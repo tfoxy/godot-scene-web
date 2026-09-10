@@ -1,0 +1,11 @@
+{
+  "godotScreenshot": "required",
+  "tolerancePx": 2,
+  "imageDiff": {
+    "enabled": true,
+    "mode": "text-runs",
+    "threshold": 0.12,
+    "maxDiffRatio": 0.12,
+    "padding": 8
+  }
+}

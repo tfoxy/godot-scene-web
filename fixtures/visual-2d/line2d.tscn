@@ -1,0 +1,21 @@
+[gd_scene load_steps=3 format=3]
+
+[sub_resource type="Gradient" id="line_gradient"]
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(1, 0, 0, 1, 0, 0.8, 1, 1)
+
+[node name="Root" type="Control"]
+offset_right = 160.0
+offset_bottom = 100.0
+
+[node name="Line" type="Line2D" parent="."]
+position = Vector2(20, 30)
+points = PackedVector2Array(0, 0, 40, 20, 80, 0)
+width = 6.0
+default_color = Color(1, 0, 0, 1)
+gradient = SubResource("line_gradient")
+texture_mode = 2
+joint_mode = 1
+begin_cap_mode = 2
+end_cap_mode = 2
+antialiased = true

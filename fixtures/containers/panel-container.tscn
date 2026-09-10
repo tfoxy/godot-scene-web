@@ -1,0 +1,21 @@
+[gd_scene load_steps=2 format=3]
+
+[sub_resource type="StyleBoxFlat" id="panel"]
+bg_color = Color(0.1, 0.2, 0.3, 1)
+border_width_left = 2
+border_width_top = 3
+border_width_right = 4
+border_width_bottom = 5
+border_color = Color(0.9, 0.9, 0.9, 1)
+content_margin_left = 8
+content_margin_top = 7
+content_margin_right = 6
+content_margin_bottom = 5
+
+[node name="Root" type="PanelContainer"]
+offset_right = 100.0
+offset_bottom = 60.0
+theme_override_styles/panel = SubResource("panel")
+
+[node name="Child" type="ColorRect" parent="."]
+color = Color(0.8, 0.1, 0.1, 1)

@@ -1,0 +1,30 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/assets/panel.svg" id="1"]
+[ext_resource type="Texture2D" path="res://fixtures/resources/atlas-panel.tres" id="2"]
+
+[node name="Root" type="Control"]
+offset_right = 320.0
+offset_bottom = 160.0
+
+[node name="Texture" type="TextureRect" parent="."]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 84.0
+offset_bottom = 84.0
+texture = ExtResource("2")
+expand_mode = 1
+stretch_mode = 5
+mouse_filter = 2
+self_modulate = Color(1, 1, 1, 0.75)
+
+[node name="Patch" type="NinePatchRect" parent="."]
+offset_left = 120.0
+offset_top = 20.0
+offset_right = 300.0
+offset_bottom = 100.0
+texture = ExtResource("1")
+patch_margin_left = 8
+patch_margin_top = 8
+patch_margin_right = 8
+patch_margin_bottom = 8

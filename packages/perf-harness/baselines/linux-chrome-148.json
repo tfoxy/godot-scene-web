@@ -1,0 +1,1294 @@
+{
+  "schema": "perf-baseline/1",
+  "capturedAt": "2026-08-13T23:00:57.949Z",
+  "repo": "godot-scene-web",
+  "scenario": "atlas-sprites",
+  "env": {
+    "kind": "ci",
+    "label": "linux-chrome-148",
+    "cpuThrottle": 1,
+    "device": null,
+    "geometry": {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "devicePixelRatio": 1,
+      "orientation": "landscape",
+      "fit": false,
+      "fitScale": 1,
+      "stage": {
+        "width": 1280,
+        "height": 800
+      },
+      "fittedStage": {
+        "width": 1280,
+        "height": 800
+      },
+      "grid": "10x5",
+      "emulatedViewport": "1280x800@1"
+    }
+  },
+  "repeats": 5,
+  "warmups": 1,
+  "params": {
+    "mounted": 50,
+    "animated": 10,
+    "regions": 100,
+    "atlasPage": 4096,
+    "scaleDiversity": "per-region"
+  },
+  "mechanisms": {
+    "canvas": {
+      "initialRenderMs": 140.4,
+      "readyMs": 124.8,
+      "frameCostMs": {
+        "p50": 1.5,
+        "p95": 2.09,
+        "max": 12.58
+      },
+      "contentUpdateHz": 60.31,
+      "activationGapMs": {
+        "p50": 16.65,
+        "p95": 17.1,
+        "max": 18.87,
+        "over100msCount": 0,
+        "count": 150
+      },
+      "swapRateHz": 59.96,
+      "blockedMs": 0,
+      "longAnimationFrames": 0,
+      "longTaskCount": 0,
+      "decode": {
+        "count": 1,
+        "totalMs": 94.93,
+        "maxMs": 94.93,
+        "distinctImages": 1,
+        "redecodeCount": 0,
+        "redecodeMs": 0,
+        "inRasterCount": 0,
+        "inRasterMs": 0,
+        "codecRuns": 1,
+        "codecMs": 94.93,
+        "imageKey": "none",
+        "cacheFamily": "unknown"
+      },
+      "paint": {
+        "count": 0,
+        "distinctUrls": 0,
+        "maxSourceMegapixels": 0,
+        "maxSourceToPaintedRatio": 0
+      },
+      "rasterMs": 0,
+      "renderSurfaces": 0,
+      "renderSurfaceReasons": {},
+      "renderSurfaceListPasses": 302,
+      "mainThreadCpuRatio": 0.7224,
+      "mainThreadCpuSamples": 5,
+      "mainThreadBusyMs": 275,
+      "windowMs": 2504,
+      "activationCount": 151,
+      "cpu": {
+        "windowMs": 2504,
+        "totalCpuMs": 597.9,
+        "totalCoreRatio": 0.2385,
+        "cpuCoverage": 1,
+        "byProcess": {
+          "renderer": {
+            "cpuMs": 409.6,
+            "wallMs": 431.4,
+            "coreRatio": 0.1634,
+            "threads": 24,
+            "processes": 4
+          },
+          "gpu": {
+            "cpuMs": 140.9,
+            "wallMs": 150.5,
+            "coreRatio": 0.05621,
+            "threads": 5,
+            "processes": 1
+          },
+          "browser": {
+            "cpuMs": 34.14,
+            "wallMs": 43.46,
+            "coreRatio": 0.01364,
+            "threads": 10,
+            "processes": 1
+          },
+          "service-tracing-mojom-tracingservice": {
+            "cpuMs": 9.17,
+            "wallMs": 9.2,
+            "coreRatio": 0.003643,
+            "threads": 3,
+            "processes": 1
+          },
+          "service-network-mojom-networkservice": {
+            "cpuMs": 1.36,
+            "wallMs": 1.56,
+            "coreRatio": 0.000542,
+            "threads": 3,
+            "processes": 1
+          },
+          "service-storage-mojom-storageservice": {
+            "cpuMs": 0.64,
+            "wallMs": 0.9,
+            "coreRatio": 0.0002564,
+            "threads": 2,
+            "processes": 1
+          }
+        },
+        "byThread": [
+          {
+            "process": "Renderer",
+            "thread": "CrRendererMain",
+            "cpuMs": 261.1,
+            "wallMs": 280.1,
+            "coreRatio": 0.1041,
+            "instances": 4
+          },
+          {
+            "process": "Renderer",
+            "thread": "Compositor",
+            "cpuMs": 138.3,
+            "wallMs": 140.9,
+            "coreRatio": 0.05514,
+            "instances": 2
+          },
+          {
+            "process": "GPU Process",
+            "thread": "VizCompositorThread",
+            "cpuMs": 124.5,
+            "wallMs": 131.2,
+            "coreRatio": 0.04964,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "CrBrowserMain",
+            "cpuMs": 16.88,
+            "wallMs": 19.74,
+            "coreRatio": 0.006748,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 13.24,
+            "wallMs": 16.04,
+            "coreRatio": 0.005263,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "Chrome_IOThread",
+            "cpuMs": 8.93,
+            "wallMs": 10.36,
+            "coreRatio": 0.003551,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "tracing.CrUtilityMain",
+            "cpuMs": 7.95,
+            "wallMs": 7.91,
+            "coreRatio": 0.003158,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 7.74,
+            "wallMs": 9.25,
+            "coreRatio": 0.003089,
+            "instances": 4
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolSingleThreadForegroundBlocking1",
+            "cpuMs": 5.48,
+            "wallMs": 7.39,
+            "coreRatio": 0.002189,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "CrGpuMain",
+            "cpuMs": 4.23,
+            "wallMs": 6.01,
+            "coreRatio": 0.00169,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "PerfettoTrace",
+            "cpuMs": 1.98,
+            "wallMs": 1.93,
+            "coreRatio": 0.0007899,
+            "instances": 4
+          },
+          {
+            "process": "Renderer",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 1.94,
+            "wallMs": 2.08,
+            "coreRatio": 0.0007714,
+            "instances": 10
+          },
+          {
+            "process": "Browser",
+            "thread": "PerfettoTrace",
+            "cpuMs": 1.17,
+            "wallMs": 1.15,
+            "coreRatio": 0.0004681,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "CompositorTileWorker1",
+            "cpuMs": 0.97,
+            "wallMs": 1.08,
+            "coreRatio": 0.0003869,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.74,
+            "wallMs": 0.84,
+            "coreRatio": 0.0002951,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "MemoryInfra",
+            "cpuMs": 0.66,
+            "wallMs": 0.72,
+            "coreRatio": 0.0002652,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.64,
+            "wallMs": 0.66,
+            "coreRatio": 0.0002556,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.57,
+            "wallMs": 0.55,
+            "coreRatio": 0.0002269,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.56,
+            "wallMs": 0.53,
+            "coreRatio": 0.000222,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.47,
+            "wallMs": 0.46,
+            "coreRatio": 0.0001864,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.45,
+            "wallMs": 0.56,
+            "coreRatio": 0.0001777,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 0.35,
+            "wallMs": 0.56,
+            "coreRatio": 0.0001394,
+            "instances": 2
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolSingleThreadSharedForegroundBlocking0",
+            "cpuMs": 0.3,
+            "wallMs": 0.33,
+            "coreRatio": 0.0001192,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "network.CrUtilityMain",
+            "cpuMs": 0.255,
+            "wallMs": 0.3,
+            "coreRatio": 0.0001011,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.19,
+            "wallMs": 0.29,
+            "coreRatio": 0.00007469,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "ThreadPoolSingleThreadSharedForeground0",
+            "cpuMs": 0.13,
+            "wallMs": 0.16,
+            "coreRatio": 0.00005047,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "storage.CrUtilityMain",
+            "cpuMs": 0.125,
+            "wallMs": 0.16,
+            "coreRatio": 0.00004994,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolServiceThread",
+            "cpuMs": 0.03,
+            "wallMs": 0.07,
+            "coreRatio": 0.00001039,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolSingleThreadSharedForeground3",
+            "cpuMs": 0.03,
+            "wallMs": 0.06,
+            "coreRatio": 0.00001039,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 0.02,
+            "wallMs": 0.05,
+            "coreRatio": 0.000007987,
+            "instances": 1
+          }
+        ]
+      },
+      "gpu": {
+        "available": true,
+        "opDetail": true,
+        "hardware": "swiftshader",
+        "hardwareDetail": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+        "processCpuMs": 140.9,
+        "processWallMs": 150.5,
+        "threads": 5,
+        "byBucket": {
+          "uploadDecode": 0,
+          "rasterPlayback": 0,
+          "skiaPrepare": 0,
+          "skiaExecute": 4,
+          "presentSwap": 0.51,
+          "clear": 0,
+          "schedulerIpc": 79.22,
+          "other": 69.41
+        },
+        "topUnbucketedOps": [
+          {
+            "name": "SoftwareRenderer::DoDrawQuad",
+            "selfMs": 26.4,
+            "count": 1838
+          },
+          {
+            "name": "CreateOrUpdateLayers",
+            "selfMs": 5.66,
+            "count": 150
+          },
+          {
+            "name": "auto viz::ClientResourceProvider::ReceiveReturnsFromParent(std::vector<ReturnedResource>)::(lambda)::operator()()::(lambda)::operator()(uint32_t) const",
+            "selfMs": 5.16,
+            "count": 149
+          },
+          {
+            "name": "LayerContextImpl::DoDrawInternal",
+            "selfMs": 4.22,
+            "count": 150
+          },
+          {
+            "name": "LayerTreeHostImpl::CalculateRenderPasses",
+            "selfMs": 3.64,
+            "count": 150
+          },
+          {
+            "name": "DelayBasedBeginFrameSource::OnTimerTick",
+            "selfMs": 2.28,
+            "count": 151
+          },
+          {
+            "name": "Surface::ActivateFrame",
+            "selfMs": 2.23,
+            "count": 157
+          },
+          {
+            "name": "LayerTreeHostImpl::BuildHitTestData",
+            "selfMs": 2.08,
+            "count": 150
+          },
+          {
+            "name": "SharedImageStub::CreateSharedImage",
+            "selfMs": 1.94,
+            "count": 200
+          },
+          {
+            "name": "DirectRenderer::DrawFrame",
+            "selfMs": 1.89,
+            "count": 151
+          }
+        ],
+        "device": null
+      },
+      "layerCount": 54,
+      "presented": {
+        "nonEmptyRatio": 0.2217,
+        "sampleHits": 50,
+        "sampleCount": 50,
+        "screenshot": ""
+      }
+    },
+    "page-crop": {
+      "initialRenderMs": 534.1,
+      "readyMs": 27.2,
+      "frameCostMs": {
+        "p50": 0.9,
+        "p95": 1.11,
+        "max": 3.01
+      },
+      "contentUpdateHz": 48.31,
+      "activationGapMs": {
+        "p50": 16.66,
+        "p95": 17.02,
+        "max": 18.16,
+        "over100msCount": 0,
+        "count": 120
+      },
+      "swapRateHz": 47.91,
+      "blockedMs": 419.5,
+      "longAnimationFrames": 1,
+      "longTaskCount": 1,
+      "decode": {
+        "count": 1329,
+        "totalMs": 1323,
+        "maxMs": 502.9,
+        "distinctImages": 1,
+        "redecodeCount": 3,
+        "redecodeMs": 375.3,
+        "inRasterCount": 0,
+        "inRasterMs": 0,
+        "codecRuns": 4,
+        "codecMs": 502,
+        "imageKey": "pixelRefId",
+        "cacheFamily": "software"
+      },
+      "paint": {
+        "count": 1270,
+        "distinctUrls": 1,
+        "maxSourceMegapixels": 16.78,
+        "maxSourceToPaintedRatio": 1820
+      },
+      "rasterMs": 96.3,
+      "renderSurfaces": 0,
+      "renderSurfaceReasons": {},
+      "renderSurfaceListPasses": 244,
+      "mainThreadCpuRatio": 0.003298,
+      "mainThreadCpuSamples": 1,
+      "mainThreadBusyMs": 588.5,
+      "windowMs": 2507,
+      "activationCount": 121,
+      "cpu": {
+        "windowMs": 2507,
+        "totalCpuMs": 1006,
+        "totalCoreRatio": 0.4016,
+        "cpuCoverage": 1,
+        "byProcess": {
+          "renderer": {
+            "cpuMs": 869.7,
+            "wallMs": 2176,
+            "coreRatio": 0.3473,
+            "threads": 20,
+            "processes": 3
+          },
+          "gpu": {
+            "cpuMs": 93.08,
+            "wallMs": 102.5,
+            "coreRatio": 0.03712,
+            "threads": 4,
+            "processes": 1
+          },
+          "browser": {
+            "cpuMs": 32.82,
+            "wallMs": 36.62,
+            "coreRatio": 0.01311,
+            "threads": 7,
+            "processes": 1
+          },
+          "service-tracing-mojom-tracingservice": {
+            "cpuMs": 8.52,
+            "wallMs": 8.64,
+            "coreRatio": 0.003397,
+            "threads": 3,
+            "processes": 1
+          },
+          "service-network-mojom-networkservice": {
+            "cpuMs": 1.72,
+            "wallMs": 1.84,
+            "coreRatio": 0.0006869,
+            "threads": 2,
+            "processes": 1
+          },
+          "service-storage-mojom-storageservice": {
+            "cpuMs": 0.6,
+            "wallMs": 0.68,
+            "coreRatio": 0.0002412,
+            "threads": 2,
+            "processes": 1
+          }
+        },
+        "byThread": [
+          {
+            "process": "Renderer",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 670.2,
+            "wallMs": 1454,
+            "coreRatio": 0.2673,
+            "instances": 10
+          },
+          {
+            "process": "Renderer",
+            "thread": "Compositor",
+            "cpuMs": 100.8,
+            "wallMs": 121.1,
+            "coreRatio": 0.04026,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "CrRendererMain",
+            "cpuMs": 88.78,
+            "wallMs": 591.1,
+            "coreRatio": 0.03542,
+            "instances": 3
+          },
+          {
+            "process": "GPU Process",
+            "thread": "VizCompositorThread",
+            "cpuMs": 85.87,
+            "wallMs": 94.55,
+            "coreRatio": 0.03425,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "CrBrowserMain",
+            "cpuMs": 20.09,
+            "wallMs": 23.11,
+            "coreRatio": 0.008022,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "tracing.CrUtilityMain",
+            "cpuMs": 7.5,
+            "wallMs": 7.5,
+            "coreRatio": 0.002989,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "Chrome_IOThread",
+            "cpuMs": 6.84,
+            "wallMs": 7.35,
+            "coreRatio": 0.002733,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 5.31,
+            "wallMs": 5.79,
+            "coreRatio": 0.002122,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "MemoryInfra",
+            "cpuMs": 4.16,
+            "wallMs": 4.28,
+            "coreRatio": 0.001655,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolSingleThreadForegroundBlocking1",
+            "cpuMs": 3.11,
+            "wallMs": 3.13,
+            "coreRatio": 0.00124,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "PerfettoTrace",
+            "cpuMs": 1.89,
+            "wallMs": 1.86,
+            "coreRatio": 0.000755,
+            "instances": 3
+          },
+          {
+            "process": "Browser",
+            "thread": "CompositorTileWorker1",
+            "cpuMs": 1.82,
+            "wallMs": 2.02,
+            "coreRatio": 0.0007271,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 1.61,
+            "wallMs": 2.06,
+            "coreRatio": 0.0006429,
+            "instances": 3
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 1.18,
+            "wallMs": 1.33,
+            "coreRatio": 0.0004712,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "CrGpuMain",
+            "cpuMs": 0.99,
+            "wallMs": 1.22,
+            "coreRatio": 0.0003929,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.92,
+            "wallMs": 0.87,
+            "coreRatio": 0.0003674,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.57,
+            "wallMs": 0.56,
+            "coreRatio": 0.0002276,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.56,
+            "wallMs": 0.56,
+            "coreRatio": 0.0002248,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.55,
+            "wallMs": 0.52,
+            "coreRatio": 0.0002192,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "MemoryInfra",
+            "cpuMs": 0.5,
+            "wallMs": 0.5,
+            "coreRatio": 0.0001974,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.48,
+            "wallMs": 0.64,
+            "coreRatio": 0.0001901,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.44,
+            "wallMs": 0.43,
+            "coreRatio": 0.0001757,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 0.22,
+            "wallMs": 0.26,
+            "coreRatio": 0.00008576,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.17,
+            "wallMs": 0.25,
+            "coreRatio": 0.00006588,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "storage.CrUtilityMain",
+            "cpuMs": 0.03,
+            "wallMs": 0.06,
+            "coreRatio": 0.00001035,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolServiceThread",
+            "cpuMs": 0.02,
+            "wallMs": 0.05,
+            "coreRatio": 0.000008376,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "network.CrUtilityMain",
+            "cpuMs": 0.02,
+            "wallMs": 0.04,
+            "coreRatio": 0.000008755,
+            "instances": 1
+          }
+        ]
+      },
+      "gpu": {
+        "available": true,
+        "opDetail": true,
+        "hardware": "swiftshader",
+        "hardwareDetail": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+        "processCpuMs": 93.08,
+        "processWallMs": 102.5,
+        "threads": 4,
+        "byBucket": {
+          "uploadDecode": 0,
+          "rasterPlayback": 0,
+          "skiaPrepare": 0,
+          "skiaExecute": 2.09,
+          "presentSwap": 0.47,
+          "clear": 0,
+          "schedulerIpc": 45.15,
+          "other": 54.71
+        },
+        "topUnbucketedOps": [
+          {
+            "name": "SoftwareRenderer::DoDrawQuad",
+            "selfMs": 33.61,
+            "count": 681
+          },
+          {
+            "name": "LayerContextImpl::DoDrawInternal",
+            "selfMs": 3.04,
+            "count": 120
+          },
+          {
+            "name": "DelayBasedBeginFrameSource::OnTimerTick",
+            "selfMs": 2,
+            "count": 151
+          },
+          {
+            "name": "Surface::ActivateFrame",
+            "selfMs": 1.6,
+            "count": 133
+          },
+          {
+            "name": "LayerTreeHostImpl::CalculateRenderPasses",
+            "selfMs": 1.42,
+            "count": 120
+          },
+          {
+            "name": "DirectRenderer::DrawFrame",
+            "selfMs": 1.38,
+            "count": 133
+          },
+          {
+            "name": "LayerContextImpl::DoUpdateDisplayTree",
+            "selfMs": 0.95,
+            "count": 120
+          },
+          {
+            "name": "auto viz::ClientResourceProvider::ReceiveReturnsFromParent(std::vector<ReturnedResource>)::(lambda)::operator()()::(lambda)::operator()(uint32_t) const",
+            "selfMs": 0.89,
+            "count": 118
+          },
+          {
+            "name": "DeserializeTilings",
+            "selfMs": 0.85,
+            "count": 120
+          },
+          {
+            "name": "LayerTreeHostImpl::PrepareToDraw",
+            "selfMs": 0.79,
+            "count": 120
+          }
+        ],
+        "device": null
+      },
+      "layerCount": 4,
+      "presented": {
+        "nonEmptyRatio": 0.2271,
+        "sampleHits": 50,
+        "sampleCount": 50,
+        "screenshot": ""
+      }
+    },
+    "region-blob": {
+      "initialRenderMs": 507.7,
+      "readyMs": 470.3,
+      "frameCostMs": {
+        "p50": 0.79,
+        "p95": 1.54,
+        "max": 5.46
+      },
+      "contentUpdateHz": 59.28,
+      "activationGapMs": {
+        "p50": 16.66,
+        "p95": 17.05,
+        "max": 21.83,
+        "over100msCount": 0,
+        "count": 148
+      },
+      "swapRateHz": 58.89,
+      "blockedMs": 0,
+      "longAnimationFrames": 0,
+      "longTaskCount": 0,
+      "decode": {
+        "count": 1525,
+        "totalMs": 329.3,
+        "maxMs": 92.95,
+        "distinctImages": 105,
+        "redecodeCount": 0,
+        "redecodeMs": 0,
+        "inRasterCount": 0,
+        "inRasterMs": 0,
+        "codecRuns": 105,
+        "codecMs": 257.6,
+        "imageKey": "pixelRefId",
+        "cacheFamily": "software"
+      },
+      "paint": {
+        "count": 1480,
+        "distinctUrls": 100,
+        "maxSourceMegapixels": 0.16,
+        "maxSourceToPaintedRatio": 17.71
+      },
+      "rasterMs": 103.6,
+      "renderSurfaces": 0,
+      "renderSurfaceReasons": {},
+      "renderSurfaceListPasses": 299,
+      "mainThreadCpuRatio": 0.3205,
+      "mainThreadCpuSamples": 2,
+      "mainThreadBusyMs": 169.6,
+      "windowMs": 2510,
+      "activationCount": 149,
+      "cpu": {
+        "windowMs": 2510,
+        "totalCpuMs": 858.2,
+        "totalCoreRatio": 0.3415,
+        "cpuCoverage": 1,
+        "byProcess": {
+          "renderer": {
+            "cpuMs": 649,
+            "wallMs": 737.9,
+            "coreRatio": 0.2589,
+            "threads": 25,
+            "processes": 4
+          },
+          "gpu": {
+            "cpuMs": 103.9,
+            "wallMs": 114.2,
+            "coreRatio": 0.04135,
+            "threads": 5,
+            "processes": 1
+          },
+          "browser": {
+            "cpuMs": 89.72,
+            "wallMs": 98.92,
+            "coreRatio": 0.03569,
+            "threads": 10,
+            "processes": 1
+          },
+          "service-tracing-mojom-tracingservice": {
+            "cpuMs": 10.37,
+            "wallMs": 10.58,
+            "coreRatio": 0.004127,
+            "threads": 3,
+            "processes": 1
+          },
+          "service-network-mojom-networkservice": {
+            "cpuMs": 1.02,
+            "wallMs": 1.19,
+            "coreRatio": 0.0004051,
+            "threads": 3,
+            "processes": 1
+          },
+          "service-storage-mojom-storageservice": {
+            "cpuMs": 0.61,
+            "wallMs": 0.74,
+            "coreRatio": 0.0002442,
+            "threads": 2,
+            "processes": 1
+          }
+        },
+        "byThread": [
+          {
+            "process": "Renderer",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 354.4,
+            "wallMs": 390.7,
+            "coreRatio": 0.1414,
+            "instances": 11
+          },
+          {
+            "process": "Renderer",
+            "thread": "CrRendererMain",
+            "cpuMs": 163.8,
+            "wallMs": 174.8,
+            "coreRatio": 0.06518,
+            "instances": 4
+          },
+          {
+            "process": "Renderer",
+            "thread": "Compositor",
+            "cpuMs": 119.8,
+            "wallMs": 143.6,
+            "coreRatio": 0.04773,
+            "instances": 2
+          },
+          {
+            "process": "GPU Process",
+            "thread": "VizCompositorThread",
+            "cpuMs": 96.44,
+            "wallMs": 105.8,
+            "coreRatio": 0.03836,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "Chrome_IOThread",
+            "cpuMs": 60.21,
+            "wallMs": 63.55,
+            "coreRatio": 0.02395,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "CrBrowserMain",
+            "cpuMs": 25.84,
+            "wallMs": 30.33,
+            "coreRatio": 0.01033,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 9.37,
+            "wallMs": 10.95,
+            "coreRatio": 0.003747,
+            "instances": 4
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "tracing.CrUtilityMain",
+            "cpuMs": 9.23,
+            "wallMs": 9.37,
+            "coreRatio": 0.003673,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 5.55,
+            "wallMs": 6.06,
+            "coreRatio": 0.002208,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolSingleThreadForegroundBlocking1",
+            "cpuMs": 2.27,
+            "wallMs": 3.87,
+            "coreRatio": 0.0009025,
+            "instances": 1
+          },
+          {
+            "process": "Renderer",
+            "thread": "PerfettoTrace",
+            "cpuMs": 1.85,
+            "wallMs": 1.86,
+            "coreRatio": 0.0007374,
+            "instances": 4
+          },
+          {
+            "process": "GPU Process",
+            "thread": "CrGpuMain",
+            "cpuMs": 1.18,
+            "wallMs": 1.4,
+            "coreRatio": 0.0004687,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.86,
+            "wallMs": 0.87,
+            "coreRatio": 0.0003417,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.63,
+            "wallMs": 0.74,
+            "coreRatio": 0.0002495,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.61,
+            "wallMs": 0.61,
+            "coreRatio": 0.000241,
+            "instances": 1
+          },
+          {
+            "process": "GPU Process",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.59,
+            "wallMs": 0.61,
+            "coreRatio": 0.0002371,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "MemoryInfra",
+            "cpuMs": 0.57,
+            "wallMs": 0.59,
+            "coreRatio": 0.0002276,
+            "instances": 1
+          },
+          {
+            "process": "Service: tracing.mojom.TracingService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.48,
+            "wallMs": 0.5,
+            "coreRatio": 0.0001935,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "PerfettoTrace",
+            "cpuMs": 0.45,
+            "wallMs": 0.45,
+            "coreRatio": 0.0001784,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.4,
+            "wallMs": 0.54,
+            "coreRatio": 0.0001578,
+            "instances": 1
+          },
+          {
+            "process": "Service: storage.mojom.StorageService",
+            "thread": "Chrome_ChildIOThread",
+            "cpuMs": 0.16,
+            "wallMs": 0.28,
+            "coreRatio": 0.00006374,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 0.11,
+            "wallMs": 0.15,
+            "coreRatio": 0.00004359,
+            "instances": 2
+          },
+          {
+            "process": "GPU Process",
+            "thread": "ThreadPoolSingleThreadSharedForeground0",
+            "cpuMs": 0.1,
+            "wallMs": 0.14,
+            "coreRatio": 0.00004024,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolSingleThreadSharedForegroundBlocking0",
+            "cpuMs": 0.06,
+            "wallMs": 0.08,
+            "coreRatio": 0.00002307,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolServiceThread",
+            "cpuMs": 0.05,
+            "wallMs": 0.1,
+            "coreRatio": 0.00002029,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "ThreadPoolForegroundWorker",
+            "cpuMs": 0.02,
+            "wallMs": 0.04,
+            "coreRatio": 0.000007179,
+            "instances": 1
+          },
+          {
+            "process": "Service: network.mojom.NetworkService",
+            "thread": "network.CrUtilityMain",
+            "cpuMs": 0.02,
+            "wallMs": 0.03,
+            "coreRatio": 0.000006764,
+            "instances": 1
+          },
+          {
+            "process": "Browser",
+            "thread": "ThreadPoolSingleThreadSharedForeground3",
+            "cpuMs": 0.01,
+            "wallMs": 0.03,
+            "coreRatio": 0.000004799,
+            "instances": 1
+          }
+        ]
+      },
+      "gpu": {
+        "available": true,
+        "opDetail": true,
+        "hardware": "swiftshader",
+        "hardwareDetail": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+        "processCpuMs": 103.9,
+        "processWallMs": 114.2,
+        "threads": 5,
+        "byBucket": {
+          "uploadDecode": 0,
+          "rasterPlayback": 0,
+          "skiaPrepare": 0,
+          "skiaExecute": 2.31,
+          "presentSwap": 0.49,
+          "clear": 0,
+          "schedulerIpc": 48.38,
+          "other": 62.89
+        },
+        "topUnbucketedOps": [
+          {
+            "name": "SoftwareRenderer::DoDrawQuad",
+            "selfMs": 38.96,
+            "count": 753
+          },
+          {
+            "name": "LayerContextImpl::DoDrawInternal",
+            "selfMs": 3.96,
+            "count": 148
+          },
+          {
+            "name": "DelayBasedBeginFrameSource::OnTimerTick",
+            "selfMs": 2.12,
+            "count": 151
+          },
+          {
+            "name": "LayerTreeHostImpl::CalculateRenderPasses",
+            "selfMs": 1.79,
+            "count": 148
+          },
+          {
+            "name": "Surface::ActivateFrame",
+            "selfMs": 1.76,
+            "count": 148
+          },
+          {
+            "name": "DirectRenderer::DrawFrame",
+            "selfMs": 1.5,
+            "count": 148
+          },
+          {
+            "name": "LayerContextImpl::DoUpdateDisplayTree",
+            "selfMs": 1.28,
+            "count": 148
+          },
+          {
+            "name": "DeserializeTilings",
+            "selfMs": 1.04,
+            "count": 148
+          },
+          {
+            "name": "SurfaceManager::GarbageCollectSurfaces",
+            "selfMs": 1.02,
+            "count": 147
+          },
+          {
+            "name": "LayerTreeHostImpl::PrepareToDraw",
+            "selfMs": 0.935,
+            "count": 149
+          }
+        ],
+        "device": null
+      },
+      "layerCount": 4,
+      "presented": {
+        "nonEmptyRatio": 0.2269,
+        "sampleHits": 50,
+        "sampleCount": 50,
+        "screenshot": ""
+      }
+    }
+  },
+  "portability": {
+    "portable": [
+      "initialRenderMs",
+      "readyMs",
+      "frameCostMs",
+      "contentUpdateHz",
+      "activationGapMs",
+      "blockedMs",
+      "longTaskCount",
+      "longAnimationFrames",
+      "decode.*",
+      "paint.*",
+      "rasterMs",
+      "mainThreadCpuRatio",
+      "mainThreadBusyMs",
+      "cpu.byThread[].process/thread ordering"
+    ],
+    "environmentSpecific": [
+      "layerCount",
+      "renderSurfaces",
+      "renderSurfaceReasons",
+      "renderSurfaceListPasses",
+      "swapRateHz",
+      "presented.nonEmptyRatio",
+      "gpu.* (SwiftShader here, Mali/ANGLE on the phone)",
+      "cpu.totalCpuMs / cpu.byProcess.*.cpuMs"
+    ]
+  }
+}

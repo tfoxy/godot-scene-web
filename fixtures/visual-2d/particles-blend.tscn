@@ -1,0 +1,116 @@
+; Godot<->browser IMAGE-diff parity for particle BLEND ALGEBRA (ADD and MIX).
+;
+; This is the only fixture that runs the LIVE browser particle runtime against real Godot
+; compositing (see docs/parity.md and packages/test-harness/src/particles-parity/browser-entry.ts);
+; every other particle check in the repo compares the browser against itself. It exists to put a
+; hand-derived piece of algebra — the WebGL additive accumulate-then-resolve, whose reference has
+; only ever been another browser renderer — in front of the engine it is supposed to be imitating.
+;
+; WHY THE FRAME IS TIME-INVARIANT. Godot and the browser cannot be made to agree on a simulation
+; CLOCK: Godot preprocesses with speed_scale pinned to 1 (particles_storage.cpp) while the browser
+; scales its preprocess warm by speedScale, and the Godot screenshot lands two process frames after
+; the scene is added while the browser's frozen frame lands at exactly `preprocess`. So the fixture
+; removes time from the comparison instead of trying to synchronize it: gravity is zeroed, initial
+; velocity is zero (default), there is no colour ramp, and lifetime (10 s) is far longer than any
+; capture delay — so every particle sits at its emission point wearing its emission colour, and the
+; rendered frame is the SAME for all t in (0, 10) whatever the RNG did.
+;
+; WHY POINT EMISSION AND FOUR PARTICLES. emission_shape defaults to POINT and explosiveness = 1
+; bursts the whole `amount` at cycle start, so all four particles land on top of each other at the
+; node origin. That makes the cluster centre an N-DEEP accumulation probe: additive stacking is
+; linear (4 * a * rgb) and mix stacking is 1 - (1-a)^4, and either one being off by a factor shows
+; up as a flat colour error over a large area rather than as a fringe. randomness = 0 and a fixed
+; per-node seed keep it reproducible.
+;
+; WHY TWO NODES PER CLUSTER, 16 px APART. The 32x32 sprites half-overlap, so each cluster also
+; carries a region where two independent CANVASES composite over one another — the page-level half
+; of the algebra (for ADD, the node's own `mix-blend-mode: plus-lighter`), which a single node
+; cannot exercise.
+;
+; ADD (CanvasItemMaterial blend_mode = 1 -> render_mode blend_add): centre is unclamped
+; 0.5 + 4 * (1, 0.85, 0.4) * 0.11 = (0.94, 0.874, 0.676) — deliberately just under 1.0 on every
+; channel, so a clamp is never what is being measured.
+; MIX (no material): combined alpha 1 - 0.65^4 = 0.8215 over the gray backdrop.
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/assets/softdot32.png" id="softdot"]
+
+[sub_resource type="CanvasItemMaterial" id="add_blend"]
+blend_mode = 1
+
+[sub_resource type="ParticleProcessMaterial" id="add_process"]
+particle_flag_disable_z = true
+gravity = Vector3(0, 0, 0)
+color = Color(1, 0.85, 0.4, 0.11)
+
+[sub_resource type="ParticleProcessMaterial" id="mix_process"]
+particle_flag_disable_z = true
+gravity = Vector3(0, 0, 0)
+color = Color(0.3, 0.6, 1, 0.35)
+
+[node name="Root" type="Control"]
+offset_right = 240.0
+offset_bottom = 160.0
+
+[node name="Backdrop" type="ColorRect" parent="."]
+offset_right = 240.0
+offset_bottom = 160.0
+color = Color(0.5, 0.5, 0.5, 1)
+
+[node name="AddA" type="GPUParticles2D" parent="."]
+material = SubResource("add_blend")
+position = Vector2(70, 60)
+amount = 4
+lifetime = 10.0
+preprocess = 1.0
+explosiveness = 1.0
+randomness = 0.0
+visibility_rect = Rect2(-16, -16, 32, 32)
+local_coords = true
+use_fixed_seed = true
+seed = 101
+process_material = SubResource("add_process")
+texture = ExtResource("softdot")
+
+[node name="AddB" type="GPUParticles2D" parent="."]
+material = SubResource("add_blend")
+position = Vector2(86, 60)
+amount = 4
+lifetime = 10.0
+preprocess = 1.0
+explosiveness = 1.0
+randomness = 0.0
+visibility_rect = Rect2(-16, -16, 32, 32)
+local_coords = true
+use_fixed_seed = true
+seed = 202
+process_material = SubResource("add_process")
+texture = ExtResource("softdot")
+
+[node name="MixA" type="GPUParticles2D" parent="."]
+position = Vector2(150, 100)
+amount = 4
+lifetime = 10.0
+preprocess = 1.0
+explosiveness = 1.0
+randomness = 0.0
+visibility_rect = Rect2(-16, -16, 32, 32)
+local_coords = true
+use_fixed_seed = true
+seed = 303
+process_material = SubResource("mix_process")
+texture = ExtResource("softdot")
+
+[node name="MixB" type="GPUParticles2D" parent="."]
+position = Vector2(166, 100)
+amount = 4
+lifetime = 10.0
+preprocess = 1.0
+explosiveness = 1.0
+randomness = 0.0
+visibility_rect = Rect2(-16, -16, 32, 32)
+local_coords = true
+use_fixed_seed = true
+seed = 404
+process_material = SubResource("mix_process")
+texture = ExtResource("softdot")
