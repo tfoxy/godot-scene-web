@@ -1,0 +1,37 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/assets/panel.svg" id="panel"]
+
+[node name="Root" type="Control"]
+offset_right = 360.0
+offset_bottom = 160.0
+
+[node name="Region" type="TextureRect" parent="."]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 84.0
+offset_bottom = 84.0
+texture = ExtResource("panel")
+expand_mode = 1
+stretch_mode = 1
+region_enabled = true
+region_rect = Rect2(4, 4, 32, 32)
+flip_h = true
+flip_v = true
+texture_repeat = 1
+texture_filter = 1
+self_modulate = Color(1, 1, 1, 0.75)
+modulate = Color(0.9, 1, 0.95, 1)
+
+[node name="PatchRound" type="NinePatchRect" parent="."]
+offset_left = 120.0
+offset_top = 20.0
+offset_right = 320.0
+offset_bottom = 100.0
+texture = ExtResource("panel")
+patch_margin_left = 8
+patch_margin_top = 6
+patch_margin_right = 10
+patch_margin_bottom = 12
+axis_stretch_horizontal = 2
+axis_stretch_vertical = 1

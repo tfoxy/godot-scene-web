@@ -1,0 +1,16 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://fixtures/instances/button.tscn" id="1"]
+
+[node name="Root" type="Control"]
+offset_right = 300.0
+offset_bottom = 120.0
+
+[node name="Button" parent="." instance=ExtResource("1")]
+offset_left = 40.0
+offset_top = 30.0
+offset_right = 200.0
+offset_bottom = 80.0
+
+[node name="Label" parent="Button"]
+text = "Mounted"

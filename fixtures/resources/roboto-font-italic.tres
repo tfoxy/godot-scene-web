@@ -1,0 +1,4 @@
+[gd_resource type="FontFile" load_steps=1 format=3]
+
+[resource]
+font_path = "res://fixtures/assets/fonts/roboto/Roboto-Italic[wdth,wght].ttf"

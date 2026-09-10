@@ -1,0 +1,9 @@
+{
+  "godotScreenshot": "required",
+  "imageDiff": {
+    "enabled": true,
+    "mode": "full",
+    "threshold": 0.15,
+    "maxDiffRatio": 0.02
+  }
+}

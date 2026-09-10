@@ -1,0 +1,9 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="Root" type="AspectRatioContainer"]
+offset_right = 160.0
+offset_bottom = 100.0
+ratio = 2.0
+
+[node name="Child" type="ColorRect" parent="."]
+color = Color(0, 0.8, 1, 1)

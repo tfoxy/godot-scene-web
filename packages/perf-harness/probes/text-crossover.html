@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>gsw text-crossover probe</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        /* Not the grid's background. The stage paints every pixel the driver ever clips to, so
+           this colour can only appear OUTSIDE the clip — it is here so that a stage which failed
+           to size itself shows up as magenta in the still rather than as a plausible black. */
+        background: #ff00ff;
+        overflow: hidden;
+      }
+      #stage {
+        position: absolute;
+        left: 0;
+        top: 0;
+      }
+      /* The hb-gpu arm builds one WebGL canvas per CELL and copies it into the accumulator; the
+         canvases themselves must never reach the screenshot. See text-crossover-hb.ts. */
+      #offstage {
+        position: absolute;
+        left: -100000px;
+        top: 0;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+      }
+      canvas {
+        position: absolute;
+        left: 0;
+        top: 0;
+      }
+      .cell {
+        position: absolute;
+        /* EVERY ARM IS CLIPPED TO ITS OWN CELL, and that is a measurement rule rather than tidiness.
+           A dilated glyph at ppem 52 / spread 6 can reach past the cell it was drawn in, and the
+           metrics crop by `cellRect` — so ink that escaped would be scored as its NEIGHBOUR's
+           interior, its neighbour's edge and its neighbour's byte diff. Clipping makes cell
+           independence structural instead of a property of the case matrix's margins. */
+        overflow: hidden;
+        white-space: pre;
+        font-synthesis: none;
+      }
+      .glyphs {
+        position: absolute;
+        left: 0;
+        line-height: normal;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="offstage"></div>
+    <script type="module">
+      // The A1 crossover probe's page: draw ONE (arm, variant) frame of the case grid, then stop.
+      //
+      // ONE GRID PER FRAME, NOT ONE FRAME PER CASE — the shape `probes/text-crossover-cases.ts`
+      // fixes and the reason arm (d), Godot, costs three launches instead of eighty-four. Every
+      // rectangle and every pen position in here arrives in the spec the node driver computed from
+      // that module; this page derives NOTHING of its own. A second copy of `cellRect` on this side
+      // would be free to drift half a pixel from the Godot side, and half a pixel is the entire
+      // subject of metric (ii).
+      //
+      // EVERY PIXEL THE NODE SIDE READS COMES FROM A COMPOSITOR SCREENSHOT, never a canvas
+      // readback: `getImageData` on an accelerated 2D canvas returns alpha 0 on the headed rung
+      // (docs/perf-harness.md), which would silently score every canvas arm as a blank page.
+      //
+      // THE CALIBRATION BAND IS PAINTED BLACK FIRST, IN EVERY VARIANT. `CALIBRATION_ALPHAS` is
+      // white at alpha `a` OVER BLACK, decoding to `round(255a)` iff no transfer curve got in — and
+      // the `product` variant clears the frame to a dark brown card, over which the same swatch
+      // would decode to something else entirely. So the band gets its own black underlay and the
+      // invariant holds in all three variants; without it the check would be a different check per
+      // variant, which is not a check.
+      const stage = document.getElementById("stage");
+      const offstage = document.getElementById("offstage");
+
+      const state = {
+        ready: false,
+        family: null,
+        /** The face's bytes, kept because the hb-gpu arm hands the same ones to two wasm heaps. */
+        fontBytes: null,
+        baselineOffsets: new Map(),
+        hb: null,
+      };
+
+      const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+
+      /**
+       * Install the probe's face and REFUSE to continue if it did not take.
+       *
+       * A canvas2d or dom arm that drew before the face loaded would measure Chrome's fallback
+       * font at the right size in the right place — a plausible, crisp, completely wrong frame that
+       * no presence guard and no uniformity metric can see. `document.fonts.check` is the only
+       * thing between this probe and that result.
+       */
+      async function installFont(url, family) {
+        const bytes = await (await fetch(url)).arrayBuffer();
+        state.fontBytes = bytes;
+        state.family = family;
+        const face = new FontFace(family, bytes, {
+          style: "normal",
+          weight: "400",
+        });
+        await face.load();
+        document.fonts.add(face);
+        await document.fonts.ready;
+        if (!document.fonts.check(`12px "${family}"`)) {
+          throw new Error(
+            `text-crossover: the probe face ${family} did not install; every arm would silently measure a fallback face`,
+          );
+        }
+        state.ready = true;
+        return { family, byteLength: bytes.byteLength };
+      }
+
+      function clear(spec) {
+        stage.replaceChildren();
+        offstage.replaceChildren();
+        stage.style.width = `${spec.frame.width}px`;
+        stage.style.height = `${spec.frame.height}px`;
+        stage.style.background = rgb(spec.colors.background);
+      }
+
+      /** A full-frame 2D canvas at DPR 1, cleared to the variant's background. */
+      function frameCanvas(spec, scale = 1) {
+        const canvas = document.createElement("canvas");
+        canvas.width = spec.frame.width * scale;
+        canvas.height = spec.frame.height * scale;
+        canvas.style.width = `${spec.frame.width * scale}px`;
+        canvas.style.height = `${spec.frame.height * scale}px`;
+        const ctx = canvas.getContext("2d", { alpha: false });
+        ctx.fillStyle = rgb(spec.colors.background);
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        return { canvas, ctx };
+      }
+
+      /**
+       * The calibration patch, drawn with 2D ops in every arm INCLUDING the two that do not use a
+       * 2D canvas for their glyphs.
+       *
+       * That is the point: the patch is not measuring the arm, it is measuring the path from a
+       * declared colour to a byte in the PNG, which every arm shares. `scale` lets the 8x reference
+       * draw it at its own resolution and be downsampled with everything else.
+       */
+      function drawCalibration(ctx, spec, scale = 1) {
+        const { top, height, swatches } = spec.calibration;
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, top * scale, spec.frame.width * scale, height * scale);
+        for (const swatch of swatches) {
+          ctx.globalAlpha = swatch.alpha;
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(
+            swatch.x * scale,
+            top * scale,
+            swatch.width * scale,
+            height * scale,
+          );
+        }
+        ctx.restore();
+      }
+
+      /**
+       * `canvas2d` (arm b) and the geometry the 8x `reference` (arm d) reuses.
+       *
+       * STROKE FIRST, THEN FILL, AT THE SAME PEN. A centred `strokeText` of width `2 * spreadPx`
+       * reaches `spreadPx` outward and `spreadPx` INWARD, and the fill drawn afterwards covers the
+       * inward half — which is what the product draws and what hb-gpu's dilate-then-fill pair
+       * produces. Reversing them paints the outline over the glyph body and reads as a bolder,
+       * muddier font rather than as an error.
+       */
+      function drawCasesCanvas2d(ctx, spec, scale) {
+        ctx.textBaseline = "alphabetic";
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        for (const entry of spec.cells) {
+          ctx.save();
+          // The per-cell clip — see `.cell { overflow: hidden }` above for why every arm has one.
+          ctx.beginPath();
+          ctx.rect(
+            entry.cellX * scale,
+            entry.cellY * scale,
+            spec.cell.width * scale,
+            spec.cell.height * scale,
+          );
+          ctx.clip();
+          ctx.font = `${entry.pixelsPerEm * scale}px "${state.family}"`;
+          if (spec.colors.drawOutline && entry.spreadPx > 0) {
+            ctx.lineWidth = 2 * entry.spreadPx * scale;
+            ctx.strokeStyle = rgb(spec.colors.outline);
+            ctx.strokeText(spec.text, entry.penX * scale, entry.penY * scale);
+          }
+          if (spec.colors.drawFill) {
+            ctx.fillStyle = rgb(spec.colors.fill);
+            ctx.fillText(spec.text, entry.penX * scale, entry.penY * scale);
+          }
+          ctx.restore();
+        }
+      }
+
+      function renderCanvas2d(spec) {
+        clear(spec);
+        const { canvas, ctx } = frameCanvas(spec, 1);
+        drawCasesCanvas2d(ctx, spec, 1);
+        drawCalibration(ctx, spec, 1);
+        stage.appendChild(canvas);
+      }
+
+      /**
+       * Distance from a text box's top edge to its alphabetic baseline, measured with the browser's
+       * own layout rather than read out of a font table.
+       *
+       * A zero-height inline-block with `vertical-align: baseline` sits exactly ON its line box's
+       * baseline, so its top IS the answer — whichever of the face's disagreeing metric tables the
+       * engine happened to pick. The `dom` arm has to land its baseline on the SAME `penY` every
+       * other arm uses, or metric (ii) reads a translation.
+       */
+      function baselineOffset(family, fontSize) {
+        const key = `${family}@${fontSize}`;
+        const cached = state.baselineOffsets.get(key);
+        if (cached !== undefined) return cached;
+        const probe = document.createElement("div");
+        probe.style.cssText =
+          "position:absolute;left:-100000px;top:0;white-space:pre;line-height:normal;font-synthesis:none";
+        probe.style.fontFamily = `"${family}"`;
+        probe.style.fontSize = `${fontSize}px`;
+        probe.textContent = "Hxg";
+        const strut = document.createElement("span");
+        strut.style.cssText = "display:inline-block;width:0;height:0";
+        probe.appendChild(strut);
+        document.body.appendChild(probe);
+        const offset =
+          strut.getBoundingClientRect().top - probe.getBoundingClientRect().top;
+        probe.remove();
+        state.baselineOffsets.set(key, offset);
+        return offset;
+      }
+
+      /**
+       * `dom` (arm c) — the shipped CSS-box path, outlined with `-webkit-text-stroke`.
+       *
+       * `-webkit-text-stroke` IS CENTRED, which is why it is the right analogue for a centred
+       * `strokeText` and for hb-gpu's `setSpread(outlinePx / 2)`: all three reach `spreadPx`
+       * outward from the outline for a declared width of `2 * spreadPx`.
+       *
+       * `paint-order: stroke fill` IS NOT OPTIONAL HERE, AND LEAVING IT OUT WAS A MEASUREMENT BUG.
+       * Blink's DEFAULT is fill-then-stroke, which paints the inward half of a centred stroke ON
+       * TOP of the glyph body — at spread 4.5 that is 4.5 px eaten inward from every edge, and it
+       * took this arm's `product` interior to 0.0 % exactly-fill while `canvas2d` and hb-gpu were
+       * at 100 %. That is not a property of the shipped CSS-box path: `packages/html/src/text.ts`
+       * emits `paint-order: stroke fill` beside every `-webkit-text-stroke` it writes, precisely so
+       * the stroke lands underneath. Measuring without it graded a configuration gsw does not
+       * ship and produced a "never route dom with an outline" verdict that was an artefact of the
+       * probe. The arm states what the html package states.
+       */
+      function renderDom(spec) {
+        clear(spec);
+        const band = document.createElement("div");
+        band.style.cssText = `position:absolute;left:0;top:${spec.calibration.top}px;width:${spec.frame.width}px;height:${spec.calibration.height}px;background:#000`;
+        for (const swatch of spec.calibration.swatches) {
+          const patch = document.createElement("div");
+          patch.style.cssText = `position:absolute;left:${swatch.x}px;top:0;width:${swatch.width}px;height:${spec.calibration.height}px;background:rgba(255,255,255,${swatch.alpha})`;
+          band.appendChild(patch);
+        }
+        for (const entry of spec.cells) {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+          cell.style.left = `${entry.cellX}px`;
+          cell.style.top = `${entry.cellY}px`;
+          cell.style.width = `${spec.cell.width}px`;
+          cell.style.height = `${spec.cell.height}px`;
+          cell.style.fontFamily = `"${state.family}"`;
+          cell.style.fontSize = `${entry.pixelsPerEm}px`;
+          cell.style.color = spec.colors.drawFill
+            ? rgb(spec.colors.fill)
+            : "transparent";
+          if (spec.colors.drawOutline && entry.spreadPx > 0) {
+            cell.style.webkitTextStrokeWidth = `${2 * entry.spreadPx}px`;
+            cell.style.webkitTextStrokeColor = rgb(spec.colors.outline);
+            // Mirrors `packages/html/src/text.ts` — the stroke paints UNDER the fill. See above.
+            cell.style.paintOrder = "stroke fill";
+          }
+          const glyphs = document.createElement("span");
+          glyphs.className = "glyphs";
+          glyphs.textContent = spec.text;
+          // The line box puts its baseline `baselineOffset` below the span's top, so the span goes
+          // this far up to land the baseline exactly on the cell-local pen y.
+          glyphs.style.left = `${entry.penX - entry.cellX}px`;
+          glyphs.style.top = `${entry.penY - entry.cellY - baselineOffset(state.family, entry.pixelsPerEm)}px`;
+          cell.appendChild(glyphs);
+          stage.appendChild(cell);
+        }
+        stage.appendChild(band);
+      }
+
+      /**
+       * One CELL of the `reference` (arm d) at `scale`x, drawn with the canvas2d recipe.
+       *
+       * PER CELL, AND THE NODE SIDE BOX-DOWNSAMPLES AND ASSEMBLES. The whole frame at 8x would be
+       * 10240x9280 = 95 Mpx, which is a canvas Chrome will not reliably give out and a screenshot
+       * that would have to be taken beyond the viewport. A cell is 2560x1280 and is not close to
+       * any limit. The reference is a computed CEILING rather than a shippable arm — its pixels
+       * never existed at 1x in any browser — so assembling it in node costs nothing that a frame
+       * screenshot was buying.
+       */
+      function renderReferenceCell(spec) {
+        const entry = spec.cells[spec.cellIndex];
+        const scale = spec.superSample;
+        const width = spec.cell.width * scale;
+        const height = spec.cell.height * scale;
+        clear({ ...spec, frame: { width, height } });
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        const ctx = canvas.getContext("2d", { alpha: false });
+        ctx.fillStyle = rgb(spec.colors.background);
+        ctx.fillRect(0, 0, width, height);
+        ctx.textBaseline = "alphabetic";
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        // CELL-LOCAL, so the 8x canvas holds one cell and the pen keeps its whole-pixel phase:
+        // `penX - cellX` and `penY - cellY` are integers by construction (PEN_X / PEN_Y).
+        const penX = (entry.penX - entry.cellX) * scale;
+        const penY = (entry.penY - entry.cellY) * scale;
+        ctx.font = `${entry.pixelsPerEm * scale}px "${state.family}"`;
+        if (spec.colors.drawOutline && entry.spreadPx > 0) {
+          ctx.lineWidth = 2 * entry.spreadPx * scale;
+          ctx.strokeStyle = rgb(spec.colors.outline);
+          ctx.strokeText(spec.text, penX, penY);
+        }
+        if (spec.colors.drawFill) {
+          ctx.fillStyle = rgb(spec.colors.fill);
+          ctx.fillText(spec.text, penX, penY);
+        }
+        stage.appendChild(canvas);
+      }
+
+      /** The reference's calibration band at `scale`x, over the swatches' own extent only. */
+      function renderReferenceCalibration(spec) {
+        const scale = spec.superSample;
+        const width = spec.calibration.bandWidth * scale;
+        const height = spec.calibration.height * scale;
+        clear({ ...spec, frame: { width, height } });
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        const ctx = canvas.getContext("2d", { alpha: false });
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, width, height);
+        for (const swatch of spec.calibration.swatches) {
+          ctx.globalAlpha = swatch.alpha;
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(swatch.x * scale, 0, swatch.width * scale, height);
+        }
+        ctx.globalAlpha = 1;
+        stage.appendChild(canvas);
+      }
+
+      /**
+       * `hb-gpu` (arm a) — the shipped `createHbGpuText`, in a bundled module (`/hb.js`) that
+       * imports the scenario's own code.
+       *
+       * Loaded lazily and given the face bytes this page installed, so the arm shapes the same
+       * face the `canvas2d` and `dom` arms drew rather than racing a second download of it.
+       */
+      async function renderHbGpu(spec) {
+        clear(spec);
+        if (!state.hb) {
+          state.hb = await import("/hb.js");
+        }
+        const { canvas, ctx } = frameCanvas(spec, 1);
+        const report = await state.hb.render({
+          accumulator: canvas,
+          ctx,
+          offstage,
+          spec,
+          fontBytes: state.fontBytes,
+        });
+        drawCalibration(ctx, spec, 1);
+        stage.appendChild(canvas);
+        return report;
+      }
+
+      const arms = {
+        canvas2d: renderCanvas2d,
+        dom: renderDom,
+        "hb-gpu": renderHbGpu,
+        "reference-cell": renderReferenceCell,
+        "reference-calibration": renderReferenceCalibration,
+      };
+
+      window.__textCrossover = {
+        installFont,
+        async render(arm, spec) {
+          if (!state.ready) {
+            throw new Error("text-crossover: no face installed");
+          }
+          const draw = arms[arm];
+          if (!draw) throw new Error(`text-crossover: unknown arm ${arm}`);
+          const report = (await draw(spec)) ?? null;
+          // Two frames: one to commit the mutation, one to be sure it was presented before the
+          // screenshot. A single rAF returns when the frame was REQUESTED, not when it was shown.
+          await new Promise((r) =>
+            requestAnimationFrame(() => requestAnimationFrame(r)),
+          );
+          return report;
+        },
+      };
+    </script>
+  </body>
+</html>

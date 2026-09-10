@@ -1,0 +1,102 @@
+# Everything this module exports, and nothing else.
+#
+# `-sEXPORTED_FUNCTIONS=@hb-gpu.symbols` reads this file as a response list: one C symbol per
+# line, each with the leading underscore the wasm ABI gives it. Anything not named here is dead
+# to `-flto` and `--gc-sections`, which is most of what `harfbuzz-world.cc` compiles — the whole
+# OpenType shaping engine included.
+#
+# EVERY LINE IS EITHER A SYMBOL OR STARTS WITH `#`. Emscripten's parser
+# (`tools/cmdline.py:parse_symbol_list_file`) drops `#` lines but keeps blank ones, which arrive
+# as an empty export name and fail the link with a message that does not mention this file.
+#
+# SHAPING IS EXPORTED. IT USED TO BE DELIBERATELY ABSENT, AND THE REASON EXPIRED. This file once
+# said `hb_shape` and `hb_buffer_*` were withheld on purpose, because the perf-harness already
+# shaped with npm `harfbuzzjs` and this module only needed an `hb_font_t` to read outlines out of.
+# That was the right call for a measurement arm and the wrong one for a shipped path: it made every
+# consumer load a SECOND HarfBuzz and hold every face in BOTH wasm heaps — 4.19 MiB across the pair
+# on the phone, with each face resident twice. `harfbuzz-world.cc` has always compiled the whole
+# OpenType shaping engine; only this file's silence let `-flto` and `--gc-sections` throw it away.
+#
+# THE TRADE, STATED HONESTLY: the binary grew 227 049 -> 417 263 bytes (+190 KB, 1.84x) and the
+# RUNTIME footprint fell, because a face stops being resident twice. A consumer that shapes here
+# drops npm `harfbuzzjs` — a ~420 KB wasm module plus its own heap — entirely. Measured on the
+# S9 fixtures: both faces (849 KB), 2080 shaped runs and 340 encoded outlines high-water at
+# 1.125 MiB in ONE heap, against the two heaps and two face copies the split arrangement paid for.
+#
+# WHAT `HB_TINY` LEAVES OUT OF THAT SHAPER, so nobody reads "one HarfBuzz" as "the same HarfBuzz".
+# `util/gpu/web/config.h` is `HB_TINY`, whose closure defines HB_NO_AAT (no Apple layout),
+# HB_NO_LEGACY (no `kern` table — GPOS kerning is intact — and no fallback shaper), HB_NO_VERTICAL
+# and HB_NO_LAYOUT_RARELY_USED. Latin and Han shape byte-identically to npm `harfbuzzjs` on the
+# fixture faces; `test/shape.test.ts` asserts exactly that, against that other build.
+#
+# The Slug encoder: outlines in, one blob and its extents out.
+_hb_gpu_draw_create_or_fail
+_hb_gpu_draw_destroy
+_hb_gpu_draw_set_scale
+_hb_gpu_draw_glyph_or_fail
+_hb_gpu_draw_encode
+_hb_gpu_draw_clear
+_hb_gpu_draw_reset
+_hb_gpu_draw_recycle_blob
+#
+# The shader halves. `const char *`, read back through `UTF8ToString`, so the GLSL cannot drift
+# from the encoder that produced the blobs it reads.
+_hb_gpu_shader_source
+_hb_gpu_draw_shader_source
+#
+# Font bytes to an `hb_font_t` — the minimum that gets outlines into the encoder.
+_hb_blob_create
+_hb_blob_get_data
+_hb_blob_get_length
+_hb_blob_destroy
+_hb_face_create
+_hb_face_destroy
+_hb_face_get_upem
+_hb_font_create
+_hb_font_destroy
+_hb_font_set_scale
+# Codepoint to glyph id, for a caller that has not shaped (the pixel test draws one glyph).
+_hb_font_get_nominal_glyph
+#
+# THE SHAPER. Text in, glyph ids and positions out, in the font's own units — everything
+# `HbGpuFont.shape` calls and nothing more.
+_hb_shape
+# One buffer per font, created up front and cleared between runs. `hb_buffer_create` returns the
+# IMMORTAL EMPTY buffer rather than null when it cannot allocate (the same trap `hb_blob_create`
+# sets), and that buffer is the one object whose `successful` flag is false — so
+# `hb_buffer_allocation_successful` is the only way to tell a real buffer from a refusal, and the
+# only way to tell "this run shaped to nothing" from "the heap could not grow mid-run".
+_hb_buffer_create
+_hb_buffer_destroy
+_hb_buffer_allocation_successful
+# `clear_contents` and not `reset`: it drops the glyphs AND resets the segment properties to
+# invalid, so every `shape` call starts from unguessed direction/script/language instead of
+# inheriting the previous run's.
+_hb_buffer_clear_contents
+# UTF-16 and not UTF-8, because a JS string already IS UTF-16: it saves a transcode, and it makes
+# `cluster` an index into the string the caller passed. npm `harfbuzzjs` adds text the same way,
+# which is what lets the cross-check compare clusters at all.
+_hb_buffer_add_utf16
+# Segment properties. `guess` for the common case; the three setters for a caller that knows better
+# than the heuristic, which for a mixed-script or explicitly-RTL run it does.
+_hb_buffer_guess_segment_properties
+_hb_buffer_set_direction
+_hb_buffer_set_script
+_hb_buffer_set_language
+# ...and the two string parsers behind them. `hb_language_t` is an INTERNED POINTER with no other
+# constructor, so `hb_language_from_string` is not optional. `hb_script_from_string` is: an
+# ISO 15924 tag could be packed into an `hb_tag_t` in TypeScript — but it also canonicalises case
+# and maps the deprecated tags (Qaai -> Inherited), and a hand-rolled `HB_TAG` would silently not.
+_hb_language_from_string
+_hb_script_from_string
+# OpenType features, in `hb-shape`'s own syntax ("-liga", "ss01[3:5]=2"). Same argument as the
+# script tag, more so: the range and value grammar is not something to re-implement in TypeScript.
+_hb_feature_from_string
+# The shaped run. `hb_glyph_info_t` and `hb_glyph_position_t` are 20 bytes each on wasm32 and are
+# read straight out of `HEAP32`.
+_hb_buffer_get_length
+_hb_buffer_get_glyph_infos
+_hb_buffer_get_glyph_positions
+#
+_malloc
+_free

@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>gsw text-fidelity probe</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #101014;
+        overflow: hidden;
+      }
+      #stage {
+        position: absolute;
+        left: 0;
+        top: 0;
+      }
+      .run {
+        position: absolute;
+        color: #fff;
+        white-space: pre;
+        font-synthesis: none;
+        transform-origin: 50% 50%;
+      }
+      /* The glyphs live in their own absolutely-positioned box so `top` can put the BASELINE where
+         the spec asks, without touching the outer `.run` box — whose size and centred
+         transform-origin are what make the rotation match every other arm. */
+      .run > .glyphs {
+        position: absolute;
+        left: 0;
+        line-height: normal;
+      }
+      canvas {
+        position: absolute;
+        left: 0;
+        top: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script type="module">
+      // The fidelity probe's page: draw the spec's text runs — a Han one and a Latin one, stacked —
+      // at one sub-pixel offset, with one mechanism, into a fixed box, and then stop. Every pixel
+      // the node side reads comes from a compositor screenshot of this page, never from a canvas
+      // readback, because `getImageData` on an accelerated 2D canvas returns alpha 0 on the
+      // headed-Xvfb rung this probe has to run on (docs/perf-harness.md, "WHAT IS ACTUALLY BROKEN
+      // ON THAT RUNG").
+      //
+      // TWO RUNS IN ONE IMAGE, MEASURED SEPARATELY. The node side crops the still into a band per
+      // run, so the two scripts get their own acutance, their own reference and their own
+      // distortion — but they share a screenshot, which is what lets the viewer show both in the
+      // picture a reader actually looks at.
+      //
+      // EVERY ARM ANCHORS THE ALPHABETIC BASELINE AT `spec.baseline`, measured down from the run
+      // box's top edge. This probe measures RASTERIZATION, so vertical layout convention is
+      // normalised away rather than left to each mechanism's default — and the three defaults
+      // disagree badly. `textBaseline: "top"` pins the em top; a CSS line box puts the baseline at
+      // half-leading + ascent; Godot's Label uses its own ascent. Left alone they put the same run
+      // in three places (the dom arm sat 2.35 px low), which corrupts every per-pixel comparison:
+      // `rmsVsReference` and the viewer's diff images scored a translation, not a rasterizer.
+      // Scenario S9 remains the place the SHIPPED layout path is exercised.
+      const stage = document.getElementById("stage");
+
+      // One family per script, matching `PROBE_FONT_FAMILIES` in text-fidelity.ts. A `-probe`
+      // suffix so a page left open in a browser cannot pick up a face S9 installed.
+      const FACES = [
+        { family: "NotoSansSC-probe", url: "/font.ttf", sample: "一" },
+        { family: "Roboto-probe", url: "/latin.ttf", sample: "Hx" },
+      ];
+
+      const state = {
+        ready: false,
+        baselineOffsets: new Map(),
+        // Kept because the `hb-` arms hand the same bytes to a wasm shaper. Fetched once, so those
+        // arms measure the faces this page installed rather than racing a second download.
+        fontBytes: new Map(),
+        hb: null,
+      };
+
+      /**
+       * Distance from a text box's top edge to its alphabetic baseline, measured with the browser's
+       * own layout rather than read out of a font table.
+       *
+       * A metric table cannot answer this. The fixture font's tables disagree by 45% (hhea
+       * 1160/-288 against OS/2 typo 880/-120 at 1000 upem, with USE_TYPO_METRICS unset), and the
+       * two predict half-leadings of opposite sign. A zero-height inline-block with
+       * `vertical-align: baseline` sits exactly ON its line box's baseline, so its top IS the
+       * answer, whichever table the engine picked.
+       *
+       * Measured on an UNROTATED probe element: `getBoundingClientRect` reports the TRANSFORMED
+       * box, so measuring the rotated run would hand back a rotated number.
+       */
+      function baselineOffset(fontFamily, fontSize) {
+        const key = `${fontFamily}@${fontSize}`;
+        const cached = state.baselineOffsets.get(key);
+        if (cached !== undefined) return cached;
+        const face = FACES.find((entry) => entry.family === fontFamily);
+        const probe = document.createElement("div");
+        probe.style.cssText =
+          "position:absolute;left:-10000px;top:0;white-space:pre;line-height:normal;font-synthesis:none";
+        probe.style.fontFamily = `"${fontFamily}"`;
+        probe.style.fontSize = `${fontSize}px`;
+        probe.textContent = face ? face.sample : "x";
+        const strut = document.createElement("span");
+        strut.style.cssText = "display:inline-block;width:0;height:0";
+        probe.appendChild(strut);
+        document.body.appendChild(probe);
+        const offset =
+          strut.getBoundingClientRect().top - probe.getBoundingClientRect().top;
+        probe.remove();
+        state.baselineOffsets.set(key, offset);
+        return offset;
+      }
+
+      async function installFonts() {
+        for (const entry of FACES) {
+          const bytes = await (await fetch(entry.url)).arrayBuffer();
+          state.fontBytes.set(entry.family, bytes);
+          const face = new FontFace(entry.family, bytes, {
+            style: "normal",
+            weight: "400",
+          });
+          await face.load();
+          document.fonts.add(face);
+          await document.fonts.ready;
+          if (!document.fonts.check(`12px "${entry.family}"`)) {
+            throw new Error(
+              `the probe font ${entry.family} did not install; every arm would measure a fallback face`,
+            );
+          }
+        }
+        state.ready = true;
+      }
+
+      function clear(box) {
+        stage.replaceChildren();
+        stage.style.width = `${box.width}px`;
+        stage.style.height = `${box.height}px`;
+      }
+
+      // `dom` — a CSS-rotated, CSS-positioned span per run. The shipped mechanism.
+      function renderDom(spec) {
+        clear(spec.box);
+        for (const run of spec.runs) {
+          const el = document.createElement("div");
+          el.className = "run";
+          el.style.left = `${run.left + spec.dx}px`;
+          el.style.top = `${run.top + spec.dy}px`;
+          el.style.width = `${run.width}px`;
+          el.style.height = `${run.height}px`;
+          el.style.fontFamily = `"${run.fontFamily}"`;
+          el.style.fontSize = `${spec.fontSize}px`;
+          el.style.transform = `rotate(${spec.rotationDeg}deg)`;
+          const glyphs = document.createElement("span");
+          glyphs.className = "glyphs";
+          glyphs.textContent = run.text;
+          // The line box's baseline sits `baselineOffset` below the span's top, so putting the span
+          // this far up lands the baseline exactly on `spec.baseline`. PER FACE: the two faces'
+          // line boxes put their baselines in different places.
+          glyphs.style.top = `${spec.baseline - baselineOffset(run.fontFamily, spec.fontSize)}px`;
+          el.appendChild(glyphs);
+          stage.appendChild(el);
+        }
+      }
+
+      // `canvas2d` — the default browser answer, drawn at the same transform.
+      function renderCanvas2d(spec) {
+        clear(spec.box);
+        const dpr = window.devicePixelRatio || 1;
+        const canvas = document.createElement("canvas");
+        canvas.style.width = `${spec.box.width}px`;
+        canvas.style.height = `${spec.box.height}px`;
+        canvas.width = Math.round(spec.box.width * dpr);
+        canvas.height = Math.round(spec.box.height * dpr);
+        stage.appendChild(canvas);
+        const ctx = canvas.getContext("2d");
+        ctx.textBaseline = "alphabetic";
+        ctx.fillStyle = "#ffffff";
+        for (const run of spec.runs) {
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.font = `${spec.fontSize}px "${run.fontFamily}"`;
+          ctx.translate(
+            run.left + spec.dx + run.width / 2,
+            run.top + spec.dy + run.height / 2,
+          );
+          ctx.rotate((spec.rotationDeg * Math.PI) / 180);
+          ctx.fillText(
+            run.text,
+            -run.width / 2,
+            -run.height / 2 + spec.baseline,
+          );
+        }
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+
+      // The REFERENCE: the same runs at `superSample`x the size, which the node side then
+      // box-downsamples. Not a mechanism — an upper bound on how crisp this geometry can possibly
+      // be, so `acutance` has a ceiling to be read against instead of only being compared
+      // arm-to-arm.
+      function renderReference(spec) {
+        const scale = spec.superSample;
+        clear({
+          width: spec.box.width * scale,
+          height: spec.box.height * scale,
+        });
+        const canvas = document.createElement("canvas");
+        canvas.style.width = `${spec.box.width * scale}px`;
+        canvas.style.height = `${spec.box.height * scale}px`;
+        canvas.width = Math.round(spec.box.width * scale);
+        canvas.height = Math.round(spec.box.height * scale);
+        stage.appendChild(canvas);
+        const ctx = canvas.getContext("2d");
+        ctx.textBaseline = "alphabetic";
+        ctx.fillStyle = "#ffffff";
+        for (const run of spec.runs) {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.font = `${spec.fontSize * scale}px "${run.fontFamily}"`;
+          ctx.translate(
+            (run.left + spec.dx + run.width / 2) * scale,
+            (run.top + spec.dy + run.height / 2) * scale,
+          );
+          ctx.rotate((spec.rotationDeg * Math.PI) / 180);
+          ctx.fillText(
+            run.text,
+            (-run.width / 2) * scale,
+            (-run.height / 2 + spec.baseline) * scale,
+          );
+        }
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+
+      // `hb-atlas` / `hb-run` / `hb-gpu` — the candidate arms. All three live in a bundled module
+      // (`/hb.js`) that imports the SCENARIO's own code, so the alignment and crispness graded here
+      // describe the arms S9 times rather than a copy of them. Loaded lazily: a probe run that
+      // never asks for an hb- arm never fetches the wasm.
+      //
+      // `hb-gpu` is only ever ASKED for when the node side found its build — see `armsFor`. It is
+      // listed here unconditionally anyway, because the page is a dumb renderer and the decision
+      // about what can be measured belongs on the side that can look at the filesystem.
+      async function renderHb(arm, spec) {
+        clear(spec.box);
+        if (!state.hb) {
+          state.hb = await import("/hb.js");
+        }
+        await state.hb.render(stage, arm, spec, state.fontBytes);
+      }
+
+      const arms = {
+        dom: renderDom,
+        canvas2d: renderCanvas2d,
+        reference: renderReference,
+        "hb-atlas": (spec) => renderHb("hb-atlas", spec),
+        "hb-run": (spec) => renderHb("hb-run", spec),
+        "hb-gpu": (spec) => renderHb("hb-gpu", spec),
+      };
+
+      window.__textFidelity = {
+        installFonts,
+        async render(arm, spec) {
+          if (!state.ready) throw new Error("font not installed");
+          const draw = arms[arm];
+          if (!draw) throw new Error(`unknown arm ${arm}`);
+          await draw(spec);
+          // Two frames: one to commit the mutation, one to be sure it was presented before the
+          // screenshot. A single rAF returns when the frame was REQUESTED, not when it was shown.
+          await new Promise((r) =>
+            requestAnimationFrame(() => requestAnimationFrame(r)),
+          );
+          return true;
+        },
+      };
+    </script>
+  </body>
+</html>

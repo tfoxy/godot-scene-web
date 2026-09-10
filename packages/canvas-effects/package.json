@@ -1,0 +1,44 @@
+{
+  "name": "@godot-scene-web/canvas-effects",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "WebGL and WebGPU execution for portable Godot effects.",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tfoxy/godot-scene-web.git"
+  },
+  "homepage": "https://github.com/tfoxy/godot-scene-web#readme",
+  "bugs": {
+    "url": "https://github.com/tfoxy/godot-scene-web/issues"
+  },
+  "sideEffects": false,
+  "exports": {
+    "./webgl": {
+      "development": "./src/webgl.ts",
+      "types": "./dist/webgl.d.ts",
+      "import": "./dist/webgl.js"
+    },
+    "./webgpu": {
+      "development": "./src/webgpu.ts",
+      "types": "./dist/webgpu.d.ts",
+      "import": "./dist/webgpu.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run --config vitest.config.ts packages/canvas-effects/test"
+  },
+  "dependencies": {
+    "@godot-scene-web/effects": "workspace:*"
+  }
+}

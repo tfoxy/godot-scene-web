@@ -1,0 +1,21 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/assets/panel.svg" id="leaf_texture"]
+
+[node name="LeafRoot" type="Control"]
+custom_minimum_size = Vector2(160, 70)
+
+[node name="Icon" type="TextureRect" parent="."]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 42.0
+offset_bottom = 42.0
+texture = ExtResource("leaf_texture")
+stretch_mode = 5
+
+[node name="Label" type="Label" parent="."]
+offset_left = 48.0
+offset_top = 12.0
+offset_right = 150.0
+offset_bottom = 42.0
+text = "Leaf"

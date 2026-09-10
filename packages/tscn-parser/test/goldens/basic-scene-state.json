@@ -1,0 +1,129 @@
+{
+  "kind": "scene",
+  "nodes": [
+    {
+      "index": 0,
+      "name": "Root",
+      "type": "Control",
+      "parent": ".",
+      "groups": [],
+      "properties": [
+        {
+          "name": "layout_mode",
+          "value": 3
+        },
+        {
+          "name": "anchors_preset",
+          "value": 15
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Panel",
+      "type": "ColorRect",
+      "parent": ".",
+      "owner": ".",
+      "groups": ["ui", "debug"],
+      "properties": [
+        {
+          "name": "offset_left",
+          "value": 10
+        },
+        {
+          "name": "offset_top",
+          "value": 20
+        },
+        {
+          "name": "color",
+          "value": {
+            "type": "Color",
+            "args": [1, 0, 0, 1]
+          }
+        },
+        {
+          "name": "texture",
+          "value": {
+            "type": "ExtResource",
+            "id": "1"
+          }
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Instanced",
+      "parent": ".",
+      "instance": {
+        "type": "ExtResource",
+        "id": "Scene"
+      },
+      "instancePlaceholder": "res://placeholder.tscn",
+      "groups": [],
+      "properties": [
+        {
+          "name": "text",
+          "value": "Hello"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "signal": "pressed",
+      "from": "Panel",
+      "to": ".",
+      "method": "_on_pressed",
+      "flags": 1,
+      "binds": [
+        {
+          "type": "NodePath",
+          "args": ["Panel"]
+        }
+      ],
+      "unbinds": 0
+    }
+  ],
+  "extResources": [
+    {
+      "id": "1",
+      "type": "Texture2D",
+      "path": "res://ui/panel.png",
+      "attributes": {
+        "type": "Texture2D",
+        "path": "res://ui/panel.png",
+        "id": "1"
+      },
+      "properties": {}
+    },
+    {
+      "id": "Scene",
+      "type": "PackedScene",
+      "path": "res://button.tscn",
+      "attributes": {
+        "type": "PackedScene",
+        "path": "res://button.tscn",
+        "id": "Scene"
+      },
+      "properties": {}
+    }
+  ],
+  "subResources": [
+    {
+      "id": "PanelStyle",
+      "type": "StyleBoxFlat",
+      "attributes": {
+        "type": "StyleBoxFlat",
+        "id": "PanelStyle"
+      },
+      "properties": {
+        "bg_color": {
+          "type": "Color",
+          "args": [0.1, 0.2, 0.3, 1]
+        }
+      }
+    }
+  ],
+  "editableInstances": [],
+  "diagnostics": []
+}

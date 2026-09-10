@@ -1,0 +1,27 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/assets/panel.svg" id="panel"]
+
+[sub_resource type="SpriteFrames" id="frames"]
+animations = [{
+"frames": [{"duration": 1.0, "texture": ExtResource("panel")}],
+"loop": true,
+"name": &"idle",
+"speed": 5.0
+}, {
+"frames": [{"duration": 1.0, "texture": ExtResource("panel")}, {"duration": 1.0, "texture": ExtResource("panel")}],
+"loop": true,
+"name": &"run",
+"speed": 12.0
+}]
+
+[node name="Root" type="Control"]
+offset_right = 160.0
+offset_bottom = 120.0
+
+[node name="Sprite" type="AnimatedSprite2D" parent="."]
+position = Vector2(80, 60)
+offset = Vector2(4, -6)
+sprite_frames = SubResource("frames")
+animation = &"run"
+frame = 1

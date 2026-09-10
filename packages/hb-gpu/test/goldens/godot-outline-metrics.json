@@ -1,0 +1,303 @@
+{
+  "schema": "godot-outline-metrics/1",
+  "godot": "4.5.1-stable (official)",
+  "renderer": "forward_plus",
+  "adapter": "NVIDIA GeForce RTX 2060",
+  "oversampling": 1,
+  "snap2dTransforms": false,
+  "snap2dVertices": false,
+  "fontRelativePath": "fixtures/assets/fonts/noto-sans-sc/NotoSansSC-bench.ttf",
+  "fontSha256": "2d49a672ddc704618bcc429662f524342473957929ff51601e1f15a6e911369b",
+  "fontBytes": 826032,
+  "pngSha256": {
+    "outline-ref.png": "543426ea416821b88fcdbd8686480e5553d05c7342269a06f9661c0da45f453a"
+  },
+  "viewport": {
+    "width": 896,
+    "height": 232
+  },
+  "calibration": [
+    {
+      "alpha": 0.25,
+      "expected": 64,
+      "measured": 64
+    },
+    {
+      "alpha": 0.5,
+      "expected": 128,
+      "measured": 127
+    },
+    {
+      "alpha": 0.75,
+      "expected": 191,
+      "measured": 191
+    }
+  ],
+  "faces": [
+    {
+      "allowSystemFallback": false,
+      "antialiasing": 1,
+      "disableEmbeddedBitmaps": true,
+      "faceCount": 1,
+      "fixedSize": 0,
+      "forceAutohinter": false,
+      "generateMipmaps": false,
+      "hinting": 0,
+      "key": "graded",
+      "msdf": false,
+      "path": "res://fixtures/assets/fonts/noto-sans-sc/NotoSansSC-bench.ttf",
+      "subpixelPositioning": 0
+    },
+    {
+      "allowSystemFallback": false,
+      "antialiasing": 1,
+      "disableEmbeddedBitmaps": true,
+      "faceCount": 1,
+      "fixedSize": 0,
+      "forceAutohinter": false,
+      "generateMipmaps": false,
+      "hinting": 2,
+      "key": "hintedNormal",
+      "msdf": false,
+      "path": "res://fixtures/assets/fonts/noto-sans-sc/NotoSansSC-bench.ttf",
+      "subpixelPositioning": 0
+    }
+  ],
+  "realism": {
+    "case": "han-desktop",
+    "hintedAgainst": 2,
+    "gradedAt": 0,
+    "differingPixels": 0,
+    "worstDelta": 0
+  },
+  "cases": [
+    {
+      "inkVsDiskOfR50": null,
+      "name": "han-desktop",
+      "case": "han-desktop",
+      "graded": true,
+      "hinting": 0,
+      "text": "中",
+      "pixelsPerEm": 14,
+      "outlineSize": 12,
+      "spreadPx": 3,
+      "originX": 57,
+      "originY": 69,
+      "cellX": 0,
+      "cellY": 0,
+      "cellSize": 128,
+      "metrics": {
+        "width": 128,
+        "height": 128,
+        "ink": 233.65098039215687,
+        "inkPixels": 267,
+        "peak": 1,
+        "rampPixels": 40,
+        "gradientSum": 58.7871822977693,
+        "gradientRampWidthPx": 0.8505255405292196,
+        "radial": null
+      }
+    },
+    {
+      "inkVsDiskOfR50": null,
+      "name": "han-phone",
+      "case": "han-phone",
+      "graded": true,
+      "hinting": 0,
+      "text": "中",
+      "pixelsPerEm": 49,
+      "outlineSize": 42,
+      "spreadPx": 10.5,
+      "originX": 40,
+      "originY": 83,
+      "cellX": 128,
+      "cellY": 0,
+      "cellSize": 128,
+      "metrics": {
+        "width": 128,
+        "height": 128,
+        "ink": 2835.886274509801,
+        "inkPixels": 2978,
+        "peak": 1,
+        "rampPixels": 185,
+        "gradientSum": 214.65161082653606,
+        "gradientRampWidthPx": 1.0773271121029575,
+        "radial": null
+      }
+    },
+    {
+      "inkVsDiskOfR50": null,
+      "name": "latin-desktop",
+      "case": "latin-desktop",
+      "graded": true,
+      "hinting": 0,
+      "text": "B",
+      "pixelsPerEm": 20,
+      "outlineSize": 12,
+      "spreadPx": 3,
+      "originX": 57,
+      "originY": 71,
+      "cellX": 256,
+      "cellY": 0,
+      "cellSize": 128,
+      "metrics": {
+        "width": 128,
+        "height": 128,
+        "ink": 280.5058823529412,
+        "inkPixels": 307,
+        "peak": 1,
+        "rampPixels": 53,
+        "gradientSum": 63.50191104767806,
+        "gradientRampWidthPx": 1.0432756889829449,
+        "radial": null
+      }
+    },
+    {
+      "inkVsDiskOfR50": 0.9968955331142566,
+      "name": "dot-radial",
+      "case": "dot-radial",
+      "graded": true,
+      "hinting": 0,
+      "text": ".",
+      "pixelsPerEm": 49,
+      "outlineSize": 16,
+      "spreadPx": 4,
+      "originX": 58,
+      "originY": 66,
+      "cellX": 384,
+      "cellY": 0,
+      "cellSize": 128,
+      "metrics": {
+        "width": 128,
+        "height": 128,
+        "ink": 114.27843137254901,
+        "inkPixels": 141,
+        "peak": 1,
+        "rampPixels": 38,
+        "gradientSum": 39.523229817811334,
+        "gradientRampWidthPx": 1.2018248563935403,
+        "radial": {
+          "centroidX": 63.65490202807042,
+          "centroidY": 64.48809237843591,
+          "rays": 256,
+          "raysMeasured": 256,
+          "rampWidthPx": 1.0914606293678877,
+          "rampWidth1090Px": 1.365621922603212,
+          "r50Mean": 6.040631929062993,
+          "r50Stdev": 0.08334961854234336,
+          "r50Min": 5.86005442056102,
+          "r50Max": 6.2123432246599855,
+          "harmonic": 16,
+          "harmonicAmplitudePx": 0.001200780449854926
+        }
+      }
+    },
+    {
+      "inkVsDiskOfR50": 0.8240655667400144,
+      "name": "dot-radial-wide",
+      "case": "dot-radial-wide",
+      "graded": true,
+      "hinting": 0,
+      "text": ".",
+      "pixelsPerEm": 96,
+      "outlineSize": 48,
+      "spreadPx": 12,
+      "originX": 53,
+      "originY": 67,
+      "cellX": 512,
+      "cellY": 0,
+      "cellSize": 128,
+      "metrics": {
+        "width": 128,
+        "height": 128,
+        "ink": 667.678431372549,
+        "inkPixels": 768,
+        "peak": 1,
+        "rampPixels": 135,
+        "gradientSum": 175.8721780520922,
+        "gradientRampWidthPx": 0.9595036683404088,
+        "radial": {
+          "centroidX": 64.08098885221251,
+          "centroidY": 64.03027170529433,
+          "rays": 256,
+          "raysMeasured": 256,
+          "rampWidthPx": 0.9382110272550935,
+          "rampWidth1090Px": 1.2906794940124977,
+          "r50Mean": 16.059345933969983,
+          "r50Stdev": 0.10679222769510739,
+          "r50Min": 15.823542346801206,
+          "r50Max": 16.29355409634603,
+          "harmonic": 16,
+          "harmonicAmplitudePx": 0.01637262020932747
+        }
+      }
+    },
+    {
+      "inkVsDiskOfR50": 0.7520869393452032,
+      "name": "dot-radial-live-max",
+      "case": "dot-radial-live-max",
+      "graded": true,
+      "hinting": 0,
+      "text": ".",
+      "pixelsPerEm": 96,
+      "outlineSize": 56,
+      "spreadPx": 14,
+      "originX": 53,
+      "originY": 67,
+      "cellX": 640,
+      "cellY": 0,
+      "cellSize": 128,
+      "metrics": {
+        "width": 128,
+        "height": 128,
+        "ink": 771.1607843137252,
+        "inkPixels": 894,
+        "peak": 1,
+        "rampPixels": 160,
+        "gradientSum": 201.10876590147316,
+        "gradientRampWidthPx": 0.9944867350933059,
+        "radial": {
+          "centroidX": 64.08677522044687,
+          "centroidY": 64.02542131546032,
+          "rays": 256,
+          "raysMeasured": 256,
+          "rampWidthPx": 0.9334745854919735,
+          "rampWidth1090Px": 1.288479675092325,
+          "r50Mean": 18.066062502745154,
+          "r50Stdev": 0.10916490492339655,
+          "r50Min": 17.830862107720915,
+          "r50Max": 18.293610263772564,
+          "harmonic": 16,
+          "harmonicAmplitudePx": 0.011518563331851807
+        }
+      }
+    },
+    {
+      "inkVsDiskOfR50": null,
+      "name": "han-desktop-hinted",
+      "case": "han-desktop",
+      "graded": false,
+      "hinting": 2,
+      "text": "中",
+      "pixelsPerEm": 14,
+      "outlineSize": 12,
+      "spreadPx": 3,
+      "originX": 57,
+      "originY": 69,
+      "cellX": 768,
+      "cellY": 0,
+      "cellSize": 128,
+      "metrics": {
+        "width": 128,
+        "height": 128,
+        "ink": 233.65098039215687,
+        "inkPixels": 267,
+        "peak": 1,
+        "rampPixels": 40,
+        "gradientSum": 58.7871822977693,
+        "gradientRampWidthPx": 0.8505255405292196,
+        "radial": null
+      }
+    }
+  ]
+}

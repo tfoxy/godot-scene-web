@@ -1,0 +1,60 @@
+{
+  "name": "@godot-scene-web/hb-gpu",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "HarfBuzz Slug glyph-outline renderer for borrowed WebGL contexts.",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tfoxy/godot-scene-web.git"
+  },
+  "homepage": "https://github.com/tfoxy/godot-scene-web#readme",
+  "bugs": {
+    "url": "https://github.com/tfoxy/godot-scene-web/issues"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./webgl": {
+      "development": "./src/webgl.ts",
+      "types": "./dist/webgl.d.ts",
+      "import": "./dist/webgl.js"
+    },
+    "./vendor/hb-gpu.mjs": {
+      "development": "./vendor/hb-gpu.mjs",
+      "types": "./vendor/hb-gpu.d.mts",
+      "default": "./vendor/hb-gpu.mjs"
+    },
+    "./vendor/hb-gpu.wasm": {
+      "development": "./vendor/hb-gpu.wasm",
+      "default": "./vendor/hb-gpu.wasm"
+    },
+    "./vendor/*": "./vendor/*"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "vendor",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "build:wasm": "./build.sh",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run --config vitest.config.ts packages/hb-gpu/test",
+    "test:glyph-pixel": "cd ../.. && GSW_HB_GPU_PIXEL=1 xvfb-run -a vitest run packages/hb-gpu/test/glyphPixelXvfb.test.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "esbuild": "^0.28.0",
+    "harfbuzzjs": "1.6.0"
+  }
+}

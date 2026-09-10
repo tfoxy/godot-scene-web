@@ -1,0 +1,19 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="Root" type="HFlowContainer"]
+offset_right = 180.0
+offset_bottom = 120.0
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 6
+
+[node name="A" type="ColorRect" parent="."]
+custom_minimum_size = Vector2(80, 24)
+color = Color(0.8, 0.2, 0.2, 1)
+
+[node name="B" type="ColorRect" parent="."]
+custom_minimum_size = Vector2(80, 30)
+color = Color(0.2, 0.8, 0.2, 1)
+
+[node name="C" type="ColorRect" parent="."]
+custom_minimum_size = Vector2(80, 20)
+color = Color(0.2, 0.4, 0.9, 1)

@@ -1,0 +1,47 @@
+{
+  "name": "@godot-scene-web/perf-harness",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./report": {
+      "development": "./src/report.ts",
+      "types": "./dist/report.d.ts",
+      "import": "./dist/report.js"
+    },
+    "./node": {
+      "development": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. --config ../../vitest.config.ts packages/perf-harness/test"
+  },
+  "dependencies": {
+    "@godot-scene-web/canvas": "workspace:*",
+    "@godot-scene-web/core": "workspace:*",
+    "@godot-scene-web/effects": "workspace:*",
+    "@godot-scene-web/hb-gpu": "workspace:*",
+    "@godot-scene-web/html": "workspace:*",
+    "@godot-scene-web/layout": "workspace:*",
+    "@godot-scene-web/scene-graph": "workspace:*",
+    "@godot-scene-web/tscn-parser": "workspace:*",
+    "esbuild": "^0.28.0",
+    "harfbuzzjs": "1.6.0",
+    "sharp": "^0.34.5"
+  }
+}

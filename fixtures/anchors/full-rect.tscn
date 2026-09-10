@@ -1,0 +1,16 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="Root" type="Control"]
+offset_right = 1280.0
+offset_bottom = 720.0
+
+[node name="FullRect" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 10.0
+offset_top = 20.0
+offset_right = -30.0
+offset_bottom = -40.0
+color = Color(1, 0, 0, 1)

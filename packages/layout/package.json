@@ -1,0 +1,47 @@
+{
+  "name": "@godot-scene-web/layout",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "Godot Control layout interpreter for web rendering.",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tfoxy/godot-scene-web.git"
+  },
+  "homepage": "https://github.com/tfoxy/godot-scene-web#readme",
+  "bugs": {
+    "url": "https://github.com/tfoxy/godot-scene-web/issues"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./anchors": {
+      "development": "./src/anchor-grammar.ts",
+      "types": "./dist/anchor-grammar.d.ts",
+      "import": "./dist/anchor-grammar.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. --config ../../vitest.config.ts packages/layout/test"
+  },
+  "dependencies": {
+    "@godot-scene-web/core": "workspace:*",
+    "@godot-scene-web/scene-graph": "workspace:*"
+  }
+}

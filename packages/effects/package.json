@@ -1,0 +1,53 @@
+{
+  "name": "@godot-scene-web/effects",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "Portable Godot particle, shader, and easing simulation utilities.",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tfoxy/godot-scene-web.git"
+  },
+  "homepage": "https://github.com/tfoxy/godot-scene-web#readme",
+  "bugs": {
+    "url": "https://github.com/tfoxy/godot-scene-web/issues"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./particles": {
+      "development": "./src/particles/index.ts",
+      "types": "./dist/particles/index.d.ts",
+      "import": "./dist/particles/index.js"
+    },
+    "./shaders": {
+      "development": "./src/shaders/index.ts",
+      "types": "./dist/shaders/index.d.ts",
+      "import": "./dist/shaders/index.js"
+    },
+    "./easing": {
+      "development": "./src/easing/index.ts",
+      "types": "./dist/easing/index.d.ts",
+      "import": "./dist/easing/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run --config vitest.config.ts packages/effects/test"
+  }
+}

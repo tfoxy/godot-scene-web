@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/assets/panel.svg" id="frame"]
+
+[sub_resource type="SpriteFrames" id="SpriteFrames_fixture"]
+animations = [{
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("frame")
+}],
+"loop": true,
+"name": &"default",
+"speed": 10.0
+}]
+
+[node name="Root" type="Control"]
+offset_right = 160.0
+offset_bottom = 80.0
+
+[node name="Caption" type="Label" parent="."]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 150.0
+offset_bottom = 40.0
+text = "SpriteFrames"

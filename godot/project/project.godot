@@ -1,0 +1,6 @@
+config_version=5
+
+[application]
+config/name="godot-scene-web-inspector"
+run/main_scene="res://empty.tscn"
+

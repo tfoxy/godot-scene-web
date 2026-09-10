@@ -1,0 +1,51 @@
+{
+  "name": "@godot-scene-web/test-harness",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "development": "./src/browser.ts",
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
+    "./parity": {
+      "development": "./src/parity.ts",
+      "types": "./dist/parity.d.ts",
+      "import": "./dist/parity.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. --config ../../vitest.config.ts packages/test-harness/test"
+  },
+  "dependencies": {
+    "@godot-scene-web/canvas": "workspace:*",
+    "@godot-scene-web/core": "workspace:*",
+    "@godot-scene-web/effects": "workspace:*",
+    "@godot-scene-web/hb-gpu": "workspace:*",
+    "@godot-scene-web/html": "workspace:*",
+    "@godot-scene-web/layout": "workspace:*",
+    "@godot-scene-web/scene-graph": "workspace:*",
+    "@godot-scene-web/tscn-parser": "workspace:*",
+    "@playwright/test": "^1.59.1",
+    "pixelmatch": "^7.2.0",
+    "sharp": "^0.34.5",
+    "@godot-scene-web/canvas-effects": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}

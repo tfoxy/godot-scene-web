@@ -1,0 +1,62 @@
+{
+  "name": "@godot-scene-web/project",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "Godot project resource resolver for browser and Node environments.",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tfoxy/godot-scene-web.git"
+  },
+  "homepage": "https://github.com/tfoxy/godot-scene-web#readme",
+  "bugs": {
+    "url": "https://github.com/tfoxy/godot-scene-web/issues"
+  },
+  "exports": {
+    ".": {
+      "browser": {
+        "development": "./src/fetch.ts",
+        "types": "./dist/fetch.d.ts",
+        "import": "./dist/fetch.js"
+      },
+      "node": {
+        "development": "./src/node.ts",
+        "types": "./dist/node.d.ts",
+        "import": "./dist/node.js"
+      },
+      "development": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
+    "./node": {
+      "development": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
+    "./fetch": {
+      "development": "./src/fetch.ts",
+      "types": "./dist/fetch.d.ts",
+      "import": "./dist/fetch.js"
+    }
+  },
+  "main": "./dist/node.js",
+  "types": "./dist/node.d.ts",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. --config ../../vitest.config.ts packages/project/test"
+  },
+  "dependencies": {
+    "@godot-scene-web/core": "workspace:*",
+    "@godot-scene-web/scene-graph": "workspace:*",
+    "@godot-scene-web/tscn-parser": "workspace:*"
+  }
+}

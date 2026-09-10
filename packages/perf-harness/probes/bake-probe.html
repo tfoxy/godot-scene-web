@@ -1,0 +1,1101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bake probe</title>
+    <style>
+      body { font: 13px monospace; margin: 8px; }
+      pre { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h3>bake probe</h3>
+    <pre id="log">starting…</pre>
+    <script>
+      // WHY THIS EXISTS. region-blob's phone bake measured 148,800 ms for 100 regions against 470 ms
+      // on the desktop — a 316x ratio no CPU gap explains. This probe splits that one number into its
+      // candidate causes, per region, so the cost can be ATTRIBUTED instead of guessed at.
+      //
+      // It is a PROBE, not a scenario: it answers questions about mechanisms nobody has committed to
+      // yet, in a page nobody measures frame rate in. Findings that survive get built into a scenario
+      // (`static-surfaces`) where they are measured under the harness's real methodology.
+      //
+      // THE PHASES
+      //
+      //   bake      draw one region, then encode it — per format. Isolates the CODEC.
+      //             `draw-only` runs the same drawImage with NO encode, so slicing cost is separated
+      //             from encoding cost; `imagedata-*` keeps the source CPU-side (one big readback up
+      //             front) so GPU RESIDENCY is separated from both; `png-idle` yields to idle between
+      //             bakes, which turns the "Chrome runs PNG/JPEG encodes as idle tasks with a forced
+      //             deadline" hypothesis into a measurement.
+      //   fidelity  decode each format's blob BACK and compare to the source pixels — mean absolute
+      //             error and max channel error, RGB and ALPHA reported separately. A format that is
+      //             45x faster is worth nothing if it eats the alpha the shaders and particles need.
+      //
+      //             MEASURED, and it contradicts the assumption this phase was written to check:
+      //             `convertToBlob({type:"image/webp"})` with NO quality argument — and with
+      //             `quality: 1` — is LOSSLESS in Chrome. Byte-identical output, rgb and alpha error
+      //             exactly 0, including on the per-pixel-noise band below. `quality: 0.99` is the
+      //             first value that switches to the lossy encoder (rgb mean 1.36, max 70). So the
+      //             fast format is also the exact one, and it is SMALLER than PNG (83.2 KB vs
+      //             96.9 KB over the same four regions). JPEG destroys alpha outright (mean 45.9,
+      //             max 255) and is unusable for anything transparent.
+      //   blit      per-node `2d drawImage` vs `bitmaprenderer transferFromImageBitmap` — the shape
+      //             the shader runtime actually has (one shared GL canvas, N per-node canvases whose
+      //             only job is one full-canvas blit). `transferFromImageBitmap` NEUTERS its source,
+      //             so every node needs its own ImageBitmap and the clone cost is part of the price;
+      //             it is measured separately rather than hidden inside the arm.
+      //   share     N <img> each given their OWN blob URL vs N given ONE shared URL, timed to
+      //             `img.decode()`. A PROXY, and the output says so: it can show that sharing is
+      //             faster, it cannot prove the browser decoded once. The scenario's `sharedFrames`
+      //             param answers that outright, from the trace's codec-run count.
+      //
+      // Each bake records WALL (start -> blob resolved) and SYNC (the part that ran on the main
+      // thread before yielding). If wall stays high while sync stays ~0, the cost is a round-trip we
+      // are WAITING on, not work we are doing — which is the whole question.
+      //
+      // SYNC IS A TRAP FOR THE WORKER ARMS, and reading it as their main-thread cost would be the
+      // same class of dishonesty as reporting swap rate as fps. `sync` is defined as "everything
+      // before the first yield"; a worker arm's first statement is an `await`, so its sync is ~0 BY
+      // CONSTRUCTION, whether or not the main thread was actually freed. So the worker arms are
+      // judged on real occupancy instead — `long-animation-frame`'s `blockingDuration`, `longtask`
+      // totals, and rAF lateness, all attributed per variant. `sync` stays in the output because it
+      // is meaningful WITHIN the non-worker arms, and is labelled as not comparable across the
+      // worker boundary.
+      const query = new URLSearchParams(location.search);
+      const num = (key, fallback) => {
+        const value = Number(query.get(key));
+        return Number.isFinite(value) && value > 0 ? value : fallback;
+      };
+      const PAGE = num("page", 4096);
+      const COUNT = num("count", 50);
+      const FIDELITY_SAMPLES = num("fidelitySamples", 4);
+      const BLIT_NODES = num("blitNodes", 50);
+      const BLIT_PX = num("blitPx", 256);
+      // The share phase's defaults mirror S5's stage: 24 surfaces at 128 px.
+      const SHARE_NODES = num("shareNodes", 24);
+      const SHARE_PX = num("sharePx", 128);
+      // Which phases to run, and which bake variants. The slow formats are several minutes on a
+      // phone, so a follow-up question has to be answerable without re-paying for the ones already
+      // measured — and a subset run must SAY it was a subset rather than look like a full one.
+      const PHASES = (query.get("phases") ?? "bake,fidelity,blit,share")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      // Worker fan-out. The phone has 8 cores and the whole worker question is whether more than one
+      // of them can be used, so the pool size is a SWEEP (`?workers=1,2,4`) rather than a constant.
+      // Every worker variant is run once per value; the non-worker variants ignore it entirely.
+      const WORKERS = (query.get("workers") ?? "1")
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      // A variant is `<kind>` or `<kind>@<quality>`, so a quality SWEEP is a query string rather than
+      // a code change — the cliff between Chrome's lossless and lossy webp paths is exactly the sort
+      // of thing you want to bisect without editing a file between runs.
+      const KINDS = [
+        "draw-only",
+        "png",
+        "png-idle",
+        "webp",
+        "jpeg",
+        "imagedata-webp",
+        // `HTMLCanvasElement.toBlob`, not `OffscreenCanvas.convertToBlob`. They are different
+        // methods with different defaults, and every other arm here uses the latter — so the
+        // fidelity result was being generalised to a call nobody had measured. This is the call the
+        // consuming project's baker actually makes.
+        "toblob-webp",
+        "toblob-png",
+        // The worker arms. Each is the exact twin of a main-thread arm above — same codec, same
+        // source residency — differing ONLY in which thread runs it, so a difference between a pair
+        // is attributable to the thread and nothing else.
+        "worker-webp",
+        "worker-png",
+        "worker-imagedata",
+      ];
+      const DEFAULT_VARIANTS =
+        "draw-only,png,png-idle,webp,webp@1,webp@0.92,webp@0.8,jpeg,imagedata-webp," +
+        "worker-webp,worker-png,worker-imagedata";
+      const VARIANTS = (query.get("variants") ?? DEFAULT_VARIANTS)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((name) => KINDS.includes(name.split("@")[0]));
+      const kindOf = (name) => name.split("@")[0];
+      const qualityOf = (name) =>
+        name.includes("@") ? Number(name.split("@")[1]) : undefined;
+
+      const log = (m) => {
+        document.getElementById("log").textContent += "\n" + m;
+      };
+
+      function regions(count, page) {
+        const cols = Math.ceil(Math.sqrt(count));
+        const rows = Math.ceil(count / cols);
+        const cw = Math.floor(page / cols);
+        const ch = Math.floor(page / rows);
+        const out = [];
+        for (let i = 0; i < count; i++) {
+          const c = i % cols;
+          const r = Math.floor(i / cols);
+          // Deterministic inset, mirroring the fixture's per-region jitter.
+          const inset = 8 + ((i * 37) % 24);
+          out.push({
+            x: c * cw + inset,
+            y: r * ch + inset,
+            width: Math.max(4, cw - inset * 2),
+            height: Math.max(4, ch - inset * 2),
+          });
+        }
+        return out;
+      }
+
+      const stat = (xs) => {
+        const s = [...xs].sort((a, b) => a - b);
+        const at = (p) => s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
+        return {
+          total: Math.round(xs.reduce((a, b) => a + b, 0)),
+          p50: +at(50).toFixed(2),
+          p95: +at(95).toFixed(2),
+          max: +s[s.length - 1].toFixed(2),
+        };
+      };
+
+      const idle = () =>
+        new Promise((res) =>
+          typeof requestIdleCallback === "function"
+            ? requestIdleCallback(() => res(), { timeout: 200 })
+            : setTimeout(res, 0),
+        );
+
+      // THE TAB-THROTTLE WATCHDOG, and why a probe that runs for minutes needs one.
+      //
+      // A first device run measured PNG at 49,305 ms for 50 regions and JPEG at 154,306 ms, with a
+      // p50 pinned at a suspiciously exact ~4,050 ms. Re-run, the SAME probe on the SAME phone
+      // measured PNG at 1,172 ms. The difference was never the codec: a run that lasts minutes
+      // outlives the phone's screen timeout, and a backgrounded or occluded Android tab has its
+      // timers and idle tasks deferred to their forced deadlines — so everything that yields gets
+      // pinned to a constant that looks exactly like a slow encoder.
+      //
+      // A number measured through that is not slow, it is INVALID, and the difference has to be
+      // visible in the output rather than inferred later from a p50 that looked too round. So every
+      // variant carries the hidden time and the worst rAF gap observed while it ran, and anything
+      // non-zero is printed as a WARNING beside its timings.
+      const watchdog = { hiddenMs: 0, hiddenSince: null, hides: 0, maxRafGapMs: 0 };
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+          watchdog.hides++;
+          watchdog.hiddenSince = performance.now();
+        } else if (watchdog.hiddenSince !== null) {
+          watchdog.hiddenMs += performance.now() - watchdog.hiddenSince;
+          watchdog.hiddenSince = null;
+        }
+      });
+      // MAIN-THREAD OCCUPANCY — the column that replaces `sync` once a worker is in the picture.
+      //
+      // `sync` answers "how much did we run before yielding", which is a fine question for an arm
+      // that does its work inline and a meaningless one for an arm whose first statement is `await`.
+      // These three answer "was the main thread actually free", which is what the worker proposal is
+      // claiming, and they cannot be gamed by moving a yield earlier:
+      //
+      //   loafBlockingMs   `long-animation-frame`.blockingDuration — how long a frame was PREVENTED
+      //                    from being produced. The same instrument `src/browser/runtime.ts` uses.
+      //   longtaskMs       total duration of tasks over 50 ms.
+      //   rafLateMsOver20  summed excess of each rAF gap over a 20 ms budget (~50 Hz). The budget is
+      //                    in the name because a bare "lateness" is only interpretable against one.
+      //
+      // Frame counts and the window length are reported alongside, because a variant that ran for
+      // twice as long has twice as many chances to block and the raw totals would flatter the fast
+      // one for the wrong reason.
+      const RAF_BUDGET_MS = 20;
+      const occupancy = {
+        loafBlockingMs: 0,
+        loafCount: 0,
+        longtaskMs: 0,
+        longtaskCount: 0,
+        rafLateMs: 0,
+        rafFrames: 0,
+      };
+      const observeSafely = (type, onEntry) => {
+        try {
+          new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              onEntry(entry);
+            }
+          }).observe({ type, buffered: true });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const hasLoaf = observeSafely("long-animation-frame", (entry) => {
+        occupancy.loafBlockingMs += entry.blockingDuration ?? 0;
+        occupancy.loafCount++;
+      });
+      const hasLongtask = observeSafely("longtask", (entry) => {
+        occupancy.longtaskMs += entry.duration;
+        occupancy.longtaskCount++;
+      });
+
+      let lastRaf = performance.now();
+      const heartbeat = () => {
+        const now = performance.now();
+        const gap = now - lastRaf;
+        watchdog.maxRafGapMs = Math.max(watchdog.maxRafGapMs, gap);
+        occupancy.rafFrames++;
+        occupancy.rafLateMs += Math.max(0, gap - RAF_BUDGET_MS);
+        lastRaf = now;
+        requestAnimationFrame(heartbeat);
+      };
+      requestAnimationFrame(heartbeat);
+      const watchdogNow = () => ({
+        hiddenMs:
+          watchdog.hiddenMs +
+          (watchdog.hiddenSince === null
+            ? 0
+            : performance.now() - watchdog.hiddenSince),
+        hides: watchdog.hides,
+        maxRafGapMs: watchdog.maxRafGapMs,
+      });
+
+      // PerformanceObserver callbacks are delivered in a LATER task, so a snapshot taken the instant
+      // a variant finishes misses that variant's own tail and charges it to the next one. Every
+      // occupancy boundary is therefore preceded by a short quiet window: two frames plus a timeout,
+      // long enough for the queued entries to land. The window is inside the variant's reported
+      // `windowMs`, so the dilution is visible rather than hidden.
+      const flushObservers = () =>
+        new Promise((res) => {
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => setTimeout(res, 60)),
+          );
+        });
+      const occupancyNow = () => ({ ...occupancy, at: performance.now() });
+      const occupancySince = (before) => {
+        const after = occupancyNow();
+        const windowMs = after.at - before.at;
+        return {
+          windowMs: Math.round(windowMs),
+          loafBlockingMs: Math.round(after.loafBlockingMs - before.loafBlockingMs),
+          loafCount: after.loafCount - before.loafCount,
+          longtaskMs: Math.round(after.longtaskMs - before.longtaskMs),
+          longtaskCount: after.longtaskCount - before.longtaskCount,
+          rafLateMsOver20: Math.round(after.rafLateMs - before.rafLateMs),
+          rafFrames: after.rafFrames - before.rafFrames,
+          // Frames per second the page actually managed while this variant ran. A bake that keeps
+          // the main thread free should hold the display rate; one that does not will show here.
+          rafHz:
+            windowMs > 0
+              ? +(((after.rafFrames - before.rafFrames) * 1000) / windowMs).toFixed(1)
+              : 0,
+        };
+      };
+
+      async function buildPage() {
+        // A 4096^2 source built the same way the fixture's is: drawn, encoded once, then decoded
+        // through createImageBitmap so it is GPU-resident exactly like the real run's page.
+        //
+        // ALPHA IS DELIBERATE. The real subjects — shader surfaces and particle sprites — are
+        // transparent outside their shape, and an opaque probe source would let JPEG look like a
+        // viable option and would hide whatever webp does to the alpha channel. Every fourth block
+        // is drawn semi-transparent, and each block is punched with a fully transparent notch.
+        const c = new OffscreenCanvas(PAGE, PAGE);
+        const g = c.getContext("2d");
+        // The block grid is derived from PAGE, never a hardcoded 512: a smaller `?page=` (used for
+        // smoke runs) would otherwise leave most of the page EMPTY, and flat emptiness encodes
+        // losslessly in every format — which reads as "webp and jpeg are pixel-perfect".
+        const block = Math.max(8, Math.floor(PAGE / 8));
+        const chip = Math.max(2, Math.round(block * 0.08));
+        const notch = Math.max(2, Math.round(block * 0.22));
+        for (let i = 0; i < 64; i++) {
+          const x = (i % 8) * block;
+          const y = Math.floor(i / 8) * block;
+          g.globalAlpha = i % 4 === 0 ? 0.45 : 1;
+          g.fillStyle = `hsl(${(i * 37) % 360} 70% ${30 + (i % 5) * 8}%)`;
+          g.fillRect(x, y, block, block);
+          // A texture pass, so the source is not flat colour: a flat page compresses to nothing and
+          // would understate every codec's cost AND every codec's error.
+          g.globalAlpha = 0.35;
+          for (let k = 0; k < 24; k++) {
+            g.fillStyle = `hsl(${(i * 53 + k * 29) % 360} 80% ${20 + ((k * 7) % 60)}%)`;
+            g.fillRect(
+              x + ((k * 61) % (block - chip)),
+              y + ((k * 137) % (block - chip)),
+              chip,
+              chip,
+            );
+          }
+          g.globalAlpha = 1;
+          g.clearRect(x + Math.round(block * 0.39), y + Math.round(block * 0.39), notch, notch);
+        }
+        // HIGH-ENTROPY BAND. Flat synthetic blocks compress losslessly in every codec, so a
+        // fidelity phase run against them alone would report every format as pixel-perfect and the
+        // lossless/lossy question would go unanswered. This band is per-pixel noise with a graded
+        // alpha ramp: the hardest thing to encode, and the thing that makes an lossy codec show.
+        const bandH = Math.max(16, Math.round(PAGE / 8));
+        const band = g.createImageData(PAGE, bandH);
+        let seed = 0x9e3779b9;
+        const rnd = () => {
+          seed = (seed + 0x6d2b79f5) >>> 0;
+          let t = seed;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+        for (let py = 0; py < bandH; py++) {
+          for (let px = 0; px < PAGE; px++) {
+            const o = (py * PAGE + px) * 4;
+            band.data[o] = Math.floor(rnd() * 256);
+            band.data[o + 1] = Math.floor(rnd() * 256);
+            band.data[o + 2] = Math.floor(rnd() * 256);
+            band.data[o + 3] = Math.floor((px / PAGE) * 255);
+          }
+        }
+        g.putImageData(band, 0, Math.max(0, PAGE - bandH));
+        const blob = await c.convertToBlob({ type: "image/png" });
+        return { blob, bitmap: await createImageBitmap(blob) };
+      }
+
+      // THE WORKER, as a source string.
+      //
+      // It is inline rather than a second file because the driver's server answers EVERY path with
+      // this same HTML (`probes/bake-probe.ts`, `createServer((_req, res) => … res.end(html))`), so
+      // `new Worker("/worker.js")` would be handed a document. A Blob URL sidesteps that and keeps
+      // the probe a single file, which is the shape it already had.
+      //
+      // Two jobs, matching the two source residencies the main-thread arms already measure:
+      //   `bitmap`  an ImageBitmap transferred in per region — the worker draws and encodes it.
+      //   `region`  coordinates only; the worker slices from a page buffer it was given ONCE at
+      //             setup, so a per-region job costs the main thread a postMessage and nothing else.
+      //
+      // A fresh OffscreenCanvas per job, deliberately. `convertToBlob` yields, so two overlapping
+      // jobs in one worker would interleave on a cached canvas and silently encode each other's
+      // pixels — and the main-thread arms allocate per region too, so this keeps the pair honest.
+      const WORKER_SOURCE = `
+        let page = null;
+        const encode = (canvas, mime, quality) =>
+          canvas.convertToBlob(
+            quality === undefined ? { type: mime } : { type: mime, quality },
+          );
+        self.onmessage = async (event) => {
+          const msg = event.data;
+          try {
+            if (msg.type === "page") {
+              page = {
+                data: new Uint8ClampedArray(msg.buffer),
+                width: msg.width,
+                height: msg.height,
+              };
+              self.postMessage({ type: "ready", id: msg.id });
+              return;
+            }
+            if (msg.type === "bitmap") {
+              const t0 = performance.now();
+              const canvas = new OffscreenCanvas(msg.width, msg.height);
+              const ctx = canvas.getContext("2d");
+              ctx.drawImage(msg.bitmap, 0, 0);
+              msg.bitmap.close();
+              const blob = await encode(canvas, msg.mime, msg.quality);
+              self.postMessage({
+                type: "blob",
+                id: msg.id,
+                blob,
+                workerMs: performance.now() - t0,
+              });
+              return;
+            }
+            if (msg.type === "region") {
+              const t0 = performance.now();
+              const sub = new ImageData(msg.width, msg.height);
+              for (let row = 0; row < msg.height; row++) {
+                const src = ((msg.y + row) * page.width + msg.x) * 4;
+                sub.data.set(
+                  page.data.subarray(src, src + msg.width * 4),
+                  row * msg.width * 4,
+                );
+              }
+              const canvas = new OffscreenCanvas(msg.width, msg.height);
+              const ctx = canvas.getContext("2d", { willReadFrequently: true });
+              ctx.putImageData(sub, 0, 0);
+              const blob = await encode(canvas, msg.mime, msg.quality);
+              self.postMessage({
+                type: "blob",
+                id: msg.id,
+                blob,
+                workerMs: performance.now() - t0,
+              });
+              return;
+            }
+          } catch (error) {
+            self.postMessage({ type: "error", id: msg.id, message: String(error && error.message) });
+          }
+        };
+      `;
+
+      /**
+       * A pool of `size` identical workers, dealt round-robin.
+       *
+       * `Blob` structured-clones BY REFERENCE, so posting a finished blob back out is not a copy —
+       * which is what makes the worker route viable at all. An ArrayBuffer does not: transferring one
+       * NEUTERS it on the sender, so a page buffer cannot be handed to two workers and each needs its
+       * own readback. That cost is charged to the arm as `setupMs` rather than hidden.
+       */
+      function createWorkerPool(size) {
+        const url = URL.createObjectURL(
+          new Blob([WORKER_SOURCE], { type: "text/javascript" }),
+        );
+        const workers = [];
+        const pending = new Map();
+        let nextId = 0;
+        let cursor = 0;
+        for (let i = 0; i < size; i++) {
+          const worker = new Worker(url);
+          worker.onmessage = (event) => {
+            const settle = pending.get(event.data.id);
+            if (settle) {
+              pending.delete(event.data.id);
+              settle(event.data);
+            }
+          };
+          worker.onerror = (event) => log(`worker error: ${event.message}`);
+          workers.push(worker);
+        }
+        const send = (worker, message, transfer) =>
+          new Promise((res) => {
+            const id = ++nextId;
+            pending.set(id, res);
+            worker.postMessage({ ...message, id }, transfer ?? []);
+          });
+        return {
+          size,
+          workers,
+          send,
+          pageReady: false,
+          next: (message, transfer) =>
+            send(workers[cursor++ % workers.length], message, transfer),
+          terminate: () => {
+            for (const worker of workers) {
+              worker.terminate();
+            }
+            // Revoked here, not straight after construction: revoking a Blob URL a worker is still
+            // being fetched from is a race, and the leak is bounded by the run.
+            URL.revokeObjectURL(url);
+          },
+        };
+      }
+
+      /** Worker-side ms reported by the current variant's jobs. Reset by `bakeVariant`. */
+      let workerMsLog = [];
+
+      async function bakeVariant(name, regionList, make, options = {}) {
+        const wall = [];
+        const sync = [];
+        const bytes = [];
+        const concurrency = Math.max(1, options.concurrency ?? 1);
+        workerMsLog = [];
+        await flushObservers();
+        const before = watchdogNow();
+        const occupancyBefore = occupancyNow();
+
+        const bakeOne = async (region) => {
+          if (options.idleBetween) {
+            await idle();
+          }
+          const t0 = performance.now();
+          const pending = make(region); // everything up to the first yield runs here
+          sync.push(performance.now() - t0);
+          const blob = await pending;
+          wall.push(performance.now() - t0);
+          if (blob && typeof blob.size === "number") {
+            bytes.push(blob.size);
+          }
+        };
+
+        // A PULL pool, not a chunked one: each runner takes the next region the moment it is free, so
+        // a region's `wall` is its true latency and never includes time spent queued behind another.
+        // What fan-out changes is therefore `batchWallMs` (throughput), which is why that is the
+        // number the sweep is read on.
+        const t0 = performance.now();
+        let cursor = 0;
+        await Promise.all(
+          Array.from({ length: concurrency }, async () => {
+            while (cursor < regionList.length) {
+              await bakeOne(regionList[cursor++]);
+            }
+          }),
+        );
+        const batchWallMs = Math.round(performance.now() - t0);
+
+        const w = stat(wall);
+        const s = stat(sync);
+        await flushObservers();
+        const after = watchdogNow();
+        const mainThread = occupancySince(occupancyBefore);
+        // Attributed to THIS variant, not the run: a phone that dimmed during variant 3 invalidates
+        // variant 3, and saying so per variant is the difference between discarding one number and
+        // discarding the table.
+        const throttle = {
+          hiddenMs: Math.round(after.hiddenMs - before.hiddenMs),
+          hides: after.hides - before.hides,
+          maxRafGapMs: Math.round(after.maxRafGapMs),
+        };
+        const suspect = throttle.hiddenMs > 0 || throttle.maxRafGapMs > 1000;
+        const totalBytes = bytes.reduce((a, b) => a + b, 0);
+        const workerSide = workerMsLog.length ? stat(workerMsLog) : null;
+        log(
+          `${name.padEnd(20)} batch=${String(batchWallMs).padStart(6)}ms  wall p50=${String(w.p50).padStart(7)} p95=${String(w.p95).padStart(7)} max=${String(w.max).padStart(7)}` +
+            `  |  sync total=${String(s.total).padStart(6)}ms` +
+            `  |  blocked=${String(mainThread.loafBlockingMs).padStart(5)}ms longtask=${String(mainThread.longtaskMs).padStart(6)}ms rafLate=${String(mainThread.rafLateMsOver20).padStart(6)}ms @${String(mainThread.rafHz).padStart(5)}Hz` +
+            (options.setupMs ? `  |  setup=${Math.round(options.setupMs)}ms` : "") +
+            (workerSide ? `  |  workerSide total=${workerSide.total}ms` : "") +
+            (bytes.length ? `  |  ${(totalBytes / bytes.length / 1024).toFixed(1)} KB/region` : "") +
+            (suspect
+              ? `\n${" ".repeat(20)}!! THROTTLED — hidden ${throttle.hiddenMs}ms x${throttle.hides}, worst rAF gap ${throttle.maxRafGapMs}ms. This timing is INVALID, not slow.`
+              : ""),
+        );
+        return {
+          variant: name,
+          kind: options.kind ?? kindOf(name),
+          workers: options.workers ?? 0,
+          concurrency,
+          batchWallMs,
+          setupMs: Math.round(options.setupMs ?? 0),
+          wall: w,
+          // Meaningful WITHIN the inline arms. Across the worker boundary it is ~0 by construction
+          // (the first statement is an await) and says nothing about whether the thread was free —
+          // `mainThread` is the column that does.
+          sync: s,
+          mainThread,
+          workerSide,
+          bytesTotal: totalBytes,
+          bytesPerRegion: bytes.length ? Math.round(totalBytes / bytes.length) : 0,
+          throttle,
+          throttled: suspect,
+        };
+      }
+
+      /**
+       * Decode `blob` back and compare it to `expected` (the source region's ImageData).
+       *
+       * RGB and ALPHA are reported separately and RGB is compared ONLY where the source is opaque:
+       * a lossy codec's colour under a fully transparent pixel is undefined and comparing it would
+       * drown the number that matters in noise from pixels nobody can see.
+       */
+      async function fidelityOf(blob, expected, width, height) {
+        const bitmap = await createImageBitmap(blob);
+        const off = new OffscreenCanvas(width, height);
+        const ctx = off.getContext("2d", { willReadFrequently: true });
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(bitmap, 0, 0);
+        const got = ctx.getImageData(0, 0, width, height);
+        bitmap.close?.();
+        let rgbSum = 0;
+        let rgbCount = 0;
+        let rgbMax = 0;
+        let alphaSum = 0;
+        let alphaMax = 0;
+        for (let i = 0; i < expected.data.length; i += 4) {
+          const alphaError = Math.abs(expected.data[i + 3] - got.data[i + 3]);
+          alphaSum += alphaError;
+          alphaMax = Math.max(alphaMax, alphaError);
+          if (expected.data[i + 3] < 255) {
+            continue;
+          }
+          for (let c = 0; c < 3; c++) {
+            const error = Math.abs(expected.data[i + c] - got.data[i + c]);
+            rgbSum += error;
+            rgbCount++;
+            rgbMax = Math.max(rgbMax, error);
+          }
+        }
+        return {
+          rgbMeanAbs: rgbCount ? +(rgbSum / rgbCount).toFixed(3) : 0,
+          rgbMaxAbs: rgbMax,
+          alphaMeanAbs: +(alphaSum / (expected.data.length / 4)).toFixed(3),
+          alphaMaxAbs: alphaMax,
+          opaquePixels: rgbCount / 3,
+          totalPixels: expected.data.length / 4,
+        };
+      }
+
+      async function main() {
+        const results = { bake: [], fidelity: [], blit: null, share: null };
+        const list = regions(COUNT, PAGE);
+        const t0 = performance.now();
+        const { bitmap } = await buildPage();
+        log(
+          `source ${PAGE}x${PAGE} ready in ${Math.round(performance.now() - t0)}ms; ${COUNT} regions; ` +
+            `phases=${PHASES.join(",")}; variants=${VARIANTS.join(",")}`,
+        );
+
+        // ONE readback of the whole page, used by BOTH the imagedata bake variant (as a CPU-resident
+        // source) and the fidelity phase (as the ground truth). Doing it once keeps the imagedata
+        // arm's per-region cost free of any GPU round trip, which is the point of that arm.
+        const big = new OffscreenCanvas(PAGE, PAGE);
+        const bg = big.getContext("2d", { willReadFrequently: true });
+        bg.drawImage(bitmap, 0, 0);
+        const tRead = performance.now();
+        const full = bg.getImageData(0, 0, PAGE, PAGE);
+        const readbackMs = Math.round(performance.now() - tRead);
+        log(`one-time getImageData(${PAGE}^2) = ${readbackMs}ms`);
+
+        const sourceImageData = (region) => {
+          const sub = new ImageData(region.width, region.height);
+          for (let y = 0; y < region.height; y++) {
+            const src = ((region.y + y) * PAGE + region.x) * 4;
+            sub.data.set(
+              full.data.subarray(src, src + region.width * 4),
+              y * region.width * 4,
+            );
+          }
+          return sub;
+        };
+
+        // GPU-resident source (what region-blob actually does today).
+        const gpuBake = (type, quality) => (region) => {
+          const off = new OffscreenCanvas(region.width, region.height);
+          const ctx = off.getContext("2d");
+          ctx.drawImage(bitmap, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
+          return off.convertToBlob(quality === undefined ? { type } : { type, quality });
+        };
+        const cpuBake = (type, quality) => (region) => {
+          const off = new OffscreenCanvas(region.width, region.height);
+          const ctx = off.getContext("2d", { willReadFrequently: true });
+          ctx.putImageData(sourceImageData(region), 0, 0);
+          return off.convertToBlob(quality === undefined ? { type } : { type, quality });
+        };
+
+        // The `HTMLCanvasElement.toBlob` twin of `gpuBake`. Identical pixels in, identical arguments,
+        // different method — so any difference in the fidelity table is the method's default and
+        // nothing else.
+        const toBlobBake = (type, quality) => (region) => {
+          const off = document.createElement("canvas");
+          off.width = region.width;
+          off.height = region.height;
+          const ctx = off.getContext("2d");
+          ctx.drawImage(bitmap, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
+          return new Promise((res) =>
+            quality === undefined
+              ? off.toBlob(res, type)
+              : off.toBlob(res, type, quality),
+          );
+        };
+
+        const drawOnly = (region) => {
+          const off = new OffscreenCanvas(region.width, region.height);
+          const ctx = off.getContext("2d");
+          ctx.drawImage(bitmap, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
+          return Promise.resolve(null);
+        };
+
+        // Pools are cached BY SIZE and reused across variants and phases. Spinning a worker up costs
+        // real ms, and charging that to whichever variant happened to run first would make the sweep
+        // read as "1 worker is slower than 2".
+        const pools = new Map();
+        const poolOf = (size) => {
+          let pool = pools.get(size);
+          if (!pool) {
+            pool = createWorkerPool(size);
+            pools.set(size, pool);
+          }
+          return pool;
+        };
+        /**
+         * Give every worker in `pool` its own copy of the page's pixels.
+         *
+         * One readback PER WORKER, because transferring an ArrayBuffer neuters it on the sender: one
+         * buffer cannot be shared out, and `full` (the fidelity phase's ground truth) must not be
+         * given away. So the fan-out sweep pays this linearly in both time and memory, and both are
+         * stated rather than absorbed — at the default 4096² page a copy is 64 MB.
+         */
+        const ensurePage = async (pool) => {
+          if (pool.pageReady) {
+            return 0;
+          }
+          const mb = ((PAGE * PAGE * 4) / 1024 / 1024) * pool.size;
+          log(
+            `  worker page upload: ${pool.size} x ${PAGE}² readback = ${mb.toFixed(0)} MB resident`,
+          );
+          const t0 = performance.now();
+          for (const worker of pool.workers) {
+            const copy = bg.getImageData(0, 0, PAGE, PAGE);
+            await pool.send(
+              worker,
+              { type: "page", width: PAGE, height: PAGE, buffer: copy.data.buffer },
+              [copy.data.buffer],
+            );
+          }
+          pool.pageReady = true;
+          return performance.now() - t0;
+        };
+
+        // The main thread's whole job here is one crop and one postMessage. `createImageBitmap`'s
+        // synchronous part is negligible, which is exactly why `sync` cannot be the column this arm
+        // is read on.
+        const workerBitmapBake = (pool, type, quality) => async (region) => {
+          const slice = await createImageBitmap(
+            bitmap,
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+          );
+          const reply = await pool.next(
+            {
+              type: "bitmap",
+              width: region.width,
+              height: region.height,
+              mime: type,
+              quality,
+              bitmap: slice,
+            },
+            [slice],
+          );
+          if (typeof reply.workerMs === "number") {
+            workerMsLog.push(reply.workerMs);
+          }
+          if (reply.type === "error") {
+            throw new Error(`worker: ${reply.message}`);
+          }
+          return reply.blob;
+        };
+        // Coordinates only. The worker already holds the pixels, so nothing crosses the boundary but
+        // four numbers out and a blob reference back.
+        const workerRegionBake = (pool, type, quality) => async (region) => {
+          const reply = await pool.next({
+            type: "region",
+            x: region.x,
+            y: region.y,
+            width: region.width,
+            height: region.height,
+            mime: type,
+            quality,
+          });
+          if (typeof reply.workerMs === "number") {
+            workerMsLog.push(reply.workerMs);
+          }
+          if (reply.type === "error") {
+            throw new Error(`worker: ${reply.message}`);
+          }
+          return reply.blob;
+        };
+
+        const isWorkerKind = (name) => kindOf(name).startsWith("worker-");
+        const makerFor = async (name, workers) => {
+          const quality = qualityOf(name);
+          switch (kindOf(name)) {
+            case "draw-only":
+              return { make: drawOnly };
+            case "png":
+            case "png-idle":
+              return { make: gpuBake("image/png", quality) };
+            case "webp":
+              return { make: gpuBake("image/webp", quality) };
+            case "jpeg":
+              return { make: gpuBake("image/jpeg", quality) };
+            case "imagedata-webp":
+              return { make: cpuBake("image/webp", quality) };
+            case "toblob-webp":
+              return { make: toBlobBake("image/webp", quality) };
+            case "toblob-png":
+              return { make: toBlobBake("image/png", quality) };
+            case "worker-webp":
+            case "worker-png": {
+              const pool = poolOf(workers);
+              return {
+                make: workerBitmapBake(
+                  pool,
+                  kindOf(name) === "worker-png" ? "image/png" : "image/webp",
+                  quality,
+                ),
+                // In-flight jobs, matched to pool size: a single-file loop would leave every worker
+                // but one idle and the sweep would measure nothing.
+                concurrency: workers,
+                workers,
+              };
+            }
+            case "worker-imagedata": {
+              const pool = poolOf(workers);
+              const setupMs = await ensurePage(pool);
+              return {
+                make: workerRegionBake(pool, "image/webp", quality),
+                concurrency: workers,
+                workers,
+                setupMs,
+              };
+            }
+            default:
+              throw new Error(`unknown variant ${name}`);
+          }
+        };
+
+        if (PHASES.includes("bake")) {
+          for (const name of VARIANTS) {
+            for (const workers of isWorkerKind(name) ? WORKERS : [0]) {
+              // The pool size is in the LABEL for every worker row, including the default single
+              // worker: a table where only some rows carry a fan-out invites the others to be read
+              // as the same configuration.
+              const label = workers ? `${name} x${workers}` : name;
+              const { make, ...options } = await makerFor(name, workers || 1);
+              results.bake.push(
+                await bakeVariant(label, list, make, {
+                  ...options,
+                  kind: kindOf(name),
+                  idleBetween: kindOf(name) === "png-idle",
+                }),
+              );
+            }
+          }
+        }
+
+        if (PHASES.includes("fidelity")) {
+          log("\nfidelity — decode each blob BACK and diff against the source pixels");
+          // Spread from the FIRST region to the LAST inclusive. The last one overlaps the
+          // high-entropy band, and a sampling that quietly stopped short of it would report the
+          // easy, flat regions only — i.e. "every codec is pixel-perfect".
+          const span = Math.max(1, FIDELITY_SAMPLES - 1);
+          const sampled = Array.from(
+            { length: Math.min(FIDELITY_SAMPLES, list.length) },
+            (_, i) => list[Math.round((i * (list.length - 1)) / span)],
+          );
+          for (const name of VARIANTS) {
+            if (kindOf(name) === "draw-only") {
+              continue;
+            }
+            // One worker regardless of the sweep: fidelity is a property of the codec, and pool size
+            // cannot change the bytes it emits.
+            const { make } = await makerFor(name, 1);
+            const rows = [];
+            for (const region of sampled) {
+              const blob = await make(region);
+              if (!blob) {
+                continue;
+              }
+              rows.push({
+                region: `${region.width}x${region.height}`,
+                bytes: blob.size,
+                ...(await fidelityOf(blob, sourceImageData(region), region.width, region.height)),
+              });
+            }
+            if (!rows.length) {
+              continue;
+            }
+            const mean = (key) => +(rows.reduce((a, r) => a + r[key], 0) / rows.length).toFixed(3);
+            const worst = (key) => Math.max(...rows.map((r) => r[key]));
+            const summary = {
+              variant: name,
+              samples: rows.length,
+              bytesPerRegion: Math.round(rows.reduce((a, r) => a + r.bytes, 0) / rows.length),
+              rgbMeanAbs: mean("rgbMeanAbs"),
+              rgbMaxAbs: worst("rgbMaxAbs"),
+              alphaMeanAbs: mean("alphaMeanAbs"),
+              alphaMaxAbs: worst("alphaMaxAbs"),
+              // Per-sample, because a mean over four regions of which one is noise and three are
+              // flat colour reads as "nearly lossless" when one sample was mangled.
+              perSample: rows,
+            };
+            results.fidelity.push(summary);
+            log(
+              `${name.padEnd(16)} ${String(summary.bytesPerRegion).padStart(8)} B/region  ` +
+                `rgb mean=${String(summary.rgbMeanAbs).padStart(7)} max=${String(summary.rgbMaxAbs).padStart(4)}  ` +
+                `alpha mean=${String(summary.alphaMeanAbs).padStart(7)} max=${String(summary.alphaMaxAbs).padStart(4)}`,
+            );
+          }
+        }
+
+        if (PHASES.includes("blit")) {
+          log(
+            `\nblit — ${BLIT_NODES} nodes x ${BLIT_PX}px, one full-canvas blit each from ONE shared source`,
+          );
+          const shared = document.createElement("canvas");
+          shared.width = BLIT_PX;
+          shared.height = BLIT_PX;
+          const sg = shared.getContext("2d");
+          sg.drawImage(bitmap, 0, 0, PAGE, PAGE, 0, 0, BLIT_PX, BLIT_PX);
+
+          const host = document.createElement("div");
+          host.style.position = "absolute";
+          host.style.left = "-10000px";
+          host.style.top = "0";
+          document.body.appendChild(host);
+          const makeNode = () => {
+            const c = document.createElement("canvas");
+            c.width = BLIT_PX;
+            c.height = BLIT_PX;
+            c.style.width = `${BLIT_PX}px`;
+            c.style.height = `${BLIT_PX}px`;
+            host.appendChild(c);
+            return c;
+          };
+
+          const twoD = [];
+          const nodes2d = Array.from({ length: BLIT_NODES }, makeNode);
+          for (const node of nodes2d) {
+            const t = performance.now();
+            node.getContext("2d").drawImage(shared, 0, 0);
+            twoD.push(performance.now() - t);
+          }
+
+          // `transferFromImageBitmap` NEUTERS its source, so every node needs its OWN bitmap. The
+          // clone is therefore part of this arm's real price — measured separately so the transfer
+          // itself can still be read on its own.
+          const clone = [];
+          const bitmaps = [];
+          for (let i = 0; i < BLIT_NODES; i++) {
+            const t = performance.now();
+            bitmaps.push(await createImageBitmap(shared));
+            clone.push(performance.now() - t);
+          }
+          const transfer = [];
+          const nodesBr = Array.from({ length: BLIT_NODES }, makeNode);
+          for (let i = 0; i < BLIT_NODES; i++) {
+            const t = performance.now();
+            nodesBr[i].getContext("bitmaprenderer").transferFromImageBitmap(bitmaps[i]);
+            transfer.push(performance.now() - t);
+          }
+          host.remove();
+
+          results.blit = {
+            nodes: BLIT_NODES,
+            px: BLIT_PX,
+            "2d-drawImage": stat(twoD),
+            "createImageBitmap-clone": stat(clone),
+            "bitmaprenderer-transfer": stat(transfer),
+          };
+          for (const [key, s] of Object.entries(results.blit)) {
+            if (typeof s !== "object") {
+              continue;
+            }
+            log(
+              `${key.padEnd(26)} total=${String(s.total).padStart(6)}ms p50=${String(s.p50).padStart(7)} p95=${String(s.p95).padStart(7)} max=${String(s.max).padStart(7)}`,
+            );
+          }
+        }
+
+        if (PHASES.includes("share")) {
+          // THE SHARED-FRAME QUESTION, as far as a probe can take it.
+          //
+          // If a map of shader path -> finished image is the destination, many nodes will show the
+          // SAME image. Does the browser then decode it once, or once per node? This times N <img>
+          // to `img.decode()` with N distinct blob URLs against N pointing at ONE url.
+          //
+          // IT IS A PROXY AND THE OUTPUT SAYS SO. A faster shared arm is consistent with a single
+          // decode but does not demonstrate one — distinct blobs also differ in bytes and in cache
+          // pressure. `static-surfaces --param sharedFrames=true` settles it from the trace's codec
+          // run count, which is a direct observation rather than an inference from wall clock.
+          log(
+            `\nshare — ${SHARE_NODES} <img> at ${SHARE_PX}px: own blob URL each vs one shared URL (PROXY, see notes)`,
+          );
+          const shareBlob = async (index) => {
+            const off = new OffscreenCanvas(SHARE_PX, SHARE_PX);
+            const ctx = off.getContext("2d");
+            const region = list[index % list.length];
+            ctx.drawImage(
+              bitmap,
+              region.x,
+              region.y,
+              region.width,
+              region.height,
+              0,
+              0,
+              SHARE_PX,
+              SHARE_PX,
+            );
+            return off.convertToBlob({ type: "image/webp" });
+          };
+          // One extra blob, reserved for the shared arm. Reusing one of the distinct arm's blobs
+          // would hand the shared arm a resource the browser had already decoded moments earlier,
+          // and the result would be the cache, not the sharing.
+          const blobs = [];
+          for (let i = 0; i <= SHARE_NODES; i++) {
+            blobs.push(await shareBlob(i));
+          }
+
+          const decodeAll = async (urls) => {
+            const host = document.createElement("div");
+            host.style.position = "absolute";
+            host.style.left = "-10000px";
+            host.style.top = "0";
+            document.body.appendChild(host);
+            const images = urls.map(() => {
+              const image = new Image();
+              image.width = SHARE_PX;
+              image.height = SHARE_PX;
+              host.appendChild(image);
+              return image;
+            });
+            await flushObservers();
+            const occupancyBefore = occupancyNow();
+            // `src` is assigned INSIDE the timed window: assigning it during setup would start the
+            // decode early and the measured span would be whatever was left of it.
+            const t = performance.now();
+            for (let i = 0; i < images.length; i++) {
+              images[i].src = urls[i];
+            }
+            await Promise.all(images.map((image) => image.decode().catch(() => {})));
+            const ms = performance.now() - t;
+            await flushObservers();
+            const mainThread = occupancySince(occupancyBefore);
+            host.remove();
+            return { totalMs: +ms.toFixed(2), perNodeMs: +(ms / urls.length).toFixed(2), mainThread };
+          };
+
+          const distinctUrls = blobs.slice(0, SHARE_NODES).map((b) => URL.createObjectURL(b));
+          const distinct = await decodeAll(distinctUrls);
+          const sharedUrl = URL.createObjectURL(blobs[SHARE_NODES]);
+          const shared = await decodeAll(new Array(SHARE_NODES).fill(sharedUrl));
+          for (const url of distinctUrls) {
+            URL.revokeObjectURL(url);
+          }
+          URL.revokeObjectURL(sharedUrl);
+
+          results.share = {
+            nodes: SHARE_NODES,
+            px: SHARE_PX,
+            bytesPerImage: blobs[0].size,
+            distinct,
+            shared,
+            note: "proxy — a faster shared arm is consistent with one decode but does not prove it; static-surfaces --param sharedFrames=true reads the codec run count directly",
+          };
+          for (const [key, value] of [["distinct-urls", distinct], ["shared-url", shared]]) {
+            log(
+              `${key.padEnd(20)} total=${String(value.totalMs).padStart(8)}ms  per node=${String(value.perNodeMs).padStart(7)}ms` +
+                `  |  blocked=${value.mainThread.loafBlockingMs}ms longtask=${value.mainThread.longtaskMs}ms`,
+            );
+          }
+        }
+
+        for (const pool of pools.values()) {
+          pool.terminate();
+        }
+
+        const throttled = results.bake.filter((r) => r.throttled).map((r) => r.variant);
+        window.__bakeProbe = {
+          count: COUNT,
+          page: PAGE,
+          phases: PHASES,
+          variants: VARIANTS,
+          workersSweep: WORKERS,
+          readbackMs,
+          userAgent: navigator.userAgent,
+          hardwareConcurrency: navigator.hardwareConcurrency,
+          // Stated, because an absent instrument reports zero and a zero that means "not measured"
+          // is indistinguishable from a zero that means "never blocked".
+          instruments: { longAnimationFrame: hasLoaf, longtask: hasLongtask },
+          watchdog: watchdogNow(),
+          throttledVariants: throttled,
+          ...results,
+        };
+        log(
+          throttled.length
+            ? `\nDONE — but ${throttled.join(", ")} ran while the tab was throttled. Re-run with the screen kept awake; do NOT read those rows.`
+            : "\nDONE",
+        );
+      }
+
+      main().catch((e) => {
+        log("ERROR " + (e && e.message));
+        window.__bakeProbe = { error: String(e && e.message) };
+      });
+    </script>
+  </body>
+</html>

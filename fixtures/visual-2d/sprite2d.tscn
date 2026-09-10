@@ -1,0 +1,17 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/assets/panel.svg" id="panel"]
+
+[node name="Root" type="Control"]
+offset_right = 160.0
+offset_bottom = 120.0
+
+[node name="Sprite" type="Sprite2D" parent="."]
+position = Vector2(70, 50)
+texture = ExtResource("panel")
+region_enabled = true
+region_rect = Rect2(8, 8, 48, 32)
+hframes = 2
+vframes = 1
+frame = 1
+texture_filter = 1

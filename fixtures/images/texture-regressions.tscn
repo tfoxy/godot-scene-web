@@ -1,0 +1,61 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Texture2D" path="res://fixtures/images/np64.png" id="1"]
+[ext_resource type="Texture2D" path="res://fixtures/resources/atlas128.tres" id="2"]
+[ext_resource type="Shader" path="res://fixtures/images/hsv.gdshader" id="3"]
+
+[sub_resource type="ShaderMaterial" id="hsv_dim"]
+shader = ExtResource("3")
+shader_parameter/h = 1.0
+shader_parameter/s = 1.0
+shader_parameter/v = 0.9
+
+[node name="Root" type="Control"]
+offset_right = 480.0
+offset_bottom = 420.0
+
+[node name="Case1Overflow" type="NinePatchRect" parent="."]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 370.0
+offset_bottom = 150.0
+texture = ExtResource("1")
+region_rect = Rect2(0, 0, 66, 66)
+patch_margin_left = 16
+patch_margin_top = 16
+patch_margin_right = 16
+patch_margin_bottom = 16
+axis_stretch_horizontal = 1
+axis_stretch_vertical = 1
+self_modulate = Color(0.16, 0.27, 0.31, 1)
+
+[node name="Case2Control" type="NinePatchRect" parent="."]
+offset_left = 10.0
+offset_top = 170.0
+offset_right = 230.0
+offset_bottom = 270.0
+texture = ExtResource("1")
+region_rect = Rect2(0, 0, 64, 64)
+patch_margin_left = 16
+patch_margin_top = 16
+patch_margin_right = 16
+patch_margin_bottom = 16
+
+[node name="Case3AtlasShader" type="TextureRect" parent="."]
+offset_left = 250.0
+offset_top = 170.0
+offset_right = 314.0
+offset_bottom = 234.0
+texture = ExtResource("2")
+material = SubResource("hsv_dim")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Case3bAtlasPlain" type="TextureRect" parent="."]
+offset_left = 330.0
+offset_top = 170.0
+offset_right = 394.0
+offset_bottom = 234.0
+texture = ExtResource("2")
+expand_mode = 1
+stretch_mode = 5
