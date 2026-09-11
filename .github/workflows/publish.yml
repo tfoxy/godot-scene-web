@@ -34,6 +34,9 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: pnpm release:check-tag "${{ github.ref_name }}"
+      # This repo creates no GitHub Release, so CHANGELOG.md is the published record of what a
+      # version contains. Refuse to publish a version that has no section.
+      - run: ./scripts/changelog-section.sh "${{ github.ref_name }}"
       - run: pnpm -r --filter './packages/**' publish --access public --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
