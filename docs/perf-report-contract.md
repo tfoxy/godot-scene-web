@@ -426,20 +426,60 @@ repo adopts the seam when it has something to count rather than at a schema bump
 
 ### `decode`
 
-| field                         | meaning                                                                                                                                                                                                                                  |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `count`, `totalMs`, `maxMs`   | **maximal** decode-family events on decode worker threads and their wall time. Maximal because the families nest (`ImageDecodeTask` > `DecodeImageInTask` > `Decode Image`), and summing all levels triple-counts the same microseconds. |
-| `codecRuns`, `codecMs`        | the subset that actually ran the image codec.                                                                                                                                                                                            |
-| `distinctImages`, `imageKey`  | distinct images decoded and which trace field the identity came from (`pixelRefId`, `contentId`, `url`).                                                                                                                                 |
-| `redecodeCount`, `redecodeMs` | **codec runs beyond the first for the same image.** A decode task that hits the discardable cache costs ~0 and is not a re-decode.                                                                                                       |
-| `inRasterCount`, `inRasterMs` | **codec runs that happened inside a `RasterTask`.** Any value > 0 is a hard failure — see below.                                                                                                                                         |
-| `cacheFamily`                 | `software` \| `gpu` \| `mixed` \| `unknown`.                                                                                                                                                                                             |
+| field                         | meaning                                                                                                                                                                                                                                                         |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `count`, `totalMs`, `maxMs`   | **maximal** decode-family events on decode worker threads and their wall time. Maximal because the families nest (`ImageDecodeTask` > `DecodeImageInTask` > `Decode Image`), and summing all levels triple-counts the same microseconds.                        |
+| `codecRuns`, `codecMs`        | the subset that actually ran the image codec.                                                                                                                                                                                                                   |
+| `distinctImages`, `imageKey`  | distinct images decoded and which trace field the identity came from (`pixelRefId`, `contentId`, `url`).                                                                                                                                                        |
+| `redecodeCount`, `redecodeMs` | **codec runs beyond the first for the same image.** A decode task that hits the discardable cache costs ~0 and is not a re-decode.                                                                                                                              |
+| `inRasterCount`, `inRasterMs` | **codec runs that happened inside a `RasterTask`.** Any value > 0 is a hard failure — see below.                                                                                                                                                                |
+| `cacheFamily`                 | `software` \| `gpu` \| `mixed` \| `unknown`.                                                                                                                                                                                                                    |
+| `provenance`                  | Optional discriminant. Absent means `cc-trace` for backward compatibility; `canvas-texture-bridge` names direct-canvas marker-window evidence that is not a Chrome codec trace.                                                                                 |
+| `source`, `codecSource`       | For `canvas-texture-bridge`, both are required: `source` is exactly `canvas.textureBridge.window` and `codecSource` is `null`. The latter makes the non-claim explicit: a capture window did not observe a codec worker. Existing cc-trace labels remain valid. |
+| `bridgeWindow`                | Required only for `canvas-texture-bridge`: same-renderer marker-window identity plus its complete capture/upload counter deltas — see below.                                                                                                                    |
 
 `inRasterCount > 0` means an image was too large for the discardable decode cache, so its decode is
 re-paid on **every re-raster, forever**. Report it as a failure, not as a slow number.
 
-`cacheFamily === "unknown"` (or `count === 0`) means no `SoftwareImageDecodeCache::*` /
-`GpuImageDecodeCache::*` event matched. That is **unmeasured, not fast** — the validator rejects it.
+For `cc-trace` (including old reports with no `provenance`), `cacheFamily === "unknown"` with an
+image-bearing `count === 0` means no `SoftwareImageDecodeCache::*` / `GpuImageDecodeCache::*` event
+matched. That is **unmeasured, not fast** — the validator rejects it. A scenario that really paints
+no images remains the explicit `imagesExpected: false` exception.
+
+#### `canvas-texture-bridge` evidence
+
+The direct Canvas stage can own an `ImageBitmap` capture and upload it to its texture cache. That is
+not Chrome trace decode-worker evidence. A bridge report therefore keeps every trace-family numeric
+field (`count`, `totalMs`, `maxMs`, `distinctImages`, re-decode, in-raster and codec counters) at
+`0`, uses `cacheFamily: "unknown"` and `imagesExpected: true`, and does **not** call that "no image
+decoded." In particular, `bridgeWindow.pageDecodeMs` is capture-resolution latency, not codec CPU
+time, and must never be copied to `decode.totalMs`.
+
+Such a measured zero is valid only with this complete block:
+
+```jsonc
+{
+  "provenance": "canvas-texture-bridge",
+  "source": "canvas.textureBridge.window",
+  "codecSource": null,
+  "bridgeWindow": {
+    "source": "canvas.textureBridge.window",
+    "instanceId": 42, // positive integer; the producer emitted no block unless both samples matched
+    "sampleWindowMs": 1000,
+    "pageDecodes": 0,
+    "pageDecodeFailed": 0,
+    "pageDecodeMs": 0,
+    "pageOwnedUploads": 0,
+    "pageElementUploads": 0,
+    "uploads": 0,
+    "uploadMs": 0,
+  },
+}
+```
+
+All marker-window deltas are finite and non-negative; `sampleWindowMs` is finite and greater than
+zero. `pageDecodeFailed` and `pageElementUploads` are failure/fallback signals, respectively: zero
+is meaningful only because the producer proved both snapshots came from one renderer instance.
 
 ## Aggregation rules
 
@@ -451,4 +491,8 @@ re-paid on **every re-raster, forever**. Report it as a failure, not as a slow n
 - Two fields are aggregated by **worst case**, never median: `decode.inRasterCount` /
   `decode.inRasterMs` and `presented.sampleHits`. Both are failure signals, and four clean repeats
   must not smooth away a fifth broken one.
+- Every repeat in a browser report has the same decode provenance; cc trace and texture-bridge
+  evidence are never medianed together. For `canvas-texture-bridge`, marker-window duration,
+  capture activity and capture/upload latency are medianed, while `pageDecodeFailed` and
+  `pageElementUploads` are worst-case so one failed capture or element fallback remains visible.
 - A repeat that fails the presence guard is **excluded from `runs`** and listed in `failures`.

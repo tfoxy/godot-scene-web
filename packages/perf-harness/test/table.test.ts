@@ -79,6 +79,48 @@ function deviceReport(
   };
 }
 
+/** A direct-canvas bridge window is capture/upload evidence, not a Chrome trace decode count. */
+function bridgeReport(
+  bridgeOverrides: Partial<
+    NonNullable<ReportMetrics["decode"]["bridgeWindow"]>
+  > = {},
+): BrowserPerfReport {
+  const report = deviceReport();
+  const bridgeMetrics = metrics();
+  bridgeMetrics.decode = {
+    ...bridgeMetrics.decode,
+    count: 0,
+    totalMs: 0,
+    maxMs: 0,
+    distinctImages: 0,
+    redecodeCount: 0,
+    redecodeMs: 0,
+    inRasterCount: 0,
+    inRasterMs: 0,
+    codecRuns: 0,
+    codecMs: 0,
+    cacheFamily: "unknown",
+    imagesExpected: true,
+    provenance: "canvas-texture-bridge",
+    source: "canvas.textureBridge.window",
+    codecSource: null,
+    bridgeWindow: {
+      source: "canvas.textureBridge.window",
+      instanceId: 7,
+      sampleWindowMs: 1000,
+      pageDecodes: 3,
+      pageDecodeFailed: 0,
+      pageDecodeMs: 18.75,
+      pageOwnedUploads: 3,
+      pageElementUploads: 0,
+      uploads: 3,
+      uploadMs: 9.25,
+      ...bridgeOverrides,
+    },
+  };
+  return { ...report, metrics: bridgeMetrics, runs: [bridgeMetrics] };
+}
+
 describe("formatComparison: device header", () => {
   it("never prints a null throttle as `nullx`", () => {
     const text = formatComparison([deviceReport()]);
@@ -98,6 +140,44 @@ describe("formatComparison: device header", () => {
     expect(text).toContain("battery 84% -> 79%");
     expect(text).toContain("thermalStatus none -> light");
     expect(text).toContain("!! thermal status ROSE during the run");
+  });
+});
+
+describe("formatComparison: canvas texture-bridge decode provenance", () => {
+  it("prints trace decode as unmeasured, not a zero-task win or matcher alarm", () => {
+    const text = formatComparison([bridgeReport()]);
+    const traceTasks = text
+      .split("\n")
+      .find((row) => row.includes("decode trace tasks"));
+    const traceFamily = text
+      .split("\n")
+      .find((row) => row.includes("trace decode cache family"));
+
+    expect(traceTasks).toContain("n/a (not measured by bridge)");
+    expect(traceTasks).not.toContain("!!");
+    expect(traceFamily).toContain("n/a (not measured by bridge)");
+    expect(traceFamily).not.toContain("!!");
+    expect(text).not.toContain("!! n/a (not measured by bridge)");
+    expect(text).toContain(
+      "decode-in-raster: n/a (canvas texture-bridge windows did not measure Chrome trace decode work).",
+    );
+  });
+
+  it("keeps canvas bridge activity and fallback evidence visible", () => {
+    const clean = formatComparison([bridgeReport()]);
+    expect(clean).toContain(
+      "canvas bridge (window/capture/upload ms; captures/fail; owned/element/all uploads)",
+    );
+    expect(clean).toContain("1000/18.75/9.25; 3/0; 3/0/3");
+
+    const fallback = formatComparison([
+      bridgeReport({ pageDecodeFailed: 1, pageElementUploads: 1 }),
+    ]);
+    const bridgeRow = fallback
+      .split("\n")
+      .find((row) => row.includes("canvas bridge (window/capture/upload ms"));
+    expect(bridgeRow).toContain("!!");
+    expect(bridgeRow).toContain("3/1; 3/1/3");
   });
 });
 
