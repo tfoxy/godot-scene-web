@@ -132,6 +132,36 @@ export interface Stat {
   max: number;
 }
 
+/**
+ * Where the decode-like measurement came from.
+ *
+ * `cc-trace` is Chrome trace decode-worker evidence. `canvas-texture-bridge` is deliberately
+ * different: the direct-canvas bridge owns an ImageBitmap capture and can report its marker-window
+ * lifecycle, but it cannot turn that capture latency into a Chrome codec-worker total.
+ */
+export type DecodeProvenance = "cc-trace" | "canvas-texture-bridge";
+
+/**
+ * Cumulative `canvas.textureBridge` counters, differenced around one marker window by the producer.
+ *
+ * `instanceId` identifies the one renderer lifetime that supplied both samples. The producer must
+ * omit this block when the before/after samples do not belong to the same instance; one retained id
+ * is therefore evidence of that guard, not an identity inferred by the consumer.
+ */
+export interface CanvasTextureBridgeWindow {
+  source: "canvas.textureBridge.window";
+  instanceId: number;
+  sampleWindowMs: number;
+  pageDecodes: number;
+  pageDecodeFailed: number;
+  /** Capture-resolution latency, not Chrome image-codec worker CPU time. */
+  pageDecodeMs: number;
+  pageOwnedUploads: number;
+  pageElementUploads: number;
+  uploads: number;
+  uploadMs: number;
+}
+
 export interface DecodeMetrics {
   /** Decode work items that ran (maximal decode-family events on decode threads). */
   count: number;
@@ -182,6 +212,20 @@ export interface DecodeMetrics {
    * really did paint images.
    */
   imagesExpected?: boolean;
+  /**
+   * Optional so existing reports remain `cc-trace`. A bridge report has to name its provenance;
+   * otherwise a zero `count` remains the hard cc-trace matcher failure.
+   */
+  provenance?: DecodeProvenance;
+  /**
+   * The direct-canvas source is named separately from a trace's `cacheFamily`: it is a capture
+   * window, not a Chrome decode-cache family.
+   */
+  source?: string;
+  /** `null` explicitly says the bridge did not measure a codec source. */
+  codecSource?: string | null;
+  /** Required only when `provenance === "canvas-texture-bridge"`. */
+  bridgeWindow?: CanvasTextureBridgeWindow;
 }
 
 export interface PaintMetrics {

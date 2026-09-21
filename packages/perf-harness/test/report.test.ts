@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyzeTrace } from "../src/analyze";
 import {
+  type CanvasTextureBridgeWindow,
   medianMetrics,
   type PerfReport,
   REPORT_SCHEMA,
@@ -25,6 +26,51 @@ function browserMetrics(overrides: Partial<ReportMetrics> = {}): ReportMetrics {
       screenshot: "artifacts/perf/runs/x/shots/page-crop-r0.png",
     },
     ...overrides,
+  };
+}
+
+/**
+ * The direct Canvas stage can measure its own texture bridge between two markers, but those
+ * counters are not Chrome trace decode-worker events. Keep this fixture intentionally zeroed in
+ * the trace family so a test cannot accidentally bless `pageDecodeMs` being copied to `totalMs`.
+ */
+function bridgeMetrics(
+  windowOverrides: Partial<CanvasTextureBridgeWindow> = {},
+): ReportMetrics {
+  const base = browserMetrics();
+  return {
+    ...base,
+    decode: {
+      ...base.decode,
+      count: 0,
+      totalMs: 0,
+      maxMs: 0,
+      distinctImages: 0,
+      redecodeCount: 0,
+      redecodeMs: 0,
+      inRasterCount: 0,
+      inRasterMs: 0,
+      codecRuns: 0,
+      codecMs: 0,
+      cacheFamily: "unknown",
+      imagesExpected: true,
+      provenance: "canvas-texture-bridge",
+      source: "canvas.textureBridge.window",
+      codecSource: null,
+      bridgeWindow: {
+        source: "canvas.textureBridge.window",
+        instanceId: 7,
+        sampleWindowMs: 1000,
+        pageDecodes: 0,
+        pageDecodeFailed: 0,
+        pageDecodeMs: 0,
+        pageOwnedUploads: 0,
+        pageElementUploads: 0,
+        uploads: 0,
+        uploadMs: 0,
+        ...windowOverrides,
+      },
+    },
   };
 }
 
@@ -157,6 +203,105 @@ describe("validateReport: browser-render", () => {
     ).toEqual(expect.arrayContaining(["metrics.decode.count"]));
   });
 
+  it("accepts a zero trace decode only with complete canvas texture-bridge evidence", () => {
+    const metrics = bridgeMetrics({
+      pageDecodes: 3,
+      pageDecodeMs: 18.7,
+      pageOwnedUploads: 3,
+      uploads: 3,
+      uploadMs: 9.2,
+    });
+    // This is not a claim that no image decoded: the trace family stays zero while the bridge's
+    // capture latency remains in its own marker-window evidence block.
+    expect(metrics.decode.totalMs).toBe(0);
+    expect(metrics.decode.bridgeWindow?.pageDecodeMs).toBe(18.7);
+    expect(validateReport(browserReport({ metrics, runs: [metrics] }))).toEqual(
+      [],
+    );
+  });
+
+  it("rejects malformed canvas texture-bridge provenance and incomplete marker evidence", () => {
+    const base = bridgeMetrics();
+    const metrics = {
+      ...base,
+      decode: {
+        ...base.decode,
+        source: "other.window" as never,
+        codecSource: "codec" as never,
+        bridgeWindow: {
+          ...base.decode.bridgeWindow!,
+          instanceId: 0,
+          sampleWindowMs: 0,
+          pageDecodes: Number.NaN,
+        },
+      },
+    };
+    const issues = validateReport(browserReport({ metrics, runs: [metrics] }));
+    expect(issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        "metrics.decode.source",
+        "metrics.decode.codecSource",
+        "metrics.decode.bridgeWindow.instanceId",
+        "metrics.decode.bridgeWindow.sampleWindowMs",
+        "metrics.decode.bridgeWindow.pageDecodes",
+      ]),
+    );
+
+    const unknown = {
+      ...base,
+      decode: { ...base.decode, provenance: "mystery" as never },
+    };
+    expect(
+      validateReport(browserReport({ metrics: unknown, runs: [unknown] })).map(
+        (issue) => issue.path,
+      ),
+    ).toEqual(expect.arrayContaining(["metrics.decode.provenance"]));
+  });
+
+  it("rejects mixing trace and texture-bridge evidence in one report", () => {
+    const bridge = bridgeMetrics();
+    const trace = browserMetrics();
+    expect(
+      validateReport(
+        browserReport({ metrics: bridge, runs: [bridge, trace] }),
+      ).map((issue) => issue.path),
+    ).toContain("runs[1].decode.provenance");
+  });
+
+  it("does not permit bridge evidence or bridge latency in a cc-trace report", () => {
+    const base = browserMetrics();
+    const metrics = {
+      ...base,
+      decode: {
+        ...base.decode,
+        totalMs: 1,
+        bridgeWindow: bridgeMetrics().decode.bridgeWindow,
+      },
+    };
+    // The nonzero `totalMs` is fine for cc trace; the assertion proves only that a bridge payload
+    // cannot be smuggled into that family. The converse is covered below: bridge provenance rejects
+    // any nonzero trace field.
+    expect(
+      validateReport(browserReport({ metrics, runs: [metrics] })).map(
+        (issue) => issue.path,
+      ),
+    ).toEqual(expect.arrayContaining(["metrics.decode.bridgeWindow"]));
+
+    const bridge = bridgeMetrics();
+    const contaminatedBridge = {
+      ...bridge,
+      decode: { ...bridge.decode, totalMs: 1 },
+    };
+    expect(
+      validateReport(
+        browserReport({
+          metrics: contaminatedBridge,
+          runs: [contaminatedBridge],
+        }),
+      ).map((issue) => issue.path),
+    ).toContain("metrics.decode.totalMs");
+  });
+
   it("accepts an unknown cache family when decode WAS measured", () => {
     // `createImageBitmap` decodes outside cc's image-decode cache, so the canvas mechanism really
     // does report cacheFamily "unknown" with a non-zero decode count. That is a measurement, not a
@@ -165,6 +310,23 @@ describe("validateReport: browser-render", () => {
     const metrics = {
       ...base,
       decode: { ...base.decode, count: 1, cacheFamily: "unknown" as const },
+    };
+    expect(validateReport(browserReport({ metrics, runs: [metrics] }))).toEqual(
+      [],
+    );
+  });
+
+  it("keeps legacy cc-trace source labels valid", () => {
+    // Couch's accepted DOM reports already name the matched trace families. The optional bridge
+    // discriminant must not reinterpret or reject those pre-existing diagnostic labels.
+    const base = browserMetrics();
+    const metrics = {
+      ...base,
+      decode: {
+        ...base.decode,
+        source: "ImageDecodeTask",
+        codecSource: "Decode Image",
+      },
     };
     expect(validateReport(browserReport({ metrics, runs: [metrics] }))).toEqual(
       [],
@@ -533,6 +695,82 @@ describe("medianMetrics", () => {
     });
     expect(medianMetrics(runs).decode.inRasterCount).toBe(3);
     expect(medianMetrics(runs).decode.inRasterMs).toBe(273);
+  });
+
+  it("medians bridge activity and cost but keeps fallback counters worst-case", () => {
+    const runs = [
+      bridgeMetrics({
+        instanceId: 11,
+        sampleWindowMs: 999,
+        pageDecodes: 1,
+        pageDecodeFailed: 0,
+        pageDecodeMs: 3,
+        pageOwnedUploads: 1,
+        pageElementUploads: 0,
+        uploads: 1,
+        uploadMs: 2,
+      }),
+      bridgeMetrics({
+        instanceId: 12,
+        sampleWindowMs: 1000,
+        pageDecodes: 2,
+        pageDecodeFailed: 0,
+        pageDecodeMs: 4,
+        pageOwnedUploads: 2,
+        pageElementUploads: 0,
+        uploads: 2,
+        uploadMs: 3,
+      }),
+      bridgeMetrics({
+        instanceId: 13,
+        sampleWindowMs: 1001,
+        pageDecodes: 3,
+        pageDecodeFailed: 4,
+        pageDecodeMs: 5,
+        pageOwnedUploads: 3,
+        pageElementUploads: 6,
+        uploads: 3,
+        uploadMs: 4,
+      }),
+    ];
+    const median = medianMetrics(runs);
+    expect(median.decode).toMatchObject({
+      provenance: "canvas-texture-bridge",
+      source: "canvas.textureBridge.window",
+      codecSource: null,
+      count: 0,
+      totalMs: 0,
+      bridgeWindow: {
+        source: "canvas.textureBridge.window",
+        instanceId: 12,
+        sampleWindowMs: 1000,
+        pageDecodes: 2,
+        pageDecodeMs: 4,
+        pageOwnedUploads: 2,
+        uploads: 2,
+        uploadMs: 3,
+        pageDecodeFailed: 4,
+        pageElementUploads: 6,
+      },
+    });
+    expect(validateReport(browserReport({ metrics: median, runs }))).toEqual(
+      [],
+    );
+  });
+
+  it("refuses to median trace and texture-bridge decode provenance together", () => {
+    expect(() => medianMetrics([bridgeMetrics(), browserMetrics()])).toThrow(
+      /cannot combine cc-trace and canvas-texture-bridge/,
+    );
+  });
+
+  it("refuses an invalid bridge window before aggregation can replace its source", () => {
+    expect(() =>
+      medianMetrics([
+        bridgeMetrics({ source: "other.window" as never }),
+        bridgeMetrics(),
+      ]),
+    ).toThrow(/invalid bridgeWindow evidence/);
   });
 
   it("does not annihilate small ratios", () => {

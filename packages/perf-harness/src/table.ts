@@ -10,6 +10,15 @@ interface Row {
   alarm?: (report: BrowserPerfReport) => boolean;
 }
 
+function isCanvasTextureBridge(report: BrowserPerfReport): boolean {
+  return report.metrics.decode.provenance === "canvas-texture-bridge";
+}
+
+/** A bridge window is capture/upload evidence, never a substitute for a Chrome trace decode task. */
+function traceDecodeValue(report: BrowserPerfReport, value: string): string {
+  return isCanvasTextureBridge(report) ? "n/a (not measured by bridge)" : value;
+}
+
 const ROWS: Row[] = [
   { label: "initialRender ms", value: (r) => fmt(r.metrics.initialRenderMs) },
   { label: "ready ms (JS)", value: (r) => fmt(r.metrics.readyMs) },
@@ -49,43 +58,64 @@ const ROWS: Row[] = [
     alarm: (r) => r.metrics.mainThreadCpuRatio === null,
   },
   {
-    label: "decode tasks",
+    label: "decode trace tasks",
     // "n/a (no images)" rather than "0": a scenario that paints no images has nothing to decode,
     // and printing a bare zero next to arms that DO decode invites reading it as a win.
     value: (r) =>
-      r.metrics.decode.imagesExpected === false
-        ? "n/a (no images)"
-        : String(r.metrics.decode.count),
-  },
-  { label: "decode ms", value: (r) => fmt(r.metrics.decode.totalMs) },
-  { label: "  decode max ms", value: (r) => fmt(r.metrics.decode.maxMs) },
-  {
-    label: "  distinct images",
-    value: (r) => String(r.metrics.decode.distinctImages),
+      traceDecodeValue(
+        r,
+        r.metrics.decode.imagesExpected === false
+          ? "n/a (no images)"
+          : String(r.metrics.decode.count),
+      ),
   },
   {
-    label: "  decode cache family",
-    value: (r) => r.metrics.decode.cacheFamily,
+    label: "decode trace ms",
+    value: (r) => traceDecodeValue(r, fmt(r.metrics.decode.totalMs)),
+  },
+  {
+    label: "  decode trace max ms",
+    value: (r) => traceDecodeValue(r, fmt(r.metrics.decode.maxMs)),
+  },
+  {
+    label: "  trace distinct images",
+    value: (r) => traceDecodeValue(r, String(r.metrics.decode.distinctImages)),
+  },
+  {
+    label: "  trace decode cache family",
+    value: (r) => traceDecodeValue(r, r.metrics.decode.cacheFamily),
     // Only an alarm when NOTHING was decoded: "unknown" on its own is legitimate for a mechanism
     // that decodes outside cc's image-decode cache (createImageBitmap does). "unknown" WITH a zero
     // decode count is the phone-workstream trap — unmeasured, not fast.
     alarm: (r) =>
+      !isCanvasTextureBridge(r) &&
       r.metrics.decode.cacheFamily === "unknown" &&
       r.metrics.decode.count === 0 &&
       r.metrics.decode.imagesExpected !== false,
   },
-  { label: "  codec runs", value: (r) => String(r.metrics.decode.codecRuns) },
   {
-    label: "  REDECODES (n / ms)",
-    value: (r) =>
-      `${r.metrics.decode.redecodeCount} / ${fmt(r.metrics.decode.redecodeMs)}`,
-    alarm: (r) => r.metrics.decode.redecodeCount > 0,
+    label: "  trace codec runs",
+    value: (r) => traceDecodeValue(r, String(r.metrics.decode.codecRuns)),
   },
   {
-    label: "  DECODE IN RASTER (n / ms)",
+    label: "  TRACE REDECODES (n / ms)",
     value: (r) =>
-      `${r.metrics.decode.inRasterCount} / ${fmt(r.metrics.decode.inRasterMs)}`,
-    alarm: (r) => r.metrics.decode.inRasterCount > 0,
+      traceDecodeValue(
+        r,
+        `${r.metrics.decode.redecodeCount} / ${fmt(r.metrics.decode.redecodeMs)}`,
+      ),
+    alarm: (r) =>
+      !isCanvasTextureBridge(r) && r.metrics.decode.redecodeCount > 0,
+  },
+  {
+    label: "  TRACE DECODE IN RASTER (n / ms)",
+    value: (r) =>
+      traceDecodeValue(
+        r,
+        `${r.metrics.decode.inRasterCount} / ${fmt(r.metrics.decode.inRasterMs)}`,
+      ),
+    alarm: (r) =>
+      !isCanvasTextureBridge(r) && r.metrics.decode.inRasterCount > 0,
   },
   { label: "raster ms", value: (r) => fmt(r.metrics.rasterMs) },
   { label: "paintImage records", value: (r) => String(r.metrics.paint.count) },
@@ -133,6 +163,38 @@ const ROWS: Row[] = [
     value: (r) => r.metrics.presented.nonEmptyRatio.toFixed(4),
   },
 ];
+
+/**
+ * Direct Canvas marker-window evidence is appended only when an arm carries it. A fixed empty row
+ * on every generic-browser comparison would teach readers to ignore precisely the provenance that
+ * prevents a bridge zero from being misread as a trace-decode win.
+ */
+function bridgeRows(reports: BrowserPerfReport[]): Row[] {
+  if (!reports.some(isCanvasTextureBridge)) {
+    return [];
+  }
+  return [
+    {
+      label:
+        "canvas bridge (window/capture/upload ms; captures/fail; owned/element/all uploads)",
+      value: (report) => {
+        const bridge = report.metrics.decode.bridgeWindow;
+        if (!isCanvasTextureBridge(report) || !bridge) {
+          return "—";
+        }
+        return `${fmt(bridge.sampleWindowMs)}/${fmt(bridge.pageDecodeMs)}/${fmt(bridge.uploadMs)}; ${bridge.pageDecodes}/${bridge.pageDecodeFailed}; ${bridge.pageOwnedUploads}/${bridge.pageElementUploads}/${bridge.uploads}`;
+      },
+      alarm: (report) => {
+        const bridge = report.metrics.decode.bridgeWindow;
+        return (
+          isCanvasTextureBridge(report) &&
+          !!bridge &&
+          (bridge.pageDecodeFailed > 0 || bridge.pageElementUploads > 0)
+        );
+      },
+    },
+  ];
+}
 
 /** GPU rows, appended only when the GPU categories were actually collected. */
 const GPU_ROWS: Row[] = [
@@ -358,6 +420,7 @@ export function formatComparison(reports: BrowserPerfReport[]): string {
     ...(driverMemory ? DEVICE_MEMORY_ROWS : []),
     ...(memoryDump ? MEMORY_DUMP_ROWS : []),
     ...(head.metrics.watchedImage ? WATCHED_ROWS : []),
+    ...bridgeRows(reports),
     ...scenarioRows(reports),
   ];
   const columns = reports.map((report) =>
@@ -537,7 +600,12 @@ export function formatComparison(reports: BrowserPerfReport[]): string {
     lines.push(...failures);
     lines.push("");
   }
-  const inRaster = reports.filter((r) => r.metrics.decode.inRasterCount > 0);
+  const traceReports = reports.filter(
+    (report) => !isCanvasTextureBridge(report),
+  );
+  const inRaster = traceReports.filter(
+    (report) => report.metrics.decode.inRasterCount > 0,
+  );
   if (inRaster.length > 0) {
     lines.push(
       `HARD FAILURE: decode ran inside raster on ${inRaster
@@ -546,9 +614,13 @@ export function formatComparison(reports: BrowserPerfReport[]): string {
           ", ",
         )} — the image exceeds the discardable decode cache, so the decode is re-paid on EVERY re-raster, forever.`,
     );
+  } else if (traceReports.length > 0) {
+    lines.push(
+      "decode-in-raster: 0 on all trace arms (no image exceeded the discardable decode cache).",
+    );
   } else {
     lines.push(
-      "decode-in-raster: 0 on all arms (no image exceeded the discardable decode cache).",
+      "decode-in-raster: n/a (canvas texture-bridge windows did not measure Chrome trace decode work).",
     );
   }
   lines.push(

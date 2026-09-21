@@ -6,6 +6,7 @@
 // sibling repo shells out to check its envelope without ever importing this package.
 
 import type {
+  CanvasTextureBridgeWindow,
   CpuMetrics,
   GpuBuckets,
   GpuMetrics,
@@ -13,6 +14,8 @@ import type {
   TraceMetrics,
 } from "./analyze";
 import type { PresenceResult } from "./presence";
+
+export type { CanvasTextureBridgeWindow, DecodeProvenance } from "./analyze";
 
 export const REPORT_SCHEMA = "perf-report/1";
 
@@ -378,6 +381,17 @@ export function validateReport(value: unknown): ValidationIssue[] {
     report.runs.forEach((run, index) => {
       issues.push(...check(run, `runs[${index}]`));
     });
+    if (isBrowser) {
+      const aggregateProvenance = decodeProvenanceFromMetrics(report.metrics);
+      report.runs.forEach((run, index) => {
+        if (decodeProvenanceFromMetrics(run) !== aggregateProvenance) {
+          push(
+            `runs[${index}].decode.provenance`,
+            "must match metrics.decode.provenance: cc-trace and canvas-texture-bridge evidence cannot be medianed together",
+          );
+        }
+      });
+    }
   }
   return issues;
 }
@@ -843,50 +857,7 @@ function validateBrowserMetrics(
     }
   }
 
-  const decode = metrics.decode as Record<string, unknown> | undefined;
-  if (!decode || typeof decode !== "object") {
-    push(".decode", "missing");
-  } else {
-    for (const field of [
-      "count",
-      "totalMs",
-      "maxMs",
-      "distinctImages",
-      "redecodeCount",
-      "redecodeMs",
-      "inRasterCount",
-    ]) {
-      if (
-        typeof decode[field] !== "number" ||
-        !Number.isFinite(decode[field] as number)
-      ) {
-        push(`.decode.${field}`, "must be a finite number");
-      }
-    }
-    // A browser scenario that paints images CANNOT have decoded nothing. Zero decode almost always
-    // means the cc decode-cache event names drifted (e.g. the GPU path emits GpuImageDecodeCache::*
-    // where the software path emits SoftwareImageDecodeCache::*), and reporting that as "no decode
-    // cost" is the single worst mistake this harness could make.
-    // `imagesExpected: false` is the ONE way a zero here is legitimate: a scenario that paints no
-    // images at all (S9 `text-render` — glyphs are rasterized by the font stack, which emits no
-    // decode events). Absent means true, so every report written before the field existed is
-    // still held to the original rule.
-    if (
-      decode.imagesExpected !== undefined &&
-      typeof decode.imagesExpected !== "boolean"
-    ) {
-      push(".decode.imagesExpected", "must be a boolean when present");
-    }
-    if (decode.count === 0 && decode.imagesExpected !== false) {
-      push(
-        ".decode.count",
-        `no decode events matched (cacheFamily=${JSON.stringify(decode.cacheFamily)}) — treat this as UNMEASURED, not fast; re-run \`perf --dump-trace-names\` on this Chrome and update the decode matcher`,
-      );
-    }
-    // `cacheFamily: "unknown"` alone is NOT an error: a mechanism can legitimately decode outside cc's
-    // image-decode cache (`createImageBitmap` does), and the canvas arm measurably does. It only
-    // indicts the matcher when nothing was measured at all, which the `count === 0` check covers.
-  }
+  issues.push(...validateDecodeMetrics(metrics.decode, `${path}.decode`));
 
   const presented = metrics.presented as Record<string, unknown> | undefined;
   if (!presented || typeof presented !== "object") {
@@ -924,6 +895,224 @@ function validateBrowserMetrics(
     }
   }
   return issues;
+}
+
+/** The cc-trace fields the existing cross-repo contract required before bridge evidence existed. */
+const CC_TRACE_REQUIRED_NUMERIC_FIELDS = [
+  "count",
+  "totalMs",
+  "maxMs",
+  "distinctImages",
+  "redecodeCount",
+  "redecodeMs",
+  "inRasterCount",
+] as const;
+
+/** Bridge reports own their complete zeroed trace stub, including fields older producers may omit. */
+const BRIDGE_TRACE_NUMERIC_FIELDS = [
+  ...CC_TRACE_REQUIRED_NUMERIC_FIELDS,
+  "inRasterMs",
+  "codecRuns",
+  "codecMs",
+] as const;
+
+const BRIDGE_WINDOW_COUNTERS = [
+  "pageDecodes",
+  "pageDecodeFailed",
+  "pageDecodeMs",
+  "pageOwnedUploads",
+  "pageElementUploads",
+  "uploads",
+  "uploadMs",
+] as const;
+
+/**
+ * Validate the two intentionally non-interchangeable decode evidence families.
+ *
+ * A direct-canvas texture bridge can prove that one renderer lifetime made no new captures or
+ * uploads in a marker window. It cannot prove Chrome ran no codec work, so its zero trace fields
+ * remain explicit zeroes and its capture latency lives only in `bridgeWindow.pageDecodeMs`.
+ */
+function validateDecodeMetrics(
+  value: unknown,
+  path: string,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const push = (suffix: string, message: string) =>
+    issues.push({ path: `${path}${suffix}`, message });
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [{ path, message: "missing" }];
+  }
+  const decode = value as Record<string, unknown>;
+
+  for (const field of CC_TRACE_REQUIRED_NUMERIC_FIELDS) {
+    if (
+      typeof decode[field] !== "number" ||
+      !Number.isFinite(decode[field] as number)
+    ) {
+      push(`.${field}`, "must be a finite number");
+    }
+  }
+  if (
+    decode.imagesExpected !== undefined &&
+    typeof decode.imagesExpected !== "boolean"
+  ) {
+    push(".imagesExpected", "must be a boolean when present");
+  }
+
+  const provenance = decode.provenance;
+  if (
+    provenance !== undefined &&
+    provenance !== "cc-trace" &&
+    provenance !== "canvas-texture-bridge"
+  ) {
+    push(
+      ".provenance",
+      'must be "cc-trace" or "canvas-texture-bridge" when present',
+    );
+  }
+
+  if (provenance === "canvas-texture-bridge") {
+    for (const field of BRIDGE_TRACE_NUMERIC_FIELDS) {
+      if (
+        typeof decode[field] !== "number" ||
+        !Number.isFinite(decode[field] as number)
+      ) {
+        push(`.${field}`, "must be a finite number");
+      }
+    }
+    if (decode.source !== "canvas.textureBridge.window") {
+      push(
+        ".source",
+        'must be "canvas.textureBridge.window" for canvas-texture-bridge evidence',
+      );
+    }
+    if (decode.codecSource !== null) {
+      push(
+        ".codecSource",
+        "must be null: canvas-texture-bridge measures capture lifecycle, not codec source",
+      );
+    }
+    if (decode.cacheFamily !== "unknown") {
+      push(
+        ".cacheFamily",
+        'must be "unknown": bridge counters are not a Chrome decode-cache-family observation',
+      );
+    }
+    if (decode.imagesExpected !== true) {
+      push(
+        ".imagesExpected",
+        "must be true: the scene is image-bearing even though the bridge did not measure trace decode tasks",
+      );
+    }
+    for (const field of BRIDGE_TRACE_NUMERIC_FIELDS) {
+      if (decode[field] !== 0) {
+        push(
+          `.${field}`,
+          "must be 0 for canvas-texture-bridge; do not map bridge capture/upload counters into cc-trace metrics",
+        );
+      }
+    }
+    issues.push(
+      ...validateBridgeWindow(decode.bridgeWindow, `${path}.bridgeWindow`),
+    );
+    return issues;
+  }
+
+  // No provenance is deliberately the old contract. Existing reports retain the strict cc-trace
+  // rule rather than acquiring a way to smuggle an unmeasured zero through a new optional field.
+  // Existing Couch reports carry the trace event-family labels here (for example,
+  // `ImageDecodeTask` / `Decode Image`). They remain legal evidence labels on cc-trace; only the
+  // bridge provenance gives these two fields the literal/null meanings above.
+  if (decode.source !== undefined && typeof decode.source !== "string") {
+    push(".source", "must be a string when present");
+  }
+  if (
+    decode.codecSource !== undefined &&
+    decode.codecSource !== null &&
+    typeof decode.codecSource !== "string"
+  ) {
+    push(".codecSource", "must be a string or null when present");
+  }
+  if (decode.bridgeWindow !== undefined) {
+    push(".bridgeWindow", "is only valid for canvas-texture-bridge evidence");
+  }
+  // A browser scenario that paints images CANNOT have decoded nothing. Zero decode almost always
+  // means the cc decode-cache event names drifted (e.g. the GPU path emits GpuImageDecodeCache::*
+  // where the software path emits SoftwareImageDecodeCache::*), and reporting that as "no decode
+  // cost" is the single worst mistake this harness could make.
+  // `imagesExpected: false` is the ONE way a zero here is legitimate: a scenario that paints no
+  // images at all. Absent means true, so every report written before the field existed is still
+  // held to the original rule.
+  if (decode.count === 0 && decode.imagesExpected !== false) {
+    push(
+      ".count",
+      `no decode events matched (cacheFamily=${JSON.stringify(decode.cacheFamily)}) — treat this as UNMEASURED, not fast; re-run \`perf --dump-trace-names\` on this Chrome and update the decode matcher`,
+    );
+  }
+  // `cacheFamily: "unknown"` alone is NOT an error: a mechanism can legitimately decode outside cc's
+  // image-decode cache (`createImageBitmap` does). It only indicts the matcher when nothing was
+  // measured at all, which the `count === 0` check covers.
+  return issues;
+}
+
+function validateBridgeWindow(value: unknown, path: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const push = (suffix: string, message: string) =>
+    issues.push({ path: `${path}${suffix}`, message });
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [
+      {
+        path,
+        message:
+          "required for canvas-texture-bridge: complete marker-window counter deltas prove the measured zero",
+      },
+    ];
+  }
+  const window = value as Record<string, unknown>;
+  if (window.source !== "canvas.textureBridge.window") {
+    push(".source", 'must be exactly "canvas.textureBridge.window"');
+  }
+  if (
+    typeof window.instanceId !== "number" ||
+    !Number.isFinite(window.instanceId) ||
+    !Number.isInteger(window.instanceId) ||
+    window.instanceId <= 0
+  ) {
+    push(
+      ".instanceId",
+      "must be the positive integer shared renderer instance id from both marker-window samples",
+    );
+  }
+  if (
+    typeof window.sampleWindowMs !== "number" ||
+    !Number.isFinite(window.sampleWindowMs) ||
+    window.sampleWindowMs <= 0
+  ) {
+    push(".sampleWindowMs", "must be a finite number > 0");
+  }
+  for (const field of BRIDGE_WINDOW_COUNTERS) {
+    if (
+      typeof window[field] !== "number" ||
+      !Number.isFinite(window[field] as number) ||
+      (window[field] as number) < 0
+    ) {
+      push(`.${field}`, "must be a finite number >= 0");
+    }
+  }
+  return issues;
+}
+
+/** Absent is deliberately the legacy `cc-trace` contract. */
+function decodeProvenanceFromMetrics(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const decode = (value as Record<string, unknown>).decode;
+  if (!decode || typeof decode !== "object" || Array.isArray(decode)) {
+    return undefined;
+  }
+  return (decode as Record<string, unknown>).provenance ?? "cc-trace";
 }
 
 /**
@@ -1187,6 +1376,42 @@ export function medianOf(values: number[]): number {
     : sorted[mid];
 }
 
+function medianBridgeWindow(
+  windows: CanvasTextureBridgeWindow[],
+): CanvasTextureBridgeWindow {
+  for (const [index, window] of windows.entries()) {
+    if (
+      validateBridgeWindow(window, `runs[${index}].decode.bridgeWindow`).length
+    ) {
+      throw new Error(
+        "medianMetrics: canvas-texture-bridge run has invalid bridgeWindow evidence",
+      );
+    }
+  }
+  const pick = (fn: (window: CanvasTextureBridgeWindow) => number): number =>
+    Number(medianOf(windows.map(fn)).toPrecision(4));
+  const representative = windows[Math.floor(windows.length / 2)];
+  return {
+    source: "canvas.textureBridge.window",
+    // A renderer is expected to remount between repeats. This id is retained only as the
+    // same-instance evidence for the representative marker pair, never medianed as a number.
+    instanceId: representative.instanceId,
+    sampleWindowMs: pick((window) => window.sampleWindowMs),
+    pageDecodes: pick((window) => window.pageDecodes),
+    // Failed captures and fallback element uploads are hazards: one dirty repeat must stay visible.
+    pageDecodeFailed: Math.max(
+      ...windows.map((window) => window.pageDecodeFailed),
+    ),
+    pageDecodeMs: pick((window) => window.pageDecodeMs),
+    pageOwnedUploads: pick((window) => window.pageOwnedUploads),
+    pageElementUploads: Math.max(
+      ...windows.map((window) => window.pageElementUploads),
+    ),
+    uploads: pick((window) => window.uploads),
+    uploadMs: pick((window) => window.uploadMs),
+  };
+}
+
 /**
  * Median across repeats, field by field. MEDIANS, not means: one thermally-throttled or
  * GC-interrupted repeat should not move the reported number.
@@ -1228,6 +1453,38 @@ export function medianMetrics(runs: ReportMetrics[]): ReportMetrics {
           ),
         );
   const representative = runs[Math.floor(runs.length / 2)];
+  const provenance = representative.decode.provenance ?? "cc-trace";
+  if (
+    runs.some((run) => (run.decode.provenance ?? "cc-trace") !== provenance)
+  ) {
+    throw new Error(
+      "medianMetrics: cannot combine cc-trace and canvas-texture-bridge decode evidence",
+    );
+  }
+  const bridgeWindow =
+    provenance === "canvas-texture-bridge"
+      ? medianBridgeWindow(
+          runs.map((run) => {
+            if (!run.decode.bridgeWindow) {
+              throw new Error(
+                "medianMetrics: canvas-texture-bridge run is missing bridgeWindow evidence",
+              );
+            }
+            return run.decode.bridgeWindow;
+          }),
+        )
+      : undefined;
+  const decodeEvidence =
+    provenance === "canvas-texture-bridge"
+      ? {
+          provenance,
+          source: "canvas.textureBridge.window" as const,
+          codecSource: null,
+          bridgeWindow,
+        }
+      : representative.decode.provenance === "cc-trace"
+        ? { provenance: "cc-trace" as const }
+        : {};
   return {
     initialRenderMs: pick((r) => r.initialRenderMs),
     readyMs: pick((r) => r.readyMs),
@@ -1264,6 +1521,7 @@ export function medianMetrics(runs: ReportMetrics[]): ReportMetrics {
       imageKey: representative.decode.imageKey,
       cacheFamily: representative.decode.cacheFamily,
       imagesExpected: representative.decode.imagesExpected,
+      ...decodeEvidence,
     },
     paint: {
       count: pick((r) => r.paint.count),
