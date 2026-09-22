@@ -3667,6 +3667,112 @@ text = "[center][color=#f6c453][b]Title[/b][/color]\\n[i]Body[/i] [wave]wavy[/wa
     expect(text?.html).toContain("godot-rich-effect-wave");
   });
 
+  it("resolves [rainbow]'s arguments into the custom properties its rule reads", () => {
+    const scene = parseGodotTextScene(`
+[gd_scene load_steps=1 format=3]
+[node name="Root" type="Control"]
+offset_right = 240
+offset_bottom = 100
+[node name="Text" type="RichTextLabel" parent="."]
+offset_right = 240
+offset_bottom = 100
+bbcode_enabled = true
+text = "[rainbow freq=0.3 sat=0.8 val=1]hue[/rainbow]"
+`);
+    const text = renderSceneToHtmlModel(scene).nodes.find(
+      (node) => node.path === "Text",
+    );
+    // freq 0.3 -> one turn every 1/0.3 s.
+    expect(text?.html).toContain("--godot-rich-rainbow-duration: 3.333s");
+    // sat 0.8 / val 1 through the HSV->HSL identity: l = 1*(1 - 0.4), s = (1 - 0.6)/0.4.
+    expect(text?.html).toContain("--godot-rich-rainbow-s: 100%");
+    expect(text?.html).toContain("--godot-rich-rainbow-l: 60%");
+    // The stagger is the glyph advance over 50 px/s, and does NOT move with freq.
+    expect(text?.html).toContain("--godot-rich-rainbow-char-delay: -0.2s");
+  });
+
+  it("gives a bare [rainbow] Godot's own defaults", () => {
+    const scene = parseGodotTextScene(`
+[gd_scene load_steps=1 format=3]
+[node name="Root" type="Control"]
+offset_right = 240
+offset_bottom = 100
+[node name="Text" type="RichTextLabel" parent="."]
+offset_right = 240
+offset_bottom = 100
+bbcode_enabled = true
+text = "[rainbow]hue[/rainbow]"
+`);
+    const text = renderSceneToHtmlModel(scene).nodes.find(
+      (node) => node.path === "Text",
+    );
+    // freq 1, sat 0.8, val 0.8: l = 0.8*0.6 = 0.48, s = (0.8 - 0.48)/0.48.
+    expect(text?.html).toContain("--godot-rich-rainbow-duration: 1s");
+    expect(text?.html).toContain("--godot-rich-rainbow-s: 66.667%");
+    expect(text?.html).toContain("--godot-rich-rainbow-l: 48%");
+  });
+
+  it("stages the rainbow sweep at every 60 degrees, not just its endpoints", () => {
+    // A two-stop `hsl(0 …)` -> `hsl(360 …)` animation is a no-op: `color` computes to an sRGB triple before it
+    // interpolates and both endpoints compute to the same one. The intermediate stops are what make it sweep.
+    for (const hue of [60, 120, 180, 240, 300]) {
+      expect(godotSceneBaseCss).toContain(
+        `${hue}deg var(--godot-rich-rainbow-s, 80%)`,
+      );
+    }
+  });
+
+  it("applies BOTH of two nested effects, not just the inner one", () => {
+    // STS2 writes exactly this: a hue sweep inside a wave. Applying only the innermost dropped the wave.
+    const scene = parseGodotTextScene(`
+[gd_scene load_steps=1 format=3]
+[node name="Root" type="Control"]
+offset_right = 240
+offset_bottom = 100
+[node name="Text" type="RichTextLabel" parent="."]
+offset_right = 240
+offset_bottom = 100
+bbcode_enabled = true
+text = "[wave][rainbow freq=0.3]petals[/rainbow][/wave]"
+`);
+    const text = renderSceneToHtmlModel(scene).nodes.find(
+      (node) => node.path === "Text",
+    );
+    expect(text?.html).toContain("godot-rich-effect-wave");
+    expect(text?.html).toContain("godot-rich-effect-rainbow");
+    // Innermost first, so the wave's rule still reaches the characters through a descendant selector…
+    expect(text?.html).toMatch(
+      /godot-rich-effect-wave[^>]*>\s*<span[^>]*godot-rich-effect-rainbow/,
+    );
+    // …and there is still exactly ONE element per glyph, which is what the `--i` stagger depends on.
+    expect([
+      ...(text?.html ?? "").matchAll(/class="godot-rich-char"/g),
+    ]).toHaveLength(6 * 4); // "petals", once per layer
+  });
+
+  it("indexes each effect region's characters from zero", () => {
+    const scene = parseGodotTextScene(`
+[gd_scene load_steps=1 format=3]
+[node name="Root" type="Control"]
+offset_right = 240
+offset_bottom = 100
+[node name="Text" type="RichTextLabel" parent="."]
+offset_right = 240
+offset_bottom = 100
+bbcode_enabled = true
+text = "[wave]ab[/wave] cd [wave]ef[/wave]"
+`);
+    const text = renderSceneToHtmlModel(scene).nodes.find(
+      (node) => node.path === "Text",
+    );
+    // Four effect characters, two regions: 0,1 then 0,1 — never 0,1,2,3.
+    const indices = [...(text?.html ?? "").matchAll(/--i: (\d+)/g)].map(
+      (match) => match[1],
+    );
+    expect(indices.length % 4).toBe(0); // the html is stamped once per layer
+    expect(indices.slice(0, 4)).toEqual(["0", "1", "0", "1"]);
+  });
+
   it("groups a [center] region with inline tags into one alignment block per layer", () => {
     const scene = parseGodotTextScene(`
 [gd_scene load_steps=1 format=3]

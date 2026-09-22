@@ -390,6 +390,9 @@ interface RichTextEffect {
   perChar: boolean;
   perWord: boolean;
   className?: string;
+  // Inline custom properties the effect's CSS reads, resolved from the tag's own arguments (today:
+  // `[rainbow freq= sat= val= speed=]`). Absent = the base stylesheet's fallbacks apply.
+  vars?: Record<string, string>;
 }
 
 interface RichTextTag {
@@ -430,6 +433,80 @@ export const GODOT_BBCODE_BUILT_IN_EFFECTS: Readonly<
   pulse: Object.freeze({ perChar: false, perWord: false }),
   fade: Object.freeze({ perChar: true, perWord: false }),
 });
+
+// ONE SECOND OF THE RAINBOW SWEEP IS 50 PX OF THE LINE. Godot offsets each glyph's hue by its own horizontal
+// position — `freq * (elapsed * speed + x / 50)` turns — so the stagger between two neighbours is their ADVANCE,
+// not their index. A CSS `animation-delay` can only be indexed, so it approximates that with a representative
+// advance: 10 px, which is body text at the size these effects are authored for. A host that knows its real
+// metrics overrides `--godot-rich-rainbow-char-delay` on the label. Note the value is independent of `freq`:
+// a faster sweep shortens the cycle and the delay in exactly the same proportion.
+const RAINBOW_CHAR_ADVANCE_PX = 10;
+const RAINBOW_PX_PER_SECOND = 50;
+// A sweep this slow is indistinguishable from a static colour, and it is where `freq`/`speed` of 0 land (Godot
+// pins the hue there). Capping keeps the animation valid rather than emitting `Infinity s`.
+const RAINBOW_MAX_DURATION_S = 3600;
+
+// The arguments of one built-in effect tag, as the custom properties its rule in `base-css` reads. Returns
+// undefined for every tag whose CSS takes no parameters, which is all of them but `[rainbow]` today.
+function builtInEffectVars(
+  name: string,
+  args: string | undefined,
+): Record<string, string> | undefined {
+  return name === "rainbow" ? rainbowEffectVars(args) : undefined;
+}
+
+// `[rainbow freq= speed= sat= val=]` -> cycle length, per-character delay, and the two colour stops.
+//
+// THE COLOUR IS AN APPROXIMATION AND IS LABELLED ONE. Godot sweeps the hue in OKHSV (`Color::from_ok_hsv`),
+// which is perceptually uniform; this emits the sRGB-HSL twin of the same (saturation, value) pair, because a
+// keyframe that browsers can interpolate has to be a plain `<color>`. Same hue circle, same vividness knob; the
+// difference is that sRGB's yellow reads brighter and its blue darker than Godot's.
+function rainbowEffectVars(
+  args: string | undefined,
+): Record<string, string> | undefined {
+  const frequency = Math.max(0, bbcodeOptionNumber(args, "freq") ?? 1);
+  const speed = bbcodeOptionNumber(args, "speed") ?? 1;
+  const saturation = clampUnit(bbcodeOptionNumber(args, "sat") ?? 0.8);
+  const value = clampUnit(bbcodeOptionNumber(args, "val") ?? 0.8);
+  const turnsPerSecond = frequency * speed;
+  const duration =
+    turnsPerSecond > 0
+      ? Math.min(1 / turnsPerSecond, RAINBOW_MAX_DURATION_S)
+      : RAINBOW_MAX_DURATION_S;
+  // HSV -> HSL, the standard identity: the same colour named in the space CSS can write.
+  const lightness = value * (1 - saturation / 2);
+  const hslSaturation =
+    lightness <= 0 || lightness >= 1
+      ? 0
+      : (value - lightness) / Math.min(lightness, 1 - lightness);
+  return {
+    "--godot-rich-rainbow-duration": `${round(duration)}s`,
+    "--godot-rich-rainbow-char-delay": `${round(
+      -RAINBOW_CHAR_ADVANCE_PX / (RAINBOW_PX_PER_SECOND * (speed || 1)),
+    )}s`,
+    "--godot-rich-rainbow-s": `${round(hslSaturation * 100)}%`,
+    "--godot-rich-rainbow-l": `${round(lightness * 100)}%`,
+  };
+}
+
+/** One `key=value` from a bbcode tag's space-separated argument list, as a finite number. */
+function bbcodeOptionNumber(
+  args: string | undefined,
+  key: string,
+): number | undefined {
+  if (!args) {
+    return undefined;
+  }
+  const match = new RegExp(`(?:^|\\s)${key}\\s*=\\s*([^\\s\\]]+)`, "i").exec(
+    args,
+  );
+  const parsed = match ? Number.parseFloat(match[1] ?? "") : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function clampUnit(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
+}
 
 const SIMPLE_RICH_TEXT_TAGS: Record<string, RichTextTag["type"]> = {
   b: "bold",
@@ -574,6 +651,15 @@ function richTextHtml(value: string, ctx: RichTextRenderContext = {}): string {
         popRichTextStyle(styleStack, tag.type, tag.id);
         index = end + 1;
       } else {
+        // Godot indexes an effect's characters from the start of its OWN tagged region, so a label carrying two
+        // effect regions staggers each from zero rather than continuing one count across both. The buffer before
+        // this tag was already flushed above, so the runs already emitted keep the indices they were given.
+        if (
+          tag.type === "effect" &&
+          !styleStack.some((open) => open.type === "effect")
+        ) {
+          charCounter.value = 0;
+        }
         styleStack.push({
           type: tag.type,
           id: tag.id,
@@ -795,7 +881,13 @@ function parseRichTextTag(
       close,
       type: "effect",
       id: name,
-      effect: { name, perChar: spec.perChar, perWord: spec.perWord },
+      effect: {
+        name,
+        perChar: spec.perChar,
+        perWord: spec.perWord,
+        // A closing tag carries no arguments; it only has to match the open on type + id.
+        vars: close ? undefined : builtInEffectVars(name, rest),
+      },
     };
   }
 
@@ -1088,7 +1180,7 @@ function flushRichText(
     return;
   }
   const style = currentRichTextStyle(styleStack);
-  let base = style.effect?.perChar
+  let base = style.effects.some((effect) => effect.perChar)
     ? richTextCharWordHtml(text, charCounter)
     : escapeHtml(text);
   if (style.code) {
@@ -1130,8 +1222,17 @@ function flushRichText(
   if (style.url) {
     html = `<span class="godot-rich-url" data-godot-bbcode-url="${escapeAttribute(style.url)}" style="text-decoration: underline">${html}</span>`;
   }
-  if (style.effect) {
-    const effect = style.effect;
+  // ONE SPAN PER OPEN EFFECT, innermost first, because effects NEST and Godot runs all of them. STS2 writes
+  // `[sine][rainbow …]…[/rainbow][/sine]` — a wave AND a hue sweep on the same characters — and emitting only
+  // the innermost dropped the outer one from the DOM entirely, so no consumer could even see it was there.
+  //
+  // WHAT NESTING DOES AND DOES NOT BUY, stated plainly because the difference is easy to assume away: each
+  // effect's rules can now FIND the characters through their own class. It does not make two of them COMPOSE.
+  // Both rules land on the same one element per glyph — which is what the `--i` stagger and the layout depend
+  // on — so `animation` resolves by specificity and exactly one wins, whatever properties the two animate. For
+  // the case above, the more specific built-in rainbow rule wins and the wave does not play. Composing would
+  // need one element per effect per glyph; that is a bigger change than the case has earned so far.
+  for (const effect of style.effects) {
     const className = [
       "godot-rich-effect",
       `godot-rich-effect-${safeClassSegment(effect.name)}`,
@@ -1139,7 +1240,10 @@ function flushRichText(
     ]
       .filter(Boolean)
       .join(" ");
-    html = `<span class="${escapeAttribute(className)}" data-godot-bbcode-effect="${escapeAttribute(effect.name)}">${html}</span>`;
+    const vars = effect.vars
+      ? ` style="${escapeAttribute(inlineCssText(effect.vars))}"`
+      : "";
+    html = `<span class="${escapeAttribute(className)}" data-godot-bbcode-effect="${escapeAttribute(effect.name)}"${vars}>${html}</span>`;
   }
   // Alignment is applied at the paragraph level (richTextHtml/renderAlignParagraph),
   // not per run, so a `[center]` region wraps as one block instead of forcing each
@@ -1194,7 +1298,8 @@ function currentRichTextStyle(styleStack: RichTextTag[]): {
   url?: string;
   fontSize?: string;
   styleCss?: Record<string, string>;
-  effect?: RichTextEffect;
+  /** Every open effect, INNERMOST FIRST — see the emission loop in `flushRichText`. */
+  effects: RichTextEffect[];
 } {
   return {
     bold: styleStack.some((tag) => tag.type === "bold"),
@@ -1209,8 +1314,20 @@ function currentRichTextStyle(styleStack: RichTextTag[]): {
     url: lastRichTextTag(styleStack, "url")?.value,
     fontSize: lastRichTextTag(styleStack, "font_size")?.value,
     styleCss: lastRichTextTag(styleStack, "style")?.css,
-    effect: lastRichTextTag(styleStack, "effect")?.effect,
+    effects: openRichTextEffects(styleStack),
   };
+}
+
+/** Every open effect frame, INNERMOST FIRST, so the emission loop wraps from the inside out. */
+function openRichTextEffects(styleStack: RichTextTag[]): RichTextEffect[] {
+  const effects: RichTextEffect[] = [];
+  for (let index = styleStack.length - 1; index >= 0; index -= 1) {
+    const effect = styleStack[index]?.effect;
+    if (styleStack[index]?.type === "effect" && effect) {
+      effects.push(effect);
+    }
+  }
+  return effects;
 }
 
 function lastRichTextTag(

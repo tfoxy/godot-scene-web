@@ -204,13 +204,25 @@ export const godotSceneBaseCss = `
   75% { transform: translate(0, -0.12em); }
   100% { transform: translate(0.12em, 0); }
 }
+/* RAINBOW. Every number here arrives as a custom property, written per span by \`text.ts\` from the tag's own
+   \`freq\`/\`speed\`/\`sat\`/\`val\` (Godot's defaults included), so the sweep matches the tag rather than one hard-coded
+   look. The fallbacks are the pre-argument values, for markup that did not come through that parser.
+
+   SIX SEGMENTS, NOT TWO. A two-keyframe \`hsl(0 …)\` -> \`hsl(360 …)\` animation does not sweep: \`color\` computes to
+   an sRGB triple before it interpolates, and those two endpoints compute to the SAME triple, so the run just sat
+   at one hue. Naming each 60 degrees gives the interpolator six real segments to walk. */
 .godot-scene-node.godot-type-RichTextLabel .godot-rich-fill .godot-rich-effect-rainbow .godot-rich-char {
-  animation: godot-rich-rainbow 4s linear infinite;
-  animation-delay: calc(var(--i, 0) * -0.08s);
+  animation: godot-rich-rainbow var(--godot-rich-rainbow-duration, 4s) linear infinite;
+  animation-delay: calc(var(--i, 0) * var(--godot-rich-rainbow-char-delay, -0.08s));
 }
 @keyframes godot-rich-rainbow {
-  0% { color: hsl(0, 80%, 65%); }
-  100% { color: hsl(360, 80%, 65%); }
+  0%     { color: hsl(0deg var(--godot-rich-rainbow-s, 80%) var(--godot-rich-rainbow-l, 65%)); }
+  16.67% { color: hsl(60deg var(--godot-rich-rainbow-s, 80%) var(--godot-rich-rainbow-l, 65%)); }
+  33.33% { color: hsl(120deg var(--godot-rich-rainbow-s, 80%) var(--godot-rich-rainbow-l, 65%)); }
+  50%    { color: hsl(180deg var(--godot-rich-rainbow-s, 80%) var(--godot-rich-rainbow-l, 65%)); }
+  66.67% { color: hsl(240deg var(--godot-rich-rainbow-s, 80%) var(--godot-rich-rainbow-l, 65%)); }
+  83.33% { color: hsl(300deg var(--godot-rich-rainbow-s, 80%) var(--godot-rich-rainbow-l, 65%)); }
+  100%   { color: hsl(360deg var(--godot-rich-rainbow-s, 80%) var(--godot-rich-rainbow-l, 65%)); }
 }
 .godot-scene-node.godot-type-RichTextLabel .godot-rich-effect-pulse {
   animation: godot-rich-pulse 1s ease-in-out infinite;
