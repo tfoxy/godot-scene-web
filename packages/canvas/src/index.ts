@@ -153,6 +153,15 @@ export type {
 } from "./present";
 export { createCanvasStage, STAGE_CONTEXT_ATTRIBUTES } from "./present";
 export type {
+  CanvasProfileEvent,
+  CanvasProfileIdentity,
+  CanvasProfileKind,
+  CanvasProfileMetric,
+  CanvasProfileOutcome,
+  CanvasProfileReceipt,
+} from "./profile";
+export { CanvasProfileCollector, validateCanvasProfile } from "./profile";
+export type {
   CommandMask,
   ReplayMaskScratch,
   ReplaySelectionOptions,
@@ -164,6 +173,14 @@ export {
   maxPartialReplayCommands,
   RETAINED_MAX_REPLAY_FRACTION,
 } from "./replay";
+export type {
+  RetainedRangeCache,
+  RetainedRangeCacheOptions,
+  RetainedRangeCacheStats,
+  RetainedRangeCandidate,
+  RetainedRangeSubstitutionPlan,
+} from "./retained-range-cache";
+export { createRetainedRangeCache, RETAINED_RANGE_DEFAULTS } from "./retained-range-cache";
 export type {
   RetainedReplayOptions,
   RetainedReplayRegion,

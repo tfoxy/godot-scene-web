@@ -156,6 +156,15 @@ function runOf(slots: readonly number[], pixelsPerEm = 32) {
 }
 
 describe("slot ids", () => {
+  it("reports encoded ink bounds in local y-down coordinates", () => {
+    const { pass, face } = setup();
+    const a = pass.slotFor(face, 65),
+      b = pass.slotFor(face, 66);
+    const run = runOf([a, b], 20);
+    expect(pass.inkBounds(run)).toEqual({ x: 0, y: 86, width: 22, height: 14 });
+    run.slots[1] = 99999;
+    expect(pass.inkBounds(run)).toBeNull();
+  });
   it("are dense, stable and uploaded exactly once", () => {
     const { pass, face, font } = setup();
     const a = pass.slotFor(face, 7);

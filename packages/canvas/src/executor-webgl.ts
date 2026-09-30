@@ -20,7 +20,10 @@ import {
   type ScissorBox,
 } from "./clip-stack";
 import { colorMatricesEqual, IDENTITY_COLOR_MATRIX } from "./color";
-import type { CompiledDrawList } from "./compiled-draw-list";
+import type {
+  CompiledDrawList,
+  CompiledRefreshResult,
+} from "./compiled-draw-list";
 import type { DamageRect } from "./damage";
 import {
   BLEND_ADD,
@@ -55,6 +58,15 @@ import {
 import { expandPolyline, POLYLINE_QUAD_FLOATS } from "./polyline";
 import type { StageProjection } from "./present";
 import type { CommandMask } from "./replay";
+import {
+  type RetainedRangePlanStateInternal,
+  type RetainedRangeSubstitutionPlan,
+  retainedRangePlanFallback,
+  retainedRangePlanPresented,
+  retainedRangePlanState,
+  retainedRangeRasterized,
+  validateRetainedRangePlan,
+} from "./retained-range-cache";
 import type { CanvasTextureHandle } from "./textures";
 
 /**
@@ -170,6 +182,20 @@ export function blendStateFor(blend: BlendMode): BlendState {
 export interface ExecutorStats {
   /** Draw-list commands read. */
   commands: number;
+  /** Logical source commands represented by this presented frame. */
+  logicalCommands: number;
+  /** Source commands physically executed, including cold retained rebuilds. */
+  liveCommands: number;
+  /** Logical commands replaced inline by retained composites. */
+  substitutedCommands: number;
+  /** Retained textures composited at their original painter positions. */
+  retainedComposites: number;
+  /** Cold or invalid retained entries rasterized before presentation. */
+  retainedRasterizations: number;
+  /** Plans which declined atomically to a complete live frame. */
+  retainedFallbacks: number;
+  retainedRasterPixels: number;
+  retainedCompositePixels: number;
   /** Quad instances pushed, including expanded nine-patch bands and stroke quads. */
   quads: number;
   /** `drawArraysInstanced` calls — the number this executor exists to keep small. */
@@ -238,7 +264,9 @@ export interface ExecutorStats {
   reusedSelections: number;
   reusedBatches: number;
   compiledGpuFullUploads: number;
+  compiledGpuFullUploadBytes: number;
   compiledGpuRangeUploads: number;
+  compiledGpuRangeUploadBytes: number;
   compiledCachedDrawCalls: number;
 }
 
@@ -296,6 +324,13 @@ export interface ExecuteOptions {
   commandMask?: CommandMask;
   /** Opt-in retained plan. Omitted direct frames do no compilation work. */
   compiled?: CompiledDrawList<ExecutorTexture | null>;
+  /**
+   * A refresh the caller already consumed for this frame. When supplied,
+   * execution shares this coherent delta and never calls `compiled.refresh()`.
+   */
+  compiledRefresh?: CompiledRefreshResult;
+  /** Opaque, cache-issued inline range substitutions. */
+  substitutions?: RetainedRangeSubstitutionPlan;
 }
 
 export interface CanvasExecutor {
@@ -604,6 +639,14 @@ export function createCanvasExecutor(
 
   const stats: ExecutorStats = {
     commands: 0,
+    logicalCommands: 0,
+    liveCommands: 0,
+    substitutedCommands: 0,
+    retainedComposites: 0,
+    retainedRasterizations: 0,
+    retainedFallbacks: 0,
+    retainedRasterPixels: 0,
+    retainedCompositePixels: 0,
     quads: 0,
     batches: 0,
     textureBinds: 0,
@@ -639,6 +682,7 @@ export function createCanvasExecutor(
       effects: 0,
       meshes: 0,
       compiled: 0,
+      retained: 0,
       end: 0,
     },
     compiledPlanBuilds: 0,
@@ -647,7 +691,9 @@ export function createCanvasExecutor(
     reusedSelections: 0,
     reusedBatches: 0,
     compiledGpuFullUploads: 0,
+    compiledGpuFullUploadBytes: 0,
     compiledGpuRangeUploads: 0,
+    compiledGpuRangeUploadBytes: 0,
     compiledCachedDrawCalls: 0,
   };
 
@@ -670,6 +716,7 @@ export function createCanvasExecutor(
   const glyphRunViewPool: GlyphsView[] = [];
   const glyphRunViews: GlyphsView[] = [];
   const texturedMeshView = createTexturedMeshView(64, 96);
+  const retainedCompositeTransform = new Float32Array([1, 0, 0, 1, 0, 0]);
   const bands: NinePatchBand[] = createNinePatchBands();
   let strokeQuads = new Float32Array(256 * POLYLINE_QUAD_FLOATS);
   // `x, y, u, v` per vertex, transformed into design space before upload. It is
@@ -713,7 +760,7 @@ export function createCanvasExecutor(
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    ownedWhite = { texture, width: 1, height: 1 };
+    ownedWhite = { texture, width: 1, height: 1, revision: 1 };
     return ownedWhite;
   }
 
@@ -1056,6 +1103,7 @@ export function createCanvasExecutor(
         gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
         gl.bufferData(gl.ARRAY_BUFFER, run.instances, gl.DYNAMIC_DRAW);
         stats.compiledGpuFullUploads += 1;
+        stats.compiledGpuFullUploadBytes += run.instances.byteLength;
         runs.push(run);
         runsAt[run.start] = run;
         for (let item = 0; item < run.commands.length; item += 1) {
@@ -1128,6 +1176,7 @@ export function createCanvasExecutor(
         INSTANCE_FLOATS,
       );
       stats.compiledGpuRangeUploads += 1;
+      stats.compiledGpuRangeUploadBytes += INSTANCE_FLOATS * 4;
       return true;
     };
     for (const index of changedCommands) {
@@ -1696,6 +1745,7 @@ export function createCanvasExecutor(
     projection: StageProjection,
     current: Program,
     commandMask: CommandMask | undefined,
+    stopBeforeIndex: number,
   ): number {
     if (!glyphPass || !options.batchAdjacentGlyphRuns || !glyphPass.drawRuns) {
       emitGlyphsCommand(list, firstIndex, projection, current);
@@ -1703,7 +1753,7 @@ export function createCanvasExecutor(
     }
 
     let count = 0;
-    for (let index = firstIndex; index < list.count; index += 1) {
+    for (let index = firstIndex; index < Math.min(list.count, stopBeforeIndex); index += 1) {
       // A mask gap is a painter-order boundary for retained replay: the skipped command has not
       // been selected for this dirty region, so do not silently make two remaining commands look
       // adjacent. Clips/masks and every other kind fail this same exact test.
@@ -1841,7 +1891,118 @@ export function createCanvasExecutor(
     return succeeded;
   }
 
-  return {
+  function resetStats(): void {
+    stats.commands = 0;
+    stats.logicalCommands = 0;
+    stats.liveCommands = 0;
+    stats.substitutedCommands = 0;
+    stats.retainedComposites = 0;
+    stats.retainedRasterizations = 0;
+    stats.retainedFallbacks = 0;
+    stats.retainedRasterPixels = 0;
+    stats.retainedCompositePixels = 0;
+    stats.quads = 0;
+    stats.batches = 0;
+    stats.textureBinds = 0;
+    stats.scissorChanges = 0;
+    stats.blendChanges = 0;
+    stats.ninePatches = 0;
+    stats.ninePatchQuads = 0;
+    stats.polylines = 0;
+    stats.polylineQuads = 0;
+    stats.texturedMeshes = 0;
+    stats.texturedMeshTriangles = 0;
+    stats.texturedMeshDrawCalls = 0;
+    stats.glyphRuns = 0;
+    stats.glyphs = 0;
+    stats.glyphDrawCalls = 0;
+    stats.glyphRunBatches = 0;
+    stats.glyphRunBatchFallbacks = 0;
+    stats.glyphRunsDropped = 0;
+    stats.screenEffects = 0;
+    stats.screenEffectFailures = 0;
+    stats.externalEffects = 0;
+    stats.externalEffectFailures = 0;
+    stats.rotatedClipFallbacks = 0;
+    stats.unbalancedClipPops = 0;
+    stats.unknownCommands = 0;
+    stats.maxBatchQuads = 0;
+    for (const reason of Object.keys(stats.flushes) as BatchFlushReason[]) {
+      stats.flushes[reason] = 0;
+    }
+    stats.compiledPlanBuilds = 0;
+    stats.compiledPlanReuses = 0;
+    stats.compiledTemplateRangeUpdates = 0;
+    stats.reusedSelections = 0;
+    stats.reusedBatches = 0;
+    stats.compiledGpuFullUploads = 0;
+    stats.compiledGpuFullUploadBytes = 0;
+    stats.compiledGpuRangeUploads = 0;
+    stats.compiledGpuRangeUploadBytes = 0;
+    stats.compiledCachedDrawCalls = 0;
+  }
+
+  const RASTER_ADDITIVE_STATS = [
+    "commands",
+    "liveCommands",
+    "quads",
+    "batches",
+    "textureBinds",
+    "scissorChanges",
+    "blendChanges",
+    "ninePatches",
+    "ninePatchQuads",
+    "polylines",
+    "polylineQuads",
+    "texturedMeshes",
+    "texturedMeshTriangles",
+    "texturedMeshDrawCalls",
+    "glyphRuns",
+    "glyphs",
+    "glyphDrawCalls",
+    "glyphRunBatches",
+    "glyphRunBatchFallbacks",
+    "glyphRunsDropped",
+    "screenEffects",
+    "screenEffectFailures",
+    "externalEffects",
+    "externalEffectFailures",
+    "rotatedClipFallbacks",
+    "unbalancedClipPops",
+    "unknownCommands",
+    "compiledGpuFullUploads",
+    "compiledGpuFullUploadBytes",
+    "compiledGpuRangeUploads",
+    "compiledGpuRangeUploadBytes",
+    "compiledCachedDrawCalls",
+  ] as const;
+
+  interface RasterStatsSnapshot {
+    values: Record<(typeof RASTER_ADDITIVE_STATS)[number], number>;
+    flushes: Record<BatchFlushReason, number>;
+    maxBatchQuads: number;
+  }
+
+  function snapshotRasterStats(): RasterStatsSnapshot {
+    const values = {} as RasterStatsSnapshot["values"];
+    for (const key of RASTER_ADDITIVE_STATS) values[key] = stats[key];
+    return {
+      values,
+      flushes: { ...stats.flushes },
+      maxBatchQuads: stats.maxBatchQuads,
+    };
+  }
+
+  function addRasterStats(snapshot: RasterStatsSnapshot): void {
+    for (const key of RASTER_ADDITIVE_STATS) stats[key] += snapshot.values[key];
+    for (const reason of Object.keys(stats.flushes) as BatchFlushReason[]) {
+      stats.flushes[reason] += snapshot.flushes[reason];
+    }
+    stats.maxBatchQuads = Math.max(stats.maxBatchQuads, snapshot.maxBatchQuads);
+  }
+
+  let executorApi: CanvasExecutor;
+  executorApi = {
     gl,
     stats,
     maxTextureSlots,
@@ -1859,58 +2020,114 @@ export function createCanvasExecutor(
       const current = ensureProgram();
       if (!current) return false;
 
-      stats.commands = 0;
-      stats.quads = 0;
-      stats.batches = 0;
-      stats.textureBinds = 0;
-      stats.scissorChanges = 0;
-      stats.blendChanges = 0;
-      stats.ninePatches = 0;
-      stats.ninePatchQuads = 0;
-      stats.polylines = 0;
-      stats.polylineQuads = 0;
-      stats.texturedMeshes = 0;
-      stats.texturedMeshTriangles = 0;
-      stats.texturedMeshDrawCalls = 0;
-      stats.glyphRuns = 0;
-      stats.glyphs = 0;
-      stats.glyphDrawCalls = 0;
-      stats.glyphRunBatches = 0;
-      stats.glyphRunBatchFallbacks = 0;
-      stats.glyphRunsDropped = 0;
-      stats.screenEffects = 0;
-      stats.screenEffectFailures = 0;
-      stats.externalEffects = 0;
-      stats.externalEffectFailures = 0;
-      stats.rotatedClipFallbacks = 0;
-      stats.unbalancedClipPops = 0;
-      stats.unknownCommands = 0;
-      stats.maxBatchQuads = 0;
-      stats.flushes.textureSlots = 0;
-      stats.flushes.colorMatrices = 0;
-      stats.flushes.blend = 0;
-      stats.flushes.clip = 0;
-      stats.flushes.glyphs = 0;
-      stats.flushes.effects = 0;
-      stats.flushes.meshes = 0;
-      stats.flushes.compiled = 0;
-      stats.flushes.end = 0;
-      stats.compiledPlanBuilds = 0;
-      stats.compiledPlanReuses = 0;
-      stats.compiledTemplateRangeUpdates = 0;
-      stats.reusedSelections = 0;
-      stats.reusedBatches = 0;
-      stats.compiledGpuFullUploads = 0;
-      stats.compiledGpuRangeUploads = 0;
-      stats.compiledCachedDrawCalls = 0;
+      resetStats();
 
-      const compiled =
+      let compiled =
         executeOptions?.compiled?.list === list
           ? executeOptions.compiled
           : undefined;
-      let gpuCache: CachedGpuPlan | null = null;
+      // A caller may use a compiled revision only to validate retained-range
+      // substitutions while deliberately executing live commands without the
+      // compiled GPU buffers. Keep that revision available to the cache gate.
+      let refresh: CompiledRefreshResult | undefined =
+        executeOptions?.compiledRefresh;
       if (compiled) {
-        const refresh = compiled.refresh();
+        const supplied = executeOptions?.compiledRefresh;
+        if (supplied && supplied.contentRevision !== list.contentRevision) {
+          // A stale caller-consumed delta cannot safely update the executor's
+          // GPU plan. Keep the logical frame live instead of consuming a second,
+          // different refresh behind the caller's back.
+          compiled = undefined;
+          refresh = undefined;
+        } else {
+          refresh = supplied ?? compiled.refresh();
+        }
+      }
+
+      let substitutionState: RetainedRangePlanStateInternal | null = null;
+      const requestedSubstitutions = retainedRangePlanState(
+        executeOptions?.substitutions,
+      );
+      if (executeOptions?.substitutions) {
+        if (
+          executeOptions.commandMask ||
+          !requestedSubstitutions ||
+          !validateRetainedRangePlan(
+            requestedSubstitutions,
+            gl,
+            list,
+            projection,
+            refresh,
+          )
+        ) {
+          stats.retainedFallbacks = 1;
+          retainedRangePlanFallback(
+            requestedSubstitutions,
+            executeOptions.commandMask ? "command-mask" : "invalid-plan",
+          );
+        } else {
+          substitutionState = requestedSubstitutions;
+        }
+      }
+
+      const rasterSnapshots: RasterStatsSnapshot[] = [];
+      let retainedRasterizationCount = 0;
+      let retainedRasterPixelCount = 0;
+      if (substitutionState?.entries.some((entry) => entry.needsRaster)) {
+        const destination = gl.getParameter(
+          gl.DRAW_FRAMEBUFFER_BINDING,
+        ) as WebGLFramebuffer | null;
+        let rasterFailed = false;
+        for (const entry of substitutionState.entries) {
+          if (!entry.needsRaster) continue;
+          const indexes = new Array<number>(entry.end - entry.start);
+          for (let offset = 0; offset < indexes.length; offset += 1) {
+            indexes[offset] = entry.start + offset;
+          }
+          const mask: CommandMask = {
+            count: indexes.length,
+            includes(index) {
+              return index >= entry.start && index < entry.end;
+            },
+            indices() {
+              return indexes;
+            },
+          };
+          gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, entry.entry.framebuffer);
+          let rasterized = false;
+          try {
+            rasterized = executorApi.execute(list, entry.rasterProjection, {
+              clear: true,
+              clearColor: [0, 0, 0, 0],
+              commandMask: mask,
+              compiled,
+              compiledRefresh: refresh,
+            });
+          } catch {
+            rasterized = false;
+          }
+          rasterSnapshots.push(snapshotRasterStats());
+          if (!rasterized) {
+            rasterFailed = true;
+            entry.entry.valid = false;
+            entry.entry.pendingReason = "raster-failure";
+            break;
+          }
+          retainedRangeRasterized(substitutionState, entry);
+          retainedRasterizationCount += 1;
+          retainedRasterPixelCount += entry.width * entry.height;
+        }
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, destination);
+        resetStats();
+        if (rasterFailed) {
+          retainedRangePlanFallback(substitutionState, "raster-failure");
+          substitutionState = null;
+          stats.retainedFallbacks = 1;
+        }
+      }
+
+      let gpuCache: CachedGpuPlan | null = null;
+      if (compiled && refresh) {
         stats.compiledPlanBuilds = refresh.rebuilt ? 1 : 0;
         stats.compiledPlanReuses = refresh.rebuilt ? 0 : 1;
         stats.compiledTemplateRangeUpdates = refresh.rangeUpdates;
@@ -1996,12 +2213,61 @@ export function createCanvasExecutor(
       let clipSerial = 0;
       let screenEffectFailed = false;
       const count = list.count;
+      if (executeOptions?.commandMask) {
+        for (let index = 0; index < count; index += 1) {
+          if (executeOptions.commandMask.includes(index))
+            stats.logicalCommands += 1;
+        }
+      } else {
+        stats.logicalCommands = count;
+      }
+      let substitutionIndex = 0;
       for (let index = 0; index < count; index += 1) {
         if (screenEffectFailed) break;
         if (
           executeOptions?.commandMask &&
           !executeOptions.commandMask.includes(index)
         ) {
+          continue;
+        }
+        const substitution = substitutionState?.entries[substitutionIndex];
+        if (substitution && substitution.start === index) {
+          batcher.flush("retained");
+          applyBlend(BLEND_MIX);
+          const framebuffer = projection.toFramebuffer;
+          retainedCompositeTransform[4] =
+            (substitution.left - framebuffer[4]) / framebuffer[0];
+          retainedCompositeTransform[5] =
+            (substitution.top - framebuffer[5]) / framebuffer[3];
+          emitRect(
+            retainedCompositeTransform,
+            0,
+            0,
+            substitution.width / framebuffer[0],
+            substitution.height / framebuffer[3],
+            0,
+            0,
+            substitution.width,
+            substitution.height,
+            substitution.entry.texture,
+            false,
+            // FBO row zero is bottom-up while uploaded source row zero is the
+            // draw list's top. Correct that convention exactly once here.
+            true,
+            1,
+            1,
+            1,
+            1,
+            null,
+            0,
+          );
+          const substituted = substitution.end - substitution.start;
+          stats.substitutedCommands += substituted;
+          stats.retainedComposites += 1;
+          stats.retainedCompositePixels +=
+            substitution.width * substitution.height;
+          index = substitution.end - 1;
+          substitutionIndex += 1;
           continue;
         }
         const cached = executeOptions?.commandMask
@@ -2024,13 +2290,27 @@ export function createCanvasExecutor(
               cachedCount += 1;
             }
           }
+          // A compiled quad run may begin before the next retained interval
+          // and otherwise jump the loop index beyond its inline replacement.
+          // Stop at that painter boundary; the following iteration composites
+          // the retained texture before a later compiled run can resume.
+          if (substitution && substitution.start > index) {
+            while (
+              cachedCount > 0 &&
+              cached.commands[first + cachedCount - 1] >= substitution.start
+            ) {
+              cachedCount -= 1;
+            }
+          }
           batcher.flush("compiled");
           drawCachedRange(cached, first, cachedCount, current);
           stats.commands += cachedCount;
+          stats.liveCommands += cachedCount;
           index = cached.commands[first + cachedCount - 1];
           continue;
         }
         stats.commands += 1;
+        stats.liveCommands += 1;
         switch (list.kindAt(index)) {
           case DRAW_QUAD:
             emitQuadCommand(list, index, compiled);
@@ -2042,13 +2322,20 @@ export function createCanvasExecutor(
             emitPolylineCommand(list, index);
             break;
           case DRAW_GLYPHS:
-            index = emitAdjacentGlyphCommands(
-              list,
-              index,
-              projection,
-              current,
-              executeOptions?.commandMask,
-            );
+            {
+              const firstGlyphIndex = index;
+              index = emitAdjacentGlyphCommands(
+                list,
+                index,
+                projection,
+                current,
+                executeOptions?.commandMask,
+                substitution?.start ?? list.count,
+              );
+              const adjacentCommands = index - firstGlyphIndex;
+              stats.commands += adjacentCommands;
+              stats.liveCommands += adjacentCommands;
+            }
             break;
           case DRAW_TEXTURED_MESH:
             emitTexturedMeshCommand(list, index, projection, current);
@@ -2115,7 +2402,14 @@ export function createCanvasExecutor(
       stats.rotatedClipFallbacks = clipStack.rotatedFallbacks;
       gl.bindVertexArray(null);
       gl.disable(gl.SCISSOR_TEST);
-      return !screenEffectFailed;
+      for (const snapshot of rasterSnapshots) addRasterStats(snapshot);
+      stats.retainedRasterizations = retainedRasterizationCount;
+      stats.retainedRasterPixels = retainedRasterPixelCount;
+      const succeeded = !screenEffectFailed;
+      if (succeeded && substitutionState) {
+        retainedRangePlanPresented(substitutionState);
+      }
+      return succeeded;
     },
 
     invalidate() {
@@ -2153,4 +2447,5 @@ export function createCanvasExecutor(
       }
     },
   };
+  return executorApi;
 }

@@ -139,6 +139,7 @@ export function createFakeGl(options: FakeGlOptions = {}): FakeGl {
     STATIC_DRAW: 0x88e4,
     TEXTURE0: 0x84c0,
     TEXTURE_2D: 0x0de1,
+    TEXTURE_BINDING_2D: 0x8069,
     TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_MIN_FILTER: 0x2801,
     TEXTURE_WRAP_S: 0x2802,
@@ -173,6 +174,8 @@ export function createFakeGl(options: FakeGlOptions = {}): FakeGl {
       )
         return drawFramebuffer;
       if (pname === constants.READ_FRAMEBUFFER_BINDING) return readFramebuffer;
+      if (pname === constants.TEXTURE_BINDING_2D)
+        return boundTextures[activeUnit] ?? null;
       if (pname === constants.UNPACK_ALIGNMENT)
         return pixelStore.get(constants.UNPACK_ALIGNMENT) ?? 4;
       // BOOLEANS, and read back as booleans, because that is what a real context answers for these
