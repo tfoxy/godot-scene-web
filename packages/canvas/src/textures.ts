@@ -51,6 +51,14 @@ export interface CanvasTextureHandle {
   readonly texture: WebGLTexture;
   readonly width: number;
   readonly height: number;
+  /**
+   * Monotonic pixel revision for this cache. It advances after every successful
+   * full or regional upload, including same-sized in-place updates. Retained
+   * consumers can therefore invalidate only the ranges which actually sample a
+   * changed texture without treating stable `WebGLTexture` identity as stable
+   * pixels.
+   */
+  readonly revision: number;
 }
 
 export interface TextureCacheStats {
@@ -171,6 +179,7 @@ interface Entry {
   texture: WebGLTexture;
   width: number;
   height: number;
+  revision: number;
   refs: number;
   /** What the texture's STORAGE was really specified at by the last
    *  `texImage2D`, which is not always `width`/`height`: those are clamped up to
@@ -242,6 +251,7 @@ export function createTextureCache(
 ): CanvasTextureCache {
   const entries = new Map<string, Entry>();
   let whiteEntry: Entry | null = null;
+  let nextRevision = 1;
   let premultiplyScratch = new Uint8Array(0);
   const stats: TextureCacheStats = {
     entries: 0,
@@ -299,6 +309,7 @@ export function createTextureCache(
     entry.storageW = raw.width;
     entry.storageH = raw.height;
     regenerateMipmap(entry);
+    entry.revision = nextRevision++;
     stats.uploads += 1;
     stats.respecs += 1;
   }
@@ -311,6 +322,7 @@ export function createTextureCache(
     unpackForSource(entry.premultiplied);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
     regenerateMipmap(entry);
+    entry.revision = nextRevision++;
     stats.uploads += 1;
   }
 
@@ -327,6 +339,7 @@ export function createTextureCache(
     unpackForSource(entry.premultiplied);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, source);
     regenerateMipmap(entry);
+    entry.revision = nextRevision++;
     stats.uploads += 1;
   }
 
@@ -374,6 +387,7 @@ export function createTextureCache(
     entry.storageW = width;
     entry.storageH = height;
     regenerateMipmap(entry);
+    entry.revision = nextRevision++;
     stats.uploads += 1;
     stats.respecs += 1;
   }
@@ -396,6 +410,7 @@ export function createTextureCache(
       texture: gl.createTexture(),
       width: 0,
       height: 0,
+      revision: 0,
       refs: 0,
       // No storage yet: the upload that follows every `makeEntry` sets these.
       // Until it does, nothing can match, so nothing can take the fast path.

@@ -33,6 +33,7 @@ import {
   type ExecutorTexture,
 } from "../src/executor-webgl";
 import type { GlyphPass } from "../src/glyph-pass";
+import { createRetainedRangeCache } from "../src/retained-range-cache";
 import { createFakeGl, type FakeGl, fakeProjection } from "./fake-gl";
 
 function page(id: number, width = 256, height = 256): ExecutorTexture {
@@ -203,6 +204,33 @@ describe("the glyph pass inside a frame", () => {
     expect(fake.draws.map((draw) => draw.instanceCount)).toEqual([3, 3]);
     expect(executor.stats.glyphRuns).toBe(2);
     expect(executor.stats.glyphDrawCalls).toBe(2);
+  });
+
+  it("stops adjacent glyph batching before an inline retained glyph composite", () => {
+    const { fake, executor, list, projection } = setup({ batch: true });
+    pushGlyphs(list);
+    pushGlyphs(list);
+    pushGlyphs(list);
+    const cache = createRetainedRangeCache(fake.gl);
+    const candidates = [{
+      key: "middle-glyph",
+      start: 1,
+      end: 2,
+      bounds: { x: 0, y: 90, width: 32, height: 20 },
+      pixelRevision: 1,
+    }];
+    const cold = cache.prepare(list, projection, candidates);
+    expect(executor.execute(list, projection, { substitutions: cold })).toBe(true);
+    fake.reset();
+    const warm = cache.prepare(list, projection, candidates);
+    expect(executor.execute(list, projection, { substitutions: warm })).toBe(true);
+    expect(executor.stats).toMatchObject({
+      liveCommands: 2,
+      substitutedCommands: 1,
+      retainedComposites: 1,
+      glyphRuns: 2,
+    });
+    expect(fake.draws.map((draw) => draw.instanceCount)).toEqual([3, 1, 3]);
   });
 
   it("falls back to ordered individual draws when glyph residency declines a batch", () => {

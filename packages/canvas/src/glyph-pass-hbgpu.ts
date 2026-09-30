@@ -280,6 +280,8 @@ export interface HbGpuGlyphPass extends GlyphPass {
     text: string,
     options?: HbGpuShapeOptions,
   ): boolean;
+  /** Exact local ink union from encoded glyph extents, excluding spread and antialias padding. */
+  inkBounds(run: GlyphsView): { x: number; y: number; width: number; height: number } | null;
   /** Drop shaped-run memoisation without disturbing faces or atlas residency. */
   clearShapeCache(): void;
   /** Re-state both sizes after the stage resized. See `HbGpuRenderer.setViewport`. */
@@ -429,6 +431,33 @@ export function createHbGpuGlyphPass(
   const pass: HbGpuGlyphPass = {
     renderer,
     stats,
+    inkBounds(run) {
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      for (let i = 0; i < run.glyphCount; i++) {
+        const entry = entries[run.slots[i]];
+        if (!entry) return null;
+        const slot = renderer.resolve(entry.face.face, entry.glyphId);
+        const extents = slot ? null : encode(entry)?.extents;
+        if (!slot && !extents) return null;
+        const scale = run.pixelsPerEm / entry.face.upem;
+        const left = slot ? slot.minX : extents!.xBearing;
+        const right = slot ? slot.maxX : extents!.xBearing + extents!.width;
+        const bottom = slot ? slot.minY : extents!.yBearing + extents!.height;
+        const top = slot ? slot.maxY : extents!.yBearing;
+        const x = run.positions[i * 2],
+          y = run.positions[i * 2 + 1];
+        minX = Math.min(minX, x + scale * left);
+        maxX = Math.max(maxX, x + scale * right);
+        minY = Math.min(minY, y - scale * top);
+        maxY = Math.max(maxY, y - scale * bottom);
+      }
+      return minX <= maxX && minY <= maxY
+        ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+        : null;
+    },
 
     registerFace(bytes, label) {
       const name = label ?? `face${faces.length}`;

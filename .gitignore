@@ -19,6 +19,8 @@ playwright-report/
 .playwright-cli/
 test-results/
 artifacts/
+.sts2/
+packages/canvas/rust-prototype/target/
 # Explicit (already covered by artifacts/): perf-harness traces, screenshots, chrome profiles and the
 # multi-MB generated atlas page. Never commit any of it.
 artifacts/perf/

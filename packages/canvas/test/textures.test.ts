@@ -255,6 +255,19 @@ describe("texture cache lifetime", () => {
     cache.release("label");
     expect(cache.stats.entries).toBe(0);
   });
+
+  it("advances a stable handle revision after every pixel upload", () => {
+    const fake = createFakeGl();
+    const cache = createTextureCache(fake.gl);
+    const handle = cache.acquire("atlas", bitmap(64, 64));
+    const acquired = handle.revision;
+    expect(acquired).toBeGreaterThan(0);
+    expect(cache.update("atlas", bitmap(64, 64))).toBe(handle);
+    const updated = handle.revision;
+    expect(updated).toBeGreaterThan(acquired);
+    expect(cache.updateRegion("atlas", bitmap(4, 4), 8, 8)).toBe(handle);
+    expect(handle.revision).toBeGreaterThan(updated);
+  });
 });
 
 // `update` is the streaming entry point: ONE key, a new frame of the same surface

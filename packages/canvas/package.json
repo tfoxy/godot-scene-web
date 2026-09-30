@@ -27,6 +27,16 @@
       "development": "./src/glyph-pass-hbgpu.ts",
       "types": "./dist/glyph-pass-hbgpu.d.ts",
       "import": "./dist/glyph-pass-hbgpu.js"
+    },
+    "./rust-prototype": {
+      "development": "./src/rust-prototype-scene.ts",
+      "types": "./dist/rust-prototype-scene.d.ts",
+      "import": "./dist/rust-prototype-scene.js"
+    },
+    "./pixi": {
+      "development": "./src/pixi-renderer.ts",
+      "types": "./dist/pixi-renderer.d.ts",
+      "import": "./dist/pixi-renderer.js"
     }
   },
   "main": "./dist/index.js",
@@ -44,6 +54,7 @@
     "@godot-scene-web/canvas-effects": "workspace:*",
     "@godot-scene-web/core": "workspace:*",
     "@godot-scene-web/effects": "workspace:*",
-    "@godot-scene-web/hb-gpu": "workspace:*"
+    "@godot-scene-web/hb-gpu": "workspace:*",
+    "pixi.js": "8.21.0"
   }
 }

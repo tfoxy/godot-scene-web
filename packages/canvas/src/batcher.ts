@@ -165,6 +165,8 @@ export type BatchFlushReason =
   | "meshes"
   /** A retained compiled GPU run takes over after direct quad staging. */
   | "compiled"
+  /** A retained range texture replaces its logical source interval inline. */
+  | "retained"
   /** End of the draw list (or an explicit flush by the caller). */
   | "end";
 
@@ -256,6 +258,7 @@ function emptyFlushCounts(): Record<BatchFlushReason, number> {
     effects: 0,
     meshes: 0,
     compiled: 0,
+    retained: 0,
     end: 0,
   };
 }
@@ -269,6 +272,7 @@ function zeroFlushCounts(counts: Record<BatchFlushReason, number>): void {
   counts.effects = 0;
   counts.meshes = 0;
   counts.compiled = 0;
+  counts.retained = 0;
   counts.end = 0;
 }
 
