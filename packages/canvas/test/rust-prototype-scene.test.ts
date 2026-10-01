@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  BLEND_SUB,
   createClipRectView,
   createDrawList,
   createQuadView,
@@ -30,7 +31,7 @@ describe("Rust prototype scene serializer", () => {
     stringify.mockRestore();
   });
 
-  it("preserves draw order and explicitly counts unsupported commands", () => {
+  it("keeps supported commands in order and reports omitted kinds", () => {
     const list = createDrawList<string>();
     const clip = createClipRectView();
     clip.w = 50;
@@ -63,13 +64,13 @@ describe("Rust prototype scene serializer", () => {
     expect(scene.commands.map((c: { kind: string }) => c.kind)).toEqual([
       "clipPush",
       "quad",
-      "polyline",
       "clipPop",
     ]);
     expect(encoded.unsupportedCommands).toBe(1);
+    expect(encoded.omittedKinds).toEqual({ polyline: 1 });
     expect(scene.resources).toEqual([{ key: "atlas", width: 64, height: 64 }]);
   });
-  it("flattens retained group transforms and refuses fractional group alpha", () => {
+  it("flattens retained group transforms and omits fractional group alpha content", () => {
     const list = createDrawList<string>();
     const q = createQuadView();
     q.w = 4;
@@ -109,15 +110,95 @@ describe("Rust prototype scene serializer", () => {
     );
     expect(scene.commands[0].id).toBe("stable-q");
     expect(scene.commands[0].m).toEqual([1, 0, 0, 1, 15, 26]);
-    const alpha = JSON.parse(
-      new TextDecoder().decode(
-        encodeRustScene({
-          ...options,
-          plan: { ...plan, groups: [{ ...plan.groups[0], alpha: 0.5 }] },
-        }).bytes,
-      ),
-    );
-    expect(alpha.commands[0].kind).toBe("unsupportedGroupAlpha");
+    const alpha = encodeRustScene({
+      ...options,
+      plan: { ...plan, groups: [{ ...plan.groups[0], alpha: 0.5 }] },
+    });
+    expect(alpha.scene.commands).toEqual([]);
+    expect(alpha.omittedKinds).toEqual({ unsupportedGroupAlpha: 1 });
+    expect(
+      encodeRustRetainedPatch(alpha.scene, 2, [
+        { id: "stable-q", command: scene.commands[0] },
+      ]),
+    ).toBeNull();
+  });
+  it("omits an unsupported nested clip with its contents and keeps surrounding clips balanced", () => {
+    const list = createDrawList<string>();
+    const clip = createClipRectView();
+    clip.w = clip.h = 20;
+    const quad = createQuadView();
+    quad.w = quad.h = 4;
+    list.pushClipRect(clip);
+    list.pushQuad(quad);
+    list.pushClipRect(clip);
+    list.pushQuad(quad);
+    list.popClip();
+    list.pushQuad(quad);
+    list.popClip();
+    const encoded = encodeRustScene({
+      drawList: list,
+      revision: 1,
+      width: 50,
+      height: 50,
+      designWidth: 50,
+      designHeight: 50,
+      resolveTexture: () => null,
+      plan: {
+        primitives: [
+          { id: "outer", index: 0 },
+          { id: "before", index: 1 },
+          { id: "inner", index: 2, parentId: "rotated" },
+          { id: "hidden", index: 3 },
+          { id: "inner-pop", index: 4 },
+          { id: "after", index: 5 },
+          { id: "outer-pop", index: 6 },
+        ],
+        groups: [
+          {
+            id: "rotated",
+            firstIndex: 2,
+            endIndex: 5,
+            transform: [0, 1, -1, 0, 0, 0],
+          },
+        ],
+      },
+    });
+    expect(encoded.scene.commands.map((command) => command.id)).toEqual([
+      "outer",
+      "before",
+      "after",
+      "outer-pop",
+    ]);
+    expect(encoded.omittedKinds).toEqual({ unsupportedTransformedClip: 3 });
+    expect(
+      encodeRustRetainedPatch(encoded.scene, 2, [
+        { id: "hidden", command: encoded.scene.commands[1] },
+      ]),
+    ).toBeNull();
+  });
+  it("omits an unsupported blend while retaining adjacent supported quads", () => {
+    const list = createDrawList<string>();
+    const quad = createQuadView();
+    quad.w = quad.h = 4;
+    list.pushQuad(quad);
+    quad.blend = BLEND_SUB;
+    list.pushQuad(quad);
+    quad.blend = 0;
+    list.pushQuad(quad);
+    const encoded = encodeRustScene({
+      drawList: list,
+      revision: 1,
+      width: 50,
+      height: 50,
+      designWidth: 50,
+      designHeight: 50,
+      resolveTexture: () => null,
+    });
+    expect(encoded.scene.commands.map((command) => command.id)).toEqual([
+      "c0",
+      "c2",
+    ]);
+    expect(encoded.omittedKinds).toEqual({ unsupportedBlend: 1 });
   });
   it("serializes design and backing dimensions separately and premultiplies raster text alpha", () => {
     const list = createDrawList<string>();

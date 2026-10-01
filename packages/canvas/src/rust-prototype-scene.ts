@@ -85,6 +85,8 @@ export interface RustEncodedScene {
     pixels: Uint8Array;
   }[];
   unsupportedCommands: number;
+  /** Drawings omitted from this scene, grouped by the reason they could not be represented. */
+  omittedKinds: Record<string, number>;
 }
 export interface RustSceneSnapshot {
   version: 2;
@@ -158,7 +160,7 @@ function quadFields(q: QuadView, resource: string | null) {
     colorMatrix: q.hasColorMatrix ? Array.from(q.colorMatrix) : null,
   };
 }
-/** A full command batch. Unknown commands survive encoding and are refused by Rust admission. */
+/** A full command batch. Unsupported drawings are omitted; Rust still validates the resulting scene. */
 export function encodeRustScene<T>(input: RustSceneInput<T>): RustEncodedScene {
   return input.profile
     ? input.profile.collector.span(
@@ -184,6 +186,11 @@ function encodeRustSceneImpl<T>({
   const resources = new Map<string, RustResource>();
   const commands: Record<string, unknown>[] = [];
   let unsupportedCommands = 0;
+  const omittedKinds: Record<string, number> = {};
+  const omit = (kind: string) => {
+    unsupportedCommands++;
+    omittedKinds[kind] = (omittedKinds[kind] ?? 0) + 1;
+  };
   const textUploads: {
     key: string;
     width: number;
@@ -221,12 +228,6 @@ function encodeRustSceneImpl<T>({
     seen.delete(id);
     return m;
   }
-  const openGroups = new Map<number, string[]>();
-  for (const group of plan?.groups ?? []) {
-    const a = openGroups.get(group.firstIndex) ?? [];
-    a.push(group.id);
-    openGroups.set(group.firstIndex, a);
-  }
   const groupAt = (i: number) =>
     [...(plan?.groups ?? [])]
       .filter((g) => g.firstIndex <= i && i < g.endIndex)
@@ -236,13 +237,91 @@ function encodeRustSceneImpl<T>({
   const q = createQuadView(),
     n = createNinePatchView(),
     clip = createClipRectView();
+  // Mark whole subtrees before emitting anything. A missing clip push with a surviving pop is invalid,
+  // and drawing its children without the clip would expose pixels outside the intended region.
+  const omitted = new Array<string | null>(drawList.count).fill(null);
+  const clipPairs: { push: number; pop: number }[] = [];
+  const clipStack: number[] = [];
+  for (let i = 0; i < drawList.count; i++) {
+    const kind = drawList.kindAt(i);
+    if (kind === DRAW_CLIP_PUSH) clipStack.push(i);
+    else if (kind === DRAW_CLIP_POP) {
+      const push = clipStack.pop();
+      if (push !== undefined) clipPairs.push({ push, pop: i });
+      else omitted[i] = "unbalancedClip";
+    }
+  }
+  for (const push of clipStack) omitted[push] = "unbalancedClip";
+  const markRange = (start: number, end: number, reason: string) => {
+    for (let i = start; i <= end; i++) omitted[i] ??= reason;
+  };
+  const omittedGroups = (plan?.groups ?? []).filter(
+    (group) => (group.alpha ?? 1) !== 1,
+  );
+  const hiddenByGroup = (id: string | undefined): boolean => {
+    while (id) {
+      if ((groups.get(id)?.alpha ?? 1) !== 1) return true;
+      id = groups.get(id)?.parentId;
+    }
+    return false;
+  };
+  for (const group of omittedGroups) {
+    markRange(group.firstIndex, group.endIndex - 1, "unsupportedGroupAlpha");
+  }
+  for (const { push, pop } of clipPairs) {
+    const primitive = primitives.get(push);
+    const parent = primitive?.parentId ?? groupAt(push)?.id;
+    drawList.readClipRect(push, clip);
+    const m = world(parent);
+    if (
+      m[0] <= 0 ||
+      m[3] <= 0 ||
+      Math.abs(m[1]) > 1e-5 ||
+      Math.abs(m[2]) > 1e-5 ||
+      Math.abs(Math.abs(m[0]) - Math.abs(m[3])) > 1e-5
+    ) {
+      markRange(push, pop, "unsupportedTransformedClip");
+    }
+  }
+  // The Rust contract admits at most three nested clips. Omitting a deeper clip also omits its
+  // children; clips that straddle an omitted interval must be omitted as a unit.
+  let sourceDepth = 0;
+  for (let i = 0; i < drawList.count; i++) {
+    if (drawList.kindAt(i) === DRAW_CLIP_PUSH && ++sourceDepth > 3) {
+      const pair = clipPairs.find((candidate) => candidate.push === i);
+      if (pair) markRange(i, pair.pop, "clipDepth");
+    } else if (drawList.kindAt(i) === DRAW_CLIP_POP) sourceDepth--;
+  }
+  let expanded: boolean;
+  do {
+    expanded = false;
+    for (const { push, pop } of clipPairs) {
+      if (!omitted[push] && !omitted[pop]) continue;
+      for (let i = push; i <= pop; i++) {
+        if (omitted[i] === null) {
+          omitted[i] = "omittedClipContent";
+          expanded = true;
+        }
+      }
+    }
+  } while (expanded);
   for (let i = 0; i <= drawList.count; i++) {
     for (const record of textAt.get(i) ?? []) {
+      const hiddenAtIndex = omittedGroups.some(
+        (group) => group.firstIndex <= i && i < group.endIndex,
+      );
+      if (
+        (i < drawList.count && omitted[i]) ||
+        hiddenAtIndex ||
+        hiddenByGroup(record.parentId)
+      ) {
+        omit((i < drawList.count && omitted[i]) || "unsupportedGroupAlpha");
+        continue;
+      }
       const carrier = resolveText?.(record);
       const id = `t${record.key}`;
       if (!carrier) {
-        commands.push({ id, kind: "unresolvedText" });
-        unsupportedCommands++;
+        omit("unresolvedText");
         continue;
       }
       resources.set(carrier.resource.key, carrier.resource);
@@ -274,14 +353,10 @@ function encodeRustSceneImpl<T>({
       });
     }
     if (i === drawList.count) break;
-    for (const id of openGroups.get(i) ?? []) {
-      if ((groups.get(id)?.alpha ?? 1) !== 1) {
-        commands.push({
-          id: `group-alpha:${id}`,
-          kind: "unsupportedGroupAlpha",
-        });
-        unsupportedCommands++;
-      }
+    const omittedReason = omitted[i];
+    if (omittedReason) {
+      omit(omittedReason);
+      continue;
     }
     const kind = drawList.kindAt(i);
     const primitive = primitives.get(i);
@@ -295,8 +370,11 @@ function encodeRustSceneImpl<T>({
       const texture = drawList.textureAt(i);
       const resolved = texture === null ? null : resolveTexture(texture);
       if (texture !== null && resolved === null) {
-        commands.push({ id, kind: "unresolvedResource" });
-        unsupportedCommands++;
+        omit("unresolvedResource");
+        continue;
+      }
+      if (view.blend !== 0 && view.blend !== BLEND_ADD) {
+        omit("unsupportedBlend");
         continue;
       }
       if (resolved) resources.set(resolved.key, resolved);
@@ -311,7 +389,6 @@ function encodeRustSceneImpl<T>({
         local: primitive?.localTransform ?? Array.from(view.m),
         sourceLocal: primitive?.localTransform ?? Array.from(view.m),
       });
-      if (view.blend !== 0 && view.blend !== BLEND_ADD) unsupportedCommands++;
       if (kind === DRAW_NINE_PATCH)
         commands.push({
           ...payload,
@@ -322,17 +399,6 @@ function encodeRustSceneImpl<T>({
       clipParents.push(parent);
       drawList.readClipRect(i, clip);
       const m = world(parent);
-      if (
-        m[0] <= 0 ||
-        m[3] <= 0 ||
-        Math.abs(m[1]) > 1e-5 ||
-        Math.abs(m[2]) > 1e-5 ||
-        Math.abs(Math.abs(m[0]) - Math.abs(m[3])) > 1e-5
-      ) {
-        commands.push({ id, kind: "unsupportedTransformedClip" });
-        unsupportedCommands++;
-        continue;
-      }
       const p = mul(m, [1, 0, 0, 1, clip.x, clip.y]);
       commands.push({
         id,
@@ -342,10 +408,7 @@ function encodeRustSceneImpl<T>({
         outset: clip.outsetX * Math.abs(m[0]),
       });
     } else if (kind === DRAW_CLIP_POP) commands.push({ id, kind: "clipPop" });
-    else {
-      commands.push({ id, kind: drawList.kindNameAt(i) });
-      unsupportedCommands++;
-    }
+    else omit(drawList.kindNameAt(i));
   }
   const scene: RustSceneSnapshot = {
     version: 2,
@@ -384,6 +447,7 @@ function encodeRustSceneImpl<T>({
     resources: [...resources.values()],
     textUploads,
     unsupportedCommands,
+    omittedKinds,
   };
 }
 /** Pack multiple RGBA8 images into one resource upload call. */
