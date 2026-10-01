@@ -1,4 +1,5 @@
-use crate::contract::{Blend, Command, Quad, Scene};
+use crate::contract::{Blend, Command, Quad, Resource, Scene};
+use std::collections::HashMap;
 
 pub const TEXTURE_SLOTS: usize = 8;
 
@@ -289,11 +290,11 @@ pub fn patch_spans(
     if old.command_ranges.len() != scene.commands.len() {
         return None;
     }
-    let resource_index: std::collections::HashMap<_, _> = scene
-        .resources
-        .iter()
-        .map(|r| (r.key.as_str(), r))
-        .collect();
+    // Most patches touch commands with no resource (solid quads, text), so
+    // building the key -> resource index unconditionally allocated a
+    // HashMap on every call even when no update ever looked it up. Build it
+    // lazily, once, on the first update that actually carries a resource.
+    let mut resource_index: Option<HashMap<&str, &Resource>> = None;
     let mut spans = Vec::with_capacity(updates.len());
     for (index, command) in updates {
         let before = scene.commands.get(*index)?;
@@ -312,7 +313,14 @@ pub fn patch_spans(
         }
         commands.push(command.clone());
         let resources = if let Some(key) = quad.resource.as_deref() {
-            vec![(*resource_index.get(key)?).clone()]
+            let index = resource_index.get_or_insert_with(|| {
+                scene
+                    .resources
+                    .iter()
+                    .map(|r| (r.key.as_str(), r))
+                    .collect()
+            });
+            vec![(*index.get(key)?).clone()]
         } else {
             Vec::new()
         };

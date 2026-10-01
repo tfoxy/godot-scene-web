@@ -136,6 +136,12 @@ pub struct Renderer {
     adapter_info: wgpu::AdapterInfo,
     adapter_timestamp_query_supported: bool,
     adapter_texture_slots: u32,
+    /// wgpu-core 30 re-emits program + vertex-attribute GL state on every
+    /// `set_pipeline`, even a repeat of the last one — most draws in a pass
+    /// share a pipeline (mix vs add blend), so a per-pass "did it change"
+    /// check skips that work. Runtime-gated: `false` (the default)
+    /// reproduces today's call sequence exactly; see `set_draw_state_dedupe`.
+    draw_state_dedupe: bool,
     #[cfg(feature = "fault-injection")]
     validation_failure_once: bool,
 }
@@ -348,12 +354,18 @@ impl Renderer {
             adapter_info,
             adapter_timestamp_query_supported,
             adapter_texture_slots: actual.max_sampled_textures_per_shader_stage,
+            draw_state_dedupe: false,
             #[cfg(feature = "fault-injection")]
             validation_failure_once: false,
         })
     }
     pub fn backend_name(&self) -> &str {
         &self.backend
+    }
+    /// Opt into the pipeline-dedupe draw path (default `false`: unchanged).
+    /// One artifact serves both A/B arms this way.
+    pub fn set_draw_state_dedupe(&mut self, enabled: bool) {
+        self.draw_state_dedupe = enabled;
     }
     pub fn set_phase_operation_id(&mut self, id: u32) {
         self.phase_identity = (id > 0).then_some(PhaseIdentity {
@@ -806,8 +818,13 @@ impl Renderer {
             if let Some(buffer) = &self.instance_buffer {
                 pass.set_vertex_buffer(0, buffer.slice(..));
             }
+            let mut last_pipeline: Option<usize> = None;
             for (draw, bind) in g.draws.iter().zip(&binds) {
-                pass.set_pipeline(&self.pipelines[if draw.blend == Blend::Add { 1 } else { 0 }]);
+                let pipeline_index = if draw.blend == Blend::Add { 1 } else { 0 };
+                if !self.draw_state_dedupe || last_pipeline != Some(pipeline_index) {
+                    pass.set_pipeline(&self.pipelines[pipeline_index]);
+                    last_pipeline = Some(pipeline_index);
+                }
                 pass.set_bind_group(1, bind, &[]);
                 pass.draw(0..6, draw.start..draw.start + draw.count);
             }
