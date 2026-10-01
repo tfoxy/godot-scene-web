@@ -38,6 +38,7 @@ export interface PixiScenePlan {
     readonly alpha?: number;
   }[];
 }
+type PlanGroup = NonNullable<PixiScenePlan["groups"]>[number];
 
 export interface RustProfileScope {
   collector: { span<T>(identity: unknown, kind: string, action: () => T): T };
@@ -72,6 +73,14 @@ export interface RustSceneInput<T> {
   texts?: readonly PixiTextRecord[];
   resolveText?(record: PixiTextRecord): RustTextCarrier | null;
   plan?: PixiScenePlan;
+  /**
+   * Opt into the allocation-reduced encode paths (shared identity, a
+   * precomputed group-at-index table, one `Array.from` per primitive instead
+   * of several). Byte-identical output to the default path; see
+   * `rust-prototype-scene.test.ts` for the parity proof. Off by default so
+   * existing callers keep today's exact code path.
+   */
+  fast?: boolean;
 }
 export interface RustEncodedScene {
   bytes: Uint8Array;
@@ -123,7 +132,23 @@ function indexCommands(scene: RustSceneSnapshot): Map<string, number> {
   }
   return indexes;
 }
+/** The same cached per-scene id -> command-index table `encodeRustRetainedPatch` uses internally. */
+export function rustSceneCommandIndex(
+  scene: RustSceneSnapshot,
+): ReadonlyMap<string, number> {
+  return indexCommands(scene);
+}
 const identity = [1, 0, 0, 1, 0, 0] as const;
+/**
+ * Shared, frozen stand-in for a fresh `[...identity]` copy. Safe only because
+ * every reader (`mul`/`inverse`) treats its matrix arguments as read-only and
+ * returns a new array; nothing in this module ever writes through a `world()`
+ * result. Used by the `fast` encode path only — the default path keeps
+ * allocating its own copy per call, unchanged.
+ */
+const frozenIdentity: number[] = Object.freeze([
+  1, 0, 0, 1, 0, 0,
+]) as unknown as number[];
 function mul(a: ArrayLike<number>, b: ArrayLike<number>): number[] {
   return [
     a[0] * b[0] + a[2] * b[1],
@@ -145,10 +170,40 @@ function inverse(m: ArrayLike<number>): number[] | null {
   return [a, b, c, d, -a * m[4] - c * m[5], -b * m[4] - d * m[5]];
 }
 
-function quadFields(q: QuadView, resource: string | null) {
+/**
+ * Precomputes, for every draw-list index, the same winner the default
+ * `groupAt(i)` picks via `filter(covers).sort(bySizeAsc)[0]` — smallest
+ * range, ties broken by original `plan.groups` order. A stable ascending
+ * sort by size keeps tied groups in original order; visiting that order
+ * back-to-front and overwriting each covered index means the smallest
+ * (earliest, on a tie) group is always the last write, matching
+ * `filter().sort()[0]` exactly without re-filtering/re-sorting per index.
+ */
+function buildGroupIndex(
+  groupsList: PixiScenePlan["groups"],
+  count: number,
+): readonly (PlanGroup | undefined)[] {
+  const result: (PlanGroup | undefined)[] = new Array(count);
+  if (!groupsList || groupsList.length === 0) return result;
+  const sorted = groupsList
+    .slice()
+    .sort((a, b) => a.endIndex - a.firstIndex - (b.endIndex - b.firstIndex));
+  for (let k = sorted.length - 1; k >= 0; k--) {
+    const g = sorted[k];
+    const start = Math.max(g.firstIndex, 0);
+    const end = Math.min(g.endIndex, count);
+    for (let i = start; i < end; i++) result[i] = g;
+  }
+  return result;
+}
+/**
+ * The one caller always overwrites `m`, so `fast=true` skips the copy but keeps the key in place:
+ * scene/2 bytes keep the same key order on both paths.
+ */
+function quadFields(q: QuadView, resource: string | null, fast: boolean) {
   return {
     resource,
-    m: Array.from(q.m),
+    m: fast ? undefined : Array.from(q.m),
     w: q.w,
     h: q.h,
     src: [q.srcX, q.srcY, q.srcW, q.srcH],
@@ -182,6 +237,7 @@ function encodeRustSceneImpl<T>({
   texts = [],
   resolveText,
   plan,
+  fast = false,
 }: RustSceneInput<T>): RustEncodedScene {
   const resources = new Map<string, RustResource>();
   const commands: Record<string, unknown>[] = [];
@@ -216,7 +272,7 @@ function encodeRustSceneImpl<T>({
   const clipParents: (string | undefined)[] = [];
   const worldCache = new Map<string, number[]>();
   function world(id: string | undefined, seen = new Set<string>()): number[] {
-    if (!id) return [...identity];
+    if (!id) return fast ? frozenIdentity : [...identity];
     const cached = worldCache.get(id);
     if (cached) return cached;
     if (seen.has(id)) throw new Error(`cyclic group ${id}`);
@@ -228,12 +284,17 @@ function encodeRustSceneImpl<T>({
     seen.delete(id);
     return m;
   }
-  const groupAt = (i: number) =>
-    [...(plan?.groups ?? [])]
-      .filter((g) => g.firstIndex <= i && i < g.endIndex)
-      .sort(
-        (a, b) => a.endIndex - a.firstIndex - (b.endIndex - b.firstIndex),
-      )[0];
+  const groupIndex = fast
+    ? buildGroupIndex(plan?.groups, drawList.count)
+    : null;
+  const groupAt = fast
+    ? (i: number) => groupIndex![i]
+    : (i: number) =>
+        [...(plan?.groups ?? [])]
+          .filter((g) => g.firstIndex <= i && i < g.endIndex)
+          .sort(
+            (a, b) => a.endIndex - a.firstIndex - (b.endIndex - b.firstIndex),
+          )[0];
   const q = createQuadView(),
     n = createNinePatchView(),
     clip = createClipRectView();
@@ -378,17 +439,39 @@ function encodeRustSceneImpl<T>({
         continue;
       }
       if (resolved) resources.set(resolved.key, resolved);
-      const payload = {
-        id,
-        kind: kind === DRAW_QUAD ? "quad" : "ninePatch",
-        ...quadFields(view, resolved?.key ?? null),
-        m: mul(world(parent), primitive?.localTransform ?? view.m),
-      };
-      owners.set(id, {
-        parentId: parent,
-        local: primitive?.localTransform ?? Array.from(view.m),
-        sourceLocal: primitive?.localTransform ?? Array.from(view.m),
-      });
+      // The fast path computes the one `Array.from(view.m)` fallback copy
+      // once and reuses it for `m`, `local` and `sourceLocal` instead of the
+      // default path's three independent computations (one of them —
+      // quadFields' own `m` — thrown away the instant it's overwritten
+      // below). Byte-identical output either way: `view.m` and an
+      // `Array.from` copy of it read the same float64 values through `mul`.
+      let payload: Record<string, unknown>;
+      if (fast) {
+        const localSource = primitive?.localTransform ?? Array.from(view.m);
+        payload = {
+          id,
+          kind: kind === DRAW_QUAD ? "quad" : "ninePatch",
+          ...quadFields(view, resolved?.key ?? null, true),
+          m: mul(world(parent), localSource),
+        };
+        owners.set(id, {
+          parentId: parent,
+          local: localSource,
+          sourceLocal: localSource,
+        });
+      } else {
+        payload = {
+          id,
+          kind: kind === DRAW_QUAD ? "quad" : "ninePatch",
+          ...quadFields(view, resolved?.key ?? null, false),
+          m: mul(world(parent), primitive?.localTransform ?? view.m),
+        };
+        owners.set(id, {
+          parentId: parent,
+          local: primitive?.localTransform ?? Array.from(view.m),
+          sourceLocal: primitive?.localTransform ?? Array.from(view.m),
+        });
+      }
       if (kind === DRAW_NINE_PATCH)
         commands.push({
           ...payload,
@@ -502,21 +585,96 @@ function encodeRustResourcesImpl(
   return bytes;
 }
 
+function isJsonSkippedValue(v: unknown): boolean {
+  return v === undefined || typeof v === "function" || typeof v === "symbol";
+}
+function jsonArrayEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    // An array element that would be skipped at object-property position
+    // instead serializes as `null` (JSON.stringify never omits an array slot).
+    const va = isJsonSkippedValue(a[i]) ? null : a[i];
+    const vb = isJsonSkippedValue(b[i]) ? null : b[i];
+    if (!jsonValueEqual(va, vb)) return false;
+  }
+  return true;
+}
+function jsonObjectEqual(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  // Object.keys() already walks own enumerable string keys in the exact
+  // order JSON.stringify emits them (integer-like keys ascending first, then
+  // insertion order) — filter out keys JSON.stringify would drop, then
+  // compare the two key sequences positionally, since reordered keys change
+  // the stringified output even when the value set is identical.
+  const keysA = Object.keys(a).filter((k) => !isJsonSkippedValue(a[k]));
+  const keysB = Object.keys(b).filter((k) => !isJsonSkippedValue(b[k]));
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    if (keysA[i] !== keysB[i]) return false;
+    if (!jsonValueEqual(a[keysA[i]], b[keysA[i]])) return false;
+  }
+  return true;
+}
+function jsonValueEqual(a: unknown, b: unknown): boolean {
+  // JSON.stringify collapses NaN/+-Infinity to the literal `null` wherever a
+  // number appears — the SAME output a genuine `null` produces — so this
+  // normalizes both before comparing rather than only comparing NaN-ness
+  // between two numbers (which would miss e.g. NaN vs null: both "null").
+  const na = typeof a === "number" && !Number.isFinite(a) ? null : a;
+  const nb = typeof b === "number" && !Number.isFinite(b) ? null : b;
+  if (na === nb) return true; // covers equal primitives, incl. -0 === 0, null === null, matching references
+  if (Array.isArray(na) && Array.isArray(nb)) return jsonArrayEqual(na, nb);
+  if (
+    na !== null &&
+    nb !== null &&
+    typeof na === "object" &&
+    typeof nb === "object" &&
+    !Array.isArray(na) &&
+    !Array.isArray(nb)
+  )
+    return jsonObjectEqual(
+      na as Record<string, unknown>,
+      nb as Record<string, unknown>,
+    );
+  return false;
+}
+/**
+ * `jsonEqual(a, b) === (JSON.stringify(a) === JSON.stringify(b))` for every
+ * shape this module's encoders emit: plain objects and arrays nesting only
+ * numbers, strings, booleans, null, undefined, and other such objects/arrays.
+ * It does not call `toJSON` — no command this module ever produces defines
+ * one (no `Date`, `Map`, `Set`, or typed array ever lands in a `commands`
+ * entry) — so a `toJSON`-bearing value is an unsupported, documented
+ * divergence, asserted in `rust-prototype-scene.test.ts` rather than handled
+ * here; adding it would reintroduce the `JSON.stringify` cost this exists to
+ * avoid.
+ */
+export function jsonEqual(a: unknown, b: unknown): boolean {
+  const skipA = isJsonSkippedValue(a);
+  const skipB = isJsonSkippedValue(b);
+  if (skipA || skipB) return skipA && skipB;
+  return jsonValueEqual(a, b);
+}
+
 /** Encode one atomic same-shape patch; return null when the caller must admit a full scene. */
 export function encodeRustPatch(
   a: RustSceneSnapshot,
   b: RustSceneSnapshot,
   profile?: RustProfileScope,
+  options?: { fast?: boolean },
 ): Uint8Array | null {
   return profile
     ? profile.collector.span(profile.identity, "canvas.serialize", () =>
-        encodeRustPatchImpl(a, b),
+        encodeRustPatchImpl(a, b, options),
       )
-    : encodeRustPatchImpl(a, b);
+    : encodeRustPatchImpl(a, b, options);
 }
 function encodeRustPatchImpl(
   a: RustSceneSnapshot,
   b: RustSceneSnapshot,
+  options?: { fast?: boolean },
 ): Uint8Array | null {
   if (
     a.version !== 2 ||
@@ -545,8 +703,12 @@ function encodeRustPatchImpl(
     const old = a.commands[i],
       command = b.commands[i];
     if (old.id !== command.id || old.kind !== command.kind) return null;
-    if (old !== command && JSON.stringify(old) !== JSON.stringify(command))
-      updates.push({ id: command.id, command });
+    const changed =
+      old !== command &&
+      (options?.fast
+        ? !jsonEqual(old, command)
+        : JSON.stringify(old) !== JSON.stringify(command));
+    if (changed) updates.push({ id: command.id, command });
   }
   return encoder.encode(
     JSON.stringify({

@@ -69,6 +69,12 @@ impl RustRenderer {
         self.inner
             .set_phase_identity(run_id, renderer_instance_id, id);
     }
+    /// Opt into the `set_pipeline`-dedupe draw path (default off). One
+    /// artifact serves both A/B arms of the `rustFast` measurement.
+    pub fn set_draw_state_dedupe(&mut self, enabled: bool) {
+        self.inner.record_wasm_call();
+        self.inner.set_draw_state_dedupe(enabled);
+    }
     #[wasm_bindgen(js_name = gpuTimerCapability)]
     pub fn gpu_timer_capability(&self) -> String {
         self.inner.gpu_timer_capability().to_string()
