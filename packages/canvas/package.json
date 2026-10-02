@@ -38,6 +38,11 @@
       "types": "./dist/msdf-generator.d.ts",
       "import": "./dist/msdf-generator.js"
     },
+    "./msdf-worker-runtime": {
+      "development": "./src/msdf-generator-worker-runtime.ts",
+      "types": "./dist/msdf-generator-worker-runtime.d.ts",
+      "import": "./dist/msdf-generator-worker-runtime.js"
+    },
     "./pixi": {
       "development": "./src/pixi-renderer.ts",
       "types": "./dist/pixi-renderer.d.ts",
