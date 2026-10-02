@@ -140,7 +140,22 @@ interface RetainedMeta {
       sourceLocal: readonly number[];
     }
   >;
-  clipParents: readonly (string | undefined)[];
+  /** Every emitted clip push, the group its rect was placed through, and its reference placement. */
+  clips: readonly RetainedClip[];
+}
+/**
+ * A clip's reference placement: its design-space `rect` while its parent group's world was `world`. Admitted clips
+ * also keep their draw-list `local` rect `[x, y, w, h]`, and a group move re-places them exactly as admission does
+ * (the current world times the local rect), so the result is the full scene's by construction. A clip placed by an
+ * explicit update has no local rect: a group move places it at `rect` plus the change in the world's translation.
+ * Either way the placement is recomputed from the reference, never accumulated per patch.
+ */
+interface RetainedClip {
+  id: string;
+  parentId?: string;
+  rect: readonly number[];
+  world: readonly number[];
+  local?: readonly number[];
 }
 const retainedMeta = new WeakMap<RustSceneSnapshot, RetainedMeta>();
 const commandIndexes = new WeakMap<RustSceneSnapshot, Map<string, number>>();
@@ -291,7 +306,7 @@ function encodeRustSceneImpl<T>({
       sourceLocal: readonly number[];
     }
   >();
-  const clipParents: (string | undefined)[] = [];
+  const clips: RetainedClip[] = [];
   const worldCache = new Map<string, number[]>();
   function world(id: string | undefined, seen = new Set<string>()): number[] {
     if (!id) return fast ? frozenIdentity : [...identity];
@@ -522,14 +537,15 @@ function encodeRustSceneImpl<T>({
         });
       else commands.push(payload);
     } else if (kind === DRAW_CLIP_PUSH) {
-      clipParents.push(parent);
       drawList.readClipRect(i, clip);
       const m = world(parent);
       const p = mul(m, [1, 0, 0, 1, clip.x, clip.y]);
+      const rect = [p[4], p[5], clip.w * m[0], clip.h * m[3]];
+      clips.push({ id, parentId: parent, rect, world: m, local: [clip.x, clip.y, clip.w, clip.h] });
       commands.push({
         id,
         kind: "clipPush",
-        rect: [p[4], p[5], clip.w * m[0], clip.h * m[3]],
+        rect: [...rect],
         radius: clip.cornerRadius * Math.abs(m[0]),
         outset: clip.outsetX * Math.abs(m[0]),
       });
@@ -554,7 +570,7 @@ function encodeRustSceneImpl<T>({
       ]),
     ),
     owners,
-    clipParents,
+    clips,
   });
   indexCommands(scene);
   let serialized: Uint8Array | undefined;
@@ -885,7 +901,39 @@ function encodeRustPatchImpl(
   );
 }
 
-/** Encode changed commands directly from a retained scene, without a draw-list or scene diff. */
+/**
+ * The rect of a `clipPush` replacement that only translates `previous`, or null. Width, height, radius and
+ * outset must be unchanged and the new origin finite.
+ */
+function translatedClipRect(
+  previous: Record<string, unknown>,
+  command: Record<string, unknown>,
+): number[] | null {
+  const before = previous.rect,
+    after = command.rect;
+  if (
+    !Array.isArray(before) ||
+    !Array.isArray(after) ||
+    before.length !== 4 ||
+    after.length !== 4 ||
+    after[2] !== before[2] ||
+    after[3] !== before[3] ||
+    command.radius !== previous.radius ||
+    command.outset !== previous.outset ||
+    !Number.isFinite(after[0]) ||
+    !Number.isFinite(after[1])
+  )
+    return null;
+  return [after[0], after[1], before[2], before[3]];
+}
+
+/**
+ * Encode changed commands directly from a retained scene, without a draw-list or scene diff.
+ *
+ * A clip moves by translation only. An update may replace a `clipPush` whose rect keeps its size, radius and
+ * outset (its origin moves), and a group transform change carries every clip placed through that group along
+ * when the group's world moved by a pure translation. Any other clip change returns null, as before.
+ */
 export function encodeRustRetainedPatch(
   base: RustSceneSnapshot,
   revision: number,
@@ -972,14 +1020,32 @@ function encodeRustRetainedPatchImpl(
     return false;
   }
   const changed = new Set(groupTransforms.map((change) => change.id));
-  if (meta?.clipParents.some((parent) => affected(parent, changed)))
-    return null;
+  // Clip references this patch replaces with an explicit update; such a clip ignores its group's move.
+  const clipReferences = meta ? new Map(meta.clips.map((clip) => [clip.id, clip])) : null;
+  const explicitClips = new Set<string>();
   for (const { id, command, localTransform } of updates) {
     if (seen.has(id)) return null;
     seen.add(id);
     const index = indexes.get(id);
     if (index === undefined) return null;
     const previous = base.commands[index];
+    if (command.kind === "clipPush" && previous.kind === "clipPush") {
+      // A clip moves only by translation: its size, radius and outset are the clip's own.
+      const rect = translatedClipRect(previous, command);
+      if (command.id !== id || localTransform !== undefined || !rect)
+        return null;
+      staged.set(id, { ...previous, rect });
+      explicitClips.add(id);
+      const reference = clipReferences?.get(id);
+      if (reference)
+        clipReferences!.set(id, {
+          id,
+          parentId: reference.parentId,
+          rect,
+          world: groupWorld(reference.parentId, groups),
+        });
+      continue;
+    }
     const resource =
       command.kind === "glyphRun" ? command.atlas : command.resource;
     const previousResource =
@@ -1035,6 +1101,44 @@ function encodeRustRetainedPatchImpl(
     }
   }
   if (groupTransforms.length && meta) {
+    // A clip under a moved group follows it only when the group's world moved by a pure translation; any
+    // change to the linear part would rescale or rotate the clip, which a full admission must judge.
+    // The linear check covers every clip under a moved group, an explicitly updated one included: its group
+    // would otherwise scale or rotate the clipped content but not the clip. An explicit update then wins over the
+    // group's translation.
+    for (const clip of meta.clips) {
+      if (!affected(clip.parentId, changed)) continue;
+      const after = groupWorld(clip.parentId, groups);
+      if (
+        clip.world[0] !== after[0] ||
+        clip.world[1] !== after[1] ||
+        clip.world[2] !== after[2] ||
+        clip.world[3] !== after[3]
+      )
+        return null;
+      if (explicitClips.has(clip.id)) continue;
+      let next: number[];
+      if (clip.local) {
+        const p = mul(after, [1, 0, 0, 1, clip.local[0], clip.local[1]]);
+        next = [p[4], p[5], clip.local[2] * after[0], clip.local[3] * after[3]];
+      } else {
+        next = [
+          clip.rect[0] + (after[4] - clip.world[4]),
+          clip.rect[1] + (after[5] - clip.world[5]),
+          clip.rect[2],
+          clip.rect[3],
+        ];
+      }
+      if (!next.every(Number.isFinite)) return null;
+      const index = indexes.get(clip.id);
+      if (index === undefined) return null;
+      const command = base.commands[index];
+      const rect = command.rect;
+      if (command.kind !== "clipPush" || !Array.isArray(rect) || rect.length !== 4)
+        return null;
+      if (rect.every((value, i) => value === next[i])) continue;
+      staged.set(clip.id, { ...command, rect: next });
+    }
     for (const [id, owner] of owners) {
       if (!affected(owner.parentId, changed)) continue;
       const index = indexes.get(id);
@@ -1059,7 +1163,11 @@ function encodeRustRetainedPatchImpl(
   };
   commandIndexes.set(scene, indexes);
   if (meta)
-    retainedMeta.set(scene, { groups, owners, clipParents: meta.clipParents });
+    retainedMeta.set(scene, {
+      groups,
+      owners,
+      clips: explicitClips.size ? [...clipReferences!.values()] : meta.clips,
+    });
   return {
     bytes: encoder.encode(
       JSON.stringify({

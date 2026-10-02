@@ -95,6 +95,19 @@ try {
       JSON.stringify(changed));
     results['rust-faultRecovery'] = { result: recovered, ...changed };
   }
+  if (!faultInjection) {
+    // A clip translation patch: applied as clip-slot spans on the committed draw table, no geometry rebuild.
+    const before = results['rust-clipNinePatch'].result.result;
+    const moved = await page.evaluate(() => window.proof.rustSteps.clipTranslate());
+    const shifted = await capture('rust', 'rust-clipTranslate', [[16, 32], [96, 32]]);
+    assert.equal(moved.admission.accepted, true, JSON.stringify(moved));
+    assert.equal(moved.result.presented, true, JSON.stringify(moved));
+    assert.equal(moved.result.geometryRebuilds, before.geometryRebuilds, JSON.stringify(moved));
+    assert.equal(moved.result.incrementalPatches, before.incrementalPatches + 1, JSON.stringify(moved));
+    assert.ok(shifted.pixels[0][0] < 10 && shifted.pixels[0][1] < 10, JSON.stringify(shifted));
+    assert.ok(shifted.pixels[1][0] > 245 && shifted.pixels[1][1] > 245, JSON.stringify(shifted));
+    results['rust-clipTranslate'] = { result: moved, ...shifted };
+  }
   for (const [name, change] of [['cold', false], ['warm', false], ['changed', true]]) {
     const result = await page.evaluate((change) => window.proof.retainedStep(change), change);
     const captureResult = await capture('retained', `retained-${name}`, [[32, 32]]);
@@ -130,6 +143,7 @@ try {
       revision: v.result?.result?.revision,
       error: v.result?.result?.error,
       incrementalPatches: v.result?.result?.incrementalPatches,
+      geometryRebuilds: v.result?.result?.geometryRebuilds,
       instanceUploadBytes: v.result?.result?.instanceUploadBytes,
       retainedRasterizations: v.result?.stats?.retainedRasterizations,
       cached: v.result?.cached, path: v.path }])) };

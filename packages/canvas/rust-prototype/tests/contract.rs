@@ -291,6 +291,102 @@ fn scene_v2_requires_nonzero_design_dimensions() {
     assert_eq!(zero.error.as_deref(), Some("invalid scene header"));
 }
 
+/// Nested clips: `outer` holds q1, `inner` (holding q2) and a nine-patch q3; q4 is outside both.
+fn clipped_scene() -> serde_json::Value {
+    let quad = |id: &str, x: f32| {
+        let mut command = scene()["commands"][1].clone();
+        command["id"] = json!(id);
+        command["m"] = json!([1, 0, 0, 1, x, 4]);
+        command["w"] = json!(8);
+        command["h"] = json!(8);
+        command
+    };
+    let mut nine = quad("q3", 30.0);
+    nine["kind"] = json!("ninePatch");
+    nine["margins"] = json!([0.25, 0.25, 0.25, 0.25]);
+    let mut value = scene();
+    value["commands"] = json!([
+        {"id":"outer","kind":"clipPush","rect":[0,0,40,40],"radius":4,"outset":1},
+        quad("q1", 2.0),
+        {"id":"inner","kind":"clipPush","rect":[10,10,20,20],"radius":0,"outset":0},
+        quad("q2", 12.0),
+        {"id":"innerPop","kind":"clipPop"},
+        nine,
+        {"id":"outerPop","kind":"clipPop"},
+        quad("q4", 50.0)
+    ]);
+    value
+}
+
+#[test]
+fn clip_replacement_patches_scope_instances_in_place() {
+    use godot_scene_web_rust_prototype::{
+        contract::Patch,
+        geometry::{patch_spans, same_layout},
+    };
+    let mut state = SceneState::default();
+    let mut resources = ResourceStore::default();
+    resources.upload_batch(&bundle([255, 0, 0, 255])).unwrap();
+    let value = clipped_scene();
+    assert!(state.admit(&serde_json::to_vec(&value).unwrap(), &resources.ready()).accepted);
+    let before = build(state.scene().unwrap());
+    let mut q1 = value["commands"][1].clone();
+    q1["m"] = json!([1, 0, 0, 1, 7, 1]);
+    let patch: Patch = serde_json::from_value(json!({"version":1,"baseRevision":1,"revision":2,"updates":[
+        {"id":"outer","command":{"id":"outer","kind":"clipPush","rect":[5,-3,40,40],"radius":4,"outset":1}},
+        {"id":"inner","command":{"id":"inner","kind":"clipPush","rect":[12,12,20,20],"radius":0,"outset":0}},
+        {"id":"q1","command":q1}
+    ]}))
+    .unwrap();
+    let ready = resources.ready();
+    let updates = state.preflight_patch(&patch, Some(&ready)).unwrap();
+    let spans = patch_spans(&before, state.scene().unwrap(), &updates, |i| state.clips_at(i).copied()).unwrap();
+    let mut patched = before.clone();
+    for (start, instances) in &spans {
+        patched.instances[*start..*start + instances.len()].copy_from_slice(instances);
+    }
+    // Exactly what a full rebuild of the patched scene produces, on the same draw table.
+    let mut next = value.clone();
+    next["revision"] = json!(2);
+    next["commands"][0]["rect"] = json!([5, -3, 40, 40]);
+    next["commands"][2]["rect"] = json!([12, 12, 20, 20]);
+    next["commands"][1] = q1;
+    let expected = build(&serde_json::from_value(next).unwrap());
+    assert!(same_layout(&before, &expected));
+    assert_eq!(patched.instances, expected.instances);
+    assert_eq!(patched.instances[0].clips[0], [5.0, -3.0, 40.0, 40.0]);
+    assert_eq!(patched.instances[1].clips[1], [12.0, 12.0, 20.0, 20.0]);
+    // Only the clips' scopes were touched: q4 (the last instance, outside both) has no span.
+    let q4 = before.command_ranges[7].0 as usize;
+    assert!(spans.iter().all(|(start, instances)| q4 < *start || q4 >= start + instances.len()));
+    assert_eq!(patched.instances[q4], before.instances[q4]);
+    // The committed scene changes only at commit, and its clip index stays valid.
+    assert_eq!(state.scene().unwrap().revision, 1);
+    state.commit_updates(2, updates);
+    assert_eq!(state.clips_at(3).copied(), Some([Some(0), Some(2), None]));
+    assert_eq!(build(state.scene().unwrap()).instances, expected.instances);
+}
+
+#[test]
+fn clip_replacement_spans_refuse_shape_changes() {
+    use godot_scene_web_rust_prototype::{contract::Command, geometry::patch_spans};
+    let mut state = SceneState::default();
+    let mut resources = ResourceStore::default();
+    resources.upload_batch(&bundle([255, 0, 0, 255])).unwrap();
+    assert!(state.admit(&serde_json::to_vec(&clipped_scene()).unwrap(), &resources.ready()).accepted);
+    let before = build(state.scene().unwrap());
+    let clips = |i: usize| state.clips_at(i).copied();
+    // A clip replacement aimed at a quad's slot is a shape change: no span patch.
+    let clip: Command = serde_json::from_value(
+        json!({"id":"q1","kind":"clipPush","rect":[0,0,1,1],"radius":0,"outset":0}),
+    )
+    .unwrap();
+    assert!(patch_spans(&before, state.scene().unwrap(), &[(1, clip)], clips).is_none());
+    // A pop carries nothing a span could express.
+    let pop: Command = serde_json::from_value(json!({"id":"innerPop","kind":"clipPop"})).unwrap();
+    assert!(patch_spans(&before, state.scene().unwrap(), &[(4, pop)], clips).is_none());
+}
+
 fn rsr2(ops: &[(u8, u8, &str, u32, u32, u32, u32, u32, u32, Vec<u8>)]) -> Vec<u8> {
     let mut bytes = b"RSR2".to_vec();
     bytes.extend((ops.len() as u32).to_le_bytes());
@@ -507,4 +603,37 @@ fn glyph_tiles_must_fit_declared_atlas_in_full_and_patch_admission() {
         );
         assert_eq!(state.scene().unwrap().revision, 1);
     }
+}
+
+#[test]
+fn clip_replacement_rewrites_glyph_instances_in_its_scope() {
+    use godot_scene_web_rust_prototype::{contract::Patch, geometry::{patch_spans, same_layout}};
+    // A glyph run (two glyphs, a shadow each: four instances) inside a clip that a patch translates.
+    let scene = json!({ "version":2,"revision":1,"width":64,"height":64,"designWidth":64,"designHeight":64,
+      "resources":[{"key":"atlas","width":48,"height":48}],
+      "commands":[{"id":"clip","kind":"clipPush","rect":[0,0,40,40],"radius":2,"outset":0},
+        {"id":"g","kind":"glyphRun","atlas":"atlas","m":[1,0,0,1,0,0],
+        "glyphs":[{"src":[0,0,24,24],"dst":[4,5,24,24]},{"src":[24,0,24,24],"dst":[20,5,24,24]}],"method":"msdf",
+        "fill":[1,0,0,1],"shadow":{"color":[0,0,0,0.5],"offset":[1,2]},"pxRange":4,"alpha":1},
+        {"id":"pop","kind":"clipPop"}] });
+    let ready = std::collections::HashMap::from([("atlas".to_string(), (48, 48))]);
+    let mut state = SceneState::default();
+    assert!(state.admit(&serde_json::to_vec(&scene).unwrap(), &ready).accepted);
+    let before = build(state.scene().unwrap());
+    let patch: Patch = serde_json::from_value(json!({"version":1,"baseRevision":1,"revision":2,"updates":[
+        {"id":"clip","command":{"id":"clip","kind":"clipPush","rect":[6,-2,40,40],"radius":2,"outset":0}}]}))
+    .unwrap();
+    let updates = state.preflight_patch(&patch, Some(&ready)).unwrap();
+    let spans = patch_spans(&before, state.scene().unwrap(), &updates, |i| state.clips_at(i).copied()).unwrap();
+    let mut patched = before.clone();
+    for (start, instances) in &spans {
+        patched.instances[*start..*start + instances.len()].copy_from_slice(instances);
+    }
+    let mut next = scene.clone();
+    next["commands"][0]["rect"] = json!([6, -2, 40, 40]);
+    let expected = build(&serde_json::from_value(next).unwrap());
+    assert!(same_layout(&before, &expected));
+    assert_eq!(patched.instances.len(), 4);
+    assert_eq!(patched.instances, expected.instances);
+    assert!(patched.instances.iter().all(|instance| instance.clips[0] == [6.0, -2.0, 40.0, 40.0]));
 }

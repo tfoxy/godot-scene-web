@@ -8,8 +8,10 @@ Each draw uses up to eight texture slots selected by a static shader switch.
 Blend changes or a ninth distinct texture start another batch. Creation refuses
 an adapter with fewer than eight sampled texture slots. The instance buffer
 grows by powers of two and is reused. A shape-preserving patch re-emits only
-its changed commands and uploads differing instance ranges; clip, blend,
-texture, or tile-count changes rebuild the draw table. Bind groups are cached
+its changed commands and uploads differing instance ranges. A replaced
+`clipPush` keeps the draw table too: clips live in per-instance clip slots, so
+the instances in its scope get that slot rewritten in place. Blend, texture, or
+tile-count changes rebuild the draw table. Bind groups are cached
 until a resource texture changes. Two picture textures and the surface quad
 are reused between presents.
 
@@ -73,7 +75,8 @@ ordered `commands`. Quad transforms and clip coordinates use design space;
 the vertex stage projects through `designWidth,designHeight` into the configured
 surface. The surface must match the scene's `width,height`. Patches remain
 `version: 1` because they carry only command replacements and revisions.
-Commands have stable `id` and tagged `kind`:
+Commands have stable `id` and tagged `kind`; `encodeRustScene` names a command
+its plan does not name `c<draw-list index>`:
 
 - `quad`, `rasterText`, `stillImage`: `resource` (key or null), affine `m`
   `[xx,xy,yx,yy,ox,oy]`, destination `w,h`, page-pixel crop `src`
@@ -111,8 +114,17 @@ serializer composes it with its parent group and preserves any raster text
 carrier inset from full scene admission; this field stays out of patch/1 bytes.
 The returned `changedIndexes` identifies every replaced command, including
 group-expanded descendants, so retained caches can update those entries only.
-Clips, changed resource keys or blend modes, unknown IDs, and unsupported
-changes return `null` so the caller can admit a full scene.
+A clip moves by translation only: an update may replace a `clipPush` whose
+size, radius and outset are unchanged, and a group change carries the clips
+placed through that group along when the group's world moved by a pure
+translation. An admitted clip is re-placed exactly as admission places it (the
+current world times its draw-list rect); one placed by an explicit update moves
+by the world's change since that update, so chained patches do not accumulate.
+An explicit update of the same clip in one patch wins over the group's
+translation, but not over a scale or rotation, which returns `null`. Any other clip change, changed resource keys or blend modes,
+unknown IDs, and unsupported changes return `null` so the caller can admit a
+full scene. An older renderer applies a clip replacement by rebuilding its
+geometry, so emitting one stays compatible.
 
 Scene changes render into the picture texture opposite the committed one. The
 candidate pass and surface pass share one encoder and submission. Validation is

@@ -571,48 +571,172 @@ describe("Rust prototype patches", () => {
       ]),
     ).toBeNull();
   });
-  it("falls back when a retained group movement would move a clip", () => {
+  /** A clip under group `g` (clip, quad, pop), with an ungrouped quad after it, admitted at `transform`. */
+  function clippedGroupScene(transform: readonly number[], revision = 1, clipX = 2) {
     const list = createDrawList<string>();
     const clip = createClipRectView();
+    clip.x = clipX;
+    clip.y = 3;
     clip.w = 10;
-    clip.h = 10;
+    clip.h = 12;
+    clip.cornerRadius = 1.5;
+    clip.outsetX = 0.5;
     list.pushClipRect(clip);
     const q = createQuadView();
     q.w = 4;
     q.h = 4;
     list.pushQuad(q);
     list.popClip();
-    const base = encodeRustScene({
+    list.pushQuad(q);
+    return encodeRustScene({
       drawList: list,
-      revision: 1,
-      width: 20,
-      height: 20,
-      designWidth: 20,
-      designHeight: 20,
+      revision,
+      width: 40,
+      height: 40,
+      designWidth: 40,
+      designHeight: 40,
       resolveTexture: () => null,
       plan: {
-        groups: [
-          {
-            id: "g",
-            firstIndex: 0,
-            endIndex: 3,
-            transform: [1, 0, 0, 1, 0, 0],
-          },
-        ],
+        groups: [{ id: "g", firstIndex: 0, endIndex: 3, transform }],
         primitives: [
-          { id: "clip", index: 0, parentId: "g" },
           { id: "q", index: 1, parentId: "g" },
-          { id: "pop", index: 2, parentId: "g" },
+          { id: "after", index: 3 },
         ],
       },
     });
+  }
+  it("translates a clip with its group when the group moves by a pure translation", () => {
+    const base = clippedGroupScene([2, 0, 0, 2, 1, 1]);
+    const moved = [2, 0, 0, 2, 6, -3];
+    const patch = encodeRustRetainedPatch(
+      base.scene,
+      2,
+      [],
+      [{ id: "g", transform: moved }],
+    )!;
+    expect(patch).not.toBeNull();
+    // The same scene a full admission at the moved transform encodes, clip and quad alike.
+    const full = clippedGroupScene(moved, 2).scene;
+    expect(patch.scene.commands.map((command) => command.id)).toEqual(
+      full.commands.map((command) => command.id),
+    );
+    patch.scene.commands.forEach((command, index) => {
+      const expected = full.commands[index];
+      for (const key of Object.keys(expected)) {
+        const value = expected[key];
+        if (Array.isArray(value))
+          (value as number[]).forEach((n, i) =>
+            expect((command[key] as number[])[i]).toBeCloseTo(n, 9),
+          );
+        else expect(command[key]).toEqual(value);
+      }
+    });
+    const clip = patch.scene.commands[0];
+    expect(clip.kind).toBe("clipPush");
+    expect(clip.rect).toEqual([2 * 2 + 6, 2 * 3 - 3, 20, 24]);
+    expect(clip.radius).toBe(3);
+    expect(clip.outset).toBe(1);
+    // The patch carries the clip and the grouped quad; the pop and the quad outside the group are untouched.
+    const wire = JSON.parse(new TextDecoder().decode(patch.bytes));
+    expect(
+      wire.updates.map((update: { id: string }) => update.id).sort(),
+    ).toEqual(["c0", "q"]);
+    expect(patch.changedIndexes.slice().sort()).toEqual([0, 1]);
+    // The candidate keeps the clip's parent, so a second move translates from the first.
+    const again = encodeRustRetainedPatch(
+      patch.scene,
+      3,
+      [],
+      [{ id: "g", transform: [2, 0, 0, 2, 7, -3] }],
+    )!;
+    expect(again.scene.commands[0].rect).toEqual([11, 3, 20, 24]);
+  });
+  it("places a group-moved clip exactly as a full admission does, after every chained patch", () => {
+    // clip.x 2.3 (float32 in the list): a placement from world differences, (x0 + 0.1) + (x - 0.1), is one ulp
+    // off admission's 2.3 + x after the second step here.
+    const base = clippedGroupScene([1, 0, 0, 1, 0.1, 0.2], 1, 2.3);
+    let scene = base.scene;
+    let x = 0.1;
+    for (let step = 0; step < 50; step++) {
+      x += 0.1;
+      scene = encodeRustRetainedPatch(scene, scene.revision + 1, [], [
+        { id: "g", transform: [1, 0, 0, 1, x, 0.2] },
+      ])!.scene;
+      // Bit for bit after every patch: the same multiply admission uses, never a running sum or a difference.
+      const full = clippedGroupScene([1, 0, 0, 1, x, 0.2], scene.revision, 2.3).scene;
+      expect([step, scene.commands[0]]).toEqual([step, full.commands[0]]);
+    }
+  });
+  it("lets an explicit clip update win over its group's move in the same patch, and keeps it as the reference", () => {
+    const base = clippedGroupScene([1, 0, 0, 1, 0, 0]);
+    const clip = base.scene.commands[0];
+    const patch = encodeRustRetainedPatch(
+      base.scene,
+      2,
+      [{ id: "c0", command: { ...clip, rect: [40, 50, 10, 12] } }],
+      [{ id: "g", transform: [1, 0, 0, 1, 5, 5] }],
+    )!;
+    expect(patch.scene.commands[0].rect).toEqual([40, 50, 10, 12]);
+    // A later group move translates from the explicit placement, by the change since that patch only.
+    const later = encodeRustRetainedPatch(patch.scene, 3, [], [
+      { id: "g", transform: [1, 0, 0, 1, 7, 4] },
+    ])!;
+    expect(later.scene.commands[0].rect).toEqual([42, 49, 10, 12]);
+  });
+  it("falls back when an explicit clip update rides a group whose scale or rotation changes", () => {
+    const base = clippedGroupScene([1, 0, 0, 1, 0, 0]);
+    const clip = base.scene.commands[0];
     expect(
       encodeRustRetainedPatch(
         base.scene,
         2,
-        [],
-        [{ id: "g", transform: [1, 0, 0, 1, 1, 1] }],
+        [{ id: "c0", command: { ...clip, rect: [3, 4, 10, 12] } }],
+        [{ id: "g", transform: [2, 0, 0, 2, 0, 0] }],
       ),
+    ).toBeNull();
+  });
+  it("falls back when a retained group movement would scale or rotate a clip", () => {
+    const base = clippedGroupScene([1, 0, 0, 1, 0, 0]);
+    for (const transform of [
+      [1, 0, 0, 1.5, 1, 1],
+      [0, 1, -1, 0, 0, 0],
+    ])
+      expect(
+        encodeRustRetainedPatch(base.scene, 2, [], [{ id: "g", transform }]),
+      ).toBeNull();
+  });
+  it("translates a clip replaced by an update, and refuses any other clip change", () => {
+    const base = clippedGroupScene([1, 0, 0, 1, 0, 0]);
+    const clip = base.scene.commands[0];
+    const moved = encodeRustRetainedPatch(base.scene, 2, [
+      { id: "c0", command: { ...clip, rect: [5, -7, 10, 12] } },
+    ])!;
+    expect(moved.scene.commands[0]).toEqual({ ...clip, rect: [5, -7, 10, 12] });
+    expect(JSON.parse(new TextDecoder().decode(moved.bytes)).updates).toEqual([
+      { id: "c0", command: { ...clip, rect: [5, -7, 10, 12] } },
+    ]);
+    expect(moved.changedIndexes).toEqual([0]);
+    for (const command of [
+      { ...clip, rect: [5, -7, 11, 12] },
+      { ...clip, rect: [5, -7, 10, 13] },
+      { ...clip, radius: 2 },
+      { ...clip, outset: 1 },
+      { ...clip, rect: [Number.NaN, 0, 10, 12] },
+      { ...clip, rect: [0, 0, 10] },
+      { ...clip, id: "other" },
+    ])
+      expect(
+        encodeRustRetainedPatch(base.scene, 2, [{ id: "c0", command }]),
+      ).toBeNull();
+    // A pop has nothing to translate; a quad replaced as a clip is a shape change.
+    const pop = base.scene.commands[2];
+    expect(
+      encodeRustRetainedPatch(base.scene, 2, [{ id: String(pop.id), command: { ...pop } }]),
+    ).toBeNull();
+    expect(
+      encodeRustRetainedPatch(base.scene, 2, [
+        { id: "after", command: { ...clip, id: "after" } },
+      ]),
     ).toBeNull();
   });
   it("batches same-kind updates and falls back on shape change", () => {
