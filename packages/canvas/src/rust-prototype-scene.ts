@@ -66,11 +66,17 @@ export interface RustGlyphTextCarrier {
   /** Slug has a distinct blob resource and pipeline; only atlas methods use this carrier. */
   method: "msdf" | "sdf";
   atlas: RustResource;
-  glyphs: readonly { src: readonly [number, number, number, number]; dst: readonly [number, number, number, number] }[];
+  glyphs: readonly {
+    src: readonly [number, number, number, number];
+    dst: readonly [number, number, number, number];
+  }[];
   transform: readonly number[];
   fill: readonly [number, number, number, number];
   outline?: { color: readonly [number, number, number, number]; width: number };
-  shadow?: { color: readonly [number, number, number, number]; offset: readonly [number, number] };
+  shadow?: {
+    color: readonly [number, number, number, number];
+    offset: readonly [number, number];
+  };
   pxRange: number;
   alpha?: number;
 }
@@ -407,22 +413,42 @@ function encodeRustSceneImpl<T>({
           continue;
         }
         resources.set(carrier.atlas.key, carrier.atlas);
-        commands.push({ id, kind: "glyphRun", atlas: carrier.atlas.key,
+        commands.push({
+          id,
+          kind: "glyphRun",
+          atlas: carrier.atlas.key,
           m: mul(world(record.parentId), carrier.transform),
           glyphs: carrier.glyphs.map(({ src, dst }) => ({ src, dst })),
-          method: carrier.method, fill: carrier.fill, outline: carrier.outline ?? null,
-          shadow: carrier.shadow ?? null, pxRange: carrier.pxRange,
-          alpha: carrier.alpha ?? record.alpha ?? 1 });
+          method: carrier.method,
+          fill: carrier.fill,
+          outline: carrier.outline ?? null,
+          shadow: carrier.shadow ?? null,
+          pxRange: carrier.pxRange,
+          alpha: carrier.alpha ?? record.alpha ?? 1,
+        });
       } else {
         resources.set(carrier.resource.key, carrier.resource);
-        textUploads.push({ key: carrier.resource.key, width: carrier.resource.width,
-          height: carrier.resource.height, pixels: carrier.pixels });
+        textUploads.push({
+          key: carrier.resource.key,
+          width: carrier.resource.width,
+          height: carrier.resource.height,
+          pixels: carrier.pixels,
+        });
         const alpha = carrier.alpha ?? record.alpha ?? 1;
-        commands.push({ id, kind: "rasterText", resource: carrier.resource.key,
-          m: mul(world(record.parentId), carrier.transform), w: carrier.width, h: carrier.height,
+        commands.push({
+          id,
+          kind: "rasterText",
+          resource: carrier.resource.key,
+          m: mul(world(record.parentId), carrier.transform),
+          w: carrier.width,
+          h: carrier.height,
           src: [0, 0, carrier.resource.width, carrier.resource.height],
-          color: [alpha, alpha, alpha, alpha], blend: "mix", flipH: false,
-          flipV: false, colorMatrix: null });
+          color: [alpha, alpha, alpha, alpha],
+          blend: "mix",
+          flipH: false,
+          flipV: false,
+          colorMatrix: null,
+        });
       }
       owners.set(id, {
         parentId: record.parentId,
@@ -604,46 +630,122 @@ function encodeRustResourcesImpl(
 
 /** RSR2 is for atlas residency: explicit format, subrect write, and release. RSR1 remains byte-identical. */
 export type RustResourceUpdate =
-  | { operation: "replace"; key: string; width: number; height: number; format: "srgb" | "linear"; pixels: Uint8Array }
-  | { operation: "subrect"; key: string; width: number; height: number; format: "srgb" | "linear";
-      x: number; y: number; regionWidth: number; regionHeight: number; pixels: Uint8Array }
+  | {
+      operation: "allocate";
+      key: string;
+      width: number;
+      height: number;
+      format: "srgb" | "linear";
+    }
+  | {
+      operation: "replace";
+      key: string;
+      width: number;
+      height: number;
+      format: "srgb" | "linear";
+      pixels: Uint8Array;
+    }
+  | {
+      operation: "subrect";
+      key: string;
+      width: number;
+      height: number;
+      format: "srgb" | "linear";
+      x: number;
+      y: number;
+      regionWidth: number;
+      regionHeight: number;
+      pixels: Uint8Array;
+    }
   | { operation: "release"; key: string };
 
-export function encodeRustResourceUpdates(items: readonly RustResourceUpdate[]): Uint8Array {
+export function encodeRustResourceUpdates(
+  items: readonly RustResourceUpdate[],
+): Uint8Array {
   if (items.length > 4096) throw new Error("too many resource updates");
   const keys = items.map((item) => encoder.encode(item.key));
-  const total = 8 + items.reduce((size, item, index) => size + 36 + keys[index].length +
-    (item.operation === "release" ? 0 : item.pixels.length), 0);
+  const total =
+    8 +
+    items.reduce(
+      (size, item, index) =>
+        size +
+        36 +
+        keys[index].length +
+        (item.operation === "release" || item.operation === "allocate"
+          ? 0
+          : item.pixels.length),
+      0,
+    );
   const bytes = new Uint8Array(total);
   const data = new DataView(bytes.buffer);
   bytes.set([82, 83, 82, 50]); // RSR2
   data.setUint32(4, items.length, true);
   let cursor = 8;
   items.forEach((item, index) => {
-    if (!item.key || keys[index].length > 4096) throw new Error("invalid resource key");
+    if (!item.key || keys[index].length > 4096)
+      throw new Error("invalid resource key");
     const replace = item.operation === "replace";
     const subrect = item.operation === "subrect";
+    const allocate = item.operation === "allocate";
     const width = item.operation === "release" ? 0 : item.width;
     const height = item.operation === "release" ? 0 : item.height;
     const x = subrect ? item.x : 0;
     const y = subrect ? item.y : 0;
     const regionWidth = replace ? width : subrect ? item.regionWidth : 0;
     const regionHeight = replace ? height : subrect ? item.regionHeight : 0;
-    const pixels = item.operation === "release" ? undefined : item.pixels;
-    if (item.operation !== "release" &&
-      (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 ||
-       !Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 ||
-       !Number.isSafeInteger(regionWidth) || !Number.isSafeInteger(regionHeight) ||
-       regionWidth < 1 || regionHeight < 1 || x + regionWidth > width || y + regionHeight > height ||
-       pixels!.length !== regionWidth * regionHeight * 4)) throw new Error(`invalid resource region ${item.key}`);
-    bytes[cursor] = replace ? 0 : subrect ? 1 : 2;
-    bytes[cursor + 1] = item.operation === "release" ? 0 : item.format === "linear" ? 1 : 0;
+    const pixels =
+      item.operation === "release" || allocate ? undefined : item.pixels;
+    if (
+      allocate &&
+      (!Number.isSafeInteger(width) ||
+        !Number.isSafeInteger(height) ||
+        width < 1 ||
+        height < 1)
+    )
+      throw new Error(`invalid resource allocation ${item.key}`);
+    if (
+      item.operation !== "release" &&
+      !allocate &&
+      (!Number.isSafeInteger(width) ||
+        !Number.isSafeInteger(height) ||
+        width < 1 ||
+        height < 1 ||
+        !Number.isSafeInteger(x) ||
+        !Number.isSafeInteger(y) ||
+        x < 0 ||
+        y < 0 ||
+        !Number.isSafeInteger(regionWidth) ||
+        !Number.isSafeInteger(regionHeight) ||
+        regionWidth < 1 ||
+        regionHeight < 1 ||
+        x + regionWidth > width ||
+        y + regionHeight > height ||
+        pixels!.length !== regionWidth * regionHeight * 4)
+    )
+      throw new Error(`invalid resource region ${item.key}`);
+    bytes[cursor] = replace ? 0 : subrect ? 1 : allocate ? 3 : 2;
+    bytes[cursor + 1] =
+      item.operation === "release" ? 0 : item.format === "linear" ? 1 : 0;
     cursor += 4; // two reserved bytes remain zero
-    for (const value of [keys[index].length, width, height, x, y, regionWidth, regionHeight, pixels?.length ?? 0]) {
-      data.setUint32(cursor, value, true); cursor += 4;
+    for (const value of [
+      keys[index].length,
+      width,
+      height,
+      x,
+      y,
+      regionWidth,
+      regionHeight,
+      pixels?.length ?? 0,
+    ]) {
+      data.setUint32(cursor, value, true);
+      cursor += 4;
     }
-    bytes.set(keys[index], cursor); cursor += keys[index].length;
-    if (pixels) { bytes.set(pixels, cursor); cursor += pixels.length; }
+    bytes.set(keys[index], cursor);
+    cursor += keys[index].length;
+    if (pixels) {
+      bytes.set(pixels, cursor);
+      cursor += pixels.length;
+    }
   });
   return bytes;
 }
@@ -878,8 +980,10 @@ function encodeRustRetainedPatchImpl(
     const index = indexes.get(id);
     if (index === undefined) return null;
     const previous = base.commands[index];
-    const resource = command.kind === "glyphRun" ? command.atlas : command.resource;
-    const previousResource = previous.kind === "glyphRun" ? previous.atlas : previous.resource;
+    const resource =
+      command.kind === "glyphRun" ? command.atlas : command.resource;
+    const previousResource =
+      previous.kind === "glyphRun" ? previous.atlas : previous.resource;
     if (
       command.id !== id ||
       command.kind !== previous.kind ||
@@ -891,8 +995,7 @@ function encodeRustRetainedPatchImpl(
         String(command.kind),
       ) ||
       (resource !== null &&
-        (typeof resource !== "string" ||
-          !resources.has(resource)))
+        (typeof resource !== "string" || !resources.has(resource)))
     )
       return null;
     const owner = owners.get(id);

@@ -25,6 +25,12 @@ pub struct ResourceMeta {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResourceChange {
+    Allocate {
+        key: String,
+        width: u32,
+        height: u32,
+        format: ResourceFormat,
+    },
     Replace {
         key: String,
         width: u32,
@@ -47,15 +53,23 @@ pub enum ResourceChange {
 impl ResourceChange {
     pub fn key(&self) -> &str {
         match self {
-            Self::Replace { key, .. } | Self::Subrect { key, .. } | Self::Release { key } => key,
+            Self::Allocate { key, .. }
+            | Self::Replace { key, .. }
+            | Self::Subrect { key, .. }
+            | Self::Release { key } => key,
         }
     }
     pub fn byte_len(&self) -> usize {
         match self {
             Self::Replace { pixels, .. } | Self::Subrect { pixels, .. } => pixels.len(),
-            Self::Release { .. } => 0,
+            Self::Allocate { .. } | Self::Release { .. } => 0,
         }
     }
+}
+pub struct ResourceBatch {
+    pub changes: Vec<ResourceChange>,
+    staged: HashMap<String, Option<ResourceMeta>>,
+    dimensions_epoch: u64,
 }
 #[derive(Default)]
 pub struct ResourceStore {
@@ -78,6 +92,22 @@ impl ResourceStore {
             .collect()
     }
     pub fn upload_batch(&mut self, bytes: &[u8]) -> Result<Vec<ResourceChange>, String> {
+        let batch = self.plan_batch(bytes)?;
+        Ok(self.commit_batch(batch))
+    }
+    pub fn commit_batch(&mut self, batch: ResourceBatch) -> Vec<ResourceChange> {
+        for (key, value) in batch.staged {
+            if let Some(meta) = value {
+                self.entries.insert(key, meta);
+            } else {
+                self.entries.remove(&key);
+            }
+        }
+        self.dimensions_epoch = batch.dimensions_epoch;
+        batch.changes
+    }
+    /** Validate without publishing residency; GPU uploads can commit only after success. */
+    pub fn plan_batch(&self, bytes: &[u8]) -> Result<ResourceBatch, String> {
         if bytes.len() < 8 {
             return Err("invalid resource header".into());
         }
@@ -227,21 +257,49 @@ impl ResourceStore {
                         updates.push(ResourceChange::Release { key });
                     }
                 }
+                3 if is_v2 => {
+                    if w == 0
+                        || h == 0
+                        || x != 0
+                        || y != 0
+                        || rw != 0
+                        || rh != 0
+                        || n != 0
+                        || self.max_side.is_some_and(|max| w > max || h > max)
+                        || rgba_len(w, h).is_none()
+                        || self.entries.contains_key(&key)
+                        || staged.contains_key(&key)
+                    {
+                        return Err("invalid or duplicate resource allocation".into());
+                    }
+                    staged.insert(
+                        key.clone(),
+                        Some(ResourceMeta {
+                            width: w,
+                            height: h,
+                            format,
+                            fingerprint: None,
+                        }),
+                    );
+                    epoch += 1;
+                    updates.push(ResourceChange::Allocate {
+                        key,
+                        width: w,
+                        height: h,
+                        format,
+                    });
+                }
                 _ => return Err("invalid resource operation".into()),
             }
         }
         if cursor != bytes.len() {
             return Err("trailing resource bytes".into());
         }
-        for (key, value) in staged {
-            if let Some(meta) = value {
-                self.entries.insert(key, meta);
-            } else {
-                self.entries.remove(&key);
-            }
-        }
-        self.dimensions_epoch = epoch;
-        Ok(updates)
+        Ok(ResourceBatch {
+            changes: updates,
+            staged,
+            dimensions_epoch: epoch,
+        })
     }
 }
 fn rgba_len(w: u32, h: u32) -> Option<usize> {
