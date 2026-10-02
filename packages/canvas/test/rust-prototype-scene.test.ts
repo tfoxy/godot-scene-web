@@ -14,6 +14,7 @@ import {
   encodeRustScene,
   jsonEqual,
   rustSceneCommandIndex,
+  type RustSceneSnapshot,
 } from "../src/rust-prototype-scene";
 
 describe("Rust prototype scene serializer", () => {
@@ -1219,6 +1220,458 @@ describe("encodeRustPatch fast path", () => {
   });
 });
 
+// --- Pre-copy-on-write oracle ---------------------------------------------------------------------
+// Verbatim from commit 53bbfff7 (`git show 53bbfff7:packages/canvas/src/rust-prototype-scene.ts`),
+// before `encodeRustRetainedPatchImpl` was rewritten onto `OverlayMap`. Kept ONLY here, with its own
+// private bookkeeping (`legacy*`), so the randomized parity test below compares against a genuinely
+// independent reference rather than one that would inherit whatever the real implementation does —
+// an earlier version of this test kept the oracle in the package source, built from the *new*
+// `OverlayMap`s, and so silently inherited a real ordering bug instead of catching it. Do not import
+// or export this from the package, and do not fix bugs in it: it exists to stay exactly what shipped
+// before, so that a divergence from `encodeRustRetainedPatch` means something.
+const legacyEncoder = new TextEncoder();
+const legacyIdentity = [1, 0, 0, 1, 0, 0] as const;
+function legacyMul(a: ArrayLike<number>, b: ArrayLike<number>): number[] {
+  return [
+    a[0] * b[0] + a[2] * b[1],
+    a[1] * b[0] + a[3] * b[1],
+    a[0] * b[2] + a[2] * b[3],
+    a[1] * b[2] + a[3] * b[3],
+    a[0] * b[4] + a[2] * b[5] + a[4],
+    a[1] * b[4] + a[3] * b[5] + a[5],
+  ];
+}
+function legacyInverse(m: ArrayLike<number>): number[] | null {
+  const determinant = m[0] * m[3] - m[1] * m[2];
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-10) return null;
+  const a = m[3] / determinant,
+    b = -m[1] / determinant;
+  const c = -m[2] / determinant,
+    d = m[0] / determinant;
+  return [a, b, c, d, -a * m[4] - c * m[5], -b * m[4] - d * m[5]];
+}
+function legacyTranslatedClipRect(
+  previous: Record<string, unknown>,
+  command: Record<string, unknown>,
+): number[] | null {
+  const before = previous.rect,
+    after = command.rect;
+  if (
+    !Array.isArray(before) ||
+    !Array.isArray(after) ||
+    before.length !== 4 ||
+    after.length !== 4 ||
+    after[2] !== before[2] ||
+    after[3] !== before[3] ||
+    command.radius !== previous.radius ||
+    command.outset !== previous.outset ||
+    !Number.isFinite(after[0]) ||
+    !Number.isFinite(after[1])
+  )
+    return null;
+  return [after[0], after[1], before[2], before[3]];
+}
+interface LegacyRetainedClip {
+  id: string;
+  parentId?: string;
+  rect: readonly number[];
+  world: readonly number[];
+  local?: readonly number[];
+}
+interface LegacyRetainedMeta {
+  groups: Map<string, { parentId?: string; transform: readonly number[] }>;
+  owners: Map<
+    string,
+    { parentId?: string; local: readonly number[]; sourceLocal: readonly number[] }
+  >;
+  clips: readonly LegacyRetainedClip[];
+}
+const legacyRetainedMeta = new WeakMap<RustSceneSnapshot, LegacyRetainedMeta>();
+const legacyCommandIndexes = new WeakMap<RustSceneSnapshot, Map<string, number>>();
+function legacyIndexCommands(scene: RustSceneSnapshot): Map<string, number> {
+  let indexes = legacyCommandIndexes.get(scene);
+  if (!indexes) {
+    indexes = new Map(scene.commands.map((command, index) => [String(command.id), index]));
+    legacyCommandIndexes.set(scene, indexes);
+  }
+  return indexes;
+}
+/**
+ * Seeds `legacyRetainedMeta`/`legacyCommandIndexes` for a scene this test built directly. The real
+ * `encodeRustScene` never saw this object, so its own (separate, private) bookkeeping has nothing for
+ * it either — the test hands the oracle the same group/owner/clip facts it constructed the scene
+ * from, in the oracle's own pre-change shape (plain `Map`s, not `OverlayMap`s).
+ */
+function seedLegacyRetainedMeta(
+  scene: RustSceneSnapshot,
+  groups: LegacyRetainedMeta["groups"],
+  owners: LegacyRetainedMeta["owners"],
+  clips: readonly LegacyRetainedClip[],
+): void {
+  legacyIndexCommands(scene);
+  legacyRetainedMeta.set(scene, { groups, owners, clips });
+}
+function legacyEncodeRustRetainedPatch(
+  base: RustSceneSnapshot,
+  revision: number,
+  updates: readonly {
+    id: string;
+    command: Record<string, unknown>;
+    localTransform?: readonly number[];
+  }[],
+  groupTransforms: readonly { id: string; transform: readonly number[] }[] = [],
+): { bytes: Uint8Array; scene: RustSceneSnapshot; changedIndexes: readonly number[] } | null {
+  if (
+    base.version !== 2 ||
+    !Number.isSafeInteger(base.revision) ||
+    !Number.isSafeInteger(revision) ||
+    revision <= base.revision
+  )
+    return null;
+  const indexes = legacyIndexCommands(base);
+  const resources = new Set(base.resources.map((resource) => resource.key));
+  const seen = new Set<string>();
+  const nextCommands = base.commands.slice();
+  const meta = legacyRetainedMeta.get(base);
+  if (groupTransforms.length && !meta) return null;
+  const groups = meta
+    ? new Map(meta.groups)
+    : new Map<string, { parentId?: string; transform: readonly number[] }>();
+  const owners = meta
+    ? new Map(meta.owners)
+    : new Map<
+        string,
+        { parentId?: string; local: readonly number[]; sourceLocal: readonly number[] }
+      >();
+  for (const change of groupTransforms) {
+    const group = groups.get(change.id);
+    if (!group || change.transform.length !== 6 || !change.transform.every(Number.isFinite))
+      return null;
+    groups.set(change.id, { ...group, transform: change.transform });
+  }
+  const staged = new Map<string, Record<string, unknown>>();
+  function groupWorld(
+    id: string | undefined,
+    source: Map<string, { parentId?: string; transform: readonly number[] }>,
+  ): number[] {
+    if (!id) return [...legacyIdentity];
+    const group = source.get(id);
+    if (!group) throw new Error(`missing group ${id}`);
+    return legacyMul(groupWorld(group.parentId, source), group.transform);
+  }
+  function affected(id: string | undefined, changed: Set<string>): boolean {
+    while (id) {
+      if (changed.has(id)) return true;
+      id = groups.get(id)?.parentId;
+    }
+    return false;
+  }
+  const changed = new Set(groupTransforms.map((change) => change.id));
+  const clipReferences = meta ? new Map(meta.clips.map((clip) => [clip.id, clip])) : null;
+  const explicitClips = new Set<string>();
+  for (const { id, command, localTransform } of updates) {
+    if (seen.has(id)) return null;
+    seen.add(id);
+    const index = indexes.get(id);
+    if (index === undefined) return null;
+    const previous = base.commands[index];
+    if (command.kind === "clipPush" && previous.kind === "clipPush") {
+      const rect = legacyTranslatedClipRect(previous, command);
+      if (command.id !== id || localTransform !== undefined || !rect) return null;
+      staged.set(id, { ...previous, rect });
+      explicitClips.add(id);
+      const reference = clipReferences?.get(id);
+      if (reference)
+        clipReferences!.set(id, {
+          id,
+          parentId: reference.parentId,
+          rect,
+          world: groupWorld(reference.parentId, groups),
+        });
+      continue;
+    }
+    const resource = command.kind === "glyphRun" ? command.atlas : command.resource;
+    const previousResource = previous.kind === "glyphRun" ? previous.atlas : previous.resource;
+    if (
+      command.id !== id ||
+      command.kind !== previous.kind ||
+      resource !== previousResource ||
+      command.blend !== previous.blend ||
+      command.kind === "clipPush" ||
+      command.kind === "clipPop" ||
+      !["quad", "ninePatch", "rasterText", "glyphRun", "stillImage"].includes(String(command.kind)) ||
+      (resource !== null && (typeof resource !== "string" || !resources.has(resource)))
+    )
+      return null;
+    const owner = owners.get(id);
+    if (localTransform !== undefined) {
+      if (!owner || localTransform.length !== 6 || !localTransform.every(Number.isFinite))
+        return null;
+      const undoSource = legacyInverse(owner.sourceLocal);
+      if (!undoSource) return null;
+      const carrierInset = legacyMul(undoSource, owner.local);
+      const nextLocal = legacyMul(localTransform, carrierInset);
+      owners.set(id, { ...owner, local: nextLocal, sourceLocal: localTransform });
+      staged.set(id, { ...command, m: legacyMul(groupWorld(owner.parentId, groups), nextLocal) });
+    } else {
+      staged.set(id, command);
+    }
+    if (localTransform === undefined && owner && Array.isArray(command.m) && command.m.length === 6) {
+      const oldWorld = groupWorld(owner.parentId, meta!.groups);
+      const undo = legacyInverse(oldWorld);
+      if (!undo) return null;
+      owners.set(id, { ...owner, local: legacyMul(undo, command.m as number[]) });
+    }
+  }
+  if (groupTransforms.length && meta) {
+    for (const clip of meta.clips) {
+      if (!affected(clip.parentId, changed)) continue;
+      const after = groupWorld(clip.parentId, groups);
+      if (
+        clip.world[0] !== after[0] ||
+        clip.world[1] !== after[1] ||
+        clip.world[2] !== after[2] ||
+        clip.world[3] !== after[3]
+      )
+        return null;
+      if (explicitClips.has(clip.id)) continue;
+      let next: number[];
+      if (clip.local) {
+        const p = legacyMul(after, [1, 0, 0, 1, clip.local[0], clip.local[1]]);
+        next = [p[4], p[5], clip.local[2] * after[0], clip.local[3] * after[3]];
+      } else {
+        next = [
+          clip.rect[0] + (after[4] - clip.world[4]),
+          clip.rect[1] + (after[5] - clip.world[5]),
+          clip.rect[2],
+          clip.rect[3],
+        ];
+      }
+      if (!next.every(Number.isFinite)) return null;
+      const index = indexes.get(clip.id);
+      if (index === undefined) return null;
+      const command = base.commands[index];
+      const rect = command.rect;
+      if (command.kind !== "clipPush" || !Array.isArray(rect) || rect.length !== 4) return null;
+      if (rect.every((value, i) => value === next[i])) continue;
+      staged.set(clip.id, { ...command, rect: next });
+    }
+    for (const [id, owner] of owners) {
+      if (!affected(owner.parentId, changed)) continue;
+      const index = indexes.get(id);
+      if (index === undefined) return null;
+      const command = staged.get(id) ?? base.commands[index];
+      staged.set(id, { ...command, m: legacyMul(groupWorld(owner.parentId, groups), owner.local) });
+    }
+  }
+  const changedIndexes: number[] = [];
+  for (const [id, command] of staged) {
+    const index = indexes.get(id)!;
+    nextCommands[index] = command;
+    changedIndexes.push(index);
+  }
+  const scene: RustSceneSnapshot = { ...base, revision, commands: nextCommands };
+  legacyCommandIndexes.set(scene, indexes);
+  if (meta)
+    legacyRetainedMeta.set(scene, {
+      groups,
+      owners,
+      clips: explicitClips.size ? [...clipReferences!.values()] : meta.clips,
+    });
+  return {
+    bytes: legacyEncoder.encode(
+      JSON.stringify({
+        version: 1,
+        baseRevision: base.revision,
+        revision,
+        updates: [...staged].map(([id, command]) => ({ id, command })),
+      }),
+    ),
+    scene,
+    changedIndexes,
+  };
+}
+
+const BIG_RESOURCE_KEYS = ["atlasA", "atlasB", "atlasC", "atlasD", "atlasE", "atlasF"];
+/**
+ * A few hundred commands across a real two-level group hierarchy (`gA` -> `gB`, with a clip under
+ * `gB` so moving `gA` moves a large subtree including the clip) plus two ungrouped-by-any-ancestor
+ * groups (`gC`/`gD`), real resource keys, and quad/ninePatch/rasterText/glyphRun commands — every
+ * primitive and text record carries an explicit `localTransform`, so the test can hand-derive the
+ * exact `groups`/`owners`/`clips` the legacy oracle needs without reimplementing `encodeRustScene`'s
+ * own extraction of them. (`stillImage` is not producible through `encodeRustScene` at all — no
+ * drawList or text path ever emits it — so it is covered separately, directly against a hand-built
+ * scene where `meta` is undefined on both sides.)
+ */
+function buildBigScenario(rng: () => number) {
+  const list = createDrawList<string>();
+  const groupsSeed = new Map<string, { parentId?: string; transform: readonly number[] }>([
+    ["gA", { transform: [1, 0, 0, 1, 5, 7] }],
+    ["gB", { parentId: "gA", transform: [1, 0, 0, 1, -3, 4] }],
+    ["gC", { transform: [1.2, 0.1, -0.1, 1.1, 3, -2] }],
+    ["gD", { transform: [0.9, -0.2, 0.2, 0.95, -4, 6] }],
+  ]);
+  const groupPlan = [...groupsSeed].map(([id, g]) => ({
+    id,
+    parentId: g.parentId,
+    firstIndex: 0,
+    endIndex: 0, // never consulted: every primitive below gives an explicit parentId.
+    transform: g.transform as number[],
+  }));
+  const ownersSeed = new Map<
+    string,
+    { parentId?: string; local: readonly number[]; sourceLocal: readonly number[] }
+  >();
+  const primitives: { id: string; index: number; parentId?: string; localTransform: number[] }[] =
+    [];
+  const groupCycle = ["gA", "gB", "gC", "gD", undefined] as const;
+  const quadIds: string[] = [];
+  const ninePatchIds: string[] = [];
+
+  const clip = createClipRectView();
+  clip.x = -4;
+  clip.y = 2;
+  clip.w = 50;
+  clip.h = 40;
+  clip.cornerRadius = 1;
+  clip.outsetX = 0.5;
+  const clipIndex = list.pushClipRect(clip);
+  primitives.push({ id: "clip0", index: clipIndex, parentId: "gB", localTransform: [1, 0, 0, 1, 0, 0] });
+
+  const QUADS = 200;
+  const NINE_PATCHES = 40;
+  for (let i = 0; i < QUADS; i++) {
+    const q = createQuadView();
+    q.w = 4 + rng() * 10;
+    q.h = 4 + rng() * 10;
+    q.r = rng();
+    q.g = rng();
+    q.b = rng();
+    q.a = 1;
+    q.blend = 0;
+    const idx = list.pushQuad(q, BIG_RESOURCE_KEYS[i % BIG_RESOURCE_KEYS.length]);
+    const id = `q${i}`;
+    const parentId = groupCycle[i % groupCycle.length];
+    const localTransform = [1, 0, 0, 1, rng() * 10 - 5, rng() * 10 - 5];
+    primitives.push({ id, index: idx, parentId, localTransform });
+    ownersSeed.set(id, { parentId, local: localTransform, sourceLocal: localTransform });
+    quadIds.push(id);
+  }
+  for (let i = 0; i < NINE_PATCHES; i++) {
+    const n = createNinePatchView();
+    n.w = 10 + rng() * 10;
+    n.h = 10 + rng() * 10;
+    n.r = rng();
+    n.g = rng();
+    n.b = rng();
+    n.a = 1;
+    n.blend = 0;
+    n.marginLeft = n.marginTop = n.marginRight = n.marginBottom = 1;
+    const idx = list.pushNinePatch(n, BIG_RESOURCE_KEYS[i % BIG_RESOURCE_KEYS.length]);
+    const id = `n${i}`;
+    const parentId = groupCycle[(i + 2) % groupCycle.length];
+    const localTransform = [1, 0, 0, 1, rng() * 10 - 5, rng() * 10 - 5];
+    primitives.push({ id, index: idx, parentId, localTransform });
+    ownersSeed.set(id, { parentId, local: localTransform, sourceLocal: localTransform });
+    ninePatchIds.push(id);
+  }
+  list.popClip();
+  const textInsertionIndex = list.count;
+
+  const RASTER = 10;
+  const GLYPHS = 10;
+  const texts: {
+    key: string;
+    insertionIndex: number;
+    transform: readonly number[];
+    parentId?: string;
+    localTransform?: readonly number[];
+  }[] = [];
+  const rasterTextIds: string[] = [];
+  const glyphRunIds: string[] = [];
+  const textCarriers = new Map<string, Record<string, unknown>>();
+  for (let i = 0; i < RASTER; i++) {
+    const key = `raster${i}`;
+    const parentId = groupCycle[i % groupCycle.length];
+    const localTransform = [1, 0, 0, 1, rng() * 6 - 3, rng() * 6 - 3];
+    const carrierTransform = [1, 0, 0, 1, rng() * 6 - 3, rng() * 6 - 3];
+    texts.push({ key, insertionIndex: textInsertionIndex, transform: carrierTransform, parentId, localTransform });
+    rasterTextIds.push(`t${key}`);
+    ownersSeed.set(`t${key}`, { parentId, local: carrierTransform, sourceLocal: localTransform });
+    textCarriers.set(key, {
+      resource: { key: `texRaster${i}`, width: 2, height: 2 },
+      pixels: new Uint8Array(16).fill(1),
+      width: 2,
+      height: 2,
+      transform: carrierTransform,
+      alpha: 1,
+    });
+  }
+  for (let i = 0; i < GLYPHS; i++) {
+    const key = `glyph${i}`;
+    const parentId = groupCycle[(i + 3) % groupCycle.length];
+    const localTransform = [1, 0, 0, 1, rng() * 6 - 3, rng() * 6 - 3];
+    const carrierTransform = [1, 0, 0, 1, rng() * 6 - 3, rng() * 6 - 3];
+    texts.push({ key, insertionIndex: textInsertionIndex, transform: carrierTransform, parentId, localTransform });
+    glyphRunIds.push(`t${key}`);
+    ownersSeed.set(`t${key}`, { parentId, local: carrierTransform, sourceLocal: localTransform });
+    textCarriers.set(key, {
+      kind: "glyphs",
+      method: "msdf",
+      atlas: { key: "glyphAtlas", width: 64, height: 64 },
+      glyphs: [{ src: [0, 0, 8, 8], dst: [0, 0, 8, 8] }],
+      transform: carrierTransform,
+      fill: [1, 0, 0, 1],
+      pxRange: 4,
+      alpha: 1,
+    });
+  }
+  const resolveTexture = (texture: string) =>
+    BIG_RESOURCE_KEYS.includes(texture) ? { key: texture, width: 32, height: 32 } : null;
+  const resolveText = (record: { key: string }) => textCarriers.get(record.key) ?? null;
+
+  function worldOf(id: string | undefined): number[] {
+    if (!id) return [...legacyIdentity];
+    const group = groupsSeed.get(id)!;
+    return legacyMul(worldOf(group.parentId), group.transform);
+  }
+  const clipWorld = worldOf("gB");
+  const clipP = legacyMul(clipWorld, [1, 0, 0, 1, clip.x, clip.y]);
+  const clipsSeed: LegacyRetainedClip[] = [
+    {
+      id: "clip0",
+      parentId: "gB",
+      rect: [clipP[4], clipP[5], clip.w * clipWorld[0], clip.h * clipWorld[3]],
+      world: clipWorld,
+      local: [clip.x, clip.y, clip.w, clip.h],
+    },
+  ];
+
+  const built = {
+    drawList: list,
+    revision: 1,
+    width: 2000,
+    height: 2000,
+    designWidth: 2000,
+    designHeight: 2000,
+    resolveTexture,
+    resolveText,
+    texts,
+    plan: { groups: groupPlan, primitives },
+  };
+  return {
+    built,
+    groupsSeed,
+    ownersSeed,
+    clipsSeed,
+    quadIds,
+    ninePatchIds,
+    rasterTextIds,
+    glyphRunIds,
+    clipId: "clip0",
+  };
+}
+
 describe("encodeRustRetainedPatch", () => {
   it("produces identical output whether its base scene was built fast or default", () => {
     const rng = mulberry32(99);
@@ -1251,5 +1704,172 @@ describe("encodeRustRetainedPatch", () => {
       );
       expect(resultFast.changedIndexes).toEqual(resultSlow.changedIndexes);
     }
+  });
+
+  it("stays byte-identical to the pre-copy-on-write oracle over a long, randomized patch chain", () => {
+    // Exercises what the real implementation's `OverlayMap` does that the oracle's plain `Map`s never
+    // need to: compaction (>=500 steps over ~260 owners/groups, so `own` crosses the 1/8-of-root
+    // threshold many times over) and exact `Map`-order iteration (the group-move loop below iterates
+    // `owners` directly). `commands` itself is a plain array again — a per-patch `Proxy` overlay was
+    // tried and reverted for regressing every consumer that iterates the whole array — so nothing
+    // special is needed to exercise that part; it is simply `base.commands.slice()` either way. A
+    // deliberately invalid update is mixed in to prove a rejected patch lands identically on both
+    // sides, and a full `encodeRustPatch` diff against the heavily patched result closes the loop.
+    const rng = mulberry32(7);
+    const {
+      built,
+      groupsSeed,
+      ownersSeed,
+      clipsSeed,
+      quadIds,
+      ninePatchIds,
+      rasterTextIds,
+      glyphRunIds,
+      clipId,
+    } = buildBigScenario(rng);
+    const admitted = encodeRustScene(built);
+    seedLegacyRetainedMeta(admitted.scene, new Map(groupsSeed), new Map(ownersSeed), clipsSeed);
+    expect(admitted.scene.commands.length).toBeGreaterThan(250);
+
+    const movableIds = [...quadIds, ...ninePatchIds, ...rasterTextIds, ...glyphRunIds];
+    const linearFixedGroupIds = ["gA", "gB"]; // ancestors of "clip0": translate only, never rescale/rotate
+    const freeGroupIds = ["gC", "gD"]; // no clip descendant: any transform is safe
+    const groupTransformState = new Map(
+      [...groupsSeed].map(([id, g]) => [id, g.transform.slice()]),
+    );
+
+    let real: RustSceneSnapshot = admitted.scene;
+    let oracle: RustSceneSnapshot = admitted.scene;
+    let revision = admitted.scene.revision;
+    let acceptedSteps = 0;
+    let rejectedSteps = 0;
+    const STEPS = 520;
+    for (let step = 0; step < STEPS; step++) {
+      revision += 1;
+      const pick = rng();
+      let updates: {
+        id: string;
+        command: Record<string, unknown>;
+        localTransform?: number[];
+      }[] = [];
+      let groupTransforms: { id: string; transform: readonly number[] }[] = [];
+      if (pick < 0.03) {
+        // No such command id: both implementations must refuse this the same way.
+        updates = [{ id: "does-not-exist", command: { id: "does-not-exist", kind: "quad" } }];
+      } else if (pick < 0.35) {
+        const id = movableIds[Math.floor(rng() * movableIds.length)];
+        const previous = real.commands[rustSceneCommandIndex(real).get(id)!];
+        updates = [
+          { id, command: { ...previous, m: [1, 0, 0, 1, rng() * 40 - 20, rng() * 40 - 20] } },
+        ];
+      } else if (pick < 0.6) {
+        const id = movableIds[Math.floor(rng() * movableIds.length)];
+        const previous = real.commands[rustSceneCommandIndex(real).get(id)!];
+        updates = [
+          {
+            id,
+            command: { ...previous },
+            localTransform: [1, 0, 0, 1, rng() * 10 - 5, rng() * 10 - 5],
+          },
+        ];
+      } else if (pick < 0.75) {
+        const previous = real.commands[rustSceneCommandIndex(real).get(clipId)!];
+        const rect = previous.rect as number[];
+        updates = [
+          {
+            id: clipId,
+            command: {
+              ...previous,
+              rect: [rect[0] + rng() * 6 - 3, rect[1] + rng() * 6 - 3, rect[2], rect[3]],
+            },
+          },
+        ];
+      } else {
+        // "gA"/"gB" are the clip's ancestors: moving "gA" moves a large subtree (everything under
+        // "gA" and "gB" together, the clip included), so only its translation may change.
+        const fromLinearFixed = rng() < 0.5;
+        const pool = fromLinearFixed ? linearFixedGroupIds : freeGroupIds;
+        const id = pool[Math.floor(rng() * pool.length)];
+        const current = groupTransformState.get(id)!;
+        const transform = fromLinearFixed
+          ? [current[0], current[1], current[2], current[3], rng() * 20 - 10, rng() * 20 - 10]
+          : Array.from({ length: 6 }, () => rng() * 2 - 1);
+        groupTransformState.set(id, transform);
+        groupTransforms = [{ id, transform }];
+      }
+      const realResult = encodeRustRetainedPatch(real, revision, updates, groupTransforms);
+      const oracleResult = legacyEncodeRustRetainedPatch(oracle, revision, updates, groupTransforms);
+      expect([step, realResult === null]).toEqual([step, oracleResult === null]);
+      if (!realResult || !oracleResult) {
+        rejectedSteps++;
+        continue;
+      }
+      expect([step, new TextDecoder().decode(realResult.bytes)]).toEqual([
+        step,
+        new TextDecoder().decode(oracleResult.bytes),
+      ]);
+      expect([step, realResult.changedIndexes]).toEqual([step, oracleResult.changedIndexes]);
+      real = realResult.scene;
+      oracle = oracleResult.scene;
+      acceptedSteps++;
+    }
+    // The randomized actions are all individually valid (bar the deliberate rejection above), so this
+    // proves the chain actually exercised the accepted path throughout and triggered compaction many
+    // times over, not a run of early, silent `null`s.
+    expect(acceptedSteps).toBeGreaterThan(400);
+    expect(rejectedSteps).toBeGreaterThan(0);
+
+    // The full diff between the original admission and the heavily patched result agrees with the
+    // chain of retained patches, read back off a `commands` array that came out of the retained-patch
+    // path — a plain array again, not the reverted `Proxy`.
+    const fullDiff = encodeRustPatch(admitted.scene, real);
+    expect(fullDiff).not.toBeNull();
+    const wire = JSON.parse(new TextDecoder().decode(fullDiff!));
+    expect(wire.updates.length).toBeGreaterThan(0);
+    const diffedIds = new Set(wire.updates.map((update: { id: string }) => update.id));
+    expect(diffedIds.size).toBe(wire.updates.length);
+    for (const update of wire.updates) {
+      const index = rustSceneCommandIndex(real).get(update.id)!;
+      expect(update.command).toEqual(real.commands[index]);
+    }
+  });
+
+  it("patches a stillImage command the same way the oracle does, with no owner bookkeeping", () => {
+    // `encodeRustScene` never emits `stillImage` — no drawList or text path produces it — so it only
+    // ever reaches `encodeRustRetainedPatch` on a scene the function built some other way, meaning
+    // `meta` is undefined on both sides here. That is the one case the big randomized chain above does
+    // not cover (it only ever patches a scene `encodeRustScene` itself admitted).
+    const base: RustSceneSnapshot = {
+      version: 2,
+      revision: 1,
+      width: 10,
+      height: 10,
+      designWidth: 10,
+      designHeight: 10,
+      resources: [{ key: "still", width: 4, height: 4 }],
+      commands: [
+        {
+          id: "s0",
+          kind: "stillImage",
+          resource: "still",
+          m: [1, 0, 0, 1, 0, 0],
+          w: 4,
+          h: 4,
+          src: [0, 0, 4, 4],
+          color: [1, 1, 1, 1],
+          blend: "mix",
+          flipH: false,
+          flipV: false,
+          colorMatrix: null,
+        },
+      ],
+    };
+    const update = { id: "s0", command: { ...base.commands[0], m: [1, 0, 0, 1, 5, 6] } };
+    const real = encodeRustRetainedPatch(base, 2, [update]);
+    const oracle = legacyEncodeRustRetainedPatch(base, 2, [update]);
+    expect(real).not.toBeNull();
+    expect(oracle).not.toBeNull();
+    expect(new TextDecoder().decode(real!.bytes)).toBe(new TextDecoder().decode(oracle!.bytes));
+    expect(real!.changedIndexes).toEqual(oracle!.changedIndexes);
   });
 });
