@@ -9,6 +9,7 @@ import {
 import {
   encodeRustPatch,
   encodeRustResources,
+  encodeRustResourceUpdates,
   encodeRustRetainedPatch,
   encodeRustScene,
   jsonEqual,
@@ -285,6 +286,42 @@ describe("Rust prototype scene serializer", () => {
     });
     const scene = JSON.parse(new TextDecoder().decode(encoded.bytes));
     expect(scene.commands[0].m).toEqual([1, 0, 0, 1, 13, 24]);
+  });
+  it("emits a generic atlas glyph run without Bitmap uploads", () => {
+    const encoded = encodeRustScene({
+      drawList: createDrawList<string>(), revision: 1, width: 64, height: 64,
+      designWidth: 64, designHeight: 64, resolveTexture: () => null,
+      texts: [{ key: "run", insertionIndex: 0, text: "A", transform: [1, 0, 0, 1, 4, 5], style: {} }],
+      resolveText: () => ({ kind: "glyphs", method: "msdf", atlas: { key: "page", width: 48, height: 48 },
+        glyphs: [{ src: [0, 0, 24, 24], dst: [2, 3, 24, 24] }], transform: [1, 0, 0, 1, 4, 5],
+        fill: [1, 0, 0, 1], outline: { color: [0, 0, 0, 1], width: 2 },
+        shadow: { color: [0, 0, 0, 0.5], offset: [1, 2] }, pxRange: 4 }),
+    });
+    expect(encoded.textUploads).toEqual([]);
+    expect(encoded.resources).toEqual([{ key: "page", width: 48, height: 48 }]);
+    expect(encoded.scene.commands[0]).toMatchObject({ kind: "glyphRun", atlas: "page", method: "msdf",
+      glyphs: [{ src: [0, 0, 24, 24], dst: [2, 3, 24, 24] }],
+      m: [1, 0, 0, 1, 4, 5], pxRange: 4, alpha: 1 });
+    const command = { ...encoded.scene.commands[0], alpha: 0.5 };
+    const patch = encodeRustRetainedPatch(encoded.scene, 2,
+      [{ id: String(command.id), command }]);
+    expect(patch?.scene.commands[0]).toMatchObject({ kind: "glyphRun", atlas: "page", alpha: 0.5 });
+  });
+  it("encodes RSR2 linear replacement, subrect and release without changing RSR1", () => {
+    const old = encodeRustResources([{ key: "x", width: 1, height: 1,
+      pixels: new Uint8Array([1, 2, 3, 4]) }]);
+    expect([...old.slice(0, 4)]).toEqual([82, 83, 82, 49]);
+    const next = encodeRustResourceUpdates([
+      { operation: "replace", key: "x", width: 2, height: 2, format: "linear", pixels: new Uint8Array(16) },
+      { operation: "subrect", key: "x", width: 2, height: 2, format: "linear", x: 1, y: 0,
+        regionWidth: 1, regionHeight: 1, pixels: new Uint8Array([1, 2, 3, 4]) },
+      { operation: "release", key: "x" },
+    ]);
+    expect([...next.slice(0, 8)]).toEqual([82, 83, 82, 50, 3, 0, 0, 0]);
+    const first = new DataView(next.buffer);
+    expect([...next.slice(8, 12)]).toEqual([0, 1, 0, 0]);
+    expect([first.getUint32(12, true), first.getUint32(16, true), first.getUint32(20, true),
+      first.getUint32(36, true), first.getUint32(40, true)]).toEqual([1, 2, 2, 2, 16]);
   });
   it("packs resource bytes with stable little endian lengths", () => {
     const bytes = encodeRustResources([

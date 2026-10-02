@@ -1,4 +1,4 @@
-use crate::contract::{Blend, Command, Quad, Resource, Scene};
+use crate::contract::{Blend, Command, GlyphMethod, Quad, Resource, Scene};
 use std::collections::HashMap;
 
 pub const TEXTURE_SLOTS: usize = 8;
@@ -38,6 +38,14 @@ pub struct Geometry {
     pub command_ranges: Vec<(u32, u32)>,
 }
 
+#[derive(Clone, Copy)]
+struct GlyphStyle {
+    mode: f32,
+    px_range: f32,
+    outline_width: f32,
+    outline_color: [f32; 4],
+}
+
 fn emit(
     g: &mut Geometry,
     q: &Quad,
@@ -45,6 +53,7 @@ fn emit(
     src: [f32; 4],
     clips: &[Clip],
     page: (u32, u32),
+    glyph_style: Option<GlyphStyle>,
 ) {
     if rect[2] <= 0.0 || rect[3] <= 0.0 {
         return;
@@ -100,6 +109,23 @@ fn emit(
             m[0], m[1], m[2], 0.0, m[3], m[4], m[5], 0.0, m[6], m[7], m[8], 0.0,
         ];
     }
+    if let Some(style) = glyph_style {
+        inst.uv_size_slot[3] = style.mode;
+        inst.matrix = [
+            style.px_range,
+            page.0 as f32,
+            page.1 as f32,
+            style.outline_width,
+            style.outline_color[0],
+            style.outline_color[1],
+            style.outline_color[2],
+            style.outline_color[3],
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ];
+    }
     for (j, clip) in clips.iter().enumerate() {
         inst.clips[j] = clip.rect;
         inst.clip_params[j] = [clip.radius, clip.outset];
@@ -147,7 +173,100 @@ pub fn build(scene: &Scene) -> Geometry {
                     quad.src,
                     &clips,
                     page,
+                    None,
                 );
+            }
+            Command::GlyphRun {
+                atlas,
+                m,
+                glyphs,
+                method,
+                fill,
+                outline,
+                shadow,
+                px_range,
+                alpha,
+                ..
+            } => {
+                let page = pages.get(atlas.as_str()).copied().unwrap_or((1, 1));
+                let mode = match method {
+                    GlyphMethod::Msdf => 1.0,
+                    GlyphMethod::Sdf => 2.0,
+                };
+                if let Some(shadow) = shadow {
+                    for glyph in glyphs {
+                        let quad = Quad {
+                            resource: Some(atlas.clone()),
+                            m: *m,
+                            w: glyph.dst[2],
+                            h: glyph.dst[3],
+                            src: glyph.src,
+                            color: [
+                                shadow.color[0],
+                                shadow.color[1],
+                                shadow.color[2],
+                                shadow.color[3] * alpha,
+                            ],
+                            blend: Blend::Mix,
+                            flip_h: false,
+                            flip_v: false,
+                            color_matrix: None,
+                        };
+                        emit(
+                            &mut g,
+                            &quad,
+                            [
+                                glyph.dst[0] + shadow.offset[0],
+                                glyph.dst[1] + shadow.offset[1],
+                                glyph.dst[2],
+                                glyph.dst[3],
+                            ],
+                            glyph.src,
+                            &clips,
+                            page,
+                            Some(GlyphStyle {
+                                mode,
+                                px_range: *px_range,
+                                outline_width: 0.0,
+                                outline_color: [0.0; 4],
+                            }),
+                        );
+                    }
+                }
+                for glyph in glyphs {
+                    let outline_width = outline
+                        .as_ref()
+                        .map_or(0.0, |v| v.width * glyph.src[2] / glyph.dst[2] / px_range);
+                    let outline_color = outline.as_ref().map_or([0.0; 4], |v| {
+                        [v.color[0], v.color[1], v.color[2], v.color[3] * alpha]
+                    });
+                    let quad = Quad {
+                        resource: Some(atlas.clone()),
+                        m: *m,
+                        w: glyph.dst[2],
+                        h: glyph.dst[3],
+                        src: glyph.src,
+                        color: [fill[0], fill[1], fill[2], fill[3] * alpha],
+                        blend: Blend::Mix,
+                        flip_h: false,
+                        flip_v: false,
+                        color_matrix: None,
+                    };
+                    emit(
+                        &mut g,
+                        &quad,
+                        glyph.dst,
+                        glyph.src,
+                        &clips,
+                        page,
+                        Some(GlyphStyle {
+                            mode,
+                            px_range: *px_range,
+                            outline_width,
+                            outline_color,
+                        }),
+                    );
+                }
             }
             Command::NinePatch { quad, margins, .. } => {
                 let page = quad
@@ -182,6 +301,7 @@ pub fn build(scene: &Scene) -> Geometry {
                             [sx[xx], sy[yy], sx[xx + 1] - sx[xx], sy[yy + 1] - sy[yy]],
                             &clips,
                             page,
+                            None,
                         );
                     }
                 }

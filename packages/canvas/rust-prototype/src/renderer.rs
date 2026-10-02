@@ -2,7 +2,7 @@
 use crate::{
     contract::{Admission, Blend, Command, Patch, Quad, SCENE_VERSION, Scene, SceneState},
     geometry::{self, Geometry, Instance, TEXTURE_SLOTS},
-    resources::ResourceStore,
+    resources::{ResourceChange, ResourceFormat, ResourceStore},
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -162,7 +162,8 @@ impl Renderer {
             .await
             .map_err(|e| e.to_string())?;
         let adapter_info = adapter.get_info();
-        let adapter_timestamp_query_supported = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let adapter_timestamp_query_supported =
+            adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let backend = match adapter_info.backend {
             wgpu::Backend::Gl if cfg!(target_arch = "wasm32") => "webgl2".to_string(),
             wgpu::Backend::Gl => "gles".to_string(),
@@ -300,7 +301,14 @@ impl Renderer {
             make_pipeline("fs", Some(add)),
         ];
         let copy_pipeline = make_pipeline("fs_copy", None);
-        let white = create_texture(&device, &queue, 1, 1, &[255, 255, 255, 255]);
+        let white = create_texture(
+            &device,
+            &queue,
+            1,
+            1,
+            ResourceFormat::Srgb,
+            &[255, 255, 255, 255],
+        );
         let pictures = [
             create_picture(&device, &texture_layout, &sampler, &config),
             create_picture(&device, &texture_layout, &sampler, &config),
@@ -449,23 +457,57 @@ impl Renderer {
     pub fn upload_rgba_batch(&mut self, bytes: &[u8]) -> Result<usize, String> {
         let _phase = PhaseSpan::new(self.phase_identity.as_ref(), "upload");
         let changed = self.resources.upload_batch(bytes)?;
-        let uploaded_pixels: usize = changed
-            .iter()
-            .map(|key| self.resources.pixels[key].2.len())
-            .sum();
-        for key in &changed {
-            let (w, h, p) = &self.resources.pixels[key];
-            self.textures.insert(
-                key.clone(),
-                create_texture(&self.device, &self.queue, *w, *h, p),
-            );
+        let uploaded_pixels: usize = changed.iter().map(ResourceChange::byte_len).sum();
+        let mut created = 0;
+        for change in &changed {
+            match change {
+                ResourceChange::Replace {
+                    key,
+                    width,
+                    height,
+                    format,
+                    pixels,
+                } => {
+                    self.textures.insert(
+                        key.clone(),
+                        create_texture(&self.device, &self.queue, *width, *height, *format, pixels),
+                    );
+                    created += 1;
+                }
+                ResourceChange::Subrect {
+                    key,
+                    x,
+                    y,
+                    width,
+                    height,
+                    pixels,
+                } => {
+                    let texture = self
+                        .textures
+                        .get(key)
+                        .ok_or("subrect texture missing on GPU")?;
+                    write_texture_region(
+                        &self.queue,
+                        &texture._texture,
+                        *x,
+                        *y,
+                        *width,
+                        *height,
+                        pixels,
+                    );
+                }
+                ResourceChange::Release { key } => {
+                    self.textures.remove(key);
+                }
+            }
         }
+        // Every owned pixel buffer in `changed` is dropped here, after the queue copied its bytes.
         if !changed.is_empty() {
             self.bind_cache.clear();
         }
         self.upload_calls += 1;
         self.upload_bytes += uploaded_pixels as u64;
-        self.texture_creations += changed.len() as u64;
+        self.texture_creations += created;
         Ok(changed.len())
     }
     pub fn admit_scene(&mut self, bytes: &[u8]) -> Admission {
@@ -476,6 +518,22 @@ impl Renderer {
         let result = candidate.admit(bytes, &self.resources.ready());
         if result.accepted {
             let scene = candidate.scene().expect("accepted scene");
+            if scene.commands.iter().any(|command| match command {
+                Command::GlyphRun { atlas, .. } => self
+                    .resources
+                    .entries
+                    .get(atlas)
+                    .is_none_or(|resource| resource.format != ResourceFormat::Linear),
+                _ => false,
+            }) {
+                return Admission {
+                    accepted: false,
+                    revision: None,
+                    unsupported_commands: 0,
+                    resource_pending: 0,
+                    error: Some("glyph atlas must be linear RGBA8".into()),
+                };
+            }
             let latest_revision = self
                 .state
                 .scene()
@@ -527,6 +585,22 @@ impl Renderer {
                 };
             }
         };
+        if patch.updates.iter().any(|update| match &update.command {
+            Command::GlyphRun { atlas, .. } => self
+                .resources
+                .entries
+                .get(atlas)
+                .is_none_or(|resource| resource.format != ResourceFormat::Linear),
+            _ => false,
+        }) {
+            return Admission {
+                accepted: false,
+                revision: None,
+                unsupported_commands: 0,
+                resource_pending: 0,
+                error: Some("glyph atlas must be linear RGBA8".into()),
+            };
+        }
         if self.staged.is_none()
             && self.staged_delta.is_none()
             && self.state.scene().is_some()
@@ -660,7 +734,11 @@ impl Renderer {
                     .iter()
                     .filter(|r| {
                         !self.textures.contains_key(&r.key)
-                            || self.resources.pixels.get(&r.key).map(|p| (p.0, p.1))
+                            || self
+                                .resources
+                                .entries
+                                .get(&r.key)
+                                .map(|p| (p.width, p.height))
                                 != Some((r.width, r.height))
                     })
                     .count()
@@ -1004,6 +1082,7 @@ fn create_texture(
     queue: &wgpu::Queue,
     w: u32,
     h: u32,
+    format: ResourceFormat,
     pixels: &[u8],
 ) -> TextureEntry {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1016,15 +1095,34 @@ fn create_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: match format {
+            ResourceFormat::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+            ResourceFormat::Linear => wgpu::TextureFormat::Rgba8Unorm,
+        },
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    write_texture_region(queue, &texture, 0, 0, w, h, pixels);
+    let view = texture.create_view(&Default::default());
+    TextureEntry {
+        _texture: texture,
+        view,
+    }
+}
+fn write_texture_region(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    pixels: &[u8],
+) {
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture,
             mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
+            origin: wgpu::Origin3d { x, y, z: 0 },
             aspect: wgpu::TextureAspect::All,
         },
         pixels,
@@ -1039,11 +1137,6 @@ fn create_texture(
             depth_or_array_layers: 1,
         },
     );
-    let view = texture.create_view(&Default::default());
-    TextureEntry {
-        _texture: texture,
-        view,
-    }
 }
 fn create_picture(
     device: &wgpu::Device,

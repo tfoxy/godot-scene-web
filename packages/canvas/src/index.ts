@@ -196,3 +196,5 @@ export type {
   TextureCacheStats,
 } from "./textures";
 export { createTextureCache } from "./textures";
+
+export { RustAtlasPages } from "./rust-atlas-pages";
