@@ -347,6 +347,45 @@ fn rsr2_linear_subrect_and_release_are_transactional() {
     assert!(store.entries.is_empty());
 }
 #[test]
+fn rsr2_allocate_is_zero_payload_fresh_and_transactional() {
+    use godot_scene_web_rust_prototype::resources::{ResourceChange, ResourceFormat};
+    let mut store = ResourceStore::with_max_side(1024);
+    let allocate = rsr2(&[(3, 1, "atlas:g1", 1024, 1024, 0, 0, 0, 0, vec![])]);
+    let plan = store.plan_batch(&allocate).unwrap();
+    assert!(store.entries.is_empty());
+    assert_eq!(store.dimensions_epoch, 0);
+    assert_eq!(plan.changes[0].byte_len(), 0);
+    assert!(matches!(
+        plan.changes[0],
+        ResourceChange::Allocate {
+            format: ResourceFormat::Linear,
+            ..
+        }
+    ));
+    store.commit_batch(plan);
+    assert_eq!(store.ready()["atlas:g1"], (1024, 1024));
+    assert!(store.upload_batch(&allocate).is_err());
+    let malformed = rsr2(&[(3, 1, "atlas:g2", 2, 2, 0, 0, 0, 0, vec![0])]);
+    assert!(store.upload_batch(&malformed).is_err());
+    let oversized = rsr2(&[(3, 1, "atlas:g2", 1025, 2, 0, 0, 0, 0, vec![])]);
+    assert!(store.upload_batch(&oversized).is_err());
+    let mixed = rsr2(&[
+        (3, 1, "atlas:g2", 2, 2, 0, 0, 0, 0, vec![]),
+        (1, 1, "atlas:g2", 2, 2, 2, 0, 1, 1, vec![255; 4]),
+    ]);
+    assert!(store.upload_batch(&mixed).is_err());
+    assert!(!store.entries.contains_key("atlas:g2"));
+    let good = rsr2(&[
+        (3, 1, "atlas:g2", 2, 2, 0, 0, 0, 0, vec![]),
+        (1, 1, "atlas:g2", 2, 2, 0, 0, 1, 1, vec![255; 4]),
+    ]);
+    assert_eq!(store.upload_batch(&good).unwrap().len(), 2);
+    assert_eq!(store.ready()["atlas:g2"], (2, 2));
+    let release = rsr2(&[(2, 0, "atlas:g2", 0, 0, 0, 0, 0, 0, vec![])]);
+    assert_eq!(store.upload_batch(&release).unwrap().len(), 1);
+    assert!(!store.entries.contains_key("atlas:g2"));
+}
+#[test]
 fn resource_batch_stages_repeated_keys_without_changing_untouched_entries() {
     use godot_scene_web_rust_prototype::resources::ResourceChange;
     let mut store = ResourceStore::default();

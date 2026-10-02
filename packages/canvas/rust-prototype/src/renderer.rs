@@ -145,6 +145,75 @@ pub struct Renderer {
     #[cfg(feature = "fault-injection")]
     validation_failure_once: bool,
 }
+// A batch may touch the same key repeatedly. Stage only those keys while consulting
+// committed GPU residency for each key's first operation.
+fn validate_gpu_changes(
+    changes: &[ResourceChange],
+    contains_key: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    let mut present: HashMap<&str, bool> = HashMap::new();
+    for change in changes {
+        let key = change.key();
+        let exists = *present.entry(key).or_insert_with(|| contains_key(key));
+        match change {
+            ResourceChange::Allocate { .. } if exists => {
+                return Err("allocation key already exists on GPU".into());
+            }
+            ResourceChange::Allocate { .. } | ResourceChange::Replace { .. } => {
+                present.insert(key, true);
+            }
+            ResourceChange::Subrect { .. } if !exists => {
+                return Err("subrect texture missing on GPU".into());
+            }
+            ResourceChange::Release { .. } => {
+                present.insert(key, false);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod gpu_preflight_tests {
+    use super::*;
+
+    fn allocate(key: &str) -> ResourceChange {
+        ResourceChange::Allocate {
+            key: key.into(),
+            width: 2,
+            height: 2,
+            format: ResourceFormat::Linear,
+        }
+    }
+    fn subrect(key: &str) -> ResourceChange {
+        ResourceChange::Subrect {
+            key: key.into(),
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            pixels: vec![0; 4],
+        }
+    }
+    fn release(key: &str) -> ResourceChange {
+        ResourceChange::Release { key: key.into() }
+    }
+
+    #[test]
+    fn ordered_touched_key_presence() {
+        assert!(validate_gpu_changes(&[allocate("new"), subrect("new")], |_| false).is_ok());
+        assert!(
+            validate_gpu_changes(&[release("old"), allocate("old")], |key| key == "old").is_ok()
+        );
+        assert!(
+            validate_gpu_changes(&[release("old"), subrect("old")], |key| key == "old").is_err()
+        );
+        assert!(validate_gpu_changes(&[allocate("new"), allocate("new")], |_| false).is_err());
+        assert!(validate_gpu_changes(&[allocate("new"), subrect("missing")], |_| false).is_err());
+    }
+}
+
 impl Renderer {
     pub async fn new(
         instance: &wgpu::Instance,
@@ -307,7 +376,7 @@ impl Renderer {
             1,
             1,
             ResourceFormat::Srgb,
-            &[255, 255, 255, 255],
+            Some(&[255, 255, 255, 255]),
         );
         let pictures = [
             create_picture(&device, &texture_layout, &sampler, &config),
@@ -456,11 +525,25 @@ impl Renderer {
     }
     pub fn upload_rgba_batch(&mut self, bytes: &[u8]) -> Result<usize, String> {
         let _phase = PhaseSpan::new(self.phase_identity.as_ref(), "upload");
-        let changed = self.resources.upload_batch(bytes)?;
+        let batch = self.resources.plan_batch(bytes)?;
+        let changed = &batch.changes;
+        validate_gpu_changes(changed, |key| self.textures.contains_key(key))?;
         let uploaded_pixels: usize = changed.iter().map(ResourceChange::byte_len).sum();
         let mut created = 0;
-        for change in &changed {
+        for change in changed {
             match change {
+                ResourceChange::Allocate {
+                    key,
+                    width,
+                    height,
+                    format,
+                } => {
+                    self.textures.insert(
+                        key.clone(),
+                        create_texture(&self.device, &self.queue, *width, *height, *format, None),
+                    );
+                    created += 1;
+                }
                 ResourceChange::Replace {
                     key,
                     width,
@@ -470,7 +553,14 @@ impl Renderer {
                 } => {
                     self.textures.insert(
                         key.clone(),
-                        create_texture(&self.device, &self.queue, *width, *height, *format, pixels),
+                        create_texture(
+                            &self.device,
+                            &self.queue,
+                            *width,
+                            *height,
+                            *format,
+                            Some(pixels),
+                        ),
                     );
                     created += 1;
                 }
@@ -501,14 +591,17 @@ impl Renderer {
                 }
             }
         }
-        // Every owned pixel buffer in `changed` is dropped here, after the queue copied its bytes.
-        if !changed.is_empty() {
+        let changed_len = changed.len();
+        let has_changes = !changed.is_empty();
+        self.resources.commit_batch(batch);
+        // Every owned pixel buffer in the plan is dropped here, after the queue copied its bytes.
+        if has_changes {
             self.bind_cache.clear();
         }
         self.upload_calls += 1;
         self.upload_bytes += uploaded_pixels as u64;
         self.texture_creations += created;
-        Ok(changed.len())
+        Ok(changed_len)
     }
     pub fn admit_scene(&mut self, bytes: &[u8]) -> Admission {
         let _phase = PhaseSpan::new(self.phase_identity.as_ref(), "admit");
@@ -1083,7 +1176,7 @@ fn create_texture(
     w: u32,
     h: u32,
     format: ResourceFormat,
-    pixels: &[u8],
+    pixels: Option<&[u8]>,
 ) -> TextureEntry {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -1102,7 +1195,9 @@ fn create_texture(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    write_texture_region(queue, &texture, 0, 0, w, h, pixels);
+    if let Some(pixels) = pixels {
+        write_texture_region(queue, &texture, 0, 0, w, h, pixels);
+    }
     let view = texture.create_view(&Default::default());
     TextureEntry {
         _texture: texture,
