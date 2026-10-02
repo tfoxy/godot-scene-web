@@ -7,6 +7,7 @@ import { chromium } from "@playwright/test";
 
 const root = resolve(import.meta.dirname, "../../../..");
 const wasmOut = resolve(root, ".sts2/msdf-generator-web");
+const aliasWorker = process.env.GSW_MSDF_PROBE_WORKER;
 const evidenceDir = resolve(root, ".sts2/msdf-generator-proof");
 const fontPath =
   process.env.GSW_MSDF_PROBE_FONT ??
@@ -48,6 +49,13 @@ const files = new Map([
     ],
   ],
   [
+    "/msdf-generator-worker-runtime.js",
+    [
+      resolve(root, "packages/canvas/dist/msdf-generator-worker-runtime.js"),
+      "text/javascript",
+    ],
+  ],
+  [
     "/msdf_generator.js",
     [resolve(wasmOut, "msdf_generator.js"), "text/javascript"],
   ],
@@ -57,6 +65,8 @@ const files = new Map([
   ],
   ["/font.ttf", [fontPath, "font/ttf"]],
 ]);
+if (aliasWorker)
+  files.set("/msdf-worker-alias.js", [resolve(aliasWorker), "text/javascript"]);
 const browser = await chromium.launch({ headless: true });
 try {
   const context = await browser.newContext({
@@ -78,7 +88,11 @@ try {
       body: `<!doctype html><style>body{margin:0;background:#202020;color:white;font:14px sans-serif}canvas{display:block}</style><canvas width="1200" height="400"></canvas><script type="module">
       import { MsdfGenerator } from '/msdf-generator.js';
       try {
-        const generator = new MsdfGenerator({wasmModuleUrl:'/msdf_generator.js'});
+        const generator = new MsdfGenerator({wasmModuleUrl:'/msdf_generator.js'${
+          aliasWorker
+            ? ",createWorker:()=>new Worker('/msdf-worker-alias.js',{type:'module'})"
+            : ""
+        }});
         const font = await (await fetch('/font.ttf')).arrayBuffer();
         const glyphIds=${JSON.stringify(glyphIds)}, labels=${JSON.stringify(labels)};
         const firstPromise = generator.generate(font.slice(0), glyphIds, 16);
@@ -181,6 +195,7 @@ try {
     glyphIds,
     fullRange: 16,
     generatorCommit,
+    workerEntry: aliasWorker ? "host-override" : "published-package",
     wasmSha256,
     shapingProof: false,
     image,
