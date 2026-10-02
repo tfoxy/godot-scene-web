@@ -22,7 +22,7 @@ struct Out {
  @location(2) design_pos:vec2<f32>, @location(3) m0:vec4<f32>, @location(4) m1:vec4<f32>, @location(5) m2:vec4<f32>,
  @location(6) clip0:vec4<f32>, @location(7) clip1:vec4<f32>, @location(8) clip2:vec4<f32>,
  @location(9) cp0:vec2<f32>, @location(10) cp1:vec2<f32>, @location(11) cp2:vec2<f32>,
- @location(12) @interpolate(flat) slot:u32
+ @location(12) @interpolate(flat) slot:u32, @location(13) @interpolate(flat) mode:u32
 };
 @vertex fn vs(i:In)->Out {
  var o:Out;
@@ -38,7 +38,7 @@ struct Out {
  o.uv=i.yu.zw+i.us.xy*corner;o.color=i.color;o.design_pos=p;
  o.m0=i.m0;o.m1=i.m1;o.m2=i.m2;
  o.clip0=i.clip0;o.cp0=i.cp0;o.clip1=i.clip1;o.cp1=i.cp1;o.clip2=i.clip2;o.cp2=i.cp2;
- o.slot=u32(i.us.z);
+ o.slot=u32(i.us.z);o.mode=u32(i.us.w);
  return o;
 }
 fn inside(p:vec2<f32>,r:vec4<f32>,params:vec2<f32>)->bool {
@@ -49,6 +49,7 @@ fn inside(p:vec2<f32>,r:vec4<f32>,params:vec2<f32>)->bool {
  let nearest=clamp(p,vec2<f32>(left+radius,top+radius),vec2<f32>(right-radius,bottom-radius));
  return distance(p,nearest)<=radius+0.001;
 }
+fn median3(v:vec3<f32>)->f32 { return max(min(v.r,v.g),min(max(v.r,v.g),v.b)); }
 @fragment fn fs(i:Out)->@location(0) vec4<f32> {
  if !inside(i.design_pos,i.clip0,i.cp0)||!inside(i.design_pos,i.clip1,i.cp1)||!inside(i.design_pos,i.clip2,i.cp2){discard;}
  var tex:vec4<f32>;
@@ -61,6 +62,18 @@ fn inside(p:vec2<f32>,r:vec4<f32>,params:vec2<f32>)->bool {
   case 5u: { tex=textureSample(image5,image_sampler,i.uv); }
   case 6u: { tex=textureSample(image6,image_sampler,i.uv); }
   default: { tex=textureSample(image7,image_sampler,i.uv); }
+ }
+ if i.mode == 1u || i.mode == 2u {
+  let signed_distance=select(median3(tex.rgb),tex.r,i.mode == 2u)-0.5;
+  let outline_distance=select(tex.a,tex.r,i.mode == 2u)-0.5;
+  let unit_range=i.m0.x/max(i.m0.yz,vec2<f32>(1.0));
+  let screen_tex_size=1.0/max(fwidth(i.uv),vec2<f32>(0.000001));
+  let screen_range=max(0.5*dot(unit_range,screen_tex_size),1.0);
+  let fill_coverage=clamp(signed_distance*screen_range+0.5,0.0,1.0);
+  let outer_coverage=select(0.0,clamp((outline_distance+i.m0.w)*screen_range+0.5,0.0,1.0),outline_distance > -0.499);
+  let fill_alpha=i.color.a*fill_coverage;
+  let outline_alpha=i.m1.a*max(0.0,outer_coverage-fill_coverage);
+  return vec4<f32>(i.color.rgb*fill_alpha+i.m1.rgb*outline_alpha,fill_alpha+outline_alpha);
  }
  let rgb=vec3<f32>(dot(i.m0.xyz,tex.rgb),dot(i.m1.xyz,tex.rgb),dot(i.m2.xyz,tex.rgb));
  return vec4<f32>(rgb*i.color.rgb*tex.a,tex.a*i.color.a);

@@ -19,7 +19,11 @@ fn resource_upload_is_transactional_and_reports_only_changes() {
     let mut r = ResourceStore::default();
     let initial_epoch = r.dimensions_epoch;
     assert_eq!(
-        r.upload_batch(&bundle([255, 0, 0, 255])).unwrap(),
+        r.upload_batch(&bundle([255, 0, 0, 255]))
+            .unwrap()
+            .iter()
+            .map(|v| v.key().to_string())
+            .collect::<Vec<_>>(),
         vec!["red"]
     );
     assert_eq!(r.dimensions_epoch, initial_epoch + 1);
@@ -31,7 +35,7 @@ fn resource_upload_is_transactional_and_reports_only_changes() {
     let mut invalid = bundle([0, 0, 0, 0]);
     invalid.pop();
     assert!(r.upload_batch(&invalid).is_err());
-    assert_eq!(r.pixels["red"].2, [255, 0, 0, 255]);
+    assert_eq!(r.entries["red"].width, 1);
     r.upload_batch(&bundle([0, 0, 0, 255])).unwrap();
     assert_eq!(r.dimensions_epoch, initial_epoch + 1);
 }
@@ -102,7 +106,11 @@ fn negative_nine_patch_source_refuses_full_and_patch_without_losing_scene() {
     let mut original = scene();
     original["commands"][1]["kind"] = json!("ninePatch");
     original["commands"][1]["margins"] = json!([0, 0, 0, 0]);
-    assert!(state.admit(&serde_json::to_vec(&original).unwrap(), &resources.ready()).accepted);
+    assert!(
+        state
+            .admit(&serde_json::to_vec(&original).unwrap(), &resources.ready())
+            .accepted
+    );
     let mut bad_command = original["commands"][1].clone();
     bad_command["src"] = json!([0, 0, -1, 1]);
     let mut bad_scene = original.clone();
@@ -115,7 +123,12 @@ fn negative_nine_patch_source_refuses_full_and_patch_without_losing_scene() {
     let patched = state.patch(&serde_json::to_vec(&patch).unwrap(), &resources.ready());
     assert_eq!(patched.error.as_deref(), Some("invalid quad"));
     let parsed = serde_json::from_value(patch).unwrap();
-    assert_eq!(state.preflight_patch(&parsed, Some(&resources.ready())).unwrap_err(), "invalid quad");
+    assert_eq!(
+        state
+            .preflight_patch(&parsed, Some(&resources.ready()))
+            .unwrap_err(),
+        "invalid quad"
+    );
     assert_eq!(state.scene().unwrap().revision, 1);
 }
 
@@ -125,12 +138,28 @@ fn full_scene_admission_refuses_equal_and_older_revisions() {
     let mut resources = ResourceStore::default();
     resources.upload_batch(&bundle([255, 0, 0, 255])).unwrap();
     let first = scene();
-    assert!(state.admit(&serde_json::to_vec(&first).unwrap(), &resources.ready()).accepted);
-    assert!(!state.admit(&serde_json::to_vec(&first).unwrap(), &resources.ready()).accepted);
+    assert!(
+        state
+            .admit(&serde_json::to_vec(&first).unwrap(), &resources.ready())
+            .accepted
+    );
+    assert!(
+        !state
+            .admit(&serde_json::to_vec(&first).unwrap(), &resources.ready())
+            .accepted
+    );
     let mut newer = first.clone();
     newer["revision"] = json!(2);
-    assert!(state.admit(&serde_json::to_vec(&newer).unwrap(), &resources.ready()).accepted);
-    assert!(!state.admit(&serde_json::to_vec(&first).unwrap(), &resources.ready()).accepted);
+    assert!(
+        state
+            .admit(&serde_json::to_vec(&newer).unwrap(), &resources.ready())
+            .accepted
+    );
+    assert!(
+        !state
+            .admit(&serde_json::to_vec(&first).unwrap(), &resources.ready())
+            .accepted
+    );
     assert_eq!(state.scene().unwrap().revision, 2);
 }
 
@@ -245,7 +274,7 @@ fn oversized_resource_batch_refuses_without_partial_admission() {
         batch.extend(pixels);
     }
     assert!(resources.upload_batch(&batch).is_err());
-    assert!(resources.pixels.is_empty());
+    assert!(resources.entries.is_empty());
 }
 
 #[test]
@@ -260,4 +289,183 @@ fn scene_v2_requires_nonzero_design_dimensions() {
     value["designWidth"] = json!(0);
     let zero = state.admit(&serde_json::to_vec(&value).unwrap(), &ready);
     assert_eq!(zero.error.as_deref(), Some("invalid scene header"));
+}
+
+fn rsr2(ops: &[(u8, u8, &str, u32, u32, u32, u32, u32, u32, Vec<u8>)]) -> Vec<u8> {
+    let mut bytes = b"RSR2".to_vec();
+    bytes.extend((ops.len() as u32).to_le_bytes());
+    for (op, format, key, w, h, x, y, rw, rh, pixels) in ops {
+        bytes.extend([*op, *format, 0, 0]);
+        for n in [
+            key.len() as u32,
+            *w,
+            *h,
+            *x,
+            *y,
+            *rw,
+            *rh,
+            pixels.len() as u32,
+        ] {
+            bytes.extend(n.to_le_bytes());
+        }
+        bytes.extend(key.as_bytes());
+        bytes.extend(pixels);
+    }
+    bytes
+}
+#[test]
+fn rsr2_linear_subrect_and_release_are_transactional() {
+    use godot_scene_web_rust_prototype::resources::{ResourceChange, ResourceFormat};
+    let mut store = ResourceStore::default();
+    let replace = rsr2(&[(0, 1, "atlas", 2, 2, 0, 0, 2, 2, vec![128; 16])]);
+    let change = store.upload_batch(&replace).unwrap();
+    assert_eq!(change.len(), 1);
+    assert!(matches!(
+        &change[0],
+        ResourceChange::Replace {
+            format: ResourceFormat::Linear,
+            ..
+        }
+    ));
+    assert_eq!(store.entries["atlas"].format, ResourceFormat::Linear);
+    assert_eq!(store.ready()["atlas"], (2, 2));
+    let epoch = store.dimensions_epoch;
+    let subrect = rsr2(&[(1, 1, "atlas", 2, 2, 1, 0, 1, 1, vec![0, 0, 0, 255])]);
+    assert!(matches!(
+        &store.upload_batch(&subrect).unwrap()[0],
+        ResourceChange::Subrect { x: 1, y: 0, .. }
+    ));
+    assert_eq!(store.dimensions_epoch, epoch);
+    let invalid = rsr2(&[(1, 1, "atlas", 2, 2, 2, 0, 1, 1, vec![0; 4])]);
+    assert!(store.upload_batch(&invalid).is_err());
+    assert_eq!(store.ready()["atlas"], (2, 2));
+    let release = rsr2(&[(2, 0, "atlas", 0, 0, 0, 0, 0, 0, vec![])]);
+    assert!(matches!(
+        &store.upload_batch(&release).unwrap()[0],
+        ResourceChange::Release { .. }
+    ));
+    assert!(store.entries.is_empty());
+}
+#[test]
+fn resource_batch_stages_repeated_keys_without_changing_untouched_entries() {
+    use godot_scene_web_rust_prototype::resources::ResourceChange;
+    let mut store = ResourceStore::default();
+    store
+        .upload_batch(&rsr2(&[
+            (0, 1, "untouched", 1, 1, 0, 0, 1, 1, vec![7; 4]),
+            (0, 1, "atlas", 1, 1, 0, 0, 1, 1, vec![8; 4]),
+        ]))
+        .unwrap();
+    let untouched = store.entries["untouched"].clone();
+    let atlas = store.entries["atlas"].clone();
+    let epoch = store.dimensions_epoch;
+    let invalid = rsr2(&[
+        (0, 1, "atlas", 2, 2, 0, 0, 2, 2, vec![9; 16]),
+        (1, 1, "atlas", 2, 2, 2, 0, 1, 1, vec![0; 4]),
+    ]);
+    assert!(store.upload_batch(&invalid).is_err());
+    assert_eq!(store.entries["atlas"], atlas);
+    assert_eq!(store.entries["untouched"], untouched);
+    assert_eq!(store.dimensions_epoch, epoch);
+    let changes = store
+        .upload_batch(&rsr2(&[
+            (2, 0, "atlas", 0, 0, 0, 0, 0, 0, vec![]),
+            (0, 1, "atlas", 2, 2, 0, 0, 2, 2, vec![9; 16]),
+            (1, 1, "atlas", 2, 2, 1, 1, 1, 1, vec![0; 4]),
+        ]))
+        .unwrap();
+    assert!(matches!(changes[0], ResourceChange::Release { .. }));
+    assert!(matches!(changes[1], ResourceChange::Replace { .. }));
+    assert!(matches!(changes[2], ResourceChange::Subrect { .. }));
+    assert_eq!(store.ready()["atlas"], (2, 2));
+    assert_eq!(store.entries["untouched"], untouched);
+    assert_eq!(store.dimensions_epoch, epoch + 2);
+}
+#[test]
+fn glyph_run_expands_shadow_before_fill_and_rejects_bad_tiles() {
+    let scene = json!({ "version":2,"revision":1,"width":64,"height":64,"designWidth":64,"designHeight":64,
+      "resources":[{"key":"atlas","width":48,"height":48}],
+      "commands":[{"id":"g","kind":"glyphRun","atlas":"atlas","m":[1,0,0,1,0,0],
+        "glyphs":[{"src":[0,0,24,24],"dst":[4,5,24,24]},
+                  {"src":[24,0,24,24],"dst":[20,5,24,24]}],"method":"msdf",
+        "fill":[1,0,0,1],"outline":{"color":[0,0,0,1],"width":2},
+        "shadow":{"color":[0,0,0,0.5],"offset":[1,2]},"pxRange":4,"alpha":1}] });
+    let parsed = serde_json::from_value(scene.clone()).unwrap();
+    let geometry = build(&parsed);
+    assert_eq!(geometry.instances.len(), 4);
+    assert_eq!(geometry.command_ranges, vec![(0, 4)]);
+    assert_eq!(geometry.instances[0].uv_size_slot[3], 1.0);
+    assert_eq!(geometry.instances[1].uv_size_slot[3], 1.0);
+    assert_eq!(geometry.instances[0].origin_axis_x[0..2], [5.0, 7.0]);
+    assert_eq!(geometry.instances[1].origin_axis_x[0..2], [21.0, 7.0]);
+    assert_eq!(geometry.instances[2].origin_axis_x[0..2], [4.0, 5.0]);
+    assert_eq!(geometry.instances[2].matrix[0], 4.0);
+    assert!(geometry.instances[2].matrix[3] > 0.0);
+    let mut store = ResourceStore::default();
+    store
+        .upload_batch(&rsr2(&[(
+            0,
+            1,
+            "atlas",
+            48,
+            48,
+            0,
+            0,
+            48,
+            48,
+            vec![0; 48 * 48 * 4],
+        )]))
+        .unwrap();
+    let mut state = SceneState::default();
+    assert!(
+        state
+            .admit(&serde_json::to_vec(&scene).unwrap(), &store.ready())
+            .accepted
+    );
+    let mut bad = scene;
+    bad["revision"] = json!(2);
+    bad["commands"][0]["glyphs"][0]["src"][2] = json!(-1);
+    assert!(
+        !state
+            .admit(&serde_json::to_vec(&bad).unwrap(), &store.ready())
+            .accepted
+    );
+}
+#[test]
+fn glyph_tiles_must_fit_declared_atlas_in_full_and_patch_admission() {
+    let scene = json!({ "version":2,"revision":1,"width":64,"height":64,"designWidth":64,"designHeight":64,
+      "resources":[{"key":"atlas","width":48,"height":48}],
+      "commands":[{"id":"g","kind":"glyphRun","atlas":"atlas","m":[1,0,0,1,0,0],
+        "glyphs":[{"src":[0,0,24,24],"dst":[4,5,24,24]}],"method":"msdf",
+        "fill":[1,0,0,1],"pxRange":4,"alpha":1}] });
+    let ready = std::collections::HashMap::from([("atlas".to_string(), (48, 48))]);
+    let mut state = SceneState::default();
+    assert!(
+        state
+            .admit(&serde_json::to_vec(&scene).unwrap(), &ready)
+            .accepted
+    );
+    for src in [
+        json!([-1, 0, 24, 24]),
+        json!([0, -1, 24, 24]),
+        json!([25, 0, 24, 24]),
+        json!([0, 25, 24, 24]),
+    ] {
+        let mut bad = scene.clone();
+        bad["revision"] = json!(2);
+        bad["commands"][0]["glyphs"][0]["src"] = src;
+        assert!(
+            !state
+                .admit(&serde_json::to_vec(&bad).unwrap(), &ready)
+                .accepted
+        );
+        let patch = json!({"version":1,"baseRevision":1,"revision":2,
+            "updates":[{"id":"g","command":bad["commands"][0]}]});
+        assert!(
+            !state
+                .patch(&serde_json::to_vec(&patch).unwrap(), &ready)
+                .accepted
+        );
+        assert_eq!(state.scene().unwrap().revision, 1);
+    }
 }

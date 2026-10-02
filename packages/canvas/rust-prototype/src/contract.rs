@@ -36,6 +36,31 @@ pub enum Blend {
     Add,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GlyphMethod {
+    Msdf,
+    Sdf,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Glyph {
+    pub src: [f32; 4],
+    pub dst: [f32; 4],
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlyphOutline {
+    pub color: [f32; 4],
+    pub width: f32,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlyphShadow {
+    pub color: [f32; 4],
+    pub offset: [f32; 2],
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Command {
@@ -54,6 +79,19 @@ pub enum Command {
         id: String,
         #[serde(flatten)]
         quad: Quad,
+    },
+    GlyphRun {
+        id: String,
+        atlas: String,
+        m: [f32; 6],
+        glyphs: Vec<Glyph>,
+        method: GlyphMethod,
+        fill: [f32; 4],
+        outline: Option<GlyphOutline>,
+        shadow: Option<GlyphShadow>,
+        #[serde(rename = "pxRange")]
+        px_range: f32,
+        alpha: f32,
     },
     StillImage {
         id: String,
@@ -76,6 +114,7 @@ impl Command {
             Self::Quad { id, .. }
             | Self::NinePatch { id, .. }
             | Self::RasterText { id, .. }
+            | Self::GlyphRun { id, .. }
             | Self::StillImage { id, .. }
             | Self::ClipPush { id, .. }
             | Self::ClipPop { id } => id,
@@ -86,6 +125,7 @@ impl Command {
             Self::Quad { .. } => 0,
             Self::NinePatch { .. } => 1,
             Self::RasterText { .. } => 2,
+            Self::GlyphRun { .. } => 6,
             Self::StillImage { .. } => 3,
             Self::ClipPush { .. } => 4,
             Self::ClipPop { .. } => 5,
@@ -261,6 +301,7 @@ impl SceneState {
                                 "quad"
                                     | "ninePatch"
                                     | "rasterText"
+                                    | "glyphRun"
                                     | "stillImage"
                                     | "clipPush"
                                     | "clipPop"
@@ -281,7 +322,11 @@ impl SceneState {
         if let Err(e) = validate(&scene) {
             return Admission::reject(e, 0, 0);
         }
-        if self.scene.as_ref().is_some_and(|current| scene.revision <= current.revision) {
+        if self
+            .scene
+            .as_ref()
+            .is_some_and(|current| scene.revision <= current.revision)
+        {
             return Admission::reject("version or revision mismatch".into(), 0, 0);
         }
         let pending = missing(&scene, ready);
@@ -374,6 +419,51 @@ pub fn validate_command(command: &Command, resources: &[Resource]) -> Result<(),
         }
         _ => {}
     }
+    if let Command::GlyphRun {
+        atlas,
+        m,
+        glyphs,
+        fill,
+        outline,
+        shadow,
+        px_range,
+        alpha,
+        ..
+    } = command
+    {
+        let atlas_resource = resources.iter().find(|resource| &resource.key == atlas);
+        if glyphs.is_empty()
+            || glyphs.len() > 4096
+            || !px_range.is_finite()
+            || *px_range <= 0.0
+            || !alpha.is_finite()
+            || *alpha < 0.0
+            || *alpha > 1.0
+            || !m.iter().chain(fill).all(|v| v.is_finite())
+            || atlas_resource.is_none()
+            || glyphs.iter().any(|g| {
+                !g.src.iter().chain(&g.dst).all(|v| v.is_finite())
+                    || g.src[0] < 0.0
+                    || g.src[1] < 0.0
+                    || g.src[2] <= 0.0
+                    || g.src[3] <= 0.0
+                    || atlas_resource.is_some_and(|resource| {
+                        g.src[0] + g.src[2] > resource.width as f32
+                            || g.src[1] + g.src[3] > resource.height as f32
+                    })
+                    || g.dst[2] <= 0.0
+                    || g.dst[3] <= 0.0
+            })
+            || outline.as_ref().is_some_and(|v| {
+                !v.width.is_finite() || v.width < 0.0 || !v.color.iter().all(|x| x.is_finite())
+            })
+            || shadow
+                .as_ref()
+                .is_some_and(|v| !v.offset.iter().chain(&v.color).all(|x| x.is_finite()))
+        {
+            return Err("invalid glyph run".into());
+        }
+    }
     if let Some(q) = command.quad() {
         if !q
             .m
@@ -426,6 +516,7 @@ fn validate(scene: &Scene) -> Result<(), String> {
         if c.id().is_empty() || !ids.insert(c.id()) {
             return Err("invalid or duplicate command id".into());
         }
+        validate_command(c, &scene.resources)?;
         match c {
             Command::ClipPush {
                 rect,
