@@ -697,7 +697,9 @@ impl Renderer {
         if self.staged.is_none()
             && self.staged_delta.is_none()
             && self.state.scene().is_some()
-            && patch.updates.iter().all(|u| u.command.quad().is_some())
+            && patch.updates.iter().all(|u| {
+                u.command.quad().is_some() || matches!(u.command, Command::ClipPush { .. })
+            })
         {
             let ready = (self.resources.dimensions_epoch != self.admitted_dimensions_epoch)
                 .then(|| self.resources.ready());

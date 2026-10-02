@@ -401,6 +401,11 @@ pub fn patch_instances(
 }
 
 /// Build only changed instance spans. None means a draw-table or tile-layout change.
+///
+/// A `ClipPush` replacement keeps the draw table: clips live in each instance's
+/// clip slots, not in the batches. Every instance inside the replaced clip's
+/// scope gets that slot rewritten in place, and a quad replaced in the same
+/// patch is built against the replaced clip.
 pub fn patch_spans(
     old: &Geometry,
     scene: &Scene,
@@ -410,6 +415,21 @@ pub fn patch_spans(
     if old.command_ranges.len() != scene.commands.len() {
         return None;
     }
+    let mut clip_updates: HashMap<usize, &Command> = HashMap::new();
+    for (index, command) in updates {
+        if let Command::ClipPush { .. } = command {
+            if !matches!(scene.commands.get(*index)?, Command::ClipPush { .. }) {
+                return None;
+            }
+            clip_updates.insert(*index, command);
+        }
+    }
+    let clip_command = |index: usize| -> Option<&Command> {
+        clip_updates
+            .get(&index)
+            .copied()
+            .or_else(|| scene.commands.get(index))
+    };
     // Most patches touch commands with no resource (solid quads, text), so
     // building the key -> resource index unconditionally allocated a
     // HashMap on every call even when no update ever looked it up. Build it
@@ -417,6 +437,9 @@ pub fn patch_spans(
     let mut resource_index: Option<HashMap<&str, &Resource>> = None;
     let mut spans = Vec::with_capacity(updates.len());
     for (index, command) in updates {
+        if matches!(command, Command::ClipPush { .. }) {
+            continue;
+        }
         let before = scene.commands.get(*index)?;
         let (Some(old_quad), Some(quad)) = (before.quad(), command.quad()) else {
             return None;
@@ -429,7 +452,7 @@ pub fn patch_spans(
         }
         let mut commands = Vec::new();
         for clip in clips_at(*index)?.into_iter().flatten() {
-            commands.push(scene.commands.get(clip)?.clone());
+            commands.push(clip_command(clip)?.clone());
         }
         commands.push(command.clone());
         let resources = if let Some(key) = quad.resource.as_deref() {
@@ -466,6 +489,51 @@ pub fn patch_spans(
             new.uv_size_slot[2] = previous.uv_size_slot[2];
         }
         spans.push((start as usize, replacement));
+    }
+    if clip_updates.is_empty() {
+        return Some(spans);
+    }
+    // Every other drawing inside a replaced clip's scope (nested scopes
+    // included) keeps its instances and takes the new clip in its slot.
+    let replaced: std::collections::HashSet<usize> =
+        updates.iter().map(|(index, _)| *index).collect();
+    let mut scoped = std::collections::BTreeSet::new();
+    for &push in clip_updates.keys() {
+        let mut depth = 0usize;
+        for index in push + 1..scene.commands.len() {
+            match &scene.commands[index] {
+                Command::ClipPush { .. } => depth += 1,
+                Command::ClipPop { .. } if depth == 0 => break,
+                Command::ClipPop { .. } => depth -= 1,
+                _ if !replaced.contains(&index) => {
+                    scoped.insert(index);
+                }
+                _ => {}
+            }
+        }
+    }
+    for index in scoped {
+        let (start, end) = *old.command_ranges.get(index)?;
+        if start == end {
+            continue;
+        }
+        let mut instances = old.instances[start as usize..end as usize].to_vec();
+        for (slot, clip) in clips_at(index)?.into_iter().enumerate() {
+            let Some(clip) = clip else { continue };
+            if let Some(Command::ClipPush {
+                rect,
+                radius,
+                outset,
+                ..
+            }) = clip_updates.get(&clip).copied()
+            {
+                for instance in &mut instances {
+                    instance.clips[slot] = *rect;
+                    instance.clip_params[slot] = [*radius, *outset];
+                }
+            }
+        }
+        spans.push((start as usize, instances));
     }
     Some(spans)
 }

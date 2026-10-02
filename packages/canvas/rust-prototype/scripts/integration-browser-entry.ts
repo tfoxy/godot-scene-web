@@ -83,6 +83,18 @@ const rustSteps: Record<string, () => Promise<unknown>> = {
     const result = parse(await rust.present());
     return { admission, result };
   },
+  async clipTranslate() {
+    // Moves the clip half a design width right: the nine-patch under it now shows on the right instead.
+    const old = committed!;
+    const clip = old.commands.find((command) => command.kind === 'clipPush')!;
+    const rect = clip.rect as number[];
+    const patch = encodeRustRetainedPatch(old, old.revision + 1,
+      [{ id: String(clip.id), command: { ...clip, rect: [rect[0] + 32, rect[1], rect[2], rect[3]] } }])!;
+    const admission = parse(rust.apply_patch(patch.bytes));
+    const result = parse(await rust.present());
+    if (admission.accepted && result.presented) committed = patch.scene;
+    return { admission, result, changedIndexes: patch.changedIndexes };
+  },
   async faultRollback() {
     if (typeof rust.debugValidationFailureOnce !== 'function')
       throw new Error('fault-injection Wasm feature is required');
