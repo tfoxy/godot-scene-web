@@ -33,6 +33,11 @@
       "types": "./dist/rust-prototype-scene.d.ts",
       "import": "./dist/rust-prototype-scene.js"
     },
+    "./msdf-generator": {
+      "development": "./src/msdf-generator.ts",
+      "types": "./dist/msdf-generator.d.ts",
+      "import": "./dist/msdf-generator.js"
+    },
     "./pixi": {
       "development": "./src/pixi-renderer.ts",
       "types": "./dist/pixi-renderer.d.ts",

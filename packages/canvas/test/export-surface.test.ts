@@ -87,6 +87,7 @@ const VALUE_EXPORTS = [
   "RETAINED_MAX_DAMAGE_COVERAGE",
   "RETAINED_MAX_REPLAY_FRACTION",
   "RETAINED_RANGE_DEFAULTS",
+  "RustAtlasPages",
   "setViewColorMatrix",
   "shadeQuadPixel",
   "snapRetainedSize",
