@@ -131,8 +131,8 @@ export interface RustSceneSnapshot {
 }
 const encoder = new TextEncoder();
 interface RetainedMeta {
-  groups: Map<string, { parentId?: string; transform: readonly number[] }>;
-  owners: Map<
+  groups: OverlayMap<string, { parentId?: string; transform: readonly number[] }>;
+  owners: OverlayMap<
     string,
     {
       parentId?: string;
@@ -175,6 +175,87 @@ export function rustSceneCommandIndex(
 ): ReadonlyMap<string, number> {
   return indexCommands(scene);
 }
+
+/**
+ * Copy-on-write map used by `encodeRustRetainedPatchImpl` for `groups`/`owners`, which a full-scene
+ * build sizes to the whole scene (one entry per renderable). `root` is that full map, shared by every
+ * patch descending from the scene that built it; `own` holds only the entries this lineage of patches
+ * has actually written. Deriving the next generation (`OverlayMap.from`) copies `own` — bounded by the
+ * number of distinct keys ever touched since the last full-scene build or compaction, not by the
+ * scene's size.
+ *
+ * That bound only holds if something resets it: a long chain that keeps moving the same handful of
+ * groups never grows `own` past that handful, but a chain that touches a new key on every step would
+ * otherwise make `own` itself drift towards the root's size, and copying a drifting `own` is back to
+ * O(root size) per patch. So once `own.size` passes 1/8 of `root.size`, the next derive compacts
+ * instead: it flattens the current view into a fresh, small root (one `Map` built from `entries()`,
+ * the same amortized-doubling trick a growable array uses) and starts `own` over empty, keeping the
+ * amortized cost per patch at O(patch size) over the whole chain.
+ *
+ * There is no `delete`: nothing here ever removes a group or an owner, only replaces one (`set`) or
+ * adds one that was not there before (a full-scene build, never a patch). Before adding one, note that
+ * `Map` moves a key to the end on delete-then-re-add, which `entries()` below does not account for;
+ * get that case right (a tombstone set, the way an earlier revision of this file did, is one way) and
+ * the doc comment stays true, rather than leaving code that never deletes in to invite later writes
+ * through this type to drift from it.
+ */
+class OverlayMap<K, V> {
+  private readonly root: ReadonlyMap<K, V>;
+  private readonly own: Map<K, V>;
+  private constructor(root: ReadonlyMap<K, V>, own: Iterable<readonly [K, V]>) {
+    this.root = root;
+    this.own = new Map(own);
+  }
+  static from<K, V>(
+    source: ReadonlyMap<K, V> | OverlayMap<K, V> | undefined,
+  ): OverlayMap<K, V> {
+    if (source instanceof OverlayMap) {
+      if (source.own.size > 0 && source.own.size * 8 > source.root.size)
+        return new OverlayMap<K, V>(new Map(source.entries()), []);
+      return new OverlayMap<K, V>(source.root, source.own);
+    }
+    return new OverlayMap<K, V>(source ?? new Map<K, V>(), []);
+  }
+  get(key: K): V | undefined {
+    return this.own.has(key) ? this.own.get(key) : this.root.get(key);
+  }
+  has(key: K): boolean {
+    return this.own.has(key) || this.root.has(key);
+  }
+  set(key: K, value: V): void {
+    this.own.set(key, value);
+  }
+  [Symbol.iterator](): IterableIterator<[K, V]> {
+    return this.entries();
+  }
+  /**
+   * `Map` iteration order exactly: `root`'s own order, with any overridden value swapped in in place
+   * (a `set` on a key `root` already has never moves it, matching `Map`), then `own`'s keys that
+   * `root` does not have — genuinely new ones — in the order they were added.
+   */
+  *entries(): IterableIterator<[K, V]> {
+    for (const [key, value] of this.root) {
+      yield [key, this.own.has(key) ? this.own.get(key)! : value];
+    }
+    for (const [key, value] of this.own) {
+      if (this.root.has(key)) continue;
+      yield [key, value];
+    }
+  }
+}
+
+/** `base.resources` never changes across a patch chain (patches only ever touch `commands`), so its
+ * key set is computed once per full-scene build and reused by reference for every descendant patch. */
+const resourceKeySets = new WeakMap<RustResource[], ReadonlySet<string>>();
+function resourceKeySet(resources: RustResource[]): ReadonlySet<string> {
+  let keys = resourceKeySets.get(resources);
+  if (!keys) {
+    keys = new Set(resources.map((resource) => resource.key));
+    resourceKeySets.set(resources, keys);
+  }
+  return keys;
+}
+
 const identity = [1, 0, 0, 1, 0, 0] as const;
 /**
  * Shared, frozen stand-in for a fresh `[...identity]` copy. Safe only because
@@ -563,13 +644,15 @@ function encodeRustSceneImpl<T>({
     commands,
   };
   retainedMeta.set(scene, {
-    groups: new Map(
-      [...groups].map(([id, group]) => [
-        id,
-        { parentId: group.parentId, transform: group.transform },
-      ]),
+    groups: OverlayMap.from(
+      new Map(
+        [...groups].map(([id, group]) => [
+          id,
+          { parentId: group.parentId, transform: group.transform },
+        ]),
+      ),
     ),
-    owners,
+    owners: OverlayMap.from(owners),
     clips,
   });
   indexCommands(scene);
@@ -974,24 +1057,12 @@ function encodeRustRetainedPatchImpl(
   )
     return null;
   const indexes = indexCommands(base);
-  const resources = new Set(base.resources.map((resource) => resource.key));
+  const resources = resourceKeySet(base.resources);
   const seen = new Set<string>();
-  const nextCommands = base.commands.slice();
   const meta = retainedMeta.get(base);
   if (groupTransforms.length && !meta) return null;
-  const groups = meta
-    ? new Map(meta.groups)
-    : new Map<string, { parentId?: string; transform: readonly number[] }>();
-  const owners = meta
-    ? new Map(meta.owners)
-    : new Map<
-        string,
-        {
-          parentId?: string;
-          local: readonly number[];
-          sourceLocal: readonly number[];
-        }
-      >();
+  const groups = OverlayMap.from(meta?.groups);
+  const owners = OverlayMap.from(meta?.owners);
   for (const change of groupTransforms) {
     const group = groups.get(change.id);
     if (
@@ -1005,7 +1076,7 @@ function encodeRustRetainedPatchImpl(
   const staged = new Map<string, Record<string, unknown>>();
   function groupWorld(
     id: string | undefined,
-    source: Map<string, { parentId?: string; transform: readonly number[] }>,
+    source: OverlayMap<string, { parentId?: string; transform: readonly number[] }>,
   ): number[] {
     if (!id) return [...identity];
     const group = source.get(id);
@@ -1150,6 +1221,13 @@ function encodeRustRetainedPatchImpl(
       });
     }
   }
+  // A per-patch `Proxy` overlay was tried here and reverted: its `get` trap (a regex plus a `Map`
+  // lookup per property access, `.length` included) is cheap next to the `slice()` it replaces
+  // (~2.5us at 3,000 commands) but expensive next to what consumers actually do with the result —
+  // iterating or filtering the whole `commands` array, which every `get` now routes through the trap.
+  // A plain sliced array is the right tradeoff: the real per-patch cost was the `groups`/`owners`
+  // map copies above, which `OverlayMap` fixes without changing what `commands` is.
+  const nextCommands = base.commands.slice();
   const changedIndexes: number[] = [];
   for (const [id, command] of staged) {
     const index = indexes.get(id)!;

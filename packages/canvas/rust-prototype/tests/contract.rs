@@ -1,5 +1,7 @@
 use godot_scene_web_rust_prototype::{
-    contract::SceneState, geometry::build, resources::ResourceStore,
+    contract::{Command, Scene, SceneState},
+    geometry::build,
+    resources::ResourceStore,
 };
 use serde_json::json;
 fn scene() -> serde_json::Value {
@@ -636,4 +638,276 @@ fn clip_replacement_rewrites_glyph_instances_in_its_scope() {
     assert_eq!(patched.instances.len(), 4);
     assert_eq!(patched.instances, expected.instances);
     assert!(patched.instances.iter().all(|instance| instance.clips[0] == [6.0, -2.0, 40.0, 40.0]));
+}
+
+// `Command::deserialize` is hand-written (contract.rs) in place of the derived
+// `#[serde(tag = "kind", flatten)]`, which buffered every command through serde's slowest
+// deserialize path before building the real struct. These tests prove every fixture already defined
+// above still decodes to the identical scene through the new path, and that the four shapes of bad
+// input the old path could hit (an unrecognized kind, a missing field, an extra field, an oversize
+// glyph list) are refused — or accepted — exactly as they were before.
+
+#[test]
+fn every_existing_scene_fixture_round_trips_through_the_handwritten_command_decoder() {
+    // Re-encoding a decoded scene is a fixed point (decoding that encoding again produces the exact
+    // same JSON): proof the hand-written decoder loses or corrupts nothing for every fixture this file
+    // exercises through `SceneState::admit`/`patch`, not just the one case each existing test happens
+    // to check. (Comparing straight against the `json!` fixture instead would spuriously fail: an
+    // integer literal like `8` and the `f32` it decodes to and re-encodes as `8.0` are different
+    // `serde_json::Number`s even though they are the same value.)
+    for fixture in [scene(), clipped_scene()] {
+        let parsed: Scene = serde_json::from_value(fixture.clone()).unwrap();
+        let encoded = serde_json::to_value(&parsed).unwrap();
+        let reparsed: Scene = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&reparsed).unwrap(), encoded);
+    }
+    // And the fixtures' actual shape survived, not just a self-consistent re-encoding of it.
+    let plain = scene();
+    let ids_and_kinds: Vec<_> = plain["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["id"].as_str().unwrap().to_string(), c["kind"].as_str().unwrap().to_string()))
+        .collect();
+    let decoded: Scene = serde_json::from_value(plain).unwrap();
+    assert_eq!(decoded.commands.len(), ids_and_kinds.len());
+    for (command, (id, kind)) in decoded.commands.iter().zip(&ids_and_kinds) {
+        assert_eq!(command.id(), id);
+        let expected_kind = match kind.as_str() {
+            "quad" => 0,
+            "ninePatch" => 1,
+            "rasterText" => 2,
+            "stillImage" => 3,
+            "clipPush" => 4,
+            "clipPop" => 5,
+            "glyphRun" => 6,
+            other => panic!("unexpected fixture kind {other}"),
+        };
+        assert_eq!(command.kind(), expected_kind);
+    }
+}
+
+#[test]
+fn command_decode_rejects_an_unknown_kind_with_the_same_message_as_before() {
+    let value = json!({"id": "q", "kind": "texturedMesh"});
+    let error = serde_json::from_value::<Command>(value).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "unknown variant `texturedMesh`, expected one of `quad`, `ninePatch`, `rasterText`, \
+         `glyphRun`, `stillImage`, `clipPush`, `clipPop`"
+    );
+}
+
+#[test]
+fn admit_still_counts_unsupported_kinds_in_one_pass_without_replacing_the_scene() {
+    let mut state = SceneState::default();
+    let mut resources = ResourceStore::default();
+    resources.upload_batch(&bundle([255, 0, 0, 255])).unwrap();
+    let mut bad = scene();
+    bad["commands"][1]["kind"] = json!("texturedMesh");
+    let result = state.admit(&serde_json::to_vec(&bad).unwrap(), &resources.ready());
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert!(state.scene().is_none());
+}
+
+#[test]
+fn command_decode_reports_a_missing_field_with_the_same_message_as_before() {
+    let mut command = scene()["commands"][1].clone();
+    command.as_object_mut().unwrap().remove("w");
+    let error = serde_json::from_value::<Command>(command)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "missing field `w`");
+}
+
+#[test]
+fn command_decode_ignores_an_extra_field_the_same_way_flatten_did() {
+    let mut command = scene()["commands"][1].clone();
+    command["extraField"] = json!(123);
+    let parsed: Command = serde_json::from_value(command).unwrap();
+    assert_eq!(parsed.id(), "q");
+    assert_eq!(parsed.kind(), 0);
+}
+
+#[test]
+fn glyph_run_over_the_4096_tile_limit_still_refuses_admission() {
+    let glyphs: Vec<_> = std::iter::repeat(json!({"src": [0, 0, 1, 1], "dst": [0, 0, 1, 1]}))
+        .take(4097)
+        .collect();
+    let value = json!({ "version": 2, "revision": 1, "width": 64, "height": 64,
+        "designWidth": 64, "designHeight": 64,
+        "resources": [{"key": "atlas", "width": 48, "height": 48}],
+        "commands": [{"id": "g", "kind": "glyphRun", "atlas": "atlas", "m": [1, 0, 0, 1, 0, 0],
+            "glyphs": glyphs, "method": "msdf", "fill": [1, 0, 0, 1], "pxRange": 4.0, "alpha": 1.0}] });
+    let ready = std::collections::HashMap::from([("atlas".to_string(), (48, 48))]);
+    let mut state = SceneState::default();
+    let result = state.admit(&serde_json::to_vec(&value).unwrap(), &ready);
+    assert!(!result.accepted);
+    assert_eq!(result.error.as_deref(), Some("invalid glyph run"));
+    assert!(state.scene().is_none());
+}
+
+/// A single-command scene wrapping `command`, so `admit`'s unsupported-kind count is the only thing
+/// under test: that check runs before resource readiness or `validate`, so neither matters here.
+fn single_command_scene(command: serde_json::Value) -> serde_json::Value {
+    json!({ "version": 2, "revision": 1, "width": 1, "height": 1,
+        "designWidth": 1, "designHeight": 1, "resources": [], "commands": [command] })
+}
+
+// `AdmittedCommand`'s classification (contract.rs) must count every one of these as an unsupported
+// command — exactly what the old `Value`-based pre-scan did — rather than hard-failing admission on a
+// field it was never going to use because the command's `kind` was already unsupported.
+
+#[test]
+fn admit_counts_an_unknown_kind_even_with_a_wrongly_typed_field_of_another_commands_name() {
+    // "w" is a real field name (on `quad`), but holds a string here. The old pre-scan never looked at
+    // it: it checked `kind` on the raw `Value` and moved on. A naive single-pass rewrite that
+    // type-parses every known field name before deciding `kind` is unsupported would hard-fail on this
+    // instead of counting it.
+    let command = json!({"id": "q", "kind": "texturedMesh", "w": "not-a-number"});
+    let mut state = SceneState::default();
+    let result = state.admit(
+        &serde_json::to_vec(&single_command_scene(command)).unwrap(),
+        &std::collections::HashMap::new(),
+    );
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert_eq!(result.error.as_deref(), Some("unsupported command kind"));
+}
+
+#[test]
+fn admit_counts_a_command_with_no_kind_field_as_unsupported() {
+    let command = json!({"id": "q", "resource": null});
+    let mut state = SceneState::default();
+    let result = state.admit(
+        &serde_json::to_vec(&single_command_scene(command)).unwrap(),
+        &std::collections::HashMap::new(),
+    );
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert_eq!(result.error.as_deref(), Some("unsupported command kind"));
+}
+
+#[test]
+fn admit_counts_a_non_string_kind_as_unsupported() {
+    let command = json!({"id": "q", "kind": 123});
+    let mut state = SceneState::default();
+    let result = state.admit(
+        &serde_json::to_vec(&single_command_scene(command)).unwrap(),
+        &std::collections::HashMap::new(),
+    );
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert_eq!(result.error.as_deref(), Some("unsupported command kind"));
+}
+
+#[test]
+fn admit_counts_a_non_object_command_as_unsupported() {
+    for command in [json!(42), json!("foo"), json!(null), json!([1, 2])] {
+        let mut state = SceneState::default();
+        let result = state.admit(
+            &serde_json::to_vec(&single_command_scene(command.clone())).unwrap(),
+            &std::collections::HashMap::new(),
+        );
+        assert!(!result.accepted, "{command:?}");
+        assert_eq!(result.unsupported_commands, 1, "{command:?}");
+        assert_eq!(result.error.as_deref(), Some("unsupported command kind"), "{command:?}");
+    }
+}
+
+#[test]
+fn admit_counts_a_duplicate_kind_key_as_unsupported_rather_than_resolving_it() {
+    // A behavior change from the old `Value`-based pre-scan, deliberately accepted: `serde_json`'s
+    // `Value::Object` silently kept the LAST "kind" on a duplicate key, so the old pre-scan would have
+    // read whichever one came last. `AdmittedCommand`'s probe matches "kind" as a named struct field,
+    // so `serde` reports "duplicate field" there instead, which this contract treats as unsupported
+    // rather than letting it through on a coin flip of key order. `JSON.stringify` cannot emit a
+    // duplicate key, so no real wire traffic exercises this either way.
+    let raw = br#"{"version":2,"revision":1,"width":1,"height":1,"designWidth":1,"designHeight":1,
+        "resources":[],"commands":[{"id":"q","kind":"quad","kind":"clipPop"}]}"#;
+    let mut state = SceneState::default();
+    let result = state.admit(raw, &std::collections::HashMap::new());
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert_eq!(result.error.as_deref(), Some("unsupported command kind"));
+}
+
+// `admit` must count an unsupported command before the typed `SceneWire` parse can hit some OTHER,
+// unrelated problem elsewhere in the same scene — `Scene`/`resources`/every supported command are
+// typed and `deny_unknown_fields`, so without a count-first pass, whichever of the two problems the
+// single typed parse reaches first would decide the outcome, not always the unsupported command.
+
+#[test]
+fn admit_counts_unsupported_over_a_wrongly_typed_field_on_a_different_supported_command() {
+    let value = json!({ "version": 2, "revision": 1, "width": 1, "height": 1,
+        "designWidth": 1, "designHeight": 1, "resources": [],
+        "commands": [
+            {"id": "a", "kind": "futureKind"},
+            {"id": "b", "kind": "quad", "resource": null, "m": [1, 0, 0, 1, 0, 0],
+                "w": "x", "h": 1.0, "src": [0.0, 0.0, 1.0, 1.0], "color": [1.0, 1.0, 1.0, 1.0],
+                "blend": "mix", "flipH": false, "flipV": false, "colorMatrix": null},
+        ] });
+    let mut state = SceneState::default();
+    let result = state.admit(&serde_json::to_vec(&value).unwrap(), &std::collections::HashMap::new());
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert_eq!(result.error.as_deref(), Some("unsupported command kind"));
+}
+
+#[test]
+fn admit_counts_unsupported_over_an_unknown_top_level_field() {
+    let value = json!({ "version": 2, "revision": 1, "width": 1, "height": 1,
+        "designWidth": 1, "designHeight": 1, "resources": [], "extraField": true,
+        "commands": [{"id": "a", "kind": "futureKind"}] });
+    let mut state = SceneState::default();
+    let result = state.admit(&serde_json::to_vec(&value).unwrap(), &std::collections::HashMap::new());
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert_eq!(result.error.as_deref(), Some("unsupported command kind"));
+}
+
+#[test]
+fn admit_counts_unsupported_over_a_non_string_resource_key() {
+    let value = json!({ "version": 2, "revision": 1, "width": 1, "height": 1,
+        "designWidth": 1, "designHeight": 1,
+        "resources": [{"key": 1, "width": 10, "height": 10}],
+        "commands": [{"id": "a", "kind": "futureKind"}] });
+    let mut state = SceneState::default();
+    let result = state.admit(&serde_json::to_vec(&value).unwrap(), &std::collections::HashMap::new());
+    assert!(!result.accepted);
+    assert_eq!(result.unsupported_commands, 1);
+    assert_eq!(result.error.as_deref(), Some("unsupported command kind"));
+}
+
+#[test]
+fn admit_reports_a_document_relative_position_for_a_malformed_supported_command() {
+    // A multi-line, pretty-printed document (never produced by `JSON.stringify`, but exactly how a
+    // human might paste one in while debugging): the bad command's own text starts at line 1 of
+    // itself, which `admit_counts_unsupported_over_a_wrongly_typed_field_on_a_different_supported_command`
+    // above cannot tell apart from the document's real line 10, because that test's single-line,
+    // `serde_json::to_vec`-produced input puts both at "line 1" anyway. This one can tell them apart.
+    let raw = br#"{
+  "version": 2,
+  "revision": 1,
+  "width": 1,
+  "height": 1,
+  "designWidth": 1,
+  "designHeight": 1,
+  "resources": [],
+  "commands": [
+    {"id": "a", "kind": "quad", "resource": null, "m": [1,0,0,1,0,0], "h": 1.0,
+      "src": [0.0,0.0,1.0,1.0], "color": [1.0,1.0,1.0,1.0], "blend": "mix",
+      "flipH": false, "flipV": false, "colorMatrix": null}
+  ]
+}"#;
+    let mut state = SceneState::default();
+    let result = state.admit(raw, &std::collections::HashMap::new());
+    assert!(!result.accepted);
+    let error = result.error.unwrap();
+    assert!(error.starts_with("missing field `w`"), "{error}");
+    // Not "line 1" (the command's own text starts there too, same as the misleading old position)
+    // and not absent either: a real line number from somewhere past the command, in `raw` itself.
+    assert!(!error.contains("line 1 "), "{error}");
+    assert!(error.contains(" at line "), "{error}");
 }
