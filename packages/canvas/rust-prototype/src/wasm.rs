@@ -1,6 +1,14 @@
 //! wasm-bindgen boundary: one scene, patch, or resource bundle per call.
-use crate::{present::PresentMode, renderer::Renderer};
+use crate::{idle::IdleSet, present::PresentMode, renderer::Renderer};
 use wasm_bindgen::prelude::*;
+
+/// Decode an `RIA1` idle set and return every target's command matrix at `t_ms` (six f64 per target), with no
+/// renderer: the parity check for a caller's own patch path.
+#[wasm_bindgen(js_name = idleEvaluate)]
+pub fn idle_evaluate(bytes: &[u8], t_ms: f64) -> Result<Vec<f64>, JsValue> {
+    let set = IdleSet::decode(bytes).map_err(|e| JsValue::from_str(&e))?;
+    Ok(set.evaluate(t_ms).into_iter().flatten().collect())
+}
 
 #[wasm_bindgen]
 pub struct RustRenderer {
@@ -91,6 +99,40 @@ impl RustRenderer {
     pub async fn present(&mut self) -> String {
         self.inner.record_wasm_call();
         serde_json::to_string(&self.inner.present().await).unwrap()
+    }
+    /// Install idle animations (`RIA1`) for the committed revision; returns the target count. Replaces any
+    /// installed set; a refused set leaves none installed.
+    pub fn set_idle_anims(&mut self, bytes: &[u8]) -> Result<u32, JsValue> {
+        self.inner.record_wasm_call();
+        self.inner
+            .set_idle_anims(bytes)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+    pub fn clear_idle_anims(&mut self) {
+        self.inner.record_wasm_call();
+        self.inner.clear_idle_anims();
+    }
+    /// One synchronous idle frame at `t_ms` (see `Renderer::present_idle`): a bit set, 0 on refusal.
+    pub fn present_idle(&mut self, t_ms: f64) -> u32 {
+        self.inner.record_wasm_call();
+        self.inner.present_idle(t_ms)
+    }
+    /// The installed set's command matrices at `t_ms` (six f64 per target).
+    pub fn idle_poses(&self, t_ms: f64) -> Vec<f64> {
+        self.inner.idle_poses(t_ms)
+    }
+    /// The last `present_idle`'s present result as JSON (`present()`'s shape), or `null` before one.
+    pub fn idle_last_result(&self) -> String {
+        serde_json::to_string(&self.inner.idle_last_result()).unwrap()
+    }
+    /// Cumulative idle counters as JSON (diagnostics; not for the frame path).
+    pub fn idle_stats(&self) -> String {
+        serde_json::to_string(self.inner.idle_stats()).unwrap()
+    }
+    /// Capability probe: `set_idle_anims` / `present_idle` exist. Older glue reads `undefined`.
+    #[wasm_bindgen(getter)]
+    pub fn idle_anims(&self) -> bool {
+        true
     }
     /// Diagnostic only: associates one present call with a scene/patch operation ID.
     pub fn set_phase_operation_id(&mut self, id: u32) {

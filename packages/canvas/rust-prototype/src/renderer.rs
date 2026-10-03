@@ -3,6 +3,7 @@ use crate::{
     contract::{Admission, Blend, Command, Patch, PatchDelta, Quad, SCENE_VERSION, Scene, SceneState},
     damage::{self, DamageSet, DeviceRect, Projection},
     geometry::{self, Draw, Geometry, Instance, ResourceIndexCache, TEXTURE_SLOTS},
+    idle::IdleSet,
     present::PresentMode,
     resources::{ResourceChange, ResourceFormat, ResourceStore},
 };
@@ -307,6 +308,8 @@ pub struct Renderer {
     surface_globals_bind: wgpu::BindGroup,
     design_globals: wgpu::Buffer,
     design_globals_bind: wgpu::BindGroup,
+    /// The design size `design_globals` holds: a present writes the 16-byte buffer only when it changes.
+    design_globals_size: Option<(u32, u32)>,
     pipelines: [wgpu::RenderPipeline; 2],
     copy_pipeline: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
@@ -384,8 +387,46 @@ pub struct Renderer {
     last_damage: Option<&'static str>,
     /// Pixels the last present wrote to the canvas's default framebuffer.
     last_blit_pixels: u64,
+    /// The installed idle animations (`set_idle_anims`), valid while the committed revision is theirs.
+    idle: Option<IdleSet>,
+    idle_stats: IdleStats,
+    /// The last `present_idle`'s full present result (diagnostics and the integration gate; never on the frame path).
+    idle_last_result: Option<PresentResult>,
     #[cfg(feature = "fault-injection")]
     validation_failure_once: bool,
+}
+/// Cumulative `present_idle` counters (`idle_stats`).
+#[derive(serde::Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleStats {
+    pub installs: u64,
+    pub install_refusals: u64,
+    pub presents: u64,
+    /// Presents whose poses moved no command (f32 equal to the committed ones): nothing staged.
+    pub unchanged: u64,
+    pub partial: u64,
+    pub full: u64,
+    pub skipped: u64,
+    pub refusals: u64,
+    pub commands_moved: u64,
+    pub last_error: Option<String>,
+}
+/// `present_idle` result bits. 0 is a refusal (`idle_stats().lastError` says why); a presented frame sets
+/// `IDLE_PRESENTED` plus how its picture was produced.
+pub const IDLE_PRESENTED: u32 = 1;
+pub const IDLE_SKIP: u32 = 2;
+pub const IDLE_PARTIAL: u32 = 4;
+pub const IDLE_FULL: u32 = 8;
+pub const IDLE_UNCHANGED: u32 = 16;
+/// Poll a future once. Every future the present path awaits (wgpu-core's error-scope pop) is ready on its first
+/// poll, so a present runs to completion synchronously; `None` means a backend broke that assumption.
+fn resolve_now<F: std::future::Future>(future: F) -> Option<F::Output> {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(value) => Some(value),
+        std::task::Poll::Pending => None,
+    }
 }
 // A batch may touch the same key repeatedly. Stage only those keys while consulting
 // committed GPU residency for each key's first operation.
@@ -1081,6 +1122,7 @@ impl Renderer {
             surface_globals_bind,
             design_globals,
             design_globals_bind,
+            design_globals_size: None,
             pipelines,
             copy_pipeline,
             texture_layout,
@@ -1130,6 +1172,9 @@ impl Renderer {
             damage_stats: DamageStats::default(),
             last_damage: None,
             last_blit_pixels: 0,
+            idle: None,
+            idle_stats: IdleStats::default(),
+            idle_last_result: None,
             #[cfg(feature = "fault-injection")]
             validation_failure_once: false,
         })
@@ -1546,6 +1591,163 @@ impl Renderer {
         result
     }
     pub async fn present(&mut self) -> PresentResult {
+        self.present_now()
+    }
+    /// Install the idle animations for the committed revision (`RIA1`, see [`crate::idle`]). Returns the
+    /// number of targets. A refused set leaves no set installed.
+    pub fn set_idle_anims(&mut self, bytes: &[u8]) -> Result<u32, String> {
+        self.idle = None;
+        let installed = (|| {
+            let set = IdleSet::decode(bytes)?;
+            let scene = self.state.scene().ok_or("no committed scene")?;
+            if scene.revision != set.base_revision {
+                return Err(format!(
+                    "idle set for revision {} but {} is committed",
+                    set.base_revision, scene.revision
+                ));
+            }
+            let mut seen = HashSet::new();
+            for target in &set.targets {
+                if !seen.insert(target.command) {
+                    return Err("idle set names a command twice".into());
+                }
+                match scene.commands.get(target.command) {
+                    Some(
+                        Command::Quad { .. }
+                        | Command::NinePatch { .. }
+                        | Command::RasterText { .. }
+                        | Command::StillImage { .. }
+                        | Command::GlyphRun { .. },
+                    ) => {}
+                    Some(_) => return Err("idle target is not a placed command".into()),
+                    None => return Err("idle target index out of range".into()),
+                }
+            }
+            Ok(set)
+        })();
+        match installed {
+            Ok(set) => {
+                let count = set.targets.len() as u32;
+                self.idle = Some(set);
+                self.idle_stats.installs += 1;
+                Ok(count)
+            }
+            Err(error) => {
+                self.idle_stats.install_refusals += 1;
+                self.idle_stats.last_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+    pub fn clear_idle_anims(&mut self) {
+        self.idle = None;
+    }
+    pub fn idle_stats(&self) -> &IdleStats {
+        &self.idle_stats
+    }
+    pub fn idle_last_result(&self) -> Option<&PresentResult> {
+        self.idle_last_result.as_ref()
+    }
+    /// The installed set's command matrices at `t_ms` (f64, six per target), for parity checks.
+    pub fn idle_poses(&self, t_ms: f64) -> Vec<f64> {
+        self.idle
+            .as_ref()
+            .map(|set| set.evaluate(t_ms).into_iter().flatten().collect())
+            .unwrap_or_default()
+    }
+    /// One idle frame: re-pose every installed target at `t_ms` and present synchronously through the patch
+    /// path (instance spans, damage plan, the same validation). The scene revision does not change, so the
+    /// caller's next patch applies on top. Refused (0) while anything is staged, when no set is installed for
+    /// the committed revision, or before a first picture.
+    pub fn present_idle(&mut self, t_ms: f64) -> u32 {
+        let refuse = |this: &mut Self, error: &str| {
+            this.idle_stats.refusals += 1;
+            this.idle_stats.last_error = Some(error.to_owned());
+            0
+        };
+        if self.staged.is_some() || self.staged_delta.is_some() {
+            return refuse(self, "a scene or patch is staged");
+        }
+        if self.committed_picture.is_none() {
+            return refuse(self, "no completed picture");
+        }
+        if !t_ms.is_finite() {
+            return refuse(self, "non-finite idle clock");
+        }
+        let staged = (|| {
+            let (Some(set), Some(scene)) = (self.idle.as_ref(), self.state.scene()) else {
+                return Err("no idle set installed");
+            };
+            if scene.revision != set.base_revision {
+                return Err("idle set is stale");
+            }
+            let mut updates = Vec::new();
+            for (target, m) in set.targets.iter().zip(set.evaluate(t_ms)) {
+                let m = m.map(|value| value as f32);
+                let committed = &scene.commands[target.command];
+                let current = match committed {
+                    Command::GlyphRun { m, .. } => m,
+                    other => &other.quad().expect("installed targets are placed commands").m,
+                };
+                if *current == m {
+                    continue;
+                }
+                let mut command = committed.clone();
+                match &mut command {
+                    Command::GlyphRun { m: slot, .. } => *slot = m,
+                    Command::Quad { quad, .. }
+                    | Command::NinePatch { quad, .. }
+                    | Command::RasterText { quad, .. }
+                    | Command::StillImage { quad, .. } => quad.m = m,
+                    Command::ClipPush { .. } | Command::ClipPop { .. } => unreachable!(),
+                }
+                updates.push((target.command, command));
+            }
+            Ok((scene.revision, updates))
+        })();
+        let (revision, updates) = match staged {
+            Ok(staged) => staged,
+            Err(error) => return refuse(self, error),
+        };
+        let moved = updates.len() as u64;
+        if !updates.is_empty() {
+            self.staged_delta = Some(PatchDelta {
+                revision,
+                updates,
+                resources: None,
+            });
+        }
+        let result = self.present_now();
+        let presented = result.presented;
+        let error = result.error.clone();
+        self.idle_last_result = Some(result);
+        if !presented {
+            return refuse(self, error.as_deref().unwrap_or("idle present failed"));
+        }
+        self.idle_stats.presents += 1;
+        self.idle_stats.commands_moved += moved;
+        let mut code = IDLE_PRESENTED;
+        if moved == 0 {
+            self.idle_stats.unchanged += 1;
+            code |= IDLE_UNCHANGED;
+        }
+        match self.last_damage {
+            Some("partial") => {
+                self.idle_stats.partial += 1;
+                code |= IDLE_PARTIAL;
+            }
+            Some("skip") => {
+                self.idle_stats.skipped += 1;
+                code |= IDLE_SKIP;
+            }
+            _ => {
+                self.idle_stats.full += 1;
+                code |= IDLE_FULL;
+            }
+        }
+        code
+    }
+    fn present_now(&mut self) -> PresentResult {
         let phase_identity = self.phase_identity.take();
         self.active_operation_id = phase_identity
             .as_ref()
@@ -1825,12 +2027,15 @@ impl Renderer {
                 |resources| build_texture_bind(device, texture_layout, sampler, textures, white, resources),
             )
         };
-        if let Some((design_width, design_height)) = design_size {
+        if let Some((design_width, design_height)) = design_size
+            && self.design_globals_size != design_size
+        {
             self.queue.write_buffer(
                 &self.design_globals,
                 0,
                 bytemuck::cast_slice(&[design_width as f32, design_height as f32, 0.0, 0.0]),
             );
+            self.design_globals_size = design_size;
         }
         drop(prepare_phase);
         let encode_phase = PhaseSpan::new(phase_identity.as_ref(), "encode-submit");
@@ -1929,10 +2134,15 @@ impl Renderer {
         drop(encode_phase);
         // The validation future may suspend here. Its initial poll and wait are unclassified.
         phase_stamp(phase_identity.as_ref(), "validation.wait", "start");
-        let validation_error = scope.pop().await;
+        let validation_error = match resolve_now(scope.pop()) {
+            Some(error) => error.map(|error| error.to_string()),
+            None => Some("validation scope did not resolve synchronously".into()),
+        };
         phase_stamp(phase_identity.as_ref(), "validation.wait", "end");
         let _resume_phase = PhaseSpan::new(phase_identity.as_ref(), "resume");
         if let Some(error) = validation_error {
+            // A refused submission may not have written the design size: write it again next time.
+            self.design_globals_size = None;
             self.restore_instances(&dirty);
             self.staged = None;
             self.staged_patch_ids = None;

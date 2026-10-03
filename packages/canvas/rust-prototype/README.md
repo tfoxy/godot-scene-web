@@ -92,6 +92,59 @@ empty present, and empty presents through a damage renderer and a default
 one at a 3.49 device scale, and requires byte-identical screenshots after
 every step.
 
+### Idle animations (`RIA1`)
+
+A caller whose steady frames only move a few retained subtrees through periodic
+loops (a bob, a spin, a pulse) can hand those loops to the renderer instead of
+sending a patch per frame. `set_idle_anims(bytes)` installs a descriptor set
+for the committed scene revision; `present_idle(t_ms)` is one idle frame. It
+samples every loop at `t_ms`, re-poses the commands the set targets, and
+presents through the ordinary patch path (instance spans, damage plan, partial
+redraw, the same validation), synchronously. The scene revision does not move,
+so the caller's next patch applies on top; any admission or patch that commits
+a new revision makes the set stale, and `present_idle` refuses it until a new
+set is installed. The result is a bit set (`1` presented, `2` skip, `4`
+partial, `8` full, `16` no command moved), `0` on a refusal, with the reason in
+`idle_stats()`. `idle_last_result()` returns that present's full result
+(`present()`'s JSON) for diagnostics.
+
+A root is a curve (`rest`, `rotate`, `rock`, `bob`, `pivotPulse`,
+`pulseScale`) with a phase origin, offset and period, composed into its
+subtree's placement: `phase = ((((t - origin + phaseMs) / periodMs) % 1) + 1) % 1`,
+`raw = base · (pre · wire) · post`, `draw = outer · [raw.linear, raw.tx +
+spreadDx, raw.ty]`, `delta = draw · inverse`. A target is one placed command
+(`quad`, `ninePatch`, `rasterText`, `stillImage`, `glyphRun`): `group`
+(`m = (P · delta) · Q`), `primitive` (`m = C · Q`, `C` its root chain's
+deltas composed outermost first, each translated by the command's spread offset
+from that root) or `text` (`m = P · ((C · Q) · R)`). Every operation is the
+caller's f64 arithmetic in the caller's order, and the browser build takes
+`cos`/`sin` from the page's `Math`, so a pose is bit-identical to the same pose
+computed in the page; `idleEvaluate(bytes, t_ms)` returns those poses without a
+renderer. Alpha curves are refused: they change paint, not placement.
+
+The wire format is little endian: ASCII `RIA1`, u32 version 1, the base
+revision as two u32 halves, u32 root and target counts; per root u32 curve, u32
+flags (bit 0: has wire), 12 f64 curve parameters (amplitudeRad, amplitudePx,
+baselineUpPx, scaleFrom, scaleTo, alphaFrom, alphaTo, pivotX, pivotY, originMs,
+phaseMs, periodMs) and 25 f64 of placement (base, wire, outer, spreadDx,
+inverse); per target u32 command index, u32 mode, u32 chain length, per link
+u32 root, u32 reserved, f64 offset, then P, Q and R (18 f64). Browser callers
+encode with `encodeRustIdleAnims`, and read a committed retained scene's group
+members and text placements with `rustRetainedGroupMembers` and
+`rustRetainedTextPlacement` (`RUST_IDLE_ANIMS` advertises them).
+
+Every present now resolves its validation scope synchronously: wgpu-core's
+error-scope pop is ready on its first poll, so `present()` and `present_idle`
+check validation before presenting exactly as before, without suspending. A
+present also writes the design-size uniform only when the design size changed.
+
+The integration gate ends its damage sequence with an idle leg: one set over
+group members, a primitive, a nested chain with a spread offset, a glyph run
+in text mode and a root at rest, then 24 idle frames at seeded clocks. Every
+renderer but the full-redraw reference presents them with `present_idle`; the
+reference applies the same poses as patches; every step must be byte-identical.
+A re-admission then makes the set stale, and `present_idle` must refuse it.
+
 ## Browser build
 
 `cargo` and a matching `wasm-bindgen` CLI (0.2.129) are required. Run
@@ -130,6 +183,7 @@ committed revision and picture intact, and succeeds when reapplied.
 
 The browser methods are `upload_rgba_batch(bytes)`, `admit_scene(bytes)`,
 `apply_patch(bytes)`, `resize(width,height)`, `await present()`, and `dispose()`,
+the idle-animation methods above,
 plus the optional `set_draw_state_dedupe`, `set_damage_present` and
 `set_damage_verify` switches. `GSW_RUST_DAMAGE_PRESENT=1` runs the
 integration and fault legs with the damage present on, and
