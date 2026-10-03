@@ -1,11 +1,12 @@
 //! Ordered instanced wgpu executor shared by browser WebGL2 and native harnesses.
 use crate::{
     contract::{Admission, Blend, Command, Patch, Quad, SCENE_VERSION, Scene, SceneState},
+    damage::{self, DamageSet, DeviceRect, Projection},
     geometry::{self, Draw, Geometry, Instance, ResourceIndexCache, TEXTURE_SLOTS},
     resources::{ResourceChange, ResourceFormat, ResourceStore},
 };
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
 
 // These trace timestamps bracket synchronous Rust execution only. A dropped span
@@ -81,6 +82,60 @@ pub struct PresentResult {
     pub geometry_rebuilds: u64,
     pub wasm_calls: u64,
     pub error: Option<String>,
+    /// Damage present only (`set_damage_present(true)`); absent otherwise.
+    /// `"partial"`: the picture was redrawn inside the damage rectangles;
+    /// `"full"`: it was redrawn whole; `"skip"`: nothing changed on screen,
+    /// so no picture pass, no surface copy and no `queue.present` ran (the
+    /// canvas keeps showing the previous, still-correct frame).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub damage: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub damage_stats: Option<DamageStats>,
+}
+/// Cumulative damage-present counters, reported only while it is enabled.
+#[derive(serde::Serialize, Clone, Copy, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DamageStats {
+    pub partial_presents: u64,
+    pub full_presents: u64,
+    pub skipped_presents: u64,
+    /// Device pixels redrawn by partial presents.
+    pub partial_pixels: u64,
+    /// Draw calls issued by partial picture passes (clears included).
+    pub partial_draws: u64,
+    /// `set_damage_verify(true)` only: partial plans the brute-force check
+    /// found incomplete; each one was replaced by a full redraw. The check
+    /// shares the planner's bounds model (`damage::instance_bounds`), so it
+    /// catches bookkeeping slips (a stale per-draw bound, a missed span or
+    /// dirty key), not a wrong bounds model, and it is not pixel evidence.
+    /// Exactness is proven by pixel comparison against a full redraw.
+    pub verify_mismatches: u64,
+    pub verify_checks: u64,
+}
+/// What the committed picture holds, while the damage present can trust it:
+/// exactly `draws` over the committed instances, at `projection`, with every
+/// resource except `damage_dirty_keys` as currently uploaded.
+struct DamageState {
+    picture: usize,
+    projection: Projection,
+    draws: Vec<Draw>,
+    /// Conservative device bounds per draw, aligned with `draws`.
+    bounds: Vec<DeviceRect>,
+}
+enum DamagePlan {
+    /// The damage present is disabled: today's full redraw, untouched.
+    Off,
+    Full,
+    /// Redraw `rects` in place. `selection[d]` holds every pixel draw `d`
+    /// can write after this present; `touched` lists draws whose stored
+    /// bounds must be recomputed once the present commits. Empty `rects`
+    /// is a skipped present.
+    Partial {
+        rects: DamageSet,
+        selection: Vec<DeviceRect>,
+        touched: Vec<usize>,
+        resource_changed: Vec<usize>,
+    },
 }
 struct TextureEntry {
     _texture: wgpu::Texture,
@@ -160,6 +215,20 @@ pub struct Renderer {
     /// check skips that work. Runtime-gated: `false` (the default)
     /// reproduces today's call sequence exactly; see `set_draw_state_dedupe`.
     draw_state_dedupe: bool,
+    /// Runtime-gated damage present (`set_damage_present`). `false` (the
+    /// default) reproduces today's full redraw and present exactly.
+    damage_present: bool,
+    damage_verify: bool,
+    damage: Option<DamageState>,
+    /// Keys whose texture changed (any upload op) since the picture last
+    /// accounted for them. Recorded only while the damage present is on.
+    damage_dirty_keys: HashSet<String>,
+    /// A 1x1 transparent texture bound to the copy pipeline: drawn under a
+    /// scissor it clears exactly the damaged pixels, which `LoadOp::Clear`
+    /// cannot (it ignores the scissor). Created on first enable.
+    damage_clear: Option<(TextureEntry, wgpu::BindGroup)>,
+    damage_stats: DamageStats,
+    last_damage: Option<&'static str>,
     #[cfg(feature = "fault-injection")]
     validation_failure_once: bool,
 }
@@ -745,6 +814,13 @@ impl Renderer {
             adapter_timestamp_query_supported,
             adapter_texture_slots: actual.max_sampled_textures_per_shader_stage,
             draw_state_dedupe: false,
+            damage_present: false,
+            damage_verify: false,
+            damage: None,
+            damage_dirty_keys: HashSet::new(),
+            damage_clear: None,
+            damage_stats: DamageStats::default(),
+            last_damage: None,
             #[cfg(feature = "fault-injection")]
             validation_failure_once: false,
         })
@@ -756,6 +832,43 @@ impl Renderer {
     /// One artifact serves both A/B arms this way.
     pub fn set_draw_state_dedupe(&mut self, enabled: bool) {
         self.draw_state_dedupe = enabled;
+    }
+    /// Opt into the damage present (default `false`: unchanged). While on, a
+    /// patch redraws only the picture pixels it can change, in place, and a
+    /// present with nothing to change skips the GPU entirely. The first
+    /// present after enabling is a full redraw.
+    pub fn set_damage_present(&mut self, enabled: bool) {
+        if enabled && self.damage_clear.is_none() {
+            let entry = create_texture(
+                &self.device,
+                &self.queue,
+                1,
+                1,
+                ResourceFormat::Linear,
+                Some(&[0, 0, 0, 0]),
+            );
+            let bind = bind_textures(
+                &self.device,
+                &self.texture_layout,
+                &self.sampler,
+                &[&entry.view; TEXTURE_SLOTS],
+            );
+            self.texture_creations += 1;
+            self.damage_clear = Some((entry, bind));
+        }
+        if enabled != self.damage_present {
+            self.damage = None;
+            self.damage_dirty_keys.clear();
+        }
+        self.damage_present = enabled;
+    }
+    /// Brute-force check of every partial plan, re-derived from the full old
+    /// and new instance arrays instead of the spans and stored per-draw
+    /// bounds the planner used (diagnostic; CPU cost proportional to the
+    /// scene). It reuses the same bounds model and dirty-key set, so it is a
+    /// bookkeeping check, not pixel evidence — see `DamageStats`.
+    pub fn set_damage_verify(&mut self, enabled: bool) {
+        self.damage_verify = enabled;
     }
     pub fn set_phase_operation_id(&mut self, id: u32) {
         self.phase_identity = (id > 0).then_some(PhaseIdentity {
@@ -824,6 +937,7 @@ impl Renderer {
         ];
         self.texture_creations += 2;
         self.committed_picture = None;
+        self.damage = None;
         self.staged = None;
         self.staged_patch_ids = None;
         self.staged_delta = None;
@@ -909,6 +1023,12 @@ impl Renderer {
         }
         let changed_len = changed.len();
         let has_changes = !changed.is_empty();
+        if self.damage_present {
+            // Any op, `Subrect` included: the pixels a draw samples changed
+            // even when its bind group stays valid.
+            self.damage_dirty_keys
+                .extend(changed.iter().map(|change| change.key().to_owned()));
+        }
         // Targeted, not wholesale: an allocate/replace/release only affects the
         // committed draws (and cached content-keyed groups) that actually
         // reference that key (a `Subrect` keeps the same texture/view
@@ -1120,6 +1240,7 @@ impl Renderer {
             .map(|identity| identity.operation_id);
         let prepare_phase = PhaseSpan::new(phase_identity.as_ref(), "prepare");
         self.present_calls += 1;
+        self.last_damage = None;
         let candidate_scene = self
             .staged
             .as_ref()
@@ -1155,11 +1276,18 @@ impl Renderer {
         if candidate_scene.is_none() && self.committed_picture.is_none() {
             return self.failed("no completed picture", 0, 0);
         }
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            e => return self.failed(&format!("{e:?}"), 0, 0),
-        };
+        // Damage present: nothing staged means nothing on screen can change.
+        // The canvas still shows the last presented frame, so skip the
+        // surface copy and `queue.present` entirely. A skip acquires no
+        // surface texture, so it cannot observe a Lost/Outdated surface;
+        // the next present with a change does. A resize never reaches this
+        // skip: it drops `committed_picture`, so the next present fails
+        // ("no completed picture") until a full scene is drawn.
+        if self.damage_present && candidate_scene.is_none() && !self.fault_armed() {
+            self.damage_stats.skipped_presents += 1;
+            self.last_damage = Some("skip");
+            return self.result(true, 0, None, 0);
+        }
         let design_size = candidate_scene.map(|scene| (scene.design_width, scene.design_height));
         let resource_epoch = self.committed_resource_epoch;
         let mut delta_spans = None;
@@ -1202,8 +1330,54 @@ impl Renderer {
             None
         };
         let candidate_geometry = candidate_geometry.or(fallback_geometry);
+        // One instance diff per present, shared by the damage plan and the
+        // instance upload below. Without the damage present it is computed
+        // only where the upload uses it (an unchanged draw table), as before.
+        let candidate_same_layout = candidate_geometry
+            .as_ref()
+            .map(|g| geometry::same_layout(&self.committed_geometry, g));
+        let mut candidate_dirty = candidate_geometry.as_ref().and_then(|g| {
+            (g.instances.len() == self.committed_geometry.instances.len()
+                && (self.damage_present || candidate_same_layout == Some(true)))
+                .then(|| geometry::dirty_ranges(&self.committed_geometry.instances, &g.instances))
+        });
+        let mut plan = self.plan_damage(
+            candidate_geometry.as_ref(),
+            candidate_dirty.as_deref(),
+            delta_spans.as_deref(),
+            design_size,
+        );
+        if self.damage_verify
+            && matches!(plan, DamagePlan::Partial { .. })
+            && !self.verify_damage_plan(&plan, candidate_geometry.as_ref(), delta_spans.as_deref())
+        {
+            self.damage_stats.verify_mismatches += 1;
+            plan = DamagePlan::Full;
+        }
+        let partial_rects = match &plan {
+            DamagePlan::Partial { rects, .. } => Some(rects.rects()),
+            _ => None,
+        };
+        // An empty partial plan changes no pixel: no picture pass, no copy,
+        // no frame acquisition, no present. The state still commits below.
+        let skip = partial_rects.is_some_and(|rects| rects.is_empty()) && !self.fault_armed();
+        let frame = if skip {
+            None
+        } else {
+            match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(f)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
+                e => return self.failed(&format!("{e:?}"), 0, 0),
+            }
+        };
         let target = if candidate_geometry.is_some() || delta_spans.is_some() {
-            Some(self.committed_picture.map_or(0, |i| 1 - i))
+            // A partial plan redraws the committed picture in place (its
+            // pixels outside the damage are the ones being kept); a full
+            // redraw alternates pictures as before.
+            Some(match (&plan, self.committed_picture) {
+                (DamagePlan::Partial { .. }, Some(committed)) => committed,
+                (_, committed) => committed.map_or(0, |i| 1 - i),
+            })
         } else {
             None
         };
@@ -1245,8 +1419,10 @@ impl Renderer {
                 }));
                 self.buffer_creations += 1;
                 dirty.push((0, g.instances.len()));
-            } else if geometry::same_layout(&self.committed_geometry, g) {
-                dirty = geometry::dirty_ranges(&self.committed_geometry.instances, &g.instances);
+            } else if candidate_same_layout == Some(true) {
+                dirty = candidate_dirty.take().unwrap_or_else(|| {
+                    geometry::dirty_ranges(&self.committed_geometry.instances, &g.instances)
+                });
             } else {
                 dirty.push((0, g.instances.len()));
             }
@@ -1285,6 +1461,8 @@ impl Renderer {
         // length whenever `incremental` is false, which this frame's always
         // is when there's nothing staged or patched — see
         // `empty_draws_call_would_wipe_a_populated_cache`.
+        // A skipped present still resolves binds: a draw whose texture list
+        // changed off screen must not leave a stale per-draw slot behind.
         let binds: Vec<wgpu::BindGroup> = if render_draws.is_empty() {
             Vec::new()
         } else {
@@ -1310,72 +1488,96 @@ impl Renderer {
         }
         drop(prepare_phase);
         let encode_phase = PhaseSpan::new(phase_identity.as_ref(), "encode-submit");
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("scene and surface"),
-            });
         let render_geometry = candidate_geometry
             .as_ref()
             .or_else(|| delta_spans.as_ref().map(|_| &self.committed_geometry));
-        if let (Some(g), Some(target)) = (render_geometry, target) {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("candidate picture"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.pictures[target].view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                ..Default::default()
-            });
-            pass.set_bind_group(0, &self.design_globals_bind, &[]);
-            if let Some(buffer) = &self.instance_buffer {
-                pass.set_vertex_buffer(0, buffer.slice(..));
-            }
-            let mut last_pipeline: Option<usize> = None;
-            for (draw, bind) in g.draws.iter().zip(&binds) {
-                let pipeline_index = if draw.blend == Blend::Add { 1 } else { 0 };
-                if !self.draw_state_dedupe || last_pipeline != Some(pipeline_index) {
-                    pass.set_pipeline(&self.pipelines[pipeline_index]);
-                    last_pipeline = Some(pipeline_index);
+        let mut partial_work = (0u64, 0u64);
+        if let Some(frame) = frame.as_ref() {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("scene and surface"),
+                });
+            if let (Some(g), Some(target)) = (render_geometry, target) {
+                match &plan {
+                    DamagePlan::Partial {
+                        rects, selection, ..
+                    } => {
+                        let (issued, pixels) = self.encode_partial_picture(
+                            &mut encoder,
+                            target,
+                            g,
+                            &binds,
+                            rects.rects(),
+                            selection,
+                        );
+                        draws = 1 + issued;
+                        partial_work = (issued as u64, pixels);
+                    }
+                    _ => {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("candidate picture"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.pictures[target].view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                                depth_slice: None,
+                            })],
+                            ..Default::default()
+                        });
+                        pass.set_bind_group(0, &self.design_globals_bind, &[]);
+                        if let Some(buffer) = &self.instance_buffer {
+                            pass.set_vertex_buffer(0, buffer.slice(..));
+                        }
+                        let mut last_pipeline: Option<usize> = None;
+                        for (draw, bind) in g.draws.iter().zip(&binds) {
+                            let pipeline_index = if draw.blend == Blend::Add { 1 } else { 0 };
+                            if !self.draw_state_dedupe || last_pipeline != Some(pipeline_index) {
+                                pass.set_pipeline(&self.pipelines[pipeline_index]);
+                                last_pipeline = Some(pipeline_index);
+                            }
+                            pass.set_bind_group(1, bind, &[]);
+                            pass.draw(0..6, draw.start..draw.start + draw.count);
+                        }
+                    }
                 }
-                pass.set_bind_group(1, bind, &[]);
-                pass.draw(0..6, draw.start..draw.start + draw.count);
             }
+            let picture =
+                &self.pictures[target.or(self.committed_picture).expect("picture exists")];
+            let view = frame.texture.create_view(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("surface copy"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&self.copy_pipeline);
+                pass.set_bind_group(0, &self.surface_globals_bind, &[]);
+                pass.set_bind_group(1, &picture.bind, &[]);
+                pass.set_vertex_buffer(0, self.fullscreen_buffer.slice(..));
+                pass.draw(0..6, 0..1);
+            }
+            #[cfg(feature = "fault-injection")]
+            if std::mem::take(&mut self.validation_failure_once) {
+                // Both buffers are 16 bytes and lack copy usages. The validation
+                // scope must refuse this candidate before queue.present.
+                encoder.copy_buffer_to_buffer(&self.surface_globals, 0, &self.design_globals, 0, 32);
+            }
+            self.queue.submit([encoder.finish()]);
+        } else {
+            draws = 0;
         }
-        let picture = &self.pictures[target.or(self.committed_picture).expect("picture exists")];
-        let view = frame.texture.create_view(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("surface copy"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.copy_pipeline);
-            pass.set_bind_group(0, &self.surface_globals_bind, &[]);
-            pass.set_bind_group(1, &picture.bind, &[]);
-            pass.set_vertex_buffer(0, self.fullscreen_buffer.slice(..));
-            pass.draw(0..6, 0..1);
-        }
-        #[cfg(feature = "fault-injection")]
-        if std::mem::take(&mut self.validation_failure_once) {
-            // Both buffers are 16 bytes and lack copy usages. The validation
-            // scope must refuse this candidate before queue.present.
-            encoder.copy_buffer_to_buffer(&self.surface_globals, 0, &self.design_globals, 0, 32);
-        }
-        self.queue.submit([encoder.finish()]);
         self.draw_calls += draws as u64;
         drop(encode_phase);
         // The validation future may suspend here. Its initial poll and wait are unclassified.
@@ -1396,10 +1598,15 @@ impl Renderer {
             // bind group is correct independent of which candidate it was
             // built for.
             self.bind_cache = vec![None; self.committed_geometry.draws.len()];
+            // A refused command buffer runs nothing, but the next present
+            // need not rely on that: it redraws the picture whole.
+            self.damage = None;
             return self.failed(&format!("GPU validation: {error}"), 0, draws);
         }
-        self.queue.present(frame);
-        self.completed_presents += 1;
+        if let Some(frame) = frame {
+            self.queue.present(frame);
+            self.completed_presents += 1;
+        }
         if let Some(g) = candidate_geometry {
             if incremental {
                 self.incremental_patches += 1;
@@ -1439,7 +1646,329 @@ impl Renderer {
             self.committed_picture = target;
             self.incremental_patches += 1;
         }
+        self.damage_stats.partial_draws += partial_work.0;
+        self.damage_stats.partial_pixels += partial_work.1;
+        self.commit_damage(plan, design_size);
         self.result(true, draws, None, 0)
+    }
+    /// Decide how much of the committed picture this present must redraw.
+    /// Pure CPU; reads only committed state and this present's candidate.
+    fn plan_damage(
+        &self,
+        candidate: Option<&Geometry>,
+        candidate_dirty: Option<&[(usize, usize)]>,
+        delta: Option<&[(usize, Vec<Instance>)]>,
+        design_size: Option<(u32, u32)>,
+    ) -> DamagePlan {
+        if !self.damage_present {
+            return DamagePlan::Off;
+        }
+        let (Some(state), Some((design_width, design_height))) = (self.damage.as_ref(), design_size)
+        else {
+            return DamagePlan::Full;
+        };
+        let projection =
+            Projection::new(self.config.width, self.config.height, design_width, design_height);
+        let old = &self.committed_geometry;
+        if self.committed_picture != Some(state.picture)
+            || state.projection != projection
+            || state.draws.len() != old.draws.len()
+        {
+            return DamagePlan::Full;
+        }
+        let new_draws = candidate.map_or(old.draws.as_slice(), |g| g.draws.as_slice());
+        if new_draws.len() != state.draws.len()
+            || candidate.is_some_and(|g| {
+                g.instances.len() != old.instances.len() || g.command_ranges != old.command_ranges
+            })
+            || new_draws.iter().zip(&state.draws).any(|(new, held)| {
+                new.start != held.start || new.count != held.count || new.blend != held.blend
+            })
+        {
+            return DamagePlan::Full;
+        }
+        let surface = projection.full().area();
+        let mut rects = DamageSet::default();
+        let mut selection = state.bounds.clone();
+        let mut touched = Vec::new();
+        // `false` turns the plan into a full redraw: an instance outside the
+        // draw table, or damage already past half the surface (stop diffing).
+        let mut changed = |index: usize, before: &Instance, after: &Instance| -> bool {
+            let Some(draw) = damage::draw_of(new_draws, index) else {
+                return false;
+            };
+            rects.add(damage::instance_bounds(before, &projection));
+            let after_bounds = damage::instance_bounds(after, &projection);
+            rects.add(after_bounds);
+            selection[draw] = selection[draw].union(&after_bounds);
+            if touched.last() != Some(&draw) {
+                touched.push(draw);
+            }
+            rects.area() * 2 <= surface
+        };
+        if let Some(g) = candidate {
+            let Some(ranges) = candidate_dirty else {
+                return DamagePlan::Full;
+            };
+            for &(start, end) in ranges {
+                for index in start..end {
+                    if !changed(index, &old.instances[index], &g.instances[index]) {
+                        return DamagePlan::Full;
+                    }
+                }
+            }
+        } else if let Some(spans) = delta {
+            for (start, instances) in spans {
+                for (offset, after) in instances.iter().enumerate() {
+                    let index = start + offset;
+                    let Some(before) = old.instances.get(index) else {
+                        return DamagePlan::Full;
+                    };
+                    if before != after && !changed(index, before, after) {
+                        return DamagePlan::Full;
+                    }
+                }
+            }
+        }
+        // A draw whose texture list or texture contents changed repaints its
+        // whole old footprint; its new footprint is that plus the changed
+        // instances' new bounds, already in `rects`.
+        let mut resource_changed = Vec::new();
+        for (index, (draw, held)) in new_draws.iter().zip(&state.draws).enumerate() {
+            let swapped = draw.resources != held.resources;
+            let rewritten = !self.damage_dirty_keys.is_empty()
+                && draw
+                    .resources
+                    .iter()
+                    .flatten()
+                    .any(|key| self.damage_dirty_keys.contains(key));
+            if swapped || rewritten {
+                rects.add(state.bounds[index]);
+                resource_changed.push(index);
+            }
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        if rects.area() * 2 > surface {
+            return DamagePlan::Full;
+        }
+        DamagePlan::Partial {
+            rects,
+            selection,
+            touched,
+            resource_changed,
+        }
+    }
+    /// Independent brute-force check of a partial plan: recompute every
+    /// bound from the full old and new instance arrays rather than from the
+    /// spans and the stored per-draw bounds the plan used.
+    fn verify_damage_plan(
+        &mut self,
+        plan: &DamagePlan,
+        candidate: Option<&Geometry>,
+        delta: Option<&[(usize, Vec<Instance>)]>,
+    ) -> bool {
+        let DamagePlan::Partial {
+            rects, selection, ..
+        } = plan
+        else {
+            return true;
+        };
+        let Some(state) = self.damage.as_ref() else {
+            return false;
+        };
+        self.damage_stats.verify_checks += 1;
+        let projection = state.projection;
+        let old = &self.committed_geometry;
+        let new_instances: Vec<Instance> = match (candidate, delta) {
+            (Some(g), _) => g.instances.clone(),
+            (None, Some(spans)) => {
+                let mut next = old.instances.clone();
+                for (start, instances) in spans {
+                    next[*start..start + instances.len()].copy_from_slice(instances);
+                }
+                next
+            }
+            (None, None) => old.instances.clone(),
+        };
+        let new_draws = candidate.map_or(old.draws.as_slice(), |g| g.draws.as_slice());
+        let old_bounds: Vec<_> = state
+            .draws
+            .iter()
+            .map(|draw| damage::draw_bounds(draw, &old.instances, &projection))
+            .collect();
+        if old_bounds
+            .iter()
+            .zip(&state.bounds)
+            .any(|(exact, held)| !held.contains(exact))
+        {
+            return false;
+        }
+        for (before, after) in old.instances.iter().zip(&new_instances) {
+            if before != after
+                && !(rects.covers(&damage::instance_bounds(before, &projection))
+                    && rects.covers(&damage::instance_bounds(after, &projection)))
+            {
+                return false;
+            }
+        }
+        for (index, draw) in new_draws.iter().enumerate() {
+            let new_bounds = damage::draw_bounds(draw, &new_instances, &projection);
+            let resources_changed = draw.resources != state.draws[index].resources
+                || draw
+                    .resources
+                    .iter()
+                    .flatten()
+                    .any(|key| self.damage_dirty_keys.contains(key));
+            if resources_changed && !(rects.covers(&old_bounds[index]) && rects.covers(&new_bounds))
+            {
+                return false;
+            }
+            if rects
+                .rects()
+                .iter()
+                .any(|rect| new_bounds.intersects(rect) && !selection[index].intersects(rect))
+            {
+                return false;
+            }
+        }
+        true
+    }
+    /// Fault-injection builds only: a validation failure is armed for the
+    /// next encoded present, so that present must not be skipped.
+    fn fault_armed(&self) -> bool {
+        #[cfg(feature = "fault-injection")]
+        {
+            self.validation_failure_once
+        }
+        #[cfg(not(feature = "fault-injection"))]
+        {
+            false
+        }
+    }
+    /// Redraw `rects` of picture `target` in place: per rectangle, scissor,
+    /// clear to transparent, then replay in order every draw whose footprint
+    /// reaches it. Returns the draw calls issued and the pixels covered.
+    fn encode_partial_picture(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: usize,
+        g: &Geometry,
+        binds: &[wgpu::BindGroup],
+        rects: &[DeviceRect],
+        selection: &[DeviceRect],
+    ) -> (usize, u64) {
+        let (_, clear_bind) = self.damage_clear.as_ref().expect("damage present enabled");
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("damaged picture"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.pictures[target].view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+        let mut issued = 0usize;
+        let mut pixels = 0u64;
+        for rect in rects {
+            pass.set_scissor_rect(
+                rect.x0 as u32,
+                rect.y0 as u32,
+                (rect.x1 - rect.x0) as u32,
+                (rect.y1 - rect.y0) as u32,
+            );
+            // The picture has the surface's size, so the surface quad and
+            // globals cover it exactly; the copy pipeline does not blend.
+            pass.set_pipeline(&self.copy_pipeline);
+            pass.set_bind_group(0, &self.surface_globals_bind, &[]);
+            pass.set_bind_group(1, clear_bind, &[]);
+            pass.set_vertex_buffer(0, self.fullscreen_buffer.slice(..));
+            pass.draw(0..6, 0..1);
+            issued += 1;
+            pass.set_bind_group(0, &self.design_globals_bind, &[]);
+            if let Some(buffer) = &self.instance_buffer {
+                pass.set_vertex_buffer(0, buffer.slice(..));
+            }
+            let mut last_pipeline: Option<usize> = None;
+            for ((draw, bind), bounds) in g.draws.iter().zip(binds).zip(selection) {
+                if !bounds.intersects(rect) {
+                    continue;
+                }
+                let pipeline_index = if draw.blend == Blend::Add { 1 } else { 0 };
+                if last_pipeline != Some(pipeline_index) {
+                    pass.set_pipeline(&self.pipelines[pipeline_index]);
+                    last_pipeline = Some(pipeline_index);
+                }
+                pass.set_bind_group(1, bind, &[]);
+                pass.draw(0..6, draw.start..draw.start + draw.count);
+                issued += 1;
+            }
+            pixels += rect.area();
+        }
+        (issued, pixels)
+    }
+    /// After a successful present: record what the committed picture now
+    /// holds, so the next patch can trust it.
+    fn commit_damage(&mut self, plan: DamagePlan, design_size: Option<(u32, u32)>) {
+        let projection = design_size.map(|(design_width, design_height)| {
+            Projection::new(self.config.width, self.config.height, design_width, design_height)
+        });
+        let picture = self.committed_picture;
+        match plan {
+            DamagePlan::Off => {
+                self.damage = None;
+            }
+            DamagePlan::Partial {
+                rects,
+                touched,
+                resource_changed,
+                ..
+            } => {
+                let (Some(projection), Some(state)) = (projection, self.damage.as_mut()) else {
+                    self.damage = None;
+                    return;
+                };
+                let g = &self.committed_geometry;
+                for index in touched.into_iter().chain(resource_changed.iter().copied()) {
+                    state.bounds[index] = damage::draw_bounds(&g.draws[index], &g.instances, &projection);
+                }
+                for index in resource_changed {
+                    state.draws[index].resources.clone_from(&g.draws[index].resources);
+                }
+                self.damage_dirty_keys.clear();
+                if rects.is_empty() {
+                    self.damage_stats.skipped_presents += 1;
+                    self.last_damage = Some("skip");
+                } else {
+                    self.damage_stats.partial_presents += 1;
+                    self.last_damage = Some("partial");
+                }
+            }
+            DamagePlan::Full => {
+                let (Some(projection), Some(picture)) = (projection, picture) else {
+                    self.damage = None;
+                    return;
+                };
+                let g = &self.committed_geometry;
+                self.damage = Some(DamageState {
+                    picture,
+                    projection,
+                    draws: g.draws.clone(),
+                    bounds: g
+                        .draws
+                        .iter()
+                        .map(|draw| damage::draw_bounds(draw, &g.instances, &projection))
+                        .collect(),
+                });
+                self.damage_dirty_keys.clear();
+                self.damage_stats.full_presents += 1;
+                self.last_damage = Some("full");
+            }
+        }
     }
     fn restore_instances(&mut self, dirty: &[(usize, usize)]) {
         if let Some(buffer) = &self.instance_buffer {
@@ -1491,6 +2020,8 @@ impl Renderer {
             geometry_rebuilds: self.geometry_rebuilds,
             wasm_calls: self.wasm_calls.get(),
             error,
+            damage: self.damage_present.then_some(self.last_damage).flatten(),
+            damage_stats: self.damage_present.then_some(self.damage_stats),
         }
     }
 }
