@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 pub const SCENE_VERSION: u32 = 2;
 pub const PATCH_VERSION: u32 = 1;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Resource {
     pub key: String,

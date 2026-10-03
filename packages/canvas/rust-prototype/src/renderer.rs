@@ -1,7 +1,7 @@
 //! Ordered instanced wgpu executor shared by browser WebGL2 and native harnesses.
 use crate::{
     contract::{Admission, Blend, Command, Patch, Quad, SCENE_VERSION, Scene, SceneState},
-    geometry::{self, Geometry, Instance, TEXTURE_SLOTS},
+    geometry::{self, Draw, Geometry, Instance, ResourceIndexCache, TEXTURE_SLOTS},
     resources::{ResourceChange, ResourceFormat, ResourceStore},
 };
 use std::cell::Cell;
@@ -105,7 +105,25 @@ pub struct Renderer {
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     textures: HashMap<String, TextureEntry>,
-    bind_cache: HashMap<Vec<Option<String>>, wgpu::BindGroup>,
+    /// One slot per draw index in the geometry currently being rendered.
+    /// `None` means "not built yet" (or invalidated). The hot path: a hit
+    /// costs an index read and a handle clone, no string work at all.
+    bind_cache: Vec<Option<wgpu::BindGroup>>,
+    /// Keyed by a draw's resource-key list, surviving a full rebuild that
+    /// resets `bind_cache` — see `resolve_draw_binds`. This is what gives a
+    /// full rebuild with no resource upload zero new bind groups, the
+    /// property the renderer had before `bind_cache` was indexed by draw.
+    content_bind_cache: HashMap<Vec<Option<String>>, wgpu::BindGroup>,
+    /// Bumped only when a committed scene's `resources` list actually
+    /// changed content from the previous one — see where `self.state =
+    /// staged` is set in `present`. A `Patch` has no `resources` field (see
+    /// `patch_spans_with_cache`'s doc comment), so an apply_patch commit —
+    /// full scene replace or not — never bumps this; only a genuinely
+    /// different resource list from a fresh `admit_scene` does.
+    committed_resource_epoch: u64,
+    /// `key -> Resource` index for `geometry::patch_spans_with_cache`,
+    /// cached under `committed_resource_epoch`.
+    resource_index_cache: ResourceIndexCache,
     white: TextureEntry,
     pictures: [Picture; 2],
     committed_picture: Option<usize>,
@@ -211,6 +229,298 @@ mod gpu_preflight_tests {
         );
         assert!(validate_gpu_changes(&[allocate("new"), allocate("new")], |_| false).is_err());
         assert!(validate_gpu_changes(&[allocate("new"), subrect("missing")], |_| false).is_err());
+    }
+}
+
+/// Resolve the bind group for each draw in `draws`, through two cooperating
+/// caches:
+/// - `per_draw`, one slot per draw index — the hot path. A hit costs an
+///   index read and a cheap handle clone, no string work at all.
+///   `incremental = false` means `geometry::build` just produced a brand
+///   new draw table (not a patch): a draw at a given index may now mean
+///   something completely different than it did last frame, so every slot
+///   is reset first. `incremental = true` (the delta-patch /
+///   `patch_instances` steady state) guarantees each index still refers to
+///   the same draw with the same resource keys — see
+///   `geometry::patch_instances` and `patch_spans`, both of which refuse
+///   (forcing a full rebuild instead) the moment a patched command's
+///   resource or blend would differ from before — so existing slots are
+///   trusted as-is and only a length mismatch (first frame, or recovering
+///   from a discarded candidate) grows the vector.
+/// - `by_content`, keyed by a draw's resource-key list — untouched by a
+///   full rebuild (only `invalidate_binds_for_resource_changes` below
+///   touches it), so a draw whose resource list matches one seen under any
+///   earlier draw index reuses that bind group instead of building a new
+///   one. This is the property the renderer had before per-draw indexing
+///   (content-keyed, one `wgpu::BindGroup` per distinct list): a full
+///   rebuild with no resource upload in between must build zero new bind
+///   groups, since every list it could possibly produce is already here.
+///
+/// Never call this with an empty `draws` for a present that has nothing to
+/// render: `per_draw` would reset to length 0 and discard every cached
+/// slot for no reason — skip the call entirely instead (see `present`'s
+/// call site and the `empty_present_must_not_touch_the_cache` test).
+///
+/// `build` runs only for a draw whose resource list is new to *both*
+/// caches.
+fn resolve_draw_binds<T: Clone>(
+    per_draw: &mut Vec<Option<T>>,
+    by_content: &mut HashMap<Vec<Option<String>>, T>,
+    draws: &[Draw],
+    incremental: bool,
+    mut build: impl FnMut(&[Option<String>]) -> T,
+) -> Vec<T> {
+    if !incremental {
+        per_draw.clear();
+    }
+    if per_draw.len() != draws.len() {
+        per_draw.resize_with(draws.len(), || None);
+    }
+    draws
+        .iter()
+        .enumerate()
+        .map(|(index, draw)| {
+            if let Some(bind) = per_draw[index].clone() {
+                return bind;
+            }
+            if let Some(bind) = by_content.get(&draw.resources) {
+                let bind = bind.clone();
+                per_draw[index] = Some(bind.clone());
+                return bind;
+            }
+            let bind = build(&draw.resources);
+            per_draw[index] = Some(bind.clone());
+            by_content.insert(draw.resources.clone(), bind.clone());
+            bind
+        })
+        .collect()
+}
+
+/// Invalidate both caches for exactly the resource keys that changed in one
+/// upload batch: one pass to collect the changed-key set (excluding
+/// `Subrect`, which writes into the existing texture in place and so never
+/// invalidates anything), then one pass over `draws` for `per_draw` and one
+/// `retain` over `by_content`.
+fn invalidate_binds_for_resource_changes<T>(
+    per_draw: &mut [Option<T>],
+    by_content: &mut HashMap<Vec<Option<String>>, T>,
+    draws: &[Draw],
+    changes: &[ResourceChange],
+) {
+    let changed_keys: std::collections::HashSet<&str> = changes
+        .iter()
+        .filter(|change| !matches!(change, ResourceChange::Subrect { .. }))
+        .map(ResourceChange::key)
+        .collect();
+    if changed_keys.is_empty() {
+        return;
+    }
+    let references_changed =
+        |resources: &[Option<String>]| {
+            resources
+                .iter()
+                .any(|r| r.as_deref().is_some_and(|key| changed_keys.contains(key)))
+        };
+    for (index, draw) in draws.iter().enumerate() {
+        if index < per_draw.len() && references_changed(&draw.resources) {
+            per_draw[index] = None;
+        }
+    }
+    by_content.retain(|resources, _| !references_changed(resources));
+}
+
+#[cfg(test)]
+mod bind_cache_tests {
+    use super::*;
+    use crate::contract::Blend;
+    use std::cell::Cell;
+
+    fn draw(resources: &[Option<&str>]) -> Draw {
+        Draw {
+            start: 0,
+            count: 1,
+            resources: resources.iter().map(|r| r.map(String::from)).collect(),
+            blend: Blend::Mix,
+        }
+    }
+
+    /// A `build` stand-in that counts its own calls, so a test can assert
+    /// "this many (and no more) bind groups were actually built" the same
+    /// way the real `wgpu::BindGroup`-creating closure would be counted via
+    /// `texture_creations`-style diagnostics, without a GPU device.
+    fn counting_build(counter: &Cell<u32>) -> impl FnMut(&[Option<String>]) -> u32 + '_ {
+        move |_resources| {
+            counter.set(counter.get() + 1);
+            counter.get()
+        }
+    }
+
+    #[test]
+    fn full_rebuild_with_no_upload_builds_zero_new_binds() {
+        let draws_a = vec![draw(&[Some("a")]), draw(&[Some("b")]), draw(&[Some("c")])];
+        let mut per_draw = Vec::new();
+        let mut by_content = HashMap::new();
+        let calls = Cell::new(0u32);
+        resolve_draw_binds(&mut per_draw, &mut by_content, &draws_a, false, counting_build(&calls));
+        assert_eq!(calls.get(), 3);
+
+        // A full rebuild (`incremental = false` — exactly what an
+        // `admit_scene` from an unrelated text-only change produces) whose
+        // draws reference the SAME resource lists, just reordered under a
+        // different draw table, and with no resource upload in between.
+        let draws_b = vec![draw(&[Some("c")]), draw(&[Some("a")]), draw(&[Some("b")])];
+        resolve_draw_binds(&mut per_draw, &mut by_content, &draws_b, false, counting_build(&calls));
+        assert_eq!(
+            calls.get(),
+            3,
+            "no new bind groups: every resource list was already in by_content"
+        );
+    }
+
+    #[test]
+    fn full_rebuild_still_builds_for_a_genuinely_new_resource_list() {
+        let draws_a = vec![draw(&[Some("a")])];
+        let mut per_draw = Vec::new();
+        let mut by_content = HashMap::new();
+        let calls = Cell::new(0u32);
+        resolve_draw_binds(&mut per_draw, &mut by_content, &draws_a, false, counting_build(&calls));
+        assert_eq!(calls.get(), 1);
+
+        let draws_b = vec![draw(&[Some("a")]), draw(&[Some("new")])];
+        resolve_draw_binds(&mut per_draw, &mut by_content, &draws_b, false, counting_build(&calls));
+        assert_eq!(calls.get(), 2, "the unseen list \"new\" builds; the seen list \"a\" reuses");
+    }
+
+    #[test]
+    fn incremental_steady_state_builds_nothing_again() {
+        let draws = vec![draw(&[Some("a")]), draw(&[Some("b")])];
+        let mut per_draw = Vec::new();
+        let mut by_content = HashMap::new();
+        let calls = Cell::new(0u32);
+        resolve_draw_binds(&mut per_draw, &mut by_content, &draws, false, counting_build(&calls));
+        assert_eq!(calls.get(), 2);
+        let binds =
+            resolve_draw_binds(&mut per_draw, &mut by_content, &draws, true, counting_build(&calls));
+        assert_eq!(calls.get(), 2, "every slot already held a per-draw hit");
+        assert_eq!(binds.len(), 2);
+    }
+
+    #[test]
+    fn incremental_keeps_existing_slots_and_grows_as_needed() {
+        let draws_a = vec![draw(&[Some("a")]), draw(&[Some("b")])];
+        let mut per_draw = Vec::new();
+        let mut by_content = HashMap::new();
+        let calls = Cell::new(0u32);
+        resolve_draw_binds(&mut per_draw, &mut by_content, &draws_a, false, counting_build(&calls));
+        assert_eq!(calls.get(), 2);
+        let draws_b = vec![
+            draw(&[Some("a")]),
+            draw(&[Some("b")]),
+            draw(&[Some("new")]),
+            draw(&[Some("new2")]),
+        ];
+        resolve_draw_binds(&mut per_draw, &mut by_content, &draws_b, true, counting_build(&calls));
+        assert_eq!(per_draw.len(), 4);
+        assert_eq!(calls.get(), 4, "two existing slots reused untouched, two new ones built");
+    }
+
+    /// Documents why `present` must skip `resolve_draw_binds` entirely for
+    /// an empty present (nothing staged, no patch — the no-op `presentScene`
+    /// couch calls routinely, `createPixiMirrorRenderer.ts:1376`): calling
+    /// it anyway, even just to get an empty `Vec` back, wipes a populated
+    /// cache for no reason, forcing every draw to rebuild on the next real
+    /// patch.
+    #[test]
+    fn empty_draws_call_would_wipe_a_populated_cache() {
+        let mut per_draw: Vec<Option<u32>> = vec![Some(1), Some(2)];
+        let mut by_content: HashMap<Vec<Option<String>>, u32> = HashMap::new();
+        let calls = Cell::new(0u32);
+        let binds =
+            resolve_draw_binds(&mut per_draw, &mut by_content, &[], false, counting_build(&calls));
+        assert!(binds.is_empty());
+        assert!(
+            per_draw.is_empty(),
+            "an empty, non-incremental call resets per-draw slots to length 0 — \
+             present() must guard against calling this when there is nothing to render"
+        );
+    }
+
+    #[test]
+    fn release_invalidates_only_draws_and_content_entries_referencing_that_key() {
+        let draws = vec![
+            draw(&[Some("a")]),
+            draw(&[Some("b")]),
+            draw(&[Some("a"), Some("c")]),
+        ];
+        let mut per_draw = vec![Some(1u32), Some(2u32), Some(3u32)];
+        let mut by_content: HashMap<Vec<Option<String>>, u32> = [
+            (draws[0].resources.clone(), 1u32),
+            (draws[1].resources.clone(), 2u32),
+            (draws[2].resources.clone(), 3u32),
+        ]
+        .into_iter()
+        .collect();
+        let changes = vec![ResourceChange::Release { key: "a".into() }];
+        invalidate_binds_for_resource_changes(&mut per_draw, &mut by_content, &draws, &changes);
+        assert_eq!(
+            per_draw,
+            vec![None, Some(2), None],
+            "only the draws naming the released key rebind; draw 1 (key b) is untouched"
+        );
+        assert_eq!(by_content.len(), 1, "only the content entry naming key b survives");
+        assert!(by_content.contains_key(&draws[1].resources));
+    }
+
+    #[test]
+    fn replace_invalidates_only_draws_referencing_that_key() {
+        let draws = vec![draw(&[Some("atlas")]), draw(&[Some("other")])];
+        let mut per_draw = vec![Some(1u32), Some(2u32)];
+        let mut by_content: HashMap<Vec<Option<String>>, u32> = HashMap::new();
+        let changes = vec![ResourceChange::Replace {
+            key: "atlas".into(),
+            width: 4,
+            height: 4,
+            format: ResourceFormat::Linear,
+            pixels: vec![0; 64],
+        }];
+        invalidate_binds_for_resource_changes(&mut per_draw, &mut by_content, &draws, &changes);
+        assert_eq!(per_draw, vec![None, Some(2)]);
+    }
+
+    #[test]
+    fn subrect_never_invalidates() {
+        let draws = vec![draw(&[Some("atlas")])];
+        let mut per_draw = vec![Some(1u32)];
+        let mut by_content: HashMap<Vec<Option<String>>, u32> = HashMap::new();
+        let changes = vec![ResourceChange::Subrect {
+            key: "atlas".into(),
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            pixels: vec![0; 4],
+        }];
+        invalidate_binds_for_resource_changes(&mut per_draw, &mut by_content, &draws, &changes);
+        assert_eq!(
+            per_draw,
+            vec![Some(1)],
+            "a subrect writes the same texture in place; the bind group stays valid"
+        );
+    }
+
+    #[test]
+    fn allocate_of_an_unreferenced_key_touches_nothing() {
+        let draws = vec![draw(&[Some("atlas")])];
+        let mut per_draw = vec![Some(1u32)];
+        let mut by_content: HashMap<Vec<Option<String>>, u32> = HashMap::new();
+        let changes = vec![ResourceChange::Allocate {
+            key: "new-key".into(),
+            width: 2,
+            height: 2,
+            format: ResourceFormat::Linear,
+        }];
+        invalidate_binds_for_resource_changes(&mut per_draw, &mut by_content, &draws, &changes);
+        assert_eq!(per_draw, vec![Some(1)]);
     }
 }
 
@@ -400,7 +710,10 @@ impl Renderer {
             texture_layout,
             sampler,
             textures: HashMap::new(),
-            bind_cache: HashMap::new(),
+            bind_cache: Vec::new(),
+            content_bind_cache: HashMap::new(),
+            committed_resource_epoch: 0,
+            resource_index_cache: None,
             white,
             pictures,
             committed_picture: None,
@@ -514,6 +827,9 @@ impl Renderer {
         self.staged = None;
         self.staged_patch_ids = None;
         self.staged_delta = None;
+        // Full clear: draw indices and their bind groups are revalidated from
+        // scratch on the next present rather than trusted across a resize.
+        self.bind_cache.clear();
         self.fullscreen_buffer = create_fullscreen_buffer(&self.device, width, height);
         self.buffer_creations += 1;
         self.queue.write_buffer(
@@ -593,11 +909,22 @@ impl Renderer {
         }
         let changed_len = changed.len();
         let has_changes = !changed.is_empty();
+        // Targeted, not wholesale: an allocate/replace/release only affects the
+        // committed draws (and cached content-keyed groups) that actually
+        // reference that key (a `Subrect` keeps the same texture/view
+        // identity, so it never needs this). Everything else — the vast
+        // majority on a typical change, such as one Bitmap text key
+        // releasing — stays valid.
+        if has_changes {
+            invalidate_binds_for_resource_changes(
+                &mut self.bind_cache,
+                &mut self.content_bind_cache,
+                &self.committed_geometry.draws,
+                changed,
+            );
+        }
         self.resources.commit_batch(batch);
         // Every owned pixel buffer in the plan is dropped here, after the queue copied its bytes.
-        if has_changes {
-            self.bind_cache.clear();
-        }
         self.upload_calls += 1;
         self.upload_bytes += uploaded_pixels as u64;
         self.texture_creations += created;
@@ -786,23 +1113,6 @@ impl Renderer {
         }
         result
     }
-    fn texture_bind(&mut self, resources: &[Option<String>]) -> wgpu::BindGroup {
-        if let Some(bind) = self.bind_cache.get(resources) {
-            return bind.clone();
-        }
-        let views: Vec<_> = (0..TEXTURE_SLOTS)
-            .map(|i| {
-                resources
-                    .get(i)
-                    .and_then(|r| r.as_ref())
-                    .and_then(|key| self.textures.get(key))
-                    .map_or(&self.white.view, |entry| &entry.view)
-            })
-            .collect();
-        let bind = bind_textures(&self.device, &self.texture_layout, &self.sampler, &views);
-        self.bind_cache.insert(resources.to_vec(), bind.clone());
-        bind
-    }
     pub async fn present(&mut self) -> PresentResult {
         let phase_identity = self.phase_identity.take();
         self.active_operation_id = phase_identity
@@ -851,12 +1161,22 @@ impl Renderer {
             e => return self.failed(&format!("{e:?}"), 0, 0),
         };
         let design_size = candidate_scene.map(|scene| (scene.design_width, scene.design_height));
-        let mut delta_spans = self.staged_delta.as_ref().and_then(|(_, updates)| {
-            let scene = self.state.scene()?;
-            geometry::patch_spans(&self.committed_geometry, scene, updates, |index| {
-                self.state.clips_at(index).copied()
-            })
-        });
+        let resource_epoch = self.committed_resource_epoch;
+        let mut delta_spans = None;
+        if let (Some((_, updates)), Some(scene)) =
+            (self.staged_delta.as_ref(), self.state.scene())
+        {
+            let committed_geometry = &self.committed_geometry;
+            let state = &self.state;
+            delta_spans = geometry::patch_spans_with_cache(
+                committed_geometry,
+                scene,
+                updates,
+                |index| state.clips_at(index).copied(),
+                &mut self.resource_index_cache,
+                resource_epoch,
+            );
+        }
         let mut incremental = delta_spans.is_some();
         let candidate_geometry = self.staged.as_ref().and_then(|s| s.scene()).map(|scene| {
             if let Some(patched) = self.staged_patch_ids.as_ref().and_then(|ids| {
@@ -947,15 +1267,40 @@ impl Renderer {
                 }
             }
         }
-        let bind_resources: Vec<_> = candidate_geometry
-            .as_ref()
-            .or_else(|| delta_spans.as_ref().map(|_| &self.committed_geometry))
-            .map(|g| g.draws.iter().map(|d| d.resources.clone()).collect())
-            .unwrap_or_default();
-        let binds: Vec<_> = bind_resources
-            .iter()
-            .map(|resources| self.texture_bind(resources))
-            .collect();
+        // No clone or hash of any draw's resource keys on a cache hit: the
+        // cache is addressed by draw index, and `incremental` (established
+        // above) already tells us whether this frame's draw table is the
+        // same one the cache was built against.
+        let render_draws: &[Draw] = if let Some(g) = candidate_geometry.as_ref() {
+            g.draws.as_slice()
+        } else if delta_spans.is_some() {
+            self.committed_geometry.draws.as_slice()
+        } else {
+            &[]
+        };
+        // An empty present (nothing staged, no patch — couch's no-op
+        // `presentScene` calls, `createPixiMirrorRenderer.ts:1376`) renders
+        // nothing and must leave the bind caches exactly as they were:
+        // `resolve_draw_binds` resets `bind_cache` to the new (here, zero)
+        // length whenever `incremental` is false, which this frame's always
+        // is when there's nothing staged or patched — see
+        // `empty_draws_call_would_wipe_a_populated_cache`.
+        let binds: Vec<wgpu::BindGroup> = if render_draws.is_empty() {
+            Vec::new()
+        } else {
+            let device = &self.device;
+            let texture_layout = &self.texture_layout;
+            let sampler = &self.sampler;
+            let textures = &self.textures;
+            let white = &self.white;
+            resolve_draw_binds(
+                &mut self.bind_cache,
+                &mut self.content_bind_cache,
+                render_draws,
+                incremental,
+                |resources| build_texture_bind(device, texture_layout, sampler, textures, white, resources),
+            )
+        };
         if let Some((design_width, design_height)) = design_size {
             self.queue.write_buffer(
                 &self.design_globals,
@@ -1043,6 +1388,14 @@ impl Renderer {
             self.staged = None;
             self.staged_patch_ids = None;
             self.staged_delta = None;
+            // The discarded candidate may have populated `bind_cache` slots
+            // that no longer line up with the committed draw table (which
+            // this present never replaced). Realign rather than leave a
+            // length match masking stale content at a reused index.
+            // `content_bind_cache` needs no such reset: a resource-list's
+            // bind group is correct independent of which candidate it was
+            // built for.
+            self.bind_cache = vec![None; self.committed_geometry.draws.len()];
             return self.failed(&format!("GPU validation: {error}"), 0, draws);
         }
         self.queue.present(frame);
@@ -1056,8 +1409,22 @@ impl Renderer {
             self.committed_geometry = g;
             self.committed_picture = target;
             if let Some(staged) = self.staged.take() {
+                // This branch commits on both an `admit_scene` and an
+                // `apply_patch` candidate — a `Patch` has no `resources`
+                // field (see `patch_spans_with_cache`'s doc comment), so an
+                // apply_patch commit (through `patch_instances` or the
+                // general path) always carries the previous resources list
+                // forward byte-for-byte. Compare rather than assume: only a
+                // fresh `admit_scene` with a genuinely different list should
+                // invalidate `resource_index_cache`, so a run of patches in
+                // between — the common case — keeps reusing it.
+                let resources_changed = staged.scene().map(|s| &s.resources)
+                    != self.state.scene().map(|s| &s.resources);
                 self.state = staged;
                 self.admitted_dimensions_epoch = self.resources.dimensions_epoch;
+                if resources_changed {
+                    self.committed_resource_epoch += 1;
+                }
             } else if let Some((revision, updates)) = self.staged_delta.take() {
                 self.state.commit_updates(revision, updates);
             }
@@ -1171,6 +1538,30 @@ fn bind_textures(
         layout,
         entries: &entries,
     })
+}
+/// Build a fresh bind group for one draw's resource slots. A free function
+/// (not a `&self` method) so a caller can borrow `device`/`texture_layout`/
+/// `sampler`/`textures`/`white` individually and still hold other fields of
+/// `Renderer` mutably at the same time — see `resolve_draw_binds`'s call
+/// site in `present`. Does not consult or populate any cache itself.
+fn build_texture_bind(
+    device: &wgpu::Device,
+    texture_layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    textures: &HashMap<String, TextureEntry>,
+    white: &TextureEntry,
+    resources: &[Option<String>],
+) -> wgpu::BindGroup {
+    let views: Vec<_> = (0..TEXTURE_SLOTS)
+        .map(|i| {
+            resources
+                .get(i)
+                .and_then(|r| r.as_ref())
+                .and_then(|key| textures.get(key))
+                .map_or(&white.view, |entry| &entry.view)
+        })
+        .collect();
+    bind_textures(device, texture_layout, sampler, &views)
 }
 fn create_texture(
     device: &wgpu::Device,
