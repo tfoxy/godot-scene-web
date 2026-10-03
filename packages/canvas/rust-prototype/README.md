@@ -15,6 +15,46 @@ tile-count changes rebuild the draw table. Bind groups are cached
 until a resource texture changes. Two picture textures and the surface quad
 are reused between presents.
 
+### Damage present (opt-in)
+
+`set_damage_present(true)` keeps the committed picture and redraws only what a
+present can change. Off (the default), every present replays every draw into a
+cleared picture, exactly as before. On:
+
+- The damage is the union of the old and new device bounds of every changed
+  instance, plus the old footprint of any draw whose texture list or texture
+  pixels changed (any `upload_rgba_batch` op on a key it samples). A changed
+  clip changes the clip slots of every instance in its scope, so those
+  instances carry it. Bounds are the corner box of the transformed quad,
+  clipped by its clip slots and widened by one device pixel.
+- At most four damage rectangles are kept. Each is redrawn in place with
+  `LoadOp::Load`: scissor, clear to transparent with a non-blending quad,
+  then every draw whose footprint reaches it, in order. Blending is
+  order-dependent, so unchanged draws under the damage are replayed too.
+- The picture is redrawn whole on the first present, after a resize, a
+  failed validation or a design-size change, when the draw table's shape
+  changes, or when the damage covers more than half of the surface.
+- The copy to the surface stays full-screen. wgpu treats every acquired
+  surface texture as uninitialized and clears it before a `LoadOp::Load`, and
+  its WebGL2 present blits the whole swapchain texture to the canvas, so
+  `preserveDrawingBuffer` cannot make a scissored copy keep the rest.
+- A present with nothing staged, or whose damage is empty, runs no GPU work
+  and calls no `queue.present`; the canvas keeps the previous frame. Its
+  result is `presented: true` with `damage: "skip"`.
+
+Each result then carries `damage` (`"partial"`, `"full"` or `"skip"`) and
+cumulative `damageStats`. `set_damage_verify(true)` re-derives every partial
+plan by brute force from the full old and new instance arrays; a plan that
+misses a changed bound counts in `damageStats.verifyMismatches` and is
+redrawn whole instead. It shares the planner's bounds model and dirty-key
+set, so it catches bookkeeping slips, not a wrong model: it is not pixel
+evidence. The pixel evidence is the integration leg below. The integration gate below runs a seeded sequence of
+patches, clip moves, MSDF glyph runs cut by a damage edge, re-admissions,
+texture swaps, subrect rewrites under unchanged draws, uploads followed by an
+empty present, and empty presents through a damage renderer and a default
+one at a 3.49 device scale, and requires byte-identical screenshots after
+every step.
+
 ## Browser build
 
 `cargo` and a matching `wasm-bindgen` CLI (0.2.129) are required. Run
@@ -52,7 +92,10 @@ fault leg checks that a staged visible patch fails GPU validation, leaves the
 committed revision and picture intact, and succeeds when reapplied.
 
 The browser methods are `upload_rgba_batch(bytes)`, `admit_scene(bytes)`,
-`apply_patch(bytes)`, `resize(width,height)`, `await present()`, and `dispose()`.
+`apply_patch(bytes)`, `resize(width,height)`, `await present()`, and `dispose()`,
+plus the optional `set_draw_state_dedupe`, `set_damage_present` and
+`set_damage_verify` switches. `GSW_RUST_DAMAGE_PRESENT=1` runs the
+integration and fault legs with the damage present on.
 Admission and presentation return JSON strings for a batch-sized JS/WASM
 boundary. `backend`, `upload_calls`, `upload_bytes`, `texture_creations`, and
 `present_calls` are readable properties. Each present result also includes

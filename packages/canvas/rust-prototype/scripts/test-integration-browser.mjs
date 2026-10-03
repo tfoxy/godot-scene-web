@@ -8,7 +8,8 @@ import { build } from 'esbuild';
 const root = resolve(import.meta.dirname, '../../../..');
 const wasmOut = process.env.GSW_RUST_PROTOTYPE_OUT ?? resolve(root, '.sts2/rust-prototype-web');
 const faultInjection = process.env.GSW_RUST_FAULT_INJECTION === '1';
-const evidenceDir = resolve(root, faultInjection ? '.sts2/rust-webgl-fault' : '.sts2/rust-webgl-integration');
+const damageMain = process.env.GSW_RUST_DAMAGE_PRESENT === '1';
+const evidenceDir = resolve(root, (faultInjection ? '.sts2/rust-webgl-fault' : '.sts2/rust-webgl-integration') + (damageMain ? '-damage' : ''));
 const glue = await readFile(resolve(wasmOut, 'rust_prototype.js'));
 const wasm = await readFile(resolve(wasmOut, 'rust_prototype_bg.wasm'));
 const bundled = await build({ entryPoints: [resolve(import.meta.dirname, 'integration-browser-entry.ts')],
@@ -18,16 +19,16 @@ const browser = await chromium.launch({ headless: true,
   args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'] });
 const results = {};
 try {
-  const page = await browser.newPage({ viewport: { width: 384, height: 128 }, deviceScaleFactor: 1 });
+  const page = await browser.newPage({ viewport: { width: 1100, height: 220 }, deviceScaleFactor: 1 });
   page.on('pageerror', (error) => console.error('PAGE ERROR', error));
   await page.route('http://rust-proof.test/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/rust_prototype.js') await route.fulfill({ status: 200, contentType: 'text/javascript', body: glue });
     else if (path === '/rust_prototype_bg.wasm') await route.fulfill({ status: 200, contentType: 'application/wasm', body: wasm });
     else if (path === '/proof.js') await route.fulfill({ status: 200, contentType: 'text/javascript', body: script });
-    else await route.fulfill({ status: 200, contentType: 'text/html', body: `<!doctype html><style>html,body{margin:0;background:#000}canvas{display:inline-block;vertical-align:top}</style><canvas id="rust" width="64" height="64"></canvas><canvas id="retained" width="64" height="64"></canvas><canvas id="pixi" width="64" height="64"></canvas><script type="module" src="/proof.js"></script>` });
+    else await route.fulfill({ status: 200, contentType: 'text/html', body: `<!doctype html><style>html,body{margin:0;background:#000}canvas{display:inline-block;vertical-align:top}</style><canvas id="rust" width="64" height="64"></canvas><canvas id="retained" width="64" height="64"></canvas><canvas id="pixi" width="64" height="64"></canvas><canvas id="damageOn" width="349" height="209"></canvas><canvas id="damageOff" width="349" height="209"></canvas><script type="module" src="/proof.js"></script>` });
   });
-  await page.goto('http://rust-proof.test/', { waitUntil: 'commit' });
+  await page.goto(`http://rust-proof.test/${damageMain ? '?damage=1' : ''}`, { waitUntil: 'commit' });
   await page.waitForFunction(() => window.proof !== undefined, null, { timeout: 15000 });
   await mkdir(evidenceDir, { recursive: true });
   async function capture(id, name, points) {
@@ -108,6 +109,45 @@ try {
     assert.ok(shifted.pixels[1][0] > 245 && shifted.pixels[1][1] > 245, JSON.stringify(shifted));
     results['rust-clipTranslate'] = { result: moved, ...shifted };
   }
+  if (!faultInjection) {
+    // Damage present: byte-identical to a full redraw after every step of a seeded random
+    // sequence of patches, re-admissions, texture rewrites and no-op presents.
+    const plan = await page.evaluate(() => window.proof.damagePlan(60));
+    const steps = ['initial', ...plan];
+    const kinds = {};
+    let identical = 0;
+    const sequence = [];
+    let lastOn;
+    for (const [index, name] of steps.entries()) {
+      const [on, off] = await page.evaluate((name) => window.proof.damageStep(name), name);
+      for (const side of [on, off]) {
+        assert.notEqual(side.admission.accepted, false, `${name}: ${JSON.stringify(side)}`);
+        assert.equal(side.result.presented, true, `${name}: ${JSON.stringify(side)}`);
+      }
+      assert.equal(off.result.damage, undefined, 'the default renderer reports no damage mode');
+      kinds[on.result.damage] = (kinds[on.result.damage] ?? 0) + 1;
+      sequence.push(`${name}:${on.result.damage}`);
+      const [imageOn, imageOff] = [await page.locator('#damageOn').screenshot(), await page.locator('#damageOff').screenshot()];
+      if (!imageOn.equals(imageOff)) {
+        await writeFile(resolve(evidenceDir, `damage-mismatch-${index}-${name}-on.png`), imageOn);
+        await writeFile(resolve(evidenceDir, `damage-mismatch-${index}-${name}-off.png`), imageOff);
+        assert.fail(`damage present differs from a full redraw after step ${index} (${name}): ${JSON.stringify(on.result)}`);
+      }
+      identical++;
+      lastOn = on;
+      if (index === steps.length - 1) {
+        await writeFile(resolve(evidenceDir, 'damage-final-on.png'), imageOn);
+        await writeFile(resolve(evidenceDir, 'damage-final-off.png'), imageOff);
+      }
+    }
+    const stats = lastOn.result.damageStats;
+    assert.equal(stats.verifyMismatches, 0, JSON.stringify(stats));
+    assert.ok(stats.partialPresents >= 10, JSON.stringify(stats));
+    assert.ok(stats.fullPresents >= 2, JSON.stringify(stats));
+    assert.ok(stats.skippedPresents >= 1, JSON.stringify(stats));
+    results['rust-damage'] = { result: lastOn, steps: steps.length, identical, kinds, sequence, stats,
+      path: resolve(evidenceDir, 'damage-final-on.png') };
+  }
   for (const [name, change] of [['cold', false], ['warm', false], ['changed', true]]) {
     const result = await page.evaluate((change) => window.proof.retainedStep(change), change);
     const captureResult = await capture('retained', `retained-${name}`, [[32, 32]]);
@@ -133,7 +173,7 @@ try {
   assert.equal(results['pixi-initial'].result.cached, true);
   assert.equal(results['pixi-warm'].result.cached, true);
   assert.equal(results['pixi-patch'].result.cached, false);
-  const receipt = { evidenceDir, faultInjection,
+  const receipt = { evidenceDir, faultInjection, damageMain,
     source: 'packages/canvas/rust-prototype/scripts/integration-browser-entry.ts',
     glueSha256: createHash('sha256').update(glue).digest('hex'),
     wasmSha256: createHash('sha256').update(wasm).digest('hex'),
@@ -146,7 +186,8 @@ try {
       geometryRebuilds: v.result?.result?.geometryRebuilds,
       instanceUploadBytes: v.result?.result?.instanceUploadBytes,
       retainedRasterizations: v.result?.stats?.retainedRasterizations,
-      cached: v.result?.cached, path: v.path }])) };
+      cached: v.result?.cached, path: v.path,
+      ...(v.identical !== undefined ? { steps: v.steps, identical: v.identical, kinds: v.kinds, sequence: v.sequence, stats: v.stats } : {}) }])) };
   await writeFile(resolve(evidenceDir, 'receipt.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify(receipt, null, 2));
 } finally { await browser.close(); }

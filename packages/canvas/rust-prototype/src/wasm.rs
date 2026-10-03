@@ -75,6 +75,20 @@ impl RustRenderer {
         self.inner.record_wasm_call();
         self.inner.set_draw_state_dedupe(enabled);
     }
+    /// Opt into the damage present (default off): a patch redraws only the
+    /// picture pixels it can change, and a present with nothing to change
+    /// skips the GPU. A caller probes for this method before calling it.
+    pub fn set_damage_present(&mut self, enabled: bool) {
+        self.inner.record_wasm_call();
+        self.inner.set_damage_present(enabled);
+    }
+    /// Diagnostic: brute-force re-derivation of every partial damage plan
+    /// (same bounds model, so a bookkeeping check, not pixel evidence); a
+    /// failed check counts in `damageStats.verifyMismatches` and redraws whole.
+    pub fn set_damage_verify(&mut self, enabled: bool) {
+        self.inner.record_wasm_call();
+        self.inner.set_damage_verify(enabled);
+    }
     #[wasm_bindgen(js_name = gpuTimerCapability)]
     pub fn gpu_timer_capability(&self) -> String {
         self.inner.gpu_timer_capability().to_string()
