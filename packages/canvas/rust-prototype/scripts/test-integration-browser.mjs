@@ -9,7 +9,14 @@ const root = resolve(import.meta.dirname, '../../../..');
 const wasmOut = process.env.GSW_RUST_PROTOTYPE_OUT ?? resolve(root, '.sts2/rust-prototype-web');
 const faultInjection = process.env.GSW_RUST_FAULT_INJECTION === '1';
 const damageMain = process.env.GSW_RUST_DAMAGE_PRESENT === '1';
-const evidenceDir = resolve(root, (faultInjection ? '.sts2/rust-webgl-fault' : '.sts2/rust-webgl-integration') + (damageMain ? '-damage' : ''));
+// GSW_RUST_PRESENT_MODE=<mode>: the main Rust steps use `createWithPresent(canvas, mode)`.
+const presentMode = process.env.GSW_RUST_PRESENT_MODE ?? '';
+// GSW_RUST_PRESENT_PARITY=1: every present mode joins the damage sequence (plus a resize), byte-compared.
+const presentParity = process.env.GSW_RUST_PRESENT_PARITY === '1';
+const evidenceDir = resolve(root, (faultInjection ? '.sts2/rust-webgl-fault' : '.sts2/rust-webgl-integration')
+  + (damageMain ? '-damage' : '') + (presentMode ? `-present-${presentMode}` : '') + (presentParity ? '-parity' : ''));
+const query = new URLSearchParams({ ...(damageMain ? { damage: '1' } : {}), ...(presentMode ? { present: presentMode } : {}),
+  ...(presentParity ? { modes: '1' } : {}) }).toString();
 const glue = await readFile(resolve(wasmOut, 'rust_prototype.js'));
 const wasm = await readFile(resolve(wasmOut, 'rust_prototype_bg.wasm'));
 const bundled = await build({ entryPoints: [resolve(import.meta.dirname, 'integration-browser-entry.ts')],
@@ -19,17 +26,21 @@ const browser = await chromium.launch({ headless: true,
   args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'] });
 const results = {};
 try {
-  const page = await browser.newPage({ viewport: { width: 1100, height: 220 }, deviceScaleFactor: 1 });
+  const page = await browser.newPage({ viewport: { width: 1100, height: presentParity ? 700 : 220 }, deviceScaleFactor: 1 });
   page.on('pageerror', (error) => console.error('PAGE ERROR', error));
   await page.route('http://rust-proof.test/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/rust_prototype.js') await route.fulfill({ status: 200, contentType: 'text/javascript', body: glue });
     else if (path === '/rust_prototype_bg.wasm') await route.fulfill({ status: 200, contentType: 'application/wasm', body: wasm });
     else if (path === '/proof.js') await route.fulfill({ status: 200, contentType: 'text/javascript', body: script });
-    else await route.fulfill({ status: 200, contentType: 'text/html', body: `<!doctype html><style>html,body{margin:0;background:#000}canvas{display:inline-block;vertical-align:top}</style><canvas id="rust" width="64" height="64"></canvas><canvas id="retained" width="64" height="64"></canvas><canvas id="pixi" width="64" height="64"></canvas><canvas id="damageOn" width="349" height="209"></canvas><canvas id="damageOff" width="349" height="209"></canvas><script type="module" src="/proof.js"></script>` });
+    else await route.fulfill({ status: 200, contentType: 'text/html', body: `<!doctype html><style>html,body{margin:0;background:#000}canvas{display:inline-block;vertical-align:top}</style><canvas id="rust" width="64" height="64"></canvas><canvas id="retained" width="64" height="64"></canvas><canvas id="pixi" width="64" height="64"></canvas><canvas id="damageOn" width="349" height="209"></canvas><canvas id="damageOff" width="349" height="209"></canvas><div id="modes"></div><script type="module" src="/proof.js"></script>` });
   });
-  await page.goto(`http://rust-proof.test/${damageMain ? '?damage=1' : ''}`, { waitUntil: 'commit' });
+  await page.goto(`http://rust-proof.test/${query ? `?${query}` : ''}`, { waitUntil: 'commit' });
   await page.waitForFunction(() => window.proof !== undefined, null, { timeout: 15000 });
+  const { presentModes, presentMode: createdMode, unknownModeError } = await page.evaluate(() => ({
+    presentModes: window.proof.presentModes, presentMode: window.proof.presentMode, unknownModeError: window.proof.unknownModeError }));
+  assert.equal(createdMode, presentMode || 'surface');
+  assert.match(unknownModeError, /unknown present mode/);
   await mkdir(evidenceDir, { recursive: true });
   async function capture(id, name, points) {
     const image = await page.locator(`#${id}`).screenshot();
@@ -136,17 +147,38 @@ try {
   if (!faultInjection) {
     // Damage present: byte-identical to a full redraw after every step of a seeded random
     // sequence of patches, re-admissions, texture rewrites and no-op presents.
-    const plan = await page.evaluate(() => window.proof.damagePlan(60));
+    const plan = await page.evaluate((withResize) => window.proof.damagePlan(60, withResize), presentParity);
     const steps = ['initial', ...plan];
     const kinds = {};
     let identical = 0;
     const sequence = [];
     let lastOn;
+    const modeStats = Object.fromEntries(presentModes.map((id) => [id, { full: 0, partial: 0, skip: 0, blitPixels: 0, surfacePixels: 0 }]));
+    const lastPartialPixels = {};
+    const savedKinds = new Set();
     for (const [index, name] of steps.entries()) {
-      const [on, off] = await page.evaluate((name) => window.proof.damageStep(name), name);
-      for (const side of [on, off]) {
+      const [on, off, ...modes] = await page.evaluate((name) => window.proof.damageStep(name), name);
+      for (const side of [on, off, ...modes]) {
         assert.notEqual(side.admission.accepted, false, `${name}: ${JSON.stringify(side)}`);
         assert.equal(side.result.presented, true, `${name}: ${JSON.stringify(side)}`);
+      }
+      const surfacePixels = (await page.locator('#damageOff').evaluate((c) => c.width * c.height));
+      assert.equal(off.result.present, 'surface');
+      assert.equal(off.result.blitPixels, surfacePixels, `${name}: the surface present copies the whole surface`);
+      for (const [modeIndex, id] of presentModes.entries()) {
+        const { result } = modes[modeIndex];
+        const kind = result.damage ?? 'full';
+        const stats = modeStats[id];
+        stats[kind]++; stats.blitPixels += result.blitPixels; stats.surfacePixels += surfacePixels;
+        const partialPixels = result.damageStats?.partialPixels ?? 0;
+        const partialDelta = partialPixels - (lastPartialPixels[id] ?? 0);
+        lastPartialPixels[id] = partialPixels;
+        const preserved = result.present.startsWith('preserved');
+        // A skip writes nothing; a preserved partial after a full blit writes exactly its damage
+        // rectangles (the picture rectangles it redrew); everything else writes the whole surface.
+        const expected = kind === 'skip' ? 0 : kind === 'partial' && preserved && name !== 'resize' ? partialDelta : surfacePixels;
+        assert.equal(result.blitPixels, expected, `${id} ${name}: blitPixels ${JSON.stringify(result)}`);
+        if (kind === 'partial' && preserved) assert.ok(result.blitPixels < surfacePixels, `${id} ${name}`);
       }
       assert.equal(off.result.damage, undefined, 'the default renderer reports no damage mode');
       kinds[on.result.damage] = (kinds[on.result.damage] ?? 0) + 1;
@@ -157,6 +189,22 @@ try {
         await writeFile(resolve(evidenceDir, `damage-mismatch-${index}-${name}-off.png`), imageOff);
         assert.fail(`damage present differs from a full redraw after step ${index} (${name}): ${JSON.stringify(on.result)}`);
       }
+      // Evidence: the first full, partial and skipped step, the resize and the step after it, and the last step.
+      const save = presentParity && (!savedKinds.has(on.result.damage) || name === 'resize'
+        || steps[index - 1] === 'resize' || index === steps.length - 1);
+      savedKinds.add(on.result.damage);
+      for (const [modeIndex, id] of presentModes.entries()) {
+        const image = await page.locator(`#${id}`).screenshot();
+        if (save)
+          await writeFile(resolve(evidenceDir, `parity-${String(index).padStart(2, '0')}-${name}-${on.result.damage}-${id}.png`), image);
+        if (!image.equals(imageOff)) {
+          await writeFile(resolve(evidenceDir, `parity-mismatch-${index}-${name}-${id}.png`), image);
+          await writeFile(resolve(evidenceDir, `parity-mismatch-${index}-${name}-reference.png`), imageOff);
+          assert.fail(`${id} differs from the surface full redraw after step ${index} (${name}): ${JSON.stringify(modes[modeIndex].result)}`);
+        }
+      }
+      if (save)
+        await writeFile(resolve(evidenceDir, `parity-${String(index).padStart(2, '0')}-${name}-${on.result.damage}-reference.png`), imageOff);
       identical++;
       lastOn = on;
       if (index === steps.length - 1) {
@@ -171,6 +219,13 @@ try {
     assert.ok(stats.skippedPresents >= 1, JSON.stringify(stats));
     results['rust-damage'] = { result: lastOn, steps: steps.length, identical, kinds, sequence, stats,
       path: resolve(evidenceDir, 'damage-final-on.png') };
+    if (presentModes.length) {
+      for (const [id, stats] of Object.entries(modeStats)) {
+        assert.ok(stats.full >= 2, `${id}: ${JSON.stringify(stats)}`);
+        if (!id.endsWith('Full')) assert.ok(stats.partial >= 10 && stats.skip >= 1, `${id}: ${JSON.stringify(stats)}`);
+      }
+      results['present-parity'] = { steps: steps.length, identical, modes: modeStats, sequence };
+    }
   }
   for (const [name, change] of [['cold', false], ['warm', false], ['changed', true]]) {
     const result = await page.evaluate((change) => window.proof.retainedStep(change), change);
@@ -197,7 +252,8 @@ try {
   assert.equal(results['pixi-initial'].result.cached, true);
   assert.equal(results['pixi-warm'].result.cached, true);
   assert.equal(results['pixi-patch'].result.cached, false);
-  const receipt = { evidenceDir, faultInjection, damageMain,
+  const receipt = { evidenceDir, faultInjection, damageMain, presentMode: presentMode || 'surface', presentParity,
+    presentModes: results['present-parity'],
     source: 'packages/canvas/rust-prototype/scripts/integration-browser-entry.ts',
     glueSha256: createHash('sha256').update(glue).digest('hex'),
     wasmSha256: createHash('sha256').update(wasm).digest('hex'),

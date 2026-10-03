@@ -16,7 +16,10 @@ bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "WebGl2RenderingContext", "console"] }
+# The direct present owns the canvas's WebGL2 context and blits the picture through wgpu-hal's own glow
+# context (`wgpu::hal` is re-exported under the `webgl` feature; glow is not). Same version as wgpu-hal's.
+glow = "=0.17.0"
 
 [features]
 default = []

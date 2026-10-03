@@ -5,7 +5,9 @@ import { chromium } from '@playwright/test';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const out = process.env.GSW_RUST_PROTOTYPE_OUT ?? resolve(root, '.sts2/rust-prototype-web');
-const evidence = resolve(root, '.sts2/rust-webgl-proof/transparent-red-alpha.png');
+// GSW_RUST_PRESENT_MODE=<mode> creates the renderer through `createWithPresent(canvas, mode)`.
+const presentMode = process.env.GSW_RUST_PRESENT_MODE ?? '';
+const evidence = resolve(root, `.sts2/rust-webgl-proof/transparent-red-alpha${presentMode ? `-${presentMode}` : ''}.png`);
 const glue = await readFile(resolve(out, 'rust_prototype.js'));
 const wasm = await readFile(resolve(out, 'rust_prototype_bg.wasm'));
 const browser = await chromium.launch({
@@ -25,7 +27,7 @@ try {
         try {
           const module = await import('/rust_prototype.js');
           await module.default();
-          const renderer = await module.RustRenderer.create(document.querySelector('canvas'));
+          const renderer = ${presentMode ? `await module.RustRenderer.createWithPresent(document.querySelector('canvas'), ${JSON.stringify(presentMode)})` : `await module.RustRenderer.create(document.querySelector('canvas'))`};
           const scene = {version:2,revision:1,width:64,height:64,designWidth:64,designHeight:64,resources:[],commands:[{id:'semi',kind:'quad',resource:null,m:[1,0,0,1,0,0],w:64,h:64,src:[0,0,1,1],color:[0.5,0,0,0.5],blend:'mix',flipH:false,flipV:false,colorMatrix:null}]};
           const admission = JSON.parse(renderer.admit_scene(new TextEncoder().encode(JSON.stringify(scene))));
           const result = JSON.parse(await renderer.present());
@@ -41,6 +43,8 @@ try {
   assert.equal(proof.admission.accepted, true);
   assert.equal(proof.result.presented, true);
   assert.equal(proof.result.backend, 'webgl2');
+  assert.equal(proof.result.present, presentMode || 'surface');
+  assert.equal(proof.result.blitPixels, 64 * 64);
   const screenshot = await page.screenshot({ omitBackground: true });
   const encoded = screenshot.toString('base64');
   const pixel = await page.evaluate(async (data) => {
@@ -56,7 +60,7 @@ try {
     `premultiplied copy changed transparent red: ${pixel}`);
   await mkdir(resolve(root, '.sts2/rust-webgl-proof'), { recursive: true });
   await writeFile(evidence, screenshot);
-  console.log(JSON.stringify({ pixel, evidence, revision: proof.result.revision }));
+  console.log(JSON.stringify({ pixel, evidence, revision: proof.result.revision, present: proof.result.present }));
 } finally {
   await browser.close();
 }

@@ -13,9 +13,13 @@ const pixiCanvas = document.querySelector<HTMLCanvasElement>('#pixi')!;
 const enc = new TextEncoder();
 const wasm = await import('/rust_prototype.js');
 await wasm.default();
-const rust = await wasm.RustRenderer.create(rustCanvas);
+const params = new URLSearchParams(location.search);
+// GSW_RUST_PRESENT_MODE=<mode> runs the main Rust steps through `createWithPresent(canvas, mode)`.
+const presentMode = params.get('present');
+const rust = presentMode ? await wasm.RustRenderer.createWithPresent(rustCanvas, presentMode)
+  : await wasm.RustRenderer.create(rustCanvas);
 // GSW_RUST_DAMAGE_PRESENT=1 runs the main Rust steps (and the fault leg) with the damage present on.
-if (new URLSearchParams(location.search).get('damage') === '1') rust.set_damage_present(true);
+if (params.get('damage') === '1') rust.set_damage_present(true);
 let committed: RustSceneSnapshot | null = null;
 let failedPatchBytes: Uint8Array | null = null;
 let textSwapInputs: ((text: string, revision: number) => { list: ReturnType<typeof createDrawList<string>>; carriers: Map<string, any>; encoded: ReturnType<typeof encodeRustScene> }) | null = null;
@@ -223,7 +227,8 @@ function pixiStep(kind: string) {
 // Damage present exactness: two renderers receive the same randomized scene,
 // patch and upload sequence; one redraws only the damage, one redraws whole.
 // 349x209 over a 100x60 design: the phone's 3.49 device scale, so bounds round on fractional pixels.
-const DAMAGE_W = 349, DAMAGE_H = 209, DAMAGE_DESIGN_W = 100, DAMAGE_DESIGN_H = 60;
+let DAMAGE_W = 349, DAMAGE_H = 209;
+const DAMAGE_DESIGN_W = 100, DAMAGE_DESIGN_H = 60;
 const damageOnCanvas = document.querySelector<HTMLCanvasElement>('#damageOn')!;
 const damageOffCanvas = document.querySelector<HTMLCanvasElement>('#damageOff')!;
 const damageOn = await wasm.RustRenderer.create(damageOnCanvas);
@@ -231,6 +236,30 @@ const damageOff = await wasm.RustRenderer.create(damageOffCanvas);
 damageOn.set_damage_present(true);
 damageOn.set_damage_verify(true);
 const damageRenderers = [damageOn, damageOff];
+const damageCanvases = [damageOnCanvas, damageOffCanvas];
+// GSW_RUST_PRESENT_PARITY=1: the same sequence also drives one renderer per present mode, each
+// compared with the full-redraw surface renderer (`#damageOff`) after every step.
+const PRESENT_PARITY = [
+  { id: 'modeDirect', mode: 'direct', damage: true },
+  { id: 'modeDirectFull', mode: 'direct', damage: false },
+  { id: 'modePreserved', mode: 'preserved', damage: true },
+  { id: 'modePreservedFull', mode: 'preserved', damage: false },
+  { id: 'modePreservedDesync', mode: 'preserved-desync', damage: true },
+];
+const presentParity = params.get('modes') === '1' ? PRESENT_PARITY : [];
+for (const { id, mode, damage } of presentParity) {
+  const canvas = document.createElement('canvas');
+  canvas.id = id; canvas.width = DAMAGE_W; canvas.height = DAMAGE_H;
+  document.querySelector('#modes')!.append(canvas);
+  const renderer = await wasm.RustRenderer.createWithPresent(canvas, mode);
+  if (renderer.present_mode !== mode) throw new Error(`${id}: present_mode ${renderer.present_mode} != ${mode}`);
+  if (damage) { renderer.set_damage_present(true); renderer.set_damage_verify(true); }
+  damageRenderers.push(renderer);
+  damageCanvases.push(canvas);
+}
+let unknownModeError = '';
+try { await wasm.RustRenderer.createWithPresent(document.createElement('canvas'), 'bogus'); }
+catch (error) { unknownModeError = String(error); }
 let rngState = 0x5eed1234;
 function rng() {
   rngState = (rngState + 0x6d2b79f5) | 0;
@@ -308,6 +337,17 @@ function moved(command: DamageCommand, reach: number): DamageCommand {
   [m[0], m[1], m[2], m[3]] = [m[0] * c - m[1] * s, m[0] * s + m[1] * c, m[2] * c - m[3] * s, m[2] * s + m[3] * c];
   m[4] += (rng() - 0.5) * reach; m[5] += (rng() - 0.5) * reach;
   return { ...command, m };
+}
+async function damageResize() {
+  // A new backing size and a full re-admission: every canvas is cleared, so a preserved canvas must blit whole.
+  DAMAGE_W = 300; DAMAGE_H = 180;
+  for (const [index, renderer] of damageRenderers.entries()) {
+    damageCanvases[index].width = DAMAGE_W; damageCanvases[index].height = DAMAGE_H;
+    renderer.resize(DAMAGE_W, DAMAGE_H);
+  }
+  damageRevision++;
+  const bytes = damageSceneBytes();
+  return damageAll((renderer) => renderer.admit_scene(bytes));
 }
 async function damageAll(run: (renderer: typeof damageOn) => unknown) {
   const results = [];
@@ -455,14 +495,18 @@ const damageSteps: Record<string, () => Promise<unknown>> = {
   async noop() {
     return damageAll(() => ({ accepted: true }));
   },
+  resize: damageResize,
 };
 function damageStep(name: string) { return damageSteps[name](); }
-function damagePlan(count: number) {
+function damagePlan(count: number, withResize = false) {
   const weighted = ['move', 'move', 'move', 'move', 'color', 'color', 'clip', 'many', 'readmit', 'swap',
     'retexture', 'same', 'noop', 'probe', 'probe', 'glyphMove', 'subrect', 'uploadOnly', 'textSwap', 'textSwap'];
   // A fixed tail, so these paths run regardless of the seed: upload with no patch, empty present, then patch.
   return [...Array.from({ length: count }, () => pick(weighted)), 'uploadOnly', 'noop', 'probe', 'subrect', 'glyphMove', 'probe',
-    'textSwap', 'noop', 'textSwap', 'probe'];
+    'textSwap', 'noop', 'textSwap', 'probe',
+    // Present parity only (it changes the sequence): a resize, then partial, skipped and full presents.
+    ...(withResize ? ['resize', 'probe', 'noop', 'move', 'color', 'many', 'probe'] : [])];
 }
 
-root.proof = { rustSteps, retainedStep, pixiStep, damageStep, damagePlan };
+root.proof = { rustSteps, retainedStep, pixiStep, damageStep, damagePlan, presentModes: presentParity.map((p) => p.id),
+  presentMode: rust.present_mode, unknownModeError };

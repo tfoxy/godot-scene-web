@@ -1,5 +1,5 @@
 //! wasm-bindgen boundary: one scene, patch, or resource bundle per call.
-use crate::renderer::Renderer;
+use crate::{present::PresentMode, renderer::Renderer};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -24,6 +24,37 @@ impl RustRenderer {
             .map_err(|e| JsValue::from_str(&e))?;
         inner.record_wasm_call();
         Ok(Self { inner })
+    }
+    /// `create` with a present mode: `"surface"` (what `create` does), `"direct"` (this renderer
+    /// creates the WebGL2 context and blits the picture into the canvas without a wgpu surface),
+    /// `"preserved"` (direct, `preserveDrawingBuffer: true`, a partial redraw blits only its damage)
+    /// or `"preserved-desync"` (preserved plus `desynchronized: true`). Any other mode is an error.
+    #[wasm_bindgen(js_name = createWithPresent)]
+    pub async fn create_with_present(
+        canvas: web_sys::HtmlCanvasElement,
+        mode: String,
+    ) -> Result<RustRenderer, JsValue> {
+        let mode = PresentMode::parse(&mode).map_err(|e| JsValue::from_str(&e))?;
+        if mode == PresentMode::Surface {
+            return Self::create(canvas).await;
+        }
+        let width = canvas.width().max(1);
+        let height = canvas.height().max(1);
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::GL,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let inner = Renderer::new_direct(&instance, canvas, mode, width, height)
+            .await
+            .map_err(|e| JsValue::from_str(&e))?;
+        inner.record_wasm_call();
+        Ok(Self { inner })
+    }
+    /// The present mode this renderer was created with.
+    #[wasm_bindgen(getter)]
+    pub fn present_mode(&self) -> String {
+        self.inner.record_wasm_call();
+        self.inner.present_mode().name().to_owned()
     }
 
     #[wasm_bindgen(getter)]
