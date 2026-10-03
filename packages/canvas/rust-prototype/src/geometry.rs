@@ -336,6 +336,21 @@ pub fn dirty_ranges(old: &[Instance], new: &[Instance]) -> Vec<(usize, usize)> {
     ranges
 }
 
+/// A `scene.resources` key -> `Resource` index, cached across calls as long as
+/// `epoch` still matches. `Patch` carries no `resources` field (see
+/// `contract::Patch`), so the committed scene's resource list only ever
+/// changes when a full scene is admitted; a caller that bumps `epoch` solely
+/// on that event can reuse this map for every patch in between.
+///
+/// Values are `(width, height)`, not a cloned `Resource`: the key string is
+/// already owned once as the map key, and a `Resource` also owns a copy of
+/// its key, so storing the full struct here would clone every key twice per
+/// rebuild for no reason — the dimensions are the only fields a lookup
+/// doesn't already have at the call site (see `patch_spans_with_cache`,
+/// which rebuilds the `Resource` it needs from the key it's already
+/// holding plus these two `Copy` fields).
+pub type ResourceIndexCache = Option<(u64, HashMap<String, (u32, u32)>)>;
+
 /// Replace only commands named by a validated patch. A changed tile count,
 /// texture, blend, or clip returns None so the caller rebuilds the draw table.
 pub fn patch_instances(
@@ -412,6 +427,23 @@ pub fn patch_spans(
     updates: &[(usize, Command)],
     clips_at: impl Fn(usize) -> Option<[Option<usize>; 3]>,
 ) -> Option<Vec<(usize, Vec<Instance>)>> {
+    let mut cache: ResourceIndexCache = None;
+    patch_spans_with_cache(old, scene, updates, clips_at, &mut cache, 0)
+}
+
+/// Same as [`patch_spans`], but reuses `resource_index_cache` across calls
+/// instead of rebuilding the `key -> Resource` map every time. The cache is
+/// rebuilt only when `resource_epoch` differs from the value it was built
+/// under; the caller (the renderer) owns both and bumps the epoch exactly
+/// when the committed scene's `resources` list can have changed.
+pub fn patch_spans_with_cache(
+    old: &Geometry,
+    scene: &Scene,
+    updates: &[(usize, Command)],
+    clips_at: impl Fn(usize) -> Option<[Option<usize>; 3]>,
+    resource_index_cache: &mut ResourceIndexCache,
+    resource_epoch: u64,
+) -> Option<Vec<(usize, Vec<Instance>)>> {
     if old.command_ranges.len() != scene.commands.len() {
         return None;
     }
@@ -433,8 +465,9 @@ pub fn patch_spans(
     // Most patches touch commands with no resource (solid quads, text), so
     // building the key -> resource index unconditionally allocated a
     // HashMap on every call even when no update ever looked it up. Build it
-    // lazily, once, on the first update that actually carries a resource.
-    let mut resource_index: Option<HashMap<&str, &Resource>> = None;
+    // lazily, on the first update that actually carries a resource — and
+    // only when the cached copy is missing or stale, since a `Patch` never
+    // changes `scene.resources` (only a fresh `admit_scene` does).
     let mut spans = Vec::with_capacity(updates.len());
     for (index, command) in updates {
         if matches!(command, Command::ClipPush { .. }) {
@@ -456,14 +489,24 @@ pub fn patch_spans(
         }
         commands.push(command.clone());
         let resources = if let Some(key) = quad.resource.as_deref() {
-            let index = resource_index.get_or_insert_with(|| {
-                scene
+            let fresh = resource_index_cache
+                .as_ref()
+                .is_none_or(|(epoch, _)| *epoch != resource_epoch);
+            if fresh {
+                let map = scene
                     .resources
                     .iter()
-                    .map(|r| (r.key.as_str(), r))
-                    .collect()
-            });
-            vec![(*index.get(key)?).clone()]
+                    .map(|r| (r.key.clone(), (r.width, r.height)))
+                    .collect();
+                *resource_index_cache = Some((resource_epoch, map));
+            }
+            let (_, map) = resource_index_cache.as_ref().expect("just populated above");
+            let &(width, height) = map.get(key)?;
+            vec![Resource {
+                key: key.to_string(),
+                width,
+                height,
+            }]
         } else {
             Vec::new()
         };
@@ -536,4 +579,102 @@ pub fn patch_spans(
         spans.push((start as usize, instances));
     }
     Some(spans)
+}
+
+#[cfg(test)]
+mod resource_index_cache_tests {
+    use super::*;
+    use crate::contract::Blend;
+
+    fn scene_with_quad(resource_key: &str, width: u32, height: u32, quad_w: f32) -> Scene {
+        Scene {
+            version: crate::contract::SCENE_VERSION,
+            revision: 1,
+            width: 100,
+            height: 100,
+            design_width: 100,
+            design_height: 100,
+            resources: vec![Resource {
+                key: resource_key.into(),
+                width,
+                height,
+            }],
+            commands: vec![Command::Quad {
+                id: "q0".into(),
+                quad: Quad {
+                    resource: Some(resource_key.into()),
+                    m: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    w: quad_w,
+                    h: 10.0,
+                    src: [0.0, 0.0, 10.0, 20.0],
+                    color: [1.0; 4],
+                    blend: Blend::Mix,
+                    flip_h: false,
+                    flip_v: false,
+                    color_matrix: None,
+                },
+            }],
+        }
+    }
+
+    fn no_clips(_index: usize) -> Option<[Option<usize>; 3]> {
+        Some([None, None, None])
+    }
+
+    /// A stale cache entry whose epoch matches must be trusted as-is: the
+    /// resulting UV scale reflects the cached (wrong) resource dimensions,
+    /// not the scene's real ones, proving no rebuild happened.
+    #[test]
+    fn matching_epoch_reuses_cache_without_rebuilding() {
+        let base = scene_with_quad("r1", 10, 20, 10.0);
+        let old = build(&base);
+        let updated = scene_with_quad("r1", 10, 20, 20.0); // same resource, different w
+        let updates = vec![(0usize, updated.commands[0].clone())];
+        let mut cache: ResourceIndexCache =
+            Some((1, [("r1".to_string(), (999u32, 888u32))].into_iter().collect()));
+        let spans =
+            patch_spans_with_cache(&old, &base, &updates, no_clips, &mut cache, 1).unwrap();
+        let (_, instances) = &spans[0];
+        // page.0 = 999 (the stale cached width): uv width = src width / page width.
+        assert!((instances[0].uv_size_slot[0] - 10.0 / 999.0).abs() < 1e-6);
+        // The cache entry itself must be untouched (still the stale one, still epoch 1).
+        let (epoch, map) = cache.as_ref().unwrap();
+        assert_eq!(*epoch, 1);
+        assert_eq!(map.get("r1").unwrap().0, 999);
+    }
+
+    /// A new resource epoch forces a fresh build from `scene.resources`,
+    /// discarding whatever the stale cache held, and the cache is left
+    /// holding the fresh map under the new epoch for the next call to reuse.
+    #[test]
+    fn new_epoch_rebuilds_and_refreshes_cache() {
+        let base = scene_with_quad("r1", 10, 20, 10.0);
+        let old = build(&base);
+        let updated = scene_with_quad("r1", 10, 20, 20.0);
+        let updates = vec![(0usize, updated.commands[0].clone())];
+        let mut cache: ResourceIndexCache =
+            Some((1, [("r1".to_string(), (999u32, 888u32))].into_iter().collect()));
+        let spans =
+            patch_spans_with_cache(&old, &base, &updates, no_clips, &mut cache, 2).unwrap();
+        let (_, instances) = &spans[0];
+        // page.0 = 10 (the scene's real width), read fresh since the epoch changed.
+        assert!((instances[0].uv_size_slot[0] - 10.0 / 10.0).abs() < 1e-6);
+        let (epoch, map) = cache.as_ref().unwrap();
+        assert_eq!(*epoch, 2);
+        assert_eq!(map.get("r1").unwrap().0, 10);
+    }
+
+    /// `patch_spans` (the uncached entry point kept for existing callers)
+    /// always starts from an empty cache, so its output never depends on
+    /// anything left over from a previous call — unchanged behaviour.
+    #[test]
+    fn uncached_entry_point_ignores_any_prior_state() {
+        let base = scene_with_quad("r1", 10, 20, 10.0);
+        let old = build(&base);
+        let updated = scene_with_quad("r1", 10, 20, 20.0);
+        let updates = vec![(0usize, updated.commands[0].clone())];
+        let spans = patch_spans(&old, &base, &updates, no_clips).unwrap();
+        let (_, instances) = &spans[0];
+        assert!((instances[0].uv_size_slot[0] - 10.0 / 10.0).abs() < 1e-6);
+    }
 }
