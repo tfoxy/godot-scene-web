@@ -162,6 +162,10 @@ try {
         assert.notEqual(side.admission.accepted, false, `${name}: ${JSON.stringify(side)}`);
         assert.equal(side.result.presented, true, `${name}: ${JSON.stringify(side)}`);
       }
+      if (name === 'idleReadmit') for (const side of [on, ...modes])
+        assert.equal(side.admission.staleIdle, 0, `a set for a replaced revision is refused: ${JSON.stringify(side)}`);
+      if (name.startsWith('idle') && name !== 'idleReadmit') for (const side of [on, ...modes])
+        assert.equal(side.admission.stats.lastError, null, `${name}: ${JSON.stringify(side.admission)}`);
       const surfacePixels = (await page.locator('#damageOff').evaluate((c) => c.width * c.height));
       assert.equal(off.result.present, 'surface');
       assert.equal(off.result.blitPixels, surfacePixels, `${name}: the surface present copies the whole surface`);

@@ -2,6 +2,7 @@ pub mod contract;
 pub mod damage;
 pub mod present;
 pub mod geometry;
+pub mod idle;
 pub mod renderer;
 pub mod resources;
 #[cfg(target_arch = "wasm32")]

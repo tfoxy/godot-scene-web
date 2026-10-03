@@ -1420,3 +1420,174 @@ function encodeRustRetainedPatchImpl(
     resourcesChanged,
   };
 }
+
+/**
+ * `RIA1` idle animations (see the crate's `idle.rs`): a caller that re-poses a few retained subtrees with periodic
+ * loops installs one descriptor set per committed scene revision (`set_idle_anims`) and presents each idle frame
+ * with `present_idle(t)`, instead of a patch per frame. `RUST_IDLE_ANIMS` advertises this module.
+ */
+export const RUST_IDLE_ANIMS = true;
+
+/** A root's loop curve. `rest` composes the committed pose (a root with no loop running). */
+export type RustIdleCurve = "rest" | "rotate" | "rock" | "bob" | "pivotPulse" | "pulseScale";
+const IDLE_CURVES: Record<RustIdleCurve, number> = { rest: 0, rotate: 1, rock: 2, bob: 3, pivotPulse: 4, pulseScale: 5 };
+
+export interface RustIdleRoot {
+  curve: RustIdleCurve;
+  amplitudeRad: number;
+  amplitudePx: number;
+  baselineUpPx: number;
+  scaleFrom: number;
+  scaleTo: number;
+  pivotX: number;
+  pivotY: number;
+  /** Phase origin (ms on the caller's clock), per-node phase offset and period. */
+  originMs: number;
+  phaseMs: number;
+  periodMs: number;
+  /** The parent's rendered global, the node's own local (null when it has none), the shared left-multiplier,
+   * the root's spread shift, and the inverse of the pose the committed list holds. */
+  base: readonly number[];
+  wire: readonly number[] | null;
+  outer: readonly number[];
+  spreadDx: number;
+  inverse: readonly number[];
+}
+
+/**
+ * One command a root chain re-poses. `group`: a member of the root's group, `m = (parentWorld·delta)·local`.
+ * `primitive`: `m = C·reference` with `C` the chain's composed delta. `text`: a text carrier placed with a local
+ * transform, `m = parentWorld·((C·reference)·inset)`.
+ */
+export interface RustIdleTarget {
+  commandIndex: number;
+  mode: "group" | "primitive" | "text";
+  /** Roots outermost first, each with this command's spread offset from it (ignored for `group`). */
+  chain: readonly { root: number; offset: number }[];
+  parentWorld?: readonly number[];
+  reference: readonly number[];
+  inset?: readonly number[];
+}
+
+export interface RustIdleSet {
+  baseRevision: number;
+  roots: readonly RustIdleRoot[];
+  targets: readonly RustIdleTarget[];
+}
+
+/** Encode an idle set as `RIA1` bytes. Null when a value is not finite or an index is out of range. */
+export function encodeRustIdleAnims(set: RustIdleSet): Uint8Array | null {
+  if (!Number.isSafeInteger(set.baseRevision) || set.baseRevision < 0) return null;
+  let size = 24 + set.roots.length * 304;
+  for (const target of set.targets) size += 12 + target.chain.length * 16 + 144;
+  const bytes = new Uint8Array(size);
+  const view = new DataView(bytes.buffer);
+  let at = 0;
+  let finite = true;
+  const u32 = (value: number) => { view.setUint32(at, value, true); at += 4; };
+  const f64 = (value: number) => { if (!Number.isFinite(value)) finite = false; view.setFloat64(at, value, true); at += 8; };
+  const affine = (m: readonly number[] | undefined) => {
+    const value = m ?? identity;
+    if (value.length !== 6) finite = false;
+    for (let i = 0; i < 6; i++) f64(value[i]);
+  };
+  bytes.set([0x52, 0x49, 0x41, 0x31], 0);
+  at = 4;
+  u32(1);
+  u32(set.baseRevision % 0x1_0000_0000);
+  u32(Math.floor(set.baseRevision / 0x1_0000_0000));
+  u32(set.roots.length);
+  u32(set.targets.length);
+  for (const root of set.roots) {
+    u32(IDLE_CURVES[root.curve]);
+    u32(root.wire ? 1 : 0);
+    for (const value of [root.amplitudeRad, root.amplitudePx, root.baselineUpPx, root.scaleFrom, root.scaleTo, 1, 1,
+      root.pivotX, root.pivotY, root.originMs, root.phaseMs, root.periodMs]) f64(value);
+    affine(root.base);
+    affine(root.wire ?? undefined);
+    affine(root.outer);
+    f64(root.spreadDx);
+    affine(root.inverse);
+  }
+  for (const target of set.targets) {
+    if (!Number.isInteger(target.commandIndex) || target.commandIndex < 0 || target.chain.length === 0 ||
+      target.chain.some(({ root }) => !Number.isInteger(root) || root < 0 || root >= set.roots.length)) return null;
+    u32(target.commandIndex);
+    u32(target.mode === "group" ? 0 : target.mode === "primitive" ? 1 : 2);
+    u32(target.chain.length);
+    for (const { root, offset } of target.chain) { u32(root); u32(0); f64(offset); }
+    affine(target.parentWorld);
+    affine(target.reference);
+    affine(target.inset);
+  }
+  return finite && at === size ? bytes : null;
+}
+
+/**
+ * The commands a retained patch re-places when `groupId`'s transform changes, as this scene holds them: each one's
+ * index and group-local placement, plus the world of the group's own parent chain. Null when the scene has no
+ * retained metadata or the group, or when a command sits in a group nested under it (its world would compose more
+ * than one moving transform).
+ */
+export function rustRetainedGroupMembers(
+  scene: RustSceneSnapshot,
+  groupId: string,
+): { parentWorld: number[]; members: { id: string; index: number; local: number[] }[] } | null {
+  const meta = retainedMeta.get(scene);
+  const group = meta?.groups.get(groupId);
+  if (!meta || !group) return null;
+  const indexes = indexCommands(scene);
+  const members: { id: string; index: number; local: number[] }[] = [];
+  for (const [id, owner] of meta.owners) {
+    let parent = owner.parentId;
+    let nested = false;
+    while (parent && parent !== groupId) { nested = true; parent = meta.groups.get(parent)?.parentId; }
+    if (parent !== groupId) continue;
+    const index = indexes.get(id);
+    if (nested || index === undefined) return null;
+    members.push({ id, index, local: [...owner.local] });
+  }
+  for (const clip of meta.clips) {
+    for (let parent = clip.parentId; parent; parent = meta.groups.get(parent)?.parentId)
+      if (parent === groupId) return null;
+  }
+  let world: number[] = [...identity];
+  const chain: string[] = [];
+  for (let parent = group.parentId; parent; parent = meta.groups.get(parent)?.parentId) chain.push(parent);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const parent = meta.groups.get(chain[i]);
+    if (!parent) return null;
+    world = mul(world, parent.transform);
+  }
+  return { parentWorld: world, members };
+}
+
+/**
+ * Where a retained text command (`t<key>`) lands for a `localTransform` update, as this scene holds it: its parent
+ * group's world and the carrier inset `inverse(sourceLocal)·local` the update composes with. Null when it has no
+ * retained placement or its source transform is singular.
+ */
+export function rustRetainedTextPlacement(
+  scene: RustSceneSnapshot,
+  id: string,
+): { index: number; parentWorld: number[]; inset: number[] } | null {
+  const meta = retainedMeta.get(scene);
+  const owner = meta?.owners.get(id);
+  const index = indexCommands(scene).get(id);
+  if (!meta || !owner || index === undefined) return null;
+  const undoSource = inverse(owner.sourceLocal);
+  if (!undoSource) return null;
+  let world: number[];
+  try {
+    const groupWorld = (groupId: string | undefined): number[] => {
+      if (!groupId) return [...identity];
+      const group = meta.groups.get(groupId);
+      if (!group) throw new Error(`missing group ${groupId}`);
+      return mul(groupWorld(group.parentId), group.transform);
+    };
+    world = groupWorld(owner.parentId);
+  } catch {
+    return null;
+  }
+  return { index, parentWorld: world, inset: mul(undoSource, owner.local) };
+}

@@ -1,5 +1,6 @@
 import { createClipRectView, createDrawList, createNinePatchView, createQuadView } from '../../src/draw-list';
-import { encodeRustResources, encodeRustResourceUpdates, encodeRustRetainedPatch, encodeRustScene, type RustSceneSnapshot } from '../../src/rust-prototype-scene';
+import { encodeRustIdleAnims, encodeRustResources, encodeRustResourceUpdates, encodeRustRetainedPatch, encodeRustScene,
+  type RustIdleSet, type RustSceneSnapshot } from '../../src/rust-prototype-scene';
 import { createCanvasStage } from '../../src/present';
 import { createCanvasExecutor } from '../../src/executor-webgl';
 import { createRetainedRangeCache } from '../../src/retained-range-cache';
@@ -496,7 +497,88 @@ const damageSteps: Record<string, () => Promise<unknown>> = {
     return damageAll(() => ({ accepted: true }));
   },
   resize: damageResize,
+  // Idle animations (`RIA1`): every renderer but the full-redraw reference installs one set and presents each idle
+  // frame with `present_idle(t)`; the reference applies the same poses (`idleEvaluate`) as an ordinary patch.
+  async idleInstall() {
+    const index = (id: string) => damageCommands.findIndex((c) => c.id === id);
+    const m = (id: string) => [...commandById(id).m as number[]];
+    const placement = (x: number, y: number) => {
+      const base = [1, 0, 0, 1, 0, 0], wire = [1, 0, 0, 1, x, y], outer = [1, 0, 0, 1, 0.25, 0];
+      // The inverse of the rest pose, so a delta is just the loop's own motion.
+      return { base, wire, outer, spreadDx: 0, inverse: [1, 0, 0, 1, -(x + 0.25), -y] };
+    };
+    const loop = { amplitudeRad: 0.15, amplitudePx: 3, baselineUpPx: 2, scaleFrom: 0.85, scaleTo: 1.2 };
+    idleSet = {
+      baseRevision: damageRevision,
+      roots: [
+        { curve: 'bob', ...loop, pivotX: 0, pivotY: 0, originMs: 120.5, phaseMs: 333.25, periodMs: 2000, ...placement(30, 20) },
+        { curve: 'rotate', ...loop, pivotX: 20, pivotY: 12, originMs: 0, phaseMs: 0, periodMs: 7000, ...placement(40, 25) },
+        { curve: 'rock', ...loop, pivotX: 15, pivotY: 6, originMs: 17, phaseMs: 9, periodMs: 2600, ...placement(10, 35) },
+        { curve: 'pulseScale', ...loop, pivotX: 4, pivotY: 4, originMs: 3, phaseMs: 0, periodMs: 1800, ...placement(0, 0) },
+        { curve: 'pivotPulse', ...loop, pivotX: 30, pivotY: 30, originMs: 999, phaseMs: 50, periodMs: 1500, ...placement(5, 5) },
+        { curve: 'rest', ...loop, pivotX: 0, pivotY: 0, originMs: 0, phaseMs: 0, periodMs: 1, ...placement(1, 1) },
+      ],
+      targets: [
+        // Group members re-placed through a moving group, a primitive, a nested chain with a spread offset, a text
+        // carrier with a parent world and an inset, and a command under a root at rest.
+        ...['q0-0', 'q0-1', 'q0-2'].map((id) => ({ commandIndex: index(id), mode: 'group' as const,
+          chain: [{ root: 0, offset: 0 }], parentWorld: [1, 0, 0, 1, 0, 0], reference: m(id) })),
+        { commandIndex: index('q2-0'), mode: 'primitive', chain: [{ root: 1, offset: 0 }], reference: m('q2-0') },
+        { commandIndex: index('q4-1'), mode: 'primitive', chain: [{ root: 0, offset: 2.5 }, { root: 2, offset: 0 }],
+          reference: m('q4-1') },
+        { commandIndex: index('glyphs-a'), mode: 'text', chain: [{ root: 2, offset: 0 }, { root: 3, offset: -1 }],
+          parentWorld: [1, 0, 0, 1, 1.5, -0.5], reference: m('glyphs-a'), inset: [1, 0, 0, 1, -0.75, 0.5] },
+        { commandIndex: index('stamp'), mode: 'primitive', chain: [{ root: 4, offset: 0 }], reference: m('stamp') },
+        { commandIndex: index('label'), mode: 'primitive', chain: [{ root: 5, offset: 0 }], reference: m('label') },
+      ],
+    };
+    idleBytes = encodeRustIdleAnims(idleSet)!;
+    referenceRevision = damageRevision;
+    for (const renderer of damageRenderers) if (renderer !== damageOff) renderer.set_idle_anims(idleBytes);
+    idleClock = 10_000;
+    return idleAll(idleClock);
+  },
+  async idle() {
+    // Mostly frame-sized steps, sometimes a long gap; the same clock twice presents nothing new.
+    const r = rng();
+    idleClock += r < 0.15 ? 0 : r < 0.85 ? 16 + rng() * 40 : 300 + rng() * 2500;
+    return idleAll(idleClock);
+  },
+  async idleReadmit() {
+    // A full admission moves every renderer to a new revision: the installed set is stale and refused.
+    damageRevision = Math.max(damageRevision, referenceRevision) + 1;
+    const bytes = damageSceneBytes();
+    const results = await damageAll((renderer) => renderer.admit_scene(bytes));
+    const stale = damageRenderers.map((renderer) => renderer === damageOff ? null : renderer.present_idle(idleClock + 50));
+    return results.map((side, i) => ({ ...side, admission: { ...side.admission, staleIdle: stale[i] } }));
+  },
 };
+let idleSet: RustIdleSet | null = null;
+let idleBytes = new Uint8Array();
+let idleClock = 0;
+let referenceRevision = 0;
+async function idleAll(t: number) {
+  const poses = wasm.idleEvaluate(idleBytes, t) as Float64Array;
+  const updates = idleSet!.targets.map((target, i) => {
+    const command = damageCommands[target.commandIndex];
+    const next = { ...command, m: Array.from(poses.subarray(i * 6, i * 6 + 6)) };
+    damageCommands[target.commandIndex] = next;
+    return { id: command.id, command: next };
+  });
+  const results = [];
+  for (const renderer of damageRenderers) {
+    if (renderer === damageOff) {
+      const bytes = enc.encode(JSON.stringify({ version: 1, baseRevision: referenceRevision, revision: ++referenceRevision, updates }));
+      const admission = parse(renderer.apply_patch(bytes));
+      results.push({ admission, result: parse(await renderer.present()) });
+    } else {
+      const code = renderer.present_idle(t);
+      results.push({ admission: { accepted: code !== 0, code, stats: parse(renderer.idle_stats()) },
+        result: parse(renderer.idle_last_result()) });
+    }
+  }
+  return results;
+}
 function damageStep(name: string) { return damageSteps[name](); }
 function damagePlan(count: number, withResize = false) {
   const weighted = ['move', 'move', 'move', 'move', 'color', 'color', 'clip', 'many', 'readmit', 'swap',
@@ -505,7 +587,10 @@ function damagePlan(count: number, withResize = false) {
   return [...Array.from({ length: count }, () => pick(weighted)), 'uploadOnly', 'noop', 'probe', 'subrect', 'glyphMove', 'probe',
     'textSwap', 'noop', 'textSwap', 'probe',
     // Present parity only (it changes the sequence): a resize, then partial, skipped and full presents.
-    ...(withResize ? ['resize', 'probe', 'noop', 'move', 'color', 'many', 'probe'] : [])];
+    ...(withResize ? ['resize', 'probe', 'noop', 'move', 'color', 'many', 'probe'] : []),
+    // Idle animations, last: an idle frame keeps a renderer's revision while the reference's patches advance it,
+    // until the re-admission brings every renderer to one revision again.
+    'idleInstall', ...Array.from({ length: 24 }, () => 'idle'), 'idleReadmit', 'probe', 'noop'];
 }
 
 root.proof = { rustSteps, retainedStep, pixiStep, damageStep, damagePlan, presentModes: presentParity.map((p) => p.id),
