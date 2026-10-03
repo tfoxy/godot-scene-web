@@ -3,6 +3,7 @@ use crate::{
     contract::{Admission, Blend, Command, Patch, PatchDelta, Quad, SCENE_VERSION, Scene, SceneState},
     damage::{self, DamageSet, DeviceRect, Projection},
     geometry::{self, Draw, Geometry, Instance, ResourceIndexCache, TEXTURE_SLOTS},
+    present::PresentMode,
     resources::{ResourceChange, ResourceFormat, ResourceStore},
 };
 use std::cell::Cell;
@@ -91,6 +92,12 @@ pub struct PresentResult {
     pub damage: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub damage_stats: Option<DamageStats>,
+    /// The present mode (`surface`, `direct`, `preserved`, `preserved-desync`).
+    pub present: &'static str,
+    /// Pixels this present wrote to the canvas's default framebuffer: 0 on a skip or failure, the
+    /// whole surface for wgpu's present or a full canvas present, the damage area for a preserved
+    /// partial.
+    pub blit_pixels: u64,
 }
 /// Cumulative damage-present counters, reported only while it is enabled.
 #[derive(serde::Serialize, Clone, Copy, Default)]
@@ -283,8 +290,16 @@ struct Picture {
     view: wgpu::TextureView,
     bind: wgpu::BindGroup,
 }
+/// Where a present puts the committed picture (see [`crate::present`]).
+enum Output {
+    /// wgpu's surface: copy pass into the acquired texture, then wgpu-hal's present draw.
+    Surface(wgpu::Surface<'static>),
+    /// A canvas whose WebGL2 context this renderer created: one present draw from the picture.
+    #[cfg(target_arch = "wasm32")]
+    Canvas(crate::present::canvas::CanvasPresenter),
+}
 pub struct Renderer {
-    surface: wgpu::Surface<'static>,
+    output: Output,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -367,6 +382,8 @@ pub struct Renderer {
     damage_clear: Option<(TextureEntry, wgpu::BindGroup)>,
     damage_stats: DamageStats,
     last_damage: Option<&'static str>,
+    /// Pixels the last present wrote to the canvas's default framebuffer.
+    last_blit_pixels: u64,
     #[cfg(feature = "fault-injection")]
     validation_failure_once: bool,
 }
@@ -829,6 +846,41 @@ impl Renderer {
             })
             .await
             .map_err(|e| e.to_string())?;
+        Self::with_adapter(adapter, Output::Surface(surface), width, height).await
+    }
+    /// The direct present (`mode` is not `Surface`): create `canvas`'s WebGL2 context with the
+    /// mode's attributes and build the adapter on it. No `wgpu::Surface` exists; `present` draws
+    /// the committed picture into the canvas itself.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn new_direct(
+        instance: &wgpu::Instance,
+        canvas: web_sys::HtmlCanvasElement,
+        mode: PresentMode,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
+        if mode == PresentMode::Surface {
+            return Err("the surface present mode uses Renderer::new".into());
+        }
+        let context = crate::present::canvas::create_context(&canvas, mode.context_attributes())?;
+        // SAFETY: the context was just created and is not lost; the renderer keeps the canvas
+        // (and so the context) alive at least as long as the device built on it.
+        let exposed = unsafe {
+            wgpu::hal::gles::Adapter::new_external(context, wgpu::GlBackendOptions::default())
+        }
+        .ok_or("WebGL2 adapter unavailable on the created context")?;
+        // SAFETY: the WebGL GLES instance holds no per-instance adapter state; any GL instance
+        // accepts an adapter exposed from an external context.
+        let adapter = unsafe { instance.create_adapter_from_hal(exposed) };
+        let presenter = crate::present::canvas::CanvasPresenter::new(canvas, mode);
+        Self::with_adapter(adapter, Output::Canvas(presenter), width, height).await
+    }
+    async fn with_adapter(
+        adapter: wgpu::Adapter,
+        mut output: Output,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
         let adapter_info = adapter.get_info();
         let adapter_timestamp_query_supported =
             adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
@@ -863,10 +915,34 @@ impl Renderer {
             ));
         }
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let config = surface
-            .get_default_config(&adapter, width.max(1), height.max(1))
-            .ok_or("surface unsupported")?;
-        surface.configure(&device, &config);
+        let config = match &mut output {
+            Output::Surface(surface) => {
+                let config = surface
+                    .get_default_config(&adapter, width.max(1), height.max(1))
+                    .ok_or("surface unsupported")?;
+                surface.configure(&device, &config);
+                config
+            }
+            #[cfg(target_arch = "wasm32")]
+            Output::Canvas(presenter) => {
+                presenter.set_size(width.max(1), height.max(1));
+                // Never configured; it carries the size and the picture format. `get_default_config`
+                // on the WebGL2 surface picks `Rgba8UnormSrgb` (wgpu-core lists sRGB formats
+                // first), so the surface path's pictures are sRGB; these must be too, or the scene
+                // would blend in a different space.
+                wgpu::SurfaceConfiguration {
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    color_space: wgpu::SurfaceColorSpace::Auto,
+                    width: width.max(1),
+                    height: height.max(1),
+                    desired_maximum_frame_latency: 2,
+                    present_mode: wgpu::PresentMode::Fifo,
+                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                    view_formats: vec![],
+                }
+            }
+        };
         let surface_globals = viewport_buffer(&device, width, height);
         let design_globals = viewport_buffer(&device, 1, 1);
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -985,8 +1061,19 @@ impl Renderer {
         if let Some(error) = scope.pop().await {
             return Err(format!("GPU initialization validation: {error}"));
         }
+        #[cfg(target_arch = "wasm32")]
+        if let Output::Canvas(presenter) = &mut output {
+            // Everything a canvas present needs from wgpu-hal is checked here, so it cannot fail later.
+            for picture in &pictures {
+                gl_texture(&picture._texture)?;
+            }
+            // SAFETY: wgpu-hal's glow context of this device, which is the canvas's context.
+            let hal = unsafe { device.as_hal::<wgpu::hal::api::Gles>() }
+                .ok_or("device is not a GLES device")?;
+            unsafe { presenter.init(hal.context().lock()) }?;
+        }
         Ok(Self {
-            surface,
+            output,
             device,
             queue,
             config,
@@ -1042,12 +1129,20 @@ impl Renderer {
             damage_clear: None,
             damage_stats: DamageStats::default(),
             last_damage: None,
+            last_blit_pixels: 0,
             #[cfg(feature = "fault-injection")]
             validation_failure_once: false,
         })
     }
     pub fn backend_name(&self) -> &str {
         &self.backend
+    }
+    pub fn present_mode(&self) -> PresentMode {
+        match &self.output {
+            Output::Surface(_) => PresentMode::Surface,
+            #[cfg(target_arch = "wasm32")]
+            Output::Canvas(presenter) => presenter.mode,
+        }
     }
     /// Opt into the pipeline-dedupe draw path (default `false`: unchanged).
     /// One artifact serves both A/B arms this way.
@@ -1141,7 +1236,11 @@ impl Renderer {
         }
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        match &mut self.output {
+            Output::Surface(surface) => surface.configure(&self.device, &self.config),
+            #[cfg(target_arch = "wasm32")]
+            Output::Canvas(presenter) => presenter.set_size(self.config.width, self.config.height),
+        }
         self.pictures = [
             create_picture(
                 &self.device,
@@ -1454,6 +1553,7 @@ impl Renderer {
         let prepare_phase = PhaseSpan::new(phase_identity.as_ref(), "prepare");
         self.present_calls += 1;
         self.last_damage = None;
+        self.last_blit_pixels = 0;
         let candidate_scene = self
             .staged
             .as_ref()
@@ -1597,15 +1697,25 @@ impl Renderer {
         // An empty partial plan changes no pixel: no picture pass, no copy,
         // no frame acquisition, no present. The state still commits below.
         let skip = partial_rects.is_some_and(|rects| rects.is_empty()) && !self.fault_armed();
-        let frame = if skip {
-            None
-        } else {
-            match self.surface.get_current_texture() {
+        // The canvas regions this present will write, captured before `plan` commits below. A
+        // preserved canvas takes only a partial plan's rectangles (`present::blit_regions`).
+        #[cfg(target_arch = "wasm32")]
+        let blit_partial = partial_rects.map(<[DeviceRect]>::to_vec);
+        let frame = match &self.output {
+            _ if skip => None,
+            Output::Surface(surface) => match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(f)
                 | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
                 e => return self.failed(&format!("{e:?}"), 0, 0),
-            }
+            },
+            #[cfg(target_arch = "wasm32")]
+            Output::Canvas(_) => None,
         };
+        // Surface: an acquired frame means this present renders and presents. Canvas: no frame
+        // exists; it renders (and draws into the canvas) whenever it does not skip.
+        let render = !skip;
+        // The surface copy is one draw of its own; the direct present's canvas draw is not counted.
+        let surface_draws = usize::from(frame.is_some());
         let target = if candidate_geometry.is_some() || delta_spans.is_some() {
             // A partial plan redraws the committed picture in place (its
             // pixels outside the damage are the ones being kept); a full
@@ -1618,7 +1728,7 @@ impl Renderer {
             None
         };
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut draws = 1usize;
+        let mut draws = surface_draws;
         let mut dirty = Vec::new();
         if let Some(spans) = delta_spans.as_ref() {
             draws += self.committed_geometry.draws.len();
@@ -1728,7 +1838,9 @@ impl Renderer {
             .as_ref()
             .or_else(|| delta_spans.as_ref().map(|_| &self.committed_geometry));
         let mut partial_work = (0u64, 0u64);
-        if let Some(frame) = frame.as_ref() {
+        // The picture the canvas shows after this present: the one just drawn, else the committed one.
+        let shown_picture = target.or(self.committed_picture);
+        if render {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1747,7 +1859,7 @@ impl Renderer {
                             rects.rects(),
                             selection,
                         );
-                        draws = 1 + issued;
+                        draws = surface_draws + issued;
                         partial_work = (issued as u64, pixels);
                     }
                     _ => {
@@ -1781,10 +1893,9 @@ impl Renderer {
                     }
                 }
             }
-            let picture =
-                &self.pictures[target.or(self.committed_picture).expect("picture exists")];
-            let view = frame.texture.create_view(&Default::default());
-            {
+            if let Some(frame) = frame.as_ref() {
+                let picture = &self.pictures[shown_picture.expect("picture exists")];
+                let view = frame.texture.create_view(&Default::default());
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("surface copy"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1844,6 +1955,20 @@ impl Renderer {
         if let Some(frame) = frame {
             self.queue.present(frame);
             self.completed_presents += 1;
+            self.last_blit_pixels = u64::from(self.config.width) * u64::from(self.config.height);
+        } else if render {
+            #[cfg(target_arch = "wasm32")]
+            if let Err(error) = self.present_to_canvas(
+                shown_picture.expect("picture exists"),
+                blit_partial.as_deref(),
+            ) {
+                // Unreachable after construction's checks (it means wgpu-hal changed under us). The
+                // picture may already hold this candidate, so drop the damage state: the next
+                // present redraws and copies whole.
+                self.damage = None;
+                return self.failed(&format!("canvas present: {error}"), 0, draws);
+            }
+            self.completed_presents += 1;
         }
         if let Some(g) = candidate_geometry {
             if incremental {
@@ -1886,6 +2011,27 @@ impl Renderer {
         self.damage_stats.partial_pixels += partial_work.1;
         self.commit_damage(plan, design_size);
         self.result(true, draws, None, 0)
+    }
+    /// Direct present: draw picture `index` into the canvas, only inside `partial` on a preserved
+    /// canvas that still shows the previous picture. Construction checked every fallible step, so
+    /// an error here means wgpu-hal changed under us.
+    #[cfg(target_arch = "wasm32")]
+    fn present_to_canvas(&mut self, index: usize, partial: Option<&[DeviceRect]>) -> Result<(), String> {
+        let Output::Canvas(presenter) = &mut self.output else {
+            return Err("no canvas output".into());
+        };
+        let (width, height) = (self.config.width, self.config.height);
+        let regions =
+            crate::present::blit_regions(presenter.mode, presenter.force_full, partial, width, height);
+        let scissored = regions != [DeviceRect::full(width, height)];
+        let raw = gl_texture(&self.pictures[index]._texture)?;
+        // SAFETY: wgpu-hal's glow context of this device, which is the canvas's context; `raw` is a
+        // picture this renderer keeps alive, sized to the configured surface.
+        let device = unsafe { self.device.as_hal::<wgpu::hal::api::Gles>() }
+            .ok_or("device is not a GLES device")?;
+        unsafe { presenter.present(device.context().lock(), raw, &regions, scissored, width, height) }?;
+        self.last_blit_pixels = crate::present::blit_pixels(&regions);
+        Ok(())
     }
     /// Decide how much of the committed picture this present must redraw (see [`plan_damage`]).
     fn plan_damage(
@@ -2199,7 +2345,31 @@ impl Renderer {
             error,
             damage: self.damage_present.then_some(self.last_damage).flatten(),
             damage_stats: self.damage_present.then_some(self.damage_stats),
+            present: self.present_mode().name(),
+            blit_pixels: self.last_blit_pixels,
         }
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        if let Output::Canvas(presenter) = &mut self.output {
+            // SAFETY: wgpu-hal's glow context of this (still alive) device.
+            if let Some(device) = unsafe { self.device.as_hal::<wgpu::hal::api::Gles>() } {
+                unsafe { presenter.release(device.context().lock()) };
+            }
+        }
+    }
+}
+/// The raw GL texture behind a wgpu texture on the WebGL2 backend.
+#[cfg(target_arch = "wasm32")]
+fn gl_texture(texture: &wgpu::Texture) -> Result<glow::Texture, String> {
+    // SAFETY: only reads the handle; the guard is dropped before returning and the texture is
+    // kept alive by its owner.
+    let hal = unsafe { texture.as_hal::<wgpu::hal::api::Gles>() }.ok_or("not a GLES texture")?;
+    match hal.inner {
+        wgpu::hal::gles::TextureInner::Texture { raw, .. } => Ok(raw),
+        _ => Err("not a GL texture object".into()),
     }
 }
 fn viewport_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {

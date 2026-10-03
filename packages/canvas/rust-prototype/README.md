@@ -38,13 +38,46 @@ cleared picture, exactly as before. On:
 - The picture is redrawn whole on the first present, after a resize, a
   failed validation or a design-size change, when the draw table's shape
   changes, or when the damage covers more than half of the surface.
-- The copy to the surface stays full-screen. wgpu treats every acquired
-  surface texture as uninitialized and clears it before a `LoadOp::Load`, and
-  its WebGL2 present blits the whole swapchain texture to the canvas, so
-  `preserveDrawingBuffer` cannot make a scissored copy keep the rest.
+- In the default `surface` present mode the copy to the canvas stays
+  full-screen: wgpu treats every acquired surface texture as uninitialized
+  and clears it before a `LoadOp::Load`, and its WebGL2 present redraws the
+  whole swapchain texture into the canvas. Only the `preserved` modes below
+  copy just the damage.
 - A present with nothing staged, or whose damage is empty, runs no GPU work
-  and calls no `queue.present`; the canvas keeps the previous frame. Its
-  result is `presented: true` with `damage: "skip"`.
+  and writes nothing to the canvas; the canvas keeps the previous frame. Its
+  result is `presented: true` with `damage: "skip"` and `blitPixels: 0`.
+
+### Present modes
+
+`await RustRenderer.createWithPresent(canvas, mode)` picks how the picture
+reaches the canvas; `create(canvas)` is `"surface"`. An unknown mode is an
+error, and `present_mode` reports the mode in use.
+
+- `"surface"` (default): wgpu's surface. A full-screen copy pass draws the
+  picture into the acquired surface texture, then wgpu-hal's present draws
+  that texture into the canvas. Two full-surface passes per presented frame.
+- `"direct"`: the renderer creates the canvas's WebGL2 context itself
+  (`antialias: false`, every other attribute at the WebGL default, as wgpu's
+  surface does), builds the adapter on it with
+  `wgpu_hal::gles::Adapter::new_external`, and creates no surface. A present
+  draws the committed picture straight into the default framebuffer with
+  wgpu-hal's own sRGB present shader and sampling state: one full-surface
+  pass, the same pixels. The surface format wgpu picks on WebGL2 is
+  `Rgba8UnormSrgb`, so wgpu-hal's present is that shader, not a
+  `blitFramebuffer`, and a framebuffer blit would decode the sRGB picture.
+- `"preserved"`: `direct` with `preserveDrawingBuffer: true`. After a partial
+  redraw the present runs only inside the damage rectangles (scissored); a
+  full redraw, the damage present off, and the first present after creation
+  or a resize copy the whole picture.
+- `"preserved-desync"`: `preserved` plus `desynchronized: true`.
+
+A lost context is recovered as before, by creating a new renderer, whose
+first present is full. Every result carries `present` (the mode) and
+`blitPixels`: the pixels this present wrote to the canvas (0 on a skip or
+failure, the whole surface for `surface`, `direct` and full presents, the
+damage area for a `preserved` partial). In the direct modes `draws` no longer
+counts the surface copy, and `presented: true` means the canvas draw was
+issued. All four modes work with the damage present on or off.
 
 Each result then carries `damage` (`"partial"`, `"full"` or `"skip"`) and
 cumulative `damageStats`. `set_damage_verify(true)` re-derives every partial
@@ -99,7 +132,13 @@ The browser methods are `upload_rgba_batch(bytes)`, `admit_scene(bytes)`,
 `apply_patch(bytes)`, `resize(width,height)`, `await present()`, and `dispose()`,
 plus the optional `set_draw_state_dedupe`, `set_damage_present` and
 `set_damage_verify` switches. `GSW_RUST_DAMAGE_PRESENT=1` runs the
-integration and fault legs with the damage present on.
+integration and fault legs with the damage present on, and
+`GSW_RUST_PRESENT_MODE=<mode>` runs their main Rust steps through
+`createWithPresent`. `GSW_RUST_PRESENT_PARITY=1` adds `direct`,
+`preserved` and `preserved-desync` renderers (damage on, and `direct` and
+`preserved` with it off) to the damage sequence, appends a resize, and
+requires each to match the full-redraw surface renderer byte for byte after
+every step, with `blitPixels` checked per step.
 Admission and presentation return JSON strings for a batch-sized JS/WASM
 boundary. `backend`, `upload_calls`, `upload_bytes`, `texture_creations`, and
 `present_calls` are readable properties. Each present result also includes

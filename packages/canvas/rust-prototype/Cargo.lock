@@ -179,6 +179,7 @@ name = "godot-scene-web-rust-prototype"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "glow",
  "js-sys",
  "serde",
  "serde_json",
