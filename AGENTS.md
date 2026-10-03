@@ -56,6 +56,9 @@ mise exec -- godot --version
 
 Do not run package managers outside the repo root unless a package-specific command requires it.
 
+Use [gsw-wgpu-renderer](skills/gsw-wgpu-renderer/SKILL.md) for implementation and review of the Rust/wgpu
+canvas renderer; use [gsw-perf](skills/gsw-perf/SKILL.md) for performance-harness work and measurements.
+
 ## Commits
 
 Full rules, and the release runbook, in [docs/commit-and-release.md](docs/commit-and-release.md).
