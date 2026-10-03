@@ -99,6 +99,12 @@ impl RustRenderer {
         self.inner.record_wasm_call();
         self.inner.debug_validation_failure_once();
     }
+    /// Capability probe: `apply_patch` accepts a patch `resources` list (a replaced raster-text key). Glue
+    /// built before this returns `undefined` for the property, and such a crate refuses the field.
+    #[wasm_bindgen(getter)]
+    pub fn patch_resources(&self) -> bool {
+        true
+    }
     #[wasm_bindgen(getter)]
     pub fn upload_calls(&self) -> u64 {
         self.inner.record_wasm_call();

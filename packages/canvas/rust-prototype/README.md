@@ -10,7 +10,11 @@ an adapter with fewer than eight sampled texture slots. The instance buffer
 grows by powers of two and is reused. A shape-preserving patch re-emits only
 its changed commands and uploads differing instance ranges. A replaced
 `clipPush` keeps the draw table too: clips live in per-instance clip slots, so
-the instances in its scope get that slot rewritten in place. Blend, texture, or
+the instances in its scope get that slot rewritten in place. So does a
+glyph run that keeps its glyph count, and a raster label whose patch swaps its
+texture key when that is a pure slot rename: the old key is drawn by that label
+alone within its draw, and a fresh build would batch the new key into the same
+slot. The draw then rebinds; nothing else does. Other blend, texture, or
 tile-count changes rebuild the draw table. Bind groups are cached
 until a resource texture changes. Two picture textures and the surface quad
 are reused between presents.
@@ -117,7 +121,8 @@ logical `designWidth,designHeight`, `resources: [{key,width,height}]`, and
 ordered `commands`. Quad transforms and clip coordinates use design space;
 the vertex stage projects through `designWidth,designHeight` into the configured
 surface. The surface must match the scene's `width,height`. Patches remain
-`version: 1` because they carry only command replacements and revisions.
+`version: 1`: they carry command replacements and revisions, plus, only when a
+patch changes it, the scene's next resource list.
 Commands have stable `id` and tagged `kind`; `encodeRustScene` names a command
 its plan does not name `c<draw-list index>`:
 
@@ -131,8 +136,13 @@ its plan does not name `c<draw-list index>`:
   `clipPop`: just `id` and `kind`. Three nested clips are supported.
 
 A patch has `version`, `baseRevision`, new `revision`, and `updates:
-[{id,command}]`, each a full same-kind command replacement. Revisions, shape,
-clip balance and resources are checked atomically. Unsupported command kinds
+[{id,command}]`, each a full same-kind command replacement, and optionally
+`resources: [{key,width,height}]`, the scene's complete resource list after the
+patch. That list may add keys (already uploaded at the declared size) and drop
+keys no command still names, but cannot resize a kept key. The renderer's
+`patch_resources` property is `true` when it accepts the field; an older
+renderer refuses such a patch. Revisions, shape, clip balance and resources are
+checked atomically. Unsupported command kinds
 are counted and refused; they are never silently skipped. Admission refuses
 until every resource is uploaded at the declared dimensions.
 
@@ -157,6 +167,13 @@ serializer composes it with its parent group and preserves any raster text
 carrier inset from full scene admission; this field stays out of patch/1 bytes.
 The returned `changedIndexes` identifies every replaced command, including
 group-expanded descendants, so retained caches can update those entries only.
+A sixth argument, `{ texts: [{ record, carrier }] }`, replaces text commands
+with exactly what a full admission emits for those records and carriers
+(`RUST_RETAINED_TEXT_PATCH` advertises it). The record must keep its command id,
+parent group and method. A raster carrier may name a new key: the patch then
+carries the next resource list in full-admission order, `resourcesChanged` is
+true, and `textUploads` lists the pixels to upload before applying it. Release
+the old key only after the patch presents.
 A clip moves by translation only: an update may replace a `clipPush` whose
 size, radius and outset are unchanged, and a group change carries the clips
 placed through that group along when the group's world moved by a pure

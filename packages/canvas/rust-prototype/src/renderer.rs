@@ -1,6 +1,6 @@
 //! Ordered instanced wgpu executor shared by browser WebGL2 and native harnesses.
 use crate::{
-    contract::{Admission, Blend, Command, Patch, Quad, SCENE_VERSION, Scene, SceneState},
+    contract::{Admission, Blend, Command, Patch, PatchDelta, Quad, SCENE_VERSION, Scene, SceneState},
     damage::{self, DamageSet, DeviceRect, Projection},
     geometry::{self, Draw, Geometry, Instance, ResourceIndexCache, TEXTURE_SLOTS},
     resources::{ResourceChange, ResourceFormat, ResourceStore},
@@ -137,6 +137,143 @@ enum DamagePlan {
         resource_changed: Vec<usize>,
     },
 }
+/// Put back the draw slots a failed present renamed in place (newest first), and drop those draws' cached
+/// bind groups, which were built for the renamed lists.
+fn undo_slot_renames<T>(
+    draws: &mut [Draw],
+    bind_cache: &mut [Option<T>],
+    undo: &mut Vec<(usize, usize, Option<String>)>,
+) {
+    for (draw, slot, previous) in undo.drain(..).rev() {
+        draws[draw].resources[slot] = previous;
+        if let Some(bind) = bind_cache.get_mut(draw) {
+            *bind = None;
+        }
+    }
+}
+/// What [`plan_damage`] reads of the renderer: the committed picture's damage bookkeeping and draw table.
+struct DamageInputs<'a> {
+    enabled: bool,
+    state: Option<&'a DamageState>,
+    committed_picture: Option<usize>,
+    /// Configured surface size in device pixels.
+    surface: (u32, u32),
+    committed: &'a Geometry,
+    dirty_keys: &'a HashSet<String>,
+}
+/// Decide how much of the committed picture this present must redraw.
+/// Pure CPU; reads only committed state (`inputs`) and this present's candidate.
+fn plan_damage(
+    inputs: &DamageInputs,
+    candidate: Option<&Geometry>,
+    candidate_dirty: Option<&[(usize, usize)]>,
+    delta: Option<&[(usize, Vec<Instance>)]>,
+    design_size: Option<(u32, u32)>,
+) -> DamagePlan {
+    if !inputs.enabled {
+        return DamagePlan::Off;
+    }
+    let (Some(state), Some((design_width, design_height))) = (inputs.state, design_size)
+    else {
+        return DamagePlan::Full;
+    };
+    let projection =
+        Projection::new(inputs.surface.0, inputs.surface.1, design_width, design_height);
+    let old = inputs.committed;
+    if inputs.committed_picture != Some(state.picture)
+        || state.projection != projection
+        || state.draws.len() != old.draws.len()
+    {
+        return DamagePlan::Full;
+    }
+    // A delta renames draw slots in the committed table in place before planning, so the committed draws are
+    // the ones this present renders; `state.draws` still holds what the picture was drawn with.
+    let new_draws = candidate
+        .map(|g| g.draws.as_slice())
+        .unwrap_or(old.draws.as_slice());
+    if new_draws.len() != state.draws.len()
+        || candidate.is_some_and(|g| {
+            g.instances.len() != old.instances.len() || g.command_ranges != old.command_ranges
+        })
+        || new_draws.iter().zip(&state.draws).any(|(new, held)| {
+            new.start != held.start || new.count != held.count || new.blend != held.blend
+        })
+    {
+        return DamagePlan::Full;
+    }
+    let surface = projection.full().area();
+    let mut rects = DamageSet::default();
+    let mut selection = state.bounds.clone();
+    let mut touched = Vec::new();
+    // `false` turns the plan into a full redraw: an instance outside the
+    // draw table, or damage already past half the surface (stop diffing).
+    let mut changed = |index: usize, before: &Instance, after: &Instance| -> bool {
+        let Some(draw) = damage::draw_of(new_draws, index) else {
+            return false;
+        };
+        rects.add(damage::instance_bounds(before, &projection));
+        let after_bounds = damage::instance_bounds(after, &projection);
+        rects.add(after_bounds);
+        selection[draw] = selection[draw].union(&after_bounds);
+        if touched.last() != Some(&draw) {
+            touched.push(draw);
+        }
+        rects.area() * 2 <= surface
+    };
+    if let Some(g) = candidate {
+        let Some(ranges) = candidate_dirty else {
+            return DamagePlan::Full;
+        };
+        for &(start, end) in ranges {
+            for index in start..end {
+                if !changed(index, &old.instances[index], &g.instances[index]) {
+                    return DamagePlan::Full;
+                }
+            }
+        }
+    } else if let Some(spans) = delta {
+        for (start, instances) in spans {
+            for (offset, after) in instances.iter().enumerate() {
+                let index = start + offset;
+                let Some(before) = old.instances.get(index) else {
+                    return DamagePlan::Full;
+                };
+                if before != after && !changed(index, before, after) {
+                    return DamagePlan::Full;
+                }
+            }
+        }
+    }
+    // A draw whose texture list or texture contents changed repaints its
+    // whole old footprint; its new footprint is that plus the changed
+    // instances' new bounds, already in `rects`.
+    let mut resource_changed = Vec::new();
+    for (index, (draw, held)) in new_draws.iter().zip(&state.draws).enumerate() {
+        let swapped = draw.resources != held.resources;
+        let rewritten = !inputs.dirty_keys.is_empty()
+            && draw
+                .resources
+                .iter()
+                .flatten()
+                .any(|key| inputs.dirty_keys.contains(key));
+        if swapped || rewritten {
+            rects.add(state.bounds[index]);
+            resource_changed.push(index);
+        }
+    }
+    touched.sort_unstable();
+    touched.dedup();
+    if rects.area() * 2 > surface {
+        return DamagePlan::Full;
+    }
+    DamagePlan::Partial {
+        rects,
+        selection,
+        touched,
+        resource_changed,
+    }
+}
+
 struct TextureEntry {
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -170,12 +307,13 @@ pub struct Renderer {
     /// property the renderer had before `bind_cache` was indexed by draw.
     content_bind_cache: HashMap<Vec<Option<String>>, wgpu::BindGroup>,
     /// Bumped only when a committed scene's `resources` list actually
-    /// changed content from the previous one — see where `self.state =
-    /// staged` is set in `present`. A `Patch` has no `resources` field (see
-    /// `patch_spans_with_cache`'s doc comment), so an apply_patch commit —
-    /// full scene replace or not — never bumps this; only a genuinely
-    /// different resource list from a fresh `admit_scene` does.
+    /// changed content from the previous one: a fresh `admit_scene` with a
+    /// different list (see where `self.state = staged` is set in `present`),
+    /// or a patch that carries a `resources` list (`commit_delta`, which also
+    /// moves `resource_index_cache` to the new epoch in place).
     committed_resource_epoch: u64,
+    /// Draw slots the present in progress renamed in place, with their previous keys (see `failed`).
+    slot_undo: Vec<(usize, usize, Option<String>)>,
     /// `key -> Resource` index for `geometry::patch_spans_with_cache`,
     /// cached under `committed_resource_epoch`.
     resource_index_cache: ResourceIndexCache,
@@ -190,7 +328,7 @@ pub struct Renderer {
     pub state: SceneState,
     staged: Option<SceneState>,
     staged_patch_ids: Option<Vec<String>>,
-    staged_delta: Option<(u64, Vec<(usize, Command)>)>,
+    staged_delta: Option<PatchDelta>,
     admitted_dimensions_epoch: u64,
     pub upload_calls: u64,
     pub upload_bytes: u64,
@@ -396,6 +534,88 @@ fn invalidate_binds_for_resource_changes<T>(
         }
     }
     by_content.retain(|resources, _| !references_changed(resources));
+}
+
+#[cfg(test)]
+mod plan_damage_tests {
+    use super::*;
+    use crate::contract::Scene;
+
+    fn scene(first_key: &str) -> Scene {
+        let quad = |id: &str, key: &str, x: f32| {
+            serde_json::json!({"id":id,"kind":"rasterText","resource":key,"m":[1,0,0,1,x,0],"w":10,"h":8,
+                "src":[0,0,10,8],"color":[1,1,1,1],"blend":"mix","flipH":false,"flipV":false,"colorMatrix":null})
+        };
+        serde_json::from_value(serde_json::json!({"version":2,"revision":1,"width":100,"height":100,
+            "designWidth":100,"designHeight":100,
+            "resources":[{"key":first_key,"width":10,"height":8},{"key":"other","width":10,"height":8}],
+            "commands":[quad("clock", first_key, 10.0), quad("name", "other", 60.0)]}))
+        .unwrap()
+    }
+
+    /// An equal-size raster swap keeps every instance byte; only the draw's slot names a new key. Production
+    /// renames the committed table in place before planning while `DamageState.draws` still holds the keys the
+    /// picture was drawn with; the plan must damage that draw's footprint (its old bounds), not skip the present.
+    #[test]
+    fn an_equal_size_slot_rename_damages_the_renamed_draw() {
+        let old = geometry::build(&scene("text:04:00"));
+        let projection = Projection::new(100, 100, 100, 100);
+        let state = DamageState {
+            picture: 0,
+            projection,
+            draws: old.draws.clone(),
+            bounds: old
+                .draws
+                .iter()
+                .map(|draw| damage::draw_bounds(draw, &old.instances, &projection))
+                .collect(),
+        };
+        let dirty = HashSet::new();
+        // The replaced command's span, byte-identical to what it was.
+        let spans = vec![(0usize, vec![old.instances[0]])];
+        let plan_for = |committed: &Geometry| {
+            plan_damage(
+                &DamageInputs {
+                    enabled: true,
+                    state: Some(&state),
+                    committed_picture: Some(0),
+                    surface: (100, 100),
+                    committed,
+                    dirty_keys: &dirty,
+                },
+                None,
+                None,
+                Some(&spans),
+                Some((100, 100)),
+            )
+        };
+        assert!(matches!(&plan_for(&old), DamagePlan::Partial { rects, .. } if rects.is_empty()));
+        let mut renamed = old.clone();
+        renamed.draws[0].resources[0] = Some("text:04:01".into());
+        let DamagePlan::Partial { rects, resource_changed, .. } = plan_for(&renamed) else {
+            panic!("an equal-size swap should be a partial redraw");
+        };
+        assert_eq!(resource_changed, vec![0]);
+        assert!(rects.covers(&state.bounds[0]));
+        assert_eq!(rects.area(), state.bounds[0].area());
+    }
+
+    /// A failed present restores the slots it renamed in place, newest first, and drops those draws' binds.
+    #[test]
+    fn a_failed_present_restores_renamed_slots() {
+        let mut draws = geometry::build(&scene("text:04:00")).draws;
+        let original = draws.clone();
+        let mut binds = vec![Some(1u32); draws.len()];
+        let mut undo = Vec::new();
+        for key in ["text:04:01", "text:04:02"] {
+            let previous = std::mem::replace(&mut draws[0].resources[0], Some(key.into()));
+            undo.push((0, 0, previous));
+        }
+        undo_slot_renames(&mut draws, &mut binds, &mut undo);
+        assert_eq!(draws, original);
+        assert!(undo.is_empty());
+        assert_eq!(binds[0], None);
+    }
 }
 
 #[cfg(test)]
@@ -782,6 +1002,7 @@ impl Renderer {
             bind_cache: Vec::new(),
             content_bind_cache: HashMap::new(),
             committed_resource_epoch: 0,
+            slot_undo: Vec::new(),
             resource_index_cache: None,
             white,
             pictures,
@@ -1055,7 +1276,7 @@ impl Renderer {
         self.staged_patch_ids = None;
         self.staged_delta = None;
         let mut candidate = SceneState::default();
-        let result = candidate.admit(bytes, &self.resources.ready());
+        let result = candidate.admit(bytes, &self.resources);
         if result.accepted {
             let scene = candidate.scene().expect("accepted scene");
             if scene.commands.iter().any(|command| match command {
@@ -1145,14 +1366,16 @@ impl Renderer {
             && self.staged_delta.is_none()
             && self.state.scene().is_some()
             && patch.updates.iter().all(|u| {
-                u.command.quad().is_some() || matches!(u.command, Command::ClipPush { .. })
+                u.command.quad().is_some()
+                    || matches!(u.command, Command::ClipPush { .. } | Command::GlyphRun { .. })
             })
         {
-            let ready = (self.resources.dimensions_epoch != self.admitted_dimensions_epoch)
-                .then(|| self.resources.ready());
-            match self.state.preflight_patch(&patch, ready.as_ref()) {
-                Ok(updates) => {
-                    self.staged_delta = Some((patch.revision, updates));
+            // A patch that installs a new resource list always checks the keys it adds against what is
+            // resident; the rest only when residency changed size since the last admission.
+            let check_resident = self.resources.dimensions_epoch != self.admitted_dimensions_epoch;
+            match self.state.preflight_delta(&patch, &self.resources, check_resident) {
+                Ok(delta) => {
+                    self.staged_delta = Some(delta);
                     return Admission {
                         accepted: true,
                         revision: Some(patch.revision),
@@ -1188,22 +1411,12 @@ impl Renderer {
         {
             candidate.set_scene(scene.clone());
         }
-        if let Some((revision, updates)) = self.staged_delta.take() {
-            let scene = candidate.scene().expect("delta base");
-            let materialized = Scene {
-                revision,
-                commands: {
-                    let mut commands = scene.commands.clone();
-                    for (index, command) in updates {
-                        commands[index] = command;
-                    }
-                    commands
-                },
-                ..scene.clone()
-            };
+        if let Some(delta) = self.staged_delta.take() {
+            let mut materialized = candidate.scene().expect("delta base").clone();
+            delta.apply_into(&mut materialized);
             candidate.set_scene(materialized);
         }
-        let result = candidate.patch_parsed(patch, &self.resources.ready());
+        let result = candidate.patch_parsed(patch, &self.resources);
         if result.accepted {
             let scene = candidate.scene().expect("accepted patch");
             if scene.width != self.config.width || scene.height != self.config.height {
@@ -1250,13 +1463,18 @@ impl Renderer {
             if scene.width != self.config.width || scene.height != self.config.height {
                 return self.failed("scene surface does not match configured surface", 0, 0);
             }
+            let delta_resources = self
+                .staged_delta
+                .as_ref()
+                .and_then(|delta| delta.resources.as_deref());
             let pending = if self.staged_delta.is_some()
+                && delta_resources.is_none()
                 && self.resources.dimensions_epoch == self.admitted_dimensions_epoch
             {
                 0
             } else {
-                scene
-                    .resources
+                delta_resources
+                    .unwrap_or(&scene.resources)
                     .iter()
                     .filter(|r| {
                         !self.textures.contains_key(&r.key)
@@ -1291,19 +1509,24 @@ impl Renderer {
         let design_size = candidate_scene.map(|scene| (scene.design_width, scene.design_height));
         let resource_epoch = self.committed_resource_epoch;
         let mut delta_spans = None;
-        if let (Some((_, updates)), Some(scene)) =
-            (self.staged_delta.as_ref(), self.state.scene())
-        {
+        // Draw slots a resource-replacing patch points at its new keys (see `patch_spans_renaming`).
+        let mut slot_renames: Vec<geometry::SlotRename> = Vec::new();
+        if let (Some(delta), Some(scene)) = (self.staged_delta.as_ref(), self.state.scene()) {
             let committed_geometry = &self.committed_geometry;
             let state = &self.state;
-            delta_spans = geometry::patch_spans_with_cache(
+            delta_spans = geometry::patch_spans_renaming(
                 committed_geometry,
                 scene,
-                updates,
+                &delta.updates,
                 |index| state.clips_at(index).copied(),
                 &mut self.resource_index_cache,
                 resource_epoch,
-            );
+                delta.resources.as_deref(),
+            )
+            .map(|patch| {
+                slot_renames = patch.renames;
+                patch.spans
+            });
         }
         let mut incremental = delta_spans.is_some();
         let candidate_geometry = self.staged.as_ref().and_then(|s| s.scene()).map(|scene| {
@@ -1319,12 +1542,8 @@ impl Renderer {
             }
         });
         let fallback_geometry = if self.staged_delta.is_some() && delta_spans.is_none() {
-            let scene = self.state.scene().expect("delta base");
-            let mut next = scene.clone();
-            for (index, command) in &self.staged_delta.as_ref().expect("delta").1 {
-                next.commands[*index] = command.clone();
-            }
-            next.revision = self.staged_delta.as_ref().expect("delta").0;
+            let mut next = self.state.scene().expect("delta base").clone();
+            self.staged_delta.as_ref().expect("delta").apply_to(&mut next);
             Some(geometry::build(&next))
         } else {
             None
@@ -1341,6 +1560,19 @@ impl Renderer {
                 && (self.damage_present || candidate_same_layout == Some(true)))
                 .then(|| geometry::dirty_ranges(&self.committed_geometry.instances, &g.instances))
         });
+        // A slot rename keeps every draw's place and range; only the renamed draws bind differently, so
+        // their cached bind groups are dropped and the rest stay. The committed draws are renamed in place
+        // (no table copy); `slot_undo` puts them back if this present fails (`failed`).
+        for rename in slot_renames.drain(..) {
+            let slot = &mut self.committed_geometry.draws[rename.draw].resources[rename.slot];
+            let previous = std::mem::replace(slot, Some(rename.key));
+            self.slot_undo.push((rename.draw, rename.slot, previous));
+            if let Some(bind) = self.bind_cache.get_mut(rename.draw) {
+                *bind = None;
+            }
+        }
+        // The damage plan sees the draw table this present renders, renames included: a renamed slot can
+        // change a draw's pixels while every instance byte stays equal (an equal-size text swap).
         let mut plan = self.plan_damage(
             candidate_geometry.as_ref(),
             candidate_dirty.as_deref(),
@@ -1349,7 +1581,11 @@ impl Renderer {
         );
         if self.damage_verify
             && matches!(plan, DamagePlan::Partial { .. })
-            && !self.verify_damage_plan(&plan, candidate_geometry.as_ref(), delta_spans.as_deref())
+            && !self.verify_damage_plan(
+                &plan,
+                candidate_geometry.as_ref(),
+                delta_spans.as_deref(),
+            )
         {
             self.damage_stats.verify_mismatches += 1;
             plan = DamagePlan::Full;
@@ -1603,6 +1839,8 @@ impl Renderer {
             self.damage = None;
             return self.failed(&format!("GPU validation: {error}"), 0, draws);
         }
+        // Past validation this present commits: whatever it renamed in place stays renamed.
+        self.slot_undo.clear();
         if let Some(frame) = frame {
             self.queue.present(frame);
             self.completed_presents += 1;
@@ -1617,14 +1855,12 @@ impl Renderer {
             self.committed_picture = target;
             if let Some(staged) = self.staged.take() {
                 // This branch commits on both an `admit_scene` and an
-                // `apply_patch` candidate — a `Patch` has no `resources`
-                // field (see `patch_spans_with_cache`'s doc comment), so an
-                // apply_patch commit (through `patch_instances` or the
-                // general path) always carries the previous resources list
-                // forward byte-for-byte. Compare rather than assume: only a
-                // fresh `admit_scene` with a genuinely different list should
-                // invalidate `resource_index_cache`, so a run of patches in
-                // between — the common case — keeps reusing it.
+                // `apply_patch` candidate. Most patches carry the previous
+                // resources list forward byte-for-byte; a fresh admission or
+                // a patch with a `resources` list may not. Compare rather
+                // than assume: only a genuinely different list invalidates
+                // `resource_index_cache`, so a run of ordinary patches — the
+                // common case — keeps reusing it.
                 let resources_changed = staged.scene().map(|s| &s.resources)
                     != self.state.scene().map(|s| &s.resources);
                 self.state = staged;
@@ -1632,8 +1868,8 @@ impl Renderer {
                 if resources_changed {
                     self.committed_resource_epoch += 1;
                 }
-            } else if let Some((revision, updates)) = self.staged_delta.take() {
-                self.state.commit_updates(revision, updates);
+            } else if let Some(delta) = self.staged_delta.take() {
+                self.commit_delta(delta);
             }
             self.staged_patch_ids = None;
         } else if let Some(spans) = delta_spans.take() {
@@ -1641,8 +1877,8 @@ impl Renderer {
                 let end = start + instances.len();
                 self.committed_geometry.instances[start..end].copy_from_slice(&instances);
             }
-            let (revision, updates) = self.staged_delta.take().expect("delta exists");
-            self.state.commit_updates(revision, updates);
+            let delta = self.staged_delta.take().expect("delta exists");
+            self.commit_delta(delta);
             self.committed_picture = target;
             self.incremental_patches += 1;
         }
@@ -1651,8 +1887,7 @@ impl Renderer {
         self.commit_damage(plan, design_size);
         self.result(true, draws, None, 0)
     }
-    /// Decide how much of the committed picture this present must redraw.
-    /// Pure CPU; reads only committed state and this present's candidate.
+    /// Decide how much of the committed picture this present must redraw (see [`plan_damage`]).
     fn plan_damage(
         &self,
         candidate: Option<&Geometry>,
@@ -1660,104 +1895,20 @@ impl Renderer {
         delta: Option<&[(usize, Vec<Instance>)]>,
         design_size: Option<(u32, u32)>,
     ) -> DamagePlan {
-        if !self.damage_present {
-            return DamagePlan::Off;
-        }
-        let (Some(state), Some((design_width, design_height))) = (self.damage.as_ref(), design_size)
-        else {
-            return DamagePlan::Full;
-        };
-        let projection =
-            Projection::new(self.config.width, self.config.height, design_width, design_height);
-        let old = &self.committed_geometry;
-        if self.committed_picture != Some(state.picture)
-            || state.projection != projection
-            || state.draws.len() != old.draws.len()
-        {
-            return DamagePlan::Full;
-        }
-        let new_draws = candidate.map_or(old.draws.as_slice(), |g| g.draws.as_slice());
-        if new_draws.len() != state.draws.len()
-            || candidate.is_some_and(|g| {
-                g.instances.len() != old.instances.len() || g.command_ranges != old.command_ranges
-            })
-            || new_draws.iter().zip(&state.draws).any(|(new, held)| {
-                new.start != held.start || new.count != held.count || new.blend != held.blend
-            })
-        {
-            return DamagePlan::Full;
-        }
-        let surface = projection.full().area();
-        let mut rects = DamageSet::default();
-        let mut selection = state.bounds.clone();
-        let mut touched = Vec::new();
-        // `false` turns the plan into a full redraw: an instance outside the
-        // draw table, or damage already past half the surface (stop diffing).
-        let mut changed = |index: usize, before: &Instance, after: &Instance| -> bool {
-            let Some(draw) = damage::draw_of(new_draws, index) else {
-                return false;
-            };
-            rects.add(damage::instance_bounds(before, &projection));
-            let after_bounds = damage::instance_bounds(after, &projection);
-            rects.add(after_bounds);
-            selection[draw] = selection[draw].union(&after_bounds);
-            if touched.last() != Some(&draw) {
-                touched.push(draw);
-            }
-            rects.area() * 2 <= surface
-        };
-        if let Some(g) = candidate {
-            let Some(ranges) = candidate_dirty else {
-                return DamagePlan::Full;
-            };
-            for &(start, end) in ranges {
-                for index in start..end {
-                    if !changed(index, &old.instances[index], &g.instances[index]) {
-                        return DamagePlan::Full;
-                    }
-                }
-            }
-        } else if let Some(spans) = delta {
-            for (start, instances) in spans {
-                for (offset, after) in instances.iter().enumerate() {
-                    let index = start + offset;
-                    let Some(before) = old.instances.get(index) else {
-                        return DamagePlan::Full;
-                    };
-                    if before != after && !changed(index, before, after) {
-                        return DamagePlan::Full;
-                    }
-                }
-            }
-        }
-        // A draw whose texture list or texture contents changed repaints its
-        // whole old footprint; its new footprint is that plus the changed
-        // instances' new bounds, already in `rects`.
-        let mut resource_changed = Vec::new();
-        for (index, (draw, held)) in new_draws.iter().zip(&state.draws).enumerate() {
-            let swapped = draw.resources != held.resources;
-            let rewritten = !self.damage_dirty_keys.is_empty()
-                && draw
-                    .resources
-                    .iter()
-                    .flatten()
-                    .any(|key| self.damage_dirty_keys.contains(key));
-            if swapped || rewritten {
-                rects.add(state.bounds[index]);
-                resource_changed.push(index);
-            }
-        }
-        touched.sort_unstable();
-        touched.dedup();
-        if rects.area() * 2 > surface {
-            return DamagePlan::Full;
-        }
-        DamagePlan::Partial {
-            rects,
-            selection,
-            touched,
-            resource_changed,
-        }
+        plan_damage(
+            &DamageInputs {
+                enabled: self.damage_present,
+                state: self.damage.as_ref(),
+                committed_picture: self.committed_picture,
+                surface: (self.config.width, self.config.height),
+                committed: &self.committed_geometry,
+                dirty_keys: &self.damage_dirty_keys,
+            },
+            candidate,
+            candidate_dirty,
+            delta,
+            design_size,
+        )
     }
     /// Independent brute-force check of a partial plan: recompute every
     /// bound from the full old and new instance arrays rather than from the
@@ -1791,7 +1942,9 @@ impl Renderer {
             }
             (None, None) => old.instances.clone(),
         };
-        let new_draws = candidate.map_or(old.draws.as_slice(), |g| g.draws.as_slice());
+        let new_draws = candidate
+            .map(|g| g.draws.as_slice())
+            .unwrap_or(old.draws.as_slice());
         let old_bounds: Vec<_> = state
             .draws
             .iter()
@@ -1970,6 +2123,28 @@ impl Renderer {
             }
         }
     }
+    /// Commit a presented patch delta. A replaced resource list is admitted like a fresh scene's: the
+    /// resource index cache moves to a new epoch and the list was checked against what is resident.
+    fn commit_delta(&mut self, delta: PatchDelta) {
+        let resources_changed = delta.resources.as_ref().is_some_and(|next| {
+            self.state.scene().is_none_or(|scene| &scene.resources != next)
+        });
+        self.state.commit_delta(delta);
+        if resources_changed {
+            let from = self.committed_resource_epoch;
+            self.committed_resource_epoch += 1;
+            self.admitted_dimensions_epoch = self.resources.dimensions_epoch;
+            // A text tick swaps one key: move the index along instead of rebuilding it next tick.
+            if let Some(scene) = self.state.scene() {
+                geometry::update_resource_index(
+                    &mut self.resource_index_cache,
+                    from,
+                    self.committed_resource_epoch,
+                    &scene.resources,
+                );
+            }
+        }
+    }
     fn restore_instances(&mut self, dirty: &[(usize, usize)]) {
         if let Some(buffer) = &self.instance_buffer {
             for &(start, end) in dirty {
@@ -1988,6 +2163,8 @@ impl Renderer {
         }
     }
     fn failed(&mut self, error: &str, pending: usize, draws: usize) -> PresentResult {
+        // A present that renamed draw slots in place and then failed restores the committed table.
+        undo_slot_renames(&mut self.committed_geometry.draws, &mut self.bind_cache, &mut self.slot_undo);
         self.staged = None;
         self.staged_patch_ids = None;
         self.staged_delta = None;

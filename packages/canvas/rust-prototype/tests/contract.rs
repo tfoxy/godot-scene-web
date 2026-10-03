@@ -28,7 +28,8 @@ fn resource_upload_is_transactional_and_reports_only_changes() {
             .collect::<Vec<_>>(),
         vec!["red"]
     );
-    assert_eq!(r.dimensions_epoch, initial_epoch + 1);
+    // A new key cannot affect any committed scene: the dimensions epoch stays.
+    assert_eq!(r.dimensions_epoch, initial_epoch);
     assert!(
         r.upload_batch(&bundle([255, 0, 0, 255]))
             .unwrap()
@@ -39,6 +40,15 @@ fn resource_upload_is_transactional_and_reports_only_changes() {
     assert!(r.upload_batch(&invalid).is_err());
     assert_eq!(r.entries["red"].width, 1);
     r.upload_batch(&bundle([0, 0, 0, 255])).unwrap();
+    assert_eq!(r.dimensions_epoch, initial_epoch);
+    // Resizing a resident key moves it.
+    let mut resized = b"RSR1".to_vec();
+    for n in [1u32, 3, 2, 1, 8] {
+        resized.extend(n.to_le_bytes())
+    }
+    resized.extend(b"red");
+    resized.extend([0u8; 8]);
+    r.upload_batch(&resized).unwrap();
     assert_eq!(r.dimensions_epoch, initial_epoch + 1);
 }
 #[test]
@@ -127,7 +137,7 @@ fn negative_nine_patch_source_refuses_full_and_patch_without_losing_scene() {
     let parsed = serde_json::from_value(patch).unwrap();
     assert_eq!(
         state
-            .preflight_patch(&parsed, Some(&resources.ready()))
+            .preflight_delta(&parsed, &resources, true)
             .unwrap_err(),
         "invalid quad"
     );
@@ -242,7 +252,8 @@ fn preflight_and_span_patch_preserve_committed_scene_until_commit() {
     )
     .unwrap();
     let ready = resources.ready();
-    let updates = state.preflight_patch(&patch, Some(&ready)).unwrap();
+    let delta = state.preflight_delta(&patch, &ready, true).unwrap();
+    let updates = delta.updates.clone();
     let spans = patch_spans(&before, state.scene().unwrap(), &updates, |i| {
         state.clips_at(i).copied()
     })
@@ -254,9 +265,9 @@ fn preflight_and_span_patch_preserve_committed_scene_until_commit() {
     assert_eq!(before.instances[0].origin_axis_x[0], 0.0);
     let mut bad = patch;
     bad.updates[0].command = serde_json::from_value(json!({"id":"q","kind":"clipPop"})).unwrap();
-    assert!(state.preflight_patch(&bad, Some(&ready)).is_err());
+    assert!(state.preflight_delta(&bad, &ready, true).is_err());
     assert_eq!(state.scene().unwrap().revision, 1);
-    state.commit_updates(2, updates);
+    state.commit_delta(delta);
     assert_eq!(state.scene().unwrap().revision, 2);
 }
 
@@ -341,7 +352,8 @@ fn clip_replacement_patches_scope_instances_in_place() {
     ]}))
     .unwrap();
     let ready = resources.ready();
-    let updates = state.preflight_patch(&patch, Some(&ready)).unwrap();
+    let delta = state.preflight_delta(&patch, &ready, true).unwrap();
+    let updates = delta.updates.clone();
     let spans = patch_spans(&before, state.scene().unwrap(), &updates, |i| state.clips_at(i).copied()).unwrap();
     let mut patched = before.clone();
     for (start, instances) in &spans {
@@ -364,7 +376,7 @@ fn clip_replacement_patches_scope_instances_in_place() {
     assert_eq!(patched.instances[q4], before.instances[q4]);
     // The committed scene changes only at commit, and its clip index stays valid.
     assert_eq!(state.scene().unwrap().revision, 1);
-    state.commit_updates(2, updates);
+    state.commit_delta(delta);
     assert_eq!(state.clips_at(3).copied(), Some([Some(0), Some(2), None]));
     assert_eq!(build(state.scene().unwrap()).instances, expected.instances);
 }
@@ -516,7 +528,8 @@ fn resource_batch_stages_repeated_keys_without_changing_untouched_entries() {
     assert!(matches!(changes[2], ResourceChange::Subrect { .. }));
     assert_eq!(store.ready()["atlas"], (2, 2));
     assert_eq!(store.entries["untouched"], untouched);
-    assert_eq!(store.dimensions_epoch, epoch + 2);
+    // The release moves the epoch; re-adding the key under the same batch is a new key and does not.
+    assert_eq!(store.dimensions_epoch, epoch + 1);
 }
 #[test]
 fn glyph_run_expands_shadow_before_fill_and_rejects_bad_tiles() {
@@ -625,7 +638,8 @@ fn clip_replacement_rewrites_glyph_instances_in_its_scope() {
     let patch: Patch = serde_json::from_value(json!({"version":1,"baseRevision":1,"revision":2,"updates":[
         {"id":"clip","command":{"id":"clip","kind":"clipPush","rect":[6,-2,40,40],"radius":2,"outset":0}}]}))
     .unwrap();
-    let updates = state.preflight_patch(&patch, Some(&ready)).unwrap();
+    let delta = state.preflight_delta(&patch, &ready, true).unwrap();
+    let updates = delta.updates.clone();
     let spans = patch_spans(&before, state.scene().unwrap(), &updates, |i| state.clips_at(i).copied()).unwrap();
     let mut patched = before.clone();
     for (start, instances) in &spans {

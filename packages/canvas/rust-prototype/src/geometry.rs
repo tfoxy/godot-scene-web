@@ -337,10 +337,11 @@ pub fn dirty_ranges(old: &[Instance], new: &[Instance]) -> Vec<(usize, usize)> {
 }
 
 /// A `scene.resources` key -> `Resource` index, cached across calls as long as
-/// `epoch` still matches. `Patch` carries no `resources` field (see
-/// `contract::Patch`), so the committed scene's resource list only ever
-/// changes when a full scene is admitted; a caller that bumps `epoch` solely
-/// on that event can reuse this map for every patch in between.
+/// `epoch` still matches. The committed scene's resource list changes only
+/// on a fresh admission or a patch that carries a `resources` list (a
+/// replaced raster-text key); the caller bumps `epoch` on exactly those
+/// commits, and for a patch moves the map to the new epoch in place with
+/// [`update_resource_index`] instead of rebuilding it.
 ///
 /// Values are `(width, height)`, not a cloned `Resource`: the key string is
 /// already owned once as the map key, and a `Resource` also owns a copy of
@@ -350,6 +351,26 @@ pub fn dirty_ranges(old: &[Instance], new: &[Instance]) -> Vec<(usize, usize)> {
 /// which rebuilds the `Resource` it needs from the key it's already
 /// holding plus these two `Copy` fields).
 pub type ResourceIndexCache = Option<(u64, HashMap<String, (u32, u32)>)>;
+
+/// Move a cache built under `from` to `to` for the resource list `next`, which differs from the cached one by
+/// the few keys a resource-replacing patch adds or drops: drop the keys `next` no longer lists, add the new ones.
+/// A cache built under any other epoch is left alone (stale, so the next lookup rebuilds it whole).
+pub fn update_resource_index(cache: &mut ResourceIndexCache, from: u64, to: u64, next: &[Resource]) {
+    let Some((epoch, map)) = cache.as_mut() else {
+        return;
+    };
+    if *epoch != from {
+        return;
+    }
+    let listed: std::collections::HashSet<&str> = next.iter().map(|r| r.key.as_str()).collect();
+    map.retain(|key, _| listed.contains(key.as_str()));
+    for r in next {
+        if !map.contains_key(&r.key) {
+            map.insert(r.key.clone(), (r.width, r.height));
+        }
+    }
+    *epoch = to;
+}
 
 /// Replace only commands named by a validated patch. A changed tile count,
 /// texture, blend, or clip returns None so the caller rebuilds the draw table.
@@ -444,6 +465,49 @@ pub fn patch_spans_with_cache(
     resource_index_cache: &mut ResourceIndexCache,
     resource_epoch: u64,
 ) -> Option<Vec<(usize, Vec<Instance>)>> {
+    patch_spans_renaming(
+        old,
+        scene,
+        updates,
+        clips_at,
+        resource_index_cache,
+        resource_epoch,
+        None,
+    )
+    .map(|patch| patch.spans)
+}
+
+/// One draw's texture slot that a patch points at a different resource. The draw keeps its place, its
+/// instance range and every other slot; only the bind group for `draw` changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotRename {
+    pub draw: usize,
+    pub slot: usize,
+    pub key: String,
+}
+
+/// Changed instance spans, plus the draw slots a resource-replacing patch renames.
+#[derive(Clone, Debug, Default)]
+pub struct SpanPatch {
+    pub spans: Vec<(usize, Vec<Instance>)>,
+    pub renames: Vec<SlotRename>,
+}
+
+/// [`patch_spans_with_cache`] for a patch that may also replace the resource list (`next_resources`). A
+/// command may then name a different resource than before when that is a pure slot rename: the old key is
+/// drawn by this command alone within its draw, and the new key is in neither that draw nor a neighbour a
+/// fresh build would merge into. Under exactly those conditions [`build`] of the patched scene produces the
+/// same draw table with that one slot renamed, so the patch keeps the table and the caller rebinds one draw.
+/// A glyph run may change its glyphs (not their count) the same way a quad changes its rect.
+pub fn patch_spans_renaming(
+    old: &Geometry,
+    scene: &Scene,
+    updates: &[(usize, Command)],
+    clips_at: impl Fn(usize) -> Option<[Option<usize>; 3]>,
+    resource_index_cache: &mut ResourceIndexCache,
+    resource_epoch: u64,
+    next_resources: Option<&[Resource]>,
+) -> Option<SpanPatch> {
     if old.command_ranges.len() != scene.commands.len() {
         return None;
     }
@@ -466,21 +530,37 @@ pub fn patch_spans_with_cache(
     // building the key -> resource index unconditionally allocated a
     // HashMap on every call even when no update ever looked it up. Build it
     // lazily, on the first update that actually carries a resource — and
-    // only when the cached copy is missing or stale, since a `Patch` never
-    // changes `scene.resources` (only a fresh `admit_scene` does).
+    // only when the cached copy is missing or stale. A patch that carries a
+    // resource list (`next_resources`) is looked up in that list instead.
     let mut spans = Vec::with_capacity(updates.len());
+    let mut renames: Vec<SlotRename> = Vec::new();
+    // Draw resource lists as this patch's renames leave them, so two renames in one draw see each other.
+    let mut renamed_draws: HashMap<usize, Vec<Option<String>>> = HashMap::new();
     for (index, command) in updates {
         if matches!(command, Command::ClipPush { .. }) {
             continue;
         }
         let before = scene.commands.get(*index)?;
-        let (Some(old_quad), Some(quad)) = (before.quad(), command.quad()) else {
+        if before.kind() != command.kind() {
             return None;
+        }
+        let (old_key, new_key) = match (before, command) {
+            (
+                Command::GlyphRun { atlas: a, .. },
+                Command::GlyphRun { atlas: b, .. },
+            ) => (Some(a.as_str()), Some(b.as_str())),
+            _ => {
+                let (Some(old_quad), Some(quad)) = (before.quad(), command.quad()) else {
+                    return None;
+                };
+                if old_quad.blend != quad.blend {
+                    return None;
+                }
+                (old_quad.resource.as_deref(), quad.resource.as_deref())
+            }
         };
-        if before.kind() != command.kind()
-            || old_quad.resource != quad.resource
-            || old_quad.blend != quad.blend
-        {
+        let renamed = old_key != new_key;
+        if renamed && (next_resources.is_none() || old_key.is_none() || new_key.is_none()) {
             return None;
         }
         let mut commands = Vec::new();
@@ -488,20 +568,26 @@ pub fn patch_spans_with_cache(
             commands.push(clip_command(clip)?.clone());
         }
         commands.push(command.clone());
-        let resources = if let Some(key) = quad.resource.as_deref() {
-            let fresh = resource_index_cache
-                .as_ref()
-                .is_none_or(|(epoch, _)| *epoch != resource_epoch);
-            if fresh {
-                let map = scene
-                    .resources
-                    .iter()
-                    .map(|r| (r.key.clone(), (r.width, r.height)))
-                    .collect();
-                *resource_index_cache = Some((resource_epoch, map));
-            }
-            let (_, map) = resource_index_cache.as_ref().expect("just populated above");
-            let &(width, height) = map.get(key)?;
+        let resources = if let Some(key) = new_key {
+            let (width, height) = if let Some(list) = next_resources {
+                list.iter()
+                    .find(|r| r.key == key)
+                    .map(|r| (r.width, r.height))?
+            } else {
+                let fresh = resource_index_cache
+                    .as_ref()
+                    .is_none_or(|(epoch, _)| *epoch != resource_epoch);
+                if fresh {
+                    let map = scene
+                        .resources
+                        .iter()
+                        .map(|r| (r.key.clone(), (r.width, r.height)))
+                        .collect();
+                    *resource_index_cache = Some((resource_epoch, map));
+                }
+                let (_, map) = resource_index_cache.as_ref().expect("just populated above");
+                *map.get(key)?
+            };
             vec![Resource {
                 key: key.to_string(),
                 width,
@@ -525,6 +611,16 @@ pub fn patch_spans_with_cache(
         if replacement.len() != (end - start) as usize {
             return None;
         }
+        if renamed {
+            let rename = slot_rename(
+                old,
+                &mut renamed_draws,
+                (start as usize, end as usize),
+                old_key?,
+                new_key?,
+            )?;
+            renames.push(rename);
+        }
         for (new, previous) in replacement
             .iter_mut()
             .zip(&old.instances[start as usize..end as usize])
@@ -534,8 +630,9 @@ pub fn patch_spans_with_cache(
         spans.push((start as usize, replacement));
     }
     if clip_updates.is_empty() {
-        return Some(spans);
+        return Some(SpanPatch { spans, renames });
     }
+
     // Every other drawing inside a replaced clip's scope (nested scopes
     // included) keeps its instances and takes the new clip in its slot.
     let replaced: std::collections::HashSet<usize> =
@@ -578,7 +675,83 @@ pub fn patch_spans_with_cache(
         }
         spans.push((start as usize, instances));
     }
-    Some(spans)
+    Some(SpanPatch { spans, renames })
+}
+
+/// The slot rename that lets the instances `range` (one command) draw `to` instead of `from` with the draw
+/// table unchanged, or None when a fresh build would lay the draws out differently.
+fn slot_rename(
+    old: &Geometry,
+    renamed_draws: &mut HashMap<usize, Vec<Option<String>>>,
+    range: (usize, usize),
+    from: &str,
+    to: &str,
+) -> Option<SlotRename> {
+    let (start, end) = range;
+    if start >= end {
+        return None;
+    }
+    let draw_index = old
+        .draws
+        .partition_point(|draw| (draw.start + draw.count) as usize <= start);
+    let draw = old.draws.get(draw_index)?;
+    let draw_end = (draw.start + draw.count) as usize;
+    if (draw.start as usize) > start || end > draw_end {
+        return None;
+    }
+    let resources = renamed_draws
+        .entry(draw_index)
+        .or_insert_with(|| draw.resources.clone());
+    let slot = resources
+        .iter()
+        .position(|r| r.as_deref() == Some(from))?;
+    if resources.iter().any(|r| r.as_deref() == Some(to)) {
+        return None;
+    }
+    let slot_value = slot as f32;
+    // The old key is this command's alone within the draw (it was first used here, so the slot order a
+    // fresh build gives the new key is the same).
+    for (i, instance) in old.instances[draw.start as usize..draw_end].iter().enumerate() {
+        let inside = (start..end).contains(&(draw.start as usize + i));
+        if (instance.uv_size_slot[2] == slot_value) != inside {
+            return None;
+        }
+    }
+    let full = resources.len() == TEXTURE_SLOTS;
+    // A fresh build tests each instance's key against the draw it would join. If this command opened its
+    // draw, the new key must not be one the previous draw (same blend) already holds; if this draw is full,
+    // the next draw's opening instance must not be the new key, or a fresh build would merge them.
+    if draw.start as usize == start && draw_index > 0 {
+        let previous = &old.draws[draw_index - 1];
+        let previous_resources = renamed_draws
+            .get(&(draw_index - 1))
+            .unwrap_or(&previous.resources);
+        if previous.blend == draw.blend
+            && previous_resources.iter().any(|r| r.as_deref() == Some(to))
+        {
+            return None;
+        }
+    }
+    if full {
+        if let Some(next) = old.draws.get(draw_index + 1) {
+            if next.blend == draw.blend && next.count > 0 {
+                let opening = old.instances.get(next.start as usize)?;
+                let next_resources = renamed_draws
+                    .get(&(draw_index + 1))
+                    .unwrap_or(&next.resources);
+                let key = next_resources.get(opening.uv_size_slot[2] as usize)?;
+                if key.as_deref() == Some(to) {
+                    return None;
+                }
+            }
+        }
+    }
+    renamed_draws.get_mut(&draw_index).expect("inserted above")[slot] = Some(to.to_string());
+    Some(SlotRename {
+        draw: draw_index,
+        slot,
+        key: to.to_string(),
+    })
 }
 
 #[cfg(test)]

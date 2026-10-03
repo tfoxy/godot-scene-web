@@ -74,8 +74,15 @@ pub struct ResourceBatch {
 #[derive(Default)]
 pub struct ResourceStore {
     pub entries: HashMap<String, ResourceMeta>,
+    /// Moves when a resident key is resized or released, never for a new key: it says whether a committed
+    /// scene's resources may have stopped matching what is resident.
     pub dimensions_epoch: u64,
     max_side: Option<u32>,
+}
+impl crate::contract::ReadyResources for ResourceStore {
+    fn ready_size(&self, key: &str) -> Option<(u32, u32)> {
+        self.entries.get(key).map(|entry| (entry.width, entry.height))
+    }
 }
 impl ResourceStore {
     pub fn with_max_side(max_side: u32) -> Self {
@@ -191,7 +198,9 @@ impl ResourceStore {
                             || old.format != format
                             || old.fingerprint != Some(hash)
                     });
-                    if previous.is_none_or(|old| old.width != w || old.height != h) {
+                    // The epoch tracks what a committed scene may rely on: a resident key's size. A new key
+                    // cannot invalidate a scene that does not name it yet (admitting one checks it anyway).
+                    if previous.is_some_and(|old| old.width != w || old.height != h) {
                         epoch += 1;
                     }
                     staged.insert(
@@ -281,7 +290,7 @@ impl ResourceStore {
                             fingerprint: None,
                         }),
                     );
-                    epoch += 1;
+                    // A fresh key: nothing committed names it (see Replace above).
                     updates.push(ResourceChange::Allocate {
                         key,
                         width: w,

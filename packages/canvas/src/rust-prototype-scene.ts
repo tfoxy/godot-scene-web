@@ -244,8 +244,8 @@ class OverlayMap<K, V> {
   }
 }
 
-/** `base.resources` never changes across a patch chain (patches only ever touch `commands`), so its
- * key set is computed once per full-scene build and reused by reference for every descendant patch. */
+/** `base.resources` is carried by reference through a patch chain (only a text change replaces it), so its
+ * key set is computed once per list and reused by every descendant patch that keeps it. */
 const resourceKeySets = new WeakMap<RustResource[], ReadonlySet<string>>();
 function resourceKeySet(resources: RustResource[]): ReadonlySet<string> {
   let keys = resourceKeySets.get(resources);
@@ -254,6 +254,31 @@ function resourceKeySet(resources: RustResource[]): ReadonlySet<string> {
     resourceKeySets.set(resources, keys);
   }
   return keys;
+}
+
+/** The resource a command names (an atlas for a glyph run), or undefined. */
+function commandResource(command: Record<string, unknown>): string | undefined {
+  const key = command.kind === "glyphRun" ? command.atlas : command.resource;
+  return typeof key === "string" ? key : undefined;
+}
+/**
+ * Per scene: how many commands name each resource. Computed on the first text change of a lineage and carried
+ * (shared, or copied and adjusted on a key swap) to every descendant patch, so a text tick need not rescan the
+ * command list to know whether a replaced key is still drawn.
+ */
+const resourceUses = new WeakMap<RustSceneSnapshot, ReadonlyMap<string, number>>();
+function usesOf(scene: RustSceneSnapshot): ReadonlyMap<string, number> {
+  let uses = resourceUses.get(scene);
+  if (!uses) {
+    const counted = new Map<string, number>();
+    for (const command of scene.commands) {
+      const key = commandResource(command);
+      if (key !== undefined) counted.set(key, (counted.get(key) ?? 0) + 1);
+    }
+    uses = counted;
+    resourceUses.set(scene, uses);
+  }
+  return uses;
 }
 
 const identity = [1, 0, 0, 1, 0, 0] as const;
@@ -331,6 +356,65 @@ function quadFields(q: QuadView, resource: string | null, fast: boolean) {
     flipH: q.flipH,
     flipV: q.flipV,
     colorMatrix: q.hasColorMatrix ? Array.from(q.colorMatrix) : null,
+  };
+}
+function validGlyphRun(carrier: RustGlyphTextCarrier): boolean {
+  return carrier.glyphs.length > 0 && carrier.glyphs.length <= 4096;
+}
+/**
+ * One text record's scene/2 command, placed through its parent group's `world`. Shared by full admission and
+ * the retained text patch, so a patched label is the command a full build would emit for it, byte for byte.
+ */
+function textCommand(
+  id: string,
+  record: PixiTextRecord,
+  carrier: RustTextCarrier,
+  world: ArrayLike<number>,
+): {
+  command: Record<string, unknown>;
+  resource: RustResource;
+  upload?: { key: string; width: number; height: number; pixels: Uint8Array };
+} {
+  if (carrier.kind === "glyphs")
+    return {
+      resource: carrier.atlas,
+      command: {
+        id,
+        kind: "glyphRun",
+        atlas: carrier.atlas.key,
+        m: mul(world, carrier.transform),
+        glyphs: carrier.glyphs.map(({ src, dst }) => ({ src, dst })),
+        method: carrier.method,
+        fill: carrier.fill,
+        outline: carrier.outline ?? null,
+        shadow: carrier.shadow ?? null,
+        pxRange: carrier.pxRange,
+        alpha: carrier.alpha ?? record.alpha ?? 1,
+      },
+    };
+  const alpha = carrier.alpha ?? record.alpha ?? 1;
+  return {
+    resource: carrier.resource,
+    upload: {
+      key: carrier.resource.key,
+      width: carrier.resource.width,
+      height: carrier.resource.height,
+      pixels: carrier.pixels,
+    },
+    command: {
+      id,
+      kind: "rasterText",
+      resource: carrier.resource.key,
+      m: mul(world, carrier.transform),
+      w: carrier.width,
+      h: carrier.height,
+      src: [0, 0, carrier.resource.width, carrier.resource.height],
+      color: [alpha, alpha, alpha, alpha],
+      blend: "mix",
+      flipH: false,
+      flipV: false,
+      colorMatrix: null,
+    },
   };
 }
 /** A full command batch. Unsupported drawings are omitted; Rust still validates the resulting scene. */
@@ -503,49 +587,14 @@ function encodeRustSceneImpl<T>({
         omit("unresolvedText");
         continue;
       }
-      if (carrier.kind === "glyphs") {
-        if (!carrier.glyphs.length || carrier.glyphs.length > 4096) {
-          omit("invalidGlyphRun");
-          continue;
-        }
-        resources.set(carrier.atlas.key, carrier.atlas);
-        commands.push({
-          id,
-          kind: "glyphRun",
-          atlas: carrier.atlas.key,
-          m: mul(world(record.parentId), carrier.transform),
-          glyphs: carrier.glyphs.map(({ src, dst }) => ({ src, dst })),
-          method: carrier.method,
-          fill: carrier.fill,
-          outline: carrier.outline ?? null,
-          shadow: carrier.shadow ?? null,
-          pxRange: carrier.pxRange,
-          alpha: carrier.alpha ?? record.alpha ?? 1,
-        });
-      } else {
-        resources.set(carrier.resource.key, carrier.resource);
-        textUploads.push({
-          key: carrier.resource.key,
-          width: carrier.resource.width,
-          height: carrier.resource.height,
-          pixels: carrier.pixels,
-        });
-        const alpha = carrier.alpha ?? record.alpha ?? 1;
-        commands.push({
-          id,
-          kind: "rasterText",
-          resource: carrier.resource.key,
-          m: mul(world(record.parentId), carrier.transform),
-          w: carrier.width,
-          h: carrier.height,
-          src: [0, 0, carrier.resource.width, carrier.resource.height],
-          color: [alpha, alpha, alpha, alpha],
-          blend: "mix",
-          flipH: false,
-          flipV: false,
-          colorMatrix: null,
-        });
+      if (carrier.kind === "glyphs" && !validGlyphRun(carrier)) {
+        omit("invalidGlyphRun");
+        continue;
       }
+      const text = textCommand(id, record, carrier, world(record.parentId));
+      resources.set(text.resource.key, text.resource);
+      if (text.upload) textUploads.push(text.upload);
+      commands.push(text.command);
       owners.set(id, {
         parentId: record.parentId,
         local: carrier.transform,
@@ -1010,8 +1059,23 @@ function translatedClipRect(
   return [after[0], after[1], before[2], before[3]];
 }
 
+/** `encodeRustRetainedPatch` accepts `options.texts` (a retained text change); a caller can probe this. */
+export const RUST_RETAINED_TEXT_PATCH = true;
+
+/** A text record whose label changed, with the carrier the caller prepared for it (the full build's resolver). */
+export interface RustRetainedTextChange {
+  record: PixiTextRecord;
+  carrier: RustTextCarrier;
+}
+
 /**
  * Encode changed commands directly from a retained scene, without a draw-list or scene diff.
+ *
+ * `options.texts` replaces text commands with the command a full build emits for each record and carrier, placed
+ * through the record's (possibly just moved) parent group. The record must name the text command's id, its parent
+ * group and its kind (raster or glyph run) as admitted. A raster change may name a new resource: the patch then
+ * carries the scene's next resource list, in full-build order, and `textUploads` lists the pixels the caller must
+ * upload before applying it. Only a renderer that accepts patch resources (`patch_resources`) may be sent one.
  *
  * A clip moves by translation only. An update may replace a `clipPush` whose rect keeps its size, radius and
  * outset (its origin moves), and a group transform change carries every clip placed through that group along
@@ -1027,12 +1091,13 @@ export function encodeRustRetainedPatch(
   }[],
   groupTransforms: readonly { id: string; transform: readonly number[] }[] = [],
   profile?: RustProfileScope,
+  options?: { texts?: readonly RustRetainedTextChange[] },
 ): ReturnType<typeof encodeRustRetainedPatchImpl> {
   return profile
     ? profile.collector.span(profile.identity, "canvas.serialize", () =>
-        encodeRustRetainedPatchImpl(base, revision, updates, groupTransforms),
+        encodeRustRetainedPatchImpl(base, revision, updates, groupTransforms, options),
       )
-    : encodeRustRetainedPatchImpl(base, revision, updates, groupTransforms);
+    : encodeRustRetainedPatchImpl(base, revision, updates, groupTransforms, options);
 }
 function encodeRustRetainedPatchImpl(
   base: RustSceneSnapshot,
@@ -1043,11 +1108,16 @@ function encodeRustRetainedPatchImpl(
     localTransform?: readonly number[];
   }[],
   groupTransforms: readonly { id: string; transform: readonly number[] }[] = [],
+  options?: { texts?: readonly RustRetainedTextChange[] },
 ): {
   bytes: Uint8Array;
   scene: RustSceneSnapshot;
   /** Commands replaced by this patch, in patch update order. */
   changedIndexes: readonly number[];
+  /** Raster pixels the patched texts draw; the caller uploads the ones not yet resident before applying. */
+  textUploads: readonly { key: string; width: number; height: number; pixels: Uint8Array }[];
+  /** Whether the patch carries a new resource list (only a text change can). */
+  resourcesChanged: boolean;
 } | null {
   if (
     base.version !== 2 ||
@@ -1171,6 +1241,32 @@ function encodeRustRetainedPatchImpl(
       owners.set(id, { ...owner, local: mul(undo, command.m as number[]) });
     }
   }
+  const texts = options?.texts ?? [];
+  if (texts.length && !meta) return null;
+  const textUploads: { key: string; width: number; height: number; pixels: Uint8Array }[] = [];
+  const textResources = new Map<string, RustResource>();
+  for (const { record, carrier } of texts) {
+    const id = `t${record.key}`;
+    if (seen.has(id)) return null;
+    seen.add(id);
+    const index = indexes.get(id);
+    const owner = owners.get(id);
+    if (index === undefined || !owner || owner.parentId !== record.parentId) return null;
+    const previous = base.commands[index];
+    if (previous.kind !== (carrier.kind === "glyphs" ? "glyphRun" : "rasterText")) return null;
+    if (carrier.kind === "glyphs" && !validGlyphRun(carrier)) return null;
+    const text = textCommand(id, record, carrier, groupWorld(record.parentId, groups));
+    const known = textResources.get(text.resource.key);
+    if (known && (known.width !== text.resource.width || known.height !== text.resource.height)) return null;
+    textResources.set(text.resource.key, text.resource);
+    if (text.upload) textUploads.push(text.upload);
+    staged.set(id, text.command);
+    owners.set(id, {
+      parentId: record.parentId,
+      local: carrier.transform,
+      sourceLocal: record.localTransform ?? record.transform,
+    });
+  }
   if (groupTransforms.length && meta) {
     // A clip under a moved group follows it only when the group's world moved by a pure translation; any
     // change to the linear part would rescale or rotate the clip, which a full admission must judge.
@@ -1234,12 +1330,74 @@ function encodeRustRetainedPatchImpl(
     nextCommands[index] = command;
     changedIndexes.push(index);
   }
+  // A text change can name a resource the base does not list (and stop naming one it does): the next list is the
+  // one a full build makes, every named resource in first-use order. The common tick swaps a key only that label
+  // draws for one no command draws yet, which a full build places where the old key was: replaced in place, with
+  // the per-key use counts telling whether that holds. Anything else recomputes the order from the commands.
+  let nextResources = base.resources;
+  let nextUses: ReadonlyMap<string, number> | undefined = resourceUses.get(base);
+  if (textResources.size) {
+    const listed = new Map(base.resources.map((resource, index) => [resource.key, index]));
+    for (const [key, resource] of textResources) {
+      const at = listed.get(key);
+      const known = at === undefined ? undefined : base.resources[at];
+      if (known && (known.width !== resource.width || known.height !== resource.height)) return null;
+    }
+    const swaps: [string, string][] = [];
+    for (const [id, command] of staged) {
+      const before = commandResource(base.commands[indexes.get(id)!]), after = commandResource(command);
+      if (before !== after) {
+        if (before === undefined || after === undefined) return null;
+        swaps.push([before, after]);
+      }
+    }
+    if (swaps.length) {
+      const uses = new Map(usesOf(base));
+      let inPlace = true;
+      const next = base.resources.slice();
+      for (const [before, after] of swaps) {
+        const at = listed.get(before);
+        if (uses.get(before) !== 1 || (uses.get(after) ?? 0) !== 0 || listed.has(after) || at === undefined)
+          inPlace = false;
+        else {
+          next[at] = textResources.get(after)!;
+          listed.delete(before);
+          listed.set(after, at);
+        }
+        uses.set(before, (uses.get(before) ?? 1) - 1);
+        if (!uses.get(before)) uses.delete(before);
+        uses.set(after, (uses.get(after) ?? 0) + 1);
+      }
+      nextUses = uses;
+      if (inPlace) nextResources = next;
+      else {
+        const sizes = new Map(base.resources.map((resource) => [resource.key, resource]));
+        for (const [key, resource] of textResources) if (!sizes.has(key)) sizes.set(key, resource);
+        const ordered = new Map<string, RustResource>();
+        for (const command of nextCommands) {
+          const key = commandResource(command);
+          if (key === undefined || ordered.has(key)) continue;
+          const resource = sizes.get(key);
+          if (!resource) return null;
+          ordered.set(key, resource);
+        }
+        const next = [...ordered.values()];
+        const same = next.length === base.resources.length && next.every((resource, i) =>
+          resource.key === base.resources[i].key && resource.width === base.resources[i].width &&
+          resource.height === base.resources[i].height);
+        if (!same) nextResources = next;
+      }
+    }
+  }
+  const resourcesChanged = nextResources !== base.resources;
   const scene: RustSceneSnapshot = {
     ...base,
     revision,
     commands: nextCommands,
+    resources: nextResources,
   };
   commandIndexes.set(scene, indexes);
+  if (nextUses) resourceUses.set(scene, nextUses);
   if (meta)
     retainedMeta.set(scene, {
       groups,
@@ -1253,9 +1411,12 @@ function encodeRustRetainedPatchImpl(
         baseRevision: base.revision,
         revision,
         updates: [...staged].map(([id, command]) => ({ id, command })),
+        ...(resourcesChanged ? { resources: nextResources } : {}),
       }),
     ),
     scene,
     changedIndexes,
+    textUploads,
+    resourcesChanged,
   };
 }

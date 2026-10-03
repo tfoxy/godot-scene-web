@@ -505,6 +505,59 @@ pub struct Patch {
     pub base_revision: u64,
     pub revision: u64,
     pub updates: Vec<Update>,
+    /// The scene's complete resource list after this patch, present only when the patch changes it (a
+    /// replaced raster-text key). Omitted, the list carries forward unchanged, which is every patch an
+    /// older caller sends. A resource the list drops must not be named by any command after the patch,
+    /// and one it adds must already be uploaded at its declared size: a text change uploads its new
+    /// raster first and releases the old one only after this patch commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<Resource>>,
+}
+/// A validated patch, ready to commit: the replaced commands by index, plus the new resource list when the
+/// patch carries one.
+#[derive(Clone, Debug)]
+pub struct PatchDelta {
+    pub revision: u64,
+    pub updates: Vec<(usize, Command)>,
+    pub resources: Option<Vec<Resource>>,
+}
+impl PatchDelta {
+    /// Apply this delta to `scene`: the one place a validated patch edits a scene, whether that scene is the
+    /// committed one or a candidate copy.
+    pub fn apply_to(&self, scene: &mut Scene) {
+        apply_delta(scene, self.revision, self.updates.iter().cloned(), self.resources.clone());
+    }
+    /// [`PatchDelta::apply_to`] for a delta the caller no longer needs: moves the commands instead of cloning.
+    pub fn apply_into(self, scene: &mut Scene) {
+        apply_delta(scene, self.revision, self.updates, self.resources);
+    }
+}
+fn apply_delta(
+    scene: &mut Scene,
+    revision: u64,
+    updates: impl IntoIterator<Item = (usize, Command)>,
+    resources: Option<Vec<Resource>>,
+) {
+    for (index, command) in updates {
+        scene.commands[index] = command;
+    }
+    if let Some(resources) = resources {
+        scene.resources = resources;
+    }
+    scene.revision = revision;
+}
+/// Where admission looks up whether a resource key is resident, and at what size. A map of every resident
+/// resource satisfies it, and so does the resource store itself, which saves building that map per patch.
+pub trait ReadyResources {
+    fn ready_size(&self, key: &str) -> Option<(u32, u32)>;
+}
+impl ReadyResources for HashMap<String, (u32, u32)> {
+    fn ready_size(&self, key: &str) -> Option<(u32, u32)> {
+        self.get(key).copied()
+    }
+}
+fn is_ready(ready: &impl ReadyResources, resource: &Resource) -> bool {
+    ready.ready_size(&resource.key) == Some((resource.width, resource.height))
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -588,12 +641,16 @@ impl SceneState {
     pub fn clips_at(&self, index: usize) -> Option<&[Option<usize>; 3]> {
         self.clip_indices.get(index)
     }
-    /// `ready` may be omitted while the resource-dimension epoch equals the last admitted epoch.
-    pub fn preflight_patch(
+    /// Validate a patch against the committed scene without changing it. A resource the patch's list adds is
+    /// always checked against `ready`; every other listed resource only when `check_resident` (the caller's
+    /// resource-dimension epoch moved since the last admission: a resident key was resized or released), since
+    /// the committed list was resident then.
+    pub fn preflight_delta(
         &self,
         patch: &Patch,
-        ready: Option<&HashMap<String, (u32, u32)>>,
-    ) -> Result<Vec<(usize, Command)>, String> {
+        ready: &impl ReadyResources,
+        check_resident: bool,
+    ) -> Result<PatchDelta, String> {
         let current = self.scene.as_ref().ok_or("no scene")?;
         if patch.version != PATCH_VERSION
             || patch.base_revision != current.revision
@@ -601,6 +658,7 @@ impl SceneState {
         {
             return Err("version or revision mismatch".into());
         }
+        let resources = patch.resources.as_deref().unwrap_or(&current.resources);
         let mut seen = HashSet::new();
         let mut replacements = Vec::with_capacity(patch.updates.len());
         for update in &patch.updates {
@@ -613,22 +671,33 @@ impl SceneState {
             {
                 return Err("patch shape mismatch".into());
             }
-            validate_command(&update.command, &current.resources)?;
+            validate_command(&update.command, resources)?;
             replacements.push((index, update.command.clone()));
         }
-        if ready.is_some_and(|ready| missing(current, ready) > 0) {
+        if let Some(next) = patch.resources.as_ref() {
+            let added = validate_resource_list(current, next, &replacements)?;
+            let unready = if check_resident {
+                next.iter().any(|resource| !is_ready(ready, resource))
+            } else {
+                added.iter().any(|resource| !is_ready(ready, resource))
+            };
+            if unready {
+                return Err("resources not ready".into());
+            }
+        } else if check_resident && missing(current, ready) > 0 {
             return Err("resources not ready".into());
         }
-        Ok(replacements)
+        Ok(PatchDelta {
+            revision: patch.revision,
+            updates: replacements,
+            resources: patch.resources.clone(),
+        })
     }
-    pub fn commit_updates(&mut self, revision: u64, updates: Vec<(usize, Command)>) {
+    pub fn commit_delta(&mut self, delta: PatchDelta) {
         let scene = self.scene.as_mut().expect("committed scene exists");
-        for (index, command) in updates {
-            scene.commands[index] = command;
-        }
-        scene.revision = revision;
+        apply_delta(scene, delta.revision, delta.updates, delta.resources);
     }
-    pub fn admit(&mut self, bytes: &[u8], ready: &HashMap<String, (u32, u32)>) -> Admission {
+    pub fn admit(&mut self, bytes: &[u8], ready: &impl ReadyResources) -> Admission {
         // Counting must fully finish, and win, before the typed `SceneWire` parse below is even
         // attempted: `Scene`/`resources`/every supported command are typed and `deny_unknown_fields`,
         // so a scene with an unsupported command AND an unrelated problem elsewhere would otherwise
@@ -684,14 +753,14 @@ impl SceneState {
         self.set_scene(scene);
         Admission::ok(revision)
     }
-    pub fn patch(&mut self, bytes: &[u8], ready: &HashMap<String, (u32, u32)>) -> Admission {
+    pub fn patch(&mut self, bytes: &[u8], ready: &impl ReadyResources) -> Admission {
         let patch: Patch = match serde_json::from_slice(bytes) {
             Ok(v) => v,
             Err(e) => return Admission::reject(e.to_string(), 0, 0),
         };
         self.patch_parsed(patch, ready)
     }
-    pub fn patch_parsed(&mut self, patch: Patch, ready: &HashMap<String, (u32, u32)>) -> Admission {
+    pub fn patch_parsed(&mut self, patch: Patch, ready: &impl ReadyResources) -> Admission {
         let Some(current) = self.scene.as_ref() else {
             return Admission::reject("no scene".into(), 0, 0);
         };
@@ -722,31 +791,34 @@ impl SceneState {
             ) {
                 changed_clips = true;
             }
-            if let Err(e) = validate_command(&update.command, &current.resources) {
+            let resources = patch.resources.as_deref().unwrap_or(&current.resources);
+            if let Err(e) = validate_command(&update.command, resources) {
                 return Admission::reject(e, 0, 0);
             }
             replacements.push((index, update.command));
         }
-        let pending = missing(current, ready);
+        if let Some(next) = patch.resources.as_ref() {
+            if let Err(e) = validate_resource_list(current, next, &replacements) {
+                return Admission::reject(e, 0, 0);
+            }
+        }
+        let pending = match patch.resources.as_ref() {
+            Some(next) => next.iter().filter(|r| !is_ready(ready, r)).count(),
+            None => missing(current, ready),
+        };
         if pending > 0 {
             return Admission::reject("resources not ready".into(), 0, pending);
         }
         if changed_clips {
             let mut next = current.clone();
-            for (index, command) in &replacements {
-                next.commands[*index] = command.clone();
-            }
-            next.revision = patch.revision;
+            apply_delta(&mut next, patch.revision, replacements, patch.resources);
             if let Err(e) = validate(&next) {
                 return Admission::reject(e, 0, 0);
             }
             self.set_scene(next);
         } else {
             let scene = self.scene.as_mut().expect("scene exists");
-            for (index, command) in replacements {
-                scene.commands[index] = command;
-            }
-            scene.revision = patch.revision;
+            apply_delta(scene, patch.revision, replacements, patch.resources);
         }
         Admission::ok(patch.revision)
     }
@@ -835,12 +907,62 @@ pub fn validate_command(command: &Command, resources: &[Resource]) -> Result<(),
     }
     Ok(())
 }
-fn missing(scene: &Scene, ready: &HashMap<String, (u32, u32)>) -> usize {
-    scene
+/// A patch's replacement resource list: unique non-empty keys at non-zero sizes, and no key it drops still named
+/// by a command the patch leaves in place. The patch's own commands were validated against `next` already.
+/// Returns the resources the list adds to the committed one.
+fn validate_resource_list<'a>(
+    current: &Scene,
+    next: &'a [Resource],
+    replacements: &[(usize, Command)],
+) -> Result<Vec<&'a Resource>, String> {
+    let committed: HashMap<&str, (u32, u32)> = current
         .resources
         .iter()
-        .filter(|r| ready.get(&r.key) != Some(&(r.width, r.height)))
-        .count()
+        .map(|r| (r.key.as_str(), (r.width, r.height)))
+        .collect();
+    let mut keys = HashSet::with_capacity(next.len());
+    let mut added = Vec::new();
+    for r in next {
+        if r.key.is_empty() || r.width == 0 || r.height == 0 || !keys.insert(r.key.as_str()) {
+            return Err("invalid or duplicate resource".into());
+        }
+        match committed.get(r.key.as_str()) {
+            // A kept key may change size only through a fresh admission: committed instances carry UVs
+            // normalised by the size they were built against.
+            Some(size) if *size != (r.width, r.height) => {
+                return Err("patch resizes a resource".into());
+            }
+            Some(_) => {}
+            None => added.push(r),
+        }
+    }
+    // The kept keys are the listed ones minus the additions; when they number every committed key, the list
+    // drops nothing and no command needs checking.
+    if keys.len() - added.len() == committed.len() {
+        return Ok(added);
+    }
+    let dropped: HashSet<&str> = committed
+        .keys()
+        .copied()
+        .filter(|key| !keys.contains(key))
+        .collect();
+    let replaced: HashSet<usize> = replacements.iter().map(|(index, _)| *index).collect();
+    for (index, command) in current.commands.iter().enumerate() {
+        if replaced.contains(&index) {
+            continue;
+        }
+        let named = match command {
+            Command::GlyphRun { atlas, .. } => Some(atlas.as_str()),
+            _ => command.quad().and_then(|q| q.resource.as_deref()),
+        };
+        if named.is_some_and(|key| dropped.contains(key)) {
+            return Err("patch drops a resource still in use".into());
+        }
+    }
+    Ok(added)
+}
+fn missing(scene: &Scene, ready: &impl ReadyResources) -> usize {
+    scene.resources.iter().filter(|r| !is_ready(ready, r)).count()
 }
 fn validate(scene: &Scene) -> Result<(), String> {
     if scene.version != SCENE_VERSION

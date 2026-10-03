@@ -108,6 +108,30 @@ try {
     assert.ok(shifted.pixels[0][0] < 10 && shifted.pixels[0][1] < 10, JSON.stringify(shifted));
     assert.ok(shifted.pixels[1][0] > 245 && shifted.pixels[1][1] > 245, JSON.stringify(shifted));
     results['rust-clipTranslate'] = { result: moved, ...shifted };
+
+    // A text change as a retained patch: one slot renamed on the committed draw table, no geometry rebuild,
+    // and the same pixels as admitting the changed scene from scratch, before and after the old raster's release.
+    const swapped = await page.evaluate(() => window.proof.rustSteps.textSwap());
+    const swapPicture = await capture('rust', 'rust-textSwap', [[64, 32]]);
+    assert.equal(swapped.admitted.admission.accepted, true, JSON.stringify(swapped));
+    assert.equal(swapped.admission.accepted, true, JSON.stringify(swapped));
+    assert.equal(swapped.result.presented, true, JSON.stringify(swapped));
+    assert.equal(swapped.resourcesChanged, true);
+    assert.equal(swapped.sameScene, true);
+    assert.equal(swapped.result.geometryRebuilds, swapped.admitted.result.geometryRebuilds, JSON.stringify(swapped));
+    assert.equal(swapped.result.incrementalPatches, swapped.admitted.result.incrementalPatches + 1, JSON.stringify(swapped));
+    results['rust-textSwap'] = { result: swapped, ...swapPicture };
+    const rebuilt = await page.evaluate(() => window.proof.rustSteps.textSwapFull());
+    const rebuiltPicture = await capture('rust', 'rust-textSwapFull', [[64, 32]]);
+    assert.equal(rebuilt.admission.accepted, true, JSON.stringify(rebuilt));
+    assert.deepEqual(await readFile(swapPicture.path), await readFile(rebuiltPicture.path));
+    results['rust-textSwapFull'] = { result: rebuilt, ...rebuiltPicture };
+    const released = await page.evaluate(() => window.proof.rustSteps.textSwapRelease());
+    const releasedPicture = await capture('rust', 'rust-textSwapRelease', [[64, 32]]);
+    assert.equal(released.admission.accepted, true, JSON.stringify(released));
+    assert.equal(released.result.presented, true, JSON.stringify(released));
+    assert.deepEqual(await readFile(releasedPicture.path), await readFile(rebuiltPicture.path));
+    results['rust-textSwapRelease'] = { result: released, ...releasedPicture };
   }
   if (!faultInjection) {
     // Damage present: byte-identical to a full redraw after every step of a seeded random

@@ -18,6 +18,7 @@ const rust = await wasm.RustRenderer.create(rustCanvas);
 if (new URLSearchParams(location.search).get('damage') === '1') rust.set_damage_present(true);
 let committed: RustSceneSnapshot | null = null;
 let failedPatchBytes: Uint8Array | null = null;
+let textSwapInputs: ((text: string, revision: number) => { list: ReturnType<typeof createDrawList<string>>; carriers: Map<string, any>; encoded: ReturnType<typeof encodeRustScene> }) | null = null;
 const parse = (value: string) => JSON.parse(value);
 function quad(color: [number, number, number, number], width = 64, height = 64) {
   const list = createDrawList<string>();
@@ -96,6 +97,60 @@ const rustSteps: Record<string, () => Promise<unknown>> = {
     const result = parse(await rust.present());
     if (admission.accepted && result.presented) committed = patch.scene;
     return { admission, result, changedIndexes: patch.changedIndexes };
+  },
+  // A label's text changes: the retained text patch swaps its raster key and quad (and the scene's resource
+  // list) on the committed draw table. `textSwapFull` admits the same scene from scratch for comparison, and
+  // `textSwapRelease` releases the old raster and re-renders through a patch.
+  async textSwap() {
+    const digits = (text: string) => {
+      const width = 10 * text.length + 4;
+      const raster = document.createElement('canvas'); raster.width = width; raster.height = 20;
+      const ctx = raster.getContext('2d')!;
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.fillText(text, 2, 18);
+      return { resource: { key: `digits:${text}`, width, height: 20 },
+        pixels: new Uint8Array(ctx.getImageData(0, 0, width, 20).data), width, height: 20,
+        transform: [1, 0, 0, 1, 64 - width / 2, 22] };
+    };
+    textSwapInputs = (text: string, revision: number) => {
+      const list = createDrawList<string>();
+      const view = createQuadView(); view.w = 128; view.h = 64; view.srcW = 20; view.srcH = 20;
+      [view.r, view.g, view.b, view.a] = [0, 0, 0.5, 1];
+      list.pushQuad(view, 'background');
+      const carriers = new Map([['clock:0:0', digits(text)], ['name:0:0', { ...digits('7'), transform: [1, 0, 0, 1, 4, 40] }]]);
+      return { list, carriers, encoded: encodeRustScene({ drawList: list, revision, width: 128, height: 64,
+        designWidth: 128, designHeight: 64, resolveTexture: (key) => ({ key, width: 20, height: 20 }),
+        texts: [{ key: 'clock:0:0', insertionIndex: 1, transform: [1, 0, 0, 1, 64, 22] },
+          { key: 'name:0:0', insertionIndex: 1, transform: [1, 0, 0, 1, 4, 40] }],
+        resolveText: (record) => carriers.get(record.key) ?? null }) };
+    };
+    const background = new Uint8Array(20 * 20 * 4).fill(255);
+    const before = textSwapInputs('04:00', 20);
+    rust.upload_rgba_batch(encodeRustResources([{ key: 'background', width: 20, height: 20, pixels: background },
+      ...before.encoded.textUploads]));
+    const admitted = await full(before.encoded);
+    const after = textSwapInputs('04:01', 21);
+    const change = { record: { key: 'clock:0:0', insertionIndex: 1, transform: [1, 0, 0, 1, 64, 22] },
+      carrier: after.carriers.get('clock:0:0')! };
+    const patch = encodeRustRetainedPatch(committed!, 21, [], [], undefined, { texts: [change] })!;
+    rust.upload_rgba_batch(encodeRustResources(patch.textUploads));
+    const admission = parse(rust.apply_patch(patch.bytes));
+    const result = parse(await rust.present());
+    if (admission.accepted && result.presented) committed = patch.scene;
+    return { admitted, admission, result, resourcesChanged: patch.resourcesChanged,
+      sameScene: JSON.stringify(patch.scene) === JSON.stringify({ ...after.encoded.scene, revision: 21 }) };
+  },
+  async textSwapFull() {
+    return full(textSwapInputs!('04:01', 22).encoded);
+  },
+  async textSwapRelease() {
+    rust.upload_rgba_batch(encodeRustResourceUpdates([{ operation: 'release', key: 'digits:04:00' }]));
+    const old = committed!;
+    const patch = encodeRustRetainedPatch(old, old.revision + 1,
+      [{ id: String(old.commands[0].id), command: { ...old.commands[0] } }])!;
+    const admission = parse(rust.apply_patch(patch.bytes));
+    const result = parse(await rust.present());
+    if (admission.accepted && result.presented) committed = patch.scene;
+    return { admission, result };
   },
   async faultRollback() {
     if (typeof rust.debugValidationFailureOnce !== 'function')
@@ -212,6 +267,16 @@ function damageQuad(id: string): DamageCommand {
 // A linear 32x32 glyph atlas (MSDF method): smooth channels so fwidth-based coverage varies across a glyph.
 const GLYPH_ATLAS = 'damage-glyphs';
 const STAMP = 'damage-stamp';
+// A raster-text label whose key a retained patch swaps for an equal-size raster: same rect, same UV, so
+// every instance byte stays equal and only the draw's texture slot changes (WP5's slot rename).
+let labelKey = 'damage-label-0', labelCount = 0;
+function labelPixels(): Uint8Array {
+  const pixels = new Uint8Array(8 * 4 * 4);
+  for (let i = 0; i < pixels.length; i += 4) { const on = rng() < 0.5 ? 255 : 0; pixels.set([on, on, on, on], i); }
+  return pixels;
+}
+const damageResources = () => [...[...damageKeys, STAMP].map((key) => ({ key, width: 4, height: 4 })),
+  { key: labelKey, width: 8, height: 4 }, { key: GLYPH_ATLAS, width: 32, height: 32 }];
 function glyphAtlasPixels(): Uint8Array {
   const pixels = new Uint8Array(32 * 32 * 4);
   for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
@@ -230,7 +295,7 @@ function damageGlyphRun(id: string, x: number, y: number): DamageCommand {
 function damageSceneBytes() {
   return enc.encode(JSON.stringify({ version: 2, revision: damageRevision, width: DAMAGE_W, height: DAMAGE_H,
     designWidth: DAMAGE_DESIGN_W, designHeight: DAMAGE_DESIGN_H,
-    resources: [...[...damageKeys, STAMP].map((key) => ({ key, width: 4, height: 4 })), { key: GLYPH_ATLAS, width: 32, height: 32 }],
+    resources: damageResources(),
     commands: damageCommands }));
 }
 const quadIds = () => damageCommands.filter((c) => c.kind === 'quad').map((c) => c.id);
@@ -261,9 +326,12 @@ function patchBytes(updates: { id: string; command: DamageCommand }[]) {
 }
 const damageSteps: Record<string, () => Promise<unknown>> = {
   async initial() {
-    const textures = encodeRustResources([...damageKeys, STAMP].map((key) => ({ key, width: 4, height: 4, pixels: damagePixels() })));
+    const textures = encodeRustResources([...[...damageKeys, STAMP].map((key) => ({ key, width: 4, height: 4, pixels: damagePixels() })),
+      { key: labelKey, width: 8, height: 4, pixels: labelPixels() }]);
     damageCommands = [{ ...damageQuad('bg'), resource: null, m: [1, 0, 0, 1, 0, 0], w: 100, h: 60,
-      src: [0, 0, 1, 1], color: [0.05, 0.1, 0.15, 1], blend: 'mix' }];
+      src: [0, 0, 1, 1], color: [0.05, 0.1, 0.15, 1], blend: 'mix' },
+      { id: 'label', kind: 'rasterText', resource: labelKey, m: [1, 0, 0, 1, 46, 26], w: 16, h: 8, src: [0, 0, 8, 4],
+        color: [1, 1, 1, 1], blend: 'mix', flipH: false, flipV: false, colorMatrix: null }];
     for (let group = 0; group < 6; group++) {
       const clipped = group % 2 === 1;
       if (clipped) damageCommands.push({ id: `clip${group}`, kind: 'clipPush',
@@ -308,6 +376,21 @@ const damageSteps: Record<string, () => Promise<unknown>> = {
       format: 'srgb', x: 1, y: 1, regionWidth: 2, regionHeight: 2, pixels }]);
     const bytes = patchBytes([{ id: 'probe', command: moved(commandById('probe'), 2) }]);
     return damageAll((renderer) => { renderer.upload_rgba_batch(upload); return renderer.apply_patch(bytes); });
+  },
+  async textSwap() {
+    // Upload the new raster, patch the label to it with the scene's new resource list, then release the old one.
+    const previous = labelKey;
+    labelKey = `damage-label-${++labelCount}`;
+    const upload = encodeRustResources([{ key: labelKey, width: 8, height: 4, pixels: labelPixels() }]);
+    const base = damageRevision++;
+    const command = { ...commandById('label'), resource: labelKey };
+    damageCommands[damageCommands.findIndex((c) => c.id === 'label')] = command;
+    const bytes = enc.encode(JSON.stringify({ version: 1, baseRevision: base, revision: damageRevision,
+      updates: [{ id: 'label', command }], resources: damageResources() }));
+    const release = encodeRustResourceUpdates([{ operation: 'release', key: previous }]);
+    const results = await damageAll((renderer) => { renderer.upload_rgba_batch(upload); return renderer.apply_patch(bytes); });
+    for (const renderer of damageRenderers) renderer.upload_rgba_batch(release);
+    return results;
   },
   async uploadOnly() {
     // An upload with no patch, then an empty present: both renderers keep showing the pre-upload frame.
@@ -376,9 +459,10 @@ const damageSteps: Record<string, () => Promise<unknown>> = {
 function damageStep(name: string) { return damageSteps[name](); }
 function damagePlan(count: number) {
   const weighted = ['move', 'move', 'move', 'move', 'color', 'color', 'clip', 'many', 'readmit', 'swap',
-    'retexture', 'same', 'noop', 'probe', 'probe', 'glyphMove', 'subrect', 'uploadOnly'];
+    'retexture', 'same', 'noop', 'probe', 'probe', 'glyphMove', 'subrect', 'uploadOnly', 'textSwap', 'textSwap'];
   // A fixed tail, so these paths run regardless of the seed: upload with no patch, empty present, then patch.
-  return [...Array.from({ length: count }, () => pick(weighted)), 'uploadOnly', 'noop', 'probe', 'subrect', 'glyphMove', 'probe'];
+  return [...Array.from({ length: count }, () => pick(weighted)), 'uploadOnly', 'noop', 'probe', 'subrect', 'glyphMove', 'probe',
+    'textSwap', 'noop', 'textSwap', 'probe'];
 }
 
 root.proof = { rustSteps, retainedStep, pixiStep, damageStep, damagePlan };
