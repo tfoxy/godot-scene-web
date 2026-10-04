@@ -1,17 +1,23 @@
 //! How a rendered picture reaches the canvas.
 //!
+//! The renderer works in gamma space, as Godot's 2D renderer and the DOM do: every picture and
+//! resource texture is plain `RGBA8`, so tints multiply and blends mix the sRGB-encoded values as
+//! they are, and the picture's bytes are already the canvas's bytes. No stage decodes to or
+//! encodes from linear light.
+//!
 //! `surface` (the default) is wgpu's own path. A full-screen copy pass draws the picture into the
-//! acquired surface texture, then wgpu-hal's WebGL2 present draws that texture into the canvas's
-//! default framebuffer. The surface format wgpu picks there is `Rgba8UnormSrgb` (wgpu-core sorts
-//! sRGB formats first), so that present is not its `blitFramebuffer` branch but its sRGB branch:
-//! a full-screen triangle through a small re-encoding shader (`SRGB_PRESENT_*` below).
+//! acquired surface texture, then wgpu-hal's WebGL2 present copies that texture into the canvas's
+//! default framebuffer. The renderer configures the surface as `Rgba8Unorm` (chosen explicitly:
+//! wgpu-core lists sRGB formats first, and an sRGB surface would blend in linear light), so that
+//! present is wgpu-hal's Y-flipping `blitFramebuffer`, a byte copy.
 //!
 //! The other modes create the canvas's WebGL2 context themselves, build the wgpu adapter on it
-//! (`wgpu_hal::gles::Adapter::new_external`) and never create a `wgpu::Surface`. Their present runs
-//! that same shader, with the same sampling state, straight from the committed picture: one
-//! full-surface pass instead of two, and the same pixels by construction. A raw
-//! `blitFramebuffer` cannot be used: reading an sRGB texture through a framebuffer decodes it to
-//! linear, and WebGL2 has no way to copy its encoded bytes into the (linear) default framebuffer.
+//! (`wgpu_hal::gles::Adapter::new_external`) and never create a `wgpu::Surface`; the GL backend
+//! creates its own context the same way. Their present draws a full-screen triangle through a
+//! straight-copy shader (`PRESENT_*` below) with the swapchain texture's sampling state, straight
+//! from the committed picture: one full-surface pass instead of two. Each fragment samples exactly
+//! its own texel with nearest filtering and writes it unchanged, so the canvas gets the picture's
+//! bytes, the bytes the surface path's blit copies.
 //!
 //! `preserved` and `preserved-desync` also ask for `preserveDrawingBuffer` (and `desynchronized`),
 //! so after a partial redraw the present runs only inside the damage rectangles (scissored).
@@ -122,10 +128,10 @@ pub fn gl_scissor_box(rect: &DeviceRect, height: u32) -> [i32; 4] {
     ]
 }
 
-/// wgpu-hal 30.0.1 `src/gles/shaders/srgb_present.vert` and `.frag` (MIT OR Apache-2.0), verbatim:
-/// the program its WebGL2 surface present runs for an sRGB surface. Reusing the exact source keeps
-/// the direct present's output identical to the surface path's.
-pub const SRGB_PRESENT_VERT: &str = "#version 300 es
+/// The present's vertex shader: wgpu-hal 30.0.1 `src/gles/shaders/srgb_present.vert` (MIT OR
+/// Apache-2.0), verbatim. Its triangle maps texture row `t` (device row `t` of a wgpu-rendered
+/// picture) to canvas row `t` from the top, as wgpu-hal's Y-flipping present blit does.
+pub const PRESENT_VERT: &str = "#version 300 es
 precision mediump float;
 // A triangle that fills the whole screen
 const vec2[3] TRIANGLE_POS = vec2[](
@@ -143,21 +149,17 @@ void main() {
   uv = TRIANGLE_UV[gl_VertexID];
   gl_Position = vec4(TRIANGLE_POS[gl_VertexID], 0.0, 1.0);
 }";
-pub const SRGB_PRESENT_FRAG: &str = "#version 300 es
-precision mediump float;
+/// The present's fragment shader: a straight copy. The picture already holds the canvas's
+/// (premultiplied, sRGB-encoded) bytes, so the texel is written unchanged. `highp` keeps `uv`
+/// exact enough to land on the fragment's own texel on wide canvases, where a 16-bit `mediump`
+/// varying would not.
+pub const PRESENT_FRAG: &str = "#version 300 es
+precision highp float;
 in vec2 uv;
 uniform sampler2D present_texture;
 out vec4 frag;
-vec4 linear_to_srgb(vec4 linear) {
-    vec3 color_linear = linear.rgb;
-    vec3 selector = ceil(color_linear - 0.0031308); // 0 if under value, 1 if over
-    vec3 under = 12.92 * color_linear;
-    vec3 over = 1.055 * pow(color_linear, vec3(0.41666)) - 0.055;
-    vec3 result = mix(under, over, selector);
-    return vec4(result, linear.a);
-}
 void main() {
-  frag = linear_to_srgb(texture(present_texture, uv));
+  frag = texture(present_texture, uv);
 }";
 
 #[cfg(target_arch = "wasm32")]
@@ -256,7 +258,7 @@ pub mod canvas {
         ///
         /// Runs after `queue.submit`: wgpu-hal's GLES queue issues every recorded command inside
         /// `submit`, so the picture's draws precede this one in the context's command stream.
-        /// It sets the state wgpu-hal's own sRGB present sets (viewport, default draw framebuffer,
+        /// It sets the state wgpu-hal's own shader present sets (viewport, default draw framebuffer,
         /// texture unit 0, program, depth/stencil/scissor/blend/cull off, `BACK` draw buffer),
         /// scissors to each region when `partial`, then leaves the program, texture, sampler,
         /// framebuffer and scissor unbound or off. wgpu-hal's `Queue::reset_state` rebinds or
@@ -406,8 +408,8 @@ pub mod canvas {
         let program = unsafe { gl.create_program() }?;
         let mut shaders = Vec::new();
         for (kind, source) in [
-            (glow::VERTEX_SHADER, super::SRGB_PRESENT_VERT),
-            (glow::FRAGMENT_SHADER, super::SRGB_PRESENT_FRAG),
+            (glow::VERTEX_SHADER, super::PRESENT_VERT),
+            (glow::FRAGMENT_SHADER, super::PRESENT_FRAG),
         ] {
             let shader = unsafe { gl.create_shader(kind) }?;
             unsafe {
@@ -509,12 +511,19 @@ mod tests {
     }
 
     #[test]
-    fn present_shader_is_wgpu_hal_source() {
-        assert!(SRGB_PRESENT_VERT.starts_with("#version 300 es\nprecision mediump float;"));
-        assert!(SRGB_PRESENT_FRAG.contains("pow(color_linear, vec3(0.41666))"));
-        assert!(
-            SRGB_PRESENT_FRAG.ends_with("frag = linear_to_srgb(texture(present_texture, uv));\n}")
-        );
+    fn present_vertex_shader_is_wgpu_hal_source() {
+        assert!(PRESENT_VERT.starts_with("#version 300 es\nprecision mediump float;"));
+        assert!(PRESENT_VERT.contains("uv = TRIANGLE_UV[gl_VertexID];"));
+    }
+
+    #[test]
+    fn present_fragment_shader_copies_the_picture_without_re_encoding() {
+        assert!(PRESENT_FRAG.starts_with("#version 300 es\nprecision highp float;"));
+        assert!(PRESENT_FRAG.ends_with("frag = texture(present_texture, uv);\n}"));
+        // Gamma space end to end: no sRGB transfer curve anywhere in the present.
+        for curve in ["linear_to_srgb", "pow(", "0.0031308", "12.92"] {
+            assert!(!PRESENT_FRAG.contains(curve), "present re-encodes: {curve}");
+        }
     }
 
     #[test]
