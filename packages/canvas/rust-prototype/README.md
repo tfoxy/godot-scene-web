@@ -38,7 +38,7 @@ rectangles) with the surface copy, and the present. Two implementations:
   creates, with no wgpu device, queue, encoder or validation scope. It compiles
   the program wgpu-hal compiles: `build.rs` translates `shader.wgsl` with naga
   (same version, wgpu-hal's WebGL2 options and binding map) into GLSL ES 3.00,
-  and the present is wgpu-hal's sRGB shader. Samplers, sampler uniforms, the
+  and the present is the direct modes' straight-copy shader. Samplers, sampler uniforms, the
   globals block binding, viewport, clear colour and scissor test are set once;
   each draw start gets its own vertex array (WebGL2 has no base instance), so
   a draw binds one array and toggles no attributes; framebuffer, program,
@@ -92,18 +92,20 @@ cleared picture, exactly as before. On:
 reaches the canvas; `create(canvas)` is `"surface"`. An unknown mode is an
 error, and `present_mode` reports the mode in use.
 
-- `"surface"` (default): wgpu's surface. A full-screen copy pass draws the
-  picture into the acquired surface texture, then wgpu-hal's present draws
-  that texture into the canvas. Two full-surface passes per presented frame.
+- `"surface"` (default): wgpu's surface, configured as `Rgba8Unorm` (picked
+  explicitly from the surface capabilities; creation fails if the surface does
+  not offer it, rather than falling back to wgpu's default sRGB format). A
+  full-screen copy pass draws the picture into the acquired surface texture,
+  then wgpu-hal's present blits that texture into the canvas. Two full-surface
+  passes per presented frame.
 - `"direct"`: the renderer creates the canvas's WebGL2 context itself
   (`antialias: false`, every other attribute at the WebGL default, as wgpu's
   surface does), builds the adapter on it with
   `wgpu_hal::gles::Adapter::new_external`, and creates no surface. A present
-  draws the committed picture straight into the default framebuffer with
-  wgpu-hal's own sRGB present shader and sampling state: one full-surface
-  pass, the same pixels. The surface format wgpu picks on WebGL2 is
-  `Rgba8UnormSrgb`, so wgpu-hal's present is that shader, not a
-  `blitFramebuffer`, and a framebuffer blit would decode the sRGB picture.
+  draws the committed picture straight into the default framebuffer through a
+  full-screen triangle and a straight-copy shader, sampling as wgpu-hal samples
+  its swapchain texture (nearest): one full-surface pass, the same bytes the
+  surface path's blit copies.
 - `"preserved"`: `direct` with `preserveDrawingBuffer: true`. After a partial
   redraw the present runs only inside the damage rectangles (scissored); a
   full redraw, the damage present off, and the first present after creation
@@ -184,6 +186,21 @@ renderer but the full-redraw reference presents them with `present_idle`; the
 reference applies the same poses as patches; every step must be byte-identical.
 A re-admission then makes the set stale, and `present_idle` must refuse it.
 
+### Colour space
+
+The renderer works in gamma space, as Godot's 2D renderer and the DOM do: tint
+colours, texture texels and the picture are all sRGB-encoded values, and
+tinting, colour matrices and blending operate on those values directly. Every
+picture and resource texture is plain `RGBA8` (`Rgba8Unorm` on the wgpu
+backend), and the present copies the picture's bytes to the canvas unchanged;
+no stage decodes to or encodes from linear light. So a white texture tinted
+`#A78A67` draws `#A78A67`, and black at alpha 0.85 over grey 128 draws 19.
+Pass tints as sRGB-encoded values, not linearized ones. The `gamma_blend`
+property is `true` on a renderer that blends this way; glue built before it
+blended in linear light (sRGB textures and an encoding present) and reads
+`undefined`. The resource formats `srgb` and `linear` remain on the wire (a
+glyph atlas must be uploaded as `linear`), but both are stored as `RGBA8`.
+
 ## Browser build
 
 `cargo` and a matching `wasm-bindgen` CLI (0.2.129) are required. Run
@@ -195,8 +212,11 @@ ignored output defaults to `.sts2/rust-prototype-web/rust_prototype.js` and
 
 After building, run `mise exec -- node packages/canvas/rust-prototype/scripts/test-web-pixels.mjs`
 from the repository root. The browser test checks a half-transparent red scene
-through generated Wasm and writes its PNG witness under ignored
-`.sts2/rust-webgl-proof/`. It requires Playwright Chromium.
+and a layered colour scene (an uploaded white texture tinted `#A78A67`, the
+built-in white tinted `#877256`, black at alpha 0.85 over grey 128) through
+generated Wasm, and writes its PNG witnesses under ignored
+`.sts2/rust-webgl-proof/`. Run it on both backends (`GSW_RUST_BACKEND=gl`).
+It requires Playwright Chromium.
 
 For the source integration gate, run
 `mise exec -- node packages/canvas/rust-prototype/scripts/test-integration-browser.mjs`
@@ -263,7 +283,7 @@ its plan does not name `c<draw-list index>`:
 
 - `quad`, `rasterText`, `stillImage`: `resource` (key or null), affine `m`
   `[xx,xy,yx,yy,ox,oy]`, destination `w,h`, page-pixel crop `src`
-  `[x,y,w,h]`, premultiplied linear tint `color` `[r,g,b,a]`, `blend`
+  `[x,y,w,h]`, premultiplied sRGB-encoded tint `color` `[r,g,b,a]`, `blend`
   (`mix` or `add`), `flipH`, `flipV`, optional row-major `colorMatrix` (9 floats).
 - `ninePatch`: quad fields plus page-pixel `margins`
   `[left,top,right,bottom]`.
@@ -283,7 +303,7 @@ until every resource is uploaded at the declared dimensions.
 
 Resources are a separate binary batch: ASCII `RSR1`, little-endian u32 count,
 then repeated little-endian u32 `keyByteLength,width,height,pixelByteLength`,
-UTF-8 key bytes and tightly packed RGBA8 pixel bytes. Pixel RGB is **straight-alpha sRGB**, sampled into linear shader space. Duplicate unchanged uploads are ignored; changed keys recreate only
+UTF-8 key bytes and tightly packed RGBA8 pixel bytes. Pixel RGB is **straight-alpha sRGB**, sampled as stored. Duplicate unchanged uploads are ignored; changed keys recreate only
 their own GPU texture. Browser callers can use `encodeRustScene`,
 `encodeRustPatch`, and `encodeRustResources` from
 `@godot-scene-web/canvas/rust-prototype`. `encodeRustScene` accepts a DrawList,

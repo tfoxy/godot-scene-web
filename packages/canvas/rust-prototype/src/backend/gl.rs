@@ -2,8 +2,11 @@
 //! creates, with no wgpu device, queue, encoder, validation scope or per-pass state reset in between.
 //!
 //! It compiles the program wgpu-hal compiles for the scene (naga's translation of `shader.wgsl`,
-//! generated at build time) and presents with wgpu-hal's sRGB present shader, so its pixels are the
-//! wgpu backend's. What it does not do is re-issue state:
+//! generated at build time) and presents with the straight-copy present shader the wgpu backend's
+//! direct modes use ([`present::PRESENT_FRAG`]), so its pixels are the wgpu backend's. Every texture
+//! it allocates is plain `RGBA8` ([`texture_internal_format`]): tinting and blending happen on the
+//! sRGB-encoded values themselves (gamma space), as in Godot's 2D renderer and the DOM. What it does
+//! not do is re-issue state:
 //! - samplers are bound to their units, the sampler uniforms, the globals block binding, the
 //!   viewport, the clear colour and the scissor test are set once (at creation, on restore, and the
 //!   viewport on resize); textures get no per-bind parameters (sampler objects decide);
@@ -18,7 +21,7 @@
 //! this backend owns ([`ContextState::Restored`]); the renderer then starts from an empty residency.
 use super::{
     BackendError, ContextState, Created, FrameWork, GpuBackend, PartialWork, PictureRegion,
-    gl_layout::{INSTANCE_ATTRIBUTES, shaders},
+    gl_layout::{GL_RGBA8, INSTANCE_ATTRIBUTES, shaders, texture_internal_format},
 };
 use crate::{
     contract::Blend,
@@ -28,6 +31,8 @@ use crate::{
     resources::ResourceFormat,
 };
 use glow::HasContext;
+
+const _: () = assert!(GL_RGBA8 == glow::RGBA8);
 use std::collections::{HashMap, HashSet};
 
 const STRIDE: i32 = std::mem::size_of::<Instance>() as i32;
@@ -202,14 +207,8 @@ unsafe fn create_picture(
         partial.framebuffers.push(framebuffer);
         gl.active_texture(glow::TEXTURE0 + UPLOAD_UNIT);
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        // wgpu's `Rgba8UnormSrgb` picture: blending happens in linear space, storage is sRGB.
-        gl.tex_storage_2d(
-            glow::TEXTURE_2D,
-            1,
-            glow::SRGB8_ALPHA8,
-            width as i32,
-            height as i32,
-        );
+        // wgpu's `Rgba8Unorm` picture: the blend runs on the stored sRGB-encoded bytes (gamma space).
+        gl.tex_storage_2d(glow::TEXTURE_2D, 1, GL_RGBA8, width as i32, height as i32);
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
         gl.framebuffer_texture_2d(
             glow::FRAMEBUFFER,
@@ -253,12 +252,8 @@ impl Objects {
     ) -> Result<Self, String> {
         unsafe {
             let scene_program = compile(gl, shaders::SCENE_VERT, shaders::SCENE_FRAG, partial)?;
-            let present_program = compile(
-                gl,
-                present::SRGB_PRESENT_VERT,
-                present::SRGB_PRESENT_FRAG,
-                partial,
-            )?;
+            let present_program =
+                compile(gl, present::PRESENT_VERT, present::PRESENT_FRAG, partial)?;
             gl.use_program(Some(scene_program));
             for (name, slot) in shaders::SCENE_TEXTURES {
                 let location = gl.get_uniform_location(scene_program, name);
@@ -291,7 +286,8 @@ impl Objects {
             }
             gl.sampler_parameter_f32(scene_sampler, glow::TEXTURE_MIN_LOD, 0.0);
             gl.sampler_parameter_f32(scene_sampler, glow::TEXTURE_MAX_LOD, 32.0);
-            // wgpu-hal's present: nearest filters, every other parameter at its default.
+            // The present samples as wgpu-hal samples its swapchain texture: nearest filters, every
+            // other parameter at its default.
             let present_sampler = gl.create_sampler()?;
             partial.samplers.push(present_sampler);
             gl.sampler_parameter_i32(
@@ -316,7 +312,13 @@ impl Objects {
             let white = gl.create_texture()?;
             partial.textures.push(white);
             gl.bind_texture(glow::TEXTURE_2D, Some(white));
-            gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::SRGB8_ALPHA8, 1, 1);
+            gl.tex_storage_2d(
+                glow::TEXTURE_2D,
+                1,
+                texture_internal_format(ResourceFormat::Srgb),
+                1,
+                1,
+            );
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -711,10 +713,7 @@ impl GpuBackend for GlBackend {
             self.loss.mark_lost();
             lost(error)
         })?;
-        let internal = match format {
-            ResourceFormat::Srgb => glow::SRGB8_ALPHA8,
-            ResourceFormat::Linear => glow::RGBA8,
-        };
+        let internal = texture_internal_format(format);
         self.bind_upload(texture);
         unsafe {
             self.gl

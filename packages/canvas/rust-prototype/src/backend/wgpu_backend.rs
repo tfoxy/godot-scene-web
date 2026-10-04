@@ -1,6 +1,10 @@
 //! The wgpu implementation of [`GpuBackend`]: a wgpu device on WebGL2 (browser) or any native
 //! adapter, presenting through wgpu's surface or, in the direct present modes, through the canvas
 //! context the backend created ([`crate::present::canvas`]).
+//!
+//! Every texture it creates, the pictures and the surface included, is `Rgba8Unorm`
+//! ([`PICTURE_FORMAT`], [`texture_format`]): tints and blends operate on the sRGB-encoded values
+//! themselves (gamma space), as in Godot's 2D renderer and the DOM.
 use super::{
     BackendError, ContextState, Created, FrameWork, GpuBackend, PartialWork, PictureRegion,
 };
@@ -12,6 +16,32 @@ use crate::{
     resources::ResourceFormat,
 };
 use wgpu::util::DeviceExt;
+
+/// The format of the pictures and the surface: plain 8-bit RGBA, so blending runs in gamma space.
+pub const PICTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// The format of a resource texture. Both wire formats store plain `Rgba8Unorm`: sampling returns the
+/// uploaded bytes as they are. `ResourceFormat` stays a wire value (a glyph atlas must say `Linear`).
+pub const fn texture_format(format: ResourceFormat) -> wgpu::TextureFormat {
+    match format {
+        ResourceFormat::Srgb | ResourceFormat::Linear => wgpu::TextureFormat::Rgba8Unorm,
+    }
+}
+
+/// The surface format to configure: [`PICTURE_FORMAT`], which the surface must offer. wgpu's default
+/// configuration takes the first offered format, which wgpu-core makes an sRGB one; an sRGB surface
+/// would make the copy pass blend and store in linear light. A surface without `Rgba8Unorm` is an
+/// error, not a silent fallback to a format that changes every translucent pixel.
+pub fn surface_format(offered: &[wgpu::TextureFormat]) -> Result<wgpu::TextureFormat, String> {
+    if offered.contains(&PICTURE_FORMAT) {
+        Ok(PICTURE_FORMAT)
+    } else {
+        Err(format!(
+            "surface does not offer {PICTURE_FORMAT:?} (offers {offered:?}); the renderer blends in \
+             gamma space and will not present through an sRGB or other surface format"
+        ))
+    }
+}
 
 pub struct TextureEntry {
     texture: wgpu::Texture,
@@ -172,22 +202,22 @@ impl WgpuBackend {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let config = match &mut output {
             Output::Surface(surface) => {
-                let config = surface
+                let mut config = surface
                     .get_default_config(&adapter, width.max(1), height.max(1))
                     .ok_or("surface unsupported")?;
+                config.format = surface_format(&surface.get_capabilities(&adapter).formats)?;
+                config.view_formats = vec![];
                 surface.configure(&device, &config);
                 config
             }
             #[cfg(target_arch = "wasm32")]
             Output::Canvas(presenter) => {
                 presenter.set_size(width.max(1), height.max(1));
-                // Never configured; it carries the size and the picture format. `get_default_config`
-                // on the WebGL2 surface picks `Rgba8UnormSrgb` (wgpu-core lists sRGB formats
-                // first), so the surface path's pictures are sRGB; these must be too, or the scene
-                // would blend in a different space.
+                // Never configured; it carries the size and the picture format, the surface path's
+                // format, so both paths blend in the same (gamma) space.
                 wgpu::SurfaceConfiguration {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format: PICTURE_FORMAT,
                     color_space: wgpu::SurfaceColorSpace::Auto,
                     width: width.max(1),
                     height: height.max(1),
@@ -849,10 +879,7 @@ fn create_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: match format {
-            ResourceFormat::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-            ResourceFormat::Linear => wgpu::TextureFormat::Rgba8Unorm,
-        },
+        format: texture_format(format),
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -952,4 +979,35 @@ fn create_fullscreen_buffer(device: &wgpu::Device, width: u32, height: u32) -> w
         contents: bytemuck::cast_slice(&geometry.instances),
         usage: wgpu::BufferUsages::VERTEX,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_texture_is_plain_rgba8_so_blending_runs_in_gamma_space() {
+        assert_eq!(PICTURE_FORMAT, wgpu::TextureFormat::Rgba8Unorm);
+        assert!(!PICTURE_FORMAT.is_srgb());
+        for format in [ResourceFormat::Srgb, ResourceFormat::Linear] {
+            assert_eq!(texture_format(format), PICTURE_FORMAT);
+        }
+    }
+
+    #[test]
+    fn the_surface_takes_rgba8_unorm_even_when_srgb_is_listed_first() {
+        use wgpu::TextureFormat::*;
+        // WebGL2's list as wgpu-core orders it: sRGB formats first.
+        let webgl = [Rgba8UnormSrgb, Bgra8UnormSrgb, Rgba8Unorm, Bgra8Unorm];
+        assert_eq!(surface_format(&webgl), Ok(Rgba8Unorm));
+        assert_eq!(surface_format(&[Rgba8Unorm]), Ok(Rgba8Unorm));
+    }
+
+    #[test]
+    fn a_surface_without_rgba8_unorm_is_refused_not_downgraded() {
+        use wgpu::TextureFormat::*;
+        let error = surface_format(&[Rgba8UnormSrgb, Bgra8UnormSrgb, Bgra8Unorm]).unwrap_err();
+        assert!(error.contains("Rgba8Unorm"), "{error}");
+        assert!(surface_format(&[]).is_err());
+    }
 }

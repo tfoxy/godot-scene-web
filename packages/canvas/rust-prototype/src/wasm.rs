@@ -267,6 +267,14 @@ impl RustRenderer {
     pub fn patch_resources(&self) -> bool {
         true
     }
+    /// Capability probe: the renderer tints and blends in gamma space (plain `RGBA8` pictures and
+    /// textures, a straight-copy present), as Godot's 2D renderer and the DOM do. A caller must pass
+    /// tints as sRGB-encoded values, not linearized ones. Older glue, which blended in linear light,
+    /// reads `undefined`.
+    #[wasm_bindgen(getter)]
+    pub fn gamma_blend(&self) -> bool {
+        true
+    }
     #[wasm_bindgen(getter)]
     pub fn upload_calls(&self) -> u64 {
         with!(&self.inner, r => {

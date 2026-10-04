@@ -1,6 +1,8 @@
 //! The direct-GL backend's view of the scene shader, independent of the browser so it tests natively:
-//! naga's GLSL for `shader.wgsl` (generated at build time, see `build.rs`) and the instance
-//! attribute layout the vertex arrays describe.
+//! naga's GLSL for `shader.wgsl` (generated at build time, see `build.rs`), the instance
+//! attribute layout the vertex arrays describe, and the texture formats it allocates.
+
+use crate::resources::ResourceFormat;
 
 /// naga's GLSL ES 3.00 translation of `shader.wgsl` for wgpu-hal's WebGL2 pipeline layout.
 pub mod shaders {
@@ -24,9 +26,34 @@ pub const INSTANCE_ATTRIBUTES: [(u32, i32, i32); 13] = [
     (12, 2, 176),
 ];
 
+/// `GL_RGBA8`. glow is a browser-only dependency, so the value is spelled out here; `gl.rs` asserts
+/// at compile time that it is `glow::RGBA8`.
+pub const GL_RGBA8: u32 = 0x8058;
+
+/// The internal format of a resource texture. Every texture the backend allocates (pictures, the
+/// white texture, resources) is plain `RGBA8`: the renderer tints and blends sRGB-encoded values as
+/// they are (gamma space), as Godot's 2D renderer and the DOM do. An `SRGB8_ALPHA8` texture would
+/// decode to linear light on every sample and re-encode on every blend, which lightens tinted and
+/// translucent layers. `ResourceFormat` stays a wire value (a glyph atlas must say `Linear`); it no
+/// longer selects a storage format.
+pub const fn texture_internal_format(format: ResourceFormat) -> u32 {
+    match format {
+        ResourceFormat::Srgb | ResourceFormat::Linear => GL_RGBA8,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_resource_format_is_stored_as_plain_rgba8() {
+        const GL_SRGB8_ALPHA8: u32 = 0x8C43;
+        for format in [ResourceFormat::Srgb, ResourceFormat::Linear] {
+            assert_eq!(texture_internal_format(format), GL_RGBA8);
+            assert_ne!(texture_internal_format(format), GL_SRGB8_ALPHA8);
+        }
+    }
     use crate::geometry::Instance;
 
     #[test]
