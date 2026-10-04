@@ -19,6 +19,17 @@ tile-count changes rebuild the draw table. Bind groups are cached
 until a resource texture changes. Two picture textures and the surface quad
 are reused between presents.
 
+### GPU backends
+
+`Renderer<B: GpuBackend>` (`src/renderer.rs`) holds everything that is not a
+GPU call: the contract, staging, geometry, the damage plan, the bind caches,
+residency and every counter. The GPU calls go through the `GpuBackend` trait
+(`src/backend/mod.rs`): textures and binds, the instance buffer and design
+size, frame acquisition, one validation scope per present, the picture pass
+(whole or scissored to the damage rectangles) with the surface copy, and the
+present. `WgpuBackend` (`src/backend/wgpu_backend.rs`) is the one
+implementation; `create` and `createWithPresent` build on it.
+
 ### Damage present (opt-in)
 
 `set_damage_present(true)` keeps the committed picture and redraws only what a
