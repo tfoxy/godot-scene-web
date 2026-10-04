@@ -1,6 +1,8 @@
-//! Ordered instanced wgpu executor shared by browser WebGL2 and native harnesses.
+//! Ordered instanced executor shared by browser WebGL2 and native harnesses. Everything here is
+//! backend-neutral; the GPU calls go through [`GpuBackend`] (wgpu: [`WgpuBackend`]).
 use crate::{
-    contract::{Admission, Blend, Command, Patch, PatchDelta, Quad, SCENE_VERSION, Scene, SceneState},
+    backend::{FrameWork, GpuBackend, PictureRegion, PicturePass, wgpu_backend::WgpuBackend},
+    contract::{Admission, Command, Patch, PatchDelta, SceneState},
     damage::{self, DamageSet, DeviceRect, Projection},
     geometry::{self, Draw, Geometry, Instance, ResourceIndexCache, TEXTURE_SLOTS},
     idle::IdleSet,
@@ -9,7 +11,6 @@ use crate::{
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use wgpu::util::DeviceExt;
 
 // These trace timestamps bracket synchronous Rust execution only. A dropped span
 // closes on every early return; no span crosses the validation future's await.
@@ -282,48 +283,23 @@ fn plan_damage(
     }
 }
 
-struct TextureEntry {
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
-}
-struct Picture {
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    bind: wgpu::BindGroup,
-}
-/// Where a present puts the committed picture (see [`crate::present`]).
-enum Output {
-    /// wgpu's surface: copy pass into the acquired texture, then wgpu-hal's present draw.
-    Surface(wgpu::Surface<'static>),
-    /// A canvas whose WebGL2 context this renderer created: one present draw from the picture.
-    #[cfg(target_arch = "wasm32")]
-    Canvas(crate::present::canvas::CanvasPresenter),
-}
-pub struct Renderer {
-    output: Output,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    surface_globals: wgpu::Buffer,
-    surface_globals_bind: wgpu::BindGroup,
-    design_globals: wgpu::Buffer,
-    design_globals_bind: wgpu::BindGroup,
-    /// The design size `design_globals` holds: a present writes the 16-byte buffer only when it changes.
+pub struct Renderer<B: GpuBackend = WgpuBackend> {
+    backend: B,
+    /// Configured surface size in device pixels (at least 1x1).
+    width: u32,
+    height: u32,
+    /// The design size the backend holds: a present writes it only when it changes.
     design_globals_size: Option<(u32, u32)>,
-    pipelines: [wgpu::RenderPipeline; 2],
-    copy_pipeline: wgpu::RenderPipeline,
-    texture_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    textures: HashMap<String, TextureEntry>,
+    textures: HashMap<String, B::Texture>,
     /// One slot per draw index in the geometry currently being rendered.
     /// `None` means "not built yet" (or invalidated). The hot path: a hit
     /// costs an index read and a handle clone, no string work at all.
-    bind_cache: Vec<Option<wgpu::BindGroup>>,
+    bind_cache: Vec<Option<B::Bind>>,
     /// Keyed by a draw's resource-key list, surviving a full rebuild that
     /// resets `bind_cache` — see `resolve_draw_binds`. This is what gives a
     /// full rebuild with no resource upload zero new bind groups, the
     /// property the renderer had before `bind_cache` was indexed by draw.
-    content_bind_cache: HashMap<Vec<Option<String>>, wgpu::BindGroup>,
+    content_bind_cache: HashMap<Vec<Option<String>>, B::Bind>,
     /// Bumped only when a committed scene's `resources` list actually
     /// changed content from the previous one: a fresh `admit_scene` with a
     /// different list (see where `self.state = staged` is set in `present`),
@@ -335,13 +311,10 @@ pub struct Renderer {
     /// `key -> Resource` index for `geometry::patch_spans_with_cache`,
     /// cached under `committed_resource_epoch`.
     resource_index_cache: ResourceIndexCache,
-    white: TextureEntry,
-    pictures: [Picture; 2],
     committed_picture: Option<usize>,
-    instance_buffer: Option<wgpu::Buffer>,
+    /// Instances the backend's buffer holds; 0 until the first scene (no buffer yet).
     instance_capacity: usize,
     committed_geometry: Geometry,
-    fullscreen_buffer: wgpu::Buffer,
     pub resources: ResourceStore,
     pub state: SceneState,
     staged: Option<SceneState>,
@@ -361,10 +334,6 @@ pub struct Renderer {
     pub present_calls: u64,
     phase_identity: Option<PhaseIdentity>,
     active_operation_id: Option<u32>,
-    backend: String,
-    adapter_info: wgpu::AdapterInfo,
-    adapter_timestamp_query_supported: bool,
-    adapter_texture_slots: u32,
     /// wgpu-core 30 re-emits program + vertex-attribute GL state on every
     /// `set_pipeline`, even a repeat of the last one — most draws in a pass
     /// share a pipeline (mix vs add blend), so a per-pass "did it change"
@@ -379,10 +348,6 @@ pub struct Renderer {
     /// Keys whose texture changed (any upload op) since the picture last
     /// accounted for them. Recorded only while the damage present is on.
     damage_dirty_keys: HashSet<String>,
-    /// A 1x1 transparent texture bound to the copy pipeline: drawn under a
-    /// scissor it clears exactly the damaged pixels, which `LoadOp::Clear`
-    /// cannot (it ignores the scissor). Created on first enable.
-    damage_clear: Option<(TextureEntry, wgpu::BindGroup)>,
     damage_stats: DamageStats,
     last_damage: Option<&'static str>,
     /// Pixels the last present wrote to the canvas's default framebuffer.
@@ -418,16 +383,6 @@ pub const IDLE_SKIP: u32 = 2;
 pub const IDLE_PARTIAL: u32 = 4;
 pub const IDLE_FULL: u32 = 8;
 pub const IDLE_UNCHANGED: u32 = 16;
-/// Poll a future once. Every future the present path awaits (wgpu-core's error-scope pop) is ready on its first
-/// poll, so a present runs to completion synchronously; `None` means a backend broke that assumption.
-fn resolve_now<F: std::future::Future>(future: F) -> Option<F::Output> {
-    let mut future = std::pin::pin!(future);
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match future.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(value) => Some(value),
-        std::task::Poll::Pending => None,
-    }
-}
 // A batch may touch the same key repeatedly. Stage only those keys while consulting
 // committed GPU residency for each key's first operation.
 fn validate_gpu_changes(
@@ -871,23 +826,15 @@ mod bind_cache_tests {
     }
 }
 
-impl Renderer {
+impl Renderer<WgpuBackend> {
     pub async fn new(
         instance: &wgpu::Instance,
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-        Self::with_adapter(adapter, Output::Surface(surface), width, height).await
+        let backend = WgpuBackend::new(instance, surface, width, height).await?;
+        Ok(Self::with_backend(backend, width, height))
     }
     /// The direct present (`mode` is not `Surface`): create `canvas`'s WebGL2 context with the
     /// mode's attributes and build the adapter on it. No `wgpu::Surface` exists; `present` draws
@@ -900,246 +847,29 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
-        if mode == PresentMode::Surface {
-            return Err("the surface present mode uses Renderer::new".into());
-        }
-        let context = crate::present::canvas::create_context(&canvas, mode.context_attributes())?;
-        // SAFETY: the context was just created and is not lost; the renderer keeps the canvas
-        // (and so the context) alive at least as long as the device built on it.
-        let exposed = unsafe {
-            wgpu::hal::gles::Adapter::new_external(context, wgpu::GlBackendOptions::default())
-        }
-        .ok_or("WebGL2 adapter unavailable on the created context")?;
-        // SAFETY: the WebGL GLES instance holds no per-instance adapter state; any GL instance
-        // accepts an adapter exposed from an external context.
-        let adapter = unsafe { instance.create_adapter_from_hal(exposed) };
-        let presenter = crate::present::canvas::CanvasPresenter::new(canvas, mode);
-        Self::with_adapter(adapter, Output::Canvas(presenter), width, height).await
+        let backend = WgpuBackend::new_direct(instance, canvas, mode, width, height).await?;
+        Ok(Self::with_backend(backend, width, height))
     }
-    async fn with_adapter(
-        adapter: wgpu::Adapter,
-        mut output: Output,
-        width: u32,
-        height: u32,
-    ) -> Result<Self, String> {
-        let adapter_info = adapter.get_info();
-        let adapter_timestamp_query_supported =
-            adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
-        let backend = match adapter_info.backend {
-            wgpu::Backend::Gl if cfg!(target_arch = "wasm32") => "webgl2".to_string(),
-            wgpu::Backend::Gl => "gles".to_string(),
-            wgpu::Backend::Vulkan => "vulkan".to_string(),
-            wgpu::Backend::BrowserWebGpu => "webgpu".to_string(),
-            other => format!("{other:?}"),
-        };
-        let actual = adapter.limits();
-        if actual.max_sampled_textures_per_shader_stage < TEXTURE_SLOTS as u32 {
-            return Err(format!(
-                "8 texture slots required; adapter provides {}",
-                actual.max_sampled_textures_per_shader_stage
-            ));
-        }
-        let mut requested = wgpu::Limits::downlevel_webgl2_defaults();
-        requested.max_texture_dimension_2d = actual.max_texture_dimension_2d;
-        requested.max_sampled_textures_per_shader_stage = TEXTURE_SLOTS as u32;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: requested,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-        let max_side = device.limits().max_texture_dimension_2d;
-        if width.max(height) > max_side {
-            return Err(format!(
-                "surface {width}x{height} exceeds max texture side {max_side}"
-            ));
-        }
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let config = match &mut output {
-            Output::Surface(surface) => {
-                let config = surface
-                    .get_default_config(&adapter, width.max(1), height.max(1))
-                    .ok_or("surface unsupported")?;
-                surface.configure(&device, &config);
-                config
-            }
-            #[cfg(target_arch = "wasm32")]
-            Output::Canvas(presenter) => {
-                presenter.set_size(width.max(1), height.max(1));
-                // Never configured; it carries the size and the picture format. `get_default_config`
-                // on the WebGL2 surface picks `Rgba8UnormSrgb` (wgpu-core lists sRGB formats
-                // first), so the surface path's pictures are sRGB; these must be too, or the scene
-                // would blend in a different space.
-                wgpu::SurfaceConfiguration {
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    color_space: wgpu::SurfaceColorSpace::Auto,
-                    width: width.max(1),
-                    height: height.max(1),
-                    desired_maximum_frame_latency: 2,
-                    present_mode: wgpu::PresentMode::Fifo,
-                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                    view_formats: vec![],
-                }
-            }
-        };
-        let surface_globals = viewport_buffer(&device, width, height);
-        let design_globals = viewport_buffer(&device, 1, 1);
-        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let surface_globals_bind = viewport_bind(&device, &globals_layout, &surface_globals);
-        let design_globals_bind = viewport_bind(&device, &globals_layout, &design_globals);
-        let texture_entries: Vec<_> = (0..TEXTURE_SLOTS)
-            .map(|i| wgpu::BindGroupLayoutEntry {
-                binding: i as u32,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            })
-            .chain(std::iter::once(wgpu::BindGroupLayoutEntry {
-                binding: TEXTURE_SLOTS as u32,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            }))
-            .collect();
-        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &texture_entries,
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("instanced scene shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout)],
-            immediate_size: 0,
-        });
-        let attrs = wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x4,2=>Float32x4,3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Float32x4,7=>Float32x4,8=>Float32x4,9=>Float32x4,10=>Float32x2,11=>Float32x2,12=>Float32x2];
-        let make_pipeline = |entry_point: &str, blend: Option<wgpu::BlendState>| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("instanced scene pipeline"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Instance>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &attrs,
-                    })],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry_point),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let add = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-        };
-        let pipelines = [
-            make_pipeline("fs", Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)),
-            make_pipeline("fs", Some(add)),
-        ];
-        let copy_pipeline = make_pipeline("fs_copy", None);
-        let white = create_texture(
-            &device,
-            &queue,
-            1,
-            1,
-            ResourceFormat::Srgb,
-            Some(&[255, 255, 255, 255]),
-        );
-        let pictures = [
-            create_picture(&device, &texture_layout, &sampler, &config),
-            create_picture(&device, &texture_layout, &sampler, &config),
-        ];
-        let fullscreen_buffer = create_fullscreen_buffer(&device, width, height);
-        if let Some(error) = scope.pop().await {
-            return Err(format!("GPU initialization validation: {error}"));
-        }
-        #[cfg(target_arch = "wasm32")]
-        if let Output::Canvas(presenter) = &mut output {
-            // Everything a canvas present needs from wgpu-hal is checked here, so it cannot fail later.
-            for picture in &pictures {
-                gl_texture(&picture._texture)?;
-            }
-            // SAFETY: wgpu-hal's glow context of this device, which is the canvas's context.
-            let hal = unsafe { device.as_hal::<wgpu::hal::api::Gles>() }
-                .ok_or("device is not a GLES device")?;
-            unsafe { presenter.init(hal.context().lock()) }?;
-        }
-        Ok(Self {
-            output,
-            device,
-            queue,
-            config,
-            surface_globals,
-            surface_globals_bind,
-            design_globals,
-            design_globals_bind,
+}
+impl<B: GpuBackend> Renderer<B> {
+    /// A renderer over a constructed backend whose output is `width` x `height`.
+    pub fn with_backend(backend: B, width: u32, height: u32) -> Self {
+        let max_side = backend.max_texture_side();
+        let (texture_creations, buffer_creations) = backend.creation_baseline();
+        Self {
+            backend,
+            width: width.max(1),
+            height: height.max(1),
             design_globals_size: None,
-            pipelines,
-            copy_pipeline,
-            texture_layout,
-            sampler,
             textures: HashMap::new(),
             bind_cache: Vec::new(),
             content_bind_cache: HashMap::new(),
             committed_resource_epoch: 0,
             slot_undo: Vec::new(),
             resource_index_cache: None,
-            white,
-            pictures,
             committed_picture: None,
-            instance_buffer: None,
             instance_capacity: 0,
             committed_geometry: Geometry::default(),
-            fullscreen_buffer,
             resources: ResourceStore::with_max_side(max_side),
             state: SceneState::default(),
             staged: None,
@@ -1149,8 +879,8 @@ impl Renderer {
             upload_calls: 0,
             upload_bytes: 0,
             instance_upload_bytes: 0,
-            texture_creations: 3,
-            buffer_creations: 3,
+            texture_creations,
+            buffer_creations,
             draw_calls: 0,
             completed_presents: 0,
             incremental_patches: 0,
@@ -1159,16 +889,11 @@ impl Renderer {
             present_calls: 0,
             phase_identity: None,
             active_operation_id: None,
-            backend,
-            adapter_info,
-            adapter_timestamp_query_supported,
-            adapter_texture_slots: actual.max_sampled_textures_per_shader_stage,
             draw_state_dedupe: false,
             damage_present: false,
             damage_verify: false,
             damage: None,
             damage_dirty_keys: HashSet::new(),
-            damage_clear: None,
             damage_stats: DamageStats::default(),
             last_damage: None,
             last_blit_pixels: 0,
@@ -1177,17 +902,13 @@ impl Renderer {
             idle_last_result: None,
             #[cfg(feature = "fault-injection")]
             validation_failure_once: false,
-        })
+        }
     }
     pub fn backend_name(&self) -> &str {
-        &self.backend
+        self.backend.name()
     }
     pub fn present_mode(&self) -> PresentMode {
-        match &self.output {
-            Output::Surface(_) => PresentMode::Surface,
-            #[cfg(target_arch = "wasm32")]
-            Output::Canvas(presenter) => presenter.mode,
-        }
+        self.backend.present_mode()
     }
     /// Opt into the pipeline-dedupe draw path (default `false`: unchanged).
     /// One artifact serves both A/B arms this way.
@@ -1199,23 +920,8 @@ impl Renderer {
     /// present with nothing to change skips the GPU entirely. The first
     /// present after enabling is a full redraw.
     pub fn set_damage_present(&mut self, enabled: bool) {
-        if enabled && self.damage_clear.is_none() {
-            let entry = create_texture(
-                &self.device,
-                &self.queue,
-                1,
-                1,
-                ResourceFormat::Linear,
-                Some(&[0, 0, 0, 0]),
-            );
-            let bind = bind_textures(
-                &self.device,
-                &self.texture_layout,
-                &self.sampler,
-                &[&entry.view; TEXTURE_SLOTS],
-            );
+        if enabled && self.backend.ensure_damage_clear() {
             self.texture_creations += 1;
-            self.damage_clear = Some((entry, bind));
         }
         if enabled != self.damage_present {
             self.damage = None;
@@ -1247,20 +953,7 @@ impl Renderer {
             });
     }
     pub fn gpu_timer_capability(&self) -> serde_json::Value {
-        serde_json::json!({
-            "backend": self.backend,
-            "adapterName": self.adapter_info.name,
-            "adapterVendor": self.adapter_info.vendor,
-            "adapterDevice": self.adapter_info.device,
-            "adapterDriver": self.adapter_info.driver,
-            "adapterDriverInfo": self.adapter_info.driver_info,
-            "adapterTimestampQuerySupported": self.adapter_timestamp_query_supported,
-            "wgpuTimestampQuery": self.device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
-            "webgl2TimerExtension": null,
-            "webgl2TimerExtensionReason": "wgpu owns the WebGL2 context and exposes no safe context accessor",
-            "gpuElapsedNs": null,
-            "gpuElapsedNsReason": "no validated timer query on the executor context"
-        })
+        self.backend.timer_capability()
     }
     pub fn record_wasm_call(&self) {
         self.wasm_calls.set(self.wasm_calls.get() + 1);
@@ -1270,7 +963,7 @@ impl Renderer {
         self.validation_failure_once = true;
     }
     pub fn max_texture_side(&self) -> u32 {
-        self.device.limits().max_texture_dimension_2d
+        self.backend.max_texture_side()
     }
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), String> {
         let max = self.max_texture_side();
@@ -1279,28 +972,12 @@ impl Renderer {
                 "surface {width}x{height} exceeds max texture side {max}"
             ));
         }
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        match &mut self.output {
-            Output::Surface(surface) => surface.configure(&self.device, &self.config),
-            #[cfg(target_arch = "wasm32")]
-            Output::Canvas(presenter) => presenter.set_size(self.config.width, self.config.height),
-        }
-        self.pictures = [
-            create_picture(
-                &self.device,
-                &self.texture_layout,
-                &self.sampler,
-                &self.config,
-            ),
-            create_picture(
-                &self.device,
-                &self.texture_layout,
-                &self.sampler,
-                &self.config,
-            ),
-        ];
+        self.width = width.max(1);
+        self.height = height.max(1);
+        self.backend.resize(width, height);
+        // The backend recreated both pictures and the surface quad.
         self.texture_creations += 2;
+        self.buffer_creations += 1;
         self.committed_picture = None;
         self.damage = None;
         self.staged = None;
@@ -1309,13 +986,6 @@ impl Renderer {
         // Full clear: draw indices and their bind groups are revalidated from
         // scratch on the next present rather than trusted across a resize.
         self.bind_cache.clear();
-        self.fullscreen_buffer = create_fullscreen_buffer(&self.device, width, height);
-        self.buffer_creations += 1;
-        self.queue.write_buffer(
-            &self.surface_globals,
-            0,
-            bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]),
-        );
         Ok(())
     }
     pub fn upload_rgba_batch(&mut self, bytes: &[u8]) -> Result<usize, String> {
@@ -1333,10 +1003,10 @@ impl Renderer {
                     height,
                     format,
                 } => {
-                    self.textures.insert(
-                        key.clone(),
-                        create_texture(&self.device, &self.queue, *width, *height, *format, None),
-                    );
+                    let texture = self.backend.create_texture(*width, *height, *format, None);
+                    if let Some(old) = self.textures.insert(key.clone(), texture) {
+                        self.backend.release_texture(old);
+                    }
                     created += 1;
                 }
                 ResourceChange::Replace {
@@ -1346,17 +1016,12 @@ impl Renderer {
                     format,
                     pixels,
                 } => {
-                    self.textures.insert(
-                        key.clone(),
-                        create_texture(
-                            &self.device,
-                            &self.queue,
-                            *width,
-                            *height,
-                            *format,
-                            Some(pixels),
-                        ),
-                    );
+                    let texture =
+                        self.backend
+                            .create_texture(*width, *height, *format, Some(pixels));
+                    if let Some(old) = self.textures.insert(key.clone(), texture) {
+                        self.backend.release_texture(old);
+                    }
                     created += 1;
                 }
                 ResourceChange::Subrect {
@@ -1371,18 +1036,13 @@ impl Renderer {
                         .textures
                         .get(key)
                         .ok_or("subrect texture missing on GPU")?;
-                    write_texture_region(
-                        &self.queue,
-                        &texture._texture,
-                        *x,
-                        *y,
-                        *width,
-                        *height,
-                        pixels,
-                    );
+                    self.backend
+                        .write_texture(texture, *x, *y, *width, *height, pixels);
                 }
                 ResourceChange::Release { key } => {
-                    self.textures.remove(key);
+                    if let Some(texture) = self.textures.remove(key) {
+                        self.backend.release_texture(texture);
+                    }
                 }
             }
         }
@@ -1456,7 +1116,7 @@ impl Renderer {
                     error: Some("version or revision mismatch".into()),
                 };
             }
-            if scene.width != self.config.width || scene.height != self.config.height {
+            if scene.width != self.width || scene.height != self.height {
                 self.staged = None;
                 return Admission {
                     accepted: false,
@@ -1465,7 +1125,7 @@ impl Renderer {
                     resource_pending: 0,
                     error: Some(format!(
                         "scene surface {}x{} does not match configured {}x{}",
-                        scene.width, scene.height, self.config.width, self.config.height
+                        scene.width, scene.height, self.width, self.height
                     )),
                 };
             }
@@ -1563,7 +1223,7 @@ impl Renderer {
         let result = candidate.patch_parsed(patch, &self.resources);
         if result.accepted {
             let scene = candidate.scene().expect("accepted patch");
-            if scene.width != self.config.width || scene.height != self.config.height {
+            if scene.width != self.width || scene.height != self.height {
                 self.staged = None;
                 return Admission {
                     accepted: false,
@@ -1762,7 +1422,7 @@ impl Renderer {
             .and_then(|s| s.scene())
             .or_else(|| self.staged_delta.as_ref().and_then(|_| self.state.scene()));
         if let Some(scene) = candidate_scene {
-            if scene.width != self.config.width || scene.height != self.config.height {
+            if scene.width != self.width || scene.height != self.height {
                 return self.failed("scene surface does not match configured surface", 0, 0);
             }
             let delta_resources = self
@@ -1901,17 +1561,14 @@ impl Renderer {
         let skip = partial_rects.is_some_and(|rects| rects.is_empty()) && !self.fault_armed();
         // The canvas regions this present will write, captured before `plan` commits below. A
         // preserved canvas takes only a partial plan's rectangles (`present::blit_regions`).
-        #[cfg(target_arch = "wasm32")]
         let blit_partial = partial_rects.map(<[DeviceRect]>::to_vec);
-        let frame = match &self.output {
-            _ if skip => None,
-            Output::Surface(surface) => match surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(f)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
-                e => return self.failed(&format!("{e:?}"), 0, 0),
-            },
-            #[cfg(target_arch = "wasm32")]
-            Output::Canvas(_) => None,
+        let frame = if skip {
+            None
+        } else {
+            match self.backend.acquire_frame() {
+                Ok(frame) => frame,
+                Err(error) => return self.failed(&error, 0, 0),
+            }
         };
         // Surface: an acquired frame means this present renders and presents. Canvas: no frame
         // exists; it renders (and draws into the canvas) whenever it does not skip.
@@ -1929,28 +1586,20 @@ impl Renderer {
         } else {
             None
         };
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let scope = self.backend.begin_validation();
         let mut draws = surface_draws;
         let mut dirty = Vec::new();
         if let Some(spans) = delta_spans.as_ref() {
             draws += self.committed_geometry.draws.len();
-            let buffer = self
-                .instance_buffer
-                .as_ref()
-                .expect("committed instances allocated");
             for (start, instances) in spans {
                 if instances.is_empty() {
                     continue;
                 }
                 let end = start + instances.len();
-                let bytes = bytemuck::cast_slice(instances);
-                self.queue.write_buffer(
-                    buffer,
-                    (*start * std::mem::size_of::<Instance>()) as u64,
-                    bytes,
-                );
-                self.upload_bytes += bytes.len() as u64;
-                self.instance_upload_bytes += bytes.len() as u64;
+                self.backend.write_instances(*start, instances);
+                let bytes = std::mem::size_of_val(instances.as_slice()) as u64;
+                self.upload_bytes += bytes;
+                self.instance_upload_bytes += bytes;
                 dirty.push((*start, end));
             }
         }
@@ -1959,12 +1608,7 @@ impl Renderer {
             let needed = g.instances.len().max(1);
             if needed > self.instance_capacity {
                 self.instance_capacity = needed.next_power_of_two();
-                self.instance_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("grow-only scene instances"),
-                    size: (self.instance_capacity * std::mem::size_of::<Instance>()) as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
+                self.backend.grow_instances(self.instance_capacity);
                 self.buffer_creations += 1;
                 dirty.push((0, g.instances.len()));
             } else if candidate_same_layout == Some(true) {
@@ -1974,20 +1618,13 @@ impl Renderer {
             } else {
                 dirty.push((0, g.instances.len()));
             }
-            let buffer = self
-                .instance_buffer
-                .as_ref()
-                .expect("instance buffer allocated");
             for &(start, end) in &dirty {
                 if start < end {
-                    let bytes = bytemuck::cast_slice(&g.instances[start..end]);
-                    self.queue.write_buffer(
-                        buffer,
-                        (start * std::mem::size_of::<Instance>()) as u64,
-                        bytes,
-                    );
-                    self.upload_bytes += bytes.len() as u64;
-                    self.instance_upload_bytes += bytes.len() as u64;
+                    let instances = &g.instances[start..end];
+                    self.backend.write_instances(start, instances);
+                    let bytes = std::mem::size_of_val(instances) as u64;
+                    self.upload_bytes += bytes;
+                    self.instance_upload_bytes += bytes;
                 }
             }
         }
@@ -2011,30 +1648,23 @@ impl Renderer {
         // `empty_draws_call_would_wipe_a_populated_cache`.
         // A skipped present still resolves binds: a draw whose texture list
         // changed off screen must not leave a stale per-draw slot behind.
-        let binds: Vec<wgpu::BindGroup> = if render_draws.is_empty() {
+        let binds: Vec<B::Bind> = if render_draws.is_empty() {
             Vec::new()
         } else {
-            let device = &self.device;
-            let texture_layout = &self.texture_layout;
-            let sampler = &self.sampler;
+            let backend = &self.backend;
             let textures = &self.textures;
-            let white = &self.white;
             resolve_draw_binds(
                 &mut self.bind_cache,
                 &mut self.content_bind_cache,
                 render_draws,
                 incremental,
-                |resources| build_texture_bind(device, texture_layout, sampler, textures, white, resources),
+                |resources| build_texture_bind(backend, textures, resources),
             )
         };
         if let Some((design_width, design_height)) = design_size
             && self.design_globals_size != design_size
         {
-            self.queue.write_buffer(
-                &self.design_globals,
-                0,
-                bytemuck::cast_slice(&[design_width as f32, design_height as f32, 0.0, 0.0]),
-            );
+            self.backend.write_design_size(design_width, design_height);
             self.design_globals_size = design_size;
         }
         drop(prepare_phase);
@@ -2046,87 +1676,40 @@ impl Renderer {
         // The picture the canvas shows after this present: the one just drawn, else the committed one.
         let shown_picture = target.or(self.committed_picture);
         if render {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("scene and surface"),
-                });
-            if let (Some(g), Some(target)) = (render_geometry, target) {
-                match &plan {
-                    DamagePlan::Partial {
-                        rects, selection, ..
-                    } => {
-                        let (issued, pixels) = self.encode_partial_picture(
-                            &mut encoder,
-                            target,
-                            g,
-                            &binds,
-                            rects.rects(),
+            let picture = match (render_geometry, target) {
+                (Some(g), Some(target)) => Some(PicturePass {
+                    target,
+                    draws: &g.draws,
+                    binds: &binds,
+                    region: match &plan {
+                        DamagePlan::Partial {
+                            rects, selection, ..
+                        } => PictureRegion::Partial {
+                            rects: rects.rects(),
                             selection,
-                        );
-                        draws = surface_draws + issued;
-                        partial_work = (issued as u64, pixels);
-                    }
-                    _ => {
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("candidate picture"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &self.pictures[target].view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                                depth_slice: None,
-                            })],
-                            ..Default::default()
-                        });
-                        pass.set_bind_group(0, &self.design_globals_bind, &[]);
-                        if let Some(buffer) = &self.instance_buffer {
-                            pass.set_vertex_buffer(0, buffer.slice(..));
-                        }
-                        let mut last_pipeline: Option<usize> = None;
-                        for (draw, bind) in g.draws.iter().zip(&binds) {
-                            let pipeline_index = if draw.blend == Blend::Add { 1 } else { 0 };
-                            if !self.draw_state_dedupe || last_pipeline != Some(pipeline_index) {
-                                pass.set_pipeline(&self.pipelines[pipeline_index]);
-                                last_pipeline = Some(pipeline_index);
-                            }
-                            pass.set_bind_group(1, bind, &[]);
-                            pass.draw(0..6, draw.start..draw.start + draw.count);
-                        }
-                    }
-                }
-            }
-            if let Some(frame) = frame.as_ref() {
-                let picture = &self.pictures[shown_picture.expect("picture exists")];
-                let view = frame.texture.create_view(&Default::default());
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("surface copy"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
                         },
-                        depth_slice: None,
-                    })],
-                    ..Default::default()
-                });
-                pass.set_pipeline(&self.copy_pipeline);
-                pass.set_bind_group(0, &self.surface_globals_bind, &[]);
-                pass.set_bind_group(1, &picture.bind, &[]);
-                pass.set_vertex_buffer(0, self.fullscreen_buffer.slice(..));
-                pass.draw(0..6, 0..1);
-            }
+                        _ => PictureRegion::Full {
+                            dedupe_pipelines: self.draw_state_dedupe,
+                        },
+                    },
+                }),
+                _ => None,
+            };
             #[cfg(feature = "fault-injection")]
-            if std::mem::take(&mut self.validation_failure_once) {
-                // Both buffers are 16 bytes and lack copy usages. The validation
-                // scope must refuse this candidate before queue.present.
-                encoder.copy_buffer_to_buffer(&self.surface_globals, 0, &self.design_globals, 0, 32);
+            let inject_validation_failure = std::mem::take(&mut self.validation_failure_once);
+            #[cfg(not(feature = "fault-injection"))]
+            let inject_validation_failure = false;
+            let partial = self.backend.encode(FrameWork {
+                picture,
+                surface_copy: frame
+                    .as_ref()
+                    .map(|frame| (frame, shown_picture.expect("picture exists"))),
+                inject_validation_failure,
+            });
+            if let Some((issued, pixels)) = partial {
+                draws = surface_draws + issued;
+                partial_work = (issued as u64, pixels);
             }
-            self.queue.submit([encoder.finish()]);
         } else {
             draws = 0;
         }
@@ -2134,13 +1717,10 @@ impl Renderer {
         drop(encode_phase);
         // The validation future may suspend here. Its initial poll and wait are unclassified.
         phase_stamp(phase_identity.as_ref(), "validation.wait", "start");
-        let validation_error = match resolve_now(scope.pop()) {
-            Some(error) => error.map(|error| error.to_string()),
-            None => Some("validation scope did not resolve synchronously".into()),
-        };
+        let validation = self.backend.end_validation(scope);
         phase_stamp(phase_identity.as_ref(), "validation.wait", "end");
         let _resume_phase = PhaseSpan::new(phase_identity.as_ref(), "resume");
-        if let Some(error) = validation_error {
+        if let Err(error) = validation {
             // A refused submission may not have written the design size: write it again next time.
             self.design_globals_size = None;
             self.restore_instances(&dirty);
@@ -2163,20 +1743,21 @@ impl Renderer {
         // Past validation this present commits: whatever it renamed in place stays renamed.
         self.slot_undo.clear();
         if let Some(frame) = frame {
-            self.queue.present(frame);
+            self.backend.present_frame(frame);
             self.completed_presents += 1;
-            self.last_blit_pixels = u64::from(self.config.width) * u64::from(self.config.height);
+            self.last_blit_pixels = u64::from(self.width) * u64::from(self.height);
         } else if render {
-            #[cfg(target_arch = "wasm32")]
-            if let Err(error) = self.present_to_canvas(
-                shown_picture.expect("picture exists"),
-                blit_partial.as_deref(),
-            ) {
-                // Unreachable after construction's checks (it means wgpu-hal changed under us). The
-                // picture may already hold this candidate, so drop the damage state: the next
-                // present redraws and copies whole.
-                self.damage = None;
-                return self.failed(&format!("canvas present: {error}"), 0, draws);
+            match self
+                .backend
+                .present_picture(shown_picture.expect("picture exists"), blit_partial.as_deref())
+            {
+                Ok(pixels) => self.last_blit_pixels = pixels,
+                Err(error) => {
+                    // The picture may already hold this candidate, so drop the damage state: the
+                    // next present redraws and copies whole.
+                    self.damage = None;
+                    return self.failed(&format!("canvas present: {error}"), 0, draws);
+                }
             }
             self.completed_presents += 1;
         }
@@ -2222,27 +1803,6 @@ impl Renderer {
         self.commit_damage(plan, design_size);
         self.result(true, draws, None, 0)
     }
-    /// Direct present: draw picture `index` into the canvas, only inside `partial` on a preserved
-    /// canvas that still shows the previous picture. Construction checked every fallible step, so
-    /// an error here means wgpu-hal changed under us.
-    #[cfg(target_arch = "wasm32")]
-    fn present_to_canvas(&mut self, index: usize, partial: Option<&[DeviceRect]>) -> Result<(), String> {
-        let Output::Canvas(presenter) = &mut self.output else {
-            return Err("no canvas output".into());
-        };
-        let (width, height) = (self.config.width, self.config.height);
-        let regions =
-            crate::present::blit_regions(presenter.mode, presenter.force_full, partial, width, height);
-        let scissored = regions != [DeviceRect::full(width, height)];
-        let raw = gl_texture(&self.pictures[index]._texture)?;
-        // SAFETY: wgpu-hal's glow context of this device, which is the canvas's context; `raw` is a
-        // picture this renderer keeps alive, sized to the configured surface.
-        let device = unsafe { self.device.as_hal::<wgpu::hal::api::Gles>() }
-            .ok_or("device is not a GLES device")?;
-        unsafe { presenter.present(device.context().lock(), raw, &regions, scissored, width, height) }?;
-        self.last_blit_pixels = crate::present::blit_pixels(&regions);
-        Ok(())
-    }
     /// Decide how much of the committed picture this present must redraw (see [`plan_damage`]).
     fn plan_damage(
         &self,
@@ -2256,7 +1816,7 @@ impl Renderer {
                 enabled: self.damage_present,
                 state: self.damage.as_ref(),
                 committed_picture: self.committed_picture,
-                surface: (self.config.width, self.config.height),
+                surface: (self.width, self.height),
                 committed: &self.committed_geometry,
                 dirty_keys: &self.damage_dirty_keys,
             },
@@ -2355,76 +1915,11 @@ impl Renderer {
             false
         }
     }
-    /// Redraw `rects` of picture `target` in place: per rectangle, scissor,
-    /// clear to transparent, then replay in order every draw whose footprint
-    /// reaches it. Returns the draw calls issued and the pixels covered.
-    fn encode_partial_picture(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        target: usize,
-        g: &Geometry,
-        binds: &[wgpu::BindGroup],
-        rects: &[DeviceRect],
-        selection: &[DeviceRect],
-    ) -> (usize, u64) {
-        let (_, clear_bind) = self.damage_clear.as_ref().expect("damage present enabled");
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("damaged picture"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.pictures[target].view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            ..Default::default()
-        });
-        let mut issued = 0usize;
-        let mut pixels = 0u64;
-        for rect in rects {
-            pass.set_scissor_rect(
-                rect.x0 as u32,
-                rect.y0 as u32,
-                (rect.x1 - rect.x0) as u32,
-                (rect.y1 - rect.y0) as u32,
-            );
-            // The picture has the surface's size, so the surface quad and
-            // globals cover it exactly; the copy pipeline does not blend.
-            pass.set_pipeline(&self.copy_pipeline);
-            pass.set_bind_group(0, &self.surface_globals_bind, &[]);
-            pass.set_bind_group(1, clear_bind, &[]);
-            pass.set_vertex_buffer(0, self.fullscreen_buffer.slice(..));
-            pass.draw(0..6, 0..1);
-            issued += 1;
-            pass.set_bind_group(0, &self.design_globals_bind, &[]);
-            if let Some(buffer) = &self.instance_buffer {
-                pass.set_vertex_buffer(0, buffer.slice(..));
-            }
-            let mut last_pipeline: Option<usize> = None;
-            for ((draw, bind), bounds) in g.draws.iter().zip(binds).zip(selection) {
-                if !bounds.intersects(rect) {
-                    continue;
-                }
-                let pipeline_index = if draw.blend == Blend::Add { 1 } else { 0 };
-                if last_pipeline != Some(pipeline_index) {
-                    pass.set_pipeline(&self.pipelines[pipeline_index]);
-                    last_pipeline = Some(pipeline_index);
-                }
-                pass.set_bind_group(1, bind, &[]);
-                pass.draw(0..6, draw.start..draw.start + draw.count);
-                issued += 1;
-            }
-            pixels += rect.area();
-        }
-        (issued, pixels)
-    }
     /// After a successful present: record what the committed picture now
     /// holds, so the next patch can trust it.
     fn commit_damage(&mut self, plan: DamagePlan, design_size: Option<(u32, u32)>) {
         let projection = design_size.map(|(design_width, design_height)| {
-            Projection::new(self.config.width, self.config.height, design_width, design_height)
+            Projection::new(self.width, self.height, design_width, design_height)
         });
         let picture = self.committed_picture;
         match plan {
@@ -2502,18 +1997,14 @@ impl Renderer {
         }
     }
     fn restore_instances(&mut self, dirty: &[(usize, usize)]) {
-        if let Some(buffer) = &self.instance_buffer {
+        // No capacity means no instance buffer yet: nothing was written.
+        if self.instance_capacity > 0 {
             for &(start, end) in dirty {
                 let end = end.min(self.committed_geometry.instances.len());
                 if start < end {
-                    let bytes =
-                        bytemuck::cast_slice(&self.committed_geometry.instances[start..end]);
-                    self.queue.write_buffer(
-                        buffer,
-                        (start * std::mem::size_of::<Instance>()) as u64,
-                        bytes,
-                    );
-                    self.upload_bytes += bytes.len() as u64;
+                    let instances = &self.committed_geometry.instances[start..end];
+                    self.backend.write_instances(start, instances);
+                    self.upload_bytes += std::mem::size_of_val(instances) as u64;
                 }
             }
         }
@@ -2540,9 +2031,9 @@ impl Renderer {
             draws,
             resource_pending: pending,
             unsupported_commands: self.state.refused_total,
-            backend: self.backend.clone(),
+            backend: self.backend.name().to_owned(),
             max_texture_side: self.max_texture_side(),
-            max_sampled_textures: self.adapter_texture_slots,
+            max_sampled_textures: self.backend.sampled_texture_slots(),
             draw_calls: self.draw_calls,
             buffer_creations: self.buffer_creations,
             texture_creations: self.texture_creations,
@@ -2560,219 +2051,20 @@ impl Renderer {
         }
     }
 }
-#[cfg(target_arch = "wasm32")]
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        if let Output::Canvas(presenter) = &mut self.output {
-            // SAFETY: wgpu-hal's glow context of this (still alive) device.
-            if let Some(device) = unsafe { self.device.as_hal::<wgpu::hal::api::Gles>() } {
-                unsafe { presenter.release(device.context().lock()) };
-            }
-        }
-    }
-}
-/// The raw GL texture behind a wgpu texture on the WebGL2 backend.
-#[cfg(target_arch = "wasm32")]
-fn gl_texture(texture: &wgpu::Texture) -> Result<glow::Texture, String> {
-    // SAFETY: only reads the handle; the guard is dropped before returning and the texture is
-    // kept alive by its owner.
-    let hal = unsafe { texture.as_hal::<wgpu::hal::api::Gles>() }.ok_or("not a GLES texture")?;
-    match hal.inner {
-        wgpu::hal::gles::TextureInner::Texture { raw, .. } => Ok(raw),
-        _ => Err("not a GL texture object".into()),
-    }
-}
-fn viewport_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("viewport"),
-        contents: bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    })
-}
-fn viewport_bind(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    buffer: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-        }],
-    })
-}
-fn bind_textures(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    views: &[&wgpu::TextureView],
-) -> wgpu::BindGroup {
-    let entries: Vec<_> = views
-        .iter()
-        .enumerate()
-        .map(|(i, v)| wgpu::BindGroupEntry {
-            binding: i as u32,
-            resource: wgpu::BindingResource::TextureView(v),
-        })
-        .chain(std::iter::once(wgpu::BindGroupEntry {
-            binding: TEXTURE_SLOTS as u32,
-            resource: wgpu::BindingResource::Sampler(sampler),
-        }))
-        .collect();
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout,
-        entries: &entries,
-    })
-}
-/// Build a fresh bind group for one draw's resource slots. A free function
-/// (not a `&self` method) so a caller can borrow `device`/`texture_layout`/
-/// `sampler`/`textures`/`white` individually and still hold other fields of
-/// `Renderer` mutably at the same time — see `resolve_draw_binds`'s call
-/// site in `present`. Does not consult or populate any cache itself.
-fn build_texture_bind(
-    device: &wgpu::Device,
-    texture_layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    textures: &HashMap<String, TextureEntry>,
-    white: &TextureEntry,
+/// Build a fresh bind for one draw's resource slots: a resident texture per named key, white
+/// otherwise. A free function (not a `&self` method) so a caller can borrow the backend and
+/// `textures` individually and still hold other fields of `Renderer` mutably at the same time —
+/// see `resolve_draw_binds`'s call site in `present`. Does not consult or populate any cache itself.
+fn build_texture_bind<B: GpuBackend>(
+    backend: &B,
+    textures: &HashMap<String, B::Texture>,
     resources: &[Option<String>],
-) -> wgpu::BindGroup {
-    let views: Vec<_> = (0..TEXTURE_SLOTS)
-        .map(|i| {
-            resources
-                .get(i)
-                .and_then(|r| r.as_ref())
-                .and_then(|key| textures.get(key))
-                .map_or(&white.view, |entry| &entry.view)
-        })
-        .collect();
-    bind_textures(device, texture_layout, sampler, &views)
-}
-fn create_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    w: u32,
-    h: u32,
-    format: ResourceFormat,
-    pixels: Option<&[u8]>,
-) -> TextureEntry {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: None,
-        size: wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: match format {
-            ResourceFormat::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-            ResourceFormat::Linear => wgpu::TextureFormat::Rgba8Unorm,
-        },
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+) -> B::Bind {
+    let slots: [Option<&B::Texture>; TEXTURE_SLOTS] = std::array::from_fn(|i| {
+        resources
+            .get(i)
+            .and_then(|r| r.as_ref())
+            .and_then(|key| textures.get(key))
     });
-    if let Some(pixels) = pixels {
-        write_texture_region(queue, &texture, 0, 0, w, h, pixels);
-    }
-    let view = texture.create_view(&Default::default());
-    TextureEntry {
-        _texture: texture,
-        view,
-    }
-}
-fn write_texture_region(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    pixels: &[u8],
-) {
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d { x, y, z: 0 },
-            aspect: wgpu::TextureAspect::All,
-        },
-        pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(w * 4),
-            rows_per_image: Some(h),
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-}
-fn create_picture(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    config: &wgpu::SurfaceConfiguration,
-) -> Picture {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("reusable picture"),
-        size: wgpu::Extent3d {
-            width: config.width,
-            height: config.height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: config.format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&Default::default());
-    let views = [&view; TEXTURE_SLOTS];
-    let bind = bind_textures(device, layout, sampler, &views);
-    Picture {
-        _texture: texture,
-        view,
-        bind,
-    }
-}
-fn create_fullscreen_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
-    let quad = Quad {
-        resource: None,
-        m: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-        w: width as f32,
-        h: height as f32,
-        src: [0.0, 0.0, 1.0, 1.0],
-        color: [1.0; 4],
-        blend: Blend::Mix,
-        flip_h: false,
-        flip_v: false,
-        color_matrix: None,
-    };
-    let scene = Scene {
-        version: SCENE_VERSION,
-        revision: 0,
-        width,
-        height,
-        design_width: width,
-        design_height: height,
-        resources: vec![],
-        commands: vec![Command::Quad {
-            id: "full".into(),
-            quad,
-        }],
-    };
-    let geometry = geometry::build(&scene);
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("static surface quad"),
-        contents: bytemuck::cast_slice(&geometry.instances),
-        usage: wgpu::BufferUsages::VERTEX,
-    })
+    backend.create_bind(&slots)
 }
