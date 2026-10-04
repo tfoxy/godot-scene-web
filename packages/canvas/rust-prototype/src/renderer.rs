@@ -1,7 +1,10 @@
 //! Ordered instanced executor shared by browser WebGL2 and native harnesses. Everything here is
 //! backend-neutral; the GPU calls go through [`GpuBackend`] (wgpu: [`WgpuBackend`]).
 use crate::{
-    backend::{FrameWork, GpuBackend, PictureRegion, PicturePass, wgpu_backend::WgpuBackend},
+    backend::{
+        BackendError, ContextState, Created, FrameWork, GpuBackend, PictureRegion, PicturePass,
+        wgpu_backend::WgpuBackend,
+    },
     contract::{Admission, Command, Patch, PatchDelta, SceneState},
     damage::{self, DamageSet, DeviceRect, Projection},
     geometry::{self, Draw, Geometry, Instance, ResourceIndexCache, TEXTURE_SLOTS},
@@ -100,6 +103,10 @@ pub struct PresentResult {
     /// whole surface for wgpu's present or a full canvas present, the damage area for a preserved
     /// partial.
     pub blit_pixels: u64,
+    /// The backend's context is lost: every texture and the committed scene were dropped. The
+    /// caller uploads and admits again after a restore (or on a new renderer). Absent otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub context_lost: bool,
 }
 /// Cumulative damage-present counters, reported only while it is enabled.
 #[derive(serde::Serialize, Clone, Copy, Default)]
@@ -290,6 +297,14 @@ pub struct Renderer<B: GpuBackend = WgpuBackend> {
     height: u32,
     /// The design size the backend holds: a present writes it only when it changes.
     design_globals_size: Option<(u32, u32)>,
+    /// The next canvas present covers the whole canvas: set at creation, on resize (which clears
+    /// the canvas) and after a loss or a failed present; cleared by a canvas present.
+    canvas_full: bool,
+    /// The backend reported a lost context and its facts were dropped (`lose`); cleared on restore.
+    context_lost: bool,
+    /// `width` x `height` were asked for while the context was lost (or the backend refused them on
+    /// restore): the backend still has to be resized to them.
+    resize_pending: bool,
     textures: HashMap<String, B::Texture>,
     /// One slot per draw index in the geometry currently being rendered.
     /// `None` means "not built yet" (or invalidated). The hot path: a hit
@@ -334,12 +349,6 @@ pub struct Renderer<B: GpuBackend = WgpuBackend> {
     pub present_calls: u64,
     phase_identity: Option<PhaseIdentity>,
     active_operation_id: Option<u32>,
-    /// wgpu-core 30 re-emits program + vertex-attribute GL state on every
-    /// `set_pipeline`, even a repeat of the last one — most draws in a pass
-    /// share a pipeline (mix vs add blend), so a per-pass "did it change"
-    /// check skips that work. Runtime-gated: `false` (the default)
-    /// reproduces today's call sequence exactly; see `set_draw_state_dedupe`.
-    draw_state_dedupe: bool,
     /// Runtime-gated damage present (`set_damage_present`). `false` (the
     /// default) reproduces today's full redraw and present exactly.
     damage_present: bool,
@@ -834,7 +843,7 @@ impl Renderer<WgpuBackend> {
         height: u32,
     ) -> Result<Self, String> {
         let backend = WgpuBackend::new(instance, surface, width, height).await?;
-        Ok(Self::with_backend(backend, width, height))
+        Self::with_backend(backend, width, height)
     }
     /// The direct present (`mode` is not `Surface`): create `canvas`'s WebGL2 context with the
     /// mode's attributes and build the adapter on it. No `wgpu::Surface` exists; `present` draws
@@ -848,19 +857,33 @@ impl Renderer<WgpuBackend> {
         height: u32,
     ) -> Result<Self, String> {
         let backend = WgpuBackend::new_direct(instance, canvas, mode, width, height).await?;
-        Ok(Self::with_backend(backend, width, height))
+        Self::with_backend(backend, width, height)
+    }
+    /// Follow `canvas`'s context-loss events (the surface path). A lost context fails every present
+    /// with `contextLost`; recovery is a new renderer.
+    #[cfg(target_arch = "wasm32")]
+    pub fn watch_context_loss(&mut self, canvas: &web_sys::HtmlCanvasElement) {
+        self.backend.watch_context_loss(canvas);
     }
 }
 impl<B: GpuBackend> Renderer<B> {
     /// A renderer over a constructed backend whose output is `width` x `height`.
-    pub fn with_backend(backend: B, width: u32, height: u32) -> Self {
+    pub fn with_backend(backend: B, width: u32, height: u32) -> Result<Self, String> {
         let max_side = backend.max_texture_side();
-        let (texture_creations, buffer_creations) = backend.creation_baseline();
-        Self {
+        if width.max(height) > max_side {
+            return Err(format!(
+                "surface {width}x{height} exceeds max texture side {max_side}"
+            ));
+        }
+        let baseline = backend.creation_baseline();
+        Ok(Self {
             backend,
             width: width.max(1),
             height: height.max(1),
             design_globals_size: None,
+            canvas_full: true,
+            context_lost: false,
+            resize_pending: false,
             textures: HashMap::new(),
             bind_cache: Vec::new(),
             content_bind_cache: HashMap::new(),
@@ -879,8 +902,8 @@ impl<B: GpuBackend> Renderer<B> {
             upload_calls: 0,
             upload_bytes: 0,
             instance_upload_bytes: 0,
-            texture_creations,
-            buffer_creations,
+            texture_creations: baseline.textures,
+            buffer_creations: baseline.buffers,
             draw_calls: 0,
             completed_presents: 0,
             incremental_patches: 0,
@@ -889,7 +912,6 @@ impl<B: GpuBackend> Renderer<B> {
             present_calls: 0,
             phase_identity: None,
             active_operation_id: None,
-            draw_state_dedupe: false,
             damage_present: false,
             damage_verify: false,
             damage: None,
@@ -902,7 +924,7 @@ impl<B: GpuBackend> Renderer<B> {
             idle_last_result: None,
             #[cfg(feature = "fault-injection")]
             validation_failure_once: false,
-        }
+        })
     }
     pub fn backend_name(&self) -> &str {
         self.backend.name()
@@ -910,18 +932,19 @@ impl<B: GpuBackend> Renderer<B> {
     pub fn present_mode(&self) -> PresentMode {
         self.backend.present_mode()
     }
-    /// Opt into the pipeline-dedupe draw path (default `false`: unchanged).
-    /// One artifact serves both A/B arms this way.
+    /// Opt into the pipeline-dedupe draw path (default `false`: unchanged). A backend option: wgpu
+    /// skips a repeated `set_pipeline`; a backend that never repeats state ignores it.
     pub fn set_draw_state_dedupe(&mut self, enabled: bool) {
-        self.draw_state_dedupe = enabled;
+        self.backend.set_draw_state_dedupe(enabled);
     }
     /// Opt into the damage present (default `false`: unchanged). While on, a
     /// patch redraws only the picture pixels it can change, in place, and a
     /// present with nothing to change skips the GPU entirely. The first
     /// present after enabling is a full redraw.
     pub fn set_damage_present(&mut self, enabled: bool) {
-        if enabled && self.backend.ensure_damage_clear() {
-            self.texture_creations += 1;
+        if enabled {
+            let created = self.backend.ensure_damage_clear();
+            self.count_created(created);
         }
         if enabled != self.damage_present {
             self.damage = None;
@@ -965,6 +988,80 @@ impl<B: GpuBackend> Renderer<B> {
     pub fn max_texture_side(&self) -> u32 {
         self.backend.max_texture_side()
     }
+    fn count_created(&mut self, created: Created) {
+        self.texture_creations += created.textures;
+        self.buffer_creations += created.buffers;
+    }
+    /// Follow the backend's context state. A loss drops every GPU-side fact (once per loss) and
+    /// refuses the operation; a restore starts again from nothing: the caller uploads and admits.
+    fn sync_context(&mut self) -> Result<(), String> {
+        match self.backend.context_state() {
+            ContextState::Ready => Ok(()),
+            ContextState::Lost => {
+                self.lose();
+                Err(BackendError::Lost.to_string())
+            }
+            ContextState::Restored => {
+                self.lose();
+                self.context_lost = false;
+                // A resize asked for while lost: the restored backend is still at its old size.
+                if std::mem::take(&mut self.resize_pending) {
+                    match self.backend.resize(self.width, self.height) {
+                        Ok(created) => self.count_created(created),
+                        Err(BackendError::Lost) => {
+                            self.resize_pending = true;
+                            self.lose();
+                            return Err(BackendError::Lost.to_string());
+                        }
+                        Err(BackendError::Failed(error)) => {
+                            // Keep asking on the next call; the renderer's size is the requested one.
+                            self.resize_pending = true;
+                            return Err(error);
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+    /// Pick up the backend's context state now rather than on the next call: for a caller's
+    /// `webglcontextrestored` handler. `true` when the context is usable (a restore was taken, or it
+    /// was never lost); `false` while it is lost, including a restore the backend could not complete.
+    pub fn restore_context(&mut self) -> bool {
+        self.sync_context().is_ok()
+    }
+    /// The GPU context is gone: forget every texture, bind, picture and residency fact it held, and
+    /// the committed scene drawn with them. The old context's objects are dropped, not released.
+    fn lose(&mut self) {
+        if self.context_lost {
+            return;
+        }
+        self.context_lost = true;
+        self.reset_gpu_facts();
+    }
+    /// Forget every GPU-side fact (textures, binds, pictures, residency) and the committed scene.
+    fn reset_gpu_facts(&mut self) {
+        self.bind_cache.clear();
+        self.content_bind_cache.clear();
+        self.textures.clear();
+        self.design_globals_size = None;
+        self.instance_capacity = 0;
+        self.committed_picture = None;
+        self.committed_geometry = Geometry::default();
+        self.canvas_full = true;
+        self.resources = ResourceStore::with_max_side(self.backend.max_texture_side());
+        self.admitted_dimensions_epoch = 0;
+        self.state = SceneState::default();
+        self.staged = None;
+        self.staged_patch_ids = None;
+        self.staged_delta = None;
+        self.slot_undo.clear();
+        self.resource_index_cache = None;
+        self.committed_resource_epoch += 1;
+        self.damage = None;
+        self.damage_dirty_keys.clear();
+        self.idle = None;
+    }
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), String> {
         let max = self.max_texture_side();
         if width.max(height) > max {
@@ -972,12 +1069,30 @@ impl<B: GpuBackend> Renderer<B> {
                 "surface {width}x{height} exceeds max texture side {max}"
             ));
         }
-        self.width = width.max(1);
-        self.height = height.max(1);
-        self.backend.resize(width, height);
-        // The backend recreated both pictures and the surface quad.
-        self.texture_creations += 2;
-        self.buffer_creations += 1;
+        let (width, height) = (width.max(1), height.max(1));
+        if self.sync_context().is_err() {
+            // While lost, record the size; the restore applies it (`sync_context`).
+            self.width = width;
+            self.height = height;
+            self.resize_pending = true;
+            return Ok(());
+        }
+        match self.backend.resize(width, height) {
+            Ok(created) => self.count_created(created),
+            Err(BackendError::Lost) => {
+                self.lose();
+                self.width = width;
+                self.height = height;
+                self.resize_pending = true;
+                return Ok(());
+            }
+            // Refused: the backend kept its size and pictures, and so does the renderer.
+            Err(BackendError::Failed(error)) => return Err(error),
+        }
+        self.width = width;
+        self.height = height;
+        self.resize_pending = false;
+        self.canvas_full = true;
         self.committed_picture = None;
         self.damage = None;
         self.staged = None;
@@ -990,40 +1105,31 @@ impl<B: GpuBackend> Renderer<B> {
     }
     pub fn upload_rgba_batch(&mut self, bytes: &[u8]) -> Result<usize, String> {
         let _phase = PhaseSpan::new(self.phase_identity.as_ref(), "upload");
+        self.sync_context()?;
         let batch = self.resources.plan_batch(bytes)?;
         let changed = &batch.changes;
         validate_gpu_changes(changed, |key| self.textures.contains_key(key))?;
         let uploaded_pixels: usize = changed.iter().map(ResourceChange::byte_len).sum();
         let mut created = 0;
         for change in changed {
-            match change {
+            let (key, texture) = match change {
                 ResourceChange::Allocate {
                     key,
                     width,
                     height,
                     format,
-                } => {
-                    let texture = self.backend.create_texture(*width, *height, *format, None);
-                    if let Some(old) = self.textures.insert(key.clone(), texture) {
-                        self.backend.release_texture(old);
-                    }
-                    created += 1;
-                }
+                } => (key, self.backend.create_texture(*width, *height, *format, None)),
                 ResourceChange::Replace {
                     key,
                     width,
                     height,
                     format,
                     pixels,
-                } => {
-                    let texture =
-                        self.backend
-                            .create_texture(*width, *height, *format, Some(pixels));
-                    if let Some(old) = self.textures.insert(key.clone(), texture) {
-                        self.backend.release_texture(old);
-                    }
-                    created += 1;
-                }
+                } => (
+                    key,
+                    self.backend
+                        .create_texture(*width, *height, *format, Some(pixels)),
+                ),
                 ResourceChange::Subrect {
                     key,
                     x,
@@ -1038,11 +1144,32 @@ impl<B: GpuBackend> Renderer<B> {
                         .ok_or("subrect texture missing on GPU")?;
                     self.backend
                         .write_texture(texture, *x, *y, *width, *height, pixels);
+                    continue;
                 }
                 ResourceChange::Release { key } => {
                     if let Some(texture) = self.textures.remove(key) {
                         self.backend.release_texture(texture);
                     }
+                    continue;
+                }
+            };
+            match texture {
+                Ok(texture) => {
+                    if let Some(old) = self.textures.insert(key.clone(), texture) {
+                        self.backend.release_texture(old);
+                    }
+                    created += 1;
+                }
+                // A creation the context refused mid-batch: it is lost, and so is this batch.
+                Err(BackendError::Lost) => {
+                    self.lose();
+                    return Err(BackendError::Lost.to_string());
+                }
+                Err(BackendError::Failed(error)) => {
+                    // Earlier ops of this batch reached the GPU but not the residency store, so
+                    // neither can be trusted: start again from nothing, as after a loss.
+                    self.reset_gpu_facts();
+                    return Err(format!("texture creation: {error}"));
                 }
             }
         }
@@ -1075,8 +1202,21 @@ impl<B: GpuBackend> Renderer<B> {
         self.texture_creations += created;
         Ok(changed_len)
     }
+    /// A refused admission: the backend's context is lost (its residency is gone).
+    fn lost_admission(error: String) -> Admission {
+        Admission {
+            accepted: false,
+            revision: None,
+            unsupported_commands: 0,
+            resource_pending: 0,
+            error: Some(error),
+        }
+    }
     pub fn admit_scene(&mut self, bytes: &[u8]) -> Admission {
         let _phase = PhaseSpan::new(self.phase_identity.as_ref(), "admit");
+        if let Err(error) = self.sync_context() {
+            return Self::lost_admission(error);
+        }
         self.staged_patch_ids = None;
         self.staged_delta = None;
         let mut candidate = SceneState::default();
@@ -1138,6 +1278,9 @@ impl<B: GpuBackend> Renderer<B> {
     }
     pub fn apply_patch(&mut self, bytes: &[u8]) -> Admission {
         let _phase = PhaseSpan::new(self.phase_identity.as_ref(), "admit");
+        if let Err(error) = self.sync_context() {
+            return Self::lost_admission(error);
+        }
         let patch: Patch = match serde_json::from_slice(bytes) {
             Ok(patch) => patch,
             Err(error) => {
@@ -1416,6 +1559,9 @@ impl<B: GpuBackend> Renderer<B> {
         self.present_calls += 1;
         self.last_damage = None;
         self.last_blit_pixels = 0;
+        if self.sync_context().is_err() {
+            return self.lost_present();
+        }
         let candidate_scene = self
             .staged
             .as_ref()
@@ -1559,15 +1705,13 @@ impl<B: GpuBackend> Renderer<B> {
         // An empty partial plan changes no pixel: no picture pass, no copy,
         // no frame acquisition, no present. The state still commits below.
         let skip = partial_rects.is_some_and(|rects| rects.is_empty()) && !self.fault_armed();
-        // The canvas regions this present will write, captured before `plan` commits below. A
-        // preserved canvas takes only a partial plan's rectangles (`present::blit_regions`).
-        let blit_partial = partial_rects.map(<[DeviceRect]>::to_vec);
         let frame = if skip {
             None
         } else {
             match self.backend.acquire_frame() {
                 Ok(frame) => frame,
-                Err(error) => return self.failed(&error, 0, 0),
+                Err(BackendError::Lost) => return self.lost_present(),
+                Err(BackendError::Failed(error)) => return self.failed(&error, 0, 0),
             }
         };
         // Surface: an acquired frame means this present renders and presents. Canvas: no frame
@@ -1608,8 +1752,8 @@ impl<B: GpuBackend> Renderer<B> {
             let needed = g.instances.len().max(1);
             if needed > self.instance_capacity {
                 self.instance_capacity = needed.next_power_of_two();
-                self.backend.grow_instances(self.instance_capacity);
-                self.buffer_creations += 1;
+                let created = self.backend.grow_instances(self.instance_capacity);
+                self.count_created(created);
                 dirty.push((0, g.instances.len()));
             } else if candidate_same_layout == Some(true) {
                 dirty = candidate_dirty.take().unwrap_or_else(|| {
@@ -1675,6 +1819,12 @@ impl<B: GpuBackend> Renderer<B> {
         let mut partial_work = (0u64, 0u64);
         // The picture the canvas shows after this present: the one just drawn, else the committed one.
         let shown_picture = target.or(self.committed_picture);
+        // `fault-injection` builds: this present's GPU work is refused as a failed validation would
+        // refuse it (nothing runs), whatever the backend.
+        #[cfg(feature = "fault-injection")]
+        let injected_failure = render && std::mem::take(&mut self.validation_failure_once);
+        #[cfg(not(feature = "fault-injection"))]
+        let injected_failure = false;
         if render {
             let picture = match (render_geometry, target) {
                 (Some(g), Some(target)) => Some(PicturePass {
@@ -1688,27 +1838,22 @@ impl<B: GpuBackend> Renderer<B> {
                             rects: rects.rects(),
                             selection,
                         },
-                        _ => PictureRegion::Full {
-                            dedupe_pipelines: self.draw_state_dedupe,
-                        },
+                        _ => PictureRegion::Full,
                     },
                 }),
                 _ => None,
             };
-            #[cfg(feature = "fault-injection")]
-            let inject_validation_failure = std::mem::take(&mut self.validation_failure_once);
-            #[cfg(not(feature = "fault-injection"))]
-            let inject_validation_failure = false;
-            let partial = self.backend.encode(FrameWork {
-                picture,
-                surface_copy: frame
-                    .as_ref()
-                    .map(|frame| (frame, shown_picture.expect("picture exists"))),
-                inject_validation_failure,
-            });
-            if let Some((issued, pixels)) = partial {
-                draws = surface_draws + issued;
-                partial_work = (issued as u64, pixels);
+            if !injected_failure {
+                let partial = self.backend.encode(FrameWork {
+                    picture,
+                    surface_copy: frame
+                        .as_ref()
+                        .map(|frame| (frame, shown_picture.expect("picture exists"))),
+                });
+                if let Some((issued, pixels)) = partial {
+                    draws = surface_draws + issued;
+                    partial_work = (issued as u64, pixels);
+                }
             }
         } else {
             draws = 0;
@@ -1717,50 +1862,60 @@ impl<B: GpuBackend> Renderer<B> {
         drop(encode_phase);
         // The validation future may suspend here. Its initial poll and wait are unclassified.
         phase_stamp(phase_identity.as_ref(), "validation.wait", "start");
-        let validation = self.backend.end_validation(scope);
+        let mut validation = self.backend.end_validation(scope);
+        if injected_failure {
+            validation = Err(BackendError::Failed("injected validation failure".into()));
+        }
         phase_stamp(phase_identity.as_ref(), "validation.wait", "end");
         let _resume_phase = PhaseSpan::new(phase_identity.as_ref(), "resume");
-        if let Err(error) = validation {
-            // A refused submission may not have written the design size: write it again next time.
-            self.design_globals_size = None;
-            self.restore_instances(&dirty);
-            self.staged = None;
-            self.staged_patch_ids = None;
-            self.staged_delta = None;
-            // The discarded candidate may have populated `bind_cache` slots
-            // that no longer line up with the committed draw table (which
-            // this present never replaced). Realign rather than leave a
-            // length match masking stale content at a reused index.
-            // `content_bind_cache` needs no such reset: a resource-list's
-            // bind group is correct independent of which candidate it was
-            // built for.
-            self.bind_cache = vec![None; self.committed_geometry.draws.len()];
-            // A refused command buffer runs nothing, but the next present
-            // need not rely on that: it redraws the picture whole.
-            self.damage = None;
-            return self.failed(&format!("GPU validation: {error}"), 0, draws);
+        match validation {
+            Ok(()) => {}
+            Err(BackendError::Lost) => return self.lost_present(),
+            Err(BackendError::Failed(error)) => {
+                // A refused command buffer runs nothing: the committed picture is intact.
+                self.discard_candidate(&dirty, false);
+                return self.failed(&format!("GPU validation: {error}"), 0, draws);
+            }
         }
-        // Past validation this present commits: whatever it renamed in place stays renamed.
-        self.slot_undo.clear();
         if let Some(frame) = frame {
             self.backend.present_frame(frame);
             self.completed_presents += 1;
             self.last_blit_pixels = u64::from(self.width) * u64::from(self.height);
         } else if render {
-            match self
-                .backend
-                .present_picture(shown_picture.expect("picture exists"), blit_partial.as_deref())
-            {
-                Ok(pixels) => self.last_blit_pixels = pixels,
-                Err(error) => {
-                    // The picture may already hold this candidate, so drop the damage state: the
-                    // next present redraws and copies whole.
-                    self.damage = None;
+            let picture = shown_picture.expect("picture exists");
+            // A preserved canvas that still shows the previous picture takes only a partial plan's
+            // rectangles; everything else copies the whole picture.
+            let partial = match &plan {
+                DamagePlan::Partial { rects, .. } => Some(rects.rects()),
+                _ => None,
+            };
+            let regions = crate::present::blit_regions(
+                self.backend.present_mode(),
+                self.canvas_full,
+                partial,
+                self.width,
+                self.height,
+            );
+            let scissored = regions != [DeviceRect::full(self.width, self.height)];
+            match self.backend.present_picture(picture, &regions, scissored) {
+                Ok(()) => {
+                    self.canvas_full = false;
+                    self.last_blit_pixels = crate::present::blit_pixels(&regions);
+                }
+                Err(BackendError::Lost) => return self.lost_present(),
+                Err(BackendError::Failed(error)) => {
+                    // The GPU ran this candidate: a partial plan drew it into the committed picture,
+                    // which therefore no longer holds the last accepted frame.
+                    let drew_into_committed = target.is_some() && target == self.committed_picture;
+                    self.discard_candidate(&dirty, drew_into_committed);
+                    self.canvas_full = true;
                     return self.failed(&format!("canvas present: {error}"), 0, draws);
                 }
             }
             self.completed_presents += 1;
         }
+        // This present commits: whatever it renamed in place stays renamed.
+        self.slot_undo.clear();
         if let Some(g) = candidate_geometry {
             if incremental {
                 self.incremental_patches += 1;
@@ -1996,6 +2151,36 @@ impl<B: GpuBackend> Renderer<B> {
             }
         }
     }
+    /// Roll a present's candidate back to the committed state: the instance ranges it wrote, the
+    /// staged scene or patch, and the per-draw binds it may have realigned (`failed` puts back any
+    /// slots it renamed). When the candidate was drawn into the committed picture, that picture is
+    /// no longer the last accepted one and is dropped: the next present needs a full redraw.
+    fn discard_candidate(&mut self, dirty: &[(usize, usize)], drew_into_committed: bool) {
+        // A refused submission may not have written the design size: write it again next time.
+        self.design_globals_size = None;
+        self.restore_instances(dirty);
+        self.staged = None;
+        self.staged_patch_ids = None;
+        self.staged_delta = None;
+        // The discarded candidate may have populated `bind_cache` slots
+        // that no longer line up with the committed draw table (which
+        // this present never replaced). Realign rather than leave a
+        // length match masking stale content at a reused index.
+        // `content_bind_cache` needs no such reset: a resource-list's
+        // bind group is correct independent of which candidate it was
+        // built for.
+        self.bind_cache = vec![None; self.committed_geometry.draws.len()];
+        // The next present redraws the picture whole.
+        self.damage = None;
+        if drew_into_committed {
+            self.committed_picture = None;
+        }
+    }
+    /// A present that found the context lost: drop every GPU fact and fail.
+    fn lost_present(&mut self) -> PresentResult {
+        self.lose();
+        self.failed(&BackendError::Lost.to_string(), 0, 0)
+    }
     fn restore_instances(&mut self, dirty: &[(usize, usize)]) {
         // No capacity means no instance buffer yet: nothing was written.
         if self.instance_capacity > 0 {
@@ -2048,6 +2233,22 @@ impl<B: GpuBackend> Renderer<B> {
             damage_stats: self.damage_present.then_some(self.damage_stats),
             present: self.present_mode().name(),
             blit_pixels: self.last_blit_pixels,
+            context_lost: self.context_lost,
+        }
+    }
+}
+impl<B: GpuBackend> Drop for Renderer<B> {
+    /// Release every resident texture through the backend before the backend itself drops (a GL
+    /// backend's textures are plain handles that dropping does not free). After a loss the old
+    /// context's objects are already gone.
+    fn drop(&mut self) {
+        self.bind_cache.clear();
+        self.content_bind_cache.clear();
+        let textures = std::mem::take(&mut self.textures);
+        if !self.context_lost {
+            for (_, texture) in textures {
+                self.backend.release_texture(texture);
+            }
         }
     }
 }
@@ -2067,4 +2268,253 @@ fn build_texture_bind<B: GpuBackend>(
             .and_then(|key| textures.get(key))
     });
     backend.create_bind(&slots)
+}
+
+/// The renderer's side of the seam, natively: rollback, loss, drop and counters over a recording mock.
+#[cfg(test)]
+mod backend_seam_tests {
+    use super::*;
+    use crate::backend::{ContextState, PartialWork};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    struct Log {
+        live: HashSet<u32>,
+        released: Vec<u32>,
+        presents: Vec<(usize, Vec<DeviceRect>)>,
+        resizes: Vec<(u32, u32)>,
+    }
+    struct Mock {
+        log: Rc<RefCell<Log>>,
+        next: u32,
+        state: Rc<std::cell::Cell<ContextState>>,
+        fail_present: Rc<std::cell::Cell<bool>>,
+    }
+    impl GpuBackend for Mock {
+        type Texture = u32;
+        type Bind = [Option<u32>; TEXTURE_SLOTS];
+        type Frame = ();
+        type Validation = ();
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn present_mode(&self) -> PresentMode {
+            PresentMode::Preserved
+        }
+        fn max_texture_side(&self) -> u32 {
+            4096
+        }
+        fn sampled_texture_slots(&self) -> u32 {
+            16
+        }
+        fn timer_capability(&self) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+        fn creation_baseline(&self) -> Created {
+            Created { textures: 7, buffers: 5 }
+        }
+        fn context_state(&mut self) -> ContextState {
+            let state = self.state.get();
+            if state == ContextState::Restored {
+                self.state.set(ContextState::Ready);
+                self.log.borrow_mut().live.clear();
+            }
+            state
+        }
+        fn resize(&mut self, width: u32, height: u32) -> Result<Created, BackendError> {
+            self.log.borrow_mut().resizes.push((width, height));
+            Ok(Created { textures: 4, buffers: 0 })
+        }
+        fn create_texture(
+            &mut self,
+            _width: u32,
+            _height: u32,
+            _format: ResourceFormat,
+            _pixels: Option<&[u8]>,
+        ) -> Result<u32, BackendError> {
+            self.next += 1;
+            self.log.borrow_mut().live.insert(self.next);
+            Ok(self.next)
+        }
+        fn write_texture(&mut self, _: &u32, _: u32, _: u32, _: u32, _: u32, _: &[u8]) {}
+        fn release_texture(&mut self, texture: u32) {
+            let mut log = self.log.borrow_mut();
+            assert!(log.live.remove(&texture), "released a texture that is not live");
+            log.released.push(texture);
+        }
+        fn create_bind(&self, slots: &[Option<&u32>; TEXTURE_SLOTS]) -> Self::Bind {
+            std::array::from_fn(|i| slots[i].copied())
+        }
+        fn ensure_damage_clear(&mut self) -> Created {
+            Created::default()
+        }
+        fn grow_instances(&mut self, _capacity: usize) -> Created {
+            Created { textures: 0, buffers: 3 }
+        }
+        fn write_instances(&mut self, _first: usize, _instances: &[Instance]) {}
+        fn write_design_size(&mut self, _width: u32, _height: u32) {}
+        fn acquire_frame(&mut self) -> Result<Option<()>, BackendError> {
+            Ok(None)
+        }
+        fn begin_validation(&mut self) {}
+        fn encode(&mut self, work: FrameWork<'_, Self>) -> Option<PartialWork> {
+            match work.picture?.region {
+                PictureRegion::Full => None,
+                PictureRegion::Partial { rects, .. } => Some((rects.len(), 1)),
+            }
+        }
+        fn end_validation(&mut self, _: ()) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn present_frame(&mut self, _: ()) {}
+        fn present_picture(
+            &mut self,
+            picture: usize,
+            regions: &[DeviceRect],
+            _scissored: bool,
+        ) -> Result<(), BackendError> {
+            if self.fail_present.get() {
+                return Err(BackendError::Failed("refused".into()));
+            }
+            self.log.borrow_mut().presents.push((picture, regions.to_vec()));
+            Ok(())
+        }
+    }
+
+    struct Rig {
+        renderer: Renderer<Mock>,
+        log: Rc<RefCell<Log>>,
+        state: Rc<std::cell::Cell<ContextState>>,
+        fail_present: Rc<std::cell::Cell<bool>>,
+    }
+    fn rig() -> Rig {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let state = Rc::new(std::cell::Cell::new(ContextState::Ready));
+        let fail_present = Rc::new(std::cell::Cell::new(false));
+        let mock = Mock {
+            log: log.clone(),
+            next: 0,
+            state: state.clone(),
+            fail_present: fail_present.clone(),
+        };
+        let mut renderer = Renderer::with_backend(mock, 100, 100).unwrap();
+        renderer.set_damage_present(true);
+        Rig {
+            renderer,
+            log,
+            state,
+            fail_present,
+        }
+    }
+    fn rsr1(keys: &[&str]) -> Vec<u8> {
+        let mut v = b"RSR1".to_vec();
+        v.extend((keys.len() as u32).to_le_bytes());
+        for key in keys {
+            for n in [key.len() as u32, 2, 2, 16] {
+                v.extend(n.to_le_bytes());
+            }
+            v.extend(key.as_bytes());
+            v.extend([255u8; 16]);
+        }
+        v
+    }
+    fn quad(id: &str, key: &str, x: f32) -> serde_json::Value {
+        serde_json::json!({"id":id,"kind":"quad","resource":key,"m":[1,0,0,1,x,10],"w":10,"h":10,
+            "src":[0,0,2,2],"color":[1,1,1,1],"blend":"mix","flipH":false,"flipV":false,"colorMatrix":null})
+    }
+    fn scene(revision: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"version":2,"revision":revision,"width":100,"height":100,
+            "designWidth":100,"designHeight":100,
+            "resources":[{"key":"a","width":2,"height":2},{"key":"b","width":2,"height":2}],
+            "commands":[quad("qa","a",10.0),quad("qb","b",60.0)]}))
+        .unwrap()
+    }
+    fn patch(base: u64, x: f32) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"version":1,"baseRevision":base,"revision":base + 1,
+            "updates":[{"id":"qa","command":quad("qa","a",x)}]}))
+        .unwrap()
+    }
+    fn start(rig: &mut Rig) {
+        rig.renderer.upload_rgba_batch(&rsr1(&["a", "b"])).unwrap();
+        assert!(rig.renderer.admit_scene(&scene(1)).accepted);
+        assert!(rig.renderer.present_now().presented);
+    }
+
+    #[test]
+    fn counters_come_from_what_the_backend_reports() {
+        let mut rig = rig();
+        assert_eq!((rig.renderer.texture_creations, rig.renderer.buffer_creations), (7, 5));
+        start(&mut rig);
+        // Two uploaded textures; one instance-buffer growth reported as three buffers.
+        assert_eq!((rig.renderer.texture_creations, rig.renderer.buffer_creations), (9, 8));
+        rig.renderer.resize(50, 40).unwrap();
+        assert_eq!(rig.renderer.texture_creations, 13);
+    }
+
+    #[test]
+    fn a_failed_canvas_present_after_a_partial_redraw_drops_the_committed_picture() {
+        let mut rig = rig();
+        start(&mut rig);
+        assert!(rig.renderer.apply_patch(&patch(1, 12.0)).accepted);
+        rig.fail_present.set(true);
+        let failed = rig.renderer.present_now();
+        assert!(!failed.presented);
+        assert!(!failed.context_lost);
+        // The candidate drew into the committed picture: it is gone, and the scene stays at revision 1.
+        assert_eq!(rig.renderer.state.scene().unwrap().revision, 1);
+        assert_eq!(rig.renderer.committed_picture, None);
+        assert!(!rig.renderer.present_now().presented, "no picture to present without a redraw");
+        rig.fail_present.set(false);
+        assert!(rig.renderer.apply_patch(&patch(1, 12.0)).accepted);
+        let recovered = rig.renderer.present_now();
+        assert!(recovered.presented, "{:?}", recovered.error);
+        assert_eq!(recovered.damage, Some("full"));
+        // A full redraw after the failure presents the whole canvas.
+        let (_, regions) = rig.log.borrow().presents.last().cloned().unwrap();
+        assert_eq!(regions, vec![DeviceRect::full(100, 100)]);
+    }
+
+    #[test]
+    fn a_lost_context_refuses_work_and_a_restore_starts_from_nothing() {
+        let mut rig = rig();
+        start(&mut rig);
+        rig.state.set(ContextState::Lost);
+        let lost = rig.renderer.present_now();
+        assert!(!lost.presented && lost.context_lost);
+        assert!(rig.renderer.upload_rgba_batch(&rsr1(&["c"])).is_err());
+        assert!(!rig.renderer.admit_scene(&scene(2)).accepted);
+        assert!(rig.renderer.textures.is_empty());
+        assert!(rig.renderer.state.scene().is_none());
+        assert!(rig.log.borrow().released.is_empty(), "a lost context's textures are dropped, not released");
+        rig.state.set(ContextState::Restored);
+        rig.renderer.upload_rgba_batch(&rsr1(&["a", "b"])).unwrap();
+        assert!(rig.renderer.admit_scene(&scene(1)).accepted, "revisions start over");
+        let restored = rig.renderer.present_now();
+        assert!(restored.presented && !restored.context_lost, "{:?}", restored.error);
+    }
+
+    #[test]
+    fn a_resize_while_lost_is_applied_on_restore() {
+        let mut rig = rig();
+        start(&mut rig);
+        rig.state.set(ContextState::Lost);
+        rig.renderer.resize(60, 30).expect("a resize while lost is recorded, not refused");
+        assert!(rig.log.borrow().resizes.is_empty());
+        rig.state.set(ContextState::Restored);
+        rig.renderer.upload_rgba_batch(&rsr1(&["a"])).unwrap();
+        assert_eq!(rig.log.borrow().resizes, vec![(60, 30)]);
+        assert_eq!((rig.renderer.width, rig.renderer.height), (60, 30));
+    }
+
+    #[test]
+    fn dropping_the_renderer_releases_every_resident_texture_through_the_backend() {
+        let mut rig = rig();
+        start(&mut rig);
+        let log = rig.log.clone();
+        drop(rig);
+        let log = log.borrow();
+        assert!(log.live.is_empty());
+        assert_eq!(log.released.len(), 2);
+    }
 }

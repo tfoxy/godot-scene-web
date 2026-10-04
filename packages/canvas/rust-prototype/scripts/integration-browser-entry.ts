@@ -16,8 +16,13 @@ const wasm = await import('/rust_prototype.js');
 await wasm.default();
 const params = new URLSearchParams(location.search);
 // GSW_RUST_PRESENT_MODE=<mode> runs the main Rust steps through `createWithPresent(canvas, mode)`.
+// GSW_RUST_BACKEND=gl: the main Rust steps, the damage renderer and every present-parity renderer use the
+// direct-GL backend (`createWithGl(canvas, mode)`, mode `direct` unless given); the full-redraw reference
+// stays on wgpu's surface, so every comparison is also a cross-backend byte comparison.
+const glBackend = params.get('backend') === 'gl';
 const presentMode = params.get('present');
-const rust = presentMode ? await wasm.RustRenderer.createWithPresent(rustCanvas, presentMode)
+const rust = glBackend ? await wasm.RustRenderer.createWithGl(rustCanvas, presentMode ?? 'direct')
+  : presentMode ? await wasm.RustRenderer.createWithPresent(rustCanvas, presentMode)
   : await wasm.RustRenderer.create(rustCanvas);
 // GSW_RUST_DAMAGE_PRESENT=1 runs the main Rust steps (and the fault leg) with the damage present on.
 if (params.get('damage') === '1') rust.set_damage_present(true);
@@ -232,7 +237,8 @@ let DAMAGE_W = 349, DAMAGE_H = 209;
 const DAMAGE_DESIGN_W = 100, DAMAGE_DESIGN_H = 60;
 const damageOnCanvas = document.querySelector<HTMLCanvasElement>('#damageOn')!;
 const damageOffCanvas = document.querySelector<HTMLCanvasElement>('#damageOff')!;
-const damageOn = await wasm.RustRenderer.create(damageOnCanvas);
+const damageOn = glBackend ? await wasm.RustRenderer.createWithGl(damageOnCanvas, 'direct')
+  : await wasm.RustRenderer.create(damageOnCanvas);
 const damageOff = await wasm.RustRenderer.create(damageOffCanvas);
 damageOn.set_damage_present(true);
 damageOn.set_damage_verify(true);
@@ -252,7 +258,8 @@ for (const { id, mode, damage } of presentParity) {
   const canvas = document.createElement('canvas');
   canvas.id = id; canvas.width = DAMAGE_W; canvas.height = DAMAGE_H;
   document.querySelector('#modes')!.append(canvas);
-  const renderer = await wasm.RustRenderer.createWithPresent(canvas, mode);
+  const renderer = glBackend ? await wasm.RustRenderer.createWithGl(canvas, mode)
+    : await wasm.RustRenderer.createWithPresent(canvas, mode);
   if (renderer.present_mode !== mode) throw new Error(`${id}: present_mode ${renderer.present_mode} != ${mode}`);
   if (damage) { renderer.set_damage_present(true); renderer.set_damage_verify(true); }
   damageRenderers.push(renderer);
@@ -261,6 +268,12 @@ for (const { id, mode, damage } of presentParity) {
 let unknownModeError = '';
 try { await wasm.RustRenderer.createWithPresent(document.createElement('canvas'), 'bogus'); }
 catch (error) { unknownModeError = String(error); }
+// The GL backend draws into its canvas: it refuses the surface mode (and unknown modes).
+let glSurfaceError = '';
+if (glBackend) {
+  try { await wasm.RustRenderer.createWithGl(document.createElement('canvas'), 'surface'); }
+  catch (error) { glSurfaceError = String(error); }
+}
 let rngState = 0x5eed1234;
 function rng() {
   rngState = (rngState + 0x6d2b79f5) | 0;
@@ -593,5 +606,61 @@ function damagePlan(count: number, withResize = false) {
     'idleInstall', ...Array.from({ length: 24 }, () => 'idle'), 'idleReadmit', 'probe', 'noop'];
 }
 
-root.proof = { rustSteps, retainedStep, pixiStep, damageStep, damagePlan, presentModes: presentParity.map((p) => p.id),
-  presentMode: rust.present_mode, unknownModeError };
+// Context loss (WEBGL_lose_context) on a renderer of its own: a present while lost fails with `contextLost`
+// (not a refused present); after `webglcontextrestored` the GL backend restores in place and the caller uploads
+// and admits again; a wgpu renderer stays lost and is replaced by a new one on the same canvas.
+const eventOrTimeout = (target: EventTarget, type: string) => new Promise<string>((resolve) => {
+  const timer = setTimeout(() => resolve(`${type}: no event within 5 s`), 5000);
+  target.addEventListener(type, () => { clearTimeout(timer); resolve(''); }, { once: true });
+});
+async function contextLoss() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 16;
+  const create = () => glBackend ? wasm.RustRenderer.createWithGl(canvas, 'preserved')
+    : wasm.RustRenderer.createWithPresent(canvas, 'preserved');
+  const sceneBytes = (revision: number, color: number[], size: number) => enc.encode(JSON.stringify({ version: 2,
+    revision, width: size, height: size, designWidth: 16, designHeight: 16, resources: [], commands: [{ id: 'q',
+      kind: 'quad', resource: null, m: [1, 0, 0, 1, 0, 0], w: 16, h: 16, src: [0, 0, 1, 1], color, blend: 'mix',
+      flipH: false, flipV: false, colorMatrix: null }] }));
+  const step = async (renderer: any, revision: number, color: number[], size = 16) => {
+    const admission = parse(renderer.admit_scene(sceneBytes(revision, color, size)));
+    const result = parse(await renderer.present());
+    return { admission, result };
+  };
+  const pixel = () => {
+    const probe = document.createElement('canvas'); probe.width = probe.height = canvas.width;
+    const ctx = probe.getContext('2d')!; ctx.drawImage(canvas, 0, 0);
+    return [...ctx.getImageData(8, 8, 1, 1).data];
+  };
+  let renderer = await create();
+  const first = await step(renderer, 1, [1, 0, 0, 1]);
+  const firstPixel = pixel();
+  const ext = (canvas.getContext('webgl2') as WebGL2RenderingContext).getExtension('WEBGL_lose_context');
+  if (!ext) return { skipped: 'WEBGL_lose_context unavailable' };
+  const lostEvent = eventOrTimeout(canvas, 'webglcontextlost');
+  ext.loseContext();
+  const lostTimeout = await lostEvent;
+  if (lostTimeout) return { skipped: lostTimeout };
+  const lost = await step(renderer, 2, [0, 1, 0, 1]);
+  let uploadWhileLost = '';
+  try { renderer.upload_rgba_batch(encodeRustResources([{ key: 'k', width: 1, height: 1, pixels: new Uint8Array(4) }])); }
+  catch (error) { uploadWhileLost = String(error); }
+  // A resize while lost is recorded, not refused; the GL backend applies it when it restores.
+  let resizeWhileLost = '';
+  if (glBackend) try { renderer.resize(20, 20); } catch (error) { resizeWhileLost = String(error); }
+  // Chrome allows the restore only once the lost event's dispatch has returned (default prevented).
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const restoredEvent = eventOrTimeout(canvas, 'webglcontextrestored');
+  ext.restoreContext();
+  const restoredTimeout = await restoredEvent;
+  if (restoredTimeout) return { skipped: restoredTimeout, lost };
+  const restoredInPlace = renderer.restore_context();
+  const sameRenderer = await step(renderer, 3, [0, 0, 1, 1], glBackend ? 20 : 16);
+  const replaced = !sameRenderer.result.presented;
+  if (replaced) { renderer.dispose(); renderer = await create(); }
+  const after = replaced ? await step(renderer, 3, [0, 0, 1, 1]) : sameRenderer;
+  return { first, firstPixel, lost, uploadWhileLost, resizeWhileLost, restoredInPlace, sameRenderer, replaced,
+    after, afterPixel: pixel(), afterSize: [canvas.width, canvas.height] };
+}
+root.proof = { rustSteps, contextLoss, retainedStep, pixiStep, damageStep, damagePlan, presentModes: presentParity.map((p) => p.id),
+  presentMode: rust.present_mode, backend: rust.backend, damageBackend: damageOn.backend, unknownModeError, glSurfaceError };
