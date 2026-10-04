@@ -23,12 +23,40 @@ are reused between presents.
 
 `Renderer<B: GpuBackend>` (`src/renderer.rs`) holds everything that is not a
 GPU call: the contract, staging, geometry, the damage plan, the bind caches,
-residency and every counter. The GPU calls go through the `GpuBackend` trait
-(`src/backend/mod.rs`): textures and binds, the instance buffer and design
-size, frame acquisition, one validation scope per present, the picture pass
-(whole or scissored to the damage rectangles) with the surface copy, and the
-present. `WgpuBackend` (`src/backend/wgpu_backend.rs`) is the one
-implementation; `create` and `createWithPresent` build on it.
+residency, which canvas regions a present writes, and every counter. The GPU
+calls go through the `GpuBackend` trait (`src/backend/mod.rs`): textures and
+binds, the instance buffer and design size, frame acquisition, one validation
+scope per present, the picture pass (whole or scissored to the damage
+rectangles) with the surface copy, and the present. Two implementations:
+
+- `WgpuBackend` (`src/backend/wgpu_backend.rs`): `create` and
+  `createWithPresent`.
+- `GlBackend` (`src/backend/gl.rs`, feature `gl-backend`, on in
+  `build-web.sh` by default): `await RustRenderer.createWithGl(canvas, mode)`,
+  `mode` one of `direct`, `preserved`, `preserved-desync` (`surface` and
+  unknown modes are errors). It issues WebGL2 through `glow` on a context it
+  creates, with no wgpu device, queue, encoder or validation scope. It compiles
+  the program wgpu-hal compiles: `build.rs` translates `shader.wgsl` with naga
+  (same version, wgpu-hal's WebGL2 options and binding map) into GLSL ES 3.00,
+  and the present is wgpu-hal's sRGB shader. Samplers, sampler uniforms, the
+  globals block binding, viewport, clear colour and scissor test are set once;
+  each draw start gets its own vertex array (WebGL2 has no base instance), so
+  a draw binds one array and toggles no attributes; framebuffer, program,
+  blending, units, vertex array and scissor are issued only when they change.
+  No fences, no `getError`, no per-frame resets. Its `backend` is
+  `webgl2-gl`. The integration gate (`GSW_RUST_BACKEND=gl`) byte-compares it
+  with the wgpu surface renderer after every step.
+
+**Context loss** is learned from the canvas's `webglcontextlost` /
+`webglcontextrestored` events (and wgpu's device-lost callback), never by
+querying GL. While lost, presents fail with `contextLost: true` in the result
+(distinct from a refused present), and uploads and admissions are refused; the
+renderer drops every texture, bind and residency fact and the committed scene.
+The GL backend restores in place: after `webglcontextrestored` the caller
+uploads and admits again on the same renderer. A wgpu renderer stays lost; the
+caller creates a new one. A present that fails after its GPU work ran rolls
+back the candidate and, if it drew into the committed picture, drops that
+picture, so the next present is a full redraw.
 
 ### Damage present (opt-in)
 
@@ -82,8 +110,8 @@ error, and `present_mode` reports the mode in use.
   or a resize copy the whole picture.
 - `"preserved-desync"`: `preserved` plus `desynchronized: true`.
 
-A lost context is recovered as before, by creating a new renderer, whose
-first present is full. Every result carries `present` (the mode) and
+A lost context fails presents with `contextLost` (see GPU backends); a wgpu
+renderer is recovered by creating a new one, whose first present is full. Every result carries `present` (the mode) and
 `blitPixels`: the pixels this present wrote to the canvas (0 on a skip or
 failure, the whole surface for `surface`, `direct` and full presents, the
 damage area for a `preserved` partial). In the direct modes `draws` no longer
@@ -180,7 +208,7 @@ To check GPU validation rollback with the optional test feature, use a separate
 ignored artifact directory:
 
 ```bash
-GSW_RUST_PROTOTYPE_FEATURES=webgl,fault-injection \
+GSW_RUST_PROTOTYPE_FEATURES=webgl,gl-backend,fault-injection \
   GSW_RUST_PROTOTYPE_OUT="$PWD/.sts2/rust-prototype-web-fault" \
   packages/canvas/rust-prototype/scripts/build-web.sh
 GSW_RUST_PROTOTYPE_OUT="$PWD/.sts2/rust-prototype-web-fault" \
@@ -190,7 +218,10 @@ GSW_RUST_PROTOTYPE_OUT="$PWD/.sts2/rust-prototype-web-fault" \
 
 This writes a separate `.sts2/rust-webgl-fault/receipt.json` and PNG set. The
 fault leg checks that a staged visible patch fails GPU validation, leaves the
-committed revision and picture intact, and succeeds when reapplied.
+committed revision and picture intact, and succeeds when reapplied. The
+failure is injected by the renderer, whatever the backend: the armed present
+runs no GPU work and reports a failed validation, as a refused wgpu command
+buffer would. Add `GSW_RUST_BACKEND=gl` to run any leg on the GL backend.
 
 The browser methods are `upload_rgba_batch(bytes)`, `admit_scene(bytes)`,
 `apply_patch(bytes)`, `resize(width,height)`, `await present()`, and `dispose()`,
@@ -300,7 +331,7 @@ Device loss or failures after the compositor accepts `queue.present` remain
 outside this guarantee and require browser/process presentation evidence.
 
 The optional test-only `fault-injection` feature exposes
-`debugValidationFailureOnce()` for the browser rollback fixture. It is not
+`debugValidationFailureOnce()` for the browser rollback fixture (both backends). It is not
 enabled in normal builds. Detailed CPU phase timing belongs in separate
 diagnostic runs and is absent from the normal present path.
 

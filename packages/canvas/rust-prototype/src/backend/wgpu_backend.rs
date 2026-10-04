@@ -1,7 +1,9 @@
 //! The wgpu implementation of [`GpuBackend`]: a wgpu device on WebGL2 (browser) or any native
 //! adapter, presenting through wgpu's surface or, in the direct present modes, through the canvas
 //! context the backend created ([`crate::present::canvas`]).
-use super::{FrameWork, GpuBackend, PartialWork, PictureRegion};
+use super::{
+    BackendError, ContextState, Created, FrameWork, GpuBackend, PartialWork, PictureRegion,
+};
 use crate::{
     contract::{Blend, Command, Quad, SCENE_VERSION, Scene},
     damage::DeviceRect,
@@ -54,6 +56,13 @@ pub struct WgpuBackend {
     adapter_info: wgpu::AdapterInfo,
     adapter_timestamp_query_supported: bool,
     adapter_texture_slots: u32,
+    /// `set_draw_state_dedupe`: skip a `set_pipeline` to the pipeline already set in a full pass.
+    draw_state_dedupe: bool,
+    /// Set by the device-lost callback (a real loss, not the device's own drop).
+    device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The canvas's loss and restore events, when the backend knows its canvas.
+    #[cfg(target_arch = "wasm32")]
+    loss: Option<crate::present::canvas::LossWatch>,
 }
 /// Poll a future once. Every future the present path awaits (wgpu-core's error-scope pop) is ready on its first
 /// poll, so a present runs to completion synchronously; `None` means a backend broke that assumption.
@@ -108,8 +117,18 @@ impl WgpuBackend {
         // SAFETY: the WebGL GLES instance holds no per-instance adapter state; any GL instance
         // accepts an adapter exposed from an external context.
         let adapter = unsafe { instance.create_adapter_from_hal(exposed) };
+        let loss = crate::present::canvas::LossWatch::new(&canvas);
         let presenter = crate::present::canvas::CanvasPresenter::new(canvas, mode);
-        Self::with_adapter(adapter, Output::Canvas(presenter), width, height).await
+        let mut backend =
+            Self::with_adapter(adapter, Output::Canvas(presenter), width, height).await?;
+        backend.loss = Some(loss);
+        Ok(backend)
+    }
+    /// Follow `canvas`'s context-loss events (the surface path, whose canvas wgpu took). A lost
+    /// context is not restored in place: the caller creates a new renderer.
+    #[cfg(target_arch = "wasm32")]
+    pub fn watch_context_loss(&mut self, canvas: &web_sys::HtmlCanvasElement) {
+        self.loss = Some(crate::present::canvas::LossWatch::new(canvas));
     }
     async fn with_adapter(
         adapter: wgpu::Adapter,
@@ -308,6 +327,13 @@ impl WgpuBackend {
                 .ok_or("device is not a GLES device")?;
             unsafe { presenter.init(hal.context().lock()) }?;
         }
+        let device_lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = device_lost.clone();
+        device.set_device_lost_callback(move |reason, _message| {
+            if reason == wgpu::DeviceLostReason::Unknown {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
         Ok(Self {
             output,
             device,
@@ -330,6 +356,10 @@ impl WgpuBackend {
             adapter_info,
             adapter_timestamp_query_supported,
             adapter_texture_slots: actual.max_sampled_textures_per_shader_stage,
+            draw_state_dedupe: false,
+            device_lost,
+            #[cfg(target_arch = "wasm32")]
+            loss: None,
         })
     }
     /// Redraw `rects` of picture `target` in place: per rectangle, scissor,
@@ -437,11 +467,27 @@ impl GpuBackend for WgpuBackend {
             "gpuElapsedNsReason": "no validated timer query on the executor context"
         })
     }
-    fn creation_baseline(&self) -> (u64, u64) {
+    fn creation_baseline(&self) -> Created {
         // White and the two pictures; the two viewport buffers and the surface quad.
-        (3, 3)
+        Created {
+            textures: 3,
+            buffers: 3,
+        }
     }
-    fn resize(&mut self, width: u32, height: u32) {
+    fn set_draw_state_dedupe(&mut self, enabled: bool) {
+        self.draw_state_dedupe = enabled;
+    }
+    fn context_state(&mut self) -> ContextState {
+        #[cfg(target_arch = "wasm32")]
+        if self.loss.as_ref().is_some_and(|loss| loss.lost()) {
+            return ContextState::Lost;
+        }
+        if self.device_lost.load(std::sync::atomic::Ordering::Relaxed) {
+            return ContextState::Lost;
+        }
+        ContextState::Ready
+    }
+    fn resize(&mut self, width: u32, height: u32) -> Result<Created, BackendError> {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         match &mut self.output {
@@ -469,6 +515,10 @@ impl GpuBackend for WgpuBackend {
             0,
             bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]),
         );
+        Ok(Created {
+            textures: 2,
+            buffers: 1,
+        })
     }
     fn create_texture(
         &mut self,
@@ -476,8 +526,15 @@ impl GpuBackend for WgpuBackend {
         height: u32,
         format: ResourceFormat,
         pixels: Option<&[u8]>,
-    ) -> TextureEntry {
-        create_texture(&self.device, &self.queue, width, height, format, pixels)
+    ) -> Result<TextureEntry, BackendError> {
+        Ok(create_texture(
+            &self.device,
+            &self.queue,
+            width,
+            height,
+            format,
+            pixels,
+        ))
     }
     fn write_texture(
         &mut self,
@@ -500,9 +557,9 @@ impl GpuBackend for WgpuBackend {
             .collect();
         bind_textures(&self.device, &self.texture_layout, &self.sampler, &views)
     }
-    fn ensure_damage_clear(&mut self) -> bool {
+    fn ensure_damage_clear(&mut self) -> Created {
         if self.damage_clear.is_some() {
-            return false;
+            return Created::default();
         }
         let entry = create_texture(
             &self.device,
@@ -519,15 +576,22 @@ impl GpuBackend for WgpuBackend {
             &[&entry.view; TEXTURE_SLOTS],
         );
         self.damage_clear = Some((entry, bind));
-        true
+        Created {
+            textures: 1,
+            buffers: 0,
+        }
     }
-    fn grow_instances(&mut self, capacity: usize) {
+    fn grow_instances(&mut self, capacity: usize) -> Created {
         self.instance_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("grow-only scene instances"),
             size: (capacity * std::mem::size_of::<Instance>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
+        Created {
+            textures: 0,
+            buffers: 1,
+        }
     }
     fn write_instances(&mut self, first: usize, instances: &[Instance]) {
         let buffer = self
@@ -547,13 +611,24 @@ impl GpuBackend for WgpuBackend {
             bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]),
         );
     }
-    fn acquire_frame(&mut self) -> Result<Option<wgpu::SurfaceTexture>, String> {
+    fn acquire_frame(&mut self) -> Result<Option<wgpu::SurfaceTexture>, BackendError> {
         match &self.output {
-            Output::Surface(surface) => match surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(f)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Ok(Some(f)),
-                e => Err(format!("{e:?}")),
-            },
+            Output::Surface(surface) => {
+                let mut acquired = surface.get_current_texture();
+                // An outdated or lost surface is reconfigured and asked once more.
+                if matches!(
+                    acquired,
+                    wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost
+                ) {
+                    surface.configure(&self.device, &self.config);
+                    acquired = surface.get_current_texture();
+                }
+                match acquired {
+                    wgpu::CurrentSurfaceTexture::Success(f)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Ok(Some(f)),
+                    e => Err(BackendError::Failed(format!("{e:?}"))),
+                }
+            }
             #[cfg(target_arch = "wasm32")]
             Output::Canvas(_) => Ok(None),
         }
@@ -580,7 +655,8 @@ impl GpuBackend for WgpuBackend {
                         selection,
                     ));
                 }
-                PictureRegion::Full { dedupe_pipelines } => {
+                PictureRegion::Full => {
+                    let dedupe_pipelines = self.draw_state_dedupe;
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("candidate picture"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -633,72 +709,59 @@ impl GpuBackend for WgpuBackend {
             pass.set_vertex_buffer(0, self.fullscreen_buffer.slice(..));
             pass.draw(0..6, 0..1);
         }
-        #[cfg(feature = "fault-injection")]
-        if work.inject_validation_failure {
-            // Both buffers are 16 bytes and lack copy usages. The validation
-            // scope must refuse this candidate before queue.present.
-            encoder.copy_buffer_to_buffer(&self.surface_globals, 0, &self.design_globals, 0, 32);
-        }
-        #[cfg(not(feature = "fault-injection"))]
-        let _ = work.inject_validation_failure;
         self.queue.submit([encoder.finish()]);
         partial
     }
-    fn end_validation(&mut self, scope: wgpu::ErrorScopeGuard) -> Result<(), String> {
+    fn end_validation(&mut self, scope: wgpu::ErrorScopeGuard) -> Result<(), BackendError> {
         match resolve_now(scope.pop()) {
             Some(None) => Ok(()),
-            Some(Some(error)) => Err(error.to_string()),
-            None => Err("validation scope did not resolve synchronously".into()),
+            Some(Some(error)) => Err(BackendError::Failed(error.to_string())),
+            None => Err(BackendError::Failed(
+                "validation scope did not resolve synchronously".into(),
+            )),
         }
     }
     fn present_frame(&mut self, frame: wgpu::SurfaceTexture) {
         self.queue.present(frame);
     }
-    /// Direct present: draw picture `index` into the canvas, only inside `partial` on a preserved
-    /// canvas that still shows the previous picture. Construction checked every fallible step, so
-    /// an error here means wgpu-hal changed under us.
+    /// Direct present: draw `regions` of picture `index` into the canvas. Construction checked
+    /// every fallible step, so an error here means wgpu-hal changed under us.
     #[cfg(target_arch = "wasm32")]
     fn present_picture(
         &mut self,
         index: usize,
-        partial: Option<&[DeviceRect]>,
-    ) -> Result<u64, String> {
+        regions: &[DeviceRect],
+        scissored: bool,
+    ) -> Result<(), BackendError> {
         let Output::Canvas(presenter) = &mut self.output else {
-            return Err("no canvas output".into());
+            return Err(BackendError::Failed("no canvas output".into()));
         };
         let (width, height) = (self.config.width, self.config.height);
-        let regions = crate::present::blit_regions(
-            presenter.mode,
-            presenter.force_full,
-            partial,
-            width,
-            height,
-        );
-        let scissored = regions != [DeviceRect::full(width, height)];
-        let raw = gl_texture(&self.pictures[index].texture)?;
+        let raw = gl_texture(&self.pictures[index].texture).map_err(BackendError::Failed)?;
         // SAFETY: wgpu-hal's glow context of this device, which is the canvas's context; `raw` is a
         // picture this backend keeps alive, sized to the configured surface.
         let device = unsafe { self.device.as_hal::<wgpu::hal::api::Gles>() }
-            .ok_or("device is not a GLES device")?;
+            .ok_or_else(|| BackendError::Failed("device is not a GLES device".into()))?;
         unsafe {
             presenter.present(
                 device.context().lock(),
                 raw,
-                &regions,
+                regions,
                 scissored,
                 width,
                 height,
             )
-        }?;
-        Ok(crate::present::blit_pixels(&regions))
+        }
+        .map_err(BackendError::Failed)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn present_picture(
         &mut self,
         _index: usize,
-        _partial: Option<&[DeviceRect]>,
-    ) -> Result<u64, String> {
-        Err("no canvas output".into())
+        _regions: &[DeviceRect],
+        _scissored: bool,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::Failed("no canvas output".into()))
     }
 }
 #[cfg(target_arch = "wasm32")]

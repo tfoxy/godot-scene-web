@@ -12,11 +12,15 @@ serde_json = { version = "1", features = ["raw_value"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl"] }
 bytemuck = { version = "1", features = ["derive"] }
 
+[build-dependencies]
+# `gl-backend`: translate shader.wgsl to GLSL at build time, with the naga wgpu-hal uses (same version).
+naga = { version = "=30.0.1", optional = true, features = ["wgsl-in", "glsl-out"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement", "WebGl2RenderingContext", "console"] }
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "WebGl2RenderingContext", "console", "Event", "EventTarget"] }
 # The direct present owns the canvas's WebGL2 context and blits the picture through wgpu-hal's own glow
 # context (`wgpu::hal` is re-exported under the `webgl` feature; glow is not). Same version as wgpu-hal's.
 glow = "=0.17.0"
@@ -25,6 +29,8 @@ glow = "=0.17.0"
 default = []
 webgl = ["wgpu/webgl"]
 fault-injection = []
+# The direct-WebGL2 backend (`RustRenderer.createWithGl`): glow calls with no wgpu device in between.
+gl-backend = ["dep:naga"]
 
 [profile.release]
 opt-level = "s"

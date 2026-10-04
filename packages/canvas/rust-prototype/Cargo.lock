@@ -181,6 +181,7 @@ dependencies = [
  "bytemuck",
  "glow",
  "js-sys",
+ "naga",
  "serde",
  "serde_json",
  "wasm-bindgen",

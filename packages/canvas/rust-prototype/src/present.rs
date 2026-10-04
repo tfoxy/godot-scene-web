@@ -199,14 +199,11 @@ pub mod canvas {
         }
     }
 
-    /// The canvas the direct present writes, plus the present program and its sampler.
+    /// The canvas the direct present writes, plus the present program and its sampler. Which regions
+    /// a present writes is the renderer's decision ([`super::blit_regions`]).
     pub struct CanvasPresenter {
         pub canvas: web_sys::HtmlCanvasElement,
         pub mode: PresentMode,
-        /// The next present covers the whole canvas: set at creation and on resize (which clears
-        /// the canvas), cleared by a present. A lost context is rebuilt by the caller as a new
-        /// renderer, so it starts full too.
-        pub force_full: bool,
         /// Created once with the device (`init`), so a present never creates GL objects.
         program: Option<glow::Program>,
         sampler: Option<glow::Sampler>,
@@ -217,7 +214,6 @@ pub mod canvas {
             Self {
                 canvas,
                 mode,
-                force_full: true,
                 program: None,
                 sampler: None,
             }
@@ -251,11 +247,10 @@ pub mod canvas {
             Ok(())
         }
         /// Size the canvas backing as wgpu-hal's `Surface::configure` does. Setting either
-        /// dimension clears the drawing buffer, so the next present is full.
+        /// dimension clears the drawing buffer, so the next present must be full.
         pub fn set_size(&mut self, width: u32, height: u32) {
             self.canvas.set_width(width);
             self.canvas.set_height(height);
-            self.force_full = true;
         }
         /// Draw `regions` of the picture (raw GL texture `texture`) into the default framebuffer.
         ///
@@ -315,7 +310,6 @@ pub mod canvas {
                 gl.bind_texture(glow::TEXTURE_2D, None);
                 gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             }
-            self.force_full = false;
             Ok(())
         }
         /// Delete the program and sampler (renderer drop).
@@ -329,6 +323,82 @@ pub mod canvas {
             if let Some(sampler) = self.sampler.take() {
                 unsafe { gl.delete_sampler(sampler) };
             }
+        }
+    }
+
+    /// The canvas's `webglcontextlost` / `webglcontextrestored` events, recorded as they fire: the
+    /// hook a backend reads to tell a lost context from a refused operation, without querying GL.
+    /// A loss is `preventDefault`ed so the browser may restore the context.
+    pub struct LossWatch {
+        canvas: web_sys::HtmlCanvasElement,
+        flags: std::rc::Rc<LossFlags>,
+        on_lost: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
+        on_restored: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
+    }
+    #[derive(Default)]
+    struct LossFlags {
+        lost: std::cell::Cell<bool>,
+        restored: std::cell::Cell<bool>,
+    }
+    impl LossWatch {
+        pub fn new(canvas: &web_sys::HtmlCanvasElement) -> Self {
+            let flags = std::rc::Rc::new(LossFlags::default());
+            let lost_flags = flags.clone();
+            let on_lost = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+                move |event: web_sys::Event| {
+                    event.prevent_default();
+                    lost_flags.lost.set(true);
+                    lost_flags.restored.set(false);
+                },
+            );
+            let restored_flags = flags.clone();
+            let on_restored = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+                move |_event: web_sys::Event| restored_flags.restored.set(true),
+            );
+            let _ = canvas.add_event_listener_with_callback(
+                "webglcontextlost",
+                on_lost.as_ref().unchecked_ref(),
+            );
+            let _ = canvas.add_event_listener_with_callback(
+                "webglcontextrestored",
+                on_restored.as_ref().unchecked_ref(),
+            );
+            Self {
+                canvas: canvas.clone(),
+                flags,
+                on_lost,
+                on_restored,
+            }
+        }
+        /// A loss event fired and no restore has been taken since.
+        pub fn lost(&self) -> bool {
+            self.flags.lost.get()
+        }
+        /// After a loss: the restore event fired. Clears both flags (the caller is rebuilding).
+        pub fn take_restored(&self) -> bool {
+            if self.flags.lost.get() && self.flags.restored.get() {
+                self.flags.lost.set(false);
+                self.flags.restored.set(false);
+                true
+            } else {
+                false
+            }
+        }
+        /// Record a loss the backend observed itself (a GL object creation refused).
+        pub fn mark_lost(&self) {
+            self.flags.lost.set(true);
+        }
+    }
+    impl Drop for LossWatch {
+        fn drop(&mut self) {
+            let _ = self.canvas.remove_event_listener_with_callback(
+                "webglcontextlost",
+                self.on_lost.as_ref().unchecked_ref(),
+            );
+            let _ = self.canvas.remove_event_listener_with_callback(
+                "webglcontextrestored",
+                self.on_restored.as_ref().unchecked_ref(),
+            );
         }
     }
 

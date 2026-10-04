@@ -13,10 +13,13 @@ const damageMain = process.env.GSW_RUST_DAMAGE_PRESENT === '1';
 const presentMode = process.env.GSW_RUST_PRESENT_MODE ?? '';
 // GSW_RUST_PRESENT_PARITY=1: every present mode joins the damage sequence (plus a resize), byte-compared.
 const presentParity = process.env.GSW_RUST_PRESENT_PARITY === '1';
+// GSW_RUST_BACKEND=gl: the Rust renderers under test use `createWithGl` (the reference stays wgpu).
+const glBackend = process.env.GSW_RUST_BACKEND === 'gl';
 const evidenceDir = resolve(root, (faultInjection ? '.sts2/rust-webgl-fault' : '.sts2/rust-webgl-integration')
-  + (damageMain ? '-damage' : '') + (presentMode ? `-present-${presentMode}` : '') + (presentParity ? '-parity' : ''));
+  + (glBackend ? '-gl' : '') + (damageMain ? '-damage' : '') + (presentMode ? `-present-${presentMode}` : '')
+  + (presentParity ? '-parity' : ''));
 const query = new URLSearchParams({ ...(damageMain ? { damage: '1' } : {}), ...(presentMode ? { present: presentMode } : {}),
-  ...(presentParity ? { modes: '1' } : {}) }).toString();
+  ...(presentParity ? { modes: '1' } : {}), ...(glBackend ? { backend: 'gl' } : {}) }).toString();
 const glue = await readFile(resolve(wasmOut, 'rust_prototype.js'));
 const wasm = await readFile(resolve(wasmOut, 'rust_prototype_bg.wasm'));
 const bundled = await build({ entryPoints: [resolve(import.meta.dirname, 'integration-browser-entry.ts')],
@@ -37,10 +40,15 @@ try {
   });
   await page.goto(`http://rust-proof.test/${query ? `?${query}` : ''}`, { waitUntil: 'commit' });
   await page.waitForFunction(() => window.proof !== undefined, null, { timeout: 15000 });
-  const { presentModes, presentMode: createdMode, unknownModeError } = await page.evaluate(() => ({
-    presentModes: window.proof.presentModes, presentMode: window.proof.presentMode, unknownModeError: window.proof.unknownModeError }));
-  assert.equal(createdMode, presentMode || 'surface');
+  const { presentModes, presentMode: createdMode, unknownModeError, backend, damageBackend, glSurfaceError } =
+    await page.evaluate(() => ({ presentModes: window.proof.presentModes, presentMode: window.proof.presentMode,
+      unknownModeError: window.proof.unknownModeError, backend: window.proof.backend,
+      damageBackend: window.proof.damageBackend, glSurfaceError: window.proof.glSurfaceError }));
+  assert.equal(createdMode, presentMode || (glBackend ? 'direct' : 'surface'));
   assert.match(unknownModeError, /unknown present mode/);
+  assert.equal(backend, glBackend ? 'webgl2-gl' : 'webgl2');
+  assert.equal(damageBackend, glBackend ? 'webgl2-gl' : 'webgl2');
+  if (glBackend) assert.match(glSurfaceError, /draws into the canvas/);
   await mkdir(evidenceDir, { recursive: true });
   async function capture(id, name, points) {
     const image = await page.locator(`#${id}`).screenshot();
@@ -231,6 +239,30 @@ try {
       results['present-parity'] = { steps: steps.length, identical, modes: modeStats, sequence };
     }
   }
+  if (!faultInjection) {
+    const loss = await page.evaluate(() => window.proof.contextLoss());
+    console.error('contextLoss', JSON.stringify({ skipped: loss.skipped, replaced: loss.replaced, lost: loss.lost?.result?.error }));
+    if (loss.skipped && !/unavailable/.test(loss.skipped)) assert.fail(`context loss leg: ${loss.skipped}`);
+    if (!loss.skipped) {
+      assert.equal(loss.first.result.presented, true, JSON.stringify(loss.first));
+      assert.ok(loss.firstPixel[0] > 245 && loss.firstPixel[1] < 10, JSON.stringify(loss));
+      assert.equal(loss.lost.result.presented, false, JSON.stringify(loss.lost));
+      assert.equal(loss.lost.result.contextLost, true, JSON.stringify(loss.lost));
+      assert.match(loss.uploadWhileLost, /context lost/);
+      // The GL backend restores in place; a wgpu renderer is replaced, as couch does.
+      assert.equal(loss.replaced, !glBackend, JSON.stringify(loss));
+      assert.equal(loss.restoredInPlace, glBackend, JSON.stringify(loss));
+      if (glBackend) {
+        assert.equal(loss.resizeWhileLost, '', JSON.stringify(loss));
+        assert.deepEqual(loss.afterSize, [20, 20], JSON.stringify(loss));
+      }
+      assert.equal(loss.after.result.presented, true, JSON.stringify(loss.after));
+      assert.equal(loss.after.result.contextLost, undefined, JSON.stringify(loss.after));
+      assert.ok(loss.afterPixel[2] > 245 && loss.afterPixel[0] < 10, JSON.stringify(loss));
+    }
+    results['rust-contextLoss'] = { result: { result: loss.after?.result }, pixels: [loss.firstPixel, loss.afterPixel],
+      skipped: loss.skipped, replaced: loss.replaced };
+  }
   for (const [name, change] of [['cold', false], ['warm', false], ['changed', true]]) {
     const result = await page.evaluate((change) => window.proof.retainedStep(change), change);
     const captureResult = await capture('retained', `retained-${name}`, [[32, 32]]);
@@ -256,7 +288,8 @@ try {
   assert.equal(results['pixi-initial'].result.cached, true);
   assert.equal(results['pixi-warm'].result.cached, true);
   assert.equal(results['pixi-patch'].result.cached, false);
-  const receipt = { evidenceDir, faultInjection, damageMain, presentMode: presentMode || 'surface', presentParity,
+  const receipt = { evidenceDir, faultInjection, damageMain, presentMode: presentMode || (glBackend ? 'direct' : 'surface'), presentParity,
+    ...(glBackend ? { backend: 'gl' } : {}),
     presentModes: results['present-parity'],
     source: 'packages/canvas/rust-prototype/scripts/integration-browser-entry.ts',
     glueSha256: createHash('sha256').update(glue).digest('hex'),
