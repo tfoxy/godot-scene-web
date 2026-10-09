@@ -84,3 +84,18 @@ target_link_libraries(rs0_codec_test PRIVATE grc_warnings)
 target_compile_definitions(rs0_codec_test PRIVATE
   GRC_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden")
 add_test(NAME rs0_codec COMMAND rs0_codec_test)
+
+# G1c1: rs_ws, a dependency-free RFC 6455 server on its own I/O thread
+# (protocol/gate1-design.md D3, Q3, Q4). Pure transport: no mirror, no engine,
+# not yet wired into render_stream_capture (G1c2 does that).
+add_executable(rs_ws_test test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp)
+target_include_directories(rs_ws_test PRIVATE src)
+target_link_libraries(rs_ws_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_ws COMMAND rs_ws_test)
+
+# Test-only echo server for the Node and Godot interop self-tests
+# (scripts/test/self-test-rs-ws.ts, receiver/tests/ws_selftest.gd). Not linked
+# into render_stream_capture.
+add_executable(rs_ws_echo test/rs_ws_echo.cpp src/rs_ws.cpp src/rs_sha1.cpp)
+target_include_directories(rs_ws_echo PRIVATE src)
+target_link_libraries(rs_ws_echo PRIVATE grc_warnings Threads::Threads)
