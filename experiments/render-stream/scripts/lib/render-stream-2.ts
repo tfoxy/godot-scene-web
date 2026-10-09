@@ -21,6 +21,17 @@
 // elsewhere (the capture's rs_texture_payload, G2a). decodeTexturePayload()/payloadSha256()/
 // expectedDataBytes() below are the read side, needed to validate `resource` records and
 // `payloads/*.grt` golden vectors.
+//
+// render-stream/3 (../../protocol/render-stream-3.md, G4e1) is implemented IN THIS SAME FILE
+// behind an explicit `version: 2 | 3 = 2` parameter on every exported entry point
+// (splitRecords/decodeRecording/validateRecording/resolveRecording), rather than a forked
+// render-stream-3.ts module -- /3 is /2 plus one draw command (add_msdf_texture_rect_region) and
+// one sabotage kind (perturb-glyph), too small a delta to justify duplicating this module
+// (gate4-design.md G4e1: "Renaming files is not part of this contract"). `version` selects the
+// expected magic (GRS2 vs GRS3) and the decoded/resolved schema strings; every version-2 call
+// site in this repo omits the parameter and is therefore unaffected. The new command and
+// sabotage kind are always representable regardless of `version` -- a /2 stream simply never
+// contains them in practice, since the capture never emits them under /2.
 
 import { createHash } from "node:crypto";
 
@@ -64,7 +75,8 @@ export type SabotageKind =
   | "wrong-hash"
   | "spurious-texture-update"
   | "drop-resource"
-  | "unpin";
+  | "unpin"
+  | "perturb-glyph";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -194,6 +206,14 @@ export interface CommandAddTextureRectRegion {
   clip_uv: boolean;
   f: number;
 }
+/** render-stream-3.md "Command" (new at /3): tex/rect/src/modulate as add_texture_rect_region,
+ * plus the engine's int outline_size, px_range and size/msdf_size scale. */
+export interface CommandAddMsdfTextureRectRegion {
+  op: "add_msdf_texture_rect_region";
+  tex: number | null;
+  outline: number;
+  f: number;
+}
 export interface CommandUnsupported {
   op: "unsupported";
   name: string;
@@ -203,6 +223,7 @@ export type Command =
   | CommandAddRect
   | CommandAddTextureRect
   | CommandAddTextureRectRegion
+  | CommandAddMsdfTextureRectRegion
   | CommandUnsupported;
 
 export interface TransactionItem {
@@ -310,6 +331,11 @@ export type Rs2Meta = SessionMeta | TransactionMeta | ResourceMeta | EndMeta;
 export const MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x32, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-3.md: the GRS3 magic, selected by `version: 3` on splitRecords()/
+// decodeRecording()/validateRecording()/resolveRecording(). MAGIC (GRS2) stays the default.
+export const MAGIC_V3: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x33, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -382,6 +408,7 @@ const SABOTAGE_KINDS = [
   "spurious-texture-update",
   "drop-resource",
   "unpin",
+  "perturb-glyph",
 ] as const;
 
 const TRANSACTION_KEYS = [
@@ -428,6 +455,8 @@ const PARENT_KEYS = ["kind", "id"];
 const ADD_RECT_KEYS = ["op", "aa", "f"];
 const ADD_TEXTURE_RECT_KEYS = ["op", "tex", "tile", "transpose", "f"];
 const ADD_TEXTURE_RECT_REGION_KEYS = ["op", "tex", "transpose", "clip_uv", "f"];
+// render-stream-3.md "Command" (new at /3).
+const ADD_MSDF_TEXTURE_RECT_REGION_KEYS = ["op", "tex", "outline", "f"];
 const UNSUPPORTED_CMD_KEYS = ["op", "name", "reason"];
 const TEXTURE_KEYS = [
   "id",
@@ -726,7 +755,10 @@ function checkSessionSchema(
   ];
   if (!hasExactKeys(meta, SESSION_KEYS))
     return err("session has the wrong top-level keys or order");
-  if (meta.protocol !== "render-stream/2")
+  if (
+    meta.protocol !== "render-stream/2" &&
+    meta.protocol !== "render-stream/3"
+  )
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
     return err('"session_id" is not a string');
@@ -1077,6 +1109,19 @@ function checkTransactionSchema(
               'a commands[] "add_texture_rect_region" entry is malformed',
             );
           }
+        } else if (cmd.op === "add_msdf_texture_rect_region") {
+          if (
+            !hasExactKeys(cmd, ADD_MSDF_TEXTURE_RECT_REGION_KEYS) ||
+            !(cmd.tex === null || (isInt(cmd.tex) && cmd.tex >= 1)) ||
+            !isInt(cmd.outline) ||
+            cmd.outline < 0 ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err(
+              'a commands[] "add_msdf_texture_rect_region" entry is malformed',
+            );
+          }
         } else if (cmd.op === "unsupported") {
           if (
             !hasExactKeys(cmd, UNSUPPORTED_CMD_KEYS) ||
@@ -1198,23 +1243,29 @@ export interface RawRecord {
   bytes: Uint8Array;
 }
 
-export function splitRecords(data: Uint8Array): {
+export function splitRecords(
+  data: Uint8Array,
+  version: 2 | 3 = 2,
+): {
   records: RawRecord[];
   errors: string[];
 } {
+  const expectedMagic = version === 3 ? MAGIC_V3 : MAGIC;
   if (
-    data.length < MAGIC.length ||
-    !bytesEqual(data.subarray(0, MAGIC.length), MAGIC)
+    data.length < expectedMagic.length ||
+    !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
   ) {
-    const got = toHex(data.subarray(0, Math.min(MAGIC.length, data.length)));
+    const got = toHex(
+      data.subarray(0, Math.min(expectedMagic.length, data.length)),
+    );
     return {
       records: [],
-      errors: [`bad-magic: expected ${toHex(MAGIC)}, got ${got}`],
+      errors: [`bad-magic: expected ${toHex(expectedMagic)}, got ${got}`],
     };
   }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const records: RawRecord[] = [];
-  let pos = MAGIC.length;
+  let pos = expectedMagic.length;
   while (pos < data.length) {
     if (pos + 4 > data.length) {
       return {
@@ -1394,12 +1445,15 @@ export function decodeRecord(raw: RawRecord): {
 
 // --------------------------------------------------------------------------------------- decodeRecording
 
-export function decodeRecording(data: Uint8Array): {
-  schema: "render-stream-2-decoded/1";
+export function decodeRecording(
+  data: Uint8Array,
+  version: 2 | 3 = 2,
+): {
+  schema: "render-stream-2-decoded/1" | "render-stream-3-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
-  const split = splitRecords(data);
+  const split = splitRecords(data, version);
   if (split.errors.length > 0) throw new Error(split.errors[0]);
   const records: DecodedRecord[] = [];
   for (const raw of split.records) {
@@ -1412,7 +1466,13 @@ export function decodeRecording(data: Uint8Array): {
     }
     records.push(decoded.record);
   }
-  return { schema: "render-stream-2-decoded/1", magic: toHex(MAGIC), records };
+  const magic = version === 3 ? MAGIC_V3 : MAGIC;
+  return {
+    schema:
+      version === 3 ? "render-stream-3-decoded/1" : "render-stream-2-decoded/1",
+    magic: toHex(magic),
+    records,
+  };
 }
 
 // --------------------------------------------------------------------------------------- texture payload
@@ -1579,16 +1639,20 @@ export interface ResolvedCommand {
     | "add_rect"
     | "add_texture_rect"
     | "add_texture_rect_region"
+    | "add_msdf_texture_rect_region"
     | "unsupported";
   aa?: boolean;
   tex?: number | null;
   tile?: boolean;
   transpose?: boolean;
   clip_uv?: boolean;
+  outline?: number;
   rect?: [number, number, number, number];
   src?: [number, number, number, number];
   color?: [number, number, number, number];
   modulate?: [number, number, number, number];
+  px_range?: number;
+  scale?: number;
   name?: string;
   reason?: UnsupportedCmdReason;
 }
@@ -1723,12 +1787,46 @@ function liftCommand(cmd: Command, cmdF32: number[]): ResolvedCommand {
       modulate,
     };
   }
+  if (cmd.op === "add_msdf_texture_rect_region") {
+    // render-stream-3.md "Command": 14 floats (rect 4, src 4, modulate 4, px_range, scale).
+    const rect = cmdF32.slice(cmd.f, cmd.f + 4) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const src = cmdF32.slice(cmd.f + 4, cmd.f + 8) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const modulate = cmdF32.slice(cmd.f + 8, cmd.f + 12) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const pxRange = cmdF32[cmd.f + 12];
+    const scale = cmdF32[cmd.f + 13];
+    return {
+      op: "add_msdf_texture_rect_region",
+      tex: cmd.tex,
+      outline: cmd.outline,
+      rect,
+      src,
+      modulate,
+      px_range: pxRange,
+      scale,
+    };
+  }
   return { op: "unsupported", name: cmd.name, reason: cmd.reason };
 }
 
 function commandFloatCount(cmd: Command): number {
   if (cmd.op === "add_rect" || cmd.op === "add_texture_rect") return 8;
   if (cmd.op === "add_texture_rect_region") return 12;
+  if (cmd.op === "add_msdf_texture_rect_region") return 14;
   return 0;
 }
 
@@ -2075,7 +2173,8 @@ function checkResolvedInvariants(
     for (const command of item.commands) {
       if (
         (command.op === "add_texture_rect" ||
-          command.op === "add_texture_rect_region") &&
+          command.op === "add_texture_rect_region" ||
+          command.op === "add_msdf_texture_rect_region") &&
         command.tex !== null &&
         command.tex !== undefined
       ) {
@@ -2150,7 +2249,8 @@ function checkResolvedInvariants(
       }
       if (
         (command.op === "add_texture_rect" ||
-          command.op === "add_texture_rect_region") &&
+          command.op === "add_texture_rect_region" ||
+          command.op === "add_msdf_texture_rect_region") &&
         command.tex !== null &&
         command.tex !== undefined
       ) {
@@ -2166,11 +2266,14 @@ function checkResolvedInvariants(
           unsupportedViaDiffuse
         ) {
           // The derived entry's `op` is the RenderingServer method name
-          // (canvas_item_add_texture_rect[_region]), not the wire command's own op.
+          // (canvas_item_add_texture_rect[_region] / _msdf_texture_rect_region), not the wire
+          // command's own op.
           const rsMethod =
             command.op === "add_texture_rect"
               ? "canvas_item_add_texture_rect"
-              : "canvas_item_add_texture_rect_region";
+              : command.op === "add_texture_rect_region"
+                ? "canvas_item_add_texture_rect_region"
+                : "canvas_item_add_msdf_texture_rect_region";
           actualUnsupportedTexture.add(`${item.id}:${rsMethod}`);
         }
       }
@@ -2276,8 +2379,11 @@ function checkResolvedInvariants(
 
 // --------------------------------------------------------------------------------------- validateRecording
 
-export function validateRecording(data: Uint8Array): string[] {
-  const split = splitRecords(data);
+export function validateRecording(
+  data: Uint8Array,
+  version: 2 | 3 = 2,
+): string[] {
+  const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
   if (split.records.length === 0)
     return ["missing-session: the recording has no records"];
@@ -2713,15 +2819,18 @@ export interface ResolvedResource {
 }
 
 export interface ResolvedRecording {
-  schema: "render-stream-2-resolved/1";
+  schema: "render-stream-2-resolved/1" | "render-stream-3-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
   resources: ResolvedResource[];
 }
 
-export function resolveRecording(data: Uint8Array): ResolvedRecording {
-  const decoded = decodeRecording(data);
+export function resolveRecording(
+  data: Uint8Array,
+  version: 2 | 3 = 2,
+): ResolvedRecording {
+  const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
   if (sessionRecord.meta.type !== "session")
     throw new Error("missing-session: the first record is not a session");
@@ -2756,7 +2865,10 @@ export function resolveRecording(data: Uint8Array): ResolvedRecording {
     });
   }
   return {
-    schema: "render-stream-2-resolved/1",
+    schema:
+      version === 3
+        ? "render-stream-3-resolved/1"
+        : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

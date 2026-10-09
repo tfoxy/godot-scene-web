@@ -48,6 +48,19 @@ inline constexpr const char *kProtocol = "render-stream/2";
 inline constexpr const char *kPublication = "snapshot-or-patch";
 inline constexpr const char *kPayloadSchema = "render-stream-texture/1";
 
+// render-stream/3 (G4e1, render-stream-3.md): /2 plus one draw command
+// (AddMsdfTextureRectRegion) and one host sabotage kind (PerturbGlyph). Rather than fork this
+// whole module the way rs1 forked from rs0, /3 is implemented AS a protocol-version switch on
+// Session (Session::version) inside the same rs2_* modules (gate4-design.md G4e1: "Renaming files
+// is not part of this contract"). encode_session() picks the magic/protocol string from
+// Session::version; everything else -- the new CommandKind and SabotageKind values -- is always
+// representable, since a /2 session simply never uses them.
+inline constexpr std::array<std::uint8_t, 8> kMagicV3 = {0x47, 0x52, 0x53, 0x33,
+                                                          0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV3 = "render-stream/3";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3 };
+
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
 inline constexpr std::size_t kItemFloats = 18;    // xform 6, modulate 4, self_modulate 4, custom rect 4
@@ -55,6 +68,8 @@ inline constexpr std::size_t kCanvasFloats = 6;   // xform 6
 inline constexpr std::size_t kAddRectFloats = 8;              // rect 4, colour 4
 inline constexpr std::size_t kAddTextureRectFloats = 8;       // rect 4, modulate 4
 inline constexpr std::size_t kAddTextureRectRegionFloats = 12;  // rect 4, src 4, modulate 4
+// new at /3: rect 4, src 4, modulate 4, px_range 1, scale 1 (render-stream-3.md "Command").
+inline constexpr std::size_t kAddMsdfTextureRectRegionFloats = 14;
 
 inline constexpr std::size_t kMaxLiveItems = 4096;
 inline constexpr std::size_t kMaxCommandsPerItem = 1024;
@@ -85,7 +100,14 @@ enum class CanvasRole : std::uint8_t { None, Root };  // None -> JSON null
 
 enum class ParentKind : std::uint8_t { None, Canvas, Item };  // None -> JSON null
 
-enum class CommandKind : std::uint8_t { AddRect, AddTextureRect, AddTextureRectRegion, Unsupported };
+// AddMsdfTextureRectRegion: new at /3 (render-stream-3.md "Command").
+enum class CommandKind : std::uint8_t {
+  AddRect,
+  AddTextureRect,
+  AddTextureRectRegion,
+  AddMsdfTextureRectRegion,
+  Unsupported,
+};
 
 // CanvasTextureHeadless (G2d): a texture draw naming RID() on a headless host, whose dummy
 // storage's canvas_texture_allocate() returns RID() (render-stream-2.md "Commands").
@@ -131,6 +153,7 @@ enum class SabotageKind : std::uint8_t {
   SpuriousTextureUpdate,   // new at /2
   DropResource,            // new at /2 (G2c2)
   Unpin,                   // new at /2 (G2c2)
+  PerturbGlyph,            // new at /3 (G4e1/G4e2, render-stream-3.md)
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -233,6 +256,7 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::SpuriousTextureUpdate: return "spurious-texture-update";
   case SabotageKind::DropResource: return "drop-resource";
   case SabotageKind::Unpin: return "unpin";
+  case SabotageKind::PerturbGlyph: return "perturb-glyph";
   }
   return "";
 }
@@ -413,6 +437,10 @@ struct Sabotage {
 };
 
 struct Session {
+  // Which wire format encode_session()/encode_transaction() produce (render-stream-3.md
+  // "render-stream/3"). Defaults to V2, so existing /2 callers that never set this field are
+  // unaffected -- golden-2/ must keep passing unchanged (gate4-design.md G4e1).
+  ProtocolVersion version = ProtocolVersion::V2;
   std::string session_id;
   StreamInfo stream;
   EngineInfo engine;
@@ -436,11 +464,12 @@ struct ParentRef {
 };
 
 // One command. Which fields are meaningful is determined by `kind` (render-stream-2.md
-// "Commands"):
-//   AddRect              antialiased, rect, color
-//   AddTextureRect       tex, tile, transpose, rect, modulate
-//   AddTextureRectRegion  tex, transpose, clip_uv, rect, src, modulate
-//   Unsupported          name, reason
+// "Commands"; render-stream-3.md "Command" for AddMsdfTextureRectRegion):
+//   AddRect                   antialiased, rect, color
+//   AddTextureRect            tex, tile, transpose, rect, modulate
+//   AddTextureRectRegion      tex, transpose, clip_uv, rect, src, modulate
+//   AddMsdfTextureRectRegion  tex, msdf_outline, rect, src, modulate, msdf_px_range, msdf_scale
+//   Unsupported               name, reason
 struct Command {
   CommandKind kind = CommandKind::AddRect;
   bool antialiased = false;
@@ -452,9 +481,14 @@ struct Command {
   Rect4 rect = kZeroRect;
   Rect4 src = kZeroRect;
   Color4 color = kWhite;     // AddRect
-  Color4 modulate = kWhite;  // AddTextureRect / AddTextureRectRegion
+  Color4 modulate = kWhite;  // AddTextureRect / AddTextureRectRegion / AddMsdfTextureRectRegion
   std::string name;          // Unsupported: the hooked RenderingServer method name
   UnsupportedCmdReason unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
+  // new at /3 (AddMsdfTextureRectRegion only): the engine's int outline_size, px_range and
+  // size/msdf_size scale (render-stream-3.md "Command"; gate4-design.md Q1g).
+  std::int32_t msdf_outline = 0;
+  float msdf_px_range = 0.0f;
+  float msdf_scale = 0.0f;
 };
 
 // The mirror's full state for one item at one frame: always carries its complete `commands`.
