@@ -48,3 +48,7 @@ fixtures/assets/fonts/roboto-msdf/*.ttf
 # Playground particle-verify harness: a machine-local symlink to an external Godot
 # project (recreate per scripts/serve note); never committed or linted.
 apps/playground/public/recovered
+
+# Gate -1 render-stream capture library: CMake build tree and the .gdextension
+# file CMake generates into it with absolute paths.
+experiments/render-stream/capture/build/
