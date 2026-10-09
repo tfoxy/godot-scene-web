@@ -197,6 +197,10 @@ experiments/render-stream/scripts/build-capture.sh
 # templates under artifacts/render-stream/calibration/
 experiments/render-stream/scripts/calibrate.sh
 experiments/render-stream/scripts/calibrate.sh --check   # diff, do not overwrite
+
+# an engine fork that rebrands GODOT_VERSION_NAME (the version string is "<name> v<build>")
+python3 experiments/render-stream/capture/tools/calibrate.py --binary <elf> \
+  --header ../godot-4.5.1-stable/servers/rendering_server.h --version-name MegaDot --out <record>
 ```
 
 The build writes `capture/build/librender_stream_capture.so` and
@@ -245,8 +249,23 @@ startup-loaded extension reaches SCENE initialisation at `main/main.cpp:3633`,
 before `register_server_singletons()` at `main/main.cpp:3704`, so
 `global_get_singleton("RenderingServer")` would still be null; the attempt is
 then retried from the `startup` callback and from each `frame` callback until the
-singleton exists. That fallback is source-derived, not exercised by the scratch
-runs. Only the first successful attempt decides.
+singleton exists. Only the first successful attempt decides.
+
+That deferred path was first run on 2026-10-09, with the extension listed in a
+scratch project's `.godot/extension_list.cfg` on the pinned template. It refused
+a correct record as `slot-mask-mismatch`: the retry re-parsed the record into the
+same lists and the anchors doubled to 34/17. Loading the record and collecting the
+fingerprint now start from empty. With that change the startup-loaded extension
+defers at `scene-init` and decides at `startup`: `validated` in validate mode;
+`armed` in arm mode, where the scripted `add_rect` is bit-exact, and then
+disarmed and restored. A `load_extension` from a `--script` `SceneTree._initialize`
+arms at `scene-init` directly.
+
+A mod's managed code always runs after the singletons exist, because
+`ScriptServer::init_languages()` follows `register_server_singletons()`
+(`main/main.cpp:3707`). So a `GDExtensionManager.LoadExtension` call from mod code
+decides at `scene-init` and never needs the deferred path. Gate −0.5 measured the
+same on the target game.
 
 Evidence files, exactly as the runner expects:
 
@@ -378,17 +397,39 @@ the change.
   complete. The 23 draw-path hooks added afterwards are covered in the next
   section.
 - Only Linux x86-64 and this one binary were tested. The startup-loaded path (deferred
-  arming) is derived from source and has not been run.
+  arming) was not run here; it was run, and fixed, on 2026-10-09 (see "Runtime contract").
 - MegaDot and the shipped game were not tested. Their stripped fork needs its own
   record, which is gate −0.5.
 - No costs were measured.
 
-### Next bounded step
+## Gate −0.5 result (2026-10-09)
 
-Gate −0.5 needs the operator's explicit go-ahead. It runs this library unmodified,
-`GRC_MODE=validate` only, against the installed target binary in an owned, isolated
-headless instance under that repository's instance rules. It records the
-accept-or-refuse decision and the anchors matched, and writes no memory.
+**Pass.** The operator approved the run. The library ran unmodified with
+`GRC_MODE=validate` against the installed STS2 binary (`MegaDot v4.5.1.m.14.mono.custom_build`,
+non-PIE, with a GNU build-id). The instance was owned, isolated and `--headless`, run under
+sts2-couch-coop's instance rules.
+
+- **Offline calibration.** `calibrate.py --version-name MegaDot` against the pinned 4.5.1 header gives
+  588 slots: Object prefix **23** plus 565 `RenderingServer` virtuals. **17/17** anchors match, the
+  mask is unique, so there are no interior insertions, and the pure placeholder is 0. The hooked-slot
+  indices are identical to the stock release template's. The record holds addresses and a digest of a
+  commercial binary, so it is kept in that repository's ignored research folder, not here.
+- **Load route.** The modder route. An env-gated, dev-only couch-coop hook calls
+  `GDExtensionManager.LoadExtension(<absolute .gdextension>)` at mod init and logs `LoadStatus` `Ok`.
+  It runs on a couch-coop branch and is not merged. The mod was deployed into a private game-root
+  copy, not into the install. The extension decided at `scene-init`.
+- **Decision.** `validated`, `vptr_written: false`. All 13 runtime checks pass: digest, version
+  string, build-id, bias, live concrete vptr equal to the recorded address + 16, anchors 17/17 in
+  memory, hooked slots pure in the abstract table and implemented in the concrete one, and the
+  `get_default_clear_color` probe byte-equal through the slot and through the method bind. The game
+  reached its normal main-menu readiness and stayed up through the settle window.
+- **Negative.** The every-index-+1 record is refused `slot-mask-mismatch` with anchors 11/17, before
+  the behavioural probe.
+- **Safety.** The operator's profile, the Steam remote store and the install's binaries hash identical
+  before and after.
+- **Teardown.** After the main menu, the game ends on SIGTERM by SIGABRT ("terminate called without an
+  active exception"), with or without the extension. The control leg reproduced it, so "no crash" is
+  judged over the running window.
 
 ## Draw-path hooks for gate −0.25 (2026-10-09)
 
@@ -483,6 +524,42 @@ omitted hook has a `null` count and is named in `hook_plan`. The armed run count
   and puts `draw_center` and `modulate` on the stack. The fixture captures
   `draw_center = false` and the modulate exactly, which proves the tail of that
   argument list. `mesh_add_surface` takes `SurfaceData` by reference.
+
+## Gate −0.25 result (2026-10-09)
+
+**Pass.** The operator approved this gate too. It used the same owned, isolated `--headless` STS2
+instance and the same modder load route as gate −0.5, with the 31-hook library. The record was
+re-derived with the version-2 calibrator: 31 of 31 hooks are named, and the indices are identical to
+the stock template's. The run was `GRC_MODE=arm` with `GRC_DISARM_AFTER_FRAMES=2000`.
+
+- **Readiness.** Normal main-menu readiness at 27 s. The library armed at `scene-init`, stayed armed for
+  about 4 minutes (2000 frames at the game's idle frame cap) and disarmed itself with
+  `vptr_was_shadow` and `vptr_restored`. The game stayed up afterwards. RSS was flat and there was no
+  crash.
+- **Counts.**
+
+  | Hook                                       | Count  |
+  | ------------------------------------------ | ------ |
+  | `canvas_item_add_rect`                     | 3      |
+  | `canvas_item_add_texture_rect`             | 6      |
+  | `canvas_item_add_texture_rect_region`      | 25     |
+  | `canvas_item_add_msdf_texture_rect_region` | 247    |
+  | `canvas_item_add_mesh`                     | 65 604 |
+  | `mesh_surface_update_vertex_region`        | 65 571 |
+  | `mesh_surface_update_attribute_region`     | 65 571 |
+  | `mesh_set_custom_aabb`                     | 65 571 |
+  | `mesh_create`                              | 83     |
+  | `texture_2d_create`                        | 1 526  |
+  | `canvas_item_add_triangle_array`           | 0      |
+  | `canvas_item_add_nine_patch`               | 0      |
+  | `canvas_item_add_polygon`                  | 0      |
+
+  The three equal mesh counts are spine-godot's per-frame pattern. They show the rigs animating
+  through a third-party extension on the dummy renderer. This is the first live exercise of the
+  `texture_rect` and `msdf_texture_rect_region` hooks.
+
+- **Teardown.** Writing evidence by frame count matters here, because this game ends on SIGTERM by
+  SIGABRT before any GDExtension shutdown callback runs.
 
 ## Scratch verification (2026-10-08)
 
