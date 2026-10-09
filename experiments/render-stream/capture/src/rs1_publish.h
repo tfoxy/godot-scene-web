@@ -11,8 +11,8 @@
 //
 // Sabotages handled here: `freeze-frame` and `perturb-transform` (as at gate 0, applied to the
 // one published copy both sinks share) and `patch-drop-item` (patch sink only). `omit-update`
-// and `omit-op` live in the mirror (rs_mirror.h); `drop-message` in the live hub (rs1_live.h,
-// G1c2); `ignore-credit` and `stale-coalesce` are refused until G1d.
+// and `omit-op` live in the mirror (rs_mirror.h); `drop-message` (G1c2), `ignore-credit` and
+// `stale-coalesce` (G1d) in the live hub (rs1_live.h).
 #ifndef GRC_RS1_PUBLISH_H
 #define GRC_RS1_PUBLISH_H
 
@@ -92,11 +92,12 @@ struct ParseResult {
 // or nullptr when the variable is unset. An unset `kind` is ok with SabotageKind::None (the
 // other two are then ignored, as the caller reads them only when GRC_SABOTAGE is set).
 //
-// Accepted: freeze-frame, omit-update, perturb-transform, patch-drop-item, drop-message (live;
-// entry.cpp refuses it without GRC_LIVE_LISTEN), and omit-op with a non-empty `op` matching
-// [a-z0-9_]+. Refused (ok false, `error` says why; the caller must then publish nothing): the
-// live kinds ignore-credit and stale-coalesce (G1d), any other kind, a `frame` that is not a decimal integer >= 1 (digits only,
-// no sign), and a non-empty `op` with any kind other than omit-op.
+// Accepted: freeze-frame, omit-update, perturb-transform, patch-drop-item, the live kinds
+// drop-message, ignore-credit and stale-coalesce (entry.cpp refuses them without
+// GRC_LIVE_LISTEN; rs1_live.h acts on them), and omit-op with a non-empty `op` matching
+// [a-z0-9_]+. Refused (ok false, `error` says why; the caller must then publish nothing): any
+// other kind, a `frame` that is not a decimal integer >= 1 (digits only, no sign), and a
+// non-empty `op` with any kind other than omit-op.
 ParseResult parse_sabotage(const char *kind, const char *frame, const char *op);
 
 // 32 lowercase hex characters: 128 random bits from getrandom(). Used for both session_id and

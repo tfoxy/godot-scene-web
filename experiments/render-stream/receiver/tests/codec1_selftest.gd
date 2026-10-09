@@ -17,9 +17,12 @@ extends SceneTree
 ##      (rs_calls, created, freed, reparented, commands_replayed, unsupported commands): the
 ##      receiver's work does not depend on encoding. The first seq makes RS calls; every seq whose
 ##      resolved state equals the previous one in resolved.json (seq 4 must be one) makes none;
-##      dispose() frees exactly the RIDs the applier still owned;
+##      dispose() frees exactly the RIDs the applier still owned, which is every RID it created
+##      minus the ones it freed while applying (G1d);
 ##   5. corrupt-meta.rs1's broken transaction is rejected with zero RS calls, after the earlier
-##      records applied.
+##      records applied;
+##   7. a reconnect (G1d): one applier replays full.rs1, is disposed, and then replays patch.rs1
+##      as a fresh session -- the second pass costs exactly what a fresh applier's does.
 ## And the live control messages (RsLiveClient, G1c2):
 ##   6. hello, ack and resync encode to exactly the golden control/valid/*.json messages (same
 ##      keys in the same order, same values), and parse_host_text accepts the golden error
@@ -53,6 +56,7 @@ func _initialize() -> void:
 func _run_applier_tests(index: Dictionary, resolved: Dictionary) -> void:
 	_test_applier_encodings(index, resolved)
 	_test_applier_corrupt(index)
+	_test_applier_reconnect()
 	_finish()
 
 
@@ -294,9 +298,38 @@ func _apply_recording(file: String) -> Array[Dictionary]:
 			"stats": result["stats"],
 		})
 	var owned: int = applier.owned_rids()
+	_check(owned == applier.created_rids - applier.freed_by_apply, "%s: the applier owns %d RIDs, created %d - freed while applying %d" % [file, owned, applier.created_rids, applier.freed_by_apply])
 	var freed: int = applier.dispose()
 	_check(freed == owned and applier.disposed_frees == owned and applier.owned_rids() == 0, "%s: dispose() freed %d RIDs, the applier owned %d" % [file, freed, owned])
 	return out
+
+
+## G1d reconnect, as receiver.gd does it: dispose() between two sessions on ONE applier. The
+## second session (patch.rs1) must cost exactly what it costs a fresh applier, record by record:
+## nothing of the first session survives the dispose.
+func _test_applier_reconnect() -> void:
+	var fresh: Array[Dictionary] = _apply_recording("patch.rs1")
+	var applier: RsApplier = _new_applier()
+	for file: String in ["full.rs1", "patch.rs1"]:
+		var data: PackedByteArray = _read_bytes(file)
+		var records: Array[Dictionary] = Rs1Decoder.split_records(data)["records"]
+		var stream := Rs1Decoder.Stream.new()
+		var calls: Array[int] = []
+		for raw: Dictionary in records:
+			var before: int = applier.rs_calls
+			var result: Dictionary = applier.apply_record(data, Rs1Decoder.as_int(raw["offset"]), stream)
+			var errors: PackedStringArray = result["errors"]
+			_check(errors.is_empty(), "reconnect %s: %s" % [file, str(errors)])
+			calls.append(applier.rs_calls - before)
+		if file == "patch.rs1":
+			var expected: Array[int] = []
+			for row: Dictionary in fresh:
+				expected.append(row["rs_calls"])
+			_check(calls == expected, "reconnect: the second session cost %s RS calls per record, a fresh applier %s" % [str(calls), str(expected)])
+		var owned: int = applier.owned_rids()
+		var freed: int = applier.dispose()
+		_check(freed == owned and owned > 0 and applier.owned_rids() == 0, "reconnect %s: dispose() freed %d of %d owned RIDs, %d left" % [file, freed, owned, applier.owned_rids()])
+	print("[rs1-selftest] applier reconnect: a disposed applier replays patch.rs1 exactly like a fresh one")
 
 
 func _test_applier_encodings(index: Dictionary, resolved: Dictionary) -> void:

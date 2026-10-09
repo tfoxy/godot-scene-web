@@ -4,19 +4,21 @@
 #
 #   bash run-gate1.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g1a,g1b,g1c]
+#     [--legs g1a,g1b,g1c,g1d]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
 # artifacts/render-stream/gate1/<UTC>/ and must not already hold files. --legs selects leg groups
 # (comma-separated); the default is every group whose increment has landed: g1a (G1a), g1b
-# (G1b2; it compares against g1a's capture, reference and receiver, so it needs g1a) and g1c (G1c2,
+# (G1b2; it compares against g1a's capture, reference and receiver, so it needs g1a), g1c (G1c2,
 # live delivery over the capture library's WebSocket server; it compares against g1a's reference,
-# so it needs g1a too).
+# so it needs g1a too) and g1d (G1d: a receiver stall with coalescing and newest-state recovery,
+# resync, reconnect, a killed receiver, and the ignore-credit and stale-coalesce sabotages; needs
+# g1a for the same reason).
 #
 # NEVER Xvfb and never a desktop window: rendered legs (reference and every receiver) share ONE
 # private `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip
-# DISPLAY and WAYLAND_DISPLAY. Live legs (g1c) serve on loopback only, on an ephemeral port the
+# DISPLAY and WAYLAND_DISPLAY. Live legs (g1c, g1d) serve on loopback only, on an ephemeral port the
 # host names in evidence/live.json. Every launch strips every inherited GRC_* and RS_* variable and
 # passes only what its leg wants (env.txt records it).
 
@@ -36,7 +38,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order. G1b-G1d add theirs here.
-LANDED_GROUPS=(g1a g1b g1c)
+LANDED_GROUPS=(g1a g1b g1c g1d)
 
 EXTENSION=""
 CALIBRATION=""
@@ -80,8 +82,27 @@ DROP_MESSAGE_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 4 + 20))
 LIVE_HOST_PID=""
 LIVE_PORT=""
 
+# g1d (G1d) legs, on the g1c host setup (gate1-design.md "G1d"): the receiver stalls 2000 ms after
+# its step 1 shot (step 2 is applied inside the stall); reconnects after its step 4 shot; refuses
+# the first transaction of step 6's window and asks for a resync. The killed receiver is SIGKILLed
+# once the host's live log reaches frame S + 5 N. ignore-credit starts at S + 3 N; stale-coalesce
+# at S + N, with the same stall as live-stall.
+STALL_SPEC="1:2000"
+# ignore-credit needs a receiver that holds its credit at some point after the sabotage frame:
+# measured (2026-10-09), a receiver that returns credit within one frame (p50 8.5 ms) makes a host
+# that ignores credit send exactly what a correct host sends, and the sabotage is unobservable. A
+# 500 ms stall after the step 3 shot (S+3N+7 = 487 on) ends before step 4's window (547), so no
+# shot is missed.
+IGNORE_CREDIT_STALL_SPEC="3:500"
+RECONNECT_STEP=4
+RESYNC_STEP=6
+KILL_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 5))
+IGNORE_CREDIT_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 3))
+STALE_COALESCE_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 1))
+KILL_WAIT_S=60
+
 usage() {
-	sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -150,11 +171,7 @@ else
 	IFS=',' read -r -a requested <<<"$LEGS_ARG"
 	for group in "${requested[@]}"; do
 		case "$group" in
-		g1a | g1b | g1c) ;;
-		g1d)
-			echo "run-gate1: leg group $group has not landed yet (landed: ${LANDED_GROUPS[*]})" >&2
-			exit 2
-			;;
+		g1a | g1b | g1c | g1d) ;;
 		*)
 			echo "run-gate1: unknown leg group: $group (known: g1a g1b g1c g1d)" >&2
 			exit 2
@@ -163,11 +180,11 @@ else
 		GROUPS_RUN+=("$group")
 	done
 	case " ${GROUPS_RUN[*]} " in
-	*" g1b "* | *" g1c "*)
+	*" g1b "* | *" g1c "* | *" g1d "*)
 		case " ${GROUPS_RUN[*]} " in
 		*" g1a "*) ;;
 		*)
-			echo "run-gate1: leg groups g1b and g1c compare against g1a's capture, reference and receiver; pass --legs g1a,..." >&2
+			echo "run-gate1: leg groups g1b, g1c and g1d compare against g1a's capture, reference and receiver; pass --legs g1a,..." >&2
 			exit 2
 			;;
 		esac
@@ -214,6 +231,10 @@ command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 # Whatever ends this script stops the Godot process it owns and tears its own compositor down.
 # Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
 cleanup() {
+	if [ -n "${KILL_RECEIVER_PID:-}" ] && kill -0 "$KILL_RECEIVER_PID" 2>/dev/null; then
+		echo "run-gate1: stopping owned live receiver $KILL_RECEIVER_PID" >&2
+		kill "$KILL_RECEIVER_PID" 2>/dev/null || true
+	fi
 	if [ -n "${LIVE_HOST_PID:-}" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; then
 		echo "run-gate1: stopping owned live host $LIVE_HOST_PID" >&2
 		kill "$LIVE_HOST_PID" 2>/dev/null || true
@@ -427,6 +448,8 @@ finish_live_host() {
 # live_receiver <leg dir> <rendered|headless>: a live receiver on the current host's port, with
 # --max-fps 60. Rendered receivers shoot the step windows (credit stage submitted); the headless
 # one runs under strace -e openat (receiver-never-loaded-fixture) with credit stage applied.
+# LIVE_RECEIVER_ENV (reset after the call) adds receiver words, e.g. RS_RECEIVER_STALL (g1d).
+LIVE_RECEIVER_ENV=()
 live_receiver() {
 	local leg="$1" kind="$2" dir="$1/receiver"
 	mkdir -p "$dir"
@@ -439,6 +462,10 @@ live_receiver() {
 		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
 		RS_RECEIVER_OUT="$dir/applied.json"
 	)
+	if [ "${#LIVE_RECEIVER_ENV[@]}" -gt 0 ]; then
+		LEG_ENV+=("${LIVE_RECEIVER_ENV[@]}")
+	fi
+	LIVE_RECEIVER_ENV=()
 	if [ "$kind" = "headless" ]; then
 		run_headless "$dir" openat -- "$BINARY" --headless --max-fps 60 --path "$RECEIVER_DIR"
 	else
@@ -487,11 +514,105 @@ run_g1c() {
 	GS_RUN_DIR=""
 }
 
+# live_frame <host dir>: the frame of the last line of the host's connection 1 live log (0 when
+# there is none yet). Every live-log line starts with {"frame":<n>,.
+live_frame() {
+	local line
+	line="$(tail -n 1 "$1/tap/live-1.jsonl" 2>/dev/null || true)"
+	line="${line#\{\"frame\":}"
+	line="${line%%,*}"
+	case "$line" in
+	'' | *[!0-9]*) echo 0 ;;
+	*) echo "$line" ;;
+	esac
+}
+
+# killed_receiver <leg dir> <frame>: a headless live receiver (credit stage applied) on the current
+# host's port, started in the background and SIGKILLed once the host's live log shows <frame>
+# (gate1-design.md G1d live-receiver-killed). Writes <leg>/receiver/killed.json.
+KILL_RECEIVER_PID=""
+killed_receiver() {
+	local leg="$1" frame="$2" dir="$1/receiver" waited=0 seen=0 alive=0
+	mkdir -p "$dir"
+	if [ -z "$LIVE_PORT" ]; then
+		echo "the live host is not listening (see $leg/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate1: ${dir#"$OUT"/} skipped: the host is not listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
+		RS_RECEIVER_OUT="$dir/applied.json"
+	)
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$RECEIVER_DIR"
+	KILL_RECEIVER_PID="$BG_PID"
+	while [ "$waited" -lt $((KILL_WAIT_S * 20)) ] && kill -0 "$KILL_RECEIVER_PID" 2>/dev/null; do
+		seen="$(live_frame "$leg/host")"
+		[ "$seen" -ge "$frame" ] && break
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	kill -0 "$KILL_RECEIVER_PID" 2>/dev/null && alive=1
+	if [ "$alive" = "1" ]; then
+		kill -9 "$KILL_RECEIVER_PID" 2>/dev/null || true
+	fi
+	printf '{"pid": %s, "target_frame": %s, "host_frame_seen": %s, "killed": %s, "signal": "SIGKILL"}\n' \
+		"$KILL_RECEIVER_PID" "$frame" "$seen" "$([ "$alive" = "1" ] && echo true || echo false)" >"$dir/killed.json"
+	finish_bg "$dir" "$KILL_RECEIVER_PID" 10
+	KILL_RECEIVER_PID=""
+	echo "run-gate1: ${dir#"$OUT"/} SIGKILLed at host frame $seen (target $frame)"
+}
+
+# g1d (G1d): stall, coalescing, newest-state recovery, resync, reconnect, a killed receiver and the
+# two credit sabotages. Every leg starts its own capture host (the g1c setup) and one receiver.
+run_g1d() {
+	echo "run-gate1: live-receiver-killed (host + headless live receiver, SIGKILL at host frame $KILL_FRAME)"
+	start_live_host "$OUT/live-receiver-killed/host"
+	killed_receiver "$OUT/live-receiver-killed" "$KILL_FRAME"
+	finish_live_host "$OUT/live-receiver-killed/host"
+
+	echo "run-gate1: bringing up private gamescope for g1d rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g1d"
+
+	echo "run-gate1: live-stall (RS_RECEIVER_STALL=$STALL_SPEC)"
+	start_live_host "$OUT/live-stall/host"
+	LIVE_RECEIVER_ENV=(RS_RECEIVER_STALL="$STALL_SPEC")
+	live_receiver "$OUT/live-stall" rendered
+	finish_live_host "$OUT/live-stall/host"
+
+	echo "run-gate1: live-reconnect (RS_RECEIVER_RECONNECT=$RECONNECT_STEP)"
+	start_live_host "$OUT/live-reconnect/host"
+	LIVE_RECEIVER_ENV=(RS_RECEIVER_RECONNECT="$RECONNECT_STEP")
+	live_receiver "$OUT/live-reconnect" rendered
+	finish_live_host "$OUT/live-reconnect/host"
+
+	echo "run-gate1: live-resync (RS_RECEIVER_RESYNC=$RESYNC_STEP)"
+	start_live_host "$OUT/live-resync/host"
+	LIVE_RECEIVER_ENV=(RS_RECEIVER_RESYNC="$RESYNC_STEP")
+	live_receiver "$OUT/live-resync" rendered
+	finish_live_host "$OUT/live-resync/host"
+
+	echo "run-gate1: sabotage-ignore-credit (host sends regardless of credit from frame $IGNORE_CREDIT_FRAME; RS_RECEIVER_STALL=$IGNORE_CREDIT_STALL_SPEC)"
+	start_live_host "$OUT/sabotage-ignore-credit/host" GRC_SABOTAGE=ignore-credit GRC_SABOTAGE_FRAME="$IGNORE_CREDIT_FRAME"
+	LIVE_RECEIVER_ENV=(RS_RECEIVER_STALL="$IGNORE_CREDIT_STALL_SPEC")
+	live_receiver "$OUT/sabotage-ignore-credit" rendered
+	finish_live_host "$OUT/sabotage-ignore-credit/host"
+
+	echo "run-gate1: sabotage-stale-coalesce (host sends the first missed target from frame $STALE_COALESCE_FRAME; RS_RECEIVER_STALL=$STALL_SPEC)"
+	start_live_host "$OUT/sabotage-stale-coalesce/host" GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$STALE_COALESCE_FRAME"
+	LIVE_RECEIVER_ENV=(RS_RECEIVER_STALL="$STALL_SPEC")
+	live_receiver "$OUT/sabotage-stale-coalesce" rendered
+	finish_live_host "$OUT/sabotage-stale-coalesce/host"
+
+	gs_teardown "$OUT/gamescope-g1d"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g1a) run_g1a ;;
 	g1b) run_g1b ;;
 	g1c) run_g1c ;;
+	g1d) run_g1d ;;
 	esac
 done
 

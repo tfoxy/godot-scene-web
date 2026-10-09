@@ -540,6 +540,10 @@ struct Hub::Conn {
   bool resync = false;
   std::uint64_t epoch_sent = 0;
   bool pending = false;
+  std::uint64_t pending_since_frame = 0;  // the callback that made the current target pending
+  std::uint64_t pending_since_ns = 0;
+  std::optional<Snapshot> stale;  // stale-coalesce: the first missed target since the last send
+  std::uint64_t stale_frame = 0;
   EndStats stats;
   struct Sent {
     std::uint64_t ns = 0;
@@ -759,11 +763,14 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
           }
         }
         if (credit_message) {
+          // Any credit-stage answer settles its own seq, so `uncredited` (max_in_flight) counts
+          // the seqs still outstanding even when ignore-credit put several in flight; only the
+          // in-flight seq returns the credit.
+          c.uncredited.erase(message.seq);
           if (c.in_flight.has_value() && *c.in_flight == message.seq) {
             credited = true;
             c.credit = true;
             c.in_flight.reset();
-            c.uncredited.erase(message.seq);
             ++c.s.credits;
             if (!is_ack) {
               c.resync = true;
@@ -804,15 +811,27 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
   }
 }
 
-bool Hub::wants_snapshot() const {
+bool Hub::wants_snapshot(std::uint64_t frame) const {
+  const bool ignore_credit =
+      config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
+  const bool stale_coalesce =
+      config_.stale_coalesce_frame != 0 && frame >= config_.stale_coalesce_frame;
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
     if ((c.state == State::AwaitHello && c.hello_received) ||
-        (c.state == State::Streaming && c.credit)) {
+        (c.state == State::Streaming &&
+         (c.credit || ignore_credit || (stale_coalesce && !c.stale.has_value())))) {
       return true;
     }
   }
   return false;
+}
+
+void Hub::note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns) {
+  c.s.max_pending_frames =
+      std::max(c.s.max_pending_frames, frame - std::min(frame, c.pending_since_frame));
+  c.s.max_pending_age_us = std::max(
+      c.s.max_pending_age_us, (now_ns - std::min(now_ns, c.pending_since_ns)) / 1000);
 }
 
 bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send) {
@@ -830,7 +849,8 @@ bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send) 
 
 std::string Hub::send_transaction(Conn &c, const Snapshot &snapshot, std::uint64_t frame,
                                   std::uint64_t now_ns, std::uint64_t epoch,
-                                  std::uint64_t snapshot_ns, bool first) {
+                                  std::uint64_t snapshot_ns, bool first,
+                                  std::uint64_t stale_from) {
   Snapshot cur = snapshot;
   cur.seq = c.next_seq;
   cur.frame = frame;
@@ -883,12 +903,19 @@ std::string Hub::send_transaction(Conn &c, const Snapshot &snapshot, std::uint64
   c.stats.snapshot_ns_total = saturating_add(c.stats.snapshot_ns_total, snapshot_ns);
 
   const std::uint64_t seq = cur.seq;
+  const bool had_credit = c.credit;
   c.base = std::move(cur);
   c.has_base = true;
   c.resync = false;
   ++c.next_seq;
   c.epoch_sent = epoch;
+  if (c.pending) {
+    note_pending_age(c, frame, now_ns);  // the pending target is replaced by this send
+  }
   c.pending = false;
+  if (stale_from != 0) {
+    ++c.s.stale_sent;
+  }
   if (drop) {
     // drop-message: formed, logged and tapped, never sent; the credit is restored at once.
     drop_done_ = true;
@@ -896,6 +923,9 @@ std::string Hub::send_transaction(Conn &c, const Snapshot &snapshot, std::uint64
     c.credit = true;
   } else {
     ++c.s.sent;
+    if (!had_credit) {
+      ++c.s.sent_without_credit;  // ignore-credit
+    }
     c.credit = false;
     c.in_flight = seq;
     c.uncredited.insert(seq);
@@ -906,6 +936,9 @@ std::string Hub::send_transaction(Conn &c, const Snapshot &snapshot, std::uint64
   sent.num("seq", seq).str("encoding", full ? "full" : "patch").num("bytes", bytes.size());
   if (drop) {
     sent.boolean("dropped", true);
+  }
+  if (stale_from != 0) {
+    sent.num("stale_from", stale_from);
   }
   return sent.take();
 }
@@ -927,8 +960,13 @@ void Hub::log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool cre
   } else {
     line.null("in_flight");
   }
-  line.boolean("pending", c.pending)
-      .num("coalesced", c.s.coalesced)
+  line.boolean("pending", c.pending);
+  if (c.pending) {
+    line.num("pending_since", c.pending_since_frame);
+  } else {
+    line.null("pending_since");
+  }
+  line.num("coalesced", c.s.coalesced)
       .num("queued_bytes", queued)
       .raw("sent", sent_json);
   log_line(c, line.take());
@@ -998,14 +1036,36 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const Snapshot *sn
       }
     } else if (c.state == State::Streaming) {
       ++c.s.frames_offered;
-      if (c.credit) {
+      const bool ignore_credit =
+          config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
+      if (c.credit && c.stale.has_value()) {
+        // stale-coalesce: the first missed target goes out instead of the newest state.
+        const Snapshot stale = std::move(*c.stale);
+        c.stale.reset();
+        sent_json = send_transaction(c, stale, frame, now_ns, epoch, snapshot_ns, false,
+                                     c.stale_frame);
+      } else if (c.credit || ignore_credit) {
         if (snapshot == nullptr) {
           continue;
         }
         sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, false);
       } else if (epoch != c.epoch_sent) {
+        // No credit and the mirror moved since the last send: the one pending target (the
+        // mirror itself) is replaced by this callback's state; nothing is serialized.
+        if (!c.pending) {
+          c.pending_since_frame = frame;
+          c.pending_since_ns = now_ns;
+          ++c.s.pending_episodes;
+        }
         c.pending = true;
+        c.s.max_pending = 1;
         ++c.s.coalesced;
+        note_pending_age(c, frame, now_ns);
+        if (config_.stale_coalesce_frame != 0 && frame >= config_.stale_coalesce_frame &&
+            !c.stale.has_value() && snapshot != nullptr) {
+          c.stale = *snapshot;
+          c.stale_frame = frame;
+        }
       }
     }
     if (c.state == State::Closed) {
@@ -1129,6 +1189,12 @@ std::string Hub::summary_json() const {
     json.field("full", static_cast<int64_t>(s.full));
     json.field("patch", static_cast<int64_t>(s.patch));
     json.field("coalesced", static_cast<int64_t>(s.coalesced));
+    json.field("max_pending", static_cast<int64_t>(s.max_pending));
+    json.field("pending_episodes", static_cast<int64_t>(s.pending_episodes));
+    json.field("max_pending_frames", static_cast<int64_t>(s.max_pending_frames));
+    json.field("max_pending_age_us", static_cast<int64_t>(s.max_pending_age_us));
+    json.field("sent_without_credit", static_cast<int64_t>(s.sent_without_credit));
+    json.field("stale_sent", static_cast<int64_t>(s.stale_sent));
     json.field("max_in_flight", static_cast<int64_t>(s.max_in_flight));
     json.field("max_queued_bytes", static_cast<int64_t>(s.max_queued_bytes));
     json.field("max_message_sent", static_cast<int64_t>(s.max_message_sent));

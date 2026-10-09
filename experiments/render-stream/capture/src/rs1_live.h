@@ -20,7 +20,11 @@
 //                the next transaction full). Other acks feed timing only. Without credit, a
 //                mirror change since the last send marks the connection `pending` and counts one
 //                `coalesced` callback; the pending target is the mirror itself, never a queued
-//                copy, so obsolete targets are never serialized.
+//                copy, so obsolete targets are never serialized. At most one target is pending
+//                per connection (`pending` is a flag, not a queue); the frame and time it became
+//                pending are kept, so the log and the summary carry the oldest pending target's
+//                age (G1d). When credit returns, the next transaction is formed from the
+//                newest state at that callback.
 //   closed       after a close from either side; nothing more is sent or logged.
 // A transaction larger than min(hello.inbound_buffer_bytes, max_message_bytes) is the error
 // `message-too-large` and close 1009. A malformed or out-of-order control message is the error
@@ -29,12 +33,19 @@
 // disarm) every streaming connection gets its end record whether or not it holds credit; the
 // receiver closes after reading it, and close_open() closes whatever is left with 1000.
 //
-// Sabotage handled here: `drop-message` -- the first transaction formed at a frame >= the
-// sabotage frame is encoded, logged and written to the tap but not sent, and its credit is
-// restored at once, so the next transaction reaches the receiver with a seq gap. (The contract
-// says "at exactly that frame"; a transaction is only formed at a frame that holds credit, so
-// "exactly" would make the sabotage depend on the credit phase. See gate1-design.md G1c2
-// "As built".)
+// Sabotages handled here:
+//   drop-message    the first transaction formed at a frame >= the sabotage frame is encoded,
+//                   logged and written to the tap but not sent, and its credit is restored at
+//                   once, so the next transaction reaches the receiver with a seq gap. (The
+//                   contract says "at exactly that frame"; a transaction is only formed at a
+//                   frame that holds credit, so "exactly" would make the sabotage depend on the
+//                   credit phase. See gate1-design.md G1c2 "As built".)
+//   ignore-credit   (G1d) from the sabotage frame on, a transaction is formed and sent at every
+//                   frame callback while streaming, credit or not: several in flight at once.
+//   stale-coalesce  (G1d) from the sabotage frame on, the first missed target (the snapshot of
+//                   the first callback that coalesced since the last send) is kept, and when
+//                   credit returns that copy is sent instead of the newest state, labelled with
+//                   the current frame. The next transaction patches from it to the newest state.
 //
 // Files, when a tap directory is configured (GRC_LIVE_TAP_DIR):
 //   stream-<connection>.rs1   the exact bytes of every binary message formed for that connection
@@ -137,8 +148,10 @@ struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES
   std::uint64_t hello_timeout_ms = 5000;        // GRC_LIVE_HELLO_TIMEOUT_MS
   std::string tap_dir;                          // GRC_LIVE_TAP_DIR; empty: no tap, no log
-  // drop-message: 0 disables it.
+  // Sabotage frames; 0 disables each.
   std::uint64_t drop_message_frame = 0;
+  std::uint64_t ignore_credit_frame = 0;   // G1d
+  std::uint64_t stale_coalesce_frame = 0;  // G1d
 };
 
 // One connection's transport-level event, as the caller drains it from the server. `t_ns` is
@@ -179,7 +192,18 @@ struct ConnectionSummary {
   std::uint64_t full = 0;
   std::uint64_t patch = 0;
   std::uint64_t coalesced = 0;
-  std::uint64_t max_in_flight = 0;
+  // Pending targets (G1d): at most one per connection at any time (`max_pending` is 0 or 1); how
+  // many times a target became pending, and the oldest a pending target got before a send
+  // replaced it, in host frames and in microseconds of the frame callback's clock.
+  std::uint64_t max_pending = 0;
+  std::uint64_t pending_episodes = 0;
+  std::uint64_t max_pending_frames = 0;
+  std::uint64_t max_pending_age_us = 0;
+  // Sabotage evidence (G1d): sends made without credit (ignore-credit) and stale copies sent
+  // (stale-coalesce). Both stay 0 without the sabotage.
+  std::uint64_t sent_without_credit = 0;
+  std::uint64_t stale_sent = 0;
+  std::uint64_t max_in_flight = 0;  // sent seqs whose credit-stage ack had not arrived
   std::uint64_t max_queued_bytes = 0;
   std::uint64_t max_message_sent = 0;  // the largest binary message formed (magic + session incl.)
   std::uint64_t resyncs = 0;
@@ -213,9 +237,10 @@ class Hub {
   // then calls on_frame for the same callback).
   void on_event(const LiveEvent &event, std::uint64_t frame);
 
-  // True when on_frame needs a snapshot this callback: a connection holds a received hello, or
-  // is streaming with credit.
-  bool wants_snapshot() const;
+  // True when on_frame needs a snapshot at callback `frame`: a connection holds a received
+  // hello, or is streaming with credit (or, under the G1d sabotages, would send without credit
+  // or keep a stale copy).
+  bool wants_snapshot(std::uint64_t frame) const;
 
   // One frame callback. `snapshot` is the published state for `frame` (required when
   // wants_snapshot() was true; may be null otherwise); `epoch` the mirror's mutation epoch read
@@ -252,9 +277,12 @@ class Hub {
   bool deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send);
   // Forms, encodes and sends (or, under drop-message, only taps) the next transaction. Returns
   // the live log's `sent` object, or "null" when the connection was closed instead.
+  // `stale_from` (stale-coalesce) is the frame the snapshot was taken at, 0 otherwise.
   std::string send_transaction(Conn &c, const Snapshot &snapshot, std::uint64_t frame,
                                std::uint64_t now_ns, std::uint64_t epoch,
-                               std::uint64_t snapshot_ns, bool first);
+                               std::uint64_t snapshot_ns, bool first,
+                               std::uint64_t stale_from = 0);
+  void note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns);
   void log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool credit_before,
                  const std::string &sent_json);
   void log_line(Conn &c, const std::string &line);

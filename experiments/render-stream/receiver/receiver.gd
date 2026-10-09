@@ -24,13 +24,23 @@ extends Node
 ##   RS_RECEIVER_CREDIT_STAGE    submitted (default) or applied; forced to applied under --headless,
 ##                               where frame_post_draw never fires
 ##   RS_RECEIVER_CONNECT_TIMEOUT milliseconds to reach STATE_OPEN (default 10000)
+##   RS_RECEIVER_STALL           <step>:<ms> (G1d): after the shot for <step>, block the main loop
+##                               <ms> (OS.delay_msec, an INJECTED receiver delay, not GPU work)
+##                               before the `submitted` ack
+##   RS_RECEIVER_RECONNECT       <step> (G1d): after the shot for <step> (and its submitted ack),
+##                               close with 1000, free every RID the applier made, and connect
+##                               again: a fresh session on received-2.rs1
+##   RS_RECEIVER_RESYNC          <step> (G1d): refuse the first transaction in that step's window
+##                               unapplied, send `resync` for it, and ignore patches until a full
+##                               transaction arrives
+## The three G1d options need a shot window for their step.
 ## On open it sends `hello`. Each binary message is appended to the received file, framed (the
 ## first is the magic and the session, every later one exactly one record), decoded and accepted
 ## (Rs1Decoder.Stream resolves patches) and acked `received`. The newest accepted transaction is
 ## applied at most once per _process and acked `applied`; at the next frame_post_draw a due shot is
 ## taken and the `submitted` ack sent. `presented` is unavailable in Godot and never guessed. The
 ## end record finishes the run; a close without it is replay-failure live-disconnected, a host
-## `error` message replay-failure host-error. RS_RECEIVER_STALL / _RECONNECT / _RESYNC land in G1d.
+## `error` message replay-failure host-error.
 ##
 ## Every record is decoded and validated completely (Rs1Decoder.decode_record, then
 ## Rs1Decoder.Stream.accept, which resolves patches) before RsApplier makes any RenderingServer
@@ -44,7 +54,7 @@ const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
-## numbers its connections from 1 (one connection until G1d's reconnect).
+## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
 const DEFAULT_INBOUND_BYTES: int = 16777216
 const DEFAULT_CONNECT_TIMEOUT_MS: int = 10000
@@ -62,7 +72,7 @@ var _shot_dir: String = ""
 var _state_dir: String = ""
 var _shot_seqs: Array[int] = []
 var _state_seqs: Array[int] = []
-var _state_paths: Dictionary[int, String] = {}
+var _state_paths: Dictionary[String, String] = {}
 var _busy: bool = false
 var _finished: bool = false
 var _last_applied_seq: int = 0
@@ -94,6 +104,20 @@ var _submit_pending: bool = false
 var _end_seen: bool = false
 var _acks_sent: Dictionary = {"received": 0, "applied": 0, "submitted": 0}
 var _closing_by_receiver: bool = false
+var _received_base: String = ""  # stream 1's received path; stream n inserts "-<n>"
+var _connect_timeout_ms: int = DEFAULT_CONNECT_TIMEOUT_MS
+## The live connection being read: 1, then 2 after a reconnect. Transactions, shots and state
+## dumps name it as their stream.
+var _conn_index: int = 1
+# G1d options (-1: off).
+var _stall_step: int = -1
+var _stall_ms: int = 0
+var _reconnect_step: int = -1
+var _reconnect_due: bool = false
+var _reconnecting: bool = false
+var _resync_step: int = -1
+var _resync_done: bool = false
+var _awaiting_full: bool = false
 
 
 func _ready() -> void:
@@ -351,13 +375,15 @@ func _dump_state(seq: int, meta: Dictionary) -> bool:
 		return false
 	file.store_string(JSON.stringify(_state_json(meta), "", false, true) + "\n")
 	file.close()
-	_state_paths[seq] = path
+	_state_paths[_seq_name(seq)] = path
 	_log("state seq %d -> %s" % [seq, path])
 	return true
 
 
-## "seq-<n>" (one stream). Live connections after the first get "stream-<k>-seq-<n>" (G1d).
+## "seq-<n>" (stream 1). Live connections after the first get "stream-<k>-seq-<n>" (G1d).
 func _seq_name(seq: int) -> String:
+	if _conn_index > 1:
+		return "stream-%d-seq-%d" % [_conn_index, seq]
 	return "seq-%d" % seq
 
 
@@ -477,7 +503,7 @@ func _take_shot(seq: int) -> void:
 		"seq": seq,
 		"step": null,
 		"path": path,
-		"state_path": _state_paths.get(seq),
+		"state_path": _state_paths.get(_seq_name(seq)),
 		"process_frame": Engine.get_process_frames(),
 		"applied_through": _last_applied_seq,
 	})
@@ -497,7 +523,7 @@ func _finish() -> void:
 			_fail(seq, "shot-unavailable", "a shot of seq %d was requested, but the recording has no such transaction" % seq)
 			return
 	for seq: int in _state_seqs:
-		if not _state_paths.has(seq):
+		if not _state_paths.has(_seq_name(seq)):
 			_fail(seq, "state-unavailable", "a state dump of seq %d was requested, but the recording has no such transaction" % seq)
 			return
 	_report["status"] = "ok"
@@ -521,11 +547,6 @@ func _ready_live() -> void:
 			_log("error: %s is a file-mode variable; live mode uses RS_RECEIVER_URL and RS_RECEIVER_SHOT_WINDOWS" % variable)
 			_quit(EXIT_USAGE)
 			return
-	for variable: String in ["RS_RECEIVER_STALL", "RS_RECEIVER_RECONNECT", "RS_RECEIVER_RESYNC"]:
-		if OS.get_environment(variable) != "":
-			_log("error: %s is not implemented yet; it lands in G1d (gate1-design.md)" % variable)
-			_quit(EXIT_USAGE)
-			return
 	_url = OS.get_environment("RS_RECEIVER_URL").strip_edges()
 	if not (_url.begins_with("ws://127.0.0.1:") or _url.begins_with("ws://[::1]:")):
 		_log("error: RS_RECEIVER_URL must be ws://127.0.0.1:<port>/... or ws://[::1]:<port>/... (loopback only; got %s)" % JSON.stringify(_url))
@@ -533,7 +554,7 @@ func _ready_live() -> void:
 		return
 	_shot_dir = _out_path.get_base_dir().path_join("shots")
 	_state_dir = _out_path.get_base_dir().path_join("state")
-	if not _parse_windows():
+	if not _parse_windows() or not _parse_g1d_options():
 		_quit(EXIT_USAGE)
 		return
 	_received_path = OS.get_environment("RS_RECEIVER_RECEIVED_OUT")
@@ -543,12 +564,14 @@ func _ready_live() -> void:
 		_log("error: RS_RECEIVER_RECEIVED_OUT must be absolute (got %s)" % JSON.stringify(_received_path))
 		_quit(EXIT_USAGE)
 		return
+	_received_base = _received_path
 	var inbound: int = _positive_env("RS_RECEIVER_INBOUND_BYTES", DEFAULT_INBOUND_BYTES)
 	var timeout_ms: int = _positive_env("RS_RECEIVER_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT_MS)
 	if inbound < 0 or timeout_ms < 0:
 		_quit(EXIT_USAGE)
 		return
 	_inbound_bytes = inbound
+	_connect_timeout_ms = timeout_ms
 	var stage: String = OS.get_environment("RS_RECEIVER_CREDIT_STAGE").strip_edges()
 	if stage == "":
 		stage = "submitted"
@@ -584,7 +607,7 @@ func _ready_live() -> void:
 		"close_code": null,
 	}
 	_streams.append(_stream_report)
-	_log("mode live, url %s, out %s, received %s, credit %s, inbound %d, windows %s, display %s" % [_url, _out_path, _received_path, _credit_stage, _inbound_bytes, JSON.stringify(_windows), display_server])
+	_log("mode live, url %s, out %s, received %s, credit %s, inbound %d, windows %s, stall %s, reconnect %s, resync %s, display %s" % [_url, _out_path, _received_path, _credit_stage, _inbound_bytes, JSON.stringify(_windows), "%d:%d" % [_stall_step, _stall_ms] if _stall_step >= 0 else "off", str(_reconnect_step) if _reconnect_step >= 0 else "off", str(_resync_step) if _resync_step >= 0 else "off", display_server])
 	if display_server == "headless" and not _windows.is_empty():
 		_fail(null, "shot-unavailable", "shot windows were requested, but the display server is headless")
 		return
@@ -642,19 +665,76 @@ func _parse_windows() -> bool:
 	return true
 
 
+## RS_RECEIVER_STALL (<step>:<ms>), RS_RECEIVER_RECONNECT (<step>) and RS_RECEIVER_RESYNC
+## (<step>), each optional; every step must have a shot window (gate1-design.md Q5, G1d).
+func _parse_g1d_options() -> bool:
+	var stall: String = OS.get_environment("RS_RECEIVER_STALL").strip_edges()
+	if stall != "":
+		var parts: PackedStringArray = stall.split(":")
+		if parts.size() != 2 or not parts[0].is_valid_int() or not parts[1].is_valid_int() or parts[0].to_int() < 0 or parts[1].to_int() < 1:
+			_log("error: RS_RECEIVER_STALL must be <step>:<ms> with ms >= 1 (got %s)" % JSON.stringify(stall))
+			return false
+		_stall_step = parts[0].to_int()
+		_stall_ms = parts[1].to_int()
+	for variable: String in ["RS_RECEIVER_RECONNECT", "RS_RECEIVER_RESYNC"]:
+		var text: String = OS.get_environment(variable).strip_edges()
+		if text == "":
+			continue
+		if not text.is_valid_int() or text.to_int() < 0:
+			_log("error: %s must be a step >= 0 (got %s)" % [variable, JSON.stringify(text)])
+			return false
+		if variable == "RS_RECEIVER_RECONNECT":
+			_reconnect_step = text.to_int()
+		else:
+			_resync_step = text.to_int()
+	for named: Array in [["RS_RECEIVER_STALL", _stall_step], ["RS_RECEIVER_RECONNECT", _reconnect_step], ["RS_RECEIVER_RESYNC", _resync_step]]:
+		var step: int = named[1]
+		if step >= 0 and _window_of(step).is_empty():
+			_log("error: %s names step %d, which has no RS_RECEIVER_SHOT_WINDOWS window" % [named[0], step])
+			return false
+	return true
+
+
+## The shot window of `step` ({} when there is none).
+func _window_of(step: int) -> Dictionary:
+	for window: Dictionary in _windows:
+		if window["step"] == step:
+			return window
+	return {}
+
+
 func _process_live() -> void:
 	if _finished:
 		return
 	_client.poll()
 	var state: WebSocketPeer.State = _client.state()
+	if _reconnect_due and _live_phase == "streaming" and not _submit_pending:
+		_begin_reconnect()
+		return
 	match _live_phase:
 		"connecting":
 			if state == WebSocketPeer.STATE_OPEN:
 				_live_phase = "streaming"
 				_send(RsLiveClient.hello("gate1-receiver-%s" % DisplayServer.get_name(), _credit_stage, _inbound_bytes))
-				_log("connected to %s (subprotocol %s); hello sent" % [_url, _client.peer.get_selected_protocol()])
-			elif state == WebSocketPeer.STATE_CLOSED or Time.get_ticks_msec() > _deadline_msec:
+				_log("connected to %s as connection %d (subprotocol %s); hello sent" % [_url, _conn_index, _client.peer.get_selected_protocol()])
+			elif Time.get_ticks_msec() > _deadline_msec:
 				_fail(null, "live-connect-failed", "no open connection to %s (state %d, close code %d)" % [_url, state, _client.close_code()])
+			elif state == WebSocketPeer.STATE_CLOSED:
+				if not _reconnecting:
+					_fail(null, "live-connect-failed", "no open connection to %s (state %d, close code %d)" % [_url, state, _client.close_code()])
+					return
+				# A reconnect can race the host's teardown of connection 1 (one receiver at a time: a
+				# second gets 503), so it retries until the connect timeout.
+				var reconnect: Dictionary = _live_report["reconnect"]
+				reconnect["connect_attempts"] = Rs1Decoder.as_int(reconnect["connect_attempts"]) + 1
+				var opened: Error = _client.open(_url, _inbound_bytes)
+				if opened != OK:
+					_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
+			return
+		"reconnect-closing":
+			# Connection 1 closes (1000) before anything of connection 2 starts.
+			if state == WebSocketPeer.STATE_CLOSED or Time.get_ticks_msec() > _deadline_msec:
+				_start_next_connection()
 			return
 		"draining":
 			# The receiver closed after the end record; wait for the close handshake.
@@ -694,6 +774,74 @@ func _process_live() -> void:
 			_fail(_last_seq_or_null(), "host-error", "%s: the host closed with %d" % [reason, code])
 		else:
 			_fail(_last_seq_or_null(), "live-disconnected", "the connection closed (code %d %s) without an end record" % [code, JSON.stringify(reason)])
+
+
+## RS_RECEIVER_RECONNECT, part 1: after the reconnect step's shot and submitted ack, close
+## connection 1 with 1000. Anything the host sent after that ack is never read (a stream the
+## receiver closed may stop short of the host's tap).
+func _begin_reconnect() -> void:
+	_reconnect_due = false
+	_live_phase = "reconnect-closing"
+	_closing_by_receiver = true
+	_stream_report["closed_by"] = "receiver"
+	_stream_report["close_code"] = 1000
+	_client.close(1000, "reconnect")
+	_deadline_msec = Time.get_ticks_msec() + CLOSE_WAIT_MS
+	_log("reconnect: closing connection %d after seq %d" % [_conn_index, _last_applied_seq])
+
+
+## RS_RECEIVER_RECONNECT, part 2: finish connection 1's received file, free every RID the applier
+## made (dispose), and open connection 2 with a new received file and a new decoder stream; its
+## first message is a fresh session.
+func _start_next_connection() -> void:
+	_received_file.flush()
+	_received_file.close()
+	_received_file = null
+	_stream_report["received_sha256"] = Rs1Decoder.sha256_hex(_data)
+	_stream_report["received_bytes"] = _data.size()
+	var owned_before: int = _applier.owned_rids()
+	var freed: int = _applier.dispose()
+	var leftover: int = _applier.owned_rids()
+	var reconnect: Dictionary = _live_report["reconnect"]
+	reconnect["created_rids"] = _applier.created_rids
+	reconnect["freed_by_apply"] = _applier.freed_by_apply
+	reconnect["owned_before_dispose"] = owned_before
+	reconnect["freed_rids"] = freed
+	reconnect["leftover_rids"] = leftover
+	reconnect["closed_us"] = Time.get_ticks_usec()
+	_log("reconnect: disposed %d RIDs (created %d, freed while applying %d, left %d)" % [freed, _applier.created_rids, _applier.freed_by_apply, leftover])
+
+	_conn_index += 1
+	_received_path = "%s-%d.%s" % [_received_base.get_basename(), _conn_index, _received_base.get_extension()]
+	_received_file = FileAccess.open(_received_path, FileAccess.WRITE)
+	if _received_file == null:
+		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
+		return
+	_data = PackedByteArray()
+	_stream = Rs1Decoder.Stream.new()
+	_session_seen = false
+	_stream_id = ""
+	_waiting.clear()
+	_previous_unsupported = {}
+	_stream_report = {
+		"stream_id": null,
+		"connection": null,
+		"received_path": _received_path,
+		"received_sha256": null,
+		"received_bytes": 0,
+		"end_seen": false,
+		"closed_by": null,
+		"close_code": null,
+	}
+	_streams.append(_stream_report)
+	_closing_by_receiver = false
+	_reconnecting = true
+	var opened: Error = _client.open(_url, _inbound_bytes)
+	if opened != OK:
+		_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
+		return
+	_live_phase = "connecting"
+	_deadline_msec = Time.get_ticks_msec() + _connect_timeout_ms
 
 
 ## Receives every available packet (binary records, or the host's error text).
@@ -748,7 +896,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 		return
 	match kind:
 		"transaction":
-			var entry: Dictionary = _transaction_entry(FILE_STREAM, meta, record)
+			var entry: Dictionary = _transaction_entry(_conn_index, meta, record)
 			entry["received_us"] = now_us
 			_transactions.append(entry)
 			var received_seq: int = entry["seq"]
@@ -771,6 +919,8 @@ func _apply_newest() -> void:
 	_waiting.clear()
 	var entry: Dictionary = newest["entry"]
 	var meta: Dictionary = newest["meta"]
+	if _refuse_for_resync(entry):
+		return
 	var stats: Dictionary = _applier.apply_state(_stream.canvases, _stream.items)
 	var now_us: int = Time.get_ticks_usec()
 	entry["applied_us"] = now_us
@@ -802,20 +952,79 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 		if path == "":
 			return
 		_shots.append({
-			"stream": FILE_STREAM,
+			"stream": _conn_index,
 			"seq": seq,
 			"step": step,
 			"path": path,
-			"state_path": _state_paths.get(seq),
+			"state_path": _state_paths.get(_seq_name(seq)),
 			"process_frame": Engine.get_process_frames(),
 			"applied_through": _last_applied_seq,
 		})
 		_log("shot step %d seq %d frame %d -> %s" % [step, seq, Rs1Decoder.as_int(entry["frame"]), path])
+	if step >= 0 and step == _stall_step and _live_report["stall"] == null:
+		# RS_RECEIVER_STALL: an injected receiver delay (a blocked main loop), not GPU-limited work;
+		# the host sees it only as a credit that does not come back.
+		var start_us: int = Time.get_ticks_usec()
+		OS.delay_msec(_stall_ms)
+		var end_us: int = Time.get_ticks_usec()
+		_live_report["stall"] = {
+			"step": step,
+			"ms": _stall_ms,
+			"after_seq": seq,
+			"after_frame": Rs1Decoder.as_int(entry["frame"]),
+			"start_us": start_us,
+			"end_us": end_us,
+			"injected": true,
+			"mechanism": "OS.delay_msec on the receiver main thread after frame_post_draw, before the submitted ack",
+		}
+		_log("stall: blocked %d us after the step %d shot (seq %d), injected" % [end_us - start_us, step, seq])
 	var now_us: int = Time.get_ticks_usec()
 	entry["submitted_us"] = now_us
 	_send(RsLiveClient.ack(_stream_id, seq, "submitted", now_us))
 	_acks_sent["submitted"] = Rs1Decoder.as_int(_acks_sent["submitted"]) + 1
 	_submit_pending = false
+	if step >= 0 and step == _reconnect_step and _live_report["reconnect"] == null:
+		_live_report["reconnect"] = {
+			"step": step,
+			"after_seq": seq,
+			"after_frame": Rs1Decoder.as_int(entry["frame"]),
+			"connect_attempts": 1,
+			"created_rids": null,
+			"freed_by_apply": null,
+			"owned_before_dispose": null,
+			"freed_rids": null,
+			"leftover_rids": null,
+			"closed_us": null,
+		}
+		_reconnect_due = true
+
+
+## RS_RECEIVER_RESYNC: the first transaction applied inside the resync step's window is refused
+## unapplied (`skipped: "resync"`, a `resync` message instead of the applied ack), and so is every
+## patch after it until a full transaction arrives. Returns true when `entry` was refused.
+func _refuse_for_resync(entry: Dictionary) -> bool:
+	if _resync_step < 0:
+		return false
+	var seq: int = entry["seq"]
+	var frame: int = entry["frame"]
+	if _awaiting_full:
+		if entry["encoding"] == "full":
+			_awaiting_full = false
+			_log("resync: full transaction seq %d arrived" % seq)
+			return false
+	elif not _resync_done:
+		var window: Dictionary = _window_of(_resync_step)
+		if window["shot"] or frame < Rs1Decoder.as_int(window["from"]) or frame > Rs1Decoder.as_int(window["to"]):
+			return false
+		_resync_done = true
+		_awaiting_full = true
+		_live_report["resync"] = {"step": _resync_step, "seq": seq, "frame": frame, "reason": "injected"}
+	else:
+		return false
+	entry["skipped"] = "resync"
+	_send(RsLiveClient.resync(_stream_id, seq, "injected"))
+	_log("resync: refused seq %d (frame %d) unapplied; ignoring patches until a full transaction" % [seq, frame])
+	return true
 
 
 ## The last accepted seq, or null before the first transaction (a failure's `seq`).

@@ -18,6 +18,12 @@ extends RefCounted
 var rs_calls: int = 0
 ## How many RIDs the last dispose() freed.
 var disposed_frees: int = 0
+## Every RID apply_state() created (items and canvases), and every one it freed, since this
+## applier was made. Before a dispose(), created_rids - freed_by_apply is what the applier owns;
+## a receiver that reconnects (gate1-design.md G1d) checks that dispose() freed exactly that many
+## and that nothing is left (owned_rids() == 0).
+var created_rids: int = 0
+var freed_by_apply: int = 0
 
 var _viewport: RID
 var _root_canvas: RID
@@ -151,6 +157,7 @@ func apply_state(canvases: Dictionary, items: Dictionary) -> Dictionary:
 		RenderingServer.free_rid(gone.rid)
 		rs_calls += 1
 		freed += 1
+		freed_by_apply += 1
 		_detach_from_parent(id, gone.parent_key)
 		for child: int in gone.children:
 			if _items.has(child):
@@ -166,6 +173,7 @@ func apply_state(canvases: Dictionary, items: Dictionary) -> Dictionary:
 		RenderingServer.free_rid(gone_canvas.rid)
 		rs_calls += 1
 		freed += 1
+		freed_by_apply += 1
 		for child: int in gone_canvas.children:
 			if _items.has(child):
 				_items[child].parent_key = ""
@@ -181,6 +189,7 @@ func apply_state(canvases: Dictionary, items: Dictionary) -> Dictionary:
 		canvas_state.owned = true
 		_canvases[id] = canvas_state
 		created += 1
+		created_rids += 1
 	var fresh: Dictionary[int, bool] = {}
 	for id: int in item_order:
 		if _items.has(id):
@@ -191,6 +200,7 @@ func apply_state(canvases: Dictionary, items: Dictionary) -> Dictionary:
 		_items[id] = item_state
 		fresh[id] = true
 		created += 1
+		created_rids += 1
 
 	# 4. Parent pass, in id order. set_parent appends to the new parent's list.
 	for id: int in item_order:

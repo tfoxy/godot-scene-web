@@ -137,10 +137,10 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
     result.config.kind = SabotageKind::PatchDropItem;
   } else if (kind_text == "drop-message") {
     result.config.kind = SabotageKind::DropMessage;
-  } else if (kind_text == "ignore-credit" || kind_text == "stale-coalesce") {
-    result.ok = false;
-    result.error = "live sabotage " + kind_text + ": not implemented until G1d";
-    return result;
+  } else if (kind_text == "ignore-credit") {
+    result.config.kind = SabotageKind::IgnoreCredit;
+  } else if (kind_text == "stale-coalesce") {
+    result.config.kind = SabotageKind::StaleCoalesce;
   } else {
     result.ok = false;
     result.error = "unknown GRC_SABOTAGE kind \"" + kind_text + "\"";

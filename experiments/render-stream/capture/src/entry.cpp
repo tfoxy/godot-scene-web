@@ -19,7 +19,8 @@
 // Sabotage (GRC_SABOTAGE / GRC_SABOTAGE_FRAME / GRC_SABOTAGE_OP, validated by
 // rs1::parse_sabotage; a refusal publishes nothing): omit-update and omit-op
 // act in the mirror, freeze-frame, perturb-transform and patch-drop-item in
-// the publisher, drop-message in the live hub (G1c2).
+// the publisher, drop-message (G1c2), ignore-credit and stale-coalesce (G1d)
+// in the live hub.
 //
 // The root-size policy GRC_ROOT_SIZE (observe | enforce-min-size; G1a,
 // gate1-design.md "Q1") is applied at arm between the root query and the
@@ -39,7 +40,8 @@
 // transaction, hands it the same published copy the file sinks got. Nothing
 // on the main thread waits on a socket. GRC_LIVE_TAP_DIR,
 // GRC_LIVE_MAX_MESSAGE_BYTES and GRC_LIVE_HELLO_TIMEOUT_MS configure the hub;
-// GRC_SABOTAGE=drop-message needs GRC_LIVE_LISTEN. At shutdown or disarm every
+// the live sabotages (drop-message, ignore-credit, stale-coalesce) need
+// GRC_LIVE_LISTEN. At shutdown or disarm every
 // streaming connection gets its end record; the host then lingers up to 1.5 s
 // for the receivers to close after reading it (a Godot client loses messages
 // that arrive together with a close frame), closes the rest with 1000, stops
@@ -560,8 +562,11 @@ void stream_start() {
   if (sabotage.ok) {
     const rs1::SabotageKind kind = sabotage.config.kind;
     std::string why;
-    if (kind == rs1::SabotageKind::DropMessage && !live_ok) {
-      why = "drop-message needs GRC_LIVE_LISTEN";
+    const bool live_kind = kind == rs1::SabotageKind::DropMessage ||
+                           kind == rs1::SabotageKind::IgnoreCredit ||
+                           kind == rs1::SabotageKind::StaleCoalesce;
+    if (live_kind && !live_ok) {
+      why = std::string(rs1::to_wire(kind)) + " needs GRC_LIVE_LISTEN";
     } else if (!files && (kind == rs1::SabotageKind::FreezeFrame ||
                           kind == rs1::SabotageKind::PerturbTransform ||
                           kind == rs1::SabotageKind::PatchDropItem)) {
@@ -578,6 +583,10 @@ void stream_start() {
     }
     if (kind == rs1::SabotageKind::DropMessage) {
       live_config.drop_message_frame = sabotage.config.frame;
+    } else if (kind == rs1::SabotageKind::IgnoreCredit) {
+      live_config.ignore_credit_frame = sabotage.config.frame;
+    } else if (kind == rs1::SabotageKind::StaleCoalesce) {
+      live_config.stale_coalesce_frame = sabotage.config.frame;
     }
   }
   if (!sabotage.ok) {
@@ -877,7 +886,7 @@ void stream_publish(uint64_t frame) {
     return;
   }
   live_drain(frame);
-  const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot();
+  const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot(frame);
   const uint64_t epoch = rs::mirror_epoch();
   if (g_stream.publisher == nullptr && !live_wants) {
     if (g_live.hub != nullptr) {

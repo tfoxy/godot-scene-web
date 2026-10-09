@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the gate 1 checker (lib/gate1-checks.ts and lib/gate1-live-checks.ts, groups
-// g1a, g1b and g1c). Proves that every
+// Self-test for the gate 1 checker (lib/gate1-checks.ts, lib/gate1-live-checks.ts and
+// lib/gate1-g1d-checks.ts, groups g1a, g1b, g1c and g1d). Proves that every
 // check can fail as well as pass, and that classifyGate1 adds gate 1's rules (the session's root
 // size declaration, patch divergence) to gate 0's precedence.
 //
@@ -56,6 +56,11 @@ import {
   stepFrames,
   synthesizeGate1,
 } from "../lib/gate1-expected";
+import {
+  G1D_CLASSIFIED_LEGS,
+  G1D_EXPECTATIONS,
+  G1D_SUPPORT_LEGS,
+} from "../lib/gate1-g1d-checks";
 import {
   G1C_CLASSIFIED_LEGS,
   G1C_EXPECTATIONS,
@@ -954,8 +959,8 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     sha256: "54cc",
   });
   await writeJson(join(out, "legs.json"), {
-    groups_run: ["g1a", "g1b", "g1c"],
-    groups_landed: ["g1a", "g1b", "g1c"],
+    groups_run: ["g1a", "g1b", "g1c", "g1d"],
+    groups_landed: ["g1a", "g1b", "g1c", "g1d"],
   });
   for (const p of ["fixture", "receiver"]) {
     await writeProcess(
@@ -1124,6 +1129,7 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   }
 
   await buildLiveLegs(out, projects);
+  await buildG1dLegs(out, projects);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1707,6 +1713,823 @@ async function buildLiveLegs(
 }
 
 // ---------------------------------------------------------------------------------------------
+// g1d (G1d): fabricated stall, reconnect, resync, killed-receiver and sabotage legs
+// ---------------------------------------------------------------------------------------------
+
+/** The fabricated receiver returns every credit this many frames after the send (so the host
+ * sends every second frame, as in g1c), except the stalled seq's. */
+const G1D_ACK_LAG = 2;
+/** RS_RECEIVER_STALL=1:250 withholds the step 1 shot's credit 15 more frames (sim-kept-running
+ * needs 0.8 x 60 x 0.25 = 12): step 2 (frame 50) is applied inside, step 2's window [57, 59] lies
+ * inside, and the recovery at frame 64 follows step 3's change (frame 60). */
+const G1D_STALL_MS = 250;
+const G1D_STALL_FRAMES = 15;
+const G1D_RECONNECT_STEP = 4;
+const G1D_RESYNC_STEP = 6;
+const G1D_IGNORE_FRAME = LS + LN * 3;
+const G1D_STALE_FRAME = LS + LN * 1;
+const G1D_KILL_FRAME = LS + LN * 5;
+const G1D_STREAM_2 = "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d";
+
+interface G1dWindow {
+  step: number;
+  from: number;
+  to: number;
+}
+
+/** The runner's live windows on the fabricated timeline. */
+function g1dWindows(): G1dWindow[] {
+  return EXPECTED.steps.map((s) => ({
+    step: s.step,
+    from: LS + LN * s.step + 7,
+    to: s.step === 10 ? LQUIT : LS + LN * (s.step + 1) - 1,
+  }));
+}
+
+function g1dWindowsEnv(): string {
+  return g1dWindows()
+    .map((w) => `${w.step}:${w.from}-${w.to}`)
+    .join(",");
+}
+
+interface SimSentJson {
+  seq: number;
+  encoding: "full" | "patch";
+  bytes: number;
+  stale_from?: number;
+}
+
+interface SimSend {
+  seq: number;
+  frame: number;
+  encoding: "full" | "patch";
+  /** the model frame whose state it carries (an earlier one when stale) */
+  stateFrame: number;
+  json: SimSentJson;
+}
+
+interface SimConn {
+  connection: number;
+  streamId: string;
+  sends: SimSend[];
+  lines: Record<string, unknown>[];
+  /** how many leading sends the receiver read (a reconnect closes before reading the last) */
+  read: number;
+  shots: Map<number, number>;
+  stalled: number | null;
+  refused: number | null;
+  ended: boolean;
+  closeCode: number;
+  closeReason: string;
+  counters: {
+    coalesced: number;
+    pendingEpisodes: number;
+    maxPendingFrames: number;
+    maxPending: number;
+    sentWithoutCredit: number;
+    staleSent: number;
+    resyncs: number;
+    credits: number;
+    maxInFlight: number;
+    acks: { received: number; applied: number; submitted: number };
+  };
+}
+
+interface SimOptions {
+  connection: number;
+  streamId: string;
+  /** the open event and the await-hello frame line; the hello arrives the frame after */
+  open: number;
+  /** windows this connection may shoot (a reconnect's second connection gets the rest) */
+  windows: G1dWindow[];
+  stallStep?: number;
+  stallFrames?: number;
+  resyncStep?: number;
+  /** the host does not answer the resync with a full transaction (a broken host) */
+  resyncNoFull?: boolean;
+  ignoreFrom?: number;
+  staleFrom?: number;
+  /** the receiver closes (1000) after this step's shot and its credit */
+  closeAfterStep?: number;
+  /** the receiver dies (1006) at this frame */
+  killAt?: number;
+}
+
+function sameState(a: TState, b: TState): boolean {
+  return (
+    JSON.stringify([a.canvases, a.items, a.unsupported ?? []]) ===
+    JSON.stringify([b.canvases, b.items, b.unsupported ?? []])
+  );
+}
+
+/** A host connection and the receiver on it, frame by frame (rs1_live.cpp's Hub and receiver.gd
+ * in miniature): the sends, the live log and the summary counters. */
+function simulateConn(o: SimOptions, states: TState[]): SimConn {
+  let t = 1_000_000 + o.connection * 10_000_000;
+  const at = () => (t += 1000);
+  const c: SimConn = {
+    connection: o.connection,
+    streamId: o.streamId,
+    sends: [],
+    lines: [],
+    read: 0,
+    shots: new Map(),
+    stalled: null,
+    refused: null,
+    ended: false,
+    closeCode: 1000,
+    closeReason: "end seen",
+    counters: {
+      coalesced: 0,
+      pendingEpisodes: 0,
+      maxPendingFrames: 0,
+      maxPending: 0,
+      sentWithoutCredit: 0,
+      staleSent: 0,
+      resyncs: 0,
+      credits: 0,
+      maxInFlight: 0,
+      acks: { received: 0, applied: 0, submitted: 0 },
+    },
+  };
+  const k = c.counters;
+  const line = (l: Record<string, unknown>) => c.lines.push(l);
+  line({
+    frame: o.open,
+    t_us: at(),
+    event: "open",
+    connection: o.connection,
+    stream_id: o.streamId,
+  });
+  line({
+    frame: o.open,
+    t_us: at(),
+    state: "await-hello",
+    credit: false,
+    in_flight: null,
+    pending: false,
+    pending_since: null,
+    coalesced: 0,
+    queued_bytes: 0,
+    sent: null,
+  });
+  line({
+    frame: o.open + 1,
+    t_us: at(),
+    event: "hello",
+    receiver: "gate1-receiver-X11",
+    credit_stage: "submitted",
+    inbound_buffer_bytes: 16777216,
+    max_message_bytes: 16777216,
+  });
+  const due = new Map<number, { seq: number; kind: "ack" | "refuse" }[]>();
+  const schedule = (
+    frame: number,
+    ev: { seq: number; kind: "ack" | "refuse" },
+  ) => due.set(frame, [...(due.get(frame) ?? []), ev]);
+  const outstanding = new Set<number>();
+  const shot = new Set<number>();
+  let credit = true;
+  let inFlight: number | null = null;
+  let seq = 0;
+  let sentFrame = -1;
+  let pendingSince: number | null = null;
+  let stale: number | null = null;
+  let resyncDue = false;
+  let resyncDone = false;
+  let closeAt: number | null = null;
+  let readThrough: number | null = null;
+  const drain = (
+    frame: number,
+    ev: { seq: number; kind: "ack" | "refuse" },
+  ) => {
+    const stages =
+      ev.kind === "ack" ? ["received", "applied", "submitted"] : ["received"];
+    for (const stage of stages) {
+      const credits = stage === "submitted" && inFlight === ev.seq;
+      line({
+        frame,
+        t_us: at(),
+        event: "ack",
+        seq: ev.seq,
+        stream_id: o.streamId,
+        stage,
+        receiver_t_us: t,
+        credited: credits,
+        ignored: stage === "submitted" && !credits ? "stale" : null,
+      });
+      k.acks[stage as "received"]++;
+    }
+    if (ev.kind === "refuse") {
+      const credits = inFlight === ev.seq;
+      line({
+        frame,
+        t_us: at(),
+        event: "resync",
+        seq: ev.seq,
+        stream_id: o.streamId,
+        reason: "injected",
+        credited: credits,
+        ignored: credits ? null : "stale",
+      });
+      if (credits) {
+        k.resyncs++;
+        resyncDue = true;
+      }
+    }
+    outstanding.delete(ev.seq);
+    if (inFlight === ev.seq) {
+      credit = true;
+      inFlight = null;
+      k.credits++;
+    }
+  };
+  let frame = o.open + 1;
+  for (; frame <= LQUIT; frame++) {
+    if (closeAt !== null && frame === closeAt) break;
+    if (o.killAt !== undefined && frame === o.killAt) break;
+    for (const ev of due.get(frame) ?? []) drain(frame, ev);
+    due.delete(frame);
+    const creditBefore = credit;
+    const ignore = o.ignoreFrom !== undefined && frame >= o.ignoreFrom;
+    const changed =
+      sentFrame >= 1 && !sameState(states[frame - 1], states[sentFrame - 1]);
+    let sent: SimSentJson | null = null;
+    if (credit || ignore) {
+      seq++;
+      const full = seq === 1 || (resyncDue && !o.resyncNoFull);
+      resyncDue = false;
+      let stateFrame = frame;
+      if (credit && stale !== null) {
+        stateFrame = stale;
+        stale = null;
+        k.staleSent++;
+      }
+      if (pendingSince !== null)
+        k.maxPendingFrames = Math.max(k.maxPendingFrames, frame - pendingSince);
+      pendingSince = null;
+      if (!credit) k.sentWithoutCredit++;
+      sent = { seq, encoding: full ? "full" : "patch", bytes: 0 };
+      if (stateFrame !== frame) sent.stale_from = stateFrame;
+      c.sends.push({
+        seq,
+        frame,
+        encoding: sent.encoding,
+        stateFrame,
+        json: sent,
+      });
+      credit = false;
+      inFlight = seq;
+      outstanding.add(seq);
+      k.maxInFlight = Math.max(k.maxInFlight, outstanding.size);
+      sentFrame = frame;
+      // The receiver: shoot the first transaction in an unshot window, or refuse it (resync).
+      const w = o.windows.find(
+        (x) => !shot.has(x.step) && frame >= x.from && frame <= x.to,
+      );
+      if (w && o.resyncStep === w.step && !resyncDone) {
+        resyncDone = true;
+        c.refused = seq;
+        schedule(frame + G1D_ACK_LAG, { seq, kind: "refuse" });
+      } else {
+        let lag = G1D_ACK_LAG;
+        if (w) {
+          shot.add(w.step);
+          c.shots.set(w.step, seq);
+          if (w.step === o.stallStep && c.stalled === null) {
+            c.stalled = seq;
+            lag += o.stallFrames ?? 0;
+          }
+          if (w.step === o.closeAfterStep) {
+            closeAt = frame + lag + 1;
+            readThrough = seq;
+          }
+        }
+        schedule(frame + lag, { seq, kind: "ack" });
+      }
+    } else if (changed) {
+      if (pendingSince === null) {
+        pendingSince = frame;
+        k.pendingEpisodes++;
+      }
+      k.coalesced++;
+      k.maxPending = 1;
+      k.maxPendingFrames = Math.max(k.maxPendingFrames, frame - pendingSince);
+      if (o.staleFrom !== undefined && frame >= o.staleFrom && stale === null)
+        stale = frame;
+    }
+    line({
+      frame,
+      t_us: at(),
+      state: "streaming",
+      credit: creditBefore,
+      in_flight: inFlight,
+      pending: pendingSince !== null,
+      pending_since: pendingSince,
+      coalesced: k.coalesced,
+      queued_bytes: 0,
+      sent,
+    });
+  }
+  c.read = readThrough ?? c.sends.length;
+  if (closeAt !== null) {
+    c.closeReason = "reconnect";
+    line({
+      frame,
+      t_us: at(),
+      event: "close",
+      code: 1000,
+      reason: "reconnect",
+      closed_by: "receiver",
+    });
+    return c;
+  }
+  if (o.killAt !== undefined) {
+    c.closeCode = 1006;
+    c.closeReason = "peer closed";
+    line({
+      frame,
+      t_us: at(),
+      event: "close",
+      code: 1006,
+      reason: "peer closed",
+      closed_by: "receiver",
+    });
+    return c;
+  }
+  c.ended = true;
+  line({
+    frame: LQUIT,
+    t_us: at(),
+    event: "end",
+    reason: "shutdown",
+    transactions: c.sends.length,
+    bytes: 200,
+  });
+  for (const [, evs] of [...due.entries()].sort((a, b) => a[0] - b[0]))
+    for (const ev of evs) drain(LQUIT, ev);
+  line({
+    frame: LQUIT,
+    t_us: at(),
+    event: "close",
+    code: 1000,
+    reason: "end seen",
+    closed_by: "receiver",
+  });
+  return c;
+}
+
+/** The tap of a simulated connection (and the bytes the receiver read), with each send's byte
+ * count filled into its log line. */
+function simStreams(
+  c: SimConn,
+  states: TState[],
+): { tap: Buffer; received: Buffer } {
+  const formed = c.sends.map((s) => ({
+    ...states[s.stateFrame - 1],
+    frame: s.frame,
+  }));
+  const tap = encodeRs1Recording(formed, {
+    ...sessionFor({ quit: LQUIT }, "patch"),
+    sessionId: LIVE_SESSION,
+    streamId: c.streamId,
+    transport: "websocket" as const,
+    connection: c.connection,
+    fullAt: c.sends.filter((s) => s.encoding === "full").map((s) => s.seq),
+    noEnd: !c.ended,
+  });
+  const split = splitRecords(new Uint8Array(tap));
+  for (const s of c.sends) s.json.bytes = split.records[s.seq].byte_length;
+  for (const l of c.lines)
+    if (l.sent) l.queued_bytes = (l.sent as SimSentJson).bytes;
+  if (c.read === c.sends.length) return { tap, received: tap };
+  const cut = split.records[c.read + 1];
+  return { tap, received: tap.subarray(0, cut.offset) };
+}
+
+function simSummary(c: SimConn): Record<string, unknown> {
+  const lat = { count: 1, min: 9000, median: 11000, p95: 12000, max: 15000 };
+  const k = c.counters;
+  return {
+    connection: c.connection,
+    stream_id: c.streamId,
+    receiver: "gate1-receiver-X11",
+    credit_stage: "submitted",
+    inbound_buffer_bytes: 16777216,
+    max_message_bytes: 16777216,
+    frames_offered: LQUIT - c.sends[0].frame + 1,
+    transactions: c.sends.length,
+    sent: c.sends.length,
+    dropped: 0,
+    full: c.sends.filter((s) => s.encoding === "full").length,
+    patch: c.sends.filter((s) => s.encoding === "patch").length,
+    coalesced: k.coalesced,
+    max_pending: k.maxPending,
+    pending_episodes: k.pendingEpisodes,
+    max_pending_frames: k.maxPendingFrames,
+    max_pending_age_us: k.maxPendingFrames * 16667,
+    sent_without_credit: k.sentWithoutCredit,
+    stale_sent: k.staleSent,
+    max_in_flight: k.maxInFlight,
+    max_queued_bytes: 8000,
+    max_message_sent: 8000,
+    bytes_sent: 100000,
+    resyncs: k.resyncs,
+    credits: k.credits,
+    acks: { ...k.acks },
+    acks_ignored: 0,
+    end_sent: c.ended,
+    close_code: c.closeCode,
+    closed_by: "receiver",
+    close_reason: c.closeReason,
+    error_sent: null,
+    ack_latency_us: { received: lat, applied: lat, submitted: lat },
+    credit_rtt_us: lat,
+    credit_rtt_frames: { count: 1, min: 2, median: 2, p95: 2, max: 2 },
+  };
+}
+
+interface G1dLegOptions {
+  stall?: boolean;
+  /** frames the stalled credit is withheld beyond the normal lag */
+  stallFrames?: number;
+  reconnect?: boolean;
+  resync?: boolean;
+  resyncNoFull?: boolean;
+  ignoreFrom?: number;
+  staleFrom?: number;
+  /** connection 2 reuses connection 1's stream_id */
+  reuseStreamId?: boolean;
+  /** the receiver's applied.json reconnect record leaves RIDs behind */
+  leftoverRids?: number;
+  sabotage?: { kind: string; frame: number } | null;
+}
+
+/** One g1d leg: host (capture sinks, taps, logs, summary) and rendered receiver. */
+async function writeG1dLeg(
+  out: string,
+  projects: Projects,
+  leg: string,
+  o: G1dLegOptions,
+): Promise<void> {
+  await rm(join(out, leg), { recursive: true, force: true });
+  const hostDir = join(out, leg, "host");
+  const recvDir = join(out, leg, "receiver");
+  const states = modelStates({ quit: LQUIT, start: LS, stepFrames: LN });
+  const windows = g1dWindows();
+  const conns: SimConn[] = [];
+  const first = simulateConn(
+    {
+      connection: 1,
+      streamId: LIVE_STREAM,
+      open: LFIRST - 1,
+      windows,
+      stallStep: o.stall ? 1 : undefined,
+      stallFrames: o.stallFrames ?? G1D_STALL_FRAMES,
+      resyncStep: o.resync ? G1D_RESYNC_STEP : undefined,
+      resyncNoFull: o.resyncNoFull,
+      ignoreFrom: o.ignoreFrom,
+      staleFrom: o.staleFrom,
+      closeAfterStep: o.reconnect ? G1D_RECONNECT_STEP : undefined,
+    },
+    states,
+  );
+  conns.push(first);
+  if (o.reconnect) {
+    const lastFrame = first.lines[first.lines.length - 1].frame as number;
+    conns.push(
+      simulateConn(
+        {
+          connection: 2,
+          streamId: o.reuseStreamId ? LIVE_STREAM : G1D_STREAM_2,
+          open: lastFrame + 1,
+          windows: windows.filter((w) => !first.shots.has(w.step)),
+        },
+        states,
+      ),
+    );
+  }
+  const streams = conns.map((c) => simStreams(c, states));
+
+  // Host.
+  await writeCaptureLeg(hostDir, {
+    quit: LQUIT,
+    start: LS,
+    stepFrames: LN,
+    sabotage: o.sabotage ?? null,
+  });
+  await writeText(join(hostDir, "steps.jsonl"), stepLog(LS, LN));
+  await writeText(
+    join(hostDir, "stdout.log"),
+    `[fixture] gate1 ready: S=${LS} N=${LN} quit=${LQUIT}\n[fixture] quitting frame=${LQUIT}\n`,
+  );
+  await editJson<Record<string, unknown>>(
+    join(hostDir, "evidence", "result.json"),
+    (r) => {
+      r.live = {
+        status: "closed",
+        listen: "127.0.0.1:0",
+        address: "127.0.0.1",
+        port: LIVE_PORT,
+        reason: null,
+        connections: conns.length,
+      };
+    },
+  );
+  await writeJson(join(hostDir, "evidence", "live.json"), {
+    schema: "render-stream-live/1",
+    status: "listening",
+    address: "127.0.0.1",
+    port: LIVE_PORT,
+    reason: null,
+  });
+  await writeJson(join(hostDir, "evidence", "live-summary.json"), {
+    schema: "render-stream-live-summary/1",
+    connections: conns.map(simSummary),
+  });
+  await mkdir(join(hostDir, "tap"), { recursive: true });
+  await mkdir(recvDir, { recursive: true });
+  for (const [i, c] of conns.entries()) {
+    await writeFile(
+      join(hostDir, "tap", `stream-${c.connection}.rs1`),
+      streams[i].tap,
+    );
+    await writeText(
+      join(hostDir, "tap", `live-${c.connection}.jsonl`),
+      `${c.lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
+    );
+  }
+
+  // Receiver.
+  const txs: Record<string, unknown>[] = [];
+  const shots: Record<string, unknown>[] = [];
+  let us = 5_000_000;
+  for (const [i, c] of conns.entries()) {
+    const name =
+      c.connection === 1 ? "received.rs1" : `received-${c.connection}.rs1`;
+    await writeFile(join(recvDir, name), streams[i].received);
+    const summary = summarizeRecording(
+      name,
+      new Uint8Array(streams[i].received),
+    );
+    for (const tx of summary.transactions) {
+      const refused = tx.meta.seq === c.refused;
+      us += 1000;
+      txs.push({
+        stream: c.connection,
+        seq: tx.meta.seq,
+        frame: tx.meta.frame,
+        encoding: tx.meta.encoding,
+        record_sha256: tx.sha256,
+        process_frame: us / 1000,
+        created: 0,
+        freed: 0,
+        reparented: 0,
+        commands_replayed: 0,
+        rs_calls: refused ? null : rsCallsOf(tx.meta.seq),
+        received_us: us,
+        applied_us: refused ? null : us + 300,
+        submitted_us: refused ? null : us + 600,
+        skipped: refused ? "resync" : null,
+      });
+    }
+    for (const [step, seq] of c.shots) {
+      if (seq > c.read) continue;
+      const png =
+        c.connection === 1
+          ? `seq-${seq}.png`
+          : `stream-${c.connection}-seq-${seq}.png`;
+      await writePng(join(recvDir, "shots", png), step);
+      shots.push({
+        stream: c.connection,
+        seq,
+        step,
+        path: join(recvDir, "shots", png),
+        state_path: null,
+        process_frame: seq + 2,
+        applied_through: seq,
+      });
+    }
+  }
+  const shotSteps = new Set(shots.map((s) => s.step as number));
+  const stall =
+    first.stalled === null
+      ? null
+      : {
+          step: 1,
+          ms: G1D_STALL_MS,
+          after_seq: first.stalled,
+          after_frame: first.sends.find((s) => s.seq === first.stalled)?.frame,
+          start_us: 7_000_000,
+          end_us: 7_000_000 + G1D_STALL_MS * 1000 + 70,
+          injected: true,
+          mechanism:
+            "OS.delay_msec on the receiver main thread after frame_post_draw, before the submitted ack",
+        };
+  const reconnectSeq = first.shots.get(G1D_RECONNECT_STEP);
+  await writeJson(join(recvDir, "applied.json"), {
+    schema: "render-stream-receiver-applied/2",
+    mode: "live",
+    recording: null,
+    session_id: LIVE_SESSION,
+    streams: conns.map((c, i) => ({
+      stream_id: c.streamId,
+      connection: c.connection,
+      received_path: join(
+        recvDir,
+        i === 0 ? "received.rs1" : `received-${c.connection}.rs1`,
+      ),
+      received_sha256: summarizeRecording(
+        "r",
+        new Uint8Array(streams[i].received),
+      ).sha256,
+      received_bytes: streams[i].received.length,
+      end_seen: c.ended,
+      closed_by: "receiver",
+      close_code: 1000,
+    })),
+    status: "ok",
+    failure: null,
+    end_seen: true,
+    viewport: {
+      display_server: "X11",
+      size: [640, 360],
+      size_check: "ok",
+      logical_size: [640, 360],
+      canvas_transform: [1, 0, 0, 1, 8, 4],
+    },
+    transactions: txs,
+    shots,
+    shots_missed: EXPECTED.steps
+      .map((s) => s.step)
+      .filter((s) => !shotSteps.has(s)),
+    unsupported: [],
+    live: {
+      url: `ws://127.0.0.1:${LIVE_PORT}/render-stream`,
+      credit_stage: "submitted",
+      inbound_buffer_bytes: 16777216,
+      presented: "unavailable",
+      acks_sent: {
+        received: txs.length,
+        applied: txs.length,
+        submitted: txs.length,
+      },
+      stall,
+      reconnect: o.reconnect
+        ? {
+            step: G1D_RECONNECT_STEP,
+            after_seq: reconnectSeq,
+            after_frame: first.sends.find((s) => s.seq === reconnectSeq)?.frame,
+            connect_attempts: 1,
+            created_rids: 22,
+            freed_by_apply: 2,
+            owned_before_dispose: 20,
+            freed_rids: 20 - (o.leftoverRids ?? 0),
+            leftover_rids: o.leftoverRids ?? 0,
+            closed_us: 6_000_000,
+          }
+        : null,
+      resync:
+        first.refused === null
+          ? null
+          : {
+              step: G1D_RESYNC_STEP,
+              seq: first.refused,
+              frame: first.sends.find((s) => s.seq === first.refused)?.frame,
+              reason: "injected",
+            },
+    },
+  });
+  const env = [
+    "RS_RECEIVER_MODE=live",
+    `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
+    `RS_RECEIVER_OUT=${join(recvDir, "applied.json")}`,
+    `RS_RECEIVER_SHOT_WINDOWS=${g1dWindowsEnv()}`,
+    ...(o.stall ? [`RS_RECEIVER_STALL=1:${G1D_STALL_MS}`] : []),
+    ...(o.reconnect ? [`RS_RECEIVER_RECONNECT=${G1D_RECONNECT_STEP}`] : []),
+    ...(o.resync ? [`RS_RECEIVER_RESYNC=${G1D_RESYNC_STEP}`] : []),
+  ];
+  await writeProcess(
+    recvDir,
+    [
+      "/tpl/linux_release.x86_64",
+      "--path",
+      projects.receiverProjectDir,
+      "--rendering-driver",
+      "opengl3",
+      "--max-fps",
+      "60",
+    ],
+    env,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.1); hello sent\n[receiver] ok\n`,
+    0,
+  );
+}
+
+/** live-receiver-killed: a host whose headless receiver was SIGKILLed at frame G1D_KILL_FRAME. */
+async function writeKilledLeg(
+  out: string,
+  projects: Projects,
+  o: { cleanClose?: boolean; hostExit?: number; noQuit?: boolean } = {},
+): Promise<void> {
+  const leg = join(out, "live-receiver-killed");
+  await rm(leg, { recursive: true, force: true });
+  const hostDir = join(leg, "host");
+  const recvDir = join(leg, "receiver");
+  const states = modelStates({ quit: LQUIT, start: LS, stepFrames: LN });
+  const c = simulateConn(
+    {
+      connection: 1,
+      streamId: LIVE_STREAM,
+      open: LFIRST - 1,
+      windows: [],
+      killAt: G1D_KILL_FRAME + 1,
+    },
+    states,
+  );
+  const { tap } = simStreams(c, states);
+  await writeCaptureLeg(hostDir, { quit: LQUIT, start: LS, stepFrames: LN });
+  await writeText(join(hostDir, "steps.jsonl"), stepLog(LS, LN));
+  await writeProcess(
+    hostDir,
+    [
+      "/tpl/linux_release.x86_64",
+      "--headless",
+      "--max-fps",
+      "60",
+      "--path",
+      "/fixture",
+    ],
+    ["GRC_MODE=arm", "GRC_LIVE_LISTEN=127.0.0.1:0"],
+    `[fixture] gate1 ready: S=${LS} N=${LN} quit=${LQUIT}\n${o.noQuit ? "" : `[fixture] quitting frame=${LQUIT}\n`}`,
+    o.hostExit ?? 0,
+  );
+  await writeJson(join(hostDir, "evidence", "live.json"), {
+    schema: "render-stream-live/1",
+    status: "listening",
+    address: "127.0.0.1",
+    port: LIVE_PORT,
+    reason: null,
+  });
+  const summary = simSummary(c);
+  if (o.cleanClose) {
+    summary.close_code = 1000;
+    summary.close_reason = "end seen";
+  }
+  await writeJson(join(hostDir, "evidence", "live-summary.json"), {
+    schema: "render-stream-live-summary/1",
+    connections: [summary],
+  });
+  await mkdir(join(hostDir, "tap"), { recursive: true });
+  await writeFile(join(hostDir, "tap", "stream-1.rs1"), tap);
+  await writeText(
+    join(hostDir, "tap", "live-1.jsonl"),
+    `${c.lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
+  );
+  await writeJson(join(recvDir, "killed.json"), {
+    pid: 4242,
+    target_frame: G1D_KILL_FRAME,
+    host_frame_seen: G1D_KILL_FRAME + 1,
+    killed: true,
+    signal: "SIGKILL",
+  });
+  await writeProcess(
+    recvDir,
+    [
+      "/tpl/linux_release.x86_64",
+      "--headless",
+      "--max-fps",
+      "60",
+      "--path",
+      projects.receiverProjectDir,
+    ],
+    [
+      "RS_RECEIVER_MODE=live",
+      `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
+    ],
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.1); hello sent\n`,
+    137,
+  );
+}
+
+/** The whole g1d group. */
+async function buildG1dLegs(out: string, projects: Projects): Promise<void> {
+  await writeG1dLeg(out, projects, "live-stall", { stall: true });
+  await writeG1dLeg(out, projects, "live-reconnect", { reconnect: true });
+  await writeG1dLeg(out, projects, "live-resync", { resync: true });
+  await writeG1dLeg(out, projects, "sabotage-ignore-credit", {
+    ignoreFrom: G1D_IGNORE_FRAME,
+    sabotage: { kind: "ignore-credit", frame: G1D_IGNORE_FRAME },
+  });
+  await writeG1dLeg(out, projects, "sabotage-stale-coalesce", {
+    stall: true,
+    staleFrom: G1D_STALE_FRAME,
+    sabotage: { kind: "stale-coalesce", frame: G1D_STALE_FRAME },
+  });
+  await writeKilledLeg(out, projects);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------------------------
 
@@ -1716,7 +2539,12 @@ interface Scenario {
   expected?: (e: Gate1Expected) => Gate1Expected;
   checks?: Record<string, boolean>;
   classes?: Partial<
-    Record<Gate1Leg | (typeof G1C_CLASSIFIED_LEGS)[number], Gate1Class>
+    Record<
+      | Gate1Leg
+      | (typeof G1C_CLASSIFIED_LEGS)[number]
+      | (typeof G1D_CLASSIFIED_LEGS)[number],
+      Gate1Class
+    >
   >;
   report?: (report: Gate1Report) => void;
   gatePassed?: boolean;
@@ -1832,6 +2660,20 @@ const G1C_CHECK_IDS = [
   "live-receiver-late",
   "receiver-never-loaded-fixture-live",
   ...G1C_CLASSIFIED_LEGS.map((leg) => `leg-class-${leg}`),
+];
+
+const G1D_CHECK_IDS = [
+  "stall-observed",
+  "sim-kept-running",
+  "pending-bounded",
+  "coalesced",
+  "newest-after-stall",
+  "stall-pixels",
+  "reconnect-fresh-session",
+  "reconnect-clean-slate",
+  "resync-full",
+  "host-survives-receiver-loss",
+  ...G1D_CLASSIFIED_LEGS.map((leg) => `leg-class-${leg}`),
 ];
 
 /** The live leg's applied.json shots, step -> seq. */
@@ -2038,8 +2880,8 @@ const liveScenarios: Scenario[] = [
     name: "g1c: a run without g1c reports not-run and fails the gate",
     mutate: (out) =>
       writeJson(join(out, "legs.json"), {
-        groups_run: ["g1a", "g1b"],
-        groups_landed: ["g1a", "g1b", "g1c"],
+        groups_run: ["g1a", "g1b", "g1d"],
+        groups_landed: ["g1a", "g1b", "g1c", "g1d"],
       }),
     gatePassed: false,
     report: (r) =>
@@ -2072,7 +2914,10 @@ const scenarios: Scenario[] = [
   {
     name: "the good tree passes every check, every leg at its expected class",
     checks: Object.fromEntries(
-      [...ALL_CHECK_IDS, ...G1C_CHECK_IDS].map((id) => [id, true]),
+      [...ALL_CHECK_IDS, ...G1C_CHECK_IDS, ...G1D_CHECK_IDS].map((id) => [
+        id,
+        true,
+      ]),
     ),
     classes: {
       ...Object.fromEntries(
@@ -2081,27 +2926,38 @@ const scenarios: Scenario[] = [
       ...Object.fromEntries(
         G1C_CLASSIFIED_LEGS.map((leg) => [leg, G1C_EXPECTATIONS[leg].class]),
       ),
+      ...Object.fromEntries(
+        G1D_CLASSIFIED_LEGS.map((leg) => [leg, G1D_EXPECTATIONS[leg].class]),
+      ),
     },
     gatePassed: true,
     report: (r) => {
       assert("report: schema", r.schema === "render-stream-gate1-report/1");
       assert(
         "report: groups",
-        r.groups.run.join() === "g1a,g1b,g1c" && r.groups.not_run.length === 0,
+        r.groups.run.join() === "g1a,g1b,g1c,g1d" &&
+          r.groups.not_run.length === 0,
       );
       assert(
         "report: every leg present, support legs null-classed",
-        [...ALL_LEGS, ...G1C_CLASSIFIED_LEGS, ...G1A_SUPPORT_LEGS].every(
-          (l) => l in r.legs,
-        ) && G1A_SUPPORT_LEGS.every((l) => r.legs[l].expected_class === null),
+        [
+          ...ALL_LEGS,
+          ...G1C_CLASSIFIED_LEGS,
+          ...G1A_SUPPORT_LEGS,
+          ...G1D_CLASSIFIED_LEGS,
+          ...G1D_SUPPORT_LEGS,
+        ].every((l) => l in r.legs) &&
+          [...G1A_SUPPORT_LEGS, ...G1D_SUPPORT_LEGS].every(
+            (l) => r.legs[l].expected_class === null,
+          ),
       );
       assert(
-        "report: 143 checkpoints (13 shooting receiver legs x 11 steps, live, live-replay and the drop leg included), each with leg, stream and 9 regions",
-        r.checkpoints.length === 143 &&
+        "report: 196 checkpoints (13 shooting receiver legs x 11 steps, live, live-replay and the drop leg included, plus g1d's 5 legs x 11 less the 2 windows the stalls excuse), each with leg, stream and 9 regions",
+        r.checkpoints.length === 196 &&
           r.checkpoints.every(
             (c) => c.regions.length === 9 && typeof c.leg === "string",
           ) &&
-          r.checkpoints.filter((c) => c.stream === "patch").length === 55,
+          r.checkpoints.filter((c) => c.stream === "patch").length === 108,
         `${r.checkpoints.length}`,
       );
       assert(
@@ -2152,6 +3008,26 @@ const scenarios: Scenario[] = [
           r.legs["root-size-observe"].reasons.some((x) =>
             x.startsWith("pixel-mismatch:"),
           ),
+      );
+      const stall = r.g1d?.["live-stall"]?.stall;
+      assert(
+        "report: g1d live-stall numbers (stalled seq credited 17 frames later, step 2 inside, 14 coalesced, recovery a patch on the stalled seq)",
+        stall?.frames_during_stall === 17 &&
+          stall.steps_applied_during.join() === "2,3" &&
+          stall.coalesced_delta === 14 &&
+          stall.first_pending_frame === 50 &&
+          stall.oldest_pending_frames === 14 &&
+          stall.max_pending === 1 &&
+          stall.recovery?.base_seq === stall.stalled_seq &&
+          stall.recovery?.frames_after_credit === 0 &&
+          stall.expected_missed_steps.join() === "2" &&
+          stall.injected === true,
+        JSON.stringify(stall),
+      );
+      assert(
+        "report: g1d live-reconnect has 2 connections and the dispose record",
+        r.g1d?.["live-reconnect"]?.connections.length === 2 &&
+          r.g1d?.["live-reconnect"]?.receiver.streams === 2,
       );
       assert(
         "report: every quoted image path is under the run directory",
@@ -2666,13 +3542,13 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeJson(join(out, "legs.json"), {
         groups_run: ["g1b"],
-        groups_landed: ["g1a", "g1b", "g1c"],
+        groups_landed: ["g1a", "g1b", "g1c", "g1d"],
       }),
     gatePassed: false,
     report: (r) =>
       assert(
-        "report: g1a and g1c not_run and a failed g1b group check",
-        r.groups.not_run.join() === "g1a,g1c" &&
+        "report: g1a, g1c and g1d not_run and a failed g1b group check",
+        r.groups.not_run.join() === "g1a,g1c,g1d" &&
           r.checks.some((c) => c.id === "group-g1b" && c.status === "fail"),
       ),
   },
@@ -2681,19 +3557,242 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeJson(join(out, "legs.json"), {
         groups_run: [],
-        groups_landed: ["g1a", "g1b", "g1c"],
+        groups_landed: ["g1a", "g1b", "g1c", "g1d"],
       }),
     gatePassed: false,
     report: (r) =>
       assert(
-        "report: g1a, g1b and g1c not_run, checks not-run",
-        r.groups.not_run.join() === "g1a,g1b,g1c" &&
-          r.checks.filter((c) => c.status === "not-run").length === 3,
+        "report: g1a, g1b, g1c and g1d not_run, checks not-run",
+        r.groups.not_run.join() === "g1a,g1b,g1c,g1d" &&
+          r.checks.filter((c) => c.status === "not-run").length === 4,
       ),
   },
 ];
 
-scenarios.push(...liveScenarios);
+/** Rewrites the lines of a g1d host's connection-1 log. */
+async function editG1dLog(
+  out: string,
+  leg: string,
+  edit: (lines: Record<string, unknown>[]) => Record<string, unknown>[],
+): Promise<void> {
+  await editLiveLog(out, leg, edit);
+}
+
+const g1dScenarios: Scenario[] = [
+  {
+    name: "g1d: a stall shorter than requested fails stall-observed",
+    mutate: (out) =>
+      editJson<{ live: { stall: { end_us: number; start_us: number } } }>(
+        join(out, "live-stall", "receiver", "applied.json"),
+        (a) => {
+          a.live.stall.end_us = a.live.stall.start_us + 100_000;
+        },
+      ),
+    checks: { "stall-observed": false, "leg-class-live-stall": true },
+  },
+  {
+    name: "g1d: a stall the host barely noticed (7 frames) fails sim-kept-running",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "live-stall", { stall: true, stallFrames: 5 }),
+    checks: {
+      "sim-kept-running": false,
+      "stall-observed": true,
+      "pending-bounded": true,
+    },
+  },
+  {
+    name: "g1d: a send during the stall fails pending-bounded and is delivery-violation",
+    mutate: (out) =>
+      editG1dLog(out, "live-stall", (lines) => {
+        // A transaction sent mid-stall while the stalled seq still holds the credit.
+        const send = lines.find(
+          (l) =>
+            l.state === "streaming" &&
+            l.sent === null &&
+            (l.frame as number) === 55,
+        );
+        if (send) {
+          send.sent = { seq: 999, encoding: "patch", bytes: 300 };
+          send.credit = false;
+        }
+        return lines;
+      }),
+    checks: { "pending-bounded": false },
+    classes: { "live-stall": "delivery-violation" },
+  },
+  {
+    name: "g1d: a stall whose coalesced counter stops growing fails coalesced",
+    mutate: (out) =>
+      editG1dLog(out, "live-stall", (lines) => {
+        const pending = lines.filter(
+          (l) => l.state === "streaming" && l.pending === true,
+        );
+        const frozen =
+          pending.length > 0 ? (pending[0].coalesced as number) : 0;
+        for (const l of lines)
+          if (l.state === "streaming" && (l.frame as number) >= 50)
+            l.coalesced = frozen;
+        return lines;
+      }),
+    checks: { coalesced: false, "newest-after-stall": true },
+  },
+  {
+    name: "g1d: a recovery that sends the first missed target fails newest-after-stall (stale-state)",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "live-stall", {
+        stall: true,
+        staleFrom: 50,
+      }),
+    checks: { "newest-after-stall": false, "pending-bounded": true },
+    classes: { "live-stall": "delivery-violation" },
+  },
+  {
+    name: "g1d: a post-stall shot without the in-stall update fails stall-pixels (pixel-mismatch)",
+    mutate: async (out) => {
+      const applied = await readJsonFile<{
+        shots: { step: number; seq: number }[];
+      }>(join(out, "live-stall", "receiver", "applied.json"));
+      const post = applied.shots.find((s) => s.step === 3);
+      if (post)
+        await writePng(
+          join(out, "live-stall", "receiver", "shots", `seq-${post.seq}.png`),
+          1,
+        );
+    },
+    checks: { "stall-pixels": false, "newest-after-stall": true },
+    classes: { "live-stall": "pixel-mismatch" },
+  },
+  {
+    name: "g1d: a missed window outside the stall is replay-failure and fails stall-pixels",
+    mutate: async (out) => {
+      await editJson<{ shots: { step: number }[]; shots_missed: number[] }>(
+        join(out, "live-stall", "receiver", "applied.json"),
+        (a) => {
+          a.shots = a.shots.filter((s) => s.step !== 5);
+          a.shots_missed = [...a.shots_missed, 5].sort((x, y) => x - y);
+        },
+      );
+    },
+    checks: { "stall-pixels": false, "leg-class-live-stall": false },
+    classes: { "live-stall": "replay-failure" },
+  },
+  {
+    name: "g1d: a second connection reusing the first stream_id fails reconnect-fresh-session",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "live-reconnect", {
+        reconnect: true,
+        reuseStreamId: true,
+      }),
+    checks: { "reconnect-fresh-session": false, "reconnect-clean-slate": true },
+  },
+  {
+    name: "g1d: RIDs left after the reconnect's dispose fail reconnect-clean-slate",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "live-reconnect", {
+        reconnect: true,
+        leftoverRids: 2,
+      }),
+    checks: {
+      "reconnect-clean-slate": false,
+      "reconnect-fresh-session": true,
+    },
+  },
+  {
+    name: "g1d: a first connection the receiver read past the host's tap is replay-failure",
+    mutate: async (out) => {
+      const path = join(out, "live-reconnect", "receiver", "received.rs1");
+      const bytes = await readFile(path);
+      bytes[bytes.length - 1] ^= 0x01;
+      await writeFile(path, bytes);
+    },
+    checks: { "leg-class-live-reconnect": false },
+    classes: { "live-reconnect": "replay-failure" },
+  },
+  {
+    name: "g1d: a host that answers a resync with a patch fails resync-full",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "live-resync", {
+        resync: true,
+        resyncNoFull: true,
+      }),
+    checks: { "resync-full": false },
+  },
+  {
+    name: "g1d: a killed receiver whose host never reached its quit frame fails host-survives-receiver-loss",
+    mutate: (out, projects) =>
+      writeKilledLeg(out, projects, { noQuit: true, hostExit: 1 }),
+    checks: { "host-survives-receiver-loss": false },
+  },
+  {
+    name: "g1d: a receiver loss logged as a clean close fails host-survives-receiver-loss",
+    mutate: (out, projects) =>
+      writeKilledLeg(out, projects, { cleanClose: true }),
+    checks: { "host-survives-receiver-loss": false },
+  },
+  {
+    name: "g1d: an ignore-credit host that honours credit classifies success and fails its leg class",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "sabotage-ignore-credit", {
+        sabotage: { kind: "ignore-credit", frame: G1D_IGNORE_FRAME },
+      }),
+    checks: { "leg-class-sabotage-ignore-credit": false },
+    classes: { "sabotage-ignore-credit": "success" },
+  },
+  {
+    name: "g1d: an ignore-credit violation before the sabotage frame fails its leg class",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "sabotage-ignore-credit", {
+        ignoreFrom: G1D_IGNORE_FRAME - 10,
+        sabotage: { kind: "ignore-credit", frame: G1D_IGNORE_FRAME },
+      }),
+    checks: { "leg-class-sabotage-ignore-credit": false },
+    classes: { "sabotage-ignore-credit": "delivery-violation" },
+  },
+  {
+    name: "g1d: a stale-coalesce host that recovers to the newest state fails its leg class",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "sabotage-stale-coalesce", {
+        stall: true,
+        sabotage: { kind: "stale-coalesce", frame: G1D_STALE_FRAME },
+      }),
+    checks: { "leg-class-sabotage-stale-coalesce": false },
+    classes: { "sabotage-stale-coalesce": "success" },
+  },
+  {
+    name: "g1d: a run without g1d reports not-run and fails the gate",
+    mutate: (out) =>
+      writeJson(join(out, "legs.json"), {
+        groups_run: ["g1a", "g1b", "g1c"],
+        groups_landed: ["g1a", "g1b", "g1c", "g1d"],
+      }),
+    gatePassed: false,
+    report: (r) =>
+      assert(
+        "report: g1d not_run, its group check not-run, g1d null",
+        r.groups.not_run.join() === "g1d" &&
+          r.checks.some(
+            (c) => c.id === "group-g1d" && c.status === "not-run",
+          ) &&
+          r.g1d === null,
+      ),
+  },
+  {
+    name: "g1d without g1a fails the gate",
+    mutate: (out) =>
+      writeJson(join(out, "legs.json"), {
+        groups_run: ["g1d"],
+        groups_landed: ["g1a", "g1b", "g1c", "g1d"],
+      }),
+    gatePassed: false,
+    report: (r) =>
+      assert(
+        "report: a failed g1d group check",
+        r.checks.some((c) => c.id === "group-g1d" && c.status === "fail"),
+      ),
+  },
+];
+
+scenarios.push(...liveScenarios, ...g1dScenarios);
 
 async function runScenarios(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "gate1-self-test-"));
