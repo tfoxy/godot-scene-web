@@ -1,0 +1,11 @@
+[
+  {
+    "file": "OpenSans_SemiBold.woff2",
+    "source": "packages/html/vendor/OpenSans_SemiBold.woff2",
+    "bytes": 46392,
+    "sha256": "661e2d9975d3029aeb32bf37b1b963c31c7c3ce08ac1bab2c8ebe27e135c4ec2",
+    "license": "Apache-2.0",
+    "license_file": "packages/html/vendor/LICENSE-OpenSans",
+    "upstream": "Open Sans SemiBold 1.10, byte-identical to Godot 4.5.1 thirdparty/fonts/OpenSans_SemiBold.woff2"
+  }
+]

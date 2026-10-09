@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://gate4.gd" id="1"]
+
+[node name="Gate4" type="Node"]
+script = ExtResource("1")
