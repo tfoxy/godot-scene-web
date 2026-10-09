@@ -92,7 +92,7 @@ let EXPECTED: Gate1Expected;
 const S = 1;
 const N = 10;
 const CAPTURE_QUIT = 400;
-const SHORT_QUIT = 112;
+const SHORT_QUIT = 132;
 
 // ---------------------------------------------------------------------------------------------
 // A model of the fixture's retained canvas state (what the mirror publishes), step by step.
@@ -105,6 +105,8 @@ interface MItem {
   visible: boolean;
   draw_index: number;
   z_index: number;
+  z_relative: boolean;
+  behind: boolean;
   layer: number;
   version: number;
   xform: number[];
@@ -149,6 +151,8 @@ const MARKER = [
   c(0.4, 0.6, 0.8),
   c(0.8, 0.6, 0.4),
   c(0.2, 0.6, 0.2),
+  [1, 0.2, 1, 1],
+  [0.2, 1, 0.8, 1],
 ];
 
 function initialState(): MState {
@@ -169,6 +173,8 @@ function initialState(): MState {
       visible: true,
       draw_index: di,
       z_index: 0,
+      z_relative: true,
+      behind: false,
       layer,
       version: 1 + rects.length,
       xform: [1, 0, 0, 1, pos[0], pos[1]],
@@ -251,6 +257,8 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
         visible: true,
         draw_index: 0,
         z_index: 0,
+        z_relative: true,
+        behind: false,
         layer: 1,
         version: 2,
         xform: [1, 0, 0, 1, ...(opts.tieOverlap ? [112, 112] : [80, 304])],
@@ -324,6 +332,8 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
         visible: true,
         draw_index: 7,
         z_index: 0,
+        z_relative: true,
+        behind: false,
         layer: 1,
         version: 2,
         // (top-level indices are reassigned below)
@@ -352,15 +362,116 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
         for (const item of state.items.values()) redraw(item, item.rects);
       }
       break;
+    case 11:
+      // G1e: z_as_relative. ZP (22) is a new top-level item (ties with P at index 0 until the
+      // deferred raise next frame, same as T at step 1); its child ZC (23) has z_index -1 and
+      // z_as_relative = false.
+      state.items.set(22, {
+        id: 22,
+        parent: { kind: "canvas", id: 1 },
+        children: [23],
+        visible: true,
+        draw_index: 0,
+        z_index: 1,
+        z_relative: true,
+        behind: false,
+        layer: 1,
+        version: 1,
+        xform: [1, 0, 0, 1, 90, 0],
+        modulate: [...W],
+        self_modulate: [...W],
+        rects: [],
+      });
+      state.items.set(23, {
+        id: 23,
+        parent: { kind: "item", id: 22 },
+        children: [],
+        visible: true,
+        draw_index: 0,
+        z_index: -1,
+        z_relative: false,
+        behind: false,
+        layer: 1,
+        version: 2,
+        xform: [1, 0, 0, 1, 0, 0],
+        modulate: [...W],
+        self_modulate: [...W],
+        rects: [[0, 0, 64, 32, ...c(1, 0.6, 0)]],
+      });
+      state.canvasItems = [...state.canvasItems, 22];
+      break;
+    case 12:
+      // G1e: ZB (24) completes step 11's visual proof (a new top-level item at effective z 0,
+      // overlapping ZC); BP (25)/BC (26) exercise show_behind_parent. ZB and BP enter together
+      // (and tie with P, and each other, until the deferred raise), so this step's tie group has
+      // three members.
+      state.items.set(24, {
+        id: 24,
+        parent: { kind: "canvas", id: 1 },
+        children: [],
+        visible: true,
+        draw_index: 0,
+        z_index: 0,
+        z_relative: true,
+        behind: false,
+        layer: 1,
+        version: 2,
+        xform: [1, 0, 0, 1, 122, 0],
+        modulate: [...W],
+        self_modulate: [...W],
+        rects: [[0, 0, 64, 32, ...c(0, 0.4, 1)]],
+      });
+      state.items.set(25, {
+        id: 25,
+        parent: { kind: "canvas", id: 1 },
+        children: [26],
+        visible: true,
+        draw_index: 0,
+        z_index: 0,
+        z_relative: true,
+        behind: false,
+        layer: 1,
+        version: 2,
+        xform: [1, 0, 0, 1, 90, 36],
+        modulate: [...W],
+        self_modulate: [...W],
+        rects: [[0, 0, 64, 32, ...c(1, 0, 0)]],
+      });
+      state.items.set(26, {
+        id: 26,
+        parent: { kind: "item", id: 25 },
+        children: [],
+        visible: true,
+        draw_index: 0,
+        z_index: 0,
+        z_relative: true,
+        behind: true,
+        layer: 1,
+        version: 2,
+        xform: [1, 0, 0, 1, 32, 0],
+        modulate: [...W],
+        self_modulate: [...W],
+        rects: [[0, 0, 64, 32, ...c(0, 0.8, 0)]],
+      });
+      state.canvasItems = [...state.canvasItems, 24, 25];
+      break;
   }
   redraw(g(17), [[0, 0, 32, 32, ...MARKER[step]]]);
 }
 
 /** The deferred top-level raise, one frame after a step (scene/main/scene_tree.cpp:644, :708-709):
- * T, added at step 1 with the RS default index 0, gets 10 (P..Marker keep 0..9). */
+ * T, added at step 1 with the RS default index 0, gets 10 (P..Marker keep 0..9). Steps 11 and 12
+ * (G1e) each add one or two more top-level items the same way: every top-level item of canvas 1
+ * is reassigned a fresh, increasing index in tree order (canvas_item.cpp:224-235), which for an
+ * unchanged tree order leaves the existing items' indices unchanged and only appends the new
+ * ones. */
 function afterStep(state: MState, step: number, opts: ModelOptions): void {
   if (step === 1 && !opts.noTieRaise) {
     (state.items.get(20) as MItem).draw_index = 10;
+  } else if (step === 11 || step === 12) {
+    state.canvasItems.forEach((id, i) => {
+      (state.items.get(id) as MItem).draw_index = i;
+    });
   }
 }
 
@@ -428,7 +539,7 @@ function modelStates(opts: RecordingOptions): TState[] {
   for (let frame = 1; frame <= opts.quit; frame++) {
     if (applied >= 1 && frame === appliedAt(applied) + 1)
       afterStep(state, applied, opts);
-    for (let k = applied + 1; k <= 10; k++) {
+    for (let k = applied + 1; k <= 12; k++) {
       if (appliedAt(k) === frame) {
         applyStep(state, k, opts);
         applied = k;
@@ -445,6 +556,8 @@ function modelStates(opts: RecordingOptions): TState[] {
           visible: it.visible,
           draw_index: it.draw_index,
           z_index: it.z_index,
+          z_relative: it.z_relative,
+          behind: it.behind,
           visibility_layer: it.layer,
           content_version: it.version,
           xform: [...it.xform],
@@ -665,6 +778,9 @@ function settleSeqs(): number[] {
 
 /** The fixture's one tie frame (expected.json draw_index_ties: step 1's applied frame). */
 const TIE_FRAME = S + N * 1;
+
+/** G1e's two more tie frames (step 11's and step 12's applied frames). */
+const G1E_TIE_FRAMES = [S + N * 11, S + N * 12];
 
 /** A receiver's RenderingServer calls per seq: any deterministic function of the resolved state
  * will do, as long as the full and patch receivers agree. */
@@ -1008,25 +1124,26 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     join(out, "receiver"),
     projects,
     capture.full,
-    [...seqs, TIE_FRAME],
+    [...seqs, TIE_FRAME, ...G1E_TIE_FRAMES],
     true,
     seqs,
   );
   await writeShots(join(out, "receiver"), seqs);
-  await writePng(join(out, "receiver", "shots", `seq-${TIE_FRAME}.png`), 1);
+  for (const f of [TIE_FRAME, ...G1E_TIE_FRAMES]) {
+    await writePng(join(out, "receiver", "shots", `seq-${f}.png`), 1);
+  }
   await writeReceiverProcess(
     join(out, "receiver-patch"),
     projects,
     capture.patch,
-    [...seqs, TIE_FRAME],
+    [...seqs, TIE_FRAME, ...G1E_TIE_FRAMES],
     true,
     seqs,
   );
   await writeShots(join(out, "receiver-patch"), seqs);
-  await writePng(
-    join(out, "receiver-patch", "shots", `seq-${TIE_FRAME}.png`),
-    1,
-  );
+  for (const f of [TIE_FRAME, ...G1E_TIE_FRAMES]) {
+    await writePng(join(out, "receiver-patch", "shots", `seq-${f}.png`), 1);
+  }
   await writeReceiverProcess(
     join(out, "receiver-headless-trace"),
     projects,
@@ -1039,7 +1156,9 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   const ref = join(out, "reference");
   for (const s of EXPECTED.steps)
     await writePng(join(ref, "shots", `step-${s.step}.png`), s.step);
-  await writePng(join(ref, "shots", `frame-${TIE_FRAME}.png`), 1);
+  for (const f of [TIE_FRAME, ...G1E_TIE_FRAMES]) {
+    await writePng(join(ref, "shots", `frame-${f}.png`), 1);
+  }
   await writeText(join(ref, "steps.jsonl"), stepLog());
   await writeText(join(ref, "root.jsonl"), rootLog("x11"));
   await writeProcess(
@@ -1136,11 +1255,11 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
 // g1c (G1c2): fabricated live legs
 // ---------------------------------------------------------------------------------------------
 
-/** The live timeline of the fabricated hosts: S = 30, N = 10, quit S + 11 N (the runner uses 300,
- * 60 and 960; the checker derives everything from steps.jsonl and the evidence). */
+/** The live timeline of the fabricated hosts: S = 30, N = 10, quit S + 13 N (the runner uses 300,
+ * 60 and 1080; the checker derives everything from steps.jsonl and the evidence). */
 const LS = 30;
 const LN = 10;
-const LQUIT = LS + LN * 11;
+const LQUIT = LS + LN * 13;
 /** The receiver joins at host frame 5; with credit returning in one frame, the host sends every
  * second frame (5, 7, 9, ...). */
 const LFIRST = 5;
@@ -1191,7 +1310,7 @@ function liveShots(sends: LiveSend[], stopSeq?: number): Map<number, number> {
   for (const s of EXPECTED.steps) {
     const k = s.step;
     const from = LS + LN * k + 7;
-    const to = k === 10 ? LQUIT : LS + LN * (k + 1) - 1;
+    const to = k === 12 ? LQUIT : LS + LN * (k + 1) - 1;
     const hit = sends.find(
       (x) =>
         !x.dropped &&
@@ -1742,7 +1861,7 @@ function g1dWindows(): G1dWindow[] {
   return EXPECTED.steps.map((s) => ({
     step: s.step,
     from: LS + LN * s.step + 7,
-    to: s.step === 10 ? LQUIT : LS + LN * (s.step + 1) - 1,
+    to: s.step === 12 ? LQUIT : LS + LN * (s.step + 1) - 1,
   }));
 }
 
@@ -2952,12 +3071,12 @@ const scenarios: Scenario[] = [
           ),
       );
       assert(
-        "report: 196 checkpoints (13 shooting receiver legs x 11 steps, live, live-replay and the drop leg included, plus g1d's 5 legs x 11 less the 2 windows the stalls excuse), each with leg, stream and 9 regions",
-        r.checkpoints.length === 196 &&
+        "report: 232 checkpoints (13 shooting receiver legs x 13 steps, live, live-replay and the drop leg included, plus g1d's 5 legs x 13 less the 2 windows the stalls excuse), each with leg, stream and 11 regions",
+        r.checkpoints.length === 232 &&
           r.checkpoints.every(
-            (c) => c.regions.length === 9 && typeof c.leg === "string",
+            (c) => c.regions.length === 11 && typeof c.leg === "string",
           ) &&
-          r.checkpoints.filter((c) => c.stream === "patch").length === 108,
+          r.checkpoints.filter((c) => c.stream === "patch").length === 128,
         `${r.checkpoints.length}`,
       );
       assert(
@@ -2973,13 +3092,21 @@ const scenarios: Scenario[] = [
             (r.patch_bytes?.full.bytes_total ?? 0),
       );
       assert(
-        "report: the capture's one harmless tie at frame 11 between P (1) and T (20)",
-        r.ties?.capture.length === 1 &&
+        "report: the capture's three harmless ties (step 1's P+T, step 11's P+ZP, step 12's P+ZB+BP)",
+        r.ties?.capture.length === 3 &&
           r.ties.capture[0].frame === TIE_FRAME &&
           r.ties.capture[0].members.join() === "1,20" &&
           r.ties.capture[0].harmless === true &&
-          r.ties.tie_overlap.length === 1 &&
-          r.ties.tie_overlap[0].harmless === false,
+          r.ties.capture[1].frame === G1E_TIE_FRAMES[0] &&
+          r.ties.capture[1].members.join() === "1,22" &&
+          r.ties.capture[1].harmless === true &&
+          r.ties.capture[2].frame === G1E_TIE_FRAMES[1] &&
+          r.ties.capture[2].members.join() === "1,24,25" &&
+          r.ties.capture[2].harmless === true &&
+          r.ties.tie_overlap.length === 3 &&
+          r.ties.tie_overlap[0].harmless === false &&
+          r.ties.tie_overlap[1].harmless === true &&
+          r.ties.tie_overlap[2].harmless === true,
         JSON.stringify(r.ties),
       );
       assert(
@@ -2991,13 +3118,14 @@ const scenarios: Scenario[] = [
         JSON.stringify(r.ties?.tie_overlap_pixels),
       );
       assert(
-        "report: the capture leg lists its harmless tie",
-        (r.legs.capture.harmless_ties ?? []).join() === `${TIE_FRAME}:1`,
+        "report: the capture leg lists its harmless ties",
+        (r.legs.capture.harmless_ties ?? []).join() ===
+          `${TIE_FRAME}:1,${G1E_TIE_FRAMES[0]}:1,${G1E_TIE_FRAMES[1]}:1`,
       );
       assert(
-        "report: root_geometry has the session declaration, 11 equal per-step transforms",
+        "report: root_geometry has the session declaration, 13 equal per-step transforms",
         r.root_geometry?.status === "match" &&
-          r.root_geometry.per_step.length === 11 &&
+          r.root_geometry.per_step.length === 13 &&
           r.root_geometry.per_step.every((p) => p.equal),
       );
       assert(
@@ -4015,11 +4143,17 @@ function helperCases(): void {
   );
   const ties = recordingTies(model);
   assert(
-    "recordingTies: the model's only tie is T with P at frame 11, harmless",
-    ties.length === 1 &&
+    "recordingTies: the model's three ties (T+P, ZP+P, ZB+BP+P), all harmless",
+    ties.length === 3 &&
       ties[0].frame === TIE_FRAME &&
       ties[0].members.join() === "1,20" &&
-      ties[0].harmless,
+      ties[0].harmless &&
+      ties[1].frame === G1E_TIE_FRAMES[0] &&
+      ties[1].members.join() === "1,22" &&
+      ties[1].harmless &&
+      ties[2].frame === G1E_TIE_FRAMES[1] &&
+      ties[2].members.join() === "1,24,25" &&
+      ties[2].harmless,
     JSON.stringify(ties),
   );
   const overlap = recordingTies(
@@ -4029,8 +4163,11 @@ function helperCases(): void {
     ),
   );
   assert(
-    "recordingTies: with T over P the same tie is not harmless",
-    overlap.length === 1 && overlap[0].harmless === false,
+    "recordingTies: with T over P that tie is not harmless, the two G1e ties still are",
+    overlap.length === 3 &&
+      overlap[0].harmless === false &&
+      overlap[1].harmless === true &&
+      overlap[2].harmless === true,
     JSON.stringify(overlap),
   );
   const tied = recordingTies(

@@ -4,8 +4,8 @@
   "records": [
     {
       "offset": 8,
-      "byte_length": 3396,
-      "sha256": "be91fda9cbd5de27bff8d74d3b033ab8c6fa52a061e5d1aa0d94955e64547944",
+      "byte_length": 3317,
+      "sha256": "51b1a4f3fe584c207bc24a7fe08af1b756540002080697275c71d7406dcdb2ac",
       "meta": {
         "type": "session",
         "protocol": "render-stream/1",
@@ -130,11 +130,9 @@
             "canvas_item_set_canvas_group_mode",
             "canvas_item_set_default_texture_filter",
             "canvas_item_set_default_texture_repeat",
-            "canvas_item_set_draw_behind_parent",
             "canvas_item_set_instance_shader_parameter",
             "canvas_item_set_light_mask",
             "canvas_item_set_sort_children_by_y",
-            "canvas_item_set_z_as_relative_to_parent",
             "canvas_set_modulate",
             "viewport_remove_canvas",
             "viewport_set_canvas_cull_mask",
@@ -206,7 +204,7 @@
       ]
     },
     {
-      "offset": 3404,
+      "offset": 3325,
       "byte_length": 2114,
       "sha256": "4b4ba1b4037142aeef5eb496046dcc90abc950214768fbf72929ef5a3bd8651b",
       "meta": {
@@ -485,7 +483,7 @@
       ]
     },
     {
-      "offset": 5518,
+      "offset": 5439,
       "byte_length": 737,
       "sha256": "69629036cd00909a96250b8f1eaa46e7d29382cbe04331d895e5489b03ef95c6",
       "meta": {
@@ -571,7 +569,7 @@
       ]
     },
     {
-      "offset": 6255,
+      "offset": 6176,
       "byte_length": 1612,
       "sha256": "5c25bdb6017d6eb51a24316670cf30364b1c54663f8fa7be6106ca1b0838c864",
       "meta": {
@@ -783,7 +781,7 @@
       ]
     },
     {
-      "offset": 7867,
+      "offset": 7788,
       "byte_length": 414,
       "sha256": "5b352160c84d895608656a0b8b38075629deeaf49017b704007880aece070415",
       "meta": {
@@ -830,7 +828,7 @@
       ]
     },
     {
-      "offset": 8281,
+      "offset": 8202,
       "byte_length": 1228,
       "sha256": "4294eba2c40dba305f00fd4d4d8700a20d329338698ae6beaac758c91fddfb07",
       "meta": {
@@ -979,7 +977,7 @@
       ]
     },
     {
-      "offset": 9509,
+      "offset": 9430,
       "byte_length": 2184,
       "sha256": "5d0b919e3263ed33ff4f3bc9ae81f31d65d1bc4568bfd4561be10e48d1f23825",
       "meta": {
@@ -1263,19 +1261,19 @@
       ]
     },
     {
-      "offset": 11693,
+      "offset": 11614,
       "byte_length": 247,
-      "sha256": "00c863494b910fd29f3c0d8b6175524cb473da8050679ac541a7a761d01e4d48",
+      "sha256": "b69f50cfa337ca5fe705544224e838f87e0fb8327d16a338a5e4d7225859078e",
       "meta": {
         "type": "end",
         "transactions": 6,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 11693,
+          "bytes_total": 11614,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 12345,
-          "max_record_bytes": 3396,
+          "max_record_bytes": 3317,
           "full_transactions": 2,
           "patch_transactions": 4
         },

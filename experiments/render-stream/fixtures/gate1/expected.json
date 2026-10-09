@@ -5,7 +5,7 @@
   "start_frame_default": 1,
   "step_frames_default": 10,
   "settle_offset": 7,
-  "quit_frame_default": 112,
+  "quit_frame_default": 132,
   "regions": {
     "hierarchy": [72, 72, 184, 112],
     "order": [280, 72, 200, 112],
@@ -15,7 +15,9 @@
     "corner": [600, 320, 40, 40],
     "corner-degenerate": [24, 24, 48, 48],
     "marker": [584, 8, 48, 48],
-    "tie": [72, 296, 48, 48]
+    "tie": [72, 296, 48, 48],
+    "z-relative": [98, 4, 96, 32],
+    "behind": [98, 40, 96, 32]
   },
   "creation_order": [
     "P",
@@ -46,6 +48,26 @@
     {
       "name": "L2",
       "step": 9
+    },
+    {
+      "name": "ZP",
+      "step": 11
+    },
+    {
+      "name": "ZC",
+      "step": 11
+    },
+    {
+      "name": "ZB",
+      "step": 12
+    },
+    {
+      "name": "BP",
+      "step": 12
+    },
+    {
+      "name": "BC",
+      "step": 12
     }
   ],
   "steps": [
@@ -1230,6 +1252,226 @@
         { "kind": "canvas_xform", "canvas": 1, "value": [1, 0, 0, 1, 8, 4] },
         { "kind": "version_all", "except": ["Marker"], "cmp": "eq", "step": 9 }
       ]
+    },
+    {
+      "step": 11,
+      "draws": [
+        {
+          "name": "ZC",
+          "rect_px": [98, 4, 64, 32],
+          "rgba8": [255, 153, 0, 255]
+        },
+        {
+          "name": "P",
+          "rect_px": [88, 100, 64, 64],
+          "rgba8": [255, 0, 255, 255]
+        },
+        {
+          "name": "C",
+          "rect_px": [200, 100, 48, 48],
+          "rgba8": [0, 0, 255, 255]
+        },
+        {
+          "name": "G",
+          "rect_px": [160, 100, 32, 32],
+          "rgba8": [153, 0, 153, 255]
+        },
+        {
+          "name": "Q1",
+          "rect_px": [408, 84, 64, 64],
+          "rgba8": [255, 102, 0, 255]
+        },
+        {
+          "name": "R1",
+          "rect_px": [408, 84, 48, 48],
+          "rgba8": [204, 204, 0, 255]
+        },
+        {
+          "name": "V",
+          "rect_px": [88, 220, 64, 64],
+          "rgba8": [51, 204, 51, 255]
+        },
+        {
+          "name": "K",
+          "rect_px": [248, 220, 16, 16],
+          "rgba8": [255, 0, 0, 255]
+        },
+        {
+          "name": "K",
+          "rect_px": [272, 220, 16, 16],
+          "rgba8": [0, 255, 0, 255]
+        },
+        {
+          "name": "K",
+          "rect_px": [296, 220, 16, 16],
+          "rgba8": [0, 0, 255, 255]
+        },
+        {
+          "name": "Corner",
+          "rect_px": [616, 332, 32, 32],
+          "rgba8": [204, 204, 51, 255]
+        },
+        {
+          "name": "Marker",
+          "rect_px": [600, 20, 32, 32],
+          "rgba8": [255, 51, 255, 255]
+        },
+        {
+          "name": "T",
+          "rect_px": [88, 308, 32, 32],
+          "rgba8": [153, 255, 102, 255]
+        },
+        {
+          "name": "L2",
+          "rect_px": [368, 220, 32, 32],
+          "rgba8": [51, 102, 255, 255]
+        },
+        {
+          "name": "D",
+          "rect_px": [448, 220, 32, 32],
+          "rgba8": [51, 255, 255, 255]
+        },
+        {
+          "name": "Q2",
+          "rect_px": [328, 116, 64, 64],
+          "rgba8": [0, 153, 255, 255]
+        }
+      ],
+      "marker_rgba8": [255, 51, 255, 255],
+      "canvas_transform": [1, 0, 0, 1, 8, 4],
+      "invariants": [
+        { "kind": "new_ids", "items": ["ZP", "ZC"], "step": 10 },
+        { "kind": "field", "item": "ZP", "field": "z_index", "value": 1 },
+        {
+          "kind": "field",
+          "item": "ZC",
+          "field": "parent",
+          "value": { "item": "ZP" }
+        },
+        { "kind": "field", "item": "ZC", "field": "z_index", "value": -1 },
+        {
+          "kind": "field",
+          "item": "ZC",
+          "field": "z_relative",
+          "value": false
+        },
+        { "kind": "field", "item": "ZC", "field": "behind", "value": false },
+        { "kind": "version_all", "except": ["Marker"], "cmp": "eq", "step": 10 }
+      ]
+    },
+    {
+      "step": 12,
+      "draws": [
+        {
+          "name": "ZC",
+          "rect_px": [98, 4, 64, 32],
+          "rgba8": [255, 153, 0, 255]
+        },
+        {
+          "name": "P",
+          "rect_px": [88, 100, 64, 64],
+          "rgba8": [255, 0, 255, 255]
+        },
+        {
+          "name": "C",
+          "rect_px": [200, 100, 48, 48],
+          "rgba8": [0, 0, 255, 255]
+        },
+        {
+          "name": "G",
+          "rect_px": [160, 100, 32, 32],
+          "rgba8": [153, 0, 153, 255]
+        },
+        {
+          "name": "Q1",
+          "rect_px": [408, 84, 64, 64],
+          "rgba8": [255, 102, 0, 255]
+        },
+        {
+          "name": "R1",
+          "rect_px": [408, 84, 48, 48],
+          "rgba8": [204, 204, 0, 255]
+        },
+        {
+          "name": "V",
+          "rect_px": [88, 220, 64, 64],
+          "rgba8": [51, 204, 51, 255]
+        },
+        {
+          "name": "K",
+          "rect_px": [248, 220, 16, 16],
+          "rgba8": [255, 0, 0, 255]
+        },
+        {
+          "name": "K",
+          "rect_px": [272, 220, 16, 16],
+          "rgba8": [0, 255, 0, 255]
+        },
+        {
+          "name": "K",
+          "rect_px": [296, 220, 16, 16],
+          "rgba8": [0, 0, 255, 255]
+        },
+        {
+          "name": "Corner",
+          "rect_px": [616, 332, 32, 32],
+          "rgba8": [204, 204, 51, 255]
+        },
+        {
+          "name": "Marker",
+          "rect_px": [600, 20, 32, 32],
+          "rgba8": [51, 255, 204, 255]
+        },
+        {
+          "name": "T",
+          "rect_px": [88, 308, 32, 32],
+          "rgba8": [153, 255, 102, 255]
+        },
+        {
+          "name": "L2",
+          "rect_px": [368, 220, 32, 32],
+          "rgba8": [51, 102, 255, 255]
+        },
+        {
+          "name": "D",
+          "rect_px": [448, 220, 32, 32],
+          "rgba8": [51, 255, 255, 255]
+        },
+        {
+          "name": "ZB",
+          "rect_px": [130, 4, 64, 32],
+          "rgba8": [0, 102, 255, 255]
+        },
+        {
+          "name": "BC",
+          "rect_px": [130, 40, 64, 32],
+          "rgba8": [0, 204, 0, 255]
+        },
+        {
+          "name": "BP",
+          "rect_px": [98, 40, 64, 32],
+          "rgba8": [255, 0, 0, 255]
+        },
+        {
+          "name": "Q2",
+          "rect_px": [328, 116, 64, 64],
+          "rgba8": [0, 153, 255, 255]
+        }
+      ],
+      "marker_rgba8": [51, 255, 204, 255],
+      "canvas_transform": [1, 0, 0, 1, 8, 4],
+      "invariants": [
+        { "kind": "new_ids", "items": ["ZB", "BP", "BC"], "step": 11 },
+        {
+          "kind": "field",
+          "item": "BC",
+          "field": "parent",
+          "value": { "item": "BP" }
+        },
+        { "kind": "field", "item": "BC", "field": "behind", "value": true },
+        { "kind": "field", "item": "BC", "field": "z_relative", "value": true },
+        { "kind": "version_all", "except": ["Marker"], "cmp": "eq", "step": 11 }
+      ]
     }
   ],
   "draw_index_ties": [
@@ -1238,6 +1480,20 @@
       "frame_offset": 0,
       "canvas": 1,
       "members": ["P", "T"],
+      "harmless": true
+    },
+    {
+      "step": 11,
+      "frame_offset": 0,
+      "canvas": 1,
+      "members": ["P", "ZP"],
+      "harmless": true
+    },
+    {
+      "step": 12,
+      "frame_offset": 0,
+      "canvas": 1,
+      "members": ["P", "ZB", "BP"],
       "harmless": true
     }
   ]

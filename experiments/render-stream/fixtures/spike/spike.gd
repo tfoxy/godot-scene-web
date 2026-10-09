@@ -155,13 +155,18 @@ func _ready() -> void:
 	_multimesh.set_instance_transform_2d(0, Transform2D(Vector2(1, 0), Vector2(0, 1), MULTIMESH_OFFSET))
 
 	# A node created after the capture armed: its constructor calls canvas_item_create. It draws
-	# nothing, so its z_index (canvas_item_set_z_index) and self_modulate
-	# (canvas_item_set_self_modulate) change no pixels. The self_modulate is not white because
-	# CanvasItem::set_self_modulate returns early on an unchanged value and would never reach the
-	# RenderingServer.
+	# nothing, so its z_index (canvas_item_set_z_index), self_modulate
+	# (canvas_item_set_self_modulate), z_as_relative (canvas_item_set_z_as_relative_to_parent) and
+	# show_behind_parent (canvas_item_set_draw_behind_parent) change no pixels. The self_modulate is
+	# not white, and z_as_relative/show_behind_parent are not left at their defaults (true/false),
+	# because CanvasItem's setters return early on an unchanged value and would never reach the
+	# RenderingServer (scene/main/canvas_item.cpp:556, :655-661, :1155-1161; calibrator 4,
+	# gate1-design.md G1e).
 	var late: Node2D = Node2D.new()
 	late.z_index = LATE_Z_INDEX
 	late.self_modulate = LATE_SELF_MODULATE
+	late.z_as_relative = false
+	late.show_behind_parent = true
 	add_child(late)
 	# An empty CanvasLayer created after arming: canvas_create in its constructor, then
 	# viewport_attach_canvas and viewport_set_canvas_transform when it enters the tree. It has no

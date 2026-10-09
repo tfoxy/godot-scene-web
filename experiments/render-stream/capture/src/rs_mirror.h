@@ -26,8 +26,9 @@
 // `frame` arguments are the hook stamp (hooks.cpp current_frame()): the
 // 1-based main-loop iteration the call arrived in.
 //
-// `z_relative` and `behind` stay at their RenderingServer defaults (true,
-// false): their setters are not hooked until G1e.
+// `z_relative` and `behind` (gate1-design.md G1e) are mutated by
+// canvas_item_set_z_as_relative_to_parent and canvas_item_set_draw_behind_parent;
+// a new item still starts at the RenderingServer defaults (true, false).
 #ifndef GRC_RS_MIRROR_H
 #define GRC_RS_MIRROR_H
 
@@ -108,7 +109,8 @@ class Mirror {
   // method itself for canvas_create, canvas_item_create, the viewport_* taps,
   // canvas_item_clear and canvas_item_add_rect; `free` for free_rid; and
   // canvas_item_<name> for each set_<name> tap (canvas_item_set_parent, ...,
-  // canvas_item_set_material).
+  // canvas_item_set_material, canvas_item_set_z_as_relative_to_parent,
+  // canvas_item_set_draw_behind_parent).
   void canvas_create(std::uint64_t rid, std::uint64_t frame);
   void canvas_item_create(std::uint64_t rid, std::uint64_t frame);
   void free_rid(std::uint64_t rid, std::uint64_t frame);
@@ -128,6 +130,9 @@ class Mirror {
   void set_visibility_layer(std::uint64_t item, std::uint32_t layer, std::uint64_t frame);
   void set_z_index(std::uint64_t item, std::int32_t z, std::uint64_t frame);
   void set_draw_index(std::uint64_t item, std::int32_t index, std::uint64_t frame);
+  // gate1-design.md G1e: canvas_item_set_z_as_relative_to_parent / _draw_behind_parent.
+  void set_z_relative(std::uint64_t item, bool relative, std::uint64_t frame);
+  void set_behind(std::uint64_t item, bool behind, std::uint64_t frame);
   void set_material(std::uint64_t item, std::uint64_t material, std::uint64_t frame);
 
   void clear(std::uint64_t item, std::uint64_t frame);

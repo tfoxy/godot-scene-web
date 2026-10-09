@@ -105,8 +105,9 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op);
 std::string generate_id();
 
 // The constant gate-1 session `features` (render-stream-1.md "Session record"): gate 0's lists
-// with item_state += "behind", "z_relative" and unobserved += "viewport_set_global_canvas_transform",
-// each array sorted ascending by byte value; publication "snapshot-or-patch".
+// with item_state += "behind", "z_relative"; unobserved += "viewport_set_global_canvas_transform",
+// minus "canvas_item_set_draw_behind_parent" and "canvas_item_set_z_as_relative_to_parent" (G1e
+// hooks both); each array sorted ascending by byte value; publication "snapshot-or-patch".
 Features gate1_features();
 
 // Writes render-stream/1 recordings to up to two file sinks from one snapshot per frame. Not

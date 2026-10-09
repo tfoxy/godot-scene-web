@@ -503,6 +503,26 @@ void Mirror::set_draw_index(std::uint64_t rid, std::int32_t index, std::uint64_t
   }
 }
 
+void Mirror::set_z_relative(std::uint64_t rid, bool relative, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_set_z_as_relative_to_parent", frame)) {
+    return;
+  }
+  if (Item *item = item_for(rid, "canvas_item_set_z_as_relative_to_parent", frame)) {
+    item->state.z_relative = relative;
+  }
+}
+
+void Mirror::set_behind(std::uint64_t rid, bool behind, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_set_draw_behind_parent", frame)) {
+    return;
+  }
+  if (Item *item = item_for(rid, "canvas_item_set_draw_behind_parent", frame)) {
+    item->state.behind = behind;
+  }
+}
+
 void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (dropped("canvas_item_set_material", frame)) {

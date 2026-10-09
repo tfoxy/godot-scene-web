@@ -62,22 +62,37 @@ SABOTAGE_STEPS=(modulate:1 transform:2 order:3 visibility:7)
 OMIT_OP_LEGS=(free:free:8 visible:canvas_item_set_visible:6)
 # sabotage-patch-drop: the patch sink drops its highest-id item entry at step 5's frame.
 PATCH_DROP_STEP=5
-# The fixture's one-frame top-level draw-index tie: step 1 adds T, which holds index 0 (as P
-# does) until the deferred _top_level_raise_self runs the next frame (expected.json
-# draw_index_ties).
+# The fixture's one-frame top-level draw-index ties: each of steps 1 (T), 11 (ZP) and 12 (ZB,
+# BP) adds a top-level item that holds index 0 (as P does) until the deferred
+# _top_level_raise_self runs the next frame (expected.json draw_index_ties). TIE_FRAME is step
+# 1's, kept separate because it alone is also shot under RS_FIXTURE_TIE=overlap (g1b).
 TIE_FRAME=$((START_FRAME + STEP_FRAMES * 1))
+G1E_TIE_FRAMES="$((START_FRAME + STEP_FRAMES * 11)),$((START_FRAME + STEP_FRAMES * 12))"
+
+# The seqs of every declared tie's frame (TIE_FRAME, G1E_TIE_FRAMES), comma-separated, for
+# RECEIVER_EXTRA_SHOTS: checkTieFramePixels needs a receiver shot at each one.
+tie_seqs_csv() {
+	local recording="$1" frame seq out=""
+	for frame in "$TIE_FRAME" ${G1E_TIE_FRAMES//,/ }; do
+		seq="$(seq_at_frame "$recording" "$frame" || true)"
+		[ -n "$seq" ] && out="${out:+$out,}$seq"
+	done
+	echo "$out"
+}
 
 # Every gate 1 capture writes both sinks: recording.rs1 (full) and recording-patch.rs1 (patch).
 CAPTURE_WITH_PATCH=1
 
 # g1c (G1c2) live legs: the host paces at 60 frames per second and delays the timeline so the
 # receiver joins before step 0 settles (gate1-design.md D10, Q7): S = 300, N = 60. The quit frame
-# is S + 11 N (>= the fixture's default S + 10 N + 11), so the last step's window is as long as the
-# others; the receiver's windows are [S + N k + 7, S + N (k + 1) - 1], the last ending at the quit
-# frame. drop-message drops the first transaction formed at or after S + 4 N + 20.
+# is S + (LAST_STEP + 1) N = S + 13 N (>= the fixture's default S + 12 N + 11; S + 11 N before G1e
+# appended steps 11 and 12), so the last step's window is as long as the others; the receiver's
+# windows are [S + N k + 7, S + N (k + 1) - 1], the last ending at the quit frame. drop-message
+# drops the first transaction formed at or after S + 4 N + 20.
+LAST_STEP=12
 LIVE_START_FRAME=300
 LIVE_STEP_FRAMES=60
-LIVE_QUIT_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 11))
+LIVE_QUIT_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * (LAST_STEP + 1)))
 DROP_MESSAGE_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 4 + 20))
 LIVE_HOST_PID=""
 LIVE_PORT=""
@@ -312,12 +327,13 @@ run_g1a() {
 	mkdir -p "$OUT/reference/shots"
 	LEG_ENV=(
 		RS_FIXTURE_SHOT_DIR="$OUT/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/reference/steps.jsonl"
-		RS_FIXTURE_ROOT_LOG="$OUT/reference/root.jsonl" RS_FIXTURE_SHOT_FRAMES="$TIE_FRAME"
+		RS_FIXTURE_ROOT_LOG="$OUT/reference/root.jsonl" RS_FIXTURE_SHOT_FRAMES="$TIE_FRAME,$G1E_TIE_FRAMES"
 	)
 	run_rendered "$OUT/reference" "$FIXTURE_DIR"
 
 	echo "run-gate1: receiver"
-	RECEIVER_EXTRA_SHOTS="$(seq_at_frame "$OUT/capture/$RECORDING_NAME" "$TIE_FRAME" || true)"
+	TIE_SEQS_CSV="$(tie_seqs_csv "$OUT/capture/$RECORDING_NAME")"
+	RECEIVER_EXTRA_SHOTS="$TIE_SEQS_CSV"
 	RECEIVER_STATE=1
 	run_rendered_receiver "$OUT/capture" "$OUT/receiver"
 
@@ -365,7 +381,7 @@ run_g1b() {
 
 	echo "run-gate1: receiver-patch"
 	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
-	RECEIVER_EXTRA_SHOTS="$(seq_at_frame "$OUT/capture/$RECORDING_NAME" "$TIE_FRAME" || true)"
+	RECEIVER_EXTRA_SHOTS="$(tie_seqs_csv "$OUT/capture/$RECORDING_NAME")"
 	RECEIVER_STATE=1
 	run_rendered_receiver "$OUT/capture" "$OUT/receiver-patch"
 
@@ -397,13 +413,13 @@ run_g1b() {
 	GS_RUN_DIR=""
 }
 
-# The receiver's shot windows for the live timeline: <step>:<from>-<to>, steps 0..10.
+# The receiver's shot windows for the live timeline: <step>:<from>-<to>, steps 0..LAST_STEP.
 live_windows() {
 	local k from to out="" sep=""
-	for k in $(seq 0 10); do
+	for k in $(seq 0 "$LAST_STEP"); do
 		from=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * k + 7))
 		to=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * (k + 1) - 1))
-		[ "$k" -eq 10 ] && to=$LIVE_QUIT_FRAME
+		[ "$k" -eq "$LAST_STEP" ] && to=$LIVE_QUIT_FRAME
 		out+="$sep$k:$from-$to"
 		sep=","
 	done

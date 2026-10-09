@@ -197,22 +197,25 @@ const range = (from: number, to: number): number[] =>
   Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
 /** The sabotage step sets are gate1-design.md's predictions, confirmed by running (README
- * "Gate 1a result", "Gate 1b result"). */
+ * "Gate 1a result", "Gate 1b result"). G1e (steps 11/12) extends the ranges that never recover
+ * (modulate, transform, visibility, free: nothing after the sabotaged step resets the dropped
+ * state, so the mismatch persists into the two new steps too); order and visible converge again
+ * before step 11, so their sets are unchanged. */
 export const G1A_EXPECTATIONS: Record<G1aLeg, Gate1LegExpectation> = {
   capture: { class: "success" },
   receiver: { class: "success" },
   "sabotage-omit-modulate": {
     class: "pixel-mismatch",
-    mismatchSteps: range(1, 10),
+    mismatchSteps: range(1, 12),
   },
   "sabotage-omit-transform": {
     class: "pixel-mismatch",
-    mismatchSteps: range(2, 10),
+    mismatchSteps: range(2, 12),
   },
   "sabotage-omit-order": { class: "pixel-mismatch", mismatchSteps: [3] },
   "sabotage-omit-visibility": {
     class: "pixel-mismatch",
-    mismatchSteps: range(7, 10),
+    mismatchSteps: range(7, 12),
   },
   "root-size-observe": {
     class: "unsupported",
@@ -223,7 +226,10 @@ export const G1A_EXPECTATIONS: Record<G1aLeg, Gate1LegExpectation> = {
 
 export const G1B_EXPECTATIONS: Record<G1bLeg, Gate1LegExpectation> = {
   "receiver-patch": { class: "success" },
-  "sabotage-omit-free": { class: "pixel-mismatch", mismatchSteps: [8, 9, 10] },
+  "sabotage-omit-free": {
+    class: "pixel-mismatch",
+    mismatchSteps: [8, 9, 10, 11, 12],
+  },
   "sabotage-omit-visible": { class: "pixel-mismatch", mismatchSteps: [6] },
   "sabotage-patch-drop": {
     class: "capture-failure",
@@ -492,6 +498,10 @@ function fieldValue(item: ItemFull, field: string, names: NameMap): unknown {
       return item.draw_index;
     case "z_index":
       return item.z_index;
+    case "z_relative":
+      return item.z_relative;
+    case "behind":
+      return item.behind;
     case "visibility_layer":
       return item.visibility_layer;
     case "modulate":
@@ -1099,15 +1109,15 @@ export function checkExpectedSelfConsistent(
   if (expected.settle_offset !== 7) problems.push("settle_offset is not 7");
   if (!(N > expected.settle_offset))
     problems.push("step_frames_default <= settle_offset");
-  if (expected.quit_frame_default !== S + N * 10 + 11) {
+  if (expected.quit_frame_default !== S + N * 12 + 11) {
     problems.push(
-      `quit_frame_default ${expected.quit_frame_default} != S+N*10+11 = ${S + N * 10 + 11}`,
+      `quit_frame_default ${expected.quit_frame_default} != S+N*12+11 = ${S + N * 12 + 11}`,
     );
   }
   const steps = expected.steps ?? [];
-  if (steps.map((s) => s.step).join(",") !== range(0, 10).join(",")) {
+  if (steps.map((s) => s.step).join(",") !== range(0, 12).join(",")) {
     problems.push(
-      `steps are ${steps.map((s) => s.step).join(",")}, expected 0..10`,
+      `steps are ${steps.map((s) => s.step).join(",")}, expected 0..12`,
     );
   }
   const names = new Set(gate1Names(expected));
@@ -1199,7 +1209,7 @@ export function checkExpectedSelfConsistent(
   }
   return check(
     "expected-self-consistent",
-    "expected.json obeys its rules: 640x360, steps 0..10, every draw colour in {0,51,..,255} with alpha 255, every draw inside a region and none in [0,0,72,72], one distinct marker colour per step used by nothing else, known names, step 10 = step 9 shifted",
+    "expected.json obeys its rules: 640x360, steps 0..12, every draw colour in {0,51,..,255} with alpha 255, every draw inside a region and none in [0,0,72,72], one distinct marker colour per step used by nothing else, known names, step 10 = step 9 shifted",
     problems,
     `${steps.length} steps, ${steps.reduce((n, s) => n + s.draws.length, 0)} draws, ${steps.reduce((n, s) => n + s.invariants.length, 0)} invariants consistent`,
     [],
@@ -1246,7 +1256,7 @@ export async function checkStepAlignment(
   }
   return check(
     "step-alignment",
-    "capture and reference steps.jsonl list steps 0..10 at S+N*k (settle +7), and each step's marker colour first appears in the transaction of its applied frame",
+    "capture and reference steps.jsonl list steps 0..12 at S+N*k (settle +7), and each step's marker colour first appears in the transaction of its applied frame",
     problems,
     `marker colours first published at ${firsts.join(", ")}`,
     [capturePath, referencePath, recording.path],
@@ -1288,7 +1298,7 @@ export async function checkExpectedImageReference(
   ).filter((p): p is string => p !== undefined);
   return check(
     "expected-image-reference",
-    "each reference/shots/step-<k>.png (k = 0..10) equals synthesizeGate1(k) exactly",
+    "each reference/shots/step-<k>.png (k = 0..12) equals synthesizeGate1(k) exactly",
     problems,
     `${paths.length} reference shots match exactly`,
     paths,
@@ -1351,7 +1361,7 @@ export function checkReceiverVsReference(
     problems.push("compareRgbaBuffers reported a difference");
   return check(
     "receiver-vs-reference",
-    "receiver shots equal the reference shots at all 11 steps: full frame and every expected.json region, 0 mismatched pixels and max channel delta 0",
+    "receiver shots equal the reference shots at all 13 steps: full frame and every expected.json region, 0 mismatched pixels and max channel delta 0",
     problems,
     `${receiver.checkpoints.length} checkpoints identical (full frame and ${Object.keys(expected.regions).length} regions)`,
     receiver.checkpoints.flatMap((c) => [
@@ -1841,7 +1851,7 @@ export async function checkPatchVsFullPixels(
   }
   return check(
     "patch-vs-full-pixels",
-    "the patch receiver's settle shots equal the full receiver's and the reference's exactly at all 11 steps",
+    "the patch receiver's settle shots equal the full receiver's and the reference's exactly at all 13 steps",
     problems,
     `${receiverPatch.checkpoints.length} patch-receiver shots == receiver shots == reference`,
     evidence,
@@ -2058,8 +2068,10 @@ export async function checkLegClass(
         `mismatching steps {${got.join(",")}}, expected {${exp.mismatchSteps.join(",")}}`,
       );
     }
-    if (e.checkpoints.length !== 11)
-      problems.push(`${e.checkpoints.length} checkpoints, expected 11`);
+    if (e.checkpoints.length !== expected.steps.length)
+      problems.push(
+        `${e.checkpoints.length} checkpoints, expected ${expected.steps.length}`,
+      );
   }
   if (
     exp.reasonIncludes &&
@@ -2069,8 +2081,10 @@ export async function checkLegClass(
   }
   if (exp.mismatchRegions) {
     const want = [...exp.mismatchRegions].sort().join(",");
-    if (e.checkpoints.length !== 11)
-      problems.push(`${e.checkpoints.length} checkpoints, expected 11`);
+    if (e.checkpoints.length !== expected.steps.length)
+      problems.push(
+        `${e.checkpoints.length} checkpoints, expected ${expected.steps.length}`,
+      );
     for (const cp of e.checkpoints) {
       const got = cp.regions
         .filter((r) => r.mismatched_pixels === null || r.mismatched_pixels > 0)
@@ -2098,13 +2112,16 @@ export async function checkLegClass(
       );
   }
   if (e.leg === "tie-overlap") {
-    // Exactly the fixture's tie, at the same frame, now overlapping; plus the measured (not
-    // gated) comparison of the tie frame with the variant's own reference.
+    // Exactly the fixture's declared ties, at the same frames; RS_FIXTURE_TIE=overlap only
+    // widens step 1's T, so only step 1's tie flips to overlapping (not harmless) -- every other
+    // declared tie (G1e's step 11/12 additions) is unaffected and keeps its usual harmlessness.
+    // Plus the measured (not gated) comparison of the tie frame with the variant's own reference.
     const names = mapNames(expected, statesOf(e.full));
     const ties = recordingTies(e.full);
-    const want = expectedTies(expected, names).map((t) => ({
+    const declared = expected.draw_index_ties ?? [];
+    const want = expectedTies(expected, names).map((t, i) => ({
       ...t,
-      harmless: false,
+      harmless: declared[i]?.step === 1 ? false : t.harmless,
     }));
     const got = ties.map((t) => ({
       frame: t.frame,

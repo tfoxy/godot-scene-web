@@ -31,6 +31,8 @@ export type Gate1Invariant =
         | "visible"
         | "draw_index"
         | "z_index"
+        | "z_relative"
+        | "behind"
         | "visibility_layer"
         | "command_count"
         | "modulate"

@@ -75,7 +75,7 @@ Key order (line breaks for reading only):
   - `ops`: `["add_rect"]`
   - `item_state`: gate 0's list plus `"behind"` and `"z_relative"`.
   - `observed_unsupported_ops`: gate 0's list.
-  - `unobserved`: gate 0's list plus `"viewport_set_global_canvas_transform"`. G1e removes
+  - `unobserved`: gate 0's list plus `"viewport_set_global_canvas_transform"`. G1e removed
     `canvas_item_set_draw_behind_parent` and `canvas_item_set_z_as_relative_to_parent`.
 - Sabotage kinds: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op` (`op` is
   the RenderingServer method name), `patch-drop-item`, `drop-message`, `ignore-credit`,

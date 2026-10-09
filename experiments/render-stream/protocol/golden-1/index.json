@@ -6,13 +6,13 @@
       "file": "full.rs1",
       "hex": "full.hex",
       "decoded": "full.decoded.json",
-      "sha256": "214714cdc07b4b0388042cb7fdd045c4192104a5a4291c5bb96eed5b49749a5f"
+      "sha256": "04c950398ff0ba3981ffa573f782becf356503beaec43cd8453b31aa8427d6b4"
     },
     {
       "file": "patch.rs1",
       "hex": "patch.hex",
       "decoded": "patch.decoded.json",
-      "sha256": "852338f26833a271f5395831cdfb3b6c62b1dd963450835355f1eb508afa4b01"
+      "sha256": "01f890bd90d984ddecd6bfd77c2f3971ec5daf007944d49cacde381889c7265a"
     }
   ],
   "resolved": "resolved.json",

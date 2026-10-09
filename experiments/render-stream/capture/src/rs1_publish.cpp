@@ -232,14 +232,15 @@ Features gate1_features() {
                                        "canvas_item_add_texture_rect_region",
                                        "canvas_item_add_triangle_array",
                                        "canvas_item_set_material"};
+  // G1e hooks canvas_item_set_z_as_relative_to_parent and
+  // canvas_item_set_draw_behind_parent, so both leave this list (render-stream-1.md
+  // "Session record").
   features.unobserved = {"canvas_item_set_canvas_group_mode",
                          "canvas_item_set_default_texture_filter",
                          "canvas_item_set_default_texture_repeat",
-                         "canvas_item_set_draw_behind_parent",
                          "canvas_item_set_instance_shader_parameter",
                          "canvas_item_set_light_mask",
                          "canvas_item_set_sort_children_by_y",
-                         "canvas_item_set_z_as_relative_to_parent",
                          "canvas_set_modulate",
                          "viewport_remove_canvas",
                          "viewport_set_canvas_cull_mask",

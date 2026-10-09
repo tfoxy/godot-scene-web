@@ -120,6 +120,8 @@ using FnMaterialSetParam = void (*)(void *, RID, const void *, const void *);
 using FnViewportSetCanvasTransform = void (*)(void *, RID, RID, const Transform2D *);
 //   1556: virtual void canvas_item_set_visible(RID p_item, bool p_visible) = 0;
 //   1562: virtual void canvas_item_set_clip(RID p_item, bool p_clip) = 0;
+//   1569: virtual void canvas_item_set_draw_behind_parent(RID p_item, bool p_enable) = 0;
+//   1600: virtual void canvas_item_set_z_as_relative_to_parent(RID p_item, bool p_enable) = 0;
 using FnRidBool = void (*)(void *, RID, bool);
 //   1564: virtual void canvas_item_set_custom_rect(RID p_item, bool p_custom_rect,
 //                                                  const Rect2 &p_rect = Rect2()) = 0;
@@ -130,6 +132,9 @@ using FnRidU32 = void (*)(void *, RID, uint32_t);
 //   1599: virtual void canvas_item_set_z_index(RID p_item, int p_z) = 0;
 //   1606: virtual void canvas_item_set_draw_index(RID p_item, int p_index) = 0;
 using FnRidInt = void (*)(void *, RID, int);
+//
+// --- calibrator 4 (optional): gate1-design.md G1e, the draw-order fields the
+// mirror held at RenderingServer defaults until now ---------------------------
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -178,6 +183,9 @@ enum HookId : size_t {
   kSetVisibilityLayer,
   kSetZIndex,
   kSetDrawIndex,
+  // calibrator 4
+  kSetZAsRelative,
+  kSetDrawBehindParent,
   kHookCount,
 };
 
@@ -486,6 +494,8 @@ Log<PodEntry<ItemColorKey>> g_set_self_modulates;
 Log<PodEntry<ItemValueKey>> g_set_visibility_layers;
 Log<PodEntry<ItemValueKey>> g_set_z_indices;
 Log<PodEntry<ItemValueKey>> g_set_draw_indices;
+Log<PodEntry<ItemValueKey>> g_set_z_as_relatives;
+Log<PodEntry<ItemValueKey>> g_set_draw_behinds;
 
 template <typename Key>
 PodEntry<Key> pod(const Key &key) {
@@ -1121,6 +1131,24 @@ void hook_set_draw_index(void *self, RID item, int index) {
   original<FnRidInt>(kSetDrawIndex)(self, item, index);
 }
 
+void hook_set_z_as_relative(void *self, RID item, bool relative) {
+  bump(kSetZAsRelative);
+  log_entry(&g_set_z_as_relatives, item_value(item, relative ? 1 : 0));
+  if (streaming()) {
+    mirror().set_z_relative(item.id, relative, current_frame());
+  }
+  original<FnRidBool>(kSetZAsRelative)(self, item, relative);
+}
+
+void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
+  bump(kSetDrawBehindParent);
+  log_entry(&g_set_draw_behinds, item_value(item, behind ? 1 : 0));
+  if (streaming()) {
+    mirror().set_behind(item.id, behind, current_frame());
+  }
+  original<FnRidBool>(kSetDrawBehindParent)(self, item, behind);
+}
+
 // --- hook table --------------------------------------------------------------
 
 struct HookSpec {
@@ -1183,6 +1211,9 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_set_visibility_layer)},
     {kSetZIndex, "canvas_item_set_z_index", as_ptr(&hook_set_z_index)},
     {kSetDrawIndex, "canvas_item_set_draw_index", as_ptr(&hook_set_draw_index)},
+    {kSetZAsRelative, "canvas_item_set_z_as_relative_to_parent", as_ptr(&hook_set_z_as_relative)},
+    {kSetDrawBehindParent, "canvas_item_set_draw_behind_parent",
+     as_ptr(&hook_set_draw_behind_parent)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -1370,7 +1401,7 @@ struct Snapshot {
   Log<PodEntry<RidTripleKey>> frees, viewport_attaches, canvas_creates, set_parents;
   Log<PodEntry<ViewportCanvasTransformKey>> viewport_canvas_transforms;
   Log<PodEntry<ItemValueKey>> set_visibles, set_clips, set_visibility_layers, set_z_indices,
-      set_draw_indices;
+      set_draw_indices, set_z_as_relatives, set_draw_behinds;
   Log<PodEntry<ItemCustomRectKey>> set_custom_rects;
   Log<PodEntry<ItemColorKey>> set_self_modulates;
 };
@@ -1417,6 +1448,8 @@ Snapshot take_snapshot() {
   s.set_visibility_layers = g_set_visibility_layers;
   s.set_z_indices = g_set_z_indices;
   s.set_draw_indices = g_set_draw_indices;
+  s.set_z_as_relatives = g_set_z_as_relatives;
+  s.set_draw_behinds = g_set_draw_behinds;
   return s;
 }
 
@@ -1759,6 +1792,10 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   write_log(&json, "canvas_item_set_z_index", s.set_z_indices, item_int_writer("z_index"));
   write_log(&json, "canvas_item_set_draw_index", s.set_draw_indices,
             item_int_writer("draw_index"));
+  write_log(&json, "canvas_item_set_z_as_relative_to_parent", s.set_z_as_relatives,
+            item_bool_writer("z_relative"));
+  write_log(&json, "canvas_item_set_draw_behind_parent", s.set_draw_behinds,
+            item_bool_writer("behind"));
   json.object_end();
 
   // Distinct calls that arrived after an optional hook's log was full.
@@ -1802,6 +1839,10 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
              static_cast<int64_t>(s.set_visibility_layers.dropped));
   json.field("canvas_item_set_z_index", static_cast<int64_t>(s.set_z_indices.dropped));
   json.field("canvas_item_set_draw_index", static_cast<int64_t>(s.set_draw_indices.dropped));
+  json.field("canvas_item_set_z_as_relative_to_parent",
+             static_cast<int64_t>(s.set_z_as_relatives.dropped));
+  json.field("canvas_item_set_draw_behind_parent",
+             static_cast<int64_t>(s.set_draw_behinds.dropped));
   json.object_end();
 
   json.object_end();

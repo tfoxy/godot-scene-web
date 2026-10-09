@@ -67,7 +67,10 @@ export const RECORDING_NAME = "recording.rs1";
 /** The patch-sink recording (GRC_STREAM_PATCH_OUT), written by the gate 1 capture legs. */
 export const PATCH_RECORDING_NAME = "recording-patch.rs1";
 
-/** Every hook calibrator 3 installs, sorted by byte value (render-stream-0.md, golden session). */
+/** Every hook the committed calibration record installs, sorted by byte value
+ * (render-stream-0.md, golden session): calibrator 3's 42, plus calibrator 4's
+ * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent` (gate1-design.md
+ * G1e) -- the record is shared by gate -1, gate 0 and gate 1, so every one of them plans all 44. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
   "canvas_item_add_circle",
@@ -88,6 +91,7 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_item_create",
   "canvas_item_set_clip",
   "canvas_item_set_custom_rect",
+  "canvas_item_set_draw_behind_parent",
   "canvas_item_set_draw_index",
   "canvas_item_set_material",
   "canvas_item_set_modulate",
@@ -96,6 +100,7 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_item_set_transform",
   "canvas_item_set_visibility_layer",
   "canvas_item_set_visible",
+  "canvas_item_set_z_as_relative_to_parent",
   "canvas_item_set_z_index",
   "free",
   "material_set_param",
@@ -114,7 +119,9 @@ export const GATE0_HOOKS: readonly string[] = [
 ];
 
 /** Session `features` at gate 1 / render-stream/1, exactly (render-stream-1.md "Session record"):
- * gate 0's lists plus `behind`/`z_relative` and `viewport_set_global_canvas_transform`. */
+ * gate 0's lists plus `behind`/`z_relative` and `viewport_set_global_canvas_transform`, minus
+ * `canvas_item_set_draw_behind_parent`/`canvas_item_set_z_as_relative_to_parent` (G1e hooks both,
+ * so they leave `unobserved`). */
 export const RS1_FEATURES = {
   ops: ["add_rect"],
   item_state: [
@@ -148,15 +155,15 @@ export const RS1_FEATURES = {
     "canvas_item_add_triangle_array",
     "canvas_item_set_material",
   ],
+  // G1e hooks canvas_item_set_draw_behind_parent and canvas_item_set_z_as_relative_to_parent,
+  // so both leave this list.
   unobserved: [
     "canvas_item_set_canvas_group_mode",
     "canvas_item_set_default_texture_filter",
     "canvas_item_set_default_texture_repeat",
-    "canvas_item_set_draw_behind_parent",
     "canvas_item_set_instance_shader_parameter",
     "canvas_item_set_light_mask",
     "canvas_item_set_sort_children_by_y",
-    "canvas_item_set_z_as_relative_to_parent",
     "canvas_set_modulate",
     "viewport_remove_canvas",
     "viewport_set_canvas_cull_mask",
@@ -1324,7 +1331,7 @@ export async function checkCaptureArmed(
   }
   return check(
     "capture-armed",
-    "the capture leg armed with stream.status closed, no hook omitted (counters.json and session), and hooks_planned is exactly the 42 calibrator-3 hooks",
+    `the capture leg armed with stream.status closed, no hook omitted (counters.json and session), and hooks_planned is exactly the ${GATE0_HOOKS.length} hooks named by the committed record`,
     problems,
     `armed, stream closed, ${GATE0_HOOKS.length} hooks planned, none omitted`,
     [resultPath, countersPath, capture.recording.path],

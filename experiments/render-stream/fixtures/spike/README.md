@@ -107,6 +107,13 @@ template, for both the headless legs and the rendered gamescope legs.
     and the deferred `_set_draw_index`. Each `Control` redraw calls
     `canvas_item_set_custom_rect` and `_set_clip` (`scene/gui/control.cpp:3899-3901`).
 
+- Calibrator-4 state hooks, added for gate 1 G1e (`canvas_item_set_z_as_relative_to_parent`,
+  `canvas_item_set_draw_behind_parent`). Nothing here draws either, so the pixels do not change:
+  the same post-arm `Node2D` also gets `z_as_relative = false` and `show_behind_parent = true`.
+  Neither is left at its default (`z_relative` true, `behind` false), because
+  `CanvasItem::set_z_as_relative` and `set_draw_behind_parent` return early on an unchanged value
+  (`scene/main/canvas_item.cpp:655-661`, `:1155-1161`) and would never reach the RenderingServer.
+
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See
   its own `"description"` fields for the Godot-source citations (`color_rect.cpp`,
