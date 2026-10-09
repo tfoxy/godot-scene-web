@@ -1,7 +1,6 @@
 {
   "schema": "render-stream-gate-minus1-expected/1",
   "note": "Values match spike.gd/spike.tscn literally; see README.md. *_bits are the IEEE-754 float32 hex encoding (little-endian byte order read back as a little-endian u32, i.e. new DataView(new Float32Array([x]).buffer).getUint32(0, true)) of each field in *_bits order. Every value here is an exact sum of negative powers of two, so it round-trips through float32 bit-exact -- this is not a tolerance-budgeted fixture.",
-
   "script_add_rect": {
     "description": "spike.gd _draw(): RenderingServer.canvas_item_add_rect(get_canvas_item(), SCRIPT_RECT, SCRIPT_RECT_COLOR) -- antialiased defaults to false (servers/rendering_server.h canvas_item_add_rect).",
     "rect": [213.25, 27.5, 101.125, 49.75],
@@ -10,7 +9,6 @@
     "color_bits": ["0x3e000000", "0x3f000000", "0x3f400000", "0x3f800000"],
     "antialiased": false
   },
-
   "script_add_polygon": {
     "description": "spike.gd _draw(): RenderingServer.canvas_item_add_polygon(get_canvas_item(), _polygon_points, _polygon_colors) -- uvs/texture omitted, so uvs_count is 0 (servers/rendering_server.h canvas_item_add_polygon DEFVAL(Vector<Point2>())).",
     "points": [[400.5, 40.25], [480.75, 60.5], [440.125, 120.875]],
@@ -32,7 +30,6 @@
     "point_count": 3,
     "uvs_count": 0
   },
-
   "colorrect_add_rect": {
     "description": "Engine-internal path, not a script call: ColorRect::_notification(NOTIFICATION_DRAW) calls CanvasItem::draw_rect(Rect2(Point2(), get_size()), color) (scene/gui/color_rect.cpp), i.e. the rect is in the ColorRect's OWN local coordinates (0,0,width,height), not its (40,40) scene position -- the position is carried by the node's separate canvas transform, which this capture format does not need to decode for Gate -1. draw_rect's default filled=true/antialiased=false path calls canvas_item_add_rect directly (scene/main/canvas_item.cpp).",
     "rect": [0, 0, 120, 80],
@@ -41,14 +38,12 @@
     "color_bits": ["0x3f600000", "0x3e800000", "0x3e000000", "0x3f800000"],
     "antialiased": false
   },
-
   "label_glyphs": {
     "description": "Label draws its glyphs through the font's texture-atlas path, captured as canvas_item_add_texture_rect_region (bitmap font atlas) or canvas_item_add_msdf_texture_rect_region (MSDF font atlas) calls -- either counts for Gate -1, which only needs the path exercised, not a specific font backend. Starts as \"Spike Ag\"; spike.gd changes it to \"Spike Ag Qz!\" at frame 30, which must introduce new glyphs (Q, z, !) and so a font atlas texture_2d_update after frame 30.",
     "initial_text": "Spike Ag",
     "relabel_frame": 30,
     "relabeled_text": "Spike Ag Qz!"
   },
-
   "counters_must_be_positive": [
     "canvas_item_add_rect",
     "canvas_item_add_polygon",
@@ -59,7 +54,311 @@
     "canvas_item_add_texture_rect_region",
     "canvas_item_add_msdf_texture_rect_region"
   ],
-
   "frames_total": 400,
-  "screenshot_default_frame": 60
+  "screenshot_default_frame": 60,
+  "draw_paths": {
+    "description": "Calibrator-2 hooks, exercised by spike.gd/spike.tscn. Entries in counters.json's captured.<hook> are deduplicated (identical calls bump calls/last_frame). 'script' entries are on the scene root's canvas item, the one the scripted canvas_item_add_rect lands on; 'native' entries come from engine-internal draws on another item. Signatures: servers/rendering_server.h of 4.5.1, cited per hook in capture/src/hooks.cpp.",
+    "triangle_array": {
+      "description": "spike.gd _draw(): canvas_item_add_triangle_array(item, indices, points, colors, uvs) -- bones/weights empty, texture RID() (0), count -1 by default.",
+      "indices": [0, 1, 2, 0, 2, 3],
+      "points": [
+        [20.5, 220.25],
+        [120.75, 220.25],
+        [120.75, 300.5],
+        [20.5, 300.5]
+      ],
+      "point_bits": [
+        ["0x41a40000", "0x435c4000"],
+        ["0x42f18000", "0x435c4000"],
+        ["0x42f18000", "0x43964000"],
+        ["0x41a40000", "0x43964000"]
+      ],
+      "colors": [
+        [0.75, 0.25, 0.5, 1],
+        [0.25, 0.75, 0.5, 1],
+        [0.5, 0.25, 0.75, 1],
+        [1, 1, 0.25, 1]
+      ],
+      "color_bits": [
+        ["0x3f400000", "0x3e800000", "0x3f000000", "0x3f800000"],
+        ["0x3e800000", "0x3f400000", "0x3f000000", "0x3f800000"],
+        ["0x3f000000", "0x3e800000", "0x3f400000", "0x3f800000"],
+        ["0x3f800000", "0x3f800000", "0x3e800000", "0x3f800000"]
+      ],
+      "uvs": [[0, 0], [1, 0], [1, 1], [0, 1]],
+      "uv_bits": [
+        ["0x00000000", "0x00000000"],
+        ["0x3f800000", "0x00000000"],
+        ["0x3f800000", "0x3f800000"],
+        ["0x00000000", "0x3f800000"]
+      ],
+      "bones_total": 0,
+      "weights_total": 0,
+      "texture": "0",
+      "count": -1
+    },
+    "stylebox_panel": {
+      "description": "Native: the Panel's StyleBoxFlat draws through canvas_item_add_triangle_array (scene/resources/style_box_flat.cpp), every vertex colour bg_color, opaque for the fill and at alpha 0 for the anti-aliasing feather ring; spike.gd also sets the Panel's modulate (canvas_item_set_modulate) and a ShaderMaterial (canvas_item_set_material) whose shader is created from code, re-coded (shader_create_from_code, shader_set_code) and given a parameter (material_set_param).",
+      "bg_color": [0.25, 0.375, 0.625, 1],
+      "bg_color_bits": ["0x3e800000", "0x3ec00000", "0x3f200000", "0x3f800000"],
+      "modulate": [0.875, 1, 1, 1],
+      "modulate_bits": ["0x3f600000", "0x3f800000", "0x3f800000", "0x3f800000"]
+    },
+    "nine_patch_script": {
+      "description": "spike.gd _draw(): canvas_item_add_nine_patch on the 4x4 RGBA8 (format 5) ImageTexture spike.gd creates, whose RID is the texture_2d_create capture of that size. x/y axis modes NINE_PATCH_TILE (1) / NINE_PATCH_TILE_FIT (2); draw_center false and modulate are stack-passed arguments, so they prove the tail of the decode.",
+      "rect": [140.5, 220.5, 80.25, 60.75],
+      "rect_bits": ["0x430c8000", "0x435c8000", "0x42a08000", "0x42730000"],
+      "source": [0, 0, 4, 4],
+      "source_bits": ["0x00000000", "0x00000000", "0x40800000", "0x40800000"],
+      "topleft": [1.25, 1.5],
+      "topleft_bits": ["0x3fa00000", "0x3fc00000"],
+      "bottomright": [1.75, 1.0],
+      "bottomright_bits": ["0x3fe00000", "0x3f800000"],
+      "x_axis_mode": 1,
+      "y_axis_mode": 2,
+      "draw_center": false,
+      "modulate": [1, 0.75, 0.5, 1],
+      "modulate_bits": ["0x3f800000", "0x3f400000", "0x3f000000", "0x3f800000"],
+      "texture_width": 4,
+      "texture_height": 4,
+      "texture_format": 5
+    },
+    "nine_patch_native": {
+      "description": "Native: NinePatchRect::_notification(NOTIFICATION_DRAW) (scene/gui/nine_patch_rect.cpp) with the same texture, in its own local rect (0, 0, 100, 60), margins (left, top) / (right, bottom) = (1, 1) / (2, 2), stretch modes, draw_center true, an empty region rect, default modulate.",
+      "rect_bits": ["0x00000000", "0x00000000", "0x42c80000", "0x42700000"],
+      "topleft_bits": ["0x3f800000", "0x3f800000"],
+      "bottomright_bits": ["0x40000000", "0x40000000"],
+      "x_axis_mode": 0,
+      "y_axis_mode": 0,
+      "draw_center": true
+    },
+    "primitive": {
+      "description": "spike.gd _draw(): canvas_item_add_primitive with 4 points/colours/UVs on the 4x4 texture.",
+      "points": [
+        [240.25, 220.5],
+        [300.75, 220.5],
+        [300.75, 280.25],
+        [240.25, 280.25]
+      ],
+      "point_bits": [
+        ["0x43704000", "0x435c8000"],
+        ["0x43966000", "0x435c8000"],
+        ["0x43966000", "0x438c2000"],
+        ["0x43704000", "0x438c2000"]
+      ],
+      "color_bits": [
+        ["0x3f800000", "0x3f800000", "0x3f800000", "0x3f800000"],
+        ["0x3f800000", "0x3f000000", "0x3f000000", "0x3f800000"],
+        ["0x3f000000", "0x3f800000", "0x3f000000", "0x3f800000"],
+        ["0x3f000000", "0x3f000000", "0x3f800000", "0x3f800000"]
+      ],
+      "uv_bits": [
+        ["0x00000000", "0x00000000"],
+        ["0x3f800000", "0x00000000"],
+        ["0x3f800000", "0x3f800000"],
+        ["0x00000000", "0x3f800000"]
+      ]
+    },
+    "line": {
+      "description": "spike.gd _draw(): canvas_item_add_line(item, from, to, color, 3.5) -- antialiased false by default.",
+      "from_bits": ["0x43a04000", "0x435c4000"],
+      "to_bits": ["0x43c86000", "0x43914000"],
+      "color_bits": ["0x3ec00000", "0x3f600000", "0x3f200000", "0x3f800000"],
+      "width_bits": ["0x40600000"],
+      "antialiased": false
+    },
+    "polyline": {
+      "description": "spike.gd _draw(): canvas_item_add_polyline with 3 points, one colour, width 2.5.",
+      "point_bits": [
+        ["0x43d24000", "0x43964000"],
+        ["0x43e62000", "0x43aa6000"],
+        ["0x43f56000", "0x43962000"]
+      ],
+      "color_bits": [["0x3f600000", "0x3f600000", "0x3e000000", "0x3f800000"]],
+      "width_bits": ["0x40200000"]
+    },
+    "set_transform": {
+      "description": "spike.gd _draw(): canvas_item_add_set_transform(item, Transform2D(x=(1,0), y=(0,1), origin=(400.5, 0.25))), written as columns x, y, origin.",
+      "transform_bits": [
+        "0x3f800000",
+        "0x00000000",
+        "0x00000000",
+        "0x3f800000",
+        "0x43c84000",
+        "0x3e800000"
+      ]
+    },
+    "circle": {
+      "description": "spike.gd _draw(): canvas_item_add_circle after the add_set_transform, local position (40.5, 250.25), radius 20.75.",
+      "position_bits": ["0x42220000", "0x437a4000"],
+      "radius_bits": ["0x41a60000"],
+      "color_bits": ["0x3f200000", "0x3ec00000", "0x3f600000", "0x3f800000"]
+    },
+    "mesh": {
+      "description": "spike.gd: an ArrayMesh (ArrayMesh::_create_if_empty -> mesh_create; add_surface_from_arrays -> mesh_add_surface) with 3 Vector2 vertices and colours, flag ARRAY_FLAG_USE_DYNAMIC_UPDATE. format = VERTEX|COLOR|USE_2D_VERTICES|USE_DYNAMIC_UPDATE|FORMAT_VERSION_2 = 1+8+2^25+2^26+2^35; vertex stride 8 (2 floats), attribute stride 4 (RGBA8); aabb is the computed bounds. _draw() adds it with canvas_item_add_mesh and a translation transform, and canvas_item_add_multimesh adds a 1-instance 2D MultiMesh of it.",
+      "primitive": 3,
+      "format": "34460401673",
+      "vertex_count": 3,
+      "vertex_data_size": 24,
+      "attribute_data_size": 12,
+      "skin_data_size": 0,
+      "index_count": 0,
+      "index_data_size": 0,
+      "aabb_bits": [
+        "0x41a20000",
+        "0x439b4000",
+        "0x00000000",
+        "0x42a10000",
+        "0x421f0000",
+        "0x00000000"
+      ],
+      "transform_bits": [
+        "0x3f800000",
+        "0x00000000",
+        "0x00000000",
+        "0x3f800000",
+        "0x43028000",
+        "0x3e800000"
+      ],
+      "modulate_bits": ["0x3f800000", "0x3f600000", "0x3f400000", "0x3f800000"],
+      "texture": "0"
+    },
+    "vertex_region": {
+      "description": "spike.gd _process(), every frame: mesh_surface_update_vertex_region(mesh, 0, 8, PackedFloat32Array([110.25, 330.5]).to_byte_array()) -- vertex 1 moves; the headless-armed leg is armed for 60 frames.",
+      "surface": 0,
+      "offset": 8,
+      "data_size": 8,
+      "head_hex": "0080dc420040a543",
+      "min_calls": 55
+    },
+    "attribute_region": {
+      "description": "spike.gd _process(), every frame: mesh_surface_update_attribute_region(mesh, 0, 8, [255, 255, 0, 255]) -- vertex 2's RGBA8 colour.",
+      "surface": 0,
+      "offset": 8,
+      "data_size": 4,
+      "head_hex": "ffff00ff",
+      "min_calls": 55
+    },
+    "custom_aabb": {
+      "description": "spike.gd _process(), every frame: mesh_set_custom_aabb, as spine-godot does after each region update.",
+      "aabb_bits": [
+        "0x41a20000",
+        "0x439b4000",
+        "0x00000000",
+        "0x42b40000",
+        "0x421f0000",
+        "0x00000000"
+      ]
+    },
+    "visible_samples": {
+      "description": "Pixels of unarmed.png (and so of the byte-identical armed.png) that each new drawing covers: some pixel within 1 px must differ from the clear colour by more than 16 in a channel. moved_mesh_vertex lies inside the drawn mesh only because vertex 1 moved to (110.25, 330.5) (+ the (130.5, 0.25) transform): the original triangle does not reach it.",
+      "samples": [
+        {
+          "name": "triangle_array",
+          "x": 70,
+          "y": 260
+        },
+        {
+          "name": "nine_patch_script_top_border",
+          "x": 180,
+          "y": 221
+        },
+        {
+          "name": "primitive",
+          "x": 270,
+          "y": 250
+        },
+        {
+          "name": "line",
+          "x": 360,
+          "y": 255
+        },
+        {
+          "name": "polyline",
+          "x": 440,
+          "y": 320
+        },
+        {
+          "name": "circle_after_set_transform",
+          "x": 441,
+          "y": 250
+        },
+        {
+          "name": "mesh",
+          "x": 194,
+          "y": 330
+        },
+        {
+          "name": "moved_mesh_vertex",
+          "x": 230,
+          "y": 331
+        },
+        {
+          "name": "multimesh",
+          "x": 324,
+          "y": 330
+        },
+        {
+          "name": "stylebox_panel",
+          "x": 560,
+          "y": 70
+        },
+        {
+          "name": "nine_patch_rect",
+          "x": 570,
+          "y": 170
+        }
+      ]
+    }
+  },
+  "optional_hooks": [
+    "canvas_item_add_triangle_array",
+    "canvas_item_add_mesh",
+    "canvas_item_add_multimesh",
+    "canvas_item_add_nine_patch",
+    "canvas_item_add_primitive",
+    "canvas_item_add_line",
+    "canvas_item_add_polyline",
+    "canvas_item_add_circle",
+    "canvas_item_add_set_transform",
+    "canvas_item_set_transform",
+    "canvas_item_set_modulate",
+    "canvas_item_create",
+    "canvas_item_clear",
+    "canvas_item_set_material",
+    "mesh_create",
+    "mesh_add_surface",
+    "mesh_surface_update_vertex_region",
+    "mesh_surface_update_attribute_region",
+    "mesh_clear",
+    "mesh_set_custom_aabb",
+    "shader_create_from_code",
+    "shader_set_code",
+    "material_set_param"
+  ],
+  "optional_counters_must_be_positive": [
+    "canvas_item_add_triangle_array",
+    "canvas_item_add_mesh",
+    "canvas_item_add_multimesh",
+    "canvas_item_add_nine_patch",
+    "canvas_item_add_primitive",
+    "canvas_item_add_line",
+    "canvas_item_add_polyline",
+    "canvas_item_add_circle",
+    "canvas_item_add_set_transform",
+    "canvas_item_set_transform",
+    "canvas_item_set_modulate",
+    "canvas_item_create",
+    "canvas_item_clear",
+    "canvas_item_set_material",
+    "mesh_create",
+    "mesh_add_surface",
+    "mesh_surface_update_vertex_region",
+    "mesh_surface_update_attribute_region",
+    "mesh_clear",
+    "mesh_set_custom_aabb",
+    "shader_create_from_code",
+    "shader_set_code",
+    "material_set_param"
+  ]
 }

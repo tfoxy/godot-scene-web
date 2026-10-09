@@ -9,7 +9,8 @@ It answers one question before any protocol work starts:
 > damage a shipped game?
 
 **Answer: yes, measured.** A GDExtension copies the `RenderingServer` singleton's
-vtable into the heap, replaces eight slots with pass-through recording hooks, and
+vtable into the heap, replaces up to 31 slots with pass-through recording hooks
+(the eight gate −1 hooks, plus 23 draw-path hooks added for gate −0.25), and
 publishes the copy with one aligned pointer store into the singleton object's
 first word. Native `Control` drawing, the `Label` glyph path and direct
 `RenderingServer` calls from GDScript are all intercepted; the engine's own call
@@ -61,8 +62,8 @@ so the singleton's first word is its vtable address point, and slot `i` is
 2. **Verify at runtime** (`capture/src/calib.cpp`): see "Safety model" below.
 3. **Arm** (`capture/src/vtable.cpp`): `calloc` a table of `slot_count + 2`
    pointers, copy the live table from two words before the address point (so
-   offset-to-top and the typeinfo pointer come along), overwrite the eight hooked
-   slots, then one `__atomic_store_n(..., __ATOMIC_RELEASE)` of the new address
+   offset-to-top and the typeinfo pointer come along), overwrite the hooked slots
+   the record names, then one `__atomic_store_n(..., __ATOMIC_RELEASE)` of the new address
    point into the object's first word.
 4. **Hook** (`capture/src/hooks.cpp`): each hook records and calls the original
    function pointer with the identical arguments. The hooks are plain functions
@@ -101,17 +102,90 @@ assuming any particular sentinel.
 
 ### Hooked slots on the pinned binary
 
-| Method                                        | Slot |
-| --------------------------------------------- | ---- |
-| `texture_2d_create`                           | 24   |
-| `texture_2d_update`                           | 30   |
-| `canvas_item_add_rect`                        | 465  |
-| `canvas_item_add_texture_rect`                | 467  |
-| `canvas_item_add_texture_rect_region`         | 468  |
-| `canvas_item_add_msdf_texture_rect_region`    | 469  |
-| `canvas_item_add_polygon`                     | 473  |
-| `free`                                        | 549  |
-| `get_default_clear_color` (probe, not hooked) | 577  |
+"Tier" is the calibrator version that first emitted the slot. Tier 1 is gate −1's
+set and is required; tier 2 is optional (see "Calibration records and hook
+versions" below). "Captured" is what the hook records beside its count. Every
+signature is copied from the 4.5.1 header, with the line cited in
+`capture/src/hooks.cpp`.
+
+| Method                                        | Slot | Tier | Captured                                                                                        |
+| --------------------------------------------- | ---- | ---- | ----------------------------------------------------------------------------------------------- |
+| `texture_2d_create`                           | 24   | 1    | returned RID, image size/format/bytes, frame                                                    |
+| `texture_2d_update`                           | 30   | 1    | RID, layer, image size/format/bytes, frame                                                      |
+| `shader_create_from_code`                     | 54   | 2    | returned RID (code and path `String`s not decoded)                                              |
+| `shader_set_code`                             | 55   | 2    | shader RID (code `String` not decoded)                                                          |
+| `material_set_param`                          | 66   | 2    | material RID (`StringName` and `Variant` not decoded)                                           |
+| `mesh_create`                                 | 71   | 2    | returned RID                                                                                    |
+| `mesh_add_surface`                            | 82   | 2    | mesh, and from `SurfaceData`: primitive, format, vertex/index counts, four buffer sizes, `aabb` |
+| `mesh_surface_update_vertex_region`           | 86   | 2    | mesh, surface, byte offset, byte count, first 64 bytes                                          |
+| `mesh_surface_update_attribute_region`        | 87   | 2    | as above                                                                                        |
+| `mesh_set_custom_aabb`                        | 94   | 2    | mesh, AABB                                                                                      |
+| `mesh_clear`                                  | 100  | 2    | mesh                                                                                            |
+| `canvas_item_create`                          | 446  | 2    | returned RID                                                                                    |
+| `canvas_item_set_transform`                   | 453  | 2    | item, transform                                                                                 |
+| `canvas_item_set_modulate`                    | 457  | 2    | item, colour                                                                                    |
+| `canvas_item_add_line`                        | 462  | 2    | item, from, to, colour, width, antialiased                                                      |
+| `canvas_item_add_polyline`                    | 463  | 2    | item, points, colours, width, antialiased                                                       |
+| `canvas_item_add_rect`                        | 465  | 1    | item, rect, colour, antialiased                                                                 |
+| `canvas_item_add_circle`                      | 466  | 2    | item, position, radius, colour, antialiased                                                     |
+| `canvas_item_add_texture_rect`                | 467  | 1    | count only                                                                                      |
+| `canvas_item_add_texture_rect_region`         | 468  | 1    | count only                                                                                      |
+| `canvas_item_add_msdf_texture_rect_region`    | 469  | 1    | count only                                                                                      |
+| `canvas_item_add_nine_patch`                  | 471  | 2    | every argument                                                                                  |
+| `canvas_item_add_primitive`                   | 472  | 2    | item, points, colours, UVs, texture                                                             |
+| `canvas_item_add_polygon`                     | 473  | 1    | item, points, colours, UV count, texture                                                        |
+| `canvas_item_add_triangle_array`              | 474  | 2    | item, indices, points, colours, UVs, bone/weight counts, texture, count                         |
+| `canvas_item_add_mesh`                        | 475  | 2    | item, mesh (passed by reference), transform, modulate, texture                                  |
+| `canvas_item_add_multimesh`                   | 476  | 2    | item, multimesh, texture                                                                        |
+| `canvas_item_add_set_transform`               | 478  | 2    | item, transform                                                                                 |
+| `canvas_item_clear`                           | 486  | 2    | item                                                                                            |
+| `canvas_item_set_material`                    | 488  | 2    | item, material                                                                                  |
+| `free`                                        | 549  | 1    | count only                                                                                      |
+| `get_default_clear_color` (probe, not hooked) | 577  | 1    | —                                                                                               |
+
+Floats are written as values and as float32 bit patterns (`*_bits`). Arrays keep
+their first 64 elements, and `*_total` gives the real length. A tier-2 hook
+deduplicates identical calls into one entry with `calls`, `first_frame` and
+`last_frame`. It keeps at most 32 distinct entries and counts any further
+distinct calls in `captured_dropped`. Nothing that owns memory is decoded: no
+`String`, `StringName` or `Variant`. `SurfaceData` is read in place through the
+engine's pointer, and only its leading members up to `aabb` are read. Their
+offsets are pinned by `static_assert`s in `capture/src/abi.h` and by the
+`abi_decode` unit test. The offsets were also cross-checked with `offsetof` probes
+compiled against the pinned 4.5.1 header itself: primitive 0, format 8, the
+vertex/attribute/skin buffers 16/32/48, vertex_count 64, index_data 72,
+index_count 88, aabb 92, struct size 240.
+
+The calibrator also refuses to write a record whose named slots would not pass
+the library's own runtime check: pure-virtual in the abstract vtable and
+implemented in the concrete one.
+
+### Calibration records and hook versions
+
+A record produced by an older calibrator still loads in the current library.
+That record may come from a sibling calibrating another binary with whatever
+`calibrate.py` was on `main` at the time. The rules:
+
+- **Tier 1 slots are required.** If a record does not name one of the eight
+  gate −1 hooks, the library refuses with `slot-mask-mismatch` before any write.
+  It now refuses in `validate` mode too, so validate predicts what arm would do.
+- **Tier 2 and later slots are optional.** If a record does not name one, that
+  hook is not installed. Nothing is guessed, and the record is not refused. The
+  omission is recorded in three places:
+  - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
+    omitted hooks, for example:
+    `8 of 31 hooks named by the record; omitted (record predates them): …`.
+  - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
+    is `null` rather than `0`. A `null` means "not installed", which is
+    different from "never called".
+  - stdout gets a `[grc] hooks: …` line.
+- **Every slot a record names is verified, whether or not it is hooked.** It must
+  be pure-virtual in the abstract vtable and implemented in the concrete one, or
+  the library refuses with `slot-mask-mismatch`.
+- **Changing the calibrator.** Adding a key to `WANTED_SLOTS` is backward
+  compatible. Bump `CALIBRATOR_VERSION` and add the hook as optional. Renaming or
+  removing a key is not backward compatible. The gate's `old-record` leg proves
+  that a version-1 record (tier 1 slots only) still arms.
 
 ## Build, calibrate, run
 
@@ -203,6 +277,16 @@ Deviations from the drafted contract, all additive:
   draw), so an expected atlas update can be placed in time.
 - `invalid-calibration` is a reason code in addition to the drafted ones, for a
   record that exists but does not parse or carries the wrong schema.
+- Calibrator 2 added keys only; the schema string is unchanged. The new
+  `counters.json` keys are:
+  - `hooks_planned` and `hooks_omitted`, as described in "Calibration records and
+    hook versions".
+  - one `counts` entry per tier-2 hook, `null` when the hook was omitted.
+  - one `captured` array per tier-2 hook, in the shapes listed in the slot table
+    above.
+  - `captured_dropped`.
+
+  `calibration-check.json` adds the `hook_plan` check.
 
 ## Safety model
 
@@ -230,10 +314,13 @@ Deviations from the drafted contract, all additive:
   hooks hold no locks across the forwarded call except the small capture mutex,
   and counters are atomics because calls arrive from loader threads too.
 
-What this does **not** establish: that the shipped game's stripped fork has the
-same vtable layout (it needs its own record, which is exactly what the
-calibrator is for), that the capture is complete (only eight slots are hooked),
-or anything about performance.
+What this does **not** establish:
+
+- that the shipped game's stripped fork has the same vtable layout. It needs its
+  own record, which is exactly what the calibrator is for.
+- that the capture is complete. 31 of the 565 `RenderingServer` virtuals are
+  hooked.
+- anything about performance.
 
 ## Gate −1 result (2026-10-08)
 
@@ -287,7 +374,9 @@ the change.
 - The `add_msdf_texture_rect_region` and `add_texture_rect` hooks were never called:
   the default font is a bitmap atlas, and the fixture has no `TextureRect`. They are
   installed, but their argument decoding has not been exercised.
-- Only 8 slots are hooked, so nothing here says the capture is complete.
+- Only 8 slots were hooked in that run, so nothing in it says the capture is
+  complete. The 23 draw-path hooks added afterwards are covered in the next
+  section.
 - Only Linux x86-64 and this one binary were tested. The startup-loaded path (deferred
   arming) is derived from source and has not been run.
 - MegaDot and the shipped game were not tested. Their stripped fork needs its own
@@ -300,6 +389,100 @@ Gate −0.5 needs the operator's explicit go-ahead. It runs this library unmodif
 `GRC_MODE=validate` only, against the installed target binary in an owned, isolated
 headless instance under that repository's instance rules. It records the
 accept-or-refuse decision and the anchors matched, and writes no memory.
+
+## Draw-path hooks for gate −0.25 (2026-10-09)
+
+Gate −0.25 arms counters on the real game. It needs counters for the paths the
+game draws through: Spine rigs drawn by the spine-godot GDExtension, nine-patch
+styleboxes, meshes and primitives. Calibrator 2 adds 23 optional hooks for those
+paths (the tier-2 rows of the slot table above). The fixture now drives every one
+of them.
+
+**Pass.** Run `artifacts/render-stream/gate-minus1/20261009T031006Z/` (ignored,
+not committed) passes 28 of 28 checks: the 18 gate −1 checks plus 10 new ones,
+listed in [scripts/README.md](scripts/README.md) as #7 `new-drawings-visible`,
+#9 and #10.
+
+### spine-godot's draw path
+
+spine-godot draws through `canvas_item_add_mesh`, not
+`canvas_item_add_triangle_array`. The source is
+`spine-godot/spine_godot/SpineSprite.cpp` on the `4.2` branch of
+EsotericSoftware/spine-runtimes. That file was fetched and read, and it matches
+the pinned copy at commit `e7dc1435`
+(`sts2-couch-coop/.sts2/research/data/spine-reliable-sep04/upstream/`, sha256
+`8eb74951…`). Each `SpineMesh2D` runs `_notification(NOTIFICATION_DRAW)`, which
+calls `clear_triangles` (`canvas_item_clear`) and then `add_triangles`. In 4.x
+`add_triangles` calls `update_mesh`. The `#ifdef SPINE_GODOT_EXTENSION` branch is
+the one a GDExtension build such as the game's `libspine_godot` compiles:
+
+- **When the mesh is rebuilt** (vertex or index count changed): `free_rid` (the
+  `free` slot), `mesh_create`, then `mesh_add_surface_from_arrays` with the
+  `ARRAY_FLAG_USE_DYNAMIC_UPDATE` flag. That method is implemented in
+  `RenderingServer` itself and calls the virtual `mesh_add_surface`
+  (`servers/rendering_server.cpp:1390-1396`). It then calls `mesh_get_surface`
+  and the stride getters, which only read.
+- **Every other frame**: `mesh_surface_update_vertex_region(mesh, 0, 0, …)`,
+  `mesh_surface_update_attribute_region(mesh, 0, 0, …)` and
+  `mesh_set_custom_aabb`.
+- **Always**: `canvas_item_add_mesh` of that mesh, with an identity transform, a
+  white modulate and the renderer object's canvas texture.
+
+`canvas_item_add_triangle_array` appears only in the Godot 3
+`VisualServer` branch. A GDExtension reaches these methods through ClassDB
+method binds, and those binds call the virtual member functions
+(`rendering_server.cpp:2350-2375`, `3315`, `3327`, `3471`). Every call in the
+list above therefore dispatches through the shadow vtable, and each one has a
+hook. The fixture's ArrayMesh reproduces this shape: one surface with dynamic
+update, per-frame vertex and attribute region writes, a custom AABB each frame,
+then `canvas_item_add_mesh`.
+
+### Counts in the headless-armed leg (armed for 60 frames)
+
+| Hook                                                                                                                       | Count | Source                                                                                             |
+| -------------------------------------------------------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------- |
+| `canvas_item_add_triangle_array`                                                                                           | 62    | script (61, bit-exact) + the Panel's `StyleBoxFlat` (108 points, 318 indices, native)              |
+| `canvas_item_add_nine_patch`                                                                                               | 62    | script (61, bit-exact, on its 4×4 texture) + `NinePatchRect` (native, same texture RID)            |
+| `canvas_item_add_primitive`, `_line`, `_polyline`, `_circle`, `_set_transform`                                             | 61    | script, each bit-exact                                                                             |
+| `canvas_item_add_mesh`, `canvas_item_add_multimesh`                                                                        | 61    | script, mesh RID = the ArrayMesh's `mesh_create`                                                   |
+| `mesh_surface_update_vertex_region`, `_attribute_region`, `mesh_set_custom_aabb`                                           | 60    | script `_process`, once per armed frame; offset 8, 8 bytes `0080dc420040a543` / 4 bytes `ffff00ff` |
+| `mesh_create` / `mesh_add_surface`                                                                                         | 2 / 2 | the ArrayMesh (format `34460401673`, 3 vertices, 24 + 12 bytes, AABB) + a scratch mesh             |
+| `mesh_clear`                                                                                                               | 1     | the scratch mesh                                                                                   |
+| `canvas_item_clear`                                                                                                        | 67    | engine, every redraw                                                                               |
+| `canvas_item_set_transform`                                                                                                | 5     | engine                                                                                             |
+| `canvas_item_create`                                                                                                       | 1     | a `Node2D` created after arming (the scene's own items exist before the extension loads)           |
+| `canvas_item_set_modulate`, `canvas_item_set_material`, `material_set_param`, `shader_create_from_code`, `shader_set_code` | 1     | the Panel's modulate and `ShaderMaterial`, RIDs consistent across all five                         |
+
+The rendered-armed leg is armed for all 400 frames on OpenGL under X11. It counts
+400 or 401 calls of every per-frame hook, so the same paths are hooked on the GPU
+renderer too. `unarmed.png` and `armed.png` are still byte-identical (sha256
+`985ed809…`), and the new drawings appear in both. Each one covers a sample pixel,
+and one sample lies inside the mesh only because the per-frame vertex update
+moved that vertex.
+
+A calibrator-1 record (leg `old-record`) arms with 8 hooks and omits 23. Each
+omitted hook has a `null` count and is named in `hook_plan`. The armed run counts
+`add_rect` 62 and `add_polygon` 61, and disarm restores the vptr.
+
+### What is left
+
+- `canvas_item_add_texture_rect` and `canvas_item_add_msdf_texture_rect_region`
+  are still never called by this fixture, as at gate −1. Every tier-2 hook is
+  exercised.
+- Count-only by design: `shader_create_from_code`, `shader_set_code` and
+  `material_set_param` record RIDs and leave their `String`, `StringName` and
+  `Variant` arguments undecoded. Those are reference-counted, owning types, so
+  decoding them means reproducing more engine ABI than a counter needs. Gate 5.5
+  needs captured shader source, and that should go through a ClassDB call rather
+  than a layout copy. The three gate −1 hooks `texture_rect`,
+  `texture_rect_region` and `msdf_texture_rect_region` also stay count-only.
+- Not hooked but on spine-godot's path: `mesh_get_surface` and the format and
+  stride getters. They are read-only queries and draw nothing.
+- Signatures that needed care: `canvas_item_add_mesh` takes its mesh RID **by
+  reference**. `canvas_item_add_nine_patch` passes its axis modes as 4-byte enums
+  and puts `draw_center` and `modulate` on the stack. The fixture captures
+  `draw_center = false` and the modulate exactly, which proves the tail of that
+  argument list. `mesh_add_surface` takes `SurfaceData` by reference.
 
 ## Scratch verification (2026-10-08)
 

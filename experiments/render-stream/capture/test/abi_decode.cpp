@@ -102,6 +102,59 @@ void test_layout() {
   check(sizeof(grc::Transform2D) == 24, "Transform2D size");
 }
 
+// RenderingServer::SurfaceData is read in place through the engine's pointer.
+// Build a 240-byte block with the members where the 4.5.1 header puts them
+// (offsets computed by hand and cross-checked with offsetof against the pinned
+// header, see abi.h) and decode it through SurfaceDataPrefix.
+void test_surface_data() {
+  check(offsetof(grc::SurfaceDataPrefix, primitive) == 0, "SurfaceData::primitive at 0");
+  check(offsetof(grc::SurfaceDataPrefix, format) == 8, "SurfaceData::format at 8");
+  check(offsetof(grc::SurfaceDataPrefix, vertex_data) == 16, "SurfaceData::vertex_data at 16");
+  check(offsetof(grc::SurfaceDataPrefix, attribute_data) == 32,
+        "SurfaceData::attribute_data at 32");
+  check(offsetof(grc::SurfaceDataPrefix, skin_data) == 48, "SurfaceData::skin_data at 48");
+  check(offsetof(grc::SurfaceDataPrefix, vertex_count) == 64, "SurfaceData::vertex_count at 64");
+  check(offsetof(grc::SurfaceDataPrefix, index_data) == 72, "SurfaceData::index_data at 72");
+  check(offsetof(grc::SurfaceDataPrefix, index_count) == 88, "SurfaceData::index_count at 88");
+  check(offsetof(grc::SurfaceDataPrefix, aabb) == 92, "SurfaceData::aabb at 92");
+  check(sizeof(grc::AABB) == 24, "AABB size");
+
+  FakeCowData<uint8_t> vertices(1, std::vector<uint8_t>(24, 0xab));
+  FakeCowData<uint8_t> attributes(1, std::vector<uint8_t>(12, 0xcd));
+  FakeCowData<uint8_t> indices(1, std::vector<uint8_t>(6, 0x01));
+
+  alignas(16) uint8_t block[240] = {};
+  const int32_t primitive = 3;  // PRIMITIVE_TRIANGLES
+  const uint64_t format = 0x0000000800002011ull;
+  const uint32_t vertex_count = 3;
+  const uint32_t index_count = 3;
+  const float aabb[6] = {1.5f, -2.25f, 0.0f, 10.125f, 20.5f, 0.0f};
+  const void *vertex_ptr = vertices.elements;
+  const void *attribute_ptr = attributes.elements;
+  const void *index_ptr = indices.elements;
+  std::memcpy(block + 0, &primitive, sizeof(primitive));
+  std::memcpy(block + 8, &format, sizeof(format));
+  // Each Vector<uint8_t> is the write-proxy word, then the CowData pointer.
+  std::memcpy(block + 16 + 8, &vertex_ptr, sizeof(void *));
+  std::memcpy(block + 32 + 8, &attribute_ptr, sizeof(void *));
+  // skin_data stays empty: a null CowData pointer.
+  std::memcpy(block + 64, &vertex_count, sizeof(vertex_count));
+  std::memcpy(block + 72 + 8, &index_ptr, sizeof(void *));
+  std::memcpy(block + 88, &index_count, sizeof(index_count));
+  std::memcpy(block + 92, aabb, sizeof(aabb));
+
+  const auto *surface = reinterpret_cast<const grc::SurfaceDataPrefix *>(block);
+  check(surface->primitive == 3, "decoded primitive");
+  check(surface->format == format, "decoded format");
+  check(surface->vertex_data.size() == 24, "decoded vertex_data size");
+  check(surface->attribute_data.size() == 12, "decoded attribute_data size");
+  check(surface->skin_data.size() == 0, "decoded empty skin_data");
+  check(surface->vertex_count == 3, "decoded vertex_count");
+  check(surface->index_data.size() == 6, "decoded index_data size");
+  check(surface->index_count == 3, "decoded index_count");
+  check(surface->aabb.position.y == -2.25f && surface->aabb.size.x == 10.125f, "decoded aabb");
+}
+
 }  // namespace
 
 int main() {
@@ -111,6 +164,7 @@ int main() {
   test_colors();
   test_large_size();
   test_layout();
+  test_surface_data();
   if (g_failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", g_failures);
     return 1;

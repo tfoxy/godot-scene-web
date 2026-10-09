@@ -261,6 +261,14 @@ make_tampered_binary "$TAMPERED_BINARY"
 chmod +x "$TAMPERED_BINARY"
 run_headless_leg "refuse-binary-byte" "arm" "$CALIBRATION" "$TAMPERED_BINARY" "60"
 
+# A record as calibrator version 1 wrote it (gate -1 slots only): must still arm, with every later
+# hook left out and reported. This is the record shape a sibling may produce for another binary
+# with an older calibrator.
+echo "run-gate-minus1: old-record"
+mkdir -p "$OUT/old-record"
+mise exec -- node "$SCRIPT_DIR/lib/tamper-calibration.mjs" v1 "$CALIBRATION" "$OUT/old-record/calibrator-v1-record.json"
+run_headless_leg "old-record" "arm" "$OUT/old-record/calibrator-v1-record.json" "$BINARY" "60"
+
 # ---------------------------------------------------------------------------------------------
 # Rendered legs: one private gamescope compositor for both, identity reverified before each
 # launch. "unarmed" runs with the capture extension absent; "armed" arms and disarms only at

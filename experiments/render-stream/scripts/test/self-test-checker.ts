@@ -18,15 +18,20 @@ import {
   type Criterion,
   checkCaptureCounts,
   checkDisarmAndCompletion,
+  checkDrawPaths,
   checkFrameCallbackTicked,
   checkHeadlessNoGpu,
+  checkNewDrawingsVisible,
   checkNoMprotectAfterArm,
+  checkOlderRecord,
   checkPixelParity,
   checkPolygonBitExact,
   checkRenderedLegs,
   checkValidateAndRefusals,
-  type ExpectedJson,
+  type ExpectedWithDrawPaths,
 } from "../lib/gate-minus1-checks";
+
+type ExpectedJson = ExpectedWithDrawPaths;
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -46,9 +51,17 @@ async function writeText(path: string, text: string): Promise<void> {
   await writeFile(path, text);
 }
 
+/** Where the fixture's calibrator-2 drawings land (expected.json draw_paths.visible_samples). */
+let drawingSamples: Array<{ name: string; x: number; y: number }> = [];
+
 async function writeScenePng(
   path: string,
-  options: { blank?: boolean; perturbPixel?: [number, number] } = {},
+  options: {
+    blank?: boolean;
+    perturbPixel?: [number, number];
+    /** Leave this drawing's sample area at the clear colour. */
+    omitDrawing?: string;
+  } = {},
 ): Promise<void> {
   const buf = Buffer.alloc(WIDTH * HEIGHT * 4);
   for (let y = 0; y < HEIGHT; y++) {
@@ -62,6 +75,20 @@ async function writeScenePng(
       buf[index + 3] = color[3];
     }
   }
+  if (!options.blank) {
+    // A 5x5 patch at each new drawing's sample point.
+    for (const sample of drawingSamples) {
+      if (sample.name === options.omitDrawing) continue;
+      for (let y = sample.y - 2; y <= sample.y + 2; y++) {
+        for (let x = sample.x - 2; x <= sample.x + 2; x++) {
+          const index = (y * WIDTH + x) * 4;
+          buf[index] = 200;
+          buf[index + 1] = 180;
+          buf[index + 2] = 160;
+        }
+      }
+    }
+  }
   if (options.perturbPixel) {
     const [px, py] = options.perturbPixel;
     const index = (py * WIDTH + px) * 4;
@@ -73,27 +100,212 @@ async function writeScenePng(
     .toFile(path);
 }
 
+/** `{name: value}` for every calibrator-2 hook. */
+function optionalCounts(
+  expected: ExpectedJson,
+  value: number | null,
+): Record<string, number | null> {
+  return Object.fromEntries(
+    expected.optional_hooks.map((name) => [name, value]),
+  );
+}
+
+/** counters.json `captured` entries for every calibrator-2 hook, in the library's shapes, with
+ * RIDs that tie them together the way the real fixture's do. */
+function goodDrawPathCaptures(expected: ExpectedJson): Record<string, unknown> {
+  const dp = expected.draw_paths;
+  const seen = { calls: 60, first_frame: 1, last_frame: 60 };
+  return {
+    canvas_item_add_triangle_array: [
+      {
+        item: "script",
+        indices: dp.triangle_array.indices,
+        indices_total: dp.triangle_array.indices.length,
+        point_bits: dp.triangle_array.point_bits,
+        points_total: dp.triangle_array.point_bits.length,
+        color_bits: dp.triangle_array.color_bits,
+        colors_total: dp.triangle_array.color_bits.length,
+        uv_bits: dp.triangle_array.uv_bits,
+        uvs_total: dp.triangle_array.uv_bits.length,
+        bones_total: 0,
+        weights_total: 0,
+        texture: dp.triangle_array.texture,
+        count: dp.triangle_array.count,
+        ...seen,
+      },
+      {
+        item: "panel",
+        indices_total: 3,
+        points_total: 2,
+        // The fill, then the anti-aliasing feather: bg_color at alpha 0.
+        color_bits: [
+          dp.stylebox_panel.bg_color_bits,
+          [...dp.stylebox_panel.bg_color_bits.slice(0, 3), "0x00000000"],
+        ],
+        colors_total: 2,
+        calls: 1,
+      },
+    ],
+    canvas_item_set_modulate: [
+      { item: "panel", color_bits: dp.stylebox_panel.modulate_bits },
+    ],
+    canvas_item_set_material: [{ item: "panel", material: "material" }],
+    material_set_param: [{ material: "material" }],
+    shader_create_from_code: [{ rid: "shader" }],
+    shader_set_code: [{ shader: "shader" }],
+    canvas_item_add_nine_patch: [
+      {
+        item: "script",
+        rect_bits: dp.nine_patch_script.rect_bits,
+        source_bits: dp.nine_patch_script.source_bits,
+        texture: "texture4",
+        topleft_bits: dp.nine_patch_script.topleft_bits,
+        bottomright_bits: dp.nine_patch_script.bottomright_bits,
+        x_axis_mode: dp.nine_patch_script.x_axis_mode,
+        y_axis_mode: dp.nine_patch_script.y_axis_mode,
+        draw_center: dp.nine_patch_script.draw_center,
+        modulate_bits: dp.nine_patch_script.modulate_bits,
+        ...seen,
+      },
+      {
+        item: "ninepatchrect",
+        rect_bits: dp.nine_patch_native.rect_bits,
+        texture: "texture4",
+        topleft_bits: dp.nine_patch_native.topleft_bits,
+        bottomright_bits: dp.nine_patch_native.bottomright_bits,
+        x_axis_mode: dp.nine_patch_native.x_axis_mode,
+        y_axis_mode: dp.nine_patch_native.y_axis_mode,
+        draw_center: dp.nine_patch_native.draw_center,
+      },
+    ],
+    canvas_item_add_primitive: [
+      {
+        item: "script",
+        point_bits: dp.primitive.point_bits,
+        color_bits: dp.primitive.color_bits,
+        uv_bits: dp.primitive.uv_bits,
+      },
+    ],
+    canvas_item_add_line: [
+      {
+        item: "script",
+        from_bits: dp.line.from_bits,
+        to_bits: dp.line.to_bits,
+        color_bits: dp.line.color_bits,
+        width_bits: dp.line.width_bits,
+        antialiased: dp.line.antialiased,
+      },
+    ],
+    canvas_item_add_polyline: [
+      {
+        item: "script",
+        point_bits: dp.polyline.point_bits,
+        color_bits: dp.polyline.color_bits,
+        width_bits: dp.polyline.width_bits,
+      },
+    ],
+    canvas_item_add_set_transform: [
+      { item: "script", transform_bits: dp.set_transform.transform_bits },
+    ],
+    canvas_item_add_circle: [
+      {
+        item: "script",
+        position_bits: dp.circle.position_bits,
+        radius_bits: dp.circle.radius_bits,
+        color_bits: dp.circle.color_bits,
+      },
+    ],
+    mesh_create: [{ rid: "mesh" }, { rid: "scratch" }],
+    mesh_add_surface: [
+      {
+        mesh: "mesh",
+        primitive: dp.mesh.primitive,
+        format: dp.mesh.format,
+        vertex_count: dp.mesh.vertex_count,
+        vertex_data_size: dp.mesh.vertex_data_size,
+        attribute_data_size: dp.mesh.attribute_data_size,
+        skin_data_size: dp.mesh.skin_data_size,
+        index_count: dp.mesh.index_count,
+        index_data_size: dp.mesh.index_data_size,
+        aabb_bits: dp.mesh.aabb_bits,
+      },
+    ],
+    canvas_item_add_mesh: [
+      {
+        item: "script",
+        mesh: "mesh",
+        transform_bits: dp.mesh.transform_bits,
+        modulate_bits: dp.mesh.modulate_bits,
+        texture: dp.mesh.texture,
+        ...seen,
+      },
+    ],
+    canvas_item_add_multimesh: [
+      { item: "script", mesh: "multimesh", texture: "0" },
+    ],
+    mesh_clear: [{ mesh: "scratch" }],
+    mesh_surface_update_vertex_region: [
+      {
+        mesh: "mesh",
+        surface: dp.vertex_region.surface,
+        offset: dp.vertex_region.offset,
+        data_size: dp.vertex_region.data_size,
+        head_hex: dp.vertex_region.head_hex,
+        ...seen,
+      },
+    ],
+    mesh_surface_update_attribute_region: [
+      {
+        mesh: "mesh",
+        surface: dp.attribute_region.surface,
+        offset: dp.attribute_region.offset,
+        data_size: dp.attribute_region.data_size,
+        head_hex: dp.attribute_region.head_hex,
+        ...seen,
+      },
+    ],
+    mesh_set_custom_aabb: [
+      { mesh: "mesh", aabb_bits: dp.custom_aabb.aabb_bits, ...seen },
+    ],
+  };
+}
+
+async function readCounters(path: string): Promise<{
+  counts: Record<string, number | null>;
+  captured: Record<string, Array<Record<string, unknown>>>;
+  [key: string]: unknown;
+}> {
+  return JSON.parse(
+    await (await import("node:fs/promises")).readFile(path, "utf8"),
+  );
+}
+
 /** A fully-passing evidence tree for the groups the self-test exercises. Each scenario starts
  * from a copy of this and perturbs exactly one thing. */
 async function buildGoodEvidence(
   dir: string,
   expected: ExpectedJson,
 ): Promise<void> {
+  drawingSamples = expected.draw_paths.visible_samples.samples;
   const armedDir = join(dir, "headless-armed");
   await writeJson(join(armedDir, "evidence", "counters.json"), {
     schema: "render-stream-gate-minus1-counters/1",
     frames_total: 400,
     frames_armed: 340,
+    hooks_planned: [],
+    hooks_omitted: [],
     counts: {
       canvas_item_add_rect: 2,
       canvas_item_add_polygon: 1,
       canvas_item_add_texture_rect_region: 5,
       canvas_item_add_msdf_texture_rect_region: 0,
-      texture_2d_create: 1,
+      texture_2d_create: 2,
       texture_2d_update: 1,
       free: 0,
+      ...optionalCounts(expected, 60),
     },
     captured: {
+      ...goodDrawPathCaptures(expected),
       canvas_item_add_rect: [
         {
           item: "colorrect",
@@ -121,7 +333,10 @@ async function buildGoodEvidence(
           uvs_count: expected.script_add_polygon.uvs_count,
         },
       ],
-      texture_2d_create: [{ rid: "1", frame: 1, width: 256, height: 256 }],
+      texture_2d_create: [
+        { rid: "1", frame: 1, width: 256, height: 256 },
+        { rid: "texture4", frame: 1, width: 4, height: 4, format: 5 },
+      ],
       texture_2d_update: [
         { rid: "1", frame: expected.label_glyphs.relabel_frame, layer: 0 },
       ],
@@ -210,6 +425,7 @@ async function buildGoodEvidence(
       canvas_item_add_rect: 800,
       canvas_item_add_polygon: 400,
       canvas_item_add_texture_rect_region: 17,
+      ...optionalCounts(expected, 400),
     },
   });
   await writeJson(join(dir, "rendered-armed", "evidence", "disarm.json"), {
@@ -217,6 +433,52 @@ async function buildGoodEvidence(
     vptr_was_shadow: true,
     vptr_restored: true,
     frame: 400,
+  });
+
+  // old-record: a calibrator-1 record armed with every calibrator-2 hook left out.
+  const oldDir = join(dir, "old-record", "evidence");
+  await writeJson(join(oldDir, "result.json"), {
+    status: "armed",
+    reason: null,
+    vptr_written: true,
+    disarmed: true,
+    display_server: "headless",
+  });
+  await writeJson(join(oldDir, "disarm.json"), {
+    disarmed: true,
+    vptr_was_shadow: true,
+    vptr_restored: true,
+    frame: 60,
+  });
+  await writeJson(join(oldDir, "counters.json"), {
+    frames_total: 400,
+    frames_armed: 60,
+    hooks_planned: [
+      "canvas_item_add_rect",
+      "canvas_item_add_texture_rect",
+      "canvas_item_add_texture_rect_region",
+      "canvas_item_add_msdf_texture_rect_region",
+      "canvas_item_add_polygon",
+      "texture_2d_create",
+      "texture_2d_update",
+      "free",
+    ],
+    hooks_omitted: expected.optional_hooks,
+    counts: {
+      canvas_item_add_rect: 62,
+      canvas_item_add_polygon: 61,
+      ...optionalCounts(expected, null),
+    },
+    captured: {},
+  });
+  await writeJson(join(oldDir, "calibration-check.json"), {
+    checks: [
+      {
+        name: "hook_plan",
+        ok: true,
+        detail: `8 of 31 hooks named by the record; omitted (record predates them): ${expected.optional_hooks.join(",")}`,
+      },
+    ],
   });
 }
 
@@ -244,8 +506,21 @@ const scenarios: Scenario[] = [
       ...(await checkPixelParity(dir, expected)),
       await checkRenderedLegs(dir, expected),
       await checkNoMprotectAfterArm(dir),
+      ...(await checkDrawPaths(dir, expected)),
+      await checkNewDrawingsVisible(dir, expected),
+      await checkOlderRecord(dir, expected),
     ],
     expect: {
+      "optional-hook-counts": "pass",
+      "triangle-array-bit-exact": "pass",
+      "stylebox-panel-native": "pass",
+      "shader-material-path": "pass",
+      "nine-patch-bit-exact": "pass",
+      "scripted-shapes-bit-exact": "pass",
+      "mesh-surface-and-draw": "pass",
+      "mesh-region-updates": "pass",
+      "new-drawings-visible": "pass",
+      "older-record-loads": "pass",
       "frame-callback-ticked": "pass",
       "headless-no-gpu": "pass",
       "rendered-legs-armed-and-absent": "pass",
@@ -596,6 +871,141 @@ const scenarios: Scenario[] = [
     },
     run: async (dir) => [await checkNoMprotectAfterArm(dir)],
     expect: { "no-mprotect-after-arm": "fail" },
+  },
+  {
+    name: "one perturbed triangle-array point bit fails only the triangle-array criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const path = join(dir, "headless-armed", "evidence", "counters.json");
+      const counters = await readCounters(path);
+      const entry = counters.captured.canvas_item_add_triangle_array[0];
+      const points = entry.point_bits as string[][];
+      // 120.75 -> its float32 neighbour: one mantissa bit.
+      points[1] = [points[1][0].replace(/0$/, "1"), points[1][1]];
+      await writeJson(path, counters);
+    },
+    run: async (dir, expected) => checkDrawPaths(dir, expected),
+    expect: {
+      "triangle-array-bit-exact": "fail",
+      "stylebox-panel-native": "pass",
+      "nine-patch-bit-exact": "pass",
+      "mesh-surface-and-draw": "pass",
+    },
+  },
+  {
+    name: "a vertex-region update captured at the wrong byte offset fails the mesh-region criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const path = join(dir, "headless-armed", "evidence", "counters.json");
+      const counters = await readCounters(path);
+      counters.captured.mesh_surface_update_vertex_region[0].offset = 0;
+      await writeJson(path, counters);
+    },
+    run: async (dir, expected) => checkDrawPaths(dir, expected),
+    expect: {
+      "mesh-region-updates": "fail",
+      "mesh-surface-and-draw": "pass",
+    },
+  },
+  {
+    name: "a vertex-region update seen once instead of once per frame fails the mesh-region criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const path = join(dir, "headless-armed", "evidence", "counters.json");
+      const counters = await readCounters(path);
+      counters.captured.mesh_surface_update_vertex_region[0].calls = 1;
+      await writeJson(path, counters);
+    },
+    run: async (dir, expected) => checkDrawPaths(dir, expected),
+    expect: { "mesh-region-updates": "fail" },
+  },
+  {
+    name: "a nine-patch whose stack-passed draw_center decoded wrong fails the nine-patch criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const path = join(dir, "headless-armed", "evidence", "counters.json");
+      const counters = await readCounters(path);
+      counters.captured.canvas_item_add_nine_patch[0].draw_center = true;
+      await writeJson(path, counters);
+    },
+    run: async (dir, expected) => checkDrawPaths(dir, expected),
+    expect: {
+      "nine-patch-bit-exact": "fail",
+      "triangle-array-bit-exact": "pass",
+    },
+  },
+  {
+    name: "add_mesh of a mesh that was never mesh_create'd fails the mesh-surface criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const path = join(dir, "headless-armed", "evidence", "counters.json");
+      const counters = await readCounters(path);
+      counters.captured.canvas_item_add_mesh[0].mesh = "elsewhere";
+      await writeJson(path, counters);
+    },
+    run: async (dir, expected) => checkDrawPaths(dir, expected),
+    expect: { "mesh-surface-and-draw": "fail" },
+  },
+  {
+    name: "an optional hook that never fired fails the optional-hook-counts criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const path = join(dir, "headless-armed", "evidence", "counters.json");
+      const counters = await readCounters(path);
+      counters.counts.canvas_item_add_multimesh = 0;
+      await writeJson(path, counters);
+    },
+    run: async (dir, expected) => checkDrawPaths(dir, expected),
+    expect: { "optional-hook-counts": "fail" },
+  },
+  {
+    name: "a render missing the mesh drawn with the moved vertex fails the new-drawings criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      for (const [leg, file] of [
+        ["rendered-unarmed", "unarmed.png"],
+        ["rendered-armed", "armed.png"],
+      ] as const) {
+        await writeScenePng(join(dir, leg, file), {
+          omitDrawing: "moved_mesh_vertex",
+        });
+      }
+    },
+    run: async (dir, expected) => [
+      ...(await checkPixelParity(dir, expected)),
+      await checkNewDrawingsVisible(dir, expected),
+    ],
+    // Both renders lack it alike, so parity still passes; the visibility check catches it.
+    expect: {
+      "armed-vs-unarmed-pixels": "pass",
+      "unarmed-not-blank": "pass",
+      "new-drawings-visible": "fail",
+    },
+  },
+  {
+    name: "an older record that refused instead of arming fails the older-record criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      await writeJson(join(dir, "old-record", "evidence", "result.json"), {
+        status: "refused",
+        reason: "slot-mask-mismatch",
+        vptr_written: false,
+      });
+    },
+    run: async (dir, expected) => [await checkOlderRecord(dir, expected)],
+    expect: { "older-record-loads": "fail" },
+  },
+  {
+    name: "an older record whose omitted hook still reports a count fails the older-record criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const path = join(dir, "old-record", "evidence", "counters.json");
+      const counters = await readCounters(path);
+      counters.counts.mesh_create = 0;
+      await writeJson(path, counters);
+    },
+    run: async (dir, expected) => [await checkOlderRecord(dir, expected)],
+    expect: { "older-record-loads": "fail" },
   },
 ];
 

@@ -225,6 +225,21 @@ bool attempt(const char *phase) {
     return true;
   }
 
+  // Which hooks the record allows. A required (gate -1) hook the record does
+  // not name refuses in both modes, so validate predicts arm; an optional hook
+  // it does not name (a record from an older calibrator) is left out and
+  // reported, not refused. Pure bookkeeping: nothing is called or written.
+  HookPlan plan;
+  const bool plan_ok = hooks_plan(g_state.calib, &plan);
+  g_state.checks.push_back({"hook_plan", plan_ok, hooks_plan_detail(plan)});
+  if (!plan.omitted.empty()) {
+    log_line("hooks: " + hooks_plan_detail(plan));
+  }
+  if (!plan_ok) {
+    refuse("slot-mask-mismatch");
+    return true;
+  }
+
   if (g_state.mode != "arm") {
     decide("validated", std::string());
     return true;
@@ -234,14 +249,8 @@ bool attempt(const char *phase) {
   if (!hooks_image_details_available()) {
     log_line("Image method binds unavailable: texture captures will omit details");
   }
-  std::vector<SlotReplacement> replacements;
-  if (!hooks_replacements(g_state.calib, &replacements, &error)) {
-    log_line("hooks: " + error);
-    refuse("slot-mask-mismatch");
-    return true;
-  }
   if (!g_state.shadow.arm(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
-                          replacements, &error)) {
+                          plan.replacements, &error)) {
     log_line("arm: " + error);
     refuse("arm-failed");
     return true;
