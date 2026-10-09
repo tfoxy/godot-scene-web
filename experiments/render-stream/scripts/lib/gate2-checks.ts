@@ -62,6 +62,7 @@ import {
   type G2cHostNumbers,
   runG2c,
 } from "./gate2c-checks";
+import { runG2e } from "./gate2e-checks";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract
@@ -1682,6 +1683,11 @@ export async function runGate2(
         host: { ...(prior?.host ?? {}), ...n },
       };
     }
+  }
+  if (groups.run.includes("g2e")) {
+    const g2e = await runG2e(outDir, ctx.expected);
+    checks.push(...g2e.checks);
+    Object.assign(legs, g2e.legs);
   }
   for (const group of notRun)
     if (group !== "g2a")

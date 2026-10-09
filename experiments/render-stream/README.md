@@ -1695,6 +1695,90 @@ Images, all under the run directory: `live/receiver/shots/seq-<n>.png` (11 steps
 - Fetch costs below one frame, parallel fetches, large payloads (the largest is 21 955 B),
   constrained links and cache eviction (gate 6); browser receivers and their HTTP caches (gate 7).
 
+## Gate 2e result (2026-10-09)
+
+G2e ([protocol/gate2-design.md](protocol/gate2-design.md) "G2e") passes: `pnpm render-stream:gate2
+-- --legs g2a,g2b,g2c,g2e` is 77/77 in `artifacts/render-stream/gate2/g2e-run1/`. The same build
+passed gate −1 28/28, gate 0 19/19 and gate 1 65/65 (all four groups), and `pnpm test` (2490
+passed), `pnpm exec tsc --noEmit` on `experiments/render-stream`, and every pure self-test
+(`self-test-rs0/1/2.ts`, `self-test-gate0.ts` 205/205, `self-test-gate1.ts` 402/402,
+`self-test-gate2.ts` 354/354, `make_golden.py --check` on `golden/`, `golden-1/` and `golden-2/`).
+All under the ignored `artifacts/`.
+
+What landed:
+
+- **`rs_ws` checks a bearer token on both routes.** `ServerConfig::auth_token` (empty disables the
+  check, exactly as before G2e) gates the WebSocket upgrade and every resource GET.
+  `constant_time_equals` (exposed in `rs_ws.h` for its own ctest) compares the presented token
+  against the configured one in time that depends only on the longer string's length, never on
+  where they first differ; the "Bearer " prefix check itself is allowed to short-circuit, since it
+  names no secret. A missing or wrong token is `401`, never a close code: the upgrade's `reject()`
+  closes the TCP connection after flushing the response (the same path every other rejected
+  handshake already took); a GET's `401` honours `Connection: keep-alive` like its `404`, since an
+  unauthorized request is not a broken connection.
+- **The host generates and evidences the token without ever logging it.** `GRC_LIVE_AUTH=token`
+  (default `none`) makes `entry.cpp` generate 32 random bytes as 64 lowercase hex
+  (`getrandom()`, independent of `rs2::generate_id()`'s 16-byte session/stream ids), write them to
+  `evidence/live-token` (mode 0600) before the listener starts, and declare the session's
+  `resources.auth: "bearer"` (the wire field G2b1 had already reserved). A rejected upgrade is a
+  new `rs_ws` event, `AuthRejected` — the connection never reaches `Opened`, so the hub has nothing
+  to track; `entry.cpp`'s `live_drain()` logs it directly to `stdout.log` as `live: 401
+unauthorized upgrade`, never to the structured hook log, since it carries no hash. A rejected GET
+  stays on the existing `HttpGet`/`http-get` path with `http_status: 401`.
+- **The receiver sends the token on both routes, or a deliberately wrong one.**
+  `RS_RECEIVER_TOKEN_FILE` is read once at startup; `RsLiveClient.open()` sets
+  `WebSocketPeer.handshake_headers` to `Authorization: Bearer <token>` before every
+  `connect_to_url()` call, including reconnects; `RsResourceFetcher` sends the same header on every
+  `HTTPClient.request()`. The new sabotage `RS_RECEIVER_SABOTAGE=wrong-http-token` corrupts only the
+  fetcher's copy (appends `-wrong`) after the WebSocket has already opened with the correct one, so
+  "correct on the upgrade, wrong on every GET" holds exactly as the contract asks.
+
+Legs (group `g2e`), each a fresh live host (`GRC_LIVE_AUTH=token`, the live timeline, S = 300,
+N = 60, quit 911) plus one receiver:
+
+| leg                       | class (expected) | why                                                                                                                                       |
+| ------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `live-auth`               | success          | as `live` (README "Gate 2c result") with tokens: 852 transactions, 9 fetches (31 181 B), 10 uploads (31 220 B), host 9 GETs / 0 errors    |
+| `sabotage-no-token`       | replay-failure   | `live-connect-failed` at the very first connect: `WebSocketPeer` never reaches `STATE_OPEN` (state 3, close code −1) after the host's 401 |
+| `sabotage-bad-http-token` | replay-failure   | `resource-unavailable` at seq 1: the first resource GET (needed by the initial transaction) answers HTTP 401                              |
+
+`sabotage-no-token`'s host log shows exactly one `live: 401 unauthorized upgrade` line and zero
+`http-get` 401s; `sabotage-bad-http-token`'s hook log shows exactly one `http-get` line with
+`http_status: 401` and zero upgrade rejections; `live-auth` shows neither. `token-not-logged`
+greps every file under each leg's directory (recordings, hook log, `stdout.log`, `applied.json`,
+shots) for that leg's own 64-character token and finds it nowhere but `evidence/live-token` — this
+was re-verified independently outside the checker (a raw-byte grep of the whole run directory,
+each leg's token excluded only from its own `evidence/live-token` file) with zero hits.
+
+### Findings
+
+- **Bearer-auth evidence needed a channel `rs_ws` didn't have.** Every existing rejected-handshake
+  path (wrong subprotocol, `max_clients`, a malformed request) produces no `Event` at all, which
+  is fine when nothing downstream needs to know why. Proving the _host_ actually answered 401 (not
+  just that the receiver failed to connect, which Godot's `WebSocketPeer` reports identically for
+  any handshake failure — `get_close_code()` stays unset) needed a dedicated event
+  (`AuthRejected`), following the exact precedent `HttpGet` set at G2c1/G2c2 for the same kind of
+  "the switch must stay exhaustive under `-Wswitch`" extension.
+- **Only the secret itself needs the constant-time property.** The "Bearer " prefix is a public
+  RFC 6750 constant; letting `std::string::compare` short-circuit on it leaks nothing a timing
+  attack could use, so `bearer_ok()` only pays for `constant_time_equals` over the token that
+  follows the prefix (or an empty string, when the header is missing or malformed).
+- **Node's WebSocket global cannot drive this test.** The WHATWG `WebSocket` constructor has no
+  header parameter (the same restriction browsers have), so `self-test-rs-ws.ts`'s bearer-auth
+  checks use `node:http`'s raw upgrade request directly: a 101 response arrives as an `upgrade`
+  event, anything else (401 included) as an ordinary `response` event. The Godot interop tests hit
+  the same wall from the other side — `WebSocketPeer` exposes no HTTP status for a failed
+  handshake — so `ws_selftest.gd`'s auth phase can only assert "never reaches `STATE_OPEN`"; the
+  host-side evidence above is what actually proves the status was 401.
+
+### What G2e does not prove
+
+- Non-loopback serving (gate 8, D13) and token transport without headers for a browser receiver
+  (gate 7, deferred by D13 too).
+- Token rotation while a connection is open, multiple valid tokens, or any authorization scheme
+  beyond one static bearer token per host process.
+- Canvas textures (G2d, landing in parallel); gate 2's full summary waits for it.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

@@ -549,7 +549,7 @@ at 60 frames per second each). It uses `lib/legs.sh` (`run_headless`, `run_captu
 
 ## Gate 2 files
 
-- `run-gate2.sh`: the orchestrator (`run_g2a`, `run_g2b`, `run_g2c`, `run_reference`,
+- `run-gate2.sh`: the orchestrator (`run_g2a`, `run_g2b`, `run_g2c`, `run_g2e`, `run_reference`,
   `g2_capture`, `g2_receiver`, `start_live_host`, `live_windows`, `g2c_receiver`, `g2c_leg`).
 - `lib/gate2-expected.ts`: the `render-stream-gate2-expected/1` types, `stepFrames2`,
   `stepOfFrame` (the census windows), `texel`, `sampleAt` and `synthesizeGate2(expected, step,
@@ -572,9 +572,19 @@ at 60 frames per second each). It uses `lib/legs.sh` (`run_headless`, `run_captu
   `unadvertisedGets`, `getsVsFetches`, `fetchesAfterApplied`, the live checkpoints (the animate
   variant's anim region against `synthesizeGate2` at the shot's frame), every g2c check,
   `classifyG2cLeg` and `runG2c`.
+- `lib/gate2e-checks.ts`: group g2e: `classifyG2eLeg` (host health plus the receiver's own
+  `applied.json` status -- no pixel or resource-traffic comparison, unlike g2b/g2c, since
+  gate2-design.md G2e's own checks ask for neither), `checkAuthRequired` (the host log shows
+  401s exactly for the sabotage requests), `checkTokenNotLogged` (a raw byte search of every file
+  under each g2e leg for its own host-generated token, `evidence/live-token` itself excepted) and
+  `runG2e`.
 - `check-gate2.ts`: writes `<out>/result.json` (`render-stream-gate2-report/1`) and exits non-zero
   unless `gate_passed`.
-- `test/self-test-gate2.ts`, `test/gate2b-fixture.ts`, `test/gate2c-fixture.ts`: see below.
+- `test/self-test-gate2.ts`, `test/gate2b-fixture.ts`, `test/gate2c-fixture.ts`: see below. g2e has
+  no fabricated-evidence self-test of its own (gate2-design.md's G2e "Files" list does not ask for
+  one): its three legs are thin, connection-level behavior over machinery g2b1/g2c2 already proved
+  byte-exact, so `run-gate2.sh --legs g2a,g2b,g2c,g2e` against a real host and receiver is the
+  check.
 
 ## Gate 2 legs and evidence under `--out`
 
@@ -607,6 +617,9 @@ at 60 frames per second each). It uses `lib/legs.sh` (`run_headless`, `run_captu
 | `sabotage-unpin`           | g2c   | `sabotage-unpin/{host,receiver}/`     | as `live-animate`, host `GRC_SABOTAGE=unpin` from frame 1                                                                                                                                                         |
 | `sabotage-drop-resource`   | g2c   | `sabotage-drop-resource/{host,…}/`    | host `drop-resource` @660 (step 6), headless receiver                                                                                                                                                             |
 | `sabotage-wrong-hash-live` | g2c   | `sabotage-wrong-hash-live/{host,…}/`  | host `wrong-hash` @660 (the store's corrupted copy served over HTTP), headless receiver                                                                                                                           |
+| `live-auth`                | g2e   | `live-auth/{host,receiver}/`          | host `GRC_LIVE_AUTH=token` (writes `evidence/live-token`) + rendered live receiver, `RS_RECEIVER_TOKEN_FILE` the host's token, shot windows for the 11 steps                                                      |
+| `sabotage-no-token`        | g2e   | `sabotage-no-token/{host,receiver}/`  | same host; headless receiver, no `RS_RECEIVER_TOKEN_FILE` -- the upgrade itself is refused (401)                                                                                                                  |
+| `sabotage-bad-http-token`  | g2e   | `sabotage-bad-http-token/{host,…}/`   | same host; headless receiver, `RS_RECEIVER_TOKEN_FILE` the host's token (correct on the upgrade) and `RS_RECEIVER_SABOTAGE=wrong-http-token` (wrong on every resource GET)                                        |
 
 Every fixture run writes `steps.jsonl` and `textures.jsonl` (`RS_FIXTURE_TEXTURE_LOG`). Every armed
 run writes `evidence/resources.jsonl` (the hook log) and `evidence/root.json`, whose additive
@@ -694,6 +707,22 @@ receiver's status and failure, received bytes against the tap, the applied list 
 received stream, a late join, missed shot windows), delivery-violation (gate 1's per-connection
 delivery report), resource-violation (redundant fetches or uploads, warm-cache fetches,
 unadvertised GETs, transform-only traffic), pixel-mismatch.
+
+## Gate 2 criteria (g2e)
+
+| Check              | Passes when                                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `auth-required`    | the host log shows a 401 upgrade rejection for `sabotage-no-token`, a 401 resource-GET for `sabotage-bad-http-token`, and neither for `live-auth`                                                            |
+| `token-not-logged` | each leg's own `evidence/live-token` string appears in no other file under that leg's directory (recordings, hook log, `stdout.log`, `applied.json`, shots -- a raw byte search, so a binary hit counts too) |
+| `leg-class-<leg>`  | `live-auth` success; `sabotage-no-token` replay-failure (`live-connect-failed`); `sabotage-bad-http-token` replay-failure (`resource-unavailable`)                                                           |
+
+Classification (`classifyG2eLeg`) is narrower than g2b/g2c's: host health (armed, stream closed
+cleanly, no texture-log-divergence) for capture-failure, and the receiver's own `applied.json`
+`status`/`end_seen`/`failure.reason` for replay-failure -- no pixel or resource-traffic comparison,
+since gate2-design.md G2e's "Checks" list asks for neither. The WebSocket-upgrade 401 is logged by
+entry.cpp's `live_drain()` to the host's `stdout.log` (`rs_ws`'s `AuthRejected` event carries no
+hash to put in the structured hook log); the resource-GET 401 is an ordinary `http-get` line in
+`evidence/resources.jsonl` with `http_status` 401, already covered by G2c2's logging path.
 
 ## Gate 2 self-test
 

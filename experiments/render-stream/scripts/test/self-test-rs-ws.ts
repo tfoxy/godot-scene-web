@@ -1,10 +1,16 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Node interop self-test for rs_ws (protocol/gate1-design.md G1c1) and its
-// HTTP GET resource serving (protocol/gate2-design.md G2c1), against the
+// Node interop self-test for rs_ws (protocol/gate1-design.md G1c1), its
+// HTTP GET resource serving (protocol/gate2-design.md G2c1) and its
+// bearer-token authorization (gate2-design.md D13, G2e), against the
 // test-only capture/test/rs_ws_echo.cpp binary built by
 // scripts/build-capture.sh. Uses Node's built-in WebSocket and fetch
 // (stable since Node 22; this repo pins Node 24, see mise.toml) rather than
-// the npm `ws` package, which is not in this workspace.
+// the npm `ws` package, which is not in this workspace. The bearer-auth
+// checks use Node's `http` module directly instead of the WebSocket global:
+// the WHATWG WebSocket constructor has no way to set a custom header (the
+// same restriction browsers have), so a raw upgrade request is the only way
+// to see the host's 401 at all -- a spec-compliant WebSocket client can only
+// ever observe "never opened".
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-rs-ws.ts \
@@ -28,10 +34,18 @@
 // render-stream-2.md "HTTP (live)" specifies; a third, well-formed but
 // unregistered hash gets 404.
 //
+// Also (gate2-design.md D13 "Pass criteria", Node interop), against a
+// second rs_ws_echo instance started with --token=<value>: a WebSocket
+// upgrade with no Authorization header, or with the wrong bearer token,
+// never receives a 101 (a plain HTTP response instead, status 401); the
+// correct token does upgrade. The same three cases over `fetch` for a
+// resource GET: 401, 401, 200 byte-exact.
+//
 // Exits non-zero if any assertion fails or the server never starts.
 
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -85,8 +99,9 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 
 async function startEcho(
   binary: string,
+  extraArgs: readonly string[] = [],
 ): Promise<{ child: EchoProcess; port: number }> {
-  const child = spawn(binary, ["--port=0"], {
+  const child = spawn(binary, ["--port=0", ...extraArgs], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdoutBuf = "";
@@ -119,6 +134,107 @@ function once<T extends Event>(target: WebSocket, type: string): Promise<T> {
   return new Promise((res) => {
     target.addEventListener(type, (event) => res(event as T), { once: true });
   });
+}
+
+// A raw (non-WebSocket-API) upgrade request: the only way from Node to observe the host's actual
+// HTTP response to a WS upgrade attempt, since the WHATWG WebSocket constructor has no way to set
+// a custom header. `upgraded` is true only for a 101 response (Node's http.ClientRequest emits
+// "upgrade" for that, never "response"); any other status -- 401 included -- is a normal
+// "response" event. Destroys the socket immediately either way: this probes the handshake, it
+// does not speak the WebSocket frame protocol afterward.
+function rawUpgradeProbe(
+  port: number,
+  authorization: string | undefined,
+): Promise<{ status: number; upgraded: boolean }> {
+  return new Promise((resolvePromise, reject) => {
+    const headers: Record<string, string> = {
+      Connection: "Upgrade",
+      Upgrade: "websocket",
+      "Sec-WebSocket-Version": "13",
+      "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+      "Sec-WebSocket-Protocol": "render-stream.1",
+    };
+    if (authorization !== undefined) headers.Authorization = authorization;
+    const req = httpRequest(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/render-stream",
+        method: "GET",
+        headers,
+      },
+      (res) => {
+        res.resume();
+        resolvePromise({ status: res.statusCode ?? 0, upgraded: false });
+      },
+    );
+    req.on("upgrade", (res, socket) => {
+      socket.destroy();
+      resolvePromise({ status: res.statusCode ?? 0, upgraded: true });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function testBearerAuth(binary: string): Promise<void> {
+  const TOKEN = "node-self-test-bearer-token";
+  const { child, port } = await startEcho(binary, [`--token=${TOKEN}`]);
+  try {
+    const noToken = await rawUpgradeProbe(port, undefined);
+    ok(
+      !noToken.upgraded && noToken.status === 401,
+      `WS upgrade without a token -> 401, not an upgrade (got status ${noToken.status}, upgraded ${noToken.upgraded})`,
+    );
+
+    const wrongToken = await rawUpgradeProbe(port, "Bearer wrong-token");
+    ok(
+      !wrongToken.upgraded && wrongToken.status === 401,
+      `WS upgrade with the wrong token -> 401, not an upgrade (got status ${wrongToken.status}, upgraded ${wrongToken.upgraded})`,
+    );
+
+    const rightToken = await rawUpgradeProbe(port, `Bearer ${TOKEN}`);
+    ok(
+      rightToken.upgraded && rightToken.status === 101,
+      `WS upgrade with the correct token -> 101 upgrade (got status ${rightToken.status}, upgraded ${rightToken.upgraded})`,
+    );
+
+    const url = `http://127.0.0.1:${port}${RESOURCE_PREFIX}${HASH_1MIB}`;
+    const getNoToken = await fetch(url);
+    ok(
+      getNoToken.status === 401,
+      `GET without a token -> 401 (got ${getNoToken.status})`,
+    );
+    await getNoToken.arrayBuffer();
+
+    const getWrongToken = await fetch(url, {
+      headers: { Authorization: "Bearer wrong-token" },
+    });
+    ok(
+      getWrongToken.status === 401,
+      `GET with the wrong token -> 401 (got ${getWrongToken.status})`,
+    );
+    await getWrongToken.arrayBuffer();
+
+    const getRightToken = await fetch(url, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    ok(
+      getRightToken.status === 200,
+      `GET with the correct token -> 200 (got ${getRightToken.status})`,
+    );
+    const body = new Uint8Array(await getRightToken.arrayBuffer());
+    ok(
+      bytesEqual(body, expectedResourcePayload(1 << 20)),
+      "GET with the correct token is byte-exact",
+    );
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise<void>((res) => {
+      child.on("exit", () => res());
+      setTimeout(res, 2000);
+    });
+  }
 }
 
 async function main(): Promise<void> {
@@ -254,6 +370,8 @@ async function main(): Promise<void> {
       setTimeout(res, 2000);
     });
   }
+
+  await testBearerAuth(BINARY);
 
   console.log(
     `\nself-test-rs-ws: ${failures === 0 ? "all checks passed" : `${failures} check(s) FAILED`}`,

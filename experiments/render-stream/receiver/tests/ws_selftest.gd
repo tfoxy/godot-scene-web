@@ -1,9 +1,11 @@
 extends SceneTree
 ## WebSocketPeer interop self-test for rs_ws (capture/src/rs_ws.h), against the
 ## test-only echo server capture/test/rs_ws_echo.cpp (protocol/gate1-design.md
-## G1c1 "Pass criteria", Godot interop).
+## G1c1 "Pass criteria", Godot interop), plus its bearer-token authorization
+## (protocol/gate2-design.md D13, G2e).
 ##
-##   RS_WS_ECHO_PORT=<port> mise exec -- godot --headless \
+##   RS_WS_ECHO_PORT=<port> RS_WS_ECHO_AUTH_PORT=<port> RS_WS_ECHO_AUTH_TOKEN=<token> \
+##     mise exec -- godot --headless \
 ##     --path experiments/render-stream/receiver --script res://tests/ws_selftest.gd
 ##
 ## rs_ws_echo's tiny test protocol (not part of render-stream/1): a text
@@ -11,15 +13,23 @@ extends SceneTree
 ## bytes, deterministic as byte[i] = i % 256; anything else is echoed back
 ## as text verbatim.
 ##
-## Two connections, run one after the other as a per-frame state machine
-## (connecting and receiving a multi-megabyte message both take more than
-## one frame):
+## Two connections to the plain (RS_WS_ECHO_PORT) instance, run one after the
+## other as a per-frame state machine (connecting and receiving a
+## multi-megabyte message both take more than one frame):
 ##   1. inbound_buffer_size raised to 16 MiB *before* connect_to_url: a text
 ##      echo, then an 8 MiB binary push checked byte-exact.
 ##   2. inbound_buffer_size left at its default 65535
 ##      (modules/websocket/wsl_peer.cpp:70-71): a 1 MiB push closes the
 ##      connection with 1009, recording the engine's own limit
 ##      (wsl_peer.cpp:405-410).
+##
+## Then three connections to the auth-enabled instance (RS_WS_ECHO_AUTH_PORT,
+## started with --token=RS_WS_ECHO_AUTH_TOKEN): no Authorization header, a
+## wrong bearer token, and the correct one. Godot's WebSocketPeer exposes no
+## HTTP status for a failed handshake, so the first two are checked as
+## "never reaches STATE_OPEN" (ready_state closed within the connect
+## timeout) -- the same observation receiver.gd's own connect-timeout
+## handling makes (replay-failure live-connect-failed). The third must open.
 ##
 ## Prints "[ws-selftest] ok" and quits 0, or prints each failure and quits 1.
 
@@ -30,12 +40,18 @@ const BIG_PUSH_BYTES: int = 8 * 1024 * 1024
 const OVERSIZE_PUSH_BYTES: int = 1 * 1024 * 1024
 const CONNECT_TIMEOUT_MS: int = 10000
 const REPLY_TIMEOUT_MS: int = 20000
+## G2e: how long a bad-token connection gets to prove it never opens.
+const AUTH_REJECT_TIMEOUT_MS: int = 5000
 
 var _failures: Array[String] = []
 var _port: int = 0
 var _state: String = "start"
 var _deadline_msec: int = 0
 var _peer: WebSocketPeer = null
+
+# G2e bearer-token phase.
+var _auth_port: int = 0
+var _auth_token: String = ""
 
 
 func _initialize() -> void:
@@ -44,6 +60,15 @@ func _initialize() -> void:
 		_fail_now("RS_WS_ECHO_PORT must be set to rs_ws_echo's bound port (got %s)" % port_str)
 		return
 	_port = port_str.to_int()
+	var auth_port_str: String = OS.get_environment("RS_WS_ECHO_AUTH_PORT")
+	if auth_port_str == "" or not auth_port_str.is_valid_int():
+		_fail_now("RS_WS_ECHO_AUTH_PORT must be set to the auth-enabled rs_ws_echo's bound port (got %s)" % auth_port_str)
+		return
+	_auth_port = auth_port_str.to_int()
+	_auth_token = OS.get_environment("RS_WS_ECHO_AUTH_TOKEN")
+	if _auth_token == "":
+		_fail_now("RS_WS_ECHO_AUTH_TOKEN must be set to the auth-enabled rs_ws_echo's --token value")
+		return
 	process_frame.connect(_tick)
 
 
@@ -74,6 +99,20 @@ func _new_peer(inbound_buffer_size: int) -> WebSocketPeer:
 		peer.inbound_buffer_size = inbound_buffer_size
 	peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
 	var url: String = "ws://127.0.0.1:%d%s" % [_port, PATH]
+	var err: Error = peer.connect_to_url(url)
+	_check(err == OK, "connect_to_url(%s) returned OK (got %s)" % [url, error_string(err)])
+	return peer
+
+
+## G2e: a peer connecting to the auth-enabled echo instance, optionally with an Authorization
+## header (set as WebSocketPeer.handshake_headers before connect_to_url, as RsLiveClient.open
+## does -- modules/websocket/wsl_peer.cpp:551-552).
+func _new_auth_peer(authorization: String) -> WebSocketPeer:
+	var peer := WebSocketPeer.new()
+	peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
+	if authorization != "":
+		peer.handshake_headers = PackedStringArray(["Authorization: " + authorization])
+	var url: String = "ws://127.0.0.1:%d%s" % [_auth_port, PATH]
 	var err: Error = peer.connect_to_url(url)
 	_check(err == OK, "connect_to_url(%s) returned OK (got %s)" % [url, error_string(err)])
 	return peer
@@ -171,8 +210,46 @@ func _tick() -> void:
 			if _peer.get_ready_state() == WebSocketPeer.STATE_CLOSED:
 				_check(_peer.get_close_code() == 1009,
 					"a message over the default inbound_buffer_size closes with 1009 (got %d)" % _peer.get_close_code())
-				_finish()
+				_peer = _new_auth_peer("")  # G2e: no Authorization header at all.
+				_deadline_msec = Time.get_ticks_msec() + AUTH_REJECT_TIMEOUT_MS
+				_state = "auth_no_token"
 			elif Time.get_ticks_msec() > _deadline_msec:
 				_fail_now("connection 2 did not close within %d ms of the oversize push" % REPLY_TIMEOUT_MS)
+		"auth_no_token":
+			_peer.poll()
+			var ready_state: int = _peer.get_ready_state()
+			if ready_state == WebSocketPeer.STATE_OPEN:
+				_fail_now("a connection with no Authorization header reached STATE_OPEN against the auth-enabled echo")
+			elif ready_state == WebSocketPeer.STATE_CLOSED:
+				_check(true, "no Authorization header never reaches STATE_OPEN (401 expected)")
+				_peer = _new_auth_peer("Bearer wrong-token")
+				_deadline_msec = Time.get_ticks_msec() + AUTH_REJECT_TIMEOUT_MS
+				_state = "auth_wrong_token"
+			elif Time.get_ticks_msec() > _deadline_msec:
+				_fail_now("a connection with no Authorization header neither opened nor closed within %d ms" % AUTH_REJECT_TIMEOUT_MS)
+		"auth_wrong_token":
+			_peer.poll()
+			var ready_state_2: int = _peer.get_ready_state()
+			if ready_state_2 == WebSocketPeer.STATE_OPEN:
+				_fail_now("a connection with the wrong bearer token reached STATE_OPEN against the auth-enabled echo")
+			elif ready_state_2 == WebSocketPeer.STATE_CLOSED:
+				_check(true, "a wrong bearer token never reaches STATE_OPEN (401 expected)")
+				_peer = _new_auth_peer("Bearer " + _auth_token)
+				_deadline_msec = Time.get_ticks_msec() + CONNECT_TIMEOUT_MS
+				_state = "auth_correct_token"
+			elif Time.get_ticks_msec() > _deadline_msec:
+				_fail_now("a connection with the wrong bearer token neither opened nor closed within %d ms" % AUTH_REJECT_TIMEOUT_MS)
+		"auth_correct_token":
+			_peer.poll()
+			var ready_state_3: int = _peer.get_ready_state()
+			if ready_state_3 == WebSocketPeer.STATE_OPEN:
+				_check(_peer.get_selected_protocol() == SUBPROTOCOL,
+					"auth connection subprotocol (got %s)" % _peer.get_selected_protocol())
+				_peer.close(1000, "self-test done")
+				_finish()
+			elif ready_state_3 == WebSocketPeer.STATE_CLOSED:
+				_fail_now("a connection with the correct bearer token closed before opening (code %d)" % _peer.get_close_code())
+			elif Time.get_ticks_msec() > _deadline_msec:
+				_fail_now("a connection with the correct bearer token did not open within %d ms" % CONNECT_TIMEOUT_MS)
 		_:
 			_fail_now("unknown state %s" % _state)

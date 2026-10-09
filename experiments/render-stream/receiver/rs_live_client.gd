@@ -24,14 +24,22 @@ var url: String = ""
 var inbound_buffer_bytes: int = 0
 
 
-## Starts connecting. Returns connect_to_url()'s error.
-func open(target_url: String, inbound_bytes: int) -> Error:
+## Starts connecting. `token` (G2e, gate2-design.md D13), when non-empty, is sent as
+## "Authorization: Bearer <token>" on the upgrade request (WebSocketPeer.handshake_headers,
+## modules/websocket/wsl_peer.cpp:551-552), set before connect_to_url like inbound_buffer_size --
+## both are fixed at handshake time. A missing or wrong token gets HTTP 401 from the host, which
+## this peer surfaces only as never reaching STATE_OPEN (Godot's WebSocketPeer exposes no HTTP
+## status for a failed handshake); the caller's existing connect-timeout handling already covers
+## that as replay-failure live-connect-failed. Returns connect_to_url()'s error.
+func open(target_url: String, inbound_bytes: int, token: String = "") -> Error:
 	url = target_url
 	inbound_buffer_bytes = inbound_bytes
 	peer = WebSocketPeer.new()
 	# Before connect_to_url: the buffer (and wslay's message cap) is fixed at handshake time.
 	peer.inbound_buffer_size = inbound_bytes
 	peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
+	if token != "":
+		peer.handshake_headers = PackedStringArray(["Authorization: Bearer " + token])
 	return peer.connect_to_url(target_url)
 
 

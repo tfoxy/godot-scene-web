@@ -86,8 +86,21 @@
 // (`pin`, `retire`, `http-get`), and the retained bytes count against the
 // budget. Sabotages unpin and drop-resource (both need GRC_LIVE_LISTEN) act
 // there, and wrong-hash serves the store's corrupted copy.
+//
+// Authorization (G2e, gate2-design.md D13): GRC_LIVE_AUTH is `none` (default) or `token`, read
+// only with GRC_LIVE_LISTEN. `token` generates 32 random bytes as 64 lowercase hex, writes them
+// to evidence/live-token (mode 0600, refused as resource-store-missing-equivalent
+// `live-token-unwritable` without GRC_EVIDENCE_DIR), declares the session's
+// `resources.auth: "bearer"`, and requires it on the WebSocket upgrade and on every resource GET
+// (rs_ws.h ServerConfig::auth_token). A rejected upgrade is logged (never the token itself) as an
+// AuthRejected event; a rejected GET is an ordinary HttpGet event with http_status 401, already
+// covered by the existing hook-log path.
+
+#include <sys/random.h>
+#include <sys/stat.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -253,6 +266,32 @@ void log_line(const std::string &text) {
 std::string env_string(const char *name) {
   const char *value = std::getenv(name);
   return value != nullptr ? std::string(value) : std::string();
+}
+
+// G2e (gate2-design.md D13, "Environment"): 32 random bytes as 64 lowercase hex characters, via
+// getrandom() -- independent of rs2::generate_id()'s 16-byte session/stream ids, which are not
+// secrets and need no particular length.
+std::string generate_live_token() {
+  unsigned char buf[32] = {};
+  std::size_t got = 0;
+  while (got < sizeof(buf)) {
+    const ssize_t n = ::getrandom(buf + got, sizeof(buf) - got, 0);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      break;  // leaves the remaining bytes zero rather than looping forever
+    }
+    got += static_cast<std::size_t>(n);
+  }
+  static const char *const hex = "0123456789abcdef";
+  std::string out;
+  out.reserve(sizeof(buf) * 2);
+  for (unsigned char b : buf) {
+    out.push_back(hex[(b >> 4) & 0xF]);
+    out.push_back(hex[b & 0xF]);
+  }
+  return out;
 }
 
 // Writes `text` to the evidence directory, or to stdout when there is none.
@@ -706,11 +745,15 @@ void stream_start() {
   std::string live_host;
   uint16_t live_port = 0;
   rs2::LiveConfig live_config;
+  // G2e: empty/None unless GRC_LIVE_AUTH=token successfully generates and writes one below.
+  std::string live_auth_token;
+  rs2::Auth live_auth = rs2::Auth::None;
   bool live_ok = sabotage.ok && !g_live.listen.empty();
   if (live_ok) {
     std::string why;
     const char *tap = std::getenv("GRC_LIVE_TAP_DIR");
     live_config.tap_dir = tap != nullptr ? std::string(tap) : std::string();
+    const std::string auth_mode = env_string("GRC_LIVE_AUTH");
     if (!parse_listen(g_live.listen, &live_host, &live_port, &why)) {
       live_ok = false;
     } else if (!env_positive("GRC_LIVE_MAX_MESSAGE_BYTES", 16u << 20,
@@ -729,6 +772,28 @@ void stream_start() {
       live_ok = false;
       why = "GRC_RESOURCE_INLINE_MAX_BYTES above " + std::to_string(kLiveInlineMaxBytes) +
             " with GRC_LIVE_LISTEN (inline over live is capped at 1 MiB)";
+    } else if (!auth_mode.empty() && auth_mode != "none" && auth_mode != "token") {
+      live_ok = false;
+      why = "GRC_LIVE_AUTH must be none or token (got " + auth_mode + ")";
+    }
+    // G2e: generated only once every other live setting is known good, so a usage error never
+    // burns a token or writes evidence/live-token for a listener that will not actually start.
+    if (live_ok && auth_mode == "token") {
+      if (!g_state.evidence_ready) {
+        live_ok = false;
+        why = "GRC_LIVE_AUTH=token needs GRC_EVIDENCE_DIR (the token is written to evidence/live-token)";
+      } else {
+        live_auth_token = generate_live_token();
+        const std::string token_path = path_join(g_state.evidence_dir, "live-token");
+        if (!write_file(token_path, live_auth_token)) {
+          live_ok = false;
+          why = "cannot write " + token_path;
+          live_auth_token.clear();
+        } else {
+          ::chmod(token_path.c_str(), 0600);
+          live_auth = rs2::Auth::Bearer;
+        }
+      }
     }
     if (!live_ok) {
       live_decided("refused", why);
@@ -953,6 +1018,7 @@ void stream_start() {
     server_config.port = live_port;
     server_config.max_clients = 1;  // D5: one receiver at a time (a second gets 503)
     server_config.subprotocol = "render-stream.2";  // render-stream-2.md "Live transport"
+    server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();
     std::string error;
@@ -981,6 +1047,7 @@ void stream_start() {
       // G2c2: every live connection follows the configured policy; out-of-band payloads come
       // from GET /resources/sha256/<hash> on this listener.
       tmpl.resources = rs2::resources_info(g_stream.policy, rs2::Fetch::Http);
+      tmpl.resources.auth = live_auth;  // G2e: "bearer" exactly when GRC_LIVE_AUTH=token.
       g_live.hub = std::make_unique<rs2::Hub>(g_live.transport.get(), live_config, tmpl);
       live_decided("listening", std::string());
     }
@@ -1001,6 +1068,7 @@ void stream_start() {
            " live=" +
            (g_live.hub != nullptr ? g_live.address + ":" + std::to_string(g_live.port)
                                   : std::string("<off>")) +
+           " auth=" + (live_auth == rs2::Auth::Bearer ? std::string("bearer") : std::string("none")) +
            " sabotage=" + sabotage_text(sabotage.config) + " resources=" +
            (g_stream.resources_file != nullptr ? g_stream.resources_path : std::string("<off>")));
 }
@@ -1028,6 +1096,14 @@ void live_drain(uint64_t frame) {
       ctx.main_thread = false;
       rs::resource_log().serve_event(ctx, "http-get", is_lower_hex64(event.hash) ? event.hash : "",
                                      event.bytes, nullptr, conn, event.http_status, false);
+      continue;
+    }
+    if (event.kind == live::Event::AuthRejected) {
+      // G2e: a WebSocket upgrade refused for a missing or wrong bearer token. The connection
+      // never reached Opened, so the hub has nothing to track; log the 401 itself (never the
+      // token, which this event does not even carry) so a sabotage leg has host-side evidence
+      // that the server actually answered 401, not merely that the receiver failed to connect.
+      log_line("live: 401 unauthorized upgrade (missing or wrong bearer token)");
       continue;
     }
     g_live.hub->on_event(rs2::to_live_event(event), frame);

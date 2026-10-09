@@ -22,6 +22,11 @@ extends RefCounted
 ##
 ## `delay_ms` (RS_RECEIVER_FETCH_DELAY_MS) is an injected wait before each fetch, timed against
 ## Time.get_ticks_msec(), never a blocked main loop. Nothing here touches the RenderingServer.
+##
+## `auth_token` (G2e, gate2-design.md D13), when non-empty, is sent as
+## "Authorization: Bearer <auth_token>" on every GET. A missing or wrong token gets HTTP 401 from
+## the host, which falls straight through the existing "non-200 status" rule above into
+## resource-unavailable -- no separate handling needed.
 
 const READ_CHUNK: int = 65536
 ## A bound on the polls one poll() call makes (each one non-blocking).
@@ -33,6 +38,7 @@ var port: int = 0
 var path_prefix: String = "/resources/sha256/"
 var timeout_ms: int = 10000
 var delay_ms: int = 0
+var auth_token: String = ""
 
 var results: Array[Dictionary] = []
 var error: String = ""
@@ -46,12 +52,13 @@ var _deadline_msec: int = 0
 var _connects: int = 0
 
 
-func _init(target_host: String, target_port: int, prefix: String, timeout: int, delay: int) -> void:
+func _init(target_host: String, target_port: int, prefix: String, timeout: int, delay: int, token: String = "") -> void:
 	host = target_host
 	port = target_port
 	path_prefix = prefix
 	timeout_ms = timeout
 	delay_ms = delay
+	auth_token = token
 
 
 ## Queues `hashes` (fetched in this order). Clears the previous results.
@@ -135,7 +142,10 @@ func _issue() -> void:
 func _request() -> void:
 	var hash: String = _current["hash"]
 	# The headers argument is not optional in 4.5.1 (a parse error without it).
-	var err: Error = _client.request(HTTPClient.METHOD_GET, path_prefix + hash, PackedStringArray())
+	var headers := PackedStringArray()
+	if auth_token != "":
+		headers.append("Authorization: Bearer " + auth_token)
+	var err: Error = _client.request(HTTPClient.METHOD_GET, path_prefix + hash, headers)
 	if err != OK:
 		_fail("GET %s%s: request() %s" % [path_prefix, hash, error_string(err)])
 		return
