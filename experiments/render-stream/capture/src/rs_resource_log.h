@@ -110,13 +110,19 @@ class ResourceLog {
   void serve_event(const TapContext &ctx, const char *op, const std::string &hash,
                    std::uint64_t payload_bytes, const char *reason, std::uint64_t conn,
                    std::int64_t http_status, bool sabotage);
-  void canvas_texture_create(const TapContext &ctx, std::uint64_t rid);
+  // `omitted` (G2d, as the other texture taps): the omit-op sabotage dropped this call; the
+  // registry is left unchanged and the line is marked "sabotage":true,"omitted":true.
+  // A create returning RID(), or a set_* on RID() (a headless host, whose dummy storage never
+  // allocates a canvas texture), spends no id and is logged with status "unsupported", reason
+  // "canvas-texture-headless" (protocol/canvas-texture-headless.md).
+  void canvas_texture_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
   void canvas_texture_set_channel(const TapContext &ctx, std::uint64_t canvas_texture,
-                                  std::int32_t channel, std::uint64_t texture);
+                                  std::int32_t channel, std::uint64_t texture,
+                                  bool omitted = false);
   void canvas_texture_set_filter(const TapContext &ctx, std::uint64_t canvas_texture,
-                                 std::int32_t filter);
+                                 std::int32_t filter, bool omitted = false);
   void canvas_texture_set_repeat(const TapContext &ctx, std::uint64_t canvas_texture,
-                                 std::int32_t repeat);
+                                 std::int32_t repeat, bool omitted = false);
   void canvas_item_set_default_texture_filter(const TapContext &ctx, std::uint64_t item,
                                               std::int32_t filter);
   void canvas_item_set_default_texture_repeat(const TapContext &ctx, std::uint64_t item,
@@ -153,6 +159,9 @@ class ResourceLog {
   };
 
   void emit(const Line &line);
+  // G2d: a canvas_texture_* call on RID() (a headless host) -- status unsupported, reason
+  // canvas-texture-headless, no id. Caller holds the mutex.
+  void null_canvas_texture(Line *line);
   Entry *find(std::uint64_t rid);
 
   mutable std::mutex mutex_;

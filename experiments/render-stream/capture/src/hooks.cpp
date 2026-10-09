@@ -1447,8 +1447,8 @@ void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
 // Counted, captured into counters.json and written to the texture hook log
 // (G2a); since G2b2 (render-stream/2) the texture, filter and repeat hooks are
 // mirror taps too, and canvas_item_add_lcd_texture_rect_region is an
-// unsupported command (/2 declares it in observed_unsupported_ops). The canvas
-// texture hooks stay count-and-log until G2d.
+// unsupported command (/2 declares it in observed_unsupported_ops). Since G2d
+// the four canvas_texture_* hooks are mirror taps too (gate2-design.md Q3).
 
 RID hook_texture_2d_placeholder_create(void *self) {
   bump(kTexture2dPlaceholderCreate);
@@ -1499,7 +1499,12 @@ RID hook_canvas_texture_create(void *self) {
   bump(kCanvasTextureCreate);
   const RID result = original<FnCreate>(kCanvasTextureCreate)(self);
   log_entry(&g_canvas_texture_creates, rids(result.id));
-  resources().canvas_texture_create(tap_context(), result.id);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const bool omit = omitted("canvas_texture_create");
+  if (streaming() && !omit) {
+    mirror().canvas_texture_create(result.id, current_frame());
+  }
+  resources().canvas_texture_create(tap_context(), result.id, omit);
   return result;
 }
 
@@ -1514,21 +1519,37 @@ void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t cha
   log_entry(&g_canvas_texture_channels, pod(key));
   original<FnCanvasTextureSetChannel>(kCanvasTextureSetChannel)(self, canvas_texture, channel,
                                                                 texture);
-  resources().canvas_texture_set_channel(tap_context(), canvas_texture.id, channel, texture.id);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const bool omit = omitted("canvas_texture_set_channel");
+  if (streaming() && !omit) {
+    mirror().canvas_texture_set_channel(canvas_texture.id, channel, texture.id, current_frame());
+  }
+  resources().canvas_texture_set_channel(tap_context(), canvas_texture.id, channel, texture.id,
+                                         omit);
 }
 
 void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int32_t filter) {
   bump(kCanvasTextureSetTextureFilter);
   log_entry(&g_canvas_texture_filters, item_value(canvas_texture, filter));
   original<FnRidEnum>(kCanvasTextureSetTextureFilter)(self, canvas_texture, filter);
-  resources().canvas_texture_set_filter(tap_context(), canvas_texture.id, filter);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const bool omit = omitted("canvas_texture_set_texture_filter");
+  if (streaming() && !omit) {
+    mirror().canvas_texture_set_filter(canvas_texture.id, filter, current_frame());
+  }
+  resources().canvas_texture_set_filter(tap_context(), canvas_texture.id, filter, omit);
 }
 
 void hook_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int32_t repeat) {
   bump(kCanvasTextureSetTextureRepeat);
   log_entry(&g_canvas_texture_repeats, item_value(canvas_texture, repeat));
   original<FnRidEnum>(kCanvasTextureSetTextureRepeat)(self, canvas_texture, repeat);
-  resources().canvas_texture_set_repeat(tap_context(), canvas_texture.id, repeat);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const bool omit = omitted("canvas_texture_set_texture_repeat");
+  if (streaming() && !omit) {
+    mirror().canvas_texture_set_repeat(canvas_texture.id, repeat, current_frame());
+  }
+  resources().canvas_texture_set_repeat(tap_context(), canvas_texture.id, repeat, omit);
 }
 
 void hook_set_default_texture_filter(void *self, RID item, int32_t filter) {

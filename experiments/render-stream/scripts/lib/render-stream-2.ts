@@ -43,8 +43,14 @@ export type UnsupportedReason =
   | "draw-index-tie"
   | "degenerate-host-size"
   | "unknown-texture"
-  | "unsupported-texture";
-export type UnsupportedCmdReason = "unsupported-op" | "unknown-texture";
+  | "unsupported-texture"
+  | "canvas-texture-headless";
+/** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
+ * storage never allocates a canvas texture (protocol/canvas-texture-headless.md). */
+export type UnsupportedCmdReason =
+  | "unsupported-op"
+  | "unknown-texture"
+  | "canvas-texture-headless";
 export type SabotageKind =
   | "freeze-frame"
   | "omit-update"
@@ -158,6 +164,9 @@ export interface SessionMeta {
     ops: string[];
     item_state: string[];
     resources: string[];
+    /** G2d: resource kinds the host refuses, sorted by resource (a headless host:
+     * canvas_texture, canvas-texture-headless). */
+    unsupported_resources: Array<{ resource: string; reason: string }>;
     observed_unsupported_ops: string[];
     unobserved: string[];
     publication: string;
@@ -353,6 +362,7 @@ const FEATURES_KEYS = [
   "ops",
   "item_state",
   "resources",
+  "unsupported_resources",
   "observed_unsupported_ops",
   "unobserved",
   "publication",
@@ -487,7 +497,13 @@ const TEXTURE_REASONS = [
   "unknown-texture",
   "canvas-texture-channel",
 ] as const;
-const UNSUPPORTED_CMD_REASONS = ["unsupported-op", "unknown-texture"] as const;
+const UNSUPPORTED_CMD_REASONS = [
+  "unsupported-op",
+  "unknown-texture",
+  "canvas-texture-headless",
+] as const;
+const UNSUPPORTED_RESOURCE_KEYS = ["resource", "reason"];
+const UNSUPPORTED_RESOURCE_REASONS = ["canvas-texture-headless"] as const;
 const SESSION_UNSUPPORTED_REASONS = [
   "non-root-viewport",
   "extra-canvas",
@@ -499,6 +515,7 @@ const ITEM_UNSUPPORTED_REASONS = [
   "draw-index-tie",
   "unknown-texture",
   "unsupported-texture",
+  "canvas-texture-headless",
 ] as const;
 
 // render-stream-2.md "Texture payload": pixel size (bytes/texel) of the permitted uncompressed
@@ -548,6 +565,27 @@ function isInt(value: unknown): value is number {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+/** features.unsupported_resources (G2d): {resource, reason} objects, sorted strictly ascending by
+ * resource (byte order), each reason a known one. */
+function isUnsupportedResources(
+  value: unknown,
+): value is Array<{ resource: string; reason: string }> {
+  if (!Array.isArray(value)) return false;
+  let last: string | null = null;
+  for (const entry of value) {
+    if (
+      !isPlainObject(entry) ||
+      !hasExactKeys(entry, UNSUPPORTED_RESOURCE_KEYS) ||
+      typeof entry.resource !== "string" ||
+      !isOneOf(entry.reason, UNSUPPORTED_RESOURCE_REASONS)
+    )
+      return false;
+    if (last !== null && !(last < entry.resource)) return false;
+    last = entry.resource;
+  }
+  return true;
 }
 
 function isIntArray(value: unknown): value is number[] {
@@ -781,6 +819,7 @@ function checkSessionSchema(
     !isStringArray(features.ops) ||
     !isStringArray(features.item_state) ||
     !isStringArray(features.resources) ||
+    !isUnsupportedResources(features.unsupported_resources) ||
     !isStringArray(features.observed_unsupported_ops) ||
     !isStringArray(features.unobserved) ||
     typeof features.publication !== "string"
@@ -2102,8 +2141,9 @@ function checkResolvedInvariants(
         if (!seenOps.has(command.name)) {
           seenOps.add(command.name);
           const reason: UnsupportedReason =
-            command.reason === "unknown-texture"
-              ? "unknown-texture"
+            command.reason === "unknown-texture" ||
+            command.reason === "canvas-texture-headless"
+              ? command.reason
               : "unsupported-op";
           actualUnsupportedOps.set(`${item.id}:${command.name}`, reason);
         }
@@ -2170,7 +2210,8 @@ function checkResolvedInvariants(
     lastOp = entry.op;
     if (
       entry.reason === "unsupported-op" ||
-      entry.reason === "unknown-texture"
+      entry.reason === "unknown-texture" ||
+      entry.reason === "canvas-texture-headless"
     ) {
       const pair = `${entry.item}:${entry.op}`;
       const expected = actualUnsupportedOps.get(pair);

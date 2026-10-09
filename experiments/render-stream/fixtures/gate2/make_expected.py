@@ -55,7 +55,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "expected.json")
 
 S, N, SETTLE = 1, 10, 7
-LAST_STEP = 10
+LAST_STEP = 11
 QUIT = S + N * LAST_STEP + SETTLE + 4
 
 WHITE = [255, 255, 255, 255]
@@ -72,6 +72,7 @@ MARKER = [
     [102, 153, 204, 255],
     [204, 153, 102, 255],
     [51, 153, 51, 255],
+    [255, 51, 255, 255],
 ]
 
 
@@ -165,6 +166,13 @@ VARIANT_TEXTURE_OBJECTS = {
         "U1": {"kind": "image", "created_step": 0, "thread": "main", "contents": [[0, "U1"]], "status": "unsupported", "reason": "unsupported-format"},
         "PRE": {"kind": "image", "created_step": None, "thread": "main", "contents": [[0, "PRE"]], "unknown": True},
     },
+    # G2d: step 11's CanvasTexture (diffuse A, nearest, repeat enabled). On a headless host it is
+    # never allocated and its draw is refused (canvas-texture-headless,
+    # protocol/canvas-texture-headless.md); on a rendered host it is a canvas table entry.
+    "canvas": {"CT": {"kind": "canvas", "created_step": 11, "thread": "main", "contents": []}},
+    "canvas-normal": {
+        "CT": {"kind": "canvas", "created_step": 11, "thread": "main", "contents": [], "status": "unsupported", "reason": "canvas-texture-channel"},
+    },
 }
 
 
@@ -181,7 +189,8 @@ def g_offset(step):
 
 
 def canvas_offset(step):
-    return (8, 4) if step == 10 else (0, 0)
+    # Step 10's canvas_transform is never reset, so it still applies at step 11 (G2d).
+    return (8, 4) if step >= 10 else (0, 0)
 
 
 def sample(texture, src, flip_h=False, flip_v=False, transpose=False, tile=False, repeat="disabled"):
@@ -215,6 +224,10 @@ def regions(step):
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        # SC (G2d): Sprite2D at (200,120), region_enabled with a 64x64 region_rect, scale 1.125 --
+        # its on-screen rect is exactly (200,120,72,72) (64*1.125). A tight box, unlike some other
+        # named cells (see S1/S2's 80x80), since the pixel check carves comparisons out by name.
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48],
     }
     cx, cy = canvas_offset(step)
@@ -260,6 +273,13 @@ def draws(step):
         out.append({"name": "SD", "rect_px": [40, 120, 32, 32], "sample": sample("D", (0, 0, 16, 16))})
     if step >= 9:
         out.append({"name": "MM", "rect_px": [120, 120, 16, 16], "sample": sample("M", (0, 0, 64, 64))})
+    # SC (step 11): region_rect (0,0,64,64) on A2 (32x32), tiled 2x2 under repeat ENABLED, nearest,
+    # at scale 1.125 (64x64 -> 72x72, magnified like S1/S2's 2x, so nearest and linear sampling
+    # differ: sabotage-omit-canvas-filter). The main fixture sets nearest/enabled on the item; the
+    # canvas variants (G2d) get the same pixels from a CanvasTexture's own filter and repeat while
+    # the item says linear/disabled.
+    if step >= 11:
+        out.append({"name": "SC", "rect_px": [200, 120, 72, 72], "sample": sample(a, (0, 0, 64, 64), repeat="enabled")})
     out.append({"name": "Marker", "rect_px": [592, 16, 32, 32], "rgba8": MARKER[step]})
     # RAW1/RAW2 (draw indices 1000/1001, painted last): placeholders at 8x; P1 freed at step 8
     # draws white; P2 replaced by E at step 9.
@@ -309,7 +329,7 @@ ENGINE_TEXTURES = [
     }
 ]
 
-ITEMS_AT_READY = ["G", "S1", "S2", "TR", "DR", "S3", "BG", "SB", "SD", "MM", "Marker"]
+ITEMS_AT_READY = ["G", "S1", "S2", "TR", "DR", "S3", "BG", "SB", "SD", "MM", "SC", "Marker"]
 
 
 def census(step):
@@ -340,6 +360,11 @@ def census(step):
         c["texture_2d_create"] = 1  # E
         c["texture_replace"] = 1  # P2 <- E
         c["canvas_item_set_default_texture_filter"] = 1  # MM
+    elif step == 11:
+        # SC's own filter and repeat (nearest/enabled; the canvas variants' linear/disabled are one
+        # call each too, and their CanvasTexture calls are the variants' census_extra).
+        c["canvas_item_set_default_texture_filter"] = 1  # SC
+        c["canvas_item_set_default_texture_repeat"] = 1  # SC
     return dict(sorted(c.items()))
 
 
@@ -392,6 +417,13 @@ def invariants(step):
             {"kind": "tex_absent", "textures": ["E"]},
             {"kind": "filter", "item": "MM", "value": "linear_mipmaps"},
         ]
+    if step == 11:
+        # The main fixture's SC; the canvas variants' CT is checked by checkCanvasTextureWire on
+        # the rendered canvas-host capture (gate2-design.md G2d).
+        inv += [
+            {"kind": "filter", "item": "SC", "value": "nearest"},
+            {"kind": "repeat", "item": "SC", "value": "enabled"},
+        ]
     return inv
 
 
@@ -420,6 +452,9 @@ def receiver_resources(step):
         r["fetched"] = 2  # E, M
         r["created"] = 1  # M, first named by MM
         r["replaced"] = 1  # P2: placeholder -> image
+    elif step == 11:
+        # SC names A, resident since step 0: nothing to fetch or upload.
+        pass
     return r
 
 
@@ -427,7 +462,19 @@ def variant(name):
     steps = []
     for step in range(LAST_STEP + 1):
         cx, cy = canvas_offset(step)
-        if name == "animate":
+        if name in ("canvas", "canvas-normal"):
+            # Same pixels as the main fixture (SC's nearest/enabled come from CT instead);
+            # canvas-normal's SC draw is refused (unsupported-texture), which the checks compare
+            # by region. Census: CT's create, diffuse (and normal), filter and repeat.
+            d, r, c = [], {}, {}
+            if step == 11:
+                c = {
+                    "canvas_texture_create": 1,
+                    "canvas_texture_set_channel": 2 if name == "canvas-normal" else 1,
+                    "canvas_texture_set_texture_filter": 1,
+                    "canvas_texture_set_texture_repeat": 1,
+                }
+        elif name == "animate":
             d = [{"name": "ANIM", "rect_px": shift([280, 120, 32, 32], cx, cy), "sample": sample("ANIM", (0, 0, 8, 8))}]
             r = {"anim": shift([272, 112, 48, 48], cx, cy)}
             # ANIM is update()d at every frame of the step's window (the step's frames from its
@@ -481,7 +528,7 @@ def build():
         "textures": TEXTURES,
         "texture_objects": TEXTURE_OBJECTS,
         "steps": steps,
-        "variants": {"animate": variant("animate"), "unsupported": variant("unsupported")},
+        "variants": {name: variant(name) for name in ("animate", "unsupported", "canvas", "canvas-normal")},
     }
 
 

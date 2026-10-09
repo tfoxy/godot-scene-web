@@ -82,8 +82,9 @@ Key order (line breaks for reading only):
               "fetch":"http"|"directory"|"none",
               "http_path":"/resources/sha256/"|null,
               "auth":"none"|"bearer"},
- "features":{"ops":[...],"item_state":[...],"resources":[...],"observed_unsupported_ops":[...],
-             "unobserved":[...],"publication":"snapshot-or-patch"},
+ "features":{"ops":[...],"item_state":[...],"resources":[...],
+             "unsupported_resources":[{"resource":<str>,"reason":<str>}...],
+             "observed_unsupported_ops":[...],"unobserved":[...],"publication":"snapshot-or-patch"},
  "sabotage":null | {"kind":<kind>,"frame":<int>=1>,"op":<str>|null},
  "blocks":[clear_color, root_canvas_xform, host_visible_rect, host_final_xform, content_scale_factor]}
 ```
@@ -110,7 +111,12 @@ Key order (line breaks for reading only):
 - `ops`: `["add_rect","add_texture_rect","add_texture_rect_region"]`.
 - `item_state`: /1's list plus `"texture_filter"` and `"texture_repeat"`.
 - `resources` (new key): `["texture_2d","texture_2d_placeholder"]`, plus `"canvas_texture"` from
-  G2d on.
+  G2d on, on a host with a real renderer only.
+- `unsupported_resources` (new key, G2d): the resource kinds this host refuses, each
+  `{"resource","reason"}`, sorted by `resource`. A headless host (`engine.display_server`
+  `headless`) lists `{"resource":"canvas_texture","reason":"canvas-texture-headless"}`: its dummy
+  storage never allocates a canvas texture ([canvas-texture-headless.md](canvas-texture-headless.md)).
+  Otherwise `[]`. The only reason so far is `canvas-texture-headless`.
 - `observed_unsupported_ops`: /1's list without `canvas_item_add_texture_rect` and
   `canvas_item_add_texture_rect_region`, plus `canvas_item_add_lcd_texture_rect_region` (hooked from
   calibrator 5 on).
@@ -169,7 +175,8 @@ is `default`.
 {"op":"add_rect","aa":<bool>,"f":<int>}
 {"op":"add_texture_rect","tex":<int>|null,"tile":<bool>,"transpose":<bool>,"f":<int>}
 {"op":"add_texture_rect_region","tex":<int>|null,"transpose":<bool>,"clip_uv":<bool>,"f":<int>}
-{"op":"unsupported","name":<RenderingServer method name>,"reason":"unsupported-op"|"unknown-texture"}
+{"op":"unsupported","name":<RenderingServer method name>,
+ "reason":"unsupported-op"|"unknown-texture"|"canvas-texture-headless"}
 ```
 
 | op                        | floats in `cmd_f32` | layout                                                             |
@@ -187,6 +194,10 @@ is `default`.
   capture never saw created: a texture that existed before arming, a proxy, layered or viewport
   texture, or a canvas texture without the G2d hooks. It keeps its place in the command order and
   uses no floats.
+- `unsupported` with reason `canvas-texture-headless` (G2d) is a texture draw naming `RID()` on a
+  host that declares `canvas_texture` in `unsupported_resources`: there a `CanvasTexture`'s RID is
+  `RID()`, so such a draw cannot be told from a null texture, and it is refused rather than
+  replayed as the white default. It keeps its place and uses no floats, like `unknown-texture`.
 - `f` is the index of the command's first float in `cmd_f32`. Over the commands that have floats,
   taken in item order and then command order, each `f` is the previous `f` plus the previous
   command's float count, starting at 0 (`cmd-offset`).

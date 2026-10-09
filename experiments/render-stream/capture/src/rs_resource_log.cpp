@@ -488,9 +488,39 @@ void ResourceLog::serve_event(const TapContext &ctx, const char *op, const std::
   emit(line);
 }
 
-void ResourceLog::canvas_texture_create(const TapContext &ctx, std::uint64_t rid) {
+// A canvas_texture_set_* call on RID(): the CanvasTexture of a headless host (see
+// canvas_texture_create). Logged as the same typed refusal, with no id.
+void ResourceLog::null_canvas_texture(Line *line) {
+  line->rid = 0;
+  line->kind = "canvas";
+  line->status = "unsupported";
+  line->reason = "canvas-texture-headless";
+  emit(*line);
+}
+
+void ResourceLog::canvas_texture_create(const TapContext &ctx, std::uint64_t rid, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = base_line(ctx, "canvas_texture_create");
+    line.rid = rid;
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  if (rid == 0) {
+    // A headless host: the dummy storage's canvas_texture_allocate() returns RID()
+    // (servers/rendering/dummy/storage/texture_storage.h:54). No id is spent (the mirror spends
+    // none either); the line is the hook-side typed refusal (canvas-texture-headless).
+    Line line = base_line(ctx, "canvas_texture_create");
+    line.rid = 0;
+    line.kind = "canvas";
+    line.status = "unsupported";
+    line.reason = "canvas-texture-headless";
+    emit(line);
     return;
   }
   Entry entry;
@@ -507,7 +537,8 @@ void ResourceLog::canvas_texture_create(const TapContext &ctx, std::uint64_t rid
 }
 
 void ResourceLog::canvas_texture_set_channel(const TapContext &ctx, std::uint64_t canvas_texture,
-                                             std::int32_t channel, std::uint64_t texture) {
+                                             std::int32_t channel, std::uint64_t texture,
+                                             bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -521,7 +552,23 @@ void ResourceLog::canvas_texture_set_channel(const TapContext &ctx, std::uint64_
   if (const Entry *tex = find(texture)) {
     line.ref_id = tex->id;
   }
+  if (canvas_texture == 0 && !omitted) {
+    null_canvas_texture(&line);
+    return;
+  }
   Entry *ct = find(canvas_texture);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (ct != nullptr) {
+      line.id = ct->id;
+      line.version = ct->version;
+      line.kind = ct->kind;
+      line.status = ct->status;
+    }
+    emit(line);
+    return;
+  }
   if (ct != nullptr) {
     auto it = ct->channels.find(channel);
     const std::uint64_t old = it == ct->channels.end() ? 0 : it->second;
@@ -529,16 +576,31 @@ void ResourceLog::canvas_texture_set_channel(const TapContext &ctx, std::uint64_
       ct->channels[channel] = texture;
       ct->version += 1;
     }
+    // A non-null normal (1) or specular (2) channel makes the entry unsupported
+    // (canvas-texture-channel); clearing both back to null makes it ok again (gate2-design.md
+    // G2d, mirrored from Mirror::canvas_texture_set_channel).
+    const auto channel_set = [&](std::int32_t c) {
+      const auto found = ct->channels.find(c);
+      return found != ct->channels.end() && found->second != 0;
+    };
+    if (channel_set(1) || channel_set(2)) {
+      ct->status = "unsupported";
+      ct->reason = "canvas-texture-channel";
+    } else {
+      ct->status = "ok";
+      ct->reason.clear();
+    }
     line.id = ct->id;
     line.version = ct->version;
     line.kind = ct->kind;
     line.status = ct->status;
+    line.reason = ct->reason;
   }
   emit(line);
 }
 
 void ResourceLog::canvas_texture_set_filter(const TapContext &ctx, std::uint64_t canvas_texture,
-                                            std::int32_t filter) {
+                                            std::int32_t filter, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -547,7 +609,23 @@ void ResourceLog::canvas_texture_set_filter(const TapContext &ctx, std::uint64_t
   line.rid = canvas_texture;
   line.has_value = true;
   line.value = filter;
+  if (canvas_texture == 0 && !omitted) {
+    null_canvas_texture(&line);
+    return;
+  }
   Entry *ct = find(canvas_texture);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (ct != nullptr) {
+      line.id = ct->id;
+      line.version = ct->version;
+      line.kind = ct->kind;
+      line.status = ct->status;
+    }
+    emit(line);
+    return;
+  }
   if (ct != nullptr) {
     if (ct->filter != filter) {
       ct->filter = filter;
@@ -562,7 +640,7 @@ void ResourceLog::canvas_texture_set_filter(const TapContext &ctx, std::uint64_t
 }
 
 void ResourceLog::canvas_texture_set_repeat(const TapContext &ctx, std::uint64_t canvas_texture,
-                                            std::int32_t repeat) {
+                                            std::int32_t repeat, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -571,7 +649,23 @@ void ResourceLog::canvas_texture_set_repeat(const TapContext &ctx, std::uint64_t
   line.rid = canvas_texture;
   line.has_value = true;
   line.value = repeat;
+  if (canvas_texture == 0 && !omitted) {
+    null_canvas_texture(&line);
+    return;
+  }
   Entry *ct = find(canvas_texture);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (ct != nullptr) {
+      line.id = ct->id;
+      line.version = ct->version;
+      line.kind = ct->kind;
+      line.status = ct->status;
+    }
+    emit(line);
+    return;
+  }
   if (ct != nullptr) {
     if (ct->repeat != repeat) {
       ct->repeat = repeat;

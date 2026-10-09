@@ -4,8 +4,8 @@
   "records": [
     {
       "offset": 8,
-      "byte_length": 3654,
-      "sha256": "65cad5140b7a1d10a78b0aea1acd50a02e40b67a9282d3d67cd9cdd1bf773a4b",
+      "byte_length": 3681,
+      "sha256": "fd6d30397f051a5c2fce3204838c25fef991c75ae56a292f50a5c4497eeddf66",
       "meta": {
         "type": "session",
         "protocol": "render-stream/2",
@@ -136,6 +136,7 @@
             "texture_2d",
             "texture_2d_placeholder"
           ],
+          "unsupported_resources": [],
           "observed_unsupported_ops": [
             "canvas_item_add_circle",
             "canvas_item_add_lcd_texture_rect_region",
@@ -229,7 +230,7 @@
       ]
     },
     {
-      "offset": 3662,
+      "offset": 3689,
       "byte_length": 1312,
       "sha256": "653bb134eee5325d1802dd5fa89f42570def1732ecbde227c387ac2e92e142dd",
       "meta": {
@@ -252,7 +253,7 @@
       ]
     },
     {
-      "offset": 4974,
+      "offset": 5001,
       "byte_length": 312,
       "sha256": "c5f423448253f2ddfe43be74b3527c42e7e5c31be3d9fdf5f5406646a74e9fa7",
       "meta": {
@@ -275,7 +276,7 @@
       ]
     },
     {
-      "offset": 5286,
+      "offset": 5313,
       "byte_length": 4227,
       "sha256": "8ba8bc58fbaf285f37fa2ffab5f12b89d9247c8363388277e5aa2cf216e0216e",
       "meta": {
@@ -700,7 +701,7 @@
       ]
     },
     {
-      "offset": 9513,
+      "offset": 9540,
       "byte_length": 4227,
       "sha256": "be0a2a79f10a81fe2fb6f2890599f65c019c73315fc36e23ca6fa7ebd67a2ae3",
       "meta": {
@@ -1125,7 +1126,7 @@
       ]
     },
     {
-      "offset": 13740,
+      "offset": 13767,
       "byte_length": 1312,
       "sha256": "cb6635b0895f9dfa98247b3600b3df534c1c0bc46af21a4c0352741afad0a1b3",
       "meta": {
@@ -1148,7 +1149,7 @@
       ]
     },
     {
-      "offset": 15052,
+      "offset": 15079,
       "byte_length": 4227,
       "sha256": "41ab48920ec879f271dfd1a6af5d67abb76ac50a3edaa5e5dc23d65d54984aa5",
       "meta": {
@@ -1573,7 +1574,7 @@
       ]
     },
     {
-      "offset": 19279,
+      "offset": 19306,
       "byte_length": 622,
       "sha256": "ba1466a306379dddadfc466067b01b3d888b23ed45f10a6001f5f8fdd45b4e4b",
       "meta": {
@@ -1596,7 +1597,7 @@
       ]
     },
     {
-      "offset": 19901,
+      "offset": 19928,
       "byte_length": 4472,
       "sha256": "18453ea9738d6285fb5409de4aed29da283447dfb3281b38719c2a95cbe565af",
       "meta": {
@@ -2036,7 +2037,7 @@
       ]
     },
     {
-      "offset": 24373,
+      "offset": 24400,
       "byte_length": 4294,
       "sha256": "68280eb15706b28504c08f2ba813cfa165e11b90fc13b17d8dd49550b40d1741",
       "meta": {
@@ -2461,7 +2462,7 @@
       ]
     },
     {
-      "offset": 28667,
+      "offset": 28694,
       "byte_length": 4294,
       "sha256": "08eb5f1d891ee14a7f4cf42656b33283b25fb049eea3a3f98a16d656bd16dcd9",
       "meta": {
@@ -2886,15 +2887,15 @@
       ]
     },
     {
-      "offset": 32961,
+      "offset": 32988,
       "byte_length": 286,
-      "sha256": "86f5fe86ee851feff2fe89a9378ee13967c68333be4c85cc468c7371c0618073",
+      "sha256": "cd8e75f1bd1f1aefff39575e52407f954c165157065bb2defa2ee6be1ec807ec",
       "meta": {
         "type": "end",
         "transactions": 6,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 32961,
+          "bytes_total": 32988,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 0,

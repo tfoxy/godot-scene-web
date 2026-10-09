@@ -127,8 +127,10 @@ std::string generate_id();
 // two texture-rect draws, plus canvas_item_add_lcd_texture_rect_region; unobserved gate 1's
 // without the item default filter/repeat setters, plus canvas_texture_set_shading_parameters and
 // texture_set_size_override. Each array sorted ascending by byte value; publication
-// "snapshot-or-patch".
-Features gate2_features();
+// "snapshot-or-patch". G2d: resources adds canvas_texture, except on a headless host
+// (`headless_host`), where unsupported_resources lists it with reason canvas-texture-headless
+// instead (protocol/canvas-texture-headless.md).
+Features gate2_features(bool headless_host = false);
 
 // The resource policy a capture publishes under (GRC_RESOURCE_*).
 struct ResourcePolicy {

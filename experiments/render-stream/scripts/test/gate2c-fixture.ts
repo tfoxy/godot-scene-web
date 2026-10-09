@@ -12,6 +12,7 @@
 // state dumps. Receivers join at frame 5 and the host sends at every frame from then on, except
 // where a leg says otherwise (the stall, the reconnect, a failing receiver).
 
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FILE_RESOURCES } from "../lib/gate0-checks";
 import type { ResourceLine } from "../lib/gate2-checks";
@@ -879,4 +880,93 @@ export async function buildG2cTree(
       upload_bytes: sim.uploads.reduce((n, u) => n + u.data_bytes, 0),
     },
   });
+}
+
+/** The bearer token a fabricated g2e host wrote to its evidence/live-token. */
+export function g2eToken(leg: string): string {
+  return sha256Hex(Buffer.from(`token ${leg}`));
+}
+
+/** The g2e legs (G2e, lib/gate2e-checks.ts): three live hosts with GRC_LIVE_AUTH=token, each with
+ * its evidence/live-token. live-auth is live with the token; sabotage-no-token's upgrade is
+ * refused (a "401 unauthorized upgrade" host line, no connection, the receiver fails
+ * live-connect-failed); sabotage-bad-http-token's first GET (A0, seq 1) answers 401 and the
+ * receiver fails resource-unavailable. */
+export async function buildG2eTree(
+  out: string,
+  e: Gate2Expected,
+): Promise<void> {
+  const quit = e.quit_frame_default;
+  const main = buildModel(e, { quit });
+  await writeLiveLeg(out, e, {
+    leg: "live-auth",
+    model: main,
+    conns: [
+      {
+        n: 1,
+        sends: everyFrame(JOIN_FRAME, quit),
+        closed: null,
+        closedBy: "receiver",
+      },
+    ],
+    rendered: true,
+  });
+  await writeLiveLeg(out, e, {
+    leg: "sabotage-bad-http-token",
+    model: main,
+    conns: [
+      {
+        n: 1,
+        sends: [JOIN_FRAME],
+        closed: JOIN_FRAME + 3,
+        closedBy: "receiver",
+      },
+    ],
+    rendered: false,
+    failure: {
+      seq: 1,
+      hash: CONTENT.A0.hash,
+      reason: "resource-unavailable",
+      status: 401,
+    },
+  });
+  const noToken = await writeLiveLeg(out, e, {
+    leg: "sabotage-no-token",
+    model: main,
+    conns: [],
+    rendered: false,
+  });
+  await writeText(
+    join(noToken.hostDir, "stdout.log"),
+    "[fixture] gate2 ready\n[grc] live: 401 unauthorized upgrade (missing or wrong bearer token)\n",
+  );
+  await writeText(join(noToken.receiverDir, "exit-code.txt"), "3\n");
+  await writeText(
+    join(noToken.receiverDir, "stdout.log"),
+    "[receiver] replay-failure: seq <null> live-connect-failed: the upgrade was refused\n",
+  );
+  const appliedPath = join(noToken.receiverDir, "applied.json");
+  const applied = JSON.parse(await readFile(appliedPath, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  await writeJson(appliedPath, {
+    ...applied,
+    status: "replay-failure",
+    failure: {
+      seq: null,
+      reason: "live-connect-failed",
+      detail: "the WebSocket upgrade never reached STATE_OPEN (HTTP 401)",
+    },
+    end_seen: false,
+  });
+  for (const leg of [
+    "live-auth",
+    "sabotage-no-token",
+    "sabotage-bad-http-token",
+  ])
+    await writeText(
+      join(out, leg, "host", "evidence", "live-token"),
+      `${g2eToken(leg)}\n`,
+    );
 }

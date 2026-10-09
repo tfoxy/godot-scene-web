@@ -1,6 +1,6 @@
 // Gate 2 group g2e (G2e): bearer-token authorization on the WebSocket upgrade and on every
 // resource GET (protocol/gate2-design.md D13, G2e). Three legs, each a fresh live host (the live
-// timeline, S = 300, N = 60, quit 911, as g2c's) plus one live receiver:
+// timeline, S = 300, N = 60, quit 971, as g2c's) plus one live receiver:
 //   live-auth                 GRC_LIVE_AUTH=token; the receiver gets the host's own
 //                             evidence/live-token (RS_RECEIVER_TOKEN_FILE) -> success
 //   sabotage-no-token         same host; the receiver sends no token at all -> replay-failure
@@ -44,9 +44,9 @@ import {
   textureLogDivergence,
 } from "./gate2b-checks";
 
-/** run-gate2.sh's live timeline: S = 300, N = 60, 10 steps plus the settle offset (as
+/** run-gate2.sh's live timeline: S = 300, N = 60, quit S + N*11 + 11 (steps 0..11; as
  * gate2b-checks.ts's live-inline leg and gate2c-checks.ts's live legs). */
-const LIVE_QUIT_FRAME = 911;
+const LIVE_QUIT_FRAME = 971;
 
 function check(
   id: string,

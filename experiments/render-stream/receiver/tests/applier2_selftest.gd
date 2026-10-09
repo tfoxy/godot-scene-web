@@ -70,6 +70,7 @@ func _run_applier_tests() -> void:
 	_test_applier_textures()
 	_test_applier_reupload()
 	_test_applier_reconnect()
+	_test_applier_canvas_texture()
 	_finish()
 
 
@@ -257,6 +258,86 @@ func _test_applier_reconnect() -> void:
 		b.append(row["rs_calls"])
 	_check(a == b, "reconnect: the second session cost %s RS calls per record, a fresh applier %s" % [str(b), str(a)])
 	_dispose_checked(applier, "reconnect second session", true)
+
+
+## G2d: canvas_texture_create, canvas_texture_set_channel(DIFFUSE), filter, repeat. No golden-2
+## vector carries a canvas texture (golden-2 predates G2d, gate2-design.md G2d "As built"), so
+## this hand-builds a resolved Rs2Decoder.Stream (its fields are plain public Dictionaries) to
+## exercise the applier's kind == "canvas" branch directly, the one path neither golden-2 nor a
+## headless gate 2 run can reach (a headless capture's canvas_texture_create always returns
+## RID(), so CT never reaches the wire table there).
+func _test_applier_canvas_texture() -> void:
+	var applier: RsApplier = _new_applier()
+	var cache: RsResourceCache = _memory_cache()
+	var payload_hashes: Array[String] = _payloads.keys()
+	var image_hash: String = payload_hashes[0]
+	var decoded: Dictionary = cache.decoded(image_hash)
+	var stream := Rs2Decoder.Stream.new()
+	stream.canvases = {1: {"items": [10, 11], "xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]}}
+	var image_entry: Dictionary = {
+		"id": 1, "kind": "image", "status": "ok", "hash": image_hash,
+		"format": decoded["format"], "width": decoded["width"], "height": decoded["height"],
+		"mipmaps": decoded["mipmaps"], "payload_bytes": 0, "canvas": null,
+	}
+	var canvas_entry: Dictionary = {
+		"id": 2, "kind": "canvas", "status": "ok", "version": 4, "hash": null,
+		"format": null, "width": 0, "height": 0, "mipmaps": false, "payload_bytes": 0,
+		"canvas": {"diffuse": 1, "filter": "nearest", "repeat": "enabled"},
+	}
+	stream.textures = {1: image_entry, 2: canvas_entry}
+	var base_item: Dictionary = {
+		"parent": {"kind": "canvas", "id": 1}, "children": [],
+		"xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "modulate": [1.0, 1.0, 1.0, 1.0],
+		"self_modulate": [1.0, 1.0, 1.0, 1.0], "visible": true, "clip": false,
+		"custom_rect": false, "custom_rect_rect": [0.0, 0.0, 0.0, 0.0],
+		"visibility_layer": 1, "z_index": 0, "z_relative": true, "behind": false,
+		"draw_index": 0, "texture_filter": "default", "texture_repeat": "default",
+		"content_version": 1,
+	}
+	# Item 10 draws A directly (D5 lazy residency: A must already be resident before item 11's
+	# canvas texture can resolve its diffuse, exactly as the real fixture's SC relies on A already
+	# being drawn elsewhere).
+	var item_a: Dictionary = base_item.duplicate(true)
+	item_a["id"] = 10
+	item_a["commands"] = [{"op": "add_texture_rect", "tex": 1, "tile": false, "transpose": false,
+		"rect": [0.0, 0.0, 4.0, 4.0], "modulate": [1.0, 1.0, 1.0, 1.0]}]
+	var item_ct: Dictionary = base_item.duplicate(true)
+	item_ct["id"] = 11
+	item_ct["texture_filter"] = "linear"
+	item_ct["commands"] = [{"op": "add_texture_rect", "tex": 2, "tile": false, "transpose": false,
+		"rect": [0.0, 0.0, 10.0, 10.0], "modulate": [1.0, 1.0, 1.0, 1.0]}]
+	stream.items = {10: item_a, 11: item_ct}
+
+	var need: Dictionary = applier.needed(stream.items, stream.textures)
+	var need_ids: Array = need["ids"]
+	_check(need_ids == [1], "only the image (A) needs a fetch, not the canvas texture: %s" % str(need))
+
+	var stats: Dictionary = applier.apply_state(stream, cache)
+	var resources: Dictionary = stats["resources"]
+	_check(resources["created"] == 2, "A and CT both counted created: %s" % str(resources))
+	_check(applier.resident_textures() == 2, "two resident textures (image + canvas), got %d" % applier.resident_textures())
+	var unsupported_commands: Array = stats["unsupported_commands"]
+	_check(unsupported_commands.is_empty(), "the canvas-texture draw is not skipped: %s" % str(unsupported_commands))
+
+	# Re-apply the same (unchanged) state: version-driven, so CT's setters are not re-issued and A
+	# is not re-uploaded (same hash) -- no RS calls at all for either texture.
+	var before: int = applier.rs_calls
+	var stats2: Dictionary = applier.apply_state(stream, cache)
+	_check(applier.rs_calls == before, "an unchanged canvas texture and image make no further RS calls: %d -> %d" % [before, applier.rs_calls])
+	var resources2: Dictionary = stats2["resources"]
+	_check(resources2["created"] == 0, "re-applying creates nothing: %s" % str(resources2))
+
+	# Bump CT's version (diffuse cleared to null): the setters are re-issued once.
+	var cleared: Dictionary = canvas_entry.duplicate(true)
+	cleared["version"] = 5
+	var cleared_canvas: Dictionary = cleared["canvas"]
+	cleared_canvas["diffuse"] = null
+	stream.textures = {1: image_entry, 2: cleared}
+	var calls_before: int = applier.rs_calls
+	applier.apply_state(stream, cache)
+	_check(applier.rs_calls > calls_before, "a version bump re-issues CT's setters: %d -> %d" % [calls_before, applier.rs_calls])
+
+	_dispose_checked(applier, "canvas texture")
 
 
 # --------------------------------------------------------------------------- cache

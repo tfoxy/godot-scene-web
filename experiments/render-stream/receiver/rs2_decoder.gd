@@ -54,8 +54,12 @@ const DELIVERIES: Array = ["out-of-band", "inline", "mixed"]
 const FETCHES: Array = ["http", "directory", "none"]
 const AUTHS: Array = ["none", "bearer"]
 const FEATURES_KEYS: Array = [
-	"ops", "item_state", "resources", "observed_unsupported_ops", "unobserved", "publication",
+	"ops", "item_state", "resources", "unsupported_resources", "observed_unsupported_ops",
+	"unobserved", "publication",
 ]
+## features.unsupported_resources entries (G2d): a resource kind the host refuses, and why.
+const UNSUPPORTED_RESOURCE_KEYS: Array = ["resource", "reason"]
+const UNSUPPORTED_RESOURCE_REASONS: Array = ["canvas-texture-headless"]
 const PUBLICATION: String = "snapshot-or-patch"
 const SABOTAGE_KEYS: Array = ["kind", "frame", "op"]
 const SABOTAGE_KINDS: Array = [
@@ -77,6 +81,7 @@ const UNSUPPORTED_KEYS: Array = ["op", "item", "reason"]
 const SESSION_UNSUPPORTED_REASONS: Array = ["non-root-viewport", "extra-canvas", "degenerate-host-size"]
 const ITEM_UNSUPPORTED_REASONS: Array = [
 	"unsupported-op", "unsupported-state", "draw-index-tie", "unknown-texture", "unsupported-texture",
+	"canvas-texture-headless",
 ]
 const CANVAS_KEYS: Array = ["id", "origin", "role", "attached", "items"]
 const ORIGINS: Array = ["created", "root-query", "adopted"]
@@ -91,7 +96,7 @@ const ADD_RECT_KEYS: Array = ["op", "aa", "f"]
 const ADD_TEXTURE_RECT_KEYS: Array = ["op", "tex", "tile", "transpose", "f"]
 const ADD_TEXTURE_RECT_REGION_KEYS: Array = ["op", "tex", "transpose", "clip_uv", "f"]
 const UNSUPPORTED_CMD_KEYS: Array = ["op", "name", "reason"]
-const UNSUPPORTED_CMD_REASONS: Array = ["unsupported-op", "unknown-texture"]
+const UNSUPPORTED_CMD_REASONS: Array = ["unsupported-op", "unknown-texture", "canvas-texture-headless"]
 const FILTERS: Array = [
 	"default", "nearest", "linear", "nearest_mipmaps", "linear_mipmaps",
 	"nearest_mipmaps_anisotropic", "linear_mipmaps_anisotropic",
@@ -374,6 +379,21 @@ class Schema:
 				fail("%s is not sorted ascending without repeats at %d" % [path, i])
 			last = text
 
+	## features.unsupported_resources (G2d): {resource, reason} objects sorted strictly ascending by
+	## resource, each reason a known one.
+	func unsupported_resources(value: Variant, path: String) -> void:
+		var list: Array = array(value, path)
+		var last: String = ""
+		for i: int in list.size():
+			var entry: Dictionary = object(list[i], Rs2Decoder.UNSUPPORTED_RESOURCE_KEYS, "%s[%d]" % [path, i])
+			if not ok:
+				return
+			var resource: String = string(entry.get("resource"), "%s[%d].resource" % [path, i])
+			one_of(entry.get("reason"), Rs2Decoder.UNSUPPORTED_RESOURCE_REASONS, "%s[%d].reason" % [path, i])
+			if ok and i > 0 and not (last < resource):
+				fail("%s is not sorted ascending by resource without repeats at %d" % [path, i])
+			last = resource
+
 	func int_pair(value: Variant, path: String) -> void:
 		var list: Array = array(value, path)
 		if ok and list.size() != 2:
@@ -460,6 +480,7 @@ class Schema:
 		sorted_strings(features.get("ops"), "meta.features.ops")
 		sorted_strings(features.get("item_state"), "meta.features.item_state")
 		sorted_strings(features.get("resources"), "meta.features.resources")
+		unsupported_resources(features.get("unsupported_resources"), "meta.features.unsupported_resources")
 		sorted_strings(features.get("observed_unsupported_ops"), "meta.features.observed_unsupported_ops")
 		sorted_strings(features.get("unobserved"), "meta.features.unobserved")
 		exact(features.get("publication"), Rs2Decoder.PUBLICATION, "meta.features.publication")
@@ -1462,7 +1483,8 @@ class Stream:
 					var name: String = command["name"]
 					if not seen_ops.has(name):
 						seen_ops[name] = true
-						var reason: String = "unknown-texture" if command["reason"] == "unknown-texture" else "unsupported-op"
+						var cmd_reason: String = command["reason"]
+						var reason: String = cmd_reason if cmd_reason == "unknown-texture" or cmd_reason == "canvas-texture-headless" else "unsupported-op"
 						actual_unsupported_ops["%d:%s" % [id, name]] = reason
 				elif op == "add_texture_rect" or op == "add_texture_rect_region":
 					var tex: Variant = command["tex"]
@@ -1505,7 +1527,7 @@ class Stream:
 				return Rs2Decoder.err("unsupported-mismatch", "%s: unsupported entry (%d, %s) is out of order or repeated" % [where, item_id, op])
 			last_item = item_id
 			last_op = op
-			if reason == "unsupported-op" or reason == "unknown-texture":
+			if reason == "unsupported-op" or reason == "unknown-texture" or reason == "canvas-texture-headless":
 				var pair: String = "%d:%s" % [item_id, op]
 				if not actual_unsupported_ops.has(pair) or actual_unsupported_ops[pair] != reason:
 					return Rs2Decoder.err("unsupported-mismatch", "%s: %s entry (%d, %s) has no matching command" % [where, reason, item_id, op])

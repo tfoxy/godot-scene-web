@@ -9,7 +9,7 @@
 // `session.sabotage`.
 //
 // Evidence layout under <out>/ for g2c (besides g2a's reference, see gate2-checks.ts):
-//   <leg>/host/       a live host on the live timeline (S=300, N=60, quit 911): recording.rs2,
+//   <leg>/host/       a live host on the live timeline (S=300, N=60, quit 971): recording.rs2,
 //                     recording-patch.rs2, store/, steps.jsonl, textures.jsonl, evidence/{result,
 //                     live,live-summary}.json, evidence/resources.jsonl (with the serving lines
 //                     pin / retire / http-get), tap/stream-<n>.rs2, tap/live-<n>.jsonl
@@ -78,7 +78,7 @@ import { statesEqual } from "./render-stream-2";
 export const DEFAULT_BUDGET_BYTES = 536870912;
 export const CACHE_CONTROL = "private, max-age=31536000, immutable";
 
-/** A host's timeline, from its own steps.jsonl (run-gate2.sh runs S = 300, N = 60, quit 911): step
+/** A host's timeline, from its own steps.jsonl (run-gate2.sh runs S = 300, N = 60, quit 971): step
  * -> {applied, settle}, and the quit frame (its full recording's last frame). */
 export interface LiveTimeline {
   steps: Map<number, { applied: number; settle: number }>;

@@ -309,6 +309,16 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string_array(m, session.features.item_state);
   m += ",\"resources\":";
   append_json_string_array(m, session.features.resources);
+  m += ",\"unsupported_resources\":[";
+  for (std::size_t i = 0; i < session.features.unsupported_resources.size(); ++i) {
+    const UnsupportedResource &u = session.features.unsupported_resources[i];
+    m += i == 0 ? "{\"resource\":" : ",{\"resource\":";
+    append_json_string(m, u.resource);
+    m += ",\"reason\":";
+    append_json_string(m, u.reason);
+    m += "}";
+  }
+  m += "]";
   m += ",\"observed_unsupported_ops\":";
   append_json_string_array(m, session.features.observed_unsupported_ops);
   m += ",\"unobserved\":";

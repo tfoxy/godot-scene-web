@@ -4,8 +4,8 @@
   "records": [
     {
       "offset": 8,
-      "byte_length": 3658,
-      "sha256": "62c214be80379601298a11c7b67a3cf2a0f6dfc4cccaaa6753f9f83909f6364f",
+      "byte_length": 3685,
+      "sha256": "e6d41c56673e672a512386aa12f1f4c434a213c8b1abd040acf38272bc0caffc",
       "meta": {
         "type": "session",
         "protocol": "render-stream/2",
@@ -136,6 +136,7 @@
             "texture_2d",
             "texture_2d_placeholder"
           ],
+          "unsupported_resources": [],
           "observed_unsupported_ops": [
             "canvas_item_add_circle",
             "canvas_item_add_lcd_texture_rect_region",
@@ -229,7 +230,7 @@
       ]
     },
     {
-      "offset": 3666,
+      "offset": 3693,
       "byte_length": 4227,
       "sha256": "8ba8bc58fbaf285f37fa2ffab5f12b89d9247c8363388277e5aa2cf216e0216e",
       "meta": {
@@ -654,7 +655,7 @@
       ]
     },
     {
-      "offset": 7893,
+      "offset": 7920,
       "byte_length": 981,
       "sha256": "5dcf69c833ff9db1b093582f34fe74e5a6944e8267c285c5ddcba0869f97f343",
       "meta": {
@@ -751,7 +752,7 @@
       ]
     },
     {
-      "offset": 8874,
+      "offset": 8901,
       "byte_length": 853,
       "sha256": "3cb9547c703315b384e0cd8c0884106e7991f40ffecf355adbcb0a7e5e2c6f75",
       "meta": {
@@ -823,7 +824,7 @@
       ]
     },
     {
-      "offset": 9727,
+      "offset": 9754,
       "byte_length": 1277,
       "sha256": "0514e70265b790de631fd2e438da54e32fa94cdc61bf7a47763e9c3b902af32c",
       "meta": {
@@ -925,7 +926,7 @@
       ]
     },
     {
-      "offset": 11004,
+      "offset": 11031,
       "byte_length": 1085,
       "sha256": "eca9ec2e961abcdb7c06892720481a265ff910373a30007bac62f441a09daafc",
       "meta": {
@@ -1041,7 +1042,7 @@
       ]
     },
     {
-      "offset": 12089,
+      "offset": 12116,
       "byte_length": 4294,
       "sha256": "08eb5f1d891ee14a7f4cf42656b33283b25fb049eea3a3f98a16d656bd16dcd9",
       "meta": {
@@ -1466,15 +1467,15 @@
       ]
     },
     {
-      "offset": 16383,
+      "offset": 16410,
       "byte_length": 287,
-      "sha256": "1d373405adf3d1e6acf72d01cb5266161ef90e1d61a5fd4fbacca9a0968cde91",
+      "sha256": "2aa81d56f400f5a6fc9de8e939b71ab9b2dfa854831f446a1a1f5bdb54f7f449",
       "meta": {
         "type": "end",
         "transactions": 6,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 16383,
+          "bytes_total": 16410,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 12345,

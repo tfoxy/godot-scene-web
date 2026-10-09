@@ -1,6 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the gate 2 checker (lib/gate2-checks.ts, lib/gate2b-checks.ts and
-// lib/gate2-expected.ts, groups g2a and g2b). Proves that every check can fail as well as pass.
+// Self-test for the gate 2 checker (lib/gate2-checks.ts, lib/gate2b-checks.ts, gate2c-checks.ts,
+// gate2e-checks.ts and lib/gate2-expected.ts, groups g2a-g2e). Proves that every check can fail as
+// well as pass.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate2.ts
@@ -9,9 +10,10 @@
 //    partial alpha) against hand-computed texels, the step windows, the census helpers, the hook
 //    log's line validation, and checkExpectedSelfConsistent on the committed expected.json and on
 //    broken copies of it.
-// 2. Evidence-tree scenarios: a fabricated passing g2a + g2b tree (gate2b-fixture.ts: one model of
+// 2. Evidence-tree scenarios: a fabricated passing g2a-g2e tree (gate2b-fixture.ts: one model of
 //    the fixture's texture calls writes every hook log, fixture log, render-stream/2 recording,
-//    store, cache and simulated receiver; PNGs are synthesized from fixtures/gate2/expected.json),
+//    store, cache and simulated receiver; PNGs are synthesized from fixtures/gate2/expected.json;
+//    gate2c-fixture.ts adds the live hosts and receivers of g2c and g2e),
 //    then perturbations: every check and every leg class is failed by at least one of them. Each
 //    scenario runs the real runGate2 and asserts that exactly the checks it targets fail and every
 //    other check still passes.
@@ -70,7 +72,12 @@ import {
   writeJson,
   writeText,
 } from "./gate2b-fixture";
-import { buildG2cTree, HTTP_RESOURCES } from "./gate2c-fixture";
+import {
+  buildG2cTree,
+  buildG2eTree,
+  g2eToken,
+  HTTP_RESOURCES,
+} from "./gate2c-fixture";
 import { texturePayload } from "./rs2-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -223,13 +230,14 @@ function pureCases(): void {
   );
 
   // Windows and census helpers.
+  const quitDefault = e.quit_frame_default;
   assert(
     "stepOfFrame: windows [S+N*k, S+N*(k+1)), the last through quit",
-    stepOfFrame(e, 1, 112) === 0 &&
-      stepOfFrame(e, 10, 112) === 0 &&
-      stepOfFrame(e, 11, 112) === 1 &&
-      stepOfFrame(e, 112, 112) === 10 &&
-      stepOfFrame(e, 113, 112) === -1,
+    stepOfFrame(e, 1, quitDefault) === 0 &&
+      stepOfFrame(e, 10, quitDefault) === 0 &&
+      stepOfFrame(e, 11, quitDefault) === 1 &&
+      stepOfFrame(e, quitDefault, quitDefault) === e.last_step &&
+      stepOfFrame(e, quitDefault + 1, quitDefault) === -1,
   );
   const lines = [
     { frame: 1, thread: "main", op: "texture_2d_create" },
@@ -246,17 +254,18 @@ function pureCases(): void {
   );
   assert(
     "expectedCensus: the unsupported variant adds U1's create and two items' calls at step 0",
-    expectedCensus(e, 0, 112, "unsupported").texture_2d_create ===
+    expectedCensus(e, 0, quitDefault, "unsupported").texture_2d_create ===
       e.steps[0].census.texture_2d_create + 1 &&
-      expectedCensus(e, 0, 112, "unsupported")
+      expectedCensus(e, 0, quitDefault, "unsupported")
         .canvas_item_set_default_texture_filter ===
         e.items_at_ready.length + 2,
   );
   assert(
-    "expectedCensus: animate's per-frame updates fill the window (10 at step 1, 12 in the last, frames 101..112)",
-    expectedCensus(e, 1, 112, "animate").texture_2d_update === 10 &&
-      expectedCensus(e, 10, 112, "animate").texture_2d_update === 12,
-    JSON.stringify(expectedCensus(e, 10, 112, "animate")),
+    "expectedCensus: animate's per-frame updates fill the window (10 at step 1, 12 in the last)",
+    expectedCensus(e, 1, quitDefault, "animate").texture_2d_update === 10 &&
+      expectedCensus(e, e.last_step, quitDefault, "animate")
+        .texture_2d_update === 12,
+    JSON.stringify(expectedCensus(e, e.last_step, quitDefault, "animate")),
   );
 
   const good = Object.fromEntries(
@@ -355,6 +364,10 @@ const G2B_LEGS = [
   "sabotage-spurious-update",
   "sabotage-receiver-reupload",
   "sabotage-receiver-ignore-cache",
+  "canvas-headless",
+  "canvas-host",
+  "canvas-normal",
+  "sabotage-omit-canvas-filter",
 ];
 const G2B_CHECKS = [
   "recordings-decode-2",
@@ -372,6 +385,10 @@ const G2B_CHECKS = [
   "freed-draws-default",
   "copy-at-hook",
   "unsupported-regions",
+  "canvas-texture-headless-refused",
+  "canvas-texture-override",
+  "canvas-texture-wire",
+  "canvas-normal-region",
   "live-inline",
   "receiver-consumed-stream",
   "receiver-never-loaded-fixture",
@@ -408,6 +425,13 @@ const G2C_CHECKS = [
   "transform-only-no-resource-traffic-live",
   "warm-host-no-gets",
   ...G2C_LEGS.map((leg) => `leg-class-${leg}`),
+];
+
+const G2E_LEGS = ["live-auth", "sabotage-no-token", "sabotage-bad-http-token"];
+const G2E_CHECKS = [
+  ...G2E_LEGS.map((leg) => `leg-class-${leg}`),
+  "auth-required",
+  "token-not-logged",
 ];
 
 /** applied.json /3, as far as the scenarios edit it. */
@@ -540,6 +564,7 @@ async function main(): Promise<void> {
     const good = join(root, "good");
     await buildTree(good, EXPECTED);
     await buildG2cTree(good, EXPECTED);
+    await buildG2eTree(good, EXPECTED);
     const report = await run(good);
     const bad = report.checks.filter((c) => c.status !== "pass");
     assert(
@@ -548,21 +573,21 @@ async function main(): Promise<void> {
       bad.map((c) => `${c.id}: ${c.detail}`).join(" | "),
     );
     assert(
-      "good tree: the checks are the G2a set, then the G2b set, then the G2c set",
-      [...G2A_CHECKS, ...G2B_CHECKS, ...G2C_CHECKS].join(",") ===
+      "good tree: the checks are the G2a set, then the G2b set (with G2d's), then the G2c set, then the G2e set",
+      [...G2A_CHECKS, ...G2B_CHECKS, ...G2C_CHECKS, ...G2E_CHECKS].join(",") ===
         report.checks.map((c) => c.id).join(","),
       report.checks.map((c) => c.id).join(","),
     );
-    const misclassified = [...G2B_LEGS, ...G2C_LEGS].filter(
+    const misclassified = [...G2B_LEGS, ...G2C_LEGS, ...G2E_LEGS].filter(
       (leg) =>
         report.legs[leg]?.result_class !== report.legs[leg]?.expected_class,
     );
     assert(
-      "good tree: the capture leg is success and every g2b and g2c leg lands in its expected class",
+      "good tree: the capture leg is success and every g2b, g2c, g2d and g2e leg lands in its expected class",
       report.legs.capture?.result_class === "success" &&
         misclassified.length === 0 &&
         Object.keys(report.legs).length ===
-          1 + 5 + G2B_LEGS.length + 3 + G2C_LEGS.length,
+          1 + 5 + G2B_LEGS.length + 3 + G2C_LEGS.length + G2E_LEGS.length,
       `${misclassified.join(",")}; ${Object.keys(report.legs).length} legs`,
     );
     assert(
@@ -748,7 +773,9 @@ async function main(): Promise<void> {
         );
       },
       // Every receiver is held to the reference: the faithful ones now mismatch at step 6, and
-      // omit-replace's mismatching steps grow to {6,7,8,9,10}.
+      // omit-replace's mismatching steps grow to {6,7,8,9,10}. canvas-normal and
+      // sabotage-omit-canvas-filter also check their pre-step-11 checkpoints against this same
+      // shared reference dir (gate2b-checks.ts's `reference` var), so step 6 catches them too.
       [
         "expected-image-reference",
         "reference-repeat-budget",
@@ -768,6 +795,9 @@ async function main(): Promise<void> {
         "leg-class-live-stall",
         "leg-class-live-reconnect",
         "leg-class-live-animate",
+        "canvas-normal-region",
+        "leg-class-canvas-host",
+        "leg-class-sabotage-omit-canvas-filter",
       ],
     );
     await scenario(
@@ -846,6 +876,7 @@ async function main(): Promise<void> {
         await rm(out, { recursive: true, force: true });
         await buildTree(out, EXPECTED, { noTextureRect: true });
         await buildG2cTree(out, EXPECTED);
+        await buildG2eTree(out, EXPECTED);
       },
       ["leg-class-capture"],
     );
@@ -1831,6 +1862,250 @@ async function main(): Promise<void> {
       ["leg-class-sabotage-wrong-hash-live"],
     );
 
+    // ---- g2d: CanvasTexture (gate2-design.md G2d) ----------------------------------------
+    await scenario(
+      root,
+      good,
+      "canvas-override-pixel-off",
+      async (out) => {
+        // A pixel inside region sc of canvas-host's own rendered step-11 frame (shifted by step
+        // 10's canvas_transform, never reset): only canvas-texture-override reads that frame.
+        await writeBytes(
+          join(out, "canvas-host", "capture", "shots", "step-11.png"),
+          await shotPng(EXPECTED, 11, { perturb: [220, 140] }),
+        );
+      },
+      ["canvas-texture-override"],
+    );
+    await scenario(
+      root,
+      good,
+      "canvas-wire-ct-unresolvable",
+      async (out) => {
+        // textureIdsByName can no longer resolve "CT" on canvas-host: isolated to
+        // canvas-texture-wire, since no other check reads canvas-host's fixture log by name.
+        await editText(
+          join(out, "canvas-host", "capture", "textures.jsonl"),
+          (t) =>
+            t
+              .split("\n")
+              .filter((l) => !l.includes('"name":"CT"'))
+              .join("\n"),
+        );
+      },
+      ["canvas-texture-wire"],
+    );
+    await scenario(
+      root,
+      good,
+      "canvas-headless-receiver-silent",
+      async (out) => {
+        // The headless receiver drew nothing for SC but reported nothing either: the refusal
+        // must be visible on the receiver side too. The recording still refuses, so the leg
+        // stays unsupported.
+        await editJson<{ unsupported: unknown[] }>(
+          join(out, "canvas-headless", "receiver", "applied.json"),
+          (a) => {
+            a.unsupported = [];
+          },
+        );
+      },
+      ["canvas-texture-headless-refused"],
+    );
+    await scenario(
+      root,
+      good,
+      "canvas-headless-hook-line-ok",
+      async (out) => {
+        // A canvas_texture_create hook line that claims success on a headless host.
+        await editLog(
+          join(
+            out,
+            "canvas-headless",
+            "capture",
+            "evidence",
+            "resources.jsonl",
+          ),
+          (ls) =>
+            ls.map((l) =>
+              l.op === "canvas_texture_create"
+                ? { ...l, status: "ok", reason: null }
+                : l,
+            ),
+        );
+      },
+      ["canvas-texture-headless-refused"],
+    );
+    await scenario(
+      root,
+      good,
+      "canvas-headless-capture-not-armed",
+      async (out) => {
+        await editJson<{ status: string }>(
+          join(out, "canvas-headless", "capture", "evidence", "result.json"),
+          (r) => {
+            r.status = "disarmed";
+          },
+        );
+      },
+      ["leg-class-canvas-headless"],
+    );
+    await scenario(
+      root,
+      good,
+      "canvas-host-pixel-off",
+      async (out) => {
+        await writeBytes(
+          shot(out, join("canvas-host", "receiver"), 5),
+          await shotPng(EXPECTED, 5, { perturb: [210, 130] }),
+        );
+      },
+      ["leg-class-canvas-host"],
+    );
+    await scenario(
+      root,
+      good,
+      "canvas-normal-mismatches-before-step-11",
+      async (out) => {
+        // A pixel well outside region sc, before SC has a texture at all: canvas-normal-region
+        // expects 0 px differ for every step < 11, so this is isolated to it alone --
+        // leg-class-canvas-normal's checkpoints are [] (gate2b-checks.ts's "canvas-normal" input),
+        // so a pixel-mismatch here never reaches classification.
+        await writeBytes(
+          shot(out, join("canvas-normal", "receiver"), 5),
+          await shotPng(EXPECTED, 5, { perturb: [600, 300] }),
+        );
+      },
+      ["canvas-normal-region"],
+    );
+    await scenario(
+      root,
+      good,
+      "canvas-normal-capture-not-armed",
+      async (out) => {
+        // canvas-normal's "unsupported" class comes from the recording's own unsupported entry
+        // (SC's draw), not applied.json (which carries none here, unlike unsupported-textures'
+        // receiver-side one) -- so flip the one thing that outranks it in G2B_PRECEDENCE instead:
+        // capture-failure. No other check reads this leg's own capture evidence.
+        await editJson<{ status: string }>(
+          join(out, "canvas-normal", "capture", "evidence", "result.json"),
+          (r) => {
+            r.status = "disarmed";
+          },
+        );
+      },
+      ["leg-class-canvas-normal"],
+    );
+    await scenario(
+      root,
+      good,
+      "omit-canvas-filter-matches-at-step-11",
+      async (out) => {
+        // Same pattern as omit-replace-matches-at-step-10: replace the one step where the
+        // sabotage is supposed to show with the unperturbed reference, so the predicted
+        // mismatching step set {11} no longer holds.
+        await writeBytes(
+          shot(out, join("sabotage-omit-canvas-filter", "receiver"), 11),
+          await shotPng(EXPECTED, 11),
+        );
+      },
+      ["leg-class-sabotage-omit-canvas-filter"],
+    );
+
+    // ---- g2e: bearer-token authorization (gate2-design.md G2e) ---------------------------
+    await scenario(
+      root,
+      good,
+      "g2e-token-logged",
+      async (out) => {
+        await appendFile(
+          join(out, "live-auth", "receiver", "stdout.log"),
+          `[receiver] token ${g2eToken("live-auth")}\n`,
+        );
+      },
+      ["token-not-logged"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-token-file-missing",
+      async (out) => {
+        await unlink(
+          join(out, "sabotage-no-token", "host", "evidence", "live-token"),
+        );
+      },
+      ["token-not-logged"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-upgrade-not-refused",
+      async (out) => {
+        // The receiver still reports live-connect-failed, but the host never logged the 401.
+        await writeText(
+          join(out, "sabotage-no-token", "host", "stdout.log"),
+          "[fixture] gate2 ready\n",
+        );
+      },
+      ["auth-required"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-live-auth-get-401",
+      async (out) => {
+        await editLog(hostLog(out, "live-auth"), (ls) => [
+          ...ls,
+          line({
+            frame: 7,
+            thread: "other",
+            op: "http-get",
+            hash: CONTENT.A0.hash,
+            payload_bytes: 0,
+            conn: 1,
+            http_status: 401,
+          }),
+        ]);
+      },
+      ["auth-required"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-live-auth-fails",
+      async (out) => {
+        await editLive(out, "live-auth", (a) => {
+          a.status = "replay-failure";
+          a.failure = { seq: 3, reason: "resource-unavailable" };
+        });
+      },
+      ["leg-class-live-auth"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-no-token-connects",
+      async (out) => {
+        await editLive(out, "sabotage-no-token", (a) => {
+          a.status = "ok";
+          a.failure = null;
+          a.end_seen = true;
+        });
+      },
+      ["leg-class-sabotage-no-token"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-bad-http-token-wrong-reason",
+      async (out) => {
+        await editLive(out, "sabotage-bad-http-token", (a) => {
+          if (a.failure) a.failure.reason = "resource-hash-mismatch";
+        });
+      },
+      ["leg-class-sabotage-bad-http-token"],
+    );
+
     // Every check of a passing tree is failed by some scenario (expected-self-consistent by
     // the pure cases).
     const never = report.checks
@@ -1845,32 +2120,74 @@ async function main(): Promise<void> {
     // Groups not run: their checks are not-run and the gate fails.
     const g2aOnly = join(root, "g2a-only");
     await cp(good, g2aOnly, { recursive: true });
+    const LATER = ["group-g2b", "group-g2c", "group-g2d", "group-g2e"];
     await writeJson(join(g2aOnly, "legs.json"), {
       groups_run: ["g2a"],
-      groups_landed: ["g2a", "g2b", "g2c"],
+      groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
     });
     const onlyA = await run(g2aOnly);
     assert(
-      "g2b and g2c not run: group-g2b and group-g2c are not-run, the g2a checks pass and the gate fails",
+      "g2b-g2e not run: group-g2b..group-g2e are not-run, the g2a checks pass and the gate fails",
       !onlyA.gate_passed &&
-        ["group-g2b", "group-g2c"].every((id) =>
+        LATER.every((id) =>
           onlyA.checks.some((c) => c.id === id && c.status === "not-run"),
         ) &&
         onlyA.checks
-          .filter((c) => c.id !== "group-g2b" && c.id !== "group-g2c")
+          .filter((c) => !LATER.includes(c.id))
           .map((c) => `${c.id}:${c.status}`)
           .join(",") === G2A_CHECKS.map((id) => `${id}:pass`).join(","),
       onlyA.checks.map((c) => `${c.id}:${c.status}`).join(","),
     );
+    // g2b without g2d: G2d's legs and canvas-normal-region are not judged at all, every g2b
+    // check passes, and group-g2d is not-run.
+    const noG2d = join(root, "no-g2d");
+    await cp(good, noG2d, { recursive: true });
+    for (const leg of [
+      "canvas-headless",
+      "canvas-host",
+      "canvas-normal",
+      "sabotage-omit-canvas-filter",
+    ])
+      await rm(join(noG2d, leg), { recursive: true, force: true });
+    await writeJson(join(noG2d, "legs.json"), {
+      groups_run: ["g2a", "g2b", "g2c", "g2e"],
+      groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
+    });
+    const withoutD = await run(noG2d);
+    const g2dIds = [
+      "canvas-texture-headless-refused",
+      "canvas-texture-override",
+      "canvas-texture-wire",
+      "canvas-normal-region",
+      "leg-class-canvas-headless",
+      "leg-class-canvas-host",
+      "leg-class-canvas-normal",
+      "leg-class-sabotage-omit-canvas-filter",
+    ];
+    assert(
+      "g2d not run: only group-g2d is not-run, G2d's checks are absent, every other check passes",
+      !withoutD.gate_passed &&
+        withoutD.checks
+          .filter((c) => c.status !== "pass")
+          .map((c) => `${c.id}:${c.status}`)
+          .join(",") === "group-g2d:not-run" &&
+        !withoutD.checks.some((c) => g2dIds.includes(c.id)) &&
+        withoutD.legs["canvas-normal"] === undefined,
+      withoutD.checks
+        .filter((c) => c.status !== "pass")
+        .map((c) => `${c.id}:${c.status}: ${c.detail.slice(0, 200)}`)
+        .join(" | "),
+    );
+    await rm(noG2d, { recursive: true, force: true });
     await writeJson(join(g2aOnly, "legs.json"), {
       groups_run: [],
-      groups_landed: ["g2a", "g2b", "g2c"],
+      groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
     });
     const notRun = await run(g2aOnly);
     assert(
-      "nothing run: group-g2a, group-g2b and group-g2c are not-run and the gate fails",
+      "nothing run: group-g2a..group-g2e are not-run and the gate fails",
       !notRun.gate_passed &&
-        ["group-g2a", "group-g2b", "group-g2c"].every((id) =>
+        ["group-g2a", ...LATER].every((id) =>
           notRun.checks.some((c) => c.id === id && c.status === "not-run"),
         ),
       notRun.checks.map((c) => `${c.id}:${c.status}`).join(","),

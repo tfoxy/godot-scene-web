@@ -393,8 +393,20 @@ function replayLog(
       case "texture_2d_create":
       case "texture_2d_placeholder_create":
       case "texture_2d_update":
-      case "canvas_texture_create":
         if (l.id !== null) set(l.id);
+        break;
+      case "canvas_texture_create":
+        // G2d finding: a headless (dummy-renderer) capture's canvas_texture_create always
+        // returns RID() (servers/rendering/dummy/storage/texture_storage.h:54), and the
+        // mirror's own rid==0 guard then never registers it -- so the log's replica must not
+        // either, or it would diverge from a table that (correctly) never has this id.
+        if (l.id !== null && l.rid !== null) set(l.id);
+        break;
+      case "canvas_texture_set_channel":
+      case "canvas_texture_set_texture_filter":
+      case "canvas_texture_set_texture_repeat":
+        // Only an update to an id this replica already has live (created with a real rid).
+        if (l.id !== null && state.has(l.id)) set(l.id);
         break;
       case "texture_replace":
         if (l.id !== null) set(l.id);
@@ -482,7 +494,8 @@ export function textureIdsByName(
   for (const f of fixture) {
     if (
       f.op !== "texture_2d_create" &&
-      f.op !== "texture_2d_placeholder_create"
+      f.op !== "texture_2d_placeholder_create" &&
+      f.op !== "canvas_texture_create"
     )
       continue;
     const i = hook.findIndex(
@@ -1350,7 +1363,8 @@ export interface G2bCheckpoint {
   regions: Record<string, number>;
 }
 
-/** Receiver shots at the settle seqs against a reference's step shots (full frame, exact). */
+/** Receiver shots at the settle seqs against a reference's step shots (full frame, exact), with
+ * the per-region mismatch counts. */
 export async function receiverCheckpoints(
   expected: Gate2Expected,
   r: ReceiverEvidence,
@@ -1392,6 +1406,217 @@ export async function receiverCheckpoints(
       ).mismatched_pixels;
   }
   return out;
+}
+
+/** The session record's meta of a recording (render-stream-2.md "Session record"). */
+function sessionMeta(r: Resolved): Record<string, unknown> | null {
+  const m = r.metas[0];
+  return m && m.type === "session" ? m : null;
+}
+
+const HEADLESS_REFUSAL = "canvas-texture-headless";
+
+/** protocol/canvas-texture-headless.md: a headless host cannot allocate a CanvasTexture (the dummy
+ * storage's canvas_texture_allocate returns RID(), servers/rendering/dummy/storage/
+ * texture_storage.h:54), so it refuses them, typed. On canvas-headless (the `canvas` variant on a
+ * headless capture host): the session declares canvas_texture in `unsupported_resources`
+ * (canvas-texture-headless) and not in `resources`; every canvas_texture_* hook line is logged
+ * `unsupported`/canvas-texture-headless with no id; no transaction carries a canvas texture entry;
+ * from step 11 on exactly one item draws an `unsupported` command with reason
+ * canvas-texture-headless (and the matching item-level entry), before step 11 none does; the
+ * receiver skips it and reports it. The rendered canvas-host declares canvas_texture supported and
+ * refuses nothing. */
+export function checkCanvasTextureHeadlessRefusal(
+  expected: Gate2Expected,
+  headless: CaptureEvidence,
+  headlessRx: ReceiverEvidence,
+  host: CaptureEvidence,
+): G2bCheck {
+  const problems: string[] = [];
+  const feat = (r: Resolved) =>
+    (sessionMeta(r)?.features ?? {}) as {
+      resources?: string[];
+      unsupported_resources?: Array<{ resource: string; reason: string }>;
+    };
+  const display = (r: Resolved) =>
+    ((sessionMeta(r)?.engine ?? {}) as { display_server?: string })
+      .display_server;
+  const hf = feat(headless.full);
+  if (display(headless.full) !== "headless")
+    problems.push(
+      `canvas-headless: display_server ${display(headless.full)}, expected headless`,
+    );
+  if (
+    (hf.resources ?? []).includes("canvas_texture") ||
+    JSON.stringify(hf.unsupported_resources ?? null) !==
+      JSON.stringify([{ resource: "canvas_texture", reason: HEADLESS_REFUSAL }])
+  )
+    problems.push(
+      `canvas-headless: features resources ${JSON.stringify(hf.resources)} unsupported_resources ${JSON.stringify(hf.unsupported_resources)}`,
+    );
+  const of = feat(host.full);
+  if (
+    display(host.full) === "headless" ||
+    !(of.resources ?? []).includes("canvas_texture") ||
+    (of.unsupported_resources ?? []).length !== 0
+  )
+    problems.push(
+      `canvas-host: display_server ${display(host.full)}, features resources ${JSON.stringify(of.resources)} unsupported_resources ${JSON.stringify(of.unsupported_resources)}`,
+    );
+  const ctLines = headless.hook.lines.filter((l) =>
+    l.op.startsWith("canvas_texture_"),
+  );
+  if (!ctLines.some((l) => l.op === "canvas_texture_create"))
+    problems.push("canvas-headless: no canvas_texture_create hook line");
+  for (const l of ctLines)
+    if (
+      l.status !== "unsupported" ||
+      l.reason !== HEADLESS_REFUSAL ||
+      l.id !== null
+    )
+      problems.push(
+        `canvas-headless: hook line ${l.op} @${l.frame} is ${l.status}/${l.reason} id ${l.id}`,
+      );
+  const f11 = stepFrames2(expected, 11).applied;
+  const rec = headless.full.recording;
+  if (!rec) problems.push("canvas-headless: recording did not resolve");
+  else {
+    for (const t of rec.transactions) {
+      if (t.state.textures.some((x) => x.kind === "canvas")) {
+        problems.push(`canvas-headless seq ${t.seq}: a canvas texture entry`);
+        break;
+      }
+      const refusing = t.state.items.filter((it) =>
+        it.commands.some(
+          (c) => c.op === "unsupported" && c.reason === HEADLESS_REFUSAL,
+        ),
+      );
+      const entries = t.state.unsupported.filter(
+        (u) => u.reason === HEADLESS_REFUSAL,
+      );
+      const want = t.frame >= f11 ? 1 : 0;
+      if (refusing.length !== want || entries.length !== want) {
+        problems.push(
+          `canvas-headless seq ${t.seq} (frame ${t.frame}): ${refusing.length} items refuse, ${entries.length} entries, expected ${want}`,
+        );
+        break;
+      }
+    }
+  }
+  const a = headlessRx.applied;
+  if (a?.status !== "ok")
+    problems.push(`canvas-headless receiver status ${a?.status}`);
+  if (
+    !(a?.unsupported ?? []).some(
+      (u: { reason?: string }) => u.reason === HEADLESS_REFUSAL,
+    )
+  )
+    problems.push(
+      "canvas-headless receiver reports no canvas-texture-headless entry",
+    );
+  return check(
+    "canvas-texture-headless-refused",
+    "a headless capture host refuses CanvasTexture, typed (protocol/canvas-texture-headless.md): canvas-headless's session lists canvas_texture under unsupported_resources (canvas-texture-headless) and not under resources, every canvas_texture_* hook line is unsupported/canvas-texture-headless with no id, no transaction has a canvas entry, from step 11 on exactly one item draws an unsupported canvas-texture-headless command (with its item-level entry) and none before, and the headless receiver skips and reports it; the rendered canvas-host declares canvas_texture supported",
+    problems,
+    `canvas-headless refuses ${ctLines.length} canvas_texture_* calls and SC's draw; canvas-host supports it`,
+    [headless.hook.path, headless.full.path, host.full.path],
+  );
+}
+
+/** render-stream-2.md: a CanvasTexture's own non-default filter/repeat override the item's
+ * (gate2-design.md Q1d). At step 11 the `canvas` variant's SC asks for linear/disabled on the item
+ * and nearest/enabled on its CanvasTexture; region sc of canvas-host's own rendered frame (a
+ * GPU-backed host: host-renderer evidence, not headless support) equals synthesizeGate2's
+ * nearest/enabled. */
+export async function checkCanvasTextureOverride(
+  expected: Gate2Expected,
+  hostDir: string,
+): Promise<G2bCheck> {
+  const problems: string[] = [];
+  const want = synthesizeGate2(expected, 11);
+  const region = gate2Regions(expected, 11).sc;
+  const path = join(hostDir, "shots", "step-11.png");
+  const got = await decodePngRgba(path);
+  let bad = 0;
+  if (!got || !region) {
+    problems.push(`${path} or region sc unreadable`);
+  } else {
+    for (let y = region[1]; y < region[1] + region[3]; y++)
+      for (let x = region[0]; x < region[0] + region[2]; x++) {
+        const i = (y * want.width + x) * 4;
+        if ([0, 1, 2, 3].some((c) => want.rgba[i + c] !== got.data[i + c]))
+          bad++;
+      }
+    if (bad > 0)
+      problems.push(
+        `${bad} px of region sc differ from synthesizeGate2 (nearest, repeat enabled)`,
+      );
+  }
+  return check(
+    "canvas-texture-override",
+    "at step 11, region sc of canvas-host's own rendered frame (SC's CanvasTexture CT: diffuse A, texture_filter nearest, texture_repeat enabled; SC's own item filter linear, repeat disabled) equals synthesizeGate2 (nearest, enabled) exactly: the canvas texture's own filter and repeat override the item's (host-renderer evidence)",
+    problems,
+    `region sc exact (${bad} px differ)`,
+    [path],
+  );
+}
+
+/** render-stream-2.md "Texture" (kind canvas), on canvas-host (the rendered capture host of the
+ * `canvas` variant, the only kind of host that allocates a CanvasTexture): CT's wire entry at
+ * step 11 is kind canvas, status ok, diffuse A's id, filter nearest, repeat enabled, and its
+ * version is above 1 (each setter bumped it once from the create's 1). */
+export function checkCanvasTextureWire(
+  expected: Gate2Expected,
+  host: CaptureEvidence,
+): G2bCheck {
+  const problems: string[] = [];
+  const rec = host.full.recording;
+  if (!rec) {
+    return check(
+      "canvas-texture-wire",
+      "canvas-host's recording resolves, and at step 11 CT is kind canvas, status ok, diffuse A's id, filter nearest, repeat enabled, version > 1",
+      ["canvas-host recording did not resolve"],
+      "",
+      [host.full.path],
+    );
+  }
+  const ids = textureIdsByName(host.hook.lines, host.fixture);
+  const settle = settleTransactions(expected, rec);
+  const t11 = settle.get(11);
+  const ctId = ids.get("CT");
+  const aId = ids.get("A");
+  if (!t11 || ctId === undefined || aId === undefined) {
+    problems.push(
+      `missing settle transaction or ids (ct=${ctId}, a=${aId}, t11=${!!t11})`,
+    );
+  } else {
+    const ct = t11.state.textures.find((e) => e.id === ctId);
+    if (ct?.kind !== "canvas") {
+      problems.push(`CT is ${ct?.kind ?? "absent"}, expected canvas`);
+    } else if (ct.status !== "ok") {
+      problems.push(`CT status ${ct.status}`);
+    } else if (!ct.canvas || ct.canvas.diffuse !== aId) {
+      problems.push(`CT diffuse ${ct.canvas?.diffuse}, expected A's id ${aId}`);
+    } else if (
+      ct.canvas.filter !== "nearest" ||
+      ct.canvas.repeat !== "enabled"
+    ) {
+      problems.push(
+        `CT filter/repeat ${ct.canvas.filter}/${ct.canvas.repeat}, expected nearest/enabled`,
+      );
+    } else if (!(ct.version > 1)) {
+      problems.push(
+        `CT version ${ct.version}, expected > 1 (each setter bumps it)`,
+      );
+    }
+  }
+  return check(
+    "canvas-texture-wire",
+    "on canvas-host (a rendered, GPU-backed capture host; host-renderer evidence): CT's wire entry at step 11 is kind canvas, status ok, diffuse A's id, filter nearest, repeat enabled, with version above 1",
+    problems,
+    problems.length === 0 ? "CT correct on the rendered host" : "",
+    [host.hook.path, host.full.path],
+  );
 }
 
 export function mismatchingSteps(cps: readonly G2bCheckpoint[]): number[] {
@@ -1597,6 +1822,43 @@ export function checkUnsupportedRegions(
   );
 }
 
+/** G2d: canvas-normal variant. CT.normal_texture = B makes the canvas texture unsupported
+ * (canvas-texture-channel), so SC's command is skipped and recorded, never drawn with a
+ * substitute (D10). SC draws nothing in either the variant or the plain reference before step
+ * 11, so this leg differs from the plain reference only in region sc, and only from step 11 on. */
+export function checkCanvasNormalRegion(
+  cps: readonly G2bCheckpoint[],
+): G2bCheck {
+  const problems: string[] = [];
+  for (const c of cps) {
+    if (c.mismatched_pixels === null) {
+      problems.push(`step ${c.step}: shot unreadable`);
+      continue;
+    }
+    const sc = c.regions.sc ?? 0;
+    if (c.step < 11) {
+      if (c.mismatched_pixels !== 0)
+        problems.push(
+          `step ${c.step}: ${c.mismatched_pixels} px differ before step 11`,
+        );
+    } else {
+      if (sc === 0)
+        problems.push(`step ${c.step}: 0 px differ in region sc, expected > 0`);
+      if (c.mismatched_pixels !== sc)
+        problems.push(
+          `step ${c.step}: ${c.mismatched_pixels - sc} px differ outside region sc`,
+        );
+    }
+  }
+  return check(
+    "canvas-normal-region",
+    "canvas-normal: the receiver on the canvas-normal variant's recording differs from the plain reference only in region sc, and only from step 11 on (CT.normal_texture = B makes the canvas texture unsupported, canvas-texture-channel)",
+    problems,
+    cps.map((c) => `${c.step}:${c.regions.sc ?? 0}`).join(" "),
+    cps.map((c) => c.shot),
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Receiver hygiene
 // ---------------------------------------------------------------------------------------------
@@ -1706,7 +1968,7 @@ export async function loadLive(
     outDir,
     "live-inline/host",
     "live-inline/host",
-    911,
+    971, // the live timeline's quit, S + N*11 + 11 (run-gate2.sh LIVE_QUIT_FRAME)
   );
   return {
     host,
@@ -1976,6 +2238,15 @@ export interface G2bLegExpectation {
   reason?: string;
 }
 
+/** G2d's legs (group g2d): evaluated by runG2b, since they reuse its captures, reference and
+ * receiver checks, but only when g2d ran. */
+export const G2D_LEG_NAMES: readonly string[] = [
+  "canvas-headless",
+  "canvas-host",
+  "canvas-normal",
+  "sabotage-omit-canvas-filter",
+];
+
 export const G2B_LEGS: readonly G2bLegExpectation[] = [
   { leg: "receiver-cold", expected_class: "success" },
   { leg: "receiver-warm", expected_class: "success" },
@@ -1991,7 +2262,10 @@ export const G2B_LEGS: readonly G2bLegExpectation[] = [
   {
     leg: "sabotage-omit-replace",
     expected_class: "pixel-mismatch",
-    steps: [7, 8, 9, 10],
+    // G2d: A stays stuck at A1's shape and P2 stuck as a placeholder forever (the dropped
+    // texture_replace is never retried), so step 11's SC, which also samples A, inherits the
+    // same mismatch the other A-drawing items already show from step 7 on.
+    steps: [7, 8, 9, 10, 11],
   },
   {
     leg: "sabotage-stale-texture",
@@ -2017,6 +2291,25 @@ export const G2B_LEGS: readonly G2bLegExpectation[] = [
     leg: "sabotage-receiver-ignore-cache",
     expected_class: "resource-violation",
     reason: "warm-cache-fetch",
+  },
+  // G2d. canvas-headless: the `canvas` variant on a headless host, refused typed
+  // (protocol/canvas-texture-headless.md). canvas-host, canvas-normal and the sabotage run on a
+  // rendered host: host-renderer evidence, not headless support.
+  {
+    leg: "canvas-headless",
+    expected_class: "unsupported",
+    reason: "canvas-texture-headless",
+  },
+  { leg: "canvas-host", expected_class: "success" },
+  {
+    leg: "canvas-normal",
+    expected_class: "unsupported",
+    reason: "unsupported-texture",
+  },
+  {
+    leg: "sabotage-omit-canvas-filter",
+    expected_class: "pixel-mismatch",
+    steps: [11],
   },
 ];
 
@@ -2060,7 +2353,7 @@ export function checkLegClass(
 // ---------------------------------------------------------------------------------------------
 
 export interface G2bLegReport {
-  group: "g2b";
+  group: "g2b" | "g2d";
   expected_class: G2bClass | null;
   result_class: G2bClass | null;
   reasons: string[];
@@ -2121,10 +2414,15 @@ function endStats(
     : null;
 }
 
+/** Groups g2b and, with `withG2d`, g2d (G2d's canvas-headless, canvas-host, canvas-normal and
+ * sabotage-omit-canvas-filter legs and their four checks). Without it those legs are not loaded at
+ * all, so
+ * `--legs g2a,g2b` judges g2b alone and the gate reports group-g2d as not-run. */
 export async function runG2b(
   outDir: string,
   expected: Gate2Expected,
   captureQuit: number,
+  withG2d = true,
 ): Promise<G2bResult> {
   const quit = expected.quit_frame_default;
   const capture = await loadCapture(outDir, "capture", "capture", captureQuit);
@@ -2147,6 +2445,13 @@ export async function runG2b(
   const stale = await sab("sabotage-stale-texture");
   const wrongHash = await sab("sabotage-wrong-hash");
   const spurious = await sab("sabotage-spurious-update");
+  // G2d.
+  const omitCanvasFilter = withG2d
+    ? await sab("sabotage-omit-canvas-filter")
+    : null;
+  const canvasNormal = withG2d ? await sab("canvas-normal") : null;
+  const canvasHost = withG2d ? await sab("canvas-host") : null;
+  const canvasHeadless = withG2d ? await sab("canvas-headless") : null;
 
   const rx = (leg: string, rel: string, c: CaptureEvidence | null) =>
     loadReceiver(outDir, leg, rel, c, expected);
@@ -2199,6 +2504,29 @@ export async function runG2b(
     "sabotage-receiver-ignore-cache/receiver",
     capture,
   );
+  // G2d.
+  const omitCanvasFilterRx = omitCanvasFilter
+    ? await rx(
+        "sabotage-omit-canvas-filter",
+        "sabotage-omit-canvas-filter/receiver",
+        omitCanvasFilter,
+      )
+    : null;
+  const canvasNormalRx = canvasNormal
+    ? await rx("canvas-normal", "canvas-normal/receiver", canvasNormal)
+    : null;
+  const canvasHostRx = canvasHost
+    ? await rx("canvas-host", "canvas-host/receiver", canvasHost)
+    : null;
+  const canvasHeadlessRx = canvasHeadless
+    ? await rx("canvas-headless", "canvas-headless/receiver", canvasHeadless)
+    : null;
+  const g2dReceivers = [
+    canvasHeadlessRx,
+    canvasHostRx,
+    omitCanvasFilterRx,
+    canvasNormalRx,
+  ].filter((r): r is ReceiverEvidence => r !== null);
   const live = await loadLive(outDir, expected);
 
   const reference = join(outDir, "reference");
@@ -2222,6 +2550,17 @@ export async function runG2b(
     omitReplaceRx,
     reference,
   );
+  // G2d: the canvas variants draw the main fixture's pixels, so every receiver of them is held to
+  // the plain reference (canvas-headless's is headless: no shots).
+  const cpOmitCanvasFilter = omitCanvasFilterRx
+    ? await receiverCheckpoints(expected, omitCanvasFilterRx, reference)
+    : [];
+  const cpCanvasNormal = canvasNormalRx
+    ? await receiverCheckpoints(expected, canvasNormalRx, reference)
+    : [];
+  const cpCanvasHost = canvasHostRx
+    ? await receiverCheckpoints(expected, canvasHostRx, reference)
+    : [];
 
   const store = await checkStoreComplete([capture, unsupported]);
   const coldHashes = new Set(
@@ -2243,6 +2582,19 @@ export async function runG2b(
     await checkFreedDrawsDefault(expected, reference, cold),
     await checkCopyAtHook(expected, reference, cold),
     checkUnsupportedRegions(cpUnsupported, expected),
+    ...(canvasHeadless && canvasHeadlessRx && canvasHost
+      ? [
+          checkCanvasTextureHeadlessRefusal(
+            expected,
+            canvasHeadless,
+            canvasHeadlessRx,
+            canvasHost,
+          ),
+          await checkCanvasTextureOverride(expected, canvasHost.dir),
+          checkCanvasTextureWire(expected, canvasHost),
+          checkCanvasNormalRegion(cpCanvasNormal),
+        ]
+      : []),
     checkLiveInline(live),
     await checkReceiverConsumedStream([
       cold,
@@ -2258,6 +2610,7 @@ export async function runG2b(
       spuriousRx,
       reuploadRx,
       ignoreRx,
+      ...g2dReceivers,
     ]),
     await checkReceiverNeverLoadedFixture(outDir),
     checkReceiverTypedClean([
@@ -2274,6 +2627,7 @@ export async function runG2b(
       spuriousRx,
       reuploadRx,
       ignoreRx,
+      ...g2dReceivers,
       live.receiver,
     ]),
   ];
@@ -2350,8 +2704,37 @@ export async function runG2b(
       expected,
     },
   };
+  if (canvasNormal && canvasNormalRx)
+    inputs["canvas-normal"] = {
+      capture: canvasNormal,
+      receiver: canvasNormalRx,
+      checkpoints: [],
+      expected,
+    };
+  if (canvasHeadless && canvasHeadlessRx)
+    inputs["canvas-headless"] = {
+      capture: canvasHeadless,
+      receiver: canvasHeadlessRx,
+      checkpoints: [],
+      expected,
+    };
+  if (canvasHost && canvasHostRx)
+    inputs["canvas-host"] = {
+      capture: canvasHost,
+      receiver: canvasHostRx,
+      checkpoints: cpCanvasHost,
+      expected,
+    };
+  if (omitCanvasFilter && omitCanvasFilterRx)
+    inputs["sabotage-omit-canvas-filter"] = {
+      capture: omitCanvasFilter,
+      receiver: omitCanvasFilterRx,
+      checkpoints: cpOmitCanvasFilter,
+      expected,
+    };
   const legs: Record<string, G2bLegReport> = {};
   for (const e of G2B_LEGS) {
+    if (!withG2d && G2D_LEG_NAMES.includes(e.leg)) continue;
     const c =
       e.leg === "live-inline"
         ? classifyLive(live)
@@ -2387,7 +2770,7 @@ export async function runG2b(
       : [];
     checks.push(checkLegClass(e, c, extra, artifacts));
     legs[e.leg] = {
-      group: "g2b",
+      group: G2D_LEG_NAMES.includes(e.leg) ? "g2d" : "g2b",
       expected_class: e.expected_class,
       result_class: c.result_class,
       reasons: c.reasons,
