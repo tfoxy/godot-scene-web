@@ -1,0 +1,178 @@
+{
+  "schema": "render-stream-2-golden-index/1",
+  "protocol": "render-stream/2",
+  "valid": [
+    {
+      "file": "full.rs2",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "f41cffdb9df8eb45b736db0fc8c795fa60b0017e8a4c0e5b5bcb0fb6a91ea08c"
+    },
+    {
+      "file": "patch.rs2",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "17f370e3b559d9a12e18f3f06f6b5be5bd81b6ae4bb64c0f764c34aef28c945f"
+    },
+    {
+      "file": "inline.rs2",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "ffdc8b9788e65dc0f4a26c6914e17b686faf12870778e778d31528f49703c338"
+    }
+  ],
+  "resolved": "resolved.json",
+  "inline_resources": [
+    {
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "bytes": 1135,
+      "record_index": 1
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 2
+    },
+    {
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "bytes": 1135,
+      "record_index": 5
+    },
+    {
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "bytes": 447,
+      "record_index": 7
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs2",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs2 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs2",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '1' (GRS1), not '2'"
+    },
+    {
+      "file": "invalid/meta-schema.rs2",
+      "code": "meta-schema",
+      "description": "seq 1's cmd_f32 block (0 bytes either way) is declared type u8 instead of f32"
+    },
+    {
+      "file": "invalid/texture-entry.rs2",
+      "code": "texture-entry",
+      "description": "texture 1 is kind image, status ok, but hash is null"
+    },
+    {
+      "file": "invalid/texture-ref.rs2",
+      "code": "texture-ref",
+      "description": "item 1's add_texture_rect names texture 99, which has no entry in the resolved table"
+    },
+    {
+      "file": "invalid/texture-version.rs2",
+      "code": "texture-version",
+      "description": "texture 1's version is 2 at seq 1 and 1 at seq 2: version must never decrease"
+    },
+    {
+      "file": "invalid/resource-hash.rs2",
+      "code": "resource-hash",
+      "description": "the resource record declares hash 0...0, but the payload's own sha256 is different"
+    },
+    {
+      "file": "invalid/resource-duplicate.rs2",
+      "code": "resource-duplicate",
+      "description": "the same hash is carried by two resource records in the same stream"
+    },
+    {
+      "file": "invalid/resource-missing.rs2",
+      "code": "resource-missing",
+      "description": "texture 1 is an ok image within inline_max_bytes, but its hash never arrives as a resource record"
+    },
+    {
+      "file": "invalid/resource-payload.rs2",
+      "code": "resource-payload",
+      "description": "the resource's payload decodes as 8x8, but texture 1's table entry declares 4x4 for the same hash"
+    },
+    {
+      "file": "invalid/cmd-offset.rs2",
+      "code": "cmd-offset",
+      "description": "add_rect declares f=8, but the preceding add_texture_rect_region consumed 12 floats"
+    },
+    {
+      "file": "invalid/unsupported-mismatch.rs2",
+      "code": "unsupported-mismatch",
+      "description": "item 1 draws against unsupported texture 1, with no derived unsupported-texture entry"
+    },
+    {
+      "file": "invalid/patch-removed.rs2",
+      "code": "patch-removed",
+      "description": "seq 2 removes texture 99, which is absent from the base state"
+    }
+  ],
+  "payload_invalid": [
+    {
+      "file": "payload-invalid/payload-magic.grt",
+      "code": "payload-magic",
+      "description": "the GRT1 magic's last byte is corrupted"
+    },
+    {
+      "file": "payload-invalid/payload-meta.grt",
+      "code": "payload-meta",
+      "description": "meta_len is shortened by one byte, breaking the JSON"
+    },
+    {
+      "file": "payload-invalid/payload-length.grt",
+      "code": "payload-length",
+      "description": "data_len is one more than the trailing bytes present"
+    },
+    {
+      "file": "payload-invalid/payload-size.grt",
+      "code": "payload-size",
+      "description": "data_bytes is a self-consistent 63, but 4x4 RGBA8 needs 64"
+    }
+  ],
+  "payloads": [
+    {
+      "file": "payloads/a1.grt",
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/a2.grt",
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/f.grt",
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "format": "LA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 137
+    },
+    {
+      "file": "payloads/p.grt",
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "format": "RGBA8",
+      "width": 8,
+      "height": 8,
+      "mipmaps": true,
+      "bytes": 447
+    }
+  ]
+}

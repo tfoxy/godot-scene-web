@@ -1,0 +1,334 @@
+extends SceneTree
+## Rs2Decoder / RsTexturePayload self-test against the shared golden vectors (protocol/golden-2/).
+##
+##   godot --headless --path receiver --script res://tests/codec2_selftest.gd
+##
+## RS_SELFTEST_GOLDEN_DIR overrides the golden directory (default <receiver>/../protocol/golden-2).
+## Prints "[rs2-selftest] ok" and quits 0, or prints each failure and quits 1.
+##
+## Pure-codec properties only (gate2-design.md G2b1 "Pass criteria" -- the applier, RsApplier,
+## does not exist for /2 until G2b2):
+##   1. decode_record()-equivalent (split_records + decode_record) deep-equals *.decoded.json for
+##      full/patch/inline.rs2;
+##   2. the Stream's resolved state after each transaction deep-equals resolved.json's per-seq
+##      state (session_id/stream_id/encoding excepted, as self-test-rs2.ts), for all three;
+##   3. every invalid/*.rs2 yields its index.json code, and validate_recording() of all three
+##      valid vectors is [];
+##   4. corrupt-meta.rs2's broken transaction is rejected with "meta-json";
+##   5. every payload-invalid/*.grt yields its code from RsTexturePayload.decode();
+##   6. every payloads/*.grt hashes to its listed name, decodes to its listed shape, and an Image
+##      rebuilt from it (RsTexturePayload.make_image()) has get_data() equal to the payload's data
+##      bytes.
+
+var _failures: Array[String] = []
+var _golden: String = ""
+
+
+func _initialize() -> void:
+	_golden = OS.get_environment("RS_SELFTEST_GOLDEN_DIR")
+	if _golden == "":
+		_golden = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
+	print("[rs2-selftest] golden %s" % _golden)
+	var index: Dictionary = _read_json("index.json")
+	if index.is_empty():
+		_finish()
+		return
+	var resolved_file: String = index["resolved"]
+	var resolved: Dictionary = _read_json(resolved_file)
+	_test_valid(index, resolved)
+	_test_invalid(index)
+	_test_corrupt(index)
+	_test_payload_invalid(index)
+	_test_payloads(index)
+	_finish()
+
+
+func _finish() -> void:
+	if _failures.is_empty():
+		print("[rs2-selftest] ok")
+		quit(0)
+	else:
+		for failure: String in _failures:
+			print("[rs2-selftest] FAIL: " + failure)
+		print("[rs2-selftest] %d failure(s)" % _failures.size())
+		quit(1)
+
+
+func _check(condition: Variant, what: String) -> void:
+	if not condition:
+		_failures.append(what)
+
+
+func _read_bytes(relative: String) -> PackedByteArray:
+	var path: String = _golden.path_join(relative)
+	var data: PackedByteArray = FileAccess.get_file_as_bytes(path)
+	_check(not data.is_empty(), "cannot read %s" % path)
+	return data
+
+
+func _read_json(relative: String) -> Dictionary:
+	var path: String = _golden.path_join(relative)
+	var json := JSON.new()
+	if json.parse(FileAccess.get_file_as_string(path)) != OK or typeof(json.data) != TYPE_DICTIONARY:
+		_failures.append("cannot parse %s as a JSON object" % path)
+		return {}
+	var parsed: Dictionary = json.data
+	return parsed
+
+
+## decodeRecording() in GDScript: the golden decoded form, built from Rs2Decoder's own API. A u8
+## block decodes to {"u8_bytes","sha256"} (unchanged shape from decode_record()); an f32 block to
+## a plain float Array.
+func _decode_recording(data: PackedByteArray) -> Dictionary:
+	var split: Dictionary = Rs2Decoder.split_records(data)
+	var records: Array[Dictionary] = split["records"]
+	var split_errors: PackedStringArray = split["errors"]
+	_check(split_errors.is_empty(), "split_records errors: %s" % str(split_errors))
+	var decoded: Array = []
+	for raw: Dictionary in records:
+		var record: Dictionary = Rs2Decoder.decode_record(data, Rs2Decoder.as_int(raw["offset"]))
+		var errors: PackedStringArray = record["errors"]
+		_check(errors.is_empty(), "decode_record at %d errors: %s" % [Rs2Decoder.as_int(raw["offset"]), str(errors)])
+		_check(record["byte_length"] == raw["byte_length"], "byte_length disagrees between split_records and decode_record at %d" % Rs2Decoder.as_int(raw["offset"]))
+		var blocks: Array = record["blocks"]
+		var block_lists: Array = []
+		for block: Variant in blocks:
+			if block is PackedFloat32Array:
+				var float_block: PackedFloat32Array = block
+				var floats: Array = []
+				for value: float in float_block:
+					floats.append(value)
+				block_lists.append(floats)
+			else:
+				block_lists.append(block)
+		decoded.append({
+			"offset": record["offset"],
+			"byte_length": record["byte_length"],
+			"sha256": record["sha256"],
+			"meta": record["meta"],
+			"blocks": block_lists,
+		})
+	return {
+		"schema": "render-stream-2-decoded/1",
+		"magic": data.slice(0, 8).hex_encode(),
+		"records": decoded,
+	}
+
+
+## The "state" shape resolved.json carries per transaction, read off a Stream right after it
+## accepted that transaction's record.
+func _snapshot_state(stream: Rs2Decoder.Stream, meta: Dictionary) -> Dictionary:
+	var canvas_ids: Array[int] = []
+	for id: int in stream.canvases:
+		canvas_ids.append(id)
+	canvas_ids.sort()
+	var canvases_out: Array = []
+	for id: int in canvas_ids:
+		canvases_out.append(stream.canvases[id])
+	var item_ids: Array[int] = []
+	for id: int in stream.items:
+		item_ids.append(id)
+	item_ids.sort()
+	var items_out: Array = []
+	for id: int in item_ids:
+		items_out.append(stream.items[id])
+	var texture_ids: Array[int] = []
+	for id: int in stream.textures:
+		texture_ids.append(id)
+	texture_ids.sort()
+	var textures_out: Array = []
+	for id: int in texture_ids:
+		textures_out.append(stream.textures[id])
+	return {
+		"status": meta["status"],
+		"failures": meta["failures"],
+		"unsupported": meta["unsupported"],
+		"default_texture_filter": stream.default_texture_filter,
+		"default_texture_repeat": stream.default_texture_repeat,
+		"canvases": canvases_out,
+		"items": items_out,
+		"textures": textures_out,
+	}
+
+
+func _test_valid(index: Dictionary, resolved: Dictionary) -> void:
+	var valid: Array = index["valid"]
+	for value: Variant in valid:
+		var vector: Dictionary = value
+		var file: String = vector["file"]
+		var data: PackedByteArray = _read_bytes(file)
+		_check(Rs2Decoder.sha256_hex(data) == vector["sha256"], "%s sha256 differs from index.json" % file)
+
+		var decoded_file: String = vector["decoded"]
+		var expected_decoded: Dictionary = _read_json(decoded_file)
+		var actual_decoded: Dictionary = _decode_recording(data)
+		var diffs: Array[String] = []
+		_deep_equal(actual_decoded, expected_decoded, "$", diffs)
+		for diff: String in diffs.slice(0, 20):
+			_failures.append("%s decoded form: %s" % [file, diff])
+
+		var split: Dictionary = Rs2Decoder.split_records(data)
+		var records: Array[Dictionary] = split["records"]
+		var stream := Rs2Decoder.Stream.new()
+		var expected_transactions: Array = resolved["transactions"]
+		var resolved_index: int = 0
+		for i: int in records.size():
+			var raw: Dictionary = records[i]
+			var record: Dictionary = Rs2Decoder.decode_record(data, Rs2Decoder.as_int(raw["offset"]))
+			var record_errors: PackedStringArray = record["errors"]
+			_check(record_errors.is_empty(), "%s record %d decode errors: %s" % [file, i, str(record_errors)])
+			var accept_errors: PackedStringArray = stream.accept(data, record)
+			_check(accept_errors.is_empty(), "%s record %d accept errors: %s" % [file, i, str(accept_errors)])
+			var meta: Dictionary = record["meta"]
+			if meta.get("type") == "transaction":
+				_check(resolved_index < expected_transactions.size(), "%s: more transactions than resolved.json has" % file)
+				if resolved_index < expected_transactions.size():
+					var expected_txn: Dictionary = expected_transactions[resolved_index]
+					var actual_state: Dictionary = _snapshot_state(stream, meta)
+					var expected_state: Dictionary = expected_txn["state"]
+					var state_diffs: Array[String] = []
+					_deep_equal(actual_state, expected_state, "$", state_diffs)
+					for diff: String in state_diffs.slice(0, 20):
+						_failures.append("%s seq %d resolved state: %s" % [file, resolved_index + 1, diff])
+				resolved_index += 1
+		_check(stream.end_seen, "%s: the stream did not see the end record" % file)
+		_check(resolved_index == expected_transactions.size(), "%s: saw %d transactions, resolved.json has %d" % [file, resolved_index, expected_transactions.size()])
+
+		# resources: resolveRecording()'s separate ground truth (never shared across streams).
+		var resource_list: Array = []
+		for i: int in records.size():
+			var raw: Dictionary = records[i]
+			var record: Dictionary = Rs2Decoder.decode_record(data, Rs2Decoder.as_int(raw["offset"]))
+			var meta: Dictionary = record["meta"]
+			if meta.get("type") == "resource":
+				resource_list.append({"hash": meta["hash"], "bytes": meta["bytes"], "record_index": i})
+		var inline_resources: Array = index["inline_resources"]
+		var expected_resources: Array = inline_resources if file == "inline.rs2" else []
+		var resource_diffs: Array[String] = []
+		_deep_equal(resource_list, expected_resources, "$", resource_diffs)
+		for diff: String in resource_diffs:
+			_failures.append("%s resources: %s" % [file, diff])
+
+		var errors: PackedStringArray = Rs2Decoder.validate_recording(data)
+		_check(errors.is_empty(), "%s should validate, got %s" % [file, str(errors)])
+
+
+func _test_invalid(index: Dictionary) -> void:
+	var invalid: Array = index["invalid"]
+	_check(invalid.size() == 12, "index.json lists %d invalid vectors, expected 12" % invalid.size())
+	for value: Variant in invalid:
+		var vector: Dictionary = value
+		var file: String = vector["file"]
+		var code: String = vector["code"]
+		var errors: PackedStringArray = Rs2Decoder.validate_recording(_read_bytes(file))
+		var found: bool = false
+		for error: String in errors:
+			if Rs2Decoder.code_of(error) == code:
+				found = true
+		_check(found, "%s should be rejected with %s, got %s" % [file, code, str(errors)])
+		print("[rs2-selftest] %s -> %s" % [file, errors[0] if errors.size() > 0 else "(accepted)"])
+
+
+func _test_corrupt(index: Dictionary) -> void:
+	var corrupt: Array = index["corrupt"]
+	for value: Variant in corrupt:
+		var vector: Dictionary = value
+		var file: String = vector["file"]
+		var code: String = vector["code"]
+		var record_index: int = Rs2Decoder.as_int(vector["record_index"])
+		var data: PackedByteArray = _read_bytes(file)
+		var split: Dictionary = Rs2Decoder.split_records(data)
+		var split_errors: PackedStringArray = split["errors"]
+		_check(split_errors.is_empty(), "%s: framing must be intact, got %s" % [file, str(split_errors)])
+		var records: Array[Dictionary] = split["records"]
+		var first_bad: int = -1
+		var first_code: String = ""
+		for i: int in records.size():
+			var record: Dictionary = Rs2Decoder.decode_record(data, Rs2Decoder.as_int(records[i]["offset"]))
+			var errors: PackedStringArray = record["errors"]
+			if not errors.is_empty():
+				first_bad = i
+				first_code = Rs2Decoder.code_of(errors[0])
+				break
+		_check(first_bad == record_index and first_code == code, "%s: first bad record is %d (%s), expected %d (%s)" % [file, first_bad, first_code, record_index, code])
+		var whole: PackedStringArray = Rs2Decoder.validate_recording(data)
+		_check(whole.size() > 0 and Rs2Decoder.code_of(whole[0]) == code, "%s: validate_recording gave %s" % [file, str(whole)])
+		print("[rs2-selftest] %s -> record %d %s" % [file, first_bad, first_code])
+
+
+func _test_payload_invalid(index: Dictionary) -> void:
+	var payload_invalid: Array = index["payload_invalid"]
+	_check(payload_invalid.size() == 4, "index.json lists %d payload-invalid vectors, expected 4" % payload_invalid.size())
+	for value: Variant in payload_invalid:
+		var vector: Dictionary = value
+		var file: String = vector["file"]
+		var code: String = vector["code"]
+		var data: PackedByteArray = _read_bytes(file)
+		var decoded: Dictionary = RsTexturePayload.decode(data)
+		_check(not decoded["ok"] and decoded["code"] == code, "%s should decode with code %s, got %s" % [file, code, str(decoded)])
+		print("[rs2-selftest] %s -> %s" % [file, decoded.get("code", "(ok)")])
+
+
+func _test_payloads(index: Dictionary) -> void:
+	var payloads: Array = index["payloads"]
+	_check(payloads.size() == 4, "index.json lists %d payloads, expected 4" % payloads.size())
+	for value: Variant in payloads:
+		var vector: Dictionary = value
+		var file: String = vector["file"]
+		var data: PackedByteArray = _read_bytes(file)
+		_check(Rs2Decoder.sha256_hex(data) == vector["hash"], "%s sha256 differs from index.json" % file)
+		var decoded: Dictionary = RsTexturePayload.decode(data)
+		_check(decoded["ok"], "%s should decode, got %s" % [file, str(decoded)])
+		if not decoded["ok"]:
+			continue
+		_check(decoded["format"] == vector["format"], "%s format %s, expected %s" % [file, decoded["format"], vector["format"]])
+		_check(decoded["width"] == Rs2Decoder.as_int(vector["width"]), "%s width %d, expected %d" % [file, decoded["width"], Rs2Decoder.as_int(vector["width"])])
+		_check(decoded["height"] == Rs2Decoder.as_int(vector["height"]), "%s height %d, expected %d" % [file, decoded["height"], Rs2Decoder.as_int(vector["height"])])
+		_check(decoded["mipmaps"] == vector["mipmaps"], "%s mipmaps %s, expected %s" % [file, decoded["mipmaps"], vector["mipmaps"]])
+		_check(data.size() == Rs2Decoder.as_int(vector["bytes"]), "%s total bytes %d, expected %d" % [file, data.size(), Rs2Decoder.as_int(vector["bytes"])])
+		var image: Image = RsTexturePayload.make_image(decoded)
+		_check(image != null, "%s: make_image() returned null" % file)
+		if image != null:
+			var image_data: PackedByteArray = image.get_data()
+			var payload_data: PackedByteArray = decoded["data"]
+			_check(image_data == payload_data, "%s: Image.get_data() (size %d) differs from the payload's data bytes (size %d)" % [file, image_data.size(), payload_data.size()])
+
+
+## Deep equality after JSON parsing: any two numbers compare as floats.
+func _deep_equal(a: Variant, b: Variant, path: String, diffs: Array[String]) -> void:
+	var ta: int = typeof(a)
+	var tb: int = typeof(b)
+	var a_number: bool = ta == TYPE_INT or ta == TYPE_FLOAT
+	var b_number: bool = tb == TYPE_INT or tb == TYPE_FLOAT
+	if a_number and b_number:
+		var fa: float = a
+		var fb: float = b
+		if fa != fb:
+			diffs.append("%s: %s != %s" % [path, str(fa), str(fb)])
+		return
+	if ta != tb:
+		diffs.append("%s: type %s != %s" % [path, type_string(ta), type_string(tb)])
+		return
+	if ta == TYPE_DICTIONARY:
+		var da: Dictionary = a
+		var db: Dictionary = b
+		for key: Variant in da:
+			if not db.has(key):
+				diffs.append("%s: unexpected key %s" % [path, str(key)])
+			else:
+				_deep_equal(da[key], db[key], "%s.%s" % [path, str(key)], diffs)
+		for key: Variant in db:
+			if not da.has(key):
+				diffs.append("%s: missing key %s" % [path, str(key)])
+		return
+	if ta == TYPE_ARRAY:
+		var la: Array = a
+		var lb: Array = b
+		if la.size() != lb.size():
+			diffs.append("%s: length %d != %d" % [path, la.size(), lb.size()])
+			return
+		for i: int in la.size():
+			_deep_equal(la[i], lb[i], "%s[%d]" % [path, i], diffs)
+		return
+	if a != b:
+		diffs.append("%s: %s != %s" % [path, str(a), str(b)])
