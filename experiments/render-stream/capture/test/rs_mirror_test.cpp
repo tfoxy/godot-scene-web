@@ -6,13 +6,15 @@
 // and (gate 1, G1b2) render-stream-1.md "Invariant 9" / "Unsupported reasons"
 // and gate1-design.md "Q1", "Q4" and "G1b2" (omit-op, mutation epoch), and
 // (gate 2, G2b2) gate2-design.md Q3 "Texture mirror" with render-stream-2.md
-// "Texture" and "Item-level unsupported entries".
+// "Texture" and "Item-level unsupported entries", and (gate 3, G3a)
+// gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip.
 
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "rs2_diff.h"
 #include "rs_mirror.h"
 #include "rs_sha256.h"
 #include "rs_texture_payload.h"
@@ -1402,6 +1404,78 @@ void test_texture_omit_op_and_spurious() {
         "spurious-texture-update bumps the version and re-copies identical bytes");
 }
 
+// gate3-design.md Q3 "Mirror fix" (D3): the engine's Item::clear() sets clip = false and keeps
+// custom_rect (servers/rendering/renderer_canvas_render.h:455), so the mirror's clear does too.
+void test_clear_resets_clip() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_custom_rect(100, true, {0, 0, 64, 48}, 1);
+  m.set_clip(100, true, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  check(item(m.snapshot(1, 1).state, 1)->clip, "set_clip(true) stored");
+  m.clear(100, 2);
+  const Snapshot s = m.snapshot(2, 2).state;
+  const auto *it = item(s, 1);
+  check(!it->clip, "set_clip(true), clear: clip is false");
+  check(it->custom_rect && it->custom_rect_rect == Rect4{0, 0, 64, 48},
+        "clear keeps custom_rect and its rect");
+  check(it->commands.empty() && it->content_version == 2, "clear empties and bumps as before");
+}
+
+void test_clear_then_reassert_clip() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_custom_rect(100, true, {0, 0, 64, 48}, 1);
+  m.set_clip(100, true, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  const Snapshot base = m.snapshot(1, 1).state;
+  // A Control redraw: clear, custom rect, clip, content, all in one frame.
+  m.clear(100, 2);
+  m.set_custom_rect(100, true, {0, 0, 64, 48}, 2);
+  m.set_clip(100, true, 2);
+  m.add_rect(100, kRect, kGreen, false, 2);
+  const Snapshot cur = m.snapshot(2, 2).state;
+  check(item(cur, 1)->clip, "set_clip(true), clear, set_clip(true): clip is true");
+  const grc::rs2::Transaction patch = grc::rs2::make_patch(base, cur);
+  bool found = false;
+  for (const auto &e : patch.items) {
+    if (e.state.id != 1) continue;
+    found = true;
+    check(e.state.clip == item(base, 1)->clip, "the patch entry's clip equals the base's");
+    check(!e.commands_null, "the content change carries commands");
+  }
+  check(found, "the redrawn item is in the patch (content_version changed)");
+  const Snapshot resolved = grc::rs2::resolve(base, patch);
+  check(item(resolved, 1) != nullptr && item(resolved, 1)->clip,
+        "the patch resolves to clip true: no clip change on the wire");
+}
+
+void test_omit_clip_then_clear() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  m.set_clip(100, true, 4);  // before the sabotage frame: applies
+  check(item(m.snapshot(1, 4).state, 1)->clip, "a set_clip before the omit frame applies");
+  m.set_omit_op("canvas_item_set_clip", 5);
+  // Frame 5: the redraw's re-assertion is dropped, the clear still resets.
+  m.clear(100, 5);
+  m.set_clip(100, true, 5);
+  m.add_rect(100, kRect, kGreen, false, 5);
+  const Snapshot s = m.snapshot(2, 5).state;
+  const auto *it = item(s, 1);
+  check(!it->clip, "omit-op set_clip, then clear: clip false");
+  check(it->commands.size() == 1 && it->commands[0].color == kGreen,
+        "nothing of the dropped call applied; the content still changed");
+  check(s.failures.empty(), "a dropped set_clip is no failure");
+  check(m.stats().dropped_omit_op == 1, "one set_clip counted as dropped_omit_op");
+}
+
 int main() {
   test_fresh_session();
   test_ids_and_recycled_rid();
@@ -1441,6 +1515,9 @@ int main() {
   test_texture_omit_op_and_spurious();
   test_canvas_texture();
   test_canvas_texture_headless_refusal();
+  test_clear_resets_clip();
+  test_clear_then_reassert_clip();
+  test_omit_clip_then_clear();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

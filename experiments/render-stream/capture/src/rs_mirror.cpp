@@ -564,7 +564,12 @@ void Mirror::clear(std::uint64_t rid, std::uint64_t frame) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_clear", frame)) {
+    // Gate 3 (gate3-design.md D3, Q1b): the engine's Item::clear() also resets the clip flag
+    // (servers/rendering/renderer_canvas_render.h:455) but keeps custom_rect, so a Control's net
+    // clip after a redraw is the set_clip that follows the clear, and a raw item that clears
+    // without re-asserting it stops clipping.
     item->state.commands.clear();
+    item->state.clip = false;
     ++item->state.content_version;
   }
 }
