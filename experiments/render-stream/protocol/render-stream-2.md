@@ -1,11 +1,16 @@
-# render-stream/2 wire format — PROPOSED
+# render-stream/2 wire format
 
-**Status: PROPOSED (2026-10-09), not implemented.** Written with
+Status: the wire format's codecs (G2b1, 2026-10-09). Written with
 [gate2-design.md](gate2-design.md), which says what the capture puts into these records and what
-receivers do with them. G2b1 finalizes this text against the codecs and golden vectors in
-`protocol/golden-2/`; G2b2 switches the capture library, the receiver and the gate 0 and gate 1
-runners to it and drops this banner. Until then, [render-stream-1.md](render-stream-1.md) is the
-format in use.
+receivers do with them. Codecs (G2b1): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`),
+TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`) and GDScript decoder
+(`receiver/rs2_decoder.gd`) plus the texture-payload reader (`receiver/rs_texture_payload.gd`),
+all checked byte-for-byte and state-for-state against `protocol/golden-2/`, per this text. None of
+this is wired into the capture library or the receiver's live path yet: entry.cpp, the mirror and
+the publisher still emit render-stream/1, and the gate 0/1 runners still consume it. G2b2 switches
+all of that to /2 (texture mirror taps, the resource store, the receiver's file mode) and removes
+the now-superseded render-stream-1.md codecs. Until G2b2 lands, [render-stream-1.md](render-stream-1.md)
+is the format the capture library and receiver actually speak.
 
 render-stream/2 is render-stream/1 plus textures:
 
@@ -249,13 +254,13 @@ checks this.
 
 ### Texture invariants (resolved state)
 
-| code               | rule                                                                                                                                                                 |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `texture-entry`    | the field table above                                                                                                                                                |
-| `texture-ref`      | a command's non-null `tex`, or a canvas entry's non-null `diffuse`, names no entry of the same state. A `diffuse` must name an `image` or `placeholder` entry        |
-| `texture-version`  | within one stream, an id's `version` never decreases; at an equal version the entry is identical except for a change to `status: "freed"` and the nulls that implies |
-| `id-reused`        | as /0, extended to texture ids                                                                                                                                       |
-| `resource-missing` | an `ok` image entry whose `payload_bytes ≤ inline_max_bytes`, with no earlier resource record in this stream carrying its `hash`                                     |
+| code               | rule                                                                                                                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `texture-entry`    | the field table above                                                                                                                                                                                                                |
+| `texture-ref`      | a command's non-null `tex`, or a canvas entry's non-null `diffuse`, must name an entry of the same (resolved) state -- a `freed` tombstone counts, since D11 relies on that. A `diffuse` must name an `image` or `placeholder` entry |
+| `texture-version`  | within one stream, an id's `version` never decreases; at an equal version the entry is identical except for a change to `status: "freed"` and the nulls that implies                                                                 |
+| `id-reused`        | as /0, extended to texture ids                                                                                                                                                                                                       |
+| `resource-missing` | an `ok` image entry whose `payload_bytes ≤ inline_max_bytes`, with no earlier resource record in this stream carrying its `hash`                                                                                                     |
 
 ## Resource record
 
@@ -387,24 +392,36 @@ records, in stream order. The receiver's state dumps use the same `state` shape.
 `make_golden.py` uses only the standard library, is deterministic, and has a `--check` mode. It
 writes:
 
-- `payloads/<hash>.grt`: four payloads. They are an RGBA8 16×16 (quadrant colours), the same
-  pixels as a second texture (one shared hash), an LA8 4×4 checker, and an RGBA8 8×8 with mipmaps
-  (four levels, 340 bytes of data).
+- `payloads/<hash>.grt`: four payloads, one per `.grt` file (a shared hash is one file reused by
+  several texture ids, not a second file). They are an RGBA8 16×16 quadrant image (shared by two
+  texture ids at seq 1, and reused unchanged by a third, brand-new id introduced at seq 4), its
+  updated RGBA8 16×16 counterpart (a `texture_2d_update`'s new version and new hash at seq 3), an
+  LA8 4×4 checker (the texture freed at seq 4 and dereferenced at seq 5), and an RGBA8 8×8 image
+  with mipmaps (four levels, 340 bytes of data; the placeholder's replacement content at seq 4).
 - `full.rs2`, with an out-of-band, `directory` session. It holds seqs 1–6 and then an end record:
   - seq 1: three images (two of them sharing a hash), a placeholder, an `unsupported-format` image
     (`RGBAF`), items drawing `add_texture_rect` (tile, transpose), `add_texture_rect_region`
-    (negative sizes, `clip_uv`), an `unknown-texture` command, and item filter/repeat values;
+    (negative sizes, `clip_uv`), an `unknown-texture` command, an `unsupported-texture` command,
+    and item filter/repeat values;
   - seq 2: transform only;
   - seq 3: a texture update (new version, new hash) and the redraw of its two items;
   - seq 4: a replace that turns the placeholder into an image (same id, kind change), a free of a
     texture that one command still names (a `freed` tombstone), a new texture, and a change of the
     default filter;
-  - seq 5: unchanged;
-  - seq 6: the tombstone's last reference cleared, so the tombstone is removed.
+  - seq 5: the tombstone's last reference cleared, so the tombstone is removed -- a real patch, so
+    `removed_textures` is populated on the wire (not deferred to the resync, unlike /1's goldens'
+    item removals, which all land before the final unchanged-resync seq);
+  - seq 6: unchanged from seq 5; re-sent in full, as after a resync.
 - `patch.rs2`: the same six states, patch-encoded, with seq 6 full as after a resync.
-- `inline.rs2`: the same six states as a `full`, `inline`-delivery stream with resource records.
-- `*.hex`, `*.decoded.json`, and one `resolved.json` that all three streams resolve to. Like /1's,
-  it omits `session_id`, `stream_id` and the per-transaction `encoding`.
+- `inline.rs2`: the same six states as a `full`, `inline`-delivery stream, with one resource
+  record per hash inserted before the first transaction whose resolved texture table needs it.
+- `*.hex`, `*.decoded.json`, and one `resolved.json` that all three streams' `transactions` resolve
+  to. Like /1's, it omits `session_id`, `stream_id` and the per-transaction `encoding`. Unlike
+  /1's, `resolved.json` carries no top-level `resources` key at all: full.rs2 and patch.rs2 use
+  directory delivery and carry zero resource records, so they resolve to `resources: []`, while
+  inline.rs2 resolves to four entries -- never the same list, so it cannot be shared ground truth.
+  `index.json`'s `inline_resources` is the ground truth for inline.rs2's `resources`; a decoder's
+  self-test checks full.rs2 and patch.rs2 resolve to `resources: []` directly, without a fixture.
 - `invalid/<name>.rs2`, with codes in `index.json`. One vector exists for each new code
   (`texture-entry`, `texture-ref`, `texture-version`, `resource-hash`, `resource-duplicate`,
   `resource-missing`, `resource-payload`, `cmd-offset` with mixed command sizes,

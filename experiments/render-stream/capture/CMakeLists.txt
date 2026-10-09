@@ -143,3 +143,22 @@ target_compile_definitions(rs1_live_test PRIVATE
   GRC_GOLDEN1_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-1"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs1_live_test_tmp")
 add_test(NAME rs1_live COMMAND rs1_live_test)
+
+# Gate 2 (G2b1): the /2 codec is byte-identical to protocol/golden-2/{full,patch,inline}.rs2.
+# Pure codec work: not yet linked into render_stream_capture (that is G2b2's job, when rs_mirror
+# and rs_publish start depending on it).
+add_executable(rs2_codec_test test/rs2_codec_test.cpp src/rs2_codec.cpp)
+target_include_directories(rs2_codec_test PRIVATE src test)
+target_link_libraries(rs2_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs2_codec_test PRIVATE
+  GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2")
+add_test(NAME rs2_codec COMMAND rs2_codec_test)
+
+# Gate 2 (G2b1): the /2 patch diff derives the same golden bytes, and resolves a patch chain
+# (items AND textures) back to the states it was built from (golden and randomized).
+add_executable(rs2_diff_test test/rs2_diff_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs2_diff_test PRIVATE src test)
+target_link_libraries(rs2_diff_test PRIVATE grc_warnings)
+target_compile_definitions(rs2_diff_test PRIVATE
+  GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2")
+add_test(NAME rs2_diff COMMAND rs2_diff_test)
