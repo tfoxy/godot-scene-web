@@ -99,3 +99,21 @@ add_test(NAME rs_ws COMMAND rs_ws_test)
 add_executable(rs_ws_echo test/rs_ws_echo.cpp src/rs_ws.cpp src/rs_sha1.cpp)
 target_include_directories(rs_ws_echo PRIVATE src)
 target_link_libraries(rs_ws_echo PRIVATE grc_warnings Threads::Threads)
+
+# Gate 1 (G1b1): the /1 codec is byte-identical to protocol/golden-1/{full,patch}.rs1. Pure code,
+# not wired into the shared library (that is G1b2).
+add_executable(rs1_codec_test test/rs1_codec_test.cpp src/rs1_codec.cpp)
+target_include_directories(rs1_codec_test PRIVATE src test)
+target_link_libraries(rs1_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs1_codec_test PRIVATE
+  GRC_GOLDEN1_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-1")
+add_test(NAME rs1_codec COMMAND rs1_codec_test)
+
+# Gate 1 (G1b1): the /1 patch diff derives the same golden bytes, and resolves a patch chain back
+# to the states it was built from (golden and randomized).
+add_executable(rs1_diff_test test/rs1_diff_test.cpp src/rs1_codec.cpp src/rs1_diff.cpp)
+target_include_directories(rs1_diff_test PRIVATE src test)
+target_link_libraries(rs1_diff_test PRIVATE grc_warnings)
+target_compile_definitions(rs1_diff_test PRIVATE
+  GRC_GOLDEN1_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-1")
+add_test(NAME rs1_diff COMMAND rs1_diff_test)

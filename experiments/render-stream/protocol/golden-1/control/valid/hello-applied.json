@@ -1,0 +1,7 @@
+{
+  "type": "hello",
+  "protocol": "render-stream/1",
+  "receiver": "gate1-selftest-headless",
+  "credit_stage": "applied",
+  "inbound_buffer_bytes": 65535
+}

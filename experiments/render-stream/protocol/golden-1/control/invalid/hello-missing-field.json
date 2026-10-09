@@ -1,0 +1,6 @@
+{
+  "type": "hello",
+  "protocol": "render-stream/1",
+  "receiver": "x",
+  "credit_stage": "submitted"
+}

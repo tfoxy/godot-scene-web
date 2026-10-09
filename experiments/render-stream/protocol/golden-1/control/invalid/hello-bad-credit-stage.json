@@ -1,0 +1,7 @@
+{
+  "type": "hello",
+  "protocol": "render-stream/1",
+  "receiver": "x",
+  "credit_stage": "eventually",
+  "inbound_buffer_bytes": 1024
+}

@@ -9,7 +9,8 @@
     "includes": [
       "**",
       "!packages/hb-gpu/vendor/hb-gpu.mjs",
-      "!experiments/render-stream/protocol/golden"
+      "!experiments/render-stream/protocol/golden",
+      "!experiments/render-stream/protocol/golden-1"
     ]
   },
   "formatter": {
