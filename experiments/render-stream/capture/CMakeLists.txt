@@ -33,9 +33,12 @@ add_library(render_stream_capture SHARED
   src/report.cpp
   src/rs1_codec.cpp
   src/rs1_diff.cpp
+  src/rs1_live.cpp
   src/rs1_publish.cpp
   src/rs_mirror.cpp
   src/rs_root_query.cpp
+  src/rs_sha1.cpp
+  src/rs_ws.cpp
   src/vtable.cpp
 )
 target_include_directories(render_stream_capture PRIVATE src vendor)
@@ -90,8 +93,8 @@ target_link_libraries(rs1_publish_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs1_publish COMMAND rs1_publish_test)
 
 # G1c1: rs_ws, a dependency-free RFC 6455 server on its own I/O thread
-# (protocol/gate1-design.md D3, Q3, Q4). Pure transport: no mirror, no engine,
-# not yet wired into render_stream_capture (G1c2 does that).
+# (protocol/gate1-design.md D3, Q3, Q4). Pure transport: no mirror, no engine.
+# Linked into render_stream_capture since G1c2 (GRC_LIVE_LISTEN, src/rs1_live.*).
 add_executable(rs_ws_test test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp)
 target_include_directories(rs_ws_test PRIVATE src)
 target_link_libraries(rs_ws_test PRIVATE grc_warnings Threads::Threads)
@@ -120,3 +123,23 @@ target_link_libraries(rs1_diff_test PRIVATE grc_warnings)
 target_compile_definitions(rs1_diff_test PRIVATE
   GRC_GOLDEN1_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-1")
 add_test(NAME rs1_diff COMMAND rs1_diff_test)
+
+# Gate 1 (G1c2): the live hub -- credit, resync, message-too-large, hello timeout, drop-message,
+# finish, the live log and tap, and the control-message parser against golden-1/control/ --
+# driven through a fake transport.
+add_executable(rs1_live_test
+  test/rs1_live_test.cpp
+  src/rs1_codec.cpp
+  src/rs1_diff.cpp
+  src/rs1_live.cpp
+  src/rs1_publish.cpp
+  src/report.cpp
+  src/rs_sha1.cpp
+  src/rs_ws.cpp
+)
+target_include_directories(rs1_live_test PRIVATE src test)
+target_link_libraries(rs1_live_test PRIVATE grc_warnings Threads::Threads)
+target_compile_definitions(rs1_live_test PRIVATE
+  GRC_GOLDEN1_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-1"
+  GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs1_live_test_tmp")
+add_test(NAME rs1_live COMMAND rs1_live_test)

@@ -121,6 +121,31 @@ run_headless() {
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
 }
 
+# start_headless_bg <dir> -- <command...>: as run_headless with no strace, but returns at once with
+# the child's pid in BG_PID (gate 1 live hosts run while their receiver does). finish_bg waits.
+BG_PID=""
+start_headless_bg() {
+	local dir="$1"
+	shift 2
+	mkdir -p "$dir"
+	gs_strip_env_args
+	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}")
+	if [ "${#LEG_ENV[@]}" -gt 0 ]; then
+		cmd+=("${LEG_ENV[@]}")
+	fi
+	write_invocation "$dir" "$@"
+	"${cmd[@]}" "$@" >"$dir/stdout.log" 2>&1 &
+	BG_PID=$!
+}
+
+# finish_bg <dir> <pid> <timeout s>: waits for a start_headless_bg child, writes exit-code.txt.
+finish_bg() {
+	local dir="$1" pid="$2" timeout_s="$3"
+	wait_owned "$pid" "$timeout_s"
+	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
+}
+
 # run_capture <dir> <quit frame|""> <strace mode> [scene] -- capture host on the release template,
 # armed, writing <dir>/$RECORDING_NAME and steps.jsonl from CAPTURE_FIXTURE_DIR (default
 # FIXTURE_DIR). CAPTURE_EXTRA_ENV adds sabotage/variant/policy words; both are reset after the
@@ -186,17 +211,25 @@ settle_seqs() {
 }
 
 # run_rendered <dir> <project dir>: the template inside the private gamescope with LEG_ENV.
+# RENDERED_EXTRA_ARGS (reset after the call) are appended to the command line, e.g. --max-fps 60
+# for a live receiver (gate1-design.md Q5: live legs pass --max-fps 60 to the receiver).
+RENDERED_EXTRA_ARGS=()
 run_rendered() {
 	local dir="$1" project="$2"
+	local -a extra=()
+	if [ "${#RENDERED_EXTRA_ARGS[@]}" -gt 0 ]; then
+		extra=("${RENDERED_EXTRA_ARGS[@]}")
+	fi
+	RENDERED_EXTRA_ARGS=()
 	mkdir -p "$dir"
 	gs_require_live
-	write_invocation "$dir" "$BINARY" --path "$project" --rendering-driver opengl3 --display-driver x11
+	write_invocation "$dir" "$BINARY" --path "$project" --rendering-driver opengl3 --display-driver x11 "${extra[@]}"
 	echo "DISPLAY=$GS_DISPLAY" >>"$dir/env.txt"
 	GS_GODOT_ENV=()
 	if [ "${#LEG_ENV[@]}" -gt 0 ]; then
 		GS_GODOT_ENV=("${LEG_ENV[@]}")
 	fi
-	gs_launch_godot "$GS_DISPLAY" "$BINARY" "$project" "$dir/stdout.log"
+	gs_launch_godot "$GS_DISPLAY" "$BINARY" "$project" "$dir/stdout.log" "${extra[@]}"
 	local pid="$GS_LAST_GODOT_PID"
 	CURRENT_CHILD_PID="$pid"
 	sleep 0.3

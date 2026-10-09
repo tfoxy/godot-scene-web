@@ -67,6 +67,9 @@ export interface TSessionOptions {
   hostFinalXform?: number[];
   rootCanvasXform?: number[];
   clearColor?: number[];
+  /** a live stream (G1c2): transport websocket and its connection number */
+  transport?: "file" | "websocket";
+  connection?: number | null;
 }
 
 export function encodeRecord(
@@ -110,8 +113,8 @@ export function encodeSession(opts: TSessionOptions): Buffer {
           (opts.encoding === "full"
             ? "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0"
             : "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"),
-        connection: null,
-        transport: "file",
+        connection: opts.connection ?? null,
+        transport: opts.transport ?? "file",
         encoding: opts.encoding,
       },
       engine: {

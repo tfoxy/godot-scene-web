@@ -4,18 +4,21 @@
 #
 #   bash run-gate1.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g1a,g1b]
+#     [--legs g1a,g1b,g1c]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
 # artifacts/render-stream/gate1/<UTC>/ and must not already hold files. --legs selects leg groups
-# (comma-separated); the default is every group whose increment has landed: g1a (G1a) and g1b
-# (G1b2; it compares against g1a's capture, reference and receiver, so it needs g1a).
+# (comma-separated); the default is every group whose increment has landed: g1a (G1a), g1b
+# (G1b2; it compares against g1a's capture, reference and receiver, so it needs g1a) and g1c (G1c2,
+# live delivery over the capture library's WebSocket server; it compares against g1a's reference,
+# so it needs g1a too).
 #
 # NEVER Xvfb and never a desktop window: rendered legs (reference and every receiver) share ONE
-# private `gamescope --backend headless` (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
-# and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_* variable and passes
-# only what its leg wants (env.txt records it).
+# private `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip
+# DISPLAY and WAYLAND_DISPLAY. Live legs (g1c) serve on loopback only, on an ephemeral port the
+# host names in evidence/live.json. Every launch strips every inherited GRC_* and RS_* variable and
+# passes only what its leg wants (env.txt records it).
 
 set -euo pipefail
 
@@ -33,7 +36,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order. G1b-G1d add theirs here.
-LANDED_GROUPS=(g1a g1b)
+LANDED_GROUPS=(g1a g1b g1c)
 
 EXTENSION=""
 CALIBRATION=""
@@ -65,8 +68,20 @@ TIE_FRAME=$((START_FRAME + STEP_FRAMES * 1))
 # Every gate 1 capture writes both sinks: recording.rs1 (full) and recording-patch.rs1 (patch).
 CAPTURE_WITH_PATCH=1
 
+# g1c (G1c2) live legs: the host paces at 60 frames per second and delays the timeline so the
+# receiver joins before step 0 settles (gate1-design.md D10, Q7): S = 300, N = 60. The quit frame
+# is S + 11 N (>= the fixture's default S + 10 N + 11), so the last step's window is as long as the
+# others; the receiver's windows are [S + N k + 7, S + N (k + 1) - 1], the last ending at the quit
+# frame. drop-message drops the first transaction formed at or after S + 4 N + 20.
+LIVE_START_FRAME=300
+LIVE_STEP_FRAMES=60
+LIVE_QUIT_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 11))
+DROP_MESSAGE_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 4 + 20))
+LIVE_HOST_PID=""
+LIVE_PORT=""
+
 usage() {
-	sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -135,8 +150,8 @@ else
 	IFS=',' read -r -a requested <<<"$LEGS_ARG"
 	for group in "${requested[@]}"; do
 		case "$group" in
-		g1a | g1b) ;;
-		g1c | g1d)
+		g1a | g1b | g1c) ;;
+		g1d)
 			echo "run-gate1: leg group $group has not landed yet (landed: ${LANDED_GROUPS[*]})" >&2
 			exit 2
 			;;
@@ -148,11 +163,11 @@ else
 		GROUPS_RUN+=("$group")
 	done
 	case " ${GROUPS_RUN[*]} " in
-	*" g1b "*)
+	*" g1b "* | *" g1c "*)
 		case " ${GROUPS_RUN[*]} " in
 		*" g1a "*) ;;
 		*)
-			echo "run-gate1: leg group g1b compares against g1a's capture, reference and receiver; pass --legs g1a,g1b" >&2
+			echo "run-gate1: leg groups g1b and g1c compare against g1a's capture, reference and receiver; pass --legs g1a,..." >&2
 			exit 2
 			;;
 		esac
@@ -199,6 +214,10 @@ command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 # Whatever ends this script stops the Godot process it owns and tears its own compositor down.
 # Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
 cleanup() {
+	if [ -n "${LIVE_HOST_PID:-}" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; then
+		echo "run-gate1: stopping owned live host $LIVE_HOST_PID" >&2
+		kill "$LIVE_HOST_PID" 2>/dev/null || true
+	fi
 	if [ -n "${CURRENT_CHILD_PID:-}" ] && kill -0 "$CURRENT_CHILD_PID" 2>/dev/null; then
 		echo "run-gate1: stopping owned process $CURRENT_CHILD_PID" >&2
 		kill "$CURRENT_CHILD_PID" 2>/dev/null || true
@@ -357,10 +376,122 @@ run_g1b() {
 	GS_RUN_DIR=""
 }
 
+# The receiver's shot windows for the live timeline: <step>:<from>-<to>, steps 0..10.
+live_windows() {
+	local k from to out="" sep=""
+	for k in $(seq 0 10); do
+		from=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * k + 7))
+		to=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * (k + 1) - 1))
+		[ "$k" -eq 10 ] && to=$LIVE_QUIT_FRAME
+		out+="$sep$k:$from-$to"
+		sep=","
+	done
+	echo "$out"
+}
+
+# start_live_host <host dir> [extra env words...]: the capture host (release template, headless,
+# armed, both file sinks, --max-fps 60, the live timeline) serving on 127.0.0.1:0, started in the
+# background. Waits for evidence/live.json and sets LIVE_PORT ("" when the host is not listening).
+start_live_host() {
+	local dir="$1" waited=0
+	shift
+	mkdir -p "$dir/evidence" "$dir/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_ROOT_SIZE=enforce-min-size
+		GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
+		RS_FIXTURE_START_FRAME="$LIVE_START_FRAME" RS_FIXTURE_STEP_FRAMES="$LIVE_STEP_FRAMES"
+		RS_FIXTURE_QUIT_FRAME="$LIVE_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
+		"$@"
+	)
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$FIXTURE_DIR"
+	LIVE_HOST_PID="$BG_PID"
+	LIVE_PORT=""
+	while [ "$waited" -lt 400 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	# Plain text parsing on purpose: a tsx start-up here would eat into the receiver's join budget.
+	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
+		LIVE_PORT="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
+	fi
+	echo "run-gate1: ${dir#"$OUT"/} listening on port ${LIVE_PORT:-<none>}"
+}
+
+finish_live_host() {
+	finish_bg "$1" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+}
+
+# live_receiver <leg dir> <rendered|headless>: a live receiver on the current host's port, with
+# --max-fps 60. Rendered receivers shoot the step windows (credit stage submitted); the headless
+# one runs under strace -e openat (receiver-never-loaded-fixture) with credit stage applied.
+live_receiver() {
+	local leg="$1" kind="$2" dir="$1/receiver"
+	mkdir -p "$dir"
+	if [ -z "$LIVE_PORT" ]; then
+		echo "the live host is not listening (see $leg/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate1: ${dir#"$OUT"/} skipped: the host is not listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
+		RS_RECEIVER_OUT="$dir/applied.json"
+	)
+	if [ "$kind" = "headless" ]; then
+		run_headless "$dir" openat -- "$BINARY" --headless --max-fps 60 --path "$RECEIVER_DIR"
+	else
+		LEG_ENV+=(RS_RECEIVER_SHOT_WINDOWS="$(live_windows)")
+		RENDERED_EXTRA_ARGS=(--max-fps 60)
+		run_rendered "$dir" "$RECEIVER_DIR"
+	fi
+}
+
+# g1c (G1c2): live delivery. Each leg starts its capture host, waits for the listener, runs one
+# receiver against it, then waits for the host to reach its quit frame.
+run_g1c() {
+	local seqs
+
+	echo "run-gate1: live-headless (host + headless live receiver, credit stage applied)"
+	start_live_host "$OUT/live-headless/host"
+	live_receiver "$OUT/live-headless" headless
+	finish_live_host "$OUT/live-headless/host"
+
+	echo "run-gate1: bringing up private gamescope for g1c rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g1c"
+
+	echo "run-gate1: live (host + rendered live receiver, shot windows $(live_windows))"
+	start_live_host "$OUT/live/host"
+	live_receiver "$OUT/live" rendered
+	finish_live_host "$OUT/live/host"
+
+	echo "run-gate1: live-replay (rendered file-mode receiver on live/receiver/received.rs1)"
+	if prepare_recording "$OUT/live/receiver/received.rs1" "$OUT/live-replay" &&
+		seqs="$(gate0_tool live-shot-seqs "$OUT/live/receiver/applied.json")"; then
+		mkdir -p "$OUT/live-replay/shots"
+		LEG_ENV=(
+			RS_RECEIVER_RECORDING="$OUT/live-replay/$RECORDING_NAME"
+			RS_RECEIVER_OUT="$OUT/live-replay/applied.json" RS_RECEIVER_SHOT_SEQS="$seqs"
+			RS_RECEIVER_STATE_SEQS="$seqs"
+		)
+		run_rendered "$OUT/live-replay" "$RECEIVER_DIR"
+	fi
+
+	echo "run-gate1: sabotage-drop-message (host drops the first transaction formed at frame >= $DROP_MESSAGE_FRAME)"
+	start_live_host "$OUT/sabotage-drop-message/host" GRC_SABOTAGE=drop-message GRC_SABOTAGE_FRAME="$DROP_MESSAGE_FRAME"
+	live_receiver "$OUT/sabotage-drop-message" rendered
+	finish_live_host "$OUT/sabotage-drop-message/host"
+
+	gs_teardown "$OUT/gamescope-g1c"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g1a) run_g1a ;;
 	g1b) run_g1b ;;
+	g1c) run_g1c ;;
 	esac
 done
 

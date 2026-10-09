@@ -314,7 +314,12 @@ struct Server::Impl {
 
   // --- Every method below assumes `mu` is already held by the caller. ---
 
-  void push_event_locked(Event e) { events.push_back(std::move(e)); }
+  void push_event_locked(Event e) {
+    e.t_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::steady_clock::now().time_since_epoch())
+                                            .count());
+    events.push_back(std::move(e));
+  }
 
   // Enqueues raw (already-framed) bytes for conn. `bypass_limit` is for
   // frames the protocol itself requires (pong, close) -- never refused by

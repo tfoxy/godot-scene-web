@@ -217,7 +217,14 @@ void test_sink_presence() {
     full.open("memory://full-only");
     Publisher publisher(&full, nullptr);
     check(publisher.start(make_template()), "full sink only");
-    publish_script(&publisher);
+    check(publisher.last_published() == nullptr, "no last_published() before the first publish");
+    const std::vector<Snapshot> fed_full = publish_script(&publisher);
+    // The live adapter (G1c2) delivers the same published copy, kept even without a patch sink.
+    const Snapshot *last = publisher.last_published();
+    check(last != nullptr && last->seq == kFrames &&
+              encode_transaction(make_full(*last)) ==
+                  encode_transaction(make_full(stamped(fed_full.back(), kFrames, last->frame))),
+          "last_published() is the last published copy, seq and frame stamped");
     check(publisher.finish(EndReason::Shutdown), "finish full only");
     check(publisher.has_sink(Encoding::Full) && !publisher.has_sink(Encoding::Patch),
           "has_sink full only");
@@ -537,7 +544,7 @@ void test_parse_sabotage() {
       {"freeze-frame", "5", "free", false, SabotageKind::None, 0, "op with freeze-frame"},
       {"omit-update", "5", "free", false, SabotageKind::None, 0, "op with omit-update"},
       {"patch-drop-item", "5", "free", false, SabotageKind::None, 0, "op with patch-drop-item"},
-      {"drop-message", "5", nullptr, false, SabotageKind::None, 0, "drop-message is live-only"},
+      {"drop-message", "5", nullptr, true, SabotageKind::DropMessage, 5, "drop-message @5 (live)"},
       {"ignore-credit", nullptr, nullptr, false, SabotageKind::None, 0, "ignore-credit"},
       {"stale-coalesce", nullptr, nullptr, false, SabotageKind::None, 0, "stale-coalesce"},
       {"not-a-real-kind", nullptr, nullptr, false, SabotageKind::None, 0, "unknown kind"},
@@ -564,8 +571,8 @@ void test_parse_sabotage() {
     }
   }
   check(parse_sabotage("stale-coalesce", nullptr, nullptr).error ==
-            "live sabotage: no live adapter yet (G1c2)",
-        "the live kinds name the missing live adapter");
+            "live sabotage stale-coalesce: not implemented until G1d",
+        "the G1d live kinds name the missing increment");
 }
 
 void test_generate_id() {

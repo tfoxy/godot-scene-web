@@ -19,7 +19,7 @@
 // Sabotage (GRC_SABOTAGE / GRC_SABOTAGE_FRAME / GRC_SABOTAGE_OP, validated by
 // rs1::parse_sabotage; a refusal publishes nothing): omit-update and omit-op
 // act in the mirror, freeze-frame, perturb-transform and patch-drop-item in
-// the publisher.
+// the publisher, drop-message in the live hub (G1c2).
 //
 // The root-size policy GRC_ROOT_SIZE (observe | enforce-min-size; G1a,
 // gate1-design.md "Q1") is applied at arm between the root query and the
@@ -29,6 +29,24 @@
 // failure `root-size-enforce-failed` when enforce-min-size could not make it
 // match -- and, as at G1a, to evidence/root.json
 // (render-stream-root-geometry/1).
+//
+// Live delivery (G1c2, gate1-design.md Q3, Q4, "G1c2"): GRC_LIVE_LISTEN
+// (127.0.0.1:<port> or [::1]:<port>; port 0 = ephemeral) also enables the
+// mirror and the root query, with or without file sinks, and starts the rs_ws
+// server (own I/O thread) at arm; evidence/live.json says what the listener
+// became (render-stream-live/1). Each frame callback drains the server's
+// events into the live hub (rs1_live.h) and, when a connection can take a
+// transaction, hands it the same published copy the file sinks got. Nothing
+// on the main thread waits on a socket. GRC_LIVE_TAP_DIR,
+// GRC_LIVE_MAX_MESSAGE_BYTES and GRC_LIVE_HELLO_TIMEOUT_MS configure the hub;
+// GRC_SABOTAGE=drop-message needs GRC_LIVE_LISTEN. At shutdown or disarm every
+// streaming connection gets its end record; the host then lingers up to 1.5 s
+// for the receivers to close after reading it (a Godot client loses messages
+// that arrive together with a close frame), closes the rest with 1000, stops
+// the server with a 2-second flush budget and writes
+// evidence/live-summary.json. At shutdown the linger blocks (the game is
+// quitting); after a disarm it runs across the following frame callbacks, so
+// the simulation never waits on a socket.
 
 #include <chrono>
 #include <cstdio>
@@ -36,15 +54,18 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "calib.h"
 #include "hooks.h"
 #include "iface.h"
 #include "report.h"
+#include "rs1_live.h"
 #include "rs1_publish.h"
 #include "rs_mirror.h"
 #include "rs_root_query.h"
+#include "rs_ws.h"
 #include "vtable.h"
 
 namespace grc {
@@ -99,6 +120,29 @@ struct Stream {
 };
 
 Stream g_stream;
+
+// The live adapter (G1c2). `status` is evidence/live.json and result.json
+// `live.status`: off | listening | refused | failed, then closed.
+struct Live {
+  std::string listen;  // GRC_LIVE_LISTEN as given; empty when unset
+  std::string status = "off";
+  std::string address;
+  int64_t port = -1;
+  std::string reason;
+  std::unique_ptr<live::Server> server;
+  std::unique_ptr<rs1::ServerTransport> transport;
+  std::unique_ptr<rs1::Hub> hub;
+  // After the end records went out: wait (bounded) for the receivers to close first
+  // (rs1::Hub::finish).
+  bool ending = false;
+  bool stopped = false;
+  uint64_t linger_deadline_ns = 0;
+};
+
+// How long the host waits for receivers to close after their end record (rs1_live.h, finish).
+constexpr uint64_t kLiveLingerNs = 1500ull * 1000ull * 1000ull;
+
+Live g_live;
 
 // GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
 using rs1::RootSizePolicy;
@@ -167,6 +211,16 @@ std::string result_json() {
   json.field("status", g_stream.status);
   json.field_or_null("reason", g_stream.reason);
   json.field("transactions", stream_transactions());
+  json.object_end();
+  // Additive (G1c2).
+  json.key("live").object_begin();
+  json.field("status", g_live.status);
+  json.field_or_null("listen", g_live.listen);
+  json.field_or_null("address", g_live.address);
+  json.field("port", g_live.port);
+  json.field_or_null("reason", g_live.reason);
+  json.field("connections",
+             static_cast<int64_t>(g_live.hub != nullptr ? g_live.hub->connections() : 0));
   json.object_end();
   json.object_end();
   return json.take();
@@ -361,13 +415,92 @@ std::string sabotage_text(const rs1::SabotageConfig &config) {
   return text;
 }
 
+// GRC_LIVE_LISTEN: "127.0.0.1:<port>" or "[::1]:<port>" (gate1-design.md
+// "G1c2"). Returns false with *reason "non-loopback" for any other host, or
+// a description of the malformation.
+bool parse_listen(const std::string &text, std::string *host, uint16_t *port, std::string *reason) {
+  std::string h;
+  std::string p;
+  if (!text.empty() && text[0] == '[') {
+    const std::size_t close = text.find(']');
+    if (close == std::string::npos || close + 1 >= text.size() || text[close + 1] != ':') {
+      *reason = "invalid GRC_LIVE_LISTEN=" + text + " (expected [::1]:<port>)";
+      return false;
+    }
+    h = text.substr(1, close - 1);
+    p = text.substr(close + 2);
+  } else {
+    const std::size_t colon = text.rfind(':');
+    if (colon == std::string::npos) {
+      *reason = "invalid GRC_LIVE_LISTEN=" + text + " (expected 127.0.0.1:<port>)";
+      return false;
+    }
+    h = text.substr(0, colon);
+    p = text.substr(colon + 1);
+  }
+  if (p.empty() || p.size() > 5 || p.find_first_not_of("0123456789") != std::string::npos ||
+      std::stoul(p) > 65535) {
+    *reason = "invalid GRC_LIVE_LISTEN port \"" + p + "\"";
+    return false;
+  }
+  if (h != "127.0.0.1" && h != "::1") {
+    *reason = "non-loopback";
+    return false;
+  }
+  *host = h;
+  *port = static_cast<uint16_t>(std::stoul(p));
+  return true;
+}
+
+// A positive decimal environment value, or `fallback` when unset. False when
+// set and malformed.
+bool env_positive(const char *name, uint64_t fallback, uint64_t *out) {
+  const char *value = std::getenv(name);
+  if (value == nullptr || *value == '\0') {
+    *out = fallback;
+    return true;
+  }
+  const std::string text(value);
+  if (text.size() > 15 || text.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  *out = std::stoull(text);
+  return *out >= 1;
+}
+
+std::string live_json() {
+  JsonWriter json;
+  json.object_begin();
+  json.field("schema", std::string("render-stream-live/1"));
+  json.field("status", g_live.status);
+  json.field_or_null("address", g_live.address);
+  if (g_live.port < 0) {
+    json.field_null("port");
+  } else {
+    json.field("port", g_live.port);
+  }
+  json.field_or_null("reason", g_live.reason);
+  json.object_end();
+  return json.take();
+}
+
+void live_decided(const std::string &status, const std::string &reason) {
+  g_live.status = status;
+  g_live.reason = reason;
+  emit("live.json", live_json());
+  log_line("live: " + status + (g_live.address.empty() ? std::string() : " " + g_live.address) +
+           (g_live.port >= 0 ? ":" + std::to_string(g_live.port) : std::string()) +
+           (reason.empty() ? std::string() : " (" + reason + ")"));
+}
+
 // At arm, right after the vptr store: validates the sabotage environment,
 // opens the recordings, enables the mirror, runs the root query and the
 // root-size policy, and writes the session records. A refusal or an open
 // failure leaves the mirror off and publishes nothing; arming itself is
 // unaffected.
 void stream_start() {
-  if (g_stream.path.empty() && g_stream.patch_path.empty()) {
+  const bool files = !g_stream.path.empty() || !g_stream.patch_path.empty();
+  if (!files && g_live.listen.empty()) {
     return;
   }
   const char *sabotage_kind = std::getenv("GRC_SABOTAGE");
@@ -385,7 +518,67 @@ void stream_start() {
     log_line("stream: refused root size policy (" + error + ")");
     g_stream.status = "refused";
     g_stream.reason = error;
+    if (!g_live.listen.empty()) {
+      live_decided("refused", "stream refused: " + error);
+    }
     return;
+  }
+  if (!sabotage.ok && !g_live.listen.empty()) {
+    live_decided("refused", "sabotage refused: " + sabotage.error);
+  }
+  // Live configuration, decided before anything is opened (gate1-design.md G1c2).
+  std::string live_host;
+  uint16_t live_port = 0;
+  rs1::LiveConfig live_config;
+  bool live_ok = sabotage.ok && !g_live.listen.empty();
+  if (live_ok) {
+    std::string why;
+    const char *tap = std::getenv("GRC_LIVE_TAP_DIR");
+    live_config.tap_dir = tap != nullptr ? std::string(tap) : std::string();
+    if (!parse_listen(g_live.listen, &live_host, &live_port, &why)) {
+      live_ok = false;
+    } else if (!env_positive("GRC_LIVE_MAX_MESSAGE_BYTES", 16u << 20,
+                             &live_config.max_message_bytes)) {
+      live_ok = false;
+      why = "invalid GRC_LIVE_MAX_MESSAGE_BYTES (a decimal integer >= 1)";
+    } else if (!env_positive("GRC_LIVE_HELLO_TIMEOUT_MS", 5000, &live_config.hello_timeout_ms)) {
+      live_ok = false;
+      why = "invalid GRC_LIVE_HELLO_TIMEOUT_MS (a decimal integer >= 1)";
+    } else if (!live_config.tap_dir.empty() && live_config.tap_dir[0] != '/') {
+      live_ok = false;
+      why = "GRC_LIVE_TAP_DIR must be absolute";
+    }
+    if (!live_ok) {
+      live_decided("refused", why);
+    }
+  }
+  if (sabotage.ok && !files && !live_ok) {
+    g_stream.status = "refused";
+    g_stream.reason = "no file sink and no live listener (" + g_live.reason + ")";
+    return;
+  }
+  if (sabotage.ok) {
+    const rs1::SabotageKind kind = sabotage.config.kind;
+    std::string why;
+    if (kind == rs1::SabotageKind::DropMessage && !live_ok) {
+      why = "drop-message needs GRC_LIVE_LISTEN";
+    } else if (!files && (kind == rs1::SabotageKind::FreezeFrame ||
+                          kind == rs1::SabotageKind::PerturbTransform ||
+                          kind == rs1::SabotageKind::PatchDropItem)) {
+      why = std::string(rs1::to_wire(kind)) + " acts on the file publication; set a file sink";
+    }
+    if (!why.empty()) {
+      log_line("stream: refused sabotage (" + why + ")");
+      g_stream.status = "refused";
+      g_stream.reason = why;
+      if (live_ok) {
+        live_decided("refused", "sabotage refused: " + why);
+      }
+      return;
+    }
+    if (kind == rs1::SabotageKind::DropMessage) {
+      live_config.drop_message_frame = sabotage.config.frame;
+    }
   }
   if (!sabotage.ok) {
     log_line(std::string("stream: refused sabotage=") +
@@ -503,29 +696,136 @@ void stream_start() {
   session.host_final_xform = root.final_transform;
   session.content_scale_factor = static_cast<float>(root.content_scale_factor);
 
-  g_stream.publisher = std::make_unique<rs1::Publisher>(
-      g_stream.full_sink.get(), g_stream.patch_sink.get(), sabotage.config);
-  if (!g_stream.publisher->start(session)) {
-    log_line("stream: cannot write the session record");
-    rs::mirror_enable(false);
-    stream_drop_sinks();
-    g_stream.publisher.reset();
-    g_stream.status = "open-failed";
-    g_stream.reason = "session write failed";
-    return;
+  if (files) {
+    g_stream.publisher = std::make_unique<rs1::Publisher>(
+        g_stream.full_sink.get(), g_stream.patch_sink.get(), sabotage.config);
+    if (!g_stream.publisher->start(session)) {
+      log_line("stream: cannot write the session record");
+      rs::mirror_enable(false);
+      stream_drop_sinks();
+      g_stream.publisher.reset();
+      g_stream.status = "open-failed";
+      g_stream.reason = "session write failed";
+      if (live_ok) {
+        live_decided("refused", "stream open failed");
+      }
+      return;
+    }
+  }
+  if (live_ok) {
+    live::ServerConfig server_config;
+    server_config.host = live_host;
+    server_config.port = live_port;
+    server_config.max_clients = 1;  // D5: one receiver at a time (a second gets 503)
+    g_live.address = live_host;
+    g_live.server = std::make_unique<live::Server>();
+    std::string error;
+    if (!g_live.server->start(server_config, &error)) {
+      g_live.server.reset();
+      live_decided(error == "non-loopback" ? "refused" : "failed", error);
+      if (!files) {
+        rs::mirror_enable(false);
+        g_stream.status = "open-failed";
+        g_stream.reason = "live listener failed: " + error;
+        return;
+      }
+    } else {
+      g_live.port = g_live.server->port();
+      g_live.transport = std::make_unique<rs1::ServerTransport>(g_live.server.get());
+      rs1::Session tmpl = session;
+      tmpl.stream = rs1::StreamInfo();
+      g_live.hub = std::make_unique<rs1::Hub>(g_live.transport.get(), live_config, tmpl);
+      live_decided("listening", std::string());
+    }
   }
   g_stream.status = "open";
-  const rs1::Publisher &publisher = *g_stream.publisher;
-  const auto stream_id = [&publisher](rs1::Encoding encoding) {
-    return publisher.has_sink(encoding) ? publisher.session(encoding).stream.stream_id
-                                        : std::string("-");
+  const rs1::Publisher *publisher = g_stream.publisher.get();
+  const auto stream_id = [publisher](rs1::Encoding encoding) {
+    return publisher != nullptr && publisher->has_sink(encoding)
+               ? publisher->session(encoding).stream.stream_id
+               : std::string("-");
   };
   log_line("stream: open full=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path) +
            " full_stream=" + stream_id(rs1::Encoding::Full) +
            " patch=" + (g_stream.patch_path.empty() ? std::string("<off>") : g_stream.patch_path) +
            " patch_stream=" + stream_id(rs1::Encoding::Patch) + " session=" + session.session_id +
            " root_query=" + (root.ok ? std::string("ok") : "failed at " + root.failed_step) +
+           " live=" +
+           (g_live.hub != nullptr ? g_live.address + ":" + std::to_string(g_live.port)
+                                  : std::string("<off>")) +
            " sabotage=" + sabotage_text(sabotage.config));
+}
+
+// Drains the server's events into the hub (frame callback, main thread).
+void live_drain(uint64_t frame) {
+  if (g_live.hub == nullptr || g_live.server == nullptr || g_live.stopped) {
+    return;
+  }
+  for (const live::Event &event : g_live.server->take_events()) {
+    g_live.hub->on_event(rs1::to_live_event(event), frame);
+  }
+}
+
+// The end of the linger: close whatever is still open with 1000, stop the
+// server with a 2-second flush budget, write evidence/live-summary.json.
+void live_close_and_stop() {
+  if (g_live.hub == nullptr || g_live.stopped) {
+    return;
+  }
+  live_drain(g_state.frames_total);
+  g_live.hub->close_open(g_state.frames_total);
+  if (g_live.server != nullptr) {
+    g_live.server->stop(2000);
+  }
+  g_live.stopped = true;
+  g_live.ending = false;
+  emit("live-summary.json", g_live.hub->summary_json());
+  for (const rs1::ConnectionSummary &s : g_live.hub->summaries()) {
+    log_line("live: connection " + std::to_string(s.connection) + " stream " + s.stream_id +
+             " offered=" + std::to_string(s.frames_offered) +
+             " formed=" + std::to_string(s.transactions) + " sent=" + std::to_string(s.sent) +
+             " dropped=" + std::to_string(s.dropped) + " coalesced=" +
+             std::to_string(s.coalesced) + " acks=" + std::to_string(s.acks[0]) + "/" +
+             std::to_string(s.acks[1]) + "/" + std::to_string(s.acks[2]) +
+             " bytes_sent=" + std::to_string(s.bytes_sent) +
+             " credit_rtt_us p50/p95=" + std::to_string(s.credit_rtt_us.median) + "/" +
+             std::to_string(s.credit_rtt_us.p95) + " close=" + std::to_string(s.close_code) +
+             " by " + s.closed_by);
+  }
+  g_live.status = "closed";
+}
+
+// One linger step: drain closes; stop once every receiver closed or the
+// linger ran out. `blocking` waits here (shutdown); otherwise the next frame
+// callback continues (disarm).
+void live_linger(bool blocking) {
+  if (!g_live.ending || g_live.stopped) {
+    return;
+  }
+  for (;;) {
+    live_drain(g_state.frames_total);
+    if (g_live.hub->open_connections() == 0 || monotonic_ns() >= g_live.linger_deadline_ns) {
+      live_close_and_stop();
+      return;
+    }
+    if (!blocking) {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
+// Ends live delivery: the end record to every streaming connection
+// (rs1::Hub::finish), then the linger.
+void live_finish(rs1::EndReason reason, bool blocking) {
+  if (g_live.hub == nullptr || g_live.ending || g_live.stopped) {
+    return;
+  }
+  live_drain(g_state.frames_total);
+  g_live.hub->finish(reason, g_state.frames_total, monotonic_ns());
+  g_live.ending = true;
+  g_live.linger_deadline_ns = monotonic_ns() + kLiveLingerNs;
+  live_linger(blocking);
 }
 
 // Writes each sink's end record and closes the recordings. Only the first call
@@ -536,6 +836,11 @@ void stream_finish(rs1::EndReason reason) {
     return;
   }
   rs::mirror_enable(false);
+  live_finish(reason, reason == rs1::EndReason::Shutdown);
+  if (g_stream.publisher == nullptr) {
+    g_stream.status = "closed";
+    return;
+  }
   const bool ok = g_stream.publisher->finish(reason);
   g_stream.status = "closed";
   if (!ok && g_stream.reason.empty()) {
@@ -561,17 +866,43 @@ void stream_finish(rs1::EndReason reason) {
 // One snapshot for the frame callback at the end of iteration `frame`, shared
 // by both sinks. It is copied under the mirror lock (timed) and diffed and
 // encoded outside it.
+//
+// Live (G1c2): the server's events are drained into the hub first, so credit
+// that arrived since the last callback is usable now; the hub then gets the
+// same published copy when a connection can take a transaction (one snapshot
+// copy per frame either way). Without file sinks the snapshot is taken only
+// when the hub wants one.
 void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
+    return;
+  }
+  live_drain(frame);
+  const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot();
+  const uint64_t epoch = rs::mirror_epoch();
+  if (g_stream.publisher == nullptr && !live_wants) {
+    if (g_live.hub != nullptr) {
+      g_live.hub->on_frame(frame, monotonic_ns(), nullptr, epoch, 0);
+    }
     return;
   }
   const uint64_t t0 = monotonic_ns();
   rs1::Snapshot snapshot = rs::mirror_snapshot(0, frame);
   const uint64_t snapshot_ns = monotonic_ns() - t0;
-  if (!g_stream.publisher->publish(std::move(snapshot), frame, snapshot_ns)) {
-    log_line("stream: write failed at frame " + std::to_string(frame));
-    g_stream.reason = "transaction write failed";
-    stream_finish(rs1::EndReason::Shutdown);
+  const rs1::Snapshot *published = &snapshot;
+  if (g_stream.publisher != nullptr) {
+    if (!g_stream.publisher->publish(std::move(snapshot), frame, snapshot_ns)) {
+      log_line("stream: write failed at frame " + std::to_string(frame));
+      g_stream.reason = "transaction write failed";
+      stream_finish(rs1::EndReason::Shutdown);
+      return;
+    }
+    published = g_stream.publisher->last_published();
+  } else {
+    snapshot.frame = frame;
+  }
+  if (g_live.hub != nullptr) {
+    g_live.hub->on_frame(frame, monotonic_ns(), live_wants ? published : nullptr, epoch,
+                         snapshot_ns);
   }
 }
 
@@ -691,6 +1022,7 @@ void on_startup() { attempt("startup"); }
 
 void on_frame() {
   ++g_state.frames_total;
+  live_linger(false);  // after a disarm: the receivers' closes, then the server stop
   hooks_set_frame(g_state.frames_total + 1);
   // Only a library armed before this callback publishes for this frame: one
   // armed by the deferred attempt below saw none of the frame's calls.
@@ -713,6 +1045,7 @@ void on_frame() {
 
 void on_shutdown() {
   stream_finish(rs1::EndReason::Shutdown);
+  live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
   emit("result.json", result_json());
@@ -733,6 +1066,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_state.disarm_after_frames = frames.empty() ? -1 : std::strtoll(frames.c_str(), nullptr, 10);
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
+  g_live.listen = env_string("GRC_LIVE_LISTEN");
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);
     if (!g_state.evidence_ready) {
@@ -743,7 +1077,8 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
            (g_state.calibration_path.empty() ? "<unset>" : g_state.calibration_path) +
            " evidence=" + (g_state.evidence_dir.empty() ? "<stdout>" : g_state.evidence_dir) +
            " disarm_after_frames=" + std::to_string(g_state.disarm_after_frames) +
-           " stream=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path));
+           " stream=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path) +
+           " live=" + (g_live.listen.empty() ? std::string("<off>") : g_live.listen));
   attempt("scene-init");
 }
 
@@ -754,6 +1089,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   // The shutdown callback normally gets here first; this is the backstop for an
   // unload that happens without it.
   stream_finish(rs1::EndReason::Shutdown);
+  live_linger(true);
   do_disarm("deinitialize");
 }
 
