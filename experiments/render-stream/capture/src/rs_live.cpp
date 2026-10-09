@@ -499,9 +499,9 @@ LiveEvent to_live_event(const live::Event &event) {
       out.kind = LiveEvent::Closed;
       break;
     case live::Event::HttpGet:
-      // The hub has no notion of a resource GET yet (G2c2 adds the live store that answers
-      // them and accounts for them in the summary). entry.cpp's live_drain() never forwards an
-      // HttpGet event here; this case exists only so the switch stays exhaustive under -Wswitch.
+      // Resource GETs are not session events: entry.cpp's live_drain() hands them to
+      // Hub::on_http_get() and never forwards one here; this case exists only so the switch
+      // stays exhaustive under -Wswitch.
       break;
   }
   out.conn = event.conn;
@@ -546,6 +546,7 @@ struct Hub::Conn {
   bool credit = false;
   Snapshot base;
   bool has_base = false;
+  rs::PayloadMap base_payloads;  // G2c2: the payloads `base` names (the pin, D7)
   bool resync = false;
   std::uint64_t epoch_sent = 0;
   bool pending = false;
@@ -964,6 +965,7 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
   const bool had_credit = c.credit;
   c.base = std::move(cur);
   c.has_base = true;
+  c.base_payloads = snapshot.payloads;
   c.resync = false;
   ++c.next_seq;
   c.epoch_sent = epoch;
@@ -1227,7 +1229,61 @@ void write_latency(JsonWriter *json, const std::string &name, const LatencyStats
 
 }  // namespace
 
-std::string Hub::summary_json() const {
+std::vector<const rs::PayloadMap *> Hub::base_payloads() const {
+  std::vector<const rs::PayloadMap *> out;
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    if (c.state != State::Closed && c.has_base) {
+      out.push_back(&c.base_payloads);
+    }
+  }
+  return out;
+}
+
+std::vector<const rs::PayloadMap *> Hub::held_payloads() const {
+  std::vector<const rs::PayloadMap *> out;
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    if (c.state != State::Closed && c.stale.has_value()) {
+      out.push_back(&c.stale->payloads);
+    }
+  }
+  return out;
+}
+
+std::uint32_t Hub::on_http_get(const std::string &hash, std::uint16_t status, std::uint64_t bytes,
+                               std::uint64_t t_ns, std::uint64_t frame) {
+  // One receiver at a time (max_clients 1): the newest connection that is not closed.
+  Conn *streaming = nullptr;
+  for (auto &entry : conns_) {
+    Conn &c = *entry.second;
+    if (c.state != State::Closed &&
+        (streaming == nullptr || c.s.connection > streaming->s.connection)) {
+      streaming = &c;
+    }
+  }
+  if (streaming == nullptr) {
+    return 0;
+  }
+  Conn &c = *streaming;
+  ++c.s.http_gets;
+  if (status == 200) {
+    c.s.http_bytes += bytes;
+  } else {
+    ++c.s.http_errors;
+  }
+  log_line(c, Line()
+                  .num("frame", frame)
+                  .num("t_us", t_ns / 1000)
+                  .str("event", "http-get")
+                  .str("hash", hash)
+                  .num("status", status)
+                  .num("bytes", bytes)
+                  .take());
+  return c.s.connection;
+}
+
+std::string Hub::summary_json(const ServingSummary *resources) const {
   JsonWriter json;
   json.object_begin();
   json.field("schema", std::string("render-stream-live-summary/1"));
@@ -1259,6 +1315,9 @@ std::string Hub::summary_json() const {
     json.field("bytes_sent", static_cast<int64_t>(s.bytes_sent));
     json.field("resource_records", static_cast<int64_t>(s.resource_records));
     json.field("resource_bytes", static_cast<int64_t>(s.resource_bytes));
+    json.field("http_gets", static_cast<int64_t>(s.http_gets));
+    json.field("http_bytes", static_cast<int64_t>(s.http_bytes));
+    json.field("http_errors", static_cast<int64_t>(s.http_errors));
     json.field("resyncs", static_cast<int64_t>(s.resyncs));
     json.field("credits", static_cast<int64_t>(s.credits));
     json.key("acks").object_begin();
@@ -1286,6 +1345,23 @@ std::string Hub::summary_json() const {
     json.object_end();
   }
   json.array_end();
+  if (resources != nullptr) {
+    json.key("resources").object_begin();
+    json.field("http_gets", static_cast<int64_t>(resources->http_gets));
+    json.field("http_bytes", static_cast<int64_t>(resources->http_bytes));
+    json.field("http_errors", static_cast<int64_t>(resources->http_errors));
+    json.field("pinned", static_cast<int64_t>(resources->pinned));
+    json.field("retired", static_cast<int64_t>(resources->retired));
+    json.field("retired_unpinned", static_cast<int64_t>(resources->retired_unpinned));
+    json.field("retained_max", static_cast<int64_t>(resources->retained_max));
+    json.field("retained_bytes_max", static_cast<int64_t>(resources->retained_bytes_max));
+    json.field("retained_end", static_cast<int64_t>(resources->retained_end));
+    json.field("retained_bytes_end", static_cast<int64_t>(resources->retained_bytes_end));
+    json.field("budget_bytes", static_cast<int64_t>(resources->budget_bytes));
+    json.field_or_null("dropped_hash", resources->dropped_hash);
+    json.field_or_null("corrupted_hash", resources->corrupted_hash);
+    json.object_end();
+  }
   json.object_end();
   return json.take();
 }

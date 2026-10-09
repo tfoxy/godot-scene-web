@@ -20,8 +20,11 @@ extends Node
 ##                                replay-failure cache-not-fresh) or warm (it must exist)
 ##   RS_RECEIVER_STORE_DIR        file mode: the capture's store, the origin for fetch "directory"
 ##                                (reading from it counts as a fetch)
-##   RS_RECEIVER_FETCH_TIMEOUT_MS live: default 10000 (HTTP fetches arrive with G2c2)
-##   RS_RECEIVER_FETCH_DELAY_MS   an injected delay before each fetch, default 0
+##   RS_RECEIVER_FETCH_TIMEOUT_MS live: a GET not complete this many ms after it was issued is
+##                                resource-unavailable (default 10000)
+##   RS_RECEIVER_FETCH_DELAY_MS   an injected delay before each fetch, default 0 (file mode: a
+##                                blocked main loop; live mode: a timed wait, the loop keeps
+##                                presenting)
 ##   RS_RECEIVER_SABOTAGE         reupload (upload every resident texture at every applied
 ##                                transaction) or ignore-cache (fetch even on a cache hit); both
 ##                                exist only to fail checks
@@ -29,7 +32,12 @@ extends Node
 ## not resident (or resident with another hash) is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
 ## written to the cache. Each is verified against its SHA-256 name and decoded first
-## (resource-hash-mismatch, resource-unavailable, resource-invalid otherwise).
+## (resource-hash-mismatch, resource-unavailable, resource-invalid otherwise). In live mode with
+## `fetch: "http"` (G2c2) a miss is fetched with RsResourceFetcher, `GET <http_path><hash>` on the
+## RS_RECEIVER_URL host and port, one keep-alive HTTPClient, sequentially, polled from _process:
+## the transaction waits (unapplied, unacknowledged beyond `received`) until every payload it
+## needs is in, and the rendered loop keeps presenting the previous state meanwhile. After a
+## reconnect the payloads held in memory are dropped, so connection 2 takes them from the cache.
 ##
 ## Live mode (RS_RECEIVER_MODE=live, G1c2):
 ##   RS_RECEIVER_URL             ws://127.0.0.1:<port>/render-stream or ws://[::1]:<port>/... (required)
@@ -111,7 +119,13 @@ var _uploads: Array[Dictionary] = []
 var _fetched_hashes: Dictionary[String, bool] = {}
 var _summary: Dictionary = {"distinct_fetched": 0, "fetched_bytes": 0, "cache_hits": 0, "uploads": 0, "upload_bytes": 0}
 var _fetch_delay_ms: int = 0
+var _fetch_timeout_ms: int = 10000
 var _inline_since_applied: int = 0
+# Live HTTP fetches (G2c2).
+var _fetch_kind: String = ""
+var _fetcher: RsResourceFetcher = null
+## The transaction waiting for its fetches: {entry, meta, resources (its fetch counters so far)}.
+var _pending_apply: Dictionary = {}
 var _delivery: String = ""
 var _sabotage: String = ""
 
@@ -274,7 +288,8 @@ func _parse_resource_env(live: bool) -> bool:
 	if store_dir != "" and (live or not store_dir.is_absolute_path()):
 		_log("error: RS_RECEIVER_STORE_DIR must be an absolute directory, and is file-mode only (got %s)" % JSON.stringify(store_dir))
 		return false
-	if _positive_env("RS_RECEIVER_FETCH_TIMEOUT_MS", 10000) < 0:
+	_fetch_timeout_ms = _positive_env("RS_RECEIVER_FETCH_TIMEOUT_MS", 10000)
+	if _fetch_timeout_ms < 0:
 		return false
 	var delay_text: String = OS.get_environment("RS_RECEIVER_FETCH_DELAY_MS").strip_edges()
 	if delay_text != "":
@@ -333,7 +348,7 @@ func _receive_resource(record: Dictionary, data: PackedByteArray) -> bool:
 func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> String:
 	var need: Dictionary = _applier.needed(_stream.items, _stream.textures)
 	var hashes: Array = need["hashes"]
-	var fetch_us: int = 0
+	var fetch_us: int = Rs2Decoder.as_int(resources["fetch_us"])
 	for value: Variant in hashes:
 		var hash: String = value
 		if _cache.has_in_memory(hash):
@@ -382,8 +397,11 @@ static func _empty_resources() -> Dictionary:
 
 ## Fetches what the resolved state needs, then applies it. Returns {ok: bool, stats} (ok false
 ## after failing the replay at `seq`).
-func _fetch_and_apply(stream_index: int, seq: int) -> Dictionary:
+func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) -> Dictionary:
 	var resources: Dictionary = _empty_resources()
+	for key: String in ["fetched", "fetched_bytes", "fetch_us"]:
+		if prefetched.has(key):
+			resources[key] = prefetched[key]
 	resources["inline_received"] = _inline_since_applied
 	_inline_since_applied = 0
 	var error: String = _obtain_needed(stream_index, seq, resources)
@@ -441,9 +459,21 @@ func _begin_session(accepted: Dictionary) -> bool:
 	if _delivery != "inline" and _cache.dir == "":
 		_fail(null, "resource-unavailable", "the session's delivery is %s (fetch %s) and RS_RECEIVER_CACHE_DIR is unset" % [_delivery, fetch])
 		return false
-	if _live and fetch == "http":
-		_fail(null, "resource-unavailable", "the session advertises fetch http, which this receiver gets with G2c2")
+	_fetch_kind = fetch
+	if _live and fetch == "directory":
+		_fail(null, "resource-unavailable", "a live session advertises fetch directory")
 		return false
+	if _live and fetch == "http":
+		var http_path: Variant = resources_meta["http_path"]
+		var origin: Dictionary = _url_origin(_url)
+		if http_path == null or origin.is_empty():
+			_fail(null, "resource-unavailable", "fetch http with http_path %s on %s" % [JSON.stringify(http_path), _url])
+			return false
+		if _fetcher != null:
+			_fetcher.cancel()
+		var origin_host: String = origin["host"]
+		var origin_port: int = origin["port"]
+		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms)
 	var blocks: Array = record["blocks"]
 	_applier.sabotage_reupload = _sabotage == "reupload"
 	_applier.begin_session(meta, blocks)
@@ -1016,6 +1046,11 @@ func _process_live() -> void:
 	_drain_packets()
 	if _finished:
 		return
+	# A transaction waiting for its HTTP fetches (G2c2) is applied once they are all in.
+	if not _pending_apply.is_empty():
+		_poll_fetches()
+		if _finished or not _pending_apply.is_empty():
+			return
 	# Apply the newest accepted transaction, at most one per _process, never while a submit is
 	# pending (the host waits for it under submitted credit anyway).
 	if not _waiting.is_empty() and not _submit_pending:
@@ -1090,6 +1125,12 @@ func _start_next_connection() -> void:
 	_data = PackedByteArray()
 	_stream = Rs2Decoder.Stream.new()
 	_inline_since_applied = 0
+	# G2c2: connection 2 owes nothing to connection 1: payloads come from its own inline records,
+	# the cache directory or a fetch, never from this process's memory.
+	_cache.clear_memory()
+	_pending_apply = {}
+	if _fetcher != null:
+		_fetcher.cancel()
 	_session_seen = false
 	_stream_id = ""
 	_waiting.clear()
@@ -1196,8 +1237,85 @@ func _apply_newest() -> void:
 	var meta: Dictionary = newest["meta"]
 	if _refuse_for_resync(entry):
 		return
+	_begin_apply(entry, meta, _empty_resources())
+
+
+## The payloads the current resolved state needs that are neither in memory nor in the cache
+## directory (or every one not in memory, under ignore-cache): what live mode fetches over HTTP.
+func _http_misses() -> Array[String]:
+	var out: Array[String] = []
+	if _fetcher == null:
+		return out
+	var need: Dictionary = _applier.needed(_stream.items, _stream.textures)
+	for value: Variant in need["hashes"]:
+		var hash: String = value
+		if _cache.has_in_memory(hash):
+			continue
+		if not _cache.ignore_cache and _cache.cache_has(hash):
+			continue
+		out.append(hash)
+	return out
+
+
+## Applies `entry` once every payload it needs is available; until then its HTTP fetches run
+## (_poll_fetches) and the previous state stays on screen. `resources` carries the fetch counters
+## of the passes so far.
+func _begin_apply(entry: Dictionary, meta: Dictionary, resources: Dictionary) -> void:
+	var misses: Array[String] = _http_misses()
+	if not misses.is_empty():
+		_pending_apply = {"entry": entry, "meta": meta, "resources": resources}
+		_fetcher.start(misses)
+		_poll_fetches()
+		return
+	_finish_apply(entry, meta, resources)
+
+
+## One _process step of the pending transaction's fetches: each completed GET is verified,
+## decoded and cached (RsResourceCache.add_fetched) and recorded; an error fails the replay at
+## that transaction; when the queue is done the transaction is applied (after one more miss check:
+## a newer state accepted meanwhile may need more).
+func _poll_fetches() -> void:
+	var done: bool = _fetcher.poll()
+	if not done:
+		return
+	var pending: Dictionary = _pending_apply
+	_pending_apply = {}
+	var entry: Dictionary = pending["entry"]
+	var resources: Dictionary = pending["resources"]
+	var seq: int = entry["seq"]
+	for result: Dictionary in _fetcher.results:
+		var hash: String = result["hash"]
+		var start_us: int = result["start_us"]
+		var end_us: int = result["end_us"]
+		var got_bytes: int = result["bytes"]
+		var error: String = result["error"]
+		var fetch_entry: Dictionary = {
+			"stream": _conn_index, "seq": seq, "hash": hash, "source": "http",
+			"status": result["status"], "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
+			"verified": false, "delay_us": result["delay_us"], "headers": result["headers"],
+		}
+		_fetches.append(fetch_entry)
+		resources["fetch_us"] = Rs2Decoder.as_int(resources["fetch_us"]) + (end_us - start_us)
+		if error == "":
+			# A 200 body: verified against its name first (a mismatch leaves verified false).
+			var body: PackedByteArray = result["data"]
+			error = _cache.add_fetched(hash, body, "GET %s" % hash)
+			fetch_entry["verified"] = not error.begins_with("resource-hash-mismatch")
+		if error != "":
+			_fail_with_error(seq, error)
+			return
+		resources["fetched"] = Rs2Decoder.as_int(resources["fetched"]) + 1
+		resources["fetched_bytes"] = Rs2Decoder.as_int(resources["fetched_bytes"]) + got_bytes
+		_summary["fetched_bytes"] = Rs2Decoder.as_int(_summary["fetched_bytes"]) + got_bytes
+		_fetched_hashes[hash] = true
+		_summary["distinct_fetched"] = _fetched_hashes.size()
+	var meta: Dictionary = pending["meta"]
+	_begin_apply(entry, meta, resources)
+
+
+func _finish_apply(entry: Dictionary, meta: Dictionary, prefetched: Dictionary) -> void:
 	var seq_applied: int = entry["seq"]
-	var applied: Dictionary = _fetch_and_apply(_conn_index, seq_applied)
+	var applied: Dictionary = _fetch_and_apply(_conn_index, seq_applied, prefetched)
 	if not applied["ok"]:
 		return
 	var stats: Dictionary = applied["stats"]
@@ -1304,6 +1422,28 @@ func _refuse_for_resync(entry: Dictionary) -> bool:
 	_send(RsLiveClient.resync(_stream_id, seq, "injected"))
 	_log("resync: refused seq %d (frame %d) unapplied; ignoring patches until a full transaction" % [seq, frame])
 	return true
+
+
+## {host, port} of a ws://127.0.0.1:<port>/... or ws://[::1]:<port>/... URL ({} otherwise): the
+## HTTP fetches go to the WebSocket's own host and port (render-stream-2.md "HTTP (live)").
+static func _url_origin(url: String) -> Dictionary:
+	var rest: String = url.trim_prefix("ws://")
+	var host: String = ""
+	var port_text: String = ""
+	if rest.begins_with("[::1]:"):
+		host = "::1"
+		port_text = rest.substr(6)
+	elif rest.begins_with("127.0.0.1:"):
+		host = "127.0.0.1"
+		port_text = rest.substr(10)
+	else:
+		return {}
+	var slash: int = port_text.find("/")
+	if slash >= 0:
+		port_text = port_text.substr(0, slash)
+	if not port_text.is_valid_int() or port_text.to_int() < 1 or port_text.to_int() > 65535:
+		return {}
+	return {"host": host, "port": port_text.to_int()}
 
 
 ## The last accepted seq, or null before the first transaction (a failure's `seq`).

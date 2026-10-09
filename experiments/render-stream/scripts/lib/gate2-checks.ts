@@ -56,6 +56,12 @@ import {
   synthesizeGate2,
 } from "./gate2-expected";
 import { type G2bCheckpoint, type G2bResources, runG2b } from "./gate2b-checks";
+import {
+  type AnimateCounts,
+  type G2cCheckpoint,
+  type G2cHostNumbers,
+  runG2c,
+} from "./gate2c-checks";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract
@@ -85,7 +91,7 @@ export const GATE2_CLASS_PRECEDENCE: readonly Gate2Class[] = [
 ];
 
 export const ALL_GROUPS = ["g2a", "g2b", "g2c", "g2d", "g2e"] as const;
-export const LANDED_GROUPS: readonly string[] = ["g2a", "g2b"];
+export const LANDED_GROUPS: readonly string[] = ["g2a", "g2b", "g2c"];
 
 /** Legs with an expected class. G2a has one: the capture, which since G2b2 (render-stream/2)
  * carries its texture draws as real commands and classifies success. */
@@ -251,8 +257,15 @@ export function parseJsonl<T>(
   return { lines, problem: null };
 }
 
-/** The publisher's own hook-log ops (G2b2): not RenderingServer calls, never in a census. */
-export const PUBLISHER_LOG_OPS: readonly string[] = ["store", "inline"];
+/** The publisher's own hook-log ops (G2b2: store, inline; G2c2: the live serving lines pin,
+ * retire and http-get): not RenderingServer calls, never in a census. */
+export const PUBLISHER_LOG_OPS: readonly string[] = [
+  "store",
+  "inline",
+  "pin",
+  "retire",
+  "http-get",
+];
 
 export function validateResourceLine(value: unknown): string | null {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -1469,11 +1482,16 @@ export interface Gate2Report {
   checkpoints: Gate2Checkpoint[];
   /** g2b: receiver shots against the references */
   receiver_checkpoints: G2bCheckpoint[] | null;
+  /** g2c: live receiver shots against the reference (and the animate synthesis) */
+  live_checkpoints: G2cCheckpoint[] | null;
+  /** g2c: live-animate's ANIM updates against the versions and hashes on the wire */
+  live_animate: AnimateCounts | null;
   census: Record<string, CensusResult> | null;
   repeat_budget: RegionBudget[] | null;
   unknown_rids: UnknownRidReport[] | null;
   /** per leg: the copy and hash costs at the hook (G2a); the store, the receivers' traffic per
-   * step and the host's resource bytes (G2b2) */
+   * step and the host's resource bytes (G2b2); the live hosts' HTTP serving, pins and the
+   * receivers' fetch latencies (G2c2) */
   resources: Record<
     string,
     {
@@ -1482,10 +1500,11 @@ export interface Gate2Report {
       per_step: G2bResources["per_step"];
       host:
         | (Partial<ReturnType<typeof copyCosts>> &
-            Partial<NonNullable<G2bResources["host"]>> & {
-              retained_max: null;
-              http_gets: null;
-              http_bytes: null;
+            Partial<NonNullable<G2bResources["host"]>> &
+            Partial<G2cHostNumbers> & {
+              retained_max: number | null;
+              http_gets: number | null;
+              http_bytes: number | null;
             })
         | null;
     }
@@ -1561,6 +1580,8 @@ export async function runGate2(
   let unknown: UnknownRidReport[] | null = null;
   let resources: Gate2Report["resources"] = null;
   let receiverCheckpoints: G2bCheckpoint[] | null = null;
+  let liveCheckpoints: G2cCheckpoint[] | null = null;
+  let liveAnimate: AnimateCounts | null = null;
 
   if (groups.run.includes("g2a")) {
     const capture = await evaluateCapture(outDir);
@@ -1645,6 +1666,23 @@ export async function runGate2(
       };
     }
   }
+  if (groups.run.includes("g2c")) {
+    const g2c = await runG2c(outDir, ctx.expected);
+    checks.push(...g2c.checks);
+    Object.assign(legs, g2c.legs);
+    liveCheckpoints = g2c.checkpoints;
+    liveAnimate = g2c.animate;
+    resources ??= {};
+    for (const [leg, n] of Object.entries(g2c.numbers)) {
+      const prior = resources[leg];
+      resources[leg] = {
+        store: prior?.store ?? null,
+        receiver: prior?.receiver ?? null,
+        per_step: prior?.per_step ?? null,
+        host: { ...(prior?.host ?? {}), ...n },
+      };
+    }
+  }
   for (const group of notRun)
     if (group !== "g2a")
       checks.push(notRunCheck(group, `${group} was not in --legs`));
@@ -1665,6 +1703,8 @@ export async function runGate2(
     checks,
     checkpoints,
     receiver_checkpoints: receiverCheckpoints,
+    live_checkpoints: liveCheckpoints,
+    live_animate: liveAnimate,
     census,
     repeat_budget: repeatBudget,
     unknown_rids: unknown,

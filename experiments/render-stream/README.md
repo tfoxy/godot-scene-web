@@ -1,4 +1,4 @@
-# render-stream experiment — gates −1, 0, 1, 2a and 2b: capture seam, first stream, retained state, live delivery, texture capture, textures on the wire
+# render-stream experiment — gates −1, 0, 1, 2a, 2b and 2c: capture seam, first stream, retained state, live delivery, texture capture, textures on the wire, live resources over HTTP
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
@@ -365,10 +365,11 @@ experiments/render-stream/scripts/build-capture.sh          # + rs_sha256, rs_te
 mise exec -- pnpm render-stream:gate2 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g2a,g2b]
+  [--legs g2a,g2b,g2c]
 ```
 
-About five minutes for groups `g2a` and `g2b` (g2b needs g2a's captures and reference). It
+About eight minutes for groups `g2a`, `g2b` and `g2c` (g2b and g2c need g2a's captures and
+reference). It
 imports `fixtures/gate2/` and `receiver/`, runs the headless capture (400 frames,
 `enforce-min-size`, strace, both sinks and the store) and the `unsupported` variant's capture,
 then the reference, its same-build repeat and the extension-armed reference in one private
@@ -376,7 +377,10 @@ gamescope. Group g2b adds the inline capture and the five sabotage captures, the
 receivers (strace trace, wrong-hash, stale, spurious, reupload), a live host with a headless
 inline receiver, then in a second private gamescope the variant's reference and the rendered
 receivers (cold, warm, patch, inline, unsupported, the two omit-op sabotages), and last the
-ignore-cache receiver. The checker writes `artifacts/render-stream/gate2/<UTC>/result.json`
+ignore-cache receiver. Group g2c runs nine live hosts (S = 300, N = 60, quit 911, fetch http):
+the headless live receiver and the drop-resource and live wrong-hash sabotages, then in a third
+private gamescope the rendered `live` receiver, its file replay, the warm, stall, reconnect and
+animate receivers and the unpin sabotage. The checker writes `artifacts/render-stream/gate2/<UTC>/result.json`
 (`render-stream-gate2-report/1`). Legs and criteria: [scripts/README.md](scripts/README.md) "Gate
 2". Self-tests: `scripts/test/self-test-gate2.ts`; `fixtures/gate2/make_expected.py --check`; the
 receiver's `tests/applier2_selftest.gd`.
@@ -385,27 +389,27 @@ receiver's `tests/applier2_selftest.gd`.
 
 Environment, read once at SCENE initialisation:
 
-| Variable                         | Meaning                                                                                                                                                                                                                                                                                                                                                                                 |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GRC_CALIBRATION`                | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                                                                                                                                                                                                       |
-| `GRC_MODE`                       | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                                                                                                                                          |
-| `GRC_EVIDENCE_DIR`               | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                                                                                                                                       |
-| `GRC_DISARM_AFTER_FRAMES`        | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                                                                                                                                   |
-| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                  |
-| `GRC_STREAM_PATCH_OUT`           | G1b2: absolute `.rs2` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                                                                                                                                      |
-| `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), and G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`. `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected) |
-| `GRC_SABOTAGE_OP`                | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                                                                                                                                               |
-| `GRC_SABOTAGE_FRAME`             | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                                                                                                                                                 |
-| `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                                                                                                                                   |
-| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/2 since G2b2, subprotocol `render-stream.2`, inline-only until G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`)                                                 |
-| `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                             |
-| `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                   |
-| `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                     |
-| `GRC_RESOURCE_FORMATS`           | G2a, read at arm with a stream: the `Image` formats whose bytes are copied, a comma-separated subset of `L8,LA8,R8,RG8,RGB8,RGBA8` (the default); any other name refuses to publish                                                                                                                                                                                                     |
-| `GRC_RESOURCE_MAX_PAYLOAD_BYTES` | G2a: the largest canonical payload copied, a decimal integer ≥ 1, default 67108864 (64 MiB); a larger texture is logged `payload-too-large` and not copied. An engine without the `Image` binds or `image_ptr` refuses to publish (`image-access-unavailable`)                                                                                                                          |
-| `GRC_RESOURCE_STORE_DIR`         | G2b2: absolute content-addressed store (`sha256/<hash>.grt`, `index.jsonl`) every `ok` payload of each published snapshot is written to; required when a file sink is open and delivery is not inline (else the stream refuses: `resource-store-missing`)                                                                                                                               |
-| `GRC_RESOURCE_INLINE_MAX_BYTES`  | G2b2: the largest payload a file sink carries in band as a `resource` record, default 0 (out of band); delivery is `inline` when it is at least the max payload size, `mixed` in between. Live connections are inline-only until G2c2, whatever this says                                                                                                                               |
-| `GRC_RESOURCE_BUDGET_BYTES`      | G2b2: the payload bytes the capture may retain (the mirror's plus those the last publication pins), default 536870912; above it the stream ends with `resource-budget-exceeded` (result.json `stream.reason`), as a store write failure does with `resource-store-failed`                                                                                                               |
+| Variable                         | Meaning                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GRC_CALIBRATION`                | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                                                                                                                                                                                                                         |
+| `GRC_MODE`                       | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                                                                                                                                                            |
+| `GRC_EVIDENCE_DIR`               | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                                                                                                                                                         |
+| `GRC_DISARM_AFTER_FRAMES`        | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                                                                                                                                                     |
+| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
+| `GRC_STREAM_PATCH_OUT`           | G1b2: absolute `.rs2` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                                                                                                                                                        |
+| `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), and G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`. `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected)                   |
+| `GRC_SABOTAGE_OP`                | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                                                                                                                                                                 |
+| `GRC_SABOTAGE_FRAME`             | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                                                                                                                                                                   |
+| `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                                                                                                                                                     |
+| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/2 since G2b2, subprotocol `render-stream.2`; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
+| `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                                               |
+| `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                                     |
+| `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                                       |
+| `GRC_RESOURCE_FORMATS`           | G2a, read at arm with a stream: the `Image` formats whose bytes are copied, a comma-separated subset of `L8,LA8,R8,RG8,RGB8,RGBA8` (the default); any other name refuses to publish                                                                                                                                                                                                                       |
+| `GRC_RESOURCE_MAX_PAYLOAD_BYTES` | G2a: the largest canonical payload copied, a decimal integer ≥ 1, default 67108864 (64 MiB); a larger texture is logged `payload-too-large` and not copied. An engine without the `Image` binds or `image_ptr` refuses to publish (`image-access-unavailable`)                                                                                                                                            |
+| `GRC_RESOURCE_STORE_DIR`         | G2b2: absolute content-addressed store (`sha256/<hash>.grt`, `index.jsonl`) every `ok` payload of each published snapshot is written to; required when a file sink is open and delivery is not inline (else the stream refuses: `resource-store-missing`)                                                                                                                                                 |
+| `GRC_RESOURCE_INLINE_MAX_BYTES`  | G2b2: the largest payload a file sink carries in band as a `resource` record, default 0 (out of band); delivery is `inline` when it is at least the max payload size, `mixed` in between. Live connections follow it too (G2c2); above 1 MiB the live listener is refused                                                                                                                                 |
+| `GRC_RESOURCE_BUDGET_BYTES`      | G2b2: the payload bytes the capture may retain (the mirror's plus those the last publication pins), default 536870912; above it the stream ends with `resource-budget-exceeded` (result.json `stream.reason`), as a store write failure does with `resource-store-failed`                                                                                                                                 |
 
 Arming happens at the earliest point where the `RenderingServer` singleton is
 available. With a runtime `load_extension` from an autoload that is SCENE
@@ -461,7 +465,7 @@ reason, connections}`. Written at decision time and rewritten at disarm and shut
   G2b2's mirror will use: one per-session counter, never reused), `rid`, `version`, `kind`,
   `status`, `reason`, `format`, `width`, `height`, `mipmaps`, `data_bytes`, `payload_bytes`,
   `hash` (SHA-256 of the GRT1 payload, copied and hashed on the calling thread before the call
-  was forwarded), `copy_ns`, `hash_ns`, `conn` and `http_status` (null until G2c2), then G2a's
+  was forwarded), `copy_ns`, `hash_ns`, `conn` and `http_status` (set on G2c2's `http-get` lines), then G2a's
   additions `target` (the item, viewport or other texture RID the call names), `ref_id` (that
   texture's id), `value` (the filter, repeat or channel argument), `layer` and `root_viewport`.
   A `texture_replace` line carries the payload fields of the content its target now holds.
@@ -471,6 +475,11 @@ reason, connections}`. Written at decision time and rewritten at disarm and shut
   bump) and `"sabotage":true,"omitted":true` (a call the omit-op sabotage dropped from the
   capture: logged, but neither the mirror nor the log's registry applies it, so the two keep
   agreeing and the sabotage shows as pixels).
+  G2c2 adds the live serving lines: `pin` (a hash became servable over HTTP; `reason` `current`),
+  `retire` (it stopped being servable and its bytes were released; `superseded`, or `unpin` under
+  that sabotage) and `http-get` (one GET the server answered: `hash`, `http_status`,
+  `payload_bytes`, `conn` the live connection streaming then, thread `other`); a drop-resource
+  pin carries `"sabotage":true`.
 - `armed.marker` — empty file, created immediately after the vptr store.
 
 Deviations from the drafted contract, all additive:
@@ -1597,6 +1606,94 @@ patch transactions carry no texture entry.
   retained budget in a real run (both are unit-tested only).
 - Cache eviction, parallel fetches, lazy hashing (gate 6), browser receivers (gate 7), late join and
   the target game's textures (gate 8).
+
+## Gate 2c result (2026-10-09)
+
+G2c2 ([protocol/gate2-design.md](protocol/gate2-design.md) "G2c2" and its "As built") passes:
+`pnpm render-stream:gate2` (groups g2a, g2b, g2c) is 72/72 in
+`artifacts/render-stream/gate2/g2c2-final/`. The same build passed gate −1 28/28
+(`artifacts/render-stream/gate-minus1/g2c2-final/`), gate 0 19/19
+(`artifacts/render-stream/gate0/g2c2-final/`) and gate 1 65/65, all four groups
+(`artifacts/render-stream/gate1/g2c2-final/`). All under the ignored `artifacts/`.
+
+What landed:
+
+- **The live host serves payloads by hash.** `ServedResources` (`capture/src/rs_resource_store.h`)
+  is the rs_ws `ResourceSource`: at each frame callback the published snapshot's payloads are
+  pinned before the hub sends, and after the sends the servable set is exactly the current state's
+  payloads united with every open connection's base (the payloads of its last sent transaction);
+  everything else is retired and its bytes released. Pins, retirements and every GET go to the
+  hook log (`pin`, `retire`, `http-get`), the summary gains the serving totals, and the retained
+  budget counts the servable set. Live connections follow the configured policy (`fetch: "http"`,
+  inline capped at 1 MiB). Sabotages `unpin` and `drop-resource`; `wrong-hash` serves the store's
+  corrupted copy.
+- **The live receiver fetches before it applies.** `RsResourceFetcher` (one keep-alive
+  `HTTPClient`, sequential GETs, a timeout, the delay as a timed wait) fills the cache; a
+  transaction stays unapplied (acked `received`) until every payload it needs is verified and
+  cached, while the previous state stays on screen.
+
+Numbers (host `live-summary.json` and hook log; receiver `applied.json`):
+
+| leg              | GETs | HTTP bytes | pinned / retired | retained max (hashes / bytes) | fetch latency p50 / p95                |
+| ---------------- | ---- | ---------- | ---------------- | ----------------------------- | -------------------------------------- |
+| `live`           | 9    | 31 181     | 10 / 3           | 7 / 49 050                    | 16.1 / 16.7 ms                         |
+| `live-headless`  | 9    | 31 181     | 10 / 3           | 7 / 49 050                    | 19.4 / 20.9 ms                         |
+| `live-stall`     | 9    | 31 181     | 10 / 3           | 7 / 49 050                    | 16.1 / 16.7 ms                         |
+| `live-reconnect` | 9    | 31 181     | 10 / 3           | 7 / 49 050                    | 16.2 / 16.7 ms                         |
+| `live-warm`      | 0    | 0          | 10 / 3           | 7 / 49 050                    | – (9 cache hits)                       |
+| `live-animate`   | 15   | 33 365     | 905 / 897        | 10 / 49 778                   | 16.9 / 17.1 ms (100 ms delay excluded) |
+
+Fetch latency is the same for 137 B and 21 955 B payloads (15.8–16.7 ms in `live`): a fetch costs
+one receiver frame at `--max-fps 60`, since the fetcher is polled from `_process`; the loopback
+transfer itself is not visible at this resolution. `pins-bounded` holds at all 911 frames of every
+good host (the replayed servable set equals the full recording's ok hashes united with every open
+connection's tapped base, peak 48 086 B after retirement; the summary's 49 050 B includes the
+phase-1 pins of a callback before its retirements), against a 512 MiB budget.
+
+`live-animate`: 911 ANIM updates, 661 ANIM versions reached the wire (in 661 transactions), six
+distinct ANIM hashes (k = frame mod 6), 15 distinct hashes fetched (the six ANIM contents and the
+nine fixture payloads, every one named by a sent transaction), 897 retirements: every superseded
+ANIM version left the servable set at the next callback once no base named it.
+
+| leg                        | class (expected) | why                                                                                                                  |
+| -------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `live`                     | success          | 853 transactions, 9 fetches (one per payload), 11 shots equal to the reference                                       |
+| `live-warm`                | success          | a new host and receiver on `live`'s cache: the host answers no GET, 9 cache hits, shots equal `live`'s               |
+| `live-replay`              | success          | file replay of `live`'s `received.rs2` with `live`'s cache as its store: same seqs, payloads, shots and state dumps  |
+| `live-headless`            | success          | 808 transactions, `applied` credit, under strace                                                                     |
+| `live-stall`               | success          | stall after seq 559 (frame 607); seq 560 at frame 687 carries A1, fetched once; its step 6 shot equals the reference |
+| `live-reconnect`           | success          | connection 2 starts full: 0 fetched, 3 cache hits, 5 uploads for 5 resident textures; then C and D fetched once each |
+| `live-animate`             | success          | anim region equal to `synthesizeGate2` at each shot's frame, the rest equal to the reference                         |
+| `sabotage-unpin`           | replay-failure   | `resource-unavailable` at seq 1: the third GET (ANIM, ~21 frames after the send) found its version retired, HTTP 404 |
+| `sabotage-drop-resource`   | replay-failure   | `resource-unavailable` at seq 568, the first transaction naming A1, which the host answers 404                       |
+| `sabotage-wrong-hash-live` | replay-failure   | `resource-hash-mismatch` at seq 571: the served A1 has its first data byte flipped                                   |
+
+Images, all under the run directory: `live/receiver/shots/seq-<n>.png` (11 steps; equal to
+`reference/shots/step-<k>.png`), `live-replay/shots/seq-<n>.png` for the same seqs,
+`live-stall/receiver/shots/seq-560.png` (step 6, after the stall),
+`live-reconnect/receiver/shots/stream-2-seq-<n>.png` (steps 8–10 on connection 2) and
+`live-animate/receiver/shots/seq-<n>.png`.
+
+### Findings
+
+- **Pinning has to precede the send.** rs_ws's I/O thread transmits a transaction as soon as it
+  is queued, so a receiver can GET a hash new at that frame before the callback ends; the host
+  therefore pins everything it may send before the hub runs and retires after it.
+- **The contract's 100 ms delay with a six-content ANIM.** A fresh receiver caches all six ANIM
+  contents by host frame ~90, so `unpin` from S + N was unobservable (it retired 11 base-named
+  hashes and the leg succeeded); the leg arms it from frame 1. The delay itself is safe: a fetch
+  costs ~7 frames, so the GET lands three ANIM phases off the current content and is served only
+  by the base pin.
+- **A 2 s stall after step 5 skips step 6 entirely.** It would end at ~728, after step 7 replaced
+  A, so A1 never reaches the wire; `live-stall` uses 1.3 s, ending inside step 6's window.
+- **One HTTPClient state per frame cost 2–3 frames per fetch.** The fetcher now polls repeatedly
+  within a frame while it makes progress (each poll non-blocking), bringing a fetch to one frame.
+
+### What G2c does not prove
+
+- Bearer tokens (G2e) and canvas textures (G2d); non-loopback serving (gate 8).
+- Fetch costs below one frame, parallel fetches, large payloads (the largest is 21 955 B),
+  constrained links and cache eviction (gate 6); browser receivers and their HTTP caches (gate 7).
 
 ## Scratch verification (2026-10-08)
 

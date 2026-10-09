@@ -74,6 +74,13 @@ const SHAPES: Record<string, [string, number, number, boolean]> = {
   C: ["RGBA8", 16, 16, false],
   D: ["RGBA8", 16, 16, false],
   E: ["RGBA8", 4, 4, false],
+  // G2c2: the animate variant's six ANIM contents (k = frame mod 6).
+  ANIM0: ["RGBA8", 8, 8, false],
+  ANIM1: ["RGBA8", 8, 8, false],
+  ANIM2: ["RGBA8", 8, 8, false],
+  ANIM3: ["RGBA8", 8, 8, false],
+  ANIM4: ["RGBA8", 8, 8, false],
+  ANIM5: ["RGBA8", 8, 8, false],
 };
 
 function makeContent(name: string, salt: number): Content {
@@ -131,7 +138,8 @@ export type Sabotage =
 
 export interface ModelOptions {
   quit: number;
-  variant?: "unsupported";
+  /** unsupported: U1 and PRE; animate (G2c2): ANIM, update()d every frame */
+  variant?: "unsupported" | "animate";
   sabotage?: Sabotage;
   /** TR, RAW1 and RAW2 draw with add_texture_rect_region: no add_texture_rect anywhere */
   noTextureRect?: boolean;
@@ -184,6 +192,8 @@ export const ITEM = {
   RAW2: 13,
   U1: 14,
   PRE: 15,
+  /** the animate variant's sprite (G2c2) */
+  ANIM: 14,
 } as const;
 
 export const texRid = (id: number): string => String(1000 + id);
@@ -412,7 +422,11 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
   fix(0, "texture_2d_placeholder_create", "P1", null);
   ids.P2 = placeholder(1);
   fix(0, "texture_2d_placeholder_create", "P2", null);
-  if (o.variant) {
+  if (o.variant === "animate") {
+    ids.ANIM = create(1, C.ANIM1);
+    fix(0, "texture_2d_create", "ANIM", C.ANIM1);
+  }
+  if (o.variant === "unsupported") {
     ids.U1 = next++;
     live.set(ids.U1, { version: 1, kind: "image" });
     hook.push(
@@ -449,7 +463,8 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
   }
   const items = [
     ...e.items_at_ready.map((_, i) => i + 1),
-    ...(o.variant ? [ITEM.U1, ITEM.PRE] : []),
+    ...(o.variant === "unsupported" ? [ITEM.U1, ITEM.PRE] : []),
+    ...(o.variant === "animate" ? [ITEM.ANIM] : []),
   ];
   for (const item of items) {
     itemCall(1, "canvas_item_set_default_texture_filter", item, 0);
@@ -506,7 +521,33 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
   fix(9, "texture_replace", "P2", null);
   itemCall(f(9), "canvas_item_set_default_texture_filter", ITEM.MM, 4);
   // Scene teardown after the quit frame.
-  for (const name of ["A", "B", "M", "C", "D", ...(o.variant ? ["U1"] : [])])
+  if (o.variant === "animate")
+    for (let frame = 1; frame <= o.quit; frame++) {
+      const c = C[`ANIM${frame % 6}`];
+      update(frame, ids.ANIM, c);
+      fixture.push({
+        step: stepAt(e, frame),
+        frame,
+        op: "texture_2d_update",
+        name: "ANIM",
+        thread: "main",
+        format: c.format,
+        width: c.width,
+        height: c.height,
+        mipmaps: c.mipmaps,
+        data_bytes: c.data_bytes,
+        payload_sha256: c.hash,
+      });
+    }
+  for (const name of [
+    "A",
+    "B",
+    "M",
+    "C",
+    "D",
+    ...(o.variant === "unsupported" ? ["U1"] : []),
+    ...(o.variant === "animate" ? ["ANIM"] : []),
+  ])
     free(o.quit + 1, ids[name]);
 
   // The texture tables: the hook log replayed frame by frame.
@@ -516,7 +557,9 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
   const tex = new Map<number, TexState>();
   const states: TState[] = [];
   const drawnRect = new Set<string>();
-  const drawnRegion = new Set<string>(o.variant ? [PRE_RID] : []);
+  const drawnRegion = new Set<string>(
+    o.variant === "unsupported" ? [PRE_RID] : [],
+  );
   const stores: Model["stores"] = [];
   const stored = new Set<string>();
   const publisherLines: ResourceLine[] = [];
@@ -593,20 +636,21 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
           }),
         );
       }
-    const unsupported = o.variant
-      ? [
-          {
-            op: "canvas_item_add_texture_rect_region",
-            item: ITEM.U1,
-            reason: "unsupported-texture",
-          },
-          {
-            op: "canvas_item_add_texture_rect_region",
-            item: ITEM.PRE,
-            reason: "unknown-texture",
-          },
-        ]
-      : [];
+    const unsupported =
+      o.variant === "unsupported"
+        ? [
+            {
+              op: "canvas_item_add_texture_rect_region",
+              item: ITEM.U1,
+              reason: "unsupported-texture",
+            },
+            {
+              op: "canvas_item_add_texture_rect_region",
+              item: ITEM.PRE,
+              reason: "unknown-texture",
+            },
+          ]
+        : [];
     states.push({
       frame,
       failures: [],
@@ -710,7 +754,8 @@ function itemsAt(
     ),
     item(ITEM.RAW1, [rect(ids.P1)]),
     item(ITEM.RAW2, [rect(ids.P2)]),
-    ...(o.variant
+    ...(o.variant === "animate" ? [item(ITEM.ANIM, [region(ids.ANIM)])] : []),
+    ...(o.variant === "unsupported"
       ? [
           item(ITEM.U1, [region(ids.U1)]),
           item(ITEM.PRE, [
@@ -917,7 +962,8 @@ export function simulateReceiver(
         have.delete(id);
         r.freed++;
       }
-    if (model.options.variant && tx.seq === 1) r.skipped_commands++;
+    if (model.options.variant === "unsupported" && tx.seq === 1)
+      r.skipped_commands++;
     resources.set(tx.seq, r);
   }
   return { resources, fetches, uploads, acquired };
@@ -1218,7 +1264,9 @@ export function shotPng(
   e: Gate2Expected,
   step: number,
   o: {
-    variant?: "unsupported";
+    variant?: "unsupported" | "animate";
+    /** the frame a shot shows (the animate variant's ANIM content) */
+    frame?: number;
     skipUnsupported?: boolean;
     perturb?: [number, number];
   } = {},
@@ -1228,6 +1276,7 @@ export function shotPng(
   if (!png) {
     const { width, height, rgba } = synthesizeGate2(e, step, {
       variant: o.variant,
+      frame: o.frame,
     });
     const buf = Buffer.from(rgba);
     if (o.skipUnsupported) {
@@ -1281,8 +1330,8 @@ export async function buildTree(
 ): Promise<void> {
   const quit = e.quit_frame_default;
   await writeJson(join(out, "legs.json"), {
-    groups_run: ["g2a", "g2b"],
-    groups_landed: ["g2a", "g2b"],
+    groups_run: ["g2a", "g2b", "g2c"],
+    groups_landed: ["g2a", "g2b", "g2c"],
   });
   await writeJson(join(out, "binary.json"), {
     path: "/tpl/linux_release.x86_64",

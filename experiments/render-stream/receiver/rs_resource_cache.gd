@@ -4,7 +4,9 @@ extends RefCounted
 ## an in-memory map of verified payloads (inline resource records and every payload this process
 ## already obtained), the content-addressed cache directory RS_RECEIVER_CACHE_DIR
 ## (`sha256/<hash>.grt`), and, in file mode, the capture's store directory RS_RECEIVER_STORE_DIR
-## as the origin for `fetch: "directory"` (reading from it counts as a fetch).
+## as the origin for `fetch: "directory"` (reading from it counts as a fetch). In live mode the
+## origin is HTTP (G2c2): RsResourceFetcher gets the bytes, add_fetched() verifies, decodes and
+## caches them exactly as the directory branch of obtain() does.
 ##
 ## Every payload is verified against its name (SHA-256) before it is used and before it is
 ## written to the cache, and decoded (RsTexturePayload) before it is used. A payload this process
@@ -97,6 +99,36 @@ func add_inline(hash: String, payload: PackedByteArray) -> String:
 	if not decoded["ok"]:
 		return Rs2Decoder.err("resource-invalid", "inline payload %s: %s" % [hash, decoded["detail"]])
 	_memory[hash] = decoded
+	_lengths[hash] = payload.size()
+	return ""
+
+
+## Whether the cache directory holds a file for `hash` (a hit for obtain(), unless ignore_cache).
+func cache_has(hash: String) -> bool:
+	return dir != "" and FileAccess.file_exists(dir.path_join(CACHE_SUBDIR).path_join(hash + ".grt"))
+
+
+## Forgets every payload held in memory (a live reconnect: the new session's payloads come from
+## the stream's inline records, the cache directory or a fetch, never from the old session).
+func clear_memory() -> void:
+	_memory.clear()
+	_lengths.clear()
+
+
+## A payload fetched over HTTP (G2c2, RsResourceFetcher): verified against its name, decoded,
+## written to the cache, kept in memory -- obtain()'s directory branch, with the bytes already in
+## hand. Returns "" or the error (resource-hash-mismatch, resource-invalid, resource-unavailable).
+func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> String:
+	if RsTexturePayload.sha256_hex(payload) != hash:
+		return Rs2Decoder.err("resource-hash-mismatch", "%s (%d bytes) does not hash to its name" % [origin, payload.size()])
+	var fetched_decoded: Dictionary = RsTexturePayload.decode(payload)
+	if not fetched_decoded["ok"]:
+		return Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, fetched_decoded["detail"]])
+	if dir != "":
+		var write_error: String = _write_cache(hash, payload)
+		if write_error != "":
+			return write_error
+	_memory[hash] = fetched_decoded
 	_lengths[hash] = payload.size()
 	return ""
 

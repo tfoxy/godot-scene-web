@@ -1000,6 +1000,59 @@ self-test cases.
 "Gate 2c result" gives fetch latency per size, HTTP bytes, retained-store maxima, and the
 `live-animate` update, publish and fetch counts.
 
+**As built (2026-10-09; README "Gate 2c result").** `--legs g2a,g2b,g2c` is 72/72 and every g2c
+leg classifies as expected. Deviations and decisions, recorded so G2d/G2e build on them:
+
+- **Serving is two-phase per frame callback** (`rs_resource_store.h` `ServedResources`, the
+  server's `ResourceSource`). Before the hub sends, every payload it may send this callback (the
+  published snapshot's, and a stale-coalesce copy's) is pinned; after the sends, the servable set
+  becomes exactly the snapshot's payloads united with every open connection's base (`Hub::base_payloads`,
+  the payload map of the last transaction sent), and the rest is retired. Pinning only after the
+  sends would let a receiver GET a hash new at this frame before it is servable (the I/O thread
+  sends at once). A closed connection pins nothing. With a live server the snapshot is taken at
+  every callback, so the current state is always servable. `lookup()` takes only its own mutex,
+  inside rs_ws's lock; the main thread never calls the server while holding it.
+- **Hook log.** `pin` (reason `current`), `retire` (`superseded`, or `unpin`) and `http-get`
+  (`hash`, `http_status`, `payload_bytes`, `conn` = the hub connection streaming at the time, the
+  I/O thread's `t_us`, thread `other`) lines, in the existing key set; a drop-resource pin carries
+  `"sabotage":true`. They are publisher ops for the census. `pins-bounded` replays them frame by
+  frame against the full recording united with each connection's tapped base; no per-frame
+  retained line is logged. `live-summary.json` gains per-connection `http_gets`/`http_bytes`/
+  `http_errors` and a top-level `resources` object (GET totals, pinned, retired, retained maxima,
+  budget, the dropped and corrupted hash). The retained budget now counts the servable set too.
+- **Live policy.** Every live connection declares the configured policy with `fetch: "http"`;
+  `GRC_RESOURCE_INLINE_MAX_BYTES` above 1 MiB with `GRC_LIVE_LISTEN` refuses the listener. g2b's
+  `live-inline` host therefore asks for inline delivery explicitly (1 MiB both), and gate 1's live
+  receivers get a fresh cache directory (their streams are out of band now; no command names a
+  texture, so they fetch nothing).
+- **Receiver.** `RsResourceFetcher` polls from `_process`; a transaction whose payloads are
+  missing waits unapplied (acked `received` only) while the previous state stays on screen, then
+  is applied once every fetch is verified and cached (`RsResourceCache.add_fetched`). One poll call
+  keeps polling while it progresses, so a fetch costs one frame (~16 ms at 60 fps) rather than one
+  frame per HTTPClient state; latency is frame-quantized, not network-bound. The delay is a timed
+  wait in live mode. A reconnect drops the in-memory payloads, so connection 2's first transaction
+  takes everything from the disk cache (hits counted). Fetch entries add `delay_us` and the
+  response `headers`.
+- **`sabotage-unpin` arms at frame 1, not S + N.** ANIM has six contents (`k = frame mod 6`), so a
+  fresh receiver fetches all six within its first ~10 transactions (by host frame ~90) and never
+  fetches again; measured: unpin from S + N = 360 retired 11 base-named hashes and the leg still
+  succeeded. From frame 1 the receiver's first ANIM fetch (seq 1) finds it retired: 404,
+  `resource-unavailable`. The 100 ms delay stays: each fetch costs ~7 frames (6 delay + 1), so the
+  third GET of seq 1 lands ~21 frames after the send, three ANIM phases away from coincidence with
+  the current content.
+- **`live-stall` uses `5:1300`, not `5:2000`.** The step 5 shot is at ~607; a 2 s stall ends at
+  ~728, after step 7 (720) replaced A, so A1 would never reach the wire and the check's "the first
+  post-stall transaction carries A1" could not hold. 1.3 s ends at ~687, inside step 6's window.
+- **Live sabotage receivers are headless** (drop-resource, wrong-hash-live); unpin is rendered,
+  as live-animate. The checker also requires drop-resource and wrong-hash-live to fail at the first
+  transaction naming A1 and the host's dropped/corrupted hash to be A1, and unpin to have retired a
+  base-named hash with a 404 for the failing fetch.
+- **`transform-only-no-resource-traffic` (live)** is a separate check id
+  (`transform-only-no-resource-traffic-live`) over the five main-variant legs.
+
+What G2d/G2e need: G2e adds the bearer check in `rs_ws` and the token to `RsLiveClient` and
+`RsResourceFetcher` (requests go through `_request()`, which passes an explicit headers array).
+
 ---
 
 ### G2d — `CanvasTexture`: per-command filter and repeat (sonnet)

@@ -53,6 +53,7 @@ struct ResourceLog::Line {
   bool sabotage = false;
   bool omitted = false;
   std::uint64_t conn = 0;  // 0 = null
+  std::int64_t http_status = -1;  // -1 = null (G2c2: http-get lines)
 };
 
 void ResourceLog::emit(const Line &l) {
@@ -140,7 +141,7 @@ void ResourceLog::emit(const Line &l) {
   key("conn");
   u64_or_null(l.conn);
   key("http_status");
-  o += "null";
+  i64_or_null(l.http_status >= 0, l.http_status);
   key("target");
   if (l.has_target) {
     append_string(&o, std::to_string(l.target));
@@ -465,6 +466,25 @@ void ResourceLog::resource_event(const TapContext &ctx, const char *op, const st
   line.status = status;
   line.payload = &described;
   line.conn = conn;
+  emit(line);
+}
+
+void ResourceLog::serve_event(const TapContext &ctx, const char *op, const std::string &hash,
+                              std::uint64_t payload_bytes, const char *reason, std::uint64_t conn,
+                              std::int64_t http_status, bool sabotage) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  PayloadCopy described;
+  described.payload_bytes = static_cast<std::int64_t>(payload_bytes);
+  described.hash = hash;
+  Line line = base_line(ctx, op);
+  line.reason = reason != nullptr ? reason : "";
+  line.payload = &described;
+  line.conn = conn;
+  line.http_status = http_status;
+  line.sabotage = sabotage;
   emit(line);
 }
 

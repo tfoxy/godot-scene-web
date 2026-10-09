@@ -141,6 +141,8 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"stale-texture", SabotageKind::StaleTexture},
       {"wrong-hash", SabotageKind::WrongHash},
       {"spurious-texture-update", SabotageKind::SpuriousTextureUpdate},
+      {"drop-resource", SabotageKind::DropResource},
+      {"unpin", SabotageKind::Unpin},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -152,9 +154,7 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
   }
   if (!known) {
     result.ok = false;
-    result.error = kind_text == "drop-resource" || kind_text == "unpin"
-                       ? "GRC_SABOTAGE " + kind_text + " needs live resource serving (G2c2)"
-                       : "unknown GRC_SABOTAGE kind \"" + kind_text + "\"";
+    result.error = "unknown GRC_SABOTAGE kind \"" + kind_text + "\"";
     return result;
   }
 

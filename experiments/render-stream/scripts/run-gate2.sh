@@ -4,7 +4,7 @@
 #
 #   bash run-gate2.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g2a,g2b]
+#     [--legs g2a,g2b,g2c]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -13,8 +13,11 @@
 # its rendered reference and a same-build repeat, the extension-armed reference, the RS call
 # census and the copy at the hook) and g2b (G2b2: render-stream/2 with textures -- the store,
 # inline records, cold/warm/patch/inline receivers, a live inline host, the unsupported variant
-# and the sabotages). g2b needs g2a's captures and reference, so it only runs together with g2a.
-# Groups g2c-g2e arrive with their increments.
+# and the sabotages) and g2c (G2c2: live resources over HTTP -- live hosts serving payloads by
+# hash with pins and retirement, rendered and headless live receivers fetching before they apply,
+# warm, replay, stall, reconnect and animate legs, and the unpin, drop-resource and live
+# wrong-hash sabotages). g2b and g2c need g2a's captures and reference, so they only run together
+# with g2a. Groups g2d-g2e arrive with their increments.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -37,7 +40,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order. G2c-G2e add theirs here.
-LANDED_GROUPS=(g2a g2b)
+LANDED_GROUPS=(g2a g2b g2c)
 KNOWN_GROUPS=(g2a g2b g2c g2d g2e)
 
 EXTENSION=""
@@ -146,17 +149,19 @@ else
 		GROUPS_RUN+=("$group")
 	done
 fi
-case " ${GROUPS_RUN[*]} " in
-*" g2b "*)
+for group in g2b g2c; do
 	case " ${GROUPS_RUN[*]} " in
-	*" g2a "*) ;;
-	*)
-		echo "run-gate2: g2b needs g2a's captures and reference; pass --legs g2a,g2b" >&2
-		exit 2
+	*" $group "*)
+		case " ${GROUPS_RUN[*]} " in
+		*" g2a "*) ;;
+		*)
+			echo "run-gate2: $group needs g2a's captures and reference; pass --legs g2a,$group" >&2
+			exit 2
+			;;
+		esac
 		;;
 	esac
-	;;
-esac
+done
 
 ACTUAL_BINARY_SHA256="$(sha256sum "$BINARY" | awk '{print $1}')"
 if [ "$ACTUAL_BINARY_SHA256" != "$EXPECTED_BINARY_SHA256" ]; then
@@ -333,11 +338,13 @@ run_g2a() {
 	GS_RUN_DIR=""
 }
 
-# start_live_host <host dir>: the gate 2 capture host (headless, armed, both file sinks and their
-# store, --max-fps 60, the live timeline) serving on 127.0.0.1:0 in the background. Waits for
+# start_live_host <host dir> [extra env words...]: the gate 2 capture host (headless, armed, both
+# file sinks and their store, --max-fps 60, the live timeline) serving on 127.0.0.1:0 in the
+# background, plus the extra words (variant, sabotage, inline policy). Waits for
 # evidence/live.json and sets LIVE_PORT ("" when the host is not listening).
 start_live_host() {
 	local dir="$1" waited=0
+	shift
 	mkdir -p "$dir/evidence" "$dir/tap"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
@@ -346,7 +353,7 @@ start_live_host() {
 		GRC_ROOT_SIZE=enforce-min-size GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
 		RS_FIXTURE_START_FRAME="$LIVE_START_FRAME" RS_FIXTURE_STEP_FRAMES="$LIVE_STEP_FRAMES"
 		RS_FIXTURE_QUIT_FRAME="$LIVE_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
-		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl"
+		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl" "$@"
 	)
 	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$FIXTURE_DIR"
 	LIVE_HOST_PID="$BG_PID"
@@ -405,9 +412,12 @@ run_g2b() {
 	g2_receiver "$OUT/capture" "$OUT/sabotage-receiver-reupload/receiver" headless \
 		RS_RECEIVER_SABOTAGE=reupload
 
-	# Live: inline only until G2c2 (every payload a resource record before its transaction).
+	# Live inline: every payload a resource record before its transaction. Since G2c2 live
+	# connections follow the configured policy, so this host asks for inline delivery (1 MiB, the
+	# live inline cap, covers the fixture's largest payload).
 	echo "run-gate2: live-inline (host + headless live receiver, credit stage applied)"
-	start_live_host "$OUT/live-inline/host"
+	start_live_host "$OUT/live-inline/host" \
+		GRC_RESOURCE_INLINE_MAX_BYTES=1048576 GRC_RESOURCE_MAX_PAYLOAD_BYTES=1048576
 	mkdir -p "$OUT/live-inline/receiver"
 	if [ -z "$LIVE_PORT" ]; then
 		echo "the live host is not listening (see live-inline/host/evidence/live.json)" >"$OUT/live-inline/receiver/skipped.txt"
@@ -461,10 +471,126 @@ run_g2b() {
 		RS_RECEIVER_CACHE_MODE=warm RS_RECEIVER_SABOTAGE=ignore-cache
 }
 
+# The live receiver's shot windows for the live timeline: <step>:<from>-<to>, steps 0..LAST_STEP
+# (gate 1's rule: from the settle frame to the frame before the next step; the last to the quit).
+live_windows() {
+	local k from to out="" sep=""
+	for k in $(seq 0 "$LAST_STEP"); do
+		from=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * k + 7))
+		to=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * (k + 1) - 1))
+		[ "$k" -eq "$LAST_STEP" ] && to=$LIVE_QUIT_FRAME
+		out+="$sep$k:$from-$to"
+		sep=","
+	done
+	echo "$out"
+}
+
+# g2c_receiver <leg dir> <rendered|headless> [extra env words...]: a live receiver on the current
+# host's port with a fresh cache at <leg>/receiver/cache (the extra words may override it) and
+# --max-fps 60. Rendered receivers shoot the step windows (credit stage submitted); headless ones
+# run with credit stage applied under strace -e openat.
+g2c_receiver() {
+	local leg="$1" kind="$2" dir="$1/receiver"
+	shift 2
+	mkdir -p "$dir"
+	if [ -z "$LIVE_PORT" ]; then
+		echo "the live host is not listening (see $leg/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate2: ${dir#"$OUT"/} skipped: the host is not listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache" "$@"
+	)
+	if [ "$kind" = "headless" ]; then
+		LEG_ENV+=(RS_RECEIVER_CREDIT_STAGE=applied)
+		run_headless "$dir" openat -- "$BINARY" --headless --max-fps 60 --path "$RECEIVER_DIR"
+	else
+		LEG_ENV+=(RS_RECEIVER_SHOT_WINDOWS="$(live_windows)")
+		RENDERED_EXTRA_ARGS=(--max-fps 60)
+		run_rendered "$dir" "$RECEIVER_DIR"
+	fi
+}
+
+# g2c_leg <leg> <rendered|headless> <host words...> -- <receiver words...>: one live host and one
+# receiver against it, then the host to its quit frame.
+g2c_leg() {
+	local leg="$1" kind="$2"
+	shift 2
+	local -a host_words=() receiver_words=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		host_words+=("$1")
+		shift
+	done
+	[ $# -gt 0 ] && shift
+	receiver_words=("$@")
+	start_live_host "$OUT/$leg/host" ${host_words[@]+"${host_words[@]}"}
+	g2c_receiver "$OUT/$leg" "$kind" ${receiver_words[@]+"${receiver_words[@]}"}
+	finish_bg "$OUT/$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+}
+
+# g2c (G2c2): live resources over HTTP. Every host is the live timeline (S = 300, N = 60, quit 911)
+# with both file sinks, the store, GRC_LIVE_LISTEN and GRC_LIVE_TAP_DIR, and the configured
+# out-of-band policy (fetch http). The stall ends inside step 6's window, so step 6's texture
+# update lands inside it and the first post-stall transaction carries A1 (gate2-design.md G2c2
+# "As built"); unpin is armed from frame 1, before the receiver's first fetch, because ANIM has
+# only six contents and a fresh cache holds all of them long before S + N.
+G2C_STALL_SPEC="5:1300"
+G2C_RECONNECT_STEP=7
+G2C_FETCH_DELAY_MS=100
+G2C_UNPIN_FRAME=1
+run_g2c() {
+	local f6 seqs
+	f6=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 6))
+
+	echo "run-gate2: live-headless (host + headless live receiver, fresh cache)"
+	g2c_leg live-headless headless
+	echo "run-gate2: sabotage-drop-resource (drop-resource @$f6, headless receiver)"
+	g2c_leg sabotage-drop-resource headless GRC_SABOTAGE=drop-resource GRC_SABOTAGE_FRAME="$f6"
+	echo "run-gate2: sabotage-wrong-hash-live (wrong-hash @$f6 served over HTTP, headless receiver)"
+	g2c_leg sabotage-wrong-hash-live headless GRC_SABOTAGE=wrong-hash GRC_SABOTAGE_FRAME="$f6"
+
+	echo "run-gate2: bringing up private gamescope for g2c rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g2c"
+
+	echo "run-gate2: live (host + rendered live receiver, fresh cache, shot windows $(live_windows))"
+	g2c_leg live rendered
+	echo "run-gate2: live-replay (rendered file-mode receiver on live/receiver/received.rs2, store = live's cache)"
+	if prepare_recording "$OUT/live/receiver/received.rs2" "$OUT/live-replay" &&
+		seqs="$(gate0_tool live-shot-seqs "$OUT/live/receiver/applied.json")"; then
+		mkdir -p "$OUT/live-replay/shots"
+		LEG_ENV=(
+			RS_RECEIVER_RECORDING="$OUT/live-replay/$RECORDING_NAME"
+			RS_RECEIVER_OUT="$OUT/live-replay/applied.json" RS_RECEIVER_SHOT_SEQS="$seqs"
+			RS_RECEIVER_STATE_SEQS="$seqs" RS_RECEIVER_CACHE_DIR="$OUT/live-replay/cache"
+			RS_RECEIVER_STORE_DIR="$OUT/live/receiver/cache"
+		)
+		run_rendered "$OUT/live-replay" "$RECEIVER_DIR"
+	fi
+	echo "run-gate2: live-warm (a new host + a new rendered receiver on live's cache, mode warm)"
+	g2c_leg live-warm rendered -- \
+		RS_RECEIVER_CACHE_DIR="$OUT/live/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	echo "run-gate2: live-stall (RS_RECEIVER_STALL=$G2C_STALL_SPEC)"
+	g2c_leg live-stall rendered -- RS_RECEIVER_STALL="$G2C_STALL_SPEC"
+	echo "run-gate2: live-reconnect (RS_RECEIVER_RECONNECT=$G2C_RECONNECT_STEP)"
+	g2c_leg live-reconnect rendered -- RS_RECEIVER_RECONNECT="$G2C_RECONNECT_STEP"
+	echo "run-gate2: live-animate (RS_FIXTURE_VARIANT=animate, RS_RECEIVER_FETCH_DELAY_MS=$G2C_FETCH_DELAY_MS)"
+	g2c_leg live-animate rendered RS_FIXTURE_VARIANT=animate -- \
+		RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
+	echo "run-gate2: sabotage-unpin (as live-animate, unpin @$G2C_UNPIN_FRAME)"
+	g2c_leg sabotage-unpin rendered RS_FIXTURE_VARIANT=animate GRC_SABOTAGE=unpin \
+		GRC_SABOTAGE_FRAME="$G2C_UNPIN_FRAME" -- RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
+
+	gs_teardown "$OUT/gamescope-g2c"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g2a) run_g2a ;;
 	g2b) run_g2b ;;
+	g2c) run_g2c ;;
 	esac
 done
 

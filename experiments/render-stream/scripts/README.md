@@ -362,12 +362,13 @@ log); live receiver directories hold `applied.json` (`mode: live`), `received.rs
 `shots/stream-2-seq-<n>.png` and `state/stream-2-seq-<n>.json`. Frame lines of the live log carry
 `pending_since` (the frame the pending target became pending, or null) and the summary
 `max_pending`, `pending_episodes`, `max_pending_frames`, `max_pending_age_us`,
-`sent_without_credit` and `stale_sent`. Since G2b2 every live connection is inline (until G2c2):
-the subprotocol is `render-stream.2`, live receivers get no cache, and right before the
-transaction that first needs a payload (at least the hue strip, before seq 1) the host sends it as
-a resource record, one binary message of its own, logging a `resource` event line (`hash`,
-`bytes`); the summary gains `resource_records` and `resource_bytes` per connection. Not every
-message after the first is a transaction, so the checks find transactions by seq only.
+`sent_without_credit` and `stale_sent`. Since G2b2 the subprotocol is `render-stream.2`. A live
+connection carries payloads of at most `inline_max_bytes` as resource records, one binary message
+each, right before the transaction that first needs them (a `resource` event line; the summary's
+`resource_records`/`resource_bytes`), and since G2c2 serves larger ones over HTTP: gate 1's hosts
+run the default out-of-band policy, so every live receiver gets a fresh `cache/`, although no
+gate 1 command names a texture and nothing is fetched. Not every message after the first is
+necessarily a transaction, so the checks find transactions by seq only.
 
 ## Gate 1 classification
 
@@ -527,26 +528,29 @@ Drives `../fixtures/gate2/` through the leg groups of
 reference, the RenderingServer texture-call census and the copy and hash at the hook) and `g2b`
 (G2b2: render-stream/2 with textures -- the texture table against the hook log, the store and
 inline records, cold/warm/patch/inline receivers, a live inline host, the unsupported variant and
-the sabotages) have landed; `g2c`-`g2e` arrive with their increments and are refused until then.
-g2b needs g2a's captures and reference, so `--legs g2b` alone is refused. Run it from the repo
-root:
+the sabotages) and `g2c` (G2c2: live resources over HTTP -- hosts serving payloads by hash with
+pins and retirement, live receivers fetching before they apply, warm, replay, stall, reconnect and
+animate legs, and the unpin, drop-resource and live wrong-hash sabotages) have landed; `g2d`-`g2e`
+arrive with their increments and are refused until then. g2b and g2c need g2a's captures and
+reference, so `--legs g2b` or `--legs g2c` alone is refused. Run it from the repo root:
 
 ```bash
 mise exec -- pnpm render-stream:gate2 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g2a,g2b]
+  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g2a,g2b,g2c]
 ```
 
 The arguments and refusals are gate 1's; `--out` defaults to `artifacts/render-stream/gate2/<UTC>/`.
-The runner takes about five minutes. It uses `lib/legs.sh` (`run_headless`, `run_capture`,
+The runner takes about eight minutes for the three groups (g2c's nine live hosts run 911 frames
+at 60 frames per second each). It uses `lib/legs.sh` (`run_headless`, `run_capture`,
 `run_rendered`, `settle_seqs`, `start_headless_bg`) and one private gamescope per group.
 `GS_STRIP_VARS` lists every `GRC_*` and `RS_*` variable gate2-design.md introduces, landed or not.
 
 ## Gate 2 files
 
-- `run-gate2.sh`: the orchestrator (`run_g2a`, `run_g2b`, `run_reference`, `g2_capture`,
-  `g2_receiver`, `start_live_host`).
+- `run-gate2.sh`: the orchestrator (`run_g2a`, `run_g2b`, `run_g2c`, `run_reference`,
+  `g2_capture`, `g2_receiver`, `start_live_host`, `live_windows`, `g2c_receiver`, `g2c_leg`).
 - `lib/gate2-expected.ts`: the `render-stream-gate2-expected/1` types, `stepFrames2`,
   `stepOfFrame` (the census windows), `texel`, `sampleAt` and `synthesizeGate2(expected, step,
 {variant, frame})`: the clear colour, then every draw in paint order, flat or sampled the way the
@@ -562,31 +566,47 @@ The runner takes about five minutes. It uses `lib/legs.sh` (`run_headless`, `run
   hook log replayed as ground truth (`textureLogDivergence`), fixture names to wire ids, every
   g2b check, `classifyG2bLeg`/`classifyLive` (gate2-design.md Q7's precedence, resource-violation
   included) and `runG2b`.
+- `lib/gate2c-checks.ts`: group g2c: each live leg's host (per connection: tap, live log, gate 1's
+  `deliveryReport`) and receiver, `pinsReport` (the pin and retire lines replayed against the full
+  recording's state united with every open connection's base, frame by frame),
+  `unadvertisedGets`, `getsVsFetches`, `fetchesAfterApplied`, the live checkpoints (the animate
+  variant's anim region against `synthesizeGate2` at the shot's frame), every g2c check,
+  `classifyG2cLeg` and `runG2c`.
 - `check-gate2.ts`: writes `<out>/result.json` (`render-stream-gate2-report/1`) and exits non-zero
   unless `gate_passed`.
-- `test/self-test-gate2.ts`: see below.
+- `test/self-test-gate2.ts`, `test/gate2b-fixture.ts`, `test/gate2c-fixture.ts`: see below.
 
 ## Gate 2 legs and evidence under `--out`
 
-| Leg                       | Group | Directory                             | Runs                                                                                                                                                                                                              |
-| ------------------------- | ----- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `import`                  | g2a   | `import/{fixture,receiver}/`          | the mise editor's `--import` of `fixtures/gate2` and `receiver/`                                                                                                                                                  |
-| `capture`                 | g2a   | `capture/`                            | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps                                                                                       |
-| `capture-unsupported`     | g2a   | `capture-unsupported/`                | the same with `RS_FIXTURE_VARIANT=unsupported`, the fixture's own quit frame, no strace                                                                                                                           |
-| `reference`               | g2a   | `reference/`                          | rendered in gamescope, extension absent: `shots/step-0..10.png`                                                                                                                                                   |
-| `reference-repeat`        | g2a   | `reference-repeat/`                   | the same again                                                                                                                                                                                                    |
-| `reference-armed`         | g2a   | `reference-armed/`                    | rendered, extension armed with `GRC_STREAM_OUT` and a store (so the hooks copy and hash), shots                                                                                                                   |
-| `capture-inline`          | g2b   | `capture-inline/`                     | capture with `GRC_RESOURCE_INLINE_MAX_BYTES` = `GRC_RESOURCE_MAX_PAYLOAD_BYTES` = 16 MiB (delivery `inline`), no store, quit 400                                                                                  |
-| `receiver-cold`           | g2b   | `receiver-cold/`                      | rendered receiver on `capture/recording.rs2`, fresh `cache/`, store = `capture/store`, shots and state dumps at the 11 settle seqs                                                                                |
-| `receiver-warm`           | g2b   | `receiver-warm/`                      | a new rendered receiver on `receiver-cold/cache` with `RS_RECEIVER_CACHE_MODE=warm`                                                                                                                               |
-| `receiver-patch`          | g2b   | `receiver-patch/`                     | rendered receiver on `capture/recording-patch.rs2`, its own fresh cache                                                                                                                                           |
-| `receiver-inline`         | g2b   | `receiver-inline/`                    | rendered receiver on `capture-inline/recording.rs2`, fresh cache, no store                                                                                                                                        |
-| `receiver-headless-trace` | g2b   | `receiver-headless-trace/`            | headless receiver on `capture/` under `strace -e openat`                                                                                                                                                          |
-| `live-inline`             | g2b   | `live-inline/{host,receiver}/`        | host (`GRC_LIVE_LISTEN`, S = 300, N = 60, both sinks and a store) + headless live receiver (`applied` credit)                                                                                                     |
-| `reference-unsupported`   | g2b   | `reference-unsupported/`              | rendered fixture, `RS_FIXTURE_VARIANT=unsupported`, extension absent                                                                                                                                              |
-| `unsupported-textures`    | g2b   | `unsupported-textures/receiver/`      | rendered receiver on `capture-unsupported/`                                                                                                                                                                       |
-| `sabotage-<name>`         | g2b   | `sabotage-<name>/{capture,receiver}/` | omit-update (`omit-op texture_2d_update` @61), omit-replace (`omit-op texture_replace` @71): captures + rendered receivers; stale-texture @61, wrong-hash @61, spurious-update @21: captures + headless receivers |
-| `sabotage-receiver-*`     | g2b   | `sabotage-receiver-*/receiver/`       | headless receivers on `capture/`: `RS_RECEIVER_SABOTAGE=reupload` (fresh cache), `ignore-cache` (warm, on a copy of `receiver-cold/cache`)                                                                        |
+| Leg                        | Group | Directory                             | Runs                                                                                                                                                                                                              |
+| -------------------------- | ----- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `import`                   | g2a   | `import/{fixture,receiver}/`          | the mise editor's `--import` of `fixtures/gate2` and `receiver/`                                                                                                                                                  |
+| `capture`                  | g2a   | `capture/`                            | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps                                                                                       |
+| `capture-unsupported`      | g2a   | `capture-unsupported/`                | the same with `RS_FIXTURE_VARIANT=unsupported`, the fixture's own quit frame, no strace                                                                                                                           |
+| `reference`                | g2a   | `reference/`                          | rendered in gamescope, extension absent: `shots/step-0..10.png`                                                                                                                                                   |
+| `reference-repeat`         | g2a   | `reference-repeat/`                   | the same again                                                                                                                                                                                                    |
+| `reference-armed`          | g2a   | `reference-armed/`                    | rendered, extension armed with `GRC_STREAM_OUT` and a store (so the hooks copy and hash), shots                                                                                                                   |
+| `capture-inline`           | g2b   | `capture-inline/`                     | capture with `GRC_RESOURCE_INLINE_MAX_BYTES` = `GRC_RESOURCE_MAX_PAYLOAD_BYTES` = 16 MiB (delivery `inline`), no store, quit 400                                                                                  |
+| `receiver-cold`            | g2b   | `receiver-cold/`                      | rendered receiver on `capture/recording.rs2`, fresh `cache/`, store = `capture/store`, shots and state dumps at the 11 settle seqs                                                                                |
+| `receiver-warm`            | g2b   | `receiver-warm/`                      | a new rendered receiver on `receiver-cold/cache` with `RS_RECEIVER_CACHE_MODE=warm`                                                                                                                               |
+| `receiver-patch`           | g2b   | `receiver-patch/`                     | rendered receiver on `capture/recording-patch.rs2`, its own fresh cache                                                                                                                                           |
+| `receiver-inline`          | g2b   | `receiver-inline/`                    | rendered receiver on `capture-inline/recording.rs2`, fresh cache, no store                                                                                                                                        |
+| `receiver-headless-trace`  | g2b   | `receiver-headless-trace/`            | headless receiver on `capture/` under `strace -e openat`                                                                                                                                                          |
+| `live-inline`              | g2b   | `live-inline/{host,receiver}/`        | host (`GRC_LIVE_LISTEN`, S = 300, N = 60, both sinks and a store) + headless live receiver (`applied` credit)                                                                                                     |
+| `reference-unsupported`    | g2b   | `reference-unsupported/`              | rendered fixture, `RS_FIXTURE_VARIANT=unsupported`, extension absent                                                                                                                                              |
+| `unsupported-textures`     | g2b   | `unsupported-textures/receiver/`      | rendered receiver on `capture-unsupported/`                                                                                                                                                                       |
+| `sabotage-<name>`          | g2b   | `sabotage-<name>/{capture,receiver}/` | omit-update (`omit-op texture_2d_update` @61), omit-replace (`omit-op texture_replace` @71): captures + rendered receivers; stale-texture @61, wrong-hash @61, spurious-update @21: captures + headless receivers |
+| `sabotage-receiver-*`      | g2b   | `sabotage-receiver-*/receiver/`       | headless receivers on `capture/`: `RS_RECEIVER_SABOTAGE=reupload` (fresh cache), `ignore-cache` (warm, on a copy of `receiver-cold/cache`)                                                                        |
+| `live`                     | g2c   | `live/{host,receiver}/`               | live host (S = 300, N = 60, quit 911, both sinks, store, tap; fetch http) + rendered live receiver, fresh `cache/`, shot windows for the 11 steps                                                                 |
+| `live-replay`              | g2c   | `live-replay/`                        | rendered file-mode receiver on `live/receiver/received.rs2`, store = `live/receiver/cache`, shots and state dumps at live's shot seqs                                                                             |
+| `live-warm`                | g2c   | `live-warm/{host,receiver}/`          | a new host + a new rendered receiver on `live/receiver/cache`, mode warm                                                                                                                                          |
+| `live-headless`            | g2c   | `live-headless/{host,receiver}/`      | host + headless receiver (`applied` credit) under `strace -e openat`                                                                                                                                              |
+| `live-stall`               | g2c   | `live-stall/{host,receiver}/`         | `RS_RECEIVER_STALL=5:1300`: the stall ends inside step 6's window, after step 6's texture update                                                                                                                  |
+| `live-reconnect`           | g2c   | `live-reconnect/{host,receiver}/`     | `RS_RECEIVER_RECONNECT=7`                                                                                                                                                                                         |
+| `live-animate`             | g2c   | `live-animate/{host,receiver}/`       | host `RS_FIXTURE_VARIANT=animate`, receiver `RS_RECEIVER_FETCH_DELAY_MS=100`                                                                                                                                      |
+| `sabotage-unpin`           | g2c   | `sabotage-unpin/{host,receiver}/`     | as `live-animate`, host `GRC_SABOTAGE=unpin` from frame 1                                                                                                                                                         |
+| `sabotage-drop-resource`   | g2c   | `sabotage-drop-resource/{host,…}/`    | host `drop-resource` @660 (step 6), headless receiver                                                                                                                                                             |
+| `sabotage-wrong-hash-live` | g2c   | `sabotage-wrong-hash-live/{host,…}/`  | host `wrong-hash` @660 (the store's corrupted copy served over HTTP), headless receiver                                                                                                                           |
 
 Every fixture run writes `steps.jsonl` and `textures.jsonl` (`RS_FIXTURE_TEXTURE_LOG`). Every armed
 run writes `evidence/resources.jsonl` (the hook log) and `evidence/root.json`, whose additive
@@ -647,6 +667,34 @@ texture-log-divergence, resource-violation for transform-only traffic, redundant
 uploads and warm-cache fetches, and pixel-mismatch from the receiver's settle shots against the
 reference; the first class in Q7's precedence wins.
 
+## Gate 2 criteria (g2c)
+
+| Check                                     | Passes when                                                                                                                                                                                                                         |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `live-tap-equals-received`                | each connection's received stream is its tap byte for byte (a prefix only for the connection the reconnecting receiver closed itself)                                                                                               |
+| `live-resolves-to-recording`              | every tapped transaction of every g2c host equals the full recording's state at its frame, texture table included                                                                                                                   |
+| `live-credit-bounded`                     | per connection, recomputed from its log: one transaction in flight at most, no send without credit, queued bytes within the largest credit window + 4096                                                                            |
+| `live-acks-staged`                        | received <= applied <= submitted per seq; per connection the host saw exactly the acks of what the receiver read; presented `unavailable`                                                                                           |
+| `live-vs-reference`                       | every rendered live shot per step equals the reference exactly (live-animate: its anim region equals `synthesizeGate2` at the shot's frame instead)                                                                                 |
+| `live-replay-equals-live`                 | the file replay of `received.rs2` with live's cache as its store: same seqs and record hashes, same payloads, identical shots and state dumps                                                                                       |
+| `http-gets-match-fetches`                 | the host's `http-get` lines equal the receiver's http fetches, hash for hash, byte for byte, in order; each hash at most once per process; every fetch a verified 200 with the immutable headers                                    |
+| `gets-advertised`                         | every GET names a hash a transaction already sent on its connection (at an earlier frame callback) names                                                                                                                            |
+| `fetch-before-applied`                    | every fetch for seq n ends before n's applied ack (receiver clock), and its GET reached the host no later than that ack (host frames)                                                                                               |
+| `pins-bounded`                            | after every frame callback the servable set (replayed from `pin`/`retire`) equals the full recording's ok hashes united with every open connection's base, within `GRC_RESOURCE_BUDGET_BYTES`                                       |
+| `obsolete-retired`                        | nothing stays servable once nothing names it, nothing is retired while something does; live-animate's fetched hashes were all sent, fewer ANIM versions were sent than updated, superseded versions retired (counts reported)       |
+| `stall-newest-texture`                    | live-stall: step 6's update lands in the stall, the first post-stall transaction carries A1, A1 is fetched once (for it), and its shot equals the reference                                                                         |
+| `reconnect-no-refetch`                    | live-reconnect: connection 2 starts full with 0 fetches (cache hits only) and one upload per resident texture; C and D are then fetched once each on connection 2                                                                   |
+| `transform-only-no-resource-traffic-live` | steps 2 and 10 on every main-variant live leg: no GET, every receiver resource counter 0                                                                                                                                            |
+| `warm-host-no-gets`                       | live-warm's host answers no GET, its receiver hits its cache once per payload live fetched, and its shots equal live's                                                                                                              |
+| `leg-class-<leg>`                         | the live legs success; `sabotage-unpin` and `sabotage-drop-resource` replay-failure (`resource-unavailable`), `sabotage-wrong-hash-live` replay-failure (`resource-hash-mismatch`), the last two at the first transaction naming A1 |
+
+Classification (`classifyG2cLeg`) follows Q7: capture-failure (host status and stream reason, the
+listener, invalid recordings or taps, texture-log-divergence), unsupported, replay-failure (the
+receiver's status and failure, received bytes against the tap, the applied list against the
+received stream, a late join, missed shot windows), delivery-violation (gate 1's per-connection
+delivery report), resource-violation (redundant fetches or uploads, warm-cache fetches,
+unadvertised GETs, transform-only traffic), pixel-mismatch.
+
 ## Gate 2 self-test
 
 ```bash
@@ -657,7 +705,9 @@ Unit cases cover `sampleAt` (flips, transpose, S3's rotation, the region across 
 tile, mirror, clamp, LA8 alpha), `synthesizeGate2` (binary alpha over BG, the freed RAW1, C's
 pre-fill content, partial alpha, the animate variant), the step windows, the census helpers, the
 hook-log line validation and `checkExpectedSelfConsistent` on the committed file and five broken
-copies. A passing g2a+g2b tree is then fabricated (render-stream/2 capture recordings from
+copies. A passing g2a+g2b+g2c tree is then fabricated (render-stream/2 capture recordings from
 `test/rs2-test-encoder.ts`, hook and fixture logs from a model of the fixture's texture calls,
-receivers' applied.json, PNGs from `synthesizeGate2`), and each check gets at least one failing
-perturbation; the real `runGate2` runs on every tree.
+receivers' applied.json, PNGs from `synthesizeGate2`; `test/gate2c-fixture.ts` adds every g2c
+live host with its D7 pin and retire lines, taps and live logs, and its receiver with http
+fetches), and each check gets at least one failing perturbation; the real `runGate2` runs on every
+tree.

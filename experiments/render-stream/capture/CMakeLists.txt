@@ -120,6 +120,7 @@ target_link_libraries(rs_ws_echo PRIVATE grc_warnings Threads::Threads)
 
 # Gate 1 (G1c2) / gate 2 (G2b2): the live hub -- credit, resync, message-too-large, hello
 # timeout, drop-message, finish, the live log and tap, inline resource records per connection,
+# (G2c2) the served set: pins, retirement, unpin, drop-resource, wrong-hash, GET attribution,
 # and the control-message parser against golden-2/control/ -- driven through a fake transport.
 add_executable(rs_live_test
   test/rs_live_test.cpp

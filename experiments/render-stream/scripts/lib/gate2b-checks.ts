@@ -138,6 +138,8 @@ export interface HookLine {
   copy_ns: number | null;
   hash_ns: number | null;
   conn: number | null;
+  /** G2c2 http-get lines: the status the server answered */
+  http_status?: number | null;
   target: string | null;
   sabotage?: boolean;
   omitted?: boolean;
@@ -1780,7 +1782,7 @@ export function checkLiveInline(live: LiveEvidence): G2bCheck {
   }
   return check(
     "live-inline",
-    "the live connection declares delivery inline / fetch none (no http path before G2c2), every ok hash it names arrives as a resource record before the transaction that needs it (validateRecording of received.rs2 is []), received.rs2 equals the host's tap byte for byte, the receiver fetches nothing, the host's summary counts the same resource records, and every live transaction resolves to the host recording's state at its frame",
+    "the live connection declares delivery inline / fetch none / no http path (its host asks for inline delivery under the 1 MiB live cap), every ok hash it names arrives as a resource record before the transaction that needs it (validateRecording of received.rs2 is []), received.rs2 equals the host's tap byte for byte, the receiver fetches nothing, the host's summary counts the same resource records, and every live transaction resolves to the host recording's state at its frame",
     problems,
     `${live.received.resources.size} resource records (${[...live.received.resources.values()].reduce((n, b) => n + b.length, 0)} B), ${matched} transactions equal to the host recording`,
     [
