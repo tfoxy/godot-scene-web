@@ -1,6 +1,6 @@
 // Arm-time root viewport query (gate 0, WP1; protocol/gate0-design.md
-// "Root adoption"). Version-neutral since G1b2: it fills render-stream/1
-// (rs1_snapshot.h) values.
+// "Root adoption"). Version-neutral since G1b2: it fills render-stream/2
+// (rs2_snapshot.h) values.
 //
 // The root viewport and its canvas exist before the capture library loads, so
 // their RIDs and state cannot be observed through the hooks. They are read back
@@ -43,7 +43,7 @@
 #include <cstdint>
 #include <string>
 
-#include "rs1_snapshot.h"
+#include "rs2_snapshot.h"
 
 namespace grc {
 namespace rs {
@@ -53,10 +53,10 @@ struct RootInfo {
   std::string failed_step;  // e.g. "Viewport.get_world_2d"; empty when ok
   std::uint64_t viewport_rid = 0;
   std::uint64_t canvas_rid = 0;
-  rs1::Xform canvas_xform = {0, 0, 0, 0, 0, 0};
+  rs2::Xform canvas_xform = {0, 0, 0, 0, 0, 0};
   std::uint32_t canvas_cull_mask = 0;
-  rs1::Rect4 visible_rect = rs1::kZeroRect;
-  rs1::Color4 clear_color = {0, 0, 0, 0};
+  rs2::Rect4 visible_rect = rs2::kZeroRect;
+  rs2::Color4 clear_color = {0, 0, 0, 0};
 
   // Gate 1 root geometry (zeros where a read failed).
   std::int32_t logical_size[2] = {0, 0};  // Window.content_scale_size
@@ -65,7 +65,7 @@ struct RootInfo {
   std::int64_t content_scale_stretch = 0; // Window.ContentScaleStretch
   double content_scale_factor = 0.0;
   std::int32_t window_size[2] = {0, 0};   // Window.size
-  rs1::Xform final_transform = {0, 0, 0, 0, 0, 0};
+  rs2::Xform final_transform = {0, 0, 0, 0, 0, 0};
 
   // Gate 2 (G2a), evidence only: Viewport.get_default_canvas_item_texture_filter/_repeat on the
   // root, as the scene enums (filter 0 Nearest, 1 Linear, 2 Linear Mipmap, 3 Nearest Mipmap;
@@ -82,16 +82,16 @@ struct RootInfo {
 // match: window size == logical size and visible rect size == logical size;
 // degenerate-visible: visible rect size != logical size (layout input differs);
 // degenerate-window: visible rect right, window size wrong (stretch differs).
-inline rs1::HostSizeStatus host_size_status(const RootInfo &info) {
+inline rs2::HostSizeStatus host_size_status(const RootInfo &info) {
   const float lw = static_cast<float>(info.logical_size[0]);
   const float lh = static_cast<float>(info.logical_size[1]);
   if (info.visible_rect[2] != lw || info.visible_rect[3] != lh) {
-    return rs1::HostSizeStatus::DegenerateVisible;
+    return rs2::HostSizeStatus::DegenerateVisible;
   }
   if (info.window_size[0] != info.logical_size[0] || info.window_size[1] != info.logical_size[1]) {
-    return rs1::HostSizeStatus::DegenerateWindow;
+    return rs2::HostSizeStatus::DegenerateWindow;
   }
-  return rs1::HostSizeStatus::Match;
+  return rs2::HostSizeStatus::Match;
 }
 
 // Spellings for evidence/root.json `stretch` (Window enums, scene/main/window.h).
@@ -104,7 +104,7 @@ const char *content_scale_stretch_name(std::int64_t stretch);
 // 1 keep / 2 keep_width / 3 keep_height / 4 expand; content_scale_stretch
 // 0 fractional / 1 integer. Returns false (leaving the RS-default value in
 // place for that field) when a value is outside its enum.
-bool stretch_from_window(const RootInfo &info, rs1::Stretch *out);
+bool stretch_from_window(const RootInfo &info, rs2::Stretch *out);
 
 // Runs the read-only queries (1-12). Main thread, after the engine singletons
 // and the SceneTree exist (the library arms inside the fixture autoload's

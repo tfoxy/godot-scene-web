@@ -1,4 +1,4 @@
-#include "rs1_publish.h"
+#include "rs_publish.h"
 
 #include <sys/random.h>
 
@@ -10,11 +10,11 @@
 #include <utility>
 
 #include "report.h"
-#include "rs1_codec.h"
-#include "rs1_diff.h"
+#include "rs2_codec.h"
+#include "rs2_diff.h"
 
 namespace grc {
-namespace rs1 {
+namespace rs2 {
 
 namespace {
 
@@ -45,6 +45,10 @@ bool is_op_name(const std::string &op) {
   return !op.empty() && std::all_of(op.begin(), op.end(), [](unsigned char c) {
     return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
   });
+}
+
+bool is_ok_image(const TextureEntry &entry) {
+  return entry.kind == TextureKind::Image && entry.status == TextureStatus::Ok && entry.has_hash;
 }
 
 }  // namespace
@@ -125,25 +129,32 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
     return result;
   }
   const std::string kind_text(kind);
-  if (kind_text == "freeze-frame") {
-    result.config.kind = SabotageKind::FreezeFrame;
-  } else if (kind_text == "omit-update") {
-    result.config.kind = SabotageKind::OmitUpdate;
-  } else if (kind_text == "perturb-transform") {
-    result.config.kind = SabotageKind::PerturbTransform;
-  } else if (kind_text == "omit-op") {
-    result.config.kind = SabotageKind::OmitOp;
-  } else if (kind_text == "patch-drop-item") {
-    result.config.kind = SabotageKind::PatchDropItem;
-  } else if (kind_text == "drop-message") {
-    result.config.kind = SabotageKind::DropMessage;
-  } else if (kind_text == "ignore-credit") {
-    result.config.kind = SabotageKind::IgnoreCredit;
-  } else if (kind_text == "stale-coalesce") {
-    result.config.kind = SabotageKind::StaleCoalesce;
-  } else {
+  static const std::pair<const char *, SabotageKind> kKinds[] = {
+      {"freeze-frame", SabotageKind::FreezeFrame},
+      {"omit-update", SabotageKind::OmitUpdate},
+      {"perturb-transform", SabotageKind::PerturbTransform},
+      {"omit-op", SabotageKind::OmitOp},
+      {"patch-drop-item", SabotageKind::PatchDropItem},
+      {"drop-message", SabotageKind::DropMessage},
+      {"ignore-credit", SabotageKind::IgnoreCredit},
+      {"stale-coalesce", SabotageKind::StaleCoalesce},
+      {"stale-texture", SabotageKind::StaleTexture},
+      {"wrong-hash", SabotageKind::WrongHash},
+      {"spurious-texture-update", SabotageKind::SpuriousTextureUpdate},
+  };
+  bool known = false;
+  for (const auto &entry : kKinds) {
+    if (kind_text == entry.first) {
+      result.config.kind = entry.second;
+      known = true;
+      break;
+    }
+  }
+  if (!known) {
     result.ok = false;
-    result.error = "unknown GRC_SABOTAGE kind \"" + kind_text + "\"";
+    result.error = kind_text == "drop-resource" || kind_text == "unpin"
+                       ? "GRC_SABOTAGE " + kind_text + " needs live resource serving (G2c2)"
+                       : "unknown GRC_SABOTAGE kind \"" + kind_text + "\"";
     return result;
   }
 
@@ -211,14 +222,16 @@ std::string generate_id() {
   return out;
 }
 
-Features gate1_features() {
+Features gate2_features() {
   Features features;
-  features.ops = {"add_rect"};
-  features.item_state = {"behind",     "children",         "clip",    "custom_rect",
-                         "draw_index", "modulate",         "parent",  "self_modulate",
-                         "transform",  "visibility_layer", "visible", "z_index",
-                         "z_relative"};
+  features.ops = {"add_rect", "add_texture_rect", "add_texture_rect_region"};
+  features.item_state = {"behind",         "children",         "clip",           "custom_rect",
+                         "draw_index",     "modulate",         "parent",         "self_modulate",
+                         "texture_filter", "texture_repeat",   "transform",      "visibility_layer",
+                         "visible",        "z_index",          "z_relative"};
+  features.resources = {"texture_2d", "texture_2d_placeholder"};
   features.observed_unsupported_ops = {"canvas_item_add_circle",
+                                       "canvas_item_add_lcd_texture_rect_region",
                                        "canvas_item_add_line",
                                        "canvas_item_add_mesh",
                                        "canvas_item_add_msdf_texture_rect_region",
@@ -228,20 +241,15 @@ Features gate1_features() {
                                        "canvas_item_add_polyline",
                                        "canvas_item_add_primitive",
                                        "canvas_item_add_set_transform",
-                                       "canvas_item_add_texture_rect",
-                                       "canvas_item_add_texture_rect_region",
                                        "canvas_item_add_triangle_array",
                                        "canvas_item_set_material"};
-  // G1e hooks canvas_item_set_z_as_relative_to_parent and
-  // canvas_item_set_draw_behind_parent, so both leave this list (render-stream-1.md
-  // "Session record").
   features.unobserved = {"canvas_item_set_canvas_group_mode",
-                         "canvas_item_set_default_texture_filter",
-                         "canvas_item_set_default_texture_repeat",
                          "canvas_item_set_instance_shader_parameter",
                          "canvas_item_set_light_mask",
                          "canvas_item_set_sort_children_by_y",
                          "canvas_set_modulate",
+                         "canvas_texture_set_shading_parameters",
+                         "texture_set_size_override",
                          "viewport_remove_canvas",
                          "viewport_set_canvas_cull_mask",
                          "viewport_set_global_canvas_transform"};
@@ -249,14 +257,37 @@ Features gate1_features() {
   return features;
 }
 
+ResourcesInfo resources_info(const ResourcePolicy &policy, Fetch out_of_band_fetch) {
+  ResourcesInfo info;
+  info.inline_max_bytes = policy.inline_max_bytes;
+  info.max_payload_bytes = policy.max_payload_bytes;
+  info.permitted_formats = policy.permitted_formats;
+  if (policy.inline_max_bytes == 0) {
+    info.delivery = Delivery::OutOfBand;
+  } else if (policy.inline_max_bytes >= policy.max_payload_bytes) {
+    info.delivery = Delivery::Inline;
+  } else {
+    info.delivery = Delivery::Mixed;
+  }
+  info.fetch = info.delivery == Delivery::Inline ? Fetch::None : out_of_band_fetch;
+  info.has_http_path = info.fetch == Fetch::Http;
+  info.http_path = info.has_http_path ? "/resources/sha256/" : "";
+  info.auth = Auth::None;
+  return info;
+}
+
 // ----------------------------------------------------------------- Publisher
 
-Publisher::Publisher(RecordSink *full, RecordSink *patch, SabotageConfig sabotage)
-    : sabotage_(std::move(sabotage)) {
+Publisher::Publisher(RecordSink *full, RecordSink *patch, SabotageConfig sabotage,
+                     ResourcePolicy policy, rs::ResourceStore *store)
+    : sabotage_(std::move(sabotage)), policy_(std::move(policy)), store_(store) {
   lanes_[0].sink = full;
   lanes_[0].encoding = Encoding::Full;
   lanes_[1].sink = patch;
   lanes_[1].encoding = Encoding::Patch;
+  if (store_ != nullptr && sabotage_.kind == SabotageKind::WrongHash) {
+    store_->set_wrong_hash_frame(sabotage_.frame);
+  }
 }
 
 bool Publisher::start(const Session &tmpl) {
@@ -275,6 +306,7 @@ bool Publisher::start(const Session &tmpl) {
     lane.session.stream.connection = 0;
     lane.session.stream.transport = Transport::File;
     lane.session.stream.encoding = lane.encoding;
+    lane.session.resources = resources_info(policy_, Fetch::Directory);
     const std::uint64_t t0 = monotonic_ns();
     const std::vector<std::uint8_t> session_bytes = encode_session(lane.session);
     const std::uint64_t t1 = monotonic_ns();
@@ -283,7 +315,7 @@ bool Publisher::start(const Session &tmpl) {
       ok = false;
       continue;
     }
-    // bytes_total counts the magic too (render-stream-0.md "End record", unchanged at /1).
+    // bytes_total counts the magic too (render-stream-0.md "End record", unchanged at /2).
     lane.stats.bytes_total += magic_bytes.size();
     note_record_bytes(&lane.stats, session_bytes);
     lane.stats.encode_ns_total = saturating_add(lane.stats.encode_ns_total, t1 - t0);
@@ -313,39 +345,170 @@ bool Publisher::write_transaction(Lane *lane, const Transaction &transaction,
   return true;
 }
 
-bool Publisher::publish(Snapshot snapshot, std::uint64_t frame, std::uint64_t snapshot_ns) {
+bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uint64_t frame) {
+  if (policy_.inline_max_bytes == 0) {
+    return true;
+  }
+  // render-stream-2.md "Resource record": one record per hash the stream has not carried yet,
+  // before the first transaction whose resolved table holds it, in table (id) order.
+  for (const TextureEntry &entry : published.state.textures) {
+    if (!is_ok_image(entry) || entry.payload_bytes > policy_.inline_max_bytes ||
+        lane->carried.count(entry.hash) != 0) {
+      continue;
+    }
+    const auto payload = published.payloads.find(entry.hash);
+    if (payload == published.payloads.end() || payload->second == nullptr) {
+      error_ = "resource-store-failed: no payload for hash " + entry.hash;
+      return false;
+    }
+    ResourceRecord record;
+    record.hash = entry.hash;
+    record.payload = *payload->second;
+    const std::vector<std::uint8_t> bytes = encode_resource(record);
+    const bool ok = lane->sink->write(bytes) && lane->sink->flush();
+    if (events_) {
+      events_("inline", entry.hash, record.payload.size(), ok, frame);
+    }
+    if (!ok) {
+      return false;
+    }
+    lane->carried.insert(entry.hash);
+    ++lane->stats.resource_records;
+    lane->stats.resource_bytes += record.payload.size();
+    note_record_bytes(&lane->stats, bytes);
+  }
+  return true;
+}
+
+bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
+  for (const TextureEntry &entry : published.state.textures) {
+    if (!is_ok_image(entry)) {
+      continue;
+    }
+    if (store_ == nullptr) {
+      if (entry.payload_bytes > policy_.inline_max_bytes) {
+        error_ = "resource-store-missing: hash " + entry.hash + " (" +
+                 std::to_string(entry.payload_bytes) + " B) is above the inline threshold and " +
+                 "no store directory is open";
+        return false;
+      }
+      continue;
+    }
+    if (store_->has(entry.hash)) {
+      continue;
+    }
+    const auto payload = published.payloads.find(entry.hash);
+    if (payload == published.payloads.end() || payload->second == nullptr) {
+      error_ = "resource-store-failed: no payload for hash " + entry.hash;
+      return false;
+    }
+    std::string why;
+    const rs::ResourceStore::Put put = store_->put(entry, *payload->second, frame, &why);
+    if (events_ && put != rs::ResourceStore::Put::Present) {
+      events_("store", entry.hash, payload->second->size(), put == rs::ResourceStore::Put::Stored,
+              frame);
+    }
+    if (put == rs::ResourceStore::Put::Failed) {
+      error_ = "resource-store-failed: " + why;
+      return false;
+    }
+  }
+  return true;
+}
+
+void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame) {
+  if (sabotage_.kind != SabotageKind::StaleTexture || frame < sabotage_.frame) {
+    return;
+  }
+  if (stale_id_ == 0 && has_previous_) {
+    // The lowest-id texture whose entry changed at or after the sabotage frame keeps the
+    // version, hash and payload it had before the change (gate2-design.md G2b2).
+    for (const TextureEntry &entry : captured->state.textures) {
+      const auto before = std::find_if(
+          previous_.state.textures.begin(), previous_.state.textures.end(),
+          [&entry](const TextureEntry &e) { return e.id == entry.id; });
+      if (before == previous_.state.textures.end() || before->version == entry.version) {
+        continue;
+      }
+      stale_id_ = entry.id;
+      stale_entry_ = *before;
+      stale_payload_.reset();
+      if (is_ok_image(*before)) {
+        const auto payload = previous_.payloads.find(before->hash);
+        if (payload != previous_.payloads.end()) {
+          stale_payload_ = payload->second;
+        }
+      }
+      break;
+    }
+  }
+  if (stale_id_ == 0) {
+    return;
+  }
+  for (TextureEntry &entry : captured->state.textures) {
+    if (entry.id != stale_id_) {
+      continue;
+    }
+    entry = stale_entry_;
+    break;
+  }
+  // The payload map holds exactly the ok image hashes of the (sabotaged) table.
+  rs::PayloadMap payloads;
+  for (const TextureEntry &entry : captured->state.textures) {
+    if (!is_ok_image(entry)) {
+      continue;
+    }
+    const auto it = captured->payloads.find(entry.hash);
+    if (it != captured->payloads.end()) {
+      payloads.emplace(entry.hash, it->second);
+    } else if (entry.id == stale_id_ && stale_payload_ != nullptr) {
+      payloads.emplace(entry.hash, stale_payload_);
+    }
+  }
+  captured->payloads = std::move(payloads);
+}
+
+bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_t snapshot_ns) {
   if (finished_) {
     return false;
   }
   // The one published copy (gate0-design.md "Publication" sabotages, unchanged at gate 1).
   const bool sabotage_frame_reached = frame >= sabotage_.frame;
-  Snapshot published;
+  rs::Captured published;
   if (sabotage_.kind == SabotageKind::FreezeFrame && sabotage_frame_reached && has_frozen_) {
     // Republish the content from the transaction before frame F, untouched.
     published = frozen_;
   } else {
     if (sabotage_.kind == SabotageKind::PerturbTransform && sabotage_frame_reached) {
-      for (ItemState &item : snapshot.items) {
+      for (ItemState &item : captured.state.items) {
         item.xform[4] += 1.0f;  // origin.x
       }
     }
+    apply_stale_texture(&captured, frame);
     if (sabotage_.kind == SabotageKind::FreezeFrame) {
       // Keep the pre-sabotage copy available for when freezing starts.
-      frozen_ = snapshot;
+      frozen_ = captured;
       has_frozen_ = true;
     }
-    published = std::move(snapshot);
+    published = std::move(captured);
   }
-  published.seq = next_seq_++;
-  published.frame = frame;
+  published.state.seq = next_seq_++;
+  published.state.frame = frame;
+
+  // Out of band first: every payload the transactions below name is in the store before any
+  // sink can be read (gate2-design.md Q4 "File sinks").
+  if (!store_payloads(published, frame)) {
+    return false;
+  }
 
   bool ok = true;
   Lane &full = lanes_[0];
   if (full.sink != nullptr) {
     const std::uint64_t t0 = monotonic_ns();
-    const Transaction transaction = make_full(published);
+    const Transaction transaction = make_full(published.state);
     const std::uint64_t t1 = monotonic_ns();
-    ok = write_transaction(&full, transaction, t1 - t0, 0, snapshot_ns) && ok;
+    ok = write_inline(&full, published, frame) &&
+         write_transaction(&full, transaction, t1 - t0, 0, snapshot_ns) && ok;
   }
 
   Lane &patch = lanes_[1];
@@ -356,11 +519,11 @@ bool Publisher::publish(Snapshot snapshot, std::uint64_t frame, std::uint64_t sn
     const std::uint64_t t0 = monotonic_ns();
     if (!has_previous_) {
       // A patch stream starts full (render-stream-1.md "Session record": `encoding`).
-      transaction = make_full(published);
+      transaction = make_full(published.state);
       form_ns = monotonic_ns() - t0;
     } else {
       // base_seq = previous_.seq = seq - 1: both sinks advance together.
-      transaction = make_patch(previous_, published);
+      transaction = make_patch(previous_.state, published.state);
       diff_ns = monotonic_ns() - t0;
     }
     if (sabotage_.kind == SabotageKind::PatchDropItem && frame == sabotage_.frame &&
@@ -370,7 +533,8 @@ bool Publisher::publish(Snapshot snapshot, std::uint64_t frame, std::uint64_t sn
       // diverges until that item changes again.
       transaction.items.pop_back();
     }
-    ok = write_transaction(&patch, transaction, form_ns, diff_ns, snapshot_ns) && ok;
+    ok = write_inline(&patch, published, frame) &&
+         write_transaction(&patch, transaction, form_ns, diff_ns, snapshot_ns) && ok;
   }
   // Kept with or without a patch sink: the patch sink's next base, and the copy the live
   // adapter delivers (last_published()).
@@ -400,5 +564,5 @@ bool Publisher::finish(EndReason reason) {
   return ok;
 }
 
-}  // namespace rs1
+}  // namespace rs2
 }  // namespace grc

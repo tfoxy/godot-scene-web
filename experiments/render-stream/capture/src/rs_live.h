@@ -1,7 +1,15 @@
-// render-stream/1 live delivery (gate 1, G1c2): per-connection credit-based delivery over a
-// WebSocket transport, the receiver control-message parser, the per-connection live log and tap,
-// and the live summary (protocol/gate1-design.md "Q4. Delivery model" and "G1c2";
-// protocol/render-stream-1.md "Live transport").
+// Live delivery (gate 1 G1c2 as rs1_live; render-stream/2 since gate 2 G2b2): per-connection
+// credit-based delivery over a WebSocket transport, the receiver control-message parser, the
+// per-connection live log and tap, and the live summary (protocol/gate1-design.md "Q4. Delivery
+// model" and "G1c2"; protocol/render-stream-2.md "Live transport").
+//
+// Resources (G2b2, gate2-design.md "G2b2: Live before HTTP"): until G2c2 every live connection
+// declares `delivery: "inline"` and `fetch: "none"` (the caller's session template says so) and
+// carries every payload its transactions name as `resource` records: before a transaction goes
+// out, each `ok` image hash of its snapshot that this connection has not carried yet is sent as
+// one resource record per binary message, in the same credit window, in table (id) order. A
+// resource record larger than the message cap is `message-too-large` like a transaction. A
+// resync keeps what the connection already carried; a new connection carries everything again.
 //
 // Engine-free and transport-agnostic: the Hub drives an abstract LiveTransport (production:
 // ServerTransport over grc::live::Server, rs_ws.h; tests: a fake), and takes snapshots that the
@@ -48,12 +56,12 @@
 //                   the current frame. The next transaction patches from it to the newest state.
 //
 // Files, when a tap directory is configured (GRC_LIVE_TAP_DIR):
-//   stream-<connection>.rs1   the exact bytes of every binary message formed for that connection
+//   stream-<connection>.rs2   the exact bytes of every binary message formed for that connection
 //                             (sent, or dropped by the sabotage), in order: a valid stream.
 //   live-<connection>.jsonl   one line per frame callback while the connection exists, plus
 //                             event lines (open, hello, ack, resync, close, error).
-#ifndef GRC_RS1_LIVE_H
-#define GRC_RS1_LIVE_H
+#ifndef GRC_RS_LIVE_H
+#define GRC_RS_LIVE_H
 
 #include <cstdint>
 #include <cstdio>
@@ -63,7 +71,8 @@
 #include <string>
 #include <vector>
 
-#include "rs1_snapshot.h"
+#include "rs2_snapshot.h"
+#include "rs_captured.h"
 
 namespace grc {
 
@@ -72,7 +81,7 @@ class Server;
 struct Event;
 }  // namespace live
 
-namespace rs1 {
+namespace rs2 {
 
 // ----------------------------------------------------------------------------- control messages
 
@@ -81,7 +90,8 @@ const char *to_wire(AckStage stage);
 
 enum class ControlType : std::uint8_t { Hello, Ack, Resync, Error };
 
-// One parsed control message (render-stream-1.md "Live transport"). Only the fields of `type`
+// One parsed control message (render-stream-1.md "Live transport", unchanged at /2 except for the
+// hello's protocol string). Only the fields of `type`
 // are meaningful.
 struct ControlMessage {
   ControlType type = ControlType::Hello;
@@ -211,6 +221,8 @@ struct ConnectionSummary {
   std::uint64_t acks_ignored = 0;     // stale seq or foreign stream_id
   std::uint64_t credits = 0;          // credit returns (acks at the credit stage + resyncs)
   std::uint64_t bytes_sent = 0;       // binary message bytes handed to the transport
+  std::uint64_t resource_records = 0;  // G2b2: inline resource records sent (payloads carried)
+  std::uint64_t resource_bytes = 0;    // G2b2: their payload bytes
   bool end_sent = false;
   std::int64_t close_code = -1;  // -1: still open
   std::string closed_by;         // "host" | "receiver" | ""
@@ -245,7 +257,7 @@ class Hub {
   // One frame callback. `snapshot` is the published state for `frame` (required when
   // wants_snapshot() was true; may be null otherwise); `epoch` the mirror's mutation epoch read
   // before it was copied; `snapshot_ns` its copy time (added to each sending stream's stats).
-  void on_frame(std::uint64_t frame, std::uint64_t now_ns, const Snapshot *snapshot,
+  void on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured *snapshot,
                 std::uint64_t epoch, std::uint64_t snapshot_ns);
 
   // Shutdown / disarm: the end record to every streaming connection, credit or not. It does NOT
@@ -278,7 +290,7 @@ class Hub {
   // Forms, encodes and sends (or, under drop-message, only taps) the next transaction. Returns
   // the live log's `sent` object, or "null" when the connection was closed instead.
   // `stale_from` (stale-coalesce) is the frame the snapshot was taken at, 0 otherwise.
-  std::string send_transaction(Conn &c, const Snapshot &snapshot, std::uint64_t frame,
+  std::string send_transaction(Conn &c, const rs::Captured &snapshot, std::uint64_t frame,
                                std::uint64_t now_ns, std::uint64_t epoch,
                                std::uint64_t snapshot_ns, bool first,
                                std::uint64_t stale_from = 0);
@@ -299,7 +311,7 @@ class Hub {
   std::uint64_t frame_ = 0;  // the frame callback being processed (for log lines)
 };
 
-}  // namespace rs1
+}  // namespace rs2
 }  // namespace grc
 
-#endif  // GRC_RS1_LIVE_H
+#endif  // GRC_RS_LIVE_H

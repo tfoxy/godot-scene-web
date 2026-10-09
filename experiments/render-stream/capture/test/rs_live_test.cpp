@@ -1,12 +1,13 @@
-// Unit tests for the render-stream/1 live hub (src/rs1_live.cpp), protocol/gate1-design.md
+// Unit tests for the live hub (src/rs_live.cpp; render-stream/2 since G2b2), protocol/gate1-design.md
 // "Q4. Delivery model" and "G1c2": credit (one in flight; credit only on the declared stage and
 // the in-flight seq; stale and foreign acks ignored), resync, message-too-large, hello timeout,
 // protocol errors, the drop-message sabotage, finish (end record without credit), receiver
 // close, the live log, coalescing under a stalled receiver with its pending-target bookkeeping
 // and newest-state recovery, the ignore-credit and stale-coalesce sabotages (G1d), and the
-// control-message parser against protocol/golden-1/control/
-// (valid and invalid) plus extra malformed cases. Driven through a fake transport: no socket, no
-// engine. The tap directory is under the build tree.
+// control-message parser against protocol/golden-2/control/
+// (valid and invalid) plus extra malformed cases, and (G2b2) inline resource records per
+// connection. Driven through a fake transport: no socket, no engine. The tap directory is under
+// the build tree.
 
 #include <dirent.h>
 
@@ -20,15 +21,17 @@
 #include <vector>
 
 #include "report.h"
-#include "rs1_codec.h"
-#include "rs1_diff.h"
-#include "rs1_golden_states.h"
-#include "rs1_live.h"
-#include "rs1_snapshot.h"
+#include "rs2_codec.h"
+#include "rs2_diff.h"
+#include "rs2_golden_states.h"
+#include "rs2_snapshot.h"
+#include "rs_live.h"
+#include "rs_publish.h"
 
 namespace {
 
-using namespace grc::rs1;  // NOLINT
+using namespace grc::rs2;  // NOLINT
+using grc::rs::Captured;
 
 int g_failures = 0;
 int g_checks = 0;
@@ -112,9 +115,9 @@ bool has(const std::string &meta, const std::string &needle) {
 }
 
 const std::string kHelloSubmitted =
-    R"({"type":"hello","protocol":"render-stream/1","receiver":"t","credit_stage":"submitted","inbound_buffer_bytes":16777216})";
+    R"({"type":"hello","protocol":"render-stream/2","receiver":"t","credit_stage":"submitted","inbound_buffer_bytes":16777216})";
 const std::string kHelloApplied =
-    R"({"type":"hello","protocol":"render-stream/1","receiver":"t","credit_stage":"applied","inbound_buffer_bytes":16777216})";
+    R"({"type":"hello","protocol":"render-stream/2","receiver":"t","credit_stage":"applied","inbound_buffer_bytes":16777216})";
 
 std::string ack(const std::string &stream_id, std::uint64_t seq, const char *stage) {
   return std::string(R"({"type":"ack","stream_id":")") + stream_id + R"(","seq":)" +
@@ -125,10 +128,19 @@ std::string resync(const std::string &stream_id, std::uint64_t seq) {
          std::to_string(seq) + R"(,"reason":"test"})";
 }
 
-Session make_template() {
-  Session tmpl = golden::golden_session(Encoding::Full, std::string(), golden::kFullSessionId);
+// The golden out-of-band session: no payload is ever inline, so the gate 1 delivery tests see
+// exactly one message per record they form. test_inline_resources() uses an inline one.
+Session make_template(Delivery delivery = Delivery::OutOfBand) {
+  Session tmpl = golden::golden_session(Encoding::Full, std::string(), golden::kFullSessionId,
+                                        delivery);
   tmpl.stream = StreamInfo();
   return tmpl;
+}
+
+Captured captured_state(int n) {
+  Captured c;
+  c.state = golden::state(n);
+  return c;
 }
 
 LiveEvent opened(std::uint32_t conn, std::uint64_t t_ns = 1000) {
@@ -202,12 +214,13 @@ std::vector<std::string> list_dir(const std::string &dir) {
 }
 
 void test_control_parser() {
-  const std::string root = std::string(GRC_GOLDEN1_DIR) + "/control";
+  const std::string root = std::string(GRC_GOLDEN2_DIR) + "/control";
   const std::vector<std::string> valid = list_dir(root + "/valid");
   const std::vector<std::string> invalid = list_dir(root + "/invalid");
   check(valid.size() == 7, "7 valid control goldens (got " + std::to_string(valid.size()) + ")");
-  check(invalid.size() == 7,
-        "7 invalid control goldens (got " + std::to_string(invalid.size()) + ")");
+  check(invalid.size() == 8,
+        "8 invalid control goldens, a render-stream/1 hello included (got " +
+            std::to_string(invalid.size()) + ")");
   for (const std::string &path : valid) {
     ControlMessage m;
     std::string error;
@@ -223,8 +236,8 @@ void test_control_parser() {
     ControlMessage m;
     check(parse_control(read_file(root + "/valid/hello-submitted.json"), &m, nullptr) &&
               m.type == ControlType::Hello && m.credit_stage == AckStage::Submitted &&
-              m.inbound_buffer_bytes == 16777216 && m.receiver == "gate1-selftest" &&
-              m.protocol == "render-stream/1",
+              m.inbound_buffer_bytes == 16777216 && m.receiver == "gate2-selftest" &&
+              m.protocol == "render-stream/2",
           "hello-submitted fields");
     check(parse_control(read_file(root + "/valid/ack-applied.json"), &m, nullptr) &&
               m.type == ControlType::Ack && m.stage == AckStage::Applied && m.seq == 1 &&
@@ -274,7 +287,7 @@ void test_control_parser() {
        "nested object"},
       {R"({"type":"ack","stream_id":")" + sid + R"(","seq":1,"stage":true,"t_us":1})", "boolean"},
       {R"({"type":"ack","stream_id":")" + sid + R"(","seq":1,"stage":null,"t_us":1})", "null"},
-      {R"({"type":"hello","protocol":"render-stream/1","receiver":"x","credit_stage":"received","inbound_buffer_bytes":1})",
+      {R"({"type":"hello","protocol":"render-stream/2","receiver":"x","credit_stage":"received","inbound_buffer_bytes":1})",
        "credit stage received"},
       {R"({"type":"ack","stream_id":")" + sid + R"(","seq":1,"stage":"received","t_us":9007199254740992})",
        "above 2^53-1"},
@@ -307,7 +320,7 @@ struct Rig {
   // One frame callback with golden state `state_n`.
   void step(int state_n, std::uint64_t now_ns = 0) {
     ++frame;
-    const Snapshot snapshot = golden::state(state_n);
+    const Captured snapshot = captured_state(state_n);
     hub.on_frame(frame, now_ns == 0 ? frame * 16000000ULL : now_ns,
                  hub.wants_snapshot(frame) ? &snapshot : nullptr, epoch, 1000);
   }
@@ -454,7 +467,7 @@ void test_message_too_large() {
     rig.hub.on_event(opened(1), 0);
     rig.hub.on_event(
         text(1,
-             R"({"type":"hello","protocol":"render-stream/1","receiver":"t","credit_stage":"applied","inbound_buffer_bytes":64})"),
+             R"({"type":"hello","protocol":"render-stream/2","receiver":"t","credit_stage":"applied","inbound_buffer_bytes":64})"),
         0);
     rig.step(1);
     check(rig.transport.of(Sent::Binary).empty(), "a too-large session message is never sent");
@@ -479,12 +492,12 @@ void test_message_too_large() {
     Hub hub(&transport, config, make_template());
     hub.on_event(opened(1), 0);
     hub.on_event(text(1, kHelloApplied), 0);
-    Snapshot big = golden::state(1);
+    Captured big = captured_state(1);
     for (std::uint32_t id = 100; id < 400; ++id) {
       ItemState item;
       item.id = id;
       item.parent.kind = ParentKind::None;
-      big.items.push_back(item);
+      big.state.items.push_back(item);
     }
     hub.on_frame(1, 1, &big, 1, 0);
     check(transport.of(Sent::Binary).size() == 1, "the session fits under the cap and is sent");
@@ -535,7 +548,7 @@ void test_hello_timeout_and_protocol() {
 
 void test_drop_message_finish_and_log() {
   const std::string tap = std::string(GRC_TEST_TMP_DIR) + "/drop";
-  std::remove((tap + "/stream-1.rs1").c_str());
+  std::remove((tap + "/stream-1.rs2").c_str());
   std::remove((tap + "/live-1.jsonl").c_str());
   LiveConfig config;
   config.tap_dir = tap;
@@ -580,7 +593,7 @@ void test_drop_message_finish_and_log() {
 
   // The tap holds every formed message, the dropped seq 3 included, and is self-consistent:
   // the end record's bytes_total counts magic + session + four transactions.
-  const std::string tap_bytes = read_file(tap + "/stream-1.rs1");
+  const std::string tap_bytes = read_file(tap + "/stream-1.rs2");
   const std::vector<std::uint8_t> tapped(tap_bytes.begin(), tap_bytes.end());
   const std::vector<std::string> metas = stream_metas(tapped);
   check(metas.size() == 6, "tap: session, seqs 1-4, end (got " + std::to_string(metas.size()) +
@@ -725,7 +738,7 @@ std::vector<std::uint8_t> expected_patch(int base_n, std::uint64_t base_seq,
 void test_stall_coalescing() {
   const std::string tap = std::string(GRC_TEST_TMP_DIR) + "/stall";
   grc::make_directories(tap);
-  std::remove((tap + "/stream-1.rs1").c_str());
+  std::remove((tap + "/stream-1.rs2").c_str());
   std::remove((tap + "/live-1.jsonl").c_str());
   LiveConfig config;
   config.tap_dir = tap;
@@ -847,6 +860,96 @@ void test_stale_coalesce() {
 
 }  // namespace
 
+// G2b2: an inline session ("Live before HTTP"). Every ok image hash a transaction's table names
+// goes out once per connection as a resource record, one per message, right before that
+// transaction; a resync keeps what was carried; the message cap applies to resource records.
+Captured with_payloads(int n) {
+  Captured c = captured_state(n);
+  for (const TextureEntry &t : c.state.textures) {
+    if (t.kind == TextureKind::Image && t.status == TextureStatus::Ok && t.has_hash) {
+      // Any bytes: the hub packages them, it does not decode them.
+      c.payloads[t.hash] = std::make_shared<grc::rs::PayloadBytes>(
+          std::vector<std::uint8_t>(t.payload_bytes, static_cast<std::uint8_t>(t.id)));
+    }
+  }
+  return c;
+}
+
+void test_inline_resources() {
+  FakeTransport transport;
+  Hub hub(&transport, LiveConfig(), make_template(Delivery::Inline));
+  hub.on_event(opened(1), 0);
+  hub.on_event(text(1, kHelloApplied), 0);
+  std::uint64_t frame = 0;
+  const auto step = [&](int n) {
+    ++frame;
+    const Captured c = with_payloads(n);
+    hub.on_frame(frame, frame * 1000000ULL, hub.wants_snapshot(frame) ? &c : nullptr, frame, 0);
+  };
+  const auto kinds = [&transport]() {
+    std::string out;
+    for (const Sent &s : transport.of(Sent::Binary)) {
+      const std::vector<std::string> metas = stream_metas(s.bytes.size() > 8 && s.bytes[0] == 'G'
+                                                              ? s.bytes
+                                                              : std::vector<std::uint8_t>());
+      if (!metas.empty()) {
+        out.push_back('s');
+        continue;
+      }
+      const std::string meta = meta_at(s.bytes, 0);
+      out.push_back(has(meta, "\"type\":\"resource\"") ? 'r' : 't');
+    }
+    return out;
+  };
+  step(1);
+  // State 1 names A1 (ids 1 and 2 share it) and F: two distinct hashes, in id order.
+  check(kinds() == "srrt", "session, A1 and F inline, then seq 1");
+  const std::string sid = hub.summaries().at(0).stream_id;
+  hub.on_event(text(1, ack(sid, 1, "applied")), frame);
+  step(2);
+  check(kinds() == "srrtt", "an unchanged table carries nothing new");
+  hub.on_event(text(1, ack(sid, 2, "applied")), frame);
+  step(3);
+  check(kinds() == "srrttrt", "A2 arrives right before the transaction that first names it");
+  hub.on_event(text(1, resync(sid, 3)), frame);
+  step(4);
+  // State 4 adds P (replaced placeholder) and N (A1 again): only P is new; the resync's full
+  // transaction re-sends nothing already carried.
+  check(kinds() == "srrttrtrt", "after a resync only never-carried hashes go out (P)");
+  const ConnectionSummary s = hub.summaries().at(0);
+  check(s.resource_records == 4, "summary resource_records 4");
+  hub.finish(EndReason::Shutdown, frame, frame * 1000000ULL);
+  const std::vector<Sent> bin = transport.of(Sent::Binary);
+  const std::string end_meta = meta_at(bin.back().bytes, 0);
+  check(has(end_meta, "\"resource_records\":4"), "the end record counts the resource records");
+  std::vector<std::uint8_t> stream;
+  for (const Sent &x : bin) {
+    stream.insert(stream.end(), x.bytes.begin(), x.bytes.end());
+  }
+  std::uint64_t total = 0;
+  for (std::size_t i = 0; i + 1 < bin.size(); ++i) {
+    total += bin[i].bytes.size();
+  }
+  check(has(end_meta, "\"bytes_total\":" + std::to_string(total)),
+        "bytes_total counts the magic, session, resource and transaction records");
+
+  // A resource record above the message cap: message-too-large, close 1009.
+  LiveConfig small;
+  small.max_message_bytes = 1200;
+  FakeTransport t2;
+  Hub hub2(&t2, small, make_template(Delivery::Inline));
+  hub2.on_event(opened(1), 0);
+  hub2.on_event(text(1, kHelloApplied), 0);
+  Captured big = with_payloads(1);
+  big.payloads[golden::kHashA1] =
+      std::make_shared<grc::rs::PayloadBytes>(std::vector<std::uint8_t>(4000, 1));
+  hub2.on_frame(1, 1, &big, 1, 0);
+  const std::vector<Sent> closes = t2.of(Sent::Close);
+  check(closes.size() == 1 && closes[0].code == 1009 &&
+            hub2.summaries().at(0).error_sent == "message-too-large",
+        "an oversize resource record closes 1009 (message-too-large)");
+}
+
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_control_parser();
@@ -861,6 +964,7 @@ int main() {
   test_stall_coalescing();
   test_ignore_credit();
   test_stale_coalesce();
-  std::printf("rs1_live_test: %d checks, %d failures\n", g_checks, g_failures);
+  test_inline_resources();
+  std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

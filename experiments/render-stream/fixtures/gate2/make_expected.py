@@ -395,6 +395,34 @@ def invariants(step):
     return inv
 
 
+def receiver_resources(step):
+    """The file-mode receiver's texture traffic over the step's window, with a fresh cache
+    (gate2-design.md D5, Q5 step 2-3, G2b2 `upload-accounting`). A texture becomes resident when
+    a command first names it and is re-uploaded only when its hash or kind changes; a payload is
+    fetched once per process (equal bytes share one fetch); a placeholder counts as created and
+    uploads nothing; an entry that leaves the table or becomes a tombstone frees its RID. M is
+    named by no command until step 9, and the engine's hue strip never is."""
+    r = {"fetched": 0, "created": 0, "updated": 0, "replaced": 0, "freed": 0}
+    if step == 0:
+        r["fetched"] = 2  # A0 (shared by A and Atwin), B0
+        r["created"] = 5  # A, Atwin, B, P1, P2 (the two placeholders without bytes)
+    elif step == 6:
+        r["fetched"] = 1  # A1
+        r["updated"] = 1  # A: same format, size, mipmaps -> texture_2d_update
+    elif step == 7:
+        r["fetched"] = 2  # A2, B1
+        r["replaced"] = 2  # A 16x16 -> 32x32, B LA8 -> RGBA8: texture_replace(create)
+    elif step == 8:
+        r["fetched"] = 2  # C (pre-fill bytes), D
+        r["created"] = 2  # C, D
+        r["freed"] = 2  # Atwin (left the table), P1 (tombstone RAW1 still draws)
+    elif step == 9:
+        r["fetched"] = 2  # E, M
+        r["created"] = 1  # M, first named by MM
+        r["replaced"] = 1  # P2: placeholder -> image
+    return r
+
+
 def variant(name):
     steps = []
     for step in range(LAST_STEP + 1):
@@ -433,6 +461,7 @@ def build():
                 "synth_exclude": synth_exclude(step),
                 "census": census(step),
                 "invariants": invariants(step),
+                "receiver_resources": receiver_resources(step),
             }
         )
     return {

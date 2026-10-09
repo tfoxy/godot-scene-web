@@ -38,7 +38,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate2 --
   and which content each shows from which step, and per step the regions (they follow `G` and the
   canvas transform), the draws in paint order (each a flat colour or a texture sample), the
   `synth_exclude` regions, the RenderingServer texture-call census and the texture invariants
-  G2b2 evaluates; plus the two variants and the engine's own texture calls (`engine_textures`).
+  G2b2 evaluates, and (G2b2) `receiver_resources`, the fresh-cache receiver's texture traffic per step; plus the two variants and the engine's own texture calls (`engine_textures`).
 
 ## Timeline
 

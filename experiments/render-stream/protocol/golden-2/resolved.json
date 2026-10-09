@@ -382,7 +382,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -397,7 +397,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -442,7 +442,7 @@
             "width": 4,
             "height": 4,
             "mipmaps": false,
-            "payload_bytes": 32,
+            "payload_bytes": 137,
             "canvas": null
           }
         ]
@@ -829,7 +829,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -844,7 +844,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -889,7 +889,7 @@
             "width": 4,
             "height": 4,
             "mipmaps": false,
-            "payload_bytes": 32,
+            "payload_bytes": 137,
             "canvas": null
           }
         ]
@@ -1276,7 +1276,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1291,7 +1291,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1336,7 +1336,7 @@
             "width": 4,
             "height": 4,
             "mipmaps": false,
-            "payload_bytes": 32,
+            "payload_bytes": 137,
             "canvas": null
           }
         ]
@@ -1723,7 +1723,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1738,7 +1738,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1768,7 +1768,7 @@
             "width": 8,
             "height": 8,
             "mipmaps": true,
-            "payload_bytes": 340,
+            "payload_bytes": 447,
             "canvas": null
           },
           {
@@ -1798,7 +1798,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           }
         ]
@@ -2185,7 +2185,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2200,7 +2200,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2230,7 +2230,7 @@
             "width": 8,
             "height": 8,
             "mipmaps": true,
-            "payload_bytes": 340,
+            "payload_bytes": 447,
             "canvas": null
           },
           {
@@ -2245,7 +2245,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           }
         ]
@@ -2632,7 +2632,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2647,7 +2647,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2677,7 +2677,7 @@
             "width": 8,
             "height": 8,
             "mipmaps": true,
-            "payload_bytes": 340,
+            "payload_bytes": 447,
             "canvas": null
           },
           {
@@ -2692,7 +2692,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           }
         ]

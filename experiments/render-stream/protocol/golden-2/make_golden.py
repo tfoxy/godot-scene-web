@@ -714,6 +714,10 @@ def unsupported_cmd(name: str, reason: str) -> dict:
     return {"op": "unsupported", "name": name, "reason": reason}
 
 
+# `payload_bytes` is the length of the whole render-stream-texture/1 payload (magic, meta, lengths
+# and data) -- render-stream-2.md "Texture": "payload length" -- the size the inline threshold and
+# the store's index compare, not the image's data size. (G2b2 corrected the G2b1 vectors, which
+# had carried the data size here.)
 def texture(
     *, kind: str, status: str = "ok", reason: str | None = None, version: int,
     hash: str | None = None, format: str | None = None, width: int = 0, height: int = 0,
@@ -769,14 +773,14 @@ def _base_items() -> dict:
 def state1() -> dict:
     textures = {
         1: texture(kind="image", version=1, hash=HASH_A1, format="RGBA8", width=16, height=16,
-                   payload_bytes=1024),
+                   payload_bytes=len(PAYLOAD_A1)),
         2: texture(kind="image", version=1, hash=HASH_A1, format="RGBA8", width=16, height=16,
-                   payload_bytes=1024),
+                   payload_bytes=len(PAYLOAD_A1)),
         3: texture(kind="image", status="unsupported", reason="unsupported-format", version=1,
                    format="RGBAF", width=4, height=4),
         4: texture(kind="placeholder", version=1),
         5: texture(kind="image", version=1, hash=HASH_F, format="LA8", width=4, height=4,
-                   payload_bytes=32),
+                   payload_bytes=len(PAYLOAD_F)),
     }
     return {
         "items": _base_items(), "canvases": {1: root_canvas([1, 2, 3, 4, 5])},
@@ -815,7 +819,7 @@ def state4() -> dict:
     replaced["width"] = 8
     replaced["height"] = 8
     replaced["mipmaps"] = True
-    replaced["payload_bytes"] = 340
+    replaced["payload_bytes"] = len(PAYLOAD_P)
     textures[4] = replaced
     freed = dict(textures[5])
     freed["status"] = "freed"
@@ -828,7 +832,7 @@ def state4() -> dict:
     # version is UNCHANGED while freed with a surviving reference (gate2-design.md Q3 "free(rid)").
     textures[5] = freed
     textures[6] = texture(kind="image", version=1, hash=HASH_A1, format="RGBA8", width=16,
-                          height=16, payload_bytes=1024)
+                          height=16, payload_bytes=len(PAYLOAD_A1))
     state["textures"] = textures
     state["default_filter"] = "linear"
     return state
@@ -975,7 +979,7 @@ def mini_item() -> dict:
 
 def mini_texture(*, version: int = 1, hash: str | None = MINI_HASH) -> dict:
     return texture(kind="image", version=version, hash=hash, format="RGBA8", width=4, height=4,
-                   payload_bytes=64)
+                   payload_bytes=len(MINI_PAYLOAD))
 
 
 def mini_state(*, texture_version: int = 1) -> dict:

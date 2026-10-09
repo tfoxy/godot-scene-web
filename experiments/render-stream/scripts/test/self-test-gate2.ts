@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the gate 2 checker (lib/gate2-checks.ts and lib/gate2-expected.ts, group g2a).
-// Proves that every check can fail as well as pass.
+// Self-test for the gate 2 checker (lib/gate2-checks.ts, lib/gate2b-checks.ts and
+// lib/gate2-expected.ts, groups g2a and g2b). Proves that every check can fail as well as pass.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate2.ts
@@ -9,20 +9,29 @@
 //    partial alpha) against hand-computed texels, the step windows, the census helpers, the hook
 //    log's line validation, and checkExpectedSelfConsistent on the committed expected.json and on
 //    broken copies of it.
-// 2. Evidence-tree scenarios: a fabricated passing g2a tree (a render-stream/1 capture recording
-//    encoded by rs1-test-encoder.ts, hook logs and fixture texture logs from a model of the
-//    fixture's texture calls, PNGs synthesized from fixtures/gate2/expected.json), then one
-//    perturbation per failure mode. Each scenario runs the real runGate2 and asserts the verdict
-//    of the checks it targets, and that every other check still passes.
+// 2. Evidence-tree scenarios: a fabricated passing g2a + g2b tree (gate2b-fixture.ts: one model of
+//    the fixture's texture calls writes every hook log, fixture log, render-stream/2 recording,
+//    store, cache and simulated receiver; PNGs are synthesized from fixtures/gate2/expected.json),
+//    then perturbations: every check and every leg class is failed by at least one of them. Each
+//    scenario runs the real runGate2 and asserts that exactly the checks it targets fail and every
+//    other check still passes.
 //
 // Exits non-zero if any assertion fails.
 
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  cp,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { GATE0_HOOKS } from "../lib/gate0-checks";
 import {
   censusOf,
@@ -44,10 +53,24 @@ import {
   synthesizeGate2,
 } from "../lib/gate2-expected";
 import {
-  encodeRs1Recording,
-  type TItem,
-  type TState,
-} from "./rs1-test-encoder";
+  buildModel,
+  buildTree,
+  CAPTURE_QUIT,
+  CONTENT,
+  encodeSink,
+  INLINE_RESOURCES,
+  jsonl,
+  line,
+  type Model,
+  PRE_RID,
+  shotPng,
+  texRid,
+  writeBytes,
+  writeCounters,
+  writeJson,
+  writeText,
+} from "./gate2b-fixture";
+import { texturePayload } from "./rs2-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -65,7 +88,6 @@ function assert(name: string, ok: boolean, detail = ""): void {
 }
 
 let EXPECTED: Gate2Expected;
-const CAPTURE_QUIT = 400;
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 // ---------------------------------------------------------------------------------------------
@@ -295,352 +317,98 @@ function pureCases(): void {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 2. A model of the fixture's texture calls (what the hook log and the fixture log record)
+// 2. Evidence-tree scenarios
 // ---------------------------------------------------------------------------------------------
 
 const H = (tag: string): string => tag.repeat(64 / tag.length).slice(0, 64);
-const HASH = {
-  A0: H("a0"),
-  B0: H("b0"),
-  M: H("4d"),
-  HUE: H("e1"),
-  A1: H("a1"),
-  A2: H("a2"),
-  B1: H("b1"),
-  C: H("c0"),
-  D: H("d0"),
-  E: H("e0"),
-};
 
-interface LogModelOptions {
-  variant?: "unsupported";
-  quit: number;
+/** The checks a passing tree reports, in order: G2a's (gate2-checks.ts), then G2b's (runG2b). */
+const G2A_CHECKS = [
+  "expected-self-consistent",
+  "capture-armed",
+  "headless-no-gpu",
+  "recording-decodes",
+  "step-alignment",
+  "expected-image-reference",
+  "reference-repeat-budget",
+  "armed-transparent",
+  "census",
+  "hook-bytes-exact",
+  "worker-thread-create",
+  "replace-retires-temp",
+  "viewport-defaults",
+  "unsupported-variant",
+  "leg-class-capture",
+];
+const G2B_LEGS = [
+  "receiver-cold",
+  "receiver-warm",
+  "receiver-patch",
+  "receiver-inline",
+  "live-inline",
+  "unsupported-textures",
+  "sabotage-omit-update",
+  "sabotage-omit-replace",
+  "sabotage-stale-texture",
+  "sabotage-wrong-hash",
+  "sabotage-spurious-update",
+  "sabotage-receiver-reupload",
+  "sabotage-receiver-ignore-cache",
+];
+const G2B_CHECKS = [
+  "recordings-decode-2",
+  "patch-resolves-to-full",
+  "store-complete",
+  "inline-equals-store",
+  "texture-versions-current",
+  "texture-invariants",
+  "receiver-vs-reference",
+  "expected-image-receiver",
+  "transform-only-no-resource-traffic",
+  "upload-accounting",
+  "warm-cache",
+  "fresh-cache",
+  "freed-draws-default",
+  "copy-at-hook",
+  "unsupported-regions",
+  "live-inline",
+  "receiver-consumed-stream",
+  "receiver-never-loaded-fixture",
+  "receiver-typed-clean",
+  ...G2B_LEGS.map((leg) => `leg-class-${leg}`),
+];
+
+/** applied.json /3, as far as the scenarios edit it. */
+interface AppliedEdit {
+  status: string;
+  failure: { seq: number; reason: string; detail?: string } | null;
+  end_seen: boolean;
+  transactions: Array<{
+    seq: number;
+    record_sha256: string;
+    rs_calls: number;
+    resources: Record<string, number> | null;
+  }>;
+  fetches: unknown[];
+  uploads: Array<{ seq: number; id: number; hash: string | null; op: string }>;
+  unsupported: Array<{ reason: string }>;
+  cache: { mode: string };
+  resources_summary: { distinct_fetched: number };
 }
 
-function line(
-  partial: Partial<ResourceLine> & Pick<ResourceLine, "frame" | "op">,
-): ResourceLine {
-  const base = Object.fromEntries(
-    RESOURCE_LINE_KEYS.map((k) => [k, null]),
-  ) as unknown as ResourceLine;
-  return { ...base, t_us: partial.frame * 1000, thread: "main", ...partial };
-}
-
-function image(
-  frame: number,
-  op: "texture_2d_create" | "texture_2d_update" | "texture_replace",
-  id: number,
-  rid: string,
-  version: number,
-  format: string,
-  w: number,
-  h: number,
-  hash: string | null,
-  extra: Partial<ResourceLine> = {},
-): ResourceLine {
-  const bytes = format === "LA8" ? 2 : format === "RGBAF" ? 16 : 4;
-  const ok = hash !== null;
-  return line({
-    frame,
-    op,
-    id,
-    rid,
-    version,
-    kind: "image",
-    status: ok ? "ok" : "unsupported",
-    reason: ok ? null : "unsupported-format",
-    format,
-    width: w,
-    height: h,
-    mipmaps: w === 64,
-    data_bytes: w === 64 ? 21844 : w * h * bytes,
-    payload_bytes: ok ? 100 + w * h * bytes : 0,
-    hash,
-    copy_ns: ok ? 500 : null,
-    hash_ns: ok ? 4000 : null,
-    layer: op === "texture_2d_update" ? 0 : null,
-    ...extra,
-  });
-}
-
-function itemCalls(
-  frame: number,
-  op: string,
-  count: number,
-  firstRid: number,
-  value: number,
-) {
-  return [...Array(count).keys()].map((i) =>
-    line({ frame, op, target: String(firstRid + i), value }),
-  );
-}
-
-function hookLog(opts: LogModelOptions): ResourceLine[] {
-  const f = (k: number) => stepFrames2(EXPECTED, k).applied;
-  const items = EXPECTED.items_at_ready.length + (opts.variant ? 2 : 0);
-  const out: ResourceLine[] = [
-    image(1, "texture_2d_create", 1, "1001", 1, "RGBA8", 16, 16, HASH.A0),
-    image(1, "texture_2d_create", 2, "1002", 1, "RGBA8", 16, 16, HASH.A0),
-    image(1, "texture_2d_create", 3, "1003", 1, "LA8", 4, 4, HASH.B0),
-    image(1, "texture_2d_create", 4, "1004", 1, "RGBA8", 64, 64, HASH.M),
-    line({
-      frame: 1,
-      op: "texture_2d_placeholder_create",
-      id: 5,
-      rid: "1005",
-      version: 1,
-      kind: "placeholder",
-      status: "ok",
-    }),
-    line({
-      frame: 1,
-      op: "texture_2d_placeholder_create",
-      id: 6,
-      rid: "1006",
-      version: 1,
-      kind: "placeholder",
-      status: "ok",
-    }),
-  ];
-  if (opts.variant)
-    out.push(image(1, "texture_2d_create", 7, "1013", 1, "RGBAF", 4, 4, null));
-  out.push(
-    ...itemCalls(1, "canvas_item_set_default_texture_filter", items, 2001, 0),
-    ...itemCalls(1, "canvas_item_set_default_texture_repeat", items, 2001, 0),
-    image(1, "texture_2d_create", 8, "1007", 1, "RGBA8", 800, 6, HASH.HUE),
-    line({
-      frame: f(3),
-      op: "canvas_item_set_default_texture_filter",
-      target: "2003",
-      value: 2,
-    }),
-    line({
-      frame: f(4),
-      op: "viewport_set_default_canvas_item_texture_filter",
-      target: "3000",
-      value: 2,
-      root_viewport: true,
-    }),
-    line({
-      frame: f(5),
-      op: "viewport_set_default_canvas_item_texture_filter",
-      target: "3000",
-      value: 1,
-      root_viewport: true,
-    }),
-    line({
-      frame: f(5),
-      op: "canvas_item_set_default_texture_repeat",
-      target: "2005",
-      value: 3,
-    }),
-    image(f(6), "texture_2d_update", 1, "1001", 2, "RGBA8", 16, 16, HASH.A1),
-    image(f(7), "texture_2d_create", 9, "1008", 1, "RGBA8", 32, 32, HASH.A2),
-    image(f(7), "texture_replace", 1, "1001", 3, "RGBA8", 32, 32, HASH.A2, {
-      by_id: 9,
-      target: "1008",
-      ref_id: 9,
-    }),
-    image(f(7), "texture_2d_create", 10, "1009", 1, "RGBA8", 4, 4, HASH.B1),
-    image(f(7), "texture_replace", 3, "1003", 2, "RGBA8", 4, 4, HASH.B1, {
-      by_id: 10,
-      target: "1009",
-      ref_id: 10,
-    }),
-    image(f(8), "texture_2d_create", 11, "1010", 1, "RGBA8", 16, 16, HASH.C),
-    line({
-      frame: f(8),
-      op: "free",
-      id: 2,
-      rid: "1002",
-      version: 1,
-      kind: "image",
-      status: "freed",
-    }),
-    image(f(8), "texture_2d_create", 12, "1011", 1, "RGBA8", 16, 16, HASH.D, {
-      thread: "other",
-    }),
-    line({
-      frame: f(8),
-      op: "free",
-      id: 5,
-      rid: "1005",
-      version: 1,
-      kind: "placeholder",
-      status: "freed",
-    }),
-    image(f(9), "texture_2d_create", 13, "1012", 1, "RGBA8", 4, 4, HASH.E),
-    image(f(9), "texture_replace", 6, "1006", 2, "RGBA8", 4, 4, HASH.E, {
-      by_id: 13,
-      target: "1012",
-      ref_id: 13,
-    }),
-    line({
-      frame: f(9),
-      op: "canvas_item_set_default_texture_filter",
-      target: "2010",
-      value: 4,
-    }),
-    line({
-      frame: opts.quit + 1,
-      op: "free",
-      id: 1,
-      rid: "1001",
-      version: 3,
-      kind: "image",
-      status: "freed",
-    }),
-  );
-  // The replace lines were built through image(); fix their op-specific fields.
-  for (const l of out) {
-    if (l.op === "texture_replace") {
-      l.layer = null;
-    }
-  }
-  return out.sort((a, b) => a.frame - b.frame);
-}
-
-function fixtureLog(): object[] {
-  const f = (k: number) => stepFrames2(EXPECTED, k).applied;
-  const entry = (
-    step: number,
-    op: string,
-    name: string,
-    hash: string | null,
-    shape: [string, number, number] | null,
-    thread = "main",
-  ) => ({
-    step,
-    frame: step === 0 ? 1 : f(step),
-    op,
-    name,
-    thread,
-    format: shape?.[0] ?? null,
-    width: shape?.[1] ?? null,
-    height: shape?.[2] ?? null,
-    mipmaps: shape ? shape[1] === 64 : null,
-    data_bytes: shape
-      ? shape[1] === 64
-        ? 21844
-        : shape[1] * shape[2] * (shape[0] === "LA8" ? 2 : 4)
-      : null,
-    payload_sha256: hash,
-  });
-  return [
-    entry(0, "texture_2d_create", "A", HASH.A0, ["RGBA8", 16, 16]),
-    entry(0, "texture_2d_create", "Atwin", HASH.A0, ["RGBA8", 16, 16]),
-    entry(0, "texture_2d_create", "B", HASH.B0, ["LA8", 4, 4]),
-    entry(0, "texture_2d_create", "M", HASH.M, ["RGBA8", 64, 64]),
-    entry(0, "texture_2d_placeholder_create", "P1", null, null),
-    entry(0, "texture_2d_placeholder_create", "P2", null, null),
-    entry(6, "texture_2d_update", "A", HASH.A1, ["RGBA8", 16, 16]),
-    entry(7, "texture_2d_create", "A", HASH.A2, ["RGBA8", 32, 32]),
-    entry(7, "texture_replace", "A", null, null),
-    entry(7, "texture_2d_create", "B", HASH.B1, ["RGBA8", 4, 4]),
-    entry(7, "texture_replace", "B", null, null),
-    entry(8, "texture_2d_create", "C", HASH.C, ["RGBA8", 16, 16]),
-    entry(8, "free", "Atwin", null, null),
-    entry(8, "texture_2d_create", "D", HASH.D, ["RGBA8", 16, 16], "other"),
-    entry(8, "free", "P1", null, null),
-    entry(9, "texture_2d_create", "E", HASH.E, ["RGBA8", 4, 4]),
-    entry(9, "texture_replace", "P2", null, null),
-  ];
-}
-
-const jsonl = (rows: readonly object[]) =>
-  `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`;
-
-// ---------------------------------------------------------------------------------------------
-// The capture recording: the Marker's colour per step, plus the two texture draws as
-// unsupported commands, one transaction per frame.
-// ---------------------------------------------------------------------------------------------
-
-function captureStates(quit: number, extraOp?: string): TState[] {
-  const states: TState[] = [];
-  let step = 0;
-  for (let frame = 1; frame <= quit; frame++) {
-    for (let k = step + 1; k <= EXPECTED.last_step; k++)
-      if (stepFrames2(EXPECTED, k).applied === frame) step = k;
-    const marker = EXPECTED.steps[step].marker_rgba8.map((v) => v / 255);
-    const base = {
-      parent: { kind: "canvas" as const, id: 1 },
-      children: [],
-      visible: true,
-      z_index: 0,
-      visibility_layer: 1,
-      xform: [1, 0, 0, 1, 0, 0],
-      modulate: [1, 1, 1, 1],
-      self_modulate: [1, 1, 1, 1],
-    };
-    const items: TItem[] = [
-      {
-        ...base,
-        id: 1,
-        draw_index: 0,
-        content_version: 1,
-        commands: [
-          { op: "unsupported", name: "canvas_item_add_texture_rect_region" },
-        ],
-      },
-      {
-        ...base,
-        id: 2,
-        draw_index: 1,
-        content_version: 1 + step,
-        commands: [{ op: "add_rect", rect: [0, 0, 32, 32], color: marker }],
-      },
-      {
-        ...base,
-        id: 3,
-        draw_index: 1000,
-        content_version: 1,
-        commands: [
-          { op: "unsupported", name: "canvas_item_add_texture_rect" },
-          ...(extraOp ? [{ op: "unsupported" as const, name: extraOp }] : []),
-        ],
-      },
-    ];
-    states.push({
-      frame,
-      failures: [],
-      unsupported: [
-        {
-          op: "canvas_item_add_texture_rect_region",
-          item: 1,
-          reason: "unsupported-op",
-        },
-        ...(extraOp
-          ? [{ op: extraOp, item: 3, reason: "unsupported-op" }]
-          : []),
-        {
-          op: "canvas_item_add_texture_rect",
-          item: 3,
-          reason: "unsupported-op",
-        },
-      ].sort((a, b) => a.item - b.item || (a.op < b.op ? -1 : 1)),
-      canvases: [{ id: 1, items: [1, 2, 3], xform: [1, 0, 0, 1, 0, 0] }],
-      items,
-    });
-  }
-  return states;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Evidence-tree writers
-// ---------------------------------------------------------------------------------------------
-
-async function writeText(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, text);
-}
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await writeText(path, `${JSON.stringify(value, null, 2)}\n`);
-}
 async function editText(
   path: string,
   edit: (text: string) => string,
 ): Promise<void> {
   await writeFile(path, edit(await readFile(path, "utf8")));
+}
+async function editJson<T>(
+  path: string,
+  edit: (value: T) => void,
+): Promise<void> {
+  const value = JSON.parse(await readFile(path, "utf8")) as T;
+  edit(value);
+  await writeJson(path, value);
 }
 async function editLog(
   path: string,
@@ -650,163 +418,8 @@ async function editLog(
     .split("\n")
     .filter((l) => l)
     .map((l) => JSON.parse(l) as ResourceLine);
-  await writeText(path, jsonl(edit(lines)));
+  await writeText(path, jsonl(edit(lines).sort((a, b) => a.frame - b.frame)));
 }
-
-async function writePng(
-  path: string,
-  step: number,
-  perturb?: [number, number],
-): Promise<void> {
-  const { width, height, rgba } = synthesizeGate2(EXPECTED, step);
-  const buf = Buffer.from(rgba);
-  if (perturb) buf[(perturb[1] * width + perturb[0]) * 4] ^= 0x10;
-  await mkdir(dirname(path), { recursive: true });
-  await sharp(buf, { raw: { width, height, channels: 4 } })
-    .png()
-    .toFile(path);
-}
-
-async function writeProcess(dir: string, exitCode = 0): Promise<void> {
-  await writeText(join(dir, "argv.txt"), "/tpl/linux_release.x86_64\n");
-  await writeText(join(dir, "env.txt"), "GRC_MODE=arm\n");
-  await writeText(join(dir, "stdout.log"), "[fixture] gate2 ready\n");
-  await writeText(join(dir, "exit-code.txt"), `${exitCode}\n`);
-}
-
-function stepLog(): string {
-  return jsonl(
-    EXPECTED.steps.map((s) => {
-      const f = stepFrames2(EXPECTED, s.step);
-      return { step: s.step, applied_frame: f.applied, settle_frame: f.settle };
-    }),
-  );
-}
-
-async function writeEvidence(
-  dir: string,
-  quit: number,
-  drawn: string[],
-): Promise<void> {
-  await writeJson(join(dir, "evidence", "result.json"), {
-    schema: "render-stream-capture-result/1",
-    status: "armed",
-    reason: null,
-    vptr_written: true,
-    disarmed: true,
-    display_server: "headless",
-    stream: {
-      path: join(dir, "recording.rs1"),
-      patch_path: null,
-      status: "closed",
-      reason: null,
-      transactions: quit,
-    },
-  });
-  await writeJson(join(dir, "evidence", "counters.json"), {
-    schema: "render-stream-gate-minus1-counters/1",
-    frames_total: quit,
-    hooks_planned: [...GATE0_HOOKS],
-    hooks_omitted: [],
-    captured: {
-      canvas_item_add_texture_rect: drawn
-        .slice(0, 2)
-        .map((texture) => ({ item: "7", texture })),
-      canvas_item_add_texture_rect_region: drawn
-        .slice(2)
-        .map((texture) => ({ item: "8", texture })),
-    },
-    captured_dropped: {
-      canvas_item_add_texture_rect: 0,
-      canvas_item_add_texture_rect_region: 0,
-    },
-  });
-  await writeJson(join(dir, "evidence", "root.json"), {
-    schema: "render-stream-root-geometry/1",
-    texture_defaults: { filter: 0, repeat: 0 },
-  });
-  await writeText(join(dir, "evidence", "armed.marker"), "");
-}
-
-const DRAWN = ["1005", "1006", "1001", "1002", "1003", "1010", "1011"];
-
-async function buildGoodTree(out: string): Promise<void> {
-  await writeJson(join(out, "legs.json"), {
-    groups_run: ["g2a"],
-    groups_landed: ["g2a"],
-  });
-  await writeJson(join(out, "binary.json"), {
-    path: "/tpl/linux_release.x86_64",
-    sha256: "54cc",
-  });
-  await writeProcess(join(out, "import", "fixture"));
-
-  const capture = join(out, "capture");
-  await writeProcess(capture);
-  await writeFile(
-    join(capture, "recording.rs1"),
-    encodeRs1Recording(captureStates(CAPTURE_QUIT), {
-      encoding: "full",
-      hooksPlanned: [...GATE0_HOOKS],
-    }),
-  );
-  await writeEvidence(capture, CAPTURE_QUIT, DRAWN);
-  await writeText(
-    join(capture, "evidence", "resources.jsonl"),
-    jsonl(hookLog({ quit: CAPTURE_QUIT })),
-  );
-  await writeText(join(capture, "textures.jsonl"), jsonl(fixtureLog()));
-  await writeText(join(capture, "steps.jsonl"), stepLog());
-  await writeText(
-    join(capture, "strace.txt"),
-    [
-      '42 10:00:00.000000 openat(AT_FDCWD, "/usr/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3',
-      `42 10:00:00.200000 openat(AT_FDCWD, "${join(capture, "evidence", "armed.marker")}", O_WRONLY|O_CREAT, 0666) = 7`,
-      "",
-    ].join("\n"),
-  );
-  await writeText(
-    join(capture, "maps.txt"),
-    "55d000000000-55d000001000 r-xp 00000000 103:09 1 /tpl/linux_release.x86_64\n",
-  );
-  await writeText(
-    join(capture, "fd.txt"),
-    "lrwx------ 1 u u 64 Oct  9 10:00 0 -> /dev/null\n",
-  );
-
-  const unsupported = join(out, "capture-unsupported");
-  await writeProcess(unsupported);
-  await writeEvidence(unsupported, EXPECTED.quit_frame_default, [
-    ...DRAWN,
-    "1013",
-    "999",
-  ]);
-  await writeText(
-    join(unsupported, "evidence", "resources.jsonl"),
-    jsonl(
-      hookLog({ quit: EXPECTED.quit_frame_default, variant: "unsupported" }),
-    ),
-  );
-
-  for (const leg of ["reference", "reference-repeat", "reference-armed"]) {
-    const dir = join(out, leg);
-    await writeProcess(dir);
-    await writeText(join(dir, "steps.jsonl"), stepLog());
-    await writeText(join(dir, "textures.jsonl"), jsonl(fixtureLog()));
-    for (const s of EXPECTED.steps)
-      await writePng(join(dir, "shots", `step-${s.step}.png`), s.step);
-  }
-  const armed = join(out, "reference-armed");
-  await writeEvidence(armed, EXPECTED.quit_frame_default, DRAWN);
-  await writeText(
-    join(armed, "evidence", "resources.jsonl"),
-    jsonl(hookLog({ quit: EXPECTED.quit_frame_default })),
-  );
-}
-
-// ---------------------------------------------------------------------------------------------
-// Scenarios
-// ---------------------------------------------------------------------------------------------
 
 async function run(out: string): Promise<Gate2Report> {
   return runGate2(out, { expected: EXPECTED, now: new Date(0) });
@@ -815,6 +428,9 @@ async function run(out: string): Promise<Gate2Report> {
 function verdicts(report: Gate2Report): Map<string, string> {
   return new Map(report.checks.map((c) => [c.id, c.status]));
 }
+
+/** Check ids some scenario proved can fail. */
+const targeted = new Set<string>();
 
 async function scenario(
   root: string,
@@ -830,7 +446,12 @@ async function scenario(
   const v = verdicts(report);
   for (const id of failing) {
     const c = report.checks.find((x) => x.id === id);
-    assert(`${name}: ${id} fails`, v.get(id) === "fail", c?.detail);
+    assert(
+      `${name}: ${id} fails (${c?.detail.slice(0, 140)})`,
+      v.get(id) === "fail",
+      c?.detail,
+    );
+    if (v.get(id) === "fail") targeted.add(id);
   }
   const unexpected = report.checks.filter(
     (c) => !failing.includes(c.id) && c.status !== "pass",
@@ -841,6 +462,7 @@ async function scenario(
     unexpected.map((c) => `${c.id}: ${c.detail}`).join(" | "),
   );
   assert(`${name}: the gate fails`, !report.gate_passed);
+  await rm(out, { recursive: true, force: true });
 }
 
 async function main(): Promise<void> {
@@ -852,10 +474,39 @@ async function main(): Promise<void> {
   ) as Gate2Expected;
   pureCases();
 
+  const MAIN: Model = buildModel(EXPECTED, { quit: CAPTURE_QUIT });
+  const VARIANT: Model = buildModel(EXPECTED, {
+    quit: EXPECTED.quit_frame_default,
+    variant: "unsupported",
+  });
+  assert(
+    "model: wire ids as in the real run (A=1 Atwin=2 B=3 M=4 P1=5 P2=6 hue 7, temporaries 8 9, C=10 D=11 E=12)",
+    JSON.stringify([
+      MAIN.ids.A,
+      MAIN.ids.Atwin,
+      MAIN.ids.B,
+      MAIN.ids.M,
+      MAIN.ids.P1,
+      MAIN.ids.P2,
+      MAIN.ids.HUE,
+      MAIN.ids.tA,
+      MAIN.ids.tB,
+      MAIN.ids.C,
+      MAIN.ids.D,
+      MAIN.ids.E,
+    ]) === JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+    JSON.stringify(MAIN.ids),
+  );
+  assert(
+    "model: the capture's tables name ten payloads (nine fixture contents and the hue strip)",
+    MAIN.stores.length === 10,
+    MAIN.stores.map((c) => c.name).join(","),
+  );
+
   const root = await mkdtemp(join(tmpdir(), "self-test-gate2-"));
   try {
     const good = join(root, "good");
-    await buildGoodTree(good);
+    await buildTree(good, EXPECTED);
     const report = await run(good);
     const bad = report.checks.filter((c) => c.status !== "pass");
     assert(
@@ -864,61 +515,67 @@ async function main(): Promise<void> {
       bad.map((c) => `${c.id}: ${c.detail}`).join(" | "),
     );
     assert(
-      "good tree: the checks are the G2a set",
-      [
-        "expected-self-consistent",
-        "capture-armed",
-        "headless-no-gpu",
-        "recording-decodes",
-        "step-alignment",
-        "expected-image-reference",
-        "reference-repeat-budget",
-        "armed-transparent",
-        "census",
-        "hook-bytes-exact",
-        "worker-thread-create",
-        "replace-retires-temp",
-        "viewport-defaults",
-        "unsupported-variant",
-        "leg-class-capture",
-      ].join(",") === report.checks.map((c) => c.id).join(","),
+      "good tree: the checks are the G2a set, then the G2b set",
+      [...G2A_CHECKS, ...G2B_CHECKS].join(",") ===
+        report.checks.map((c) => c.id).join(","),
       report.checks.map((c) => c.id).join(","),
     );
-    assert(
-      "good tree: the capture leg is unsupported, the five support legs reported",
-      report.legs.capture?.result_class === "unsupported" &&
-        Object.keys(report.legs).length === 6,
+    const misclassified = G2B_LEGS.filter(
+      (leg) =>
+        report.legs[leg]?.result_class !== report.legs[leg]?.expected_class,
     );
     assert(
-      "good tree: copy costs reported per shape",
-      (report.resources?.capture.host.by_shape.length ?? 0) >= 5,
-      JSON.stringify(
-        report.resources?.capture.host.by_shape.map((s) => s.shape),
-      ),
+      "good tree: the capture leg is success and every g2b leg lands in its expected class",
+      report.legs.capture?.result_class === "success" &&
+        misclassified.length === 0 &&
+        Object.keys(report.legs).length === 1 + 5 + G2B_LEGS.length + 3,
+      `${misclassified.join(",")}; ${Object.keys(report.legs).length} legs`,
+    );
+    assert(
+      "good tree: copy costs per shape, the store and the receivers' traffic reported",
+      (report.resources?.capture?.host?.by_shape?.length ?? 0) >= 5 &&
+        report.resources?.capture?.store?.hashes === 10 &&
+        report.resources?.["receiver-cold"]?.receiver?.distinct_fetched === 9 &&
+        report.resources?.["receiver-warm"]?.receiver?.cache_hits === 9 &&
+        report.resources?.["live-inline"]?.host?.resource_records === 10,
+      JSON.stringify({
+        shapes: report.resources?.capture?.host?.by_shape?.length,
+        store: report.resources?.capture?.store,
+        cold: report.resources?.["receiver-cold"]?.receiver,
+      }),
     );
 
     const capLog = (out: string) =>
       join(out, "capture", "evidence", "resources.jsonl");
+    const armedLog = (out: string) =>
+      join(out, "reference-armed", "evidence", "resources.jsonl");
+    const applied = (out: string, rel: string) =>
+      join(out, rel, "applied.json");
+    const shot = (out: string, rel: string, step: number) =>
+      join(out, rel, "shots", `seq-${stepFrames2(EXPECTED, step).settle}.png`);
     const f = (k: number) => stepFrames2(EXPECTED, k).applied;
+    const tx = (a: AppliedEdit, seq: number) =>
+      a.transactions.find(
+        (t) => t.seq === seq,
+      ) as AppliedEdit["transactions"][number];
 
+    // ---- g2a ----------------------------------------------------------------------------
     await scenario(
       root,
       good,
       "census-transform-only-step",
       async (out) => {
-        await editLog(capLog(out), (ls) =>
-          [
-            ...ls,
-            line({
-              frame: f(2),
-              op: "texture_2d_update",
-              id: 1,
-              rid: "1001",
-              version: 9,
-              status: "ok",
-            }),
-          ].sort((a, b) => a.frame - b.frame),
-        );
+        await editLog(armedLog(out), (ls) => [
+          ...ls,
+          line({
+            frame: f(2),
+            op: "texture_2d_update",
+            id: 1,
+            rid: texRid(1),
+            version: 9,
+            status: "ok",
+          }),
+        ]);
       },
       ["census", "hook-bytes-exact"],
     );
@@ -946,15 +603,23 @@ async function main(): Promise<void> {
           ls.map((l) => (l.thread === "other" ? { ...l, thread: "main" } : l)),
         );
       },
-      ["census", "hook-bytes-exact", "worker-thread-create"],
+      // texture-invariants matches D's fixture create by thread, so D loses its id.
+      [
+        "census",
+        "hook-bytes-exact",
+        "worker-thread-create",
+        "texture-invariants",
+      ],
     );
     await scenario(
       root,
       good,
       "hash-mismatch-c",
       async (out) => {
-        await editLog(capLog(out), (ls) =>
-          ls.map((l) => (l.hash === HASH.C ? { ...l, hash: H("cf") } : l)),
+        await editLog(armedLog(out), (ls) =>
+          ls.map((l) =>
+            l.hash === CONTENT.C.hash ? { ...l, hash: H("cf") } : l,
+          ),
         );
       },
       ["hook-bytes-exact"],
@@ -964,10 +629,7 @@ async function main(): Promise<void> {
       good,
       "engine-texture-missing",
       async (out) => {
-        await editLog(
-          join(out, "reference-armed", "evidence", "resources.jsonl"),
-          (ls) => ls.filter((l) => l.width !== 800),
-        );
+        await editLog(armedLog(out), (ls) => ls.filter((l) => l.width !== 800));
       },
       ["census", "hook-bytes-exact"],
     );
@@ -987,28 +649,28 @@ async function main(): Promise<void> {
       good,
       "replace-temp-reused",
       async (out) => {
-        await editLog(capLog(out), (ls) =>
-          [
-            ...ls,
-            line({
-              frame: f(9),
-              op: "canvas_item_set_default_texture_filter",
-              target: "1008",
-              value: 1,
-            }),
-          ].sort((a, b) => a.frame - b.frame),
-        );
+        await editLog(capLog(out), (ls) => [
+          ...ls,
+          line({
+            frame: f(9),
+            op: "canvas_item_set_default_texture_filter",
+            target: texRid(MAIN.ids.tA),
+            value: 1,
+          }),
+        ]);
       },
       ["census", "replace-retires-temp"],
     );
     await scenario(
       root,
       good,
-      "replace-version-not-bumped",
+      "replace-by-texture-unknown",
       async (out) => {
         await editLog(capLog(out), (ls) =>
           ls.map((l) =>
-            l.op === "texture_replace" && l.id === 1 ? { ...l, version: 2 } : l,
+            l.op === "texture_replace" && l.id === MAIN.ids.A
+              ? { ...l, target: "4242" }
+              : l,
           ),
         );
       },
@@ -1046,16 +708,23 @@ async function main(): Promise<void> {
       good,
       "reference-pixel-off",
       async (out) => {
-        await writePng(
+        await writeBytes(
           join(out, "reference", "shots", "step-6.png"),
-          6,
-          [50, 250],
+          await shotPng(EXPECTED, 6, { perturb: [50, 250] }),
         );
       },
+      // Every receiver is held to the reference: the faithful ones now mismatch at step 6, and
+      // omit-replace's mismatching steps grow to {6,7,8,9,10}.
       [
         "expected-image-reference",
         "reference-repeat-budget",
         "armed-transparent",
+        "receiver-vs-reference",
+        "leg-class-receiver-cold",
+        "leg-class-receiver-warm",
+        "leg-class-receiver-patch",
+        "leg-class-receiver-inline",
+        "leg-class-sabotage-omit-replace",
       ],
     );
     await scenario(
@@ -1063,10 +732,9 @@ async function main(): Promise<void> {
       good,
       "armed-pixel-off",
       async (out) => {
-        await writePng(
+        await writeBytes(
           join(out, "reference-armed", "shots", "step-2.png"),
-          2,
-          [100, 300],
+          await shotPng(EXPECTED, 2, { perturb: [100, 300] }),
         );
       },
       ["armed-transparent"],
@@ -1076,10 +744,9 @@ async function main(): Promise<void> {
       good,
       "repeat-pixel-off-outside-exclusions",
       async (out) => {
-        await writePng(
+        await writeBytes(
           join(out, "reference-repeat", "shots", "step-0.png"),
-          0,
-          [210, 50],
+          await shotPng(EXPECTED, 0, { perturb: [210, 50] }),
         );
       },
       ["reference-repeat-budget"],
@@ -1089,10 +756,13 @@ async function main(): Promise<void> {
       good,
       "variant-no-unknown-rid",
       async (out) => {
-        await writeEvidence(
+        await writeCounters(
           join(out, "capture-unsupported"),
           EXPECTED.quit_frame_default,
-          [...DRAWN, "1013"],
+          {
+            rect: VARIANT.drawn.rect,
+            region: VARIANT.drawn.region.filter((r) => r !== PRE_RID),
+          },
         );
       },
       ["unsupported-variant"],
@@ -1106,16 +776,7 @@ async function main(): Promise<void> {
           join(out, "capture-unsupported", "evidence", "resources.jsonl"),
           (ls) =>
             ls.map((l) =>
-              l.format === "RGBAF"
-                ? {
-                    ...l,
-                    status: "ok",
-                    reason: null,
-                    hash: H("ff"),
-                    copy_ns: 1,
-                    hash_ns: 1,
-                  }
-                : l,
+              l.format === "RGBAF" ? { ...l, copy_ns: 1, hash_ns: 1 } : l,
             ),
         );
       },
@@ -1126,25 +787,21 @@ async function main(): Promise<void> {
       good,
       "capture-draws-unknown-rid",
       async (out) => {
-        await writeEvidence(join(out, "capture"), CAPTURE_QUIT, [
-          ...DRAWN,
-          "4242",
-        ]);
+        await writeCounters(join(out, "capture"), CAPTURE_QUIT, {
+          rect: [...MAIN.drawn.rect, "4242"],
+          region: MAIN.drawn.region,
+        });
       },
       ["unsupported-variant"],
     );
     await scenario(
       root,
       good,
-      "capture-extra-unsupported-op",
+      "capture-no-texture-rect",
       async (out) => {
-        await writeFile(
-          join(out, "capture", "recording.rs1"),
-          encodeRs1Recording(
-            captureStates(CAPTURE_QUIT, "canvas_item_add_circle"),
-            { encoding: "full", hooksPlanned: [...GATE0_HOOKS] },
-          ),
-        );
+        // A whole tree whose fixture draws no add_texture_rect, every leg consistent with it.
+        await rm(out, { recursive: true, force: true });
+        await buildTree(out, EXPECTED, { noTextureRect: true });
       },
       ["leg-class-capture"],
     );
@@ -1153,15 +810,47 @@ async function main(): Promise<void> {
       good,
       "capture-hook-omitted",
       async (out) => {
-        await writeFile(
-          join(out, "capture", "recording.rs1"),
-          encodeRs1Recording(captureStates(CAPTURE_QUIT), {
-            encoding: "full",
+        await writeBytes(
+          join(out, "capture", "recording.rs2"),
+          encodeSink(MAIN.states, "full", {
             hooksPlanned: GATE0_HOOKS.filter((h) => h !== "texture_replace"),
           }),
         );
       },
       ["capture-armed"],
+    );
+    await scenario(
+      root,
+      good,
+      "capture-recording-without-end",
+      async (out) => {
+        await writeBytes(
+          join(out, "capture", "recording.rs2"),
+          encodeSink(MAIN.states, "full", { noEnd: true }),
+        );
+      },
+      // Every leg replaying the capture's full sink classifies capture-failure.
+      [
+        "recording-decodes",
+        "recordings-decode-2",
+        "leg-class-capture",
+        "leg-class-receiver-cold",
+        "leg-class-receiver-warm",
+        "leg-class-sabotage-receiver-reupload",
+        "leg-class-sabotage-receiver-ignore-cache",
+      ],
+    );
+    await scenario(
+      root,
+      good,
+      "capture-holds-gpu-fd",
+      async (out) => {
+        await appendFile(
+          join(out, "capture", "fd.txt"),
+          "lrwx------ 1 u u 64 Oct  9 10:00 9 -> /dev/dri/renderD128\n",
+        );
+      },
+      ["headless-no-gpu"],
     );
     await scenario(
       root,
@@ -1193,20 +882,629 @@ async function main(): Promise<void> {
       ],
     );
 
-    // A run without g2a: its checks are not-run and the gate fails.
-    const none = join(root, "not-run");
-    await cp(good, none, { recursive: true });
-    await writeJson(join(none, "legs.json"), {
-      groups_run: [],
-      groups_landed: ["g2a"],
-    });
-    const notRun = await run(none);
+    // ---- g2b: captures, store, inline ---------------------------------------------------
+    await scenario(
+      root,
+      good,
+      "inline-patch-without-end",
+      async (out) => {
+        await writeBytes(
+          join(out, "capture-inline", "recording-patch.rs2"),
+          encodeSink(MAIN.states, "patch", {
+            resources: INLINE_RESOURCES,
+            noEnd: true,
+          }),
+        );
+      },
+      ["recordings-decode-2"],
+    );
+    await scenario(
+      root,
+      good,
+      "patch-sink-diverges",
+      async (out) => {
+        await writeBytes(
+          join(out, "capture-unsupported", "recording-patch.rs2"),
+          encodeSink(VARIANT.states, "patch", {
+            mutatePatch: (seq, s) =>
+              seq === 50
+                ? {
+                    ...s,
+                    items: s.items.map((it) =>
+                      it.id === 1 ? { ...it, modulate: [1, 1, 1, 0.5] } : it,
+                    ),
+                  }
+                : s,
+          }),
+        );
+      },
+      ["patch-resolves-to-full"],
+    );
+    await scenario(
+      root,
+      good,
+      "store-file-corrupt",
+      async (out) => {
+        const path = join(
+          out,
+          "capture",
+          "store",
+          "sha256",
+          `${CONTENT.A1.hash}.grt`,
+        );
+        const bytes = await readFile(path);
+        bytes[bytes.length - 1] ^= 0xff;
+        await writeFile(path, bytes);
+      },
+      // capture-inline's payload of that hash no longer equals the store's file either.
+      ["store-complete", "inline-equals-store"],
+    );
+    await scenario(
+      root,
+      good,
+      "store-holds-a-stray-payload",
+      async (out) => {
+        const stray = texturePayload(
+          "RGBA8",
+          1,
+          1,
+          false,
+          new Uint8Array([1, 2, 3, 4]),
+        );
+        const { createHash } = await import("node:crypto");
+        const hash = createHash("sha256").update(stray).digest("hex");
+        await writeBytes(
+          join(out, "capture-unsupported", "store", "sha256", `${hash}.grt`),
+          stray,
+        );
+      },
+      ["store-complete"],
+    );
+    await scenario(
+      root,
+      good,
+      "store-index-short",
+      async (out) => {
+        await editText(join(out, "capture", "store", "index.jsonl"), (t) =>
+          t.split("\n").slice(1).join("\n"),
+        );
+      },
+      ["store-complete"],
+    );
+    await scenario(
+      root,
+      good,
+      "store-index-wrong-bytes",
+      async (out) => {
+        await editText(join(out, "capture", "store", "index.jsonl"), (t) =>
+          t.replace(/"bytes":(\d+)/, (_m, n) => `"bytes":${Number(n) + 1}`),
+        );
+      },
+      ["store-complete"],
+    );
+    await scenario(
+      root,
+      good,
+      "store-index-duplicate-line",
+      async (out) => {
+        await editText(join(out, "capture", "store", "index.jsonl"), (t) => {
+          const lines = t.split("\n").filter((l) => l !== "");
+          return `${[lines[0], ...lines].join("\n")}\n`;
+        });
+      },
+      ["store-complete"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-host-recording-truncated",
+      async (out) => {
+        const path = join(out, "live-inline", "host", "recording.rs2");
+        const bytes = await readFile(path);
+        await writeFile(path, bytes.subarray(0, bytes.length - 3));
+      },
+      // A recording that no longer resolves also fails every check that reads its states.
+      [
+        "recordings-decode-2",
+        "patch-resolves-to-full",
+        "texture-versions-current",
+        "live-inline",
+        "leg-class-live-inline",
+      ],
+    );
+    await scenario(
+      root,
+      good,
+      "warm-cache-another-dir",
+      async (out) => {
+        await editJson<{ cache: { dir: string } }>(
+          join(out, "receiver-warm", "applied.json"),
+          (a) => {
+            a.cache.dir = a.cache.dir.replace(
+              "receiver-cold",
+              "receiver-other",
+            );
+          },
+        );
+      },
+      ["warm-cache"],
+    );
+    await scenario(
+      root,
+      good,
+      "inline-capture-wrote-a-store",
+      async (out) => {
+        await writeText(
+          join(out, "capture-inline", "store", "index.jsonl"),
+          "",
+        );
+      },
+      ["inline-equals-store"],
+    );
+    await scenario(
+      root,
+      good,
+      "texture-version-off-the-log",
+      async (out) => {
+        const bumped = VARIANT.states.map((s) => ({
+          ...s,
+          textures: s.textures?.map((t) =>
+            t.id === VARIANT.ids.HUE ? { ...t, version: 2 } : t,
+          ),
+        }));
+        const dir = join(out, "capture-unsupported");
+        await writeBytes(
+          join(dir, "recording.rs2"),
+          encodeSink(bumped, "full"),
+        );
+        await writeBytes(
+          join(dir, "recording-patch.rs2"),
+          encodeSink(bumped, "patch"),
+        );
+      },
+      // The unsupported leg's capture now diverges from its hook log: capture-failure.
+      ["texture-versions-current", "leg-class-unsupported-textures"],
+    );
+    await scenario(
+      root,
+      good,
+      "fixture-log-loses-atwin",
+      async (out) => {
+        await editText(join(out, "capture", "textures.jsonl"), (t) =>
+          t.replaceAll('"name":"Atwin"', '"name":"Atwin2"'),
+        );
+      },
+      ["texture-invariants"],
+    );
+
+    // ---- g2b: receivers -----------------------------------------------------------------
+    await scenario(
+      root,
+      good,
+      "receiver-inline-pixel-off",
+      async (out) => {
+        await writeBytes(
+          shot(out, "receiver-inline", 3),
+          await shotPng(EXPECTED, 3, { perturb: [600, 300] }),
+        );
+      },
+      ["receiver-vs-reference", "leg-class-receiver-inline"],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-cold-pixel-off-the-synthesis",
+      async (out) => {
+        await writeBytes(
+          shot(out, "receiver-cold", 0),
+          await shotPng(EXPECTED, 0, { perturb: [210, 50] }),
+        );
+      },
+      [
+        "receiver-vs-reference",
+        "expected-image-receiver",
+        "warm-cache",
+        "leg-class-receiver-cold",
+      ],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-warm-uploads-in-a-transform-only-window",
+      async (out) => {
+        await editJson<AppliedEdit>(applied(out, "receiver-warm"), (a) => {
+          const r = tx(a, f(2) + 4).resources as Record<string, number>;
+          r.updated = 1;
+          r.upload_bytes = 1024;
+        });
+      },
+      ["transform-only-no-resource-traffic", "leg-class-receiver-warm"],
+    );
+    await scenario(
+      root,
+      good,
+      "patch-sink-resends-textures-in-a-transform-only-window",
+      async (out) => {
+        await writeBytes(
+          join(out, "capture", "recording-patch.rs2"),
+          encodeSink(MAIN.states, "patch", { fullAt: [f(2) + 4] }),
+        );
+      },
+      // Every leg on the capture sees the traffic; receiver-patch also replayed other records.
+      [
+        "transform-only-no-resource-traffic",
+        "leg-class-receiver-cold",
+        "leg-class-receiver-warm",
+        "leg-class-receiver-patch",
+      ],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-patch-misses-a-create",
+      async (out) => {
+        await editJson<AppliedEdit>(applied(out, "receiver-patch"), (a) => {
+          (tx(a, f(9)).resources as Record<string, number>).created = 0;
+        });
+      },
+      ["upload-accounting"],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-warm-rs-calls-differ",
+      async (out) => {
+        await editJson<AppliedEdit>(applied(out, "receiver-warm"), (a) => {
+          tx(a, 5).rs_calls += 1;
+        });
+      },
+      ["warm-cache"],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-warm-fetches",
+      async (out) => {
+        const cold = JSON.parse(
+          await readFile(applied(out, "receiver-cold"), "utf8"),
+        ) as AppliedEdit;
+        await editJson<AppliedEdit>(applied(out, "receiver-warm"), (a) => {
+          a.fetches = cold.fetches;
+          a.resources_summary.distinct_fetched = 9;
+        });
+      },
+      ["warm-cache", "leg-class-receiver-warm"],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-cold-cache-file-missing",
+      async (out) => {
+        const dir = join(out, "receiver-cold", "cache", "sha256");
+        await unlink(join(dir, (await readdir(dir))[0]));
+      },
+      ["fresh-cache"],
+    );
+    await scenario(
+      root,
+      good,
+      "freed-p1-not-white",
+      async (out) => {
+        await writeBytes(
+          shot(out, "receiver-cold", 8),
+          await shotPng(EXPECTED, 8, { perturb: [440, 50] }),
+        );
+      },
+      [
+        "freed-draws-default",
+        "receiver-vs-reference",
+        "expected-image-receiver",
+        "warm-cache",
+        "leg-class-receiver-cold",
+      ],
+    );
+    await scenario(
+      root,
+      good,
+      "s3-not-c-pre-fill",
+      async (out) => {
+        await writeBytes(
+          shot(out, "receiver-cold", 8),
+          await shotPng(EXPECTED, 8, { perturb: [320, 40] }),
+        );
+      },
+      [
+        "copy-at-hook",
+        "receiver-vs-reference",
+        "expected-image-receiver",
+        "warm-cache",
+        "leg-class-receiver-cold",
+      ],
+    );
+    await scenario(
+      root,
+      good,
+      "unsupported-receiver-draws-u1-u2",
+      async (out) => {
+        await writeBytes(
+          shot(out, join("unsupported-textures", "receiver"), 4),
+          await shotPng(EXPECTED, 4, { variant: "unsupported" }),
+        );
+      },
+      ["unsupported-regions"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-summary-miscounts",
+      async (out) => {
+        await editJson<{ connections: Array<{ resource_records: number }> }>(
+          join(out, "live-inline", "host", "evidence", "live-summary.json"),
+          (s) => {
+            s.connections[0].resource_records -= 1;
+          },
+        );
+      },
+      ["live-inline"],
+    );
+    await scenario(
+      root,
+      good,
+      "trace-receiver-copy-differs",
+      async (out) => {
+        await appendFile(
+          join(out, "receiver-headless-trace", "recording.rs2"),
+          Buffer.from([0]),
+        );
+      },
+      ["receiver-consumed-stream"],
+    );
+    await scenario(
+      root,
+      good,
+      "trace-receiver-opens-the-fixture",
+      async (out) => {
+        await appendFile(
+          join(out, "receiver-headless-trace", "strace.txt"),
+          '7 10:00:01.000000 openat(AT_FDCWD, "/repo/experiments/render-stream/fixtures/gate2/gate2.tscn", O_RDONLY) = 9\n',
+        );
+      },
+      ["receiver-never-loaded-fixture"],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-script-error",
+      async (out) => {
+        await appendFile(
+          join(out, "sabotage-stale-texture", "receiver", "stdout.log"),
+          "SCRIPT ERROR: Invalid call. Nonexistent function 'apply'.\n",
+        );
+      },
+      ["receiver-typed-clean"],
+    );
+
+    // ---- g2b: leg classes ---------------------------------------------------------------
+    await scenario(
+      root,
+      good,
+      "receiver-cold-reuploads",
+      async (out) => {
+        await editJson<AppliedEdit>(applied(out, "receiver-cold"), (a) => {
+          const u = a.uploads.find(
+            (x) => x.seq === f(6) && x.op === "update",
+          ) as AppliedEdit["uploads"][number];
+          a.uploads.splice(a.uploads.indexOf(u) + 1, 0, {
+            ...u,
+            seq: f(6) + 1,
+          });
+        });
+      },
+      ["leg-class-receiver-cold", "warm-cache"],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-patch-record-hash-differs",
+      async (out) => {
+        await editJson<AppliedEdit>(applied(out, "receiver-patch"), (a) => {
+          tx(a, 10).record_sha256 = H("ab");
+        });
+      },
+      ["leg-class-receiver-patch"],
+    );
+    await scenario(
+      root,
+      good,
+      "receiver-inline-replay-failure",
+      async (out) => {
+        await editJson<AppliedEdit>(applied(out, "receiver-inline"), (a) => {
+          a.status = "replay-failure";
+          a.failure = { seq: CAPTURE_QUIT, reason: "meta-json" };
+        });
+      },
+      ["leg-class-receiver-inline"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-receiver-end-not-seen",
+      async (out) => {
+        await editJson<AppliedEdit>(
+          applied(out, join("live-inline", "receiver")),
+          (a) => {
+            a.end_seen = false;
+          },
+        );
+      },
+      ["leg-class-live-inline"],
+    );
+    await scenario(
+      root,
+      good,
+      "unsupported-receiver-no-unsupported-texture",
+      async (out) => {
+        await editJson<AppliedEdit>(
+          applied(out, join("unsupported-textures", "receiver")),
+          (a) => {
+            a.unsupported = a.unsupported.filter(
+              (u) => u.reason !== "unsupported-texture",
+            );
+          },
+        );
+      },
+      ["leg-class-unsupported-textures"],
+    );
+    await scenario(
+      root,
+      good,
+      "omit-update-mismatches-at-step-7-too",
+      async (out) => {
+        await writeBytes(
+          shot(out, join("sabotage-omit-update", "receiver"), 7),
+          await shotPng(EXPECTED, 7, { perturb: [600, 300] }),
+        );
+      },
+      ["leg-class-sabotage-omit-update"],
+    );
+    await scenario(
+      root,
+      good,
+      "omit-replace-matches-at-step-10",
+      async (out) => {
+        await writeBytes(
+          shot(out, join("sabotage-omit-replace", "receiver"), 10),
+          await shotPng(EXPECTED, 10),
+        );
+      },
+      ["leg-class-sabotage-omit-replace"],
+    );
+    await scenario(
+      root,
+      good,
+      "stale-texture-capture-agrees-with-its-log",
+      async (out) => {
+        // The hook log marks A's update as dropped: the stale table no longer diverges.
+        await editLog(
+          join(
+            out,
+            "sabotage-stale-texture",
+            "capture",
+            "evidence",
+            "resources.jsonl",
+          ),
+          (ls) =>
+            ls.map((l) =>
+              l.op === "texture_2d_update" && l.id === MAIN.ids.A
+                ? { ...l, sabotage: true, omitted: true }
+                : l,
+            ),
+        );
+      },
+      ["leg-class-sabotage-stale-texture"],
+    );
+    await scenario(
+      root,
+      good,
+      "wrong-hash-fails-at-another-seq",
+      async (out) => {
+        await editJson<AppliedEdit>(
+          applied(out, join("sabotage-wrong-hash", "receiver")),
+          (a) => {
+            (a.failure as { seq: number }).seq = f(6) + 1;
+          },
+        );
+      },
+      ["leg-class-sabotage-wrong-hash"],
+    );
+    await scenario(
+      root,
+      good,
+      "spurious-update-not-logged",
+      async (out) => {
+        await editLog(
+          join(
+            out,
+            "sabotage-spurious-update",
+            "capture",
+            "evidence",
+            "resources.jsonl",
+          ),
+          (ls) => ls.filter((l) => l.sabotage !== true),
+        );
+      },
+      ["leg-class-sabotage-spurious-update"],
+    );
+    await scenario(
+      root,
+      good,
+      "reupload-receiver-uploads-once",
+      async (out) => {
+        await cp(
+          applied(out, "receiver-cold"),
+          applied(out, join("sabotage-receiver-reupload", "receiver")),
+        );
+      },
+      ["leg-class-sabotage-receiver-reupload"],
+    );
+    await scenario(
+      root,
+      good,
+      "ignore-cache-receiver-has-a-fresh-cache",
+      async (out) => {
+        await editJson<AppliedEdit>(
+          applied(out, join("sabotage-receiver-ignore-cache", "receiver")),
+          (a) => {
+            a.cache.mode = "fresh";
+          },
+        );
+      },
+      ["leg-class-sabotage-receiver-ignore-cache"],
+    );
+
+    // Every check of a passing tree is failed by some scenario (expected-self-consistent by
+    // the pure cases).
+    const never = report.checks
+      .map((c) => c.id)
+      .filter((id) => id !== "expected-self-consistent" && !targeted.has(id));
     assert(
-      "g2a not run: group-g2a is not-run and the gate fails",
+      "every check and leg class is failed by at least one scenario",
+      never.length === 0,
+      never.join(", "),
+    );
+
+    // Groups not run: their checks are not-run and the gate fails.
+    const g2aOnly = join(root, "g2a-only");
+    await cp(good, g2aOnly, { recursive: true });
+    await writeJson(join(g2aOnly, "legs.json"), {
+      groups_run: ["g2a"],
+      groups_landed: ["g2a", "g2b"],
+    });
+    const onlyA = await run(g2aOnly);
+    assert(
+      "g2b not run: group-g2b is not-run, the g2a checks pass and the gate fails",
+      !onlyA.gate_passed &&
+        onlyA.checks.some(
+          (c) => c.id === "group-g2b" && c.status === "not-run",
+        ) &&
+        onlyA.checks
+          .filter((c) => c.id !== "group-g2b")
+          .map((c) => `${c.id}:${c.status}`)
+          .join(",") === G2A_CHECKS.map((id) => `${id}:pass`).join(","),
+      onlyA.checks.map((c) => `${c.id}:${c.status}`).join(","),
+    );
+    await writeJson(join(g2aOnly, "legs.json"), {
+      groups_run: [],
+      groups_landed: ["g2a", "g2b"],
+    });
+    const notRun = await run(g2aOnly);
+    assert(
+      "nothing run: group-g2a and group-g2b are not-run and the gate fails",
       !notRun.gate_passed &&
-        notRun.checks.some(
-          (c) => c.id === "group-g2a" && c.status === "not-run",
+        ["group-g2a", "group-g2b"].every((id) =>
+          notRun.checks.some((c) => c.id === id && c.status === "not-run"),
         ),
+      notRun.checks.map((c) => `${c.id}:${c.status}`).join(","),
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-#include "rs1_live.h"
+#include "rs_live.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -8,13 +8,13 @@
 #include <utility>
 
 #include "report.h"
-#include "rs1_codec.h"
-#include "rs1_diff.h"
-#include "rs1_publish.h"
+#include "rs2_codec.h"
+#include "rs2_diff.h"
+#include "rs_publish.h"
 #include "rs_ws.h"
 
 namespace grc {
-namespace rs1 {
+namespace rs2 {
 
 namespace {
 
@@ -423,6 +423,10 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
       } else {
         return fail("credit_stage \"" + stage + "\" is not submitted or applied");
       }
+      // render-stream-2.md "Golden vectors": a hello for another version is invalid.
+      if (message.protocol != kProtocol) {
+        return fail("hello.protocol \"" + message.protocol + "\" is not " + kProtocol);
+      }
       break;
     }
     case ControlType::Ack: {
@@ -547,7 +551,8 @@ struct Hub::Conn {
   bool pending = false;
   std::uint64_t pending_since_frame = 0;  // the callback that made the current target pending
   std::uint64_t pending_since_ns = 0;
-  std::optional<Snapshot> stale;  // stale-coalesce: the first missed target since the last send
+  std::optional<rs::Captured> stale;  // stale-coalesce: the first missed target since the last send
+  std::set<std::string> carried;  // G2b2: payload hashes this connection already carried inline
   std::uint64_t stale_frame = 0;
   EndStats stats;
   struct Sent {
@@ -649,7 +654,7 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       c.opened_ns = event.t_ns;
       if (!config_.tap_dir.empty() && make_directories(config_.tap_dir)) {
         const std::string n = std::to_string(c.s.connection);
-        c.tap = std::fopen(path_join(config_.tap_dir, "stream-" + n + ".rs1").c_str(), "wb");
+        c.tap = std::fopen(path_join(config_.tap_dir, "stream-" + n + ".rs2").c_str(), "wb");
         c.log = std::fopen(path_join(config_.tap_dir, "live-" + n + ".jsonl").c_str(), "wb");
       }
       conns_[event.conn] = std::move(conn);
@@ -852,11 +857,59 @@ bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send) 
   return transport_->send_binary(c.id, message);
 }
 
-std::string Hub::send_transaction(Conn &c, const Snapshot &snapshot, std::uint64_t frame,
+std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::uint64_t frame,
                                   std::uint64_t now_ns, std::uint64_t epoch,
                                   std::uint64_t snapshot_ns, bool first,
                                   std::uint64_t stale_from) {
-  Snapshot cur = snapshot;
+  // G2b2: the inline payloads this connection has not carried yet, one resource record per
+  // message, ahead of the transaction that needs them (render-stream-2.md "Live transport").
+  for (const TextureEntry &entry : snapshot.state.textures) {
+    if (entry.kind != TextureKind::Image || entry.status != TextureStatus::Ok || !entry.has_hash ||
+        entry.payload_bytes > template_.resources.inline_max_bytes ||
+        c.carried.count(entry.hash) != 0) {
+      continue;
+    }
+    const auto payload = snapshot.payloads.find(entry.hash);
+    if (payload == snapshot.payloads.end() || payload->second == nullptr) {
+      continue;  // never happens: a Captured holds every ok image's payload
+    }
+    ResourceRecord record;
+    record.hash = entry.hash;
+    record.payload = *payload->second;
+    const std::vector<std::uint8_t> bytes = encode_resource(record);
+    if (bytes.size() > c.s.max_message_bytes) {
+      const std::string detail = "resource " + entry.hash + " is " +
+                                 std::to_string(bytes.size()) + " bytes, the cap is " +
+                                 std::to_string(c.s.max_message_bytes);
+      transport_->send_text(c.id, encode_error("message-too-large", detail));
+      c.s.error_sent = "message-too-large";
+      log_line(c, Line()
+                      .num("frame", frame)
+                      .num("t_us", now_ns / 1000)
+                      .str("event", "error")
+                      .str("reason", "message-too-large")
+                      .str("detail", detail)
+                      .take());
+      host_close(c, 1009, "message-too-large");
+      return "null";
+    }
+    deliver(c, bytes, true);
+    c.carried.insert(entry.hash);
+    ++c.s.resource_records;
+    c.s.resource_bytes += record.payload.size();
+    ++c.stats.resource_records;
+    c.stats.resource_bytes += record.payload.size();
+    c.stats.bytes_total += bytes.size();
+    c.stats.max_record_bytes = std::max<std::uint64_t>(c.stats.max_record_bytes, bytes.size());
+    log_line(c, Line()
+                    .num("frame", frame)
+                    .num("t_us", now_ns / 1000)
+                    .str("event", "resource")
+                    .str("hash", entry.hash)
+                    .num("bytes", record.payload.size())
+                    .take());
+  }
+  Snapshot cur = snapshot.state;
   cur.seq = c.next_seq;
   cur.frame = frame;
   const bool full = !c.has_base || c.resync;
@@ -977,7 +1030,7 @@ void Hub::log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool cre
   log_line(c, line.take());
 }
 
-void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const Snapshot *snapshot,
+void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured *snapshot,
                    std::uint64_t epoch, std::uint64_t snapshot_ns) {
   if (finished_) {
     return;
@@ -1045,7 +1098,7 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const Snapshot *sn
           config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
       if (c.credit && c.stale.has_value()) {
         // stale-coalesce: the first missed target goes out instead of the newest state.
-        const Snapshot stale = std::move(*c.stale);
+        const rs::Captured stale = std::move(*c.stale);
         c.stale.reset();
         sent_json = send_transaction(c, stale, frame, now_ns, epoch, snapshot_ns, false,
                                      c.stale_frame);
@@ -1204,6 +1257,8 @@ std::string Hub::summary_json() const {
     json.field("max_queued_bytes", static_cast<int64_t>(s.max_queued_bytes));
     json.field("max_message_sent", static_cast<int64_t>(s.max_message_sent));
     json.field("bytes_sent", static_cast<int64_t>(s.bytes_sent));
+    json.field("resource_records", static_cast<int64_t>(s.resource_records));
+    json.field("resource_bytes", static_cast<int64_t>(s.resource_bytes));
     json.field("resyncs", static_cast<int64_t>(s.resyncs));
     json.field("credits", static_cast<int64_t>(s.credits));
     json.key("acks").object_begin();
@@ -1235,5 +1290,5 @@ std::string Hub::summary_json() const {
   return json.take();
 }
 
-}  // namespace rs1
+}  // namespace rs2
 }  // namespace grc

@@ -631,14 +631,14 @@ bool streaming() { return rs::mirror_enabled(); }
 
 rs::Mirror &mirror() { return rs::mirror_instance(); }
 
-rs1::Xform to_xform(const Transform2D &t) {
+rs2::Xform to_xform(const Transform2D &t) {
   return {t.columns[0].x, t.columns[0].y, t.columns[1].x, t.columns[1].y, t.columns[2].x,
           t.columns[2].y};
 }
 
-rs1::Color4 to_color(const Color &c) { return {c.r, c.g, c.b, c.a}; }
+rs2::Color4 to_color(const Color &c) { return {c.r, c.g, c.b, c.a}; }
 
-rs1::Rect4 to_rect(const Rect2 &r) { return {r.position.x, r.position.y, r.size.x, r.size.y}; }
+rs2::Rect4 to_rect(const Rect2 &r) { return {r.position.x, r.position.y, r.size.x, r.size.y}; }
 
 // Every hooked draw op except add_rect: recorded as an unsupported command.
 void tap_unsupported(RID item, const char *op) {
@@ -745,7 +745,10 @@ rs::ResourceLog &resources() { return rs::resource_log(); }
 
 // Q3 "Copy", steps 1-3. Nothing is copied for an unreadable Image, a format
 // outside GRC_RESOURCE_FORMATS or a payload over GRC_RESOURCE_MAX_PAYLOAD_BYTES.
-rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image) {
+// The GRT1 bytes go to `bytes` (G2b2: the texture mirror keeps them); null
+// unless the copy is "ok".
+rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::PayloadPtr *bytes) {
+  bytes->reset();
   rs::PayloadCopy copy;
   copy.format = facts.format;
   copy.width = facts.width;
@@ -782,18 +785,31 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image) {
     return copy;
   }
   const uint64_t t0 = now_ns();
-  std::vector<uint8_t> payload;
-  rs::payload_header(meta, static_cast<uint64_t>(facts.data_size), &payload);
-  payload.insert(payload.end(), data, data + facts.data_size);
+  auto payload = std::make_shared<rs::PayloadBytes>();
+  rs::payload_header(meta, static_cast<uint64_t>(facts.data_size), payload.get());
+  payload->insert(payload->end(), data, data + facts.data_size);
   const uint64_t t1 = now_ns();
-  copy.hash = sha256_hex(payload.data(), payload.size());
+  copy.hash = sha256_hex(payload->data(), payload->size());
   const uint64_t t2 = now_ns();
   copy.status = "ok";
-  copy.payload_bytes = static_cast<int64_t>(payload.size());
+  copy.payload_bytes = static_cast<int64_t>(payload->size());
   copy.copy_ns = static_cast<int64_t>(t1 - t0);
   copy.hash_ns = static_cast<int64_t>(t2 - t1);
+  *bytes = std::move(payload);
   return copy;
 }
+
+// Whether the omit-op sabotage drops this texture call. The hook then leaves it
+// out of the mirror and of the hook log's registry alike (the log still writes
+// the line, marked omitted), so the two stay in agreement and the sabotage
+// shows as pixels, not as texture-log-divergence (gate2-design.md G2b2).
+bool omitted(const char *op) { return streaming() && mirror().omits(op, current_frame()); }
+
+// The mirror and the hook log assign texture ids independently, each under its own lock, from
+// the same sequence of identity calls (gate2-design.md D2). Loader threads create textures too, so
+// every texture identity tap holds this lock across both calls: the two see the calls in one
+// order and assign the same ids (`texture-versions-current` compares them).
+std::mutex g_texture_order;
 
 // --- gate -1 hooks -----------------------------------------------------------
 
@@ -824,7 +840,11 @@ void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, 
 void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture, bool tile,
                            const Color *modulate, bool transpose) {
   bump(kAddTextureRect);
-  tap_unsupported(item, "canvas_item_add_texture_rect");
+  if (streaming() && rect != nullptr && modulate != nullptr) {
+    // A mirror tap since G2b2 (gate2-design.md Q3): the raw arguments, flips included.
+    mirror().add_texture_rect(item.id, to_rect(*rect), texture.id, tile, to_color(*modulate),
+                              transpose, current_frame());
+  }
   if (rect != nullptr && modulate != nullptr) {
     // Full capture since calibrator 5 (gate2-design.md Q2): the raw arguments,
     // negative sizes (flips) included.
@@ -846,7 +866,10 @@ void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID t
                                   const Rect2 *source, const Color *modulate, bool transpose,
                                   bool clip_uv) {
   bump(kAddTextureRectRegion);
-  tap_unsupported(item, "canvas_item_add_texture_rect_region");
+  if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
+    mirror().add_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
+                                     to_color(*modulate), transpose, clip_uv, current_frame());
+  }
   if (rect != nullptr && source != nullptr && modulate != nullptr) {
     TextureRectRegionKey key;
     zero(&key);
@@ -911,7 +934,8 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   // engine sees the call (a worker-thread create is initialized later, from
   // whatever the Image then holds).
   const bool logging = resources().active();
-  const rs::PayloadCopy copy = logging ? copy_payload(facts, image) : rs::PayloadCopy();
+  rs::PayloadPtr bytes;
+  const rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes) : rs::PayloadCopy();
   const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, image);
   capture.rid = result.id;
   {
@@ -921,7 +945,12 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
     }
   }
   if (logging) {
-    resources().texture_2d_create(tap_context(), result.id, copy);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const bool omit = omitted("texture_2d_create");
+    if (streaming() && !omit) {
+      mirror().texture_2d_create(result.id, copy, std::move(bytes), current_frame());
+    }
+    resources().texture_2d_create(tap_context(), result.id, copy, omit);
   }
   return result;
 }
@@ -937,23 +966,33 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
     }
   }
   const bool logging = resources().active();
-  const rs::PayloadCopy copy = logging ? copy_payload(facts, image) : rs::PayloadCopy();
+  rs::PayloadPtr bytes;
+  const rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes) : rs::PayloadCopy();
   original<FnTexture2dUpdate>(kTexture2dUpdate)(self, texture, image, layer);
   if (logging) {
-    resources().texture_2d_update(tap_context(), texture.id, copy, layer);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const bool omit = omitted("texture_2d_update");
+    if (streaming() && !omit) {
+      mirror().texture_2d_update(texture.id, copy, std::move(bytes), layer, current_frame());
+    }
+    resources().texture_2d_update(tap_context(), texture.id, copy, layer, omit);
   }
 }
 
 void hook_free(void *self, RID rid) {
   bump(kFree);
   log_entry(&g_frees, rids(rid.id));
-  if (streaming()) {
-    // Before forwarding, so the mapping is gone before the engine can hand the
-    // value out again.
-    mirror().free_rid(rid.id, current_frame());
+  {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const bool omit = omitted("free");
+    if (streaming()) {
+      // Before forwarding, so the mapping is gone before the engine can hand the
+      // value out again. (The mirror applies omit-op `free` itself.)
+      mirror().free_rid(rid.id, current_frame());
+    }
+    // Likewise for the texture hook log, which logs only RIDs it knows as textures.
+    resources().free_rid(tap_context(), rid.id, omit);
   }
-  // Likewise for the texture hook log, which logs only RIDs it knows as textures.
-  resources().free_rid(tap_context(), rid.id);
   original<FnFree>(kFree)(self, rid);
 }
 
@@ -1405,16 +1444,22 @@ void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
 
 // --- calibrator 5 hooks (gate2-design.md Q2) -----------------------------------
 //
-// On render-stream/1 (G2a) these are counted, captured into counters.json and
-// written to the texture hook log; they make no mirror tap. In particular
-// canvas_item_add_lcd_texture_rect_region adds no unsupported command until /2
-// declares it in observed_unsupported_ops.
+// Counted, captured into counters.json and written to the texture hook log
+// (G2a); since G2b2 (render-stream/2) the texture, filter and repeat hooks are
+// mirror taps too, and canvas_item_add_lcd_texture_rect_region is an
+// unsupported command (/2 declares it in observed_unsupported_ops). The canvas
+// texture hooks stay count-and-log until G2d.
 
 RID hook_texture_2d_placeholder_create(void *self) {
   bump(kTexture2dPlaceholderCreate);
   const RID result = original<FnCreate>(kTexture2dPlaceholderCreate)(self);
   log_entry(&g_placeholder_creates, rids(result.id));
-  resources().texture_2d_placeholder_create(tap_context(), result.id);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const bool omit = omitted("texture_2d_placeholder_create");
+  if (streaming() && !omit) {
+    mirror().texture_2d_placeholder_create(result.id, current_frame());
+  }
+  resources().texture_2d_placeholder_create(tap_context(), result.id, omit);
   return result;
 }
 
@@ -1422,12 +1467,20 @@ void hook_texture_replace(void *self, RID texture, RID by_texture) {
   bump(kTextureReplace);
   log_entry(&g_texture_replaces, rids(texture.id, by_texture.id));
   original<FnSetMaterial>(kTextureReplace)(self, texture, by_texture);
-  resources().texture_replace(tap_context(), texture.id, by_texture.id);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const bool omit = omitted("texture_replace");
+  if (streaming() && !omit) {
+    mirror().texture_replace(texture.id, by_texture.id, current_frame());
+  }
+  resources().texture_replace(tap_context(), texture.id, by_texture.id, omit);
 }
 
 void hook_viewport_set_default_texture_filter(void *self, RID viewport, int32_t filter) {
   bump(kViewportSetDefaultTextureFilter);
   log_entry(&g_viewport_texture_filters, item_value(viewport, filter));
+  if (streaming()) {
+    mirror().viewport_set_texture_filter(viewport.id, filter, current_frame());
+  }
   original<FnRidEnum>(kViewportSetDefaultTextureFilter)(self, viewport, filter);
   resources().viewport_set_default_texture_filter(tap_context(), viewport.id, filter);
 }
@@ -1435,6 +1488,9 @@ void hook_viewport_set_default_texture_filter(void *self, RID viewport, int32_t 
 void hook_viewport_set_default_texture_repeat(void *self, RID viewport, int32_t repeat) {
   bump(kViewportSetDefaultTextureRepeat);
   log_entry(&g_viewport_texture_repeats, item_value(viewport, repeat));
+  if (streaming()) {
+    mirror().viewport_set_texture_repeat(viewport.id, repeat, current_frame());
+  }
   original<FnRidEnum>(kViewportSetDefaultTextureRepeat)(self, viewport, repeat);
   resources().viewport_set_default_texture_repeat(tap_context(), viewport.id, repeat);
 }
@@ -1478,6 +1534,9 @@ void hook_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int3
 void hook_set_default_texture_filter(void *self, RID item, int32_t filter) {
   bump(kSetDefaultTextureFilter);
   log_entry(&g_item_texture_filters, item_value(item, filter));
+  if (streaming()) {
+    mirror().set_texture_filter(item.id, filter, current_frame());
+  }
   original<FnRidEnum>(kSetDefaultTextureFilter)(self, item, filter);
   resources().canvas_item_set_default_texture_filter(tap_context(), item.id, filter);
 }
@@ -1485,6 +1544,9 @@ void hook_set_default_texture_filter(void *self, RID item, int32_t filter) {
 void hook_set_default_texture_repeat(void *self, RID item, int32_t repeat) {
   bump(kSetDefaultTextureRepeat);
   log_entry(&g_item_texture_repeats, item_value(item, repeat));
+  if (streaming()) {
+    mirror().set_texture_repeat(item.id, repeat, current_frame());
+  }
   original<FnRidEnum>(kSetDefaultTextureRepeat)(self, item, repeat);
   resources().canvas_item_set_default_texture_repeat(tap_context(), item.id, repeat);
 }
@@ -1492,6 +1554,7 @@ void hook_set_default_texture_repeat(void *self, RID item, int32_t repeat) {
 void hook_add_lcd_texture_rect_region(void *self, RID item, const Rect2 *rect, RID texture,
                                       const Rect2 *source, const Color *modulate) {
   bump(kAddLcdTextureRectRegion);
+  tap_unsupported(item, "canvas_item_add_lcd_texture_rect_region");
   if (rect != nullptr && source != nullptr && modulate != nullptr) {
     LcdRectKey key;
     zero(&key);

@@ -2271,6 +2271,7 @@ export function validateRecording(data: Uint8Array): string[] {
   // texture entry naming the hash is known. Local to this call: validateRecording() may run
   // repeatedly (e.g. once per golden vector) and must not leak state between calls.
   const resourcePayloadShapes = new Map<string, DecodedTexturePayload>();
+  const resourcePayloadLengths = new Map<string, number>();
   let endSeen = false;
 
   for (let i = 1; i < split.records.length; i++) {
@@ -2317,6 +2318,8 @@ export function validateRecording(data: Uint8Array): string[] {
       // resource-payload is checked once every texture entry naming this hash is known: deferred
       // to the per-transaction texture pass below, via a stored decoded shape.
       resourcePayloadShapes.set(meta.hash, decodedPayload);
+      // payload_bytes is the whole payload's length (render-stream-2.md "Texture"), not its data.
+      resourcePayloadLengths.set(meta.hash, block.u8_bytes);
       continue;
     }
 
@@ -2450,7 +2453,7 @@ export function validateRecording(data: Uint8Array): string[] {
             shape.width !== t.width ||
             shape.height !== t.height ||
             shape.mipmaps !== t.mipmaps ||
-            shape.data.length !== t.payload_bytes)
+            (resourcePayloadLengths.get(t.hash) ?? -1) !== t.payload_bytes)
         ) {
           return [
             `resource-payload: record at offset ${offset}: the resource for hash ${t.hash} decodes as ${shape.format} ${shape.width}x${shape.height}, texture ${t.id} declares ${t.format} ${t.width}x${t.height}`,

@@ -5,12 +5,15 @@
 #include <cstdio>
 #include <iterator>
 #include <map>
+#include <set>
 #include <utility>
+
+#include "rs_texture_payload.h"
 
 namespace grc {
 namespace rs {
 
-using namespace rs1;  // NOLINT: the wire types are the mirror's own types
+using namespace rs2;  // NOLINT: the wire types are the mirror's own types
 
 namespace {
 
@@ -47,6 +50,11 @@ void Mirror::reset() {
   canvas_by_rid_.clear();
   item_by_rid_.clear();
   untracked_items_.clear();
+  textures_.clear();
+  texture_by_rid_.clear();
+  next_texture_id_ = 1;
+  default_filter_ = Filter::Linear;
+  default_repeat_ = Repeat::Disabled;
   failures_.clear();
   session_unsupported_.clear();
   stats_ = MirrorStats();
@@ -326,7 +334,17 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     ++epoch_;
     return;
   }
-  ++stats_.free_unknown;  // textures, meshes, materials, ... share this slot
+  const auto texture_it = texture_by_rid_.find(rid);
+  if (texture_it != texture_by_rid_.end()) {
+    // gate2-design.md Q3: a texture a command still names becomes a `freed`
+    // tombstone (version unchanged, payload released); otherwise its id
+    // leaves the table.
+    ++epoch_;
+    const std::uint32_t id = texture_it->second;
+    retire_texture(id);
+    return;
+  }
+  ++stats_.free_unknown;  // meshes, materials, ... share this slot
 }
 
 // --- viewport -------------------------------------------------------------------
@@ -554,19 +572,12 @@ void Mirror::add_rect(std::uint64_t rid, const Rect4 &rect, const Color4 &color,
   if (item == nullptr) {
     return;
   }
-  if (item->state.commands.size() >= kMaxCommandsPerItem) {
-    ++stats_.dropped_capacity;
-    fail(FailureReason::MirrorCapacity, "commands > " + u64(kMaxCommandsPerItem) +
-                                            " item=" + u64(item->state.id) + " frame=" + u64(frame));
-    return;
-  }
   Command command;
   command.kind = CommandKind::AddRect;
   command.antialiased = antialiased;
   command.rect = rect;
   command.color = color;
-  item->state.commands.push_back(std::move(command));
-  ++item->state.content_version;
+  push_command(item, std::move(command), frame);
 }
 
 void Mirror::add_unsupported(std::uint64_t rid, const char *op, std::uint64_t frame) {
@@ -578,17 +589,412 @@ void Mirror::add_unsupported(std::uint64_t rid, const char *op, std::uint64_t fr
   if (item == nullptr) {
     return;
   }
+  Command command;
+  command.kind = CommandKind::Unsupported;
+  command.name = op;
+  command.unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::push_command(Item *item, Command command, std::uint64_t frame) {
   if (item->state.commands.size() >= kMaxCommandsPerItem) {
     ++stats_.dropped_capacity;
     fail(FailureReason::MirrorCapacity, "commands > " + u64(kMaxCommandsPerItem) +
                                             " item=" + u64(item->state.id) + " frame=" + u64(frame));
     return;
   }
-  Command command;
-  command.kind = CommandKind::Unsupported;
-  command.name = op;
   item->state.commands.push_back(std::move(command));
   ++item->state.content_version;
+}
+
+// --- textures (G2b2) ----------------------------------------------------------------
+
+namespace {
+
+bool reason_from_text(const std::string &text, TextureReason *out) {
+  static const std::pair<const char *, TextureReason> kReasons[] = {
+      {"unsupported-format", TextureReason::UnsupportedFormat},
+      {"payload-too-large", TextureReason::PayloadTooLarge},
+      {"payload-unavailable", TextureReason::PayloadUnavailable},
+      {"update-shape-mismatch", TextureReason::UpdateShapeMismatch},
+      {"layered-update", TextureReason::LayeredUpdate},
+      {"unknown-texture", TextureReason::UnknownTexture},
+      {"canvas-texture-channel", TextureReason::CanvasTextureChannel},
+  };
+  for (const auto &entry : kReasons) {
+    if (text == entry.first) {
+      *out = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+// The hook log's shape rule (rs_resource_log.cpp same_shape), so both registries accept and
+// refuse the same updates.
+bool same_shape(const PayloadCopy &a, const PayloadCopy &b) {
+  return a.format == b.format && a.width == b.width && a.height == b.height &&
+         a.mipmaps_known == b.mipmaps_known && a.mipmaps == b.mipmaps && a.format >= 0 &&
+         a.width >= 0 && a.height >= 0;
+}
+
+// The status and payload a copy gives an image texture.
+void take_copy(const PayloadCopy &copy, PayloadPtr bytes, TextureStatus *status, bool *has_reason,
+               TextureReason *reason, PayloadPtr *held) {
+  if (copy.status == "ok" && bytes != nullptr) {
+    *status = TextureStatus::Ok;
+    *has_reason = false;
+    *held = std::move(bytes);
+    return;
+  }
+  *status = TextureStatus::Unsupported;
+  *has_reason = true;
+  if (!reason_from_text(copy.reason, reason)) {
+    *reason = TextureReason::PayloadUnavailable;
+  }
+  held->reset();
+}
+
+}  // namespace
+
+bool Mirror::omits(const char *op, std::uint64_t frame) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return omit_op_matches(op, frame);
+}
+
+Mirror::Texture *Mirror::find_texture(std::uint64_t rid) {
+  const auto it = texture_by_rid_.find(rid);
+  return it == texture_by_rid_.end() ? nullptr : &textures_.at(it->second);
+}
+
+bool Mirror::texture_ref(std::uint64_t rid, bool *has_tex, std::uint32_t *tex) const {
+  if (rid == 0) {
+    *has_tex = false;
+    *tex = 0;
+    return true;
+  }
+  const auto it = texture_by_rid_.find(rid);
+  if (it == texture_by_rid_.end()) {
+    return false;
+  }
+  *has_tex = true;
+  *tex = it->second;
+  return true;
+}
+
+bool Mirror::texture_referenced(std::uint32_t id) const {
+  for (const auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if ((command.kind == CommandKind::AddTextureRect ||
+           command.kind == CommandKind::AddTextureRectRegion) &&
+          command.has_tex && command.tex == id) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void Mirror::retire_texture(std::uint32_t id) {
+  const auto it = textures_.find(id);
+  if (it == textures_.end()) {
+    return;
+  }
+  Texture &texture = it->second;
+  if (texture.rid != 0) {
+    texture_by_rid_.erase(texture.rid);
+    texture.rid = 0;
+  }
+  if (!texture_referenced(id)) {
+    textures_.erase(it);
+    return;
+  }
+  // D11: a tombstone keeps its id and version; a receiver draws its commands with RID().
+  texture.status = TextureStatus::Freed;
+  texture.has_reason = false;
+  texture.bytes.reset();
+}
+
+TextureEntry Mirror::wire_entry(const Texture &texture) {
+  TextureEntry out;
+  out.id = texture.id;
+  out.kind = texture.kind;
+  out.status = texture.status;
+  out.version = texture.version;
+  if (texture.status == TextureStatus::Freed || texture.kind != TextureKind::Image) {
+    // render-stream-2.md "Texture" field table: placeholders and tombstones carry no shape.
+    return out;
+  }
+  const PayloadCopy &copy = texture.copy;
+  const char *format = image_format_name(copy.format);
+  out.has_format = format != nullptr;
+  out.format = format != nullptr ? format : "";
+  out.width = static_cast<std::int32_t>(std::max<std::int64_t>(copy.width, 0));
+  out.height = static_cast<std::int32_t>(std::max<std::int64_t>(copy.height, 0));
+  out.mipmaps = copy.mipmaps_known && copy.mipmaps;
+  if (texture.status == TextureStatus::Ok) {
+    out.has_hash = true;
+    out.hash = copy.hash;
+    out.payload_bytes = static_cast<std::uint64_t>(std::max<std::int64_t>(copy.payload_bytes, 0));
+  } else {
+    out.has_reason = texture.has_reason;
+    out.reason = texture.reason;
+  }
+  return out;
+}
+
+void Mirror::add_texture_rect(std::uint64_t rid, const Rect4 &rect, std::uint64_t texture,
+                              bool tile, const Color4 &modulate, bool transpose,
+                              std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_texture_rect";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  Item *item = item_for(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  if (!texture_ref(texture, &command.has_tex, &command.tex)) {
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+  } else {
+    command.kind = CommandKind::AddTextureRect;
+    command.tile = tile;
+    command.transpose = transpose;
+    command.rect = rect;
+    command.modulate = modulate;
+  }
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::uint64_t texture,
+                                     const Rect4 &src, const Color4 &modulate, bool transpose,
+                                     bool clip_uv, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_texture_rect_region";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  Item *item = item_for(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  if (!texture_ref(texture, &command.has_tex, &command.tex)) {
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+  } else {
+    command.kind = CommandKind::AddTextureRectRegion;
+    command.transpose = transpose;
+    command.clip_uv = clip_uv;
+    command.rect = rect;
+    command.src = src;
+    command.modulate = modulate;
+  }
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::set_texture_filter(std::uint64_t rid, std::int32_t filter, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_set_default_texture_filter";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  Item *item = item_for(rid, kOp, frame);
+  if (item == nullptr || filter < 0 ||
+      filter > static_cast<std::int32_t>(Filter::LinearMipmapsAnisotropic)) {
+    return;
+  }
+  item->state.texture_filter = static_cast<Filter>(filter);
+}
+
+void Mirror::set_texture_repeat(std::uint64_t rid, std::int32_t repeat, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_set_default_texture_repeat";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  Item *item = item_for(rid, kOp, frame);
+  if (item == nullptr || repeat < 0 || repeat > static_cast<std::int32_t>(Repeat::Mirror)) {
+    return;
+  }
+  item->state.texture_repeat = static_cast<Repeat>(repeat);
+}
+
+void Mirror::set_texture_defaults(Filter filter, Repeat repeat) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  if (filter != Filter::Default) {
+    default_filter_ = filter;
+  }
+  if (repeat != Repeat::Default) {
+    default_repeat_ = repeat;
+  }
+}
+
+void Mirror::viewport_set_texture_filter(std::uint64_t viewport, std::int32_t filter,
+                                         std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_default_canvas_item_texture_filter";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
+    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+    return;
+  }
+  if (filter <= 0 || filter > static_cast<std::int32_t>(Filter::LinearMipmapsAnisotropic)) {
+    return;
+  }
+  default_filter_ = static_cast<Filter>(filter);
+}
+
+void Mirror::viewport_set_texture_repeat(std::uint64_t viewport, std::int32_t repeat,
+                                         std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_default_canvas_item_texture_repeat";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
+    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+    return;
+  }
+  if (repeat <= 0 || repeat > static_cast<std::int32_t>(Repeat::Mirror)) {
+    return;
+  }
+  default_repeat_ = static_cast<Repeat>(repeat);
+}
+
+void Mirror::texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
+                               std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("texture_2d_create", frame)) {
+    return;
+  }
+  const auto stale = texture_by_rid_.find(rid);
+  if (stale != texture_by_rid_.end()) {
+    retire_texture(stale->second);  // a recycled RID value: the old id is gone
+  }
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.rid = rid;
+  texture.kind = TextureKind::Image;
+  texture.version = 1;
+  texture.copy = copy;
+  take_copy(copy, std::move(bytes), &texture.status, &texture.has_reason, &texture.reason,
+            &texture.bytes);
+  texture_by_rid_[rid] = texture.id;
+  textures_.emplace(texture.id, std::move(texture));
+}
+
+void Mirror::texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("texture_2d_placeholder_create", frame)) {
+    return;
+  }
+  const auto stale = texture_by_rid_.find(rid);
+  if (stale != texture_by_rid_.end()) {
+    retire_texture(stale->second);
+  }
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.rid = rid;
+  texture.kind = TextureKind::Placeholder;
+  texture.status = TextureStatus::Ok;
+  texture.version = 1;
+  texture_by_rid_[rid] = texture.id;
+  textures_.emplace(texture.id, std::move(texture));
+}
+
+void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
+                               int layer, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (omit_op_matches("texture_2d_update", frame)) {
+    ++stats_.dropped_omit_op;
+    return;
+  }
+  Texture *texture = find_texture(rid);
+  if (texture == nullptr) {
+    // An update to a texture the capture never saw created changes nothing the stream shows.
+    ++stats_.texture_update_unknown;
+    return;
+  }
+  ++epoch_;
+  texture->version += 1;
+  if (layer != 0) {
+    texture->status = TextureStatus::Unsupported;
+    texture->has_reason = true;
+    texture->reason = TextureReason::LayeredUpdate;
+    texture->bytes.reset();
+  } else if (texture->kind != TextureKind::Image || !same_shape(texture->copy, copy)) {
+    texture->status = TextureStatus::Unsupported;
+    texture->has_reason = true;
+    texture->reason = TextureReason::UpdateShapeMismatch;
+    texture->bytes.reset();
+  } else {
+    texture->copy = copy;
+    take_copy(copy, std::move(bytes), &texture->status, &texture->has_reason, &texture->reason,
+              &texture->bytes);
+  }
+}
+
+void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (omit_op_matches("texture_replace", frame)) {
+    ++stats_.dropped_omit_op;
+    return;
+  }
+  if (t_rid == b_rid) {
+    return;  // a no-op in the engine (texture_storage.cpp:1402-1404)
+  }
+  Texture *t = find_texture(t_rid);
+  Texture *b = find_texture(b_rid);
+  if (t == nullptr && b == nullptr) {
+    return;
+  }
+  ++epoch_;
+  if (t != nullptr) {
+    t->version += 1;
+    if (b != nullptr) {
+      t->kind = b->kind;
+      t->status = b->status;
+      t->has_reason = b->has_reason;
+      t->reason = b->reason;
+      t->copy = b->copy;
+      t->bytes = b->bytes;
+    } else {
+      t->status = TextureStatus::Unsupported;
+      t->has_reason = true;
+      t->reason = TextureReason::UnknownTexture;
+      t->bytes.reset();
+    }
+  }
+  if (b != nullptr) {
+    // The storage frees the by-texture itself (texture_storage.cpp:1434): its id leaves the
+    // table (or stays as a tombstone while a command still names it).
+    retire_texture(b->id);
+  }
+}
+
+std::uint64_t Mirror::spurious_texture_update(std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  (void)frame;
+  for (auto &entry : textures_) {
+    Texture &texture = entry.second;
+    if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
+        texture.rid != 0 && texture.bytes != nullptr) {
+      ++epoch_;
+      texture.version += 1;
+      texture.bytes = std::make_shared<const PayloadBytes>(*texture.bytes);
+      return texture.rid;
+    }
+  }
+  return 0;
 }
 
 // --- publication ----------------------------------------------------------------
@@ -631,12 +1037,15 @@ void Mirror::find_ties(const std::vector<std::uint32_t> &children,
   }
 }
 
-Snapshot Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) const {
+Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Snapshot out;
+  Captured captured;
+  Snapshot &out = captured.state;
   out.seq = seq;
   out.frame = frame;
   out.failures = failures_;
+  out.default_texture_filter = default_filter_;
+  out.default_texture_repeat = default_repeat_;
 
   // Session-level entries first: degenerate-host-size (observed at session
   // start, so always the first one -- render-stream-1.md "Unsupported
@@ -652,34 +1061,69 @@ Snapshot Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) const {
   out.unsupported.insert(out.unsupported.end(), session_unsupported_.begin(),
                          session_unsupported_.end());
 
-  // Item-level entries: unsupported-op once per distinct command name,
-  // unsupported-state for a material, draw-index-tie per container; then
-  // ordered by item id, then op (byte order).
+  // A tombstone leaves the table at the first snapshot in which nothing names it
+  // (gate2-design.md Q3).
+  std::set<std::uint32_t> referenced;
+  for (const auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if ((command.kind == CommandKind::AddTextureRect ||
+           command.kind == CommandKind::AddTextureRectRegion) &&
+          command.has_tex) {
+        referenced.insert(command.tex);
+      }
+    }
+  }
+  for (auto it = textures_.begin(); it != textures_.end();) {
+    if (it->second.status == TextureStatus::Freed && referenced.count(it->first) == 0) {
+      it = textures_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  // Item-level entries (render-stream-2.md "Item-level unsupported entries"): one per distinct
+  // (op, reason) pair of each item -- an unsupported command's name and reason, a texture draw
+  // naming an unsupported texture (unsupported-texture), a material (unsupported-state) -- and
+  // draw-index-tie per container; then ordered by item id, then op, then reason (byte order).
   std::vector<UnsupportedRef> item_level;
+  const auto add_item_entry = [&item_level](std::uint32_t item, const std::string &op,
+                                            UnsupportedReason reason) {
+    for (const UnsupportedRef &ref : item_level) {
+      if (ref.has_item && ref.item == item && ref.op == op && ref.reason == reason) {
+        return;
+      }
+    }
+    UnsupportedRef ref;
+    ref.op = op;
+    ref.has_item = true;
+    ref.item = item;
+    ref.reason = reason;
+    item_level.push_back(std::move(ref));
+  };
   for (const auto &entry : items_) {
     const Item &item = entry.second;
     const ItemState &state = item.state;
-    std::vector<std::string> seen;
     for (const Command &command : state.commands) {
-      if (command.kind != CommandKind::Unsupported ||
-          std::find(seen.begin(), seen.end(), command.name) != seen.end()) {
-        continue;
+      if (command.kind == CommandKind::Unsupported) {
+        add_item_entry(state.id, command.name,
+                       command.unsupported_reason == UnsupportedCmdReason::UnknownTexture
+                           ? UnsupportedReason::UnknownTexture
+                           : UnsupportedReason::UnsupportedOp);
+      } else if ((command.kind == CommandKind::AddTextureRect ||
+                  command.kind == CommandKind::AddTextureRectRegion) &&
+                 command.has_tex) {
+        const auto texture = textures_.find(command.tex);
+        if (texture != textures_.end() && texture->second.status == TextureStatus::Unsupported) {
+          add_item_entry(state.id,
+                         command.kind == CommandKind::AddTextureRect
+                             ? "canvas_item_add_texture_rect"
+                             : "canvas_item_add_texture_rect_region",
+                         UnsupportedReason::UnsupportedTexture);
+        }
       }
-      seen.push_back(command.name);
-      UnsupportedRef ref;
-      ref.op = command.name;
-      ref.has_item = true;
-      ref.item = state.id;
-      ref.reason = UnsupportedReason::UnsupportedOp;
-      item_level.push_back(std::move(ref));
     }
     if (item.unsupported_state) {
-      UnsupportedRef ref;
-      ref.op = "canvas_item_set_material";
-      ref.has_item = true;
-      ref.item = state.id;
-      ref.reason = UnsupportedReason::UnsupportedState;
-      item_level.push_back(std::move(ref));
+      add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnsupportedState);
     }
     find_ties(state.children, &item_level);
   }
@@ -688,7 +1132,13 @@ Snapshot Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) const {
   }
   std::sort(item_level.begin(), item_level.end(),
             [](const UnsupportedRef &a, const UnsupportedRef &b) {
-              return a.item != b.item ? a.item < b.item : a.op < b.op;
+              if (a.item != b.item) {
+                return a.item < b.item;
+              }
+              if (a.op != b.op) {
+                return a.op < b.op;
+              }
+              return std::string(to_wire(a.reason)) < std::string(to_wire(b.reason));
             });
   out.unsupported.insert(out.unsupported.end(), std::make_move_iterator(item_level.begin()),
                          std::make_move_iterator(item_level.end()));
@@ -701,7 +1151,16 @@ Snapshot Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) const {
   for (const auto &entry : items_) {
     out.items.push_back(entry.second.state);
   }
-  return out;
+  out.textures.reserve(textures_.size());
+  for (const auto &entry : textures_) {
+    const Texture &texture = entry.second;
+    out.textures.push_back(wire_entry(texture));
+    if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
+        texture.bytes != nullptr) {
+      captured.payloads.emplace(texture.copy.hash, texture.bytes);
+    }
+  }
+  return captured;
 }
 
 MirrorStats Mirror::stats() const {
@@ -709,6 +1168,14 @@ MirrorStats Mirror::stats() const {
   MirrorStats out = stats_;
   out.live_canvases = canvases_.size();
   out.live_items = items_.size();
+  out.live_textures = textures_.size();
+  std::set<std::string> hashes;
+  for (const auto &entry : textures_) {
+    const Texture &texture = entry.second;
+    if (texture.bytes != nullptr && hashes.insert(texture.copy.hash).second) {
+      out.texture_payload_bytes += texture.bytes->size();
+    }
+  }
   return out;
 }
 
@@ -756,7 +1223,7 @@ void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame) {
 
 std::uint64_t mirror_epoch() { return mirror_instance().epoch(); }
 
-Snapshot mirror_snapshot(std::uint64_t seq, std::uint64_t frame) {
+Captured mirror_snapshot(std::uint64_t seq, std::uint64_t frame) {
   return mirror_instance().snapshot(seq, frame);
 }
 

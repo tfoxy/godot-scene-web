@@ -10,11 +10,14 @@
 //    skipped without a receiver, session.sabotage ignored, and draw-index ties (a tie whose
 //    members paint disjoint pixels is harmless; any other is unsupported).
 // 2. Evidence-tree scenarios: a fabricated passing tree for the whole runner layout (recordings
-//    encoded in render-stream/1 by rs1-test-encoder.ts, PNGs synthesized from the timeline), then one
-//    perturbation per failure mode. Each scenario runs the real runGate0 and asserts the verdict
-//    of the checks and leg classes it targets.
-// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-1/corrupt-meta.rs1 from
-//    golden-1/patch.rs1 byte for byte; joinSettleSeqs fails on a missing frame.
+//    encoded in render-stream/2 by rs2-test-encoder.ts, each texture table holding the engine's
+//    own unreferenced hue strip as every real gate 0 capture's does; applied.json
+//    render-stream-receiver-applied/3; PNGs synthesized from the timeline), then one perturbation
+//    per failure mode. Each scenario runs the real runGate0 and asserts the verdict of the checks
+//    and leg classes it targets.
+// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-2/corrupt-meta.rs2 from
+//    golden-2/patch.rs2 byte for byte and finds its target by seq when resource records precede
+//    it; summarizeRecording skips resource records; joinSettleSeqs fails on a missing frame.
 //
 // Exits non-zero if any assertion fails.
 
@@ -48,17 +51,21 @@ import {
   type Transaction,
 } from "../lib/gate0-checks";
 import { synthesizeExpected } from "../lib/gate0-expected";
-import { validateRecording } from "../lib/render-stream-1";
+import { validateRecording } from "../lib/render-stream-2";
 import {
-  encodeRs1Recording,
+  encodeRs2Recording,
+  HUE_STRIP_HASH,
+  HUE_STRIP_PAYLOAD,
+  hueStrip,
   type TCommand,
   type TItem,
   type TState,
-} from "./rs1-test-encoder";
+  transactionRecords,
+} from "./rs2-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-1");
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-2");
 
 let assertions = 0;
 let failures = 0;
@@ -127,8 +134,9 @@ const EXPECTED = {
 } as unknown as Gate0Expected;
 
 // ---------------------------------------------------------------------------------------------
-// Recordings: the fixture's two items per frame, encoded in render-stream/1 by
-// rs1-test-encoder.ts (full encoding, as the gate 0 capture writes).
+// Recordings: the fixture's two items per frame, encoded in render-stream/2 by
+// rs2-test-encoder.ts (full encoding, out-of-band resources, as the gate 0 capture writes), with
+// the engine's hue strip in every texture table.
 // ---------------------------------------------------------------------------------------------
 
 interface RecordingOptions {
@@ -141,6 +149,10 @@ interface RecordingOptions {
   delay?: { step: number; frames: number };
   /** drop the end record */
   noEnd?: boolean;
+  /** the session's resources (default: the file sinks' out-of-band object) */
+  resources?: Record<string, unknown>;
+  /** a websocket stream (inline delivery: a resource record before seq 1) */
+  live?: boolean;
 }
 
 function gate0States(opts: RecordingOptions): TState[] {
@@ -174,6 +186,9 @@ function gate0States(opts: RecordingOptions): TState[] {
       xform: [1, 0, 0, 1, at[0], at[1]],
       modulate: [1, 1, 1, 1],
       self_modulate: [1, 1, 1, 1],
+      // The scene sets every CanvasItem's defaults on tree entry (hooked since calibrator 5).
+      texture_filter: "linear",
+      texture_repeat: "disabled",
       commands: [
         { op: "add_rect", rect: [0, 0, size[0], size[1]], color: [...color] },
         ...extra,
@@ -193,6 +208,7 @@ function gate0States(opts: RecordingOptions): TState[] {
         ? [{ op: "canvas_item_add_circle", item: 2, reason: "unsupported-op" }]
         : [],
       canvases: [{ id: 1, items: [1, 2], xform: [1, 0, 0, 1, 0, 0] }],
+      textures: [hueStrip()],
       items: [
         item(
           1,
@@ -218,11 +234,13 @@ function gate0States(opts: RecordingOptions): TState[] {
 }
 
 function encodeRecording(opts: RecordingOptions): Buffer {
-  return encodeRs1Recording(gate0States(opts), {
+  return encodeRs2Recording(gate0States(opts), {
     encoding: "full",
     hooksPlanned: opts.hooksPlanned ?? [...GATE0_HOOKS],
     sabotage: opts.sabotage ?? null,
     noEnd: opts.noEnd,
+    resources: opts.resources,
+    ...(opts.live ? { transport: "websocket" as const, connection: 1 } : {}),
   });
 }
 
@@ -283,7 +301,7 @@ function appliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/2",
+    schema: "render-stream-receiver-applied/3",
     mode: "file",
     recording: {
       path: recordingPath,
@@ -310,6 +328,7 @@ function appliedFor(
       reparented: i === 0 ? 2 : 0,
       commands_replayed: 2,
       rs_calls: 4,
+      resources: NO_RESOURCES,
     })),
     shots: shotSeqs.map((seq) => ({
       seq,
@@ -318,8 +337,39 @@ function appliedFor(
       applied_through: seq,
     })),
     unsupported: [],
+    cache: {
+      dir: join(dirname(recordingPath), "cache"),
+      mode: "fresh",
+      entries_before: 0,
+      entries_after: 0,
+      bytes_after: 0,
+    },
+    fetches: [],
+    uploads: [],
+    resources_summary: {
+      distinct_fetched: 0,
+      fetched_bytes: 0,
+      cache_hits: 0,
+      uploads: 0,
+      upload_bytes: 0,
+    },
   };
 }
+
+/** applied.json /3 per-transaction counters of a receiver that never touches a texture. */
+const NO_RESOURCES = {
+  fetched: 0,
+  fetched_bytes: 0,
+  cache_hits: 0,
+  inline_received: 0,
+  created: 0,
+  updated: 0,
+  replaced: 0,
+  freed: 0,
+  upload_bytes: 0,
+  fetch_us: 0,
+  skipped_commands: 0,
+};
 
 interface Projects {
   receiverProjectDir: string;
@@ -374,8 +424,8 @@ async function writeCaptureLeg(
   withTrace: boolean,
 ): Promise<Buffer> {
   const bytes = encodeRecording(opts);
-  await writeText(join(dir, "recording.rs1"), "");
-  await writeFile(join(dir, "recording.rs1"), bytes);
+  await writeText(join(dir, "recording.rs2"), "");
+  await writeFile(join(dir, "recording.rs2"), bytes);
   await writeJson(join(dir, "evidence", "result.json"), {
     schema: "render-stream-capture-result/1",
     status: "armed",
@@ -386,7 +436,7 @@ async function writeCaptureLeg(
     rendering_driver: "opengl3",
     rendering_method: "gl_compatibility",
     stream: {
-      path: join(dir, "recording.rs1"),
+      path: join(dir, "recording.rs2"),
       patch_path: null,
       status: "closed",
       reason: null,
@@ -416,7 +466,7 @@ async function writeCaptureLeg(
   await writeProcess(
     dir,
     ["/tpl/linux_release.x86_64", "--headless", "--path", "/fixture"],
-    ["GRC_MODE=arm", `GRC_STREAM_OUT=${join(dir, "recording.rs1")}`],
+    ["GRC_MODE=arm", `GRC_STREAM_OUT=${join(dir, "recording.rs2")}`],
     "[fixture] extension load status=0\n",
     0,
   );
@@ -450,10 +500,10 @@ async function writeReceiverProcess(
   rendered: boolean,
 ): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "recording.rs1"), bytes);
+  await writeFile(join(dir, "recording.rs2"), bytes);
   await writeJson(
     join(dir, "applied.json"),
-    appliedFor(join(dir, "recording.rs1"), bytes, shotSeqs, join(dir, "shots")),
+    appliedFor(join(dir, "recording.rs2"), bytes, shotSeqs, join(dir, "shots")),
   );
   await writeProcess(
     dir,
@@ -474,7 +524,7 @@ async function writeReceiverProcess(
           projects.receiverProjectDir,
         ],
     [
-      `RS_RECEIVER_RECORDING=${join(dir, "recording.rs1")}`,
+      `RS_RECEIVER_RECORDING=${join(dir, "recording.rs2")}`,
       `RS_RECEIVER_OUT=${join(dir, "applied.json")}`,
     ],
     "[receiver] ok\n",
@@ -493,7 +543,7 @@ async function writeTraceStrace(
     [
       `42 10:00:00.000000 openat(AT_FDCWD, "${projects.receiverProjectDir}/project.godot", O_RDONLY|O_CLOEXEC) = 3`,
       `42 10:00:00.100000 openat(AT_FDCWD, "${projects.fixtureProjectDir}/gate0.tscn", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)`,
-      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs1")}", O_RDONLY|O_CLOEXEC) = 4`,
+      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs2")}", O_RDONLY|O_CLOEXEC) = 4`,
       "",
     ].join("\n"),
   );
@@ -524,14 +574,14 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
       "--path",
       projects.receiverProjectDir,
       "--script",
-      "res://tests/codec1_selftest.gd",
+      "res://tests/codec2_selftest.gd",
     ],
     [],
-    "[rs1-selftest] ok\n",
+    "[rs2-selftest] ok\n",
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "full.rs1"));
+  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs2"));
   await writeReceiverProcess(minimalDir, projects, minimal, [], false);
   const minimalApplied = await readJsonFile<Record<string, unknown>>(
     join(minimalDir, "applied.json"),
@@ -695,6 +745,7 @@ async function editJson<T>(
 }
 
 type Applied = {
+  schema: string;
   status: string;
   end_seen: boolean;
   failure: unknown;
@@ -702,6 +753,7 @@ type Applied = {
   transactions: { seq: number; record_sha256: string }[];
   shots: { seq: number; applied_through: number }[];
   unsupported: unknown[];
+  resources_summary: { distinct_fetched: number; uploads: number };
 };
 
 const ALL_CHECK_IDS = [
@@ -777,7 +829,7 @@ const scenarios: Scenario[] = [
     name: "a session planning one fewer hook fails capture-armed",
     mutate: async (out) => {
       await writeFile(
-        join(out, "capture", "recording.rs1"),
+        join(out, "capture", "recording.rs2"),
         encodeRecording({
           quit: 400,
           hooksPlanned: GATE0_HOOKS.filter((h) => h !== "canvas_create"),
@@ -825,7 +877,7 @@ const scenarios: Scenario[] = [
     name: "a recording without its end record fails recording-decodes and classifies capture-failure",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs1"),
+        join(out, "capture", "recording.rs2"),
         encodeRecording({ quit: 400, noEnd: true }),
       ),
     checks: { "recording-decodes": false, "leg-class-capture": false },
@@ -835,7 +887,7 @@ const scenarios: Scenario[] = [
     name: "a 52-transaction capture fails recording-decodes",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs1"),
+        join(out, "capture", "recording.rs2"),
         encodeRecording({ quit: 52 }),
       ),
     checks: { "recording-decodes": false },
@@ -844,7 +896,7 @@ const scenarios: Scenario[] = [
     name: "a capture session with sabotage set fails manifest-present (the classifier ignores it)",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs1"),
+        join(out, "capture", "recording.rs2"),
         encodeRecording({
           quit: 400,
           sabotage: { kind: "omit-update", frame: 21 },
@@ -852,6 +904,28 @@ const scenarios: Scenario[] = [
       ),
     checks: { "manifest-present": false, "leg-class-capture": true },
     classes: { capture: "success" },
+  },
+  {
+    name: "a capture session declaring inline delivery fails manifest-present",
+    mutate: (out) =>
+      writeFile(
+        join(out, "capture", "recording.rs2"),
+        encodeRecording({
+          quit: 400,
+          resources: {
+            hash: "sha256",
+            payload: "render-stream-texture/1",
+            delivery: "inline",
+            inline_max_bytes: 67108864,
+            max_payload_bytes: 67108864,
+            permitted_formats: ["L8", "LA8", "R8", "RG8", "RGB8", "RGBA8"],
+            fetch: "none",
+            http_path: null,
+            auth: "none",
+          },
+        }),
+      ),
+    checks: { "manifest-present": false, "recording-decodes": true },
   },
   {
     name: "a wrong settle frame in capture steps.jsonl fails step-alignment",
@@ -866,7 +940,7 @@ const scenarios: Scenario[] = [
     name: "a marker colour published one frame late fails step-alignment",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs1"),
+        join(out, "capture", "recording.rs2"),
         encodeRecording({ quit: 400, delay: { step: 2, frames: 1 } }),
       ),
     checks: { "step-alignment": false, "recording-decodes": true },
@@ -902,7 +976,7 @@ const scenarios: Scenario[] = [
       const seq = settleSeqs(
         summarizeRecording(
           "c",
-          new Uint8Array(await readFile(join(out, "capture", "recording.rs1"))),
+          new Uint8Array(await readFile(join(out, "capture", "recording.rs2"))),
         ).transactions,
       )[4];
       await writePng(
@@ -931,7 +1005,7 @@ const scenarios: Scenario[] = [
       const seq = settleSeqs(
         summarizeRecording(
           "c",
-          new Uint8Array(await readFile(join(out, "capture", "recording.rs1"))),
+          new Uint8Array(await readFile(join(out, "capture", "recording.rs2"))),
         ).transactions,
       )[1];
       await writePng(
@@ -986,12 +1060,29 @@ const scenarios: Scenario[] = [
     checks: { "receiver-consumed-stream": false },
   },
   {
+    name: "an applied.json still on render-stream-receiver-applied/2 fails receiver-consumed-stream",
+    mutate: (out) =>
+      editJson<Applied>(join(out, "receiver", "applied.json"), (a) => {
+        a.schema = "render-stream-receiver-applied/2";
+      }),
+    checks: { "receiver-consumed-stream": false, "leg-class-receiver": true },
+  },
+  {
+    name: "a receiver that fetched and uploaded the unreferenced hue strip fails receiver-consumed-stream",
+    mutate: (out) =>
+      editJson<Applied>(join(out, "receiver", "applied.json"), (a) => {
+        a.resources_summary.distinct_fetched = 1;
+        a.resources_summary.uploads = 1;
+      }),
+    checks: { "receiver-consumed-stream": false, "leg-class-receiver": true },
+  },
+  {
     name: "a missing requested shot classifies the receiver replay-failure",
     mutate: async (out) => {
       const seq = settleSeqs(
         summarizeRecording(
           "c",
-          new Uint8Array(await readFile(join(out, "capture", "recording.rs1"))),
+          new Uint8Array(await readFile(join(out, "capture", "recording.rs2"))),
         ).transactions,
       )[2];
       await rm(join(out, "receiver", "shots", `seq-${seq}.png`));
@@ -1053,7 +1144,7 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeText(
         join(out, "receiver-typecheck", "selftest", "stdout.log"),
-        "SCRIPT WARNING: UNTYPED_DECLARATION\n[rs1-selftest] ok\n",
+        "SCRIPT WARNING: UNTYPED_DECLARATION\n[rs2-selftest] ok\n",
       ),
     checks: { "receiver-typed-clean": false },
   },
@@ -1084,7 +1175,7 @@ const scenarios: Scenario[] = [
         "f",
         new Uint8Array(
           await readFile(
-            join(out, "sabotage-freeze", "capture", "recording.rs1"),
+            join(out, "sabotage-freeze", "capture", "recording.rs2"),
           ),
         ),
       ).transactions;
@@ -1105,7 +1196,7 @@ const scenarios: Scenario[] = [
         "o",
         new Uint8Array(
           await readFile(
-            join(out, "sabotage-omit", "capture", "recording.rs1"),
+            join(out, "sabotage-omit", "capture", "recording.rs2"),
           ),
         ),
       ).transactions;
@@ -1130,7 +1221,7 @@ const scenarios: Scenario[] = [
         "p",
         new Uint8Array(
           await readFile(
-            join(out, "sabotage-perturb", "capture", "recording.rs1"),
+            join(out, "sabotage-perturb", "capture", "recording.rs2"),
           ),
         ),
       ).transactions;
@@ -1163,7 +1254,7 @@ const scenarios: Scenario[] = [
     mutate: async (out, projects) => {
       const bytes = encodeRecording({ quit: 52 });
       await writeFile(
-        join(out, "unsupported", "capture", "recording.rs1"),
+        join(out, "unsupported", "capture", "recording.rs2"),
         bytes,
       );
       await writeReceiverProcess(
@@ -1181,7 +1272,7 @@ const scenarios: Scenario[] = [
     name: "a preexisting capture without failures fails its leg class",
     mutate: (out) =>
       writeFile(
-        join(out, "preexisting", "recording.rs1"),
+        join(out, "preexisting", "recording.rs2"),
         encodeRecording({ quit: 52 }),
       ),
     checks: { "leg-class-preexisting": false },
@@ -1309,6 +1400,8 @@ function ritem(
     clip: false,
     custom_rect: false,
     visibility_layer: 1,
+    texture_filter: "default",
+    texture_repeat: "default",
     content_version: 1,
     xform: [1, 0, 0, 1, 0, 0],
     modulate: [1, 1, 1, 1],
@@ -1354,6 +1447,9 @@ function tx(
           xform: [1, 0, 0, 1, 0, 0],
         },
       ],
+      default_texture_filter: "linear",
+      default_texture_repeat: "disabled",
+      textures: [hueStrip()],
       ...extra,
     },
     sha256: `sha-${seq}`,
@@ -1683,6 +1779,42 @@ function classifyUnitCases(): void {
         }),
       ]) === false,
     );
+    const texRect = (x: number): ResolvedCommand => ({
+      op: "add_texture_rect",
+      tex: 1,
+      tile: false,
+      transpose: false,
+      rect: [x, 0, 10, 10],
+      modulate: [1, 1, 1, 1],
+    });
+    assert(
+      "drawIndexTies: a texture rect is bounded by its destination rect (disjoint: harmless)",
+      harmless([
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(2, [texRect(100)], { draw_index: 0 }),
+      ]) === true,
+    );
+    assert(
+      "drawIndexTies: a texture rect region with negative sizes still bounds its footprint (overlap)",
+      harmless([
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(
+          2,
+          [
+            {
+              op: "add_texture_rect_region",
+              tex: 1,
+              transpose: false,
+              clip_uv: false,
+              rect: [12, 0, -10, 10],
+              src: [0, 0, 4, 4],
+              modulate: [1, 1, 1, 1],
+            },
+          ],
+          { draw_index: 0 },
+        ),
+      ]) === false,
+    );
     assert(
       "drawIndexTies: adjacent rects count as overlapping (1 px guard)",
       harmless([
@@ -1770,20 +1902,56 @@ function classifyUnitCases(): void {
 }
 
 async function helperCases(): Promise<void> {
-  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs1")));
+  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs2")));
   const corrupt = new Uint8Array(
-    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs1")),
+    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs2")),
   );
   const made = corruptTransactionMeta(minimal, 3);
   assert(
-    "corruptTransactionMeta(golden-1 patch.rs1, 3) is golden-1/corrupt-meta.rs1 byte for byte",
+    "corruptTransactionMeta(golden-2 patch.rs2, 3) is golden-2/corrupt-meta.rs2 byte for byte",
     made.length === corrupt.length && made.every((b, i) => b === corrupt[i]),
   );
   const rec = new Uint8Array(encodeRecording({ quit: 52 }));
   assert(
-    "a fabricated 52-frame recording validates",
+    "a fabricated 52-frame recording (the hue strip in every table, out-of-band) validates",
     validateRecording(rec).length === 0,
     validateRecording(rec).join(" | "),
+  );
+  assert(
+    "the hue strip's payload is the whole 800x6 RGBA8 GRT1 payload (19312 bytes)",
+    HUE_STRIP_PAYLOAD.length === 19312 &&
+      hueStrip().payload_bytes === 19312 &&
+      summarizeRecording("r", rec).transactions.every(
+        (t) =>
+          t.meta.textures.length === 1 &&
+          t.meta.textures[0].hash === HUE_STRIP_HASH &&
+          t.meta.default_texture_filter === "linear",
+      ),
+  );
+  // An inline stream: the hue strip's resource record precedes seq 1, so record k is no longer
+  // transaction k. Every helper must find transactions by seq.
+  const inline = new Uint8Array(encodeRecording({ quit: 52, live: true }));
+  const inlineTx = transactionRecords(inline);
+  const inlineSummary = summarizeRecording("inline", inline);
+  assert(
+    "an inline fabricated recording (one resource record before seq 1) validates and summarizes to seqs 1..52",
+    validateRecording(inline).length === 0 &&
+      inlineSummary.transactions.length === 52 &&
+      inlineSummary.transactions.every((t, i) => t.meta.seq === i + 1) &&
+      inlineSummary.end?.stats?.resource_records === 1,
+    validateRecording(inline).join(" | "),
+  );
+  const inlineBroken = corruptTransactionMeta(inline, 3);
+  const target = (inlineTx.get(3)?.offset ?? -1) + 8;
+  assert(
+    "corruptTransactionMeta(inline, 3) breaks transaction seq 3's meta, not record 3's",
+    inlineBroken[target] === 0x00 &&
+      inline[target] !== 0x00 &&
+      inlineBroken.every((b, i) => i === target || b === inline[i]) &&
+      validateRecording(inlineBroken).some((e) =>
+        e.startsWith(`meta-json: record at offset ${inlineTx.get(3)?.offset}`),
+      ),
+    validateRecording(inlineBroken).join(" | "),
   );
   const broken = corruptTransactionMeta(rec, 3);
   assert(
@@ -1798,6 +1966,19 @@ async function helperCases(): Promise<void> {
   }
   assert("corruptTransactionMeta refuses a seq that does not exist", threw);
   const summary = summarizeRecording("r", rec);
+  assert(
+    "joinSettleSeqs over an inline stream joins the same seqs as over the file stream",
+    joinSettleSeqs(
+      EXPECTED.steps.map((s) => ({
+        step: s.step,
+        applied_frame: s.applied_frame,
+        settle_frame: s.settle_frame,
+      })),
+      inlineSummary.transactions,
+    )
+      .entries.map((e) => e.seq)
+      .join(",") === "8,18,28,38,48",
+  );
   const steps = EXPECTED.steps.map((s) => ({
     step: s.step,
     applied_frame: s.applied_frame,

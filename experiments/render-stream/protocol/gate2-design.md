@@ -896,6 +896,47 @@ on /2, and gate −1 is green. The README section "Gate 2b result" gives the run
 paths, the bytes per transaction for full, patch and inline, the store size, and the receiver's
 fetch and upload timings.
 
+**As built (2026-10-09; README "Gate 2b result").** Every g2b leg classified as expected, and the
+prediction step sets held on the first run (omit-update {6}, omit-replace {7,8,9,10}). Deviations
+and decisions, all recorded here so G2c2/G2d build on them:
+
+- **`payload_bytes` is the whole GRT1 payload length**, as render-stream-2.md's field table says.
+  G2b1's golden-2 vectors and both decoders' `resource-payload` rule had used the image data size;
+  `golden-2/` was regenerated (`make_golden.py`), and the TS and GDScript decoders now compare the
+  resource record's whole payload length.
+- **omit-op on texture calls.** The hooks drop an omitted texture call from the mirror _and_ from
+  the hook log's registry; the log still writes the line, marked `"sabotage":true,"omitted":true`.
+  Without this the omit legs would classify `capture-failure` (texture-log-divergence) instead of
+  `pixel-mismatch`; `stale-texture` stays the sabotage that diverges.
+- **Store failure and budget** have no wire `FailureReason` (G2b1 added none), so
+  `resource-store-failed` and `resource-budget-exceeded` end the stream with the reason in
+  result.json `stream.reason`; the classifier reads it as capture-failure. Publisher events go to
+  the hook log as `store`/`inline` lines.
+- **A replaced-away by-texture a command still names** becomes a `freed` tombstone rather than
+  leaving the table, so `texture-ref` holds (not exercised by the fixture).
+- **`capture-inline`** sets `GRC_RESOURCE_MAX_PAYLOAD_BYTES=16777216` as well, because 16 MiB
+  inline under a 64 MiB maximum is `mixed` delivery, which needs a store.
+- **`unsupported-textures`** compares against a new support leg, `reference-unsupported` (the
+  variant rendered without the extension): the main reference has no U1/U2 to differ from.
+- The receiver-only sabotages and the stale-texture, wrong-hash and spurious-update receivers run
+  headless (their classes need no pixels); the omit-op receivers are rendered.
+- `applied.json` `/3` adds `uploads[]` (`{stream, seq, id, hash, op, data_bytes}`), which the
+  redundant-upload rule reads. The receiver requires `RS_RECEIVER_CACHE_DIR` at the session for any
+  non-inline delivery; `RS_RECEIVER_FETCH_TIMEOUT_MS` is validated and waits for G2c2.
+- Live connections declare `inline_max_bytes` = the maximum payload size (64 MiB) and `fetch:
+"none"`; the 1 MiB cap for inline-over-live is G2c2's configuration rule. `rs_ws` keeps its
+  transport default subprotocol; `entry.cpp` sets `render-stream.2`, and the hub's control parser
+  refuses a hello for another protocol (golden-2 `hello-wrong-protocol`).
+- The G2a capture leg now classifies `success` (texture draws are commands).
+- The receiver's applier and cache tests moved to `receiver/tests/applier2_selftest.gd`
+  (`codec2_selftest.gd` stays G2b1's pure codec test).
+
+What G2c2 needs: an HTTP fetcher behind `RsResourceCache.obtain()` (the `directory` branch is the
+template), `rs_resource_store` serving and pins (the publisher's `last_published()` payload map
+is today's pin), per-connection `fetch: "http"` sessions instead of the forced inline policy, and
+the live checks of Q7. G2d adds canvas taps to the mirror (`TextureKind::Canvas`, the
+`texture_referenced` walk must include `diffuse`) and the applier's canvas-texture branch.
+
 ---
 
 ### G2c2 — live resources: HTTP, pins, retirement (opus)

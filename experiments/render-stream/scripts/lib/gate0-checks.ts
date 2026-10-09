@@ -1,22 +1,24 @@
 // Gate 0 checks and leg classification (protocol/gate0-design.md "Q6. Runner, legs and checker"),
-// on render-stream/1 since G1b2 (protocol/gate1-design.md "G1b2"). The resolved-state recording
-// summary and the draw-index-tie analysis here are shared with gate1-checks.ts.
+// on render-stream/2 since G2b2 (protocol/gate2-design.md "G2b2"; render-stream/1 from G1b2 to
+// G2b2). The resolved-state recording summary and the draw-index-tie analysis here are shared
+// with gate1-checks.ts and gate2-checks.ts.
 //
 // Everything here reads an evidence directory written by run-gate0.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate0.ts can drive it with fabricated trees.
 // Nothing launches a process. `classifyLeg` is pure and never reads `session.sabotage`.
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 0"):
-//   capture/                   the 400-frame capture host: evidence/, recording.rs1, steps.jsonl,
-//                              strace.txt, maps.txt, fd.txt
+//   capture/                   the 400-frame capture host: evidence/, recording.rs2, store/ (the
+//                              out-of-band resource store), steps.jsonl, strace.txt, maps.txt, fd.txt
 //   reference/                 rendered fixture, extension absent: shots/step-<k>.png, steps.jsonl
-//   receiver/                  rendered receiver on a copy of capture/recording.rs1:
-//                              recording.rs1, applied.json, shots/seq-<n>.png, diff/step-<k>.png
-//   receiver-headless-trace/   headless receiver under strace: recording.rs1, applied.json, strace.txt
+//   receiver/                  rendered receiver on a copy of capture/recording.rs2 (its cache in
+//                              cache/, capture/store/ as its store): recording.rs2, applied.json,
+//                              shots/seq-<n>.png, diff/step-<k>.png
+//   receiver-headless-trace/   headless receiver under strace: recording.rs2, applied.json, strace.txt
 //   sabotage-{freeze,omit,perturb}/{capture,receiver}/
 //   unsupported/{capture,receiver}/
 //   preexisting/               a capture-shaped leg (no receiver)
-//   corrupt/                   headless receiver on capture/recording.rs1 with seq 3's meta broken
+//   corrupt/                   headless receiver on capture/recording.rs2 with seq 3's meta broken
 //   import/{fixture,receiver}/, receiver-typecheck/{selftest,minimal}/
 // Every process directory holds argv.txt (one argument per line), env.txt, stdout.log (stdout and
 // stderr) and exit-code.txt.
@@ -43,14 +45,16 @@ import {
   type ResolvedCommand,
   type ResolvedItem,
   type ResolvedState,
-  type EndMeta as Rs1EndMeta,
-  type SessionMeta as Rs1SessionMeta,
-  type TransactionMeta as Rs1TransactionMeta,
+  type ResolvedTexture,
+  type EndMeta as Rs2EndMeta,
+  type SessionMeta as Rs2SessionMeta,
+  type TransactionMeta as Rs2TransactionMeta,
   sortedResolvedCanvases,
   sortedResolvedItems,
+  sortedResolvedTextures,
   splitRecords,
   validateRecording,
-} from "./render-stream-1";
+} from "./render-stream-2";
 
 /** WP3's `render-stream-gate0-expected/1` type, whatever it is named there. */
 export type Gate0Expected = Parameters<typeof synthesizeExpected>[0];
@@ -63,9 +67,11 @@ export type Gate0Expected = Parameters<typeof synthesizeExpected>[0];
 export const CAPTURE_QUIT_FRAME = 400;
 
 /** The full-sink recording every capture writes (GRC_STREAM_OUT) and every receiver copy uses. */
-export const RECORDING_NAME = "recording.rs1";
+export const RECORDING_NAME = "recording.rs2";
 /** The patch-sink recording (GRC_STREAM_PATCH_OUT), written by the gate 1 capture legs. */
-export const PATCH_RECORDING_NAME = "recording-patch.rs1";
+export const PATCH_RECORDING_NAME = "recording-patch.rs2";
+/** The capture's out-of-band resource store (GRC_RESOURCE_STORE_DIR), next to its recordings. */
+export const STORE_DIR_NAME = "store";
 
 /** Every hook the committed calibration record installs, sorted by byte value
  * (render-stream-0.md, golden session): calibrator 3's 42, plus calibrator 4's
@@ -130,12 +136,14 @@ export const GATE0_HOOKS: readonly string[] = [
   "viewport_set_default_canvas_item_texture_repeat",
 ];
 
-/** Session `features` at gate 1 / render-stream/1, exactly (render-stream-1.md "Session record"):
- * gate 0's lists plus `behind`/`z_relative` and `viewport_set_global_canvas_transform`, minus
- * `canvas_item_set_draw_behind_parent`/`canvas_item_set_z_as_relative_to_parent` (G1e hooks both,
- * so they leave `unobserved`). */
-export const RS1_FEATURES = {
-  ops: ["add_rect"],
+/** Session `features` at render-stream/2, exactly (render-stream-2.md "Session record";
+ * protocol/golden-2/make_golden.py FEATURE_*): /1's lists with the two texture-rect draws captured
+ * (they leave observed_unsupported_ops for `ops`), calibrator 5's
+ * `canvas_item_add_lcd_texture_rect_region` hooked (observed, unsupported), the default texture
+ * filter/repeat hooked (they leave `unobserved` for `item_state`), the new `resources` key, and the
+ * two texture calls nothing hooks yet added to `unobserved`. */
+export const RS2_FEATURES = {
+  ops: ["add_rect", "add_texture_rect", "add_texture_rect_region"],
   item_state: [
     "behind",
     "children",
@@ -145,14 +153,18 @@ export const RS1_FEATURES = {
     "modulate",
     "parent",
     "self_modulate",
+    "texture_filter",
+    "texture_repeat",
     "transform",
     "visibility_layer",
     "visible",
     "z_index",
     "z_relative",
   ],
+  resources: ["texture_2d", "texture_2d_placeholder"],
   observed_unsupported_ops: [
     "canvas_item_add_circle",
+    "canvas_item_add_lcd_texture_rect_region",
     "canvas_item_add_line",
     "canvas_item_add_mesh",
     "canvas_item_add_msdf_texture_rect_region",
@@ -162,26 +174,45 @@ export const RS1_FEATURES = {
     "canvas_item_add_polyline",
     "canvas_item_add_primitive",
     "canvas_item_add_set_transform",
-    "canvas_item_add_texture_rect",
-    "canvas_item_add_texture_rect_region",
     "canvas_item_add_triangle_array",
     "canvas_item_set_material",
   ],
-  // G1e hooks canvas_item_set_draw_behind_parent and canvas_item_set_z_as_relative_to_parent,
-  // so both leave this list.
   unobserved: [
     "canvas_item_set_canvas_group_mode",
-    "canvas_item_set_default_texture_filter",
-    "canvas_item_set_default_texture_repeat",
     "canvas_item_set_instance_shader_parameter",
     "canvas_item_set_light_mask",
     "canvas_item_set_sort_children_by_y",
     "canvas_set_modulate",
+    "canvas_texture_set_shading_parameters",
+    "texture_set_size_override",
     "viewport_remove_canvas",
     "viewport_set_canvas_cull_mask",
     "viewport_set_global_canvas_transform",
   ],
   publication: "snapshot-or-patch",
+} as const;
+
+/** Session `resources` of a file capture (gate2-design.md Q4 "File sinks"): out-of-band through
+ * the store directory, nothing inline, the gate 2 permitted formats. */
+export const FILE_RESOURCES = {
+  hash: "sha256",
+  payload: "render-stream-texture/1",
+  delivery: "out-of-band",
+  inline_max_bytes: 0,
+  max_payload_bytes: 67108864,
+  permitted_formats: ["L8", "LA8", "R8", "RG8", "RGB8", "RGBA8"],
+  fetch: "directory",
+  http_path: null,
+  auth: "none",
+} as const;
+
+/** Session `resources` of a live connection until G2c2 (gate2-design.md "G2b2"): every payload
+ * inline as resource records, no fetch path. */
+export const LIVE_RESOURCES = {
+  ...FILE_RESOURCES,
+  delivery: "inline",
+  inline_max_bytes: 67108864,
+  fetch: "none",
 } as const;
 
 export type LegClass =
@@ -330,10 +361,11 @@ export interface WireUnsupported {
   item: number | null;
   reason: string;
 }
-export type { ResolvedCanvas, ResolvedCommand, ResolvedItem };
+export type { ResolvedCanvas, ResolvedCommand, ResolvedItem, ResolvedTexture };
 
-/** One transaction of a recording, RESOLVED (render-stream-1.md "Resolution"): `items` and
- * `canvases` are the complete state after it, whatever its encoding. */
+/** One transaction of a recording, RESOLVED (render-stream-2.md "Decoded and resolved forms"):
+ * `items`, `canvases` and `textures` are the complete state after it, whatever its encoding;
+ * resource records are not transactions and never appear here. */
 export interface TransactionMeta {
   type: "transaction";
   seq: number;
@@ -347,20 +379,25 @@ export interface TransactionMeta {
   items: ResolvedItem[];
   /** resolved canvases, ascending id */
   canvases: ResolvedCanvas[];
+  /** the root viewport's default texture filter and repeat */
+  default_texture_filter: string;
+  default_texture_repeat: string;
+  /** resolved texture table, ascending id */
+  textures: ResolvedTexture[];
 }
-export type SessionMeta = Partial<Omit<Rs1SessionMeta, "type">> & {
+export type SessionMeta = Partial<Omit<Rs2SessionMeta, "type">> & {
   type: "session";
 };
-export type EndMeta = Partial<Omit<Rs1EndMeta, "type" | "stats">> & {
+export type EndMeta = Partial<Omit<Rs2EndMeta, "type" | "stats">> & {
   type: "end";
-  stats?: Partial<Rs1EndMeta["stats"]>;
+  stats?: Partial<Rs2EndMeta["stats"]>;
 };
 
 export interface Transaction {
   meta: TransactionMeta;
   /** the record's own wire form (a patch's partial lists, nullable commands); absent in
    * hand-built test values */
-  wire?: Rs1TransactionMeta;
+  wire?: Rs2TransactionMeta;
   /** the record's byte length, length prefix included */
   bytes?: number;
   sha256: string;
@@ -388,7 +425,8 @@ export interface AppliedJson {
   status?: string;
   failure?: { seq: number | null; reason: string; detail?: string } | null;
   end_seen?: boolean;
-  /** render-stream-receiver-applied/2 (gate1-design.md Q5) */
+  /** render-stream-receiver-applied/3 since G2b2 (gate2-design.md Q5: gate1-design.md Q5's /2
+   * plus the resource cache, fetches and uploads) */
   mode?: string;
   viewport?: {
     display_server?: string;
@@ -402,6 +440,8 @@ export interface AppliedJson {
     encoding?: string;
     record_sha256?: string;
     rs_calls?: number;
+    /** /3: null for a transaction not applied */
+    resources?: AppliedResources | null;
   }[];
   shots?: {
     seq?: number;
@@ -415,7 +455,52 @@ export interface AppliedJson {
     name?: string;
     reason?: string;
   }[];
+  /** /3: the content-addressed cache, null when the receiver had none */
+  cache?: {
+    dir?: string;
+    mode?: string;
+    entries_before?: number;
+    entries_after?: number;
+    bytes_after?: number;
+  } | null;
+  fetches?: {
+    stream?: number;
+    seq?: number;
+    hash?: string;
+    source?: string;
+    status?: number | null;
+    bytes?: number;
+    start_us?: number;
+    end_us?: number;
+    verified?: boolean;
+  }[];
+  uploads?: unknown[];
+  resources_summary?: {
+    distinct_fetched?: number;
+    fetched_bytes?: number;
+    cache_hits?: number;
+    uploads?: number;
+    upload_bytes?: number;
+  };
 }
+
+/** applied.json /3: one applied transaction's resource counters (gate2-design.md Q5). */
+export interface AppliedResources {
+  fetched?: number;
+  fetched_bytes?: number;
+  cache_hits?: number;
+  inline_received?: number;
+  created?: number;
+  updated?: number;
+  replaced?: number;
+  freed?: number;
+  upload_bytes?: number;
+  fetch_us?: number;
+  skipped_commands?: number;
+}
+
+/** The applied.json schema the receiver writes since G2b2. */
+export const APPLIED_SCHEMA = "render-stream-receiver-applied/3";
 
 export interface StepLine {
   step: number;
@@ -480,7 +565,8 @@ function sha256Hex(data: Uint8Array): string {
 
 /** Decode, validate and resolve one recording file's bytes (undefined = the file is missing).
  * Resolution stops at the first record that fails to decode; `errors` (validateRecording) says
- * why. */
+ * why. Resource records are validated (validateRecording) but are not transactions: they are
+ * skipped here, so `transactions[k]` is seq k + 1 whatever precedes it. */
 export function summarizeRecording(
   path: string,
   data: Uint8Array | undefined,
@@ -511,9 +597,9 @@ export function summarizeRecording(
     const meta = record.meta;
     if (meta.type === "session" && !summary.session) {
       summary.session = meta as SessionMeta;
-      summary.session_blocks = record.blocks;
+      summary.session_blocks = record.blocks as number[][];
     } else if (meta.type === "transaction") {
-      state = applyTransaction(state, meta, record.blocks);
+      state = applyTransaction(state, meta, record.blocks as number[][]);
       summary.transactions.push({
         meta: {
           type: "transaction",
@@ -526,6 +612,9 @@ export function summarizeRecording(
           unsupported: arr<WireUnsupported>(meta.unsupported),
           items: sortedResolvedItems(state),
           canvases: sortedResolvedCanvases(state),
+          default_texture_filter: meta.default_texture_filter,
+          default_texture_repeat: meta.default_texture_repeat,
+          textures: sortedResolvedTextures(state),
         },
         wire: meta,
         bytes: record.byte_length,
@@ -539,7 +628,8 @@ export function summarizeRecording(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Draw-index ties (render-stream-1.md "Invariant 9") and whether one can change a pixel
+// Draw-index ties (render-stream-0.md "Invariant 9", unchanged at /2) and whether one can change
+// a pixel
 // ---------------------------------------------------------------------------------------------
 
 /** One tie group: siblings of one container sharing a draw_index, at least two of them drawing
@@ -576,7 +666,8 @@ function mulAffine(a: readonly number[], b: readonly number[]): Affine {
 
 /**
  * The pixels member `id`'s subtree can touch, in its container's space: the axis-aligned bounds
- * of every add_rect of every item in the subtree the engine would draw (an invisible item, or one
+ * of every rect command (add_rect, add_texture_rect, add_texture_rect_region: each paints inside
+ * its destination rect, negative sizes included) of every item in the subtree the engine would draw (an invisible item, or one
  * outside the cull mask, is skipped with its subtree: renderer_canvas_cull.cpp:296-302), each
  * rect's four corners mapped through the transforms from the member down, grown by one pixel for
  * antialiasing and rounding. Clip only ever shrinks what is drawn, so it is ignored, and the
@@ -596,7 +687,7 @@ function subtreeFootprint(
     if (!it.visible || (it.visibility_layer & cullMask) >>> 0 === 0) return;
     const xform = mulAffine(parent, it.xform);
     for (const c of it.commands) {
-      if (c.op !== "add_rect" || !c.rect) {
+      if (c.op === "unsupported" || !c.rect) {
         unbounded = true;
         continue;
       }
@@ -788,7 +879,8 @@ export function diffRgba(
 }
 
 /** A copy of `data` with the first meta byte of transaction `seq` set to 0x00 (the `corrupt`
- * leg). Throws if the recording has no such transaction. */
+ * leg): the transaction found by its seq, so resource records interleaved before it never shift
+ * the target. Throws if the recording has no such transaction. */
 export function corruptTransactionMeta(
   data: Uint8Array,
   seq: number,
@@ -1404,10 +1496,10 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
   if (!s) {
     problems.push("no session record");
   } else {
-    if (s.protocol !== "render-stream/1")
+    if (s.protocol !== "render-stream/2")
       problems.push(`protocol=${JSON.stringify(s.protocol)}`);
     const features = (s.features ?? {}) as Record<string, unknown>;
-    for (const [key, want] of Object.entries(RS1_FEATURES)) {
+    for (const [key, want] of Object.entries(RS2_FEATURES)) {
       const got = features[key];
       const ok =
         typeof want === "string"
@@ -1415,9 +1507,13 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
           : sameStrings(got as unknown[] | undefined, want);
       if (!ok) problems.push(`features.${key}=${JSON.stringify(got)}`);
     }
-    const extraKeys = Object.keys(features).filter((k) => !(k in RS1_FEATURES));
+    const extraKeys = Object.keys(features).filter((k) => !(k in RS2_FEATURES));
     if (extraKeys.length > 0)
       problems.push(`features has extra keys ${JSON.stringify(extraKeys)}`);
+    if (JSON.stringify(s.resources) !== JSON.stringify(FILE_RESOURCES))
+      problems.push(
+        `resources=${JSON.stringify(s.resources ?? null)}, expected ${JSON.stringify(FILE_RESOURCES)}`,
+      );
     if (s.engine?.display_server !== "headless") {
       problems.push(
         `engine.display_server=${JSON.stringify(s.engine?.display_server)}`,
@@ -1454,7 +1550,7 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
   }
   return check(
     "manifest-present",
-    "the capture session carries protocol render-stream/1, a full file stream, the exact /1 features, engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
+    "the capture session carries protocol render-stream/2, a full file stream, the exact /2 features, the file sinks' resources (out-of-band, directory fetch, the six permitted formats), engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
     problems,
     "session manifest as specified",
     [recording.path],
@@ -1631,9 +1727,21 @@ export function checkReceiverConsumedStream(
   if (!applied) {
     problems.push("applied.json missing or unparseable");
   } else {
+    if (applied.schema !== APPLIED_SCHEMA)
+      problems.push(
+        `schema=${JSON.stringify(applied.schema)}, expected ${APPLIED_SCHEMA}`,
+      );
     if (applied.status !== "ok")
       problems.push(`status=${JSON.stringify(applied.status)}`);
     if (applied.end_seen !== true) problems.push("end_seen is not true");
+    // Nothing in a gate 0 or gate 1 fixture draws a texture: the one the engine creates itself
+    // (the hue strip) is in every table but never named by a command, so a correct receiver
+    // never fetches or uploads anything.
+    const rs = applied.resources_summary;
+    if (rs?.distinct_fetched !== 0 || rs?.uploads !== 0)
+      problems.push(
+        `resources_summary=${JSON.stringify(rs ?? null)}, expected nothing fetched and nothing uploaded`,
+      );
     const tx = arr<{ seq?: number; record_sha256?: string }>(
       applied.transactions,
     );
@@ -1672,7 +1780,7 @@ export function checkReceiverConsumedStream(
   }
   return check(
     "receiver-consumed-stream",
-    "the receiver applied seqs 1..N with each record_sha256 equal to the host-computed hash, every shot has applied_through == seq, and recording.sha256 is the capture file's",
+    "applied.json is render-stream-receiver-applied/3; the receiver applied seqs 1..N with each record_sha256 equal to the host-computed hash, every shot has applied_through == seq, recording.sha256 is the capture file's, and it fetched and uploaded no texture (nothing draws one)",
     problems,
     `${host.transactions.length} transactions consumed in order, hashes match`,
     [appliedPath, host.path],
@@ -1865,8 +1973,8 @@ export async function checkReceiverTypedClean(
     if (line) problems.push(`${log}: ${line.trim()}`);
   }
   const selftest = (await readTextOrUndefined(selftestLog)) ?? "";
-  if (!selftest.includes("[rs1-selftest] ok"))
-    problems.push("selftest did not print [rs1-selftest] ok");
+  if (!selftest.includes("[rs2-selftest] ok"))
+    problems.push("selftest did not print [rs2-selftest] ok");
   const selftestExit = await readExitCode(selftestDir);
   if (selftestExit !== 0) problems.push(`selftest exit=${selftestExit}`);
   const applied = await readJson<AppliedJson>(minimalApplied);
@@ -1896,7 +2004,7 @@ export async function checkReceiverTypedClean(
     );
   return check(
     "receiver-typed-clean",
-    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest printed [rs1-selftest] ok and exited 0; the replay of golden-1/full.rs1 is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
+    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-2/inline.rs2 is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
     problems,
     `selftest ok, golden replay ok with ${want.length} unsupported entries, no script diagnostics`,
     [selftestLog, minimalLog, minimalApplied],

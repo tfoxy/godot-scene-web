@@ -1,16 +1,22 @@
 # render-stream/2 wire format
 
-Status: the wire format's codecs (G2b1, 2026-10-09). Written with
-[gate2-design.md](gate2-design.md), which says what the capture puts into these records and what
-receivers do with them. Codecs (G2b1): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`),
-TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`) and GDScript decoder
-(`receiver/rs2_decoder.gd`) plus the texture-payload reader (`receiver/rs_texture_payload.gd`),
-all checked byte-for-byte and state-for-state against `protocol/golden-2/`, per this text. None of
-this is wired into the capture library or the receiver's live path yet: entry.cpp, the mirror and
-the publisher still emit render-stream/1, and the gate 0/1 runners still consume it. G2b2 switches
-all of that to /2 (texture mirror taps, the resource store, the receiver's file mode) and removes
-the now-superseded render-stream-1.md codecs. Until G2b2 lands, [render-stream-1.md](render-stream-1.md)
-is the format the capture library and receiver actually speak.
+Status: the format the capture library and the receiver speak since G2b2 (2026-10-09). Written
+with [gate2-design.md](gate2-design.md), which says what the capture puts into these records and
+what receivers do with them. Codecs (G2b1): C++ encoder/diff (`capture/src/rs2_codec.*`,
+`rs2_diff.*`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`) and
+GDScript decoder (`receiver/rs2_decoder.gd`) plus the texture-payload reader
+(`receiver/rs_texture_payload.gd`), all checked byte-for-byte and state-for-state against
+`protocol/golden-2/`, per this text. G2b2 wired it in: the capture's texture mirror, publisher
+(`rs_publish`, both file sinks, the store directory and inline resource records) and live hub
+(`rs_live`, inline-only until G2c2) emit /2, the receiver consumes it in both modes, and the gate
+0, 1 and 2 runners check it. [render-stream-1.md](render-stream-1.md) is superseded; its codecs
+left the capture library, and its TypeScript decoder and goldens stay as frozen, verified history.
+
+One G2b1 reading was corrected by G2b2: a texture entry's `payload_bytes` is the length of the
+whole `render-stream-texture/1` payload (magic, meta, both lengths and data), the size the inline
+threshold, the store's index and the hook log compare. G2b1's vectors had carried the image's data
+size there; `golden-2/` was regenerated and both decoders' `resource-payload` rule now compares
+the resource record's whole payload length.
 
 render-stream/2 is render-stream/1 plus textures:
 

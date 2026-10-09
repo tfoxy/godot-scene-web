@@ -1,9 +1,13 @@
-// Retained canvas mirror (gate 0 WP1; render-stream/1 since gate 1 G1b2).
+// Retained canvas mirror (gate 0 WP1; render-stream/1 since gate 1 G1b2;
+// render-stream/2 with textures since gate 2 G2b2).
 //
 // A tap on the RenderingServer hooks that keeps the canvas state a receiver
 // needs to rebuild the frame: canvases, canvas items, their parenting and
-// append order, per-item state and draw commands. The frame callback copies
-// it into an rs1::Snapshot (rs1_snapshot.h) under the lock and encodes it
+// append order, per-item state and draw commands, and (G2b2) the texture
+// table: every texture the capture saw created, with its wire id, version,
+// status and the payload bytes the hook copied (gate2-design.md Q3 "Texture
+// mirror"). The frame callback copies it into an rs::Captured (rs_captured.h:
+// an rs2::Snapshot plus the payloads it names) under the lock and encodes it
 // outside. Behaviour is specified in protocol/gate0-design.md "Q1" (root
 // adoption, unknown-RID policy, viewport hooks) and "Q3" (operations, ids,
 // snapshot ordering, omit-update sabotage), and in protocol/gate1-design.md
@@ -14,6 +18,12 @@
 // The mirror is engine-free: RIDs are plain uint64 values and every value is
 // already in wire form (Xform/Color4/Rect4), so the unit test drives it without
 // an engine. Engine RIDs never leave this module; snapshots carry wire ids.
+//
+// Texture identity follows gate2-design.md D2 exactly as the texture hook log
+// (rs_resource_log.h) does, independently: one per-session id counter shared
+// by images and placeholders, never reused; version 1 at creation, +1 per
+// content or kind change. The checker compares the two
+// (`texture-versions-current`).
 //
 // Two layers:
 //   - grc::rs::Mirror, a self-contained object (one std::mutex, every method
@@ -40,7 +50,9 @@
 #include <unordered_set>
 #include <vector>
 
-#include "rs1_snapshot.h"
+#include "rs2_snapshot.h"
+#include "rs_captured.h"
+#include "rs_resource_log.h"
 
 namespace grc {
 namespace rs {
@@ -54,6 +66,10 @@ struct MirrorStats {
   std::uint64_t ignored_untracked = 0;     // calls on an item that was not tracked because of the cap
   std::uint64_t live_canvases = 0;         // root canvas included
   std::uint64_t live_items = 0;
+  // Gate 2 (G2b2).
+  std::uint64_t live_textures = 0;           // table entries, tombstones included
+  std::uint64_t texture_update_unknown = 0;  // texture_2d_update of a RID never seen created
+  std::uint64_t texture_payload_bytes = 0;   // distinct payload bytes the table holds now
 };
 
 class Mirror {
@@ -69,7 +85,7 @@ class Mirror {
 
   // Binds the root viewport and root canvas RIDs from the arm-time root query
   // and sets canvas 1's transform. A zero RID binds nothing (never matches).
-  void set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid, const rs1::Xform &canvas_xform);
+  void set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid, const rs2::Xform &canvas_xform);
 
   // Sticky capture failure `root-query-failed` with `detail` (the failed step).
   void fail_root_query(const std::string &detail);
@@ -107,7 +123,9 @@ class Mirror {
   // --- hook taps (every one is forwarded to the engine by the caller) --------
   // The omit-op name of each tap is its RenderingServer method name: the
   // method itself for canvas_create, canvas_item_create, the viewport_* taps,
-  // canvas_item_clear and canvas_item_add_rect; `free` for free_rid; and
+  // canvas_item_clear, canvas_item_add_rect, the texture taps
+  // (texture_2d_create, texture_2d_update, texture_replace, ...) and the
+  // texture-rect draws; `free` for free_rid; and
   // canvas_item_<name> for each set_<name> tap (canvas_item_set_parent, ...,
   // canvas_item_set_material, canvas_item_set_z_as_relative_to_parent,
   // canvas_item_set_draw_behind_parent).
@@ -117,15 +135,15 @@ class Mirror {
 
   void viewport_attach_canvas(std::uint64_t viewport, std::uint64_t canvas, std::uint64_t frame);
   void viewport_set_canvas_transform(std::uint64_t viewport, std::uint64_t canvas,
-                                     const rs1::Xform &xform, std::uint64_t frame);
+                                     const rs2::Xform &xform, std::uint64_t frame);
 
   void set_parent(std::uint64_t item, std::uint64_t parent, std::uint64_t frame);
-  void set_transform(std::uint64_t item, const rs1::Xform &xform, std::uint64_t frame);
-  void set_modulate(std::uint64_t item, const rs1::Color4 &color, std::uint64_t frame);
-  void set_self_modulate(std::uint64_t item, const rs1::Color4 &color, std::uint64_t frame);
+  void set_transform(std::uint64_t item, const rs2::Xform &xform, std::uint64_t frame);
+  void set_modulate(std::uint64_t item, const rs2::Color4 &color, std::uint64_t frame);
+  void set_self_modulate(std::uint64_t item, const rs2::Color4 &color, std::uint64_t frame);
   void set_visible(std::uint64_t item, bool visible, std::uint64_t frame);
   void set_clip(std::uint64_t item, bool clip, std::uint64_t frame);
-  void set_custom_rect(std::uint64_t item, bool enabled, const rs1::Rect4 &rect,
+  void set_custom_rect(std::uint64_t item, bool enabled, const rs2::Rect4 &rect,
                        std::uint64_t frame);
   void set_visibility_layer(std::uint64_t item, std::uint32_t layer, std::uint64_t frame);
   void set_z_index(std::uint64_t item, std::int32_t z, std::uint64_t frame);
@@ -136,11 +154,72 @@ class Mirror {
   void set_material(std::uint64_t item, std::uint64_t material, std::uint64_t frame);
 
   void clear(std::uint64_t item, std::uint64_t frame);
-  void add_rect(std::uint64_t item, const rs1::Rect4 &rect, const rs1::Color4 &color,
+  void add_rect(std::uint64_t item, const rs2::Rect4 &rect, const rs2::Color4 &color,
                 bool antialiased, std::uint64_t frame);
   // Any other hooked canvas_item_add_*; `op` is the RenderingServer method name
   // (stored by value), which is also its omit-op name.
   void add_unsupported(std::uint64_t item, const char *op, std::uint64_t frame);
+
+  // --- textures (gate 2, G2b2; gate2-design.md Q3 "Texture mirror") ----------
+  //
+  // canvas_item_add_texture_rect(_region): `texture` is the engine RID the
+  // command names. A RID the mirror knows becomes its wire id; RID() becomes
+  // `tex: null` (the engine's default white texture); any other RID becomes an
+  // `unsupported` command with reason `unknown-texture` (render-stream-2.md
+  // "Commands"). Both bump content_version like add_rect.
+  void add_texture_rect(std::uint64_t item, const rs2::Rect4 &rect, std::uint64_t texture,
+                        bool tile, const rs2::Color4 &modulate, bool transpose,
+                        std::uint64_t frame);
+  void add_texture_rect_region(std::uint64_t item, const rs2::Rect4 &rect, std::uint64_t texture,
+                               const rs2::Rect4 &src, const rs2::Color4 &modulate,
+                               bool transpose, bool clip_uv, std::uint64_t frame);
+
+  // canvas_item_set_default_texture_filter / _repeat: the item's own fields
+  // (RenderingServer enums; an out-of-range value is ignored, as the server's
+  // ERR_FAIL_INDEX does). They change the item entry, not content_version.
+  void set_texture_filter(std::uint64_t item, std::int32_t filter, std::uint64_t frame);
+  void set_texture_repeat(std::uint64_t item, std::int32_t repeat, std::uint64_t frame);
+
+  // The root viewport's default texture filter and repeat, read at arm
+  // through the Viewport binds (gate2-design.md Q1d), as RenderingServer
+  // enums. Never `default` (the server refuses it).
+  void set_texture_defaults(rs2::Filter filter, rs2::Repeat repeat);
+  // viewport_set_default_canvas_item_texture_filter / _repeat: on the root
+  // viewport, the transaction scalars; on any other viewport, the session-level
+  // `non-root-viewport` entry (gate 0's rule). DEFAULT and out-of-range values
+  // are ignored, as renderer_viewport.cpp:1541-1554 refuses them.
+  void viewport_set_texture_filter(std::uint64_t viewport, std::int32_t filter,
+                                   std::uint64_t frame);
+  void viewport_set_texture_repeat(std::uint64_t viewport, std::int32_t repeat,
+                                   std::uint64_t frame);
+
+  // texture_2d_create: a new id, kind image, version 1, status from the copy
+  // (`bytes` is the GRT1 payload when copy.status is "ok", null otherwise).
+  void texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
+                         std::uint64_t frame);
+  // texture_2d_placeholder_create: a new id, kind placeholder, version 1.
+  void texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame);
+  // texture_2d_update: a known id gets version + 1 and, when the layer is 0 and
+  // the shape equals the texture's, the new payload; otherwise it becomes
+  // `unsupported` (`layered-update`, `update-shape-mismatch`). An unknown RID is
+  // counted (texture_update_unknown) and changes nothing.
+  void texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes, int layer,
+                         std::uint64_t frame);
+  // texture_replace(t, b): t takes b's kind, status, reason and payload at
+  // version + 1, and b's id leaves the table (the storage frees b itself, with
+  // no free call). b unknown: t becomes `unsupported` (`unknown-texture`). t
+  // unknown: b's id leaves the table. t == b: nothing.
+  void texture_replace(std::uint64_t texture, std::uint64_t by_texture, std::uint64_t frame);
+
+  // spurious-texture-update sabotage (gate2-design.md G2b2): bumps the version of
+  // the lowest-id `ok` image and re-copies its identical bytes. Returns that
+  // texture's RID (0 when there is none) so the caller can write the matching
+  // hook-log line.
+  std::uint64_t spurious_texture_update(std::uint64_t frame);
+
+  // True when the omit-op sabotage drops `op` at `frame` (the hooks also leave
+  // such a texture call out of the hook log's registry; rs_resource_log.h).
+  bool omits(const char *op, std::uint64_t frame) const;
 
   // --- publication -----------------------------------------------------------
 
@@ -151,21 +230,41 @@ class Mirror {
   // per distinct command name, unsupported-state for a material, and
   // draw-index-tie per render-stream-1.md "Invariant 9") by item id, then op
   // (byte order). `seq` and `frame` are copied into the snapshot.
-  rs1::Snapshot snapshot(std::uint64_t seq, std::uint64_t frame) const;
+  //
+  // Since G2b2 the copy also holds the texture table (sorted by id; a `freed`
+  // tombstone that no command names any more leaves the table here, at the
+  // first snapshot in which nothing names it), the derived item-level
+  // `unknown-texture` / `unsupported-texture` entries (render-stream-2.md
+  // "Item-level unsupported entries"), the root's default filter and repeat,
+  // and the payload of every `ok` image entry.
+  Captured snapshot(std::uint64_t seq, std::uint64_t frame);
 
   MirrorStats stats() const;
 
  private:
   struct Item {
-    rs1::ItemState state;
+    rs2::ItemState state;
     std::uint64_t rid = 0;
-    // Non-null material: reported in Snapshot::unsupported only (rs1::ItemState
+    // Non-null material: reported in Snapshot::unsupported only (rs2::ItemState
     // has no field for it).
     bool unsupported_state = false;
   };
   struct Canvas {
-    rs1::CanvasState state;
+    rs2::CanvasState state;
     std::uint64_t rid = 0;
+  };
+  struct Texture {
+    std::uint32_t id = 0;
+    std::uint64_t rid = 0;  // 0 once freed (a tombstone) or retired
+    rs2::TextureKind kind = rs2::TextureKind::Image;
+    rs2::TextureStatus status = rs2::TextureStatus::Ok;
+    bool has_reason = false;
+    rs2::TextureReason reason = rs2::TextureReason::UnsupportedFormat;
+    std::uint64_t version = 1;
+    // The last accepted copy's description (kind image): its shape decides
+    // whether an update is accepted, as in the hook log.
+    PayloadCopy copy;
+    PayloadPtr bytes;  // the payload while status is ok and kind image
   };
   enum class Kind : std::uint8_t { Canvas, Item };
   struct Target {
@@ -185,13 +284,23 @@ class Mirror {
   // an item untracked because of the cap -> silently ignored.
   Item *item_for(std::uint64_t rid, const char *op, std::uint64_t frame);
   void unknown(std::uint64_t rid, const char *op, std::uint64_t frame);
-  void fail(rs1::FailureReason reason, const std::string &detail);
-  void session_unsupported(const char *op, rs1::UnsupportedReason reason);
-  std::vector<std::uint32_t> *children_of(rs1::ParentKind kind, std::uint32_t id);
+  void fail(rs2::FailureReason reason, const std::string &detail);
+  void session_unsupported(const char *op, rs2::UnsupportedReason reason);
+  std::vector<std::uint32_t> *children_of(rs2::ParentKind kind, std::uint32_t id);
   void detach(Item *item);
+  // Appends one command (cap checked) and bumps content_version.
+  void push_command(Item *item, rs2::Command command, std::uint64_t frame);
+  // A texture argument as a command: tex id / null, or false for an unknown RID.
+  bool texture_ref(std::uint64_t rid, bool *has_tex, std::uint32_t *tex) const;
+  Texture *find_texture(std::uint64_t rid);
+  bool texture_referenced(std::uint32_t id) const;
+  // Takes `id` out of the table: a `freed` tombstone while a command names it,
+  // gone otherwise.
+  void retire_texture(std::uint32_t id);
+  static rs2::TextureEntry wire_entry(const Texture &texture);
   // render-stream-1.md "Invariant 9" over one container's child list.
   void find_ties(const std::vector<std::uint32_t> &children,
-                 std::vector<rs1::UnsupportedRef> *out) const;
+                 std::vector<rs2::UnsupportedRef> *out) const;
 
   mutable std::mutex mutex_;
   std::uint64_t epoch_ = 0;
@@ -199,16 +308,21 @@ class Mirror {
   std::string omit_op_;
   std::uint64_t omit_from_frame_ = 0;
   bool degenerate_host_size_ = false;
-  std::uint32_t next_canvas_id_ = rs1::kRootCanvasId + 1;
+  std::uint32_t next_canvas_id_ = rs2::kRootCanvasId + 1;
   std::uint32_t next_item_id_ = 1;
   std::uint64_t root_viewport_rid_ = 0;
   std::map<std::uint32_t, Canvas> canvases_;  // ordered by id
   std::map<std::uint32_t, Item> items_;        // ordered by id
+  std::map<std::uint32_t, Texture> textures_;  // ordered by id, tombstones included
+  std::unordered_map<std::uint64_t, std::uint32_t> texture_by_rid_;
+  std::uint32_t next_texture_id_ = 1;
+  rs2::Filter default_filter_ = rs2::Filter::Linear;   // the server's initial values
+  rs2::Repeat default_repeat_ = rs2::Repeat::Disabled;  // (renderer_viewport.h:114-115)
   std::unordered_map<std::uint64_t, std::uint32_t> canvas_by_rid_;
   std::unordered_map<std::uint64_t, std::uint32_t> item_by_rid_;
   std::unordered_set<std::uint64_t> untracked_items_;
-  std::vector<rs1::Failure> failures_;
-  std::vector<rs1::UnsupportedRef> session_unsupported_;
+  std::vector<rs2::Failure> failures_;
+  std::vector<rs2::UnsupportedRef> session_unsupported_;
   MirrorStats stats_;
 };
 
@@ -219,14 +333,14 @@ class Mirror {
 void mirror_enable(bool enabled);
 bool mirror_enabled();
 
-void mirror_set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid, const rs1::Xform &xform);
+void mirror_set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid, const rs2::Xform &xform);
 void mirror_fail_root_query(const std::string &detail);
 void mirror_fail_root_size_enforce(const std::string &detail);
 void mirror_set_degenerate_host_size(bool on);
 void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
 std::uint64_t mirror_epoch();
-rs1::Snapshot mirror_snapshot(std::uint64_t seq, std::uint64_t frame);
+Captured mirror_snapshot(std::uint64_t seq, std::uint64_t frame);
 MirrorStats mirror_stats();
 
 // The process-wide Mirror, for the hook taps. Callers check mirror_enabled()

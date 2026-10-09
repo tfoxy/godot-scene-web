@@ -184,6 +184,43 @@ int main() {
   lines = split_lines(log.take_lines());
   EXPECT(lines.size() == 1 && has(lines[0], "\"root_viewport\":false}"));
 
+  // G2b2: an op the omit-op sabotage dropped is logged, marked, and leaves the registry alone.
+  log.texture_2d_create(main_ctx, 500, rgba8(4, 4, "f0"));          // id 2
+  log.texture_2d_update(main_ctx, 500, rgba8(4, 4, "f1"), 0, true);
+  log.texture_replace(main_ctx, 500, 400, true);
+  log.free_rid(main_ctx, 400, true);
+  log.texture_2d_create(main_ctx, 501, rgba8(4, 4, "f2"), true);
+  log.texture_2d_placeholder_create(main_ctx, 502, true);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 6);
+  EXPECT(has(lines[1], "\"id\":2,\"by_id\":null,\"rid\":\"500\",\"version\":1,") &&
+         has(lines[1], "\"hash\":\"f1\"") && has(lines[1], ",\"sabotage\":true,\"omitted\":true}"));
+  EXPECT(has(lines[2], "\"id\":2,\"by_id\":1,\"rid\":\"500\",\"version\":1,") &&
+         has(lines[2], "\"omitted\":true}"));
+  EXPECT(has(lines[3], "\"op\":\"free\",\"id\":1,") && has(lines[3], "\"status\":\"ok\"") &&
+         has(lines[3], "\"omitted\":true}"));
+  EXPECT(has(lines[4], "\"op\":\"texture_2d_create\",\"id\":null,") &&
+         has(lines[4], "\"omitted\":true}"));
+  EXPECT(has(lines[5], "\"op\":\"texture_2d_placeholder_create\",\"id\":null,"));
+  EXPECT(log.texture_id(500) == 2 && log.texture_id(400) == 1 && log.texture_id(501) == 0 &&
+         log.texture_id(502) == 0);
+  EXPECT(!has(lines[0], "sabotage"));
+  // spurious-texture-update: version + 1, the same payload, marked sabotage (not omitted).
+  log.spurious_update(main_ctx, 500);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 1 && has(lines[0], "\"op\":\"texture_2d_update\",\"id\":2,") &&
+         has(lines[0], "\"version\":2,") && has(lines[0], "\"hash\":\"f0\"") &&
+         has(lines[0], "\"layer\":0,") && has(lines[0], ",\"sabotage\":true}"));
+  // Publisher events.
+  log.resource_event(main_ctx, "store", "abcd", 1135, "ok");
+  log.resource_event(main_ctx, "inline", "abcd", 1135, "ok", 3);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 2);
+  EXPECT(has(lines[0], "\"op\":\"store\",\"id\":null,") && has(lines[0], "\"status\":\"ok\"") &&
+         has(lines[0], "\"format\":null,") && has(lines[0], "\"payload_bytes\":1135,\"hash\":\"abcd\"") &&
+         has(lines[0], "\"conn\":null,"));
+  EXPECT(has(lines[1], "\"op\":\"inline\"") && has(lines[1], "\"conn\":3,"));
+
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_resource_log_test: %d failure(s)\n", g_failures);
     return 1;

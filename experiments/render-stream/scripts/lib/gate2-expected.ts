@@ -106,6 +106,17 @@ export interface Gate2ExpectedStep {
    * `<op>@other` on any other thread, counted over the step's frame window */
   census: Record<string, number>;
   invariants: Gate2Invariant[];
+  /** G2b2: a fresh-cache file-mode receiver's texture traffic summed over the step's window
+   * (fixtures/gate2/make_expected.py receiver_resources, derived from gate2-design.md D5) */
+  receiver_resources: Gate2ReceiverResources;
+}
+
+export interface Gate2ReceiverResources {
+  fetched: number;
+  created: number;
+  updated: number;
+  replaced: number;
+  freed: number;
 }
 
 export interface Gate2VariantStep {

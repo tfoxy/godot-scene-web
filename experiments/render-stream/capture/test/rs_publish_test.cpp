@@ -1,32 +1,41 @@
-// Unit tests for the render-stream/1 publisher (src/rs1_publish.cpp), protocol/gate1-design.md
-// "G1b2" and Q4 "Frame callback" (file sinks).
+// Unit tests for the render-stream/2 publisher (src/rs_publish.cpp), protocol/gate1-design.md
+// "G1b2" and Q4 "Frame callback" (file sinks), gate2-design.md "G2b2" and Q4 "File sinks".
 //
-// Drives Publisher against two MemoryRecordSinks (no disk I/O) with snapshots taken from a real
-// rs::Mirror, and checks every record byte for byte against rs1_codec/rs1_diff applied to the
-// same snapshots: both sinks start with the /1 magic and their own session; the full sink holds
-// only full transactions; the patch sink holds seq 1 full and patches with base_seq = seq - 1
-// after it, and resolving that patch chain reproduces every full state; the freeze-frame,
-// perturb-transform and patch-drop-item sabotages; per-sink end stats; and the
-// parse_sabotage() accept/refuse matrix. Byte-level golden compatibility of the codec and the
-// diff themselves is rs1_codec_test's and rs1_diff_test's job.
+// Drives Publisher against two MemoryRecordSinks with snapshots taken from a real rs::Mirror,
+// and checks every record byte for byte against rs2_codec/rs2_diff applied to the same
+// snapshots: both sinks start with the /2 magic and their own session; the full sink holds only
+// full transactions; the patch sink holds seq 1 full and patches with base_seq = seq - 1 after
+// it, and resolving that patch chain reproduces every full state; the freeze-frame,
+// perturb-transform and patch-drop-item sabotages; per-sink end stats; the parse_sabotage()
+// accept/refuse matrix; and (G2b2) the store directory (content-addressed files, index,
+// wrong-hash), inline resource records per sink, resource-store-missing and stale-texture.
+// Byte-level golden compatibility of the codec and the diff themselves is rs2_codec_test's and
+// rs2_diff_test's job.
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
-#include "rs1_codec.h"
-#include "rs1_diff.h"
-#include "rs1_golden_states.h"
-#include "rs1_publish.h"
-#include "rs1_snapshot.h"
+#include "report.h"
+#include "rs2_codec.h"
+#include "rs2_diff.h"
+#include "rs2_golden_states.h"
+#include "rs2_snapshot.h"
 #include "rs_mirror.h"
+#include "rs_publish.h"
+#include "rs_resource_store.h"
+#include "rs_sha256.h"
+#include "rs_texture_payload.h"
 
 namespace {
 
-using namespace grc::rs1;  // NOLINT
+using namespace grc::rs2;  // NOLINT
+using grc::rs::Captured;
 using grc::rs::Mirror;
 
 int g_failures = 0;
@@ -51,9 +60,25 @@ const std::string kSessionId = "0123456789abcdef0123456789abcdef";
 
 Session make_template() {
   // The golden session with an empty stream: the publisher fills `stream` per sink.
-  Session tmpl = golden::golden_session(Encoding::Full, std::string(), kSessionId);
+  Session tmpl = golden::golden_session(Encoding::Full, std::string(), kSessionId,
+                                        Delivery::OutOfBand);
   tmpl.stream = StreamInfo();
   return tmpl;
+}
+
+// The golden session's resource policy: out of band, 16 MiB payloads, the gate 2 formats.
+ResourcePolicy golden_policy(std::uint64_t inline_max_bytes = 0) {
+  ResourcePolicy policy;
+  policy.permitted_formats = golden::kPermittedFormats;
+  policy.max_payload_bytes = 16777216;
+  policy.inline_max_bytes = inline_max_bytes;
+  return policy;
+}
+
+Captured captured(Snapshot s) {
+  Captured c;
+  c.state = std::move(s);
+  return c;
 }
 
 std::vector<std::uint8_t> nth_write(const MemoryRecordSink &sink, std::size_t n) {
@@ -154,8 +179,8 @@ std::vector<Snapshot> publish_script(Publisher *publisher, std::uint64_t snapsho
   std::vector<Snapshot> fed;
   for (int frame = 1; frame <= kFrames; ++frame) {
     drive_frame(&m, frame);
-    Snapshot s = m.snapshot(0, static_cast<std::uint64_t>(frame));
-    fed.push_back(s);
+    Captured s = m.snapshot(0, static_cast<std::uint64_t>(frame));
+    fed.push_back(s.state);
     check(publisher->publish(s, static_cast<std::uint64_t>(frame), snapshot_ns),
           "publish frame " + std::to_string(frame));
   }
@@ -169,7 +194,7 @@ void test_start_two_sinks() {
   MemoryRecordSink patch;
   full.open("memory://full");
   patch.open("memory://patch");
-  Publisher publisher(&full, &patch);
+  Publisher publisher(&full, &patch, SabotageConfig(), golden_policy());
   const Session tmpl = make_template();
   check(publisher.start(tmpl), "start() with two sinks");
 
@@ -187,9 +212,9 @@ void test_start_two_sinks() {
         "transport file, connection null");
 
   const std::vector<std::uint8_t> magic_bytes = magic();
-  check(magic_bytes.size() == 8 && magic_bytes[3] == 0x31, "the /1 magic GRS1");
+  check(magic_bytes.size() == 8 && magic_bytes[3] == 0x32, "the /2 magic GRS2");
   check(nth_write(full, 0) == magic_bytes && nth_write(patch, 0) == magic_bytes,
-        "both sinks start with the /1 magic");
+        "both sinks start with the /2 magic");
 
   Session expected_full = tmpl;
   expected_full.stream.stream_id = fs.stream.stream_id;
@@ -220,10 +245,11 @@ void test_sink_presence() {
     check(publisher.last_published() == nullptr, "no last_published() before the first publish");
     const std::vector<Snapshot> fed_full = publish_script(&publisher);
     // The live adapter (G1c2) delivers the same published copy, kept even without a patch sink.
-    const Snapshot *last = publisher.last_published();
-    check(last != nullptr && last->seq == kFrames &&
-              encode_transaction(make_full(*last)) ==
-                  encode_transaction(make_full(stamped(fed_full.back(), kFrames, last->frame))),
+    const Captured *last = publisher.last_published();
+    check(last != nullptr && last->state.seq == kFrames &&
+              encode_transaction(make_full(last->state)) ==
+                  encode_transaction(
+                      make_full(stamped(fed_full.back(), kFrames, last->state.frame))),
           "last_published() is the last published copy, seq and frame stamped");
     check(publisher.finish(EndReason::Shutdown), "finish full only");
     check(publisher.has_sink(Encoding::Full) && !publisher.has_sink(Encoding::Patch),
@@ -296,7 +322,7 @@ void test_full_and_patch_chain() {
           "resolving the patch chain equals the published full snapshot" + at);
   }
 
-  // Frame 4 changed nothing: an empty patch (render-stream-1.md "Patch transactions").
+  // Frame 4 changed nothing: an empty patch (render-stream-2.md "Full and patch transactions").
   const Transaction unchanged = make_patch(stamped(fed[2], 3, 3), stamped(fed[3], 4, 4));
   check(unchanged.items.empty() && unchanged.canvases.empty() && unchanged.removed_items.empty() &&
             unchanged.removed_canvases.empty(),
@@ -406,7 +432,7 @@ void test_freeze_frame() {
   publisher.start(make_template());
   const float xs[] = {10.0f, 20.0f, 30.0f, 40.0f};
   for (std::uint64_t f = 1; f <= 4; ++f) {
-    check(publisher.publish(one_item(xs[f - 1]), f, 0), "freeze: publish");
+    check(publisher.publish(captured(one_item(xs[f - 1])), f, 0), "freeze: publish");
   }
   // Frames 3 and 4 republish frame 2's content with a fresh seq/frame, on both sinks.
   for (std::uint64_t f = 1; f <= 4; ++f) {
@@ -434,7 +460,7 @@ void test_perturb_transform() {
   Publisher publisher(&full, &patch, sabotage);
   publisher.start(make_template());
   for (std::uint64_t f = 1; f <= 3; ++f) {
-    publisher.publish(one_item(static_cast<float>(f) * 10.0f), f, 0);
+    publisher.publish(captured(one_item(static_cast<float>(f) * 10.0f)), f, 0);
   }
   Snapshot perturbed = stamped(one_item(30.0f), 3, 3);
   perturbed.items[0].xform[4] += 1.0f;  // origin.x, from frame 3 on
@@ -550,6 +576,14 @@ void test_parse_sabotage() {
       {"stale-coalesce", nullptr, nullptr, true, SabotageKind::StaleCoalesce, 21,
        "stale-coalesce @21 (live)"},
       {"ignore-credit", "5", "free", false, SabotageKind::None, 0, "op with ignore-credit"},
+      {"stale-texture", "61", nullptr, true, SabotageKind::StaleTexture, 61, "stale-texture @61"},
+      {"wrong-hash", "61", nullptr, true, SabotageKind::WrongHash, 61, "wrong-hash @61"},
+      {"spurious-texture-update", "21", nullptr, true, SabotageKind::SpuriousTextureUpdate, 21,
+       "spurious-texture-update @21"},
+      {"wrong-hash", "61", "free", false, SabotageKind::None, 0, "op with wrong-hash"},
+      {"drop-resource", "61", nullptr, false, SabotageKind::None, 0,
+       "drop-resource is G2c2's (refused)"},
+      {"unpin", "61", nullptr, false, SabotageKind::None, 0, "unpin is G2c2's (refused)"},
       {"not-a-real-kind", nullptr, nullptr, false, SabotageKind::None, 0, "unknown kind"},
       {"", nullptr, nullptr, false, SabotageKind::None, 0, "empty kind"},
       {"freeze-frame", "0", nullptr, false, SabotageKind::None, 0, "frame 0"},
@@ -582,17 +616,313 @@ void test_generate_id() {
   check(a != b, "two generate_id() calls differ");
 }
 
-void test_gate1_features() {
-  const Features f = gate1_features();
-  check(f.ops == std::vector<std::string>{"add_rect"}, "gate1_features().ops");
-  check(f.item_state == golden::kFeatureItemState, "gate1_features().item_state");
+void test_gate2_features() {
+  const Features f = gate2_features();
+  check(f.ops == golden::kFeatureOps, "gate2_features().ops");
+  check(f.item_state == golden::kFeatureItemState, "gate2_features().item_state");
+  check(f.resources == golden::kFeatureResources, "gate2_features().resources");
   check(f.observed_unsupported_ops == golden::kFeatureObservedUnsupported,
-        "gate1_features().observed_unsupported_ops");
-  check(f.unobserved == golden::kFeatureUnobserved, "gate1_features().unobserved");
-  check(f.publication == "snapshot-or-patch", "gate1_features().publication");
-  for (const auto *list : {&f.ops, &f.item_state, &f.observed_unsupported_ops, &f.unobserved}) {
-    check(std::is_sorted(list->begin(), list->end()), "gate1_features() arrays sorted");
+        "gate2_features().observed_unsupported_ops");
+  check(f.unobserved == golden::kFeatureUnobserved, "gate2_features().unobserved");
+  check(f.publication == "snapshot-or-patch", "gate2_features().publication");
+  for (const auto *list :
+       {&f.ops, &f.item_state, &f.resources, &f.observed_unsupported_ops, &f.unobserved}) {
+    check(std::is_sorted(list->begin(), list->end()), "gate2_features() arrays sorted");
   }
+}
+
+void test_resources_info() {
+  const ResourcesInfo oob = resources_info(golden_policy(0), Fetch::Directory);
+  check(oob.delivery == Delivery::OutOfBand && oob.fetch == Fetch::Directory &&
+            !oob.has_http_path && oob.auth == Auth::None,
+        "inline_max 0: out-of-band, directory");
+  const ResourcesInfo mixed = resources_info(golden_policy(4096), Fetch::Directory);
+  check(mixed.delivery == Delivery::Mixed && mixed.fetch == Fetch::Directory,
+        "0 < inline_max < max_payload: mixed");
+  const ResourcesInfo all_inline = resources_info(golden_policy(16777216), Fetch::Http);
+  check(all_inline.delivery == Delivery::Inline && all_inline.fetch == Fetch::None &&
+            !all_inline.has_http_path,
+        "inline_max >= max_payload: inline, fetch none (no http path advertised)");
+  const ResourcesInfo http = resources_info(golden_policy(0), Fetch::Http);
+  check(http.fetch == Fetch::Http && http.has_http_path && http.http_path == "/resources/sha256/",
+        "an out-of-band live stream advertises the http path");
+  Session expected = golden::golden_session(Encoding::Full, std::string(32, '1'), kSessionId,
+                                            Delivery::OutOfBand);
+  Session built = expected;
+  built.resources = oob;
+  check(encode_session(built) == encode_session(expected),
+        "the golden out-of-band session's resources object, byte for byte");
+}
+
+// ----------------------------------------------------------------------------- resources (G2b2)
+
+grc::rs::PayloadCopy texture_copy(std::int64_t w, std::int64_t h, std::uint8_t value,
+                                  grc::rs::PayloadPtr *bytes) {
+  const std::vector<std::uint8_t> data(static_cast<std::size_t>(w * h * 4), value);
+  grc::rs::PayloadCopy copy;
+  copy.status = "ok";
+  copy.format = 5;
+  copy.width = w;
+  copy.height = h;
+  copy.mipmaps_known = true;
+  copy.mipmaps = false;
+  copy.data_bytes = static_cast<std::int64_t>(data.size());
+  auto payload = std::make_shared<grc::rs::PayloadBytes>(
+      grc::rs::encode_payload(5, w, h, false, data.data(), data.size()));
+  copy.payload_bytes = static_cast<std::int64_t>(payload->size());
+  copy.hash = grc::sha256_hex(payload->data(), payload->size());
+  *bytes = payload;
+  return copy;
+}
+
+// A textured scene: frame 1 creates A (4x4, 10s) and a 2x2 B (20s) drawn by one item each; frame
+// 2 moves the A drawer (transform only); frame 3 updates A to 30s; frame 4 creates C (8x8) and
+// draws it; frame 5 changes nothing.
+struct TextureScene {
+  Mirror m;
+  std::string hash_a0, hash_a1, hash_b, hash_c;
+  std::uint64_t bytes_a0 = 0, bytes_b = 0;
+
+  TextureScene() {
+    m.reset();
+    m.set_root(kRootViewport, kRootCanvas, kIdentityXform);
+  }
+  Captured frame(int f) {
+    const std::uint64_t u = static_cast<std::uint64_t>(f);
+    grc::rs::PayloadPtr bytes;
+    if (f == 1) {
+      auto a = texture_copy(4, 4, 10, &bytes);
+      hash_a0 = a.hash;
+      bytes_a0 = bytes->size();
+      m.texture_2d_create(500, a, bytes, u);
+      auto b = texture_copy(2, 2, 20, &bytes);
+      hash_b = b.hash;
+      bytes_b = bytes->size();
+      m.texture_2d_create(501, b, bytes, u);
+      m.canvas_item_create(100, u);
+      m.set_parent(100, kRootCanvas, u);
+      m.add_texture_rect(100, kRect, 500, false, kRed, false, u);
+      m.canvas_item_create(101, u);
+      m.set_parent(101, kRootCanvas, u);
+      m.set_draw_index(101, 1, u);
+      m.add_texture_rect(101, kRect, 501, false, kRed, false, u);
+    } else if (f == 2) {
+      m.set_transform(100, {1, 0, 0, 1, 8, 0}, u);
+    } else if (f == 3) {
+      auto a1 = texture_copy(4, 4, 30, &bytes);
+      hash_a1 = a1.hash;
+      m.texture_2d_update(500, a1, bytes, 0, u);
+    } else if (f == 4) {
+      auto c = texture_copy(8, 8, 40, &bytes);
+      hash_c = c.hash;
+      m.texture_2d_create(502, c, bytes, u);
+      m.add_texture_rect(101, kRect, 502, false, kRed, false, u);
+    }
+    return m.snapshot(0, u);
+  }
+};
+
+std::string tmp_dir(const std::string &name) {
+  const std::string dir = std::string(GRC_TEST_TMP_DIR) + "/" + name;
+  const int removed = std::system(("rm -rf '" + dir + "'").c_str());
+  check(removed == 0, "clean " + dir);
+  return dir;
+}
+
+std::vector<std::uint8_t> read_bytes(const std::string &path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+}
+
+std::string read_text(const std::string &path) {
+  std::ifstream in(path);
+  std::stringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+
+std::string sha_of(const std::vector<std::uint8_t> &bytes) {
+  return grc::sha256_hex(bytes.data(), bytes.size());
+}
+
+// The record types of a sink's writes after magic and session: 'r' resource, 't' transaction.
+std::string record_kinds(const MemoryRecordSink &sink) {
+  std::string out;
+  for (std::size_t i = 2; i < sink.writes.size(); ++i) {
+    const std::vector<std::uint8_t> bytes = nth_write(sink, i);
+    out.push_back(contains(bytes, "\"type\":\"resource\"")      ? 'r'
+                  : contains(bytes, "\"type\":\"transaction\"") ? 't'
+                                                                  : 'e');
+  }
+  return out;
+}
+
+void test_store_directory() {
+  const std::string dir = tmp_dir("store");
+  grc::rs::ResourceStore store;
+  std::string error;
+  check(store.open(dir, &error), "store opens: " + error);
+  MemoryRecordSink full;
+  MemoryRecordSink patch;
+  full.open("memory://full");
+  patch.open("memory://patch");
+  Publisher publisher(&full, &patch, SabotageConfig(), golden_policy(0), &store);
+  std::vector<std::string> events;
+  publisher.set_resource_events([&events](const char *op, const std::string &hash,
+                                          std::uint64_t, bool ok, std::uint64_t frame) {
+    events.push_back(std::string(op) + ":" + hash.substr(0, 8) + ":" + (ok ? "ok" : "failed") +
+                     "@" + std::to_string(frame));
+  });
+  check(publisher.start(make_template()), "start with a store");
+  TextureScene scene;
+  for (int f = 1; f <= 5; ++f) {
+    check(publisher.publish(scene.frame(f), static_cast<std::uint64_t>(f), 0),
+          "publish with a store, frame " + std::to_string(f));
+  }
+  publisher.finish(EndReason::Shutdown);
+  check(record_kinds(full) == "ttttte" && record_kinds(patch) == "ttttte",
+        "out of band: no resource record in either sink");
+  check(publisher.stats(Encoding::Full).resource_records == 0, "resource_records 0");
+  check(store.hashes() == 4, "the store holds every ok hash ever published (A0, B, A1, C)");
+  for (const std::string &hash : {scene.hash_a0, scene.hash_b, scene.hash_a1, scene.hash_c}) {
+    const std::vector<std::uint8_t> file = read_bytes(dir + "/sha256/" + hash + ".grt");
+    check(!file.empty() && sha_of(file) == hash, "store file " + hash.substr(0, 8) +
+                                                     " hashes to its name");
+  }
+  const std::string index = read_text(dir + "/index.jsonl");
+  check(index.find("{\"hash\":\"" + scene.hash_a0 + "\",\"bytes\":" +
+                   std::to_string(scene.bytes_a0) +
+                   ",\"format\":\"RGBA8\",\"width\":4,\"height\":4,\"mipmaps\":false,"
+                   "\"first_frame\":1}") != std::string::npos,
+        "index.jsonl names hash, bytes, shape and first frame");
+  check(index.find("\"first_frame\":3}") != std::string::npos &&
+            index.find("\"first_frame\":4}") != std::string::npos,
+        "later hashes are stored at their first publication");
+  check(events.size() == 4 && events[0] == "store:" + scene.hash_a0.substr(0, 8) + ":ok@1",
+        "one store event per stored hash");
+}
+
+void test_inline_records() {
+  MemoryRecordSink full;
+  MemoryRecordSink patch;
+  full.open("memory://full");
+  patch.open("memory://patch");
+  // A threshold between B's payload and A's: mixed delivery, so B and nothing else goes inline,
+  // and the larger payloads need a store.
+  TextureScene probe;
+  probe.frame(1);
+  const std::uint64_t threshold = probe.bytes_b;
+  check(probe.bytes_b < probe.bytes_a0, "B's payload is the smaller one");
+  const std::string dir = tmp_dir("inline-store");
+  grc::rs::ResourceStore store;
+  std::string error;
+  store.open(dir, &error);
+  Publisher publisher(&full, &patch, SabotageConfig(), golden_policy(threshold), &store);
+  publisher.start(make_template());
+  check(publisher.session(Encoding::Full).resources.delivery == Delivery::Mixed,
+        "a mixed session");
+  TextureScene scene;
+  for (int f = 1; f <= 5; ++f) {
+    publisher.publish(scene.frame(f), static_cast<std::uint64_t>(f), 0);
+  }
+  publisher.finish(EndReason::Shutdown);
+  check(record_kinds(full) == "rttttte" && record_kinds(patch) == "rttttte",
+        "each sink carries B inline once, before the first transaction naming it");
+  check(publisher.stats(Encoding::Full).resource_records == 1 &&
+            publisher.stats(Encoding::Full).resource_bytes == probe.bytes_b &&
+            publisher.stats(Encoding::Patch).resource_records == 1,
+        "per-sink resource_records/resource_bytes");
+  check(store.hashes() == 4, "the store still holds every hash (mixed: the store is complete)");
+
+  // Every payload inline: no store needed, A1 and C arrive before their first transaction.
+  MemoryRecordSink f2;
+  f2.open("memory://inline");
+  Publisher all_inline(&f2, nullptr, SabotageConfig(), golden_policy(16777216), nullptr);
+  all_inline.start(make_template());
+  TextureScene scene2;
+  for (int f = 1; f <= 5; ++f) {
+    check(all_inline.publish(scene2.frame(f), static_cast<std::uint64_t>(f), 0),
+          "inline publish without a store");
+  }
+  all_inline.finish(EndReason::Shutdown);
+  check(record_kinds(f2) == "rrttrtrtte", "A0, B; seq 1, 2; A1; seq 3; C; seq 4, 5; end");
+  const EndStats &stats = all_inline.stats(Encoding::Full);
+  check(stats.bytes_total == f2.bytes.size() - f2.writes.back() &&
+            stats.resource_records == 4,
+        "bytes_total counts resource records; resource_records 4");
+  std::uint64_t max_record = 0;
+  for (std::size_t i = 1; i + 1 < f2.writes.size(); ++i) {
+    max_record = std::max<std::uint64_t>(max_record, f2.writes[i]);
+  }
+  check(stats.max_record_bytes == max_record, "max_record_bytes includes resource records");
+  check(all_inline.session(Encoding::Full).resources.fetch == Fetch::None, "inline: fetch none");
+
+  // Out of band with no store: resource-store-missing at the first publish.
+  MemoryRecordSink f3;
+  f3.open("memory://missing");
+  Publisher missing(&f3, nullptr, SabotageConfig(), golden_policy(0), nullptr);
+  missing.start(make_template());
+  TextureScene scene3;
+  check(!missing.publish(scene3.frame(1), 1, 0) &&
+            missing.error().rfind("resource-store-missing", 0) == 0,
+        "an out-of-band payload with no store is resource-store-missing");
+}
+
+void test_wrong_hash() {
+  const std::string dir = tmp_dir("wrong-hash");
+  grc::rs::ResourceStore store;
+  std::string error;
+  store.open(dir, &error);
+  MemoryRecordSink full;
+  full.open("memory://full");
+  SabotageConfig sabotage;
+  sabotage.kind = SabotageKind::WrongHash;
+  sabotage.frame = 3;
+  Publisher publisher(&full, nullptr, sabotage, golden_policy(0), &store);
+  publisher.start(make_template());
+  TextureScene scene;
+  for (int f = 1; f <= 5; ++f) {
+    publisher.publish(scene.frame(f), static_cast<std::uint64_t>(f), 0);
+  }
+  check(store.corrupted_hash() == scene.hash_a1,
+        "wrong-hash corrupts the first hash first stored at or after the frame (A1)");
+  const std::vector<std::uint8_t> a1 = read_bytes(dir + "/sha256/" + scene.hash_a1 + ".grt");
+  const std::vector<std::uint8_t> c = read_bytes(dir + "/sha256/" + scene.hash_c + ".grt");
+  check(!a1.empty() && sha_of(a1) != scene.hash_a1, "the corrupted file no longer hashes to its name");
+  check(sha_of(c) == scene.hash_c, "later hashes are stored intact");
+  const std::size_t offset = grc::rs::ResourceStore::first_data_offset(a1);
+  check(offset > 12 && a1[offset] == static_cast<std::uint8_t>(30 ^ 0xFF) &&
+            a1[offset + 1] == 30,
+        "exactly the first data byte is flipped");
+}
+
+void test_stale_texture() {
+  MemoryRecordSink full;
+  full.open("memory://full");
+  const std::string dir = tmp_dir("stale");
+  grc::rs::ResourceStore store;
+  std::string error;
+  store.open(dir, &error);
+  SabotageConfig sabotage;
+  sabotage.kind = SabotageKind::StaleTexture;
+  sabotage.frame = 3;
+  Publisher publisher(&full, nullptr, sabotage, golden_policy(0), &store);
+  publisher.start(make_template());
+  TextureScene scene;
+  std::vector<Captured> fed;
+  for (int f = 1; f <= 5; ++f) {
+    fed.push_back(scene.frame(f));
+    publisher.publish(fed.back(), static_cast<std::uint64_t>(f), 0);
+  }
+  check(publisher.stale_texture_id() == 1, "stale-texture froze texture 1 (A, updated at frame 3)");
+  const Captured *last = publisher.last_published();
+  const TextureEntry &a = last->state.textures[0];
+  check(a.id == 1 && a.version == 1 && a.hash == scene.hash_a0 &&
+            last->payloads.count(scene.hash_a0) == 1 && last->payloads.count(scene.hash_a1) == 0,
+        "the published copy keeps A's pre-change version, hash and payload");
+  check(fed.back().state.textures[0].version == 2, "while the mirror itself moved on");
+  check(!store.has(scene.hash_a1), "the stale version's successor is never stored");
 }
 
 }  // namespace
@@ -607,11 +937,16 @@ int main() {
   test_patch_drop_item();
   test_parse_sabotage();
   test_generate_id();
-  test_gate1_features();
+  test_gate2_features();
+  test_resources_info();
+  test_store_directory();
+  test_inline_records();
+  test_wrong_hash();
+  test_stale_texture();
   if (g_failures != 0) {
-    std::fprintf(stderr, "rs1_publish_test: %d of %d checks failed\n", g_failures, g_checks);
+    std::fprintf(stderr, "rs_publish_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;
   }
-  std::printf("rs1_publish_test: all %d checks passed\n", g_checks);
+  std::printf("rs_publish_test: all %d checks passed\n", g_checks);
   return 0;
 }

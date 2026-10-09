@@ -1,26 +1,28 @@
-// Gate 2 checks and leg classification (protocol/gate2-design.md "Q7" and "G2a").
+// Gate 2 checks and leg classification (protocol/gate2-design.md "Q7", "G2a" and "G2b2").
 //
 // Everything here reads an evidence directory written by run-gate2.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate2.ts can drive it with fabricated trees.
 // Nothing launches a process. Classification never reads `session.sabotage`.
 //
-// G2a runs on render-stream/1: texture draws are still `unsupported` commands in the recording,
-// and the evidence of what happened to textures is the capture's hook log,
+// Group g2a: the evidence of what happened to textures is the capture's hook log,
 // evidence/resources.jsonl (render-stream-resource-log/1, capture/src/rs_resource_log.h), checked
 // against the fixture's own texture log (RS_FIXTURE_TEXTURE_LOG, hashed by fixtures/gate2/
-// payload.gd) and against expected.json's census.
+// payload.gd) and against expected.json's census. Since G2b2 the recordings are render-stream/2:
+// texture draws are real commands, so the capture leg classifies success. Group g2b
+// (receivers, store, inline, live inline, sabotages) lives in gate2b-checks.ts.
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 2"):
 //   legs.json, binary.json
 //   import/fixture/                editor --import of fixtures/gate2
 //   capture/                       400-frame capture host, GRC_ROOT_SIZE=enforce-min-size:
 //                                  evidence/ (result, counters, root, resources.jsonl, ...),
-//                                  recording.rs1, steps.jsonl, textures.jsonl, strace.txt, maps.txt
+//                                  recording.rs2, recording-patch.rs2, store/, steps.jsonl,
+//                                  textures.jsonl, strace.txt, maps.txt
 //   capture-unsupported/           the same with RS_FIXTURE_VARIANT=unsupported (default quit)
 //   reference/, reference-repeat/  rendered fixture, extension absent: shots/step-<k>.png,
 //                                  steps.jsonl, textures.jsonl
 //   reference-armed/               rendered fixture, extension armed with a full-sink stream:
-//                                  the same plus evidence/ and recording.rs1
+//                                  the same plus evidence/, recording.rs2 and store/
 
 import { join } from "node:path";
 import {
@@ -53,6 +55,7 @@ import {
   stepOfFrame,
   synthesizeGate2,
 } from "./gate2-expected";
+import { type G2bCheckpoint, type G2bResources, runG2b } from "./gate2b-checks";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract
@@ -82,10 +85,10 @@ export const GATE2_CLASS_PRECEDENCE: readonly Gate2Class[] = [
 ];
 
 export const ALL_GROUPS = ["g2a", "g2b", "g2c", "g2d", "g2e"] as const;
-export const LANDED_GROUPS: readonly string[] = ["g2a"];
+export const LANDED_GROUPS: readonly string[] = ["g2a", "g2b"];
 
-/** Legs with an expected class. G2a has one: the capture, whose texture draws are unsupported
- * commands on render-stream/1. */
+/** Legs with an expected class. G2a has one: the capture, which since G2b2 (render-stream/2)
+ * carries its texture draws as real commands and classifies success. */
 export const G2A_CLASSIFIED_LEGS = ["capture"] as const;
 export type G2aLeg = (typeof G2A_CLASSIFIED_LEGS)[number];
 
@@ -97,8 +100,7 @@ export const G2A_SUPPORT_LEGS = [
   "reference-armed",
 ] as const;
 
-/** On render-stream/1 the two texture-rect draws are the only unsupported commands the gate 2
- * fixture makes (every other draw is an add_rect). */
+/** The two texture-rect draws the gate 2 fixture makes (render-stream/2 commands since G2b2). */
 export const TEXTURE_DRAW_OPS: readonly string[] = [
   "canvas_item_add_texture_rect",
   "canvas_item_add_texture_rect_region",
@@ -121,7 +123,9 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
   "viewport_set_default_canvas_item_texture_repeat",
 ];
 
-/** Exact key order of a render-stream-resource-log/1 line (the contract's keys, then G2a's). */
+/** Exact key order of a render-stream-resource-log/1 line (the contract's keys, then G2a's). Since
+ * G2b2 a sabotage's own line appends `sabotage` (and `omitted` for an op the omit-op sabotage
+ * dropped from the capture), and the publisher writes `store` / `inline` lines. */
 export const RESOURCE_LINE_KEYS: readonly string[] = [
   "frame",
   "t_us",
@@ -199,6 +203,15 @@ export interface ResourceLine {
   value: number | null;
   layer: number | null;
   root_viewport: boolean | null;
+  /** G2b2: a sabotage's own line; `omitted` for an op the omit-op sabotage dropped */
+  sabotage?: boolean;
+  omitted?: boolean;
+}
+
+/** A hook-log line that is a RenderingServer call the engine made: not a publisher event and not
+ * a sabotage's own line (census and the copy checks count only these). */
+export function engineCall(line: ResourceLine): boolean {
+  return !PUBLISHER_LOG_OPS.includes(line.op) && line.sabotage !== true;
 }
 
 /** One line of the fixture's RS_FIXTURE_TEXTURE_LOG. */
@@ -238,16 +251,25 @@ export function parseJsonl<T>(
   return { lines, problem: null };
 }
 
+/** The publisher's own hook-log ops (G2b2): not RenderingServer calls, never in a census. */
+export const PUBLISHER_LOG_OPS: readonly string[] = ["store", "inline"];
+
 export function validateResourceLine(value: unknown): string | null {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     return "not an object";
   const keys = Object.keys(value);
-  if (keys.join(",") !== RESOURCE_LINE_KEYS.join(","))
+  const trailing = keys.slice(RESOURCE_LINE_KEYS.length);
+  if (
+    keys.slice(0, RESOURCE_LINE_KEYS.length).join(",") !==
+      RESOURCE_LINE_KEYS.join(",") ||
+    !["", "sabotage", "sabotage,omitted"].includes(trailing.join(","))
+  )
     return `keys ${keys.join(",")} are not render-stream-resource-log/1's, in order`;
   const v = value as ResourceLine;
   if (!Number.isInteger(v.frame) || v.frame < 1) return "frame";
   if (v.thread !== "main" && v.thread !== "other") return "thread";
-  if (!RESOURCE_LOG_OPS.includes(v.op)) return `unknown op ${v.op}`;
+  if (!RESOURCE_LOG_OPS.includes(v.op) && !PUBLISHER_LOG_OPS.includes(v.op))
+    return `unknown op ${v.op}`;
   if (v.hash !== null && !/^[0-9a-f]{64}$/.test(v.hash)) return "hash";
   return null;
 }
@@ -308,6 +330,7 @@ export function censusOf(
   for (const s of expected.steps) per_step[s.step] = {};
   const after_quit: Record<string, number> = {};
   for (const line of lines) {
+    if (!engineCall(line)) continue;
     const step = stepOfFrame(expected, line.frame, quit);
     const key = censusKey(line);
     const bucket = step < 0 ? after_quit : per_step[step];
@@ -900,7 +923,9 @@ export async function checkHookBytesExact(
       continue;
     }
     const contentOps = new Set(["texture_2d_create", "texture_2d_update"]);
-    const hookLines = hooks.lines.filter((l) => contentOps.has(l.op));
+    const hookLines = hooks.lines.filter(
+      (l) => contentOps.has(l.op) && engineCall(l),
+    );
     const fixtureLines = fixture.lines.filter(
       (l) =>
         contentOps.has(l.op) &&
@@ -985,7 +1010,9 @@ export async function checkWorkerThreadCreate(
   const d = fixture.lines.find(
     (l) => l.name === "D" && l.op === "texture_2d_create",
   );
-  const others = hooks.lines.filter((l) => l.thread === "other");
+  const others = hooks.lines.filter(
+    (l) => l.thread === "other" && engineCall(l),
+  );
   if (!d) problems.push("the fixture log has no D create");
   else if (d.thread !== "other")
     problems.push(`the fixture logged D's create on ${d.thread}`);
@@ -1025,7 +1052,7 @@ export async function checkReplaceRetiresTemp(
   const lines = hooks.lines;
   const replaces = lines
     .map((l, i) => ({ l, i }))
-    .filter(({ l }) => l.op === "texture_replace");
+    .filter(({ l }) => l.op === "texture_replace" && engineCall(l));
   const notes: string[] = [];
   for (const { l, i } of replaces) {
     const by = l.target;
@@ -1310,7 +1337,7 @@ export async function evaluateCapture(
     if (await fileExists(join(dir, p))) artifacts.push(join(dir, p));
   return {
     leg: "capture",
-    expected_class: "unsupported",
+    expected_class: "success",
     result_class: c.result_class as Gate2Class,
     reasons: c.reasons,
     exit_code: await readExitCode(dir),
@@ -1320,7 +1347,7 @@ export async function evaluateCapture(
   };
 }
 
-/** The ops a /1 recording carries as unsupported (commands and item-level entries). */
+/** The ops a recording carries as unsupported (commands and item-level entries). */
 export function unsupportedOps(recording: RecordingSummary): string[] {
   const ops = new Set<string>();
   for (const t of recording.transactions) {
@@ -1335,21 +1362,24 @@ export function unsupportedOps(recording: RecordingSummary): string[] {
 export function checkCaptureLegClass(e: Gate2LegEvaluation): Gate2Check {
   const problems: string[] = [];
   if (e.result_class !== e.expected_class)
-    problems.push(`class ${e.result_class}, expected ${e.expected_class}`);
-  const ops = unsupportedOps(e.recording);
-  const extra = ops.filter((op) => !TEXTURE_DRAW_OPS.includes(op));
-  if (extra.length > 0)
     problems.push(
-      `unsupported ops beyond the texture draws: ${extra.join(",")}`,
+      `class ${e.result_class}, expected ${e.expected_class}: ${e.reasons.slice(0, 2).join(" | ")}`,
     );
-  for (const op of TEXTURE_DRAW_OPS)
-    if (!ops.includes(op))
-      problems.push(`no unsupported ${op} in the recording`);
+  const ops = unsupportedOps(e.recording);
+  if (ops.length > 0)
+    problems.push(`the recording carries unsupported ${ops.join(",")}`);
+  // render-stream/2 carries the texture draws as commands (render-stream-2.md "Commands").
+  const drawn = new Set<string>();
+  for (const t of e.recording.transactions)
+    for (const item of t.meta.items)
+      for (const c of item.commands) drawn.add(c.op);
+  for (const op of ["add_texture_rect", "add_texture_rect_region"])
+    if (!drawn.has(op)) problems.push(`no ${op} command in the recording`);
   return check(
     "leg-class-capture",
-    "the capture leg classifies as unsupported, and only because of the texture draws (canvas_item_add_texture_rect and _region are unsupported commands on render-stream/1); the recording decodes",
+    "the capture leg classifies as success on render-stream/2: no unsupported entry or command, and the fixture's texture draws are add_texture_rect / add_texture_rect_region commands; the recording decodes",
     problems,
-    `${e.result_class}: unsupported ops ${ops.join(", ")}`,
+    `${e.result_class}: commands ${[...drawn].sort().join(", ")}`,
     e.artifacts,
   );
 }
@@ -1437,23 +1467,27 @@ export interface Gate2Report {
   >;
   checks: Gate2Check[];
   checkpoints: Gate2Checkpoint[];
+  /** g2b: receiver shots against the references */
+  receiver_checkpoints: G2bCheckpoint[] | null;
   census: Record<string, CensusResult> | null;
   repeat_budget: RegionBudget[] | null;
   unknown_rids: UnknownRidReport[] | null;
-  /** per leg: the copy and hash costs at the hook (G2a); store, receiver and per-step traffic
-   * arrive with G2b2 and stay null until then */
+  /** per leg: the copy and hash costs at the hook (G2a); the store, the receivers' traffic per
+   * step and the host's resource bytes (G2b2) */
   resources: Record<
     string,
     {
-      store: null;
-      receiver: null;
-      per_step: null;
-      host: ReturnType<typeof copyCosts> & {
-        retained_max: null;
-        retained_bytes_max: null;
-        http_gets: null;
-        http_bytes: null;
-      };
+      store: G2bResources["store"];
+      receiver: G2bResources["receiver"];
+      per_step: G2bResources["per_step"];
+      host:
+        | (Partial<ReturnType<typeof copyCosts>> &
+            Partial<NonNullable<G2bResources["host"]>> & {
+              retained_max: null;
+              http_gets: null;
+              http_bytes: null;
+            })
+        | null;
     }
   > | null;
 }
@@ -1526,6 +1560,7 @@ export async function runGate2(
   let repeatBudget: RegionBudget[] | null = null;
   let unknown: UnknownRidReport[] | null = null;
   let resources: Gate2Report["resources"] = null;
+  let receiverCheckpoints: G2bCheckpoint[] | null = null;
 
   if (groups.run.includes("g2a")) {
     const capture = await evaluateCapture(outDir);
@@ -1572,7 +1607,7 @@ export async function runGate2(
         receiver: null,
         per_step: null,
         host: {
-          ...copyCosts(log.lines),
+          ...copyCosts(log.lines.filter(engineCall)),
           retained_max: null,
           retained_bytes_max: null,
           http_gets: null,
@@ -1584,6 +1619,31 @@ export async function runGate2(
     checks.push(
       notRunCheck("g2a", "g2a was not in --legs; its checks are not-run"),
     );
+  }
+  if (groups.run.includes("g2b")) {
+    const g2b = await runG2b(outDir, ctx.expected, G2A_CAPTURE_QUIT_FRAME);
+    checks.push(...g2b.checks);
+    Object.assign(legs, g2b.legs);
+    receiverCheckpoints = g2b.checkpoints;
+    resources ??= {};
+    for (const [leg, r] of Object.entries(g2b.resources)) {
+      const prior = resources[leg];
+      resources[leg] = {
+        store: r.store,
+        receiver: r.receiver,
+        per_step: r.per_step,
+        host:
+          prior?.host || r.host
+            ? {
+                ...(prior?.host ?? {}),
+                ...(r.host ?? {}),
+                retained_max: null,
+                http_gets: null,
+                http_bytes: null,
+              }
+            : null,
+      };
+    }
   }
   for (const group of notRun)
     if (group !== "g2a")
@@ -1604,6 +1664,7 @@ export async function runGate2(
     legs,
     checks,
     checkpoints,
+    receiver_checkpoints: receiverCheckpoints,
     census,
     repeat_budget: repeatBudget,
     unknown_rids: unknown,

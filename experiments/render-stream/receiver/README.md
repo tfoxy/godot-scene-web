@@ -1,24 +1,31 @@
-# render-stream/1 receiver (gate 0, extended by gate 1)
+# render-stream/2 receiver (gate 0, extended by gates 1 and 2)
 
-A Godot project whose only input is a `render-stream/1` byte stream: a recording file (file mode)
-or one WebSocket connection to a capture host (live mode, G1c2). It replays the stream onto the
-RenderingServer and writes `applied.json`. It has no autoload, no extension and no file from
-`fixtures/`. The contract is [`../protocol/gate1-design.md`](../protocol/gate1-design.md) ("Q5.
-Receiver", "G1b2", "G1c2"), extending [`../protocol/gate0-design.md`](../protocol/gate0-design.md)
-("Q5. Receiver"); the bytes are [`../protocol/render-stream-1.md`](../protocol/render-stream-1.md).
-G1d added the live options for a stall, a reconnect and a resync (`RS_RECEIVER_STALL`,
-`_RECONNECT`, `_RESYNC`).
+A Godot project whose only input is a `render-stream/2` byte stream: a recording file (file mode)
+or one WebSocket connection to a capture host (live mode, G1c2), plus the texture payloads that
+stream names (inline resource records, a content-addressed cache directory, or the capture's
+store directory). It replays the stream onto the RenderingServer and writes `applied.json`. It has
+no autoload, no extension and no file from `fixtures/`. The contract is
+[`../protocol/gate2-design.md`](../protocol/gate2-design.md) ("Q5. Receiver", "G2b2"), extending
+[`../protocol/gate1-design.md`](../protocol/gate1-design.md) ("Q5. Receiver", "G1b2", "G1c2") and
+[`../protocol/gate0-design.md`](../protocol/gate0-design.md) ("Q5. Receiver"); the bytes are
+[`../protocol/render-stream-2.md`](../protocol/render-stream-2.md) (render-stream/1 was
+superseded at G2b2). G1d added the live options for a stall, a reconnect and a resync
+(`RS_RECEIVER_STALL`, `_RECONNECT`, `_RESYNC`).
 
-| File                       | Role                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `project.godot`            | 640×360, stretch disabled, `gl_compatibility`, typed-GDScript warnings at error level. `default_clear_color` is magenta on purpose: the session's `clear_color` must replace it.                                                                                                                                                                                                                                         |
-| `main.tscn`                | A root `Node` with `receiver.gd`.                                                                                                                                                                                                                                                                                                                                                                                        |
-| `receiver.gd`              | Orchestration: environment, framing pass, session and viewport check, one record per `_process`, state dumps, shots, `applied.json`, exit code; in live mode the connection, the acks, the step-window shots and the close after the end record.                                                                                                                                                                         |
-| `rs_live_client.gd`        | `RsLiveClient` (G1c2): the `WebSocketPeer` client (`inbound_buffer_size` set before `connect_to_url`, `get_packet()` before `was_string_packet()`), the `hello`/`ack`/`resync` encoders and the host `error` parser.                                                                                                                                                                                                     |
-| `rs1_decoder.gd`           | `Rs1Decoder`: pure `PackedByteArray` → records, with the wire spec's error codes (`split_records`, `decode_record`, `validate_recording`). `Rs1Decoder.Stream.accept` checks the cross-record rules and resolves patches into the full state (`canvases`/`items`).                                                                                                                                                       |
-| `rs_applier.gd`            | `RsApplier`: wire id → RID maps and every RenderingServer call, counted in `rs_calls`. It applies the **resolved** state, never a patch, reconciling it with its own mirror so only changed state costs calls. `apply_record` calls the RenderingServer only after decode and `accept` succeeded.                                                                                                                        |
-| `tests/codec1_selftest.gd` | Golden-vector self-test (`../protocol/golden-1/`): decoded form, resolved state per seq, every invalid vector, `corrupt-meta.rs1`, and the applier: identical per-seq stats for `full.rs1` and `patch.rs1`, 0 calls for an unchanged seq, 0 calls for the corrupt transaction, a reconnect (one applier disposed between two sessions replays like a fresh one); and the live control messages against `control/valid/`. |
-| `tests/ws_selftest.gd`     | `WebSocketPeer` interop self-test against the capture library's `rs_ws` echo server (G1c1).                                                                                                                                                                                                                                                                                                                              |
+| File                         | Role                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `project.godot`              | 640×360, stretch disabled, `gl_compatibility`, typed-GDScript warnings at error level. `default_clear_color` is magenta on purpose: the session's `clear_color` must replace it.                                                                                                                                                                                                                             |
+| `main.tscn`                  | A root `Node` with `receiver.gd`.                                                                                                                                                                                                                                                                                                                                                                            |
+| `receiver.gd`                | Orchestration: environment, framing pass, session and viewport check, one record per `_process`, state dumps, shots, `applied.json`, exit code; in live mode the connection, the acks, the step-window shots and the close after the end record.                                                                                                                                                             |
+| `rs_live_client.gd`          | `RsLiveClient` (G1c2): the `WebSocketPeer` client (`inbound_buffer_size` set before `connect_to_url`, `get_packet()` before `was_string_packet()`), the `hello`/`ack`/`resync` encoders and the host `error` parser.                                                                                                                                                                                         |
+| `rs2_decoder.gd`             | `Rs2Decoder` (G2b1): pure `PackedByteArray` → records, with the wire spec's error codes (`split_records`, `decode_record`, `validate_recording`, `raw_resource_payload`). `Rs2Decoder.Stream.accept` checks the cross-record rules (resource records included) and resolves patches into the full state (`canvases`/`items`/`textures`, the default filter/repeat).                                          |
+| `rs_texture_payload.gd`      | `RsTexturePayload` (G2b1): `render-stream-texture/1` decode (`payload-magic`/`-meta`/`-length`/`-size`), SHA-256, and the `Image` rebuilt from it.                                                                                                                                                                                                                                                           |
+| `rs_resource_cache.gd`       | `RsResourceCache` (G2b2): the in-memory map of verified payloads (inline records and everything obtained this process), the content-addressed cache directory (`fresh`/`warm`, temp file + rename, verified on read and before write) and the store directory as the file-mode origin; `resource-unavailable`, `resource-hash-mismatch`, `resource-invalid`, `cache-not-fresh`.                              |
+| `rs_applier.gd`              | `RsApplier`: wire id → RID maps and every RenderingServer call, counted in `rs_calls`. It applies the **resolved** state, never a patch, reconciling it with its own mirror so only changed state costs calls; since G2b2 also texture residency (D5), the root's default filter/repeat, the items' filter/repeat and the texture draws, skipping (and recording) commands that name an unsupported texture. |
+| `tests/codec2_selftest.gd`   | Golden-vector self-test (`../protocol/golden-2/`, G2b1): decoded form, resolved state per seq for `full`/`patch`/`inline.rs2`, every invalid vector, `corrupt-meta.rs2`, every payload vector.                                                                                                                                                                                                               |
+| `tests/applier2_selftest.gd` | G2b2: the applier on the goldens (identical per-seq stats for full, patch and inline delivery, 0 calls for an unchanged seq, the texture residency rules, the reupload sabotage, a reconnect), the cache's fresh/warm/ignore-cache and origin failures, and the live control messages against `control/valid/`.                                                                                              |
+| `tests/ws_selftest.gd`       | `WebSocketPeer` interop self-test against the capture library's `rs_ws` echo server (G1c1).                                                                                                                                                                                                                                                                                                                  |
+| `tests/http_selftest.gd`     | `HTTPClient` interop self-test against `rs_ws`'s resource GET serving (G2c1).                                                                                                                                                                                                                                                                                                                                |
 
 ## Running
 
@@ -26,28 +33,42 @@ Import once with the editor (it writes the ignored `.godot/` cache the release t
 
 ```bash
 mise exec -- godot --headless --path experiments/render-stream/receiver --import
-mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/codec1_selftest.gd
+mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/codec2_selftest.gd
+mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/applier2_selftest.gd
 ```
 
-The self-test prints `[rs1-selftest] ok` and exits 0, or prints each failure and exits 1.
-`RS_SELFTEST_GOLDEN_DIR` overrides the golden directory (default `<receiver>/../protocol/golden-1`).
-On the goldens the applier makes `[56, 1, 18, 0, 2, 0]` RenderingServer calls for seqs 1–6 of both
-`full.rs1` and `patch.rs1` (plus 3 for the session).
+The self-tests print `[rs2-selftest] ok` / `[applier2-selftest] ok` and exit 0, or print each
+failure and exit 1. `RS_SELFTEST_GOLDEN_DIR` overrides the golden directory (default
+`<receiver>/../protocol/golden-2`); `RS_SELFTEST_TMP_DIR` the applier test's scratch directory.
+On the goldens the applier makes `[74, 1, 1, 2, 2, 0]` RenderingServer calls for seqs 1–6 of
+`full.rs2`, `patch.rs2` and `inline.rs2` alike (plus 3 for the session).
 
 A replay:
 
 ```bash
-RS_RECEIVER_RECORDING=/abs/recording.rs1 RS_RECEIVER_OUT=/abs/leg/applied.json \
+RS_RECEIVER_RECORDING=/abs/recording.rs2 RS_RECEIVER_OUT=/abs/leg/applied.json \
+RS_RECEIVER_CACHE_DIR=/abs/leg/cache RS_RECEIVER_STORE_DIR=/abs/capture/store \
 RS_RECEIVER_SHOT_SEQS=1,2 RS_RECEIVER_STATE_SEQS=1,2 <godot or template> --path experiments/render-stream/receiver
 ```
 
 | Variable                 | Meaning                                                                                                                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `RS_RECEIVER_MODE`       | `file` (default when unset) or `live` (below); any other value is a usage error.                                                                                                |
-| `RS_RECEIVER_RECORDING`  | absolute `.rs1` path. Missing or unreadable → replay-failure `recording-unreadable`.                                                                                            |
+| `RS_RECEIVER_RECORDING`  | absolute `.rs2` path. Missing or unreadable → replay-failure `recording-unreadable`.                                                                                            |
 | `RS_RECEIVER_OUT`        | absolute `applied.json` path. Shots go to `<dirname>/shots/seq-<seq>.png`, state dumps to `<dirname>/state/seq-<seq>.json`.                                                     |
 | `RS_RECEIVER_SHOT_SEQS`  | optional CSV of transaction seqs to screenshot after `RenderingServer.frame_post_draw`.                                                                                         |
-| `RS_RECEIVER_STATE_SEQS` | optional CSV of transaction seqs whose resolved state is dumped right after that seq is applied, in render-stream-1.md's resolved `state` shape (compact JSON, full precision). |
+| `RS_RECEIVER_STATE_SEQS` | optional CSV of transaction seqs whose resolved state is dumped right after that seq is applied, in render-stream-2.md's resolved `state` shape (compact JSON, full precision). |
+
+Resources (G2b2, gate2-design.md Q5 "Environment"; both modes unless noted):
+
+| Variable                       | Meaning                                                                                                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RS_RECEIVER_CACHE_DIR`        | absolute content-addressed cache (`sha256/<hash>.grt`); required when the session's delivery is not inline (replay-failure `resource-unavailable` otherwise) |
+| `RS_RECEIVER_CACHE_MODE`       | `fresh` (default: the directory must be absent or empty, else replay-failure `cache-not-fresh`) or `warm` (it must exist)                                    |
+| `RS_RECEIVER_STORE_DIR`        | file mode: the capture's store, the origin for `fetch: "directory"`; reading from it is a fetch                                                              |
+| `RS_RECEIVER_FETCH_TIMEOUT_MS` | live: default 10000 (validated; HTTP fetches arrive with G2c2)                                                                                               |
+| `RS_RECEIVER_FETCH_DELAY_MS`   | an injected delay before each fetch, default 0                                                                                                               |
+| `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction) or `ignore-cache` (fetch even on a cache hit); both exist only to fail checks        |
 
 Exit codes: `0` status `ok`; `3` replay-failure (`applied.json` written); `2` usage error
 (`RS_RECEIVER_OUT` missing or not absolute, a malformed `RS_RECEIVER_SHOT_SEQS` or
@@ -71,7 +92,7 @@ RS_RECEIVER_OUT=/abs/leg/applied.json RS_RECEIVER_SHOT_WINDOWS=0:307-359,1:367-4
 | `RS_RECEIVER_URL`             | required; loopback only: `ws://127.0.0.1:<port>/…` or `ws://[::1]:<port>/…` (the port is the host's `evidence/live.json`)                                                     |
 | `RS_RECEIVER_OUT`             | as in file mode                                                                                                                                                               |
 | `RS_RECEIVER_SHOT_WINDOWS`    | optional CSV of `<step>:<from>-<to>` host-frame windows: the first applied transaction whose `frame` is inside a window is shot after `frame_post_draw`, and its state dumped |
-| `RS_RECEIVER_RECEIVED_OUT`    | absolute path of the received bytes, default `<dirname>/received.rs1`                                                                                                         |
+| `RS_RECEIVER_RECEIVED_OUT`    | absolute path of the received bytes, default `<dirname>/received.rs2`                                                                                                         |
 | `RS_RECEIVER_INBOUND_BYTES`   | `WebSocketPeer.inbound_buffer_size`, set before connecting and announced in `hello`; default 16777216                                                                         |
 | `RS_RECEIVER_CREDIT_STAGE`    | `submitted` (default) or `applied`; forced to `applied` under `--headless`, where `frame_post_draw` never fires                                                               |
 | `RS_RECEIVER_CONNECT_TIMEOUT` | milliseconds to reach `STATE_OPEN`, default 10000 (replay-failure `live-connect-failed`)                                                                                      |
@@ -103,15 +124,23 @@ close handshake of connection 1 (2 s at most), writes its received file, calls
 retrying while the host still refuses a second receiver (503) until the connect timeout;
 `live.reconnect` records the step, the seq, `created_rids`, `freed_by_apply`,
 `owned_before_dispose`, `freed_rids`, `leftover_rids` and the connect attempts. Connection 2 writes
-`received-2.rs1` (`RS_RECEIVER_RECEIVED_OUT` with `-2` before the extension), a second `streams[]`
+`received-2.rs2` (`RS_RECEIVER_RECEIVED_OUT` with `-2` before the extension), a second `streams[]`
 entry, transactions and shots with `stream: 2`, and `shots/stream-2-seq-<n>.png` /
 `state/stream-2-seq-<n>.json`. A refused transaction (resync) keeps its `transactions[]` entry with
 `skipped: "resync"` and no `applied_us`; it is acked `received` only; `live.resync` records the
 step, seq and frame.
 
-## `applied.json` (`render-stream-receiver-applied/2`)
+## `applied.json` (`render-stream-receiver-applied/3`)
 
-The schema is gate1-design.md Q5. In file mode: `mode: "file"`; `recording` and the single
+The schema is gate2-design.md Q5: gate1-design.md Q5's `/2` plus `cache`
+(`{dir, mode, entries_before, entries_after, bytes_after}` or `null` without a cache dir), a
+`resources` object on every applied transaction (`fetched`, `fetched_bytes`, `cache_hits`,
+`inline_received`, `created`, `updated`, `replaced`, `freed`, `upload_bytes`, `fetch_us`,
+`skipped_commands`; `null` for a transaction not applied), `fetches[]`
+(`{stream, seq, hash, source, status, bytes, start_us, end_us, verified}`), `uploads[]`
+(`{id, hash, op: create|update|replace|placeholder, data_bytes, stream, seq}`; G2b2's own key,
+what the redundant-upload check reads) and `resources_summary`
+(`{distinct_fetched, fetched_bytes, cache_hits, uploads, upload_bytes}`). In file mode: `mode: "file"`; `recording` and the single
 `streams[0]` describe the input file (`stream_id` from the session, `null` until the session
 decoded; `connection`, `closed_by`, `close_code` are `null`); every `transactions[]` and `shots[]`
 entry has `stream: 1`; transactions carry `encoding` and `null` `received_us`/`applied_us`/
@@ -127,8 +156,18 @@ also requested, else `null`); `shots_missed` is `[]`; `live` is `null`. `viewpor
   size is checked, then the session is applied in `_ready` (clear colour, canvas 1 → the root
   viewport's World2D canvas, its transform, the cull mask), and one record per `_process` frame
   after that.
+- **Textures (G2b2).** Before a transaction is applied, every `ok` image a command of its resolved
+  state names that is not resident (or resident with another hash) is made available -- from
+  memory (inline records, earlier fetches), from the cache (a hit), or fetched from the store and
+  written to the cache -- verified and decoded first. A texture becomes resident when a command
+  first names it and stays until its entry leaves the table or becomes a `freed` tombstone (its RID
+  is freed then; the command draws as an invalid texture, white, as on the capture side). A
+  resident image is re-uploaded only when its hash or kind changes: `texture_2d_update` with the
+  same format, size and mipmaps, else `texture_replace(rid, texture_2d_create(image))`, so its RID
+  never changes. Placeholders are the receiver's own `texture_2d_placeholder_create()`. Commands
+  naming an `unsupported` texture and `unsupported` commands are skipped and recorded.
 - **Resolved state, identity reconciliation.** Each transaction is decoded and accepted by
-  `Rs1Decoder.Stream`, which resolves a patch against the previous state. `RsApplier.apply_state`
+  `Rs2Decoder.Stream`, which resolves a patch against the previous state. `RsApplier.apply_state`
   then follows gate 0's Q5 steps 2–8 against the resolved state: free vanished, create new, parent
   pass, order pass (re-`set_parent` from the first divergence), setters only for new items or
   changed values (floats compared as float32; `z_relative` and `behind` included), content rebuild

@@ -25,6 +25,11 @@
 //   value     the enum or channel argument (filter, repeat, channel) or null
 //   layer     texture_2d_update's layer, else null
 //   root_viewport  viewport_set_default_*: whether `target` is the root viewport
+// and, since G2b2, only on a sabotage's own lines:
+//   sabotage  true (spurious-texture-update's bump, or an omit-op line)
+//   omitted   true (the omit-op sabotage dropped the call from the capture)
+// G2b2 also writes publisher lines: op "store" and "inline", with `hash`,
+// `payload_bytes`, `status` ("ok" | "failed") and, for a live stream, `conn`.
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
@@ -69,13 +74,29 @@ class ResourceLog {
   void stop();
   bool active() const;
 
-  void texture_2d_create(const TapContext &ctx, std::uint64_t rid, const PayloadCopy &copy);
+  // `omitted` (G2b2): the omit-op sabotage dropped this call from the capture.
+  // The line is still written, marked "sabotage":true,"omitted":true, with the
+  // registry's unchanged id and version, and the registry is not changed, so
+  // it keeps agreeing with the mirror (which dropped the call too).
+  void texture_2d_create(const TapContext &ctx, std::uint64_t rid, const PayloadCopy &copy,
+                         bool omitted = false);
   void texture_2d_update(const TapContext &ctx, std::uint64_t rid, const PayloadCopy &copy,
-                         int layer);
-  void texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid);
-  void texture_replace(const TapContext &ctx, std::uint64_t texture, std::uint64_t by_texture);
+                         int layer, bool omitted = false);
+  void texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid,
+                                     bool omitted = false);
+  void texture_replace(const TapContext &ctx, std::uint64_t texture, std::uint64_t by_texture,
+                       bool omitted = false);
   // Logs only RIDs it knows as textures (every other free is not a texture op).
-  void free_rid(const TapContext &ctx, std::uint64_t rid);
+  void free_rid(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
+  // spurious-texture-update sabotage (G2b2): `rid`'s version + 1 with the same
+  // payload, logged as a texture_2d_update marked "sabotage":true.
+  void spurious_update(const TapContext &ctx, std::uint64_t rid);
+  // A publisher event (G2b2): op "store" (a payload written to the store
+  // directory) or "inline" (a resource record written to a stream), with its
+  // hash, payload size and status ("ok" or "failed"); `conn` is the live
+  // connection (0 = null, a file sink).
+  void resource_event(const TapContext &ctx, const char *op, const std::string &hash,
+                      std::uint64_t payload_bytes, const char *status, std::uint64_t conn = 0);
   void canvas_texture_create(const TapContext &ctx, std::uint64_t rid);
   void canvas_texture_set_channel(const TapContext &ctx, std::uint64_t canvas_texture,
                                   std::int32_t channel, std::uint64_t texture);

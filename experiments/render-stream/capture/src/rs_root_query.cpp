@@ -299,25 +299,25 @@ const char *content_scale_stretch_name(std::int64_t stretch) {
   return "unknown";
 }
 
-bool stretch_from_window(const RootInfo &info, rs1::Stretch *out) {
+bool stretch_from_window(const RootInfo &info, rs2::Stretch *out) {
   bool ok = true;
   switch (info.content_scale_mode) {
-  case 0: out->mode = rs1::StretchMode::Disabled; break;
-  case 1: out->mode = rs1::StretchMode::CanvasItems; break;
-  case 2: out->mode = rs1::StretchMode::Viewport; break;
+  case 0: out->mode = rs2::StretchMode::Disabled; break;
+  case 1: out->mode = rs2::StretchMode::CanvasItems; break;
+  case 2: out->mode = rs2::StretchMode::Viewport; break;
   default: ok = false; break;
   }
   switch (info.content_scale_aspect) {
-  case 0: out->aspect = rs1::StretchAspect::Ignore; break;
-  case 1: out->aspect = rs1::StretchAspect::Keep; break;
-  case 2: out->aspect = rs1::StretchAspect::KeepWidth; break;
-  case 3: out->aspect = rs1::StretchAspect::KeepHeight; break;
-  case 4: out->aspect = rs1::StretchAspect::Expand; break;
+  case 0: out->aspect = rs2::StretchAspect::Ignore; break;
+  case 1: out->aspect = rs2::StretchAspect::Keep; break;
+  case 2: out->aspect = rs2::StretchAspect::KeepWidth; break;
+  case 3: out->aspect = rs2::StretchAspect::KeepHeight; break;
+  case 4: out->aspect = rs2::StretchAspect::Expand; break;
   default: ok = false; break;
   }
   switch (info.content_scale_stretch) {
-  case 0: out->scale_mode = rs1::ScaleMode::Fractional; break;
-  case 1: out->scale_mode = rs1::ScaleMode::Integer; break;
+  case 0: out->scale_mode = rs2::ScaleMode::Fractional; break;
+  case 1: out->scale_mode = rs2::ScaleMode::Integer; break;
   default: ok = false; break;
   }
   return ok;
