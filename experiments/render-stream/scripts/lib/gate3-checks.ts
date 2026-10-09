@@ -6,7 +6,9 @@
 // gate 2's, unchanged (D11).
 //
 // Group g3a: the axis-aligned fixture's capture (both sinks), its rendered reference, a same-build
-// repeat and an extension-armed reference. The clip semantics are checked three ways: the rendered
+// repeat and an extension-armed reference. Group g3c (the rotated/scaled fixture
+// fixtures/gate3-xform, its receivers and sabotages) lives in lib/gate3x-checks.ts; runGate3 runs
+// it when it ran. The clip semantics are checked three ways: the rendered
 // reference against expected.json (exact images and named 1 px probes either side of every scissor
 // edge), the recording's retained clip state against expected.json's invariants, and every final
 // scissor recomputed from the recording (lib/clip-derive.ts) against expected.json's clip_rects.
@@ -88,6 +90,8 @@ import {
   synthesizeGate3,
   visibleRect,
 } from "./gate3-expected";
+import { type G3cResult, runG3c } from "./gate3x-checks";
+import type { Gate3xExpected } from "./gate3x-expected";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract
@@ -100,7 +104,7 @@ export type Gate3Class = Gate2Class;
 
 export const ALL_GROUPS = ["g3a", "g3b", "g3c", "g3d"] as const;
 /** Groups whose increment has landed; run-gate3.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g3a", "g3b"];
+export const LANDED_GROUPS: readonly string[] = ["g3a", "g3b", "g3c"];
 
 export const G3A_SUPPORT_LEGS = [
   "import",
@@ -1768,6 +1772,10 @@ export interface Gate3Report {
   > | null;
   census: ClipCensus | null;
   ties: DrawIndexTie[] | null;
+  /** g3c: the band budget, band sizes and the reference's repeat differences there */
+  band?: G3cResult["band"] | null;
+  /** g3c: the reference's pixel at each D7 semantic probe */
+  semantic_probes?: G3cResult["semantic_probes"] | null;
 }
 
 export interface Gate3Context {
@@ -1775,16 +1783,21 @@ export interface Gate3Context {
   /** g3b's receiver-never-loaded-fixture (gate 1's shape) */
   receiverProjectDir?: string;
   fixtureProjectDir?: string;
+  /** fixtures/gate3-xform/expected.json; required when g3c ran */
+  xform?: Gate3xExpected;
+  /** the landed groups (default LANDED_GROUPS); the self-test narrows it for one-group trees */
+  landed?: readonly string[];
   now?: Date;
 }
 
 export async function readGroups(
   outDir: string,
+  landed: readonly string[] = LANDED_GROUPS,
 ): Promise<{ run: string[]; landed: string[] }> {
   const legs = await readJson<{ groups_run?: string[] }>(
     join(outDir, "legs.json"),
   );
-  return { run: legs?.groups_run ?? [], landed: [...LANDED_GROUPS] };
+  return { run: legs?.groups_run ?? [], landed: [...landed] };
 }
 
 function notRunCheck(group: string, detail: string): Gate3Check {
@@ -1850,7 +1863,7 @@ export async function runGate3(
   outDir: string,
   ctx: Gate3Context,
 ): Promise<Gate3Report> {
-  const groups = await readGroups(outDir);
+  const groups = await readGroups(outDir, ctx.landed);
   const notRun = groups.landed.filter((g) => !groups.run.includes(g));
   const checks: Gate3Check[] = [checkExpectedSelfConsistent(ctx.expected)];
   const legs: Gate3Report["legs"] = {};
@@ -1859,6 +1872,8 @@ export async function runGate3(
   let clipRects: Gate3Report["clip_rects"] = null;
   let census: ClipCensus | null = null;
   let ties: DrawIndexTie[] | null = null;
+  let band: Gate3Report["band"] = null;
+  let semantic: Gate3Report["semantic_probes"] = null;
 
   // The capture is loaded once, shared by g3a's own checks and by g3b's clip-rects-derived
   // (which also validates receiver-patch's resolved state when g3b ran).
@@ -1982,6 +1997,17 @@ export async function runGate3(
     checks.push(derived.check);
   }
 
+  if (groups.run.includes("g3c")) {
+    if (!ctx.xform) throw new Error("runGate3: g3c ran but ctx.xform is unset");
+    const g3c = await runG3c(outDir, ctx.xform);
+    checks.push(...g3c.checks);
+    Object.assign(legs, g3c.legs);
+    checkpoints = [...checkpoints, ...g3c.checkpoints];
+    probes = { ...(probes ?? {}), ...g3c.probes };
+    clipRects = { ...(clipRects ?? {}), [ctx.xform.fixture]: g3c.clip_rects };
+    band = g3c.band;
+    semantic = g3c.semantic_probes;
+  }
   for (const group of notRun)
     if (group !== "g3a" && group !== "g3b")
       checks.push(notRunCheck(group, `${group} was not in --legs`));
@@ -2005,5 +2031,7 @@ export async function runGate3(
     clip_rects: clipRects,
     census,
     ties,
+    band,
+    semantic_probes: semantic,
   };
 }

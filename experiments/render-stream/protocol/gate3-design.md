@@ -700,6 +700,31 @@ budget inside it), `semantic-probes` (D7), `probes-reference`/`-receiver`, `clip
 **Pass criteria**: `--legs g3a,g3b,g3c` is green. The README gains "Gate 3c result" with the
 semantic-probe table as measured, the band size per step, and the budget.
 
+**As built (G3c, 2026-10-09).** Every hand value of Q6d held on the first run. The derived
+scissors equal the step table and all 24 semantic-probe cells equal the hand table. The reference
+equals the engine model at all six probes, and each alternative misses five of them. The
+reference also equals pixel-centre synthesis at every pixel, band included: the band is 191, 191,
+240, 240 and 240 px (only `RQI`'s edges; `RQF`'s and `RQ2F`'s lie outside their scissors), the
+repeat differs nowhere, and the budget is 0. The perturb and ignore-clip step sets are Q7's
+{1..4} and {0..4}. Amendments:
+
+- `OA.left` and `OA.right` have no probe pairs of their own: `RQ2`'s scissor shares both edges
+  over every quarter point, so Q6c's naming rule gives the pairs to `RQ2`. Both edges are in
+  `non_decisive_edges`.
+- Semantic probe names carry the step (`rot.bottom@0`, `rot.bottom@2`).
+- `sabotage-xform-receiver-ignore-clip`'s prediction also fixes the failing probes, as G3a's
+  does (386). Two of them, step 1's `RQ.right.*.0`, lie on `RQ2F`'s rotated edge once nothing
+  clips. They are in the unclipped scene's band, listed as `probes_in_band`, and left out.
+- `import-xform` also imports the receiver project, because G3a has no receiver import. Check ids
+  that would collide with g3a's carry `-xform`. Three checks were added beyond the list:
+  `expected-self-consistent-xform`, `step-alignment-xform` and `support-legs-exit-xform`.
+  `capture-xform` quits at the fixture default, 52.
+- Q1e: the snap rounds rather than floors. It is `(origin + (0.5, 0.5)).floor()`
+  (`control.cpp:721-723`).
+- The dependency on G3b was measured. On the pre-G3b receiver, `receiver-xform` and
+  `receiver-xform-patch` mismatch at exactly steps {2,3,4} in region `rot`, because `RQ` loses
+  its clip at its step-2 redraw. With G3b landed, `--legs g3a,g3b,g3c` is 49/49.
+
 ---
 
 ### G3d — calibrator 6: `clip_ignore` refused, typed (sonnet)

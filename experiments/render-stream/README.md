@@ -2051,6 +2051,73 @@ G3a's, unchanged.
   G3d, gates 4, 6 and 7, same as G3a).
 - Late-join adoption of clip state, or a live leg exercising clip (both deferred, D10, gate 8).
 
+## Gate 3c result (2026-10-09)
+
+G3c ([protocol/gate3-design.md](protocol/gate3-design.md) "G3c") adds the rotated/scaled fixture
+`fixtures/gate3-xform/` and group g3c, and passes on top of G3b:
+`pnpm render-stream:gate3 -- --legs g3a,g3b,g3c` is 49/49 in
+`artifacts/render-stream/gate3/20261010T010856Z/`. Before G3b landed, the same g3c receiver checks failed on the
+old receiver (28/34 with g3a, `20261009T232851Z/`), at exactly the six checks that need G3b's
+clear-before-clip order and `ignore-clip` sabotage. The same build passed gate −1 28/28
+(`gate-minus1/20261010T010355Z/`), gate 0 19/19 (`gate0/20261010T010357Z/`), gate 1 65/65
+(`gate1/20261010T010853Z/`), gate 2 85/85 (`gate2/20261010T012338Z/`) and gate 4 g4a 21/21
+(`gate4/20261010T012340Z/`). The capture and the wire are unchanged.
+
+What landed:
+
+- **The fixture** (`fixtures/gate3-xform/`): four clip owners under transformed `Node2D` parents
+  (`rot`, `rotnest`, `half`, `flip`) over five steps, with `snap_controls_to_pixels` off.
+- **`make_expected.py`**, which models the transforms, the RS calls, the cull and the scissor
+  from the source, paints by pixel-centre coverage, marks the band, and evaluates the three
+  alternative clip models at the six semantic probes. It asserts Q6d's hand tables.
+- **`lib/gate3x-expected.ts`**, **`lib/gate3x-checks.ts`**, group g3c in `run-gate3.sh` and
+  `runGate3`, and `test/gate3x-cases.ts` (34 more self-test assertions; 205 in all with G3b's).
+
+Images (under `20261010T010856Z/`): `reference-xform/shots/step-{0..4}.png`, the same under
+`reference-xform-repeat/` and `reference-xform-armed/`, and the receivers' `seq-{8,18,28,38,48}.png`
+under `receiver-xform/shots/`, `receiver-xform-patch/shots/`,
+`sabotage-xform-perturb/receiver/shots/` and `sabotage-xform-receiver-ignore-clip/shots/`.
+
+The semantic probes as measured (reference pixel; the colour each model predicts):
+
+| Probe                          | reference | engine | `rotated-exact` | `edge-round` | `pixel-centre` |
+| ------------------------------ | --------- | ------ | --------------- | ------------ | -------------- |
+| `rot.corner@0` (84,84)         | `RQF`     | `RQF`  | clear           | `RQF`        | `RQF`          |
+| `rot.bottom@0` (100,157)       | `RQF`     | `RQF`  | clear           | clear        | clear          |
+| `rot.bottom@2` (100,166)       | clear     | clear  | clear           | `RQF`        | `RQF`          |
+| `half.right@0` (402,60)        | `SQF`     | `SQF`  | clear           | clear        | clear          |
+| `half.bottom@0` (380,73)       | `SQF`     | `SQF`  | clear           | clear        | clear          |
+| `half.sliver@0` (401,60)       | `SRF`     | `SRF`  | `SQF`           | `SQF`        | `SQF`          |
+
+So the reference refutes each alternative at five of the six probes. The band is 191, 191, 240,
+240 and 240 px at steps 0–4, all of it on `RQI`'s rotated edges. The reference equals pixel-centre
+synthesis there too, and the repeat differs nowhere, so **the budget is 0 px**. All 660 probes
+(330 decisive pairs) are exact in the reference and in both receivers. `clip-derive.ts` over both
+sinks reproduces every scissor, including the rotation (`RQ` `[83,83,172,158)` → `[91,75,166,164)`
+→ `[72,73,184,166)`), the nesting (`RQ2` `[232,79,328,145)`), the half rounding (`SQ`
+`[371,51,403,74)`), the sliver (`SR` `[401,54,402,66)` → `[414,58,415,74)`) and the flip (`FQ`
+`[448,208,512,256)` → `[528,208,592,256)`). The capture's retained state holds all 460 invariants:
+there are no content changes at steps 1, 3 and 4, and `RQ` bumps at step 2 with `clip` true. Perturb
+mismatches at exactly {1..4}. Ignore-clip mismatches at exactly {0..4}, with the 386 predicted
+failing probes.
+
+### Findings
+
+- **Every hand value of Q6d held on the first run**, both the scissors and all 24 semantic-probe
+  cells. GLES3 rasterizes non-antialiased rotated rects exactly by pixel centre on this GPU (RTX
+  2060), band included.
+- **The receiver dependency is the D3 trap, measured.** On the pre-G3b receiver, `receiver-xform`
+  and `-patch` mismatch at exactly steps {2,3,4}, in `rot`, with `RQF` spilling into `rotnest`. `RQ`'s scale redraw at step 2 clears it, and the receiver set `clip` before that
+  clear.
+- Contract amendments (gate3-design.md "As built (G3c)"): `OA.left` and `OA.right` are listed as
+  non-decisive, because `RQ2`'s scissor shares them; two ignore-clip probes lie in the unclipped
+  band; the receiver import; check ids get `-xform`; the snap rounds rather than floors.
+
+### What G3c does not prove
+
+- Rotated text clipping, skew, clipping under stretch, or a browser receiver's clip (gates 4, 6
+  and 7).
+
 ## Gate 4a result (2026-10-09)
 
 G4a ([protocol/gate4-design.md](protocol/gate4-design.md) "G4a") passes:

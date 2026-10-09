@@ -758,11 +758,11 @@ g2b without g2d (G2d's checks absent, only `group-g2d` not-run).
 mise exec -- pnpm render-stream:gate3 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g3a,g3b]
+  [--legs g3a,g3b,g3c]
 ```
 
-- `run-gate3.sh`: the orchestrator (`run_g3a`, `run_g3b`, `run_reference`). g3c and g3d are known
-  but have not landed, so asking for them exits 2.
+- `run-gate3.sh`: the orchestrator (`run_g3a`, `run_g3b`, `run_g3c`, `run_reference`). g3d is
+  known but has not landed, so asking for it exits 2.
 - `lib/gate3-expected.ts`: the `render-stream-gate3-expected/1` types, `stepFrames3`,
   `synthesizeGate3(expected, step, {clips})` (the clear colour, then every draw in paint order,
   each intersected with its integer scissor; `clips: false` gives the unclipped scene),
@@ -789,10 +789,21 @@ mise exec -- pnpm render-stream:gate3 -- \
   `checkReceiverTypedCleanG3b` is g3b's own lighter version of gate 1's receiver-typed-clean
   (gate2b-checks.ts's pattern): g3b has no `receiver-typecheck` leg of its own, so it scans every
   g3b receiver leg's `stdout.log` directly instead.
+- `lib/gate3x-expected.ts` (G3c): the `gate3-xform` expected types, `synthesizeGate3x(expected,
+  step, {clips})` and `paintDraws`: pixel-centre coverage of each draw (an axis-aligned
+  `rect_px`, or a `quad` under rotation) inside its integer scissor, plus the `band` mask, the
+  pixels whose centre lies within `band_px` (1.0) of a non-axis-aligned edge inside that draw's
+  scissor. The arithmetic (squared segment distances) is make_expected.py's.
+- `lib/gate3x-checks.ts` (G3c): every g3c check, `bandDiff`/`overBudget` (exact outside the band,
+  a budget inside it), `evaluateLegX` (gate 0's `classifyLeg` and gate 1's `classifyGate1` with
+  band-aware checkpoints against `reference-xform`) and `runG3c`, which `runGate3` calls when g3c
+  ran.
 - `check-gate3.ts`: writes `<out>/result.json` (`render-stream-gate3-report/1`: gate 1's shape
   plus `probes`, per leg and step `{total, decisive, failed}`, `clip_rects`, the clip-derive
-  table per fixture and step, `census` and `ties`) and exits non-zero unless `gate_passed`.
-- `test/self-test-gate3.ts`, `test/gate3-fixture.ts`: see below.
+  table per fixture and step, `census`, `ties`, and for g3c `band` (budget, band sizes, the
+  repeat's band differences) and `semantic_probes`, the reference's pixel at each D7 probe) and
+  exits non-zero unless `gate_passed`.
+- `test/self-test-gate3.ts`, `test/gate3-fixture.ts`, `test/gate3x-cases.ts`: see below.
 
 ## Gate 3 legs and evidence under `--out`
 
@@ -812,6 +823,20 @@ mise exec -- pnpm render-stream:gate3 -- \
 | `sabotage-receiver-ignore-clip` | g3b | `sabotage-receiver-ignore-clip/` | rendered receiver on `capture/recording.rs2`, `RS_RECEIVER_SABOTAGE=ignore-clip`                                         |
 | `sabotage-receiver-clip-before-clear` | g3b | `sabotage-receiver-clip-before-clear/` | the same, `RS_RECEIVER_SABOTAGE=clip-before-clear`                                                                 |
 | `root-size-observe` | g3b  | `root-size-observe/{capture,receiver}/` | its own fresh capture with `GRC_ROOT_SIZE` unset, then a rendered receiver                                               |
+
+Group g3c runs `fixtures/gate3-xform` (one private gamescope, `gamescope-xform/`):
+
+| Leg                                   | Directory                                          | Runs                                                                                                     |
+| ------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `import-xform`                        | `import-xform/{fixture,receiver}/`                 | the mise editor's `--import` of `fixtures/gate3-xform` and of the receiver                               |
+| `capture-xform`                       | `capture-xform/`                                   | the release template, `--headless`, armed, both sinks, the store, `enforce-min-size`, quit 52           |
+| `reference-xform`                     | `reference-xform/`                                 | rendered, extension absent: `shots/step-0..4.png`                                                        |
+| `reference-xform-repeat`              | `reference-xform-repeat/`                          | the same again (the band budget)                                                                         |
+| `reference-xform-armed`               | `reference-xform-armed/`                           | rendered, extension armed with `GRC_STREAM_OUT` and a store                                              |
+| `receiver-xform`                      | `receiver-xform/`                                  | rendered receiver on `capture-xform`'s full sink, shots at the five settle seqs                          |
+| `receiver-xform-patch`                | `receiver-xform-patch/`                            | the same on the patch sink                                                                               |
+| `sabotage-xform-perturb`              | `sabotage-xform-perturb/{capture,receiver}/`       | capture with `perturb-transform` at frame 11 (step 1), rendered receiver                                 |
+| `sabotage-xform-receiver-ignore-clip` | `sabotage-xform-receiver-ignore-clip/`             | rendered receiver on `capture-xform`'s full sink with `RS_RECEIVER_SABOTAGE=ignore-clip` (G3b's value)  |
 
 ## Gate 3 criteria (g3a)
 
@@ -850,11 +875,37 @@ with zero mismatching pixels outside every region), and for
 `sabotage-receiver-ignore-clip`, the exact failing-probe set (G3a's "As built" amendment: every
 decisive outside probe plus 34 inside probes `BF`/`BZ`/`CF` cover once unclipped).
 
+## Gate 3 criteria (g3c)
+
+`expected-self-consistent-xform` holds `fixtures/gate3-xform/expected.json` to its rules: the colour
+rule, regions, the Q6d hand table, the probe pairs (outside the band, colours equal to the
+synthesized and unclipped frames), decisive coverage, the band size equal to `synthesizeGate3x`'s,
+the six semantic probes equal to Q6d's table with each alternative differing from the engine
+somewhere, and the sabotage step sets equal to the contract's. `step-alignment-xform` reads the
+capture's and the three references' step logs and the capture's marker colours.
+`expected-image-reference-xform` compares every reference shot with `synthesizeGate3x` exactly
+outside the band, full frame and per region. `band-budget` requires `reference-xform` and
+`reference-xform-repeat` to be identical outside the band and turns their band differences into
+the budget. `semantic-probes` requires the reference to equal the engine model at all six D7 probes
+and each of `rotated-exact`, `edge-round` and `pixel-centre` to miss at least one.
+`probes-reference-xform` and `probes-receiver-xform` read every named probe. `armed-transparent-xform`
+requires `reference-xform-armed` to equal the reference byte for byte, band included.
+`clip-state-invariants-xform` and `clip-rects-derived-xform` are g3a's checks over both
+`capture-xform` sinks. `receiver-vs-reference-xform` and `expected-image-receiver-xform` hold both
+receivers exact outside the band, the former within the budget inside it.
+`support-legs-exit-xform` requires the two imports and the three references to exit 0. Five
+`leg-class-*` checks: `capture-xform`, `receiver-xform` and `receiver-xform-patch` classify
+`success`; `sabotage-xform-perturb` is `pixel-mismatch` at exactly {1..4}; and
+`sabotage-xform-receiver-ignore-clip` is `pixel-mismatch` at exactly {0..4}, with exactly the
+predicted failing probes (two that the unclipped scene puts in its own band are left out). The
+receiver legs need G3b's apply order (clear before clip) and its `ignore-clip` sabotage.
+
 ## Gate 3 self-test
 
 ```bash
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate3.ts
 python3 experiments/render-stream/fixtures/gate3/make_expected.py --check
+python3 experiments/render-stream/fixtures/gate3-xform/make_expected.py --check
 ```
 
 The unit cases are of three kinds. `deriveClipRects` runs on hand cases: nesting, a non-clipping
@@ -878,6 +929,16 @@ before clear) among them, and the real `runGate3` runs on every tree. Scenarios 
 shared `capture/` directory (`recapture`) run g3b out of scope (`g3aOnly`): g3b's receiver legs
 replay that capture by reference, so keeping them "honest" against a capture nobody is testing
 them against would mean regenerating four legs' worth of evidence for every g3a-only perturbation.
+
+`test/gate3x-cases.ts` covers g3c, and `make_expected.py --check` for `fixtures/gate3-xform` joins
+the list. It checks `synthesizeGate3x`'s coverage and band on a hand-computed 8×8 diamond (24
+covered pixels, a 36-pixel band, both confined by a scissor) and `bandDiff`/`overBudget`. It holds
+the six semantic probes to Q6d's table, typed in independently, and runs
+`checkExpectedSelfConsistentX` on the committed file and seven broken copies. The reference-side
+checks run on small trees of synthesized PNGs: a passing tree, a band pixel off (passes, budget
+1 px), `half.sliver` painted as the alternatives predict, a probe off, and an alternative that
+agrees everywhere. The fabricated g3a + g3b trees run `runGate3` with the landed groups narrowed
+to g3a and g3b.
 
 ## Gate 4 files
 
