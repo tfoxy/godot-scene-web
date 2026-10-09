@@ -369,7 +369,8 @@ export interface StepJoin {
 }
 
 export interface RegionDiff {
-  name: "subject" | "marker";
+  /** gate 0: "subject" | "marker"; gate 1: the expected.json region names */
+  name: string;
   rect_px: number[];
   mismatched_pixels: number | null;
   max_channel_delta: number | null;
@@ -1456,7 +1457,12 @@ export function receiverLogPaths(outDir: string): string[] {
 
 export async function checkReceiverNeverLoadedFixture(
   outDir: string,
-  paths: { receiverProjectDir: string; fixtureProjectDir: string },
+  paths: {
+    receiverProjectDir: string;
+    fixtureProjectDir: string;
+    /** receiver-side logs to scan for [fixture] lines; default receiverLogPaths(outDir) */
+    receiverLogs?: string[];
+  },
 ): Promise<Gate0Check> {
   const legDir = join(outDir, "receiver-headless-trace");
   const stracePath = join(legDir, "strace.txt");
@@ -1510,7 +1516,7 @@ export async function checkReceiverNeverLoadedFixture(
     if (twin) problems.push(`${path} is byte-identical to ${twin}`);
   }
 
-  const logs = receiverLogPaths(outDir);
+  const logs = paths.receiverLogs ?? receiverLogPaths(outDir);
   for (const required of [
     join(outDir, "receiver", "stdout.log"),
     join(legDir, "stdout.log"),

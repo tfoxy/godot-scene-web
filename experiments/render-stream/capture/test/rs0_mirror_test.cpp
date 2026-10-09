@@ -531,6 +531,74 @@ void test_process_wide_gate() {
 
 }  // namespace
 
+// Gate 1 (G1a): a node removed from the tree and added back (`D`, steps 8-9 of
+// fixtures/gate1) only goes through set_parent(item, RID()) and
+// set_parent(item, canvas); its id, state and commands survive, and it is
+// re-appended at the end of the canvas list.
+void test_detach_reattach_keeps_id() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);  // 1
+  m.canvas_item_create(101, 1);  // 2
+  m.canvas_item_create(102, 1);  // 3
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, kRootCanvas, 1);
+  m.set_parent(102, kRootCanvas, 1);
+  m.add_rect(101, kRect, kGreen, false, 1);
+  m.set_draw_index(101, 7, 1);
+  Snapshot s = m.snapshot(1, 1);
+  const uint64_t version = item(s, 2)->content_version;
+
+  m.set_parent(101, 0, 81);  // _exit_canvas
+  s = m.snapshot(2, 81);
+  check(item(s, 2) != nullptr, "a detached item keeps its id");
+  check(item(s, 2)->parent.kind == ParentKind::None, "a detached item has no parent");
+  check(canvas(s, 1)->items == ids({1, 3}), "a detached item is in no list");
+  check(item(s, 2)->commands.size() == 1 && item(s, 2)->content_version == version,
+        "a detached item keeps its commands and content version");
+  check(item(s, 2)->draw_index == 7, "a detached item keeps its draw index");
+
+  m.set_parent(101, kRootCanvas, 91);  // _enter_canvas
+  s = m.snapshot(3, 91);
+  check(item(s, 2) != nullptr && s.items.size() == 3, "re-attaching creates no new id");
+  check(item(s, 2)->parent.kind == ParentKind::Canvas && item(s, 2)->parent.id == 1,
+        "the re-attached item's parent is canvas 1 again");
+  check(canvas(s, 1)->items == ids({1, 3, 2}), "the re-attached item is appended at the end");
+  check(s.failures.empty(), "detach and re-attach raise no failure");
+}
+
+// Gate 1 (G1a): freeing a raw RenderingServer parent (`Y`, step 8) orphans its
+// child (`X`), which stays alive, detached and in no list until its own free.
+void test_raw_parent_free_leaves_detached_child() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(300, 1);  // 1: Y
+  m.set_parent(300, kRootCanvas, 1);
+  m.set_draw_index(300, 1000, 1);
+  m.add_rect(300, kRect, kRed, false, 1);
+  m.canvas_item_create(301, 1);  // 2: X
+  m.set_parent(301, 300, 1);
+  m.add_rect(301, kRect, kGreen, false, 1);
+
+  m.free_rid(300, 81);
+  Snapshot s = m.snapshot(1, 81);
+  check(item(s, 1) == nullptr, "the freed parent Y is gone");
+  check(item(s, 2) != nullptr, "its child X is still alive");
+  check(item(s, 2)->parent.kind == ParentKind::None, "X is detached");
+  check(canvas(s, 1)->items.empty(), "Y left the root canvas and X is in no list");
+  check(item(s, 2)->commands.size() == 1, "X keeps its commands");
+  check(s.failures.empty(), "freeing a parent raises no failure");
+
+  // X can still be addressed by its own RID, and freed later.
+  m.set_visible(301, false, 85);
+  s = m.snapshot(2, 85);
+  check(s.failures.empty() && !item(s, 2)->visible, "the orphan is still a known item");
+  m.free_rid(301, 91);
+  s = m.snapshot(3, 91);
+  check(s.items.empty(), "freeing the orphan removes it");
+  check(m.stats().free_unknown == 0, "neither free was of an unknown RID");
+}
+
 int main() {
   test_fresh_session();
   test_ids_and_recycled_rid();
@@ -545,6 +613,8 @@ int main() {
   test_omit_update();
   test_capacity();
   test_process_wide_gate();
+  test_detach_reattach_keeps_id();
+  test_raw_parent_free_leaves_detached_child();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs0_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

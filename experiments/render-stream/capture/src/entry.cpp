@@ -11,6 +11,13 @@
 // store, the session record is written at arm, one transaction per armed frame
 // callback, and the end record exactly once at disarm or shutdown. Without
 // GRC_STREAM_OUT the mirror stays off and the hooks behave as at gate -1.
+//
+// Gate 1 (G1a, protocol/gate1-design.md "Q1") adds the root-size policy
+// GRC_ROOT_SIZE (observe | enforce-min-size), applied at arm between the root
+// query and the session record, and writes what it saw and did to
+// evidence/root.json (render-stream-root-geometry/1). render-stream/0 has no
+// field for it; a failed enforcement is carried as the sticky
+// root-query-failed failure with detail "root-size-enforce-failed: ...".
 
 #include <chrono>
 #include <cstdio>
@@ -79,6 +86,21 @@ struct Stream {
 };
 
 Stream g_stream;
+
+// GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
+enum class RootSizePolicy { Observe, EnforceMinSize };
+
+bool parse_root_size_policy(const char *value, RootSizePolicy *out) {
+  if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "observe") == 0) {
+    *out = RootSizePolicy::Observe;
+    return true;
+  }
+  if (std::strcmp(value, "enforce-min-size") == 0) {
+    *out = RootSizePolicy::EnforceMinSize;
+    return true;
+  }
+  return false;
+}
 
 State g_state;
 
@@ -215,6 +237,73 @@ uint64_t monotonic_ns() {
                                    .count());
 }
 
+void write_xform(JsonWriter *json, const std::string &name, const rs0::Xform &xform) {
+  json->key(name).array_begin();
+  for (float value : xform) {
+    json->float32(value);
+  }
+  json->array_end();
+}
+
+void write_geometry(JsonWriter *json, const std::string &name, const rs0::RootInfo &info) {
+  json->key(name).object_begin();
+  json->key("window_size").array_begin();
+  json->integer(info.window_size[0]).integer(info.window_size[1]);
+  json->array_end();
+  json->key("visible_rect").array_begin();
+  for (float value : info.visible_rect) {
+    json->float32(value);
+  }
+  json->array_end();
+  write_xform(json, "canvas_transform", info.canvas_xform);
+  write_xform(json, "final_transform", info.final_transform);
+  json->object_end();
+}
+
+// evidence/root.json (render-stream-root-geometry/1, gate1-design.md G1a).
+std::string root_geometry_json(RootSizePolicy policy, const rs0::RootInfo &before,
+                               const rs0::RootInfo &after, rs0::HostSizeStatus status,
+                               bool enforce_called, bool enforce_ok,
+                               const std::string &enforce_detail) {
+  JsonWriter json;
+  json.object_begin();
+  json.field("schema", std::string("render-stream-root-geometry/1"));
+  json.field("policy", std::string(policy == RootSizePolicy::Observe ? "observe"
+                                                                     : "enforce-min-size"));
+  json.key("logical_size").array_begin();
+  json.integer(after.logical_size[0]).integer(after.logical_size[1]);
+  json.array_end();
+  json.key("stretch").object_begin();
+  json.field("mode", std::string(rs0::content_scale_mode_name(after.content_scale_mode)));
+  json.field("aspect", std::string(rs0::content_scale_aspect_name(after.content_scale_aspect)));
+  json.field("scale_mode",
+             std::string(rs0::content_scale_stretch_name(after.content_scale_stretch)));
+  json.object_end();
+  json.key("content_scale_factor").float32(static_cast<float>(after.content_scale_factor));
+  write_geometry(&json, "before", before);
+  write_geometry(&json, "after", after);
+  json.field("host_size_status", std::string(rs0::to_wire(status)));
+  json.key("enforce").object_begin();
+  json.field("called", enforce_called);
+  json.field("ok", enforce_ok);
+  json.field_or_null("detail", enforce_detail);
+  json.object_end();
+  json.field_or_null("root_query_failed_step", after.ok ? std::string() : after.failed_step);
+  json.object_end();
+  return json.take();
+}
+
+std::string size_text(const int32_t size[2]) {
+  return std::to_string(size[0]) + "x" + std::to_string(size[1]);
+}
+
+std::string rect_size_text(const rs0::Rect4 &rect) {
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%gx%g", static_cast<double>(rect[2]),
+                static_cast<double>(rect[3]));
+  return buffer;
+}
+
 // At arm, right after the vptr store: validates the sabotage environment,
 // opens the recording, enables the mirror, runs the root query and writes the
 // session record. A refusal or an open failure leaves the mirror off and
@@ -228,6 +317,16 @@ void stream_start() {
   // GRC_SABOTAGE_FRAME is read only when GRC_SABOTAGE is set.
   const rs0::ParseResult sabotage =
       rs0::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr);
+  const char *root_size = std::getenv("GRC_ROOT_SIZE");
+  RootSizePolicy policy = RootSizePolicy::Observe;
+  if (!parse_root_size_policy(root_size, &policy)) {
+    const std::string error = std::string("invalid GRC_ROOT_SIZE=") + root_size +
+                              " (expected observe or enforce-min-size)";
+    log_line("stream: refused root size policy (" + error + ")");
+    g_stream.status = "refused";
+    g_stream.reason = error;
+    return;
+  }
   if (!sabotage.ok) {
     log_line(std::string("stream: refused sabotage=") +
              (sabotage_kind != nullptr ? sabotage_kind : "") +
@@ -266,8 +365,52 @@ void stream_start() {
   }
 
   rs0::mirror_enable(true);  // off -> on: a fresh mirror session
-  const rs0::RootInfo root = rs0::root_query_run();
-  rs0::root_query_apply(root);  // a failure becomes the sticky root-query-failed
+  const rs0::RootInfo before = rs0::root_query_run();
+  // Binds the root RIDs before the policy runs, so any viewport call the
+  // min-size write causes is attributed to the root. A failure becomes the
+  // sticky root-query-failed.
+  rs0::root_query_apply(before);
+  rs0::RootInfo after = before;
+  bool enforce_called = false;
+  bool enforce_ok = true;
+  std::string enforce_detail;
+  if (policy == RootSizePolicy::EnforceMinSize) {
+    enforce_called = true;
+    if (!rs0::root_enforce_min_size(before, &enforce_detail)) {
+      enforce_ok = false;
+    }
+    // Read back what the write did; the declaration is always the after state.
+    after = rs0::root_query_run();
+    rs0::mirror_set_root(after.viewport_rid, after.canvas_rid, after.canvas_xform);
+    if (!after.ok) {
+      rs0::mirror_fail_root_query(after.failed_step);
+    }
+  }
+  const rs0::HostSizeStatus host_status = rs0::host_size_status(after);
+  if (policy == RootSizePolicy::EnforceMinSize && host_status != rs0::HostSizeStatus::Match) {
+    enforce_ok = false;
+    if (enforce_detail.empty()) {
+      enforce_detail = std::string(rs0::to_wire(host_status)) + ": window " +
+                       size_text(after.window_size) + ", visible " +
+                       rect_size_text(after.visible_rect) + ", logical " +
+                       size_text(after.logical_size);
+    }
+  }
+  if (!enforce_ok) {
+    // /0 has no root-size-enforce-failed reason: carried as a root-query-failed
+    // detail until render-stream/1 (gate1-design.md G1a "Files").
+    rs0::mirror_fail_root_query("root-size-enforce-failed: " + enforce_detail);
+  }
+  emit("root.json", root_geometry_json(policy, before, after, host_status, enforce_called,
+                                       enforce_ok, enforce_detail));
+  log_line(std::string("root size: policy=") +
+           (policy == RootSizePolicy::Observe ? "observe" : "enforce-min-size") +
+           " logical=" + size_text(after.logical_size) + " window " +
+           size_text(before.window_size) + " -> " + size_text(after.window_size) + " visible " +
+           rect_size_text(before.visible_rect) + " -> " + rect_size_text(after.visible_rect) +
+           " status=" + rs0::to_wire(host_status) +
+           (enforce_ok ? std::string() : " ENFORCE FAILED (" + enforce_detail + ")"));
+  const rs0::RootInfo &root = after;
   if (sabotage.config.kind == rs0::SabotageKind::OmitUpdate) {
     rs0::mirror_set_drop_frame(sabotage.config.frame);
   }

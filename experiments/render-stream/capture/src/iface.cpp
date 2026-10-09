@@ -176,6 +176,20 @@ bool call_value_getter(GDExtensionMethodBindPtr bind, void *instance, void *out,
   return true;
 }
 
+bool call_void_vector2i(GDExtensionMethodBindPtr bind, void *instance, int32_t x, int32_t y) {
+  if (bind == nullptr || instance == nullptr || g_iface.object_method_bind_ptrcall == nullptr) {
+    return false;
+  }
+  // core/math/vector2i.h: struct Vector2i { int32_t x, y; } (8 bytes).
+  alignas(8) int32_t value[2] = {x, y};
+  const GDExtensionConstTypePtr args[1] = {value};
+  // A void method writes nothing to r_ret; a scratch slot keeps that true even
+  // if a future engine returned a value.
+  alignas(16) unsigned char scratch[64] = {};
+  g_iface.object_method_bind_ptrcall(bind, instance, args, scratch);
+  return true;
+}
+
 RefHolder::~RefHolder() { release(); }
 
 bool RefHolder::call(GDExtensionMethodBindPtr bind, void *instance) {

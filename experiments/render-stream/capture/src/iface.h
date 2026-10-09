@@ -101,6 +101,15 @@ bool call_rid_getter(GDExtensionMethodBindPtr bind, void *instance, uint64_t *ou
 // value into the slot, so `size` bytes are written.
 bool call_value_getter(GDExtensionMethodBindPtr bind, void *instance, void *out, size_t size);
 
+// --- the one write: gate 1's GRC_ROOT_SIZE=enforce-min-size ------------------
+//
+// ptrcall of a bound method that takes one `Vector2i` (two int32, passed by
+// pointer: `PtrToArg<const Vector2i &>::convert` reads the value the argument
+// pointer points at) and returns nothing. Returns false when the bind, the
+// instance or ptrcall is missing; it cannot report the callee's own failure,
+// so callers read the effect back.
+bool call_void_vector2i(GDExtensionMethodBindPtr bind, void *instance, int32_t x, int32_t y);
+
 // A `Ref<T>` return. ptrcall assigns into a `Ref<RefCounted>` slot, which takes
 // a reference (core/object/ref_counted.h:251-254). The holder passes a zeroed,
 // pointer-sized slot, reads the object with ref_get_object, and drops the
