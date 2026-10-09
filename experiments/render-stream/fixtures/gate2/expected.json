@@ -426,7 +426,14 @@
           "item": "DR",
           "value": "default"
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 2,
+        "created": 5,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
     },
     {
       "step": 1,
@@ -577,7 +584,14 @@
       ],
       "synth_exclude": [],
       "census": {},
-      "invariants": []
+      "invariants": [],
+      "receiver_resources": {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
     },
     {
       "step": 2,
@@ -733,7 +747,14 @@
           "kind": "no_texture_entries",
           "step": 1
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
     },
     {
       "step": 3,
@@ -892,7 +913,14 @@
           "item": "S2",
           "value": "linear"
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
     },
     {
       "step": 4,
@@ -1050,7 +1078,14 @@
           "kind": "default_filter",
           "value": "linear"
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
     },
     {
       "step": 5,
@@ -1214,7 +1249,14 @@
           "item": "DR",
           "value": "mirror"
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
     },
     {
       "step": 6,
@@ -1396,7 +1438,14 @@
             "step": 0
           }
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 1,
+        "created": 0,
+        "updated": 1,
+        "replaced": 0,
+        "freed": 0
+      }
     },
     {
       "step": 7,
@@ -1579,7 +1628,14 @@
             "step": 7
           }
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 2,
+        "created": 0,
+        "updated": 0,
+        "replaced": 2,
+        "freed": 0
+      }
     },
     {
       "step": 8,
@@ -1771,7 +1827,14 @@
             "step": 8
           }
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 2,
+        "created": 2,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 2
+      }
     },
     {
       "step": 9,
@@ -1974,7 +2037,14 @@
           "item": "MM",
           "value": "linear_mipmaps"
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 2,
+        "created": 1,
+        "updated": 0,
+        "replaced": 1,
+        "freed": 0
+      }
     },
     {
       "step": 10,
@@ -2149,7 +2219,14 @@
           "kind": "no_texture_entries",
           "step": 9
         }
-      ]
+      ],
+      "receiver_resources": {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
     }
   ],
   "variants": {

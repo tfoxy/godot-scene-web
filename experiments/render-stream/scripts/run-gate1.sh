@@ -29,7 +29,7 @@ EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate1"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
-GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden-1"
+GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden-2"
 
 # shellcheck source=lib/gamescope.sh
 source "$SCRIPT_DIR/lib/gamescope.sh"
@@ -80,7 +80,9 @@ tie_seqs_csv() {
 	echo "$out"
 }
 
-# Every gate 1 capture writes both sinks: recording.rs1 (full) and recording-patch.rs1 (patch).
+# Every gate 1 capture writes both sinks: recording.rs2 (full) and recording-patch.rs2 (patch),
+# render-stream/2 since G2b2, with the out-of-band resource store at <capture>/store (run_capture's
+# default). Every file-mode receiver gets a fresh cache (<receiver>/cache) and that store.
 CAPTURE_WITH_PATCH=1
 
 # g1c (G1c2) live legs: the host paces at 60 frames per second and delays the timeline so the
@@ -285,15 +287,18 @@ run_g1a() {
 	done
 
 	# receiver-typecheck (support, for receiver-typed-clean): the mise editor (debug, so GDScript
-	# warnings are live) runs the render-stream/1 codec self-test, then one headless replay of
-	# golden-1/full.rs1.
+	# warnings are live) runs the render-stream/2 codec self-test, then one headless replay of
+	# golden-2/inline.rs2 (inline resource records: no store, a fresh cache).
 	echo "run-gate1: receiver-typecheck"
 	LEG_ENV=(RS_SELFTEST_GOLDEN_DIR="$GOLDEN_DIR")
 	run_headless "$OUT/receiver-typecheck/selftest" none -- \
-		mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec1_selftest.gd
+		mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec2_selftest.gd
 	local minimal_dir="$OUT/receiver-typecheck/minimal"
-	prepare_recording "$GOLDEN_DIR/full.rs1" "$minimal_dir"
-	LEG_ENV=(RS_RECEIVER_RECORDING="$minimal_dir/$RECORDING_NAME" RS_RECEIVER_OUT="$minimal_dir/applied.json")
+	prepare_recording "$GOLDEN_DIR/inline.rs2" "$minimal_dir"
+	LEG_ENV=(
+		RS_RECEIVER_RECORDING="$minimal_dir/$RECORDING_NAME" RS_RECEIVER_OUT="$minimal_dir/applied.json"
+		RS_RECEIVER_CACHE_DIR="$minimal_dir/cache"
+	)
 	run_headless "$minimal_dir" none -- mise exec -- godot --headless --path "$RECEIVER_DIR"
 
 	# Capture hosts (headless, release template, extension armed).
@@ -316,6 +321,7 @@ run_g1a() {
 
 	echo "run-gate1: receiver-headless-trace"
 	if prepare_recording "$OUT/capture/$RECORDING_NAME" "$OUT/receiver-headless-trace"; then
+		RECEIVER_STORE_DIR="$OUT/capture/store"
 		run_receiver_headless "$OUT/receiver-headless-trace" openat
 	fi
 
@@ -427,8 +433,9 @@ live_windows() {
 }
 
 # start_live_host <host dir> [extra env words...]: the capture host (release template, headless,
-# armed, both file sinks, --max-fps 60, the live timeline) serving on 127.0.0.1:0, started in the
-# background. Waits for evidence/live.json and sets LIVE_PORT ("" when the host is not listening).
+# armed, both file sinks with their resource store at <host dir>/store, --max-fps 60, the live
+# timeline) serving on 127.0.0.1:0, started in the background. Waits for evidence/live.json and
+# sets LIVE_PORT ("" when the host is not listening).
 start_live_host() {
 	local dir="$1" waited=0
 	shift
@@ -436,8 +443,8 @@ start_live_host() {
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
-		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_ROOT_SIZE=enforce-min-size
-		GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		GRC_ROOT_SIZE=enforce-min-size GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
 		RS_FIXTURE_START_FRAME="$LIVE_START_FRAME" RS_FIXTURE_STEP_FRAMES="$LIVE_STEP_FRAMES"
 		RS_FIXTURE_QUIT_FRAME="$LIVE_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
 		"$@"
@@ -463,7 +470,8 @@ finish_live_host() {
 
 # live_receiver <leg dir> <rendered|headless>: a live receiver on the current host's port, with
 # --max-fps 60. Rendered receivers shoot the step windows (credit stage submitted); the headless
-# one runs under strace -e openat (receiver-never-loaded-fixture) with credit stage applied.
+# one runs under strace -e openat (receiver-never-loaded-fixture) with credit stage applied. No
+# cache: until G2c2 every live stream is inline (delivery "inline", fetch "none").
 # LIVE_RECEIVER_ENV (reset after the call) adds receiver words, e.g. RS_RECEIVER_STALL (g1d).
 LIVE_RECEIVER_ENV=()
 live_receiver() {
@@ -509,14 +517,15 @@ run_g1c() {
 	live_receiver "$OUT/live" rendered
 	finish_live_host "$OUT/live/host"
 
-	echo "run-gate1: live-replay (rendered file-mode receiver on live/receiver/received.rs1)"
-	if prepare_recording "$OUT/live/receiver/received.rs1" "$OUT/live-replay" &&
+	# received.rs2 is an inline stream (resource records): no store, a fresh cache.
+	echo "run-gate1: live-replay (rendered file-mode receiver on live/receiver/received.rs2)"
+	if prepare_recording "$OUT/live/receiver/received.rs2" "$OUT/live-replay" &&
 		seqs="$(gate0_tool live-shot-seqs "$OUT/live/receiver/applied.json")"; then
 		mkdir -p "$OUT/live-replay/shots"
 		LEG_ENV=(
 			RS_RECEIVER_RECORDING="$OUT/live-replay/$RECORDING_NAME"
 			RS_RECEIVER_OUT="$OUT/live-replay/applied.json" RS_RECEIVER_SHOT_SEQS="$seqs"
-			RS_RECEIVER_STATE_SEQS="$seqs"
+			RS_RECEIVER_STATE_SEQS="$seqs" RS_RECEIVER_CACHE_DIR="$OUT/live-replay/cache"
 		)
 		run_rendered "$OUT/live-replay" "$RECEIVER_DIR"
 	fi

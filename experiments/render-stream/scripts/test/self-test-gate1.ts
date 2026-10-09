@@ -10,11 +10,13 @@
 // 1. classifyGate1 unit cases (pure): no session / patch divergence -> capture-failure; a
 //    degenerate host -> unsupported (degenerate-host-size); precedence against gate 0's classes;
 //    synthesizeGate1 and the invariant / tie helpers on the model's resolved states.
-// 2. Evidence-tree scenarios: a fabricated passing g1a+g1b tree (recordings encoded in
-//    render-stream/1, both sinks, by rs1-test-encoder.ts from a model of the fixture's retained
-//    state, PNGs synthesized from fixtures/gate1/expected.json), then one perturbation per failure
-//    mode. Each scenario runs the real runGate1 and asserts the verdict of the checks and leg
-//    classes it targets.
+// 2. Evidence-tree scenarios: a fabricated passing g1a+g1b+g1c+g1d tree (recordings encoded in
+//    render-stream/2, both sinks, by rs2-test-encoder.ts from a model of the fixture's retained
+//    state, every texture table holding the engine's own unreferenced hue strip; live streams
+//    inline, the hue strip's resource record ahead of seq 1; applied.json
+//    render-stream-receiver-applied/3; PNGs synthesized from fixtures/gate1/expected.json), then
+//    one perturbation per failure mode. Each scenario runs the real runGate1 and asserts the
+//    verdict of the checks and leg classes it targets.
 //
 // Exits non-zero if any assertion fails.
 
@@ -47,6 +49,7 @@ import {
   mapNames,
   type RootEvidence,
   recordingTies,
+  resolvedStateOf,
   runGate1,
   statesOf,
 } from "../lib/gate1-checks";
@@ -65,16 +68,20 @@ import {
   G1C_CLASSIFIED_LEGS,
   G1C_EXPECTATIONS,
 } from "../lib/gate1-live-checks";
-import { splitRecords, validateRecording } from "../lib/render-stream-1";
+import { splitRecords, validateRecording } from "../lib/render-stream-2";
 import {
-  encodeRs1Recording,
+  encodeRs2Recording,
+  HUE_STRIP_HASH,
+  HUE_STRIP_PAYLOAD,
+  hueStrip,
   type TItem,
   type TState,
-} from "./rs1-test-encoder";
+  transactionRecords,
+} from "./rs2-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-1");
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-2");
 
 let assertions = 0;
 let failures = 0;
@@ -135,6 +142,8 @@ interface ModelOptions {
   noTieRaise?: boolean;
   /** step 2 also redraws P (a content change where only a transform should be) */
   redrawP2?: boolean;
+  /** the hue strip's entry changes (version 2, same bytes) from this frame on */
+  hueVersion2From?: number;
 }
 
 const W = [1, 1, 1, 1];
@@ -476,7 +485,7 @@ function afterStep(state: MState, step: number, opts: ModelOptions): void {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Recordings: the model, frame by frame, encoded in render-stream/1 (rs1-test-encoder.ts)
+// Recordings: the model, frame by frame, encoded in render-stream/2 (rs2-test-encoder.ts)
 // ---------------------------------------------------------------------------------------------
 
 interface RecordingOptions extends ModelOptions {
@@ -571,8 +580,12 @@ function modelStates(opts: RecordingOptions): TState[] {
           })),
         };
       });
+    const hue = hueStrip();
+    if (opts.hueVersion2From !== undefined && frame >= opts.hueVersion2From)
+      hue.version = 2;
     const t: TState = {
       frame,
+      textures: [hue],
       failures: opts.enforceFailed
         ? [
             {
@@ -626,12 +639,12 @@ function sessionFor(opts: RecordingOptions, encoding: "full" | "patch") {
 }
 
 function encodeRecording(opts: RecordingOptions): Buffer {
-  return encodeRs1Recording(modelStates(opts), sessionFor(opts, "full"));
+  return encodeRs2Recording(modelStates(opts), sessionFor(opts, "full"));
 }
 
 function encodePatchRecording(opts: RecordingOptions): Buffer {
   const states = modelStates(opts);
-  return encodeRs1Recording(states, {
+  return encodeRs2Recording(states, {
     ...sessionFor(opts, "patch"),
     fullAt: opts.patchFullAt,
     mutatePatch:
@@ -786,17 +799,51 @@ const G1E_TIE_FRAMES = [S + N * 11, S + N * 12];
  * will do, as long as the full and patch receivers agree. */
 const rsCallsOf = (seq: number): number => (seq * 7) % 13;
 
+/** A receiver's state dump: the resolved state in render-stream-2.md's key order. */
 function resolvedState(summary: RecordingSummary, seq: number): unknown {
   const t = summary.transactions.find((x) => x.meta.seq === seq)?.meta;
-  return (
-    t && {
-      status: t.status,
-      failures: t.failures,
-      unsupported: t.unsupported,
-      canvases: t.canvases,
-      items: t.items,
-    }
-  );
+  return t && resolvedStateOf(t);
+}
+
+/** applied.json /3 per-transaction counters of a receiver that never touches a texture. */
+const NO_RESOURCES = {
+  fetched: 0,
+  fetched_bytes: 0,
+  cache_hits: 0,
+  inline_received: 0,
+  created: 0,
+  updated: 0,
+  replaced: 0,
+  freed: 0,
+  upload_bytes: 0,
+  fetch_us: 0,
+  skipped_commands: 0,
+};
+
+/** applied.json /3's top-level resource keys for a receiver that fetched and uploaded nothing
+ * (a live receiver has no cache; `inline` counts the resource records it received). */
+function noTraffic(cacheDir: string | null): Record<string, unknown> {
+  return {
+    cache:
+      cacheDir === null
+        ? null
+        : {
+            dir: cacheDir,
+            mode: "fresh",
+            entries_before: 0,
+            entries_after: 0,
+            bytes_after: 0,
+          },
+    fetches: [],
+    uploads: [],
+    resources_summary: {
+      distinct_fetched: 0,
+      fetched_bytes: 0,
+      cache_hits: 0,
+      uploads: 0,
+      upload_bytes: 0,
+    },
+  };
 }
 
 function appliedFor(
@@ -808,7 +855,7 @@ function appliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/2",
+    schema: "render-stream-receiver-applied/3",
     mode: "file",
     recording: {
       path: recordingPath,
@@ -838,6 +885,7 @@ function appliedFor(
       reparented: 0,
       commands_replayed: 0,
       rs_calls: rsCallsOf(t.meta.seq),
+      resources: NO_RESOURCES,
     })),
     shots: shotSeqs.map((seq) => ({
       stream: 1,
@@ -853,6 +901,7 @@ function appliedFor(
     shots_missed: [],
     unsupported: expectedReceiverUnsupported(summary),
     live: null,
+    ...noTraffic(join(dir, "cache")),
   };
 }
 
@@ -903,8 +952,8 @@ async function writeCaptureLeg(
   const full = encodeRecording(opts);
   const patch = encodePatchRecording(opts);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "recording.rs1"), full);
-  await writeFile(join(dir, "recording-patch.rs1"), patch);
+  await writeFile(join(dir, "recording.rs2"), full);
+  await writeFile(join(dir, "recording-patch.rs2"), patch);
   await writeJson(join(dir, "evidence", "result.json"), {
     schema: "render-stream-capture-result/1",
     status: "armed",
@@ -915,8 +964,8 @@ async function writeCaptureLeg(
     rendering_driver: "opengl3",
     rendering_method: "gl_compatibility",
     stream: {
-      path: join(dir, "recording.rs1"),
-      patch_path: join(dir, "recording-patch.rs1"),
+      path: join(dir, "recording.rs2"),
+      patch_path: join(dir, "recording-patch.rs2"),
       status: "closed",
       reason: null,
       transactions: opts.quit,
@@ -975,10 +1024,10 @@ async function writeReceiverProcess(
   stateSeqs: number[] = [],
 ): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "recording.rs1"), bytes);
+  await writeFile(join(dir, "recording.rs2"), bytes);
   await writeJson(
     join(dir, "applied.json"),
-    appliedFor(join(dir, "recording.rs1"), bytes, shotSeqs, stateSeqs, dir),
+    appliedFor(join(dir, "recording.rs2"), bytes, shotSeqs, stateSeqs, dir),
   );
   const summary = summarizeRecording("r", new Uint8Array(bytes));
   for (const seq of stateSeqs)
@@ -1002,7 +1051,7 @@ async function writeReceiverProcess(
           "--path",
           projects.receiverProjectDir,
         ],
-    [`RS_RECEIVER_RECORDING=${join(dir, "recording.rs1")}`],
+    [`RS_RECEIVER_RECORDING=${join(dir, "recording.rs2")}`],
     "[receiver] ok\n",
     0,
   );
@@ -1017,7 +1066,7 @@ async function writeTraceStrace(
     join(leg, "strace.txt"),
     [
       `42 10:00:00.000000 openat(AT_FDCWD, "${projects.receiverProjectDir}/project.godot", O_RDONLY|O_CLOEXEC) = 3`,
-      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs1")}", O_RDONLY|O_CLOEXEC) = 4`,
+      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs2")}", O_RDONLY|O_CLOEXEC) = 4`,
       "",
     ].join("\n"),
   );
@@ -1089,17 +1138,17 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   }
   await writeProcess(
     join(out, "receiver-typecheck", "selftest"),
-    ["godot", "--script", "res://tests/codec1_selftest.gd"],
+    ["godot", "--script", "res://tests/codec2_selftest.gd"],
     [],
-    "[rs1-selftest] ok\n",
+    "[rs2-selftest] ok\n",
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "full.rs1"));
+  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs2"));
   await mkdir(minimalDir, { recursive: true });
-  await writeFile(join(minimalDir, "recording.rs1"), minimal);
+  await writeFile(join(minimalDir, "recording.rs2"), minimal);
   await writeJson(join(minimalDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/2",
+    schema: "render-stream-receiver-applied/3",
     status: "ok",
     end_seen: true,
     unsupported: expectedReceiverUnsupported(
@@ -1281,6 +1330,8 @@ interface LiveOptions {
   fullAt?: number[];
   /** the tap only: a stream id other than the one the receiver got */
   tapStreamId?: string;
+  /** every live state's hue strip at version 2 (a table the file recording never had) */
+  liveHueVersion2?: boolean;
 }
 
 interface LiveSend {
@@ -1338,6 +1389,8 @@ function liveStreams(opts: LiveOptions): LiveFiles {
     let state = states[s.frame - 1];
     if (opts.staleAt === s.frame && i > 0)
       state = { ...states[sends[i - 1].frame - 1], frame: s.frame };
+    if (opts.liveHueVersion2)
+      state = { ...state, textures: [{ ...hueStrip(), version: 2 }] };
     return state;
   });
   const session = {
@@ -1349,12 +1402,12 @@ function liveStreams(opts: LiveOptions): LiveFiles {
   };
   const dropIndex = sends.findIndex((s) => s.dropped);
   if (dropIndex < 0) {
-    const received = encodeRs1Recording(formed, {
+    const received = encodeRs2Recording(formed, {
       ...session,
       fullAt: opts.fullAt,
     });
     const tap = opts.tapStreamId
-      ? encodeRs1Recording(formed, {
+      ? encodeRs2Recording(formed, {
           ...session,
           fullAt: opts.fullAt,
           streamId: opts.tapStreamId,
@@ -1362,11 +1415,13 @@ function liveStreams(opts: LiveOptions): LiveFiles {
       : received;
     return { tap, received, sends };
   }
-  // The receiver fails at the seq after the dropped one and closes: no end record anywhere.
+  // The receiver fails at the seq after the dropped one and closes: no end record anywhere. The
+  // dropped transaction is found by its seq: the hue strip's resource record precedes seq 1.
   const kept = formed.slice(0, dropIndex + 2);
-  const tap = encodeRs1Recording(kept, { ...session, noEnd: true });
-  const split = splitRecords(new Uint8Array(tap));
-  const dropped = split.records[1 + dropIndex];
+  const tap = encodeRs2Recording(kept, { ...session, noEnd: true });
+  const dropped = transactionRecords(new Uint8Array(tap)).get(
+    sends[dropIndex].seq,
+  ) as { offset: number; byte_length: number };
   const received = Buffer.concat([
     tap.subarray(0, dropped.offset),
     tap.subarray(dropped.offset + dropped.byte_length),
@@ -1419,6 +1474,13 @@ function liveLogLines(files: LiveFiles, opts: LiveOptions): string[] {
   const tapSummary = summarizeRecording("tap", new Uint8Array(files.tap));
   const bytesOf = (seq: number) =>
     tapSummary.transactions.find((x) => x.meta.seq === seq)?.bytes ?? 0;
+  // What seq 1's send queues at once: the magic and session (sent on the hello), the hue strip's
+  // resource record and the transaction -- one credit window, larger than any single message.
+  const firstWindow = transactionRecords(new Uint8Array(files.tap)).get(1);
+  const queuedOf = (seq: number) =>
+    seq === 1 && firstWindow
+      ? firstWindow.offset + firstWindow.byte_length
+      : bytesOf(seq);
   const bySendFrame = new Map(files.sends.map((s) => [s.frame, s]));
   const last = files.sends[files.sends.length - 1];
   let inFlight: number | null = null;
@@ -1441,6 +1503,14 @@ function liveLogLines(files: LiveFiles, opts: LiveOptions): string[] {
       inFlight = null;
     }
     const credit = send !== undefined;
+    if (send?.seq === 1)
+      lines.push({
+        frame,
+        t_us: at(),
+        event: "resource",
+        hash: HUE_STRIP_HASH,
+        bytes: HUE_STRIP_PAYLOAD.length,
+      });
     lines.push({
       frame,
       t_us: at(),
@@ -1449,7 +1519,7 @@ function liveLogLines(files: LiveFiles, opts: LiveOptions): string[] {
       in_flight: send && !send.dropped ? send.seq : inFlight,
       pending: false,
       coalesced: 0,
-      queued_bytes: send && !send.dropped ? bytesOf(send.seq) : 0,
+      queued_bytes: send && !send.dropped ? queuedOf(send.seq) : 0,
       sent: send
         ? {
             seq: send.seq,
@@ -1539,6 +1609,8 @@ function liveSummary(
         max_queued_bytes: 8000,
         max_message_sent: 8000,
         bytes_sent: files.received.length,
+        resource_records: 1,
+        resource_bytes: HUE_STRIP_PAYLOAD.length,
         resyncs: 0,
         credits: acked,
         acks: {
@@ -1602,7 +1674,7 @@ async function writeLiveHost(
     liveSummary(files, opts),
   );
   await mkdir(join(dir, "tap"), { recursive: true });
-  await writeFile(join(dir, "tap", "stream-1.rs1"), files.tap);
+  await writeFile(join(dir, "tap", "stream-1.rs2"), files.tap);
   await writeText(
     join(dir, "tap", "live-1.jsonl"),
     `${liveLogLines(files, opts).join("\n")}\n`,
@@ -1629,10 +1701,10 @@ function liveApplied(
     submitted: opts.rendered ? tx.length : 0,
   };
   return {
-    schema: "render-stream-receiver-applied/2",
+    schema: "render-stream-receiver-applied/3",
     mode: "live",
     recording: {
-      path: join(dir, "received.rs1"),
+      path: join(dir, "received.rs2"),
       sha256: summary.sha256,
       bytes: files.received.length,
     },
@@ -1641,7 +1713,7 @@ function liveApplied(
       {
         stream_id: LIVE_STREAM,
         connection: 1,
-        received_path: join(dir, "received.rs1"),
+        received_path: join(dir, "received.rs2"),
         received_sha256: summary.sha256,
         received_bytes: files.received.length,
         end_seen: !failed,
@@ -1681,6 +1753,10 @@ function liveApplied(
       applied_us: 1000 * t.meta.seq + 300,
       submitted_us: opts.rendered ? 1000 * t.meta.seq + 600 : null,
       skipped: null,
+      resources: {
+        ...NO_RESOURCES,
+        inline_received: t.meta.seq === 1 ? 1 : 0,
+      },
     })),
     shots: [...shots.entries()].map(([step, seq]) => ({
       stream: 1,
@@ -1705,6 +1781,7 @@ function liveApplied(
       reconnect: null,
       resync: null,
     },
+    ...noTraffic(null),
   };
 }
 
@@ -1718,7 +1795,7 @@ async function writeLiveReceiver(
     ? liveShots(files.sends, files.failSeq)
     : new Map<number, number>();
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "received.rs1"), files.received);
+  await writeFile(join(dir, "received.rs2"), files.received);
   await writeJson(
     join(dir, "applied.json"),
     liveApplied(dir, files, opts, shots),
@@ -1755,7 +1832,7 @@ async function writeLiveReceiver(
       "RS_RECEIVER_MODE=live",
       `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
     ],
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.1); hello sent\n[receiver] ok\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.2); hello sent\n[receiver] ok\n`,
     files.failSeq !== undefined ? 3 : 0,
   );
   if (!opts.rendered) await writeLiveTrace(dirname(dir), projects);
@@ -1773,7 +1850,7 @@ async function writeLiveTrace(
     join(dir, "strace.txt"),
     [
       `42 10:00:00.000000 openat(AT_FDCWD, "${projects.receiverProjectDir}/project.godot", O_RDONLY|O_CLOEXEC) = 3`,
-      `42 10:00:00.200000 openat(AT_FDCWD, "${join(dir, "received.rs1")}", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0644) = 5`,
+      `42 10:00:00.200000 openat(AT_FDCWD, "${join(dir, "received.rs2")}", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0644) = 5`,
       "",
     ].join("\n"),
   );
@@ -1783,7 +1860,7 @@ async function writeLiveTrace(
   );
 }
 
-/** live-replay: a file-mode receiver on live/receiver/received.rs1 at the live shots' seqs. */
+/** live-replay: a file-mode receiver on live/receiver/received.rs2 at the live shots' seqs. */
 async function writeLiveReplay(
   out: string,
   projects: Projects,
@@ -1941,8 +2018,9 @@ function sameState(a: TState, b: TState): boolean {
   );
 }
 
-/** A host connection and the receiver on it, frame by frame (rs1_live.cpp's Hub and receiver.gd
- * in miniature): the sends, the live log and the summary counters. */
+/** A host connection and the receiver on it, frame by frame (rs_live.cpp's Hub and receiver.gd
+ * in miniature): the sends, the live log and the summary counters. Seq 1 goes out behind the hue
+ * strip's resource record (its `resource` event line), as every /2 connection's does. */
 function simulateConn(o: SimOptions, states: TState[]): SimConn {
   let t = 1_000_000 + o.connection * 10_000_000;
   const at = () => (t += 1000);
@@ -2090,6 +2168,14 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
       if (!credit) k.sentWithoutCredit++;
       sent = { seq, encoding: full ? "full" : "patch", bytes: 0 };
       if (stateFrame !== frame) sent.stale_from = stateFrame;
+      if (seq === 1)
+        line({
+          frame,
+          t_us: at(),
+          event: "resource",
+          hash: HUE_STRIP_HASH,
+          bytes: HUE_STRIP_PAYLOAD.length,
+        });
       c.sends.push({
         seq,
         frame,
@@ -2208,7 +2294,7 @@ function simStreams(
     ...states[s.stateFrame - 1],
     frame: s.frame,
   }));
-  const tap = encodeRs1Recording(formed, {
+  const tap = encodeRs2Recording(formed, {
     ...sessionFor({ quit: LQUIT }, "patch"),
     sessionId: LIVE_SESSION,
     streamId: c.streamId,
@@ -2217,12 +2303,15 @@ function simStreams(
     fullAt: c.sends.filter((s) => s.encoding === "full").map((s) => s.seq),
     noEnd: !c.ended,
   });
-  const split = splitRecords(new Uint8Array(tap));
-  for (const s of c.sends) s.json.bytes = split.records[s.seq].byte_length;
+  // Transactions by seq: the hue strip's resource record sits between the session and seq 1.
+  const bySeq = transactionRecords(new Uint8Array(tap));
+  const recordOf = (seq: number) =>
+    bySeq.get(seq) as { offset: number; byte_length: number };
+  for (const s of c.sends) s.json.bytes = recordOf(s.seq).byte_length;
   for (const l of c.lines)
     if (l.sent) l.queued_bytes = (l.sent as SimSentJson).bytes;
   if (c.read === c.sends.length) return { tap, received: tap };
-  const cut = split.records[c.read + 1];
+  const cut = recordOf(c.read + 1);
   return { tap, received: tap.subarray(0, cut.offset) };
 }
 
@@ -2253,6 +2342,8 @@ function simSummary(c: SimConn): Record<string, unknown> {
     max_queued_bytes: 8000,
     max_message_sent: 8000,
     bytes_sent: 100000,
+    resource_records: 1,
+    resource_bytes: HUE_STRIP_PAYLOAD.length,
     resyncs: k.resyncs,
     credits: k.credits,
     acks: { ...k.acks },
@@ -2370,7 +2461,7 @@ async function writeG1dLeg(
   await mkdir(recvDir, { recursive: true });
   for (const [i, c] of conns.entries()) {
     await writeFile(
-      join(hostDir, "tap", `stream-${c.connection}.rs1`),
+      join(hostDir, "tap", `stream-${c.connection}.rs2`),
       streams[i].tap,
     );
     await writeText(
@@ -2385,7 +2476,7 @@ async function writeG1dLeg(
   let us = 5_000_000;
   for (const [i, c] of conns.entries()) {
     const name =
-      c.connection === 1 ? "received.rs1" : `received-${c.connection}.rs1`;
+      c.connection === 1 ? "received.rs2" : `received-${c.connection}.rs2`;
     await writeFile(join(recvDir, name), streams[i].received);
     const summary = summarizeRecording(
       name,
@@ -2410,6 +2501,9 @@ async function writeG1dLeg(
         applied_us: refused ? null : us + 300,
         submitted_us: refused ? null : us + 600,
         skipped: refused ? "resync" : null,
+        resources: refused
+          ? null
+          : { ...NO_RESOURCES, inline_received: tx.meta.seq === 1 ? 1 : 0 },
       });
     }
     for (const [step, seq] of c.shots) {
@@ -2447,7 +2541,7 @@ async function writeG1dLeg(
         };
   const reconnectSeq = first.shots.get(G1D_RECONNECT_STEP);
   await writeJson(join(recvDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/2",
+    schema: "render-stream-receiver-applied/3",
     mode: "live",
     recording: null,
     session_id: LIVE_SESSION,
@@ -2456,7 +2550,7 @@ async function writeG1dLeg(
       connection: c.connection,
       received_path: join(
         recvDir,
-        i === 0 ? "received.rs1" : `received-${c.connection}.rs1`,
+        i === 0 ? "received.rs2" : `received-${c.connection}.rs2`,
       ),
       received_sha256: summarizeRecording(
         "r",
@@ -2518,6 +2612,7 @@ async function writeG1dLeg(
               reason: "injected",
             },
     },
+    ...noTraffic(null),
   });
   const env = [
     "RS_RECEIVER_MODE=live",
@@ -2540,7 +2635,7 @@ async function writeG1dLeg(
       "60",
     ],
     env,
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.1); hello sent\n[receiver] ok\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.2); hello sent\n[receiver] ok\n`,
     0,
   );
 }
@@ -2600,7 +2695,7 @@ async function writeKilledLeg(
     connections: [summary],
   });
   await mkdir(join(hostDir, "tap"), { recursive: true });
-  await writeFile(join(hostDir, "tap", "stream-1.rs1"), tap);
+  await writeFile(join(hostDir, "tap", "stream-1.rs2"), tap);
   await writeText(
     join(hostDir, "tap", "live-1.jsonl"),
     `${c.lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
@@ -2626,7 +2721,7 @@ async function writeKilledLeg(
       "RS_RECEIVER_MODE=live",
       `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
     ],
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.1); hello sent\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.2); hello sent\n`,
     137,
   );
 }
@@ -2703,8 +2798,8 @@ const rewriteCapture =
   (opts: RecordingOptions) => async (out: string, projects: Projects) => {
     const full = encodeRecording(opts);
     const patch = encodePatchRecording(opts);
-    await writeFile(join(out, "capture", "recording.rs1"), full);
-    await writeFile(join(out, "capture", "recording-patch.rs1"), patch);
+    await writeFile(join(out, "capture", "recording.rs2"), full);
+    await writeFile(join(out, "capture", "recording-patch.rs2"), patch);
     const shots = [...settleSeqs(), TIE_FRAME];
     await writeReceiverProcess(
       join(out, "receiver"),
@@ -2861,6 +2956,53 @@ const liveScenarios: Scenario[] = [
       ),
   },
   {
+    name: "g1c: a live stream whose texture table differs from the file recording's is stale-state",
+    mutate: (out, projects) =>
+      rewriteLiveLeg(out, projects, "live", {
+        rendered: true,
+        liveHueVersion2: true,
+      }),
+    checks: {
+      "live-resolves-to-recording": false,
+      "live-decodes": true,
+      "live-credit-bounded": true,
+    },
+    classes: { live: "delivery-violation" },
+  },
+  {
+    name: "g1c: queued bytes one past seq 1's credit window (session, resource record, transaction) + 4096 are delivery-violation",
+    mutate: async (out) => {
+      const tap = new Uint8Array(
+        await readFile(
+          join(out, "live-headless", "host", "tap", "stream-1.rs2"),
+        ),
+      );
+      const first = transactionRecords(tap).get(1) as {
+        offset: number;
+        byte_length: number;
+      };
+      const window = first.offset + first.byte_length;
+      await editLiveLog(out, "live-headless", (lines) =>
+        lines.map((l) =>
+          (l.sent as { seq?: number } | null)?.seq === 1
+            ? { ...l, queued_bytes: window + 4097 }
+            : l,
+        ),
+      );
+    },
+    checks: { "live-credit-bounded": false },
+    classes: { "live-headless": "delivery-violation" },
+  },
+  {
+    name: "g1c: a receiver that negotiated render-stream.1 fails live-handshake",
+    mutate: (out) =>
+      writeText(
+        join(out, "live", "receiver", "stdout.log"),
+        `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.1); hello sent\n[receiver] ok\n`,
+      ),
+    checks: { "live-handshake": false },
+  },
+  {
     name: "g1c: received bytes that differ from the host's tap are replay-failure",
     mutate: (out, projects) =>
       rewriteLiveLeg(out, projects, "live", {
@@ -2986,7 +3128,7 @@ const liveScenarios: Scenario[] = [
   {
     name: "g1c: a received stream cut before its end record fails live-decodes",
     mutate: async (out) => {
-      const path = join(out, "live-headless", "receiver", "received.rs1");
+      const path = join(out, "live-headless", "receiver", "received.rs2");
       const bytes = new Uint8Array(await readFile(path));
       const split = splitRecords(bytes);
       const end = split.records[split.records.length - 1];
@@ -3209,7 +3351,7 @@ const scenarios: Scenario[] = [
     name: "a recording without its end record fails recording-decodes and makes capture capture-failure",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs1"),
+        join(out, "capture", "recording.rs2"),
         encodeRecording({ quit: CAPTURE_QUIT, noEnd: true }),
       ),
     checks: {
@@ -3324,6 +3466,48 @@ const scenarios: Scenario[] = [
     classes: { capture: "unsupported" },
   },
   {
+    name: "a hue-strip entry changing at step 2's frame puts a texture entry in a transform-only patch: patch-transform-only fails",
+    mutate: rewriteCapture({ quit: CAPTURE_QUIT, hueVersion2From: S + N * 2 }),
+    checks: {
+      "patch-transform-only": false,
+      "patch-resolves-to-full": true,
+      "recording-decodes": true,
+    },
+  },
+  {
+    name: "a receiver state dump without the texture table fails patch-vs-full-receiver-state",
+    mutate: (out) =>
+      editJson<{ textures?: unknown[] }>(
+        join(out, "receiver", "state", `seq-${settleSeqs()[2]}.json`),
+        (s) => {
+          delete s.textures;
+        },
+      ),
+    checks: { "patch-vs-full-receiver-state": false },
+  },
+  {
+    name: "a receiver-patch state dump with another default texture filter fails patch-vs-full-receiver-state",
+    mutate: (out) =>
+      editJson<{ default_texture_filter: string }>(
+        join(out, "receiver-patch", "state", `seq-${settleSeqs()[5]}.json`),
+        (s) => {
+          s.default_texture_filter = "nearest";
+        },
+      ),
+    checks: { "patch-vs-full-receiver-state": false },
+  },
+  {
+    name: "a receiver writing render-stream-receiver-applied/2 fails receiver-consumed-stream",
+    mutate: (out) =>
+      editJson<{ schema: string }>(
+        join(out, "receiver", "applied.json"),
+        (a) => {
+          a.schema = "render-stream-receiver-applied/2";
+        },
+      ),
+    checks: { "receiver-consumed-stream": false },
+  },
+  {
     name: "a step 2 that also redraws P fails patch-transform-only",
     mutate: rewriteCapture({ quit: CAPTURE_QUIT, redrawP2: true }),
     checks: { "patch-transform-only": false, "patch-resolves-to-full": true },
@@ -3362,7 +3546,7 @@ const scenarios: Scenario[] = [
   {
     name: "a sabotage capture without its recording classifies capture-failure",
     mutate: (out) =>
-      rm(join(out, "sabotage-omit-order", "capture", "recording.rs1")),
+      rm(join(out, "sabotage-omit-order", "capture", "recording.rs2")),
     checks: { "leg-class-sabotage-omit-order": false },
     classes: { "sabotage-omit-order": "capture-failure" },
   },
@@ -3420,7 +3604,7 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeText(
         join(out, "receiver-typecheck", "selftest", "stdout.log"),
-        "[rs1-selftest] ok\nSCRIPT WARNING: unsafe\n",
+        "[rs2-selftest] ok\nSCRIPT WARNING: unsafe\n",
       ),
     checks: { "receiver-typed-clean": false },
   },
@@ -3524,11 +3708,11 @@ const scenarios: Scenario[] = [
     mutate: async (out, projects) => {
       const bytes = encodeRecording({ quit: SHORT_QUIT });
       await writeFile(
-        join(out, "root-size-observe", "capture", "recording.rs1"),
+        join(out, "root-size-observe", "capture", "recording.rs2"),
         bytes,
       );
       await writeFile(
-        join(out, "root-size-observe", "capture", "recording-patch.rs1"),
+        join(out, "root-size-observe", "capture", "recording-patch.rs2"),
         encodePatchRecording({ quit: SHORT_QUIT }),
       );
       await writeReceiverProcess(
@@ -3546,7 +3730,7 @@ const scenarios: Scenario[] = [
     name: "a main capture whose patch sink diverges fails patch-resolves-to-full and classifies capture-failure (patch-divergence)",
     mutate: async (out) => {
       await writeFile(
-        join(out, "capture", "recording-patch.rs1"),
+        join(out, "capture", "recording-patch.rs2"),
         encodePatchRecording({ quit: CAPTURE_QUIT, dropMarkerAt: 41 }),
       );
     },
@@ -3569,7 +3753,7 @@ const scenarios: Scenario[] = [
     name: "a patch sink with a full transaction mid-stream fails patch-first-full (it still resolves to the full sink)",
     mutate: async (out) => {
       await writeFile(
-        join(out, "capture", "recording-patch.rs1"),
+        join(out, "capture", "recording-patch.rs2"),
         encodePatchRecording({ quit: CAPTURE_QUIT, patchFullAt: [50] }),
       );
     },
@@ -3637,11 +3821,11 @@ const scenarios: Scenario[] = [
     mutate: async (out, projects) => {
       const full = encodeRecording({ quit: SHORT_QUIT });
       await writeFile(
-        join(out, "tie-overlap", "capture", "recording.rs1"),
+        join(out, "tie-overlap", "capture", "recording.rs2"),
         full,
       );
       await writeFile(
-        join(out, "tie-overlap", "capture", "recording-patch.rs1"),
+        join(out, "tie-overlap", "capture", "recording-patch.rs2"),
         encodePatchRecording({ quit: SHORT_QUIT }),
       );
       await writeReceiverProcess(
@@ -3659,7 +3843,7 @@ const scenarios: Scenario[] = [
     name: "a sabotage-patch-drop whose patch sink is faithful is not capture-failure and fails its leg class",
     mutate: async (out) => {
       await writeFile(
-        join(out, "sabotage-patch-drop", "capture", "recording-patch.rs1"),
+        join(out, "sabotage-patch-drop", "capture", "recording-patch.rs2"),
         encodePatchRecording({ quit: SHORT_QUIT }),
       );
     },
@@ -3828,7 +4012,7 @@ const g1dScenarios: Scenario[] = [
   {
     name: "g1d: a first connection the receiver read past the host's tap is replay-failure",
     mutate: async (out) => {
-      const path = join(out, "live-reconnect", "receiver", "received.rs1");
+      const path = join(out, "live-reconnect", "receiver", "received.rs2");
       const bytes = await readFile(path);
       bytes[bytes.length - 1] ^= 0x01;
       await writeFile(path, bytes);
@@ -3927,7 +4111,7 @@ async function runScenarios(): Promise<void> {
   try {
     const templateProjects = await writeProjects(join(root, "template"));
     await buildGoodTree(join(root, "template", "out"), templateProjects);
-    for (const name of ["recording.rs1", "recording-patch.rs1"]) {
+    for (const name of ["recording.rs2", "recording-patch.rs2"]) {
       const errors = validateRecording(
         new Uint8Array(
           await readFile(join(root, "template", "out", "capture", name)),

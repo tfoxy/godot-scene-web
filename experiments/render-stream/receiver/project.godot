@@ -1,4 +1,4 @@
-; render-stream/1 receiver (gate 0, extended by gate 1). See README.md. Its only input is a
+; render-stream/2 receiver (gate 0, extended by gates 1 and 2). See README.md. Its only input is a
 ; recording named by RS_RECEIVER_RECORDING; it has no autoload, no extension and nothing from
 ; fixtures/.
 

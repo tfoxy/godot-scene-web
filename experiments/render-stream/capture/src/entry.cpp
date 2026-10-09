@@ -6,9 +6,10 @@
 // vptr.
 //
 // With GRC_STREAM_OUT and/or GRC_STREAM_PATCH_OUT set and the library armed,
-// it also publishes render-stream/1 recordings (protocol/render-stream-1.md;
-// protocol/gate1-design.md "G1b2"): GRC_STREAM_OUT is the `full`-encoding
-// file sink, GRC_STREAM_PATCH_OUT the `patch`-encoding one; either or both.
+// it also publishes render-stream/2 recordings (protocol/render-stream-2.md;
+// protocol/gate1-design.md "G1b2", gate2-design.md "G2b2"): GRC_STREAM_OUT is
+// the `full`-encoding file sink, GRC_STREAM_PATCH_OUT the `patch`-encoding
+// one; either or both.
 // The canvas mirror is enabled and the root viewport queried right after the
 // vptr store, a session record is written to each sink at arm (same
 // session_id, one stream_id per sink), then one transaction per sink per
@@ -17,10 +18,12 @@
 // and the hooks behave as at gate -1.
 //
 // Sabotage (GRC_SABOTAGE / GRC_SABOTAGE_FRAME / GRC_SABOTAGE_OP, validated by
-// rs1::parse_sabotage; a refusal publishes nothing): omit-update and omit-op
+// rs2::parse_sabotage; a refusal publishes nothing): omit-update and omit-op
 // act in the mirror, freeze-frame, perturb-transform and patch-drop-item in
 // the publisher, drop-message (G1c2), ignore-credit and stale-coalesce (G1d)
-// in the live hub.
+// in the live hub; G2b2's stale-texture in the publisher, wrong-hash in the
+// resource store and spurious-texture-update in the mirror at the frame
+// callback.
 //
 // The root-size policy GRC_ROOT_SIZE (observe | enforce-min-size; G1a,
 // gate1-design.md "Q1") is applied at arm between the root query and the
@@ -36,7 +39,7 @@
 // mirror and the root query, with or without file sinks, and starts the rs_ws
 // server (own I/O thread) at arm; evidence/live.json says what the listener
 // became (render-stream-live/1). Each frame callback drains the server's
-// events into the live hub (rs1_live.h) and, when a connection can take a
+// events into the live hub (rs_live.h) and, when a connection can take a
 // transaction, hands it the same published copy the file sinks got. Nothing
 // on the main thread waits on a socket. GRC_LIVE_TAP_DIR,
 // GRC_LIVE_MAX_MESSAGE_BYTES and GRC_LIVE_HELLO_TIMEOUT_MS configure the hub;
@@ -58,9 +61,22 @@
 // callback. GRC_RESOURCE_FORMATS (default L8,LA8,R8,RG8,RGB8,RGBA8) and
 // GRC_RESOURCE_MAX_PAYLOAD_BYTES (default 64 MiB) are read at arm; an invalid
 // value, or an engine without the Image binds and image_ptr
-// (image-access-unavailable), refuses to publish. Nothing changes on the
-// render-stream/1 wire: texture draws stay unsupported commands until G2b2.
+// (image-access-unavailable), refuses to publish.
+//
+// Resources (G2b2, gate2-design.md Q3, Q4 "File sinks", render-stream-2.md):
+// the mirror keeps every texture's payload, and each published snapshot names
+// the versions it needs. GRC_RESOURCE_INLINE_MAX_BYTES (default 0) is the
+// largest payload a file sink carries in band as a `resource` record; every
+// larger `ok` payload goes to the content-addressed store directory
+// GRC_RESOURCE_STORE_DIR (absolute), required whenever a file sink is open and
+// delivery is not inline (refused as resource-store-missing). A store write
+// failure ends the stream (resource-store-failed), as does more retained
+// payload than GRC_RESOURCE_BUDGET_BYTES (default 512 MiB;
+// resource-budget-exceeded): both land in result.json `stream.reason`. Live
+// connections are inline-only until G2c2: each declares delivery inline,
+// fetch none, and carries every payload it needs as resource records.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -74,10 +90,11 @@
 #include "hooks.h"
 #include "iface.h"
 #include "report.h"
-#include "rs1_live.h"
-#include "rs1_publish.h"
+#include "rs_live.h"
 #include "rs_mirror.h"
+#include "rs_publish.h"
 #include "rs_resource_log.h"
+#include "rs_resource_store.h"
 #include "rs_root_query.h"
 #include "rs_texture_payload.h"
 #include "rs_ws.h"
@@ -122,16 +139,24 @@ struct State {
   HookPlan plan;
 };
 
-// The render-stream/1 file publication (G1b2). `status` is result.json
+// The render-stream/2 file publication (G1b2, G2b2). `status` is result.json
 // `stream.status`: off | open | closed | refused | open-failed.
 struct Stream {
   std::string path;        // GRC_STREAM_OUT (full sink); empty when unset
   std::string patch_path;  // GRC_STREAM_PATCH_OUT (patch sink); empty when unset
   std::string status = "off";
   std::string reason;  // empty -> null
-  std::unique_ptr<rs1::FileRecordSink> full_sink;
-  std::unique_ptr<rs1::FileRecordSink> patch_sink;
-  std::unique_ptr<rs1::Publisher> publisher;
+  std::unique_ptr<rs2::FileRecordSink> full_sink;
+  std::unique_ptr<rs2::FileRecordSink> patch_sink;
+  std::unique_ptr<rs2::Publisher> publisher;
+  // Gate 2 (G2b2): the resource policy, the store directory (GRC_RESOURCE_STORE_DIR; null when
+  // every payload travels inline), the budget and the spurious-texture-update frame (0: off).
+  rs2::ResourcePolicy policy;
+  std::string store_dir;
+  std::unique_ptr<rs::ResourceStore> store;
+  uint64_t budget_bytes = 512ull << 20;
+  uint64_t retained_bytes_max = 0;
+  uint64_t spurious_frame = 0;
   // Gate 2 (G2a): evidence/resources.jsonl, the texture hook log
   // (rs_resource_log.h), written whenever a stream is enabled.
   std::FILE *resources_file = nullptr;
@@ -149,22 +174,22 @@ struct Live {
   int64_t port = -1;
   std::string reason;
   std::unique_ptr<live::Server> server;
-  std::unique_ptr<rs1::ServerTransport> transport;
-  std::unique_ptr<rs1::Hub> hub;
+  std::unique_ptr<rs2::ServerTransport> transport;
+  std::unique_ptr<rs2::Hub> hub;
   // After the end records went out: wait (bounded) for the receivers to close first
-  // (rs1::Hub::finish).
+  // (rs2::Hub::finish).
   bool ending = false;
   bool stopped = false;
   uint64_t linger_deadline_ns = 0;
 };
 
-// How long the host waits for receivers to close after their end record (rs1_live.h, finish).
+// How long the host waits for receivers to close after their end record (rs_live.h, finish).
 constexpr uint64_t kLiveLingerNs = 1500ull * 1000ull * 1000ull;
 
 Live g_live;
 
 // GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
-using rs1::RootSizePolicy;
+using rs2::RootSizePolicy;
 
 bool parse_root_size_policy(const char *value, RootSizePolicy *out) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "observe") == 0) {
@@ -183,8 +208,8 @@ int64_t stream_transactions() {
   if (g_stream.publisher == nullptr) {
     return 0;
   }
-  const bool full = g_stream.publisher->has_sink(rs1::Encoding::Full);
-  const rs1::Encoding encoding = full ? rs1::Encoding::Full : rs1::Encoding::Patch;
+  const bool full = g_stream.publisher->has_sink(rs2::Encoding::Full);
+  const rs2::Encoding encoding = full ? rs2::Encoding::Full : rs2::Encoding::Patch;
   return static_cast<int64_t>(g_stream.publisher->transactions(encoding));
 }
 
@@ -332,7 +357,7 @@ uint64_t monotonic_ns() {
                                    .count());
 }
 
-void write_xform(JsonWriter *json, const std::string &name, const rs1::Xform &xform) {
+void write_xform(JsonWriter *json, const std::string &name, const rs2::Xform &xform) {
   json->key(name).array_begin();
   for (float value : xform) {
     json->float32(value);
@@ -357,13 +382,13 @@ void write_geometry(JsonWriter *json, const std::string &name, const rs::RootInf
 
 // evidence/root.json (render-stream-root-geometry/1, gate1-design.md G1a).
 std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before,
-                               const rs::RootInfo &after, rs1::HostSizeStatus status,
+                               const rs::RootInfo &after, rs2::HostSizeStatus status,
                                bool enforce_called, bool enforce_ok,
                                const std::string &enforce_detail) {
   JsonWriter json;
   json.object_begin();
   json.field("schema", std::string("render-stream-root-geometry/1"));
-  json.field("policy", std::string(rs1::to_wire(policy)));
+  json.field("policy", std::string(rs2::to_wire(policy)));
   json.key("logical_size").array_begin();
   json.integer(after.logical_size[0]).integer(after.logical_size[1]);
   json.array_end();
@@ -376,7 +401,7 @@ std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before
   json.key("content_scale_factor").float32(static_cast<float>(after.content_scale_factor));
   write_geometry(&json, "before", before);
   write_geometry(&json, "after", after);
-  json.field("host_size_status", std::string(rs1::to_wire(status)));
+  json.field("host_size_status", std::string(rs2::to_wire(status)));
   json.key("enforce").object_begin();
   json.field("called", enforce_called);
   json.field("ok", enforce_ok);
@@ -434,7 +459,7 @@ std::string size_text(const int32_t size[2]) {
   return std::to_string(size[0]) + "x" + std::to_string(size[1]);
 }
 
-std::string rect_size_text(const rs1::Rect4 &rect) {
+std::string rect_size_text(const rs2::Rect4 &rect) {
   char buffer[64];
   std::snprintf(buffer, sizeof(buffer), "%gx%g", static_cast<double>(rect[2]),
                 static_cast<double>(rect[3]));
@@ -454,11 +479,11 @@ void stream_drop_sinks() {
 }
 
 // Opens one file sink; false (after logging) when the file cannot be created.
-bool stream_open_sink(const std::string &path, std::unique_ptr<rs1::FileRecordSink> *out) {
+bool stream_open_sink(const std::string &path, std::unique_ptr<rs2::FileRecordSink> *out) {
   if (path.empty()) {
     return true;
   }
-  *out = std::make_unique<rs1::FileRecordSink>();
+  *out = std::make_unique<rs2::FileRecordSink>();
   if (!(*out)->open(path)) {
     log_line("stream: cannot open " + path);
     return false;
@@ -466,12 +491,12 @@ bool stream_open_sink(const std::string &path, std::unique_ptr<rs1::FileRecordSi
   return true;
 }
 
-std::string sabotage_text(const rs1::SabotageConfig &config) {
-  if (config.kind == rs1::SabotageKind::None) {
+std::string sabotage_text(const rs2::SabotageConfig &config) {
+  if (config.kind == rs2::SabotageKind::None) {
     return "none";
   }
-  std::string text = std::string(rs1::to_wire(config.kind)) + "@" + std::to_string(config.frame);
-  if (config.kind == rs1::SabotageKind::OmitOp) {
+  std::string text = std::string(rs2::to_wire(config.kind)) + "@" + std::to_string(config.frame);
+  if (config.kind == rs2::SabotageKind::OmitOp) {
     text += " op=" + config.op;
   }
   return text;
@@ -530,6 +555,22 @@ bool env_positive(const char *name, uint64_t fallback, uint64_t *out) {
   return *out >= 1;
 }
 
+// A non-negative decimal environment value, or `fallback` when unset. False
+// when set and malformed.
+bool env_non_negative(const char *name, uint64_t fallback, uint64_t *out) {
+  const char *value = std::getenv(name);
+  if (value == nullptr || *value == '\0') {
+    *out = fallback;
+    return true;
+  }
+  const std::string text(value);
+  if (text.size() > 15 || text.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  *out = std::stoull(text);
+  return true;
+}
+
 std::string live_json() {
   JsonWriter json;
   json.object_begin();
@@ -569,8 +610,8 @@ void stream_start() {
   const char *sabotage_frame = std::getenv("GRC_SABOTAGE_FRAME");
   const char *sabotage_op = std::getenv("GRC_SABOTAGE_OP");
   // GRC_SABOTAGE_FRAME and GRC_SABOTAGE_OP are read only when GRC_SABOTAGE is set.
-  const rs1::ParseResult sabotage =
-      rs1::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr,
+  const rs2::ParseResult sabotage =
+      rs2::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr,
                           sabotage_kind != nullptr ? sabotage_op : nullptr);
   const char *root_size = std::getenv("GRC_ROOT_SIZE");
   RootSizePolicy policy = RootSizePolicy::Observe;
@@ -591,6 +632,7 @@ void stream_start() {
   {
     rs::FormatPolicy formats;
     uint64_t max_payload_bytes = 0;
+    uint64_t inline_max_bytes = 0;
     std::string error;
     if (!rs::parse_format_policy(std::getenv("GRC_RESOURCE_FORMATS"), &formats, &error) ||
         !rs::parse_max_payload_bytes(std::getenv("GRC_RESOURCE_MAX_PAYLOAD_BYTES"),
@@ -598,7 +640,24 @@ void stream_start() {
       // error says which variable
     } else if (!hooks_image_payload_available()) {
       error = "image-access-unavailable";
+    } else if (!env_non_negative("GRC_RESOURCE_INLINE_MAX_BYTES", 0, &inline_max_bytes)) {
+      error = "invalid GRC_RESOURCE_INLINE_MAX_BYTES (a decimal integer >= 0)";
+    } else if (!env_positive("GRC_RESOURCE_BUDGET_BYTES", 512ull << 20,
+                             &g_stream.budget_bytes)) {
+      error = "invalid GRC_RESOURCE_BUDGET_BYTES (a decimal integer >= 1)";
+    } else {
+      g_stream.store_dir = env_string("GRC_RESOURCE_STORE_DIR");
+      const bool delivery_inline = inline_max_bytes >= max_payload_bytes;
+      if (!g_stream.store_dir.empty() && g_stream.store_dir[0] != '/') {
+        error = "GRC_RESOURCE_STORE_DIR must be absolute";
+      } else if (files && !delivery_inline && g_stream.store_dir.empty()) {
+        // gate2-design.md Q4 "File sinks": a recording whose payloads have nowhere to go.
+        error = "resource-store-missing";
+      }
     }
+    g_stream.policy.permitted_formats = formats.names;
+    g_stream.policy.max_payload_bytes = max_payload_bytes;
+    g_stream.policy.inline_max_bytes = inline_max_bytes;
     if (!error.empty()) {
       log_line("stream: refused resource policy (" + error + ")");
       g_stream.status = "refused";
@@ -616,7 +675,7 @@ void stream_start() {
   // Live configuration, decided before anything is opened (gate1-design.md G1c2).
   std::string live_host;
   uint16_t live_port = 0;
-  rs1::LiveConfig live_config;
+  rs2::LiveConfig live_config;
   bool live_ok = sabotage.ok && !g_live.listen.empty();
   if (live_ok) {
     std::string why;
@@ -645,17 +704,21 @@ void stream_start() {
     return;
   }
   if (sabotage.ok) {
-    const rs1::SabotageKind kind = sabotage.config.kind;
+    const rs2::SabotageKind kind = sabotage.config.kind;
     std::string why;
-    const bool live_kind = kind == rs1::SabotageKind::DropMessage ||
-                           kind == rs1::SabotageKind::IgnoreCredit ||
-                           kind == rs1::SabotageKind::StaleCoalesce;
+    const bool live_kind = kind == rs2::SabotageKind::DropMessage ||
+                           kind == rs2::SabotageKind::IgnoreCredit ||
+                           kind == rs2::SabotageKind::StaleCoalesce;
     if (live_kind && !live_ok) {
-      why = std::string(rs1::to_wire(kind)) + " needs GRC_LIVE_LISTEN";
-    } else if (!files && (kind == rs1::SabotageKind::FreezeFrame ||
-                          kind == rs1::SabotageKind::PerturbTransform ||
-                          kind == rs1::SabotageKind::PatchDropItem)) {
-      why = std::string(rs1::to_wire(kind)) + " acts on the file publication; set a file sink";
+      why = std::string(rs2::to_wire(kind)) + " needs GRC_LIVE_LISTEN";
+    } else if (!files && (kind == rs2::SabotageKind::FreezeFrame ||
+                          kind == rs2::SabotageKind::PerturbTransform ||
+                          kind == rs2::SabotageKind::PatchDropItem ||
+                          kind == rs2::SabotageKind::StaleTexture)) {
+      why = std::string(rs2::to_wire(kind)) + " acts on the file publication; set a file sink";
+    } else if (kind == rs2::SabotageKind::WrongHash &&
+               (!files || g_stream.store_dir.empty())) {
+      why = "wrong-hash acts on the resource store; set a file sink and GRC_RESOURCE_STORE_DIR";
     }
     if (!why.empty()) {
       log_line("stream: refused sabotage (" + why + ")");
@@ -666,12 +729,14 @@ void stream_start() {
       }
       return;
     }
-    if (kind == rs1::SabotageKind::DropMessage) {
+    if (kind == rs2::SabotageKind::DropMessage) {
       live_config.drop_message_frame = sabotage.config.frame;
-    } else if (kind == rs1::SabotageKind::IgnoreCredit) {
+    } else if (kind == rs2::SabotageKind::IgnoreCredit) {
       live_config.ignore_credit_frame = sabotage.config.frame;
-    } else if (kind == rs1::SabotageKind::StaleCoalesce) {
+    } else if (kind == rs2::SabotageKind::StaleCoalesce) {
       live_config.stale_coalesce_frame = sabotage.config.frame;
+    } else if (kind == rs2::SabotageKind::SpuriousTextureUpdate) {
+      g_stream.spurious_frame = sabotage.config.frame;
     }
   }
   if (!sabotage.ok) {
@@ -686,8 +751,8 @@ void stream_start() {
     return;
   }
 
-  rs1::Session session;
-  session.session_id = rs1::generate_id();
+  rs2::Session session;
+  session.session_id = rs2::generate_id();
   session.engine.version_string = g_state.fp.version_string;
   session.engine.sha256 = g_state.fp.exe_sha256;
   session.engine.display_server = g_state.display_server;
@@ -697,12 +762,12 @@ void stream_start() {
       static_cast<uint32_t>(std::strtoul(g_state.calib.calibrator_version.c_str(), nullptr, 10));
   session.capture.hooks_planned = g_state.plan.planned;
   session.capture.hooks_omitted = g_state.plan.omitted;
-  session.features = rs1::gate1_features();
-  if (sabotage.config.kind != rs1::SabotageKind::None) {
+  session.features = rs2::gate2_features();
+  if (sabotage.config.kind != rs2::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
     session.sabotage.frame = sabotage.config.frame;
     // render-stream-1.md "Session record": `op` is non-null exactly for omit-op.
-    session.sabotage.has_op = sabotage.config.kind == rs1::SabotageKind::OmitOp;
+    session.sabotage.has_op = sabotage.config.kind == rs2::SabotageKind::OmitOp;
     session.sabotage.op = session.sabotage.has_op ? sabotage.config.op : std::string();
   }
 
@@ -712,6 +777,18 @@ void stream_start() {
     g_stream.reason = "cannot open the recording";
     stream_drop_sinks();
     return;
+  }
+  if (files && !g_stream.store_dir.empty()) {
+    g_stream.store = std::make_unique<rs::ResourceStore>();
+    std::string error;
+    if (!g_stream.store->open(g_stream.store_dir, &error)) {
+      log_line("stream: " + error);
+      g_stream.store.reset();
+      g_stream.status = "open-failed";
+      g_stream.reason = "resource-store-failed: " + error;
+      stream_drop_sinks();
+      return;
+    }
   }
 
   rs::mirror_enable(true);  // off -> on: a fresh mirror session
@@ -736,17 +813,17 @@ void stream_start() {
       rs::mirror_fail_root_query(after.failed_step);
     }
   }
-  const rs1::HostSizeStatus host_status = rs::host_size_status(after);
-  if (policy == RootSizePolicy::EnforceMinSize && host_status != rs1::HostSizeStatus::Match) {
+  const rs2::HostSizeStatus host_status = rs::host_size_status(after);
+  if (policy == RootSizePolicy::EnforceMinSize && host_status != rs2::HostSizeStatus::Match) {
     enforce_ok = false;
     if (enforce_detail.empty()) {
-      enforce_detail = std::string(rs1::to_wire(host_status)) + ": window " +
+      enforce_detail = std::string(rs2::to_wire(host_status)) + ": window " +
                        size_text(after.window_size) + ", visible " +
                        rect_size_text(after.visible_rect) + ", logical " +
                        size_text(after.logical_size);
     }
   }
-  if (host_status != rs1::HostSizeStatus::Match) {
+  if (host_status != rs2::HostSizeStatus::Match) {
     // render-stream-1.md "Unsupported reasons": the session-level
     // degenerate-host-size entry is present exactly when status != match.
     rs::mirror_set_degenerate_host_size(true);
@@ -758,22 +835,39 @@ void stream_start() {
   }
   emit("root.json", root_geometry_json(policy, before, after, host_status, enforce_called,
                                        enforce_ok, enforce_detail));
-  log_line(std::string("root size: policy=") + rs1::to_wire(policy) +
+  log_line(std::string("root size: policy=") + rs2::to_wire(policy) +
            " logical=" + size_text(after.logical_size) + " window " +
            size_text(before.window_size) + " -> " + size_text(after.window_size) + " visible " +
            rect_size_text(before.visible_rect) + " -> " + rect_size_text(after.visible_rect) +
-           " status=" + rs1::to_wire(host_status) +
+           " status=" + rs2::to_wire(host_status) +
            (enforce_ok ? std::string() : " ENFORCE FAILED (" + enforce_detail + ")"));
   const rs::RootInfo &root = after;
-  if (sabotage.config.kind == rs1::SabotageKind::OmitUpdate) {
+  // G2b2 (gate2-design.md D9, Q1d): the root viewport's default texture filter and repeat, read
+  // at arm as Viewport scene enums and mapped to the RenderingServer enums the setters use
+  // (scene/main/viewport.cpp:3903-3925, :3934-3958). The hooks follow later changes.
+  {
+    static const rs2::Filter kFilters[] = {rs2::Filter::Nearest, rs2::Filter::Linear,
+                                           rs2::Filter::LinearMipmaps,
+                                           rs2::Filter::NearestMipmaps};
+    static const rs2::Repeat kRepeats[] = {rs2::Repeat::Disabled, rs2::Repeat::Enabled,
+                                           rs2::Repeat::Mirror};
+    const int64_t filter = root.default_texture_filter >= 0 ? root.default_texture_filter
+                                                             : before.default_texture_filter;
+    const int64_t repeat = root.default_texture_repeat >= 0 ? root.default_texture_repeat
+                                                             : before.default_texture_repeat;
+    rs::mirror_instance().set_texture_defaults(
+        filter >= 0 && filter < 4 ? kFilters[filter] : rs2::Filter::Default,
+        repeat >= 0 && repeat < 3 ? kRepeats[repeat] : rs2::Repeat::Default);
+  }
+  if (sabotage.config.kind == rs2::SabotageKind::OmitUpdate) {
     rs::mirror_set_drop_frame(sabotage.config.frame);
-  } else if (sabotage.config.kind == rs1::SabotageKind::OmitOp) {
+  } else if (sabotage.config.kind == rs2::SabotageKind::OmitOp) {
     rs::mirror_set_omit_op(sabotage.config.op, sabotage.config.frame);
   }
   // render-stream-1.md "Session record": `viewport` and the blocks, all read
   // after the root-size policy.
   session.viewport.canvas_cull_mask = root.canvas_cull_mask;
-  session.viewport.root_canvas = rs1::kRootCanvasId;
+  session.viewport.root_canvas = rs2::kRootCanvasId;
   session.viewport.logical_size = {root.logical_size[0], root.logical_size[1]};
   if (!rs::stretch_from_window(root, &session.viewport.stretch)) {
     log_line("root size: content scale enum out of range (mode=" +
@@ -791,8 +885,17 @@ void stream_start() {
   session.content_scale_factor = static_cast<float>(root.content_scale_factor);
 
   if (files) {
-    g_stream.publisher = std::make_unique<rs1::Publisher>(
-        g_stream.full_sink.get(), g_stream.patch_sink.get(), sabotage.config);
+    g_stream.publisher = std::make_unique<rs2::Publisher>(
+        g_stream.full_sink.get(), g_stream.patch_sink.get(), sabotage.config, g_stream.policy,
+        g_stream.store.get());
+    g_stream.publisher->set_resource_events([](const char *op, const std::string &hash,
+                                               uint64_t bytes, bool ok, uint64_t frame) {
+      rs::TapContext ctx;
+      ctx.frame = frame;
+      ctx.t_ns = monotonic_ns();
+      ctx.main_thread = true;
+      rs::resource_log().resource_event(ctx, op, hash, bytes, ok ? "ok" : "failed");
+    });
     if (!g_stream.publisher->start(session)) {
       log_line("stream: cannot write the session record");
       rs::mirror_enable(false);
@@ -811,6 +914,7 @@ void stream_start() {
     server_config.host = live_host;
     server_config.port = live_port;
     server_config.max_clients = 1;  // D5: one receiver at a time (a second gets 503)
+    server_config.subprotocol = "render-stream.2";  // render-stream-2.md "Live transport"
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();
     std::string error;
@@ -827,25 +931,30 @@ void stream_start() {
       }
     } else {
       g_live.port = g_live.server->port();
-      g_live.transport = std::make_unique<rs1::ServerTransport>(g_live.server.get());
-      rs1::Session tmpl = session;
-      tmpl.stream = rs1::StreamInfo();
-      g_live.hub = std::make_unique<rs1::Hub>(g_live.transport.get(), live_config, tmpl);
+      g_live.transport = std::make_unique<rs2::ServerTransport>(g_live.server.get());
+      rs2::Session tmpl = session;
+      tmpl.stream = rs2::StreamInfo();
+      // gate2-design.md G2b2 "Live before HTTP": until G2c2 every live connection is inline,
+      // whatever the configuration, and never advertises a fetch path that does not exist yet.
+      rs2::ResourcePolicy live_policy = g_stream.policy;
+      live_policy.inline_max_bytes = live_policy.max_payload_bytes;
+      tmpl.resources = rs2::resources_info(live_policy, rs2::Fetch::Http);
+      g_live.hub = std::make_unique<rs2::Hub>(g_live.transport.get(), live_config, tmpl);
       live_decided("listening", std::string());
     }
   }
   g_stream.status = "open";
   resources_start(root.viewport_rid);
-  const rs1::Publisher *publisher = g_stream.publisher.get();
-  const auto stream_id = [publisher](rs1::Encoding encoding) {
+  const rs2::Publisher *publisher = g_stream.publisher.get();
+  const auto stream_id = [publisher](rs2::Encoding encoding) {
     return publisher != nullptr && publisher->has_sink(encoding)
                ? publisher->session(encoding).stream.stream_id
                : std::string("-");
   };
   log_line("stream: open full=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path) +
-           " full_stream=" + stream_id(rs1::Encoding::Full) +
+           " full_stream=" + stream_id(rs2::Encoding::Full) +
            " patch=" + (g_stream.patch_path.empty() ? std::string("<off>") : g_stream.patch_path) +
-           " patch_stream=" + stream_id(rs1::Encoding::Patch) + " session=" + session.session_id +
+           " patch_stream=" + stream_id(rs2::Encoding::Patch) + " session=" + session.session_id +
            " root_query=" + (root.ok ? std::string("ok") : "failed at " + root.failed_step) +
            " live=" +
            (g_live.hub != nullptr ? g_live.address + ":" + std::to_string(g_live.port)
@@ -865,7 +974,7 @@ void live_drain(uint64_t frame) {
     // live summary. Until then entry.cpp registers none (see live_open below), so this never
     // fires in gate 0/1 -- but to_live_event()'s switch must stay exhaustive regardless.
     if (event.kind == live::Event::HttpGet) continue;
-    g_live.hub->on_event(rs1::to_live_event(event), frame);
+    g_live.hub->on_event(rs2::to_live_event(event), frame);
   }
 }
 
@@ -883,7 +992,7 @@ void live_close_and_stop() {
   g_live.stopped = true;
   g_live.ending = false;
   emit("live-summary.json", g_live.hub->summary_json());
-  for (const rs1::ConnectionSummary &s : g_live.hub->summaries()) {
+  for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
     log_line("live: connection " + std::to_string(s.connection) + " stream " + s.stream_id +
              " offered=" + std::to_string(s.frames_offered) +
              " formed=" + std::to_string(s.transactions) + " sent=" + std::to_string(s.sent) +
@@ -919,8 +1028,8 @@ void live_linger(bool blocking) {
 }
 
 // Ends live delivery: the end record to every streaming connection
-// (rs1::Hub::finish), then the linger.
-void live_finish(rs1::EndReason reason, bool blocking) {
+// (rs2::Hub::finish), then the linger.
+void live_finish(rs2::EndReason reason, bool blocking) {
   if (g_live.hub == nullptr || g_live.ending || g_live.stopped) {
     return;
   }
@@ -934,13 +1043,13 @@ void live_finish(rs1::EndReason reason, bool blocking) {
 // Writes each sink's end record and closes the recordings. Only the first call
 // while the stream is open does anything, so disarm, shutdown and deinitialize
 // can all call it.
-void stream_finish(rs1::EndReason reason) {
+void stream_finish(rs2::EndReason reason) {
   if (g_stream.status != "open") {
     return;
   }
   rs::mirror_enable(false);
   resources_finish();
-  live_finish(reason, reason == rs1::EndReason::Shutdown);
+  live_finish(reason, reason == rs2::EndReason::Shutdown);
   if (g_stream.publisher == nullptr) {
     g_stream.status = "closed";
     return;
@@ -950,14 +1059,25 @@ void stream_finish(rs1::EndReason reason) {
   if (!ok && g_stream.reason.empty()) {
     g_stream.reason = "end record write failed";
   }
-  for (const rs1::Encoding encoding : {rs1::Encoding::Full, rs1::Encoding::Patch}) {
+  if (g_stream.store != nullptr) {
+    log_line("stream: store " + g_stream.store->dir() + " hashes=" +
+             std::to_string(g_stream.store->hashes()) + " bytes=" +
+             std::to_string(g_stream.store->bytes()) +
+             (g_stream.store->corrupted_hash().empty()
+                  ? std::string()
+                  : " corrupted=" + g_stream.store->corrupted_hash()));
+    g_stream.store->close();
+  }
+  log_line("stream: resources retained_bytes_max=" + std::to_string(g_stream.retained_bytes_max) +
+           " budget=" + std::to_string(g_stream.budget_bytes));
+  for (const rs2::Encoding encoding : {rs2::Encoding::Full, rs2::Encoding::Patch}) {
     if (!g_stream.publisher->has_sink(encoding)) {
       continue;
     }
-    const rs1::EndStats &stats = g_stream.publisher->stats(encoding);
-    log_line(std::string("stream: closed (") + rs1::to_wire(reason) +
-             ") encoding=" + rs1::to_wire(encoding) + " path=" +
-             (encoding == rs1::Encoding::Full ? g_stream.path : g_stream.patch_path) +
+    const rs2::EndStats &stats = g_stream.publisher->stats(encoding);
+    log_line(std::string("stream: closed (") + rs2::to_wire(reason) +
+             ") encoding=" + rs2::to_wire(encoding) + " path=" +
+             (encoding == rs2::Encoding::Full ? g_stream.path : g_stream.patch_path) +
              " transactions=" + std::to_string(g_stream.publisher->transactions(encoding)) +
              " bytes_total=" + std::to_string(stats.bytes_total) +
              " max_record_bytes=" + std::to_string(stats.max_record_bytes) +
@@ -980,6 +1100,20 @@ void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
   }
+  if (g_stream.spurious_frame != 0 && frame == g_stream.spurious_frame) {
+    // spurious-texture-update (gate2-design.md G2b2): a version bump with identical bytes, and
+    // its own hook-log line marked "sabotage":true, so the log and the stream still agree.
+    const uint64_t rid = rs::mirror_instance().spurious_texture_update(frame);
+    if (rid != 0) {
+      rs::TapContext ctx;
+      ctx.frame = frame;
+      ctx.t_ns = monotonic_ns();
+      ctx.main_thread = true;
+      rs::resource_log().spurious_update(ctx, rid);
+    }
+    log_line("stream: spurious-texture-update at frame " + std::to_string(frame) + " rid=" +
+             std::to_string(rid));
+  }
   resources_drain();
   live_drain(frame);
   const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot(frame);
@@ -991,19 +1125,40 @@ void stream_publish(uint64_t frame) {
     return;
   }
   const uint64_t t0 = monotonic_ns();
-  rs1::Snapshot snapshot = rs::mirror_snapshot(0, frame);
+  rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   const uint64_t snapshot_ns = monotonic_ns() - t0;
-  const rs1::Snapshot *published = &snapshot;
+  // gate2-design.md Q3: the retained payloads -- the mirror's current ones plus those the
+  // previous publication still pins -- stay within GRC_RESOURCE_BUDGET_BYTES.
+  {
+    rs::PayloadMap retained = snapshot.payloads;
+    if (g_stream.publisher != nullptr && g_stream.publisher->last_published() != nullptr) {
+      const rs::PayloadMap &pinned = g_stream.publisher->last_published()->payloads;
+      retained.insert(pinned.begin(), pinned.end());
+    }
+    const uint64_t retained_bytes = rs::payload_map_bytes(retained);
+    g_stream.retained_bytes_max = std::max(g_stream.retained_bytes_max, retained_bytes);
+    if (retained_bytes > g_stream.budget_bytes) {
+      log_line("stream: resource-budget-exceeded at frame " + std::to_string(frame) + ": " +
+               std::to_string(retained_bytes) + " > " + std::to_string(g_stream.budget_bytes));
+      g_stream.reason = "resource-budget-exceeded: " + std::to_string(retained_bytes) +
+                        " bytes retained, the budget is " + std::to_string(g_stream.budget_bytes);
+      stream_finish(rs2::EndReason::Shutdown);
+      return;
+    }
+  }
+  const rs::Captured *published = &snapshot;
   if (g_stream.publisher != nullptr) {
     if (!g_stream.publisher->publish(std::move(snapshot), frame, snapshot_ns)) {
-      log_line("stream: write failed at frame " + std::to_string(frame));
-      g_stream.reason = "transaction write failed";
-      stream_finish(rs1::EndReason::Shutdown);
+      const std::string error = g_stream.publisher->error();
+      log_line("stream: write failed at frame " + std::to_string(frame) +
+               (error.empty() ? std::string() : " (" + error + ")"));
+      g_stream.reason = error.empty() ? std::string("transaction write failed") : error;
+      stream_finish(rs2::EndReason::Shutdown);
       return;
     }
     published = g_stream.publisher->last_published();
   } else {
-    snapshot.frame = frame;
+    snapshot.state.frame = frame;
   }
   if (g_live.hub != nullptr) {
     g_live.hub->on_frame(frame, monotonic_ns(), live_wants ? published : nullptr, epoch,
@@ -1142,14 +1297,14 @@ void on_frame() {
     ++g_state.frames_armed;
     if (g_state.disarm_after_frames >= 0 &&
         static_cast<int64_t>(g_state.frames_armed) >= g_state.disarm_after_frames) {
-      stream_finish(rs1::EndReason::Disarm);
+      stream_finish(rs2::EndReason::Disarm);
       do_disarm("frame");
     }
   }
 }
 
 void on_shutdown() {
-  stream_finish(rs1::EndReason::Shutdown);
+  stream_finish(rs2::EndReason::Shutdown);
   live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
@@ -1194,7 +1349,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   }
   // The shutdown callback normally gets here first; this is the backstop for an
   // unload that happens without it.
-  stream_finish(rs1::EndReason::Shutdown);
+  stream_finish(rs2::EndReason::Shutdown);
   live_linger(true);
   do_disarm("deinitialize");
 }

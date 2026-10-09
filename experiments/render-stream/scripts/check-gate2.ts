@@ -59,11 +59,23 @@ async function main(): Promise<void> {
     console.log(`  ${leg}: ${cls}, exit ${entry.exit_code ?? "?"}`);
   }
   for (const [leg, r] of Object.entries(report.resources ?? {})) {
-    for (const s of r.host.by_shape) {
+    for (const s of r.host?.by_shape ?? []) {
       console.log(
         `  ${leg} copy/hash ${s.shape} (${s.payload_bytes} B): copy median ${s.copy_ns?.median ?? "?"} ns, hash median ${s.hash_ns?.median ?? "?"} ns (n=${s.copy_ns?.n ?? 0})`,
       );
     }
+    if (r.store)
+      console.log(
+        `  ${leg} store: ${r.store.hashes} payloads, ${r.store.bytes} B`,
+      );
+    if (r.host?.full_bytes != null)
+      console.log(
+        `  ${leg} recordings: full ${r.host.full_bytes} B, patch ${r.host.patch_bytes ?? "?"} B, resource records ${r.host.resource_records ?? 0} (${r.host.resource_bytes ?? 0} B), retained max ${r.host.retained_bytes_max ?? "?"} B`,
+      );
+    if (r.receiver)
+      console.log(
+        `  ${leg} receiver: fetched ${r.receiver.distinct_fetched} (${r.receiver.fetched_bytes} B), cache hits ${r.receiver.cache_hits}, uploads ${r.receiver.uploads} (${r.receiver.upload_bytes} B)`,
+      );
   }
   const passed = report.checks.filter((c) => c.passed).length;
   console.log(

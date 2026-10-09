@@ -14,9 +14,11 @@
 # legs strip DISPLAY and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_*
 # variable and passes only what its leg wants (env.txt records it).
 #
-# Since G1b2 (protocol/gate1-design.md) every capture publishes render-stream/1 (recording.rs1)
-# under GRC_ROOT_SIZE=enforce-min-size; without the policy the 64x64 headless host would declare
-# degenerate-host-size and classify unsupported.
+# Since G1b2 (protocol/gate1-design.md) every capture runs under GRC_ROOT_SIZE=enforce-min-size;
+# without the policy the 64x64 headless host would declare degenerate-host-size and classify
+# unsupported. Since G2b2 (protocol/gate2-design.md) every capture publishes render-stream/2
+# (recording.rs2) with its out-of-band resource store at <capture>/store (GRC_RESOURCE_STORE_DIR),
+# and every file-mode receiver gets a fresh cache (<receiver>/cache) and that store.
 
 set -euo pipefail
 
@@ -25,7 +27,7 @@ EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate0"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
-GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden-1"
+GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden-2"
 
 # shellcheck source=lib/gamescope.sh
 source "$SCRIPT_DIR/lib/gamescope.sh"
@@ -164,15 +166,19 @@ done
 
 # ---------------------------------------------------------------------------------------------
 # receiver-typecheck: the mise editor (a debug build, so GDScript warnings are live) runs the
-# render-stream/1 codec self-test, then one headless replay of the golden-1 full.rs1.
+# render-stream/2 codec self-test, then one headless replay of golden-2/inline.rs2 (inline
+# resource records, so it needs no store; it still gets a fresh cache).
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: receiver-typecheck"
 LEG_ENV=(RS_SELFTEST_GOLDEN_DIR="$GOLDEN_DIR")
 run_headless "$OUT/receiver-typecheck/selftest" none -- \
-	mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec1_selftest.gd
+	mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec2_selftest.gd
 MINIMAL_DIR="$OUT/receiver-typecheck/minimal"
-prepare_recording "$GOLDEN_DIR/full.rs1" "$MINIMAL_DIR"
-LEG_ENV=(RS_RECEIVER_RECORDING="$MINIMAL_DIR/$RECORDING_NAME" RS_RECEIVER_OUT="$MINIMAL_DIR/applied.json")
+prepare_recording "$GOLDEN_DIR/inline.rs2" "$MINIMAL_DIR"
+LEG_ENV=(
+	RS_RECEIVER_RECORDING="$MINIMAL_DIR/$RECORDING_NAME" RS_RECEIVER_OUT="$MINIMAL_DIR/applied.json"
+	RS_RECEIVER_CACHE_DIR="$MINIMAL_DIR/cache"
+)
 run_headless "$MINIMAL_DIR" none -- mise exec -- godot --headless --path "$RECEIVER_DIR"
 
 # ---------------------------------------------------------------------------------------------
@@ -190,6 +196,7 @@ echo "run-gate0: unsupported"
 CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=unsupported)
 run_capture "$OUT/unsupported/capture" "$SHORT_QUIT_FRAME" none
 if prepare_recording "$OUT/unsupported/capture/$RECORDING_NAME" "$OUT/unsupported/receiver"; then
+	RECEIVER_STORE_DIR="$OUT/unsupported/capture/store"
 	run_receiver_headless "$OUT/unsupported/receiver" none
 fi
 
@@ -212,6 +219,7 @@ mkdir -p "$OUT/corrupt"
 if [ -f "$OUT/capture/$RECORDING_NAME" ] &&
 	gate0_tool corrupt "$OUT/capture/$RECORDING_NAME" "$OUT/corrupt/$RECORDING_NAME" "$CORRUPT_SEQ" \
 		>"$OUT/corrupt/corrupt-tool.log" 2>&1; then
+	RECEIVER_STORE_DIR="$OUT/capture/store"
 	run_receiver_headless "$OUT/corrupt" none
 else
 	echo "could not build the corrupted copy (see corrupt-tool.log)" >"$OUT/corrupt/skipped.txt"
@@ -220,6 +228,7 @@ fi
 
 echo "run-gate0: receiver-headless-trace"
 if prepare_recording "$OUT/capture/$RECORDING_NAME" "$OUT/receiver-headless-trace"; then
+	RECEIVER_STORE_DIR="$OUT/capture/store"
 	run_receiver_headless "$OUT/receiver-headless-trace" openat
 fi
 

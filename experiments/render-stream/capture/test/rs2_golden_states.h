@@ -323,7 +323,7 @@ inline TextureEntry texture_a(std::uint64_t version, const std::string &hash) {
   t.format = "RGBA8";
   t.width = 16;
   t.height = 16;
-  t.payload_bytes = 1024;
+  t.payload_bytes = 1135;  // the whole GRT1 payload (render-stream-2.md "Texture")
   return t;
 }
 
@@ -338,7 +338,7 @@ inline TextureEntry texture_atwin() {
   t.format = "RGBA8";
   t.width = 16;
   t.height = 16;
-  t.payload_bytes = 1024;
+  t.payload_bytes = 1135;  // the whole GRT1 payload (render-stream-2.md "Texture")
   return t;
 }
 
@@ -377,7 +377,7 @@ inline TextureEntry texture_p_replaced() {
   t.width = 8;
   t.height = 8;
   t.mipmaps = true;
-  t.payload_bytes = 340;
+  t.payload_bytes = 447;
   return t;
 }
 
@@ -392,7 +392,7 @@ inline TextureEntry texture_f_ok() {
   t.format = "LA8";
   t.width = 4;
   t.height = 4;
-  t.payload_bytes = 32;
+  t.payload_bytes = 137;
   return t;
 }
 
@@ -416,7 +416,7 @@ inline TextureEntry texture_n() {
   t.format = "RGBA8";
   t.width = 16;
   t.height = 16;
-  t.payload_bytes = 1024;
+  t.payload_bytes = 1135;  // the whole GRT1 payload (render-stream-2.md "Texture")
   return t;
 }
 

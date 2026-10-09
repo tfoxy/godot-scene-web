@@ -39,6 +39,45 @@ std::string hex(const std::uint8_t *data, std::size_t size) {
   return out;
 }
 
+std::vector<std::uint8_t> read_file(const std::string &path) {
+  std::vector<std::uint8_t> out;
+  std::FILE *file = std::fopen(path.c_str(), "rb");
+  if (file == nullptr) {
+    return out;
+  }
+  std::uint8_t buffer[4096];
+  std::size_t n = 0;
+  while ((n = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+    out.insert(out.end(), buffer, buffer + n);
+  }
+  std::fclose(file);
+  return out;
+}
+
+std::uint32_t u32le(const std::vector<std::uint8_t> &b, std::size_t at) {
+  return static_cast<std::uint32_t>(b[at]) | (static_cast<std::uint32_t>(b[at + 1]) << 8) |
+         (static_cast<std::uint32_t>(b[at + 2]) << 16) |
+         (static_cast<std::uint32_t>(b[at + 3]) << 24);
+}
+
+// The string value of `"key":"..."` in canonical JSON.
+std::string json_string(const std::string &json, const std::string &key) {
+  const std::string needle = "\"" + key + "\":\"";
+  const std::size_t at = json.find(needle);
+  if (at == std::string::npos) {
+    return std::string();
+  }
+  const std::size_t start = at + needle.size();
+  return json.substr(start, json.find('"', start) - start);
+}
+
+// The integer value of `"key":<digits>` in canonical JSON.
+std::int64_t json_int(const std::string &json, const std::string &key) {
+  const std::string needle = "\"" + key + "\":";
+  const std::size_t at = json.find(needle);
+  return at == std::string::npos ? -1 : std::stoll(json.substr(at + needle.size()));
+}
+
 std::vector<std::uint8_t> quadrants() {
   std::vector<std::uint8_t> data;
   for (int y = 0; y < 16; ++y) {
@@ -186,6 +225,34 @@ int main() {
   EXPECT(parse_max_payload_bytes("1135", &max_bytes, &error) && max_bytes == 1135);
   EXPECT(!parse_max_payload_bytes("0", &max_bytes, &error));
   EXPECT(!parse_max_payload_bytes("12k", &max_bytes, &error));
+
+  // G2b2: the encoder re-derives every golden-2 payload byte for byte from the shape and data
+  // the golden file itself carries (protocol/golden-2/payloads/, written by make_golden.py).
+  int goldens = 0;
+  for (const char *name : {"a1", "a2", "f", "p"}) {
+    const std::vector<std::uint8_t> file =
+        read_file(std::string(GRC_GOLDEN2_DIR) + "/payloads/" + name + ".grt");
+    EXPECT(file.size() > 16);
+    if (file.size() <= 16) {
+      continue;
+    }
+    const std::uint32_t meta_len = u32le(file, 8);
+    const std::string meta(file.begin() + 12, file.begin() + 12 + meta_len);
+    const std::uint32_t data_len = u32le(file, 12 + meta_len);
+    const std::size_t data_at = 16 + meta_len;
+    EXPECT(data_at + data_len == file.size());
+    const std::string format = json_string(meta, "format");
+    const std::int64_t width = json_int(meta, "width");
+    const std::int64_t height = json_int(meta, "height");
+    const bool mipmaps = meta.find("\"mipmaps\":true") != std::string::npos;
+    const std::vector<std::uint8_t> again =
+        encode_payload(image_format_from_name(format), width, height, mipmaps,
+                       file.data() + data_at, data_len);
+    EXPECT(again == file);
+    EXPECT(payload_meta(format.c_str(), width, height, mipmaps, data_len) == meta);
+    ++goldens;
+  }
+  EXPECT(goldens == 4);
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_texture_payload_test: %d failure(s)\n", g_failures);

@@ -964,6 +964,7 @@ class Stream:
 					errors.append(Rs2Decoder.err(payload_code, "record %d at offset %d: %s" % [index, offset, payload_detail]))
 					return errors
 				_carried_hashes[hash] = true
+				decoded["payload_length"] = payload.size()
 				_resource_shapes[hash] = decoded
 				resource_records += 1
 				resource_bytes += Rs2Decoder.as_int(meta["bytes"])
@@ -1149,8 +1150,9 @@ class Stream:
 				return errors
 			if _resource_shapes.has(hash):
 				var shape: Dictionary = _resource_shapes[hash]
-				var shape_data: PackedByteArray = shape["data"]
-				if shape["format"] != t["format"] or Rs2Decoder.as_int(shape["width"]) != Rs2Decoder.as_int(t["width"]) or Rs2Decoder.as_int(shape["height"]) != Rs2Decoder.as_int(t["height"]) or shape["mipmaps"] != t["mipmaps"] or shape_data.size() != payload_bytes:
+				# payload_bytes is the whole payload's length (render-stream-2.md "Texture"), not its data.
+				var payload_length: int = Rs2Decoder.as_int(shape["payload_length"])
+				if shape["format"] != t["format"] or Rs2Decoder.as_int(shape["width"]) != Rs2Decoder.as_int(t["width"]) or Rs2Decoder.as_int(shape["height"]) != Rs2Decoder.as_int(t["height"]) or shape["mipmaps"] != t["mipmaps"] or payload_length != payload_bytes:
 					errors.append(Rs2Decoder.err("resource-payload", "seq %d: the resource for hash %s decodes as %s %dx%d, texture %d declares %s %dx%d" % [seq, hash, shape["format"], Rs2Decoder.as_int(shape["width"]), Rs2Decoder.as_int(shape["height"]), id, t["format"], Rs2Decoder.as_int(t["width"]), Rs2Decoder.as_int(t["height"])]))
 					return errors
 

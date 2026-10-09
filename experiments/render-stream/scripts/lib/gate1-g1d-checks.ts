@@ -4,10 +4,10 @@
 // written by run-gate1.sh, so scripts/test/self-test-gate1.ts drives it with fabricated trees.
 //
 // Evidence layout under <out>/ (scripts/README.md "Gate 1"), every leg with the g1c host setup:
-//   <leg>/host/       evidence/{result,live,live-summary}.json, recording.rs1,
-//                     recording-patch.rs1, steps.jsonl, tap/stream-<n>.rs1, tap/live-<n>.jsonl
-//                     (n = 1, and 2 after a reconnect)
-//   <leg>/receiver/   applied.json (mode live), received.rs1 (connection 1), received-2.rs1
+//   <leg>/host/       evidence/{result,live,live-summary}.json, recording.rs2,
+//                     recording-patch.rs2, store/, steps.jsonl, tap/stream-<n>.rs2,
+//                     tap/live-<n>.jsonl (n = 1, and 2 after a reconnect)
+//   <leg>/receiver/   applied.json (mode live), received.rs2 (connection 1), received-2.rs2
 //                     (connection 2), shots/seq-<n>.png and shots/stream-2-seq-<n>.png, env.txt
 //                     (RS_RECEIVER_SHOT_WINDOWS and the G1d option the runner passed)
 //   live-receiver-killed/receiver/killed.json   the runner's SIGKILL record (support leg)
@@ -18,6 +18,9 @@
 //     host's tap: its received stream must be a byte prefix of the tap, missing its end record;
 //   - a stall leg may miss exactly the step windows that lie wholly inside the stall (derived
 //     from the host's log, never hard-coded); any other missing shot is replay-failure.
+// Since G2b2 the streams are render-stream/2 and every connection (a reconnect's second one
+// included) carries its inline payloads as resource records ahead of the transactions that need
+// them; transactions are only ever found by seq (summarizeRecording), never by message index.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -112,9 +115,9 @@ export const NOMINAL_FPS = 60;
 export const MIN_FRAME_SHARE = 0.8;
 export const MAX_INTERVAL_FACTOR = 1.25;
 
-/** received.rs1 for connection 1, received-<n>.rs1 after a reconnect. */
+/** received.rs2 for connection 1, received-<n>.rs2 after a reconnect. */
 export function receivedName(n: number): string {
-  return n === 1 ? RECEIVED_NAME : `received-${n}.rs1`;
+  return n === 1 ? RECEIVED_NAME : `received-${n}.rs2`;
 }
 
 /** shots/seq-<seq>.png for connection 1, shots/stream-<n>-seq-<seq>.png after a reconnect. */
@@ -231,7 +234,7 @@ export interface G1dLegEvaluation {
   /** one per host connection, connection 1 first */
   hosts: LiveHostEvidence[];
   applied: AppliedLive | undefined;
-  /** one per receiver stream (received.rs1, received-2.rs1, ...) */
+  /** one per receiver stream (received.rs2, received-2.rs2, ...) */
   received: RecordingSummary[];
   shots: G1dShot[];
   windows: ShotWindow[];
@@ -767,7 +770,7 @@ export function checkPendingBounded(evals: Evals): Gate1Check {
   }
   return check(
     "pending-bounded",
-    "live-stall: through the whole leg at most one transaction in flight (recomputed from the log's own acks) and at most one pending target, queued bytes never above the largest message + 4096, and nothing sent between the stalled seq and its credit",
+    "live-stall: through the whole leg at most one transaction in flight (recomputed from the log's own acks) and at most one pending target, queued bytes never above the largest credit window + 4096, and nothing sent between the stalled seq and its credit",
     problems,
     s && d
       ? `max in flight ${d.max_in_flight}, max pending ${s.max_pending}, max queued ${d.max_queued_bytes} B <= ${d.queued_limit} (during the stall ${s.max_queued_bytes_during} B), 0 sends during the stall`
@@ -1040,7 +1043,8 @@ export function checkReconnectFreshSession(evals: Evals): Gate1Check {
           `connection 2 seq ${t.meta.seq} is ${t.meta.encoding} on ${t.meta.base_seq}`,
         );
     });
-    if (r2.errors.length > 0) problems.push(`received-2.rs1: ${r2.errors[0]}`);
+    if (r2.errors.length > 0)
+      problems.push(`${receivedName(2)}: ${r2.errors[0]}`);
   }
   const r2 = e?.received[1];
   return check(

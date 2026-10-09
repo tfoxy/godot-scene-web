@@ -20,9 +20,9 @@
 
 # The recording file names: the full sink every capture writes (GRC_STREAM_OUT) and every receiver
 # copy uses, and the patch sink (GRC_STREAM_PATCH_OUT) a capture also writes when
-# CAPTURE_WITH_PATCH=1 (gate 1).
-RECORDING_NAME="${RECORDING_NAME:-recording.rs1}"
-PATCH_RECORDING_NAME="${PATCH_RECORDING_NAME:-recording-patch.rs1}"
+# CAPTURE_WITH_PATCH=1 (gate 1). Both are render-stream/2 since G2b2 (protocol/gate2-design.md).
+RECORDING_NAME="${RECORDING_NAME:-recording.rs2}"
+PATCH_RECORDING_NAME="${PATCH_RECORDING_NAME:-recording-patch.rs2}"
 CAPTURE_WITH_PATCH="${CAPTURE_WITH_PATCH:-0}"
 
 # The process the runner currently owns (its cleanup trap stops it).
@@ -148,19 +148,27 @@ finish_bg() {
 
 # run_capture <dir> <quit frame|""> <strace mode> [scene] -- capture host on the release template,
 # armed, writing <dir>/$RECORDING_NAME and steps.jsonl from CAPTURE_FIXTURE_DIR (default
-# FIXTURE_DIR). CAPTURE_EXTRA_ENV adds sabotage/variant/policy words; both are reset after the
-# call.
+# FIXTURE_DIR). CAPTURE_EXTRA_ENV adds sabotage/variant/policy words. CAPTURE_STORE_DIR picks the
+# out-of-band resource store (GRC_RESOURCE_STORE_DIR, which a file sink needs unless delivery is
+# inline): unset or empty -> <dir>/store; the literal `none` -> no GRC_RESOURCE_STORE_DIR at all;
+# anything else -> that directory. All three are reset after the call.
 CAPTURE_EXTRA_ENV=()
 CAPTURE_FIXTURE_DIR=""
+CAPTURE_STORE_DIR=""
 run_capture() {
 	local dir="$1" quit="$2" mode="$3" scene="${4:-}"
 	local fixture="${CAPTURE_FIXTURE_DIR:-$FIXTURE_DIR}"
+	local store="${CAPTURE_STORE_DIR:-$dir/store}"
+	CAPTURE_STORE_DIR=""
 	mkdir -p "$dir/evidence"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
 	)
+	if [ "$store" != "none" ]; then
+		LEG_ENV+=(GRC_RESOURCE_STORE_DIR="$store")
+	fi
 	if [ "$CAPTURE_WITH_PATCH" = "1" ]; then
 		LEG_ENV+=(GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME")
 	fi
@@ -191,10 +199,21 @@ prepare_recording() {
 	[ "$src" = "$dir/$RECORDING_NAME" ] || cp "$src" "$dir/$RECORDING_NAME"
 }
 
-# run_receiver_headless <dir> <strace mode>: the template, --headless, on <dir>/$RECORDING_NAME.
+# run_receiver_headless <dir> <strace mode>: the template, --headless, on <dir>/$RECORDING_NAME,
+# with a fresh content-addressed cache at <dir>/cache (RS_RECEIVER_CACHE_DIR). RECEIVER_STORE_DIR
+# (optional, reset after the call), when non-empty, is the capture's store the receiver fetches
+# out-of-band payloads from (RS_RECEIVER_STORE_DIR).
+RECEIVER_STORE_DIR=""
 run_receiver_headless() {
-	local dir="$1" mode="$2"
-	LEG_ENV=(RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json")
+	local dir="$1" mode="$2" store="$RECEIVER_STORE_DIR"
+	RECEIVER_STORE_DIR=""
+	LEG_ENV=(
+		RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json"
+		RS_RECEIVER_CACHE_DIR="$dir/cache"
+	)
+	if [ -n "$store" ]; then
+		LEG_ENV+=(RS_RECEIVER_STORE_DIR="$store")
+	fi
 	run_headless "$dir" "$mode" -- "$BINARY" --headless --path "$RECEIVER_DIR"
 }
 
@@ -261,23 +280,41 @@ seq_at_frame() {
 #                        always <receiver dir>/$RECORDING_NAME
 #   RECEIVER_EXTRA_SHOTS CSV of extra seqs to shoot
 #   RECEIVER_STATE=1     also dump the resolved state at the settle seqs (RS_RECEIVER_STATE_SEQS)
+#   RECEIVER_EXTRA_ENV   an array of extra NAME=value words appended to LEG_ENV
+# The receiver always gets a fresh cache at <receiver dir>/cache (RS_RECEIVER_CACHE_DIR) and, when
+# <capture dir>/store exists, that store as its out-of-band origin (RS_RECEIVER_STORE_DIR).
 RECEIVER_SOURCE=""
 RECEIVER_EXTRA_SHOTS=""
 RECEIVER_STATE=0
+RECEIVER_EXTRA_ENV=()
 run_rendered_receiver() {
 	local capture_dir="$1" dir="$2" seqs shots source="${RECEIVER_SOURCE:-$RECORDING_NAME}"
 	local extra="$RECEIVER_EXTRA_SHOTS" state="$RECEIVER_STATE"
+	local -a extra_env=()
+	if [ "${#RECEIVER_EXTRA_ENV[@]}" -gt 0 ]; then
+		extra_env=("${RECEIVER_EXTRA_ENV[@]}")
+	fi
 	RECEIVER_SOURCE=""
 	RECEIVER_EXTRA_SHOTS=""
 	RECEIVER_STATE=0
+	RECEIVER_EXTRA_ENV=()
 	prepare_recording "$capture_dir/$source" "$dir" || return 0
 	seqs="$(settle_seqs "$capture_dir" "$dir")" || return 0
 	shots="$seqs"
 	[ -n "$extra" ] && shots="$seqs,$extra"
 	mkdir -p "$dir/shots"
-	LEG_ENV=(RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_SHOT_SEQS="$shots")
+	LEG_ENV=(
+		RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json"
+		RS_RECEIVER_SHOT_SEQS="$shots" RS_RECEIVER_CACHE_DIR="$dir/cache"
+	)
+	if [ -d "$capture_dir/store" ]; then
+		LEG_ENV+=(RS_RECEIVER_STORE_DIR="$capture_dir/store")
+	fi
 	if [ "$state" = "1" ]; then
 		LEG_ENV+=(RS_RECEIVER_STATE_SEQS="$seqs")
+	fi
+	if [ "${#extra_env[@]}" -gt 0 ]; then
+		LEG_ENV+=("${extra_env[@]}")
 	fi
 	run_rendered "$dir" "$RECEIVER_DIR"
 }

@@ -1,6 +1,13 @@
 # render-stream/1 wire format
 
-Status: the wire format the capture library publishes and the receiver consumes since G1b2
+**Superseded by render-stream/2** ([render-stream-2.md](render-stream-2.md)) since gate 2's G2b2
+(2026-10-09): the capture library, the receiver and the gate 0, 1 and 2 runners speak /2, and the
+/1 C++ codecs (`rs1_codec`, `rs1_diff`, `rs1_snapshot.h`) and the GDScript decoder
+(`rs1_decoder.gd`) are gone. This document, `scripts/lib/render-stream-1.ts`, `golden-1/` and
+`scripts/test/self-test-rs1.ts` stay as frozen, still-verified history, as render-stream/0 did at
+G1b2. The paragraph below describes the state before G2b2.
+
+Status (until G2b2): the wire format the capture library publishes and the receiver consumes since G1b2
 (2026-10-09). Codecs (G1b1): C++ encoder/diff (`capture/src/rs1_codec.*`, `rs1_diff.*`),
 TypeScript decoder/validator/resolver (`scripts/lib/render-stream-1.ts`) and GDScript decoder
 (`receiver/rs1_decoder.gd`), all checked byte-for-byte and state-for-state against

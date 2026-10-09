@@ -4,8 +4,59 @@
 // stream follows render-stream-1.md "Patch transactions": seq 1 full, then only the entries that
 // are new or differ (floats compared as float32), `commands: null` for an item whose
 // content_version is unchanged, removed ids ascending.
+//
+// Superseded by rs2-test-encoder.ts since G2b2 (gate 0 and gate 1 check render-stream/2); kept
+// only while self-test-gate2.ts still fabricates /1 recordings with it.
 
-import { RS1_FEATURES } from "../lib/gate0-checks";
+/** Session `features` at render-stream/1, exactly (render-stream-1.md "Session record"): a frozen
+ * copy of what lib/gate0-checks.ts checked before G2b2. */
+const RS1_FEATURES = {
+  ops: ["add_rect"],
+  item_state: [
+    "behind",
+    "children",
+    "clip",
+    "custom_rect",
+    "draw_index",
+    "modulate",
+    "parent",
+    "self_modulate",
+    "transform",
+    "visibility_layer",
+    "visible",
+    "z_index",
+    "z_relative",
+  ],
+  observed_unsupported_ops: [
+    "canvas_item_add_circle",
+    "canvas_item_add_line",
+    "canvas_item_add_mesh",
+    "canvas_item_add_msdf_texture_rect_region",
+    "canvas_item_add_multimesh",
+    "canvas_item_add_nine_patch",
+    "canvas_item_add_polygon",
+    "canvas_item_add_polyline",
+    "canvas_item_add_primitive",
+    "canvas_item_add_set_transform",
+    "canvas_item_add_texture_rect",
+    "canvas_item_add_texture_rect_region",
+    "canvas_item_add_triangle_array",
+    "canvas_item_set_material",
+  ],
+  unobserved: [
+    "canvas_item_set_canvas_group_mode",
+    "canvas_item_set_default_texture_filter",
+    "canvas_item_set_default_texture_repeat",
+    "canvas_item_set_instance_shader_parameter",
+    "canvas_item_set_light_mask",
+    "canvas_item_set_sort_children_by_y",
+    "canvas_set_modulate",
+    "viewport_remove_canvas",
+    "viewport_set_canvas_cull_mask",
+    "viewport_set_global_canvas_transform",
+  ],
+  publication: "snapshot-or-patch",
+} as const;
 
 export const MAGIC1 = Buffer.from([
   0x47, 0x52, 0x53, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,

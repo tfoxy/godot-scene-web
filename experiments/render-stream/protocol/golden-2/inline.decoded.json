@@ -276,8 +276,8 @@
     },
     {
       "offset": 5286,
-      "byte_length": 4226,
-      "sha256": "8c04f5199144a060db4d1a65eb95952bdfbe03e1fa20d775157fe810dcfa3751",
+      "byte_length": 4227,
+      "sha256": "8ba8bc58fbaf285f37fa2ffab5f12b89d9247c8363388277e5aa2cf216e0216e",
       "meta": {
         "type": "transaction",
         "seq": 1,
@@ -476,7 +476,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -491,7 +491,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -536,7 +536,7 @@
             "width": 4,
             "height": 4,
             "mipmaps": false,
-            "payload_bytes": 32,
+            "payload_bytes": 137,
             "canvas": null
           }
         ],
@@ -700,9 +700,9 @@
       ]
     },
     {
-      "offset": 9512,
-      "byte_length": 4226,
-      "sha256": "6f91745e01d72ce0d15b06d2cabe1400c8e62008c55c350d320a5bcb8b0442e7",
+      "offset": 9513,
+      "byte_length": 4227,
+      "sha256": "be0a2a79f10a81fe2fb6f2890599f65c019c73315fc36e23ca6fa7ebd67a2ae3",
       "meta": {
         "type": "transaction",
         "seq": 2,
@@ -901,7 +901,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -916,7 +916,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -961,7 +961,7 @@
             "width": 4,
             "height": 4,
             "mipmaps": false,
-            "payload_bytes": 32,
+            "payload_bytes": 137,
             "canvas": null
           }
         ],
@@ -1125,7 +1125,7 @@
       ]
     },
     {
-      "offset": 13738,
+      "offset": 13740,
       "byte_length": 1312,
       "sha256": "cb6635b0895f9dfa98247b3600b3df534c1c0bc46af21a4c0352741afad0a1b3",
       "meta": {
@@ -1148,9 +1148,9 @@
       ]
     },
     {
-      "offset": 15050,
-      "byte_length": 4226,
-      "sha256": "0249258fee1e4c967a490e7f6e73650ca7d6c74b6ebca9323804442d89b4c49e",
+      "offset": 15052,
+      "byte_length": 4227,
+      "sha256": "41ab48920ec879f271dfd1a6af5d67abb76ac50a3edaa5e5dc23d65d54984aa5",
       "meta": {
         "type": "transaction",
         "seq": 3,
@@ -1349,7 +1349,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1364,7 +1364,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1409,7 +1409,7 @@
             "width": 4,
             "height": 4,
             "mipmaps": false,
-            "payload_bytes": 32,
+            "payload_bytes": 137,
             "canvas": null
           }
         ],
@@ -1573,7 +1573,7 @@
       ]
     },
     {
-      "offset": 19276,
+      "offset": 19279,
       "byte_length": 622,
       "sha256": "ba1466a306379dddadfc466067b01b3d888b23ed45f10a6001f5f8fdd45b4e4b",
       "meta": {
@@ -1596,9 +1596,9 @@
       ]
     },
     {
-      "offset": 19898,
+      "offset": 19901,
       "byte_length": 4472,
-      "sha256": "fc2e940c498428e031b786b68dd57bb93c8470b8e1d1a79ed017f540185ac107",
+      "sha256": "18453ea9738d6285fb5409de4aed29da283447dfb3281b38719c2a95cbe565af",
       "meta": {
         "type": "transaction",
         "seq": 4,
@@ -1797,7 +1797,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1812,7 +1812,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -1842,7 +1842,7 @@
             "width": 8,
             "height": 8,
             "mipmaps": true,
-            "payload_bytes": 340,
+            "payload_bytes": 447,
             "canvas": null
           },
           {
@@ -1872,7 +1872,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           }
         ],
@@ -2036,9 +2036,9 @@
       ]
     },
     {
-      "offset": 24370,
+      "offset": 24373,
       "byte_length": 4294,
-      "sha256": "abd3e542ec5e866dc29dcc7aa2331b146844af187a4a5beade5490309c1fd1a8",
+      "sha256": "68280eb15706b28504c08f2ba813cfa165e11b90fc13b17d8dd49550b40d1741",
       "meta": {
         "type": "transaction",
         "seq": 5,
@@ -2237,7 +2237,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2252,7 +2252,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2282,7 +2282,7 @@
             "width": 8,
             "height": 8,
             "mipmaps": true,
-            "payload_bytes": 340,
+            "payload_bytes": 447,
             "canvas": null
           },
           {
@@ -2297,7 +2297,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           }
         ],
@@ -2461,9 +2461,9 @@
       ]
     },
     {
-      "offset": 28664,
+      "offset": 28667,
       "byte_length": 4294,
-      "sha256": "565a18d3173add9e57e4aaab9c55d972ccd45019ee78e58f592675e0aa06ef80",
+      "sha256": "08eb5f1d891ee14a7f4cf42656b33283b25fb049eea3a3f98a16d656bd16dcd9",
       "meta": {
         "type": "transaction",
         "seq": 6,
@@ -2662,7 +2662,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2677,7 +2677,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           },
           {
@@ -2707,7 +2707,7 @@
             "width": 8,
             "height": 8,
             "mipmaps": true,
-            "payload_bytes": 340,
+            "payload_bytes": 447,
             "canvas": null
           },
           {
@@ -2722,7 +2722,7 @@
             "width": 16,
             "height": 16,
             "mipmaps": false,
-            "payload_bytes": 1024,
+            "payload_bytes": 1135,
             "canvas": null
           }
         ],
@@ -2886,15 +2886,15 @@
       ]
     },
     {
-      "offset": 32958,
+      "offset": 32961,
       "byte_length": 286,
-      "sha256": "c8c05d03c188c496d1a29559f252bc9befcb3a1dfd8fb6f4c3070eb95a4b0400",
+      "sha256": "86f5fe86ee851feff2fe89a9378ee13967c68333be4c85cc468c7371c0618073",
       "meta": {
         "type": "end",
         "transactions": 6,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 32958,
+          "bytes_total": 32961,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 0,

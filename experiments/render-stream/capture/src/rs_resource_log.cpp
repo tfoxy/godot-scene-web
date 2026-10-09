@@ -50,6 +50,9 @@ struct ResourceLog::Line {
   std::int64_t layer = 0;
   bool has_root = false;
   bool root = false;
+  bool sabotage = false;
+  bool omitted = false;
+  std::uint64_t conn = 0;  // 0 = null
 };
 
 void ResourceLog::emit(const Line &l) {
@@ -135,7 +138,7 @@ void ResourceLog::emit(const Line &l) {
   key("hash_ns");
   i64_or_null(p != nullptr && p->hash_ns >= 0, p != nullptr ? p->hash_ns : 0);
   key("conn");
-  o += "null";
+  u64_or_null(l.conn);
   key("http_status");
   o += "null";
   key("target");
@@ -155,6 +158,14 @@ void ResourceLog::emit(const Line &l) {
     o += l.root ? "true" : "false";
   } else {
     o += "null";
+  }
+  // G2b2: present only on a sabotage's own lines (spurious-texture-update's version bump; an
+  // op the omit-op sabotage left out of the registry, `omitted`).
+  if (l.sabotage) {
+    o += ",\"sabotage\":true";
+  }
+  if (l.omitted) {
+    o += ",\"omitted\":true";
   }
   o += "}\n";
 }
@@ -205,9 +216,18 @@ bool same_shape(const PayloadCopy &a, const PayloadCopy &b) {
 }  // namespace
 
 void ResourceLog::texture_2d_create(const TapContext &ctx, std::uint64_t rid,
-                                    const PayloadCopy &copy) {
+                                    const PayloadCopy &copy, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = base_line(ctx, "texture_2d_create");
+    line.rid = rid;
+    line.payload = &copy;
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
     return;
   }
   Entry entry;
@@ -230,7 +250,7 @@ void ResourceLog::texture_2d_create(const TapContext &ctx, std::uint64_t rid,
 }
 
 void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
-                                    const PayloadCopy &copy, int layer) {
+                                    const PayloadCopy &copy, int layer, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -241,6 +261,19 @@ void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
   line.has_layer = true;
   line.layer = layer;
   Entry *entry = find(rid);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.kind = entry->kind;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
   if (entry == nullptr) {
     // An update to a texture the capture never saw created changes nothing the
     // stream shows (Q3); it is counted and logged with a null id.
@@ -269,9 +302,18 @@ void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
   emit(line);
 }
 
-void ResourceLog::texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid) {
+void ResourceLog::texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid,
+                                                bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = base_line(ctx, "texture_2d_placeholder_create");
+    line.rid = rid;
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
     return;
   }
   Entry entry;
@@ -288,7 +330,7 @@ void ResourceLog::texture_2d_placeholder_create(const TapContext &ctx, std::uint
 }
 
 void ResourceLog::texture_replace(const TapContext &ctx, std::uint64_t texture,
-                                  std::uint64_t by_texture) {
+                                  std::uint64_t by_texture, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -302,6 +344,19 @@ void ResourceLog::texture_replace(const TapContext &ctx, std::uint64_t texture,
   if (b != nullptr) {
     line.by_id = b->id;
     line.ref_id = b->id;
+  }
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (t != nullptr) {
+      line.id = t->id;
+      line.version = t->version;
+      line.kind = t->kind;
+      line.status = t->status;
+      line.reason = t->reason;
+    }
+    emit(line);
+    return;
   }
   if (texture == by_texture) {
     // A no-op in the engine (texture_storage.cpp:1402-1404).
@@ -344,7 +399,7 @@ void ResourceLog::texture_replace(const TapContext &ctx, std::uint64_t texture,
   emit(line);
 }
 
-void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid) {
+void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -358,9 +413,59 @@ void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid) {
   line.rid = rid;
   line.version = entry->version;
   line.kind = entry->kind;
+  if (omitted) {
+    line.status = entry->status;
+    line.reason = entry->reason;
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
   line.status = "freed";
   emit(line);
   by_rid_.erase(rid);
+}
+
+void ResourceLog::spurious_update(const TapContext &ctx, std::uint64_t rid) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Entry *entry = find(rid);
+  if (entry == nullptr) {
+    return;
+  }
+  // The same bytes again at a new version (gate2-design.md G2b2 spurious-texture-update).
+  entry->version += 1;
+  Line line = base_line(ctx, "texture_2d_update");
+  line.id = entry->id;
+  line.rid = rid;
+  line.version = entry->version;
+  line.kind = entry->kind;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  line.payload = &entry->payload;
+  line.has_layer = true;
+  line.layer = 0;
+  line.sabotage = true;
+  emit(line);
+}
+
+void ResourceLog::resource_event(const TapContext &ctx, const char *op, const std::string &hash,
+                                 std::uint64_t payload_bytes, const char *status,
+                                 std::uint64_t conn) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  PayloadCopy described;
+  described.payload_bytes = static_cast<std::int64_t>(payload_bytes);
+  described.hash = hash;
+  Line line = base_line(ctx, op);
+  line.status = status;
+  line.payload = &described;
+  line.conn = conn;
+  emit(line);
 }
 
 void ResourceLog::canvas_texture_create(const TapContext &ctx, std::uint64_t rid) {

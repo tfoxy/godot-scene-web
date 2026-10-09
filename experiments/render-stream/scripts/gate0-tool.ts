@@ -1,15 +1,17 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // Small helpers the gate runners (run-gate0.sh, run-gate1.sh, through lib/legs.sh) need between
-// legs, built on the same decoder the checker uses so the runner never parses render-stream/1 a
-// second way.
+// legs, built on the same decoder the checker uses so the runner never parses render-stream/2 a
+// second way. Every command works on transactions found by seq or frame: resource records
+// interleaved in a /2 stream are never counted as transactions.
 //
-//   gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs1>
+//   gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs2>
 //       Prints the CSV of transaction seqs at each step's settle frame (RS_RECEIVER_SHOT_SEQS).
 //       Exits 1 with the reason on stderr when the join fails (the leg is then capture-failure,
 //       step-join-failed).
-//   gate0-tool.ts corrupt <in.rs1> <out.rs1> [seq=3]
-//       Writes a copy whose transaction <seq> has its first meta byte set to 0x00.
-//   gate0-tool.ts seq-at-frame <recording.rs1> <frame>
+//   gate0-tool.ts corrupt <in.rs2> <out.rs2> [seq=3]
+//       Writes a copy whose transaction <seq> (not record <seq>) has its first meta byte set to
+//       0x00.
+//   gate0-tool.ts seq-at-frame <recording.rs2> <frame>
 //       Prints the seq of the transaction published at <frame>; exits 1 when there is none.
 //   gate0-tool.ts live-shot-seqs <applied.json>
 //       Prints the CSV of the seqs a live receiver shot (G1c2: the live-replay leg shoots the same
@@ -97,7 +99,7 @@ async function main(): Promise<void> {
     return;
   }
   console.error(
-    "usage: gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs1> | corrupt <in> <out> [seq] | seq-at-frame <recording.rs1> <frame> | live-shot-seqs <applied.json>",
+    "usage: gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs2> | corrupt <in> <out> [seq] | seq-at-frame <recording.rs2> <frame> | live-shot-seqs <applied.json>",
   );
   process.exitCode = 2;
 }

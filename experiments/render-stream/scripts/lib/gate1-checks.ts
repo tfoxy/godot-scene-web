@@ -6,24 +6,28 @@
 // already read from one, so scripts/test/self-test-gate1.ts can drive it with fabricated trees.
 // Nothing launches a process. Classification never reads `session.sabotage`.
 //
-// Since G1b2 every capture publishes render-stream/1 to two file sinks, `recording.rs1` (full
-// encoding) and `recording-patch.rs1` (patch encoding), and the host's root geometry is read from
-// the /1 session (evidence/root.json is still written, and only quoted in the report).
+// Since G1b2 every capture publishes to two file sinks, the full and the patch encoding, and the
+// host's root geometry is read from the session (evidence/root.json is still written, and only
+// quoted in the report). Since G2b2 both sinks are render-stream/2, `recording.rs2` and
+// `recording-patch.rs2`, with the capture's out-of-band resource store in `store/`; every resolved
+// state compared here (patch against full, receiver dumps, live taps) includes the root
+// viewport's default texture filter/repeat and the texture table, which in a gate 1 fixture holds
+// only the engine's own unreferenced hue strip.
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 1"):
 //   legs.json                     {"groups_run":[...],"groups_landed":[...]}
 //   capture/                      400-frame capture host, GRC_ROOT_SIZE=enforce-min-size:
-//                                 evidence/, recording.rs1, recording-patch.rs1, steps.jsonl,
-//                                 root.jsonl, strace.txt, maps.txt, fd.txt
+//                                 evidence/, recording.rs2, recording-patch.rs2, store/,
+//                                 steps.jsonl, root.jsonl, strace.txt, maps.txt, fd.txt
 //   reference/                    rendered fixture, extension absent: shots/step-<k>.png and
 //                                 shots/frame-<tie frame>.png, steps.jsonl, root.jsonl
-//   receiver/                     rendered receiver on capture/recording.rs1: shots/seq-<n>.png,
+//   receiver/                     rendered receiver on capture/recording.rs2: shots/seq-<n>.png,
 //                                 state/seq-<n>.json, diff/step-<k>.png, applied.json
 //   receiver-headless-trace/      headless receiver under strace
 //   sabotage-omit-{modulate,transform,order,visibility}/{capture,receiver}/
 //   root-size-observe/{capture,receiver}/   GRC_ROOT_SIZE unset (capture writes root.jsonl too)
 //   import/{fixture,receiver}/, receiver-typecheck/{selftest,minimal}/
-//   (g1b) receiver-patch/         rendered receiver on capture/recording-patch.rs1, as receiver/
+//   (g1b) receiver-patch/         rendered receiver on capture/recording-patch.rs2, as receiver/
 //   (g1b) sabotage-omit-{free,visible}/{capture,receiver}/, sabotage-patch-drop/{capture,receiver}/
 //   (g1b) tie-overlap/{capture,receiver,reference}/   RS_FIXTURE_TIE=overlap
 //   (g1c) live/{host,receiver}/, live-replay/, live-headless/{host,receiver}/,
@@ -338,7 +342,7 @@ export interface RootEvidence {
   enforce?: { called?: boolean; ok?: boolean; detail?: string | null };
 }
 
-/** The root geometry a /1 session declares (render-stream-1.md "Session record"). */
+/** The root geometry a session declares (render-stream-1.md "Session record", unchanged at /2). */
 export interface SessionRoot {
   policy: string | null;
   host_size_status: string | null;
@@ -702,11 +706,35 @@ export function evaluateInvariants(
 
 /** A resolved state as one comparable string: numbers bit-exact (-0 kept apart from 0). */
 function stateKey(t: RecordingSummary["transactions"][number]): string {
-  const { status, failures, unsupported, canvases, items } = t.meta;
-  return JSON.stringify(
-    { status, failures, unsupported, canvases, items },
-    (_key, value) => (Object.is(value, -0) ? "-0" : value),
+  return JSON.stringify(resolvedStateOf(t.meta), (_key, value) =>
+    Object.is(value, -0) ? "-0" : value,
   );
+}
+
+/** The resolved `state` of a transaction, in render-stream-2.md's key order: exactly what a
+ * receiver's state dump (state/seq-<n>.json) holds. */
+export function resolvedStateOf(
+  t: RecordingSummary["transactions"][number]["meta"],
+): {
+  status: string;
+  failures: unknown[];
+  unsupported: unknown[];
+  default_texture_filter: string;
+  default_texture_repeat: string;
+  canvases: unknown[];
+  items: unknown[];
+  textures: unknown[];
+} {
+  return {
+    status: t.status,
+    failures: t.failures,
+    unsupported: t.unsupported,
+    default_texture_filter: t.default_texture_filter,
+    default_texture_repeat: t.default_texture_repeat,
+    canvases: t.canvases,
+    items: t.items,
+    textures: t.textures,
+  };
 }
 
 /**
@@ -1466,7 +1494,7 @@ export function checkDrawIndexTies(
     ids.map((id) => names.byId.get(id) ?? `#${id}`).join("+");
   return check(
     "draw-index-ties",
-    "the capture recording's draw-index ties (render-stream-1.md invariant 9) are exactly expected.json's draw_index_ties -- the top-level item added at step 1 ties with P at index 0 for its applied frame only -- each declared on the wire, and each judged harmless exactly when declared so (pairwise disjoint paint footprints)",
+    "the capture recording's draw-index ties (render-stream-0.md invariant 9) are exactly expected.json's draw_index_ties -- the top-level item added at step 1 ties with P at index 0 for its applied frame only -- each declared on the wire, and each judged harmless exactly when declared so (pairwise disjoint paint footprints)",
     problems,
     `${got.length} tie(s): ${got.map((t) => `frame ${t.frame} ${t.container} {${named(t.members)}}@${t.draw_index} ${t.harmless ? "harmless" : "overlapping"} footprints ${JSON.stringify(t.footprints)}`).join("; ")}`,
     [capture.full.path],
@@ -1540,7 +1568,7 @@ export async function checkTieFramePixels(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Root geometry (Q1), from the /1 session since G1b2
+// Root geometry (Q1), from the session since G1b2
 // ---------------------------------------------------------------------------------------------
 
 const IDENTITY = [1, 0, 0, 1, 0, 0];
@@ -1694,7 +1722,7 @@ export function checkPatchResolvesToFull(
     problems.push("no transactions decoded");
   return check(
     "patch-resolves-to-full",
-    "the capture's patch sink (recording-patch.rs1) is valid and, resolved, equals the full sink (recording.rs1) at every frame, floats bit for bit",
+    "the capture's patch sink (recording-patch.rs2) is valid and, resolved, equals the full sink (recording.rs2) at every frame -- canvases, items, the default texture filter/repeat and the texture table -- floats bit for bit",
     problems,
     `${capture.patch.transactions.length} frames resolve bit-identically`,
     [capture.full.path, capture.patch.path],
@@ -1796,6 +1824,18 @@ export function checkPatchTransformOnly(
         `step 2: cmd_f32 holds ${cmdFloats} floats, expected 16 (R1's and the Marker's one rect each)`,
       );
   }
+  // A transaction that changes only transforms has empty textures and removed_textures
+  // (render-stream-2.md "Full and patch transactions").
+  for (const [step, wire] of [
+    [2, step2],
+    [10, wireAt(10)],
+  ] as const) {
+    if (wire?.encoding !== "patch") continue;
+    if (wire.textures.length > 0 || wire.removed_textures.length > 0)
+      problems.push(
+        `step ${step}: the patch carries texture entries ${JSON.stringify(wire.textures.map((t) => t.id))} / removed ${JSON.stringify(wire.removed_textures)}, expected none`,
+      );
+  }
   const step10 = wireAt(10);
   if (step10?.encoding !== "patch") {
     problems.push("no patch transaction at step 10's applied frame");
@@ -1812,7 +1852,7 @@ export function checkPatchTransformOnly(
   }
   return check(
     "patch-transform-only",
-    "in the patch at step 2's applied frame P and C carry commands:null (G unchanged, absent) and cmd_f32 holds only R1's and the Marker's floats; in the patch at step 10's frame canvas 1 is present and every item entry but the Marker's carries commands:null",
+    "in the patch at step 2's applied frame P and C carry commands:null (G unchanged, absent) and cmd_f32 holds only R1's and the Marker's floats; in the patch at step 10's frame canvas 1 is present and every item entry but the Marker's carries commands:null; neither patch carries a texture entry or a removed texture",
     problems,
     `step 2: ${step2?.items.map((i) => `${nameOf(i.id)}${i.commands === null ? "(null)" : ""}`).join(" ")} cmd_f32 ${cmdFloats}; step 10: ${step10?.items.map((i) => `${nameOf(i.id)}${i.commands === null ? "(null)" : ""}`).join(" ")}`,
     [capture.patch.path],
@@ -1912,13 +1952,7 @@ export async function checkPatchVsFullReceiverState(
       problems.push(
         `seq ${seq}: the full and patch receivers' state dumps differ`,
       );
-    const want = t && {
-      status: t.status,
-      failures: t.failures,
-      unsupported: t.unsupported,
-      canvases: t.canvases,
-      items: t.items,
-    };
+    const want = t && resolvedStateOf(t);
     if (!want || !canonicalEqual(sa, want))
       problems.push(
         `seq ${seq}: the receiver's state differs from the full recording's resolved state`,

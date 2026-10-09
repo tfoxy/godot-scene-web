@@ -4,13 +4,22 @@
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 1"):
 //   live/host/                 the capture host: evidence/{result,live,live-summary,root}.json,
-//                              recording.rs1, recording-patch.rs1, steps.jsonl,
-//                              tap/stream-1.rs1 (every binary message formed, in order),
+//                              recording.rs2, recording-patch.rs2, store/, steps.jsonl,
+//                              tap/stream-1.rs2 (every binary message formed, in order),
 //                              tap/live-1.jsonl (one line per frame callback, plus event lines)
 //   live/receiver/             the rendered live receiver: applied.json (mode live),
-//                              received.rs1, shots/seq-<n>.png, state/seq-<n>.json
-//   live-replay/               a rendered file-mode receiver on live/receiver/received.rs1,
+//                              received.rs2, shots/seq-<n>.png, state/seq-<n>.json
+//   live-replay/               a rendered file-mode receiver on live/receiver/received.rs2,
 //                              shooting the live shots' seqs
+//
+// Since G2b2 the streams are render-stream/2 (subprotocol render-stream.2). Until G2c2 every live
+// connection is inline: right before the transaction that first needs a payload the host sends it
+// as a resource record, one binary message of its own (at least the engine's hue strip before
+// seq 1), and logs a `resource` event line. Every message after the first is still exactly one
+// record, but not every record is a transaction: everything here that walks a tap or a received
+// stream goes through summarizeRecording (transactions only, by seq), never by message index, and
+// the queued-bytes bound is taken over a credit window (a transaction and the records sent ahead
+// of it), not over one message.
 //   live-headless/{host,receiver}/   credit stage applied, receiver under strace -e openat
 //   sabotage-drop-message/{host,receiver}/   GRC_SABOTAGE=drop-message
 //
@@ -62,9 +71,10 @@ import {
   type Gate1Class,
   type Gate1Classification,
   patchDivergence,
+  resolvedStateOf,
 } from "./gate1-checks";
 import type { Gate1Expected } from "./gate1-expected";
-import { splitRecords } from "./render-stream-1";
+import { decodeRecord, splitRecords } from "./render-stream-2";
 
 async function readBytes(path: string): Promise<Uint8Array | undefined> {
   try {
@@ -116,13 +126,15 @@ const RENDERED: Record<LiveHostLeg, boolean> = {
   "sabotage-drop-message": true,
 };
 
-export const TAP_NAME = "stream-1.rs1";
+export const TAP_NAME = "stream-1.rs2";
 export const LIVE_LOG_NAME = "live-1.jsonl";
 /** The tap and live log of connection `n` (G1d's reconnect makes a connection 2). */
-export const tapName = (n: number): string => `stream-${n}.rs1`;
+export const tapName = (n: number): string => `stream-${n}.rs2`;
 export const liveLogName = (n: number): string => `live-${n}.jsonl`;
-export const RECEIVED_NAME = "received.rs1";
-/** Queued bytes may exceed the largest message by this much (gate1-design.md Q7 class 4). */
+export const RECEIVED_NAME = "received.rs2";
+/** The WebSocket subprotocol a receiver negotiates (render-stream-2.md "Live transport"). */
+export const SUBPROTOCOL = "render-stream.2";
+/** Queued bytes may exceed the largest credit window by this much (gate1-design.md Q7 class 4). */
 export const QUEUED_SLACK_BYTES = 4096;
 
 // ---------------------------------------------------------------------------------------------
@@ -173,6 +185,9 @@ export interface LiveConnectionSummary {
   max_queued_bytes?: number;
   max_message_sent?: number;
   bytes_sent?: number;
+  /** G2b2: resource records sent (inline payloads) and their payload bytes */
+  resource_records?: number;
+  resource_bytes?: number;
   resyncs?: number;
   credits?: number;
   acks?: { received?: number; applied?: number; submitted?: number };
@@ -226,6 +241,9 @@ export interface LiveLogLine {
   code?: number;
   closed_by?: string;
   reason?: string;
+  /** G2b2 `resource` event lines: the payload sent inline */
+  hash?: string;
+  bytes?: number;
 }
 
 export function parseLiveLog(
@@ -246,7 +264,8 @@ export function parseLiveLog(
   return out;
 }
 
-/** applied.json in live mode (render-stream-receiver-applied/2, gate1-design.md Q5). */
+/** applied.json in live mode (render-stream-receiver-applied/3 since G2b2: gate1-design.md Q5's
+ * /2 plus gate2-design.md Q5's resource keys). */
 export interface AppliedLive extends AppliedJson {
   streams?: {
     stream_id?: string | null;
@@ -356,8 +375,8 @@ export async function loadLiveHost(
 }
 
 /** validateRecording() of the tap, except that a connection the receiver closed before the end
- * record may lack it (render-stream-1.md "File layout": "a stream the receiver itself closed may
- * lack the end record"); every other error stands. */
+ * record may lack it (render-stream-1.md "File layout", unchanged at /2: "a stream the receiver
+ * itself closed may lack the end record"); every other error stands. */
 export function tapErrors(host: LiveHostEvidence): string[] {
   const c = connectionSummary(host);
   const receiverClosedEarly =
@@ -385,12 +404,12 @@ export function step0Settle(steps: StepLine[] | undefined): number | null {
 // Delivery (pure): what the host's live log and tap say about credit and freshness
 // ---------------------------------------------------------------------------------------------
 
-/** A resolved state as one comparable string: numbers bit-exact (-0 kept apart from 0). */
+/** A resolved state as one comparable string: numbers bit-exact (-0 kept apart from 0). The live
+ * stream's session declares inline delivery where the file sinks declare out-of-band, but the
+ * texture tables themselves (ids, versions, hashes, payload sizes) must agree. */
 export function stateKey(t: RecordingSummary["transactions"][number]): string {
-  const { status, failures, unsupported, canvases, items } = t.meta;
-  return JSON.stringify(
-    { status, failures, unsupported, canvases, items },
-    (_key, value) => (Object.is(value, -0) ? "-0" : value),
+  return JSON.stringify(resolvedStateOf(t.meta), (_key, value) =>
+    Object.is(value, -0) ? "-0" : value,
   );
 }
 
@@ -406,6 +425,7 @@ export interface DeliveryReport {
   /** sends logged with `credit: false` */
   sent_without_credit: string[];
   max_queued_bytes: number;
+  /** the largest credit window + QUEUED_SLACK_BYTES */
   queued_limit: number | null;
   queued_violations: string[];
   /** tapped transactions whose resolved state differs from the full recording at their frame */
@@ -416,7 +436,8 @@ export interface DeliveryReport {
 }
 
 /** The largest binary message of a live stream: the magic plus the session record (the first
- * message), or any later record (one per message). Null when the tap is missing. */
+ * message), or any later record (one per message: a resource, a transaction or the end record).
+ * Null when the tap is missing. */
 export function largestMessage(
   tapBytes: Uint8Array | undefined,
 ): number | null {
@@ -427,6 +448,31 @@ export function largestMessage(
     8 + records[0].byte_length,
     ...records.slice(1).map((r) => r.byte_length),
   );
+}
+
+/** The largest credit window of a live stream: the bytes a host may queue for one send, i.e. one
+ * transaction plus every message sent since the previous transaction (the resource records the
+ * transaction needs, which go out right before it in the same credit window, and for seq 1 the
+ * magic and the session). A window that ends in no transaction (the end record, or what precedes
+ * it) counts too. Null when the tap is missing. Equals largestMessage on a stream without
+ * resource records, up to the session joining seq 1's window. */
+export function largestCreditWindow(
+  tapBytes: Uint8Array | undefined,
+): number | null {
+  if (!tapBytes) return null;
+  const { records } = splitRecords(tapBytes);
+  if (records.length === 0) return null;
+  let largest = 0;
+  let window = 8;
+  for (const raw of records) {
+    window += raw.byte_length;
+    const type = decodeRecord(raw).record?.meta.type;
+    if (type === "transaction" || type === "end") {
+      largest = Math.max(largest, window);
+      window = 0;
+    }
+  }
+  return Math.max(largest, window);
 }
 
 export function deliveryReport(host: LiveHostEvidence): DeliveryReport {
@@ -449,7 +495,7 @@ export function deliveryReport(host: LiveHostEvidence): DeliveryReport {
     compared_states: 0,
     send_gaps: [],
   };
-  const largest = largestMessage(host.tapBytes);
+  const largest = largestCreditWindow(host.tapBytes);
   out.queued_limit = largest === null ? null : largest + QUEUED_SLACK_BYTES;
   let lastSendFrame: number | null = null;
   for (const line of log) {
@@ -518,7 +564,7 @@ export interface LiveLegEvaluation {
   classification: Gate1Classification;
   exit_code: number | null;
   artifacts: string[];
-  /** what the receiver consumed: received.rs1 (live legs) or its copy (live-replay) */
+  /** what the receiver consumed: received.rs2 (live legs) or its copy (live-replay) */
   received: RecordingSummary;
   applied: AppliedLive | undefined;
   /** shots by step: step -> seq (live legs: from applied.shots; live-replay: live's) */
@@ -966,9 +1012,9 @@ export async function checkLiveHandshake(evals: Evals): Promise<Gate1Check> {
     const log = join(e.receiverDir, "stdout.log");
     evidence.push(log, join(e.host.dir, "evidence", "live-summary.json"));
     const text = (await readTextOrUndefined(log)) ?? "";
-    if (!text.includes("(subprotocol render-stream.1)"))
+    if (!text.includes(`(subprotocol ${SUBPROTOCOL})`))
       problems.push(
-        `${leg}: the receiver did not report subprotocol render-stream.1`,
+        `${leg}: the receiver did not report subprotocol ${SUBPROTOCOL}`,
       );
     const conns = e.host.summary?.connections ?? [];
     if (conns.length !== 1) {
@@ -1002,7 +1048,7 @@ export async function checkLiveHandshake(evals: Evals): Promise<Gate1Check> {
   }
   return check(
     "live-handshake",
-    "live and live-headless: the receiver negotiated subprotocol render-stream.1, the host logged its hello (credit stage submitted / applied, inbound buffer as configured), served exactly one connection with no error or refusal, sent the end record, and the receiver closed with 1000 after reading it",
+    "live and live-headless: the receiver negotiated subprotocol render-stream.2, the host logged its hello (credit stage submitted / applied, inbound buffer as configured), served exactly one connection with no error or refusal, sent the end record, and the receiver closed with 1000 after reading it",
     problems,
     "one connection each, hello, end record, closed by the receiver with 1000",
     evidence,
@@ -1040,7 +1086,7 @@ export function checkLiveTapEqualsReceived(evals: Evals): Gate1Check {
   }
   return check(
     "live-tap-equals-received",
-    "live and live-headless: the bytes the receiver wrote to received.rs1 are exactly the host's tap of connection 1 (same length, same sha256), as applied.json streams[0] reports",
+    "live and live-headless: the bytes the receiver wrote to received.rs2 are exactly the host's tap of connection 1 (same length, same sha256; resource records included), as applied.json streams[0] reports",
     problems,
     ["live", "live-headless"]
       .map((l) => `${l} ${evals.get(l as G1cLeg)?.received.bytes ?? "?"} B`)
@@ -1061,7 +1107,7 @@ export function checkLiveDecodes(evals: Evals): Gate1Check {
   }
   return check(
     "live-decodes",
-    "validateRecording(received.rs1) is [] for live and live-headless (framing, meta, patch rules, invariants, end stats)",
+    "validateRecording(received.rs2) is [] for live and live-headless (framing, meta, patch rules, invariants, resource records, end stats)",
     problems,
     "both received streams validate",
     ["live", "live-headless"].map(
@@ -1156,7 +1202,7 @@ export function checkLiveResolvesToRecording(evals: Evals): Gate1Check {
   }
   return check(
     "live-resolves-to-recording",
-    "every live transaction (live and live-headless), resolved, equals the full file recording's state at its frame, floats bit for bit",
+    "every live transaction (live and live-headless), resolved, equals the full file recording's state at its frame (texture table and default filter/repeat included), floats bit for bit",
     problems,
     `${compared} live transactions equal the full recording at their frames`,
     ["live", "live-headless"].map(
@@ -1242,7 +1288,7 @@ export async function checkLiveReplayEqualsLive(
   }
   return check(
     "live-replay-equals-live",
-    "a file-mode receiver replaying the live receiver's received.rs1 applies the same seqs with the same record hashes, and its shots and state dumps at the live shots' seqs are identical to the live receiver's",
+    "a file-mode receiver replaying the live receiver's received.rs2 applies the same seqs with the same record hashes, and its shots and state dumps at the live shots' seqs are identical to the live receiver's",
     problems,
     `${live?.stepShots.size ?? 0} shots and state dumps identical; ${arr(live?.applied?.transactions).length} transactions with identical hashes`,
     evidence,
@@ -1314,7 +1360,7 @@ export function checkLiveCreditBounded(evals: Evals): Gate1Check {
   }
   return check(
     "live-credit-bounded",
-    "every live host log: recomputed from its own ack/resync lines, at most one transaction in flight; no send logged without credit; queued_bytes never above the connection's largest message + 4096",
+    "every live host log: recomputed from its own ack/resync lines, at most one transaction in flight; no send logged without credit; queued_bytes never above the connection's largest credit window (a transaction and the resource records sent ahead of it) + 4096",
     problems,
     notes.join("; "),
     hostEvals(evals).map((e) => join(e.host.dir, "tap", LIVE_LOG_NAME)),
@@ -1473,7 +1519,7 @@ export async function checkLiveReceiverNeverLoadedFixture(
   }
   return check(
     "receiver-never-loaded-fixture-live",
-    "the headless live receiver's trace opens nothing under fixtures/ and does open (writes) its received.rs1; argv passes --path <abs receiver>; no live receiver log has a [fixture] line",
+    "the headless live receiver's trace opens nothing under fixtures/ and does open (writes) its received.rs2; argv passes --path <abs receiver>; no live receiver log has a [fixture] line",
     problems,
     `0 fixture opens; ${logs.length} live receiver logs clean`,
     [stracePath, ...logs],
