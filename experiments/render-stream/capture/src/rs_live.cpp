@@ -503,6 +503,11 @@ LiveEvent to_live_event(const live::Event &event) {
       // Hub::on_http_get() and never forwards one here; this case exists only so the switch
       // stays exhaustive under -Wswitch.
       break;
+    case live::Event::AuthRejected:
+      // G2e: a rejected WebSocket upgrade never reached a connection the hub is tracking (it
+      // never got an Opened event either); entry.cpp's live_drain() logs it directly and never
+      // forwards one here. This case exists only so the switch stays exhaustive under -Wswitch.
+      break;
   }
   out.conn = event.conn;
   out.text = event.text;

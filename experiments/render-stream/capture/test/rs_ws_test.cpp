@@ -21,6 +21,11 @@
 //     keep-alive across two requests, Connection: close honoured, a
 //     WebSocket session alongside HTTP fetches on the same port, and that
 //     the built test binary imports neither mmap nor mprotect.
+//   - Bearer-token authorization (gate2-design.md D13, G2e): constant_time_equals's own
+//     correctness (equal, unequal, differing lengths, empty), a missing or wrong token on the WS
+//     upgrade and on a resource GET both -> 401 (an AuthRejected event for the former, an
+//     HttpGet 401 event for the latter), a correct token succeeds on both, and no auth_token
+//     configured leaves every request unauthenticated-but-accepted as before G2e.
 //
 // The raw-socket client below is a second, independent implementation of
 // the wire format (client side): it is deliberately not shared code with
@@ -109,7 +114,8 @@ std::vector<std::uint8_t> recv_some(int fd) {
   return std::vector<std::uint8_t>(buf, buf + n);
 }
 
-std::string http_request(const std::string &key, const std::string &path, const std::string &subprotocol_header) {
+std::string http_request(const std::string &key, const std::string &path, const std::string &subprotocol_header,
+                          const std::vector<std::pair<std::string, std::string>> &extra_headers = {}) {
   std::string req = "GET " + path + " HTTP/1.1\r\n";
   req += "Host: 127.0.0.1\r\n";
   req += "Upgrade: websocket\r\n";
@@ -117,6 +123,7 @@ std::string http_request(const std::string &key, const std::string &path, const 
   req += "Sec-WebSocket-Key: " + key + "\r\n";
   req += "Sec-WebSocket-Version: 13\r\n";
   if (!subprotocol_header.empty()) req += "Sec-WebSocket-Protocol: " + subprotocol_header + "\r\n";
+  for (const auto &h : extra_headers) req += h.first + ": " + h.second + "\r\n";
   req += "\r\n";
   return req;
 }
@@ -201,8 +208,9 @@ struct Handshake {
 };
 
 Handshake do_handshake(int fd, const std::string &key, const std::string &path = "/render-stream",
-                        const std::string &subprotocol_header = "render-stream.1") {
-  const std::string req = http_request(key, path, subprotocol_header);
+                        const std::string &subprotocol_header = "render-stream.1",
+                        const std::vector<std::pair<std::string, std::string>> &extra_headers = {}) {
+  const std::string req = http_request(key, path, subprotocol_header, extra_headers);
   ::send(fd, req.data(), req.size(), 0);
   Handshake out;
   const auto bytes = recv_some(fd);
@@ -952,6 +960,142 @@ void test_http_coexists_with_websocket() {
   server.stop(1000);
 }
 
+// --- Bearer-token authorization (gate2-design.md D13, G2e). ---
+
+void test_constant_time_equals() {
+  using grc::live::constant_time_equals;
+  check(constant_time_equals("", ""), "constant_time_equals: empty vs empty");
+  check(constant_time_equals("abc", "abc"), "constant_time_equals: equal strings");
+  check(!constant_time_equals("abc", "abd"), "constant_time_equals: differ in the last byte");
+  check(!constant_time_equals("abc", "ab"), "constant_time_equals: a longer than b");
+  check(!constant_time_equals("ab", "abc"), "constant_time_equals: a shorter than b");
+  check(!constant_time_equals("", "a"), "constant_time_equals: empty vs non-empty");
+  check(!constant_time_equals("secret-token", "wrong-token"), "constant_time_equals: unrelated strings");
+}
+
+void test_ws_auth_missing_token_401() {
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");  // no Authorization header
+  check(hs.status == 401, "missing bearer token -> 401, got " + std::to_string(hs.status));
+  const auto events = wait_events(server, 1, 2000);
+  check(events.size() == 1 && events[0].kind == grc::live::Event::AuthRejected,
+        "a rejected upgrade pushes exactly one AuthRejected event");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_ws_auth_wrong_token_401() {
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.1",
+                                     {{"Authorization", "Bearer wrong-token"}});
+  check(hs.status == 401, "wrong bearer token -> 401, got " + std::to_string(hs.status));
+  check(wait_events(server, 1, 2000).size() == 1, "wrong token also pushes exactly one event");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_ws_auth_correct_token_101() {
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.1",
+                                     {{"Authorization", "Bearer s3cr3t-token"}});
+  check(hs.status == 101, "correct bearer token -> 101, got " + std::to_string(hs.status));
+  check(expect_opened(server) != 0, "Opened event after a correctly authorized handshake");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_ws_auth_disabled_by_default() {
+  // ServerConfig::auth_token defaults to empty: every handshake above this test already proves
+  // this, but a dedicated check makes the default explicit for G2e.
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  check(config.auth_token.empty(), "ServerConfig::auth_token defaults to empty");
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");  // no Authorization header at all
+  check(hs.status == 101, "no auth_token configured -> unauthenticated upgrade still succeeds");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_get_auth_missing_token_401() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('b');
+  source.set(hash, pattern_bytes(16, 11));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const std::string req = plain_http_request("GET", config.resource_prefix + hash);
+  ::send(fd, req.data(), req.size(), 0);
+  const HttpResponse resp = read_http_response(fd);
+  check(resp.ok && resp.status == 401, "missing bearer token on GET -> 401, got " + std::to_string(resp.status));
+  check(resp.body.empty(), "401 body is empty");
+  const auto events = wait_events(server, 1, 2000);
+  check(!events.empty() && events[0].kind == grc::live::Event::HttpGet && events[0].hash == hash &&
+            events[0].http_status == 401,
+        "the 401 is also reported as an HttpGet event naming the attempted hash");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_get_auth_wrong_token_401() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('c');
+  source.set(hash, pattern_bytes(16, 12));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const std::string req =
+      plain_http_request("GET", config.resource_prefix + hash, {{"Authorization", "Bearer wrong-token"}});
+  ::send(fd, req.data(), req.size(), 0);
+  const HttpResponse resp = read_http_response(fd);
+  check(resp.ok && resp.status == 401, "wrong bearer token on GET -> 401, got " + std::to_string(resp.status));
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_get_auth_correct_token_200() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('d');
+  source.set(hash, pattern_bytes(16, 13));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const std::string req =
+      plain_http_request("GET", config.resource_prefix + hash, {{"Authorization", "Bearer s3cr3t-token"}});
+  ::send(fd, req.data(), req.size(), 0);
+  const HttpResponse resp = read_http_response(fd);
+  check(resp.ok && resp.status == 200 && resp.body == pattern_bytes(16, 13),
+        "correct bearer token on GET -> 200 byte-exact, got status " + std::to_string(resp.status));
+  ::close(fd);
+  server.stop(1000);
+}
+
 void test_no_mmap_mprotect_imports() {
   char exe_path[4096];
   const ssize_t n = ::readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
@@ -1007,6 +1151,14 @@ int main() {
   test_http_connection_close_honoured();
   test_http_max_http_clients_503();
   test_http_coexists_with_websocket();
+  test_constant_time_equals();
+  test_ws_auth_missing_token_401();
+  test_ws_auth_wrong_token_401();
+  test_ws_auth_correct_token_101();
+  test_ws_auth_disabled_by_default();
+  test_http_get_auth_missing_token_401();
+  test_http_get_auth_wrong_token_401();
+  test_http_get_auth_correct_token_200();
   test_no_mmap_mprotect_imports();
 
   if (g_failures != 0) {

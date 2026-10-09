@@ -26,8 +26,10 @@ extends Node
 ##                                blocked main loop; live mode: a timed wait, the loop keeps
 ##                                presenting)
 ##   RS_RECEIVER_SABOTAGE         reupload (upload every resident texture at every applied
-##                                transaction) or ignore-cache (fetch even on a cache hit); both
-##                                exist only to fail checks
+##                                transaction), ignore-cache (fetch even on a cache hit), or
+##                                wrong-http-token (live only, G2e: send the correct bearer token
+##                                on the WebSocket upgrade but a deliberately wrong one on every
+##                                resource GET); all three exist only to fail checks
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash) is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
@@ -60,6 +62,11 @@ extends Node
 ##   RS_RECEIVER_RESYNC          <step> (G1d): refuse the first transaction in that step's window
 ##                               unapplied, send `resync` for it, and ignore patches until a full
 ##                               transaction arrives
+##   RS_RECEIVER_TOKEN_FILE      G2e (gate2-design.md D13): absolute path to a file holding the
+##                               bearer token, sent as "Authorization: Bearer <token>" on the
+##                               WebSocket upgrade and on every resource GET. Unset: no token sent
+##                               (the session must then declare resources.auth "none" or the host
+##                               refuses the upgrade with 401 -> replay-failure live-connect-failed)
 ## The three G1d options need a shot window for their step.
 ## On open it sends `hello`. Each binary message is appended to the received file, framed (the
 ## first is the magic and the session, every later one exactly one record), decoded and accepted
@@ -150,6 +157,8 @@ var _acks_sent: Dictionary = {"received": 0, "applied": 0, "submitted": 0}
 var _closing_by_receiver: bool = false
 var _received_base: String = ""  # stream 1's received path; stream n inserts "-<n>"
 var _connect_timeout_ms: int = DEFAULT_CONNECT_TIMEOUT_MS
+## G2e: the bearer token read from RS_RECEIVER_TOKEN_FILE, or "" when unset (no auth).
+var _token: String = ""
 ## The live connection being read: 1, then 2 after a reconnect. Transactions, shots and state
 ## dumps name it as their stream.
 var _conn_index: int = 1
@@ -298,8 +307,8 @@ func _parse_resource_env(live: bool) -> bool:
 			return false
 		_fetch_delay_ms = delay_text.to_int()
 	var sabotage: String = OS.get_environment("RS_RECEIVER_SABOTAGE").strip_edges()
-	if sabotage != "" and sabotage != "reupload" and sabotage != "ignore-cache":
-		_log("error: RS_RECEIVER_SABOTAGE must be reupload or ignore-cache (got %s)" % JSON.stringify(sabotage))
+	if sabotage != "" and sabotage != "reupload" and sabotage != "ignore-cache" and sabotage != "wrong-http-token":
+		_log("error: RS_RECEIVER_SABOTAGE must be reupload, ignore-cache or wrong-http-token (got %s)" % JSON.stringify(sabotage))
 		return false
 	_cache.dir = cache_dir
 	_cache.mode = cache_mode
@@ -473,7 +482,13 @@ func _begin_session(accepted: Dictionary) -> bool:
 			_fetcher.cancel()
 		var origin_host: String = origin["host"]
 		var origin_port: int = origin["port"]
-		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms)
+		# G2e sabotage wrong-http-token: the WebSocket upgrade above already used the correct
+		# _token (RsLiveClient.open was called before this session was even received); only the
+		# HTTP fetcher's copy is corrupted, so "correct on the upgrade, wrong on GET" holds.
+		var fetch_token: String = _token
+		if _sabotage == "wrong-http-token" and fetch_token != "":
+			fetch_token += "-wrong"
+		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms, fetch_token)
 	var blocks: Array = record["blocks"]
 	_applier.sabotage_reupload = _sabotage == "reupload"
 	_applier.begin_session(meta, blocks)
@@ -860,6 +875,17 @@ func _ready_live() -> void:
 		_quit(EXIT_USAGE)
 		return
 	_received_base = _received_path
+	var token_file: String = OS.get_environment("RS_RECEIVER_TOKEN_FILE").strip_edges()
+	if token_file != "":
+		if not token_file.is_absolute_path() or not FileAccess.file_exists(token_file):
+			_log("error: RS_RECEIVER_TOKEN_FILE is not an absolute path to an existing file (got %s)" % JSON.stringify(token_file))
+			_quit(EXIT_USAGE)
+			return
+		_token = FileAccess.get_file_as_string(token_file).strip_edges()
+		if _token == "":
+			_log("error: RS_RECEIVER_TOKEN_FILE %s is empty" % JSON.stringify(token_file))
+			_quit(EXIT_USAGE)
+			return
 	var inbound: int = _positive_env("RS_RECEIVER_INBOUND_BYTES", DEFAULT_INBOUND_BYTES)
 	var timeout_ms: int = _positive_env("RS_RECEIVER_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT_MS)
 	if inbound < 0 or timeout_ms < 0:
@@ -919,7 +945,7 @@ func _ready_live() -> void:
 		return
 	_applier = RsApplier.new(get_viewport().get_viewport_rid(), get_viewport().find_world_2d().canvas)
 	_client = RsLiveClient.new()
-	var opened: Error = _client.open(_url, _inbound_bytes)
+	var opened: Error = _client.open(_url, _inbound_bytes, _token)
 	if opened != OK:
 		_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 		return
@@ -1027,7 +1053,7 @@ func _process_live() -> void:
 				# second gets 503), so it retries until the connect timeout.
 				var reconnect: Dictionary = _live_report["reconnect"]
 				reconnect["connect_attempts"] = Rs2Decoder.as_int(reconnect["connect_attempts"]) + 1
-				var opened: Error = _client.open(_url, _inbound_bytes)
+				var opened: Error = _client.open(_url, _inbound_bytes, _token)
 				if opened != OK:
 					_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 			return
@@ -1148,7 +1174,7 @@ func _start_next_connection() -> void:
 	_streams.append(_stream_report)
 	_closing_by_receiver = false
 	_reconnecting = true
-	var opened: Error = _client.open(_url, _inbound_bytes)
+	var opened: Error = _client.open(_url, _inbound_bytes, _token)
 	if opened != OK:
 		_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 		return

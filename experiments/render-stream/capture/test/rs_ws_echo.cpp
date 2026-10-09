@@ -5,10 +5,13 @@
 // an independent client can exercise the transport end to end, over real
 // loopback sockets.
 //
-// Usage: rs_ws_echo [--port N] [--max-clients N] [--max-inbound-text N]
+// Usage: rs_ws_echo [--port N] [--max-clients N] [--max-inbound-text N] [--token VALUE]
 //   --port 0 (default) binds an ephemeral port. Either way, the chosen port
 //   is printed on its own stdout line: "RS_WS_ECHO_PORT <port>", flushed
 //   before anything else, so a driving script can capture it.
+//   --token VALUE (gate2-design.md G2e) requires `Authorization: Bearer VALUE`
+//   on both the WebSocket upgrade and every resource GET; omitted (the
+//   default), neither is checked.
 //
 // Inbound text is this tiny test-only command language, decided only on the
 // text's own shape (the rs_ws transport itself knows nothing about it):
@@ -121,6 +124,8 @@ int main(int argc, char **argv) {
       config.max_clients = static_cast<std::size_t>(std::strtoul(v, nullptr, 10));
     } else if (const char *v = value_of("--max-inbound-text")) {
       config.max_inbound_text = static_cast<std::size_t>(std::strtoul(v, nullptr, 10));
+    } else if (const char *v = value_of("--token")) {
+      config.auth_token = v;
     }
   }
   if (config.max_clients < 4) config.max_clients = 4;  // headroom for back-to-back test connections.
@@ -162,6 +167,9 @@ int main(int argc, char **argv) {
           std::printf("[rs-ws-echo] conn=%u http-get hash=%s status=%u bytes=%llu\n", event.conn,
                       event.hash.c_str(), static_cast<unsigned>(event.http_status),
                       static_cast<unsigned long long>(event.bytes));
+          break;
+        case grc::live::Event::AuthRejected:
+          std::printf("[rs-ws-echo] conn=%u auth-rejected\n", event.conn);
           break;
       }
       std::fflush(stdout);

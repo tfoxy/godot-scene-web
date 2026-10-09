@@ -84,6 +84,18 @@
 //     proceed while the one WebSocket slot is in use). Exceeding it ->
 //     503, connection closed. A WebSocket connection never counts against
 //     it, and vice versa.
+//
+// Bearer-token authorization (gate2-design.md D13, G2e): when
+// ServerConfig::auth_token is non-empty, every WebSocket upgrade and every
+// resource GET must carry `Authorization: Bearer <auth_token>` (RFC 6750).
+// Missing or wrong -> 401 ("Unauthorized"), never a close code -- the TCP
+// connection is simply not upgraded (WS) or the request is answered and the
+// connection kept alive or closed exactly as any other error status (HTTP
+// GET). The comparison against auth_token is constant-time
+// (constant_time_equals, below), independent of where the strings first
+// differ or whether their lengths match. auth_token empty (the default)
+// disables the check entirely: every request is treated as authorized,
+// exactly as before G2e.
 #ifndef GRC_RS_WS_H
 #define GRC_RS_WS_H
 
@@ -107,7 +119,14 @@ struct ServerConfig {
   std::size_t max_queued_bytes = 64u << 20;  // safety net, closes 1008.
   std::string resource_prefix = "/resources/sha256/";
   std::size_t max_http_clients = 8;  // concurrent HTTP (non-WebSocket) connections.
+  std::string auth_token;            // empty (default): no bearer-token check (G2e).
 };
+
+// True iff `a` and `b` hold the same bytes, compared in time that depends only on
+// max(a.size(), b.size()) -- never on where the two first differ or on whether their lengths
+// match (gate2-design.md D13). Exposed for its own unit test and used by the bearer-token check
+// on both the WebSocket upgrade and the resource GET.
+bool constant_time_equals(std::string_view a, std::string_view b);
 
 // What the server asks for the bytes behind a resource hash. Implemented by
 // G2c2's rs_resource_store; rs_ws knows nothing about where the bytes come
@@ -126,14 +145,19 @@ class ResourceSource {
 };
 
 struct Event {
-  enum Kind { Opened, Text, Closed, HttpGet } kind;
+  // AuthRejected (G2e): a WebSocket upgrade request was refused for a missing or wrong bearer
+  // token (401). It is pushed instead of Opened -- the connection never reaches Opened or Closed
+  // (opened stays false, exactly as a rejected handshake for any other reason; conn is the id
+  // that was about to open). A resource GET's own 401 is reported as an ordinary HttpGet event
+  // with http_status 401, not this kind.
+  enum Kind { Opened, Text, Closed, HttpGet, AuthRejected } kind;
   std::uint32_t conn = 0;
   std::string text;          // Kind::Text: the message. Kind::Closed: the reason, if any.
   std::uint16_t code = 0;    // Kind::Closed only.
   std::string reason;        // Kind::Closed only (duplicates text for readability at call sites).
   std::string hash;          // Kind::HttpGet only: the hash from the request path (as received;
                              // may be malformed -- that is part of what the 400/405 cases report).
-  std::uint16_t http_status = 0;  // Kind::HttpGet only: the status sent (200, 304, 400, 404, 405, 503).
+  std::uint16_t http_status = 0;  // Kind::HttpGet only: the status sent (200, 304, 400, 401, 404, 405, 503).
   std::uint64_t bytes = 0;        // Kind::HttpGet only: the response body size (0 unless 200).
   // steady_clock nanoseconds when the I/O thread observed the event (set by the server; G1c2
   // measures credit round trips from it, independently of when the main thread drains events).
@@ -164,7 +188,9 @@ class Server {
   // reordered: Opened precedes every Text for that connection, and Closed is
   // always last. An HTTP (non-WebSocket) connection produces one HttpGet
   // event per request and never an Opened or Closed event -- Closed is
-  // reserved for a connection that reached Opened.
+  // reserved for a connection that reached Opened. A WebSocket upgrade
+  // refused for a bad bearer token (G2e) produces one AuthRejected event and
+  // never an Opened or Closed event either.
   std::vector<Event> take_events();
 
   // Queues one complete message for conn. Returns false, enqueuing nothing,

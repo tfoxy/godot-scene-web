@@ -4,7 +4,7 @@
 #
 #   bash run-gate2.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g2a,g2b,g2c]
+#     [--legs g2a,g2b,g2c,g2e]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -16,8 +16,11 @@
 # and the sabotages) and g2c (G2c2: live resources over HTTP -- live hosts serving payloads by
 # hash with pins and retirement, rendered and headless live receivers fetching before they apply,
 # warm, replay, stall, reconnect and animate legs, and the unpin, drop-resource and live
-# wrong-hash sabotages). g2b and g2c need g2a's captures and reference, so they only run together
-# with g2a. Groups g2d-g2e arrive with their increments.
+# wrong-hash sabotages) and g2e (G2e: bearer-token authorization on the WebSocket upgrade and on
+# every resource GET -- a live-auth leg with tokens, a receiver that sends none, and a receiver
+# whose resource GETs carry the wrong token while its upgrade carries the right one). g2b and g2c
+# need g2a's captures and reference, so they only run together with g2a; g2e needs none of them
+# (three fresh live hosts of its own). Group g2d arrives with its increment.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -39,8 +42,8 @@ set -euo pipefail
 
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
-# Groups whose increment has landed, in run order. G2c-G2e add theirs here.
-LANDED_GROUPS=(g2a g2b g2c)
+# Groups whose increment has landed, in run order. G2d adds its group here.
+LANDED_GROUPS=(g2a g2b g2c g2e)
 KNOWN_GROUPS=(g2a g2b g2c g2d g2e)
 
 EXTENSION=""
@@ -586,11 +589,49 @@ run_g2c() {
 	GS_RUN_DIR=""
 }
 
+# g2e (G2e): bearer-token authorization (gate2-design.md D13). Three fresh live hosts of its
+# own (the live timeline, S=300, N=60, quit 911, as g2c's), each with GRC_LIVE_AUTH=token so it
+# generates and writes evidence/live-token: live-auth's receiver gets it
+# (RS_RECEIVER_TOKEN_FILE), sabotage-no-token's gets none at all, and
+# sabotage-bad-http-token's gets it for the WebSocket upgrade but a deliberately wrong one for
+# every resource GET (RS_RECEIVER_SABOTAGE=wrong-http-token). The sabotage receivers fail fast
+# (the upgrade itself is refused, or the very first texture fetch is), so both run headless;
+# only live-auth needs the gamescope compositor.
+run_g2e() {
+	echo "run-gate2: sabotage-no-token (the receiver sends none)"
+	start_live_host "$OUT/sabotage-no-token/host" GRC_LIVE_AUTH=token
+	g2c_receiver "$OUT/sabotage-no-token" headless
+	finish_bg "$OUT/sabotage-no-token/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+
+	echo "run-gate2: sabotage-bad-http-token (correct on the upgrade, wrong on every GET)"
+	start_live_host "$OUT/sabotage-bad-http-token/host" GRC_LIVE_AUTH=token
+	g2c_receiver "$OUT/sabotage-bad-http-token" headless \
+		RS_RECEIVER_TOKEN_FILE="$OUT/sabotage-bad-http-token/host/evidence/live-token" \
+		RS_RECEIVER_SABOTAGE=wrong-http-token
+	finish_bg "$OUT/sabotage-bad-http-token/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+
+	echo "run-gate2: bringing up private gamescope for the g2e rendered leg"
+	gs_start 640 360 "$OUT/gamescope-g2e"
+
+	echo "run-gate2: live-auth (as live, with tokens)"
+	start_live_host "$OUT/live-auth/host" GRC_LIVE_AUTH=token
+	g2c_receiver "$OUT/live-auth" rendered \
+		RS_RECEIVER_TOKEN_FILE="$OUT/live-auth/host/evidence/live-token"
+	finish_bg "$OUT/live-auth/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+
+	gs_teardown "$OUT/gamescope-g2e"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g2a) run_g2a ;;
 	g2b) run_g2b ;;
 	g2c) run_g2c ;;
+	g2e) run_g2e ;;
 	esac
 done
 

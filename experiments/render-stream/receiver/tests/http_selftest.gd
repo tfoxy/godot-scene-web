@@ -3,20 +3,28 @@ extends SceneTree
 ## (capture/src/rs_ws.h, protocol/gate2-design.md G2c1), against the same
 ## test-only echo server capture/test/rs_ws_echo.cpp that ws_selftest.gd
 ## drives (its header documents the fixed test hashes used below -- labels
-## for a handful of deterministic bodies, not real content hashes of them).
+## for a handful of deterministic bodies, not real content hashes of them),
+## plus its bearer-token authorization (gate2-design.md D13, G2e).
 ##
-##   RS_WS_ECHO_PORT=<port> mise exec -- godot --headless \
+##   RS_WS_ECHO_PORT=<port> RS_WS_ECHO_AUTH_PORT=<port> RS_WS_ECHO_AUTH_TOKEN=<token> \
+##     mise exec -- godot --headless \
 ##     --path experiments/render-stream/receiver --script res://tests/http_selftest.gd
 ##
-## Three sequential GETs on one HTTPClient connection (proving keep-alive,
-## gate2-design.md G2c1 "Pass criteria"): the 1 MiB resource, the 8 MiB one,
-## then a well-formed but unregistered hash. For each 200, checks
-## Content-Type, Cache-Control, ETag, that the body arrives byte-exact
-## against rs_ws_echo's byte[i] = i % 251 pattern, and that the body's own
-## SHA-256 (via HashingContext) matches the SHA-256 of that same
-## independently-generated pattern -- a second, independent way to show the
-## bytes are exactly right, not just the same length. The third request
-## checks 404 with an empty body.
+## Three sequential GETs on one HTTPClient connection to the plain
+## (RS_WS_ECHO_PORT) instance (proving keep-alive, gate2-design.md G2c1
+## "Pass criteria"): the 1 MiB resource, the 8 MiB one, then a well-formed
+## but unregistered hash. For each 200, checks Content-Type, Cache-Control,
+## ETag, that the body arrives byte-exact against rs_ws_echo's
+## byte[i] = i % 251 pattern, and that the body's own SHA-256 (via
+## HashingContext) matches the SHA-256 of that same independently-generated
+## pattern -- a second, independent way to show the bytes are exactly
+## right, not just the same length. The third request checks 404 with an
+## empty body.
+##
+## Then three sequential GETs of the 1 MiB resource on a second HTTPClient
+## connection to the auth-enabled instance (RS_WS_ECHO_AUTH_PORT, started
+## with --token=RS_WS_ECHO_AUTH_TOKEN): no Authorization header (401), a
+## wrong bearer token (401), the correct one (200, byte-exact).
 ##
 ## Prints "[http-selftest] ok" and quits 0, or prints each failure and quits 1.
 
@@ -38,6 +46,14 @@ var _step_lengths: Array[int] = []
 var _step_expected_status: Array[int] = []
 var _step_index: int = 0
 
+# G2e bearer-token phase: same three fields, but against _auth_port with per-step headers.
+var _auth_port: int = 0
+var _auth_token: String = ""
+var _auth_step_headers: Array[PackedStringArray] = []
+var _auth_step_expected_status: Array[int] = []
+var _auth_step_index: int = 0
+var _auth_hash: String = ""
+
 
 func _initialize() -> void:
 	var port_str: String = OS.get_environment("RS_WS_ECHO_PORT")
@@ -45,6 +61,15 @@ func _initialize() -> void:
 		_fail_now("RS_WS_ECHO_PORT must be set to rs_ws_echo's bound port (got %s)" % port_str)
 		return
 	_port = port_str.to_int()
+	var auth_port_str: String = OS.get_environment("RS_WS_ECHO_AUTH_PORT")
+	if auth_port_str == "" or not auth_port_str.is_valid_int():
+		_fail_now("RS_WS_ECHO_AUTH_PORT must be set to the auth-enabled rs_ws_echo's bound port (got %s)" % auth_port_str)
+		return
+	_auth_port = auth_port_str.to_int()
+	_auth_token = OS.get_environment("RS_WS_ECHO_AUTH_TOKEN")
+	if _auth_token == "":
+		_fail_now("RS_WS_ECHO_AUTH_TOKEN must be set to the auth-enabled rs_ws_echo's --token value")
+		return
 
 	var hash_1mib: String = "1".repeat(64)
 	var hash_8mib: String = "8".repeat(63) + "a"
@@ -52,6 +77,14 @@ func _initialize() -> void:
 	_step_hashes = [hash_1mib, hash_8mib, hash_unknown]
 	_step_lengths = [ONE_MIB, EIGHT_MIB, 0]
 	_step_expected_status = [200, 200, 404]
+	_auth_hash = hash_1mib  # TestResourceSource registers the same fixed hashes on every instance.
+
+	_auth_step_headers = [
+		PackedStringArray(),
+		PackedStringArray(["Authorization: Bearer wrong-token"]),
+		PackedStringArray(["Authorization: Bearer " + _auth_token]),
+	]
+	_auth_step_expected_status = [401, 401, 200]
 
 	process_frame.connect(_tick)
 
@@ -136,13 +169,47 @@ func _on_body_complete() -> void:
 	_step_index += 1
 	if _step_index >= _step_hashes.size():
 		_http.close()
-		_finish()
+		_state = "auth_start"
 	else:
 		# Same HTTPClient instance, same TCP connection: status is STATUS_CONNECTED right now
 		# (that is why this branch runs), and HTTPClient.request() only accepts that status --
 		# this is the keep-alive proof (gate2-design.md G2c1 "two requests on one keep-alive
 		# connection"), run here across all three steps rather than just two.
 		_begin_request()
+
+
+## G2e: the bearer-token phase, against the auth-enabled instance (_auth_port). Same request/body
+## mechanics as above, parameterized by _auth_step_headers / _auth_step_expected_status instead.
+func _begin_auth_request() -> void:
+	var headers: PackedStringArray = _auth_step_headers[_auth_step_index]
+	var err: Error = _http.request(HTTPClient.METHOD_GET, RESOURCE_PREFIX + _auth_hash, headers)
+	_check(err == OK, "auth step %d request() returned OK (got %s)" % [_auth_step_index, error_string(err)])
+	_body = PackedByteArray()
+	_deadline_msec = Time.get_ticks_msec() + REQUEST_TIMEOUT_MS
+	_state = "auth_requesting"
+
+
+func _on_auth_headers_ready() -> void:
+	_check(_http.has_response(), "auth step %d has a response" % _auth_step_index)
+	var code: int = _http.get_response_code()
+	var expected_code: int = _auth_step_expected_status[_auth_step_index]
+	_check(code == expected_code, "auth step %d status %d (got %d)" % [_auth_step_index, expected_code, code])
+	_deadline_msec = Time.get_ticks_msec() + REQUEST_TIMEOUT_MS
+
+
+func _on_auth_body_complete() -> void:
+	if _auth_step_expected_status[_auth_step_index] == 200:
+		var expected: PackedByteArray = _resource_pattern(ONE_MIB)
+		_check(_body == expected, "auth step %d body byte-exact with the correct bearer token" % _auth_step_index)
+	else:
+		_check(_body.is_empty(), "auth step %d (%d) body is empty" % [_auth_step_index, _auth_step_expected_status[_auth_step_index]])
+
+	_auth_step_index += 1
+	if _auth_step_index >= _auth_step_headers.size():
+		_http.close()
+		_finish()
+	else:
+		_begin_auth_request()
 
 
 func _tick() -> void:
@@ -187,5 +254,45 @@ func _tick() -> void:
 				_on_body_complete()
 			else:
 				_fail_now("step %d: unexpected status while reading body: %d" % [_step_index, status])
+		"auth_start":
+			_http = HTTPClient.new()
+			var err: Error = _http.connect_to_host("127.0.0.1", _auth_port)
+			_check(err == OK, "auth connect_to_host returned OK (got %s)" % error_string(err))
+			_deadline_msec = Time.get_ticks_msec() + CONNECT_TIMEOUT_MS
+			_state = "auth_connecting"
+		"auth_connecting":
+			_http.poll()
+			var status: HTTPClient.Status = _http.get_status()
+			if status == HTTPClient.STATUS_CONNECTED:
+				_begin_auth_request()
+			elif status == HTTPClient.STATUS_CONNECTING or status == HTTPClient.STATUS_RESOLVING:
+				if Time.get_ticks_msec() > _deadline_msec:
+					_fail_now("auth: did not connect within %d ms" % CONNECT_TIMEOUT_MS)
+			else:
+				_fail_now("auth: unexpected status while connecting: %d" % status)
+		"auth_requesting":
+			_http.poll()
+			var status: HTTPClient.Status = _http.get_status()
+			if status == HTTPClient.STATUS_REQUESTING:
+				if Time.get_ticks_msec() > _deadline_msec:
+					_fail_now("auth step %d: request did not complete within %d ms" % [_auth_step_index, REQUEST_TIMEOUT_MS])
+			elif status == HTTPClient.STATUS_BODY or status == HTTPClient.STATUS_CONNECTED:
+				_on_auth_headers_ready()
+				_state = "auth_body"
+			else:
+				_fail_now("auth step %d: unexpected status after request: %d" % [_auth_step_index, status])
+		"auth_body":
+			_http.poll()
+			var status: HTTPClient.Status = _http.get_status()
+			if status == HTTPClient.STATUS_BODY:
+				var chunk: PackedByteArray = _http.read_response_body_chunk()
+				if chunk.size() > 0:
+					_body.append_array(chunk)
+				if Time.get_ticks_msec() > _deadline_msec:
+					_fail_now("auth step %d: body did not complete within %d ms" % [_auth_step_index, REQUEST_TIMEOUT_MS])
+			elif status == HTTPClient.STATUS_CONNECTED:
+				_on_auth_body_complete()
+			else:
+				_fail_now("auth step %d: unexpected status while reading body: %d" % [_auth_step_index, status])
 		_:
 			_fail_now("unknown state %s" % _state)

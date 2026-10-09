@@ -263,6 +263,39 @@ bool request_wants_close(const ParsedRequest &req) {
   return token_list_contains(header_value(req, "connection"), "close");
 }
 
+}  // namespace
+
+// Defined outside the anonymous namespace: declared in rs_ws.h so its own unit test (and nothing
+// else) can call it directly.
+bool constant_time_equals(std::string_view a, std::string_view b) {
+  const std::size_t max_len = a.size() > b.size() ? a.size() : b.size();
+  unsigned char diff = static_cast<unsigned char>(a.size() ^ b.size());
+  for (std::size_t i = 0; i < max_len; ++i) {
+    const unsigned char ca = i < a.size() ? static_cast<unsigned char>(a[i]) : 0;
+    const unsigned char cb = i < b.size() ? static_cast<unsigned char>(b[i]) : 0;
+    diff = static_cast<unsigned char>(diff | (ca ^ cb));
+  }
+  return diff == 0;
+}
+
+namespace {
+
+// True iff `req`'s Authorization header is "Bearer <expected>" (gate2-design.md D13). Always
+// true when `expected` is empty (auth disabled). The "Bearer " prefix is a public constant (RFC
+// 6750), so checking it is allowed to short-circuit; only the secret itself is compared in
+// constant time, over `presented` (empty when the header is absent or malformed), so a
+// differently-shaped header never finishes measurably faster than a wrong token of the right
+// shape.
+bool bearer_ok(const ParsedRequest &req, const std::string &expected) {
+  if (expected.empty()) return true;
+  static const std::string kPrefix = "Bearer ";
+  const std::string value = header_value(req, "authorization");
+  const std::string presented = (value.size() >= kPrefix.size() && value.compare(0, kPrefix.size(), kPrefix) == 0)
+                                     ? value.substr(kPrefix.size())
+                                     : std::string();
+  return constant_time_equals(presented, expected);
+}
+
 // WebSocket-upgrade-specific header checks, folded out of parse_request_head so a plain HTTP GET
 // never pays for them.
 struct UpgradeHeaders {
@@ -295,6 +328,8 @@ const char *http_status_text(int status) {
       return "Not Modified";
     case 400:
       return "Bad Request";
+    case 401:
+      return "Unauthorized";
     case 404:
       return "Not Found";
     case 405:
@@ -346,6 +381,15 @@ Event make_http_get_event(std::uint32_t conn, std::string hash, std::uint16_t st
   e.hash = std::move(hash);
   e.http_status = status;
   e.bytes = bytes;
+  return e;
+}
+
+// G2e: a WebSocket upgrade refused for a missing or wrong bearer token.
+Event make_auth_rejected_event(std::uint32_t conn) {
+  Event e;
+  e.kind = Event::AuthRejected;
+  e.conn = conn;
+  e.http_status = 401;
   return e;
 }
 
@@ -569,6 +613,13 @@ struct Server::Impl {
       push_event_locked(make_http_get_event(c.id, hash, 400, 0));
       return;
     }
+    if (!bearer_ok(req, config.auth_token)) {
+      // G2e: a well-formed request, just not an authorized one. Honours keep_alive like the 404
+      // case below (an identity failure, not a broken connection) -- never the token itself.
+      send_http_status(c, 401, {}, keep_alive);
+      push_event_locked(make_http_get_event(c.id, hash, 401, 0));
+      return;
+    }
     if (!c.http_slot_held) {
       if (count_http_slots(c) >= config.max_http_clients) {
         send_http_status(c, 503, {}, /*keep_alive=*/false);
@@ -607,6 +658,14 @@ struct Server::Impl {
     }
     if (!up.protocol_ok) {
       reject(c, 400, "missing subprotocol");
+      return;
+    }
+    if (!bearer_ok(req, config.auth_token)) {
+      // G2e: 401, never a close code (render-stream-2.md "Live transport"). reject() always
+      // closes the TCP connection after flushing, which is fine here: an upgrade attempt is not a
+      // request stream a client needs to keep open across a retry.
+      push_event_locked(make_auth_rejected_event(c.id));
+      reject(c, 401, "bad bearer token");
       return;
     }
     if (count_ws_open(c) >= config.max_clients) {
