@@ -166,6 +166,9 @@ class Mirror {
   void set_behind(std::uint64_t item, bool behind, std::uint64_t frame);
   void set_material(std::uint64_t item, std::uint64_t material, std::uint64_t frame);
 
+  // canvas_item_clear: empties the commands, bumps content_version and resets
+  // `clip` to false, as the engine's Item::clear() does (gate3-design.md D3);
+  // `custom_rect` is kept.
   void clear(std::uint64_t item, std::uint64_t frame);
   void add_rect(std::uint64_t item, const rs2::Rect4 &rect, const rs2::Color4 &color,
                 bool antialiased, std::uint64_t frame);

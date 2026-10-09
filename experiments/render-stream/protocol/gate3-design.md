@@ -612,6 +612,20 @@ false` with 1 command at step 7 and 0 commands at step 8. No `content_version` c
 `fixtures/gate3/make_expected.py --check` is clean. The README gains "Gate 3a result" with the
 run directory, image paths, the census, and the reference's agreement with every probe.
 
+**As built (G3a, 2026-10-09).** Every hand value above held on the first run: the derived scissors
+equal Q6b's table, `CU` is culled exactly at steps 0–1, the census is `set_clip` 11 true / 11
+false (17 distinct entries), `set_custom_rect` 20 enabled / 1 disabled (18 distinct), and 32
+clears. There are no draw-index ties. The model's predictions agree with Q7's step sets for
+freeze, perturb, omit-clip, omit-custom-rect, clip-before-clear and root-size-observe. One
+amendment, to the G3b `ignore-clip` row: the failing probes are every decisive outside probe
+**plus 34 inside probes**. These are `A.right`/`A.bottom` and `B.right` inside pixels where a
+later-painted descendant that an inner owner confines (`BF`, `BZ` or `CF`) would, unclipped, cover
+the owner's own filler. `expected.json` `predictions` carries the exact set. Four additions: `expected.json` also has
+`fixture`, `owners`, `hand_clip_rects` (Q6b's table, typed in) and per-step `culled`;
+`deriveClipRects` returns `unknown` for an uncustomized clip whose bounds depend on an
+unsupported command; quarter points are floored, `a + ((b - a)·k) div 4`; and one check beyond
+the list, `support-legs-exit`, requires the import and rendered legs to exit 0.
+
 ---
 
 ### G3b — receiver apply order, receiver legs, sabotages (sonnet)
@@ -631,7 +645,7 @@ sabotages), `receiver/tests/applier2_selftest.gd` (Q5 cases), render-stream-2.md
 | `sabotage-perturb`                    | `perturb-transform` at step 1's frame                                        | `pixel-mismatch`, steps {1..9}                                                |
 | `sabotage-omit-clip`                  | `omit-op canvas_item_set_clip` at step 3's frame                             | `pixel-mismatch`, steps {3..9} (prediction, below)                            |
 | `sabotage-omit-custom-rect`           | `omit-op canvas_item_set_custom_rect` at step 7's frame                      | `pixel-mismatch`, steps {7,8,9}                                               |
-| `sabotage-receiver-ignore-clip`       | receiver with `RS_RECEIVER_SABOTAGE=ignore-clip`                             | `pixel-mismatch`, steps {0..9}; failing probes = every decisive outside probe |
+| `sabotage-receiver-ignore-clip`       | receiver with `RS_RECEIVER_SABOTAGE=ignore-clip`                             | `pixel-mismatch`, steps {0..9}; failing probes = `predictions` (G3a as built) |
 | `sabotage-receiver-clip-before-clear` | receiver with `clip-before-clear`                                            | `pixel-mismatch`, steps {3..9}                                                |
 | `root-size-observe`                   | capture with `GRC_ROOT_SIZE` unset, rendered receiver                        | `unsupported` (`degenerate-host-size`), mismatch only in region `anchored`    |
 

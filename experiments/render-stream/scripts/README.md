@@ -751,3 +751,81 @@ logs, and its receiver with http fetches, and the three g2e legs with their toke
 401 and the GET 401), and each check gets at least one failing perturbation; the real `runGate2`
 runs on every tree. Group selection is covered too: g2a alone (g2b-g2e not-run), nothing run, and
 g2b without g2d (G2d's checks absent, only `group-g2d` not-run).
+
+## Gate 3 files
+
+```bash
+mise exec -- pnpm render-stream:gate3 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g3a]
+```
+
+- `run-gate3.sh`: the orchestrator (`run_g3a`, `run_reference`). Groups g3b, g3c and g3d are known
+  but have not landed, so asking for them exits 2.
+- `lib/gate3-expected.ts`: the `render-stream-gate3-expected/1` types, `stepFrames3`,
+  `synthesizeGate3(expected, step, {clips})` (the clear colour, then every draw in paint order,
+  each intersected with its integer scissor; `clips: false` gives the unclipped scene),
+  `probesOf`, `pixelAt` and `visibleRect`.
+- `lib/clip-derive.ts`: `deriveClipRects(state, viewport, {cullMask, canvas})`. It derives each
+  visited item's final scissor from a resolved render-stream/2 state by gate3-design.md Q1c:
+  transforms composed from the canvas down in float32, the custom rect or command bounds (texture
+  rect flips normalized, transpose swapped), the bounding box, intersection with the rounded
+  ancestor scissor, the 0.5 px skip, and position and size rounded half away from zero. An
+  uncustomized clip whose bounds hang on an unsupported command derives as `unknown`. It is the
+  reference implementation for gate 7's browser receiver.
+- `lib/gate3-checks.ts`: every G3a check, `evaluateCapture` (gate 0's `classifyLeg` plus gate 1's
+  `classifyGate1`, which adds patch divergence and the root-size declaration), `clipCensusOf` and
+  `runGate3`. It reuses gate 0's capture, no-GPU and recording checks and gate 1's name mapping,
+  tie detection and patch resolution.
+- `check-gate3.ts`: writes `<out>/result.json` (`render-stream-gate3-report/1`: gate 1's shape
+  plus `probes`, per leg and step `{total, decisive, failed}`, `clip_rects`, the clip-derive
+  table per fixture and step, `census` and `ties`) and exits non-zero unless `gate_passed`.
+- `test/self-test-gate3.ts`, `test/gate3-fixture.ts`: see below.
+
+## Gate 3 legs and evidence under `--out`
+
+| Leg                | Group | Directory           | Runs                                                                                                                             |
+| ------------------ | ----- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `import`           | g3a   | `import/fixture/`   | the mise editor's `--import` of `fixtures/gate3`                                                                                 |
+| `capture`          | g3a   | `capture/`          | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps/fd |
+| `reference`        | g3a   | `reference/`        | rendered in gamescope, extension absent: `shots/step-0..9.png`                                                                  |
+| `reference-repeat` | g3a   | `reference-repeat/` | the same again                                                                                                                   |
+| `reference-armed`  | g3a   | `reference-armed/`  | rendered, extension armed with `GRC_STREAM_OUT` and a store, shots                                                               |
+
+## Gate 3 criteria (g3a)
+
+`capture-armed` (55 hooks) and `headless-no-gpu` are gate 0's. `recording-decodes` runs gate 0's
+check on both sinks. `patch-resolves-to-full` requires the patch sink to resolve bit-identically to
+the full sink at every frame. `step-alignment` reads the four step logs and the capture's marker
+colours. `no-draw-index-ties` fails on any tie whose members' footprints overlap (G1b2's harmless
+rule) and lists harmless ones. `expected-image-reference` compares every reference shot with
+`synthesizeGate3` exactly, full frame and per region. `probes-reference` reads every named probe
+in the reference shots and fails by name. `reference-repeat-budget` requires `reference` and
+`reference-repeat` to be identical (budget 0, D8). `armed-transparent` requires
+`reference-armed`'s shots to equal `reference`'s byte for byte. `clip-state-invariants` evaluates
+every `expected.json` invariant on both sinks' settle transactions. `clip-rects-derived` runs
+`deriveClipRects` over both sinks' settle transactions against `clip_rects`.
+`clip-call-census` sums `counters.json` `captured.canvas_item_set_clip` by value and
+`canvas_item_set_custom_rect` by enabled, reads `counts.canvas_item_clear`, and requires
+`census_totals` with nothing dropped. `support-legs-exit` requires the import and rendered legs
+to exit 0. `leg-class-capture` requires class `success` and no unsupported entry or command.
+
+## Gate 3 self-test
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate3.ts
+python3 experiments/render-stream/fixtures/gate3/make_expected.py --check
+```
+
+The unit cases are of three kinds. `deriveClipRects` runs on hand cases: nesting, a non-clipping
+intermediate, both zero-area skips, half rounding including negatives, the sub-0.5 px skip, a
+negative scale, 90° and 30° rotations (gate3-xform's `RQ`), command bounds with a flipped,
+transposed texture rect, unknown bounds, an invisible subtree and the canvas transform.
+`synthesizeGate3` and the probes run against `expected.json`, with the predictions' sanity and the
+TS call model's census against `census_totals`. `checkExpectedSelfConsistent` runs on the
+committed file and on six broken copies. A passing g3a tree is then fabricated:
+`test/gate3-fixture.ts` models the fixture's RS calls independently of `make_expected.py`, writes
+both sinks through `test/rs2-test-encoder.ts`, and synthesizes the PNGs. Every check gets at least
+one failing perturbation, the pre-gate-3 mirror (clear keeps clip) among them, and the real
+`runGate3` runs on every tree.

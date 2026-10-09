@@ -1899,6 +1899,77 @@ nine-patch (gate 5); lazy hashing, spill-to-disk, cache eviction and parallel fe
 browser receivers and their HTTP caches (gate 7); non-loopback serving, late join, and the target
 game's own textures (gate 8); `CanvasTexture` on a headless host (above).
 
+## Gate 3a result (2026-10-09)
+
+G3a ([protocol/gate3-design.md](protocol/gate3-design.md) "G3a") passes:
+`pnpm render-stream:gate3 -- --legs g3a` is 16/16 in
+`artifacts/render-stream/gate3/20261009T220745Z/`. An earlier run on the same code,
+`20261009T213400Z`, was also 16/16. The same build passed gate −1 28/28 with 55 hooks planned and
+none omitted (`artifacts/render-stream/gate-minus1/20261009T214037Z/`), gate 0 19/19
+(`gate0/20261009T214155Z/`), gate 1 65/65 with all four groups (`gate1/20261009T214425Z/`) and
+gate 2 85/85 with all five groups (`gate2/20261009T215439Z/`). The wire is unchanged
+(render-stream/2), and the capture leg classifies `success`.
+
+What landed:
+
+- **The mirror clear fix (D3).** `Mirror::clear` now sets `clip = false`, as the engine's
+  `Item::clear()` does, and keeps `custom_rect`. Three new `rs_mirror_test` cases cover it: clear
+  resets, re-asserting in the same frame carries no clip change on the patch wire, and an omitted
+  `set_clip` followed by a clear leaves the clip false. Gates 0–2 never set a clip true, so their
+  captured state is unchanged.
+- **The axis-aligned fixture** (`fixtures/gate3/`) and `make_expected.py`, which models Q1c from
+  the source over the fixture's parameters and asserts Q6b's hand table.
+- **`scripts/lib/clip-derive.ts`**, the wire-side scissor derivation (gate 7's reference), and the
+  runner, checker and self-test (`run-gate3.sh`, `check-gate3.ts`, `lib/gate3-*.ts`,
+  `test/self-test-gate3.ts`, 110 assertions).
+
+Images (under the run directory): `reference/shots/step-{0..9}.png`,
+`reference-repeat/shots/step-{0..9}.png` and `reference-armed/shots/step-{0..9}.png`. Every
+reference shot equals `synthesizeGate3` exactly, full frame and every region. The repeat and the
+armed reference are byte-identical to the reference, so the budget is 0. All **1 314 probes**
+across the ten steps (591 decisive pairs) have exactly their expected colour. `clip-derive.ts`
+over both sinks' settle transactions reproduces every owner's scissor, Q6b's table:
+
+| step | `A`                | `B`                 | `C`                 | `D`                | `RC`               | `AN`               |
+| ---- | ------------------ | ------------------- | ------------------- | ------------------ | ------------------ | ------------------ |
+| 0, 1 | `[96,88,256,208)`  | `[196,148,256,208)` | `[236,188,256,208)` | `[344,88,408,136)` | `[464,88,528,136)` | `[88,320,616,344)` |
+| 2    | same               | `[176,138,256,208)` | `[216,178,256,208)` | same               | same               | same               |
+| 3    | same               | `[176,138,236,188)` | `[216,178,236,188)` | same               | same               | same               |
+| 4    | —                  | same as 3           | same as 3           | same               | same               | same               |
+| 5    | `[96,88,256,208)`  | same as 3           | same as 3           | same               | same               | same               |
+| 6    | same               | same                | same                | same               | —                  | same               |
+| 7    | same               | same                | same                | same               | `[472,96,488,112)` | same               |
+| 8    | same               | same                | same                | same               | skipped            | same               |
+| 9    | `[104,92,264,212)` | `[184,142,244,192)` | `[224,182,244,192)` | `[352,92,416,140)` | skipped            | `[96,324,624,348)` |
+
+The census at the hook (`counters.json`, whole run) equals `expected.json`:
+`canvas_item_set_clip` 11 true and 11 false (17 distinct entries), `canvas_item_set_custom_rect`
+20 enabled and 1 disabled (18 distinct), and `canvas_item_clear` 32, with nothing dropped. Every
+Control redraw re-sent clear, custom rect and clip, and no engine redraw was unaccounted for.
+
+### Findings
+
+- **Every hand prediction held on the first run.** These include the nested and slid scissors, the
+  clip that a redraw re-asserts after its clear, the toggle, the step-6 clear that resets `RC`'s
+  clip (`RCF` drawn whole), the clip without a custom rect that falls back to the command bounds,
+  the zero-area skip, the custom rect that culls `CU` at steps 0–1 and draws it once its rect only
+  touches the viewport edge, and the canvas shift.
+- **No draw-index ties** occur in any of the capture's 400 frames, so `no-draw-index-ties` has
+  nothing to list.
+- **The ignore-clip prediction is wider than the contract said.** Unclipped, `BF`, `BZ` and `CF`
+  also cover 34 _inside_ probes near `A`'s and `B`'s right and bottom edges. The model's
+  `predictions` carry the exact set, and the contract's G3b row now points at them (As built,
+  G3a). The other predicted step sets match Q7: freeze {2..9}, perturb {1..9}, omit-clip {3..9},
+  omit-custom-rect {7,8,9}, clip-before-clear {3..9}, and root-size-observe mismatching only
+  region `anchored`.
+
+### What G3a does not prove
+
+- That a receiver reproduces any of this. The receiver still applies `clip` before its clear
+  (G3b). That gap is also why G3a has no receiver legs.
+- Rotated or scaled clip owners (G3c), `clip_ignore` (G3d), text clipping (gate 4), or clipping
+  under stretch (gates 6 and 7).
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

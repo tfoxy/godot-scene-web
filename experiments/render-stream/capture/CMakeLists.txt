@@ -73,11 +73,12 @@ target_include_directories(abi_decode_test PRIVATE src)
 target_link_libraries(abi_decode_test PRIVATE grc_warnings)
 add_test(NAME abi_decode COMMAND abi_decode_test)
 
-# Gate 0 (WP1) / gate 1 (G1b2) / gate 2 (G2b2): the retained canvas mirror, driven through its
-# public API with no engine, including draw-index ties, root geometry, the omit-op sabotage and
-# the texture table (ids, versions, tombstones, replace, derived unsupported entries).
+# Gate 0 (WP1) / gate 1 (G1b2) / gate 2 (G2b2) / gate 3 (G3a): the retained canvas mirror, driven
+# through its public API with no engine, including draw-index ties, root geometry, the omit-op
+# sabotage, the texture table (ids, versions, tombstones, replace, derived unsupported entries)
+# and the clip reset of canvas_item_clear (diffed against the previous snapshot).
 add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp
-  src/rs_texture_payload.cpp src/rs_sha256.cpp)
+  src/rs_texture_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
 target_include_directories(rs_mirror_test PRIVATE src)
 target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_mirror COMMAND rs_mirror_test)
