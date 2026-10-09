@@ -11,16 +11,18 @@
 # artifacts/render-stream/gate2/<UTC>/ and must not already hold files. --legs selects leg groups
 # (comma-separated); the default is every group whose increment has landed: g2a (G2a: the fixture,
 # its rendered reference and a same-build repeat, the extension-armed reference, the RS call
-# census and the copy at the hook) and g2b (G2b2: render-stream/2 with textures -- the store,
+# census and the copy at the hook), g2b (G2b2: render-stream/2 with textures -- the store,
 # inline records, cold/warm/patch/inline receivers, a live inline host, the unsupported variant
-# and the sabotages) and g2c (G2c2: live resources over HTTP -- live hosts serving payloads by
+# and the sabotages), g2c (G2c2: live resources over HTTP -- live hosts serving payloads by
 # hash with pins and retirement, rendered and headless live receivers fetching before they apply,
 # warm, replay, stall, reconnect and animate legs, and the unpin, drop-resource and live
-# wrong-hash sabotages) and g2e (G2e: bearer-token authorization on the WebSocket upgrade and on
-# every resource GET -- a live-auth leg with tokens, a receiver that sends none, and a receiver
-# whose resource GETs carry the wrong token while its upgrade carries the right one). g2b and g2c
-# need g2a's captures and reference, so they only run together with g2a; g2e needs none of them
-# (three fresh live hosts of its own). Group g2d arrives with its increment.
+# wrong-hash sabotages), g2d (G2d: CanvasTexture -- per-command filter/repeat, the canvas-normal
+# variant and its omit-op sabotage on a rendered host, and the typed headless refusal) and g2e
+# (G2e: bearer-token authorization on the WebSocket upgrade and on every resource GET -- a
+# live-auth leg with tokens, a receiver that sends none, and a receiver whose resource GETs carry
+# the wrong token while its upgrade carries the right one). g2b, g2c and g2d need g2a's captures and
+# reference, and g2d also needs g2b's, so each only runs together with the groups it needs; g2e
+# needs none of them (three fresh live hosts of its own).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -42,8 +44,8 @@ set -euo pipefail
 
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
-# Groups whose increment has landed, in run order. G2d adds its group here.
-LANDED_GROUPS=(g2a g2b g2c g2e)
+# Groups whose increment has landed, in run order.
+LANDED_GROUPS=(g2a g2b g2c g2d g2e)
 KNOWN_GROUPS=(g2a g2b g2c g2d g2e)
 
 EXTENSION=""
@@ -60,16 +62,16 @@ HEADLESS_TIMEOUT_S=180
 RENDERED_TIMEOUT_S=180
 START_FRAME=1
 STEP_FRAMES=10
-LAST_STEP=10
+LAST_STEP=11
 # The live inline leg (G2b2 "Live before HTTP"): gate 1's live timeline, S = 300, N = 60; the
-# fixture quits at its default S + N*10 + 11.
+# fixture quits at its default S + N*LAST_STEP + 11 (971).
 LIVE_START_FRAME=300
 LIVE_STEP_FRAMES=60
 LIVE_QUIT_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * LAST_STEP + 11))
 step_frame() { echo $((START_FRAME + STEP_FRAMES * $1)); }
 
 usage() {
-	sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -165,6 +167,24 @@ for group in g2b g2c; do
 		;;
 	esac
 done
+case " ${GROUPS_RUN[*]} " in
+*" g2d "*)
+	case " ${GROUPS_RUN[*]} " in
+	*" g2a "*) ;;
+	*)
+		echo "run-gate2: g2d needs g2a's captures and reference; pass --legs g2a,g2b,g2d" >&2
+		exit 2
+		;;
+	esac
+	case " ${GROUPS_RUN[*]} " in
+	*" g2b "*) ;;
+	*)
+		echo "run-gate2: g2d needs g2b2's texture mirror and receiver; pass --legs g2a,g2b,g2d" >&2
+		exit 2
+		;;
+	esac
+	;;
+esac
 
 ACTUAL_BINARY_SHA256="$(sha256sum "$BINARY" | awk '{print $1}')"
 if [ "$ACTUAL_BINARY_SHA256" != "$EXPECTED_BINARY_SHA256" ]; then
@@ -533,7 +553,7 @@ g2c_leg() {
 	LIVE_HOST_PID=""
 }
 
-# g2c (G2c2): live resources over HTTP. Every host is the live timeline (S = 300, N = 60, quit 911)
+# g2c (G2c2): live resources over HTTP. Every host is the live timeline (S = 300, N = 60, quit 971)
 # with both file sinks, the store, GRC_LIVE_LISTEN and GRC_LIVE_TAP_DIR, and the configured
 # out-of-band policy (fetch http). The stall ends inside step 6's window, so step 6's texture
 # update lands inside it and the first post-stall transaction carries A1 (gate2-design.md G2c2
@@ -590,7 +610,7 @@ run_g2c() {
 }
 
 # g2e (G2e): bearer-token authorization (gate2-design.md D13). Three fresh live hosts of its
-# own (the live timeline, S=300, N=60, quit 911, as g2c's), each with GRC_LIVE_AUTH=token so it
+# own (the live timeline, S=300, N=60, quit 971, as g2c's), each with GRC_LIVE_AUTH=token so it
 # generates and writes evidence/live-token: live-auth's receiver gets it
 # (RS_RECEIVER_TOKEN_FILE), sabotage-no-token's gets none at all, and
 # sabotage-bad-http-token's gets it for the WebSocket upgrade but a deliberately wrong one for
@@ -626,11 +646,75 @@ run_g2e() {
 	GS_RUN_DIR=""
 }
 
+# g2_capture_rendered <dir> [extra env words...]: a RENDERED capture host (gamescope, the real
+# GPU) on the gate 2 fixture, armed, writing <dir>/recording.rs2, its store and the fixture's own
+# step shots (<dir>/shots), at the fixture's default quit frame. HOST-RENDERER EVIDENCE, not
+# headless support: a headless host never allocates a CanvasTexture (the dummy storage's
+# canvas_texture_allocate returns RID(), servers/rendering/dummy/storage/texture_storage.h:54) and
+# refuses it typed (canvas-texture-headless; protocol/canvas-texture-headless.md), so the
+# CanvasTexture path itself can only be exercised on a host with a real renderer.
+g2_capture_rendered() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir/evidence" "$dir/store" "$dir/shots"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_RESOURCE_STORE_DIR="$dir/store" GRC_ROOT_SIZE=enforce-min-size
+		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
+		RS_FIXTURE_SHOT_DIR="$dir/shots"
+		"$@"
+	)
+	run_rendered "$dir" "$FIXTURE_DIR"
+}
+
+# G2d (CanvasTexture). The `canvas` variant draws the main fixture's pixels, but SC's step-11
+# nearest/enabled come from a CanvasTexture CT while SC's own item says linear/disabled.
+#   canvas-headless              headless capture + headless receiver: the typed refusal
+#                                (unsupported, canvas-texture-headless)
+#   canvas-host                  rendered capture + rendered receiver: success
+#   canvas-normal                rendered, CT.normal_texture = B: unsupported (unsupported-texture,
+#                                canvas-texture-channel), mismatch confined to region sc
+#   sabotage-omit-canvas-filter  rendered, canvas_texture_set_texture_filter dropped from step 11's
+#                                frame on: pixel-mismatch {11}
+# The last three are host-renderer evidence (g2_capture_rendered), not headless support.
+run_g2d() {
+	local f11
+	f11="$(step_frame 11)"
+
+	echo "run-gate2: canvas-headless (RS_FIXTURE_VARIANT=canvas, headless capture host)"
+	g2_capture "$OUT/canvas-headless/capture" "" none RS_FIXTURE_VARIANT=canvas
+	echo "run-gate2: canvas-headless receiver (headless)"
+	g2_receiver "$OUT/canvas-headless/capture" "$OUT/canvas-headless/receiver" headless
+
+	echo "run-gate2: bringing up private gamescope for g2d rendered legs (host-renderer evidence)"
+	gs_start 640 360 "$OUT/gamescope-g2d"
+
+	echo "run-gate2: canvas-host (RS_FIXTURE_VARIANT=canvas, rendered capture host)"
+	g2_capture_rendered "$OUT/canvas-host/capture" RS_FIXTURE_VARIANT=canvas
+	echo "run-gate2: canvas-normal (RS_FIXTURE_VARIANT=canvas-normal, rendered capture host)"
+	g2_capture_rendered "$OUT/canvas-normal/capture" RS_FIXTURE_VARIANT=canvas-normal
+	echo "run-gate2: sabotage-omit-canvas-filter (canvas, omit-op canvas_texture_set_texture_filter @$f11, rendered)"
+	g2_capture_rendered "$OUT/sabotage-omit-canvas-filter/capture" RS_FIXTURE_VARIANT=canvas \
+		GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=canvas_texture_set_texture_filter GRC_SABOTAGE_FRAME="$f11"
+
+	echo "run-gate2: canvas-host receiver"
+	g2_receiver "$OUT/canvas-host/capture" "$OUT/canvas-host/receiver" rendered
+	echo "run-gate2: canvas-normal receiver (compared against the plain reference)"
+	g2_receiver "$OUT/canvas-normal/capture" "$OUT/canvas-normal/receiver" rendered
+	echo "run-gate2: sabotage-omit-canvas-filter receiver"
+	g2_receiver "$OUT/sabotage-omit-canvas-filter/capture" "$OUT/sabotage-omit-canvas-filter/receiver" rendered
+
+	gs_teardown "$OUT/gamescope-g2d"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g2a) run_g2a ;;
 	g2b) run_g2b ;;
 	g2c) run_g2c ;;
+	g2d) run_g2d ;;
 	g2e) run_g2e ;;
 	esac
 done

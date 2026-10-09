@@ -129,6 +129,10 @@ FEATURE_ITEM_STATE = sorted(
 )
 # ["texture_2d", "texture_2d_placeholder"]; "canvas_texture" is added from G2d on, not here.
 FEATURE_RESOURCES = sorted(["texture_2d", "texture_2d_placeholder"])
+# G2d: the resource kinds the host refuses, {"resource", "reason"} sorted by resource. A headless
+# host lists {"resource": "canvas_texture", "reason": "canvas-texture-headless"}; the goldens'
+# session refuses nothing.
+FEATURE_UNSUPPORTED_RESOURCES = []
 # /1's observed_unsupported_ops without the two texture-rect hooks (now fully captured), plus
 # canvas_item_add_lcd_texture_rect_region (hooked from calibrator 5 on).
 FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
@@ -394,6 +398,7 @@ def session_record(
             "ops": FEATURE_OPS,
             "item_state": FEATURE_ITEM_STATE,
             "resources": FEATURE_RESOURCES,
+            "unsupported_resources": FEATURE_UNSUPPORTED_RESOURCES,
             "observed_unsupported_ops": FEATURE_OBSERVED_UNSUPPORTED_OPS,
             "unobserved": FEATURE_UNOBSERVED,
             "publication": PUBLICATION,

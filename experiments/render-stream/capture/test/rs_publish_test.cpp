@@ -620,11 +620,25 @@ void test_gate2_features() {
   const Features f = gate2_features();
   check(f.ops == golden::kFeatureOps, "gate2_features().ops");
   check(f.item_state == golden::kFeatureItemState, "gate2_features().item_state");
-  check(f.resources == golden::kFeatureResources, "gate2_features().resources");
+  // golden::kFeatureResources stays golden-2's frozen {"texture_2d", "texture_2d_placeholder"}
+  // (protocol/golden-2/make_golden.py: "canvas_texture is added from G2d on, not here"), so the
+  // live production list is checked against its own up-to-date literal instead.
+  const std::vector<std::string> expected_resources = {"canvas_texture", "texture_2d",
+                                                        "texture_2d_placeholder"};
+  check(f.resources == expected_resources, "gate2_features().resources");
   check(f.observed_unsupported_ops == golden::kFeatureObservedUnsupported,
         "gate2_features().observed_unsupported_ops");
   check(f.unobserved == golden::kFeatureUnobserved, "gate2_features().unobserved");
   check(f.publication == "snapshot-or-patch", "gate2_features().publication");
+  check(f.unsupported_resources.empty(), "gate2_features(): a rendered host refuses nothing");
+  // protocol/canvas-texture-headless.md: a headless host refuses canvas_texture, typed.
+  const Features h = gate2_features(true);
+  check(h.resources == golden::kFeatureResources,
+        "gate2_features(headless).resources: texture_2d and texture_2d_placeholder only");
+  check(h.unsupported_resources.size() == 1 &&
+            h.unsupported_resources[0].resource == "canvas_texture" &&
+            h.unsupported_resources[0].reason == "canvas-texture-headless",
+        "gate2_features(headless).unsupported_resources: canvas_texture, canvas-texture-headless");
   for (const auto *list :
        {&f.ops, &f.item_state, &f.resources, &f.observed_unsupported_ops, &f.unobserved}) {
     check(std::is_sorted(list->begin(), list->end()), "gate2_features() arrays sorted");

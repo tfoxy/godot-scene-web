@@ -222,14 +222,19 @@ std::string generate_id() {
   return out;
 }
 
-Features gate2_features() {
+Features gate2_features(bool headless_host) {
   Features features;
   features.ops = {"add_rect", "add_texture_rect", "add_texture_rect_region"};
   features.item_state = {"behind",         "children",         "clip",           "custom_rect",
                          "draw_index",     "modulate",         "parent",         "self_modulate",
                          "texture_filter", "texture_repeat",   "transform",      "visibility_layer",
                          "visible",        "z_index",          "z_relative"};
-  features.resources = {"texture_2d", "texture_2d_placeholder"};
+  if (headless_host) {
+    features.resources = {"texture_2d", "texture_2d_placeholder"};
+    features.unsupported_resources = {{"canvas_texture", "canvas-texture-headless"}};
+  } else {
+    features.resources = {"canvas_texture", "texture_2d", "texture_2d_placeholder"};
+  }
   features.observed_unsupported_ops = {"canvas_item_add_circle",
                                        "canvas_item_add_lcd_texture_rect_region",
                                        "canvas_item_add_line",

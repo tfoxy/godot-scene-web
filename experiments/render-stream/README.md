@@ -1,4 +1,4 @@
-# render-stream experiment — gates −1, 0, 1, 2a, 2b and 2c: capture seam, first stream, retained state, live delivery, texture capture, textures on the wire, live resources over HTTP
+# render-stream experiment — gates −1, 0, 1 and 2: capture seam, first stream, retained state, live delivery, textures
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
@@ -42,6 +42,10 @@ content-addressed store or inline resource records, live connections carry paylo
 the receiver uploads a texture only when a command first needs it and again only when its hash
 changes, from an in-memory map, a verified cache directory or the store. render-stream/1 is
 superseded.
+
+G2c2, G2d and G2e completed gate 2 (see "Gate 2 summary" below): payloads served live over HTTP
+by hash with pins and retirement, `CanvasTexture` filter and repeat (typed as unsupported on a
+headless host), and bearer-token authorization.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -365,22 +369,24 @@ experiments/render-stream/scripts/build-capture.sh          # + rs_sha256, rs_te
 mise exec -- pnpm render-stream:gate2 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g2a,g2b,g2c]
+  [--legs g2a,g2b,g2c,g2d,g2e]
 ```
 
-About eight minutes for groups `g2a`, `g2b` and `g2c` (g2b and g2c need g2a's captures and
-reference). It
-imports `fixtures/gate2/` and `receiver/`, runs the headless capture (400 frames,
-`enforce-min-size`, strace, both sinks and the store) and the `unsupported` variant's capture,
-then the reference, its same-build repeat and the extension-armed reference in one private
+About fifteen minutes for all five groups. g2b, g2c and g2d need g2a's captures and reference,
+and g2d also needs g2b's. It imports `fixtures/gate2/` and `receiver/`, runs the headless capture
+(400 frames, `enforce-min-size`, strace, both sinks and the store) and the `unsupported` variant's
+capture, then the reference, its same-build repeat and the extension-armed reference in one private
 gamescope. Group g2b adds the inline capture and the five sabotage captures, the headless
 receivers (strace trace, wrong-hash, stale, spurious, reupload), a live host with a headless
 inline receiver, then in a second private gamescope the variant's reference and the rendered
 receivers (cold, warm, patch, inline, unsupported, the two omit-op sabotages), and last the
-ignore-cache receiver. Group g2c runs nine live hosts (S = 300, N = 60, quit 911, fetch http):
+ignore-cache receiver. Group g2c runs nine live hosts (S = 300, N = 60, quit 971, fetch http):
 the headless live receiver and the drop-resource and live wrong-hash sabotages, then in a third
 private gamescope the rendered `live` receiver, its file replay, the warm, stall, reconnect and
-animate receivers and the unpin sabotage. The checker writes `artifacts/render-stream/gate2/<UTC>/result.json`
+animate receivers and the unpin sabotage. Group g2d runs the `canvas` variant on a headless capture
+host (the typed refusal), then, in a fourth gamescope, three rendered capture hosts with their
+rendered receivers (host-renderer evidence). Group g2e runs three live hosts with
+`GRC_LIVE_AUTH=token`. The checker writes `artifacts/render-stream/gate2/<UTC>/result.json`
 (`render-stream-gate2-report/1`). Legs and criteria: [scripts/README.md](scripts/README.md) "Gate
 2". Self-tests: `scripts/test/self-test-gate2.ts`; `fixtures/gate2/make_expected.py --check`; the
 receiver's `tests/applier2_selftest.gd`.
@@ -1695,6 +1701,69 @@ Images, all under the run directory: `live/receiver/shots/seq-<n>.png` (11 steps
 - Fetch costs below one frame, parallel fetches, large payloads (the largest is 21 955 B),
   constrained links and cache eviction (gate 6); browser receivers and their HTTP caches (gate 7).
 
+## Gate 2d result (2026-10-09)
+
+G2d ([protocol/gate2-design.md](protocol/gate2-design.md) "G2d" and its "As built") passes,
+integrated onto `main` after G2c2 and G2e: `pnpm render-stream:gate2` with every group is 85/85 in
+`artifacts/render-stream/gate2/g2d-final/`. The same build passed gate −1 28/28 with 55 hooks
+(`artifacts/render-stream/gate-minus1/g2d-final/`), gate 0 19/19
+(`artifacts/render-stream/gate0/g2d-final/`) and gate 1 65/65, all four groups
+(`artifacts/render-stream/gate1/g2d-final/`). The calibrator did not need a bump: the four slots
+(441/442/444/445) were reserved by calibrator 5.
+
+What landed:
+
+- **`CanvasTexture` in the mirror and on the wire.** `rs_mirror` taps `canvas_texture_create`,
+  `_set_channel` (diffuse, normal, specular), `_set_texture_filter` and `_set_texture_repeat`. A
+  canvas texture with a normal or specular channel is `unsupported`/`canvas-texture-channel`. The
+  texture table gets `kind: "canvas"` entries with `canvas: {diffuse, filter, repeat}`.
+- **The receiver applies it.** `rs_applier.gd` creates the canvas texture on first sight and
+  re-issues the channel, filter and repeat calls whenever the wire version advances.
+- **A headless host refuses it, typed.** The dummy storage never allocates a canvas texture
+  (`servers/rendering/dummy/storage/texture_storage.h:54` returns `RID()`; the same on 4.6.2 and
+  4.7.2), so a headless host declares
+  `features.unsupported_resources: [{"resource":"canvas_texture","reason":"canvas-texture-headless"}]`
+  and makes a texture draw naming `RID()` an `unsupported` command `canvas-texture-headless`. It is
+  never replayed as the white default. The hook log marks each `canvas_texture_*` call the same
+  way. The options for real support are in
+  [protocol/canvas-texture-headless.md](protocol/canvas-texture-headless.md).
+- **The fixture's step 11.** `SC` draws `A`'s 64×64 region at 1.125× with nearest filtering and
+  repeat enabled. The main fixture sets them on the item, so no headless leg meets a
+  `CanvasTexture`. The `canvas` variant gets the same pixels from a `CanvasTexture` `CT` while the
+  item says linear/disabled.
+
+| leg                           | host     | class (expected)                        | why                                                                                                          |
+| ----------------------------- | -------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `canvas-headless`             | headless | unsupported (`canvas-texture-headless`) | 4 refused `canvas_texture_*` calls, no canvas entry; SC's draw refused from step 11, the receiver reports it |
+| `canvas-host`                 | rendered | success                                 | CT on the wire (canvas, diffuse A, nearest/enabled, version 4); the receiver equals the reference            |
+| `canvas-normal`               | rendered | unsupported (`unsupported-texture`)     | `CT.normal_texture = B`: canvas-texture-channel; region `sc` only, only step 11 (5 184 px)                   |
+| `sabotage-omit-canvas-filter` | rendered | pixel-mismatch {11}                     | `omit-op canvas_texture_set_texture_filter` at step 11's frame; 1 088 px differ (nearest vs linear)          |
+
+The three rendered legs are host-renderer evidence for the capture and replay path, not headless
+support. `canvas-texture-override` holds on `canvas-host`'s own step-11 frame: region `sc` equals
+`synthesizeGate2`'s nearest/enabled exactly (0 px differ), although SC's item says linear/disabled.
+
+### Findings
+
+- **A headless host cannot create a `CanvasTexture`** (above). Only the refusal makes that loud.
+  Before it, the draw replayed as `tex: null`, which is white.
+- **The hook log did not recompute status on a channel-set call.** `rs_resource_log.cpp`'s
+  `canvas_texture_set_channel` left `canvas/ok` after the mirror flipped to `unsupported`.
+  `canvas-normal` caught it as `texture-log-divergence`. Fixed.
+- **Nearest vs linear only shows under magnification here.** At 1:1 and at 0.75× no pixel differed
+  on flat-colour content. `SC` draws at 1.125×.
+- **Gate 2's TS checker listed only the landed groups g2a-g2c** while the runner listed g2e too.
+  Both now list g2a-g2e, g2d's legs are judged only when g2d ran, and the self-test fabricates g2e
+  evidence (`gate2c-fixture.ts` `buildG2eTree`).
+
+### What G2d does not prove
+
+- `CanvasTexture` capture on a headless host (refused; see the options study).
+- `canvas_texture_set_shading_parameters`, `texture_set_size_override`, and proxy, layered, 3D,
+  external and viewport textures.
+- Textured polygons, meshes and nine-patch (gate 5), lazy hashing and cache eviction (gate 6),
+  browser receivers (gate 7), late join and the target game's textures (gate 8).
+
 ## Gate 2e result (2026-10-09)
 
 G2e ([protocol/gate2-design.md](protocol/gate2-design.md) "G2e") passes: `pnpm render-stream:gate2
@@ -1778,6 +1847,57 @@ each leg's token excluded only from its own `evidence/live-token` file) with zer
 - Token rotation while a connection is open, multiple valid tokens, or any authorization scheme
   beyond one static bearer token per host process.
 - Canvas textures (G2d, landing in parallel); gate 2's full summary waits for it.
+
+## Gate 2 summary
+
+Gate 2 passes: `pnpm render-stream:gate2` with all groups g2a-g2e is 85/85 in
+`artifacts/render-stream/gate2/g2d-final/`, on the same build as gate −1 28/28, gate 0 19/19 and
+gate 1 65/65 (`artifacts/render-stream/{gate-minus1,gate0,gate1}/g2d-final/`). Every leg is at its
+expected class. Images are under each leg's `shots/` in the run directory, and the references are
+`reference/shots/step-{0..11}.png`.
+
+What it proves, by increment:
+
+- **2a.** The stock release template's texture calls can be hooked (calibrator 5, 55 hooks). Image
+  bytes are copied and hashed at the hook, on the calling thread (loader threads included), and
+  agree with an independent derivation of the fixture's twelve steps.
+- **2b.** render-stream/2 carries textures as a versioned table with content-addressed payloads,
+  out of band (store) or inline. A receiver uploads a texture only when a command first needs it
+  and re-uploads only on a hash change. Transform-only steps cost zero texture traffic, and a warm
+  cache fetches nothing.
+- **2c.** Live hosts serve payloads over HTTP by hash on the WebSocket's listener. Pins cover every
+  fetch a correct receiver can make, and everything else is retired. Stall, reconnect, warm, replay
+  and animate legs all draw the reference's pixels.
+- **2d.** `CanvasTexture` per-command filter and repeat override the item's, on the wire and in
+  pixels, on a host with a real renderer.
+- **2e.** A bearer token gates the upgrade and every GET, compared in constant time, and is never
+  logged.
+
+Unsupported, each typed and never substituted: formats outside the permitted six
+(`unsupported-format`), oversized payloads (`payload-too-large`), textures created before arming or
+never hooked, such as proxy, layered, 3D and viewport textures (`unknown-texture`), canvas
+textures with a normal or specular channel (`canvas-texture-channel`), and, as an **architectural
+finding**, every `CanvasTexture` on a headless host (`canvas-texture-headless`). The dummy renderer
+that `--headless` forces allocates no canvas texture on 4.5.1, 4.6.2 or 4.7.2, so no pass-through
+tap can see one. The options (a synthesized-identity shim, a software-GL host, a host-renderer
+opt-in) and the recommended next experiment are in
+[protocol/canvas-texture-headless.md](protocol/canvas-texture-headless.md).
+
+Costs measured in this run:
+
+- **Copy and hash at the hook** (`capture`, 11 payloads): copy median 0.97 µs (max 2.7 µs for the
+  800×6 hue strip). SHA-256 median 4.5 µs; 16 µs for 4 KiB, max 95 µs.
+- **Bytes** (README "Gate 2b result"): median transaction 8 697 B full, 461 B patch. The store
+  holds 10 payloads (50 493 B).
+- **Fetches and uploads.** A cold receiver fetches 9 payloads (31 181 B) and uploads 10 times
+  (31 220 B). A warm one fetches 0. Live fetch latency is p50 16.2 ms and p95 16.7 ms whatever the
+  size (137 B to 21 955 B): one receiver frame at 60 fps. The retained maximum is 7 hashes
+  (49 050 B).
+
+What gate 2 does not prove: glyph atlases and MSDF text (gate 4); textured polygons, meshes and
+nine-patch (gate 5); lazy hashing, spill-to-disk, cache eviction and parallel fetches (gate 6);
+browser receivers and their HTTP caches (gate 7); non-loopback serving, late join, and the target
+game's own textures (gate 8); `CanvasTexture` on a headless host (above).
 
 ## Scratch verification (2026-10-08)
 

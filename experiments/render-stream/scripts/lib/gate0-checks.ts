@@ -136,12 +136,16 @@ export const GATE0_HOOKS: readonly string[] = [
   "viewport_set_default_canvas_item_texture_repeat",
 ];
 
-/** Session `features` at render-stream/2, exactly (render-stream-2.md "Session record";
- * protocol/golden-2/make_golden.py FEATURE_*): /1's lists with the two texture-rect draws captured
- * (they leave observed_unsupported_ops for `ops`), calibrator 5's
+/** Session `features` of a HEADLESS host at render-stream/2, exactly (render-stream-2.md "Session
+ * record"; protocol/golden-2/make_golden.py FEATURE_*): /1's lists with the two texture-rect draws
+ * captured (they leave observed_unsupported_ops for `ops`), calibrator 5's
  * `canvas_item_add_lcd_texture_rect_region` hooked (observed, unsupported), the default texture
  * filter/repeat hooked (they leave `unobserved` for `item_state`), the new `resources` key, and the
- * two texture calls nothing hooks yet added to `unobserved`. */
+ * two texture calls nothing hooks yet added to `unobserved`. Since G2d a headless host refuses
+ * canvas textures (protocol/canvas-texture-headless.md): `resources` omits `canvas_texture` and
+ * `unsupported_resources` lists it with reason `canvas-texture-headless`; a rendered host
+ * (RS2_FEATURES_RENDERED) lists it in `resources` and refuses nothing. Every stream, not only
+ * gate 2's. */
 export const RS2_FEATURES = {
   ops: ["add_rect", "add_texture_rect", "add_texture_rect_region"],
   item_state: [
@@ -162,6 +166,9 @@ export const RS2_FEATURES = {
     "z_relative",
   ],
   resources: ["texture_2d", "texture_2d_placeholder"],
+  unsupported_resources: [
+    { resource: "canvas_texture", reason: "canvas-texture-headless" },
+  ],
   observed_unsupported_ops: [
     "canvas_item_add_circle",
     "canvas_item_add_lcd_texture_rect_region",
@@ -190,6 +197,14 @@ export const RS2_FEATURES = {
     "viewport_set_global_canvas_transform",
   ],
   publication: "snapshot-or-patch",
+} as const;
+
+/** The session `features` of a rendered (GPU-backed) host: RS2_FEATURES with `canvas_texture`
+ * supported and nothing refused. */
+export const RS2_FEATURES_RENDERED = {
+  ...RS2_FEATURES,
+  resources: ["canvas_texture", "texture_2d", "texture_2d_placeholder"],
+  unsupported_resources: [],
 } as const;
 
 /** Session `resources` of a file capture (gate2-design.md Q4 "File sinks"): out-of-band through
@@ -1504,7 +1519,12 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
       const ok =
         typeof want === "string"
           ? got === want
-          : sameStrings(got as unknown[] | undefined, want);
+          : key === "unsupported_resources"
+            ? JSON.stringify(got) === JSON.stringify(want)
+            : sameStrings(
+                got as unknown[] | undefined,
+                want as readonly string[],
+              );
       if (!ok) problems.push(`features.${key}=${JSON.stringify(got)}`);
     }
     const extraKeys = Object.keys(features).filter((k) => !(k in RS2_FEATURES));

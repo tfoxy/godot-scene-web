@@ -42,6 +42,7 @@ void Mirror::reset() {
   omit_op_.clear();
   omit_from_frame_ = 0;
   degenerate_host_size_ = false;
+  canvas_texture_headless_ = false;
   next_canvas_id_ = kRootCanvasId + 1;
   next_item_id_ = 1;
   root_viewport_rid_ = 0;
@@ -102,6 +103,12 @@ void Mirror::set_degenerate_host_size(bool on) {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
   degenerate_host_size_ = on;
+}
+
+void Mirror::set_canvas_texture_headless(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  canvas_texture_headless_ = on;
 }
 
 void Mirror::set_drop_frame(std::uint64_t frame) {
@@ -692,6 +699,15 @@ bool Mirror::texture_referenced(std::uint32_t id) const {
       }
     }
   }
+  // G2d: a canvas texture's diffuse channel also keeps its target alive (a
+  // freed image a CanvasTexture still names becomes a tombstone too).
+  for (const auto &entry : textures_) {
+    const Texture &texture = entry.second;
+    if (texture.kind == TextureKind::Canvas && texture.has_diffuse &&
+        texture.diffuse_id == id) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -721,6 +737,22 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
   out.kind = texture.kind;
   out.status = texture.status;
   out.version = texture.version;
+  if (texture.kind == TextureKind::Canvas) {
+    // render-stream-2.md "Texture" field table: a canvas entry carries no shape, but keeps its
+    // {diffuse, filter, repeat} (and reason, if unsupported) while status isn't freed.
+    if (texture.status != TextureStatus::Freed) {
+      out.has_canvas = true;
+      out.canvas.has_diffuse = texture.has_diffuse;
+      out.canvas.diffuse = texture.diffuse_id;
+      out.canvas.filter = texture.filter;
+      out.canvas.repeat = texture.repeat;
+      if (texture.status == TextureStatus::Unsupported) {
+        out.has_reason = texture.has_reason;
+        out.reason = texture.reason;
+      }
+    }
+    return out;
+  }
   if (texture.status == TextureStatus::Freed || texture.kind != TextureKind::Image) {
     // render-stream-2.md "Texture" field table: placeholders and tombstones carry no shape.
     return out;
@@ -756,7 +788,11 @@ void Mirror::add_texture_rect(std::uint64_t rid, const Rect4 &rect, std::uint64_
     return;
   }
   Command command;
-  if (!texture_ref(texture, &command.has_tex, &command.tex)) {
+  if (texture == 0 && canvas_texture_headless_) {
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::CanvasTextureHeadless;
+  } else if (!texture_ref(texture, &command.has_tex, &command.tex)) {
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
@@ -783,7 +819,11 @@ void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::
     return;
   }
   Command command;
-  if (!texture_ref(texture, &command.has_tex, &command.tex)) {
+  if (texture == 0 && canvas_texture_headless_) {
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::CanvasTextureHeadless;
+  } else if (!texture_ref(texture, &command.has_tex, &command.tex)) {
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
@@ -981,6 +1021,120 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
   }
 }
 
+// --- canvas textures (G2d) ------------------------------------------------------------
+
+void Mirror::canvas_texture_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("canvas_texture_create", frame)) {
+    return;
+  }
+  const auto stale = texture_by_rid_.find(rid);
+  if (stale != texture_by_rid_.end()) {
+    retire_texture(stale->second);  // a recycled RID value: the old id is gone
+  }
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.rid = rid;
+  texture.kind = TextureKind::Canvas;
+  texture.status = TextureStatus::Ok;
+  texture.version = 1;
+  // diffuse/filter/repeat default to {null, default, default} (Texture's own defaults).
+  texture_by_rid_[rid] = texture.id;
+  textures_.emplace(texture.id, std::move(texture));
+}
+
+void Mirror::canvas_texture_set_channel(std::uint64_t rid, std::int32_t channel,
+                                        std::uint64_t texture_rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_texture_set_channel";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (channel < 0 || channel > 2) {
+    return;  // out of range: the server's ERR_FAIL_INDEX refuses it too
+  }
+  Texture *canvas = find_texture(rid);
+  if (canvas == nullptr || canvas->kind != TextureKind::Canvas) {
+    return;
+  }
+  bool changed = false;
+  if (channel == 0) {  // CANVAS_TEXTURE_CHANNEL_DIFFUSE
+    bool has_tex = false;
+    std::uint32_t tex_id = 0;
+    const bool known = texture_ref(texture_rid, &has_tex, &tex_id);
+    const bool new_unknown = !known;
+    const bool new_has_diffuse = known && has_tex;
+    const std::uint32_t new_diffuse_id = new_has_diffuse ? tex_id : 0;
+    if (canvas->has_diffuse != new_has_diffuse || canvas->diffuse_id != new_diffuse_id ||
+        canvas->diffuse_unknown != new_unknown) {
+      canvas->has_diffuse = new_has_diffuse;
+      canvas->diffuse_id = new_diffuse_id;
+      canvas->diffuse_unknown = new_unknown;
+      changed = true;
+    }
+  } else {  // CANVAS_TEXTURE_CHANNEL_NORMAL / _SPECULAR: only non-null-ness is wire-visible
+    const bool non_null = texture_rid != 0;
+    bool &flag = channel == 1 ? canvas->normal_set : canvas->specular_set;
+    if (flag != non_null) {
+      flag = non_null;
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return;
+  }
+  canvas->version += 1;
+  // render-stream-2.md "Texture" reasons: a non-null normal/specular channel makes the entry
+  // unsupported (canvas-texture-channel); clearing both back to null makes it ok again. An
+  // unresolvable diffuse RID is unknown-texture, unless a channel reason already applies.
+  const bool unsupported = canvas->normal_set || canvas->specular_set || canvas->diffuse_unknown;
+  canvas->status = unsupported ? TextureStatus::Unsupported : TextureStatus::Ok;
+  canvas->has_reason = unsupported;
+  canvas->reason = (canvas->normal_set || canvas->specular_set)
+                       ? TextureReason::CanvasTextureChannel
+                       : TextureReason::UnknownTexture;
+}
+
+void Mirror::canvas_texture_set_filter(std::uint64_t rid, std::int32_t filter,
+                                       std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_texture_set_texture_filter";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  Texture *canvas = find_texture(rid);
+  if (canvas == nullptr || canvas->kind != TextureKind::Canvas || filter < 0 ||
+      filter > static_cast<std::int32_t>(Filter::LinearMipmapsAnisotropic)) {
+    return;
+  }
+  const Filter value = static_cast<Filter>(filter);
+  if (canvas->filter == value) {
+    return;
+  }
+  canvas->filter = value;
+  canvas->version += 1;
+}
+
+void Mirror::canvas_texture_set_repeat(std::uint64_t rid, std::int32_t repeat,
+                                       std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_texture_set_texture_repeat";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  Texture *canvas = find_texture(rid);
+  if (canvas == nullptr || canvas->kind != TextureKind::Canvas || repeat < 0 ||
+      repeat > static_cast<std::int32_t>(Repeat::Mirror)) {
+    return;
+  }
+  const Repeat value = static_cast<Repeat>(repeat);
+  if (canvas->repeat == value) {
+    return;
+  }
+  canvas->repeat = value;
+  canvas->version += 1;
+}
+
 std::uint64_t Mirror::spurious_texture_update(std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   (void)frame;
@@ -1073,6 +1227,13 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       }
     }
   }
+  // G2d: a canvas texture's diffuse also keeps its target's tombstone alive.
+  for (const auto &entry : textures_) {
+    const Texture &texture = entry.second;
+    if (texture.kind == TextureKind::Canvas && texture.has_diffuse) {
+      referenced.insert(texture.diffuse_id);
+    }
+  }
   for (auto it = textures_.begin(); it != textures_.end();) {
     if (it->second.status == TextureStatus::Freed && referenced.count(it->first) == 0) {
       it = textures_.erase(it);
@@ -1105,15 +1266,28 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     const ItemState &state = item.state;
     for (const Command &command : state.commands) {
       if (command.kind == CommandKind::Unsupported) {
-        add_item_entry(state.id, command.name,
-                       command.unsupported_reason == UnsupportedCmdReason::UnknownTexture
-                           ? UnsupportedReason::UnknownTexture
-                           : UnsupportedReason::UnsupportedOp);
+        UnsupportedReason reason = UnsupportedReason::UnsupportedOp;
+        if (command.unsupported_reason == UnsupportedCmdReason::UnknownTexture) {
+          reason = UnsupportedReason::UnknownTexture;
+        } else if (command.unsupported_reason == UnsupportedCmdReason::CanvasTextureHeadless) {
+          reason = UnsupportedReason::CanvasTextureHeadless;
+        }
+        add_item_entry(state.id, command.name, reason);
       } else if ((command.kind == CommandKind::AddTextureRect ||
                   command.kind == CommandKind::AddTextureRectRegion) &&
                  command.has_tex) {
+        // render-stream-2.md "Item-level unsupported entries": the command's own tex is
+        // unsupported, or (G2d) it names a canvas entry whose diffuse names one.
         const auto texture = textures_.find(command.tex);
-        if (texture != textures_.end() && texture->second.status == TextureStatus::Unsupported) {
+        bool unsupported_ref =
+            texture != textures_.end() && texture->second.status == TextureStatus::Unsupported;
+        if (!unsupported_ref && texture != textures_.end() &&
+            texture->second.kind == TextureKind::Canvas && texture->second.has_diffuse) {
+          const auto diffuse = textures_.find(texture->second.diffuse_id);
+          unsupported_ref =
+              diffuse != textures_.end() && diffuse->second.status == TextureStatus::Unsupported;
+        }
+        if (unsupported_ref) {
           add_item_entry(state.id,
                          command.kind == CommandKind::AddTextureRect
                              ? "canvas_item_add_texture_rect"
@@ -1214,6 +1388,9 @@ void mirror_fail_root_size_enforce(const std::string &detail) {
 }
 
 void mirror_set_degenerate_host_size(bool on) { mirror_instance().set_degenerate_host_size(on); }
+void mirror_set_canvas_texture_headless(bool on) {
+  mirror_instance().set_canvas_texture_headless(on);
+}
 
 void mirror_set_drop_frame(std::uint64_t frame) { mirror_instance().set_drop_frame(frame); }
 

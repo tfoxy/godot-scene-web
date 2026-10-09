@@ -31,6 +31,7 @@ import {
 import { RESOURCE_LINE_KEYS, type ResourceLine } from "../lib/gate2-checks";
 import {
   type Gate2Expected,
+  gate2Regions,
   stepFrames2,
   synthesizeGate2,
 } from "../lib/gate2-expected";
@@ -43,11 +44,31 @@ import {
   registerPayload,
   sha256Hex,
   type TCommand,
+  type TFilter,
   type TItem,
+  type TRepeat,
   type TState,
   type TTexture,
   texturePayload,
 } from "./rs2-test-encoder";
+
+// RenderingServer.CanvasItemTextureFilter / CanvasItemTextureRepeat order (render-stream-2.md,
+// servers/rendering_server.h:925-942), used to decode a canvas_texture_set_* hook line's `value`.
+const FILTER_NAMES: readonly TFilter[] = [
+  "default",
+  "nearest",
+  "linear",
+  "nearest_mipmaps",
+  "linear_mipmaps",
+  "nearest_mipmaps_anisotropic",
+  "linear_mipmaps_anisotropic",
+];
+const REPEAT_NAMES: readonly TRepeat[] = [
+  "default",
+  "disabled",
+  "enabled",
+  "mirror",
+];
 
 // ---------------------------------------------------------------------------------------------
 // Texture contents: real payloads
@@ -145,6 +166,13 @@ export interface ModelOptions {
   noTextureRect?: boolean;
   /** the publisher's lines: "store" (out-of-band capture) or "inline" */
   publisher?: "store" | "inline";
+  /** G2d, the `canvas` variant: step 11's SC draws through a CanvasTexture CT. "host": a rendered
+   * host allocates it (a canvas table entry, SC's command names it); "headless": the dummy
+   * storage's canvas_texture_allocate returns RID() (servers/rendering/dummy/storage/
+   * texture_storage.h:54), so every canvas_texture_* hook line is a typed refusal with no id and
+   * SC's draw an unsupported canvas-texture-headless command. Unset: the main fixture (SC draws A,
+   * nearest/enabled on the item). */
+  canvas?: "host" | "headless";
 }
 
 /** One line of the fixture's RS_FIXTURE_TEXTURE_LOG. */
@@ -187,13 +215,14 @@ export const ITEM = {
   SB: 8,
   SD: 9,
   MM: 10,
-  Marker: 11,
-  RAW1: 12,
-  RAW2: 13,
-  U1: 14,
-  PRE: 15,
+  SC: 11,
+  Marker: 12,
+  RAW1: 13,
+  RAW2: 14,
+  U1: 15,
+  PRE: 16,
   /** the animate variant's sprite (G2c2) */
-  ANIM: 14,
+  ANIM: 15,
 } as const;
 
 export const texRid = (id: number): string => String(1000 + id);
@@ -222,6 +251,8 @@ interface TexState {
   height: number;
   mipmaps: boolean;
   payload_bytes: number;
+  /** kind canvas only (G2d). */
+  canvas?: { diffuse: number | null; filter: TFilter; repeat: TRepeat };
 }
 
 function texEntry(id: number, t: TexState): TTexture {
@@ -240,6 +271,26 @@ function texEntry(id: number, t: TexState): TTexture {
       mipmaps: false,
       payload_bytes: 0,
       canvas: null,
+    };
+  if (t.kind === "canvas")
+    return {
+      id,
+      origin: "created",
+      kind: "canvas",
+      status: t.status,
+      reason: t.reason,
+      version: t.version,
+      hash: null,
+      format: null,
+      width: 0,
+      height: 0,
+      mipmaps: false,
+      payload_bytes: 0,
+      canvas: t.canvas ?? {
+        diffuse: null,
+        filter: "default",
+        repeat: "default",
+      },
     };
   return {
     id,
@@ -520,6 +571,69 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
   replace(f(9), ids.P2, ids.E, C.E);
   fix(9, "texture_replace", "P2", null);
   itemCall(f(9), "canvas_item_set_default_texture_filter", ITEM.MM, 4);
+
+  // Step 11: SC. The main fixture sets nearest (1) / enabled (2) on the item. The canvas variant
+  // (G2d) sets linear (2) / disabled (1) on the item and nearest/enabled on a CanvasTexture CT
+  // (diffuse A): a rendered host allocates CT (an id, versions 1..4); a headless host refuses
+  // every call typed, with no id (rs_resource_log.cpp null_canvas_texture).
+  if (o.canvas) {
+    const host = o.canvas === "host";
+    if (host) {
+      ids.CT = next++;
+      live.set(ids.CT, { version: 1, kind: "canvas" });
+    }
+    const ct = (version: number) =>
+      host
+        ? {
+            id: ids.CT,
+            rid: texRid(ids.CT),
+            version,
+            kind: "canvas",
+            status: "ok",
+          }
+        : {
+            kind: "canvas",
+            status: "unsupported",
+            reason: "canvas-texture-headless",
+          };
+    hook.push(
+      line({ frame: f(11), op: "canvas_texture_create", ...ct(1) }),
+      line({
+        frame: f(11),
+        op: "canvas_texture_set_channel",
+        ...ct(2),
+        target: texRid(ids.A),
+        ref_id: ids.A,
+        value: 0,
+      }),
+      line({
+        frame: f(11),
+        op: "canvas_texture_set_texture_filter",
+        ...ct(3),
+        value: 1,
+      }),
+      line({
+        frame: f(11),
+        op: "canvas_texture_set_texture_repeat",
+        ...ct(4),
+        value: 2,
+      }),
+    );
+    fix(11, "canvas_texture_create", "CT", null);
+  }
+  itemCall(
+    f(11),
+    "canvas_item_set_default_texture_filter",
+    ITEM.SC,
+    o.canvas ? 2 : 1,
+  );
+  itemCall(
+    f(11),
+    "canvas_item_set_default_texture_repeat",
+    ITEM.SC,
+    o.canvas ? 1 : 2,
+  );
+
   // Scene teardown after the quit frame.
   if (o.variant === "animate")
     for (let frame = 1; frame <= o.quit; frame++) {
@@ -592,6 +706,46 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
       } else if (l.op === "free") {
         const t = tex.get(l.id);
         if (t) tex.set(l.id, { ...t, status: "freed" });
+      } else if (l.op === "canvas_texture_create") {
+        // Mirror::canvas_texture_create's rid==0 guard (gate2-design.md G2d): a headless
+        // (dummy-renderer) capture's hook log still fires with rid null, but never reaches the
+        // texture table.
+        if (l.rid !== null)
+          tex.set(l.id as number, {
+            kind: "canvas",
+            status: "ok",
+            reason: null,
+            version: l.version as number,
+            hash: null,
+            format: null,
+            width: 0,
+            height: 0,
+            mipmaps: false,
+            payload_bytes: 0,
+            canvas: { diffuse: null, filter: "default", repeat: "default" },
+          });
+      } else if (
+        l.op === "canvas_texture_set_channel" ||
+        l.op === "canvas_texture_set_texture_filter" ||
+        l.op === "canvas_texture_set_texture_repeat"
+      ) {
+        if (l.rid === null) continue;
+        const t = tex.get(l.id as number);
+        if (t?.kind !== "canvas") continue;
+        const canvas = {
+          ...(t.canvas ?? {
+            diffuse: null,
+            filter: "default" as TFilter,
+            repeat: "default" as TRepeat,
+          }),
+        };
+        if (l.op === "canvas_texture_set_channel" && l.value === 0)
+          canvas.diffuse = l.ref_id;
+        else if (l.op === "canvas_texture_set_texture_filter")
+          canvas.filter = FILTER_NAMES[l.value as number];
+        else if (l.op === "canvas_texture_set_texture_repeat")
+          canvas.repeat = REPEAT_NAMES[l.value as number];
+        tex.set(l.id as number, { ...t, version: l.version as number, canvas });
       }
     }
     const s = stepAt(e, frame);
@@ -636,8 +790,17 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
           }),
         );
       }
-    const unsupported =
-      o.variant === "unsupported"
+    const unsupported = [
+      ...(o.canvas === "headless" && s >= 11
+        ? [
+            {
+              op: "canvas_item_add_texture_rect_region",
+              item: ITEM.SC,
+              reason: "canvas-texture-headless",
+            },
+          ]
+        : []),
+      ...(o.variant === "unsupported"
         ? [
             {
               op: "canvas_item_add_texture_rect_region",
@@ -650,7 +813,8 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
               reason: "unknown-texture",
             },
           ]
-        : [];
+        : []),
+    ];
     states.push({
       frame,
       failures: [],
@@ -745,6 +909,33 @@ function itemsAt(
       content_version: s >= 9 ? 2 : 1,
       texture_filter: s >= 9 ? "linear_mipmaps" : "default",
     }),
+    item(
+      ITEM.SC,
+      s < 11
+        ? []
+        : o.canvas === "headless"
+          ? [
+              {
+                op: "unsupported",
+                name: "canvas_item_add_texture_rect_region",
+                reason: "canvas-texture-headless",
+              },
+            ]
+          : [
+              {
+                op: "add_texture_rect_region",
+                tex: o.canvas === "host" ? ids.CT : ids.A,
+                rect: [0, 0, 64, 64],
+                src: [0, 0, 64, 64],
+                modulate: [1, 1, 1, 1],
+              },
+            ],
+      {
+        content_version: s >= 11 ? 2 : 1,
+        texture_filter: s < 11 ? "default" : o.canvas ? "linear" : "nearest",
+        texture_repeat: s < 11 ? "default" : o.canvas ? "disabled" : "enabled",
+      },
+    ),
     item(
       ITEM.Marker,
       [{ op: "add_rect", rect: [0, 0, 32, 32], color: marker }],
@@ -936,7 +1127,8 @@ export function simulateReceiver(
       }
       const prev = have.get(id);
       if (!prev) {
-        if (e.kind === "placeholder") upload(id, null, "placeholder");
+        if (e.kind === "placeholder" || e.kind === "canvas")
+          upload(id, null, e.kind === "placeholder" ? "placeholder" : "canvas");
         else {
           acquire(e.hash as string);
           upload(id, e.hash, "create");
@@ -1205,10 +1397,11 @@ export async function writeCapture(
   dir: string,
   e: Gate2Expected,
   model: Model,
-  opts: { inline?: boolean; sessionId?: string } = {},
+  opts: { inline?: boolean; sessionId?: string; rendered?: boolean } = {},
 ): Promise<CaptureFiles> {
   const extra: Partial<RecordingEncodeOptions> = {
     sessionId: opts.sessionId,
+    rendered: opts.rendered,
     ...(opts.inline ? { resources: INLINE_RESOURCES } : {}),
   };
   const full = encodeSink(model.states, "full", extra);
@@ -1269,6 +1462,9 @@ export function shotPng(
     frame?: number;
     skipUnsupported?: boolean;
     perturb?: [number, number];
+    /** G2d: blanks this named region (expected.json regions) to the clear colour, simulating a
+     * skipped (D10) draw -- canvas-normal's SC from step 11 on. */
+    blankRegion?: string;
   } = {},
 ): Promise<Buffer> {
   const key = JSON.stringify([step, o]);
@@ -1284,6 +1480,15 @@ export function shotPng(
         e.variants.unsupported.steps.find((s) => s.step === step)?.draws ?? [];
       for (const d of draws) {
         const [x0, y0, w, h] = d.rect_px;
+        for (let y = y0; y < y0 + h; y++)
+          for (let x = x0; x < x0 + w; x++)
+            buf.set(e.clear_rgba8, (y * width + x) * 4);
+      }
+    }
+    if (o.blankRegion) {
+      const r = gate2Regions(e, step)[o.blankRegion];
+      if (r) {
+        const [x0, y0, w, h] = r;
         for (let y = y0; y < y0 + h; y++)
           for (let x = x0; x < x0 + w; x++)
             buf.set(e.clear_rgba8, (y * width + x) * 4);
@@ -1321,6 +1526,8 @@ export interface TreeOptions {
   noTextureRect?: boolean;
 }
 
+const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
 export const CAPTURE_QUIT = 400;
 
 export async function buildTree(
@@ -1330,8 +1537,8 @@ export async function buildTree(
 ): Promise<void> {
   const quit = e.quit_frame_default;
   await writeJson(join(out, "legs.json"), {
-    groups_run: ["g2a", "g2b", "g2c"],
-    groups_landed: ["g2a", "g2b", "g2c"],
+    groups_run: ["g2a", "g2b", "g2c", "g2d", "g2e"],
+    groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
   });
   await writeJson(join(out, "binary.json"), {
     path: "/tpl/linux_release.x86_64",
@@ -1385,6 +1592,154 @@ export async function buildTree(
       );
   }
   await writeEvidence(join(out, "reference-armed"), armed);
+  await writeBytes(
+    join(out, "reference-armed", "recording.rs2"),
+    encodeSink(armed.states, "full", {
+      sessionId: "0123456789abcdef0123456789abcafe",
+    }),
+  );
+
+  // G2d: the `canvas` variant. canvas-headless: a headless capture host refuses the CanvasTexture
+  // typed (canvas-texture-headless), and its headless receiver skips and reports SC's draw.
+  const headlessCanvas = buildModel(e, { quit, canvas: "headless" });
+  const headlessCanvasCap = await writeCapture(
+    join(out, "canvas-headless", "capture"),
+    e,
+    headlessCanvas,
+    { sessionId: "0123456789abcdef0123456789abcd0e" },
+  );
+  await writeReceiver(join(out, "canvas-headless", "receiver"), {
+    recording: headlessCanvasCap.full,
+    txs: headlessCanvasCap.fullTx,
+    sim: simulateReceiver(
+      headlessCanvas,
+      headlessCanvasCap.fullTx,
+      "directory",
+    ),
+    cache: {
+      dir: join(out, "canvas-headless", "receiver", "cache"),
+      mode: "fresh",
+      entries_before: 0,
+    },
+    unsupported: [
+      {
+        seq: stepFrames2(e, 11).applied,
+        item: ITEM.SC,
+        name: "canvas_item_add_texture_rect_region",
+        reason: "canvas-texture-headless",
+      },
+    ],
+    headless: true,
+  });
+  // canvas-host, canvas-normal and sabotage-omit-canvas-filter: rendered capture hosts
+  // (host-renderer evidence), each derived from the host model from frame 111 (step 11, CT's
+  // creation) on. classifyG2bLeg's texture-log-divergence runs over every leg, so canvas-normal's
+  // hook log must also show CT going unsupported, not just its recording.
+  const host = buildModel(e, { quit, canvas: "host" });
+  const ctId = host.ids.CT;
+  const patchedHost = (
+    patch: (t: TTexture) => void,
+    extraUnsupported?: { op: string; item: number | null; reason: string },
+    extraHook?: ResourceLine[],
+  ): Model => ({
+    ...host,
+    // host.hook runs frame-ascending (step 11's CT lines, then the post-quit teardown frees);
+    // extraHook must land among step 11's own lines, or replayLog's frame order breaks.
+    hook: extraHook
+      ? ((): ResourceLine[] => {
+          const h = [...host.hook];
+          const at = extraHook[0].frame;
+          const idx = h.findIndex((l) => l.frame > at);
+          h.splice(idx === -1 ? h.length : idx, 0, ...extraHook);
+          return h;
+        })()
+      : host.hook,
+    states: host.states.map((s) => {
+      if (s.frame < stepFrames2(e, 11).applied) return s;
+      const textures = (s.textures ?? []).map((t) =>
+        t.id === ctId
+          ? ((): TTexture => {
+              const copy = clone(t);
+              patch(copy);
+              return copy;
+            })()
+          : t,
+      );
+      const unsupported = extraUnsupported
+        ? [...(s.unsupported ?? []), extraUnsupported]
+        : s.unsupported;
+      return { ...s, textures, unsupported };
+    }),
+  });
+  const rendered = async (
+    leg: string,
+    model: Model,
+    shot: (k: number) => Promise<Buffer>,
+  ) => {
+    const cap = await writeCapture(join(out, leg, "capture"), e, model, {
+      rendered: true,
+    });
+    for (const s of e.steps)
+      await writeBytes(
+        join(out, leg, "capture", "shots", `step-${s.step}.png`),
+        await shotPng(e, s.step),
+      );
+    await writeReceiver(join(out, leg, "receiver"), {
+      recording: cap.full,
+      txs: cap.fullTx,
+      sim: simulateReceiver(model, cap.fullTx, "directory"),
+      cache: {
+        dir: join(out, leg, "receiver", "cache"),
+        mode: "fresh",
+        entries_before: 0,
+      },
+      shots: await shotsOf(e, shot),
+    });
+  };
+  await rendered("canvas-host", host, (k) => shotPng(e, k));
+  // The real fixture (gate2.gd) sets CT.normal_texture = B only after create/diffuse/filter/
+  // repeat (all still "ok"), so the hook log picks up the channel-1 (normal) call as its own
+  // extra line at v5/unsupported -- matching rs_resource_log.cpp recomputing status per op.
+  const ctFrame = stepFrames2(e, 11).applied;
+  await rendered(
+    "canvas-normal",
+    patchedHost(
+      (t) => {
+        t.status = "unsupported";
+        t.reason = "canvas-texture-channel";
+        t.version = 5;
+      },
+      {
+        op: "canvas_item_add_texture_rect_region",
+        item: ITEM.SC,
+        reason: "unsupported-texture",
+      },
+      [
+        line({
+          frame: ctFrame,
+          op: "canvas_texture_set_channel",
+          id: ctId,
+          rid: texRid(ctId),
+          version: 5,
+          kind: "canvas",
+          status: "unsupported",
+          reason: "canvas-texture-channel",
+          target: texRid(host.ids.B),
+          ref_id: host.ids.B,
+          value: 1,
+        }),
+      ],
+    ),
+    (k) => shotPng(e, k, k >= 11 ? { blankRegion: "sc" } : {}),
+  );
+  await rendered(
+    "sabotage-omit-canvas-filter",
+    patchedHost((t) => {
+      if (t.canvas) t.canvas.filter = "default";
+    }),
+    (k) => shotPng(e, k, k === 11 ? { perturb: [210, 130] } : {}),
+  );
+
   const refU = join(out, "reference-unsupported");
   await writeProcess(refU);
   await writeText(join(refU, "steps.jsonl"), stepLog(e));
@@ -1593,7 +1948,7 @@ export async function buildTree(
         sabotage === "omit-update"
           ? await mismatch([6])
           : sabotage === "omit-replace"
-            ? await mismatch([7, 8, 9, 10])
+            ? await mismatch([7, 8, 9, 10, 11])
             : undefined,
       headless: sabotage !== "omit-update" && sabotage !== "omit-replace",
       failure:

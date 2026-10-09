@@ -94,12 +94,15 @@ class ItemState:
 class TextureState:
 	extends RefCounted
 	var rid: RID
-	var kind: String = ""  # image | placeholder
+	var kind: String = ""  # image | placeholder | canvas
 	var hash: String = ""  # the uploaded content (images)
 	var format: String = ""
 	var width: int = 0
 	var height: int = 0
 	var mipmaps: bool = false
+	## kind canvas only (G2d): the wire version last applied to this RID's diffuse/filter/repeat,
+	## -1 before the first apply so a freshly created canvas texture always gets its setters.
+	var canvas_version: int = -1
 
 
 ## `viewport` is the root viewport; `root_canvas` is its World2D canvas, which wire canvas 1 maps to.
@@ -254,8 +257,43 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 				tex_created += 1
 			uploads.append({"id": id, "hash": null, "op": "placeholder", "data_bytes": 0})
 			continue
+		if kind == "canvas":
+			# gate2-design.md Q5/G2d: canvas_texture_create, then diffuse/filter/repeat
+			# (canvas_texture_set_channel(DIFFUSE), _set_texture_filter, _set_texture_repeat),
+			# version-driven: re-applied only when the wire version actually changed. The
+			# diffuse's own RID must already be resident (it is always also named by a plain
+			# draw command in this fixture; D5's lazy residency covers it).
+			var wire_version: int = Rs2Decoder.as_int(entry["version"])
+			if not _textures.has(id):
+				var ct_rid: RID = RenderingServer.canvas_texture_create()
+				rs_calls += 1
+				var state := TextureState.new()
+				state.rid = ct_rid
+				state.kind = "canvas"
+				_textures[id] = state
+				created_rids += 1
+				tex_created += 1
+				uploads.append({"id": id, "hash": null, "op": "canvas", "data_bytes": 0})
+			var canvas_state: TextureState = _textures[id]
+			if canvas_state.canvas_version != wire_version:
+				var canvas_info: Dictionary = entry["canvas"]
+				var diffuse_rid := RID()
+				if canvas_info["diffuse"] != null:
+					var diffuse_id: int = Rs2Decoder.as_int(canvas_info["diffuse"])
+					if _textures.has(diffuse_id):
+						diffuse_rid = _textures[diffuse_id].rid
+				RenderingServer.canvas_texture_set_channel(canvas_state.rid, RenderingServer.CANVAS_TEXTURE_CHANNEL_DIFFUSE, diffuse_rid)
+				rs_calls += 1
+				var ct_filter: String = canvas_info["filter"]
+				RenderingServer.canvas_texture_set_texture_filter(canvas_state.rid, FILTERS.find(ct_filter) as RenderingServer.CanvasItemTextureFilter)
+				rs_calls += 1
+				var ct_repeat: String = canvas_info["repeat"]
+				RenderingServer.canvas_texture_set_texture_repeat(canvas_state.rid, REPEATS.find(ct_repeat) as RenderingServer.CanvasItemTextureRepeat)
+				rs_calls += 1
+				canvas_state.canvas_version = wire_version
+			continue
 		if kind != "image":
-			continue  # canvas textures arrive with G2d
+			continue
 		var hash: String = entry["hash"]
 		var resident: bool = _textures.has(id)
 		if resident and _textures[id].kind == "image" and _textures[id].hash == hash and not sabotage_reupload:

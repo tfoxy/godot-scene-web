@@ -92,7 +92,14 @@ export const GATE2_CLASS_PRECEDENCE: readonly Gate2Class[] = [
 ];
 
 export const ALL_GROUPS = ["g2a", "g2b", "g2c", "g2d", "g2e"] as const;
-export const LANDED_GROUPS: readonly string[] = ["g2a", "g2b", "g2c"];
+/** Groups whose increment has landed; run-gate2.sh's LANDED_GROUPS must say the same. */
+export const LANDED_GROUPS: readonly string[] = [
+  "g2a",
+  "g2b",
+  "g2c",
+  "g2d",
+  "g2e",
+];
 
 /** Legs with an expected class. G2a has one: the capture, which since G2b2 (render-stream/2)
  * carries its texture draws as real commands and classifies success. */
@@ -1643,7 +1650,14 @@ export async function runGate2(
     );
   }
   if (groups.run.includes("g2b")) {
-    const g2b = await runG2b(outDir, ctx.expected, G2A_CAPTURE_QUIT_FRAME);
+    // g2d's legs reuse g2b's captures, reference and receiver checks, so runG2b judges them
+    // too, when g2d ran.
+    const g2b = await runG2b(
+      outDir,
+      ctx.expected,
+      G2A_CAPTURE_QUIT_FRAME,
+      groups.run.includes("g2d"),
+    );
     checks.push(...g2b.checks);
     Object.assign(legs, g2b.legs);
     receiverCheckpoints = g2b.checkpoints;
@@ -1689,6 +1703,10 @@ export async function runGate2(
     checks.push(...g2e.checks);
     Object.assign(legs, g2e.legs);
   }
+  if (groups.run.includes("g2d") && !groups.run.includes("g2b"))
+    checks.push(
+      notRunCheck("g2d", "g2d ran without g2b, which judges its legs"),
+    );
   for (const group of notRun)
     if (group !== "g2a")
       checks.push(notRunCheck(group, `${group} was not in --legs`));

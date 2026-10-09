@@ -5,8 +5,8 @@
   "start_frame_default": 1,
   "step_frames_default": 10,
   "settle_offset": 7,
-  "quit_frame_default": 112,
-  "last_step": 10,
+  "quit_frame_default": 122,
+  "last_step": 11,
   "empty_region": [0, 0, 24, 24],
   "root_texture_defaults": {
     "filter": "nearest",
@@ -24,6 +24,7 @@
     "SB",
     "SD",
     "MM",
+    "SC",
     "Marker"
   ],
   "engine_textures": [
@@ -188,7 +189,11 @@
       "kind": "image",
       "created_step": 0,
       "thread": "main",
-      "contents": [[0, "A0"], [6, "A1"], [7, "A2"]]
+      "contents": [
+        [0, "A0"],
+        [6, "A1"],
+        [7, "A2"]
+      ]
     },
     "Atwin": {
       "kind": "image",
@@ -201,7 +206,10 @@
       "kind": "image",
       "created_step": 0,
       "thread": "main",
-      "contents": [[0, "B0"], [7, "B1"]]
+      "contents": [
+        [0, "B0"],
+        [7, "B1"]
+      ]
     },
     "M": {
       "kind": "image",
@@ -220,7 +228,10 @@
       "kind": "placeholder",
       "created_step": 0,
       "thread": "main",
-      "contents": [[0, "PH"], [9, "E"]]
+      "contents": [
+        [0, "PH"],
+        [9, "E"]
+      ]
     },
     "C": {
       "kind": "image",
@@ -259,6 +270,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -392,8 +404,8 @@
       ],
       "synth_exclude": [],
       "census": {
-        "canvas_item_set_default_texture_filter": 11,
-        "canvas_item_set_default_texture_repeat": 11,
+        "canvas_item_set_default_texture_filter": 12,
+        "canvas_item_set_default_texture_repeat": 12,
         "texture_2d_create": 5,
         "texture_2d_placeholder_create": 2
       },
@@ -451,6 +463,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -609,6 +622,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -772,6 +786,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -938,6 +953,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -1103,6 +1119,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -1274,6 +1291,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -1463,6 +1481,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -1653,6 +1672,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -1852,6 +1872,7 @@
         "raw2": [472, 32, 48, 48],
         "sd": [32, 112, 48, 48],
         "mm": [112, 112, 32, 32],
+        "sc": [200, 120, 72, 72],
         "marker": [584, 8, 48, 48]
       },
       "draws": [
@@ -2062,6 +2083,7 @@
         "raw2": [480, 36, 48, 48],
         "sd": [40, 116, 48, 48],
         "mm": [120, 116, 32, 32],
+        "sc": [208, 124, 72, 72],
         "marker": [592, 12, 48, 48]
       },
       "draws": [
@@ -2218,6 +2240,212 @@
         {
           "kind": "no_texture_entries",
           "step": 9
+        }
+      ],
+      "receiver_resources": {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "replaced": 0,
+        "freed": 0
+      }
+    },
+    {
+      "step": 11,
+      "marker_rgba8": [255, 51, 255, 255],
+      "canvas_transform": [1, 0, 0, 1, 8, 4],
+      "regions": {
+        "s1": [40, 260, 80, 80],
+        "s2": [120, 260, 80, 80],
+        "tr": [200, 36, 64, 48],
+        "dr": [264, 36, 48, 48],
+        "s3": [320, 36, 48, 48],
+        "bg": [368, 28, 64, 64],
+        "sb": [384, 44, 32, 32],
+        "raw1": [432, 36, 48, 48],
+        "raw2": [480, 36, 48, 48],
+        "sd": [40, 116, 48, 48],
+        "mm": [120, 116, 32, 32],
+        "sc": [208, 124, 72, 72],
+        "marker": [592, 12, 48, 48]
+      },
+      "draws": [
+        {
+          "name": "S1",
+          "rect_px": [48, 268, 64, 64],
+          "sample": {
+            "texture": "A2",
+            "src_px": [0, 0, 32, 32],
+            "flip_h": true,
+            "flip_v": false,
+            "transpose": false,
+            "tile": false,
+            "repeat": "disabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "S2",
+          "rect_px": [128, 268, 32, 32],
+          "sample": {
+            "texture": "A2",
+            "src_px": [0, 0, 16, 16],
+            "flip_h": false,
+            "flip_v": true,
+            "transpose": false,
+            "tile": false,
+            "repeat": "disabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "TR",
+          "rect_px": [208, 44, 48, 32],
+          "sample": {
+            "texture": "A2",
+            "src_px": [0, 0, 48, 32],
+            "flip_h": true,
+            "flip_v": false,
+            "transpose": false,
+            "tile": true,
+            "repeat": "enabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "DR",
+          "rect_px": [272, 44, 32, 32],
+          "sample": {
+            "texture": "A2",
+            "src_px": [0, 0, 32, 32],
+            "flip_h": false,
+            "flip_v": false,
+            "transpose": false,
+            "tile": false,
+            "repeat": "mirror",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "S3",
+          "rect_px": [328, 44, 32, 32],
+          "sample": {
+            "texture": "C",
+            "src_px": [0, 0, 16, 16],
+            "flip_h": true,
+            "flip_v": false,
+            "transpose": true,
+            "tile": false,
+            "repeat": "disabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "BG",
+          "rect_px": [376, 36, 24, 48],
+          "rgba8": [204, 51, 51, 255]
+        },
+        {
+          "name": "BG",
+          "rect_px": [400, 36, 24, 48],
+          "rgba8": [51, 204, 51, 255]
+        },
+        {
+          "name": "SB",
+          "rect_px": [384, 44, 32, 32],
+          "sample": {
+            "texture": "B1",
+            "src_px": [0, 0, 4, 4],
+            "flip_h": false,
+            "flip_v": false,
+            "transpose": false,
+            "tile": false,
+            "repeat": "disabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "SD",
+          "rect_px": [48, 124, 32, 32],
+          "sample": {
+            "texture": "D",
+            "src_px": [0, 0, 16, 16],
+            "flip_h": false,
+            "flip_v": false,
+            "transpose": false,
+            "tile": false,
+            "repeat": "disabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "MM",
+          "rect_px": [128, 124, 16, 16],
+          "sample": {
+            "texture": "M",
+            "src_px": [0, 0, 64, 64],
+            "flip_h": false,
+            "flip_v": false,
+            "transpose": false,
+            "tile": false,
+            "repeat": "disabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "SC",
+          "rect_px": [208, 124, 72, 72],
+          "sample": {
+            "texture": "A2",
+            "src_px": [0, 0, 64, 64],
+            "flip_h": false,
+            "flip_v": false,
+            "transpose": false,
+            "tile": false,
+            "repeat": "enabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        },
+        {
+          "name": "Marker",
+          "rect_px": [600, 20, 32, 32],
+          "rgba8": [255, 51, 255, 255]
+        },
+        {
+          "name": "RAW1",
+          "rect_px": [440, 44, 32, 32],
+          "rgba8": [255, 255, 255, 255]
+        },
+        {
+          "name": "RAW2",
+          "rect_px": [488, 44, 32, 32],
+          "sample": {
+            "texture": "E",
+            "src_px": [0, 0, 4, 4],
+            "flip_h": false,
+            "flip_v": false,
+            "transpose": false,
+            "tile": false,
+            "repeat": "disabled",
+            "modulate": [255, 255, 255, 255]
+          }
+        }
+      ],
+      "synth_exclude": ["mm", "s2", "sb"],
+      "census": {
+        "canvas_item_set_default_texture_filter": 1,
+        "canvas_item_set_default_texture_repeat": 1
+      },
+      "invariants": [
+        {
+          "kind": "filter",
+          "item": "SC",
+          "value": "nearest"
+        },
+        {
+          "kind": "repeat",
+          "item": "SC",
+          "value": "enabled"
         }
       ],
       "receiver_resources": {
@@ -2495,6 +2723,31 @@
         },
         {
           "step": 10,
+          "draws": [
+            {
+              "name": "ANIM",
+              "rect_px": [288, 124, 32, 32],
+              "sample": {
+                "texture": "ANIM",
+                "src_px": [0, 0, 8, 8],
+                "flip_h": false,
+                "flip_v": false,
+                "transpose": false,
+                "tile": false,
+                "repeat": "disabled",
+                "modulate": [255, 255, 255, 255]
+              }
+            }
+          ],
+          "regions": {
+            "anim": [280, 116, 48, 48]
+          },
+          "census_extra": {
+            "texture_2d_update": 10
+          }
+        },
+        {
+          "step": 11,
           "draws": [
             {
               "name": "ANIM",
@@ -2960,6 +3213,224 @@
             "u2": [392, 116, 48, 48]
           },
           "census_extra": {}
+        },
+        {
+          "step": 11,
+          "draws": [
+            {
+              "name": "U1",
+              "rect_px": [344, 124, 32, 32],
+              "sample": {
+                "texture": "U1",
+                "src_px": [0, 0, 4, 4],
+                "flip_h": false,
+                "flip_v": false,
+                "transpose": false,
+                "tile": false,
+                "repeat": "disabled",
+                "modulate": [255, 255, 255, 255]
+              }
+            },
+            {
+              "name": "U2",
+              "rect_px": [400, 124, 32, 32],
+              "sample": {
+                "texture": "PRE",
+                "src_px": [0, 0, 4, 4],
+                "flip_h": false,
+                "flip_v": false,
+                "transpose": false,
+                "tile": false,
+                "repeat": "disabled",
+                "modulate": [255, 255, 255, 255]
+              }
+            }
+          ],
+          "regions": {
+            "u1": [336, 116, 48, 48],
+            "u2": [392, 116, 48, 48]
+          },
+          "census_extra": {}
+        }
+      ]
+    },
+    "canvas": {
+      "textures": {
+        "CT": {
+          "kind": "canvas",
+          "created_step": 11,
+          "thread": "main",
+          "contents": []
+        }
+      },
+      "steps": [
+        {
+          "step": 0,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 1,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 2,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 3,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 4,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 5,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 6,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 7,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 8,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 9,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 10,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 11,
+          "draws": [],
+          "regions": {},
+          "census_extra": {
+            "canvas_texture_create": 1,
+            "canvas_texture_set_channel": 1,
+            "canvas_texture_set_texture_filter": 1,
+            "canvas_texture_set_texture_repeat": 1
+          }
+        }
+      ]
+    },
+    "canvas-normal": {
+      "textures": {
+        "CT": {
+          "kind": "canvas",
+          "created_step": 11,
+          "thread": "main",
+          "contents": [],
+          "status": "unsupported",
+          "reason": "canvas-texture-channel"
+        }
+      },
+      "steps": [
+        {
+          "step": 0,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 1,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 2,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 3,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 4,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 5,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 6,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 7,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 8,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 9,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 10,
+          "draws": [],
+          "regions": {},
+          "census_extra": {}
+        },
+        {
+          "step": 11,
+          "draws": [],
+          "regions": {},
+          "census_extra": {
+            "canvas_texture_create": 1,
+            "canvas_texture_set_channel": 2,
+            "canvas_texture_set_texture_filter": 1,
+            "canvas_texture_set_texture_repeat": 1
+          }
         }
       ]
     }

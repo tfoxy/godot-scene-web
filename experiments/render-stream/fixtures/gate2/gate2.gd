@@ -4,7 +4,7 @@ extends Node
 ## The root is a plain `Node`; every `CanvasItem` and every texture is created in `_ready()` or
 ## later, after `GrcLoader` armed the capture extension in its own `_enter_tree()` (gate 0 route
 ## (a)) -- except the `unsupported` variant's `PRE`, which `loader.gd` makes before arming on
-## purpose. Eleven steps (0..10) each exercise one texture behaviour; expected.json holds the
+## purpose. Twelve steps (0..11) each exercise one texture behaviour; expected.json holds the
 ## derived per-step draws, regions, exclusions and RenderingServer call census, and this
 ## script's literals must match it exactly.
 ##
@@ -19,11 +19,13 @@ extends Node
 ##   RS_FIXTURE_SHOT_DIR     absolute dir: step-<k>.png at each settle frame (rendered runs only)
 ##   RS_FIXTURE_START_FRAME  S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES  N >= 8, default 10 (step k >= 1 at S+N*k, settled at S+N*k+7)
-##   RS_FIXTURE_QUIT_FRAME   >= S+N*10+11 (the default)
+##   RS_FIXTURE_QUIT_FRAME   >= S+N*11+11 (the default)
 ##   RS_FIXTURE_SHOT_FRAMES  CSV of frames >= 1: also frame-<n>.png at each (rendered runs only)
-##   RS_FIXTURE_VARIANT      unset (the main fixture), animate (ANIM is update()d every frame)
-##                           or unsupported (U1, an RGBAF texture, and U2, drawing loader.gd's
-##                           pre-arm PRE, draw from step 0)
+##   RS_FIXTURE_VARIANT      unset (the main fixture), animate (ANIM is update()d every frame),
+##                           unsupported (U1, an RGBAF texture, and U2, drawing loader.gd's
+##                           pre-arm PRE, draw from step 0), canvas (step 11's SC draws through a
+##                           CanvasTexture instead, G2d) or canvas-normal (canvas, plus a
+##                           normal_texture: G2d's unsupported leg)
 
 const Payload := preload("res://payload.gd")
 
@@ -65,11 +67,11 @@ class RegionNode extends Node2D:
 		queue_redraw()
 
 
-const LAST_STEP: int = 10
+const LAST_STEP: int = 11
 const SETTLE_OFFSET: int = 7
 const START_FRAME_DEFAULT: int = 1
 const STEP_FRAMES_DEFAULT: int = 10
-const QUIT_AFTER_LAST_SETTLE: int = 4  # quit default S + N*10 + 11 = last settle + 4
+const QUIT_AFTER_LAST_SETTLE: int = 4  # quit default S + N*11 + 11 = last settle + 4
 
 const MARKER_COLORS: Array[Color] = [
 	Color(0, 0, 0, 1),
@@ -134,6 +136,7 @@ var bg: RectNode
 var sb: Sprite2D
 var sd: Sprite2D
 var mm: Sprite2D
+var sc: Sprite2D
 var anim_sprite: Sprite2D
 var u1_sprite: Sprite2D
 var u2_sprite: Sprite2D
@@ -151,6 +154,7 @@ var _p1: RID
 var _p2: RID
 var _raw1: RID
 var _raw2: RID
+var _ct: CanvasTexture
 
 var _frame: int = 0
 var _start_frame: int = START_FRAME_DEFAULT
@@ -212,7 +216,9 @@ func _ready() -> void:
 	sb = _sprite("SB", _b, Vector2(376, 40), 8.0)
 	sd = _sprite("SD", null, Vector2(40, 120), 2.0)
 	mm = _sprite("MM", null, Vector2(120, 120), 0.25)
-	var nodes: Array[Node] = [g, tr, dr, s3, bg, sb, sd, mm]
+	# SC (G2d): no texture until step 11, when it gets a CanvasTexture (diffuse A).
+	sc = _sprite("SC", null, Vector2(200, 120), 1.0)
+	var nodes: Array[Node] = [g, tr, dr, s3, bg, sb, sd, mm, sc]
 	if _variant == "animate":
 		_anim = _create_texture("ANIM", _anim_image(1))
 		anim_sprite = _sprite("ANIM", _anim, Vector2(280, 120), 4.0)
@@ -363,6 +369,34 @@ func _apply_step(step: int) -> void:
 			# Transform only again, after every resource change.
 			g.position = Vector2(0, 224)
 			get_viewport().canvas_transform = Transform2D(0.0, Vector2(8, 4))
+		11:
+			# SC draws A's 64x64 region (2x2 tiles of A2) at scale 1.125 (72x72, magnified like
+			# S1/S2's 2x and kept clear of the animate variant's ANIM next door), nearest with
+			# repeat enabled. The main fixture asks for that on the item itself. The canvas
+			# variants (G2d) ask for it through a CanvasTexture CT (diffuse A, nearest, enabled)
+			# while the item's own filter is LINEAR and its repeat DISABLED: the same pixels only
+			# if CT's own filter and repeat override the item's. Magnification is what makes
+			# nearest and linear differ here (sabotage-omit-canvas-filter). A headless host
+			# never allocates CT (protocol/canvas-texture-headless.md), so the main fixture keeps
+			# CanvasTexture out of every headless leg's path.
+			if _variant == "canvas" or _variant == "canvas-normal":
+				_ct = CanvasTexture.new()
+				_log_op("canvas_texture_create", "CT")
+				_ct.diffuse_texture = _a
+				_ct.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+				_ct.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+				if _variant == "canvas-normal":
+					_ct.normal_texture = _b
+				sc.texture = _ct
+				sc.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+				sc.texture_repeat = CanvasItem.TEXTURE_REPEAT_DISABLED
+			else:
+				sc.texture = _a
+				sc.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+				sc.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+			sc.scale = Vector2(1.125, 1.125)
+			sc.region_enabled = true
+			sc.region_rect = Rect2(0, 0, 64, 64)
 	marker.set_rects([Rect2(0, 0, 32, 32)], [MARKER_COLORS[step]])
 
 
@@ -442,8 +476,8 @@ func _read_environment() -> bool:
 		return false
 	if OS.has_environment("RS_FIXTURE_VARIANT"):
 		_variant = OS.get_environment("RS_FIXTURE_VARIANT")
-		if _variant != "animate" and _variant != "unsupported":
-			_error("RS_FIXTURE_VARIANT must be animate or unsupported (got %s)" % JSON.stringify(_variant))
+		if not ["animate", "unsupported", "canvas", "canvas-normal"].has(_variant):
+			_error("RS_FIXTURE_VARIANT must be animate, unsupported, canvas or canvas-normal (got %s)" % JSON.stringify(_variant))
 			return false
 	var start: int = _int_env("RS_FIXTURE_START_FRAME", START_FRAME_DEFAULT, 1)
 	var span: int = _int_env("RS_FIXTURE_STEP_FRAMES", STEP_FRAMES_DEFAULT, SETTLE_OFFSET + 1)

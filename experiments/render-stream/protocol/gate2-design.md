@@ -1075,6 +1075,40 @@ nearest and enabled repeat, although `SC.texture_filter` is LINEAR. Also `textur
 
 **Pass criteria**: groups `g2a`–`g2d` are green. The README gives a "Gate 2d result" section.
 
+**As built (2026-10-09; README "Gate 2d result").** Integrated onto `main` after G2c2 and G2e:
+`pnpm render-stream:gate2` with every group (g2a-g2e) is 85/85. The calibrator did not need a
+bump: slots 441/442/444/445 were already reserved by calibrator 5 (G2a). Deviations and decisions:
+
+- **A headless host refuses `CanvasTexture`, typed (user decision).** The dummy storage's
+  `canvas_texture_allocate()` returns `RID()` (`servers/rendering/dummy/storage/texture_storage.h:54`),
+  so on `--headless` a `CanvasTexture`'s RID and every draw of it are `RID()`. That cannot be told
+  from a null texture, and replaying it as `tex: null` would be a silent white substitute. A
+  headless host therefore declares `features.unsupported_resources`
+  `[{"resource":"canvas_texture","reason":"canvas-texture-headless"}]` and turns a texture draw
+  naming `RID()` into an `unsupported` command `canvas-texture-headless`. The hook log marks every
+  `canvas_texture_*` call the same way, with no id. The evidence, the options for real support and
+  the recommended next experiment are in [canvas-texture-headless.md](canvas-texture-headless.md).
+- **The main fixture keeps `CanvasTexture` off every headless path.** Step 11's `SC` sets
+  nearest/enabled on the item. The new `canvas` variant (and `canvas-normal`) asks for the same
+  pixels through `CT` while the item says linear/disabled. Group g2d runs `canvas-headless` (the
+  `canvas` variant on a headless capture host and a headless receiver → `unsupported`,
+  `canvas-texture-headless`) and three legs whose capture host is rendered under gamescope:
+  `canvas-host` → `success`, `canvas-normal` → `unsupported` (`unsupported-texture`), and
+  `sabotage-omit-canvas-filter` → `pixel-mismatch {11}` (1 088 px). Those three are
+  **host-renderer evidence** for the capture and replay path, not headless support.
+- **Checks.** `canvas-texture-headless-refused`, `canvas-texture-override` (`canvas-host`'s own
+  step-11 frame), `canvas-texture-wire` (`canvas-host`'s recording), `canvas-normal-region`, and
+  the four `leg-class-*`. `texture-invariants` and `upload-accounting` cover the main fixture's
+  step 11, where SC names `A` (resident since step 0: nothing fetched or uploaded).
+- **The hook log needed its own fix.** `rs_resource_log.cpp`'s `canvas_texture_set_channel` line
+  did not recompute `status`/`reason` when a normal or specular channel went non-null, so it still
+  said `canvas/ok` after the mirror correctly flipped to `unsupported`. `canvas-normal` caught this
+  as `texture-log-divergence` the first time it ran.
+- **The filter sabotage needs magnification to show.** At 1:1 or under minification (0.75x),
+  nearest and linear produced zero differing pixels on the fixture's flat-colour content. `SC`
+  draws at 1.125x.
+- The fixture grew to twelve steps, so the live timeline quits at 971, not 911.
+
 ---
 
 ### G2e — bearer-token authorization (sonnet)
@@ -1113,6 +1147,8 @@ per transaction, the cold and warm comparison, and an explicit "what this does n
   gate 6, measured.
 - Browser receivers' HTTP cache behaviour, and token transport without headers: gate 7.
 - Non-loopback serving (D13), and adoption of textures created before arming (late join): gate 8.
+- `CanvasTexture` on a headless capture host: refused (`canvas-texture-headless`) until an option
+  in [canvas-texture-headless.md](canvas-texture-headless.md) passes its experiment.
 - `texture_set_size_override`, `canvas_texture_set_shading_parameters` and proxy, layered, 3D,
   external and viewport textures stay declared (`unobserved` or `unknown-texture`) until a gate
   needs them.

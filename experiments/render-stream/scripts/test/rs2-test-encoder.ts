@@ -22,6 +22,7 @@ import {
   FILE_RESOURCES,
   LIVE_RESOURCES,
   RS2_FEATURES,
+  RS2_FEATURES_RENDERED,
 } from "../lib/gate0-checks";
 import {
   decodeRecord,
@@ -68,7 +69,7 @@ export type TCommand =
   | {
       op: "unsupported";
       name: string;
-      reason?: "unsupported-op" | "unknown-texture";
+      reason?: "unsupported-op" | "unknown-texture" | "canvas-texture-headless";
     };
 
 /** A texture-table entry exactly as on the wire (render-stream-2.md "Texture"). */
@@ -154,6 +155,9 @@ export interface TSessionOptions {
   /** the session's `resources` object (default: FILE_RESOURCES for a file stream,
    * LIVE_RESOURCES for a websocket one) */
   resources?: Record<string, unknown>;
+  /** a rendered (GPU-backed) host: engine.display_server X11 and RS2_FEATURES_RENDERED, which
+   * lists canvas_texture as supported (default: a headless host, RS2_FEATURES) */
+  rendered?: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -325,7 +329,7 @@ export function encodeSession(opts: TSessionOptions): Buffer {
         version_string: "Godot Engine v4.5.1.stable.official",
         sha256:
           "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
-        display_server: "headless",
+        display_server: opts.rendered ? "X11" : "headless",
         rendering_driver: "opengl3",
         rendering_method: "gl_compatibility",
       },
@@ -345,7 +349,9 @@ export function encodeSession(opts: TSessionOptions): Buffer {
         host_window_size: opts.hostWindowSize ?? [640, 360],
       },
       resources: sessionResources(opts),
-      features: JSON.parse(JSON.stringify(RS2_FEATURES)),
+      features: JSON.parse(
+        JSON.stringify(opts.rendered ? RS2_FEATURES_RENDERED : RS2_FEATURES),
+      ),
       sabotage:
         opts.sabotage == null
           ? null

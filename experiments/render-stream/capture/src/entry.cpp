@@ -865,7 +865,10 @@ void stream_start() {
       static_cast<uint32_t>(std::strtoul(g_state.calib.calibrator_version.c_str(), nullptr, 10));
   session.capture.hooks_planned = g_state.plan.planned;
   session.capture.hooks_omitted = g_state.plan.omitted;
-  session.features = rs2::gate2_features();
+  // protocol/canvas-texture-headless.md: a headless host (RasterizerDummy,
+  // servers/display_server_headless.h:51) declares canvas_texture unsupported.
+  const bool headless_host = g_state.display_server == "headless";
+  session.features = rs2::gate2_features(headless_host);
   if (sabotage.config.kind != rs2::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
     session.sabotage.frame = sabotage.config.frame;
@@ -962,6 +965,7 @@ void stream_start() {
         filter >= 0 && filter < 4 ? kFilters[filter] : rs2::Filter::Default,
         repeat >= 0 && repeat < 3 ? kRepeats[repeat] : rs2::Repeat::Default);
   }
+  rs::mirror_set_canvas_texture_headless(headless_host);
   if (sabotage.config.kind == rs2::SabotageKind::OmitUpdate) {
     rs::mirror_set_drop_frame(sabotage.config.frame);
   } else if (sabotage.config.kind == rs2::SabotageKind::OmitOp) {

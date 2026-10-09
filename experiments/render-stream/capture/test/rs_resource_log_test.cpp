@@ -157,6 +157,23 @@ int main() {
   EXPECT(has(lines[4], "\"version\":4,"));
   EXPECT(has(lines[4], "\"value\":2,"));
 
+  // A headless host (protocol/canvas-texture-headless.md): canvas_texture_create returned RID()
+  // and the setters name RID(): each line is a typed refusal with no id, and no id is spent.
+  log.canvas_texture_create(main_ctx, 0);
+  log.canvas_texture_set_channel(main_ctx, 0, 0, 101);
+  log.canvas_texture_set_filter(main_ctx, 0, 1);
+  log.canvas_texture_set_repeat(main_ctx, 0, 2);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 4);
+  for (const std::string &l : lines) {
+    EXPECT(has(l, "\"id\":null,\"by_id\":null,\"rid\":null,\"version\":null,\"kind\":\"canvas\","
+                  "\"status\":\"unsupported\",\"reason\":\"canvas-texture-headless\""));
+  }
+  EXPECT(has(lines[1], "\"target\":\"101\",\"ref_id\":2,\"value\":0,"));
+  log.canvas_texture_create(main_ctx, 201);  // a real one afterwards takes the next id, 6
+  lines = split_lines(log.take_lines());
+  EXPECT(has(lines[0], "\"op\":\"canvas_texture_create\",\"id\":6,"));
+
   // Item and viewport defaults: no id; the root flag compares the viewport RID.
   log.canvas_item_set_default_texture_filter(main_ctx, 300, 2);
   log.canvas_item_set_default_texture_repeat(main_ctx, 300, 3);

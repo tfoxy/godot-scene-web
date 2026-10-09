@@ -1260,6 +1260,122 @@ void test_texture_unsupported_copies_and_filters() {
         "item-level entries ordered by op then reason");
 }
 
+// gate2-design.md Q3 "canvas_texture_create / canvas_texture_set_*" (G2d), render-stream-2.md
+// "Texture" (kind canvas) and "Item-level unsupported entries" (the diffuse chain).
+void test_canvas_texture() {
+  Mirror m;
+  bind_root(&m);
+  grc::rs::PayloadPtr a_bytes;
+  const auto a = rgba8_copy(4, 4, fill(4, 4, 1), &a_bytes);
+  m.texture_2d_create(500, a, a_bytes, 1);  // id 1 (A)
+  m.canvas_texture_create(600, 1);          // id 2 (CT)
+  drawing_item(&m, 100, 600, 1);             // names CT, not A, directly
+  Snapshot s = m.snapshot(1, 1).state;
+  const auto *ct = texture(s, 2);
+  check(ct != nullptr && ct->kind == grc::rs2::TextureKind::Canvas &&
+            ct->status == grc::rs2::TextureStatus::Ok && ct->version == 1 &&
+            ct->has_canvas && !ct->canvas.has_diffuse &&
+            ct->canvas.filter == grc::rs2::Filter::Default &&
+            ct->canvas.repeat == grc::rs2::Repeat::Default,
+        "canvas_texture_create: new id, kind canvas, {diffuse: null, filter/repeat: default}");
+  check(item(s, 1)->commands.back().kind == CommandKind::AddTextureRect &&
+            item(s, 1)->commands.back().has_tex && item(s, 1)->commands.back().tex == 2,
+        "a draw naming a canvas texture resolves it exactly like an image");
+
+  const uint64_t e1 = m.epoch();
+  m.canvas_texture_set_channel(600, 0, 500, 2);  // DIFFUSE <- A
+  m.canvas_texture_set_filter(600, 1, 2);        // NEAREST
+  m.canvas_texture_set_repeat(600, 2, 2);        // ENABLED
+  check(m.epoch() > e1, "canvas_texture_set_* bump the mutation epoch");
+  s = m.snapshot(2, 2).state;
+  ct = texture(s, 2);
+  check(ct->version == 4 && ct->canvas.has_diffuse && ct->canvas.diffuse == 1 &&
+            ct->canvas.filter == grc::rs2::Filter::Nearest &&
+            ct->canvas.repeat == grc::rs2::Repeat::Enabled && ct->status == grc::rs2::TextureStatus::Ok,
+        "diffuse, filter and repeat each bump version by one on an actual change");
+
+  // Re-setting the same filter is not a change: no version bump.
+  m.canvas_texture_set_filter(600, 1, 3);
+  s = m.snapshot(3, 3).state;
+  check(texture(s, 2)->version == 4, "setting the same filter again does not bump version");
+
+  // A normal (or specular) channel set to a non-null texture makes the entry unsupported.
+  m.canvas_texture_set_channel(600, 1, 999, 4);  // NORMAL <- some RID (its id is irrelevant)
+  s = m.snapshot(4, 4).state;
+  ct = texture(s, 2);
+  check(ct->version == 5 && ct->status == grc::rs2::TextureStatus::Unsupported && ct->has_reason &&
+            ct->reason == grc::rs2::TextureReason::CanvasTextureChannel && ct->has_canvas &&
+            ct->canvas.has_diffuse,
+        "a non-null normal channel: unsupported canvas-texture-channel, diffuse unchanged");
+  check(item_entries(s) == std::vector<Entry>{{1, "canvas_item_add_texture_rect",
+                                               UnsupportedReason::UnsupportedTexture}},
+        "a draw naming the now-unsupported canvas texture gets the derived entry");
+
+  // Clearing it back to null makes the entry ok again.
+  m.canvas_texture_set_channel(600, 1, 0, 5);  // NORMAL <- null
+  s = m.snapshot(5, 5).state;
+  check(texture(s, 2)->status == grc::rs2::TextureStatus::Ok && texture(s, 2)->version == 6,
+        "clearing the normal channel back to null makes the entry ok again");
+
+  // A diffuse set to a RID the mirror never saw created: unsupported unknown-texture, diffuse null.
+  m.canvas_texture_set_channel(600, 0, 777, 6);
+  s = m.snapshot(6, 6).state;
+  ct = texture(s, 2);
+  check(ct->status == grc::rs2::TextureStatus::Unsupported &&
+            ct->reason == grc::rs2::TextureReason::UnknownTexture && !ct->canvas.has_diffuse,
+        "an unresolvable diffuse RID: unsupported unknown-texture, diffuse null on the wire");
+
+  // A freed image a canvas texture's diffuse still names is a tombstone (not just a command).
+  m.canvas_texture_set_channel(600, 0, 500, 7);  // DIFFUSE <- A again
+  m.free_rid(500, 7);
+  s = m.snapshot(7, 7).state;
+  check(texture(s, 1) != nullptr && texture(s, 1)->status == grc::rs2::TextureStatus::Freed,
+        "a canvas texture's diffuse keeps a freed image alive as a tombstone");
+
+  // omit-op on canvas_texture_set_texture_filter drops only that call.
+  m.set_omit_op("canvas_texture_set_texture_filter", 8);
+  const uint64_t before = texture(m.snapshot(8, 8).state, 2)->version;
+  m.canvas_texture_set_filter(600, 2, 8);  // would change nearest -> linear if applied
+  s = m.snapshot(9, 8).state;
+  check(texture(s, 2)->version == before && texture(s, 2)->canvas.filter == grc::rs2::Filter::Nearest,
+        "omit-op canvas_texture_set_texture_filter drops the call");
+}
+
+// protocol/canvas-texture-headless.md (G2d): on a headless host the dummy storage returns RID()
+// for every canvas_texture_create, so a CanvasTexture's draw names RID(). With the flag on, that
+// draw is a typed refusal (canvas-texture-headless), never `tex: null` (the white default).
+void test_canvas_texture_headless_refusal() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_texture_create(0, 1);  // RID(): nothing registered
+  drawing_item(&m, 100, 0, 1);
+  Snapshot s = m.snapshot(1, 1).state;
+  check(s.textures.empty() && item(s, 1)->commands.back().kind == CommandKind::AddTextureRect &&
+            !item(s, 1)->commands.back().has_tex,
+        "flag off: a draw naming RID() is tex null, and RID() registers no canvas texture");
+
+  Mirror h;
+  bind_root(&h);
+  h.set_canvas_texture_headless(true);
+  h.canvas_texture_create(0, 1);
+  h.canvas_texture_set_filter(0, 1, 1);  // on RID(): ignored
+  drawing_item(&h, 100, 0, 1);
+  s = h.snapshot(1, 1).state;
+  const auto &cmd = item(s, 1)->commands.back();
+  check(s.textures.empty() && cmd.kind == CommandKind::Unsupported &&
+            cmd.unsupported_reason == grc::rs2::UnsupportedCmdReason::CanvasTextureHeadless &&
+            cmd.name == "canvas_item_add_texture_rect",
+        "headless: a draw naming RID() is an unsupported canvas-texture-headless command");
+  check(item_entries(s) == std::vector<Entry>{{1, "canvas_item_add_texture_rect",
+                                               UnsupportedReason::CanvasTextureHeadless}},
+        "headless: the refused draw gets its item-level entry");
+  h.reset();
+  drawing_item(&h, 100, 0, 1);
+  check(!item(h.snapshot(1, 1).state, 1)->commands.back().has_tex &&
+            item(h.snapshot(1, 1).state, 1)->commands.back().kind == CommandKind::AddTextureRect,
+        "reset() clears the headless flag");
+}
+
 void test_texture_omit_op_and_spurious() {
   Mirror m;
   bind_root(&m);
@@ -1323,6 +1439,8 @@ int main() {
   test_texture_replace_free_and_tombstones();
   test_texture_unsupported_copies_and_filters();
   test_texture_omit_op_and_spurious();
+  test_canvas_texture();
+  test_canvas_texture_headless_refusal();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

@@ -87,7 +87,13 @@ enum class ParentKind : std::uint8_t { None, Canvas, Item };  // None -> JSON nu
 
 enum class CommandKind : std::uint8_t { AddRect, AddTextureRect, AddTextureRectRegion, Unsupported };
 
-enum class UnsupportedCmdReason : std::uint8_t { UnsupportedOp, UnknownTexture };
+// CanvasTextureHeadless (G2d): a texture draw naming RID() on a headless host, whose dummy
+// storage's canvas_texture_allocate() returns RID() (render-stream-2.md "Commands").
+enum class UnsupportedCmdReason : std::uint8_t {
+  UnsupportedOp,
+  UnknownTexture,
+  CanvasTextureHeadless,
+};
 
 enum class TransactionStatus : std::uint8_t { Ok, CaptureFailure };
 
@@ -107,6 +113,7 @@ enum class UnsupportedReason : std::uint8_t {
   DegenerateHostSize,
   UnknownTexture,       // new at /2: derived from an unsupported "unknown-texture" command
   UnsupportedTexture,   // new at /2: a texture-rect command naming an unsupported texture entry
+  CanvasTextureHeadless,  // G2d: derived from an unsupported "canvas-texture-headless" command
 };
 
 enum class SabotageKind : std::uint8_t {
@@ -198,11 +205,17 @@ inline const char *to_wire(UnsupportedReason v) {
   case UnsupportedReason::DegenerateHostSize: return "degenerate-host-size";
   case UnsupportedReason::UnknownTexture: return "unknown-texture";
   case UnsupportedReason::UnsupportedTexture: return "unsupported-texture";
+  case UnsupportedReason::CanvasTextureHeadless: return "canvas-texture-headless";
   }
   return "unsupported-op";
 }
 inline const char *to_wire(UnsupportedCmdReason v) {
-  return v == UnsupportedCmdReason::UnknownTexture ? "unknown-texture" : "unsupported-op";
+  switch (v) {
+  case UnsupportedCmdReason::UnsupportedOp: return "unsupported-op";
+  case UnsupportedCmdReason::UnknownTexture: return "unknown-texture";
+  case UnsupportedCmdReason::CanvasTextureHeadless: return "canvas-texture-headless";
+  }
+  return "unsupported-op";
 }
 inline const char *to_wire(SabotageKind v) {
   switch (v) {
@@ -375,10 +388,18 @@ struct ResourcesInfo {
   Auth auth = Auth::None;
 };
 
+// render-stream-2.md session "features.unsupported_resources" (G2d): a resource kind this host
+// refuses, and why -- canvas_texture on a headless host (canvas-texture-headless).
+struct UnsupportedResource {
+  std::string resource;
+  std::string reason;
+};
+
 struct Features {
   std::vector<std::string> ops;
   std::vector<std::string> item_state;
   std::vector<std::string> resources;  // new at /2
+  std::vector<UnsupportedResource> unsupported_resources;  // G2d; sorted by resource
   std::vector<std::string> observed_unsupported_ops;
   std::vector<std::string> unobserved;
   std::string publication = kPublication;

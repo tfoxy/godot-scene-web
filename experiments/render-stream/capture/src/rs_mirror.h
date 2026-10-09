@@ -19,6 +19,12 @@
 // already in wire form (Xform/Color4/Rect4), so the unit test drives it without
 // an engine. Engine RIDs never leave this module; snapshots carry wire ids.
 //
+// Canvas textures (gate2-design.md Q3, G2d): `canvas_texture_create` is a
+// texture-table entry like any other (same id counter), kind Canvas, with its
+// own diffuse/filter/repeat instead of a payload. A command naming a canvas
+// texture resolves exactly like one naming an image (texture_ref): the engine
+// never distinguishes them at the draw call.
+//
 // Texture identity follows gate2-design.md D2 exactly as the texture hook log
 // (rs_resource_log.h) does, independently: one per-session id counter shared
 // by images and placeholders, never reused; version 1 at creation, +1 per
@@ -102,6 +108,13 @@ class Mirror {
   // until reset().
   void set_degenerate_host_size(bool on);
 
+  // A headless host (G2d; protocol/canvas-texture-headless.md): the dummy storage's
+  // canvas_texture_allocate() returns RID() (servers/rendering/dummy/storage/texture_storage.h:54),
+  // so a CanvasTexture's draws name RID(). While on, a texture-rect draw naming RID() becomes an
+  // `unsupported` command with reason `canvas-texture-headless` instead of `tex: null` (which would
+  // replay as the engine's white default texture). Survives until reset().
+  void set_canvas_texture_headless(bool on);
+
   // omit-update sabotage: mutations stamped exactly `frame` are not applied
   // (identity bookkeeping -- canvas_create, canvas_item_create, free -- always
   // is). 0 disables it.
@@ -164,7 +177,9 @@ class Mirror {
   //
   // canvas_item_add_texture_rect(_region): `texture` is the engine RID the
   // command names. A RID the mirror knows becomes its wire id; RID() becomes
-  // `tex: null` (the engine's default white texture); any other RID becomes an
+  // `tex: null` (the engine's default white texture), or on a headless host
+  // (set_canvas_texture_headless) an `unsupported` command with reason
+  // `canvas-texture-headless`; any other RID becomes an
   // `unsupported` command with reason `unknown-texture` (render-stream-2.md
   // "Commands"). Both bump content_version like add_rect.
   void add_texture_rect(std::uint64_t item, const rs2::Rect4 &rect, std::uint64_t texture,
@@ -217,6 +232,29 @@ class Mirror {
   // hook-log line.
   std::uint64_t spurious_texture_update(std::uint64_t frame);
 
+  // --- canvas textures (gate 2, G2d; gate2-design.md Q3 "Texture mirror") ---
+  //
+  // canvas_texture_create: a new id, kind canvas, status ok, version 1,
+  // {diffuse: null, filter: default, repeat: default} (identity tap: only
+  // omit-op applies).
+  void canvas_texture_create(std::uint64_t rid, std::uint64_t frame);
+  // canvas_texture_set_channel: channel 0 (DIFFUSE) sets/clears `diffuse` to the
+  // wire id of a known RID, null for RID(), or an unresolvable non-null RID
+  // (reason unknown-texture, D10). Channel 1 (NORMAL) or 2 (SPECULAR) only ever
+  // records whether it is non-null: set makes the entry `unsupported`
+  // (canvas-texture-channel); clearing both back to null makes it `ok` again.
+  // Any other channel value is ignored, as the server's ERR_FAIL_INDEX is.
+  // version + 1 only when something actually changed.
+  void canvas_texture_set_channel(std::uint64_t canvas_texture, std::int32_t channel,
+                                  std::uint64_t texture, std::uint64_t frame);
+  // canvas_texture_set_texture_filter / _repeat: the canvas texture's own
+  // filter/repeat (RenderingServer enums; out of range is ignored). version + 1
+  // only on an actual change.
+  void canvas_texture_set_filter(std::uint64_t canvas_texture, std::int32_t filter,
+                                 std::uint64_t frame);
+  void canvas_texture_set_repeat(std::uint64_t canvas_texture, std::int32_t repeat,
+                                 std::uint64_t frame);
+
   // True when the omit-op sabotage drops `op` at `frame` (the hooks also leave
   // such a texture call out of the hook log's registry; rs_resource_log.h).
   bool omits(const char *op, std::uint64_t frame) const;
@@ -265,6 +303,16 @@ class Mirror {
     // whether an update is accepted, as in the hook log.
     PayloadCopy copy;
     PayloadPtr bytes;  // the payload while status is ok and kind image
+    // Canvas fields (kind == Canvas only; gate2-design.md Q3, G2d).
+    bool has_diffuse = false;
+    std::uint32_t diffuse_id = 0;
+    // A non-null diffuse RID the mirror never saw created (unknown-texture);
+    // `has_diffuse` is false in that case too (nothing to name on the wire).
+    bool diffuse_unknown = false;
+    bool normal_set = false;    // a non-null normal channel is set
+    bool specular_set = false;  // a non-null specular channel is set
+    rs2::Filter filter = rs2::Filter::Default;
+    rs2::Repeat repeat = rs2::Repeat::Default;
   };
   enum class Kind : std::uint8_t { Canvas, Item };
   struct Target {
@@ -308,6 +356,7 @@ class Mirror {
   std::string omit_op_;
   std::uint64_t omit_from_frame_ = 0;
   bool degenerate_host_size_ = false;
+  bool canvas_texture_headless_ = false;
   std::uint32_t next_canvas_id_ = rs2::kRootCanvasId + 1;
   std::uint32_t next_item_id_ = 1;
   std::uint64_t root_viewport_rid_ = 0;
@@ -337,6 +386,7 @@ void mirror_set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid, const
 void mirror_fail_root_query(const std::string &detail);
 void mirror_fail_root_size_enforce(const std::string &detail);
 void mirror_set_degenerate_host_size(bool on);
+void mirror_set_canvas_texture_headless(bool on);
 void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
 std::uint64_t mirror_epoch();
