@@ -1,0 +1,120 @@
+// Unit test for the CowData inline-header decode in src/abi.h.
+//
+// The hooks read `Vector<T>` arguments straight out of engine memory, so the
+// header offsets must be right. This test builds a buffer with the documented
+// layout and checks that the decode finds the element count and elements, with
+// no engine involved.
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+#include "abi.h"
+
+namespace {
+
+int g_failures = 0;
+
+void check(bool condition, const char *what) {
+  if (!condition) {
+    std::fprintf(stderr, "FAIL %s\n", what);
+    ++g_failures;
+  }
+}
+
+// Builds a CowData-style allocation: [refcount(8)][size(8)][elements...], and
+// returns the element pointer, which is what Godot's Vector<T> stores.
+template <typename T>
+struct FakeCowData {
+  std::vector<uint8_t> storage;
+  const T *elements = nullptr;
+
+  FakeCowData(uint64_t refcount, const std::vector<T> &values) {
+    storage.resize(static_cast<size_t>(grc::kCowDataOffset) + values.size() * sizeof(T) + 16, 0);
+    uint8_t *base = storage.data();
+    // Keep the element pointer 16-byte aligned, like the engine's allocator.
+    const size_t misalignment = reinterpret_cast<uintptr_t>(base) % 16;
+    uint8_t *aligned = base + ((16 - misalignment) % 16);
+    const uint64_t size = values.size();
+    std::memcpy(aligned + grc::kCowRefCountOffset, &refcount, sizeof(refcount));
+    std::memcpy(aligned + grc::kCowSizeOffset, &size, sizeof(size));
+    if (!values.empty()) {
+      std::memcpy(aligned + grc::kCowDataOffset, values.data(), values.size() * sizeof(T));
+    }
+    elements = reinterpret_cast<const T *>(aligned + grc::kCowDataOffset);
+  }
+};
+
+void test_offsets() {
+  check(grc::kCowRefCountOffset == 0, "REF_COUNT_OFFSET is 0");
+  check(grc::kCowSizeOffset == 8, "SIZE_OFFSET is 8");
+  check(grc::kCowDataOffset == 16, "DATA_OFFSET is 16");
+}
+
+void test_empty() {
+  grc::Vector<grc::Point2> empty = {0, nullptr};
+  check(empty.size() == 0, "a null element pointer decodes as an empty vector");
+  check(empty.empty(), "empty() on a null element pointer");
+  check(grc::cowdata_size(nullptr) == 0, "cowdata_size(nullptr)");
+  check(grc::cowdata_refcount(nullptr) == 0, "cowdata_refcount(nullptr)");
+}
+
+void test_points() {
+  const std::vector<grc::Point2> values = {{1.5f, -2.25f}, {0.0f, 1024.0f}, {3.125f, 4.0f}};
+  FakeCowData<grc::Point2> fake(7, values);
+  grc::Vector<grc::Point2> vector = {0, fake.elements};
+  check(vector.size() == 3, "point vector size");
+  check(grc::cowdata_refcount(fake.elements) == 7, "point vector refcount");
+  check(vector.ptr() == fake.elements, "point vector element pointer");
+  bool same = true;
+  for (size_t i = 0; i < values.size(); ++i) {
+    same = same && vector.ptr()[i].x == values[i].x && vector.ptr()[i].y == values[i].y;
+  }
+  check(same, "point vector elements round-trip bit-exactly");
+}
+
+void test_colors() {
+  const std::vector<grc::Color> values = {{0.125f, 0.5f, 0.75f, 1.0f}, {1.0f, 0.0f, 0.0f, 0.25f}};
+  FakeCowData<grc::Color> fake(1, values);
+  grc::Vector<grc::Color> vector = {0, fake.elements};
+  check(vector.size() == 2, "color vector size");
+  check(vector.ptr()[1].a == 0.25f, "color vector element");
+}
+
+void test_large_size() {
+  // A size that needs more than 32 bits must survive the decode.
+  std::vector<uint8_t> storage(64, 0);
+  const uint64_t size = 0x1'0000'0001ull;
+  std::memcpy(storage.data() + grc::kCowSizeOffset, &size, sizeof(size));
+  const void *elements = storage.data() + grc::kCowDataOffset;
+  check(grc::cowdata_size(elements) == static_cast<int64_t>(size), "64-bit element count");
+}
+
+void test_layout() {
+  check(sizeof(grc::RID) == 8, "RID size");
+  check(sizeof(grc::Vector<grc::Point2>) == 2 * sizeof(void *), "Vector<T> is two words");
+  check(offsetof(grc::Vector<grc::Point2>, data) == 8, "the CowData pointer is at offset 8");
+  check(sizeof(grc::Ref) == sizeof(void *), "Ref<T> is one pointer");
+  check(sizeof(grc::Rect2) == 16, "Rect2 size");
+  check(sizeof(grc::Color) == 16, "Color size");
+  check(sizeof(grc::Transform2D) == 24, "Transform2D size");
+}
+
+}  // namespace
+
+int main() {
+  test_offsets();
+  test_empty();
+  test_points();
+  test_colors();
+  test_large_size();
+  test_layout();
+  if (g_failures != 0) {
+    std::fprintf(stderr, "%d check(s) failed\n", g_failures);
+    return 1;
+  }
+  std::fprintf(stdout, "abi_decode: all checks passed\n");
+  return 0;
+}

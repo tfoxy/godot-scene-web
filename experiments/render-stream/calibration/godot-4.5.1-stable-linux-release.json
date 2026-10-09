@@ -1,0 +1,54 @@
+{
+  "schema": "render-stream-calibration/1",
+  "engine": {
+    "version_string": "Godot Engine v4.5.1.stable.official",
+    "build_id": null,
+    "sha256": "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
+    "platform": "linux-x86_64",
+    "flavor": "template_release",
+    "pie": false
+  },
+  "rendering_server": {
+    "abstract_vtable_vaddr": "0x3cde078",
+    "concrete_class": "RenderingServerDefault",
+    "concrete_vtable_vaddr": "0x3cdf2e8",
+    "object_prefix": 23,
+    "slot_count": 588,
+    "anchors_total": 17,
+    "anchors_matched": 17
+  },
+  "slots": {
+    "canvas_item_add_rect": 465,
+    "canvas_item_add_texture_rect": 467,
+    "canvas_item_add_texture_rect_region": 468,
+    "canvas_item_add_msdf_texture_rect_region": 469,
+    "canvas_item_add_polygon": 473,
+    "texture_2d_create": 24,
+    "texture_2d_update": 30,
+    "free": 549,
+    "get_default_clear_color": 577
+  },
+  "anchors": {
+    "_global_shader_parameter_get_list": 23,
+    "mesh_surface_get_format_offset": 73,
+    "mesh_surface_get_format_vertex_stride": 74,
+    "mesh_surface_get_format_normal_tangent_stride": 75,
+    "mesh_surface_get_format_attribute_stride": 76,
+    "mesh_surface_get_format_skin_stride": 77,
+    "mesh_surface_get_format_index_stride": 78,
+    "mesh_surface_make_offsets_from_format": 79,
+    "mesh_create_surface_data_from_arrays": 80,
+    "mesh_add_surface_from_arrays": 81,
+    "instance_create2": 402,
+    "init": 555,
+    "get_test_texture": 570,
+    "get_white_texture": 571,
+    "make_sphere_mesh": 573,
+    "mesh_add_surface_from_mesh_data": 574,
+    "mesh_add_surface_from_planes": 575
+  },
+  "calibrator": {
+    "version": "1",
+    "header_sha256": "3e01fb10af9abb6955314abacd65d45b697a8ea57c7bf651e59c29e8a399b9d7"
+  }
+}

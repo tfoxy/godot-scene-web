@@ -1,0 +1,65 @@
+{
+  "schema": "render-stream-gate-minus1-expected/1",
+  "note": "Values match spike.gd/spike.tscn literally; see README.md. *_bits are the IEEE-754 float32 hex encoding (little-endian byte order read back as a little-endian u32, i.e. new DataView(new Float32Array([x]).buffer).getUint32(0, true)) of each field in *_bits order. Every value here is an exact sum of negative powers of two, so it round-trips through float32 bit-exact -- this is not a tolerance-budgeted fixture.",
+
+  "script_add_rect": {
+    "description": "spike.gd _draw(): RenderingServer.canvas_item_add_rect(get_canvas_item(), SCRIPT_RECT, SCRIPT_RECT_COLOR) -- antialiased defaults to false (servers/rendering_server.h canvas_item_add_rect).",
+    "rect": [213.25, 27.5, 101.125, 49.75],
+    "rect_bits": ["0x43554000", "0x41dc0000", "0x42ca4000", "0x42470000"],
+    "color": [0.125, 0.5, 0.75, 1.0],
+    "color_bits": ["0x3e000000", "0x3f000000", "0x3f400000", "0x3f800000"],
+    "antialiased": false
+  },
+
+  "script_add_polygon": {
+    "description": "spike.gd _draw(): RenderingServer.canvas_item_add_polygon(get_canvas_item(), _polygon_points, _polygon_colors) -- uvs/texture omitted, so uvs_count is 0 (servers/rendering_server.h canvas_item_add_polygon DEFVAL(Vector<Point2>())).",
+    "points": [[400.5, 40.25], [480.75, 60.5], [440.125, 120.875]],
+    "point_bits": [
+      ["0x43c84000", "0x42210000"],
+      ["0x43f06000", "0x42720000"],
+      ["0x43dc1000", "0x42f1c000"]
+    ],
+    "colors": [
+      [0.25, 0.5, 0.75, 1],
+      [0.5, 0.25, 0.125, 1],
+      [0.875, 0.625, 0.375, 1]
+    ],
+    "color_bits": [
+      ["0x3e800000", "0x3f000000", "0x3f400000", "0x3f800000"],
+      ["0x3f000000", "0x3e800000", "0x3e000000", "0x3f800000"],
+      ["0x3f600000", "0x3f200000", "0x3ec00000", "0x3f800000"]
+    ],
+    "point_count": 3,
+    "uvs_count": 0
+  },
+
+  "colorrect_add_rect": {
+    "description": "Engine-internal path, not a script call: ColorRect::_notification(NOTIFICATION_DRAW) calls CanvasItem::draw_rect(Rect2(Point2(), get_size()), color) (scene/gui/color_rect.cpp), i.e. the rect is in the ColorRect's OWN local coordinates (0,0,width,height), not its (40,40) scene position -- the position is carried by the node's separate canvas transform, which this capture format does not need to decode for Gate -1. draw_rect's default filled=true/antialiased=false path calls canvas_item_add_rect directly (scene/main/canvas_item.cpp).",
+    "rect": [0, 0, 120, 80],
+    "rect_bits": ["0x00000000", "0x00000000", "0x42f00000", "0x42a00000"],
+    "color": [0.875, 0.25, 0.125, 1],
+    "color_bits": ["0x3f600000", "0x3e800000", "0x3e000000", "0x3f800000"],
+    "antialiased": false
+  },
+
+  "label_glyphs": {
+    "description": "Label draws its glyphs through the font's texture-atlas path, captured as canvas_item_add_texture_rect_region (bitmap font atlas) or canvas_item_add_msdf_texture_rect_region (MSDF font atlas) calls -- either counts for Gate -1, which only needs the path exercised, not a specific font backend. Starts as \"Spike Ag\"; spike.gd changes it to \"Spike Ag Qz!\" at frame 30, which must introduce new glyphs (Q, z, !) and so a font atlas texture_2d_update after frame 30.",
+    "initial_text": "Spike Ag",
+    "relabel_frame": 30,
+    "relabeled_text": "Spike Ag Qz!"
+  },
+
+  "counters_must_be_positive": [
+    "canvas_item_add_rect",
+    "canvas_item_add_polygon",
+    "texture_2d_create",
+    "texture_2d_update"
+  ],
+  "counters_any_of_must_be_positive": [
+    "canvas_item_add_texture_rect_region",
+    "canvas_item_add_msdf_texture_rect_region"
+  ],
+
+  "frames_total": 400,
+  "screenshot_default_frame": 60
+}
