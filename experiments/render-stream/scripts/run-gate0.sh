@@ -13,6 +13,10 @@
 # receivers) share ONE private `gamescope --backend headless` (scripts/lib/gamescope.sh). Headless
 # legs strip DISPLAY and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_*
 # variable and passes only what its leg wants (env.txt records it).
+#
+# Since G1b2 (protocol/gate1-design.md) every capture publishes render-stream/1 (recording.rs1)
+# under GRC_ROOT_SIZE=enforce-min-size; without the policy the 64x64 headless host would declare
+# degenerate-host-size and classify unsupported.
 
 set -euo pipefail
 
@@ -21,7 +25,7 @@ EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate0"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
-GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden"
+GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden-1"
 
 # shellcheck source=lib/gamescope.sh
 source "$SCRIPT_DIR/lib/gamescope.sh"
@@ -160,30 +164,32 @@ done
 
 # ---------------------------------------------------------------------------------------------
 # receiver-typecheck: the mise editor (a debug build, so GDScript warnings are live) runs the
-# codec self-test, then one headless replay of the golden minimal.bin.
+# render-stream/1 codec self-test, then one headless replay of the golden-1 full.rs1.
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: receiver-typecheck"
 LEG_ENV=(RS_SELFTEST_GOLDEN_DIR="$GOLDEN_DIR")
 run_headless "$OUT/receiver-typecheck/selftest" none -- \
-	mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec_selftest.gd
+	mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec1_selftest.gd
 MINIMAL_DIR="$OUT/receiver-typecheck/minimal"
-prepare_recording "$GOLDEN_DIR/minimal.bin" "$MINIMAL_DIR"
-LEG_ENV=(RS_RECEIVER_RECORDING="$MINIMAL_DIR/recording.rs0" RS_RECEIVER_OUT="$MINIMAL_DIR/applied.json")
+prepare_recording "$GOLDEN_DIR/full.rs1" "$MINIMAL_DIR"
+LEG_ENV=(RS_RECEIVER_RECORDING="$MINIMAL_DIR/$RECORDING_NAME" RS_RECEIVER_OUT="$MINIMAL_DIR/applied.json")
 run_headless "$MINIMAL_DIR" none -- mise exec -- godot --headless --path "$RECEIVER_DIR"
 
 # ---------------------------------------------------------------------------------------------
 # Capture hosts (headless, release template, extension armed).
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: capture"
+CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
 run_capture "$OUT/capture" "$CAPTURE_QUIT_FRAME" capture
 
 echo "run-gate0: preexisting"
+CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
 run_capture "$OUT/preexisting" "$SHORT_QUIT_FRAME" none "res://preexisting.tscn"
 
 echo "run-gate0: unsupported"
-CAPTURE_EXTRA_ENV=(RS_FIXTURE_VARIANT=unsupported)
+CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=unsupported)
 run_capture "$OUT/unsupported/capture" "$SHORT_QUIT_FRAME" none
-if prepare_recording "$OUT/unsupported/capture/recording.rs0" "$OUT/unsupported/receiver"; then
+if prepare_recording "$OUT/unsupported/capture/$RECORDING_NAME" "$OUT/unsupported/receiver"; then
 	run_receiver_headless "$OUT/unsupported/receiver" none
 fi
 
@@ -194,7 +200,7 @@ for kind in freeze omit perturb; do
 	perturb) sabotage=perturb-transform ;;
 	esac
 	echo "run-gate0: sabotage-$kind (capture)"
-	CAPTURE_EXTRA_ENV=(GRC_SABOTAGE="$sabotage" GRC_SABOTAGE_FRAME="$SABOTAGE_FRAME")
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE="$sabotage" GRC_SABOTAGE_FRAME="$SABOTAGE_FRAME")
 	run_capture "$OUT/sabotage-$kind/capture" "$SHORT_QUIT_FRAME" none
 done
 
@@ -203,8 +209,8 @@ done
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: corrupt"
 mkdir -p "$OUT/corrupt"
-if [ -f "$OUT/capture/recording.rs0" ] &&
-	gate0_tool corrupt "$OUT/capture/recording.rs0" "$OUT/corrupt/recording.rs0" "$CORRUPT_SEQ" \
+if [ -f "$OUT/capture/$RECORDING_NAME" ] &&
+	gate0_tool corrupt "$OUT/capture/$RECORDING_NAME" "$OUT/corrupt/$RECORDING_NAME" "$CORRUPT_SEQ" \
 		>"$OUT/corrupt/corrupt-tool.log" 2>&1; then
 	run_receiver_headless "$OUT/corrupt" none
 else
@@ -213,7 +219,7 @@ else
 fi
 
 echo "run-gate0: receiver-headless-trace"
-if prepare_recording "$OUT/capture/recording.rs0" "$OUT/receiver-headless-trace"; then
+if prepare_recording "$OUT/capture/$RECORDING_NAME" "$OUT/receiver-headless-trace"; then
 	run_receiver_headless "$OUT/receiver-headless-trace" openat
 fi
 

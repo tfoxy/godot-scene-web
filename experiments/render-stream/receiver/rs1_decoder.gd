@@ -4,8 +4,8 @@ extends RefCounted
 ##
 ## Pure: a PackedByteArray in, records and "<code>: <detail>" strings out. It opens no file and
 ## makes no RenderingServer call. Framing, canonical-JSON rules and most error codes are
-## unchanged from render-stream-0.md (see receiver/rs0_decoder.gd); this file is independent of
-## that one (no inheritance), matching rs1_codec.cpp's independence from rs0_codec.cpp.
+## unchanged from render-stream-0.md; this file was written independently of the gate 0 decoder
+## (removed in G1b2), matching rs1_codec.cpp's independence from rs0_codec.cpp.
 ##
 ## `Stream` (below) is this decoder's novelty: because a patch transaction only carries the
 ## entries that are new or different, every invariant beyond framing and per-record schema has to

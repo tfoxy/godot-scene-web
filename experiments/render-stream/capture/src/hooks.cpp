@@ -8,7 +8,7 @@
 #include "abi.h"
 #include "iface.h"
 #include "report.h"
-#include "rs0_mirror.h"
+#include "rs_mirror.h"
 
 namespace grc {
 
@@ -511,24 +511,24 @@ PodEntry<ItemValueKey> item_value(RID item, int64_t value) {
   return pod(key);
 }
 
-// --- the render-stream/0 mirror tap ------------------------------------------
+// --- the render-stream mirror tap ---------------------------------------------
 //
 // With no stream (mirror disabled) every tap is one atomic load, and the hooks
 // behave exactly as at gate -1. The tap never blocks or alters the forwarded
 // call.
 
-bool streaming() { return rs0::mirror_enabled(); }
+bool streaming() { return rs::mirror_enabled(); }
 
-rs0::Mirror &mirror() { return rs0::mirror_instance(); }
+rs::Mirror &mirror() { return rs::mirror_instance(); }
 
-rs0::Xform to_xform(const Transform2D &t) {
+rs1::Xform to_xform(const Transform2D &t) {
   return {t.columns[0].x, t.columns[0].y, t.columns[1].x, t.columns[1].y, t.columns[2].x,
           t.columns[2].y};
 }
 
-rs0::Color4 to_color(const Color &c) { return {c.r, c.g, c.b, c.a}; }
+rs1::Color4 to_color(const Color &c) { return {c.r, c.g, c.b, c.a}; }
 
-rs0::Rect4 to_rect(const Rect2 &r) { return {r.position.x, r.position.y, r.size.x, r.size.y}; }
+rs1::Rect4 to_rect(const Rect2 &r) { return {r.position.x, r.position.y, r.size.x, r.size.y}; }
 
 // Every hooked draw op except add_rect: recorded as an unsupported command.
 void tap_unsupported(RID item, const char *op) {

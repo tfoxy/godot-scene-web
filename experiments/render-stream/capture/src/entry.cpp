@@ -5,19 +5,30 @@
 // identical checks and writes the identical evidence, but never touches the
 // vptr.
 //
-// With GRC_STREAM_OUT set and the library armed, it also publishes the
-// render-stream/0 recording (protocol/gate0-design.md "Publication"): the
-// canvas mirror is enabled and the root viewport queried right after the vptr
-// store, the session record is written at arm, one transaction per armed frame
-// callback, and the end record exactly once at disarm or shutdown. Without
-// GRC_STREAM_OUT the mirror stays off and the hooks behave as at gate -1.
+// With GRC_STREAM_OUT and/or GRC_STREAM_PATCH_OUT set and the library armed,
+// it also publishes render-stream/1 recordings (protocol/render-stream-1.md;
+// protocol/gate1-design.md "G1b2"): GRC_STREAM_OUT is the `full`-encoding
+// file sink, GRC_STREAM_PATCH_OUT the `patch`-encoding one; either or both.
+// The canvas mirror is enabled and the root viewport queried right after the
+// vptr store, a session record is written to each sink at arm (same
+// session_id, one stream_id per sink), then one transaction per sink per
+// armed frame callback from ONE mirror snapshot, and each sink's end record
+// exactly once at disarm or shutdown. With neither set the mirror stays off
+// and the hooks behave as at gate -1.
 //
-// Gate 1 (G1a, protocol/gate1-design.md "Q1") adds the root-size policy
-// GRC_ROOT_SIZE (observe | enforce-min-size), applied at arm between the root
-// query and the session record, and writes what it saw and did to
-// evidence/root.json (render-stream-root-geometry/1). render-stream/0 has no
-// field for it; a failed enforcement is carried as the sticky
-// root-query-failed failure with detail "root-size-enforce-failed: ...".
+// Sabotage (GRC_SABOTAGE / GRC_SABOTAGE_FRAME / GRC_SABOTAGE_OP, validated by
+// rs1::parse_sabotage; a refusal publishes nothing): omit-update and omit-op
+// act in the mirror, freeze-frame, perturb-transform and patch-drop-item in
+// the publisher.
+//
+// The root-size policy GRC_ROOT_SIZE (observe | enforce-min-size; G1a,
+// gate1-design.md "Q1") is applied at arm between the root query and the
+// session record. What it saw and did goes on the wire -- the session's
+// `viewport` object and blocks, read after the policy; the session-level
+// `degenerate-host-size` entry whenever host_size_status != match; the sticky
+// failure `root-size-enforce-failed` when enforce-min-size could not make it
+// match -- and, as at G1a, to evidence/root.json
+// (render-stream-root-geometry/1).
 
 #include <chrono>
 #include <cstdio>
@@ -31,9 +42,9 @@
 #include "hooks.h"
 #include "iface.h"
 #include "report.h"
-#include "rs0_mirror.h"
-#include "rs0_publish.h"
-#include "rs0_root_query.h"
+#include "rs1_publish.h"
+#include "rs_mirror.h"
+#include "rs_root_query.h"
 #include "vtable.h"
 
 namespace grc {
@@ -75,20 +86,22 @@ struct State {
   HookPlan plan;
 };
 
-// The render-stream/0 publication (gate 0). `status` is result.json
+// The render-stream/1 file publication (G1b2). `status` is result.json
 // `stream.status`: off | open | closed | refused | open-failed.
 struct Stream {
-  std::string path;  // GRC_STREAM_OUT; empty when unset
+  std::string path;        // GRC_STREAM_OUT (full sink); empty when unset
+  std::string patch_path;  // GRC_STREAM_PATCH_OUT (patch sink); empty when unset
   std::string status = "off";
   std::string reason;  // empty -> null
-  std::unique_ptr<rs0::FileRecordSink> sink;
-  std::unique_ptr<rs0::Publisher> publisher;
+  std::unique_ptr<rs1::FileRecordSink> full_sink;
+  std::unique_ptr<rs1::FileRecordSink> patch_sink;
+  std::unique_ptr<rs1::Publisher> publisher;
 };
 
 Stream g_stream;
 
 // GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
-enum class RootSizePolicy { Observe, EnforceMinSize };
+using rs1::RootSizePolicy;
 
 bool parse_root_size_policy(const char *value, RootSizePolicy *out) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "observe") == 0) {
@@ -100,6 +113,16 @@ bool parse_root_size_policy(const char *value, RootSizePolicy *out) {
     return true;
   }
   return false;
+}
+
+// Transactions written per sink (both sinks advance together).
+int64_t stream_transactions() {
+  if (g_stream.publisher == nullptr) {
+    return 0;
+  }
+  const bool full = g_stream.publisher->has_sink(rs1::Encoding::Full);
+  const rs1::Encoding encoding = full ? rs1::Encoding::Full : rs1::Encoding::Patch;
+  return static_cast<int64_t>(g_stream.publisher->transactions(encoding));
 }
 
 State g_state;
@@ -140,11 +163,10 @@ std::string result_json() {
   // Additive (gate 0): the schema string is unchanged.
   json.key("stream").object_begin();
   json.field_or_null("path", g_stream.path);
+  json.field_or_null("patch_path", g_stream.patch_path);
   json.field("status", g_stream.status);
   json.field_or_null("reason", g_stream.reason);
-  json.field("transactions",
-             static_cast<int64_t>(g_stream.publisher != nullptr ? g_stream.publisher->transactions()
-                                                                : 0));
+  json.field("transactions", stream_transactions());
   json.object_end();
   json.object_end();
   return json.take();
@@ -237,7 +259,7 @@ uint64_t monotonic_ns() {
                                    .count());
 }
 
-void write_xform(JsonWriter *json, const std::string &name, const rs0::Xform &xform) {
+void write_xform(JsonWriter *json, const std::string &name, const rs1::Xform &xform) {
   json->key(name).array_begin();
   for (float value : xform) {
     json->float32(value);
@@ -245,7 +267,7 @@ void write_xform(JsonWriter *json, const std::string &name, const rs0::Xform &xf
   json->array_end();
 }
 
-void write_geometry(JsonWriter *json, const std::string &name, const rs0::RootInfo &info) {
+void write_geometry(JsonWriter *json, const std::string &name, const rs::RootInfo &info) {
   json->key(name).object_begin();
   json->key("window_size").array_begin();
   json->integer(info.window_size[0]).integer(info.window_size[1]);
@@ -261,28 +283,27 @@ void write_geometry(JsonWriter *json, const std::string &name, const rs0::RootIn
 }
 
 // evidence/root.json (render-stream-root-geometry/1, gate1-design.md G1a).
-std::string root_geometry_json(RootSizePolicy policy, const rs0::RootInfo &before,
-                               const rs0::RootInfo &after, rs0::HostSizeStatus status,
+std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before,
+                               const rs::RootInfo &after, rs1::HostSizeStatus status,
                                bool enforce_called, bool enforce_ok,
                                const std::string &enforce_detail) {
   JsonWriter json;
   json.object_begin();
   json.field("schema", std::string("render-stream-root-geometry/1"));
-  json.field("policy", std::string(policy == RootSizePolicy::Observe ? "observe"
-                                                                     : "enforce-min-size"));
+  json.field("policy", std::string(rs1::to_wire(policy)));
   json.key("logical_size").array_begin();
   json.integer(after.logical_size[0]).integer(after.logical_size[1]);
   json.array_end();
   json.key("stretch").object_begin();
-  json.field("mode", std::string(rs0::content_scale_mode_name(after.content_scale_mode)));
-  json.field("aspect", std::string(rs0::content_scale_aspect_name(after.content_scale_aspect)));
+  json.field("mode", std::string(rs::content_scale_mode_name(after.content_scale_mode)));
+  json.field("aspect", std::string(rs::content_scale_aspect_name(after.content_scale_aspect)));
   json.field("scale_mode",
-             std::string(rs0::content_scale_stretch_name(after.content_scale_stretch)));
+             std::string(rs::content_scale_stretch_name(after.content_scale_stretch)));
   json.object_end();
   json.key("content_scale_factor").float32(static_cast<float>(after.content_scale_factor));
   write_geometry(&json, "before", before);
   write_geometry(&json, "after", after);
-  json.field("host_size_status", std::string(rs0::to_wire(status)));
+  json.field("host_size_status", std::string(rs1::to_wire(status)));
   json.key("enforce").object_begin();
   json.field("called", enforce_called);
   json.field("ok", enforce_ok);
@@ -297,26 +318,65 @@ std::string size_text(const int32_t size[2]) {
   return std::to_string(size[0]) + "x" + std::to_string(size[1]);
 }
 
-std::string rect_size_text(const rs0::Rect4 &rect) {
+std::string rect_size_text(const rs1::Rect4 &rect) {
   char buffer[64];
   std::snprintf(buffer, sizeof(buffer), "%gx%g", static_cast<double>(rect[2]),
                 static_cast<double>(rect[3]));
   return buffer;
 }
 
+// Closes and drops both file sinks (an open failure before the publisher exists).
+void stream_drop_sinks() {
+  if (g_stream.full_sink != nullptr) {
+    g_stream.full_sink->close();
+  }
+  if (g_stream.patch_sink != nullptr) {
+    g_stream.patch_sink->close();
+  }
+  g_stream.full_sink.reset();
+  g_stream.patch_sink.reset();
+}
+
+// Opens one file sink; false (after logging) when the file cannot be created.
+bool stream_open_sink(const std::string &path, std::unique_ptr<rs1::FileRecordSink> *out) {
+  if (path.empty()) {
+    return true;
+  }
+  *out = std::make_unique<rs1::FileRecordSink>();
+  if (!(*out)->open(path)) {
+    log_line("stream: cannot open " + path);
+    return false;
+  }
+  return true;
+}
+
+std::string sabotage_text(const rs1::SabotageConfig &config) {
+  if (config.kind == rs1::SabotageKind::None) {
+    return "none";
+  }
+  std::string text = std::string(rs1::to_wire(config.kind)) + "@" + std::to_string(config.frame);
+  if (config.kind == rs1::SabotageKind::OmitOp) {
+    text += " op=" + config.op;
+  }
+  return text;
+}
+
 // At arm, right after the vptr store: validates the sabotage environment,
-// opens the recording, enables the mirror, runs the root query and writes the
-// session record. A refusal or an open failure leaves the mirror off and
-// publishes nothing; arming itself is unaffected.
+// opens the recordings, enables the mirror, runs the root query and the
+// root-size policy, and writes the session records. A refusal or an open
+// failure leaves the mirror off and publishes nothing; arming itself is
+// unaffected.
 void stream_start() {
-  if (g_stream.path.empty()) {
+  if (g_stream.path.empty() && g_stream.patch_path.empty()) {
     return;
   }
   const char *sabotage_kind = std::getenv("GRC_SABOTAGE");
   const char *sabotage_frame = std::getenv("GRC_SABOTAGE_FRAME");
-  // GRC_SABOTAGE_FRAME is read only when GRC_SABOTAGE is set.
-  const rs0::ParseResult sabotage =
-      rs0::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr);
+  const char *sabotage_op = std::getenv("GRC_SABOTAGE_OP");
+  // GRC_SABOTAGE_FRAME and GRC_SABOTAGE_OP are read only when GRC_SABOTAGE is set.
+  const rs1::ParseResult sabotage =
+      rs1::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr,
+                          sabotage_kind != nullptr ? sabotage_op : nullptr);
   const char *root_size = std::getenv("GRC_ROOT_SIZE");
   RootSizePolicy policy = RootSizePolicy::Observe;
   if (!parse_root_size_policy(root_size, &policy)) {
@@ -332,14 +392,15 @@ void stream_start() {
              (sabotage_kind != nullptr ? sabotage_kind : "") +
              (sabotage_frame != nullptr ? std::string(" frame=") + sabotage_frame
                                         : std::string()) +
-             " (" + sabotage.error + ")");
+             (sabotage_op != nullptr ? std::string(" op=") + sabotage_op : std::string()) + " (" +
+             sabotage.error + ")");
     g_stream.status = "refused";
     g_stream.reason = sabotage.error;
     return;
   }
 
-  rs0::Session session;
-  session.session_id = rs0::generate_session_id();
+  rs1::Session session;
+  session.session_id = rs1::generate_id();
   session.engine.version_string = g_state.fp.version_string;
   session.engine.sha256 = g_state.fp.exe_sha256;
   session.engine.display_server = g_state.display_server;
@@ -349,131 +410,168 @@ void stream_start() {
       static_cast<uint32_t>(std::strtoul(g_state.calib.calibrator_version.c_str(), nullptr, 10));
   session.capture.hooks_planned = g_state.plan.planned;
   session.capture.hooks_omitted = g_state.plan.omitted;
-  session.features = rs0::gate0_features();
-  if (sabotage.config.kind != rs0::SabotageKind::None) {
+  session.features = rs1::gate1_features();
+  if (sabotage.config.kind != rs1::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
     session.sabotage.frame = sabotage.config.frame;
+    // render-stream-1.md "Session record": `op` is non-null exactly for omit-op.
+    session.sabotage.has_op = sabotage.config.kind == rs1::SabotageKind::OmitOp;
+    session.sabotage.op = session.sabotage.has_op ? sabotage.config.op : std::string();
   }
 
-  g_stream.sink = std::make_unique<rs0::FileRecordSink>();
-  if (!g_stream.sink->open(g_stream.path)) {
-    log_line("stream: cannot open " + g_stream.path);
+  if (!stream_open_sink(g_stream.path, &g_stream.full_sink) ||
+      !stream_open_sink(g_stream.patch_path, &g_stream.patch_sink)) {
     g_stream.status = "open-failed";
     g_stream.reason = "cannot open the recording";
-    g_stream.sink.reset();
+    stream_drop_sinks();
     return;
   }
 
-  rs0::mirror_enable(true);  // off -> on: a fresh mirror session
-  const rs0::RootInfo before = rs0::root_query_run();
+  rs::mirror_enable(true);  // off -> on: a fresh mirror session
+  const rs::RootInfo before = rs::root_query_run();
   // Binds the root RIDs before the policy runs, so any viewport call the
   // min-size write causes is attributed to the root. A failure becomes the
   // sticky root-query-failed.
-  rs0::root_query_apply(before);
-  rs0::RootInfo after = before;
+  rs::root_query_apply(before);
+  rs::RootInfo after = before;
   bool enforce_called = false;
   bool enforce_ok = true;
   std::string enforce_detail;
   if (policy == RootSizePolicy::EnforceMinSize) {
     enforce_called = true;
-    if (!rs0::root_enforce_min_size(before, &enforce_detail)) {
+    if (!rs::root_enforce_min_size(before, &enforce_detail)) {
       enforce_ok = false;
     }
     // Read back what the write did; the declaration is always the after state.
-    after = rs0::root_query_run();
-    rs0::mirror_set_root(after.viewport_rid, after.canvas_rid, after.canvas_xform);
+    after = rs::root_query_run();
+    rs::mirror_set_root(after.viewport_rid, after.canvas_rid, after.canvas_xform);
     if (!after.ok) {
-      rs0::mirror_fail_root_query(after.failed_step);
+      rs::mirror_fail_root_query(after.failed_step);
     }
   }
-  const rs0::HostSizeStatus host_status = rs0::host_size_status(after);
-  if (policy == RootSizePolicy::EnforceMinSize && host_status != rs0::HostSizeStatus::Match) {
+  const rs1::HostSizeStatus host_status = rs::host_size_status(after);
+  if (policy == RootSizePolicy::EnforceMinSize && host_status != rs1::HostSizeStatus::Match) {
     enforce_ok = false;
     if (enforce_detail.empty()) {
-      enforce_detail = std::string(rs0::to_wire(host_status)) + ": window " +
+      enforce_detail = std::string(rs1::to_wire(host_status)) + ": window " +
                        size_text(after.window_size) + ", visible " +
                        rect_size_text(after.visible_rect) + ", logical " +
                        size_text(after.logical_size);
     }
   }
+  if (host_status != rs1::HostSizeStatus::Match) {
+    // render-stream-1.md "Unsupported reasons": the session-level
+    // degenerate-host-size entry is present exactly when status != match.
+    rs::mirror_set_degenerate_host_size(true);
+  }
   if (!enforce_ok) {
-    // /0 has no root-size-enforce-failed reason: carried as a root-query-failed
-    // detail until render-stream/1 (gate1-design.md G1a "Files").
-    rs0::mirror_fail_root_query("root-size-enforce-failed: " + enforce_detail);
+    // gate1-design.md Q1 "Policy": the operator asked for a guarantee the
+    // library could not give.
+    rs::mirror_fail_root_size_enforce(enforce_detail);
   }
   emit("root.json", root_geometry_json(policy, before, after, host_status, enforce_called,
                                        enforce_ok, enforce_detail));
-  log_line(std::string("root size: policy=") +
-           (policy == RootSizePolicy::Observe ? "observe" : "enforce-min-size") +
+  log_line(std::string("root size: policy=") + rs1::to_wire(policy) +
            " logical=" + size_text(after.logical_size) + " window " +
            size_text(before.window_size) + " -> " + size_text(after.window_size) + " visible " +
            rect_size_text(before.visible_rect) + " -> " + rect_size_text(after.visible_rect) +
-           " status=" + rs0::to_wire(host_status) +
+           " status=" + rs1::to_wire(host_status) +
            (enforce_ok ? std::string() : " ENFORCE FAILED (" + enforce_detail + ")"));
-  const rs0::RootInfo &root = after;
-  if (sabotage.config.kind == rs0::SabotageKind::OmitUpdate) {
-    rs0::mirror_set_drop_frame(sabotage.config.frame);
+  const rs::RootInfo &root = after;
+  if (sabotage.config.kind == rs1::SabotageKind::OmitUpdate) {
+    rs::mirror_set_drop_frame(sabotage.config.frame);
+  } else if (sabotage.config.kind == rs1::SabotageKind::OmitOp) {
+    rs::mirror_set_omit_op(sabotage.config.op, sabotage.config.frame);
   }
+  // render-stream-1.md "Session record": `viewport` and the blocks, all read
+  // after the root-size policy.
   session.viewport.canvas_cull_mask = root.canvas_cull_mask;
-  session.viewport.root_canvas = rs0::kRootCanvasId;
+  session.viewport.root_canvas = rs1::kRootCanvasId;
+  session.viewport.logical_size = {root.logical_size[0], root.logical_size[1]};
+  if (!rs::stretch_from_window(root, &session.viewport.stretch)) {
+    log_line("root size: content scale enum out of range (mode=" +
+             std::to_string(root.content_scale_mode) +
+             " aspect=" + std::to_string(root.content_scale_aspect) +
+             " stretch=" + std::to_string(root.content_scale_stretch) + ")");
+  }
+  session.viewport.root_size_policy = policy;
+  session.viewport.host_size_status = host_status;
+  session.viewport.host_window_size = {root.window_size[0], root.window_size[1]};
   session.clear_color = root.clear_color;
   session.root_canvas_xform = root.canvas_xform;
   session.host_visible_rect = root.visible_rect;
+  session.host_final_xform = root.final_transform;
+  session.content_scale_factor = static_cast<float>(root.content_scale_factor);
 
-  g_stream.publisher = std::make_unique<rs0::Publisher>(*g_stream.sink, sabotage.config);
+  g_stream.publisher = std::make_unique<rs1::Publisher>(
+      g_stream.full_sink.get(), g_stream.patch_sink.get(), sabotage.config);
   if (!g_stream.publisher->start(session)) {
-    log_line("stream: cannot write the session record to " + g_stream.path);
-    rs0::mirror_enable(false);
-    g_stream.sink->close();
+    log_line("stream: cannot write the session record");
+    rs::mirror_enable(false);
+    stream_drop_sinks();
+    g_stream.publisher.reset();
     g_stream.status = "open-failed";
     g_stream.reason = "session write failed";
     return;
   }
   g_stream.status = "open";
-  log_line("stream: open " + g_stream.path + " session=" + session.session_id +
+  const rs1::Publisher &publisher = *g_stream.publisher;
+  const auto stream_id = [&publisher](rs1::Encoding encoding) {
+    return publisher.has_sink(encoding) ? publisher.session(encoding).stream.stream_id
+                                        : std::string("-");
+  };
+  log_line("stream: open full=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path) +
+           " full_stream=" + stream_id(rs1::Encoding::Full) +
+           " patch=" + (g_stream.patch_path.empty() ? std::string("<off>") : g_stream.patch_path) +
+           " patch_stream=" + stream_id(rs1::Encoding::Patch) + " session=" + session.session_id +
            " root_query=" + (root.ok ? std::string("ok") : "failed at " + root.failed_step) +
-           " sabotage=" +
-           (sabotage.config.kind == rs0::SabotageKind::None
-                ? std::string("none")
-                : std::string(rs0::to_wire(sabotage.config.kind)) + "@" +
-                      std::to_string(sabotage.config.frame)));
+           " sabotage=" + sabotage_text(sabotage.config));
 }
 
-// Writes the end record and closes the recording. Only the first call while
-// the stream is open does anything, so disarm, shutdown and deinitialize can
-// all call it.
-void stream_finish(rs0::EndReason reason) {
+// Writes each sink's end record and closes the recordings. Only the first call
+// while the stream is open does anything, so disarm, shutdown and deinitialize
+// can all call it.
+void stream_finish(rs1::EndReason reason) {
   if (g_stream.status != "open") {
     return;
   }
-  rs0::mirror_enable(false);
+  rs::mirror_enable(false);
   const bool ok = g_stream.publisher->finish(reason);
   g_stream.status = "closed";
   if (!ok && g_stream.reason.empty()) {
     g_stream.reason = "end record write failed";
   }
-  const rs0::EndStats &stats = g_stream.publisher->stats();
-  log_line(std::string("stream: closed (") + rs0::to_wire(reason) +
-           ") transactions=" + std::to_string(g_stream.publisher->transactions()) +
-           " bytes_total=" + std::to_string(stats.bytes_total) +
-           " max_record_bytes=" + std::to_string(stats.max_record_bytes) +
-           " encode_ns_total=" + std::to_string(stats.encode_ns_total) +
-           " snapshot_ns_total=" + std::to_string(stats.snapshot_ns_total));
+  for (const rs1::Encoding encoding : {rs1::Encoding::Full, rs1::Encoding::Patch}) {
+    if (!g_stream.publisher->has_sink(encoding)) {
+      continue;
+    }
+    const rs1::EndStats &stats = g_stream.publisher->stats(encoding);
+    log_line(std::string("stream: closed (") + rs1::to_wire(reason) +
+             ") encoding=" + rs1::to_wire(encoding) + " path=" +
+             (encoding == rs1::Encoding::Full ? g_stream.path : g_stream.patch_path) +
+             " transactions=" + std::to_string(g_stream.publisher->transactions(encoding)) +
+             " bytes_total=" + std::to_string(stats.bytes_total) +
+             " max_record_bytes=" + std::to_string(stats.max_record_bytes) +
+             " encode_ns_total=" + std::to_string(stats.encode_ns_total) +
+             " snapshot_ns_total=" + std::to_string(stats.snapshot_ns_total) +
+             " diff_ns_total=" + std::to_string(stats.diff_ns_total));
+  }
 }
 
-// One transaction for the frame callback at the end of iteration `frame`.
-// The snapshot is copied under the mirror lock (timed) and encoded outside it.
+// One snapshot for the frame callback at the end of iteration `frame`, shared
+// by both sinks. It is copied under the mirror lock (timed) and diffed and
+// encoded outside it.
 void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
   }
   const uint64_t t0 = monotonic_ns();
-  rs0::Snapshot snapshot = rs0::mirror_snapshot(0, frame);
+  rs1::Snapshot snapshot = rs::mirror_snapshot(0, frame);
   const uint64_t snapshot_ns = monotonic_ns() - t0;
-  if (!g_stream.publisher->publish_transaction(std::move(snapshot), frame, snapshot_ns)) {
+  if (!g_stream.publisher->publish(std::move(snapshot), frame, snapshot_ns)) {
     log_line("stream: write failed at frame " + std::to_string(frame));
     g_stream.reason = "transaction write failed";
-    stream_finish(rs0::EndReason::Shutdown);
+    stream_finish(rs1::EndReason::Shutdown);
   }
 }
 
@@ -607,14 +705,14 @@ void on_frame() {
     ++g_state.frames_armed;
     if (g_state.disarm_after_frames >= 0 &&
         static_cast<int64_t>(g_state.frames_armed) >= g_state.disarm_after_frames) {
-      stream_finish(rs0::EndReason::Disarm);
+      stream_finish(rs1::EndReason::Disarm);
       do_disarm("frame");
     }
   }
 }
 
 void on_shutdown() {
-  stream_finish(rs0::EndReason::Shutdown);
+  stream_finish(rs1::EndReason::Shutdown);
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
   emit("result.json", result_json());
@@ -634,6 +732,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   const std::string frames = env_string("GRC_DISARM_AFTER_FRAMES");
   g_state.disarm_after_frames = frames.empty() ? -1 : std::strtoll(frames.c_str(), nullptr, 10);
   g_stream.path = env_string("GRC_STREAM_OUT");
+  g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);
     if (!g_state.evidence_ready) {
@@ -654,7 +753,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   }
   // The shutdown callback normally gets here first; this is the backstop for an
   // unload that happens without it.
-  stream_finish(rs0::EndReason::Shutdown);
+  stream_finish(rs1::EndReason::Shutdown);
   do_disarm("deinitialize");
 }
 

@@ -1,13 +1,16 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Small helpers run-gate0.sh needs between legs, built on the same decoder the checker uses so the
-// runner never parses render-stream/0 a second way.
+// Small helpers the gate runners (run-gate0.sh, run-gate1.sh, through lib/legs.sh) need between
+// legs, built on the same decoder the checker uses so the runner never parses render-stream/1 a
+// second way.
 //
-//   gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs0>
+//   gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs1>
 //       Prints the CSV of transaction seqs at each step's settle frame (RS_RECEIVER_SHOT_SEQS).
 //       Exits 1 with the reason on stderr when the join fails (the leg is then capture-failure,
 //       step-join-failed).
-//   gate0-tool.ts corrupt <in.rs0> <out.rs0> [seq=3]
+//   gate0-tool.ts corrupt <in.rs1> <out.rs1> [seq=3]
 //       Writes a copy whose transaction <seq> has its first meta byte set to 0x00.
+//   gate0-tool.ts seq-at-frame <recording.rs1> <frame>
+//       Prints the seq of the transaction published at <frame>; exits 1 when there is none.
 
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -58,8 +61,22 @@ async function main(): Promise<void> {
     await writeFile(args[1], corruptTransactionMeta(data, seq));
     return;
   }
+  if (command === "seq-at-frame" && args.length === 2) {
+    const recording = summarizeRecording(args[0], await readBytes(args[0]));
+    const frame = Number(args[1]);
+    const t = recording.transactions.find((x) => x.meta.frame === frame);
+    if (!t) {
+      console.error(
+        `gate0-tool: no transaction at frame ${args[1]} in ${args[0]}`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    console.log(String(t.meta.seq));
+    return;
+  }
   console.error(
-    "usage: gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs0> | corrupt <in> <out> [seq]",
+    "usage: gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs1> | corrupt <in> <out> [seq] | seq-at-frame <recording.rs1> <frame>",
   );
   process.exitCode = 2;
 }

@@ -81,6 +81,16 @@ export interface Gate1Expected {
   /** items created later, in creation order, with the step that creates them */
   created_later: { name: string; step: number }[];
   steps: Gate1ExpectedStep[];
+  /** the draw-index ties (render-stream-1.md invariant 9) the capture must report, and no
+   * others: at `step`'s applied frame + `frame_offset`, on canvas `canvas`, between `members`;
+   * `harmless` when their paint footprints are disjoint (G1b2, README "Gate 1b result") */
+  draw_index_ties?: {
+    step: number;
+    frame_offset: number;
+    canvas: number;
+    members: string[];
+    harmless: boolean;
+  }[];
 }
 
 export interface SynthesizedFrame {

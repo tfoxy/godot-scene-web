@@ -1,14 +1,23 @@
 # render-stream/0 wire format
 
-Status: gate 0 contract, experimental. This is not a stable public API. Gate 0's behaviour (what
+**Superseded by [render-stream/1](render-stream-1.md)** (G1b2, 2026-10-09): the capture library,
+the receiver and the gate runners now produce and consume /1 only. The C++ encoder
+(`capture/src/rs0_codec.*`, `rs0_publish.*`, `rs0_snapshot.h`) and the GDScript decoder
+(`receiver/rs0_decoder.gd`) were removed. This document, the golden vectors in
+[`golden/`](golden/) with [`golden/make_golden.py`](golden/make_golden.py), and the TypeScript
+decoder `scripts/lib/render-stream-0.ts` with `scripts/test/self-test-rs0.ts` stay as frozen,
+still-verified history: render-stream/1 is defined as a delta against this text.
+
+Status (historical): gate 0 contract, experimental. This is not a stable public API. Gate 0's behaviour (what
 the capture puts into these records and what the receiver does with them) is in
 [gate0-design.md](gate0-design.md). This document fixes only the bytes. A C++ encoder
-(`capture/src/rs0_codec.cpp`), a TypeScript decoder (`scripts/lib/render-stream-0.ts`) and a
-GDScript decoder (`receiver/rs0_decoder.gd`) must agree with it byte for byte. The reference
+(`capture/src/rs0_codec.cpp`, removed in G1b2), a TypeScript decoder (`scripts/lib/render-stream-0.ts`) and a
+GDScript decoder (`receiver/rs0_decoder.gd`, removed in G1b2) had to agree with it byte for byte. The reference
 encoder is [`golden/make_golden.py`](golden/make_golden.py). When this text and that script
 disagree, the disagreement is a bug to fix in both.
 
-The C++ model of every value below is [`capture/src/rs0_snapshot.h`](../capture/src/rs0_snapshot.h).
+The C++ model of every value below was `capture/src/rs0_snapshot.h` (removed in G1b2; its /1
+successor is [`capture/src/rs1_snapshot.h`](../capture/src/rs1_snapshot.h)).
 
 ## File layout
 

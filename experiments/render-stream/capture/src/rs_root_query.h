@@ -1,5 +1,6 @@
 // Arm-time root viewport query (gate 0, WP1; protocol/gate0-design.md
-// "Root adoption").
+// "Root adoption"). Version-neutral since G1b2: it fills render-stream/1
+// (rs1_snapshot.h) values.
 //
 // The root viewport and its canvas exist before the capture library loads, so
 // their RIDs and state cannot be observed through the hooks. They are read back
@@ -24,32 +25,34 @@
 //  12. Viewport.get_final_transform()      -> stretch transform * global canvas transform
 //
 // and the one write, Window.set_min_size(content_scale_size), made only under
-// GRC_ROOT_SIZE=enforce-min-size (root_enforce_min_size).
+// GRC_ROOT_SIZE=enforce-min-size (root_enforce_min_size). Since G1b2 these
+// are the session's `viewport` object and its `host_*` / `content_scale_factor`
+// blocks (render-stream-1.md "Session record").
 //
 // Any failure (a null bind, a null or wrongly typed object, a null RID) still
 // returns every value it could read, with zeros in place of the rest, and names
 // the first failed step in `failed_step`. The caller turns that into the sticky
 // `root-query-failed` capture failure (mirror_fail_root_query).
-#ifndef GRC_RS0_ROOT_QUERY_H
-#define GRC_RS0_ROOT_QUERY_H
+#ifndef GRC_RS_ROOT_QUERY_H
+#define GRC_RS_ROOT_QUERY_H
 
 #include <cstdint>
 #include <string>
 
-#include "rs0_snapshot.h"
+#include "rs1_snapshot.h"
 
 namespace grc {
-namespace rs0 {
+namespace rs {
 
 struct RootInfo {
   bool ok = false;
   std::string failed_step;  // e.g. "Viewport.get_world_2d"; empty when ok
   std::uint64_t viewport_rid = 0;
   std::uint64_t canvas_rid = 0;
-  Xform canvas_xform = {0, 0, 0, 0, 0, 0};
+  rs1::Xform canvas_xform = {0, 0, 0, 0, 0, 0};
   std::uint32_t canvas_cull_mask = 0;
-  Rect4 visible_rect = kZeroRect;
-  Color4 clear_color = {0, 0, 0, 0};
+  rs1::Rect4 visible_rect = rs1::kZeroRect;
+  rs1::Color4 clear_color = {0, 0, 0, 0};
 
   // Gate 1 root geometry (zeros where a read failed).
   std::int32_t logical_size[2] = {0, 0};  // Window.content_scale_size
@@ -58,44 +61,40 @@ struct RootInfo {
   std::int64_t content_scale_stretch = 0; // Window.ContentScaleStretch
   double content_scale_factor = 0.0;
   std::int32_t window_size[2] = {0, 0};   // Window.size
-  Xform final_transform = {0, 0, 0, 0, 0, 0};
+  rs1::Xform final_transform = {0, 0, 0, 0, 0, 0};
 
   // The root Window object (not owned; valid on the main thread at arm). Only
   // root_enforce_min_size uses it.
   void *window = nullptr;
 };
 
-// host_size_status (gate1-design.md Q1 "Policy").
-enum class HostSizeStatus : std::uint8_t { Match, DegenerateVisible, DegenerateWindow };
-
-inline const char *to_wire(HostSizeStatus v) {
-  switch (v) {
-  case HostSizeStatus::Match: return "match";
-  case HostSizeStatus::DegenerateVisible: return "degenerate-visible";
-  case HostSizeStatus::DegenerateWindow: return "degenerate-window";
-  }
-  return "degenerate-visible";
-}
-
+// host_size_status (gate1-design.md Q1 "Policy"):
 // match: window size == logical size and visible rect size == logical size;
 // degenerate-visible: visible rect size != logical size (layout input differs);
 // degenerate-window: visible rect right, window size wrong (stretch differs).
-inline HostSizeStatus host_size_status(const RootInfo &info) {
+inline rs1::HostSizeStatus host_size_status(const RootInfo &info) {
   const float lw = static_cast<float>(info.logical_size[0]);
   const float lh = static_cast<float>(info.logical_size[1]);
   if (info.visible_rect[2] != lw || info.visible_rect[3] != lh) {
-    return HostSizeStatus::DegenerateVisible;
+    return rs1::HostSizeStatus::DegenerateVisible;
   }
   if (info.window_size[0] != info.logical_size[0] || info.window_size[1] != info.logical_size[1]) {
-    return HostSizeStatus::DegenerateWindow;
+    return rs1::HostSizeStatus::DegenerateWindow;
   }
-  return HostSizeStatus::Match;
+  return rs1::HostSizeStatus::Match;
 }
 
 // Spellings for evidence/root.json `stretch` (Window enums, scene/main/window.h).
 const char *content_scale_mode_name(std::int64_t mode);
 const char *content_scale_aspect_name(std::int64_t aspect);
 const char *content_scale_stretch_name(std::int64_t stretch);
+
+// The session's `viewport.stretch` from the Window enums: content_scale_mode
+// 0 disabled / 1 canvas_items / 2 viewport; content_scale_aspect 0 ignore /
+// 1 keep / 2 keep_width / 3 keep_height / 4 expand; content_scale_stretch
+// 0 fractional / 1 integer. Returns false (leaving the RS-default value in
+// place for that field) when a value is outside its enum.
+bool stretch_from_window(const RootInfo &info, rs1::Stretch *out);
 
 // Runs the read-only queries (1-12). Main thread, after the engine singletons
 // and the SceneTree exist (the library arms inside the fixture autoload's
@@ -113,7 +112,7 @@ bool root_enforce_min_size(const RootInfo &info, std::string *detail);
 // canvas 1's transform, and records root-query-failed when !info.ok.
 void root_query_apply(const RootInfo &info);
 
-}  // namespace rs0
+}  // namespace rs
 }  // namespace grc
 
-#endif  // GRC_RS0_ROOT_QUERY_H
+#endif  // GRC_RS_ROOT_QUERY_H

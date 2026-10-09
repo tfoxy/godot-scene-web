@@ -6,12 +6,20 @@ extends SceneTree
 ## RS_SELFTEST_GOLDEN_DIR overrides the golden directory (default <receiver>/../protocol/golden-1).
 ## Prints "[rs1-selftest] ok" and quits 0, or prints each failure and quits 1.
 ##
-## Three properties, per gate1-design.md G1b1 "Pass criteria":
+## Three decoder properties, per gate1-design.md G1b1 "Pass criteria":
 ##   1. decodeRecording()-equivalent (split_records + decode_record) deep-equals *.decoded.json;
 ##   2. the Stream's resolved state after each transaction deep-equals resolved.json's
 ##      per-seq state (stream_id and per-transaction "encoding" excepted, same as self-test-rs1.ts);
 ##   3. every invalid/*.rs1 yields its index.json code, and validate_recording() of both valid
 ##      vectors is [].
+## And the applier (RsApplier, G1b2), through the receiver's exact path (apply_record):
+##   4. full.rs1 and patch.rs1, each through a fresh applier, produce identical per-seq stats
+##      (rs_calls, created, freed, reparented, commands_replayed, unsupported commands): the
+##      receiver's work does not depend on encoding. The first seq makes RS calls; every seq whose
+##      resolved state equals the previous one in resolved.json (seq 4 must be one) makes none;
+##      dispose() frees exactly the RIDs the applier still owned;
+##   5. corrupt-meta.rs1's broken transaction is rejected with zero RS calls, after the earlier
+##      records applied.
 
 var _failures: Array[String] = []
 var _golden: String = ""
@@ -31,6 +39,15 @@ func _initialize() -> void:
 	_test_valid(index, resolved)
 	_test_invalid(index)
 	_test_corrupt(index)
+	# _initialize runs before the root window enters the tree (SceneTree::initialize calls
+	# MainLoop::initialize, then root->_set_tree), so the root canvas is attached to the root
+	# viewport only from the first frame on. The applier tests need that attachment.
+	process_frame.connect(_run_applier_tests.bind(index, resolved), CONNECT_ONE_SHOT)
+
+
+func _run_applier_tests(index: Dictionary, resolved: Dictionary) -> void:
+	_test_applier_encodings(index, resolved)
+	_test_applier_corrupt(index)
 	_finish()
 
 
@@ -217,6 +234,117 @@ func _test_corrupt(index: Dictionary) -> void:
 		var whole: PackedStringArray = Rs1Decoder.validate_recording(data)
 		_check(whole.size() > 0 and Rs1Decoder.code_of(whole[0]) == code, "%s: validate_recording gave %s" % [file, str(whole)])
 		print("[rs1-selftest] %s -> record %d %s" % [file, first_bad, first_code])
+
+
+func _new_applier() -> RsApplier:
+	return RsApplier.new(root.get_viewport_rid(), root.find_world_2d().canvas)
+
+
+## Runs one recording through a fresh applier, record by record, as the receiver does. Returns
+## one {kind, errors, rs_calls (that record's own), stats} per record. Disposes the applier and
+## checks that dispose() freed exactly the RIDs it still owned.
+func _apply_recording(file: String) -> Array[Dictionary]:
+	var data: PackedByteArray = _read_bytes(file)
+	var records: Array[Dictionary] = Rs1Decoder.split_records(data)["records"]
+	var stream := Rs1Decoder.Stream.new()
+	var applier: RsApplier = _new_applier()
+	var out: Array[Dictionary] = []
+	for raw: Dictionary in records:
+		var before: int = applier.rs_calls
+		var result: Dictionary = applier.apply_record(data, Rs1Decoder.as_int(raw["offset"]), stream)
+		out.append({
+			"kind": result["kind"],
+			"errors": result["errors"],
+			"rs_calls": applier.rs_calls - before,
+			"stats": result["stats"],
+		})
+	var owned: int = applier.owned_rids()
+	var freed: int = applier.dispose()
+	_check(freed == owned and applier.disposed_frees == owned and applier.owned_rids() == 0, "%s: dispose() freed %d RIDs, the applier owned %d" % [file, freed, owned])
+	return out
+
+
+func _test_applier_encodings(index: Dictionary, resolved: Dictionary) -> void:
+	var expected_transactions: Array = resolved["transactions"]
+	var files: Array[String] = []
+	var per_file: Array[Array] = []
+	var valid: Array = index["valid"]
+	for value: Variant in valid:
+		var vector: Dictionary = value
+		var file: String = vector["file"]
+		var results: Array[Dictionary] = _apply_recording(file)
+		# One row per transaction: [rs_calls, created, freed, reparented, commands_replayed,
+		# unsupported_commands as text].
+		var rows: Array = []
+		for i: int in results.size():
+			var result: Dictionary = results[i]
+			var errors: PackedStringArray = result["errors"]
+			var calls: int = result["rs_calls"]
+			_check(errors.is_empty(), "%s record %d: applier errors %s" % [file, i, str(errors)])
+			match result["kind"]:
+				"session":
+					_check(calls == 3, "%s: the session made %d RS calls, expected 3" % [file, calls])
+				"transaction":
+					var stats: Dictionary = result["stats"]
+					_check(stats["rs_calls"] == calls, "%s record %d: stats.rs_calls disagrees with the applier's counter" % [file, i])
+					rows.append([calls, stats["created"], stats["freed"], stats["reparented"], stats["commands_replayed"], str(stats["unsupported_commands"])])
+				"end":
+					_check(calls == 0, "%s: the end record made %d RS calls" % [file, calls])
+		_check(rows.size() == expected_transactions.size(), "%s: applied %d transactions, resolved.json has %d" % [file, rows.size(), expected_transactions.size()])
+		files.append(file)
+		per_file.append(rows)
+		var per_seq: Array[int] = []
+		for row: Array in rows:
+			per_seq.append(row[0])
+		print("[rs1-selftest] applier %s rs_calls per seq %s" % [file, str(per_seq)])
+
+	_check(files.size() == 2, "index.json lists %d valid vectors, expected 2" % files.size())
+	if files.size() != 2:
+		return
+	var a: Array = per_file[0]
+	var b: Array = per_file[1]
+	_check(str(a) == str(b), "per-seq applier stats differ: %s %s vs %s %s" % [files[0], str(a), files[1], str(b)])
+	if a.is_empty():
+		return
+	var first: Array = a[0]
+	_check(first[0] > 0, "seq 1 made no RS calls")
+
+	# Against the golden's actual content: a seq whose resolved state equals the previous seq's
+	# must cost nothing, and seq 4 is documented (render-stream-1.md "Golden vectors") as one.
+	var unchanged: Array[int] = []
+	for i: int in range(1, mini(a.size(), expected_transactions.size())):
+		var previous: Dictionary = expected_transactions[i - 1]
+		var current: Dictionary = expected_transactions[i]
+		var diffs: Array[String] = []
+		_deep_equal(current["state"], previous["state"], "$", diffs)
+		if diffs.is_empty():
+			unchanged.append(i + 1)
+			var row: Array = a[i]
+			_check(row[0] == 0, "seq %d's resolved state equals seq %d's, yet it made %s RS calls" % [i + 1, i, str(row[0])])
+	_check(unchanged.has(4), "resolved.json seq 4 should equal seq 3; the unchanged seqs are %s" % str(unchanged))
+	print("[rs1-selftest] applier stats identical across encodings; unchanged seqs %s cost 0 RS calls" % str(unchanged))
+
+
+## The corrupt transaction must cost zero RS calls: everything is decoded, validated and resolved
+## before the applier touches the RenderingServer.
+func _test_applier_corrupt(index: Dictionary) -> void:
+	var corrupt: Array = index["corrupt"]
+	for value: Variant in corrupt:
+		var vector: Dictionary = value
+		var file: String = vector["file"]
+		var record_index: int = Rs1Decoder.as_int(vector["record_index"])
+		var results: Array[Dictionary] = _apply_recording(file)
+		_check(results.size() > record_index, "%s has only %d records" % [file, results.size()])
+		for i: int in mini(record_index + 1, results.size()):
+			var result: Dictionary = results[i]
+			var errors: PackedStringArray = result["errors"]
+			var calls: int = result["rs_calls"]
+			if i < record_index:
+				_check(errors.is_empty() and calls > 0, "%s record %d should apply (errors %s, %d RS calls)" % [file, i, str(errors), calls])
+			else:
+				_check(errors.size() > 0 and Rs1Decoder.code_of(errors[0]) == vector["code"], "%s record %d should fail with %s, got %s" % [file, i, vector["code"], str(errors)])
+				_check(calls == 0, "%s record %d made %d RS calls, expected 0" % [file, i, calls])
+				print("[rs1-selftest] applier %s record %d: %s, rs_calls %d" % [file, i, Rs1Decoder.code_of(errors[0]) if errors.size() > 0 else "(none)", calls])
 
 
 ## Deep equality after JSON parsing: any two numbers compare as floats.

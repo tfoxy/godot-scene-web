@@ -1,13 +1,13 @@
-#include "rs0_root_query.h"
+#include "rs_root_query.h"
 
 #include <cstring>
 
 #include "abi.h"
 #include "iface.h"
-#include "rs0_mirror.h"
+#include "rs_mirror.h"
 
 namespace grc {
-namespace rs0 {
+namespace rs {
 
 namespace {
 
@@ -277,6 +277,30 @@ const char *content_scale_stretch_name(std::int64_t stretch) {
   return "unknown";
 }
 
+bool stretch_from_window(const RootInfo &info, rs1::Stretch *out) {
+  bool ok = true;
+  switch (info.content_scale_mode) {
+  case 0: out->mode = rs1::StretchMode::Disabled; break;
+  case 1: out->mode = rs1::StretchMode::CanvasItems; break;
+  case 2: out->mode = rs1::StretchMode::Viewport; break;
+  default: ok = false; break;
+  }
+  switch (info.content_scale_aspect) {
+  case 0: out->aspect = rs1::StretchAspect::Ignore; break;
+  case 1: out->aspect = rs1::StretchAspect::Keep; break;
+  case 2: out->aspect = rs1::StretchAspect::KeepWidth; break;
+  case 3: out->aspect = rs1::StretchAspect::KeepHeight; break;
+  case 4: out->aspect = rs1::StretchAspect::Expand; break;
+  default: ok = false; break;
+  }
+  switch (info.content_scale_stretch) {
+  case 0: out->scale_mode = rs1::ScaleMode::Fractional; break;
+  case 1: out->scale_mode = rs1::ScaleMode::Integer; break;
+  default: ok = false; break;
+  }
+  return ok;
+}
+
 void root_query_apply(const RootInfo &info) {
   mirror_set_root(info.viewport_rid, info.canvas_rid, info.canvas_xform);
   if (!info.ok) {
@@ -284,5 +308,5 @@ void root_query_apply(const RootInfo &info) {
   }
 }
 
-}  // namespace rs0
+}  // namespace rs
 }  // namespace grc

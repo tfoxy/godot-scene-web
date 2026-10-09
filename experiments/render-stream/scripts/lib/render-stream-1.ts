@@ -984,7 +984,7 @@ export function decodeRecording(data: Uint8Array): {
 // Shared by validateRecording() (which also checks every invariant along the way) and
 // resolveRecording() (which trusts its input and just produces the merged state).
 
-interface ResolvedCommand {
+export interface ResolvedCommand {
   op: "add_rect" | "unsupported";
   aa?: boolean;
   rect?: [number, number, number, number];
@@ -992,7 +992,7 @@ interface ResolvedCommand {
   name?: string;
 }
 
-interface ResolvedCanvas {
+export interface ResolvedCanvas {
   id: number;
   origin: Origin;
   role: CanvasRole;
@@ -1001,7 +1001,7 @@ interface ResolvedCanvas {
   xform: [number, number, number, number, number, number];
 }
 
-interface ResolvedItem {
+export interface ResolvedItem {
   id: number;
   origin: Origin;
   parent: { kind: ParentKind; id: number } | null;
@@ -1022,12 +1022,12 @@ interface ResolvedItem {
   commands: ResolvedCommand[];
 }
 
-interface ResolvedState {
+export interface ResolvedState {
   canvases: Map<number, ResolvedCanvas>;
   items: Map<number, ResolvedItem>;
 }
 
-function emptyResolvedState(): ResolvedState {
+export function emptyResolvedState(): ResolvedState {
   return { canvases: new Map(), items: new Map() };
 }
 
@@ -1103,7 +1103,7 @@ function liftItem(
 // Applies one decoded transaction to `base`, per render-stream-1.md "Resolution". Trusts its
 // input (no invariant checks) -- used directly by resolveRecording(), and by validateRecording()
 // after its own checks have passed for this record.
-function applyTransaction(
+export function applyTransaction(
   base: ResolvedState,
   meta: TransactionMeta,
   blocks: number[][],
@@ -1137,11 +1137,11 @@ function applyTransaction(
   return { canvases, items };
 }
 
-function sortedResolvedCanvases(state: ResolvedState): ResolvedCanvas[] {
+export function sortedResolvedCanvases(state: ResolvedState): ResolvedCanvas[] {
   return [...state.canvases.values()].sort((a, b) => a.id - b.id);
 }
 
-function sortedResolvedItems(state: ResolvedState): ResolvedItem[] {
+export function sortedResolvedItems(state: ResolvedState): ResolvedItem[] {
   return [...state.items.values()].sort((a, b) => a.id - b.id);
 }
 

@@ -1,43 +1,53 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the gate 1 checker (lib/gate1-checks.ts, group g1a). Proves that every check can
-// fail as well as pass, and that classifyGate1 adds G1a's root-size rules to gate 0's precedence.
+// Self-test for the gate 1 checker (lib/gate1-checks.ts, groups g1a and g1b). Proves that every
+// check can fail as well as pass, and that classifyGate1 adds gate 1's rules (the session's root
+// size declaration, patch divergence) to gate 0's precedence.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate1.ts
 //
-// 1. classifyGate1 unit cases (pure): root.json missing / enforcement failed -> capture-failure;
-//    a degenerate host under `observe` -> unsupported (degenerate-host-size); precedence against
-//    gate 0's classes; synthesizeGate1 and the invariant / tie helpers on hand-built states.
-// 2. Evidence-tree scenarios: a fabricated passing g1a tree (recordings encoded here in
-//    render-stream/0 bytes from a model of the fixture's retained state, PNGs synthesized from
-//    fixtures/gate1/expected.json), then one perturbation per failure mode. Each scenario runs
-//    the real runGate1 and asserts the verdict of the checks and leg classes it targets.
+// 1. classifyGate1 unit cases (pure): no session / patch divergence -> capture-failure; a
+//    degenerate host -> unsupported (degenerate-host-size); precedence against gate 0's classes;
+//    synthesizeGate1 and the invariant / tie helpers on the model's resolved states.
+// 2. Evidence-tree scenarios: a fabricated passing g1a+g1b tree (recordings encoded in
+//    render-stream/1, both sinks, by rs1-test-encoder.ts from a model of the fixture's retained
+//    state, PNGs synthesized from fixtures/gate1/expected.json), then one perturbation per failure
+//    mode. Each scenario runs the real runGate1 and asserts the verdict of the checks and leg
+//    classes it targets.
 //
 // Exits non-zero if any assertion fails.
 
-import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
-import { classifyLeg, GATE0_FEATURES, GATE0_HOOKS } from "../lib/gate0-checks";
+import {
+  classifyLeg,
+  expectedReceiverUnsupported,
+  GATE0_HOOKS,
+  type RecordingSummary,
+  summarizeRecording,
+} from "../lib/gate0-checks";
 import {
   classifyGate1,
-  decodeStates,
   evaluateInvariants,
-  findDrawIndexTies,
   G1A_CLASSIFIED_LEGS,
   G1A_EXPECTATIONS,
   G1A_SUPPORT_LEGS,
-  type G1aLeg,
+  G1B_CLASSIFIED_LEGS,
+  G1B_EXPECTATIONS,
+  GATE1_EXPECTATIONS,
   type Gate1Class,
   type Gate1Context,
+  type Gate1Leg,
   type Gate1Report,
   mapNames,
   type RootEvidence,
+  recordingTies,
   runGate1,
+  statesOf,
 } from "../lib/gate1-checks";
 import {
   type Gate1Expected,
@@ -45,15 +55,16 @@ import {
   stepFrames,
   synthesizeGate1,
 } from "../lib/gate1-expected";
+import { validateRecording } from "../lib/render-stream-1";
 import {
-  decodeRecord,
-  splitRecords,
-  validateRecording,
-} from "../lib/render-stream-0";
+  encodeRs1Recording,
+  type TItem,
+  type TState,
+} from "./rs1-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden");
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-1");
 
 let assertions = 0;
 let failures = 0;
@@ -106,6 +117,12 @@ interface ModelOptions {
   noCanvasShift?: boolean;
   /** step 10 also bumps every item's content version */
   redrawAtShift?: boolean;
+  /** T (step 1) overlaps P instead of sitting alone (RS_FIXTURE_TIE=overlap) */
+  tieOverlap?: boolean;
+  /** T is never raised, so its tie with P lasts */
+  noTieRaise?: boolean;
+  /** step 2 also redraws P (a content change where only a transform should be) */
+  redrawP2?: boolean;
 }
 
 const W = [1, 1, 1, 1];
@@ -215,11 +232,29 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
     case 1:
       g(1).modulate = [1, 0, 1, 1];
       g(2).self_modulate = [0, 1, 1, 1];
+      // T enters the canvas at runtime with the RS default index 0, tying with P (index 0)
+      // until the deferred raise next frame (afterStep).
+      state.items.set(20, {
+        id: 20,
+        parent: { kind: "canvas", id: 1 },
+        children: [],
+        visible: true,
+        draw_index: 0,
+        z_index: 0,
+        layer: 1,
+        version: 2,
+        xform: [1, 0, 0, 1, ...(opts.tieOverlap ? [112, 112] : [80, 304])],
+        modulate: [...W],
+        self_modulate: [...W],
+        rects: [[0, 0, opts.tieOverlap ? 224 : 32, 32, ...c(0.6, 1, 0.4)]],
+      });
+      state.canvasItems = [...state.canvasItems, 20];
       break;
     case 2:
       g(1).xform = [1, 0, 0, 1, 80, 96];
       g(2).xform = [0, 1, -1, 0, 160, 0];
       redraw(g(8), [[0, 0, 48, 48, ...c(0.8, 0.8, 0)]]);
+      if (opts.redrawP2) redraw(g(1), g(1).rects);
       break;
     case 3:
       if (opts.tie) {
@@ -255,9 +290,10 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
       break;
     case 8:
       for (const id of [12, 13, 14, 18]) state.items.delete(id);
-      // remove_child(D) re-raises the remaining top-level items without resetting the counter.
-      [1, 4, 7, 9, 11, 16, 17].forEach((id, i) => {
-        g(id).draw_index = 10 + i;
+      // remove_child(D) re-raises the remaining top-level items without resetting the counter
+      // (step 1's raise left it at 11).
+      [1, 4, 7, 9, 11, 16, 17, 20].forEach((id, i) => {
+        g(id).draw_index = 11 + i;
       });
       g(19).parent = null;
       g(15).parent = null;
@@ -271,8 +307,8 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
       ]);
       break;
     case 9: {
-      state.items.set(20, {
-        id: 20,
+      state.items.set(21, {
+        id: 21,
         parent: { kind: "canvas", id: 1 },
         children: [],
         visible: true,
@@ -288,9 +324,9 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
       });
       g(15).parent = { kind: "canvas", id: 1 };
       redraw(g(15), g(15).rects);
-      state.canvasItems = [...state.canvasItems, 20, 15];
+      state.canvasItems = [...state.canvasItems, 21, 15];
       // add_child resets the sort index: every top-level item is raised again in tree order.
-      [1, 4, 7, 9, 11, 16, 17, 20, 15].forEach((id, i) => {
+      [1, 4, 7, 9, 11, 16, 17, 20, 21, 15].forEach((id, i) => {
         g(id).draw_index = i;
       });
       state.items.delete(19);
@@ -310,163 +346,179 @@ function applyStep(state: MState, step: number, opts: ModelOptions): void {
   redraw(g(17), [[0, 0, 32, 32, ...MARKER[step]]]);
 }
 
-// ---------------------------------------------------------------------------------------------
-// A test-side render-stream/0 encoder (canonical meta: objects built in key order, blocks last).
-// ---------------------------------------------------------------------------------------------
-
-const MAGIC = Buffer.from([0x47, 0x52, 0x53, 0x30, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-function encodeRecord(
-  meta: Record<string, unknown>,
-  blocks: number[][],
-): Buffer {
-  const metaBytes = Buffer.from(JSON.stringify(meta), "ascii");
-  const recordLen =
-    8 + metaBytes.length + blocks.reduce((n, b) => n + 4 + 4 * b.length, 0);
-  const out = Buffer.alloc(4 + recordLen);
-  let p = out.writeUInt32LE(recordLen, 0);
-  p = out.writeUInt32LE(metaBytes.length, p);
-  p += metaBytes.copy(out, p);
-  p = out.writeUInt32LE(blocks.length, p);
-  for (const block of blocks) {
-    p = out.writeUInt32LE(4 * block.length, p);
-    for (const v of block) p = out.writeFloatLE(v, p);
+/** The deferred top-level raise, one frame after a step (scene/main/scene_tree.cpp:644, :708-709):
+ * T, added at step 1 with the RS default index 0, gets 10 (P..Marker keep 0..9). */
+function afterStep(state: MState, step: number, opts: ModelOptions): void {
+  if (step === 1 && !opts.noTieRaise) {
+    (state.items.get(20) as MItem).draw_index = 10;
   }
-  return out;
 }
 
-const blockSpecs = (names: string[], blocks: number[][]) =>
-  names.map((name, i) => ({ name, type: "f32", count: blocks[i].length }));
+// ---------------------------------------------------------------------------------------------
+// Recordings: the model, frame by frame, encoded in render-stream/1 (rs1-test-encoder.ts)
+// ---------------------------------------------------------------------------------------------
 
 interface RecordingOptions extends ModelOptions {
   quit: number;
-  sabotage?: { kind: string; frame: number } | null;
+  sabotage?: { kind: string; frame: number; op?: string | null } | null;
   hooksPlanned?: string[];
   /** publish step `step`'s change `frames` frames late */
   delay?: { step: number; frames: number };
   noEnd?: boolean;
+  /** root-size policy; observe declares the 64x64 headless host (degenerate-visible) */
+  policy?: "observe" | "enforce-min-size";
+  /** enforce-min-size that failed: the root-size-enforce-failed failure, degenerate-window */
+  enforceFailed?: boolean;
+  /** the patch sink keeps the Marker's previous entry at this frame (patch-drop-item) */
+  dropMarkerAt?: number;
+  /** the patch sink writes these seqs as full transactions */
+  patchFullAt?: number[];
 }
 
-function encodeRecording(opts: RecordingOptions): Buffer {
-  const sessionBlocks = [
-    [0.2, 0.2, 0.4, 1],
-    [1, 0, 0, 1, 0, 0],
-    [0, 0, 640, 360],
+/** Invariant 9's entries for a state: one per container group of >= 2 drawing siblings. */
+function tieEntries(
+  state: TState,
+): { op: string; item: number; reason: string }[] {
+  const byId = new Map(state.items.map((i) => [i.id, i]));
+  const lists = [
+    ...state.canvases.map((c) => c.items),
+    ...state.items.map((i) => i.children),
   ];
-  const records: Buffer[] = [
-    encodeRecord(
-      {
-        type: "session",
-        protocol: "render-stream/0",
-        session_id: "0123456789abcdef0123456789abcdef",
-        engine: {
-          version_string: "Godot Engine v4.5.1.stable.official",
-          sha256:
-            "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
-          display_server: "headless",
-          rendering_driver: "opengl3",
-          rendering_method: "gl_compatibility",
-        },
-        capture: {
-          calibrator_version: 3,
-          hooks_planned: opts.hooksPlanned ?? [...GATE0_HOOKS],
-          hooks_omitted: [],
-        },
-        viewport: { canvas_cull_mask: 4294967295, root_canvas: 1 },
-        features: JSON.parse(JSON.stringify(GATE0_FEATURES)),
-        sabotage: opts.sabotage ?? null,
-        blocks: blockSpecs(
-          ["clear_color", "root_canvas_xform", "host_visible_rect"],
-          sessionBlocks,
-        ),
-      },
-      sessionBlocks,
-    ),
-  ];
+  const out: { op: string; item: number; reason: string }[] = [];
+  for (const list of lists) {
+    const groups = new Map<number, number[]>();
+    for (const id of list) {
+      const it = byId.get(id);
+      if (!it || (it.commands.length === 0 && it.children.length === 0))
+        continue;
+      groups.set(it.draw_index, [...(groups.get(it.draw_index) ?? []), id]);
+    }
+    for (const g of groups.values())
+      if (g.length >= 2)
+        out.push({
+          op: "canvas_item_set_draw_index",
+          item: Math.min(...g),
+          reason: "draw-index-tie",
+        });
+  }
+  return out.sort((a, b) => a.item - b.item);
+}
+
+function modelStates(opts: RecordingOptions): TState[] {
   const state = initialState();
+  const states: TState[] = [];
   let applied = 0;
+  const appliedAt = (k: number) =>
+    S + N * k + (opts.delay?.step === k ? opts.delay.frames : 0);
   for (let frame = 1; frame <= opts.quit; frame++) {
+    if (applied >= 1 && frame === appliedAt(applied) + 1)
+      afterStep(state, applied, opts);
     for (let k = applied + 1; k <= 10; k++) {
-      const at = S + N * k + (opts.delay?.step === k ? opts.delay.frames : 0);
-      if (at === frame) {
+      if (appliedAt(k) === frame) {
         applyStep(state, k, opts);
         applied = k;
       }
     }
-    const ids = [...state.items.keys()].sort((a, b) => a - b);
-    const itemF: number[] = [];
-    const cmdF: number[] = [];
-    const items = ids.map((id) => {
-      const it = state.items.get(id) as MItem;
-      itemF.push(...it.xform, ...it.modulate, ...it.self_modulate, 0, 0, 0, 0);
-      const commands = it.rects.map((r) => {
-        const f = cmdF.length;
-        cmdF.push(...r);
-        return { op: "add_rect", aa: false, f };
+    const items: TItem[] = [...state.items.keys()]
+      .sort((a, b) => a - b)
+      .map((id) => {
+        const it = state.items.get(id) as MItem;
+        return {
+          id,
+          parent: it.parent,
+          children: [...it.children],
+          visible: it.visible,
+          draw_index: it.draw_index,
+          z_index: it.z_index,
+          visibility_layer: it.layer,
+          content_version: it.version,
+          xform: [...it.xform],
+          modulate: [...it.modulate],
+          self_modulate: [...it.self_modulate],
+          custom_rect: id === 16,
+          commands: it.rects.map((r) => ({
+            op: "add_rect" as const,
+            rect: r.slice(0, 4),
+            color: r.slice(4, 8),
+          })),
+        };
       });
-      return {
-        id,
-        origin: "created",
-        parent: it.parent,
-        children: it.children,
-        visible: it.visible,
-        draw_index: it.draw_index,
-        z_index: it.z_index,
-        clip: false,
-        custom_rect: id === 16,
-        visibility_layer: it.layer,
-        content_version: it.version,
-        commands,
-      };
-    });
-    const blocks = [itemF, [...state.canvasXform], cmdF];
-    records.push(
-      encodeRecord(
-        {
-          type: "transaction",
-          seq: frame,
-          frame,
-          status: "ok",
-          failures: [],
-          unsupported: [],
-          canvases: [
+    const t: TState = {
+      frame,
+      failures: opts.enforceFailed
+        ? [
             {
-              id: 1,
-              origin: "root-query",
-              role: "root",
-              attached: true,
-              items: state.canvasItems,
+              reason: "root-size-enforce-failed",
+              detail: "degenerate-window: window 64x64, visible 640x360",
             },
-          ],
-          items,
-          blocks: blockSpecs(["item_f32", "canvas_f32", "cmd_f32"], blocks),
-        },
-        blocks,
-      ),
-    );
+          ]
+        : [],
+      canvases: [
+        { id: 1, items: [...state.canvasItems], xform: [...state.canvasXform] },
+      ],
+      items,
+    };
+    const degenerate = opts.policy === "observe" || opts.enforceFailed === true;
+    t.unsupported = [
+      ...(degenerate
+        ? [
+            {
+              op: "root_viewport_size",
+              item: null,
+              reason: "degenerate-host-size",
+            },
+          ]
+        : []),
+      ...tieEntries(t),
+    ];
+    states.push(t);
   }
-  const bytesTotal = MAGIC.length + records.reduce((n, r) => n + r.length, 0);
-  const maxRecord = Math.max(...records.map((r) => r.length));
-  if (!opts.noEnd) {
-    records.push(
-      encodeRecord(
-        {
-          type: "end",
-          transactions: opts.quit,
-          reason: "shutdown",
-          stats: {
-            bytes_total: bytesTotal,
-            encode_ns_total: 1000 * opts.quit,
-            snapshot_ns_total: 100 * opts.quit,
-            max_record_bytes: maxRecord,
+  return states;
+}
+
+function sessionFor(opts: RecordingOptions, encoding: "full" | "patch") {
+  const observe = opts.policy === "observe";
+  return {
+    encoding,
+    hooksPlanned: opts.hooksPlanned ?? [...GATE0_HOOKS],
+    sabotage: opts.sabotage ?? null,
+    noEnd: opts.noEnd,
+    policy: opts.policy ?? "enforce-min-size",
+    hostSizeStatus: observe
+      ? ("degenerate-visible" as const)
+      : opts.enforceFailed
+        ? ("degenerate-window" as const)
+        : ("match" as const),
+    hostWindowSize: (observe || opts.enforceFailed ? [64, 64] : [640, 360]) as [
+      number,
+      number,
+    ],
+    hostVisibleRect: observe ? [0, 0, 64, 64] : [0, 0, 640, 360],
+  };
+}
+
+function encodeRecording(opts: RecordingOptions): Buffer {
+  return encodeRs1Recording(modelStates(opts), sessionFor(opts, "full"));
+}
+
+function encodePatchRecording(opts: RecordingOptions): Buffer {
+  const states = modelStates(opts);
+  return encodeRs1Recording(states, {
+    ...sessionFor(opts, "patch"),
+    fullAt: opts.patchFullAt,
+    mutatePatch:
+      opts.dropMarkerAt === undefined
+        ? undefined
+        : (seq, st) => {
+            if (st.frame !== opts.dropMarkerAt) return st;
+            const prev = states[seq - 2];
+            const marker = prev.items.find((i) => i.id === 17);
+            return {
+              ...st,
+              items: st.items.map((i) => (i.id === 17 && marker ? marker : i)),
+            };
           },
-          blocks: [],
-        },
-        [],
-      ),
-    );
-  }
-  return Buffer.concat([MAGIC, ...records]);
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -596,19 +648,40 @@ function settleSeqs(): number[] {
   return EXPECTED.steps.map((s) => stepFrames(EXPECTED, s.step).settle);
 }
 
+/** The fixture's one tie frame (expected.json draw_index_ties: step 1's applied frame). */
+const TIE_FRAME = S + N * 1;
+
+/** A receiver's RenderingServer calls per seq: any deterministic function of the resolved state
+ * will do, as long as the full and patch receivers agree. */
+const rsCallsOf = (seq: number): number => (seq * 7) % 13;
+
+function resolvedState(summary: RecordingSummary, seq: number): unknown {
+  const t = summary.transactions.find((x) => x.meta.seq === seq)?.meta;
+  return (
+    t && {
+      status: t.status,
+      failures: t.failures,
+      unsupported: t.unsupported,
+      canvases: t.canvases,
+      items: t.items,
+    }
+  );
+}
+
 function appliedFor(
   recordingPath: string,
   bytes: Buffer,
   shotSeqs: number[],
-  shotsDir: string,
+  stateSeqs: number[],
+  dir: string,
 ): Record<string, unknown> {
-  const states = decodeStates(new Uint8Array(bytes));
-  const recs = recordHashes(bytes);
+  const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/1",
+    schema: "render-stream-receiver-applied/2",
+    mode: "file",
     recording: {
       path: recordingPath,
-      sha256: sha256(bytes),
+      sha256: summary.sha256,
       bytes: bytes.length,
     },
     session_id: "0123456789abcdef0123456789abcdef",
@@ -619,44 +692,37 @@ function appliedFor(
       display_server: shotSeqs.length > 0 ? "X11" : "headless",
       size: shotSeqs.length > 0 ? [640, 360] : [64, 64],
       size_check: shotSeqs.length > 0 ? "ok" : "skipped-headless",
+      logical_size: [640, 360],
       canvas_transform: [1, 0, 0, 1, 8, 4],
     },
-    transactions: states.map((t, i) => ({
-      seq: t.seq,
-      frame: t.frame,
-      record_sha256: recs[i],
+    transactions: summary.transactions.map((t, i) => ({
+      stream: 1,
+      seq: t.meta.seq,
+      frame: t.meta.frame,
+      encoding: t.meta.encoding,
+      record_sha256: t.sha256,
       process_frame: i + 2,
       created: 0,
       freed: 0,
       reparented: 0,
       commands_replayed: 0,
-      rs_calls: 0,
+      rs_calls: rsCallsOf(t.meta.seq),
     })),
     shots: shotSeqs.map((seq) => ({
+      stream: 1,
       seq,
-      path: join(shotsDir, `seq-${seq}.png`),
+      step: null,
+      path: join(dir, "shots", `seq-${seq}.png`),
+      state_path: stateSeqs.includes(seq)
+        ? join(dir, "state", `seq-${seq}.json`)
+        : null,
       process_frame: seq + 2,
       applied_through: seq,
     })),
-    unsupported: [],
+    shots_missed: [],
+    unsupported: expectedReceiverUnsupported(summary),
+    live: null,
   };
-}
-
-function sha256(data: Uint8Array): string {
-  return createHash("sha256").update(data).digest("hex");
-}
-/** record_sha256 of every transaction record, in order. */
-function recordHashes(bytes: Buffer): string[] {
-  const out: string[] = [];
-  for (const raw of splitRecords(new Uint8Array(bytes)).records) {
-    const { record } = decodeRecord(raw);
-    if (
-      (record?.meta as { type?: string } | undefined)?.type === "transaction"
-    ) {
-      out.push(record?.sha256 ?? "");
-    }
-  }
-  return out;
 }
 
 interface Projects {
@@ -701,11 +767,13 @@ async function writeProjects(root: string): Promise<Projects> {
 async function writeCaptureLeg(
   dir: string,
   opts: RecordingOptions,
-  extra: { trace?: boolean; policy?: "observe" | "enforce-min-size" } = {},
-): Promise<Buffer> {
-  const bytes = encodeRecording(opts);
+  extra: { trace?: boolean } = {},
+): Promise<{ full: Buffer; patch: Buffer }> {
+  const full = encodeRecording(opts);
+  const patch = encodePatchRecording(opts);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "recording.rs0"), bytes);
+  await writeFile(join(dir, "recording.rs1"), full);
+  await writeFile(join(dir, "recording-patch.rs1"), patch);
   await writeJson(join(dir, "evidence", "result.json"), {
     schema: "render-stream-capture-result/1",
     status: "armed",
@@ -716,7 +784,8 @@ async function writeCaptureLeg(
     rendering_driver: "opengl3",
     rendering_method: "gl_compatibility",
     stream: {
-      path: join(dir, "recording.rs0"),
+      path: join(dir, "recording.rs1"),
+      patch_path: join(dir, "recording-patch.rs1"),
       status: "closed",
       reason: null,
       transactions: opts.quit,
@@ -728,7 +797,7 @@ async function writeCaptureLeg(
     hooks_planned: [...GATE0_HOOKS],
     hooks_omitted: [],
   });
-  const policy = extra.policy ?? "enforce-min-size";
+  const policy = opts.policy ?? "enforce-min-size";
   await writeJson(join(dir, "evidence", "root.json"), rootEvidence(policy));
   await writeText(join(dir, "evidence", "armed.marker"), "");
   await writeText(join(dir, "steps.jsonl"), stepLog());
@@ -761,22 +830,31 @@ async function writeCaptureLeg(
       "lrwx------ 1 u u 64 Oct  9 10:00 0 -> /dev/null\n",
     );
   }
-  return bytes;
+  return { full, patch };
 }
 
+/** A receiver process directory on `bytes` (copied to recording.rs1), with applied.json and, for
+ * `stateSeqs`, state/seq-<n>.json holding the resolved state. Shots are written separately. */
 async function writeReceiverProcess(
   dir: string,
   projects: Projects,
   bytes: Buffer,
   shotSeqs: number[],
   rendered: boolean,
+  stateSeqs: number[] = [],
 ): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "recording.rs0"), bytes);
+  await writeFile(join(dir, "recording.rs1"), bytes);
   await writeJson(
     join(dir, "applied.json"),
-    appliedFor(join(dir, "recording.rs0"), bytes, shotSeqs, join(dir, "shots")),
+    appliedFor(join(dir, "recording.rs1"), bytes, shotSeqs, stateSeqs, dir),
   );
+  const summary = summarizeRecording("r", new Uint8Array(bytes));
+  for (const seq of stateSeqs)
+    await writeJson(
+      join(dir, "state", `seq-${seq}.json`),
+      resolvedState(summary, seq),
+    );
   await writeProcess(
     dir,
     rendered
@@ -793,7 +871,7 @@ async function writeReceiverProcess(
           "--path",
           projects.receiverProjectDir,
         ],
-    [`RS_RECEIVER_RECORDING=${join(dir, "recording.rs0")}`],
+    [`RS_RECEIVER_RECORDING=${join(dir, "recording.rs1")}`],
     "[receiver] ok\n",
     0,
   );
@@ -808,7 +886,7 @@ async function writeTraceStrace(
     join(leg, "strace.txt"),
     [
       `42 10:00:00.000000 openat(AT_FDCWD, "${projects.receiverProjectDir}/project.godot", O_RDONLY|O_CLOEXEC) = 3`,
-      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs0")}", O_RDONLY|O_CLOEXEC) = 4`,
+      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs1")}", O_RDONLY|O_CLOEXEC) = 4`,
       "",
     ].join("\n"),
   );
@@ -819,17 +897,46 @@ async function writeTraceStrace(
   );
 }
 
-/** Sabotage legs: the receiver shows a wrong pixel inside a region at exactly the predicted steps. */
-const SABOTAGE: Record<string, number[]> = {
-  "sabotage-omit-modulate":
-    G1A_EXPECTATIONS["sabotage-omit-modulate"].mismatchSteps ?? [],
-  "sabotage-omit-transform":
-    G1A_EXPECTATIONS["sabotage-omit-transform"].mismatchSteps ?? [],
-  "sabotage-omit-order":
-    G1A_EXPECTATIONS["sabotage-omit-order"].mismatchSteps ?? [],
-  "sabotage-omit-visibility":
-    G1A_EXPECTATIONS["sabotage-omit-visibility"].mismatchSteps ?? [],
+/** Sabotage legs: the receiver shows a wrong pixel inside a region at exactly the predicted
+ * steps; each capture declares its sabotage in the session (which the classifier never reads). */
+const SABOTAGE: Record<
+  string,
+  { bad: number[]; sabotage: { kind: string; frame: number; op?: string } }
+> = {
+  "sabotage-omit-modulate": {
+    bad: G1A_EXPECTATIONS["sabotage-omit-modulate"].mismatchSteps ?? [],
+    sabotage: { kind: "omit-update", frame: 11 },
+  },
+  "sabotage-omit-transform": {
+    bad: G1A_EXPECTATIONS["sabotage-omit-transform"].mismatchSteps ?? [],
+    sabotage: { kind: "omit-update", frame: 21 },
+  },
+  "sabotage-omit-order": {
+    bad: G1A_EXPECTATIONS["sabotage-omit-order"].mismatchSteps ?? [],
+    sabotage: { kind: "omit-update", frame: 31 },
+  },
+  "sabotage-omit-visibility": {
+    bad: G1A_EXPECTATIONS["sabotage-omit-visibility"].mismatchSteps ?? [],
+    sabotage: { kind: "omit-update", frame: 71 },
+  },
+  "sabotage-omit-free": {
+    bad: G1B_EXPECTATIONS["sabotage-omit-free"].mismatchSteps ?? [],
+    sabotage: { kind: "omit-op", frame: 81, op: "free" },
+  },
+  "sabotage-omit-visible": {
+    bad: G1B_EXPECTATIONS["sabotage-omit-visible"].mismatchSteps ?? [],
+    sabotage: { kind: "omit-op", frame: 61, op: "canvas_item_set_visible" },
+  },
 };
+
+async function writeShots(dir: string, seqs: number[], bad: number[] = []) {
+  for (const [k, seq] of seqs.entries())
+    await writePng(
+      join(dir, "shots", `seq-${seq}.png`),
+      k,
+      bad.includes(k) ? { perturb: [100, 100] } : {},
+    );
+}
 
 async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   await writeJson(join(out, "binary.json"), {
@@ -837,8 +944,8 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     sha256: "54cc",
   });
   await writeJson(join(out, "legs.json"), {
-    groups_run: ["g1a"],
-    groups_landed: ["g1a"],
+    groups_run: ["g1a", "g1b"],
+    groups_landed: ["g1a", "g1b"],
   });
   for (const p of ["fixture", "receiver"]) {
     await writeProcess(
@@ -851,27 +958,22 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   }
   await writeProcess(
     join(out, "receiver-typecheck", "selftest"),
-    ["godot", "--script", "res://tests/codec_selftest.gd"],
+    ["godot", "--script", "res://tests/codec1_selftest.gd"],
     [],
-    "[rs0-selftest] ok\n",
+    "[rs1-selftest] ok\n",
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "minimal.bin"));
+  const minimal = await readFile(join(GOLDEN_DIR, "full.rs1"));
   await mkdir(minimalDir, { recursive: true });
-  await writeFile(join(minimalDir, "recording.rs0"), minimal);
+  await writeFile(join(minimalDir, "recording.rs1"), minimal);
   await writeJson(join(minimalDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/1",
+    schema: "render-stream-receiver-applied/2",
     status: "ok",
     end_seen: true,
-    unsupported: [
-      {
-        seq: 1,
-        item: 2,
-        name: "canvas_item_add_circle",
-        reason: "unsupported-op",
-      },
-    ],
+    unsupported: expectedReceiverUnsupported(
+      summarizeRecording("golden", new Uint8Array(minimal)),
+    ),
   });
   await writeProcess(
     minimalDir,
@@ -881,25 +983,39 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     0,
   );
 
+  const seqs = settleSeqs();
   const capture = await writeCaptureLeg(
     join(out, "capture"),
     { quit: CAPTURE_QUIT },
     { trace: true },
   );
-  const seqs = settleSeqs();
   await writeReceiverProcess(
     join(out, "receiver"),
     projects,
-    capture,
-    seqs,
+    capture.full,
+    [...seqs, TIE_FRAME],
     true,
+    seqs,
   );
-  for (const [k, seq] of seqs.entries())
-    await writePng(join(out, "receiver", "shots", `seq-${seq}.png`), k);
+  await writeShots(join(out, "receiver"), seqs);
+  await writePng(join(out, "receiver", "shots", `seq-${TIE_FRAME}.png`), 1);
+  await writeReceiverProcess(
+    join(out, "receiver-patch"),
+    projects,
+    capture.patch,
+    [...seqs, TIE_FRAME],
+    true,
+    seqs,
+  );
+  await writeShots(join(out, "receiver-patch"), seqs);
+  await writePng(
+    join(out, "receiver-patch", "shots", `seq-${TIE_FRAME}.png`),
+    1,
+  );
   await writeReceiverProcess(
     join(out, "receiver-headless-trace"),
     projects,
-    capture,
+    capture.full,
     [],
     false,
   );
@@ -908,6 +1024,7 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   const ref = join(out, "reference");
   for (const s of EXPECTED.steps)
     await writePng(join(ref, "shots", `step-${s.step}.png`), s.step);
+  await writePng(join(ref, "shots", `frame-${TIE_FRAME}.png`), 1);
   await writeText(join(ref, "steps.jsonl"), stepLog());
   await writeText(join(ref, "root.jsonl"), rootLog("x11"));
   await writeProcess(
@@ -918,35 +1035,73 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     0,
   );
 
-  for (const [leg, bad] of Object.entries(SABOTAGE)) {
+  for (const [leg, { bad, sabotage }] of Object.entries(SABOTAGE)) {
     const bytes = await writeCaptureLeg(join(out, leg, "capture"), {
       quit: SHORT_QUIT,
-      sabotage: { kind: "omit-update", frame: 11 },
+      sabotage,
     });
     await writeReceiverProcess(
       join(out, leg, "receiver"),
       projects,
-      bytes,
+      bytes.full,
       seqs,
       true,
     );
-    for (const [k, seq] of seqs.entries()) {
-      await writePng(
-        join(out, leg, "receiver", "shots", `seq-${seq}.png`),
-        k,
-        bad.includes(k) ? { perturb: [100, 100] } : {},
-      );
-    }
+    await writeShots(join(out, leg, "receiver"), seqs, bad);
   }
+
+  // The patch sink drops the Marker's step-5 entry, so it resolves to a stale Marker until step 6.
+  const drop = await writeCaptureLeg(
+    join(out, "sabotage-patch-drop", "capture"),
+    {
+      quit: SHORT_QUIT,
+      sabotage: { kind: "patch-drop-item", frame: S + N * 5 },
+      dropMarkerAt: S + N * 5,
+    },
+  );
+  await writeReceiverProcess(
+    join(out, "sabotage-patch-drop", "receiver"),
+    projects,
+    drop.patch,
+    seqs,
+    true,
+  );
+  await writeShots(join(out, "sabotage-patch-drop", "receiver"), seqs);
+
+  // tie-overlap: the same tie, with T over P; the tie frame is shot on both sides (measured).
+  const overlap = await writeCaptureLeg(join(out, "tie-overlap", "capture"), {
+    quit: SHORT_QUIT,
+    tieOverlap: true,
+  });
+  await writeReceiverProcess(
+    join(out, "tie-overlap", "receiver"),
+    projects,
+    overlap.full,
+    [...seqs, TIE_FRAME, TIE_FRAME + 1],
+    true,
+  );
+  await writeShots(join(out, "tie-overlap", "receiver"), seqs);
+  for (const frame of [TIE_FRAME, TIE_FRAME + 1]) {
+    // Stand-ins: the measurement is reported, not gated.
+    await writePng(
+      join(out, "tie-overlap", "receiver", "shots", `seq-${frame}.png`),
+      1,
+    );
+    await writePng(
+      join(out, "tie-overlap", "reference", "shots", `frame-${frame}.png`),
+      1,
+      frame === TIE_FRAME ? { perturb: [120, 120] } : {},
+    );
+  }
+
   const observe = await writeCaptureLeg(
     join(out, "root-size-observe", "capture"),
-    { quit: SHORT_QUIT },
-    { policy: "observe" },
+    { quit: SHORT_QUIT, policy: "observe" },
   );
   await writeReceiverProcess(
     join(out, "root-size-observe", "receiver"),
     projects,
-    observe,
+    observe.full,
     seqs,
     true,
   );
@@ -968,10 +1123,12 @@ interface Scenario {
   mutate?: (out: string, projects: Projects) => Promise<void>;
   expected?: (e: Gate1Expected) => Gate1Expected;
   checks?: Record<string, boolean>;
-  classes?: Partial<Record<G1aLeg, Gate1Class>>;
+  classes?: Partial<Record<Gate1Leg, Gate1Class>>;
   report?: (report: Gate1Report) => void;
   gatePassed?: boolean;
 }
+
+const ALL_LEGS = [...G1A_CLASSIFIED_LEGS, ...G1B_CLASSIFIED_LEGS];
 
 const ALL_CHECK_IDS = [
   "expected-self-consistent",
@@ -984,25 +1141,45 @@ const ALL_CHECK_IDS = [
   "expected-image-receiver",
   "receiver-vs-reference",
   "retained-invariants",
-  "no-draw-index-ties",
   "root-geometry",
   "receiver-consumed-stream",
   "receiver-never-loaded-fixture",
   "receiver-typed-clean",
-  ...G1A_CLASSIFIED_LEGS.map((leg) => `leg-class-${leg}`),
+  "patch-resolves-to-full",
+  "patch-first-full",
+  "patch-transform-only",
+  "patch-vs-full-pixels",
+  "patch-vs-full-receiver-state",
+  "patch-bytes",
+  "draw-index-ties",
+  "tie-frame-pixels",
+  ...ALL_LEGS.map((leg) => `leg-class-${leg}`),
 ];
 
+/** Rewrites the main capture (both sinks) and keeps both receivers consistent with it, so only
+ * the targeted checks move. */
 const rewriteCapture =
   (opts: RecordingOptions) => async (out: string, projects: Projects) => {
-    const bytes = encodeRecording(opts);
-    await writeFile(join(out, "capture", "recording.rs0"), bytes);
-    // Keep the receiver consistent with the capture, so only the targeted checks move.
+    const full = encodeRecording(opts);
+    const patch = encodePatchRecording(opts);
+    await writeFile(join(out, "capture", "recording.rs1"), full);
+    await writeFile(join(out, "capture", "recording-patch.rs1"), patch);
+    const shots = [...settleSeqs(), TIE_FRAME];
     await writeReceiverProcess(
       join(out, "receiver"),
       projects,
-      bytes,
-      settleSeqs(),
+      full,
+      shots,
       true,
+      settleSeqs(),
+    );
+    await writeReceiverProcess(
+      join(out, "receiver-patch"),
+      projects,
+      patch,
+      shots,
+      true,
+      settleSeqs(),
     );
   };
 
@@ -1011,38 +1188,65 @@ const scenarios: Scenario[] = [
     name: "the good tree passes every check, every leg at its expected class",
     checks: Object.fromEntries(ALL_CHECK_IDS.map((id) => [id, true])),
     classes: Object.fromEntries(
-      G1A_CLASSIFIED_LEGS.map((leg) => [leg, G1A_EXPECTATIONS[leg].class]),
+      ALL_LEGS.map((leg) => [leg, GATE1_EXPECTATIONS[leg].class]),
     ),
     gatePassed: true,
     report: (r) => {
       assert("report: schema", r.schema === "render-stream-gate1-report/1");
       assert(
         "report: groups",
-        r.groups.run.join() === "g1a" && r.groups.not_run.length === 0,
+        r.groups.run.join() === "g1a,g1b" && r.groups.not_run.length === 0,
       );
       assert(
         "report: every leg present, support legs null-classed",
-        [...G1A_CLASSIFIED_LEGS, ...G1A_SUPPORT_LEGS].every(
-          (l) => l in r.legs,
-        ) && G1A_SUPPORT_LEGS.every((l) => r.legs[l].expected_class === null),
+        [...ALL_LEGS, ...G1A_SUPPORT_LEGS].every((l) => l in r.legs) &&
+          G1A_SUPPORT_LEGS.every((l) => r.legs[l].expected_class === null),
       );
       assert(
-        "report: 66 checkpoints (6 receiver legs x 11 steps), each with leg, stream and 8 regions",
-        r.checkpoints.length === 66 &&
+        "report: 110 checkpoints (10 shooting receiver legs x 11 steps), each with leg, stream and 9 regions",
+        r.checkpoints.length === 110 &&
           r.checkpoints.every(
-            (c) =>
-              c.stream === "full" &&
-              c.regions.length === 8 &&
-              typeof c.leg === "string",
-          ),
+            (c) => c.regions.length === 9 && typeof c.leg === "string",
+          ) &&
+          r.checkpoints.filter((c) => c.stream === "patch").length === 22,
         `${r.checkpoints.length}`,
       );
       assert(
-        "report: stream.full from the capture end record",
-        r.stream.full.transactions === CAPTURE_QUIT,
+        "report: stream.full and stream.patch from the capture end records",
+        r.stream.full.transactions === CAPTURE_QUIT &&
+          r.stream.patch?.patch_transactions === CAPTURE_QUIT - 1 &&
+          r.stream.patch?.full_transactions === 1,
       );
       assert(
-        "report: root_geometry has the host declaration, 11 equal per-step transforms",
+        "report: patch_bytes recorded",
+        (r.patch_bytes?.patch.bytes_total ?? 0) > 0 &&
+          (r.patch_bytes?.patch.bytes_total ?? 0) <
+            (r.patch_bytes?.full.bytes_total ?? 0),
+      );
+      assert(
+        "report: the capture's one harmless tie at frame 11 between P (1) and T (20)",
+        r.ties?.capture.length === 1 &&
+          r.ties.capture[0].frame === TIE_FRAME &&
+          r.ties.capture[0].members.join() === "1,20" &&
+          r.ties.capture[0].harmless === true &&
+          r.ties.tie_overlap.length === 1 &&
+          r.ties.tie_overlap[0].harmless === false,
+        JSON.stringify(r.ties),
+      );
+      assert(
+        "report: tie_overlap_pixels measured at frames 11 and 12 (receiver vs reference 1 and 0 px, the reference's frames 1 px apart)",
+        JSON.stringify(r.ties?.tie_overlap_pixels?.frames) === "[11,12]" &&
+          JSON.stringify(r.ties?.tie_overlap_pixels?.receiver_vs_reference) ===
+            "[1,0]" &&
+          r.ties?.tie_overlap_pixels?.reference_tie_vs_next === 1,
+        JSON.stringify(r.ties?.tie_overlap_pixels),
+      );
+      assert(
+        "report: the capture leg lists its harmless tie",
+        (r.legs.capture.harmless_ties ?? []).join() === `${TIE_FRAME}:1`,
+      );
+      assert(
+        "report: root_geometry has the session declaration, 11 equal per-step transforms",
         r.root_geometry?.status === "match" &&
           r.root_geometry.per_step.length === 11 &&
           r.root_geometry.per_step.every((p) => p.equal),
@@ -1108,10 +1312,14 @@ const scenarios: Scenario[] = [
     name: "a recording without its end record fails recording-decodes and makes capture capture-failure",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs0"),
+        join(out, "capture", "recording.rs1"),
         encodeRecording({ quit: CAPTURE_QUIT, noEnd: true }),
       ),
-    checks: { "recording-decodes": false, "leg-class-capture": false },
+    checks: {
+      "recording-decodes": false,
+      "leg-class-capture": false,
+      "patch-resolves-to-full": false,
+    },
     classes: { capture: "capture-failure" },
   },
   {
@@ -1151,8 +1359,9 @@ const scenarios: Scenario[] = [
       "receiver-vs-reference": false,
       "expected-image-receiver": true,
       "leg-class-receiver": false,
+      "patch-vs-full-pixels": false,
     },
-    classes: { receiver: "pixel-mismatch" },
+    classes: { receiver: "pixel-mismatch", "receiver-patch": "pixel-mismatch" },
   },
   {
     name: "one changed receiver pixel in the lifetime region fails expected-image-receiver and receiver-vs-reference",
@@ -1166,6 +1375,7 @@ const scenarios: Scenario[] = [
       "expected-image-receiver": false,
       "receiver-vs-reference": false,
       "leg-class-receiver": false,
+      "patch-vs-full-pixels": false,
     },
     report: (r) =>
       assert(
@@ -1182,17 +1392,44 @@ const scenarios: Scenario[] = [
   {
     name: "a step 3 that never swaps the draw indices fails retained-invariants",
     mutate: rewriteCapture({ quit: CAPTURE_QUIT, noSwap: true }),
-    checks: { "retained-invariants": false, "no-draw-index-ties": true },
+    checks: { "retained-invariants": false, "draw-index-ties": true },
   },
   {
-    name: "a canvas move that also redraws every item fails retained-invariants",
+    name: "a canvas move that also redraws every item fails retained-invariants and patch-transform-only",
     mutate: rewriteCapture({ quit: CAPTURE_QUIT, redrawAtShift: true }),
-    checks: { "retained-invariants": false },
+    checks: { "retained-invariants": false, "patch-transform-only": false },
   },
   {
-    name: "two drawing siblings with one draw_index fail no-draw-index-ties (and the swap invariant)",
+    name: "overlapping siblings Q1/Q2 at one draw_index: an undeclared, overlapping tie -> draw-index-ties fails, capture unsupported",
     mutate: rewriteCapture({ quit: CAPTURE_QUIT, tie: true }),
-    checks: { "no-draw-index-ties": false, "retained-invariants": false },
+    checks: {
+      "draw-index-ties": false,
+      "retained-invariants": false,
+      "leg-class-capture": false,
+      "leg-class-receiver": false,
+    },
+    classes: { capture: "unsupported", receiver: "unsupported" },
+  },
+  {
+    name: "a T that is never raised keeps its harmless tie: draw-index-ties fails (undeclared frames), the capture is still success",
+    mutate: rewriteCapture({ quit: CAPTURE_QUIT, noTieRaise: true }),
+    checks: {
+      "draw-index-ties": false,
+      "leg-class-capture": true,
+      "retained-invariants": false,
+    },
+    classes: { capture: "success" },
+  },
+  {
+    name: "a T overlapping P in the main capture: draw-index-ties fails (not harmless) and the capture is unsupported",
+    mutate: rewriteCapture({ quit: CAPTURE_QUIT, tieOverlap: true }),
+    checks: { "draw-index-ties": false, "leg-class-capture": false },
+    classes: { capture: "unsupported" },
+  },
+  {
+    name: "a step 2 that also redraws P fails patch-transform-only",
+    mutate: rewriteCapture({ quit: CAPTURE_QUIT, redrawP2: true }),
+    checks: { "patch-transform-only": false, "patch-resolves-to-full": true },
   },
   {
     name: "a capture recording without step 10's canvas move fails root-geometry",
@@ -1209,36 +1446,26 @@ const scenarios: Scenario[] = [
     checks: { "root-geometry": false },
   },
   {
-    name: "a capture declared degenerate under observe fails root-geometry and classifies capture unsupported",
-    mutate: (out) =>
-      writeJson(
-        join(out, "capture", "evidence", "root.json"),
-        rootEvidence("observe"),
-      ),
+    name: "a capture session declared degenerate under observe fails root-geometry and manifest-present and classifies capture unsupported",
+    mutate: rewriteCapture({ quit: CAPTURE_QUIT, policy: "observe" }),
     checks: {
       "root-geometry": false,
+      "manifest-present": false,
       "leg-class-capture": false,
       "leg-class-receiver": false,
     },
     classes: { capture: "unsupported", receiver: "unsupported" },
   },
   {
-    name: "a failed enforcement classifies capture-failure (root-size-enforce-failed)",
-    mutate: (out) =>
-      editJson<RootEvidence>(
-        join(out, "capture", "evidence", "root.json"),
-        (r) => {
-          r.enforce = { called: true, ok: false, detail: "degenerate-window" };
-          r.host_size_status = "degenerate-window";
-        },
-      ),
+    name: "a failed enforcement (root-size-enforce-failed) classifies capture-failure",
+    mutate: rewriteCapture({ quit: CAPTURE_QUIT, enforceFailed: true }),
     checks: { "root-geometry": false, "leg-class-capture": false },
     classes: { capture: "capture-failure", receiver: "capture-failure" },
   },
   {
-    name: "a missing root.json classifies capture-failure",
+    name: "a sabotage capture without its recording classifies capture-failure",
     mutate: (out) =>
-      rm(join(out, "sabotage-omit-order", "capture", "evidence", "root.json")),
+      rm(join(out, "sabotage-omit-order", "capture", "recording.rs1")),
     checks: { "leg-class-sabotage-omit-order": false },
     classes: { "sabotage-omit-order": "capture-failure" },
   },
@@ -1255,6 +1482,22 @@ const scenarios: Scenario[] = [
     classes: { receiver: "replay-failure" },
   },
   {
+    name: "a receiver-patch that echoes the full sink's hashes classifies replay-failure",
+    mutate: async (out) => {
+      const full = await readJsonFile<{
+        transactions: { record_sha256: string }[];
+      }>(join(out, "receiver", "applied.json"));
+      await editJson<{ transactions: { record_sha256: string }[] }>(
+        join(out, "receiver-patch", "applied.json"),
+        (a) => {
+          a.transactions = full.transactions;
+        },
+      );
+    },
+    checks: { "leg-class-receiver-patch": false },
+    classes: { "receiver-patch": "replay-failure" },
+  },
+  {
     name: "a successful openat under fixtures/ fails receiver-never-loaded-fixture",
     mutate: async (out, projects) => {
       const path = join(out, "receiver-headless-trace", "strace.txt");
@@ -1267,10 +1510,10 @@ const scenarios: Scenario[] = [
     checks: { "receiver-never-loaded-fixture": false },
   },
   {
-    name: "a [fixture] line in a sabotage receiver log fails receiver-never-loaded-fixture",
+    name: "a [fixture] line in a g1b receiver log fails receiver-never-loaded-fixture",
     mutate: (out) =>
       writeText(
-        join(out, "sabotage-omit-order", "receiver", "stdout.log"),
+        join(out, "receiver-patch", "stdout.log"),
         "[fixture] gate1 ready\n",
       ),
     checks: { "receiver-never-loaded-fixture": false },
@@ -1280,7 +1523,18 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeText(
         join(out, "receiver-typecheck", "selftest", "stdout.log"),
-        "[rs0-selftest] ok\nSCRIPT WARNING: unsafe\n",
+        "[rs1-selftest] ok\nSCRIPT WARNING: unsafe\n",
+      ),
+    checks: { "receiver-typed-clean": false },
+  },
+  {
+    name: "a golden replay that misses an unsupported entry fails receiver-typed-clean",
+    mutate: (out) =>
+      editJson<{ unsupported: unknown[] }>(
+        join(out, "receiver-typecheck", "minimal", "applied.json"),
+        (a) => {
+          a.unsupported = a.unsupported.slice(1);
+        },
       ),
     checks: { "receiver-typed-clean": false },
   },
@@ -1317,6 +1571,38 @@ const scenarios: Scenario[] = [
     checks: { "leg-class-sabotage-omit-visibility": false },
   },
   {
+    name: "an omit-free receiver that matches at step 9 fails leg-class-sabotage-omit-free",
+    mutate: (out) =>
+      writePng(
+        join(
+          out,
+          "sabotage-omit-free",
+          "receiver",
+          "shots",
+          `seq-${settleSeqs()[9]}.png`,
+        ),
+        9,
+      ),
+    checks: { "leg-class-sabotage-omit-free": false },
+    classes: { "sabotage-omit-free": "pixel-mismatch" },
+  },
+  {
+    name: "an omit-visible receiver also wrong at step 7 fails leg-class-sabotage-omit-visible",
+    mutate: (out) =>
+      writePng(
+        join(
+          out,
+          "sabotage-omit-visible",
+          "receiver",
+          "shots",
+          `seq-${settleSeqs()[7]}.png`,
+        ),
+        7,
+        { perturb: [100, 230] },
+      ),
+    checks: { "leg-class-sabotage-omit-visible": false },
+  },
+  {
     name: "a root-size-observe receiver wrong outside the corner regions fails its leg class",
     mutate: (out) =>
       writePng(
@@ -1337,28 +1623,179 @@ const scenarios: Scenario[] = [
     classes: { "root-size-observe": "unsupported" },
   },
   {
-    name: "a root-size-observe host declaring match (pixels still degenerate) classifies pixel-mismatch",
-    mutate: (out) =>
-      writeJson(
-        join(out, "root-size-observe", "capture", "evidence", "root.json"),
-        rootEvidence("enforce-min-size"),
-      ),
+    name: "a root-size-observe host whose session declares match (pixels still degenerate) classifies pixel-mismatch",
+    mutate: async (out, projects) => {
+      const bytes = encodeRecording({ quit: SHORT_QUIT });
+      await writeFile(
+        join(out, "root-size-observe", "capture", "recording.rs1"),
+        bytes,
+      );
+      await writeFile(
+        join(out, "root-size-observe", "capture", "recording-patch.rs1"),
+        encodePatchRecording({ quit: SHORT_QUIT }),
+      );
+      await writeReceiverProcess(
+        join(out, "root-size-observe", "receiver"),
+        projects,
+        bytes,
+        settleSeqs(),
+        true,
+      );
+    },
     checks: { "leg-class-root-size-observe": false },
     classes: { "root-size-observe": "pixel-mismatch" },
   },
   {
-    name: "a run without g1a reports not-run and fails the gate",
+    name: "a main capture whose patch sink diverges fails patch-resolves-to-full and classifies capture-failure (patch-divergence)",
+    mutate: async (out) => {
+      await writeFile(
+        join(out, "capture", "recording-patch.rs1"),
+        encodePatchRecording({ quit: CAPTURE_QUIT, dropMarkerAt: 41 }),
+      );
+    },
+    checks: {
+      "patch-resolves-to-full": false,
+      "leg-class-capture": false,
+      "leg-class-receiver-patch": false,
+    },
+    classes: {
+      capture: "capture-failure",
+      "receiver-patch": "capture-failure",
+    },
+    report: (r) =>
+      assert(
+        "report: the capture leg's reasons name patch-divergence",
+        r.legs.capture.reasons.some((x) => x.includes("patch-divergence")),
+      ),
+  },
+  {
+    name: "a patch sink with a full transaction mid-stream fails patch-first-full (it still resolves to the full sink)",
+    mutate: async (out) => {
+      await writeFile(
+        join(out, "capture", "recording-patch.rs1"),
+        encodePatchRecording({ quit: CAPTURE_QUIT, patchFullAt: [50] }),
+      );
+    },
+    checks: { "patch-first-full": false, "patch-resolves-to-full": true },
+  },
+  {
+    name: "a receiver-patch shot that differs at step 4 fails patch-vs-full-pixels and its leg class",
+    mutate: (out) =>
+      writePng(
+        join(out, "receiver-patch", "shots", `seq-${settleSeqs()[4]}.png`),
+        4,
+        { perturb: [300, 100] },
+      ),
+    checks: {
+      "patch-vs-full-pixels": false,
+      "leg-class-receiver-patch": false,
+      "receiver-vs-reference": true,
+    },
+    classes: { "receiver-patch": "pixel-mismatch" },
+  },
+  {
+    name: "a receiver-patch state dump that differs fails patch-vs-full-receiver-state",
+    mutate: (out) =>
+      editJson<{ items: { draw_index: number }[] }>(
+        join(out, "receiver-patch", "state", `seq-${settleSeqs()[3]}.json`),
+        (s) => {
+          s.items[0].draw_index += 1;
+        },
+      ),
+    checks: { "patch-vs-full-receiver-state": false },
+  },
+  {
+    name: "a missing receiver state dump fails patch-vs-full-receiver-state",
+    mutate: (out) =>
+      rm(join(out, "receiver", "state", `seq-${settleSeqs()[0]}.json`)),
+    checks: { "patch-vs-full-receiver-state": false },
+  },
+  {
+    name: "receivers that made different RS calls for one seq fail patch-vs-full-receiver-state",
+    mutate: (out) =>
+      editJson<{ transactions: { rs_calls: number }[] }>(
+        join(out, "receiver-patch", "applied.json"),
+        (a) => {
+          a.transactions[30].rs_calls += 1;
+        },
+      ),
+    checks: { "patch-vs-full-receiver-state": false },
+  },
+  {
+    name: "a reference tie-frame shot that differs from the receivers' fails tie-frame-pixels",
+    mutate: (out) =>
+      writePng(join(out, "reference", "shots", `frame-${TIE_FRAME}.png`), 1, {
+        perturb: [90, 310],
+      }),
+    checks: { "tie-frame-pixels": false },
+  },
+  {
+    name: "a missing receiver tie-frame shot fails tie-frame-pixels",
+    mutate: (out) =>
+      rm(join(out, "receiver-patch", "shots", `seq-${TIE_FRAME}.png`)),
+    checks: { "tie-frame-pixels": false },
+  },
+  {
+    name: "a tie-overlap capture whose T does not overlap classifies success and fails its leg class",
+    mutate: async (out, projects) => {
+      const full = encodeRecording({ quit: SHORT_QUIT });
+      await writeFile(
+        join(out, "tie-overlap", "capture", "recording.rs1"),
+        full,
+      );
+      await writeFile(
+        join(out, "tie-overlap", "capture", "recording-patch.rs1"),
+        encodePatchRecording({ quit: SHORT_QUIT }),
+      );
+      await writeReceiverProcess(
+        join(out, "tie-overlap", "receiver"),
+        projects,
+        full,
+        [...settleSeqs(), TIE_FRAME],
+        true,
+      );
+    },
+    checks: { "leg-class-tie-overlap": false },
+    classes: { "tie-overlap": "success" },
+  },
+  {
+    name: "a sabotage-patch-drop whose patch sink is faithful is not capture-failure and fails its leg class",
+    mutate: async (out) => {
+      await writeFile(
+        join(out, "sabotage-patch-drop", "capture", "recording-patch.rs1"),
+        encodePatchRecording({ quit: SHORT_QUIT }),
+      );
+    },
+    checks: { "leg-class-sabotage-patch-drop": false },
+  },
+  {
+    name: "a run with g1b but without g1a fails the gate",
     mutate: (out) =>
       writeJson(join(out, "legs.json"), {
-        groups_run: [],
-        groups_landed: ["g1a"],
+        groups_run: ["g1b"],
+        groups_landed: ["g1a", "g1b"],
       }),
     gatePassed: false,
     report: (r) =>
       assert(
-        "report: g1a not_run, checks not-run",
+        "report: g1a not_run and a failed g1b group check",
         r.groups.not_run.join() === "g1a" &&
-          r.checks.some((c) => c.status === "not-run"),
+          r.checks.some((c) => c.id === "group-g1b" && c.status === "fail"),
+      ),
+  },
+  {
+    name: "a run without g1a or g1b reports not-run and fails the gate",
+    mutate: (out) =>
+      writeJson(join(out, "legs.json"), {
+        groups_run: [],
+        groups_landed: ["g1a", "g1b"],
+      }),
+    gatePassed: false,
+    report: (r) =>
+      assert(
+        "report: g1a and g1b not_run, checks not-run",
+        r.groups.not_run.join() === "g1a,g1b" &&
+          r.checks.filter((c) => c.status === "not-run").length === 2,
       ),
   },
 ];
@@ -1368,23 +1805,18 @@ async function runScenarios(): Promise<void> {
   try {
     const templateProjects = await writeProjects(join(root, "template"));
     await buildGoodTree(join(root, "template", "out"), templateProjects);
-    assert(
-      "the fabricated capture recording validates",
-      validateRecording(
+    for (const name of ["recording.rs1", "recording-patch.rs1"]) {
+      const errors = validateRecording(
         new Uint8Array(
-          await readFile(
-            join(root, "template", "out", "capture", "recording.rs0"),
-          ),
+          await readFile(join(root, "template", "out", "capture", name)),
         ),
-      ).length === 0,
-      validateRecording(
-        new Uint8Array(
-          await readFile(
-            join(root, "template", "out", "capture", "recording.rs0"),
-          ),
-        ),
-      ).join("; "),
-    );
+      );
+      assert(
+        `the fabricated capture ${name} validates`,
+        errors.length === 0,
+        errors.join("; "),
+      );
+    }
     for (const [index, scenario] of scenarios.entries()) {
       const caseRoot = join(root, `case-${index}`);
       await cp(join(root, "template"), caseRoot, { recursive: true });
@@ -1421,6 +1853,12 @@ async function runScenarios(): Promise<void> {
           report.gate_passed === scenario.gatePassed,
         );
       }
+      if (scenario.checks && Object.values(scenario.checks).some((v) => !v)) {
+        assert(
+          `${scenario.name}: gate_passed false`,
+          report.gate_passed === false,
+        );
+      }
       scenario.report?.(report);
     }
   } finally {
@@ -1440,30 +1878,34 @@ function classifyUnitCases(): void {
     recording: rec,
     checkpoints: [],
   });
-  const enforced = rootEvidence("enforce-min-size");
-  const observed = rootEvidence("observe");
+  const session = (status: string) =>
+    ({
+      type: "session",
+      viewport: {
+        host_size_status: status,
+        logical_size: [640, 360],
+        host_window_size: status === "match" ? [640, 360] : [64, 64],
+      },
+    }) as unknown as Parameters<typeof classifyGate1>[1];
+  const matching = session("match");
+  const degenerate = session("degenerate-visible");
   assert(
-    "classifyGate1: a matching enforced host is success",
-    classifyGate1(base, enforced).result_class === "success",
+    "classifyGate1: a matching host with an equivalent patch sink is success",
+    classifyGate1(base, matching, []).result_class === "success",
   );
   assert(
-    "classifyGate1: no root.json is capture-failure",
-    classifyGate1(base, undefined).result_class === "capture-failure",
+    "classifyGate1: no session is capture-failure",
+    classifyGate1(base, undefined, []).result_class === "capture-failure",
   );
-  const failed = {
-    ...enforced,
-    host_size_status: "degenerate-window",
-    enforce: { called: true, ok: false, detail: "x" },
-  };
-  const f = classifyGate1(base, failed);
+  const div = classifyGate1(base, matching, ["frame 51: differs"]);
   assert(
-    "classifyGate1: a failed enforcement is capture-failure, not unsupported",
-    f.result_class === "capture-failure" &&
-      f.reasons.every((r) => !r.startsWith("unsupported")),
+    "classifyGate1: patch divergence is capture-failure (patch-divergence)",
+    div.result_class === "capture-failure" &&
+      div.reasons[0].includes("patch-divergence"),
   );
-  const u = classifyGate1(base, observed);
+  const u = classifyGate1(base, degenerate, []);
   assert(
-    "classifyGate1: degenerate under observe is unsupported (degenerate-host-size)",
+    "classifyGate1: a degenerate session is unsupported (degenerate-host-size)",
     u.result_class === "unsupported" &&
       u.reasons[0].includes("degenerate-host-size"),
   );
@@ -1495,7 +1937,7 @@ function classifyUnitCases(): void {
       },
     ],
   });
-  const both = classifyGate1(pm, observed);
+  const both = classifyGate1(pm, degenerate, []);
   assert(
     "classifyGate1: unsupported outranks pixel-mismatch and both reasons are kept",
     both.result_class === "unsupported" &&
@@ -1504,7 +1946,11 @@ function classifyUnitCases(): void {
   );
   assert(
     "classifyGate1: pixel-mismatch alone on a matching host",
-    classifyGate1(pm, enforced).result_class === "pixel-mismatch",
+    classifyGate1(pm, matching, []).result_class === "pixel-mismatch",
+  );
+  assert(
+    "classifyGate1: a divergent patch sink outranks degenerate-host-size",
+    classifyGate1(base, degenerate, ["x"]).result_class === "capture-failure",
   );
   const capFail = classifyLeg({
     captureResult: { status: "refused" },
@@ -1513,7 +1959,7 @@ function classifyUnitCases(): void {
   });
   assert(
     "classifyGate1: gate 0's capture-failure outranks degenerate-host-size",
-    classifyGate1(capFail, observed).result_class === "capture-failure",
+    classifyGate1(capFail, degenerate, []).result_class === "capture-failure",
   );
 }
 
@@ -1538,6 +1984,12 @@ function helperCases(): void {
       s3.rgba.slice((120 * 640 + 330) * 4, (120 * 640 + 330) * 4 + 4),
     ).join(",") === "255,102,0,255",
   );
+  assert(
+    "synthesizeGate1: T painted from step 1",
+    Array.from(
+      s3.rgba.slice((320 * 640 + 90) * 4, (320 * 640 + 90) * 4 + 4),
+    ).join(",") === "153,255,102,255",
+  );
   const s10 = synthesizeGate1(EXPECTED, 10);
   assert(
     "synthesizeGate1: step 10's Corner clipped at the viewport edge",
@@ -1546,14 +1998,17 @@ function helperCases(): void {
     ).join(",") === "204,204,51,255",
   );
 
-  const states = decodeStates(
+  const model = summarizeRecording(
+    "model",
     new Uint8Array(encodeRecording({ quit: SHORT_QUIT })),
   );
+  const states = statesOf(model);
   const names = mapNames(EXPECTED, states);
   assert(
-    "mapNames: 20 ids in creation order, colours cross-checked",
+    "mapNames: 21 ids in creation order (T = 20, L2 = 21), colours cross-checked",
     names.problems.length === 0 &&
-      names.byName.get("L2") === 20 &&
+      names.byName.get("T") === 20 &&
+      names.byName.get("L2") === 21 &&
       names.byName.get("Corner") === 16,
     names.problems.join("; "),
   );
@@ -1563,16 +2018,49 @@ function helperCases(): void {
     inv.problems.length === 0 && inv.evaluated > 40,
     inv.problems.join("; "),
   );
+  const ties = recordingTies(model);
   assert(
-    "findDrawIndexTies: the model has none",
-    findDrawIndexTies(states).length === 0,
+    "recordingTies: the model's only tie is T with P at frame 11, harmless",
+    ties.length === 1 &&
+      ties[0].frame === TIE_FRAME &&
+      ties[0].members.join() === "1,20" &&
+      ties[0].harmless,
+    JSON.stringify(ties),
   );
-  const tied = decodeStates(
-    new Uint8Array(encodeRecording({ quit: SHORT_QUIT, tie: true })),
+  const overlap = recordingTies(
+    summarizeRecording(
+      "overlap",
+      new Uint8Array(encodeRecording({ quit: SHORT_QUIT, tieOverlap: true })),
+    ),
   );
   assert(
-    "findDrawIndexTies: a step 3 tie under Q is found",
-    findDrawIndexTies(tied).some((t) => t.includes("item 4")),
+    "recordingTies: with T over P the same tie is not harmless",
+    overlap.length === 1 && overlap[0].harmless === false,
+    JSON.stringify(overlap),
+  );
+  const tied = recordingTies(
+    summarizeRecording(
+      "tied",
+      new Uint8Array(encodeRecording({ quit: SHORT_QUIT, tie: true })),
+    ),
+  );
+  assert(
+    "recordingTies: a step 3 tie under Q (item 4) is found, overlapping",
+    tied.some((t) => t.container === "item:4" && !t.harmless),
+  );
+  const patch = summarizeRecording(
+    "patch",
+    new Uint8Array(encodePatchRecording({ quit: SHORT_QUIT })),
+  );
+  assert(
+    "the model's patch recording validates and resolves to the full one",
+    patch.errors.length === 0 &&
+      patch.transactions.every(
+        (t, i) =>
+          JSON.stringify(t.meta.items) ===
+          JSON.stringify(model.transactions[i].meta.items),
+      ),
+    patch.errors.join("; "),
   );
 }
 
