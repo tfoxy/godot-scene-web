@@ -70,6 +70,7 @@ import {
   writeJson,
   writeText,
 } from "./gate2b-fixture";
+import { buildG2cTree, HTTP_RESOURCES } from "./gate2c-fixture";
 import { texturePayload } from "./rs2-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -378,6 +379,37 @@ const G2B_CHECKS = [
   ...G2B_LEGS.map((leg) => `leg-class-${leg}`),
 ];
 
+const G2C_LEGS = [
+  "live",
+  "live-warm",
+  "live-replay",
+  "live-headless",
+  "live-stall",
+  "live-reconnect",
+  "live-animate",
+  "sabotage-unpin",
+  "sabotage-drop-resource",
+  "sabotage-wrong-hash-live",
+];
+const G2C_CHECKS = [
+  "live-tap-equals-received",
+  "live-resolves-to-recording",
+  "live-credit-bounded",
+  "live-acks-staged",
+  "live-vs-reference",
+  "live-replay-equals-live",
+  "http-gets-match-fetches",
+  "gets-advertised",
+  "fetch-before-applied",
+  "pins-bounded",
+  "obsolete-retired",
+  "stall-newest-texture",
+  "reconnect-no-refetch",
+  "transform-only-no-resource-traffic-live",
+  "warm-host-no-gets",
+  ...G2C_LEGS.map((leg) => `leg-class-${leg}`),
+];
+
 /** applied.json /3, as far as the scenarios edit it. */
 interface AppliedEdit {
   status: string;
@@ -507,6 +539,7 @@ async function main(): Promise<void> {
   try {
     const good = join(root, "good");
     await buildTree(good, EXPECTED);
+    await buildG2cTree(good, EXPECTED);
     const report = await run(good);
     const bad = report.checks.filter((c) => c.status !== "pass");
     assert(
@@ -515,20 +548,21 @@ async function main(): Promise<void> {
       bad.map((c) => `${c.id}: ${c.detail}`).join(" | "),
     );
     assert(
-      "good tree: the checks are the G2a set, then the G2b set",
-      [...G2A_CHECKS, ...G2B_CHECKS].join(",") ===
+      "good tree: the checks are the G2a set, then the G2b set, then the G2c set",
+      [...G2A_CHECKS, ...G2B_CHECKS, ...G2C_CHECKS].join(",") ===
         report.checks.map((c) => c.id).join(","),
       report.checks.map((c) => c.id).join(","),
     );
-    const misclassified = G2B_LEGS.filter(
+    const misclassified = [...G2B_LEGS, ...G2C_LEGS].filter(
       (leg) =>
         report.legs[leg]?.result_class !== report.legs[leg]?.expected_class,
     );
     assert(
-      "good tree: the capture leg is success and every g2b leg lands in its expected class",
+      "good tree: the capture leg is success and every g2b and g2c leg lands in its expected class",
       report.legs.capture?.result_class === "success" &&
         misclassified.length === 0 &&
-        Object.keys(report.legs).length === 1 + 5 + G2B_LEGS.length + 3,
+        Object.keys(report.legs).length ===
+          1 + 5 + G2B_LEGS.length + 3 + G2C_LEGS.length,
       `${misclassified.join(",")}; ${Object.keys(report.legs).length} legs`,
     );
     assert(
@@ -725,6 +759,15 @@ async function main(): Promise<void> {
         "leg-class-receiver-patch",
         "leg-class-receiver-inline",
         "leg-class-sabotage-omit-replace",
+        // g2c: every rendered live receiver is held to the same reference.
+        "live-vs-reference",
+        "stall-newest-texture",
+        "leg-class-live",
+        "leg-class-live-warm",
+        "leg-class-live-replay",
+        "leg-class-live-stall",
+        "leg-class-live-reconnect",
+        "leg-class-live-animate",
       ],
     );
     await scenario(
@@ -802,6 +845,7 @@ async function main(): Promise<void> {
         // A whole tree whose fixture draws no add_texture_rect, every leg consistent with it.
         await rm(out, { recursive: true, force: true });
         await buildTree(out, EXPECTED, { noTextureRect: true });
+        await buildG2cTree(out, EXPECTED);
       },
       ["leg-class-capture"],
     );
@@ -1462,6 +1506,331 @@ async function main(): Promise<void> {
       ["leg-class-sabotage-receiver-ignore-cache"],
     );
 
+    // ---- g2c: live resources over HTTP ---------------------------------------------------
+    const liveApplied = (out: string, leg: string) =>
+      leg === "live-replay"
+        ? join(out, leg, "applied.json")
+        : join(out, leg, "receiver", "applied.json");
+    type LiveAppliedEdit = {
+      status: string;
+      failure: { seq: number; reason: string; detail?: string } | null;
+      end_seen: boolean;
+      transactions: Array<{
+        stream: number;
+        seq: number;
+        frame: number;
+        received_us: number | null;
+        applied_us: number | null;
+        resources: Record<string, number> | null;
+      }>;
+      fetches: Array<{
+        stream: number;
+        seq: number;
+        hash: string;
+        end_us: number;
+        headers: Record<string, string>;
+      }>;
+      live: { stall: { after_frame: number } | null };
+    };
+    const editLive = (
+      out: string,
+      leg: string,
+      edit: (a: LiveAppliedEdit) => void,
+    ) => editJson<LiveAppliedEdit>(liveApplied(out, leg), edit);
+    const hostLog = (out: string, leg: string) =>
+      join(out, leg, "host", "evidence", "resources.jsonl");
+    await scenario(
+      root,
+      good,
+      "live-received-short",
+      async (out) => {
+        const path = join(out, "live", "receiver", "received.rs2");
+        const bytes = await readFile(path);
+        await writeBytes(path, bytes.subarray(0, bytes.length - 10));
+      },
+      ["live-tap-equals-received", "leg-class-live"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-tap-not-the-recording",
+      async (out) => {
+        // The tap (and what the receiver read) carries, at one frame, a state the host's full
+        // recording does not hold there: the marker one step early.
+        const model = buildModel(EXPECTED, {
+          quit: EXPECTED.quit_frame_default,
+        });
+        const sends = Array.from(
+          { length: EXPECTED.quit_frame_default - 4 },
+          (_, i) => i + 5,
+        );
+        const states = sends.map((f) => model.states[f - 1]);
+        states[25] = { ...model.states[40], frame: states[25].frame };
+        const tap = encodeSink(states, "patch", {
+          sessionId: "0123456789abcdef0123456789abc0de",
+          transport: "websocket",
+          connection: 1,
+          resources: HTTP_RESOURCES,
+        });
+        await writeBytes(join(out, "live", "host", "tap", "stream-1.rs2"), tap);
+        await writeBytes(join(out, "live", "receiver", "received.rs2"), tap);
+      },
+      ["live-resolves-to-recording", "leg-class-live"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-two-in-flight",
+      async (out) => {
+        await editText(join(out, "live", "host", "tap", "live-1.jsonl"), (t) =>
+          t
+            .split("\n")
+            .filter(
+              (l) => !(l.includes('"event":"ack"') && l.includes('"seq":10,')),
+            )
+            .join("\n"),
+        );
+      },
+      ["live-credit-bounded", "leg-class-live"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-acks-unordered",
+      async (out) => {
+        await editLive(out, "live", (a) => {
+          const t = a.transactions[19];
+          t.applied_us = (t.received_us ?? 0) - 1;
+        });
+      },
+      ["live-acks-staged"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-get-unadvertised",
+      async (out) => {
+        await editLog(hostLog(out, "live"), (ls) => [
+          ...ls,
+          line({
+            frame: 15,
+            thread: "other",
+            op: "http-get",
+            hash: CONTENT.E.hash,
+            payload_bytes: CONTENT.E.payload.length,
+            conn: 1,
+            http_status: 200,
+          }),
+        ]);
+      },
+      ["http-gets-match-fetches", "gets-advertised", "leg-class-live"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-fetch-after-applied",
+      async (out) => {
+        await editLive(out, "live", (a) => {
+          const f = a.fetches[0];
+          const t = a.transactions.find((x) => x.seq === f.seq);
+          f.end_us = (t?.applied_us ?? 0) + 1;
+        });
+      },
+      ["fetch-before-applied"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-cache-control-wrong",
+      async (out) => {
+        await editLive(out, "live", (a) => {
+          a.fetches[0].headers["Cache-Control"] = "no-cache";
+        });
+      },
+      ["http-gets-match-fetches"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-pin-missing",
+      async (out) => {
+        await editLog(hostLog(out, "live"), (ls) =>
+          ls.filter((l) => !(l.op === "pin" && l.hash === CONTENT.A1.hash)),
+        );
+      },
+      ["pins-bounded"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-never-retired",
+      async (out) => {
+        await editLog(hostLog(out, "live"), (ls) =>
+          ls.filter((l) => !(l.op === "retire" && l.hash === CONTENT.A1.hash)),
+        );
+      },
+      ["pins-bounded", "obsolete-retired"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-stall-misses-step-6",
+      async (out) => {
+        await editLive(out, "live-stall", (a) => {
+          if (a.live.stall)
+            a.live.stall.after_frame = stepFrames2(EXPECTED, 6).applied + 1;
+        });
+      },
+      ["stall-newest-texture"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-reconnect-refetches",
+      async (out) => {
+        await editLive(out, "live-reconnect", (a) => {
+          const first = a.transactions.find((t) => t.stream === 2);
+          if (first?.resources) first.resources.fetched = 1;
+        });
+      },
+      ["reconnect-no-refetch"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-transform-only-hit",
+      async (out) => {
+        await editLive(out, "live", (a) => {
+          const t = a.transactions.find(
+            (x) => x.frame === stepFrames2(EXPECTED, 2).applied + 3,
+          );
+          if (t?.resources) t.resources.cache_hits = 1;
+        });
+      },
+      ["transform-only-no-resource-traffic-live", "leg-class-live"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-warm-host-gets",
+      async (out) => {
+        await editLog(hostLog(out, "live-warm"), (ls) => [
+          ...ls,
+          line({
+            frame: 7,
+            thread: "other",
+            op: "http-get",
+            hash: CONTENT.A0.hash,
+            payload_bytes: CONTENT.A0.payload.length,
+            conn: 1,
+            http_status: 200,
+          }),
+        ]);
+      },
+      ["http-gets-match-fetches", "warm-host-no-gets"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-replay-state-differs",
+      async (out) => {
+        const shot = (
+          JSON.parse(await readFile(liveApplied(out, "live"), "utf8")) as {
+            shots: Array<{ seq: number }>;
+          }
+        ).shots[3];
+        await writeText(
+          join(out, "live-replay", "state", `seq-${shot.seq}.json`),
+          "{}",
+        );
+      },
+      ["live-replay-equals-live"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-replay-fails",
+      async (out) => {
+        await editLive(out, "live-replay", (a) => {
+          a.status = "replay-failure";
+          a.failure = { seq: 3, reason: "resource-unavailable" };
+        });
+      },
+      ["live-vs-reference", "live-replay-equals-live", "leg-class-live-replay"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-headless-fails",
+      async (out) => {
+        await editLive(out, "live-headless", (a) => {
+          a.status = "replay-failure";
+          a.failure = { seq: 9, reason: "resource-invalid" };
+        });
+      },
+      ["leg-class-live-headless"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-animate-anim-off",
+      async (out) => {
+        const a = JSON.parse(
+          await readFile(liveApplied(out, "live-animate"), "utf8"),
+        ) as { shots: Array<{ seq: number; step: number }> };
+        const s = a.shots[2];
+        const tx = (
+          JSON.parse(
+            await readFile(liveApplied(out, "live-animate"), "utf8"),
+          ) as {
+            transactions: Array<{ seq: number; frame: number }>;
+          }
+        ).transactions.find((t) => t.seq === s.seq);
+        // The ANIM content of the next frame: right everywhere except the anim region.
+        await writeBytes(
+          join(out, "live-animate", "receiver", "shots", `seq-${s.seq}.png`),
+          await shotPng(EXPECTED, s.step, {
+            variant: "animate",
+            frame: (tx?.frame ?? 0) + 1,
+          }),
+        );
+      },
+      ["live-vs-reference", "leg-class-live-animate"],
+    );
+    await scenario(
+      root,
+      good,
+      "sabotage-unpin-served",
+      async (out) => {
+        await editLive(out, "sabotage-unpin", (a) => {
+          a.failure = { seq: 1, reason: "resource-invalid" };
+        });
+      },
+      ["leg-class-sabotage-unpin"],
+    );
+    await scenario(
+      root,
+      good,
+      "sabotage-drop-resource-late",
+      async (out) => {
+        await editLive(out, "sabotage-drop-resource", (a) => {
+          if (a.failure) a.failure.seq += 1;
+        });
+      },
+      ["fetch-before-applied", "leg-class-sabotage-drop-resource"],
+    );
+    await scenario(
+      root,
+      good,
+      "sabotage-wrong-hash-live-unavailable",
+      async (out) => {
+        await editLive(out, "sabotage-wrong-hash-live", (a) => {
+          if (a.failure) a.failure.reason = "resource-unavailable";
+        });
+      },
+      ["leg-class-sabotage-wrong-hash-live"],
+    );
+
     // Every check of a passing tree is failed by some scenario (expected-self-consistent by
     // the pure cases).
     const never = report.checks
@@ -1478,30 +1847,30 @@ async function main(): Promise<void> {
     await cp(good, g2aOnly, { recursive: true });
     await writeJson(join(g2aOnly, "legs.json"), {
       groups_run: ["g2a"],
-      groups_landed: ["g2a", "g2b"],
+      groups_landed: ["g2a", "g2b", "g2c"],
     });
     const onlyA = await run(g2aOnly);
     assert(
-      "g2b not run: group-g2b is not-run, the g2a checks pass and the gate fails",
+      "g2b and g2c not run: group-g2b and group-g2c are not-run, the g2a checks pass and the gate fails",
       !onlyA.gate_passed &&
-        onlyA.checks.some(
-          (c) => c.id === "group-g2b" && c.status === "not-run",
+        ["group-g2b", "group-g2c"].every((id) =>
+          onlyA.checks.some((c) => c.id === id && c.status === "not-run"),
         ) &&
         onlyA.checks
-          .filter((c) => c.id !== "group-g2b")
+          .filter((c) => c.id !== "group-g2b" && c.id !== "group-g2c")
           .map((c) => `${c.id}:${c.status}`)
           .join(",") === G2A_CHECKS.map((id) => `${id}:pass`).join(","),
       onlyA.checks.map((c) => `${c.id}:${c.status}`).join(","),
     );
     await writeJson(join(g2aOnly, "legs.json"), {
       groups_run: [],
-      groups_landed: ["g2a", "g2b"],
+      groups_landed: ["g2a", "g2b", "g2c"],
     });
     const notRun = await run(g2aOnly);
     assert(
-      "nothing run: group-g2a and group-g2b are not-run and the gate fails",
+      "nothing run: group-g2a, group-g2b and group-g2c are not-run and the gate fails",
       !notRun.gate_passed &&
-        ["group-g2a", "group-g2b"].every((id) =>
+        ["group-g2a", "group-g2b", "group-g2c"].every((id) =>
           notRun.checks.some((c) => c.id === id && c.status === "not-run"),
         ),
       notRun.checks.map((c) => `${c.id}:${c.status}`).join(","),

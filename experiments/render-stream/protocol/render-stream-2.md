@@ -8,8 +8,10 @@ GDScript decoder (`receiver/rs2_decoder.gd`) plus the texture-payload reader
 (`receiver/rs_texture_payload.gd`), all checked byte-for-byte and state-for-state against
 `protocol/golden-2/`, per this text. G2b2 wired it in: the capture's texture mirror, publisher
 (`rs_publish`, both file sinks, the store directory and inline resource records) and live hub
-(`rs_live`, inline-only until G2c2) emit /2, the receiver consumes it in both modes, and the gate
-0, 1 and 2 runners check it. [render-stream-1.md](render-stream-1.md) is superseded; its codecs
+(`rs_live`) emit /2, the receiver consumes it in both modes, and the gate 0, 1 and 2 runners
+check it. Since G2c2 live connections follow the configured policy and serve out-of-band payloads
+over "HTTP (live)" below (`ServedResources` in `capture/src/rs_resource_store.h`; the receiver's
+`RsResourceFetcher`). [render-stream-1.md](render-stream-1.md) is superseded; its codecs
 left the capture library, and its TypeScript decoder and goldens stay as frozen, verified history.
 
 One G2b1 reading was corrected by G2b2: a texture entry's `payload_bytes` is the length of the

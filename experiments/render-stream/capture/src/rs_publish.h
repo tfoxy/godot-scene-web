@@ -110,10 +110,11 @@ struct ParseResult {
 // Accepted: freeze-frame, omit-update, perturb-transform, patch-drop-item, the live kinds
 // drop-message, ignore-credit and stale-coalesce (entry.cpp refuses them without
 // GRC_LIVE_LISTEN; rs_live.h acts on them), the G2b2 resource kinds stale-texture, wrong-hash
-// and spurious-texture-update, and omit-op with a non-empty `op` matching [a-z0-9_]+. Refused
-// (ok false, `error` says why; the caller must then publish nothing): any other kind --
-// drop-resource and unpin included, which G2c2 implements -- a `frame` that is not a decimal
-// integer >= 1 (digits only, no sign), and a non-empty `op` with any kind other than omit-op.
+// and spurious-texture-update, the G2c2 serving kinds drop-resource and unpin (entry.cpp refuses
+// them without GRC_LIVE_LISTEN; rs_resource_store.h ServedResources acts on them), and omit-op
+// with a non-empty `op` matching [a-z0-9_]+. Refused (ok false, `error` says why; the caller
+// must then publish nothing): any other kind, a `frame` that is not a decimal integer >= 1
+// (digits only, no sign), and a non-empty `op` with any kind other than omit-op.
 ParseResult parse_sabotage(const char *kind, const char *frame, const char *op);
 
 // 32 lowercase hex characters: 128 random bits from getrandom(). Used for both session_id and

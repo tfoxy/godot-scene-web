@@ -72,9 +72,20 @@
 // delivery is not inline (refused as resource-store-missing). A store write
 // failure ends the stream (resource-store-failed), as does more retained
 // payload than GRC_RESOURCE_BUDGET_BYTES (default 512 MiB;
-// resource-budget-exceeded): both land in result.json `stream.reason`. Live
-// connections are inline-only until G2c2: each declares delivery inline,
-// fetch none, and carries every payload it needs as resource records.
+// resource-budget-exceeded): both land in result.json `stream.reason`.
+//
+// Live resources (G2c2, gate2-design.md D6, D7, Q4 "Live: server, store and
+// pins"): every live connection declares the configured policy with fetch
+// http (`/resources/sha256/`); GRC_RESOURCE_INLINE_MAX_BYTES above 1 MiB is
+// refused with GRC_LIVE_LISTEN. The server's ResourceSource is a
+// ServedResources (rs_resource_store.h): at each frame callback the published
+// snapshot's payloads (and any stale-coalesce copy) are pinned before the hub
+// sends, and after the sends everything that is neither in that snapshot nor
+// in a connection's base (its last sent transaction) is retired; pins,
+// retirements and every GET the server answered go to the hook log
+// (`pin`, `retire`, `http-get`), and the retained bytes count against the
+// budget. Sabotages unpin and drop-resource (both need GRC_LIVE_LISTEN) act
+// there, and wrong-hash serves the store's corrupted copy.
 
 #include <algorithm>
 #include <chrono>
@@ -173,6 +184,10 @@ struct Live {
   std::string address;
   int64_t port = -1;
   std::string reason;
+  // G2c2: what the server serves over HTTP. Declared before `server`, which holds a pointer to
+  // it, so it outlives the server.
+  std::unique_ptr<rs::ServedResources> served;
+  rs2::ServingSummary serving;  // every GET the server answered, for the summary
   std::unique_ptr<live::Server> server;
   std::unique_ptr<rs2::ServerTransport> transport;
   std::unique_ptr<rs2::Hub> hub;
@@ -185,6 +200,21 @@ struct Live {
 
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
 constexpr uint64_t kLiveLingerNs = 1500ull * 1000ull * 1000ull;
+
+// G2c2 (gate2-design.md Q4): the largest inline threshold a live host accepts.
+constexpr uint64_t kLiveInlineMaxBytes = 1048576;
+
+bool is_lower_hex64(const std::string &text) {
+  if (text.size() != 64) {
+    return false;
+  }
+  for (const char c : text) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
 
 Live g_live;
 
@@ -693,6 +723,12 @@ void stream_start() {
     } else if (!live_config.tap_dir.empty() && live_config.tap_dir[0] != '/') {
       live_ok = false;
       why = "GRC_LIVE_TAP_DIR must be absolute";
+    } else if (g_stream.policy.inline_max_bytes > kLiveInlineMaxBytes) {
+      // gate2-design.md Q4: inline records over live share the credit window with the
+      // transaction, so the threshold is capped at 1 MiB; bigger payloads go over HTTP.
+      live_ok = false;
+      why = "GRC_RESOURCE_INLINE_MAX_BYTES above " + std::to_string(kLiveInlineMaxBytes) +
+            " with GRC_LIVE_LISTEN (inline over live is capped at 1 MiB)";
     }
     if (!live_ok) {
       live_decided("refused", why);
@@ -708,7 +744,9 @@ void stream_start() {
     std::string why;
     const bool live_kind = kind == rs2::SabotageKind::DropMessage ||
                            kind == rs2::SabotageKind::IgnoreCredit ||
-                           kind == rs2::SabotageKind::StaleCoalesce;
+                           kind == rs2::SabotageKind::StaleCoalesce ||
+                           kind == rs2::SabotageKind::DropResource ||
+                           kind == rs2::SabotageKind::Unpin;
     if (live_kind && !live_ok) {
       why = std::string(rs2::to_wire(kind)) + " needs GRC_LIVE_LISTEN";
     } else if (!files && (kind == rs2::SabotageKind::FreezeFrame ||
@@ -918,9 +956,15 @@ void stream_start() {
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();
     std::string error;
-    // No ResourceSource yet: G2c2 wires the resource store here. Every resource GET on this
-    // listener answers 404 until then (rs_ws.h Server::start()); gate 0/1 never issue one.
-    if (!g_live.server->start(server_config, /*source=*/nullptr, &error)) {
+    // G2c2: the served payloads answer every resource GET on this listener.
+    g_live.served = std::make_unique<rs::ServedResources>();
+    if (sabotage.config.kind == rs2::SabotageKind::Unpin) {
+      g_live.served->set_unpin_frame(sabotage.config.frame);
+    } else if (sabotage.config.kind == rs2::SabotageKind::DropResource) {
+      g_live.served->set_drop_frame(sabotage.config.frame);
+    }
+    g_live.serving.budget_bytes = g_stream.budget_bytes;
+    if (!g_live.server->start(server_config, g_live.served.get(), &error)) {
       g_live.server.reset();
       live_decided(error == "non-loopback" ? "refused" : "failed", error);
       if (!files) {
@@ -934,11 +978,9 @@ void stream_start() {
       g_live.transport = std::make_unique<rs2::ServerTransport>(g_live.server.get());
       rs2::Session tmpl = session;
       tmpl.stream = rs2::StreamInfo();
-      // gate2-design.md G2b2 "Live before HTTP": until G2c2 every live connection is inline,
-      // whatever the configuration, and never advertises a fetch path that does not exist yet.
-      rs2::ResourcePolicy live_policy = g_stream.policy;
-      live_policy.inline_max_bytes = live_policy.max_payload_bytes;
-      tmpl.resources = rs2::resources_info(live_policy, rs2::Fetch::Http);
+      // G2c2: every live connection follows the configured policy; out-of-band payloads come
+      // from GET /resources/sha256/<hash> on this listener.
+      tmpl.resources = rs2::resources_info(g_stream.policy, rs2::Fetch::Http);
       g_live.hub = std::make_unique<rs2::Hub>(g_live.transport.get(), live_config, tmpl);
       live_decided("listening", std::string());
     }
@@ -969,11 +1011,25 @@ void live_drain(uint64_t frame) {
     return;
   }
   for (const live::Event &event : g_live.server->take_events()) {
-    // G2c1 adds HttpGet (resource GETs on the same listener); the hub understands only the
-    // WebSocket session events. G2c2 wires a real ResourceSource and accounts for these in the
-    // live summary. Until then entry.cpp registers none (see live_open below), so this never
-    // fires in gate 0/1 -- but to_live_event()'s switch must stay exhaustive regardless.
-    if (event.kind == live::Event::HttpGet) continue;
+    if (event.kind == live::Event::HttpGet) {
+      // G2c2: one resource GET the server answered on its I/O thread, attributed to the
+      // connection streaming at the time and logged (http-get) with the I/O thread's time.
+      ++g_live.serving.http_gets;
+      if (event.http_status == 200) {
+        g_live.serving.http_bytes += event.bytes;
+      } else {
+        ++g_live.serving.http_errors;
+      }
+      const uint32_t conn =
+          g_live.hub->on_http_get(event.hash, event.http_status, event.bytes, event.t_ns, frame);
+      rs::TapContext ctx;
+      ctx.frame = frame;
+      ctx.t_ns = event.t_ns;
+      ctx.main_thread = false;
+      rs::resource_log().serve_event(ctx, "http-get", is_lower_hex64(event.hash) ? event.hash : "",
+                                     event.bytes, nullptr, conn, event.http_status, false);
+      continue;
+    }
     g_live.hub->on_event(rs2::to_live_event(event), frame);
   }
 }
@@ -991,7 +1047,29 @@ void live_close_and_stop() {
   }
   g_live.stopped = true;
   g_live.ending = false;
-  emit("live-summary.json", g_live.hub->summary_json());
+  if (g_live.served != nullptr) {
+    const rs::ServedResources::Totals totals = g_live.served->totals();
+    g_live.serving.pinned = totals.pinned;
+    g_live.serving.retired = totals.retired;
+    g_live.serving.retired_unpinned = totals.retired_unpinned;
+    g_live.serving.retained_max = totals.retained_max;
+    g_live.serving.retained_bytes_max = totals.retained_bytes_max;
+    g_live.serving.retained_end = g_live.served->retained();
+    g_live.serving.retained_bytes_end = g_live.served->retained_bytes();
+    g_live.serving.dropped_hash = g_live.served->dropped_hash();
+    g_live.serving.corrupted_hash =
+        g_stream.store != nullptr ? g_stream.store->corrupted_hash() : std::string();
+    log_line("live: resources http_gets=" + std::to_string(g_live.serving.http_gets) +
+             " http_bytes=" + std::to_string(g_live.serving.http_bytes) +
+             " http_errors=" + std::to_string(g_live.serving.http_errors) +
+             " pinned=" + std::to_string(totals.pinned) + " retired=" +
+             std::to_string(totals.retired) + " (unpin " +
+             std::to_string(totals.retired_unpinned) + ") retained_max=" +
+             std::to_string(totals.retained_max) +
+             " retained_bytes_max=" + std::to_string(totals.retained_bytes_max));
+  }
+  emit("live-summary.json",
+       g_live.hub->summary_json(g_live.served != nullptr ? &g_live.serving : nullptr));
   for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
     log_line("live: connection " + std::to_string(s.connection) + " stream " + s.stream_id +
              " offered=" + std::to_string(s.frames_offered) +
@@ -1048,6 +1126,7 @@ void stream_finish(rs2::EndReason reason) {
     return;
   }
   rs::mirror_enable(false);
+  live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first
   resources_finish();
   live_finish(reason, reason == rs2::EndReason::Shutdown);
   if (g_stream.publisher == nullptr) {
@@ -1118,7 +1197,10 @@ void stream_publish(uint64_t frame) {
   live_drain(frame);
   const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot(frame);
   const uint64_t epoch = rs::mirror_epoch();
-  if (g_stream.publisher == nullptr && !live_wants) {
+  // G2c2: with a live server the snapshot is taken at every callback, so the served set always
+  // holds the current state's payloads (D7), even when no connection takes a transaction.
+  const bool serving = g_live.hub != nullptr && g_live.served != nullptr && !g_live.stopped;
+  if (g_stream.publisher == nullptr && !live_wants && !serving) {
     if (g_live.hub != nullptr) {
       g_live.hub->on_frame(frame, monotonic_ns(), nullptr, epoch, 0);
     }
@@ -1127,13 +1209,18 @@ void stream_publish(uint64_t frame) {
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   const uint64_t snapshot_ns = monotonic_ns() - t0;
-  // gate2-design.md Q3: the retained payloads -- the mirror's current ones plus those the
-  // previous publication still pins -- stay within GRC_RESOURCE_BUDGET_BYTES.
+  // gate2-design.md Q3: the retained payloads -- the mirror's current ones, those the previous
+  // publication still pins and (G2c2) those still servable over HTTP -- stay within
+  // GRC_RESOURCE_BUDGET_BYTES.
   {
     rs::PayloadMap retained = snapshot.payloads;
     if (g_stream.publisher != nullptr && g_stream.publisher->last_published() != nullptr) {
       const rs::PayloadMap &pinned = g_stream.publisher->last_published()->payloads;
       retained.insert(pinned.begin(), pinned.end());
+    }
+    if (serving) {
+      const rs::PayloadMap served = g_live.served->retained_payloads();
+      retained.insert(served.begin(), served.end());
     }
     const uint64_t retained_bytes = rs::payload_map_bytes(retained);
     g_stream.retained_bytes_max = std::max(g_stream.retained_bytes_max, retained_bytes);
@@ -1161,8 +1248,30 @@ void stream_publish(uint64_t frame) {
     snapshot.state.frame = frame;
   }
   if (g_live.hub != nullptr) {
+    std::vector<rs::ServeEvent> events;
+    if (serving) {
+      // wrong-hash (G2b2/G2c2): the store corrupted its copy at this publish; serve the same.
+      if (g_stream.store != nullptr && !g_stream.store->corrupted_hash().empty()) {
+        g_live.served->corrupt(g_stream.store->corrupted_hash());
+      }
+      // Phase 1: everything the hub may send now is servable before it goes out.
+      std::vector<const rs::PayloadMap *> sendable = g_live.hub->held_payloads();
+      sendable.insert(sendable.begin(), &published->payloads);
+      g_live.served->pin(sendable, frame, &events);
+    }
     g_live.hub->on_frame(frame, monotonic_ns(), live_wants ? published : nullptr, epoch,
                          snapshot_ns);
+    if (serving) {
+      // Phase 2: retained := current ∪ every connection's base; the rest is retired.
+      g_live.served->retire(published->payloads, g_live.hub->base_payloads(), frame, &events);
+      rs::TapContext ctx;
+      ctx.frame = frame;
+      ctx.t_ns = monotonic_ns();
+      ctx.main_thread = true;
+      for (const rs::ServeEvent &e : events) {
+        rs::resource_log().serve_event(ctx, e.op, e.hash, e.bytes, e.reason, 0, -1, e.sabotage);
+      }
+    }
   }
 }
 

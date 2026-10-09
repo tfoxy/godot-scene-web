@@ -30,6 +30,14 @@
 //   omitted   true (the omit-op sabotage dropped the call from the capture)
 // G2b2 also writes publisher lines: op "store" and "inline", with `hash`,
 // `payload_bytes`, `status` ("ok" | "failed") and, for a live stream, `conn`.
+// G2c2 adds the live serving lines (serve_event): op "pin" (a hash became
+// servable over HTTP at this frame callback; `reason` "current"), "retire" (it
+// stopped being servable and its bytes were released; `reason` "superseded",
+// or "unpin" when the unpin sabotage retired a hash a connection's base still
+// names) and "http-get" (one resource GET the server answered: `hash` as
+// requested, `http_status`, `payload_bytes` the body size, `conn` the live
+// connection streaming at that time or null, `t_us` the I/O thread's time). A
+// drop-resource pin line carries "sabotage":true.
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
@@ -97,6 +105,11 @@ class ResourceLog {
   // connection (0 = null, a file sink).
   void resource_event(const TapContext &ctx, const char *op, const std::string &hash,
                       std::uint64_t payload_bytes, const char *status, std::uint64_t conn = 0);
+  // A live serving event (G2c2): op "pin", "retire" or "http-get" (see the
+  // header comment). `http_status` < 0 is null; `conn` 0 is null.
+  void serve_event(const TapContext &ctx, const char *op, const std::string &hash,
+                   std::uint64_t payload_bytes, const char *reason, std::uint64_t conn,
+                   std::int64_t http_status, bool sabotage);
   void canvas_texture_create(const TapContext &ctx, std::uint64_t rid);
   void canvas_texture_set_channel(const TapContext &ctx, std::uint64_t canvas_texture,
                                   std::int32_t channel, std::uint64_t texture);

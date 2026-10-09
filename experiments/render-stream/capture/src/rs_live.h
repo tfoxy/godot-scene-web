@@ -3,13 +3,18 @@
 // per-connection live log and tap, and the live summary (protocol/gate1-design.md "Q4. Delivery
 // model" and "G1c2"; protocol/render-stream-2.md "Live transport").
 //
-// Resources (G2b2, gate2-design.md "G2b2: Live before HTTP"): until G2c2 every live connection
-// declares `delivery: "inline"` and `fetch: "none"` (the caller's session template says so) and
-// carries every payload its transactions name as `resource` records: before a transaction goes
-// out, each `ok` image hash of its snapshot that this connection has not carried yet is sent as
-// one resource record per binary message, in the same credit window, in table (id) order. A
-// resource record larger than the message cap is `message-too-large` like a transaction. A
-// resync keeps what the connection already carried; a new connection carries everything again.
+// Resources (G2b2 inline, G2c2 over HTTP; gate2-design.md Q4): every live connection declares the
+// configured policy (the caller's session template): payloads of at most `inline_max_bytes` go
+// in band as `resource` records -- before a transaction goes out, each `ok` image hash of its
+// snapshot that this connection has not carried yet and that is small enough is sent as one
+// resource record per binary message, in the same credit window, in table (id) order; a resource
+// record larger than the message cap is `message-too-large` like a transaction; a resync keeps
+// what the connection already carried, a new connection carries everything again -- and every
+// larger payload is fetched by the receiver over HTTP (`fetch: "http"`) from the same listener.
+// The hub does not serve HTTP itself: it reports what each connection pins (the payloads of its
+// base, the last transaction sent on it; base_payloads()) so the caller's ServedResources
+// (rs_resource_store.h) keeps them servable until the next transaction, and it attributes every
+// GET the server answered to the connection streaming at the time (on_http_get).
 //
 // Engine-free and transport-agnostic: the Hub drives an abstract LiveTransport (production:
 // ServerTransport over grc::live::Server, rs_ws.h; tests: a fake), and takes snapshots that the
@@ -59,7 +64,8 @@
 //   stream-<connection>.rs2   the exact bytes of every binary message formed for that connection
 //                             (sent, or dropped by the sabotage), in order: a valid stream.
 //   live-<connection>.jsonl   one line per frame callback while the connection exists, plus
-//                             event lines (open, hello, ack, resync, close, error).
+//                             event lines (open, hello, ack, resync, close, error, resource and,
+//                             since G2c2, http-get).
 #ifndef GRC_RS_LIVE_H
 #define GRC_RS_LIVE_H
 
@@ -223,6 +229,11 @@ struct ConnectionSummary {
   std::uint64_t bytes_sent = 0;       // binary message bytes handed to the transport
   std::uint64_t resource_records = 0;  // G2b2: inline resource records sent (payloads carried)
   std::uint64_t resource_bytes = 0;    // G2b2: their payload bytes
+  // G2c2: resource GETs answered while this connection was the one streaming (on_http_get), the
+  // bytes of the 200 bodies, and how many were not 200.
+  std::uint64_t http_gets = 0;
+  std::uint64_t http_bytes = 0;
+  std::uint64_t http_errors = 0;
   bool end_sent = false;
   std::int64_t close_code = -1;  // -1: still open
   std::string closed_by;         // "host" | "receiver" | ""
@@ -234,6 +245,24 @@ struct ConnectionSummary {
   LatencyStats credit_rtt_us;
   // Host frames between a send and the frame callback that consumed its credit.
   LatencyStats credit_rtt_frames;
+};
+
+// The live host's HTTP serving totals (G2c2), for the summary's `resources` object: every GET
+// the server answered (attributed or not), and the ServedResources totals.
+struct ServingSummary {
+  std::uint64_t http_gets = 0;
+  std::uint64_t http_bytes = 0;
+  std::uint64_t http_errors = 0;
+  std::uint64_t pinned = 0;
+  std::uint64_t retired = 0;
+  std::uint64_t retired_unpinned = 0;
+  std::uint64_t retained_max = 0;
+  std::uint64_t retained_bytes_max = 0;
+  std::uint64_t retained_end = 0;
+  std::uint64_t retained_bytes_end = 0;
+  std::uint64_t budget_bytes = 0;
+  std::string dropped_hash;
+  std::string corrupted_hash;
 };
 
 class Hub {
@@ -275,8 +304,20 @@ class Hub {
 
   std::vector<ConnectionSummary> summaries() const;
   // render-stream-live-summary/1: {"schema", "connections":[...]} (pretty-printed).
-  std::string summary_json() const;
+  // `resources`, when given, is written as the summary's `resources` object (G2c2: the host's
+  // serving totals, entry.cpp).
+  std::string summary_json(const ServingSummary *resources = nullptr) const;
   std::size_t connections() const { return conns_.size(); }
+
+  // G2c2 pins (gate2-design.md D7): the payloads of the last transaction sent on every connection
+  // that is not closed (its base), and of every stale-coalesce copy a connection may still send.
+  std::vector<const rs::PayloadMap *> base_payloads() const;
+  std::vector<const rs::PayloadMap *> held_payloads() const;
+  // G2c2: one resource GET the server answered. It is attributed to the connection streaming at
+  // the time (one receiver at a time), counted in its summary and logged as an `http-get` event
+  // line in its live log. Returns that connection's number, or 0 when none was streaming.
+  std::uint32_t on_http_get(const std::string &hash, std::uint16_t status, std::uint64_t bytes,
+                            std::uint64_t t_ns, std::uint64_t frame);
 
  private:
   enum class State : std::uint8_t { AwaitHello, Streaming, Closed };

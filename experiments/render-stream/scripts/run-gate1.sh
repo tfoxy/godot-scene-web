@@ -470,8 +470,9 @@ finish_live_host() {
 
 # live_receiver <leg dir> <rendered|headless>: a live receiver on the current host's port, with
 # --max-fps 60. Rendered receivers shoot the step windows (credit stage submitted); the headless
-# one runs under strace -e openat (receiver-never-loaded-fixture) with credit stage applied. No
-# cache: until G2c2 every live stream is inline (delivery "inline", fetch "none").
+# one runs under strace -e openat (receiver-never-loaded-fixture) with credit stage applied. Each
+# has a fresh cache at <leg>/receiver/cache: since G2c2 a live stream declares the configured
+# out-of-band policy (fetch http), which needs one, although no gate 1 command names a texture.
 # LIVE_RECEIVER_ENV (reset after the call) adds receiver words, e.g. RS_RECEIVER_STALL (g1d).
 LIVE_RECEIVER_ENV=()
 live_receiver() {
@@ -484,7 +485,7 @@ live_receiver() {
 	fi
 	LEG_ENV=(
 		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
-		RS_RECEIVER_OUT="$dir/applied.json"
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache"
 	)
 	if [ "${#LIVE_RECEIVER_ENV[@]}" -gt 0 ]; then
 		LEG_ENV+=("${LIVE_RECEIVER_ENV[@]}")
@@ -517,7 +518,7 @@ run_g1c() {
 	live_receiver "$OUT/live" rendered
 	finish_live_host "$OUT/live/host"
 
-	# received.rs2 is an inline stream (resource records): no store, a fresh cache.
+	# received.rs2 names no texture a command draws: no store, a fresh cache.
 	echo "run-gate1: live-replay (rendered file-mode receiver on live/receiver/received.rs2)"
 	if prepare_recording "$OUT/live/receiver/received.rs2" "$OUT/live-replay" &&
 		seqs="$(gate0_tool live-shot-seqs "$OUT/live/receiver/applied.json")"; then
@@ -566,7 +567,7 @@ killed_receiver() {
 	fi
 	LEG_ENV=(
 		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
-		RS_RECEIVER_OUT="$dir/applied.json"
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache"
 	)
 	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$RECEIVER_DIR"
 	KILL_RECEIVER_PID="$BG_PID"

@@ -27,6 +27,7 @@
 #include "rs2_snapshot.h"
 #include "rs_live.h"
 #include "rs_publish.h"
+#include "rs_resource_store.h"
 
 namespace {
 
@@ -950,6 +951,137 @@ void test_inline_resources() {
         "an oversize resource record closes 1009 (message-too-large)");
 }
 
+
+// ----------------------------------------------------------------- G2c2: serving and pins
+
+grc::rs::PayloadPtr grt1(std::uint8_t fill, std::size_t data_bytes) {
+  // A minimal GRT1-shaped payload: magic, meta "{}", the data length, the data.
+  std::vector<std::uint8_t> b = {'G', 'R', 'T', '1', '\r', '\n', 0x1a, '\n', 2, 0, 0, 0, '{', '}'};
+  b.push_back(static_cast<std::uint8_t>(data_bytes & 0xff));
+  b.push_back(static_cast<std::uint8_t>((data_bytes >> 8) & 0xff));
+  b.push_back(0);
+  b.push_back(0);
+  b.insert(b.end(), data_bytes, fill);
+  return std::make_shared<grc::rs::PayloadBytes>(std::move(b));
+}
+
+const std::string kH1(64, '1');
+const std::string kH2(64, '2');
+const std::string kH3(64, '3');
+
+std::string ops(const std::vector<grc::rs::ServeEvent> &events) {
+  std::string out;
+  for (const grc::rs::ServeEvent &e : events) {
+    out += std::string(e.op) + ":" + e.hash.substr(0, 1) + ":" + e.reason +
+           (e.sabotage ? "!" : "") + " ";
+  }
+  return out;
+}
+
+// One frame callback the way entry.cpp drives it: pin what may be sent, let the hub send, then
+// retire everything neither current nor a base.
+struct ServeRig {
+  FakeTransport transport;
+  Hub hub;
+  grc::rs::ServedResources served;
+  std::uint64_t frame = 0;
+  ServeRig() : hub(&transport, LiveConfig(), make_template()) {
+    hub.on_event(opened(1), 0);
+    hub.on_event(text(1, kHelloApplied), 0);
+  }
+  std::vector<grc::rs::ServeEvent> step(const grc::rs::PayloadMap &current) {
+    ++frame;
+    Captured c = captured_state(1);
+    c.payloads = current;
+    std::vector<grc::rs::ServeEvent> events;
+    std::vector<const grc::rs::PayloadMap *> sendable = hub.held_payloads();
+    sendable.insert(sendable.begin(), &c.payloads);
+    served.pin(sendable, frame, &events);
+    hub.on_frame(frame, frame * 1000000ULL, hub.wants_snapshot(frame) ? &c : nullptr, frame, 0);
+    served.retire(c.payloads, hub.base_payloads(), frame, &events);
+    return events;
+  }
+  void applied(std::uint64_t seq) {
+    hub.on_event(text(1, ack(hub.summaries().at(0).stream_id, seq, "applied")), frame);
+  }
+};
+
+void test_served_resources() {
+  const grc::rs::PayloadPtr p1 = grt1(1, 16);
+  const grc::rs::PayloadPtr p2 = grt1(2, 16);
+  const grc::rs::PayloadPtr p3 = grt1(3, 32);
+  {
+    ServeRig rig;
+    std::vector<grc::rs::ServeEvent> e = rig.step({{kH1, p1}, {kH3, p3}});
+    check(ops(e) == "pin:1:current pin:3:current ", "frame 1 pins the current payloads: " + ops(e));
+    check(rig.hub.summaries().at(0).sent == 1, "seq 1 sent at frame 1");
+    check(rig.served.lookup(kH1) == p1, "a pinned hash is served with the mirror's own bytes");
+    check(rig.served.lookup(kH2) == nullptr, "a hash never pinned answers 404");
+    // No credit: the mirror moves on (H1 superseded by H2), the base (seq 1) still names H1.
+    e = rig.step({{kH2, p2}, {kH3, p3}});
+    check(ops(e) == "pin:2:current ", "frame 2 pins H2 and retires nothing: " + ops(e));
+    check(rig.served.lookup(kH1) == p1, "H1 stays servable while connection 1's base names it");
+    check(rig.served.retained() == 3 && rig.served.retained_bytes() == 2 * 34 + 50,
+          "retained = current + base: 3 hashes");
+    // Credit: seq 2 (H2, H3) goes out; H1 is named by nothing any more.
+    rig.applied(1);
+    e = rig.step({{kH2, p2}, {kH3, p3}});
+    check(rig.hub.summaries().at(0).sent == 2, "seq 2 sent at frame 3");
+    check(ops(e) == "retire:1:superseded ", "frame 3 retires H1: " + ops(e));
+    check(rig.served.lookup(kH1) == nullptr, "a retired hash answers 404");
+    const grc::rs::ServedResources::Totals t = rig.served.totals();
+    check(t.pinned == 3 && t.retired == 1 && t.retained_max == 3, "totals pinned 3, retired 1");
+    // GET attribution: the streaming connection counts it and logs it.
+    check(rig.hub.on_http_get(kH2, 200, 34, 5000, rig.frame) == 1, "a GET is attributed to 1");
+    check(rig.hub.on_http_get(kH1, 404, 0, 6000, rig.frame) == 1, "so is a 404");
+    const ConnectionSummary s = rig.hub.summaries().at(0);
+    check(s.http_gets == 2 && s.http_bytes == 34 && s.http_errors == 1,
+          "summary http_gets 2, http_bytes 34, http_errors 1");
+    // A closed connection pins nothing: its base no longer keeps H2 once the mirror drops it.
+    rig.hub.on_event(closed(1, 1000), rig.frame);
+    check(rig.hub.base_payloads().empty(), "a closed connection has no base pin");
+    e = rig.step({{kH3, p3}});
+    check(ops(e) == "retire:2:superseded ", "after the close H2 is retired: " + ops(e));
+    check(rig.hub.on_http_get(kH3, 200, 50, 7000, rig.frame) == 0,
+          "a GET with no connection streaming is attributed to none");
+  }
+  {
+    // unpin from frame 2: the base no longer protects H1.
+    ServeRig rig;
+    rig.served.set_unpin_frame(2);
+    rig.step({{kH1, p1}});
+    const std::vector<grc::rs::ServeEvent> e = rig.step({{kH2, p2}});
+    check(ops(e) == "pin:2:current retire:1:unpin ", "unpin retires a base-named hash: " + ops(e));
+    check(rig.served.lookup(kH1) == nullptr && rig.served.totals().retired_unpinned == 1,
+          "unpin: H1 answers 404 although seq 1 names it");
+  }
+  {
+    // drop-resource from frame 2: the first hash first pinned at or after it answers 404.
+    ServeRig rig;
+    rig.served.set_drop_frame(2);
+    rig.step({{kH1, p1}});
+    const std::vector<grc::rs::ServeEvent> e = rig.step({{kH1, p1}, {kH2, p2}});
+    check(ops(e) == "pin:2:current! ", "drop-resource marks H2's pin: " + ops(e));
+    check(rig.served.lookup(kH2) == nullptr && rig.served.retained_hashes().count(kH2) == 1,
+          "drop-resource: H2 is retained but answers 404");
+    check(rig.served.lookup(kH1) == p1, "drop-resource: hashes pinned earlier are still served");
+    rig.step({{kH1, p1}, {kH2, p2}, {kH3, p3}});
+    check(rig.served.lookup(kH3) == p3 && rig.served.dropped_hash() == kH2,
+          "drop-resource drops exactly one hash");
+  }
+  {
+    // wrong-hash: the corrupted hash is served with its first data byte flipped.
+    ServeRig rig;
+    rig.served.corrupt(kH1);
+    rig.step({{kH1, p1}, {kH2, p2}});
+    const grc::rs::PayloadPtr served = rig.served.lookup(kH1);
+    check(served != nullptr && served->size() == p1->size() && (*served)[18] == (1 ^ 0xFF) &&
+              (*served)[19] == 1 && (*p1)[18] == 1,
+          "corrupt(): first data byte flipped, the mirror's bytes untouched");
+    check(rig.served.lookup(kH2) == p2, "corrupt() touches one hash only");
+  }
+}
+
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_control_parser();
@@ -965,6 +1097,7 @@ int main() {
   test_ignore_credit();
   test_stale_coalesce();
   test_inline_resources();
+  test_served_resources();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }
