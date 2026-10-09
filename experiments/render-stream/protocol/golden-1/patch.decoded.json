@@ -1,0 +1,1287 @@
+{
+  "schema": "render-stream-1-decoded/1",
+  "magic": "475253310d0a1a0a",
+  "records": [
+    {
+      "offset": 8,
+      "byte_length": 3396,
+      "sha256": "be91fda9cbd5de27bff8d74d3b033ab8c6fa52a061e5d1aa0d94955e64547944",
+      "meta": {
+        "type": "session",
+        "protocol": "render-stream/1",
+        "session_id": "fedcba9876543210fedcba9876543210",
+        "stream": {
+          "stream_id": "22222222222222222222222222222222",
+          "connection": null,
+          "transport": "file",
+          "encoding": "patch"
+        },
+        "engine": {
+          "version_string": "Godot Engine v4.5.1.stable.official",
+          "sha256": "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
+          "display_server": "headless",
+          "rendering_driver": "opengl3",
+          "rendering_method": "gl_compatibility"
+        },
+        "capture": {
+          "calibrator_version": 3,
+          "hooks_planned": [
+            "canvas_create",
+            "canvas_item_add_circle",
+            "canvas_item_add_line",
+            "canvas_item_add_mesh",
+            "canvas_item_add_msdf_texture_rect_region",
+            "canvas_item_add_multimesh",
+            "canvas_item_add_nine_patch",
+            "canvas_item_add_polygon",
+            "canvas_item_add_polyline",
+            "canvas_item_add_primitive",
+            "canvas_item_add_rect",
+            "canvas_item_add_set_transform",
+            "canvas_item_add_texture_rect",
+            "canvas_item_add_texture_rect_region",
+            "canvas_item_add_triangle_array",
+            "canvas_item_clear",
+            "canvas_item_create",
+            "canvas_item_set_clip",
+            "canvas_item_set_custom_rect",
+            "canvas_item_set_draw_index",
+            "canvas_item_set_material",
+            "canvas_item_set_modulate",
+            "canvas_item_set_parent",
+            "canvas_item_set_self_modulate",
+            "canvas_item_set_transform",
+            "canvas_item_set_visibility_layer",
+            "canvas_item_set_visible",
+            "canvas_item_set_z_index",
+            "free",
+            "material_set_param",
+            "mesh_add_surface",
+            "mesh_clear",
+            "mesh_create",
+            "mesh_set_custom_aabb",
+            "mesh_surface_update_attribute_region",
+            "mesh_surface_update_vertex_region",
+            "shader_create_from_code",
+            "shader_set_code",
+            "texture_2d_create",
+            "texture_2d_update",
+            "viewport_attach_canvas",
+            "viewport_set_canvas_transform"
+          ],
+          "hooks_omitted": []
+        },
+        "viewport": {
+          "canvas_cull_mask": 4294967295,
+          "root_canvas": 1,
+          "logical_size": [
+            640,
+            360
+          ],
+          "stretch": {
+            "mode": "disabled",
+            "aspect": "ignore",
+            "scale_mode": "fractional"
+          },
+          "stretch_applied_by": "receiver",
+          "root_size_policy": "observe",
+          "host_size_status": "match",
+          "host_window_size": [
+            640,
+            360
+          ]
+        },
+        "features": {
+          "ops": [
+            "add_rect"
+          ],
+          "item_state": [
+            "behind",
+            "children",
+            "clip",
+            "custom_rect",
+            "draw_index",
+            "modulate",
+            "parent",
+            "self_modulate",
+            "transform",
+            "visibility_layer",
+            "visible",
+            "z_index",
+            "z_relative"
+          ],
+          "observed_unsupported_ops": [
+            "canvas_item_add_circle",
+            "canvas_item_add_line",
+            "canvas_item_add_mesh",
+            "canvas_item_add_msdf_texture_rect_region",
+            "canvas_item_add_multimesh",
+            "canvas_item_add_nine_patch",
+            "canvas_item_add_polygon",
+            "canvas_item_add_polyline",
+            "canvas_item_add_primitive",
+            "canvas_item_add_set_transform",
+            "canvas_item_add_texture_rect",
+            "canvas_item_add_texture_rect_region",
+            "canvas_item_add_triangle_array",
+            "canvas_item_set_material"
+          ],
+          "unobserved": [
+            "canvas_item_set_canvas_group_mode",
+            "canvas_item_set_default_texture_filter",
+            "canvas_item_set_default_texture_repeat",
+            "canvas_item_set_draw_behind_parent",
+            "canvas_item_set_instance_shader_parameter",
+            "canvas_item_set_light_mask",
+            "canvas_item_set_sort_children_by_y",
+            "canvas_item_set_z_as_relative_to_parent",
+            "canvas_set_modulate",
+            "viewport_remove_canvas",
+            "viewport_set_canvas_cull_mask",
+            "viewport_set_global_canvas_transform"
+          ],
+          "publication": "snapshot-or-patch"
+        },
+        "sabotage": null,
+        "blocks": [
+          {
+            "name": "clear_color",
+            "type": "f32",
+            "count": 4
+          },
+          {
+            "name": "root_canvas_xform",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "host_visible_rect",
+            "type": "f32",
+            "count": 4
+          },
+          {
+            "name": "host_final_xform",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "content_scale_factor",
+            "type": "f32",
+            "count": 1
+          }
+        ]
+      },
+      "blocks": [
+        [
+          0.25,
+          0.25,
+          0.5,
+          1.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          640.0,
+          360.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0
+        ]
+      ]
+    },
+    {
+      "offset": 3404,
+      "byte_length": 2114,
+      "sha256": "4b4ba1b4037142aeef5eb496046dcc90abc950214768fbf72929ef5a3bd8651b",
+      "meta": {
+        "type": "transaction",
+        "seq": 1,
+        "frame": 1,
+        "encoding": "full",
+        "base_seq": null,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_circle",
+            "item": 2,
+            "reason": "unsupported-op"
+          }
+        ],
+        "removed_canvases": [],
+        "removed_items": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "items": [
+              1,
+              2,
+              4
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [
+              3
+            ],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": false,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": true,
+                "f": 8
+              },
+              {
+                "op": "unsupported",
+                "name": "canvas_item_add_circle"
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "item",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 16
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": true,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 24
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 72
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 32
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          10.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          50.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          30.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          90.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          20.0,
+          20.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          8.0,
+          8.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          12.0,
+          12.0,
+          1.0,
+          1.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    {
+      "offset": 5518,
+      "byte_length": 737,
+      "sha256": "69629036cd00909a96250b8f1eaa46e7d29382cbe04331d895e5489b03ef95c6",
+      "meta": {
+        "type": "transaction",
+        "seq": 2,
+        "frame": 2,
+        "encoding": "patch",
+        "base_seq": 1,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_circle",
+            "item": 2,
+            "reason": "unsupported-op"
+          }
+        ],
+        "removed_canvases": [],
+        "removed_items": [],
+        "canvases": [],
+        "items": [
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": false,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": null
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 18
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          50.0,
+          40.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        []
+      ]
+    },
+    {
+      "offset": 6255,
+      "byte_length": 1612,
+      "sha256": "5c25bdb6017d6eb51a24316670cf30364b1c54663f8fa7be6106ca1b0838c864",
+      "meta": {
+        "type": "transaction",
+        "seq": 3,
+        "frame": 3,
+        "encoding": "patch",
+        "base_seq": 2,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_circle",
+            "item": 2,
+            "reason": "unsupported-op"
+          }
+        ],
+        "removed_canvases": [],
+        "removed_items": [
+          4
+        ],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "items": [
+              1,
+              2,
+              5
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [
+              3
+            ],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 2,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 4,
+            "z_index": 0,
+            "z_relative": false,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 3,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 8
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 54
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 16
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          10.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          50.0,
+          40.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          130.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          20.0,
+          20.0,
+          0.5,
+          0.0,
+          0.5,
+          1.0,
+          0.0,
+          0.0,
+          10.0,
+          10.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      ]
+    },
+    {
+      "offset": 7867,
+      "byte_length": 414,
+      "sha256": "5b352160c84d895608656a0b8b38075629deeaf49017b704007880aece070415",
+      "meta": {
+        "type": "transaction",
+        "seq": 4,
+        "frame": 4,
+        "encoding": "patch",
+        "base_seq": 3,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_circle",
+            "item": 2,
+            "reason": "unsupported-op"
+          }
+        ],
+        "removed_canvases": [],
+        "removed_items": [],
+        "canvases": [],
+        "items": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "offset": 8281,
+      "byte_length": 1228,
+      "sha256": "4294eba2c40dba305f00fd4d4d8700a20d329338698ae6beaac758c91fddfb07",
+      "meta": {
+        "type": "transaction",
+        "seq": 5,
+        "frame": 5,
+        "encoding": "patch",
+        "base_seq": 4,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_circle",
+            "item": 2,
+            "reason": "unsupported-op"
+          },
+          {
+            "op": "canvas_item_set_draw_index",
+            "item": 3,
+            "reason": "draw-index-tie"
+          }
+        ],
+        "removed_canvases": [],
+        "removed_items": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "items": [
+              1,
+              2
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [
+              3,
+              5
+            ],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 2,
+            "commands": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "item",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": null
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 36
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          10.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          130.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        []
+      ]
+    },
+    {
+      "offset": 9509,
+      "byte_length": 2184,
+      "sha256": "5d0b919e3263ed33ff4f3bc9ae81f31d65d1bc4568bfd4561be10e48d1f23825",
+      "meta": {
+        "type": "transaction",
+        "seq": 6,
+        "frame": 6,
+        "encoding": "full",
+        "base_seq": null,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_circle",
+            "item": 2,
+            "reason": "unsupported-op"
+          },
+          {
+            "op": "canvas_item_set_draw_index",
+            "item": 3,
+            "reason": "draw-index-tie"
+          }
+        ],
+        "removed_canvases": [],
+        "removed_items": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "items": [
+              1,
+              2
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [
+              3,
+              5
+            ],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 2,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 4,
+            "z_index": 0,
+            "z_relative": false,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": true,
+                "f": 8
+              },
+              {
+                "op": "unsupported",
+                "name": "canvas_item_add_circle"
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "item",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 16
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "item",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 24
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 72
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 32
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          10.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          50.0,
+          40.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          30.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          130.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          20.0,
+          20.0,
+          0.5,
+          0.0,
+          0.5,
+          1.0,
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          8.0,
+          8.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          10.0,
+          10.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      ]
+    },
+    {
+      "offset": 11693,
+      "byte_length": 247,
+      "sha256": "00c863494b910fd29f3c0d8b6175524cb473da8050679ac541a7a761d01e4d48",
+      "meta": {
+        "type": "end",
+        "transactions": 6,
+        "reason": "shutdown",
+        "stats": {
+          "bytes_total": 11693,
+          "encode_ns_total": 250000,
+          "snapshot_ns_total": 40000,
+          "diff_ns_total": 12345,
+          "max_record_bytes": 3396,
+          "full_transactions": 2,
+          "patch_transactions": 4
+        },
+        "blocks": []
+      },
+      "blocks": []
+    }
+  ]
+}

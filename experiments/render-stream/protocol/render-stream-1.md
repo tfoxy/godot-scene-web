@@ -1,8 +1,12 @@
 # render-stream/1 wire format
 
-**Status: PROPOSED for gate 1 (increment G1b1). Not implemented.** G1b1 implements it with
-goldens and removes this banner; until then [render-stream-0.md](render-stream-0.md) is the wire
-format in use. Behaviour (what the capture puts into these records, delivery, credit) is in
+Status: implemented for gate 1 (increment G1b1): C++ encoder/diff (`capture/src/rs1_codec.*`,
+`rs1_diff.*`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-1.ts`) and
+GDScript decoder (`receiver/rs1_decoder.gd`), all checked byte-for-byte and state-for-state
+against `protocol/golden-1/`. Not yet wired into `entry.cpp`, the publisher, `receiver.gd` or any
+runner (G1b2) and not yet served live (G1c1/G1c2); until G1b2 lands,
+[render-stream-0.md](render-stream-0.md) is the wire format actually produced and consumed.
+Behaviour (what the capture puts into these records, delivery, credit) is in
 [gate1-design.md](gate1-design.md).
 
 render-stream/1 is render-stream/0 with: a stream identity, root geometry in the session,
@@ -220,8 +224,16 @@ receiver's state dumps (`state/seq-<n>.json`) use the same `state` shape.
   recolour (`content_version` bump); seq 4 unchanged (all lists empty); seq 5 a re-parent and two
   drawing siblings tied on `draw_index` (with the `draw-index-tie` entry); seq 6 full again
   (`base_seq:null`, as after a resync); end record.
-- `*.hex`, `*.decoded.json`, and one `resolved.json` that both streams must resolve to (the
-  `stream_id`, `encoding` and per-transaction `encoding` fields excepted).
+- `*.hex`, `*.decoded.json`, and one `resolved.json` that both streams must resolve to. Fixed
+  2026-10-09 (this bullet previously read "the `stream_id`, `encoding` and per-transaction
+  `encoding` fields excepted", ambiguous about how many fields that names and how a comparison
+  excepts them): `resolved.json` is `{"schema":"render-stream-1-resolved/1","transactions":
+[{"seq","frame","state":{...}}...]}` -- it omits the top-level `session_id`/`stream_id` and the
+  per-transaction `encoding` that `resolveRecording()`'s own return value carries (render-stream-
+  1.md "Decoded and resolved forms"), since `full.rs1` and `patch.rs1` legitimately differ there
+  (different streams; a patch stream's transactions are mostly `"patch"`). A self-test compares
+  `resolveRecording(file)` against `resolved.json` by building `{schema, transactions:
+transactions.map(t => ({seq, frame, state: t.state}))}` from the live result and comparing that.
 - `corrupt-meta.rs1` (first meta byte of seq 3 zeroed → `meta-json` at record index 3).
 - `invalid/<name>.rs1`, with codes in `index.json`: `bad-magic` (a /0 magic), `patch-first`
   (→ `patch-base`), `patch-base-gap` (→ `patch-base`), `full-with-base` (→ `patch-encoding`),

@@ -1,0 +1,85 @@
+{
+  "schema": "render-stream-1-golden-index/1",
+  "protocol": "render-stream/1",
+  "valid": [
+    {
+      "file": "full.rs1",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "214714cdc07b4b0388042cb7fdd045c4192104a5a4291c5bb96eed5b49749a5f"
+    },
+    {
+      "file": "patch.rs1",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "852338f26833a271f5395831cdfb3b6c62b1dd963450835355f1eb508afa4b01"
+    }
+  ],
+  "resolved": "resolved.json",
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs1",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs1 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs1",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '0' (GRS0), not '1'"
+    },
+    {
+      "file": "invalid/patch-first.rs1",
+      "code": "patch-base",
+      "description": "seq 1 is encoded as a patch, but a stream's first transaction must be full"
+    },
+    {
+      "file": "invalid/patch-base-gap.rs1",
+      "code": "patch-base",
+      "description": "seq 3 declares base_seq 1, but the previous transaction's seq is 2"
+    },
+    {
+      "file": "invalid/full-with-base.rs1",
+      "code": "patch-encoding",
+      "description": "seq 1 is encoded as full but carries a non-null base_seq"
+    },
+    {
+      "file": "invalid/removed-unknown.rs1",
+      "code": "patch-removed",
+      "description": "seq 2 removes item 99, which is absent from the base state"
+    },
+    {
+      "file": "invalid/removed-and-present.rs1",
+      "code": "patch-removed",
+      "description": "seq 2 lists item 2 as both removed and present"
+    },
+    {
+      "file": "invalid/null-commands-new-item.rs1",
+      "code": "patch-commands",
+      "description": "seq 2 introduces new item 3 with commands:null"
+    },
+    {
+      "file": "invalid/null-commands-changed-version.rs1",
+      "code": "patch-commands",
+      "description": "seq 2 bumps item 2's content_version to 2 but still claims commands:null"
+    },
+    {
+      "file": "invalid/tie-unflagged.rs1",
+      "code": "unsupported-mismatch",
+      "description": "items 1 and 2 tie on draw_index 0 under canvas 1, but no draw-index-tie entry is declared"
+    },
+    {
+      "file": "invalid/dangling-after-patch.rs1",
+      "code": "dangling-parent",
+      "description": "seq 2 removes item 1 but leaves item 2 (its child) unresolved"
+    },
+    {
+      "file": "invalid/no-end.rs1",
+      "code": "recording-incomplete",
+      "description": "the end record is missing"
+    }
+  ]
+}
