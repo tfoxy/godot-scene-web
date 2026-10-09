@@ -1,10 +1,15 @@
-# render-stream experiment — gates −1 and 0: capture seam and first stream
+# render-stream experiment — gates −1, 0 and 1: capture seam, first stream, retained state
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
 project, pixel-exact against an independent reference. Its contract is
 [protocol/gate0-design.md](protocol/gate0-design.md), and its wire format is
 [protocol/render-stream-0.md](protocol/render-stream-0.md).
+
+Gate 1's first increment, G1a, passed on the same day (see "Gate 1a result" below). Its fixture
+has eleven retained-state steps. The capture host gets the logical root size it needs
+(`GRC_ROOT_SIZE=enforce-min-size`) and declares it. Its contract is the G1a section of
+[protocol/gate1-design.md](protocol/gate1-design.md).
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -267,19 +272,39 @@ passed. Self-tests: `scripts/test/self-test-rs0.ts` (TS decoder against the gold
 `scripts/test/self-test-gate0.ts` (checker and classifier on synthetic evidence) and
 `python3 experiments/render-stream/protocol/golden/make_golden.py --check`.
 
+### Run gate 1
+
+```bash
+experiments/render-stream/scripts/build-capture.sh
+mise exec -- pnpm render-stream:gate1 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g1a]
+```
+
+This takes about 130 seconds and runs the landed groups (only `g1a` so far). It imports
+`fixtures/gate1/` and `receiver/`, then runs the receiver's typed self-test and the headless
+captures: the 400-frame capture under `enforce-min-size`, the four `omit-update` sabotage
+captures and the `root-size-observe` capture. Next it runs the headless traced receiver. The
+reference and the six rendered receivers share one private gamescope. Last, the checker writes
+`artifacts/render-stream/gate1/<UTC>/result.json` (`render-stream-gate1-report/1`). Legs and
+criteria: [scripts/README.md](scripts/README.md) "Gate 1". Self-test:
+`scripts/test/self-test-gate1.ts`.
+
 ## Runtime contract
 
 Environment, read once at SCENE initialisation:
 
-| Variable                  | Meaning                                                                                                                                                                    |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GRC_CALIBRATION`         | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                          |
-| `GRC_MODE`                | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                             |
-| `GRC_EVIDENCE_DIR`        | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                          |
-| `GRC_DISARM_AFTER_FRAMES` | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                      |
-| `GRC_STREAM_OUT`          | gate 0: absolute `.rs0` recording path. When set and armed, enable the canvas mirror, run the root query and publish `render-stream/0`. Unset → hooks behave as at gate −1 |
-| `GRC_SABOTAGE`            | gate 0 test sabotage: `freeze-frame`, `omit-update` or `perturb-transform`. Any other value refuses to publish (arming is unaffected)                                      |
-| `GRC_SABOTAGE_FRAME`      | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                    |
+| Variable                  | Meaning                                                                                                                                                                                               |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GRC_CALIBRATION`         | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                     |
+| `GRC_MODE`                | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                        |
+| `GRC_EVIDENCE_DIR`        | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                     |
+| `GRC_DISARM_AFTER_FRAMES` | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                 |
+| `GRC_STREAM_OUT`          | gate 0: absolute `.rs0` recording path. When set and armed, enable the canvas mirror, run the root query and publish `render-stream/0`. Unset → hooks behave as at gate −1                            |
+| `GRC_SABOTAGE`            | gate 0 test sabotage: `freeze-frame`, `omit-update` or `perturb-transform`. Any other value refuses to publish (arming is unaffected)                                                                 |
+| `GRC_SABOTAGE_FRAME`      | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                               |
+| `GRC_ROOT_SIZE`           | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish |
 
 Arming happens at the earliest point where the `RenderingServer` singleton is
 available. With a runtime `load_extension` from an autoload that is SCENE
@@ -714,6 +739,117 @@ left `stream.status: "refused"`; `GRC_DISARM_AFTER_FRAMES=30` ended a valid reco
   credit or coalescing (gate 1). Cost numbers are for two items: about 5.4 µs encode and 0.95 µs
   snapshot per frame, about 1 060 bytes per transaction.
 - Not run on MegaDot or the shipped game.
+
+## Gate 1a result (2026-10-09)
+
+**Pass.** The run is `artifacts/render-stream/gate1/20261009T055845Z/` (ignored, not committed;
+produced in the G1a worktree). Its `result.json` (`render-stream-gate1-report/1`) has
+`gate_passed: true`, with groups `g1a` run and none missing, and 22 of 22 checks pass
+([protocol/gate1-design.md](protocol/gate1-design.md) "G1a"). Every leg classifies as expected.
+The hosts are gate 0's: the pinned release template under `--headless`, with the 42-hook library
+armed at `scene-init`; and the same template rendering OpenGL 3.3 on the RTX 2060 inside one
+private gamescope. Runs on the same build:
+
+- gate 0: `artifacts/render-stream/gate0/20261009T060059Z/` still passes 19 of 19, with
+  `run-gate0.sh` now on the shared `lib/legs.sh`;
+- gate −1: `artifacts/render-stream/gate-minus1/20261009T060243Z/` still passes 28 of 28.
+
+**Root geometry.** The capture host's `evidence/root.json` reads:
+
+- logical size 640×360, stretch `disabled`/`keep`/`fractional`, content scale factor 1;
+- before the policy, window 64×64 and visible rect `0,0,64,64` (the headless minimum);
+- after `Window.set_min_size(640×360)`, window 640×360 and visible rect `0,0,640,360`;
+- canvas and final transforms identity both before and after, so `host_size_status` is `match`.
+
+The host fixture's own `root.jsonl` equals the reference's line for line except `display_server`
+(`headless` against `X11`). Canvas 1's transform in the recording equals the reference's at all 11
+settle transactions: identity through step 9, `1,0,0,1,8,4` at step 10. Without the policy
+(`root-size-observe`), the host declares `degenerate-visible` with window and visible rect
+64×64.
+
+| Leg                        | Class (expected = measured)            | Measured                                                                                                                                                                                                                                                            |
+| -------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capture`                  | `success`                              | 400 transactions, every status `ok`, 20 item ids in creation order (P=1 … X=19, L2=20); `bytes_total` 2 339 645, `max_record_bytes` 6 924, `encode_ns_total` 5 599 177 (14 µs/frame), `snapshot_ns_total` 1 366 025 (3.4 µs/frame); no GPU device or library opened |
+|                            |                                        | all 45 `expected.json` invariants hold on the settle transactions; no draw-index tie in any of the 400 transactions; marker colours first published at frames 1, 11, 21, …, 101                                                                                     |
+| `reference`                | support                                | 11 shots, each equal to `synthesizeGate1(k)` exactly                                                                                                                                                                                                                |
+| `receiver`                 | `success`                              | 400 seqs applied in order with the host's hashes, 321 RS calls (227 at seq 1); shots at seqs 8, 18, …, 108 equal to the reference and to `synthesizeGate1(k)`: 0 pixels, full frame and all 8 regions                                                               |
+| `receiver-headless-trace`  | support                                | applied `ok`; no successful `openat` under `fixtures/`; no receiver file shares a sha256 with a `fixtures/gate1` file                                                                                                                                               |
+| `sabotage-omit-modulate`   | `pixel-mismatch`, steps {1..10}        | step 1: 8 448 px (hierarchy 7 424, marker 1 024); steps 2–10: hierarchy 7 424 each (`P`, `C`, `G` keep their step-0 colours); delta 255                                                                                                                             |
+| `sabotage-omit-transform`  | `pixel-mismatch`, steps {2..10}        | step 2: 10 240 px (hierarchy 6 912, order 2 304 = `R1`'s lost recolour, marker 1 024); steps 3–4: 9 216; steps 5–10: hierarchy 6 912 (`R1` is under `Q1` from step 5 and redrawn when re-added at 9); delta 204–255                                                 |
+| `sabotage-omit-order`      | `pixel-mismatch`, steps {3}            | step 3: 2 048 px (the 32×32 `Q1`/`Q2` overlap and the marker); steps 4–10 exact again                                                                                                                                                                               |
+| `sabotage-omit-visibility` | `pixel-mismatch`, steps {7..10}        | step 7: 7 424 px (visibility 4 096 = `V` still hidden, content 2 304 = `K` not cleared, marker 1 024); steps 8–10: visibility 4 096; delta 153–204                                                                                                                  |
+| `root-size-observe`        | `unsupported` (`degenerate-host-size`) | declared `degenerate-visible`, visible `0,0,64,64`; every step mismatches in exactly `corner` (1 024 px) and `corner-degenerate` (1 024 px), with 0 px outside the regions. At step 10 `corner` has 672 px: the shifted `Corner` at 616,332 is clipped to 24×28     |
+
+Images, all under the run directory:
+
+- Reference: `reference/shots/step-<k>.png` (k = 0..10).
+- Receiver: `receiver/shots/seq-{8,18,…,108}.png`. The per-step diffs
+  `receiver/diff/step-<k>.png` are all blank.
+- Sabotage: `sabotage-omit-{modulate,transform,order,visibility}/receiver/shots/seq-<n>.png` and
+  `…/receiver/diff/step-<k>.png`. For example, `sabotage-omit-order/receiver/diff/step-3.png`
+  marks only the `Q1`/`Q2` overlap and the marker.
+- Root size: `root-size-observe/receiver/diff/step-<k>.png` marks the missing bottom-right
+  `Corner` and the one drawn at 32,32.
+
+### The sabotage predictions, confirmed
+
+Each sabotage drops every mirror mutation stamped with one step's applied frame (`omit-update`).
+The engine still renders it.
+
+| Sabotage                                    | Predicted (gate1-design.md)                        | Measured | Why the set ends where it does (engine source)                                                                                                                                        |
+| ------------------------------------------- | -------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `omit-update` at 11 (modulate)              | {1..10}                                            | {1..10}  | `modulate` and `self_modulate` are never set again                                                                                                                                    |
+| `omit-update` at 21 (transform)             | {2..10}                                            | {2..10}  | `P` and `C` never move again. `R1`'s lost recolour is only repaired at step 9, when re-entering calls `queue_redraw` (`scene/main/canvas_item.cpp:286`), so it cannot end the set     |
+| `omit-update` at 31 (order)                 | {3}                                                | {3}      | `move_child` sets child draw indices in the same frame (`update_draw_order`, `canvas_item.cpp:443-444`). At step 4 `Q2`'s z puts it on top in both worlds, and step 5 moves `Q1` away |
+| `omit-update` at 71 (visibility)            | {7..10}                                            | {7..10}  | `V` is never shown again in the mirror. `K` is repaired at step 8. `V1` is hidden either way (layer 0 against stale `visible: false`)                                                 |
+| `GRC_ROOT_SIZE` unset (`root-size-observe`) | `unsupported`, regions {corner, corner-degenerate} | same     | the `Corner` `ColorRect` lays out against a 64×64 parent rect                                                                                                                         |
+
+Every prediction held on the first run, so no expectation was changed. Two refusal paths were also
+run by hand rather than as legs. `GRC_ROOT_SIZE=stretch-it` armed, created no recording and left
+`stream.status: "refused"` with the reason. `RS_FIXTURE_STEP_FRAMES=7`,
+`RS_FIXTURE_START_FRAME=0`, `RS_FIXTURE_QUIT_FRAME=100`, a relative `RS_FIXTURE_ROOT_LOG` and
+`RS_FIXTURE_VARIANT` each print `[fixture] error: …` and exit 2. `S=300, N=60` (the live legs'
+timeline) logs step 1 at frame 360 and step 10 at frame 900.
+
+### Findings
+
+- **Root size.** `enforce-min-size` is enough on a headless 4.5.1 host. One ptrcall of
+  `Window.set_min_size` at arm grows the root from 64×64 to the logical size. That happens before
+  the main scene's `Control`s lay out, so the size-anchored `ColorRect` is pixel-exact. The final
+  (stretch × global canvas) transform stays identity. Without the policy,
+  the only pixel difference in this fixture is that `Control`.
+- **Draw-order ties are transient, not absent, in node-driven scenes.** None of the capture's 400
+  transactions has a tie. But a top-level `CanvasItem` gets its index from `_top_level_raise_self`,
+  a deferred group call that is queued while the message queue flushes. That is after
+  `SceneTree::process`'s last `_flush_ugc` (`scene/main/scene_tree.cpp:708-709`), so it runs at
+  the next iteration's first one (`:644`). Measured in this run: step 8's re-raise lands at frame
+  82, and step 9's at 92. On frame 91, `L2` still has the RenderingServer default index 0 and the
+  re-added `D` its stale 7. They tie with nothing only because step 8 had already moved the other
+  top-level items to 10..16. A scratch copy of the fixture that adds a top-level node at step 1
+  shows the tie: on frame 11 the new item and `P` both have index 0, and on frame 12 the new item
+  has 10. So D7's "node-driven scenes never produce ties" holds only for frames after the raise.
+  Once G1b2 reports `draw-index-tie`, any scene that adds a top-level item at runtime will report
+  it for that one frame. Child indices (`move_child`, reparenting under an item) are set in the
+  same frame. G1b2 has to decide whether such a one-frame tie is item-level `unsupported` or
+  something the receiver resolves (the engine's sort is stable up to 16 siblings, so the newly
+  appended item is drawn last).
+- **Receiver.** The three candidates gate1-design.md listed needed no change: `X` orphaned by a
+  raw parent free, `R1` re-appended under an unchanged parent, and `D` re-attached with its old
+  id. The applier's free pass, parent pass and order pass already reproduce the engine's
+  semantics (receiver shots exact at steps 8 and 9). Mirror unit tests now pin the two
+  mirror-side cases (`rs0_mirror_test.cpp`: detach and re-attach keep the id; a raw parent free
+  leaves a detached, still addressable child).
+
+### What G1a does not prove
+
+- render-stream/1, patches, the live adapter, credit, stalls, resync and reconnect: G1b–G1d.
+- `z_as_relative` and `draw_behind_parent` are still unobserved (G1e). The fixture never changes
+  them.
+- The root-size policy was measured only on stretch `disabled`. `canvas_items` and `viewport`
+  hosts declare their stretch but were not run, and the receiver applies no stretch of its own
+  (G1b2 declares it on the wire).
+- The fixture is still axis-aligned opaque rects on integer pixels (the one rotation is exactly
+  90°), with no textures or text.
 
 ## Scratch verification (2026-10-08)
 

@@ -1,7 +1,7 @@
 # Gate 1 design: retained canvas state and delivery
 
-Status: contract for gate 1, written 2026-10-09 after gate 0 passed (commit `fa906496`). Nothing in
-it is implemented yet. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
+Status: contract for gate 1, written 2026-10-09 after gate 0 passed (commit `fa906496`). G1a is
+implemented (its "As built" note records the differences); the other increments are not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
 one verified commit on `main`, implemented by one agent in its own worktree, against this file,
 [render-stream-1.md](render-stream-1.md) (the proposed wire format, finalized by G1b1) and the
 gate 0 documents it extends: [gate0-design.md](gate0-design.md) and
@@ -685,6 +685,32 @@ transaction); `root-geometry` (Q1, 1–3); `receiver-consumed-stream`,
 **Pass criteria**: `pnpm render-stream:gate1 -- --legs g1a` passes every check; gate 0 and gate −1
 unchanged and green; the README gains a "Gate 1 — G1a" result section quoting the run directory
 and image paths, and the measured root geometry (before and after enforcement).
+
+**As built (2026-10-09; README "Gate 1a result").** All of the above passed, with every sabotage
+step set exactly as predicted. These are the differences from the text above and the
+measurements later increments need:
+
+- **A one-frame draw-index tie in node-driven scenes (D7, Q2c).** A top-level item entering a
+  canvas at runtime keeps index 0 (new) or its stale index (re-added) for one frame.
+  `_top_level_raise_self` is a deferred group call queued after `SceneTree::process`'s last
+  `_flush_ugc` (`scene/main/scene_tree.cpp:708-709`), so it runs in the next iteration (`:644`).
+  The gate 1 fixture escapes this only because step 8 already re-raised every top-level item past
+  0 before step 9 adds `L2`. A scratch probe that adds a top-level node at step 1 ties it with `P`
+  at index 0 on frame 11. G1b2's `draw-index-tie` will therefore fire for one frame in ordinary
+  scenes, and G1b2 has to decide how to classify that frame.
+- `receiver-typed-clean` needs gate 0's `receiver-typecheck` support leg, so group `g1a` runs it
+  too. The legs table above leaves it out.
+- `expected.json` `invariants` is a list of typed assertions (`field`, `version`, `version_all`,
+  `changed`, `swapped`, `absent`, `present`, `new_ids`, `canvas_xform`; see
+  `scripts/lib/gate1-expected.ts`), not an object. Step 10's "no item `content_version` changed"
+  excludes the `Marker`, which every step recolours by design.
+- `evidence/root.json` also carries `root_query_failed_step`. Under `enforce-min-size`, the /0
+  session's `host_visible_rect` and `root_canvas_xform` hold the after-policy values
+  (`0,0,640,360` measured).
+- The report adds `checks[].status` (`pass`, `fail` or `not-run`), `groups` (`run`, `landed`,
+  `not_run`) and `live: null`. `stream` holds only `full` until G1b2 adds the patch sink.
+- The fixture refuses gate 0's `RS_FIXTURE_VARIANT` (exit 2), and `RS_FIXTURE_STEP_FRAMES` must
+  be at least 8 so a step settles before the next one starts.
 
 ---
 

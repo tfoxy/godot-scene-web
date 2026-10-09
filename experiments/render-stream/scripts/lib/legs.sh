@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# Shared process plumbing for the render-stream gate runners (run-gate0.sh, run-gate1.sh).
+# Sourced, not executed; extracted from run-gate0.sh with no behaviour change
+# (protocol/gate1-design.md D9).
+#
+# The caller sets, before using any function:
+#   LEGS_LOG           log prefix, e.g. "run-gate0"
+#   OUT                absolute evidence directory
+#   BINARY EXTENSION CALIBRATION   absolute template, .gdextension and calibration record
+#   FIXTURE_DIR        the fixture project run_capture launches (overridable per call through
+#                      CAPTURE_FIXTURE_DIR)
+#   RECEIVER_DIR       the receiver project
+#   HAVE_STRACE        1 when strace is installed
+#   HEADLESS_TIMEOUT_S RENDERED_TIMEOUT_S
+#   SCRIPT_DIR REPO_ROOT
+# and sources lib/gamescope.sh first (gs_strip_env_args, gs_launch_godot, ...).
+#
+# Every launch strips GS_STRIP_VARS and every inherited GRC_* / RS_* (gs_strip_env_args) and
+# passes only the NAME=value words in LEG_ENV (env.txt records them).
+
+# The recording file name every capture writes and every receiver copy uses.
+RECORDING_NAME="${RECORDING_NAME:-recording.rs0}"
+
+# The process the runner currently owns (its cleanup trap stops it).
+CURRENT_CHILD_PID=""
+
+LEG_ENV=()
+
+gate0_tool() {
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate0-tool.ts" "$@")
+}
+
+write_invocation() {
+	local dir="$1"
+	shift
+	printf '%s\n' "$@" >"$dir/argv.txt"
+	{
+		echo "# unset: DISPLAY WAYLAND_DISPLAY (headless) / WAYLAND_DISPLAY (rendered), ${GS_STRIP_VARS[*]} and every inherited GRC_* and RS_*"
+		if [ "${#LEG_ENV[@]}" -gt 0 ]; then
+			printf '%s\n' "${LEG_ENV[@]}"
+		fi
+	} >"$dir/env.txt"
+}
+
+# Waits for an owned child, killing it after $2 seconds. Sets WAIT_EXIT (124 on timeout).
+WAIT_EXIT=0
+wait_owned() {
+	local pid="$1" timeout_s="$2" ticks=0
+	while kill -0 "$pid" 2>/dev/null; do
+		if [ "$ticks" -ge $((timeout_s * 10)) ]; then
+			echo "$LEGS_LOG: pid $pid exceeded ${timeout_s}s, killing it" >&2
+			kill "$pid" 2>/dev/null || true
+			sleep 1
+			kill -9 "$pid" 2>/dev/null || true
+			break
+		fi
+		sleep 0.1
+		ticks=$((ticks + 1))
+	done
+	set +e
+	wait "$pid" 2>/dev/null
+	WAIT_EXIT=$?
+	set -e
+	[ "$ticks" -ge $((timeout_s * 10)) ] && WAIT_EXIT=124
+	return 0
+}
+
+# run_headless <dir> <strace: none|capture|openat> -- <command...>
+#   capture: strace -f -tt -e trace=mprotect,openat, plus a /proc maps/fd sample of the traced
+#            process once <dir>/evidence/armed.marker exists (as gate -1's headless-armed leg).
+#   openat:  strace -f -tt -e trace=openat.
+run_headless() {
+	local dir="$1" mode="$2"
+	shift 3
+	mkdir -p "$dir"
+	gs_strip_env_args
+	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}")
+	if [ "${#LEG_ENV[@]}" -gt 0 ]; then
+		cmd+=("${LEG_ENV[@]}")
+	fi
+	write_invocation "$dir" "$@"
+	local traced=0
+	if [ "$mode" != "none" ]; then
+		if [ "$HAVE_STRACE" = "1" ]; then
+			traced=1
+			local trace_set="openat"
+			[ "$mode" = "capture" ] && trace_set="mprotect,openat"
+			cmd+=(strace -f -tt -e "trace=$trace_set" -o "$dir/strace.txt")
+		else
+			echo "unavailable" >"$dir/strace-status.txt"
+		fi
+	fi
+	"${cmd[@]}" "$@" >"$dir/stdout.log" 2>&1 &
+	local pid=$!
+	CURRENT_CHILD_PID="$pid"
+
+	if [ "$mode" = "capture" ]; then
+		local waited=0
+		while [ "$waited" -lt 300 ] && [ ! -f "$dir/evidence/armed.marker" ] && kill -0 "$pid" 2>/dev/null; do
+			sleep 0.05
+			waited=$((waited + 1))
+		done
+		local sample_pid="$pid"
+		if [ "$traced" = "1" ]; then
+			# strace's own pid is $pid; the traced Godot process is its child.
+			sample_pid="$(pgrep -P "$pid" 2>/dev/null | head -1 || true)"
+		fi
+		if [ -n "$sample_pid" ] && [ -d "/proc/$sample_pid" ]; then
+			cp "/proc/$sample_pid/maps" "$dir/maps.txt" 2>/dev/null || true
+			ls -la "/proc/$sample_pid/fd" >"$dir/fd.txt" 2>/dev/null || true
+		fi
+	fi
+
+	wait_owned "$pid" "$HEADLESS_TIMEOUT_S"
+	CURRENT_CHILD_PID=""
+	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
+}
+
+# run_capture <dir> <quit frame|""> <strace mode> [scene] -- capture host on the release template,
+# armed, writing <dir>/$RECORDING_NAME and steps.jsonl from CAPTURE_FIXTURE_DIR (default
+# FIXTURE_DIR). CAPTURE_EXTRA_ENV adds sabotage/variant/policy words; both are reset after the
+# call.
+CAPTURE_EXTRA_ENV=()
+CAPTURE_FIXTURE_DIR=""
+run_capture() {
+	local dir="$1" quit="$2" mode="$3" scene="${4:-}"
+	local fixture="${CAPTURE_FIXTURE_DIR:-$FIXTURE_DIR}"
+	mkdir -p "$dir/evidence"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
+	)
+	# An empty quit frame leaves the fixture at its own default.
+	if [ -n "$quit" ]; then
+		LEG_ENV+=(RS_FIXTURE_QUIT_FRAME="$quit")
+	fi
+	if [ "${#CAPTURE_EXTRA_ENV[@]}" -gt 0 ]; then
+		LEG_ENV+=("${CAPTURE_EXTRA_ENV[@]}")
+	fi
+	local -a argv=("$BINARY" --headless --path "$fixture")
+	[ -n "$scene" ] && argv+=("$scene")
+	run_headless "$dir" "$mode" -- "${argv[@]}"
+	CAPTURE_EXTRA_ENV=()
+	CAPTURE_FIXTURE_DIR=""
+}
+
+# prepare_recording <src> <dir>: the receiver's own copy at <dir>/$RECORDING_NAME. Returns 1 (and
+# records why) when there is no source recording to copy.
+prepare_recording() {
+	local src="$1" dir="$2"
+	mkdir -p "$dir"
+	if [ ! -f "$src" ]; then
+		echo "no source recording at $src" >"$dir/skipped.txt"
+		echo "$LEGS_LOG: $dir skipped: no source recording" >&2
+		return 1
+	fi
+	[ "$src" = "$dir/$RECORDING_NAME" ] || cp "$src" "$dir/$RECORDING_NAME"
+}
+
+# run_receiver_headless <dir> <strace mode>: the template, --headless, on <dir>/$RECORDING_NAME.
+run_receiver_headless() {
+	local dir="$1" mode="$2"
+	LEG_ENV=(RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json")
+	run_headless "$dir" "$mode" -- "$BINARY" --headless --path "$RECEIVER_DIR"
+}
+
+# settle_seqs <capture dir> <receiver dir>: prints the CSV, or records step-join-failed.
+settle_seqs() {
+	local capture_dir="$1" receiver_dir="$2"
+	mkdir -p "$receiver_dir"
+	if ! gate0_tool settle-seqs "$capture_dir/steps.jsonl" "$capture_dir/$RECORDING_NAME" \
+		>"$receiver_dir/shot-seqs.txt" 2>"$receiver_dir/step-join.log"; then
+		echo "$LEGS_LOG: $receiver_dir: step-join-failed (see step-join.log)" >&2
+		return 1
+	fi
+	cat "$receiver_dir/shot-seqs.txt"
+}
+
+# run_rendered <dir> <project dir>: the template inside the private gamescope with LEG_ENV.
+run_rendered() {
+	local dir="$1" project="$2"
+	mkdir -p "$dir"
+	gs_require_live
+	write_invocation "$dir" "$BINARY" --path "$project" --rendering-driver opengl3 --display-driver x11
+	echo "DISPLAY=$GS_DISPLAY" >>"$dir/env.txt"
+	GS_GODOT_ENV=()
+	if [ "${#LEG_ENV[@]}" -gt 0 ]; then
+		GS_GODOT_ENV=("${LEG_ENV[@]}")
+	fi
+	gs_launch_godot "$GS_DISPLAY" "$BINARY" "$project" "$dir/stdout.log"
+	local pid="$GS_LAST_GODOT_PID"
+	CURRENT_CHILD_PID="$pid"
+	sleep 0.3
+	if [ -d "/proc/$pid" ]; then
+		gs_verify_display_ownership "$GS_DISPLAY" "$GS_PID" "$GS_SID" "$pid" "$dir/display-ownership.json" ||
+			echo "$LEGS_LOG: WARNING: $dir display ownership check failed, see display-ownership.json" >&2
+	fi
+	local ticks=0
+	while [ -d "/proc/$pid" ] && [ "$ticks" -lt $((RENDERED_TIMEOUT_S * 10)) ]; do
+		gs_require_live
+		sleep 0.1
+		ticks=$((ticks + 1))
+	done
+	wait_owned "$pid" 5
+	CURRENT_CHILD_PID=""
+	[ "$ticks" -ge $((RENDERED_TIMEOUT_S * 10)) ] && WAIT_EXIT=124
+	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
+}
+
+# run_rendered_receiver <capture dir> <receiver dir>: a rendered receiver on a copy of the
+# capture's recording, shooting the settle seqs of its steps.jsonl.
+run_rendered_receiver() {
+	local capture_dir="$1" dir="$2" seqs
+	prepare_recording "$capture_dir/$RECORDING_NAME" "$dir" || return 0
+	seqs="$(settle_seqs "$capture_dir" "$dir")" || return 0
+	mkdir -p "$dir/shots"
+	LEG_ENV=(RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_SHOT_SEQS="$seqs")
+	run_rendered "$dir" "$RECEIVER_DIR"
+}

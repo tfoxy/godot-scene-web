@@ -217,3 +217,101 @@ It then builds a passing evidence tree for the whole layout, with recordings enc
 render-stream/0 bytes and PNGs synthesized from the timeline, plus one perturbation per failure
 mode. It runs the real `runGate0` on each: 37 scenarios, 178 assertions. It also checks that
 `corruptTransactionMeta(minimal.bin, 2)` reproduces `golden/corrupt-meta.bin` byte for byte.
+
+# Gate 1
+
+Drives `../fixtures/gate1/` and `../receiver/` through the leg groups of
+[`../protocol/gate1-design.md`](../protocol/gate1-design.md) "Q7", then checks them. Only group
+`g1a` (increment G1a: retained-state fixture, root geometry) has landed. It still runs on
+render-stream/0. Run it from the repo root:
+
+```bash
+mise exec -- pnpm render-stream:gate1 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g1a]
+```
+
+The arguments and the refusals are gate 0's. `--out` defaults to
+`artifacts/render-stream/gate1/<UTC>/`. `--legs` takes a comma-separated list of groups and
+defaults to every landed group. Asking for a group that has not landed (`g1b`, `g1c`, `g1d`)
+refuses with exit 2. `legs.json` records the groups that ran. The checker evaluates only the checks
+of groups that ran. A landed group that did not run is reported as `not-run` and fails the gate.
+The runner takes about 2 minutes 10 seconds.
+
+The process plumbing is shared with `run-gate0.sh` through `lib/legs.sh`: `write_invocation`,
+`wait_owned`, `run_headless`, `run_capture`, `prepare_recording`, `run_receiver_headless`,
+`settle_seqs`, `run_rendered` and `run_rendered_receiver`. They were moved out of `run-gate0.sh`
+without changing its behaviour. `run_capture` takes an empty quit frame to mean the fixture's own
+default. Every launch strips `GS_STRIP_VARS`, which now lists every variable gate1-design.md
+introduces, plus every other inherited `GRC_*` and `RS_*`. Rendered legs share one private
+gamescope, as at gate 0.
+
+## Gate 1 files
+
+- `run-gate1.sh`: the orchestrator (`--legs` groups; `run_g1a`).
+- `lib/legs.sh`: the shared leg plumbing (above).
+- `lib/gate1-expected.ts`: the `render-stream-gate1-expected/1` types, `stepFrames`, and
+  `synthesizeGate1(expected, step)` (clear colour, then every draw in paint order, clipped).
+- `lib/gate1-checks.ts`: `decodeStates` (the full per-transaction state that `summarizeRecording`
+  drops), `mapNames`, `evaluateInvariants`, `findDrawIndexTies`, `classifyGate1`, every check and
+  `runGate1`. It reuses gate 0's `classifyLeg`, the capture, manifest, consumption, fixture-access
+  and typed-receiver checks, and the step join.
+- `check-gate1.ts`: writes `<out>/result.json` (`render-stream-gate1-report/1`) and exits
+  non-zero unless `gate_passed`.
+- `test/self-test-gate1.ts`: see "Gate 1 self-test" below.
+
+## Gate 1 legs (group `g1a`) and evidence under `--out`
+
+Process directories are laid out as at gate 0. Capture directories also hold `evidence/root.json`
+(`render-stream-root-geometry/1`). The `capture` and `root-size-observe` captures and the
+`reference` also hold `root.jsonl` (`RS_FIXTURE_ROOT_LOG`).
+
+| Leg                       | Directory                                  | Runs                                                                                                                                 | Expected class                                                                                         |
+| ------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `import`                  | `import/{fixture,receiver}/`               | mise editor `--import` of `fixtures/gate1` and `receiver`                                                                            | — (exit 0)                                                                                             |
+| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/`   | as gate 0, for `receiver-typed-clean`                                                                                                | —                                                                                                      |
+| `capture`                 | `capture/`                                 | template `--headless`, `GRC_MODE=arm`, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, root log, under strace; maps/fd at `armed.marker` | `success`                                                                                              |
+| `sabotage-omit-<name>`    | `sabotage-omit-<name>/{capture,receiver}/` | capture (enforce, default quit 112) with `GRC_SABOTAGE=omit-update` at step k's frame `1+10k`, then a rendered receiver              | `pixel-mismatch`: modulate (k=1) {1..10}, transform (2) {2..10}, order (3) {3}, visibility (7) {7..10} |
+| `root-size-observe`       | `root-size-observe/{capture,receiver}/`    | capture with `GRC_ROOT_SIZE` unset (root log), then a rendered receiver                                                              | `unsupported` (`degenerate-host-size`), mismatching only in `corner` and `corner-degenerate`           |
+| `receiver-headless-trace` | `receiver-headless-trace/`                 | headless receiver on the capture recording under `strace -e openat`                                                                  | — (applied ok)                                                                                         |
+| `reference`               | `reference/`                               | template in gamescope, extension absent, shots `step-0..10`, step log, root log                                                      | — (11 shots)                                                                                           |
+| `receiver`                | `receiver/`                                | template in gamescope on the capture recording, shots at the 11 settle seqs                                                          | `success`                                                                                              |
+
+## Gate 1 classification
+
+`classifyGate1` takes gate 0's `classifyLeg` result and the leg's capture `evidence/root.json`.
+It adds two rules. A missing `root.json`, or `enforce.called` without `enforce.ok`
+(`root-size-enforce-failed`), is `capture-failure`. A `host_size_status` other than `match` under
+`observe` is `unsupported` (`degenerate-host-size`). The precedence is gate1-design.md Q7's:
+`capture-failure`, `unsupported`, `replay-failure`, `delivery-violation` (G1c on; nothing fires
+it yet), `pixel-mismatch`, `success`. Checkpoints compare the full frame, all eight
+`expected.json` regions, and count the mismatching pixels outside every region.
+
+## Gate 1 criteria (group `g1a`)
+
+| Check                                                                                                                           | Passes when                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `expected-self-consistent`                                                                                                      | `expected.json` obeys its rules: 640×360, steps 0..10, every colour on the 51-step grid with alpha 255, every draw inside a region and none in `[0,0,72,72]`, one marker colour per step used by nothing else, known names, step 10 = step 9 shifted                                                                       |
+| `capture-armed`, `headless-no-gpu`, `recording-decodes`, `manifest-present`, `receiver-consumed-stream`, `receiver-typed-clean` | gate 0's checks, on the gate 1 layout (400 transactions, gate 0's feature arrays)                                                                                                                                                                                                                                          |
+| `step-alignment`                                                                                                                | capture and reference `steps.jsonl` list 0..10 at `S+N·k` (settle `+7`); each step's marker colour first appears at its applied frame                                                                                                                                                                                      |
+| `expected-image-reference`, `expected-image-receiver`                                                                           | every reference shot, and every receiver settle shot, equals `synthesizeGate1(k)` exactly                                                                                                                                                                                                                                  |
+| `receiver-vs-reference`                                                                                                         | 11 steps, full frame and every region, 0 mismatched pixels and max channel delta 0                                                                                                                                                                                                                                         |
+| `retained-invariants`                                                                                                           | every `expected.json` invariant holds on its step's settle transaction. Names map to wire ids in creation order, cross-checked against the step-0 rect colours                                                                                                                                                             |
+| `no-draw-index-ties`                                                                                                            | in no transaction of the capture recording does a container have two drawing children (a command anywhere in the subtree) with equal `draw_index`                                                                                                                                                                          |
+| `root-geometry`                                                                                                                 | gate1-design.md Q1 1–3: logical size = the reference's content scale size, visible size and window size; the enforced host is `match`, `0,0,640,360`, identity final transform, and its `root.jsonl` equals the reference's except `display_server`; canvas 1's transform at every settle equals the reference's (float32) |
+| `receiver-never-loaded-fixture`                                                                                                 | gate 0's check, against `fixtures/gate1/`, scanning every g1a receiver log                                                                                                                                                                                                                                                 |
+| `leg-class-<leg>`                                                                                                               | each classified leg has its expected class; sabotage legs mismatch at exactly their step sets; `root-size-observe` names `degenerate-host-size`, declares `degenerate-visible` with a 64×64 visible rect, and at every step mismatches in exactly `corner` and `corner-degenerate` and nowhere outside the regions         |
+
+## Gate 1 self-test
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate1.ts
+```
+
+It first runs unit cases: `classifyGate1` (a missing `root.json` or a failed enforcement is
+`capture-failure`, a degenerate `observe` host is `unsupported`, and its precedence against gate
+0's classes) and `synthesizeGate1`, `mapNames`, `evaluateInvariants` and `findDrawIndexTies` on a
+model. It then builds a passing g1a evidence tree from a model of the fixture's retained state,
+encoded as render-stream/0, with PNGs synthesized from `expected.json`. Each check gets at least
+one failing perturbation, and the real `runGate1` runs on each tree: 28 scenarios, 110 assertions.
