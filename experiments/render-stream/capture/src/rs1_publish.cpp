@@ -135,10 +135,11 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
     result.config.kind = SabotageKind::OmitOp;
   } else if (kind_text == "patch-drop-item") {
     result.config.kind = SabotageKind::PatchDropItem;
-  } else if (kind_text == "drop-message" || kind_text == "ignore-credit" ||
-             kind_text == "stale-coalesce") {
+  } else if (kind_text == "drop-message") {
+    result.config.kind = SabotageKind::DropMessage;
+  } else if (kind_text == "ignore-credit" || kind_text == "stale-coalesce") {
     result.ok = false;
-    result.error = "live sabotage: no live adapter yet (G1c2)";
+    result.error = "live sabotage " + kind_text + ": not implemented until G1d";
     return result;
   } else {
     result.ok = false;
@@ -369,9 +370,11 @@ bool Publisher::publish(Snapshot snapshot, std::uint64_t frame, std::uint64_t sn
       transaction.items.pop_back();
     }
     ok = write_transaction(&patch, transaction, form_ns, diff_ns, snapshot_ns) && ok;
-    previous_ = std::move(published);
-    has_previous_ = true;
   }
+  // Kept with or without a patch sink: the patch sink's next base, and the copy the live
+  // adapter delivers (last_published()).
+  previous_ = std::move(published);
+  has_previous_ = true;
   return ok;
 }
 

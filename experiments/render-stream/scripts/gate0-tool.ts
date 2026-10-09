@@ -11,6 +11,9 @@
 //       Writes a copy whose transaction <seq> has its first meta byte set to 0x00.
 //   gate0-tool.ts seq-at-frame <recording.rs1> <frame>
 //       Prints the seq of the transaction published at <frame>; exits 1 when there is none.
+//   gate0-tool.ts live-shot-seqs <applied.json>
+//       Prints the CSV of the seqs a live receiver shot (G1c2: the live-replay leg shoots the same
+//       seqs); exits 1 when there are none.
 
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -75,8 +78,26 @@ async function main(): Promise<void> {
     console.log(String(t.meta.seq));
     return;
   }
+  if (command === "live-shot-seqs" && args.length === 1) {
+    let applied: { shots?: { seq?: unknown }[] } | undefined;
+    try {
+      applied = JSON.parse(await readFile(args[0], "utf8"));
+    } catch {
+      applied = undefined;
+    }
+    const seqs = (applied?.shots ?? [])
+      .map((s) => s.seq)
+      .filter((s): s is number => Number.isInteger(s));
+    if (seqs.length === 0) {
+      console.error(`gate0-tool: no shots in ${args[0]}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(seqs.join(","));
+    return;
+  }
   console.error(
-    "usage: gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs1> | corrupt <in> <out> [seq] | seq-at-frame <recording.rs1> <frame>",
+    "usage: gate0-tool.ts settle-seqs <steps.jsonl> <recording.rs1> | corrupt <in> <out> [seq] | seq-at-frame <recording.rs1> <frame> | live-shot-seqs <applied.json>",
   );
   process.exitCode = 2;
 }

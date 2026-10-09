@@ -7,8 +7,10 @@ TypeScript decoder/validator/resolver (`scripts/lib/render-stream-1.ts`) and GDS
 `protocol/golden-1/`. Wiring (G1b2): the mirror (`capture/src/rs_mirror.*`, including the
 invariant 9 tie detection below) and the two file sinks of `capture/src/rs1_publish.*`
 (`GRC_STREAM_OUT` full, `GRC_STREAM_PATCH_OUT` patch), the receiver's file mode
-(`receiver/receiver.gd`, `rs_applier.gd`) and the gate 0 and gate 1 runners. Not yet served live
-(G1c2). [render-stream-0.md](render-stream-0.md) is superseded and kept as frozen history.
+(`receiver/receiver.gd`, `rs_applier.gd`) and the gate 0 and gate 1 runners. Served live since
+G1c2 (`capture/src/rs1_live.*` over `rs_ws`, `GRC_LIVE_LISTEN`; the receiver's live mode,
+`receiver/rs_live_client.gd`). [render-stream-0.md](render-stream-0.md) is superseded and kept as
+frozen history.
 Behaviour (what the capture puts into these records, delivery, credit) is in
 [gate1-design.md](gate1-design.md).
 
@@ -185,6 +187,10 @@ Failure reasons: /0's three plus `root-size-enforce-failed`.
 
 `id-reused` keeps its /0 meaning over resolved states within one stream.
 
+Order (G1c2): a transaction whose `seq` is not the previous `seq` + 1 is `seq-gap` before any patch
+rule is applied, so a patch that follows a lost transaction (and names it as its base) reports the
+gap, not `patch-base`. Golden: `invalid/patch-after-gap.rs1`.
+
 ## End record
 
 ```
@@ -244,7 +250,8 @@ receiver's state dumps (`state/seq-<n>.json`) use the same `state` shape.
 transactions.map(t => ({seq, frame, state: t.state}))}` from the live result and comparing that.
 - `corrupt-meta.rs1` (first meta byte of seq 3 zeroed → `meta-json` at record index 3).
 - `invalid/<name>.rs1`, with codes in `index.json`: `bad-magic` (a /0 magic), `patch-first`
-  (→ `patch-base`), `patch-base-gap` (→ `patch-base`), `full-with-base` (→ `patch-encoding`),
+  (→ `patch-base`), `patch-base-gap` (→ `patch-base`), `patch-after-gap` (seq 4, a patch on the
+  missing seq 3, after seq 2 → `seq-gap`; G1c2), `full-with-base` (→ `patch-encoding`),
   `removed-unknown` (→ `patch-removed`), `removed-and-present` (→ `patch-removed`),
   `null-commands-new-item` (→ `patch-commands`), `null-commands-changed-version`
   (→ `patch-commands`), `tie-unflagged` (→ `unsupported-mismatch`), `dangling-after-patch` (a
@@ -274,7 +281,13 @@ transactions.map(t => ({seq, frame, state: t.state}))}` from the live result and
   `message-too-large` and close 1009.
 - Close codes used by the host: 1000 (shutdown, disarm), 1002 (protocol, hello timeout),
   1008 (queue safety limit), 1009 (message too large). A refused handshake is an HTTP status
-  (400, 404, 503), not a close code.
+  (400, 404, 503), not a close code. The close reason repeats the error's `reason`
+  (`protocol`, `hello-timeout`, `message-too-large`): a client may never read a text message that
+  arrives together with the close frame (Godot's `WebSocketPeer` drops it; gate1-design.md G1c2
+  "As built").
+- End of a stream: the host sends the end record and does not close behind it; the receiver
+  closes with 1000 once it has read the end record. A host that stops waits a bounded time (1.5 s
+  at G1c2) for that close, then closes with 1000 itself.
 
 ## Versioning
 

@@ -11,8 +11,8 @@
 //
 // Sabotages handled here: `freeze-frame` and `perturb-transform` (as at gate 0, applied to the
 // one published copy both sinks share) and `patch-drop-item` (patch sink only). `omit-update`
-// and `omit-op` live in the mirror (rs_mirror.h); the live kinds (`drop-message`,
-// `ignore-credit`, `stale-coalesce`) are refused until the live adapter exists (G1c2).
+// and `omit-op` live in the mirror (rs_mirror.h); `drop-message` in the live hub (rs1_live.h,
+// G1c2); `ignore-credit` and `stale-coalesce` are refused until G1d.
 #ifndef GRC_RS1_PUBLISH_H
 #define GRC_RS1_PUBLISH_H
 
@@ -92,10 +92,10 @@ struct ParseResult {
 // or nullptr when the variable is unset. An unset `kind` is ok with SabotageKind::None (the
 // other two are then ignored, as the caller reads them only when GRC_SABOTAGE is set).
 //
-// Accepted: freeze-frame, omit-update, perturb-transform, patch-drop-item, and omit-op with a
-// non-empty `op` matching [a-z0-9_]+. Refused (ok false, `error` says why; the caller must then
-// publish nothing): the live kinds drop-message, ignore-credit and stale-coalesce (no live
-// adapter yet, G1c2), any other kind, a `frame` that is not a decimal integer >= 1 (digits only,
+// Accepted: freeze-frame, omit-update, perturb-transform, patch-drop-item, drop-message (live;
+// entry.cpp refuses it without GRC_LIVE_LISTEN), and omit-op with a non-empty `op` matching
+// [a-z0-9_]+. Refused (ok false, `error` says why; the caller must then publish nothing): the
+// live kinds ignore-credit and stale-coalesce (G1d), any other kind, a `frame` that is not a decimal integer >= 1 (digits only,
 // no sign), and a non-empty `op` with any kind other than omit-op.
 ParseResult parse_sabotage(const char *kind, const char *frame, const char *op);
 
@@ -144,6 +144,10 @@ class Publisher {
   std::uint64_t transactions(Encoding encoding) const { return lane(encoding).transactions; }
   const EndStats &stats(Encoding encoding) const { return lane(encoding).stats; }
   const SabotageConfig &sabotage() const { return sabotage_; }
+  // The one published copy of the last publish() call (sabotages applied, seq and frame set), or
+  // null before the first. The live adapter delivers this same copy (gate1-design.md Q4: one
+  // snapshot per frame feeds every sink and every connection).
+  const Snapshot *last_published() const { return has_previous_ ? &previous_ : nullptr; }
 
  private:
   struct Lane {
@@ -164,7 +168,7 @@ class Publisher {
   SabotageConfig sabotage_;
   std::uint64_t next_seq_ = 1;
   bool finished_ = false;
-  // The previous published snapshot: the patch sink's base. Kept only with a patch sink.
+  // The previous published snapshot: the patch sink's base and last_published().
   Snapshot previous_;
   bool has_previous_ = false;
   // The last published, pre-sabotage content: what freeze-frame republishes once

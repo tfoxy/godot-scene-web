@@ -1,22 +1,24 @@
 # render-stream/1 receiver (gate 0, extended by gate 1)
 
-A Godot project whose only input is a `render-stream/1` recording. It replays the recording onto
-the RenderingServer, one transaction per frame, and writes `applied.json`. It has no autoload, no
-extension and no file from `fixtures/`. The contract is
-[`../protocol/gate1-design.md`](../protocol/gate1-design.md) ("Q5. Receiver", "G1b2"), extending
-[`../protocol/gate0-design.md`](../protocol/gate0-design.md) ("Q5. Receiver"); the bytes are
-[`../protocol/render-stream-1.md`](../protocol/render-stream-1.md). File mode only: live mode
-(WebSocket) lands in G1c2.
+A Godot project whose only input is a `render-stream/1` byte stream: a recording file (file mode)
+or one WebSocket connection to a capture host (live mode, G1c2). It replays the stream onto the
+RenderingServer and writes `applied.json`. It has no autoload, no extension and no file from
+`fixtures/`. The contract is [`../protocol/gate1-design.md`](../protocol/gate1-design.md) ("Q5.
+Receiver", "G1b2", "G1c2"), extending [`../protocol/gate0-design.md`](../protocol/gate0-design.md)
+("Q5. Receiver"); the bytes are [`../protocol/render-stream-1.md`](../protocol/render-stream-1.md).
+Stalls, reconnect and resync (`RS_RECEIVER_STALL`, `_RECONNECT`, `_RESYNC`) land in G1d and are
+usage errors until then.
 
-| File                       | Role                                                                                                                                                                                                                                                                                              |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `project.godot`            | 640×360, stretch disabled, `gl_compatibility`, typed-GDScript warnings at error level. `default_clear_color` is magenta on purpose: the session's `clear_color` must replace it.                                                                                                                  |
-| `main.tscn`                | A root `Node` with `receiver.gd`.                                                                                                                                                                                                                                                                 |
-| `receiver.gd`              | Orchestration: environment, framing pass, session and viewport check, one record per `_process`, state dumps, shots, `applied.json`, exit code.                                                                                                                                                   |
-| `rs1_decoder.gd`           | `Rs1Decoder`: pure `PackedByteArray` → records, with the wire spec's error codes (`split_records`, `decode_record`, `validate_recording`). `Rs1Decoder.Stream.accept` checks the cross-record rules and resolves patches into the full state (`canvases`/`items`).                                |
-| `rs_applier.gd`            | `RsApplier`: wire id → RID maps and every RenderingServer call, counted in `rs_calls`. It applies the **resolved** state, never a patch, reconciling it with its own mirror so only changed state costs calls. `apply_record` calls the RenderingServer only after decode and `accept` succeeded. |
-| `tests/codec1_selftest.gd` | Golden-vector self-test (`../protocol/golden-1/`): decoded form, resolved state per seq, every invalid vector, `corrupt-meta.rs1`, and the applier: identical per-seq stats for `full.rs1` and `patch.rs1`, 0 calls for an unchanged seq, 0 calls for the corrupt transaction.                    |
-| `tests/ws_selftest.gd`     | `WebSocketPeer` interop self-test against the capture library's `rs_ws` echo server (G1c1).                                                                                                                                                                                                       |
+| File                       | Role                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `project.godot`            | 640×360, stretch disabled, `gl_compatibility`, typed-GDScript warnings at error level. `default_clear_color` is magenta on purpose: the session's `clear_color` must replace it.                                                                                                                                                       |
+| `main.tscn`                | A root `Node` with `receiver.gd`.                                                                                                                                                                                                                                                                                                      |
+| `receiver.gd`              | Orchestration: environment, framing pass, session and viewport check, one record per `_process`, state dumps, shots, `applied.json`, exit code; in live mode the connection, the acks, the step-window shots and the close after the end record.                                                                                       |
+| `rs_live_client.gd`        | `RsLiveClient` (G1c2): the `WebSocketPeer` client (`inbound_buffer_size` set before `connect_to_url`, `get_packet()` before `was_string_packet()`), the `hello`/`ack`/`resync` encoders and the host `error` parser.                                                                                                                   |
+| `rs1_decoder.gd`           | `Rs1Decoder`: pure `PackedByteArray` → records, with the wire spec's error codes (`split_records`, `decode_record`, `validate_recording`). `Rs1Decoder.Stream.accept` checks the cross-record rules and resolves patches into the full state (`canvases`/`items`).                                                                     |
+| `rs_applier.gd`            | `RsApplier`: wire id → RID maps and every RenderingServer call, counted in `rs_calls`. It applies the **resolved** state, never a patch, reconciling it with its own mirror so only changed state costs calls. `apply_record` calls the RenderingServer only after decode and `accept` succeeded.                                      |
+| `tests/codec1_selftest.gd` | Golden-vector self-test (`../protocol/golden-1/`): decoded form, resolved state per seq, every invalid vector, `corrupt-meta.rs1`, and the applier: identical per-seq stats for `full.rs1` and `patch.rs1`, 0 calls for an unchanged seq, 0 calls for the corrupt transaction; and the live control messages against `control/valid/`. |
+| `tests/ws_selftest.gd`     | `WebSocketPeer` interop self-test against the capture library's `rs_ws` echo server (G1c1).                                                                                                                                                                                                                                            |
 
 ## Running
 
@@ -41,7 +43,7 @@ RS_RECEIVER_SHOT_SEQS=1,2 RS_RECEIVER_STATE_SEQS=1,2 <godot or template> --path 
 
 | Variable                 | Meaning                                                                                                                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RS_RECEIVER_MODE`       | `file` (default when unset). `live` is a usage error until G1c2; any other value is a usage error.                                                                              |
+| `RS_RECEIVER_MODE`       | `file` (default when unset) or `live` (below); any other value is a usage error.                                                                                                |
 | `RS_RECEIVER_RECORDING`  | absolute `.rs1` path. Missing or unreadable → replay-failure `recording-unreadable`.                                                                                            |
 | `RS_RECEIVER_OUT`        | absolute `applied.json` path. Shots go to `<dirname>/shots/seq-<seq>.png`, state dumps to `<dirname>/state/seq-<seq>.json`.                                                     |
 | `RS_RECEIVER_SHOT_SEQS`  | optional CSV of transaction seqs to screenshot after `RenderingServer.frame_post_draw`.                                                                                         |
@@ -49,12 +51,46 @@ RS_RECEIVER_SHOT_SEQS=1,2 RS_RECEIVER_STATE_SEQS=1,2 <godot or template> --path 
 
 Exit codes: `0` status `ok`; `3` replay-failure (`applied.json` written); `2` usage error
 (`RS_RECEIVER_OUT` missing or not absolute, a malformed `RS_RECEIVER_SHOT_SEQS` or
-`RS_RECEIVER_STATE_SEQS`, or `RS_RECEIVER_MODE` not `file`), with nothing written. Every output line
-starts with `[receiver]`.
+`RS_RECEIVER_STATE_SEQS`, `RS_RECEIVER_MODE` neither `file` nor `live`, or a malformed live
+variable), with nothing written. Every output line starts with `[receiver]`.
 
 Rendered runs go only through a private `gamescope --backend headless`
 (`../scripts/lib/gamescope.sh`), never Xvfb or a desktop display. Under `--headless` a requested
 shot is replay-failure `shot-unavailable`; state dumps work headless.
+
+## Live mode (G1c2)
+
+```bash
+RS_RECEIVER_MODE=live RS_RECEIVER_URL=ws://127.0.0.1:<port>/render-stream \
+RS_RECEIVER_OUT=/abs/leg/applied.json RS_RECEIVER_SHOT_WINDOWS=0:307-359,1:367-419 \
+<template> --max-fps 60 --path experiments/render-stream/receiver
+```
+
+| Variable                      | Meaning                                                                                                                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RS_RECEIVER_URL`             | required; loopback only: `ws://127.0.0.1:<port>/…` or `ws://[::1]:<port>/…` (the port is the host's `evidence/live.json`)                                                     |
+| `RS_RECEIVER_OUT`             | as in file mode                                                                                                                                                               |
+| `RS_RECEIVER_SHOT_WINDOWS`    | optional CSV of `<step>:<from>-<to>` host-frame windows: the first applied transaction whose `frame` is inside a window is shot after `frame_post_draw`, and its state dumped |
+| `RS_RECEIVER_RECEIVED_OUT`    | absolute path of the received bytes, default `<dirname>/received.rs1`                                                                                                         |
+| `RS_RECEIVER_INBOUND_BYTES`   | `WebSocketPeer.inbound_buffer_size`, set before connecting and announced in `hello`; default 16777216                                                                         |
+| `RS_RECEIVER_CREDIT_STAGE`    | `submitted` (default) or `applied`; forced to `applied` under `--headless`, where `frame_post_draw` never fires                                                               |
+| `RS_RECEIVER_CONNECT_TIMEOUT` | milliseconds to reach `STATE_OPEN`, default 10000 (replay-failure `live-connect-failed`)                                                                                      |
+
+The file-mode variables (`RS_RECEIVER_RECORDING`, `_SHOT_SEQS`, `_STATE_SEQS`) and the G1d ones
+(`_STALL`, `_RECONNECT`, `_RESYNC`) are usage errors in live mode. On open the receiver sends
+`hello`. Each binary message is appended to the received file, framed (the first is the magic and
+the session, every later one exactly one record, else `live-framing`), decoded, accepted and
+acked `received`. The newest accepted transaction is applied, at most one per `_process`, and
+acked `applied`; at the next `frame_post_draw` a due shot is taken and `submitted` is sent.
+`presented` is reported as `"unavailable"`. After the end record the receiver closes with 1000
+itself (Godot's `WebSocketPeer` would drop an end record that arrived together with the host's
+close frame, so the host waits for this close), then writes `applied.json` and exits 0. A close
+without an end record is replay-failure `live-disconnected`; a close with 1002, 1008 or 1009 is
+`host-error`, with the close reason (the host repeats its error's reason there). Shots and state
+dumps are `shots/seq-<n>.png` and `state/seq-<n>.json`; shot entries carry their `step`;
+`shots_missed` lists the windows without one. Transactions carry `received_us`, `applied_us` and
+`submitted_us` (`Time.get_ticks_usec()`); `live` holds the URL, the credit stage, the inbound
+buffer size and the acks sent.
 
 ## `applied.json` (`render-stream-receiver-applied/2`)
 

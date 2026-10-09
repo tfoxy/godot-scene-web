@@ -234,24 +234,25 @@ It also checks that `corruptTransactionMeta(golden-1/patch.rs1, 3)` reproduces
 
 Drives `../fixtures/gate1/` and `../receiver/` through the leg groups of
 [`../protocol/gate1-design.md`](../protocol/gate1-design.md) "Q7", then checks them. Groups `g1a`
-(increment G1a: retained-state fixture, root geometry) and `g1b` (G1b2: render-stream/1, the patch
+(increment G1a: retained-state fixture, root geometry), `g1b` (G1b2: render-stream/1, the patch
 sink and its equivalence with the full sink, the omit-op and patch-drop sabotages, the one-frame
-draw-index tie) have landed. Run it from the repo root:
+draw-index tie) and `g1c` (G1c2: live delivery over the capture library's WebSocket server, credit,
+recording/live equivalence, the drop-message sabotage) have landed. Run it from the repo root:
 
 ```bash
 mise exec -- pnpm render-stream:gate1 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g1a,g1b]
+  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g1a,g1b,g1c]
 ```
 
 The arguments and the refusals are gate 0's. `--out` defaults to
 `artifacts/render-stream/gate1/<UTC>/`. `--legs` takes a comma-separated list of groups and
-defaults to every landed group. Asking for a group that has not landed (`g1c`, `g1d`) refuses with
-exit 2, and so does `g1b` without `g1a`: g1b compares against g1a's capture, reference and
-receiver. `legs.json` records the groups that ran. The checker evaluates only the checks of groups
+defaults to every landed group. Asking for a group that has not landed (`g1d`) refuses with
+exit 2, and so do `g1b` and `g1c` without `g1a`: g1b compares against g1a's capture, reference and
+receiver, g1c against g1a's reference. `legs.json` records the groups that ran. The checker evaluates only the checks of groups
 that ran. A landed group that did not run is reported as `not-run` and fails the gate. The runner
-takes about 4 minutes.
+takes about 6 minutes.
 
 The process plumbing is shared with `run-gate0.sh` through `lib/legs.sh`: `write_invocation`,
 `wait_owned`, `run_headless`, `run_capture`, `prepare_recording`, `run_receiver_headless`,
@@ -262,11 +263,14 @@ capture) also sets `GRC_STREAM_PATCH_OUT`, so each capture writes `recording.rs1
 recording), `RECEIVER_EXTRA_SHOTS` (the tie seq) and `RECEIVER_STATE=1` (`RS_RECEIVER_STATE_SEQS`
 at the settle seqs). Every launch strips `GS_STRIP_VARS`, which lists every variable
 gate1-design.md introduces plus `RS_FIXTURE_SHOT_FRAMES` and `RS_FIXTURE_TIE`, and every other
-inherited `GRC_*` and `RS_*`. Each group's rendered legs share one private gamescope.
+inherited `GRC_*` and `RS_*`. Each group's rendered legs share one private gamescope. G1c2 added
+`start_headless_bg`/`finish_bg` (a live host runs in the background while its receiver runs) and
+`RENDERED_EXTRA_ARGS` (a rendered live receiver gets `--max-fps 60`).
 
 ## Gate 1 files
 
-- `run-gate1.sh`: the orchestrator (`--legs` groups; `run_g1a`, `run_g1b`).
+- `run-gate1.sh`: the orchestrator (`--legs` groups; `run_g1a`, `run_g1b`, `run_g1c` with
+  `start_live_host`, `live_receiver` and `live_windows`).
 - `lib/legs.sh`: the shared leg plumbing (above).
 - `lib/gate1-expected.ts`: the `render-stream-gate1-expected/1` types (with `draw_index_ties`),
   `stepFrames`, and `synthesizeGate1(expected, step)` (clear colour, then every draw in paint
@@ -276,6 +280,10 @@ inherited `GRC_*` and `RS_*`. Each group's rendered legs share one private games
   `recordingTies`, every check and `runGate1`. It reuses gate 0's `classifyLeg`, the capture,
   manifest, consumption, fixture-access and typed-receiver checks, the step join and the tie
   analysis.
+- `lib/gate1-live-checks.ts` (G1c2): the live legs' evaluation and classification
+  (`evaluateLiveLeg`, `deliveryReport`, which recomputes in-flight transactions from the host's
+  live log), the g1c checks and the report's `live` object.
+- `gate0-tool.ts live-shot-seqs <applied.json>`: the seqs a live receiver shot (for `live-replay`).
 - `check-gate1.ts`: writes `<out>/result.json` (`render-stream-gate1-report/1`) and exits
   non-zero unless `gate_passed`.
 - `test/self-test-gate1.ts` and `test/rs1-test-encoder.ts`: see "Gate 1 self-test" below.
@@ -301,7 +309,20 @@ checks use is the /1 session's). The `capture` and `root-size-observe` captures 
 | g1b   | `sabotage-omit-free`      | `sabotage-omit-free/{capture,receiver}/`    | capture with `GRC_SABOTAGE=omit-op`, `GRC_SABOTAGE_OP=free` from step 8's frame (81), then a rendered receiver                                   | `pixel-mismatch` {8,9,10}                                                                              |
 | g1b   | `sabotage-omit-visible`   | `sabotage-omit-visible/{capture,receiver}/` | `omit-op` `canvas_item_set_visible` from step 6's frame (61)                                                                                     | `pixel-mismatch` {6}                                                                                   |
 | g1b   | `sabotage-patch-drop`     | `sabotage-patch-drop/{capture,receiver}/`   | capture with `GRC_SABOTAGE=patch-drop-item` at step 5's frame (51), then a rendered receiver on its patch recording                              | `capture-failure` (`patch-divergence`)                                                                 |
+| g1c   | `live-headless`           | `live-headless/{host,receiver}/`            | live host (below) + headless live receiver under `strace -e openat`, credit stage `applied`, no shots                                            | `success`                                                                                              |
+| g1c   | `live`                    | `live/{host,receiver}/`                     | live host + rendered live receiver (`--max-fps 60`), shot windows `k:[S+Nk+7, S+N(k+1)-1]` for steps 0..10, the last ending at the quit frame    | `success`                                                                                              |
+| g1c   | `live-replay`             | `live-replay/`                              | rendered file-mode receiver on `live/receiver/received.rs1`, shooting (and dumping) the live shots' seqs                                         | `success`                                                                                              |
+| g1c   | `sabotage-drop-message`   | `sabotage-drop-message/{host,receiver}/`    | live host with `GRC_SABOTAGE=drop-message`, `GRC_SABOTAGE_FRAME=S+4N+20` (560), + rendered live receiver                                         | `replay-failure` (`seq-gap`), failing at the seq after the dropped one                                 |
 | g1b   | `tie-overlap`             | `tie-overlap/{capture,reference,receiver}/` | capture with `RS_FIXTURE_TIE=overlap` (T over P), the variant's rendered reference with `frame-11`, a rendered receiver shooting the tie seq     | `unsupported` (`draw-index-tie`); the tie frame's pixels are measured, not gated                       |
+
+A live host is the template, `--headless --max-fps 60`, armed, `GRC_ROOT_SIZE=enforce-min-size`,
+both file sinks, `GRC_LIVE_LISTEN=127.0.0.1:0`, `GRC_LIVE_TAP_DIR=<host>/tap`, and the live timeline
+`RS_FIXTURE_START_FRAME=300`, `RS_FIXTURE_STEP_FRAMES=60`, `RS_FIXTURE_QUIT_FRAME=960`. The runner
+waits for `evidence/live.json` and passes its port to the receiver. Host directories hold
+`evidence/{result,live,live-summary,root}.json`, both recordings, `steps.jsonl`,
+`tap/stream-1.rs1` (every binary message formed for connection 1) and `tap/live-1.jsonl` (the live
+log); live receiver directories hold `applied.json` (`mode: live`), `received.rs1`,
+`shots/seq-<n>.png` and `state/seq-<n>.json`.
 
 ## Gate 1 classification
 
@@ -313,9 +334,20 @@ does not resolve, bit for bit, to the full sink's state at every frame is `captu
 (`degenerate-host-size`); under `enforce-min-size` the recording also carries the
 `root-size-enforce-failed` failure, which gate 0's rules already make `capture-failure`. The
 precedence is gate1-design.md Q7's: `capture-failure`, `unsupported`, `replay-failure`,
-`delivery-violation` (G1c on; nothing fires it yet), `pixel-mismatch`, `success`. Checkpoints
+`delivery-violation`, `pixel-mismatch`, `success`. Checkpoints
 compare the full frame, all nine `expected.json` regions, and count the mismatching pixels outside
 every region; a checkpoint names its leg and stream (`full` or `patch`).
+
+Live legs (`gate1-live-checks.ts`) add: `capture-failure` for a host that did not listen or a tap
+that is not a valid stream (a tap the receiver closed before the end record may lack it);
+`replay-failure` for the receiver's status, end record, transactions that are not exactly the
+received stream, received bytes that differ from the host's tap, a receiver that joined late (its
+first applied frame at or after step 0's settle frame), and a step window without a shot
+(rendered legs); `delivery-violation` for two transactions in flight (recomputed from the log's
+own ack lines), a send logged without credit, queued bytes above the largest message + 4096, and
+`stale-state`: a tapped transaction whose resolved state differs from the full recording's at its
+frame; `pixel-mismatch` for a step shot that differs from the reference. `live-replay` is
+classified as a file-mode receiver on the received stream, shooting the live shots' seqs.
 
 ## Gate 1 criteria
 
@@ -337,6 +369,18 @@ every region; a checkpoint names its leg and stream (`full` or `patch`).
 | `patch-bytes` (g1b)                                                                                                             | recorded, not gated: both sinks' end stats and per-transaction bytes                                                                                                                                                                                                                                                                                                                          |
 | `draw-index-ties` (g1b)                                                                                                         | the capture recording's invariant-9 ties are exactly `expected.json`'s `draw_index_ties` (frame 11, canvas 1, `{P, T}`, harmless), each declared on the wire                                                                                                                                                                                                                                  |
 | `tie-frame-pixels` (g1b)                                                                                                        | `reference/shots/frame-11.png` equals both receivers' shot of the frame-11 transaction exactly                                                                                                                                                                                                                                                                                                |
+| `live-listening` (g1c)                                                                                                          | every live host's `evidence/live.json` says `listening` on 127.0.0.1 or ::1 with an ephemeral port, `result.json` `live.port` agrees, and the receiver's URL used that port                                                                                                                                                                                                                   |
+| `live-handshake` (g1c)                                                                                                          | `live`, `live-headless`: subprotocol `render-stream.1` negotiated, the host logged the hello (credit stage `submitted` / `applied`, the receiver's inbound buffer), one connection, no host error, the end record sent, and the receiver closed with 1000 after reading it                                                                                                                    |
+| `live-tap-equals-received` (g1c)                                                                                                | `live`, `live-headless`: `received.rs1` is byte-identical to the host's `tap/stream-1.rs1`, as `applied.json` `streams[0]` reports                                                                                                                                                                                                                                                            |
+| `live-decodes` (g1c)                                                                                                            | `validateRecording(received.rs1)` is `[]` for `live` and `live-headless`                                                                                                                                                                                                                                                                                                                      |
+| `live-first-full-then-patch` (g1c)                                                                                              | the live session is `websocket`, connection 1, `patch`, the capture's `session_id`, a fresh `stream_id`; seq 1 full, every later seq a patch on `seq-1`                                                                                                                                                                                                                                       |
+| `live-resolves-to-recording` (g1c)                                                                                              | every live transaction, resolved, equals the full recording's state at its frame, bit for bit                                                                                                                                                                                                                                                                                                 |
+| `live-replay-equals-live` (g1c)                                                                                                 | `live-replay` applied the same seqs with the same record hashes, and its shots and state dumps at the live shots' seqs equal the live receiver's                                                                                                                                                                                                                                              |
+| `live-vs-reference` (g1c)                                                                                                       | `live` shot every step window, each shot equal to the reference's `step-<k>.png` and `synthesizeGate1(k)` exactly                                                                                                                                                                                                                                                                             |
+| `live-credit-bounded` (g1c)                                                                                                     | every live host log: at most one transaction in flight (recomputed), no send without credit, `queued_bytes` within the largest message + 4096                                                                                                                                                                                                                                                 |
+| `live-acks-staged` (g1c)                                                                                                        | per seq `received_us <= applied_us <= submitted_us` (`submitted_us` null headless); the host saw every stage of every sent seq, matching the receiver's ack counts; `presented` is `"unavailable"`                                                                                                                                                                                            |
+| `live-receiver-late` (g1c)                                                                                                      | every live receiver's first applied transaction has a frame before step 0's settle frame (`S+7`)                                                                                                                                                                                                                                                                                              |
+| `receiver-never-loaded-fixture-live` (g1c)                                                                                      | the headless live receiver's trace opens nothing under `fixtures/` and opens its `received.rs1`; its argv passes `--path <receiver>`; no live receiver log has a `[fixture]` line                                                                                                                                                                                                             |
 | `leg-class-<leg>`                                                                                                               | each classified leg has its expected class; sabotage legs mismatch at exactly their step sets; `root-size-observe` names `degenerate-host-size`, declares `degenerate-visible` with a 64×64 `host_visible_rect`, and mismatches in exactly `corner` and `corner-degenerate`; `tie-overlap`'s only tie is the step-1 tie, not harmless                                                         |
 
 ## Gate 1 self-test
@@ -351,8 +395,15 @@ classes) and `synthesizeGate1`, `mapNames`, `evaluateInvariants` and `recordingT
 the fixture's retained state (T's one harmless tie; the overlapping variant; a step-3 tie under
 `Q`). It then builds a passing g1a+g1b evidence tree from that model, encoded in render-stream/1
 in both encodings by `test/rs1-test-encoder.ts`, with PNGs synthesized from `expected.json`.
-Each check gets at least one failing perturbation, and the real `runGate1` runs on each tree: 46
-scenarios, 225 assertions.
+Each check gets at least one failing perturbation, and the real `runGate1` runs on each tree. The
+g1c legs are fabricated from the same model on a short live timeline (S = 30, N = 10): a host tap
+and live log with one send every second frame, a receiver that shoots each step window, the
+replay, the headless leg and the drop leg; the g1c perturbations cover a send without credit or
+with a transaction in flight, oversized queues, a stale target, a tap that differs from the
+received bytes, a late receiver, a missed window, wrong live and replay pixels, a missing
+`submitted` ack, a host-side close, a non-loopback listener, a drop leg that never failed, a
+fixture open, a full transaction after seq 1, a cut stream and missing groups. 64 scenarios, 307
+assertions.
 
 # Gate 1, G1c1: `rs_ws` interop
 

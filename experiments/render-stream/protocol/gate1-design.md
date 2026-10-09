@@ -1,8 +1,8 @@
 # Gate 1 design: retained canvas state and delivery
 
 Status: contract for gate 1, written 2026-10-09 after gate 0 passed (commit `fa906496`). G1a,
-G1b1, G1c1 and G1b2 are implemented (the G1a and G1b2 "As built" notes record the differences);
-G1c2, G1d and G1e are not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
+G1b1, G1c1, G1b2 and G1c2 are implemented (the G1a, G1b2 and G1c2 "As built" notes record the
+differences); G1d and G1e are not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
 one verified commit on `main`, implemented by one agent in its own worktree, against this file,
 [render-stream-1.md](render-stream-1.md) (the proposed wire format, finalized by G1b1) and the
 gate 0 documents it extends: [gate0-design.md](gate0-design.md) and
@@ -997,6 +997,67 @@ transaction has `frame ≥ S + 7`); `receiver-never-loaded-fixture` on the live 
 
 **Pass criteria**: `--legs g1a,g1b,g1c` green; gate 0 and gate −1 green; README section with the
 measured per-stage ack latencies and patch bytes per transaction.
+
+**As built (2026-10-09; README "Gate 1c result").** Every g1c leg classified as expected. These are
+the differences from the text above, and what G1d inherits:
+
+- **Files.** The hub is `capture/src/rs1_live.{h,cpp}` (`rs1::Hub`, the control-message parser
+  `parse_control`, `LiveTransport` with `ServerTransport` over `grc::live::Server`), tested by
+  `capture/test/rs1_live_test.cpp` (fake transport, 139 checks). `rs_ws.cpp`/`rs_sha1.cpp` are in
+  the library; `rs_ws::Event` gained `t_ns`, the I/O thread's steady-clock receipt time, so ack
+  latencies do not include the wait for the next frame callback. The checker's live half is
+  `scripts/lib/gate1-live-checks.ts`; the receiver's transport is `receiver/rs_live_client.gd`.
+- **The pending target, G1c2 vs G1d.** G1c2 keeps no copy: the pending target is the mirror
+  itself. Without credit a callback only sets `pending` and counts `coalesced` when the mutation
+  epoch moved since the last send; with credit it sends the publisher's copy of the current frame.
+  `stale-coalesce` and `ignore-credit` stay refused until G1d.
+- **One copy per frame.** The hub sends the publisher's published copy (`Publisher::last_published`,
+  sabotages applied), stamped with its own seq; it keeps one base copy per connection. Without
+  file sinks the snapshot is taken only when a connection can take a transaction, and the
+  publisher-side sabotages (`freeze-frame`, `perturb-transform`, `patch-drop-item`) refuse.
+  `drop-message` without `GRC_LIVE_LISTEN` refuses.
+- **The end record is not followed by an immediate close.** Godot's `WebSocketPeer` loses every
+  message that arrives in the same `poll()` as a close frame: `get_available_packet_count()` is 0
+  once the state is not `STATE_OPEN`, and a clean close calls `close(-1)`, which clears
+  `in_buffer` (`modules/websocket/wsl_peer.cpp:654`, `:746-752`, `:827-832`, `:843-870`). A host
+  that sends the end record and close 1000 together (Q4 "Shutdown and disarm") hides the end record:
+  the first run's receiver reported `live-disconnected` after 942 good transactions. So
+  `Hub::finish` sends the end record only; the receiver closes with 1000 once it has read it; the
+  host lingers up to 1.5 s for that close and then closes what is left with 1000 (blocking at
+  shutdown, across frame callbacks after a disarm). A connection still awaiting its hello closes at
+  once. For the same reason a host `error` text may never be read: the close reason repeats the
+  error's reason (`protocol`, `message-too-large`, `hello-timeout`), and the receiver reports a
+  close with 1002, 1008 or 1009 as `host-error` with that reason.
+- **Credit for seq 1 is the hello.** `credit` becomes true when the hello is accepted, so the live
+  log's first `sent` line carries `credit: true` like every other.
+- **`drop-message` fires at the first transaction formed at or after the frame**, once. A
+  transaction is formed only at a callback holding credit, so "exactly that frame" would depend on
+  the credit phase. Measured: it fired at frame 560 exactly.
+- **`seq-gap` before the patch rules.** After a dropped message the next patch both skips a seq and
+  names the dropped seq as its base; the TS and GDScript decoders reported `patch-base` because
+  they checked the patch rules first. They now check seq continuity first, so the sabotage reads
+  `seq-gap` (its cause); the new golden `invalid/patch-after-gap.rs1` pins it in both decoders.
+- **The tap includes the dropped transaction**, and its end record counts it, so the tap is a valid
+  stream; the received stream is the tap without it. `live-tap-equals-received` is evaluated on
+  `live` and `live-headless`, and a tap whose connection the receiver closed before the end record
+  may lack it (render-stream-1.md "File layout").
+- **Timeline.** Live hosts quit at `S + 11 N` (960) instead of the fixture default `S + 10 N + 11`,
+  so step 10's window (`[907, 960]`) is as long as the others.
+- **`live-credit-bounded`** recomputes in-flight from the log's own `ack`/`resync` lines (a send
+  while an earlier send's credit-stage ack is missing is a violation), independently of the host's
+  `credit` field, which it checks too. The queued-bytes bound is the largest binary message (the
+  magic plus the session record counts as one) + 4096. Late acks that arrive during the linger are
+  logged and counted, so `live-acks-staged` sees every stage of every sent seq.
+- **Receiver-never-loaded-fixture on the live receiver** is its own check,
+  `receiver-never-loaded-fixture-live`: `live-headless`'s receiver runs under `strace -e openat`;
+  the positive control is the open of its `received.rs1` for writing.
+- **Live shots** are `shots/seq-<n>.png` and `state/seq-<n>.json` (stream 1); every shot also dumps
+  its state, and `live-replay` dumps the same seqs, so `live-replay-equals-live` compares states as
+  well as pixels.
+- **Not done here (G1d).** `RS_RECEIVER_STALL`, `_RECONNECT` and `_RESYNC` are usage errors in the
+  receiver. The host already handles `resync` (credit plus a full next transaction) and reconnects
+  (connection 2 gets a fresh `stream_id`, seq from 1, a full first transaction), both unit-tested
+  but not exercised by a leg.
 
 ---
 

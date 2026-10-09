@@ -42,6 +42,11 @@
       "description": "seq 3 declares base_seq 1, but the previous transaction's seq is 2"
     },
     {
+      "file": "invalid/patch-after-gap.rs1",
+      "code": "seq-gap",
+      "description": "seq 4 (a patch on seq 3) follows seq 2: seq 3 is missing"
+    },
+    {
       "file": "invalid/full-with-base.rs1",
       "code": "patch-encoding",
       "description": "seq 1 is encoded as full but carries a non-null base_seq"

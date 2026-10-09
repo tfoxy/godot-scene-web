@@ -1,4 +1,4 @@
-# render-stream experiment — gates −1, 0 and 1: capture seam, first stream, retained state
+# render-stream experiment — gates −1, 0 and 1: capture seam, first stream, retained state, live delivery
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
@@ -15,6 +15,10 @@ G1b2 followed (see "Gate 1b result" below): the capture, the receiver and both g
 to [protocol/render-stream-1.md](protocol/render-stream-1.md), with a patch-encoded sink that
 resolves bit for bit to the full one, and the one-frame draw-index tie of a top-level item added
 at runtime is now provoked, declared and classified. render-stream/0 is superseded.
+
+G1c2 followed (see "Gate 1c result" below): the capture library serves the same stream live over its
+own loopback WebSocket server, one transaction in flight with credit returned from the receiver's
+paced render loop, and a live receiver draws the same pixels as the file replay of what it received.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -287,10 +291,10 @@ experiments/render-stream/scripts/build-capture.sh
 mise exec -- pnpm render-stream:gate1 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g1a,g1b]
+  [--legs g1a,g1b,g1c]
 ```
 
-This takes about four minutes and runs the landed groups, `g1a` and `g1b`. It imports
+This takes about six minutes and runs the landed groups, `g1a`, `g1b` and `g1c`. It imports
 `fixtures/gate1/` and `receiver/`, then runs the receiver's typed self-test and the headless
 captures, each writing both sinks (`recording.rs1` full, `recording-patch.rs1` patch): the
 400-frame capture under `enforce-min-size`, the four `omit-update` sabotage captures and the
@@ -298,7 +302,10 @@ captures, each writing both sinks (`recording.rs1` full, `recording-patch.rs1` p
 g1a rendered receivers share one private gamescope. Group g1b then captures the two `omit-op`
 sabotages, the `patch-drop-item` sabotage and the `RS_FIXTURE_TIE=overlap` variant, and runs the
 patch receiver, the sabotage receivers and the overlap variant's reference and receiver in a
-second private gamescope. Last, the checker writes
+second private gamescope. Group g1c runs four live legs: a host serving on an ephemeral loopback
+port with a headless receiver, then, in a third private gamescope, a host with a rendered live
+receiver, a file-mode replay of what that receiver received, and the `drop-message` sabotage.
+Last, the checker writes
 `artifacts/render-stream/gate1/<UTC>/result.json` (`render-stream-gate1-report/1`). Legs and
 criteria: [scripts/README.md](scripts/README.md) "Gate 1". Self-test:
 `scripts/test/self-test-gate1.ts`.
@@ -307,18 +314,22 @@ criteria: [scripts/README.md](scripts/README.md) "Gate 1". Self-test:
 
 Environment, read once at SCENE initialisation:
 
-| Variable                  | Meaning                                                                                                                                                                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GRC_CALIBRATION`         | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                                                                |
-| `GRC_MODE`                | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                   |
-| `GRC_EVIDENCE_DIR`        | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                |
-| `GRC_DISARM_AFTER_FRAMES` | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                            |
-| `GRC_STREAM_OUT`          | absolute `.rs1` path of the full-encoding sink (render-stream/1 since G1b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1      |
-| `GRC_STREAM_PATCH_OUT`    | G1b2: absolute `.rs1` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                               |
-| `GRC_SABOTAGE`            | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2). The live kinds (`drop-message`, `ignore-credit`, `stale-coalesce`) and any other value refuse to publish (arming is unaffected) |
-| `GRC_SABOTAGE_OP`         | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                        |
-| `GRC_SABOTAGE_FRAME`      | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                          |
-| `GRC_ROOT_SIZE`           | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                            |
+| Variable                     | Meaning                                                                                                                                                                                                                                                               |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GRC_CALIBRATION`            | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                                                                                     |
+| `GRC_MODE`                   | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                        |
+| `GRC_EVIDENCE_DIR`           | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                     |
+| `GRC_DISARM_AFTER_FRAMES`    | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                 |
+| `GRC_STREAM_OUT`             | absolute `.rs1` path of the full-encoding sink (render-stream/1 since G1b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                           |
+| `GRC_STREAM_PATCH_OUT`       | G1b2: absolute `.rs1` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                    |
+| `GRC_SABOTAGE`               | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message` (G1c2, needs `GRC_LIVE_LISTEN`). `ignore-credit`, `stale-coalesce` (G1d) and any other value refuse to publish (arming is unaffected) |
+| `GRC_SABOTAGE_OP`            | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                             |
+| `GRC_SABOTAGE_FRAME`         | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                               |
+| `GRC_ROOT_SIZE`              | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                 |
+| `GRC_LIVE_LISTEN`            | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves render-stream/1 over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`)              |
+| `GRC_LIVE_TAP_DIR`           | G1c2: absolute directory for `stream-<n>.rs1` (every binary message formed for connection n) and `live-<n>.jsonl` (the live log)                                                                                                                                      |
+| `GRC_LIVE_MAX_MESSAGE_BYTES` | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                 |
+| `GRC_LIVE_HELLO_TIMEOUT_MS`  | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                   |
 
 Arming happens at the earliest point where the `RenderingServer` singleton is
 available. With a runtime `load_extension` from an autoload that is SCENE
@@ -352,8 +363,12 @@ Evidence files, exactly as the runner expects:
   (`armed|validated|refused|error`), `reason`, `vptr_written`, `disarmed`,
   `display_server`, `rendering_driver`, `rendering_method`, and (gate 0, additive)
   `stream`: `{path, patch_path, status: off|open|closed|refused|open-failed, reason,
-transactions}` (`patch_path` since G1b2).
-  Written at decision time and rewritten at disarm and shutdown.
+transactions}` (`patch_path` since G1b2), and (G1c2) `live`: `{status, listen, address, port,
+reason, connections}`. Written at decision time and rewritten at disarm and shutdown.
+- `live.json` (G1c2, with `GRC_LIVE_LISTEN`) — `render-stream-live/1`: `status`
+  (`listening|refused|failed`), `address`, `port`, `reason`; written when the listener is decided.
+- `live-summary.json` (G1c2) — `render-stream-live-summary/1`: per connection the transactions
+  formed and sent, coalesced callbacks, acks per stage, credit round trips, close code and side.
 - `fingerprint.json` — version string, sha256, build-id, pie, load bias, live
   vptr, singleton address, abstract address point, pure placeholder, pid, and the
   `/proc/self/maps` lines of the main binary.
@@ -965,6 +980,91 @@ can change pixels stays `unsupported`.
   unbounded.
 - `z_as_relative` and `draw_behind_parent` are still unobserved (G1e). The fixture is still
   axis-aligned opaque rects.
+
+## Gate 1c result (2026-10-09)
+
+**Pass.** The run is `artifacts/render-stream/gate1/20261009T080634Z/` (ignored, not committed;
+produced in the G1c2 worktree). Its `result.json` has `gate_passed: true`, groups `g1a`, `g1b` and
+`g1c` run and none missing, and 50 of 50 checks pass
+([protocol/gate1-design.md](protocol/gate1-design.md) "G1c2"). Every leg classifies as expected.
+The capture library now links `rs_ws` and serves render-stream/1 live (`GRC_LIVE_LISTEN`); the
+receiver has a live mode. Runs on the same build:
+
+- gate 0: `artifacts/render-stream/gate0/20261009T080454Z/` passes 19 of 19;
+- gate −1: `artifacts/render-stream/gate-minus1/20261009T080356Z/` still passes 28 of 28 (the
+  library's imports still have no `mprotect` or `mmap`).
+
+**Delivery.** Each live host paces the fixture at 60 frames per second with S = 300, N = 60 and
+quits at frame 960; the receiver joins long before step 0 settles (first applied host frame 38,
+85 and 40, against 307). Counts from each host's `live-summary.json` and the receiver's
+`applied.json`; presented is reported as `"unavailable"` throughout, since Godot gives no
+presentation feedback.
+
+| Leg                     | Credit stage | Frames offered | Formed | Sent | Received / applied / submitted (receiver) | Coalesced | Credit round trip p50 / p95 / max |
+| ----------------------- | ------------ | -------------- | ------ | ---- | ----------------------------------------- | --------- | --------------------------------- |
+| `live`                  | `submitted`  | 923            | 912    | 912  | 912 / 912 / 912                           | 0         | 10.9 / 11.3 / 19.7 ms             |
+| `live-headless`         | `applied`    | 876            | 876    | 876  | 876 / 876 / –                             | 0         | 7.1 / 7.6 / 11.6 ms               |
+| `sabotage-drop-message` | `submitted`  | 522            | 517    | 516  | 515 / 515 / 515, then `seq-gap` at 517    | 0         | 9.3 / 10.0 / 20.1 ms              |
+
+Host-side ack latency, from the main thread's send to the I/O thread's receipt of each stage's ack
+(`live`, p50 / p95): received 8.9 / 9.1 ms, applied 9.2 / 9.3 ms, submitted 10.9 / 11.3 ms. On the
+receiver, received → applied takes 0.64 ms (median, max 1.4) and applied → submitted (the next
+`frame_post_draw`) 1.8 ms (median, max 10.5). The credit returns within 1 host frame at the
+median and 2 at most, so the host sends on 912 of 923 streaming frames (99 %); none of the 11
+frames without credit saw the mirror change, so nothing coalesced. Queued bytes never exceeded
+7 628 (bound: the largest message, 7 624, + 4 096).
+
+**Bytes.** The live stream is the patch encoding: a 3 405-byte session message (magic included),
+seq 1 full at 7 624 bytes, then patches with a median of 354 bytes and a maximum of 3 499 (a step
+that redraws several items), and a 258-byte end record: 352 749 bytes for 912 transactions on
+`live`. The tap equals the received file byte for byte on `live` and `live-headless`.
+
+| Leg                     | Group | Class (expected = measured)  | Measured                                                                                                                                                                         |
+| ----------------------- | ----- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `live`                  | g1c   | `success`                    | 912 transactions; one shot per step window (seqs 270, 329, … 860), each equal to the reference and `synthesizeGate1(k)`; every live state equals the full recording at its frame |
+| `live-replay`           | g1c   | `success`                    | the file-mode replay of `live/receiver/received.rs1`: same 912 seqs and record hashes, identical shots and state dumps at the 11 shot seqs                                       |
+| `live-headless`         | g1c   | `success`                    | credit stage `applied` (forced under `--headless`), 876 transactions; under `strace -e openat` it opens nothing under `fixtures/`                                                |
+| `sabotage-drop-message` | g1c   | `replay-failure` (`seq-gap`) | the host formed seq 516 at frame 560, tapped it and did not send it; the receiver failed at seq 517 (`seq-gap`), after 5 of the 11 step shots                                    |
+
+g1a and g1b classify exactly as in "Gate 1b result". Images, all under the run directory:
+`reference/shots/step-<k>.png`; `live/receiver/shots/seq-{270,329,…,860}.png` with
+`live/receiver/state/seq-<n>.json`; `live-replay/shots/seq-<n>.png` for the same seqs;
+`sabotage-drop-message/receiver/shots/seq-<n>.png` for steps 0–4.
+
+### Findings
+
+- **A Godot client never reads a message that arrives with the close frame.** The first run's
+  live receiver applied 942 transactions and then reported `live-disconnected`: the host had sent
+  the end record and close 1000 together, and `WebSocketPeer` returns no packets once its state
+  is not `STATE_OPEN` and clears its buffer on a clean close (`modules/websocket/wsl_peer.cpp:654`,
+  `:746-752`, `:827-832`, `:843-870`). The host now sends the end record and lingers (up to
+  1.5 s) for the receiver to close first; error close reasons repeat the error's reason.
+- **A patch after a lost message reported its base, not the gap.** Both decoders checked the
+  patch rules before seq continuity, so the drop-message sabotage read `patch-base`. They now
+  report `seq-gap` first (golden `invalid/patch-after-gap.rs1`).
+- **Typed GDScript is checked only by the debug editor.** The release template ran the live
+  receiver happily while the editor's parse of `receiver.gd` failed on one Variant passed to an
+  `int` parameter; `receiver-typed-clean` caught it.
+
+### What this proves
+
+- The capture library can serve the stream live from inside the game process without the frame
+  callback ever waiting on a socket: encoding stays on the main thread, the I/O thread only moves
+  bytes, and one transaction is in flight at a time, by the host's own log and by an independent
+  recount from its ack lines.
+- Live delivery loses nothing a recording has: every live transaction resolves to the full file
+  recording's state at its frame, and a live receiver's pixels equal both the reference and a
+  file replay of exactly the bytes it received.
+- A lost transaction is caught at the receiver as a sequence gap before anything is drawn from it.
+
+### What this does not prove
+
+- Stalls, coalescing under a slow receiver, resync and reconnect: G1d. The host handles `resync`
+  and a second connection (unit-tested), but no leg exercises them, and coalescing never fired
+  here because the receiver keeps up.
+- Presentation: `presented` is unavailable in Godot; `submitted` is "Godot submitted the frame".
+- Rates other than 60 frames per second, more than one receiver, non-loopback serving and
+  constrained links (gate 6, gate 2).
 
 ## Scratch verification (2026-10-08)
 

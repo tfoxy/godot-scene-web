@@ -856,6 +856,18 @@ def build_invalid_vectors() -> dict[str, tuple[bytes, str, str]]:
         "seq 3 declares base_seq 1, but the previous transaction's seq is 2",
     )
 
+    # patch-after-gap: seq 3 never arrives; seq 4 is a patch on it (base_seq 3), as after a lost
+    # live message (G1c2's drop-message sabotage). The gap is reported, not the base: decoders
+    # check seq continuity before the patch rules.
+    t4_after_gap = transaction_bytes(4, 4, "patch", 3, [], [], [])
+    records = [mini_session("patch"), t1, t2, t4_after_gap]
+    end = end_record(3, records, diff_ns_total=0, full_transactions=1, patch_transactions=2)
+    out["patch-after-gap"] = (
+        recording(records, end),
+        "seq-gap",
+        "seq 4 (a patch on seq 3) follows seq 2: seq 3 is missing",
+    )
+
     # full-with-base: a full transaction with a non-null base_seq.
     items = [(iid, base["items"][iid], False) for iid in sorted(base["items"])]
     canvases = [(cid, base["canvases"][cid]) for cid in sorted(base["canvases"])]

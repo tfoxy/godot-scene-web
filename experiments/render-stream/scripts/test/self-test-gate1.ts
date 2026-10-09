@@ -1,5 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the gate 1 checker (lib/gate1-checks.ts, groups g1a and g1b). Proves that every
+// Self-test for the gate 1 checker (lib/gate1-checks.ts and lib/gate1-live-checks.ts, groups
+// g1a, g1b and g1c). Proves that every
 // check can fail as well as pass, and that classifyGate1 adds gate 1's rules (the session's root
 // size declaration, patch divergence) to gate 0's precedence.
 //
@@ -55,7 +56,11 @@ import {
   stepFrames,
   synthesizeGate1,
 } from "../lib/gate1-expected";
-import { validateRecording } from "../lib/render-stream-1";
+import {
+  G1C_CLASSIFIED_LEGS,
+  G1C_EXPECTATIONS,
+} from "../lib/gate1-live-checks";
+import { splitRecords, validateRecording } from "../lib/render-stream-1";
 import {
   encodeRs1Recording,
   type TItem,
@@ -360,6 +365,9 @@ function afterStep(state: MState, step: number, opts: ModelOptions): void {
 
 interface RecordingOptions extends ModelOptions {
   quit: number;
+  /** the fixture timeline (RS_FIXTURE_START_FRAME / _STEP_FRAMES); default S, N */
+  start?: number;
+  stepFrames?: number;
   sabotage?: { kind: string; frame: number; op?: string | null } | null;
   hooksPlanned?: string[];
   /** publish step `step`'s change `frames` frames late */
@@ -409,7 +417,9 @@ function modelStates(opts: RecordingOptions): TState[] {
   const states: TState[] = [];
   let applied = 0;
   const appliedAt = (k: number) =>
-    S + N * k + (opts.delay?.step === k ? opts.delay.frames : 0);
+    (opts.start ?? S) +
+    (opts.stepFrames ?? N) * k +
+    (opts.delay?.step === k ? opts.delay.frames : 0);
   for (let frame = 1; frame <= opts.quit; frame++) {
     if (applied >= 1 && frame === appliedAt(applied) + 1)
       afterStep(state, applied, opts);
@@ -586,10 +596,10 @@ async function writeProcess(
   await writeText(join(dir, "exit-code.txt"), `${exitCode}\n`);
 }
 
-function stepLog(): string {
+function stepLog(start = S, span = N): string {
   return `${EXPECTED.steps
     .map((s) => {
-      const f = stepFrames(EXPECTED, s.step);
+      const f = stepFrames(EXPECTED, s.step, start, span);
       return JSON.stringify({
         step: s.step,
         applied_frame: f.applied,
@@ -944,8 +954,8 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     sha256: "54cc",
   });
   await writeJson(join(out, "legs.json"), {
-    groups_run: ["g1a", "g1b"],
-    groups_landed: ["g1a", "g1b"],
+    groups_run: ["g1a", "g1b", "g1c"],
+    groups_landed: ["g1a", "g1b", "g1c"],
   });
   for (const p of ["fixture", "receiver"]) {
     await writeProcess(
@@ -1112,6 +1122,588 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
       { degenerateCorner: true },
     );
   }
+
+  await buildLiveLegs(out, projects);
+}
+
+// ---------------------------------------------------------------------------------------------
+// g1c (G1c2): fabricated live legs
+// ---------------------------------------------------------------------------------------------
+
+/** The live timeline of the fabricated hosts: S = 30, N = 10, quit S + 11 N (the runner uses 300,
+ * 60 and 960; the checker derives everything from steps.jsonl and the evidence). */
+const LS = 30;
+const LN = 10;
+const LQUIT = LS + LN * 11;
+/** The receiver joins at host frame 5; with credit returning in one frame, the host sends every
+ * second frame (5, 7, 9, ...). */
+const LFIRST = 5;
+const LIVE_PORT = 41234;
+const LIVE_SESSION = "0123456789abcdef0123456789abcdef";
+const LIVE_STREAM = "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c";
+/** sabotage-drop-message: the transaction formed at this frame is dropped. */
+const LDROP_FRAME = 71;
+
+interface LiveOptions {
+  rendered: boolean;
+  /** the frame whose transaction is formed but not sent */
+  dropFrame?: number;
+  /** first frame with a send (default LFIRST) */
+  first?: number;
+  /** relabel: the tap's transaction at this frame carries the previous send's state */
+  staleAt?: number;
+  /** encode these live seqs as full transactions */
+  fullAt?: number[];
+  /** the tap only: a stream id other than the one the receiver got */
+  tapStreamId?: string;
+}
+
+interface LiveSend {
+  seq: number;
+  frame: number;
+  dropped: boolean;
+}
+
+function liveSends(opts: LiveOptions): LiveSend[] {
+  const out: LiveSend[] = [];
+  let seq = 1;
+  let frame = opts.first ?? LFIRST;
+  while (frame <= LQUIT) {
+    const dropped = frame === opts.dropFrame;
+    out.push({ seq, frame, dropped });
+    seq++;
+    // A dropped transaction keeps its credit: the next one goes out on the next frame.
+    frame += dropped ? 1 : 2;
+  }
+  return out;
+}
+
+/** Shots: the first send inside each step window [S + N k + 7, S + N (k + 1) - 1] (the last ending
+ * at the quit frame), up to the receiver's failure seq when there is one. */
+function liveShots(sends: LiveSend[], stopSeq?: number): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const s of EXPECTED.steps) {
+    const k = s.step;
+    const from = LS + LN * k + 7;
+    const to = k === 10 ? LQUIT : LS + LN * (k + 1) - 1;
+    const hit = sends.find(
+      (x) =>
+        !x.dropped &&
+        x.frame >= from &&
+        x.frame <= to &&
+        (stopSeq === undefined || x.seq < stopSeq),
+    );
+    if (hit) out.set(k, hit.seq);
+  }
+  return out;
+}
+
+interface LiveFiles {
+  tap: Buffer;
+  received: Buffer;
+  sends: LiveSend[];
+  /** the seq the receiver fails at (drop leg) */
+  failSeq?: number;
+}
+
+function liveStreams(opts: LiveOptions): LiveFiles {
+  const states = modelStates({ quit: LQUIT, start: LS, stepFrames: LN });
+  const sends = liveSends(opts);
+  const formed = sends.map((s, i) => {
+    let state = states[s.frame - 1];
+    if (opts.staleAt === s.frame && i > 0)
+      state = { ...states[sends[i - 1].frame - 1], frame: s.frame };
+    return state;
+  });
+  const session = {
+    ...sessionFor({ quit: LQUIT }, "patch"),
+    sessionId: LIVE_SESSION,
+    streamId: LIVE_STREAM,
+    transport: "websocket" as const,
+    connection: 1,
+  };
+  const dropIndex = sends.findIndex((s) => s.dropped);
+  if (dropIndex < 0) {
+    const received = encodeRs1Recording(formed, {
+      ...session,
+      fullAt: opts.fullAt,
+    });
+    const tap = opts.tapStreamId
+      ? encodeRs1Recording(formed, {
+          ...session,
+          fullAt: opts.fullAt,
+          streamId: opts.tapStreamId,
+        })
+      : received;
+    return { tap, received, sends };
+  }
+  // The receiver fails at the seq after the dropped one and closes: no end record anywhere.
+  const kept = formed.slice(0, dropIndex + 2);
+  const tap = encodeRs1Recording(kept, { ...session, noEnd: true });
+  const split = splitRecords(new Uint8Array(tap));
+  const dropped = split.records[1 + dropIndex];
+  const received = Buffer.concat([
+    tap.subarray(0, dropped.offset),
+    tap.subarray(dropped.offset + dropped.byte_length),
+  ]);
+  return {
+    tap,
+    received,
+    sends: sends.slice(0, dropIndex + 2),
+    failSeq: sends[dropIndex + 1].seq,
+  };
+}
+
+function liveLogLines(files: LiveFiles, opts: LiveOptions): string[] {
+  const stage = opts.rendered ? "submitted" : "applied";
+  const stages = opts.rendered
+    ? ["received", "applied", "submitted"]
+    : ["received", "applied"];
+  const first = files.sends[0].frame;
+  let t = 1_000_000;
+  const at = () => (t += 1000);
+  const lines: Record<string, unknown>[] = [
+    {
+      frame: first - 1,
+      t_us: at(),
+      event: "open",
+      connection: 1,
+      stream_id: LIVE_STREAM,
+    },
+    {
+      frame: first - 1,
+      t_us: at(),
+      state: "await-hello",
+      credit: false,
+      in_flight: null,
+      pending: false,
+      coalesced: 0,
+      queued_bytes: 0,
+      sent: null,
+    },
+    {
+      frame: first,
+      t_us: at(),
+      event: "hello",
+      receiver: "gate1-receiver",
+      credit_stage: stage,
+      inbound_buffer_bytes: 16777216,
+      max_message_bytes: 16777216,
+    },
+  ];
+  const tapSummary = summarizeRecording("tap", new Uint8Array(files.tap));
+  const bytesOf = (seq: number) =>
+    tapSummary.transactions.find((x) => x.meta.seq === seq)?.bytes ?? 0;
+  const bySendFrame = new Map(files.sends.map((s) => [s.frame, s]));
+  const last = files.sends[files.sends.length - 1];
+  let inFlight: number | null = null;
+  const end = files.failSeq !== undefined ? last.frame : LQUIT;
+  for (let frame = first; frame <= end; frame++) {
+    const send = bySendFrame.get(frame);
+    if (send && inFlight !== null) {
+      for (const st of stages)
+        lines.push({
+          frame,
+          t_us: at(),
+          event: "ack",
+          seq: inFlight,
+          stream_id: LIVE_STREAM,
+          stage: st,
+          receiver_t_us: t,
+          credited: st === stage,
+          ignored: null,
+        });
+      inFlight = null;
+    }
+    const credit = send !== undefined;
+    lines.push({
+      frame,
+      t_us: at(),
+      state: "streaming",
+      credit,
+      in_flight: send && !send.dropped ? send.seq : inFlight,
+      pending: false,
+      coalesced: 0,
+      queued_bytes: send && !send.dropped ? bytesOf(send.seq) : 0,
+      sent: send
+        ? {
+            seq: send.seq,
+            encoding: send.seq === 1 ? "full" : "patch",
+            bytes: bytesOf(send.seq),
+            ...(send.dropped ? { dropped: true } : {}),
+          }
+        : null,
+    });
+    if (send && !send.dropped) inFlight = send.seq;
+  }
+  if (files.failSeq !== undefined) {
+    lines.push({
+      frame: end,
+      t_us: at(),
+      event: "close",
+      code: 1000,
+      reason: "replay-failure",
+      closed_by: "receiver",
+    });
+    return lines.map((l) => JSON.stringify(l));
+  }
+  lines.push({
+    frame: LQUIT,
+    t_us: at(),
+    event: "end",
+    reason: "shutdown",
+    transactions: files.sends.length,
+    bytes: 200,
+  });
+  if (inFlight !== null)
+    for (const st of stages)
+      lines.push({
+        frame: LQUIT,
+        t_us: at(),
+        event: "ack",
+        seq: inFlight,
+        stream_id: LIVE_STREAM,
+        stage: st,
+        receiver_t_us: t,
+        credited: st === stage,
+        ignored: null,
+      });
+  lines.push({
+    frame: LQUIT,
+    t_us: at(),
+    event: "close",
+    code: 1000,
+    reason: "end seen",
+    closed_by: "receiver",
+  });
+  return lines.map((l) => JSON.stringify(l));
+}
+
+function liveSummary(
+  files: LiveFiles,
+  opts: LiveOptions,
+): Record<string, unknown> {
+  const sent = files.sends.filter((s) => !s.dropped).length;
+  const failed = files.failSeq !== undefined;
+  const acked = failed ? sent - 1 : sent;
+  const lat = {
+    count: acked,
+    min: 9000,
+    median: 11000,
+    p95: 12000,
+    max: 15000,
+  };
+  return {
+    schema: "render-stream-live-summary/1",
+    connections: [
+      {
+        connection: 1,
+        stream_id: LIVE_STREAM,
+        receiver: "gate1-receiver",
+        credit_stage: opts.rendered ? "submitted" : "applied",
+        inbound_buffer_bytes: 16777216,
+        max_message_bytes: 16777216,
+        frames_offered: LQUIT - files.sends[0].frame + 1,
+        transactions: files.sends.length,
+        sent,
+        dropped: files.sends.length - sent,
+        full: 1,
+        patch: files.sends.length - 1,
+        coalesced: 0,
+        max_in_flight: 1,
+        max_queued_bytes: 8000,
+        max_message_sent: 8000,
+        bytes_sent: files.received.length,
+        resyncs: 0,
+        credits: acked,
+        acks: {
+          received: acked,
+          applied: acked,
+          submitted: opts.rendered ? acked : 0,
+        },
+        acks_ignored: 0,
+        end_sent: !failed,
+        close_code: 1000,
+        closed_by: "receiver",
+        close_reason: failed ? "replay-failure" : "end seen",
+        error_sent: null,
+        ack_latency_us: {
+          received: lat,
+          applied: lat,
+          submitted: opts.rendered ? lat : null,
+        },
+        credit_rtt_us: lat,
+        credit_rtt_frames: { count: acked, min: 1, median: 2, p95: 2, max: 2 },
+      },
+    ],
+  };
+}
+
+async function writeLiveHost(
+  dir: string,
+  files: LiveFiles,
+  opts: LiveOptions,
+): Promise<void> {
+  const { full, patch } = await writeCaptureLeg(dir, {
+    quit: LQUIT,
+    start: LS,
+    stepFrames: LN,
+  });
+  void full;
+  void patch;
+  await writeText(join(dir, "steps.jsonl"), stepLog(LS, LN));
+  await editJson<Record<string, unknown>>(
+    join(dir, "evidence", "result.json"),
+    (r) => {
+      r.live = {
+        status: "closed",
+        listen: "127.0.0.1:0",
+        address: "127.0.0.1",
+        port: LIVE_PORT,
+        reason: null,
+        connections: 1,
+      };
+    },
+  );
+  await writeJson(join(dir, "evidence", "live.json"), {
+    schema: "render-stream-live/1",
+    status: "listening",
+    address: "127.0.0.1",
+    port: LIVE_PORT,
+    reason: null,
+  });
+  await writeJson(
+    join(dir, "evidence", "live-summary.json"),
+    liveSummary(files, opts),
+  );
+  await mkdir(join(dir, "tap"), { recursive: true });
+  await writeFile(join(dir, "tap", "stream-1.rs1"), files.tap);
+  await writeText(
+    join(dir, "tap", "live-1.jsonl"),
+    `${liveLogLines(files, opts).join("\n")}\n`,
+  );
+}
+
+function liveApplied(
+  dir: string,
+  files: LiveFiles,
+  opts: LiveOptions,
+  shots: Map<number, number>,
+): Record<string, unknown> {
+  const summary = summarizeRecording(
+    "received",
+    new Uint8Array(files.received),
+  );
+  const failed = files.failSeq !== undefined;
+  const tx = summary.transactions.filter(
+    (t) => !failed || t.meta.seq < (files.failSeq as number),
+  );
+  const acks = {
+    received: tx.length,
+    applied: tx.length,
+    submitted: opts.rendered ? tx.length : 0,
+  };
+  return {
+    schema: "render-stream-receiver-applied/2",
+    mode: "live",
+    recording: {
+      path: join(dir, "received.rs1"),
+      sha256: summary.sha256,
+      bytes: files.received.length,
+    },
+    session_id: LIVE_SESSION,
+    streams: [
+      {
+        stream_id: LIVE_STREAM,
+        connection: 1,
+        received_path: join(dir, "received.rs1"),
+        received_sha256: summary.sha256,
+        received_bytes: files.received.length,
+        end_seen: !failed,
+        closed_by: "receiver",
+        close_code: 1000,
+      },
+    ],
+    status: failed ? "replay-failure" : "ok",
+    failure: failed
+      ? {
+          seq: files.failSeq,
+          reason: "seq-gap",
+          detail: `transaction has seq ${files.failSeq}, expected ${(files.failSeq as number) - 1}`,
+        }
+      : null,
+    end_seen: !failed,
+    viewport: {
+      display_server: opts.rendered ? "X11" : "headless",
+      size: opts.rendered ? [640, 360] : [64, 64],
+      size_check: opts.rendered ? "ok" : "skipped-headless",
+      logical_size: [640, 360],
+      canvas_transform: [1, 0, 0, 1, 8, 4],
+    },
+    transactions: tx.map((t, i) => ({
+      stream: 1,
+      seq: t.meta.seq,
+      frame: t.meta.frame,
+      encoding: t.meta.encoding,
+      record_sha256: t.sha256,
+      process_frame: i + 2,
+      created: 0,
+      freed: 0,
+      reparented: 0,
+      commands_replayed: 0,
+      rs_calls: rsCallsOf(t.meta.seq),
+      received_us: 1000 * t.meta.seq,
+      applied_us: 1000 * t.meta.seq + 300,
+      submitted_us: opts.rendered ? 1000 * t.meta.seq + 600 : null,
+      skipped: null,
+    })),
+    shots: [...shots.entries()].map(([step, seq]) => ({
+      stream: 1,
+      seq,
+      step,
+      path: join(dir, "shots", `seq-${seq}.png`),
+      state_path: join(dir, "state", `seq-${seq}.json`),
+      process_frame: seq + 2,
+      applied_through: seq,
+    })),
+    shots_missed: opts.rendered
+      ? EXPECTED.steps.map((s) => s.step).filter((k) => !shots.has(k))
+      : [],
+    unsupported: expectedReceiverUnsupported({ transactions: tx }),
+    live: {
+      url: `ws://127.0.0.1:${LIVE_PORT}/render-stream`,
+      credit_stage: opts.rendered ? "submitted" : "applied",
+      inbound_buffer_bytes: 16777216,
+      presented: "unavailable",
+      acks_sent: acks,
+      stall: null,
+      reconnect: null,
+      resync: null,
+    },
+  };
+}
+
+async function writeLiveReceiver(
+  dir: string,
+  projects: Projects,
+  files: LiveFiles,
+  opts: LiveOptions,
+): Promise<Map<number, number>> {
+  const shots = opts.rendered
+    ? liveShots(files.sends, files.failSeq)
+    : new Map<number, number>();
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "received.rs1"), files.received);
+  await writeJson(
+    join(dir, "applied.json"),
+    liveApplied(dir, files, opts, shots),
+  );
+  const summary = summarizeRecording("r", new Uint8Array(files.received));
+  for (const [step, seq] of shots) {
+    await writePng(join(dir, "shots", `seq-${seq}.png`), step);
+    await writeJson(
+      join(dir, "state", `seq-${seq}.json`),
+      resolvedState(summary, seq),
+    );
+  }
+  await writeProcess(
+    dir,
+    opts.rendered
+      ? [
+          "/tpl/linux_release.x86_64",
+          "--path",
+          projects.receiverProjectDir,
+          "--rendering-driver",
+          "opengl3",
+          "--max-fps",
+          "60",
+        ]
+      : [
+          "/tpl/linux_release.x86_64",
+          "--headless",
+          "--max-fps",
+          "60",
+          "--path",
+          projects.receiverProjectDir,
+        ],
+    [
+      "RS_RECEIVER_MODE=live",
+      `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
+    ],
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.1); hello sent\n[receiver] ok\n`,
+    files.failSeq !== undefined ? 3 : 0,
+  );
+  if (!opts.rendered) await writeLiveTrace(dirname(dir), projects);
+  return shots;
+}
+
+/** The headless live receiver's strace and argv, naming this tree's own paths (rewritten per
+ * scenario, since the template tree is copied). */
+async function writeLiveTrace(
+  legDir: string,
+  projects: Projects,
+): Promise<void> {
+  const dir = join(legDir, "receiver");
+  await writeText(
+    join(dir, "strace.txt"),
+    [
+      `42 10:00:00.000000 openat(AT_FDCWD, "${projects.receiverProjectDir}/project.godot", O_RDONLY|O_CLOEXEC) = 3`,
+      `42 10:00:00.200000 openat(AT_FDCWD, "${join(dir, "received.rs1")}", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0644) = 5`,
+      "",
+    ].join("\n"),
+  );
+  await writeText(
+    join(dir, "argv.txt"),
+    `${["/tpl/linux_release.x86_64", "--headless", "--max-fps", "60", "--path", projects.receiverProjectDir].join("\n")}\n`,
+  );
+}
+
+/** live-replay: a file-mode receiver on live/receiver/received.rs1 at the live shots' seqs. */
+async function writeLiveReplay(
+  out: string,
+  projects: Projects,
+  received: Buffer,
+  shots: Map<number, number>,
+): Promise<void> {
+  const dir = join(out, "live-replay");
+  const seqs = [...shots.values()];
+  await writeReceiverProcess(dir, projects, received, seqs, true, seqs);
+  for (const [step, seq] of shots)
+    await writePng(join(dir, "shots", `seq-${seq}.png`), step);
+}
+
+/** The whole g1c group: live, live-replay, live-headless, sabotage-drop-message. */
+async function buildLiveLegs(
+  out: string,
+  projects: Projects,
+  overrides: Partial<
+    Record<
+      "live" | "live-headless" | "sabotage-drop-message",
+      Partial<LiveOptions>
+    >
+  > = {},
+): Promise<void> {
+  const legs = {
+    live: { rendered: true, ...overrides.live },
+    "live-headless": { rendered: false, ...overrides["live-headless"] },
+    "sabotage-drop-message": {
+      rendered: true,
+      dropFrame: LDROP_FRAME,
+      ...overrides["sabotage-drop-message"],
+    },
+  } as const;
+  for (const [leg, opts] of Object.entries(legs)) {
+    const files = liveStreams(opts);
+    await writeLiveHost(join(out, leg, "host"), files, opts);
+    const shots = await writeLiveReceiver(
+      join(out, leg, "receiver"),
+      projects,
+      files,
+      opts,
+    );
+    if (leg === "live")
+      await writeLiveReplay(out, projects, files.received, shots);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1123,7 +1715,9 @@ interface Scenario {
   mutate?: (out: string, projects: Projects) => Promise<void>;
   expected?: (e: Gate1Expected) => Gate1Expected;
   checks?: Record<string, boolean>;
-  classes?: Partial<Record<Gate1Leg, Gate1Class>>;
+  classes?: Partial<
+    Record<Gate1Leg | (typeof G1C_CLASSIFIED_LEGS)[number], Gate1Class>
+  >;
   report?: (report: Gate1Report) => void;
   gatePassed?: boolean;
 }
@@ -1183,32 +1777,331 @@ const rewriteCapture =
     );
   };
 
+/** Rewrites one live leg (host and receiver; live also rewrites live-replay). */
+async function rewriteLiveLeg(
+  out: string,
+  projects: Projects,
+  leg: "live" | "live-headless" | "sabotage-drop-message",
+  opts: LiveOptions,
+): Promise<void> {
+  await rm(join(out, leg), { recursive: true, force: true });
+  const files = liveStreams(opts);
+  await writeLiveHost(join(out, leg, "host"), files, opts);
+  const shots = await writeLiveReceiver(
+    join(out, leg, "receiver"),
+    projects,
+    files,
+    opts,
+  );
+  if (leg === "live") {
+    await rm(join(out, "live-replay"), { recursive: true, force: true });
+    await writeLiveReplay(out, projects, files.received, shots);
+  }
+}
+
+/** Rewrites the lines of a live host's log. */
+async function editLiveLog(
+  out: string,
+  leg: string,
+  edit: (lines: Record<string, unknown>[]) => Record<string, unknown>[],
+): Promise<void> {
+  const path = join(out, leg, "host", "tap", "live-1.jsonl");
+  const lines = (await readFile(path, "utf8"))
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+  await writeText(
+    path,
+    `${edit(lines)
+      .map((l) => JSON.stringify(l))
+      .join("\n")}\n`,
+  );
+}
+
+const G1C_CHECK_IDS = [
+  "live-listening",
+  "live-handshake",
+  "live-tap-equals-received",
+  "live-decodes",
+  "live-first-full-then-patch",
+  "live-resolves-to-recording",
+  "live-replay-equals-live",
+  "live-vs-reference",
+  "live-credit-bounded",
+  "live-acks-staged",
+  "live-receiver-late",
+  "receiver-never-loaded-fixture-live",
+  ...G1C_CLASSIFIED_LEGS.map((leg) => `leg-class-${leg}`),
+];
+
+/** The live leg's applied.json shots, step -> seq. */
+async function liveShotSeqs(out: string): Promise<Map<number, number>> {
+  const applied = await readJsonFile<{
+    shots: { step: number; seq: number }[];
+  }>(join(out, "live", "receiver", "applied.json"));
+  return new Map(applied.shots.map((s) => [s.step, s.seq]));
+}
+
+const liveScenarios: Scenario[] = [
+  {
+    name: "g1c: a send while the previous transaction still holds the credit is delivery-violation",
+    mutate: (out) =>
+      // Drop the credit-returning acks of one seq: the next send then has two in flight.
+      editLiveLog(out, "live", (lines) =>
+        lines.filter((l) => !(l.event === "ack" && l.seq === 10)),
+      ),
+    checks: { "live-credit-bounded": false },
+    classes: { live: "delivery-violation" },
+  },
+  {
+    name: "g1c: a send logged without credit is delivery-violation",
+    mutate: (out) =>
+      editLiveLog(out, "live", (lines) =>
+        lines.map((l) =>
+          (l.sent as { seq?: number } | null)?.seq === 20
+            ? { ...l, credit: false }
+            : l,
+        ),
+      ),
+    checks: { "live-credit-bounded": false },
+    classes: { live: "delivery-violation" },
+  },
+  {
+    name: "g1c: queued bytes above the largest message + 4096 are delivery-violation",
+    mutate: (out) =>
+      editLiveLog(out, "live-headless", (lines) =>
+        lines.map((l) =>
+          l.frame === 21 && l.state !== undefined
+            ? { ...l, queued_bytes: 999999 }
+            : l,
+        ),
+      ),
+    checks: { "live-credit-bounded": false },
+    classes: { "live-headless": "delivery-violation" },
+  },
+  {
+    name: "g1c: a live transaction carrying an earlier frame's state is stale-state",
+    mutate: (out, projects) =>
+      rewriteLiveLeg(out, projects, "live", {
+        rendered: true,
+        staleAt: LS + LN * 2 + 1,
+      }),
+    checks: {
+      "live-resolves-to-recording": false,
+      "live-credit-bounded": true,
+      "live-vs-reference": true,
+    },
+    classes: { live: "delivery-violation", "live-replay": "success" },
+    report: (r) =>
+      assert(
+        "report: the stale live transaction is named",
+        r.legs.live.reasons.some((x) => x.includes("stale-state")),
+        r.legs.live.reasons.join(" | "),
+      ),
+  },
+  {
+    name: "g1c: received bytes that differ from the host's tap are replay-failure",
+    mutate: (out, projects) =>
+      rewriteLiveLeg(out, projects, "live", {
+        rendered: true,
+        tapStreamId: "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
+      }),
+    checks: {
+      "live-tap-equals-received": false,
+      "live-decodes": true,
+      "live-credit-bounded": true,
+    },
+    classes: { live: "replay-failure" },
+  },
+  {
+    name: "g1c: a receiver that joined after step 0 settled is late",
+    mutate: (out, projects) =>
+      rewriteLiveLeg(out, projects, "live", { rendered: true, first: LS + 7 }),
+    checks: { "live-receiver-late": false, "live-vs-reference": true },
+    classes: { live: "replay-failure" },
+  },
+  {
+    name: "g1c: a step window without a shot is replay-failure and fails live-vs-reference",
+    mutate: async (out) => {
+      const applied = join(out, "live", "receiver", "applied.json");
+      await editJson<{ shots: { step: number }[]; shots_missed: number[] }>(
+        applied,
+        (a) => {
+          a.shots = a.shots.filter((s) => s.step !== 3);
+          a.shots_missed = [3];
+        },
+      );
+    },
+    checks: { "live-vs-reference": false },
+    classes: { live: "replay-failure", "live-replay": "replay-failure" },
+  },
+  {
+    name: "g1c: a live shot that differs from the reference is pixel-mismatch",
+    mutate: async (out) => {
+      const seq = (await liveShotSeqs(out)).get(4) as number;
+      await writePng(
+        join(out, "live", "receiver", "shots", `seq-${seq}.png`),
+        4,
+        { perturb: [100, 100] },
+      );
+    },
+    checks: { "live-vs-reference": false, "live-replay-equals-live": false },
+    classes: { live: "pixel-mismatch", "live-replay": "success" },
+  },
+  {
+    name: "g1c: a replay shot that differs from the live one fails live-replay-equals-live",
+    mutate: async (out) => {
+      const seq = (await liveShotSeqs(out)).get(5) as number;
+      await writePng(join(out, "live-replay", "shots", `seq-${seq}.png`), 5, {
+        perturb: [101, 101],
+      });
+    },
+    checks: { "live-replay-equals-live": false, "live-vs-reference": true },
+    classes: { "live-replay": "pixel-mismatch", live: "success" },
+  },
+  {
+    name: "g1c: a transaction never acked submitted fails live-acks-staged",
+    mutate: (out) =>
+      editJson<{ transactions: { submitted_us: number | null }[] }>(
+        join(out, "live", "receiver", "applied.json"),
+        (a) => {
+          a.transactions[3].submitted_us = null;
+        },
+      ),
+    checks: { "live-acks-staged": false },
+  },
+  {
+    name: "g1c: a connection the host closed (not the receiver after its end record) fails live-handshake",
+    mutate: (out) =>
+      editJson<{ connections: { closed_by: string }[] }>(
+        join(out, "live", "host", "evidence", "live-summary.json"),
+        (s) => {
+          s.connections[0].closed_by = "host";
+        },
+      ),
+    checks: { "live-handshake": false },
+  },
+  {
+    name: "g1c: a listener on a non-loopback address fails live-listening",
+    mutate: (out) =>
+      editJson<{ address: string }>(
+        join(out, "live-headless", "host", "evidence", "live.json"),
+        (l) => {
+          l.address = "0.0.0.0";
+        },
+      ),
+    checks: { "live-listening": false },
+  },
+  {
+    name: "g1c: a drop-message leg whose receiver never saw a gap fails its leg class",
+    mutate: (out, projects) =>
+      rewriteLiveLeg(out, projects, "sabotage-drop-message", {
+        rendered: true,
+      }),
+    checks: { "leg-class-sabotage-drop-message": false },
+    classes: { "sabotage-drop-message": "success" },
+  },
+  {
+    name: "g1c: the headless live receiver opening a fixture file fails receiver-never-loaded-fixture-live",
+    mutate: async (out, projects) => {
+      const path = join(out, "live-headless", "receiver", "strace.txt");
+      const text = await readFile(path, "utf8");
+      await writeText(
+        path,
+        `${text}42 10:00:01.000000 openat(AT_FDCWD, "${projects.fixtureProjectDir}/gate1.gd", O_RDONLY|O_CLOEXEC) = 9\n`,
+      );
+    },
+    checks: { "receiver-never-loaded-fixture-live": false },
+  },
+  {
+    name: "g1c: a live stream with a full transaction after seq 1 fails live-first-full-then-patch",
+    mutate: (out, projects) =>
+      rewriteLiveLeg(out, projects, "live-headless", {
+        rendered: false,
+        fullAt: [3],
+      }),
+    checks: { "live-first-full-then-patch": false, "live-decodes": true },
+  },
+  {
+    name: "g1c: a received stream cut before its end record fails live-decodes",
+    mutate: async (out) => {
+      const path = join(out, "live-headless", "receiver", "received.rs1");
+      const bytes = new Uint8Array(await readFile(path));
+      const split = splitRecords(bytes);
+      const end = split.records[split.records.length - 1];
+      await writeFile(path, bytes.subarray(0, end.offset));
+    },
+    checks: { "live-decodes": false, "live-tap-equals-received": false },
+    classes: { "live-headless": "replay-failure" },
+  },
+  {
+    name: "g1c: a run without g1c reports not-run and fails the gate",
+    mutate: (out) =>
+      writeJson(join(out, "legs.json"), {
+        groups_run: ["g1a", "g1b"],
+        groups_landed: ["g1a", "g1b", "g1c"],
+      }),
+    gatePassed: false,
+    report: (r) =>
+      assert(
+        "report: g1c not_run, its group check not-run, live null",
+        r.groups.not_run.join() === "g1c" &&
+          r.checks.some(
+            (c) => c.id === "group-g1c" && c.status === "not-run",
+          ) &&
+          r.live === null,
+      ),
+  },
+  {
+    name: "g1c without g1a fails the gate",
+    mutate: (out) =>
+      writeJson(join(out, "legs.json"), {
+        groups_run: ["g1c"],
+        groups_landed: ["g1a", "g1b", "g1c"],
+      }),
+    gatePassed: false,
+    report: (r) =>
+      assert(
+        "report: a failed g1c group check",
+        r.checks.some((c) => c.id === "group-g1c" && c.status === "fail"),
+      ),
+  },
+];
+
 const scenarios: Scenario[] = [
   {
     name: "the good tree passes every check, every leg at its expected class",
-    checks: Object.fromEntries(ALL_CHECK_IDS.map((id) => [id, true])),
-    classes: Object.fromEntries(
-      ALL_LEGS.map((leg) => [leg, GATE1_EXPECTATIONS[leg].class]),
+    checks: Object.fromEntries(
+      [...ALL_CHECK_IDS, ...G1C_CHECK_IDS].map((id) => [id, true]),
     ),
+    classes: {
+      ...Object.fromEntries(
+        ALL_LEGS.map((leg) => [leg, GATE1_EXPECTATIONS[leg].class]),
+      ),
+      ...Object.fromEntries(
+        G1C_CLASSIFIED_LEGS.map((leg) => [leg, G1C_EXPECTATIONS[leg].class]),
+      ),
+    },
     gatePassed: true,
     report: (r) => {
       assert("report: schema", r.schema === "render-stream-gate1-report/1");
       assert(
         "report: groups",
-        r.groups.run.join() === "g1a,g1b" && r.groups.not_run.length === 0,
+        r.groups.run.join() === "g1a,g1b,g1c" && r.groups.not_run.length === 0,
       );
       assert(
         "report: every leg present, support legs null-classed",
-        [...ALL_LEGS, ...G1A_SUPPORT_LEGS].every((l) => l in r.legs) &&
-          G1A_SUPPORT_LEGS.every((l) => r.legs[l].expected_class === null),
+        [...ALL_LEGS, ...G1C_CLASSIFIED_LEGS, ...G1A_SUPPORT_LEGS].every(
+          (l) => l in r.legs,
+        ) && G1A_SUPPORT_LEGS.every((l) => r.legs[l].expected_class === null),
       );
       assert(
-        "report: 110 checkpoints (10 shooting receiver legs x 11 steps), each with leg, stream and 9 regions",
-        r.checkpoints.length === 110 &&
+        "report: 143 checkpoints (13 shooting receiver legs x 11 steps, live, live-replay and the drop leg included), each with leg, stream and 9 regions",
+        r.checkpoints.length === 143 &&
           r.checkpoints.every(
             (c) => c.regions.length === 9 && typeof c.leg === "string",
           ) &&
-          r.checkpoints.filter((c) => c.stream === "patch").length === 22,
+          r.checkpoints.filter((c) => c.stream === "patch").length === 55,
         `${r.checkpoints.length}`,
       );
       assert(
@@ -1773,13 +2666,13 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeJson(join(out, "legs.json"), {
         groups_run: ["g1b"],
-        groups_landed: ["g1a", "g1b"],
+        groups_landed: ["g1a", "g1b", "g1c"],
       }),
     gatePassed: false,
     report: (r) =>
       assert(
-        "report: g1a not_run and a failed g1b group check",
-        r.groups.not_run.join() === "g1a" &&
+        "report: g1a and g1c not_run and a failed g1b group check",
+        r.groups.not_run.join() === "g1a,g1c" &&
           r.checks.some((c) => c.id === "group-g1b" && c.status === "fail"),
       ),
   },
@@ -1788,17 +2681,19 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeJson(join(out, "legs.json"), {
         groups_run: [],
-        groups_landed: ["g1a", "g1b"],
+        groups_landed: ["g1a", "g1b", "g1c"],
       }),
     gatePassed: false,
     report: (r) =>
       assert(
-        "report: g1a and g1b not_run, checks not-run",
-        r.groups.not_run.join() === "g1a,g1b" &&
-          r.checks.filter((c) => c.status === "not-run").length === 2,
+        "report: g1a, g1b and g1c not_run, checks not-run",
+        r.groups.not_run.join() === "g1a,g1b,g1c" &&
+          r.checks.filter((c) => c.status === "not-run").length === 3,
       ),
   },
 ];
+
+scenarios.push(...liveScenarios);
 
 async function runScenarios(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "gate1-self-test-"));
@@ -1823,6 +2718,7 @@ async function runScenarios(): Promise<void> {
       const projects = projectsUnder(caseRoot);
       const out = join(caseRoot, "out");
       await writeTraceStrace(out, projects);
+      await writeLiveTrace(join(out, "live-headless"), projects);
       if (scenario.mutate) await scenario.mutate(out, projects);
       const ctx: Gate1Context = {
         expected: scenario.expected ? scenario.expected(EXPECTED) : EXPECTED,

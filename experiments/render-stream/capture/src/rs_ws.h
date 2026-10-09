@@ -66,6 +66,9 @@ struct Event {
   std::string text;          // Kind::Text: the message. Kind::Closed: the reason, if any.
   std::uint16_t code = 0;    // Kind::Closed only.
   std::string reason;        // Kind::Closed only (duplicates text for readability at call sites).
+  // steady_clock nanoseconds when the I/O thread observed the event (set by the server; G1c2
+  // measures credit round trips from it, independently of when the main thread drains events).
+  std::uint64_t t_ns = 0;
 };
 
 class Server {

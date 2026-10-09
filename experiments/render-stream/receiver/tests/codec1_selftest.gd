@@ -20,6 +20,10 @@ extends SceneTree
 ##      dispose() frees exactly the RIDs the applier still owned;
 ##   5. corrupt-meta.rs1's broken transaction is rejected with zero RS calls, after the earlier
 ##      records applied.
+## And the live control messages (RsLiveClient, G1c2):
+##   6. hello, ack and resync encode to exactly the golden control/valid/*.json messages (same
+##      keys in the same order, same values), and parse_host_text accepts the golden error
+##      message and nothing else.
 
 var _failures: Array[String] = []
 var _golden: String = ""
@@ -39,6 +43,7 @@ func _initialize() -> void:
 	_test_valid(index, resolved)
 	_test_invalid(index)
 	_test_corrupt(index)
+	_test_control_messages()
 	# _initialize runs before the root window enters the tree (SceneTree::initialize calls
 	# MainLoop::initialize, then root->_set_tree), so the root canvas is attached to the root
 	# viewport only from the first frame on. The applier tests need that attachment.
@@ -195,7 +200,7 @@ func _test_valid(index: Dictionary, resolved: Dictionary) -> void:
 
 func _test_invalid(index: Dictionary) -> void:
 	var invalid: Array = index["invalid"]
-	_check(invalid.size() == 11, "index.json lists %d invalid vectors, expected 11" % invalid.size())
+	_check(invalid.size() == 12, "index.json lists %d invalid vectors, expected 12" % invalid.size())
 	for value: Variant in invalid:
 		var vector: Dictionary = value
 		var file: String = vector["file"]
@@ -234,6 +239,36 @@ func _test_corrupt(index: Dictionary) -> void:
 		var whole: PackedStringArray = Rs1Decoder.validate_recording(data)
 		_check(whole.size() > 0 and Rs1Decoder.code_of(whole[0]) == code, "%s: validate_recording gave %s" % [file, str(whole)])
 		print("[rs1-selftest] %s -> record %d %s" % [file, first_bad, first_code])
+
+
+func _test_control_messages() -> void:
+	var stream_id: String = "0123456789abcdef0123456789abcdef"
+	var encoded: Dictionary[String, Dictionary] = {
+		"hello-submitted": RsLiveClient.hello("gate1-selftest", "submitted", 16777216),
+		"hello-applied": RsLiveClient.hello("gate1-selftest-headless", "applied", 65535),
+		"ack-received": RsLiveClient.ack(stream_id, 1, "received", 1000),
+		"ack-applied": RsLiveClient.ack(stream_id, 1, "applied", 2500),
+		"ack-submitted": RsLiveClient.ack(stream_id, 1, "submitted", 4200),
+		"resync": RsLiveClient.resync(stream_id, 6, "unapplied-stale"),
+	}
+	for name: String in encoded:
+		var golden: Dictionary = _read_json("control/valid/%s.json" % name)
+		var json := JSON.new()
+		var text: String = RsLiveClient.encode(encoded[name])
+		if json.parse(text) != OK or typeof(json.data) != TYPE_DICTIONARY:
+			_failures.append("control %s: encode() is not a JSON object: %s" % [name, text])
+			continue
+		var got: Dictionary = json.data
+		_check(got.keys() == golden.keys(), "control %s: keys %s, golden %s" % [name, str(got.keys()), str(golden.keys())])
+		var diffs: Array[String] = []
+		_deep_equal(got, golden, name, diffs)
+		_check(diffs.is_empty(), "control %s differs from the golden: %s" % [name, ", ".join(diffs)])
+		_check(not text.contains(" "), "control %s is compact: %s" % [name, text])
+		_check(not RsLiveClient.parse_host_text(text)["ok"], "parse_host_text refuses a %s message" % name)
+	var error_text: String = FileAccess.get_file_as_string(_golden.path_join("control/valid/error-message-too-large.json"))
+	var parsed: Dictionary = RsLiveClient.parse_host_text(error_text)
+	_check(parsed["ok"] and parsed["reason"] == "message-too-large" and parsed["detail"] == "transaction 42 is 20000000 bytes", "parse_host_text reads the golden error message")
+	_check(not RsLiveClient.parse_host_text("not json")["ok"], "parse_host_text refuses non-JSON")
 
 
 func _new_applier() -> RsApplier:

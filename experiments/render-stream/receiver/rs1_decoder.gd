@@ -799,14 +799,17 @@ class Stream:
 				errors.append(Rs1Decoder.err("meta-schema", "seq %d: removed_items is not strictly ascending" % seq))
 				return errors
 
+		# A missing seq is reported as itself, before the patch rules: a patch after a lost
+		# transaction also names the lost seq as its base, and the gap is the cause (gate1-design.md
+		# G1c2 "As built", the drop-message sabotage).
+		if seq != last_seq + 1:
+			errors.append(Rs1Decoder.err("seq-gap", "transaction at offset %d has seq %d, expected %d" % [offset, seq, last_seq + 1]))
+			return errors
+
 		# Patch rules (render-stream-1.md "Patch error codes").
 		var patch_error: String = _check_patch_rules(encoding, seq, meta, removed_canvases, removed_items, canvases_meta, items_meta)
 		if patch_error != "":
 			errors.append(patch_error)
-			return errors
-
-		if seq != last_seq + 1:
-			errors.append(Rs1Decoder.err("seq-gap", "transaction at offset %d has seq %d, expected %d" % [offset, seq, last_seq + 1]))
 			return errors
 		if frame <= last_frame:
 			errors.append(Rs1Decoder.err("frame-order", "transaction seq %d has frame %d, not after %d" % [seq, frame, last_frame]))
