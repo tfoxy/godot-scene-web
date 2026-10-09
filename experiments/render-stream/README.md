@@ -1,5 +1,8 @@
 # render-stream experiment — gate −1: capture seam
 
+Gate 0 is in progress. Its contract is [protocol/gate0-design.md](protocol/gate0-design.md), and
+its wire format is [protocol/render-stream-0.md](protocol/render-stream-0.md).
+
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
 

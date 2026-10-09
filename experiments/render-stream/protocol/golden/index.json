@@ -1,0 +1,53 @@
+{
+  "schema": "render-stream-0-golden-index/1",
+  "protocol": "render-stream/0",
+  "valid": [
+    {
+      "file": "minimal.bin",
+      "hex": "minimal.hex",
+      "decoded": "minimal.decoded.json",
+      "sha256": "05cf07115af3b8693179c8525c4d367f188d8e9f5e1fb506e19b2cabee527f9f"
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.bin",
+      "code": "meta-json",
+      "record_index": 2,
+      "seq": 2,
+      "description": "transaction seq 2: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.bin",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '1' (GRS1), not '0'"
+    },
+    {
+      "file": "invalid/short-block.bin",
+      "code": "block-length",
+      "description": "transaction 1 cmd_f32 declares count 16 but carries 60 bytes"
+    },
+    {
+      "file": "invalid/seq-gap.bin",
+      "code": "seq-gap",
+      "description": "second transaction has seq 3 after seq 1"
+    },
+    {
+      "file": "invalid/reused-id.bin",
+      "code": "id-reused",
+      "description": "item id 2 is freed in seq 2 and reappears in seq 3"
+    },
+    {
+      "file": "invalid/dangling-parent.bin",
+      "code": "dangling-parent",
+      "description": "seq 2 item 3 names parent item 9, which is not in the transaction"
+    },
+    {
+      "file": "invalid/no-end.bin",
+      "code": "recording-incomplete",
+      "description": "the end record is missing"
+    }
+  ]
+}
