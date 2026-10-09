@@ -1,9 +1,10 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Node interop self-test for rs_ws (protocol/gate1-design.md G1c1), against
-// the test-only capture/test/rs_ws_echo.cpp binary built by
-// scripts/build-capture.sh. Uses Node's built-in WebSocket (stable since
-// Node 22; this repo pins Node 24, see mise.toml) rather than the npm `ws`
-// package, which is not in this workspace.
+// Node interop self-test for rs_ws (protocol/gate1-design.md G1c1) and its
+// HTTP GET resource serving (protocol/gate2-design.md G2c1), against the
+// test-only capture/test/rs_ws_echo.cpp binary built by
+// scripts/build-capture.sh. Uses Node's built-in WebSocket and fetch
+// (stable since Node 22; this repo pins Node 24, see mise.toml) rather than
+// the npm `ws` package, which is not in this workspace.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-rs-ws.ts \
@@ -18,6 +19,14 @@
 // protocol: a decimal-text request for N bytes) arrive byte-exact against
 // the deterministic pattern byte[i] = i % 256, and the server closes
 // cleanly (code 1000) when this client closes.
+//
+// Also (gate2-design.md G2c1 "Pass criteria", Node interop), while the
+// WebSocket connection above is still open: `fetch` of rs_ws_echo's two
+// fixed test resources (1 MiB and 8 MiB, see capture/test/rs_ws_echo.cpp's
+// header for the hash strings and why they are test fixtures, not real
+// content hashes) is byte-exact against byte[i] = i % 251, with the headers
+// render-stream-2.md "HTTP (live)" specifies; a third, well-formed but
+// unregistered hash gets 404.
 //
 // Exits non-zero if any assertion fails or the server never starts.
 
@@ -34,6 +43,13 @@ const DEFAULT_BINARY = resolve(SCRIPT_DIR, "../../capture/build/rs_ws_echo");
 const BINARY =
   process.argv[2] ?? process.env.RS_WS_ECHO_BINARY ?? DEFAULT_BINARY;
 
+// capture/test/rs_ws_echo.cpp's fixed test resources and the default resource_prefix
+// (capture/src/rs_ws.h ServerConfig::resource_prefix). Test fixtures, not real content hashes.
+const RESOURCE_PREFIX = "/resources/sha256/";
+const HASH_1MIB = "1".repeat(64);
+const HASH_8MIB = `${"8".repeat(63)}a`;
+const HASH_UNKNOWN = "f".repeat(64);
+
 let failures = 0;
 
 function ok(condition: boolean, what: string): void {
@@ -48,6 +64,14 @@ function ok(condition: boolean, what: string): void {
 function expectedPayload(len: number): Uint8Array {
   const out = new Uint8Array(len);
   for (let i = 0; i < len; i++) out[i] = i % 256;
+  return out;
+}
+
+// rs_ws_echo.cpp's HTTP resource bodies: byte[i] = i % 251 (a different modulus from the WS
+// binary push above, deliberately, so a test that mixed the two up would be caught).
+function expectedResourcePayload(len: number): Uint8Array {
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) out[i] = i % 251;
   return out;
 }
 
@@ -162,6 +186,55 @@ async function main(): Promise<void> {
         `binary push of ${len} bytes is byte-exact`,
       );
     }
+
+    // --- HTTP GET resources, while the WebSocket session above is still open --------------------
+    for (const [hash, len] of [
+      [HASH_1MIB, 1 << 20],
+      [HASH_8MIB, 8 << 20],
+    ] as const) {
+      const resp = await fetch(
+        `http://127.0.0.1:${port}${RESOURCE_PREFIX}${hash}`,
+      );
+      ok(
+        resp.status === 200,
+        `GET ${hash.slice(0, 8)}... is 200 (got ${resp.status})`,
+      );
+      ok(
+        resp.headers.get("content-type") === "application/octet-stream",
+        `GET ${hash.slice(0, 8)}... has Content-Type: application/octet-stream`,
+      );
+      ok(
+        resp.headers.get("cache-control") ===
+          "private, max-age=31536000, immutable",
+        `GET ${hash.slice(0, 8)}... has the immutable Cache-Control`,
+      );
+      ok(
+        resp.headers.get("etag") === `"${hash}"`,
+        `GET ${hash.slice(0, 8)}... has the matching ETag`,
+      );
+      const body = new Uint8Array(await resp.arrayBuffer());
+      ok(
+        body.length === len,
+        `GET ${hash.slice(0, 8)}... body length (got ${body.length}, want ${len})`,
+      );
+      ok(
+        bytesEqual(body, expectedResourcePayload(len)),
+        `GET ${hash.slice(0, 8)}... body is byte-exact`,
+      );
+    }
+
+    const notFound = await fetch(
+      `http://127.0.0.1:${port}${RESOURCE_PREFIX}${HASH_UNKNOWN}`,
+    );
+    ok(
+      notFound.status === 404,
+      `GET of an unregistered hash is 404 (got ${notFound.status})`,
+    );
+
+    ok(
+      ws.readyState === WebSocket.OPEN,
+      "the WebSocket session is still open after the HTTP fetches",
+    );
 
     // --- clean close -----------------------------------------------------------------------------
     const closeEvent = await new Promise<CloseEvent>((res) => {

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# rs_ws interop tests (protocol/gate1-design.md G1c1 "Pass criteria"): the
-# Node self-test and the Godot self-test, both driving the same
-# capture/test/rs_ws_echo.cpp binary built by build-capture.sh.
+# rs_ws interop tests: the WebSocket transport (protocol/gate1-design.md G1c1
+# "Pass criteria") and its HTTP GET resource serving (protocol/gate2-design.md
+# G2c1 "Pass criteria"). Both the Node self-test and the two Godot self-tests
+# drive the same capture/test/rs_ws_echo.cpp binary built by build-capture.sh.
 #
 # Usage, from the repo root:
 #   experiments/render-stream/scripts/build-capture.sh
@@ -10,13 +11,15 @@
 # Equivalent to running each piece by hand:
 #   mise exec -- pnpm exec tsx --conditions=development \
 #     experiments/render-stream/scripts/test/self-test-rs-ws.ts
-#     # (spawns and kills its own rs_ws_echo)
+#     # (spawns and kills its own rs_ws_echo; covers WS and HTTP GET)
 #
 #   experiments/render-stream/capture/build/rs_ws_echo --port=0
 #     # note the printed "RS_WS_ECHO_PORT <port>" line
 #   mise exec -- godot --headless --path experiments/render-stream/receiver --import  # once
 #   RS_WS_ECHO_PORT=<port> mise exec -- godot --headless \
 #     --path experiments/render-stream/receiver --script res://tests/ws_selftest.gd
+#   RS_WS_ECHO_PORT=<port> mise exec -- godot --headless \
+#     --path experiments/render-stream/receiver --script res://tests/http_selftest.gd
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,4 +64,8 @@ echo "run-rs-ws-interop: rs_ws_echo listening on 127.0.0.1:${PORT}"
 RS_WS_ECHO_PORT="${PORT}" mise exec -- godot --headless --path "${RECEIVER_DIR}" \
 	--script res://tests/ws_selftest.gd
 
-echo "run-rs-ws-interop: both interop tests passed"
+echo "run-rs-ws-interop: Godot interop (http_selftest.gd)"
+RS_WS_ECHO_PORT="${PORT}" mise exec -- godot --headless --path "${RECEIVER_DIR}" \
+	--script res://tests/http_selftest.gd
+
+echo "run-rs-ws-interop: all interop tests passed"

@@ -729,7 +729,9 @@ void stream_start() {
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();
     std::string error;
-    if (!g_live.server->start(server_config, &error)) {
+    // No ResourceSource yet: G2c2 wires the resource store here. Every resource GET on this
+    // listener answers 404 until then (rs_ws.h Server::start()); gate 0/1 never issue one.
+    if (!g_live.server->start(server_config, /*source=*/nullptr, &error)) {
       g_live.server.reset();
       live_decided(error == "non-loopback" ? "refused" : "failed", error);
       if (!files) {
@@ -771,6 +773,11 @@ void live_drain(uint64_t frame) {
     return;
   }
   for (const live::Event &event : g_live.server->take_events()) {
+    // G2c1 adds HttpGet (resource GETs on the same listener); the hub understands only the
+    // WebSocket session events. G2c2 wires a real ResourceSource and accounts for these in the
+    // live summary. Until then entry.cpp registers none (see live_open below), so this never
+    // fires in gate 0/1 -- but to_live_event()'s switch must stay exhaustive regardless.
+    if (event.kind == live::Event::HttpGet) continue;
     g_live.hub->on_event(rs1::to_live_event(event), frame);
   }
 }

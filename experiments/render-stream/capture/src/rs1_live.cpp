@@ -494,6 +494,11 @@ LiveEvent to_live_event(const live::Event &event) {
     case live::Event::Closed:
       out.kind = LiveEvent::Closed;
       break;
+    case live::Event::HttpGet:
+      // The hub has no notion of a resource GET yet (G2c2 adds the live store that answers
+      // them and accounts for them in the summary). entry.cpp's live_drain() never forwards an
+      // HttpGet event here; this case exists only so the switch stays exhaustive under -Wswitch.
+      break;
   }
   out.conn = event.conn;
   out.text = event.text;

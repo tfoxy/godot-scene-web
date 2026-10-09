@@ -1,5 +1,6 @@
 // Unit test for rs_ws (src/rs_ws.h), the dependency-free RFC 6455 server
-// (protocol/gate1-design.md G1c1).
+// (protocol/gate1-design.md G1c1) and its HTTP GET resource serving
+// (protocol/gate2-design.md G2c1).
 //
 // Covers:
 //   - SHA-1 vectors (FIPS 180, "" and "abc").
@@ -14,6 +15,12 @@
 //     malformed request (400), a client beyond max_clients (503).
 //   - Non-loopback refusal.
 //   - stop() flushing and closing.
+//   - HTTP GET: 200 bodies byte-exact at several sizes, 304 via
+//     If-None-Match, 400 on a malformed hash, 404 on an unknown hash, 405 on
+//     a non-GET method with Allow: GET, 503 beyond max_http_clients,
+//     keep-alive across two requests, Connection: close honoured, a
+//     WebSocket session alongside HTTP fetches on the same port, and that
+//     the built test binary imports neither mmap nor mprotect.
 //
 // The raw-socket client below is a second, independent implementation of
 // the wire format (client side): it is deliberately not shared code with
@@ -30,7 +37,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -233,6 +243,117 @@ std::uint32_t expect_opened(grc::live::Server &server) {
   return events[0].conn;
 }
 
+// --- A fixed-table ResourceSource and a minimal raw-socket HTTP/1.1 client for the test. ---
+
+// Exactly 64 of `fill` (a lowercase hex digit), so every string this returns is a well-formed
+// resource hash shape regardless of whether FakeResourceSource actually holds it.
+std::string make_hash(char fill) { return std::string(64, fill); }
+
+// Deterministic, independent of rs_ws_echo.cpp's own pattern (different call sites, same idea):
+// byte[i] = (seed + i * 31) % 256.
+std::vector<std::uint8_t> pattern_bytes(std::size_t len, std::uint8_t seed) {
+  std::vector<std::uint8_t> out(len);
+  for (std::size_t i = 0; i < len; ++i) {
+    out[i] = static_cast<std::uint8_t>((seed + i * 31) % 256);
+  }
+  return out;
+}
+
+class FakeResourceSource : public grc::live::ResourceSource {
+ public:
+  void set(const std::string &hash, std::vector<std::uint8_t> body) {
+    bodies_[hash] = std::make_shared<const std::vector<std::uint8_t>>(std::move(body));
+  }
+  std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override {
+    const auto it = bodies_.find(std::string(hash));
+    return it == bodies_.end() ? nullptr : it->second;
+  }
+
+ private:
+  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> bodies_;
+};
+
+std::string plain_http_request(const std::string &method, const std::string &path,
+                                const std::vector<std::pair<std::string, std::string>> &headers = {}) {
+  std::string req = method + " " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+  for (const auto &h : headers) req += h.first + ": " + h.second + "\r\n";
+  req += "\r\n";
+  return req;
+}
+
+struct HttpResponse {
+  bool ok = false;  // the full response (headers + declared body) was read before EOF/timeout.
+  int status = 0;
+  std::map<std::string, std::string> headers;  // lowercase keys, first occurrence kept.
+  std::vector<std::uint8_t> body;
+};
+
+// Reads exactly one HTTP/1.1 response from `fd`: the status line and headers up to "\r\n\r\n",
+// then exactly Content-Length body bytes (0 if the header is absent, which is every status this
+// server sends without a body). Blocks, subject to the socket's receive timeout, until the
+// response is complete, the peer closes, or the timeout fires.
+HttpResponse read_http_response(int fd) {
+  HttpResponse out;
+  std::vector<std::uint8_t> buf;
+  std::uint8_t chunk[65536];
+  std::size_t header_end = std::string::npos;
+  for (;;) {
+    for (std::size_t i = 0; i + 4 <= buf.size(); ++i) {
+      if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+        header_end = i;
+        break;
+      }
+    }
+    if (header_end != std::string::npos) break;
+    const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+    if (n <= 0) return out;  // closed or timed out before the headers completed.
+    buf.insert(buf.end(), chunk, chunk + n);
+  }
+  const std::string head(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(header_end));
+  std::vector<std::uint8_t> body_so_far(buf.begin() + static_cast<std::ptrdiff_t>(header_end + 4), buf.end());
+
+  std::size_t line_start = 0;
+  bool first = true;
+  while (line_start <= head.size()) {
+    const std::size_t line_end = head.find("\r\n", line_start);
+    const std::string line =
+        head.substr(line_start, line_end == std::string::npos ? std::string::npos : line_end - line_start);
+    if (first) {
+      first = false;
+      const std::size_t sp1 = line.find(' ');
+      const std::size_t sp2 = sp1 == std::string::npos ? std::string::npos : line.find(' ', sp1 + 1);
+      if (sp1 != std::string::npos) {
+        out.status = std::atoi(line.substr(sp1 + 1, sp2 == std::string::npos ? std::string::npos : sp2 - sp1 - 1)
+                                    .c_str());
+      }
+    } else if (!line.empty()) {
+      const std::size_t colon = line.find(':');
+      if (colon != std::string::npos) {
+        std::string k = line.substr(0, colon);
+        for (char &ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        std::size_t vstart = colon + 1;
+        while (vstart < line.size() && line[vstart] == ' ') ++vstart;
+        out.headers.emplace(k, line.substr(vstart));
+      }
+    }
+    if (line_end == std::string::npos) break;
+    line_start = line_end + 2;
+  }
+
+  std::size_t content_length = 0;
+  const auto it = out.headers.find("content-length");
+  if (it != out.headers.end()) content_length = std::strtoul(it->second.c_str(), nullptr, 10);
+
+  out.body = std::move(body_so_far);
+  while (out.body.size() < content_length) {
+    const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+    if (n <= 0) return out;  // incomplete: ok stays false.
+    out.body.insert(out.body.end(), chunk, chunk + n);
+  }
+  out.ok = true;
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 
 void test_sha1_vectors() {
@@ -246,7 +367,7 @@ void test_handshake_accept_key_rfc_vector() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
 
   const int fd = connect_loopback(server.port());
   check(fd >= 0, "connect for RFC vector");
@@ -264,7 +385,7 @@ void test_masked_text_roundtrip() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
@@ -283,7 +404,7 @@ void test_frame_header_length_classes() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
@@ -310,7 +431,7 @@ void test_ping_pong() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for ping/pong");
@@ -329,7 +450,7 @@ void test_close_handshake() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
@@ -358,7 +479,7 @@ void test_fragmentation_rejected() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for fragmentation");
@@ -377,7 +498,7 @@ void test_binary_inbound_rejected() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for binary-inbound rejection");
@@ -396,7 +517,7 @@ void test_unmasked_inbound_rejected() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for unmasked rejection");
@@ -416,7 +537,7 @@ void test_text_too_long() {
   grc::live::ServerConfig config;
   config.max_inbound_text = 16;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for too-long text");
@@ -435,7 +556,7 @@ void test_wrong_path_404() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/wrong-path");
   check(hs.status == 404, "wrong path -> 404, got " + std::to_string(hs.status));
@@ -448,7 +569,7 @@ void test_missing_subprotocol_400() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", /*subprotocol_header=*/"");
   check(hs.status == 400, "missing subprotocol -> 400, got " + std::to_string(hs.status));
@@ -460,7 +581,7 @@ void test_malformed_request_400() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   const std::string garbage = "not even http\r\n\r\n";
   ::send(fd, garbage.data(), garbage.size(), 0);
@@ -476,7 +597,7 @@ void test_max_clients_503() {
   grc::live::ServerConfig config;
   config.max_clients = 1;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
 
   const int fd1 = connect_loopback(server.port());
   const Handshake hs1 = do_handshake(fd1, "dGhlIHNhbXBsZSBub25jZQ==");
@@ -497,14 +618,14 @@ void test_non_loopback_refused() {
   grc::live::ServerConfig config;
   config.host = "0.0.0.0";
   std::string error;
-  check(!server.start(config, &error), "non-loopback host refuses to start");
+  check(!server.start(config, nullptr, &error), "non-loopback host refuses to start");
   check(error == "non-loopback", "non-loopback error reason, got '" + error + "'");
 
   grc::live::Server server2;
   grc::live::ServerConfig config2;
   config2.host = "example.com";
   std::string error2;
-  check(!server2.start(config2, &error2), "a hostname refuses to start");
+  check(!server2.start(config2, nullptr, &error2), "a hostname refuses to start");
   check(error2 == "non-loopback", "hostname error reason, got '" + error2 + "'");
 }
 
@@ -513,7 +634,7 @@ void test_queued_bytes_safety_net() {
   grc::live::ServerConfig config;
   config.max_queued_bytes = 1024;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
@@ -532,7 +653,7 @@ void test_stats_track_sent_bytes() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
@@ -552,7 +673,7 @@ void test_large_binary_4mib() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
@@ -572,7 +693,7 @@ void test_stop_closes_open_connections() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
-  check(server.start(config, &error), "server starts: " + error);
+  check(server.start(config, nullptr, &error), "server starts: " + error);
   const int fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened before stop()");
@@ -585,6 +706,274 @@ void test_stop_closes_open_connections() {
   std::uint8_t probe;
   check(::recv(fd, &probe, 1, 0) == 0, "stop() actually closes the TCP connection");
   ::close(fd);
+}
+
+// --- HTTP GET resource serving (gate2-design.md G2c1). ---
+
+void test_http_get_sizes_byte_exact() {
+  FakeResourceSource source;
+  const std::size_t sizes[] = {0, 1, 65536, 4u << 20};
+  std::string hashes[] = {make_hash('0'), make_hash('1'), make_hash('2'), make_hash('3')};
+  for (std::size_t i = 0; i < 4; ++i) source.set(hashes[i], pattern_bytes(sizes[i], static_cast<std::uint8_t>(i)));
+
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+
+  for (std::size_t i = 0; i < 4; ++i) {
+    const int fd = connect_loopback(server.port());
+    check(fd >= 0, "connect for size " + std::to_string(sizes[i]));
+    const std::string req = plain_http_request("GET", config.resource_prefix + hashes[i]);
+    ::send(fd, req.data(), req.size(), 0);
+    const HttpResponse resp = read_http_response(fd);
+    check(resp.ok, "response complete for size " + std::to_string(sizes[i]));
+    check(resp.status == 200, "200 for size " + std::to_string(sizes[i]) + ": got " + std::to_string(resp.status));
+    check(resp.headers.count("content-type") != 0 && resp.headers.at("content-type") == "application/octet-stream",
+          "Content-Type for size " + std::to_string(sizes[i]));
+    check(resp.headers.count("cache-control") != 0 &&
+              resp.headers.at("cache-control") == "private, max-age=31536000, immutable",
+          "Cache-Control immutable for size " + std::to_string(sizes[i]));
+    check(resp.headers.count("etag") != 0 && resp.headers.at("etag") == "\"" + hashes[i] + "\"",
+          "ETag for size " + std::to_string(sizes[i]));
+    check(resp.body == pattern_bytes(sizes[i], static_cast<std::uint8_t>(i)),
+          "byte-exact body for size " + std::to_string(sizes[i]));
+    ::close(fd);
+  }
+  server.stop(1000);
+}
+
+void test_http_404_unknown_hash() {
+  FakeResourceSource source;
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const std::string req = plain_http_request("GET", config.resource_prefix + make_hash('e'));
+  ::send(fd, req.data(), req.size(), 0);
+  const HttpResponse resp = read_http_response(fd);
+  check(resp.ok && resp.status == 404, "unknown hash -> 404, got " + std::to_string(resp.status));
+  check(resp.body.empty(), "404 body is empty");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_400_malformed_hash() {
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+
+  const std::string bad_paths[] = {
+      config.resource_prefix,                               // no hash at all
+      config.resource_prefix + std::string(63, '0'),         // one short
+      config.resource_prefix + std::string(65, '0'),         // one long
+      config.resource_prefix + std::string(64, 'A'),         // uppercase
+      config.resource_prefix + std::string(63, '0') + "g",   // non-hex
+  };
+  for (const std::string &path : bad_paths) {
+    const int fd = connect_loopback(server.port());
+    const std::string req = plain_http_request("GET", path);
+    ::send(fd, req.data(), req.size(), 0);
+    const HttpResponse resp = read_http_response(fd);
+    check(resp.ok && resp.status == 400, "malformed hash '" + path + "' -> 400, got " + std::to_string(resp.status));
+    ::close(fd);
+  }
+  const auto events = wait_events(server, (sizeof(bad_paths) / sizeof(bad_paths[0])), 2000);
+  check(events.size() == (sizeof(bad_paths) / sizeof(bad_paths[0])) && events.back().kind == grc::live::Event::HttpGet &&
+            events.back().http_status == 400,
+        "each malformed hash is also reported as an HttpGet 400 event");
+  server.stop(1000);
+}
+
+void test_http_405_wrong_method() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('4');
+  source.set(hash, pattern_bytes(16, 7));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const std::string req = plain_http_request("POST", config.resource_prefix + hash);
+  ::send(fd, req.data(), req.size(), 0);
+  const HttpResponse resp = read_http_response(fd);
+  check(resp.ok && resp.status == 405, "POST -> 405, got " + std::to_string(resp.status));
+  check(resp.headers.count("allow") != 0 && resp.headers.at("allow") == "GET", "405 carries Allow: GET");
+  const auto events = wait_events(server, 1, 2000);
+  check(!events.empty() && events[0].kind == grc::live::Event::HttpGet && events[0].hash == hash &&
+            events[0].http_status == 405,
+        "405 is also reported as an HttpGet event naming the attempted hash");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_if_none_match_304() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('5');
+  source.set(hash, pattern_bytes(256, 9));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+
+  const int fd = connect_loopback(server.port());
+  const std::string req1 = plain_http_request("GET", config.resource_prefix + hash);
+  ::send(fd, req1.data(), req1.size(), 0);
+  const HttpResponse resp1 = read_http_response(fd);
+  check(resp1.ok && resp1.status == 200, "first GET is 200");
+
+  const std::string req2 = plain_http_request("GET", config.resource_prefix + hash, {{"If-None-Match", "\"" + hash + "\""}});
+  ::send(fd, req2.data(), req2.size(), 0);
+  const HttpResponse resp2 = read_http_response(fd);
+  check(resp2.ok && resp2.status == 304, "If-None-Match -> 304, got " + std::to_string(resp2.status));
+  check(resp2.body.empty(), "304 body is empty");
+  check(resp2.headers.count("etag") != 0 && resp2.headers.at("etag") == "\"" + hash + "\"", "304 carries ETag");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_keep_alive_two_requests_one_connection() {
+  FakeResourceSource source;
+  const std::string hash_a = make_hash('6');
+  const std::string hash_b = make_hash('7');
+  source.set(hash_a, pattern_bytes(32, 1));
+  source.set(hash_b, pattern_bytes(48, 2));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+
+  const int fd = connect_loopback(server.port());
+  const std::string req1 = plain_http_request("GET", config.resource_prefix + hash_a);
+  ::send(fd, req1.data(), req1.size(), 0);
+  const HttpResponse resp1 = read_http_response(fd);
+  check(resp1.ok && resp1.status == 200 && resp1.body == pattern_bytes(32, 1), "first request on the connection");
+
+  const std::string req2 = plain_http_request("GET", config.resource_prefix + hash_b);
+  const ssize_t sent = ::send(fd, req2.data(), req2.size(), 0);
+  check(sent == static_cast<ssize_t>(req2.size()), "second request sent on the same (still-open) connection");
+  const HttpResponse resp2 = read_http_response(fd);
+  check(resp2.ok && resp2.status == 200 && resp2.body == pattern_bytes(48, 2),
+        "second request on the same connection, keep-alive");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_connection_close_honoured() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('8');
+  source.set(hash, pattern_bytes(16, 3));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+
+  const int fd = connect_loopback(server.port());
+  const std::string req = plain_http_request("GET", config.resource_prefix + hash, {{"Connection", "close"}});
+  ::send(fd, req.data(), req.size(), 0);
+  const HttpResponse resp = read_http_response(fd);
+  check(resp.ok && resp.status == 200, "200 despite Connection: close");
+  check(resp.headers.count("connection") != 0 && resp.headers.at("connection") == "close",
+        "response echoes Connection: close");
+  std::uint8_t probe;
+  check(::recv(fd, &probe, 1, 0) == 0, "Connection: close actually closes the TCP connection");
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_max_http_clients_503() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('9');
+  source.set(hash, pattern_bytes(8, 4));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.max_http_clients = 2;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+
+  int fds[3];
+  for (int i = 0; i < 3; ++i) {
+    fds[i] = connect_loopback(server.port());
+    const std::string req = plain_http_request("GET", config.resource_prefix + hash);
+    ::send(fds[i], req.data(), req.size(), 0);
+    const HttpResponse resp = read_http_response(fds[i]);
+    if (i < 2) {
+      check(resp.ok && resp.status == 200, "client " + std::to_string(i) + " within max_http_clients -> 200");
+    } else {
+      check(resp.ok && resp.status == 503,
+            "client " + std::to_string(i) + " beyond max_http_clients -> 503, got " + std::to_string(resp.status));
+    }
+  }
+  const auto events = wait_events(server, 3, 2000);
+  check(events.size() == 3 && events.back().kind == grc::live::Event::HttpGet &&
+            events.back().hash == hash && events.back().http_status == 503,
+        "the client beyond max_http_clients is also reported as an HttpGet 503 event");
+  for (int fd : fds) ::close(fd);
+  server.stop(1000);
+}
+
+void test_http_coexists_with_websocket() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('a');
+  source.set(hash, pattern_bytes(128, 5));
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+
+  const int ws_fd = connect_loopback(server.port());
+  do_handshake(ws_fd, "dGhlIHNhbXBsZSBub25jZQ==");
+  const std::uint32_t conn = expect_opened(server);
+  check(conn != 0, "WebSocket session opened before any HTTP traffic");
+
+  const int http_fd = connect_loopback(server.port());
+  const std::string req = plain_http_request("GET", config.resource_prefix + hash);
+  ::send(http_fd, req.data(), req.size(), 0);
+  const HttpResponse resp = read_http_response(http_fd);
+  check(resp.ok && resp.status == 200 && resp.body == pattern_bytes(128, 5),
+        "HTTP GET succeeds alongside an open WebSocket session");
+  ::close(http_fd);
+
+  // The successful GET above already pushed its own HttpGet event; drain and check it before
+  // sending on the WebSocket, so the Text event below isn't waiting behind it in the queue.
+  const auto http_events = wait_events(server, 1, 2000);
+  check(!http_events.empty() && http_events[0].kind == grc::live::Event::HttpGet &&
+            http_events[0].hash == hash && http_events[0].http_status == 200 && http_events[0].bytes == 128,
+        "the HTTP GET is also reported as an HttpGet event");
+
+  const auto frame = client_text("still alive");
+  ::send(ws_fd, frame.data(), frame.size(), 0);
+  const auto events = wait_events(server, 1, 2000);
+  check(!events.empty() && events[0].kind == grc::live::Event::Text && events[0].text == "still alive",
+        "the WebSocket session still carries data after a concurrent HTTP fetch");
+  ::close(ws_fd);
+  server.stop(1000);
+}
+
+void test_no_mmap_mprotect_imports() {
+  char exe_path[4096];
+  const ssize_t n = ::readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  check(n > 0, "readlink /proc/self/exe");
+  if (n <= 0) return;
+  exe_path[n] = '\0';
+
+  const std::string cmd = std::string("nm -D --undefined-only '") + exe_path + "' 2>/dev/null";
+  FILE *pipe = ::popen(cmd.c_str(), "r");
+  check(pipe != nullptr, "popen(nm) for the import check");
+  if (pipe == nullptr) return;
+  bool found_mmap = false;
+  bool found_mprotect = false;
+  char line[512];
+  while (std::fgets(line, sizeof(line), pipe) != nullptr) {
+    const std::string l(line);
+    if (l.find("mmap") != std::string::npos) found_mmap = true;
+    if (l.find("mprotect") != std::string::npos) found_mprotect = true;
+  }
+  ::pclose(pipe);
+  check(!found_mmap, "the test binary imports no mmap symbol (HTTP bodies are served from memory, never mapped)");
+  check(!found_mprotect, "the test binary imports no mprotect symbol");
 }
 
 }  // namespace
@@ -609,6 +998,16 @@ int main() {
   test_stats_track_sent_bytes();
   test_large_binary_4mib();
   test_stop_closes_open_connections();
+  test_http_get_sizes_byte_exact();
+  test_http_404_unknown_hash();
+  test_http_400_malformed_hash();
+  test_http_405_wrong_method();
+  test_http_if_none_match_304();
+  test_http_keep_alive_two_requests_one_connection();
+  test_http_connection_close_honoured();
+  test_http_max_http_clients_503();
+  test_http_coexists_with_websocket();
+  test_no_mmap_mprotect_imports();
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_ws_test: %d of %d checks failed\n", g_failures, g_checks);

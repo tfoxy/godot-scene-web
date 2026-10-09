@@ -57,6 +57,30 @@ bool token_list_contains(const std::string &value, const std::string &token_lowe
   return false;
 }
 
+// Lowercase hex digit, or -1.
+int hex_value(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+  return -1;
+}
+
+// Exactly 64 lowercase hex characters (render-stream-2.md "Texture payload": a SHA-256 hex digest).
+bool is_sha256_hex(const std::string &s) {
+  if (s.size() != 64) return false;
+  for (char ch : s) {
+    if (hex_value(ch) < 0) return false;
+  }
+  return true;
+}
+
+// Strips one leading and one trailing '"' if both are present (ETag / If-None-Match are quoted
+// per RFC 7232; a client may also send an unquoted value, which this passes through unchanged so
+// it simply fails the hash comparison rather than being rejected outright).
+std::string unquote(const std::string &s) {
+  if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
+  return s;
+}
+
 std::string base64_encode(const std::uint8_t *data, std::size_t len) {
   static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   std::string out;
@@ -181,17 +205,19 @@ ParseStatus parse_frame_header(const std::vector<std::uint8_t> &buf, FrameHeader
 // HTTP/1.1 upgrade request parsing.
 // ---------------------------------------------------------------------------
 
+// A generic HTTP/1.1 request head: the request line plus headers, with no opinion yet on where
+// it routes. `parsed` is false only when the request line itself is unreadable (not even
+// "TOKEN SP TOKEN SP TOKEN"); an unrecognized method or an unsupported version still parses, so
+// the dispatcher can answer the right status (405 vs 400) instead of a blanket one.
 struct ParsedRequest {
-  bool parsed = false;  // false only when the request line itself is unreadable.
+  bool parsed = false;
+  std::string method;
   std::string path;
-  bool has_upgrade_websocket = false;
-  bool has_connection_upgrade = false;
-  bool version13 = false;
-  std::string key;
-  bool protocol_ok = false;
+  bool version_ok = false;  // exactly "HTTP/1.1"
+  std::map<std::string, std::string> headers;  // lowercased keys; repeats comma-joined, in order.
 };
 
-ParsedRequest parse_http_head(const std::string &head, const std::string &expected_subprotocol) {
+ParsedRequest parse_request_head(const std::string &head) {
   ParsedRequest req;
   const std::size_t line_end = head.find("\r\n");
   const std::string request_line = (line_end == std::string::npos) ? head : head.substr(0, line_end);
@@ -199,14 +225,11 @@ ParsedRequest parse_http_head(const std::string &head, const std::string &expect
   if (sp1 == std::string::npos) return req;
   const std::size_t sp2 = request_line.find(' ', sp1 + 1);
   if (sp2 == std::string::npos) return req;
-  const std::string method = request_line.substr(0, sp1);
-  const std::string path = request_line.substr(sp1 + 1, sp2 - sp1 - 1);
-  const std::string version = request_line.substr(sp2 + 1);
-  if (method != "GET" || version != "HTTP/1.1") return req;
   req.parsed = true;
-  req.path = path;
+  req.method = request_line.substr(0, sp1);
+  req.path = request_line.substr(sp1 + 1, sp2 - sp1 - 1);
+  req.version_ok = request_line.substr(sp2 + 1) == "HTTP/1.1";
 
-  std::map<std::string, std::string> headers;
   std::size_t pos = (line_end == std::string::npos) ? head.size() : line_end + 2;
   while (pos < head.size()) {
     const std::size_t next = head.find("\r\n", pos);
@@ -216,31 +239,49 @@ ParsedRequest parse_http_head(const std::string &head, const std::string &expect
       if (colon != std::string::npos) {
         const std::string k = to_lower(trim(line.substr(0, colon)));
         const std::string v = trim(line.substr(colon + 1));
-        auto it = headers.find(k);
-        if (it != headers.end()) {
+        auto it = req.headers.find(k);
+        if (it != req.headers.end()) {
           it->second += ", " + v;
         } else {
-          headers.emplace(k, v);
+          req.headers.emplace(k, v);
         }
       }
     }
     if (next == std::string::npos) break;
     pos = next + 2;
   }
-
-  auto it = headers.find("upgrade");
-  if (it != headers.end() && token_list_contains(it->second, "websocket")) req.has_upgrade_websocket = true;
-  it = headers.find("connection");
-  if (it != headers.end() && token_list_contains(it->second, "upgrade")) req.has_connection_upgrade = true;
-  it = headers.find("sec-websocket-version");
-  if (it != headers.end() && trim(it->second) == "13") req.version13 = true;
-  it = headers.find("sec-websocket-key");
-  if (it != headers.end()) req.key = trim(it->second);
-  it = headers.find("sec-websocket-protocol");
-  if (it != headers.end() && token_list_contains(it->second, to_lower(expected_subprotocol))) {
-    req.protocol_ok = true;
-  }
   return req;
+}
+
+// Looks up a header by its (already lowercase) name; "" if absent.
+std::string header_value(const ParsedRequest &req, const std::string &name_lower) {
+  const auto it = req.headers.find(name_lower);
+  return it == req.headers.end() ? std::string() : it->second;
+}
+
+bool request_wants_close(const ParsedRequest &req) {
+  return token_list_contains(header_value(req, "connection"), "close");
+}
+
+// WebSocket-upgrade-specific header checks, folded out of parse_request_head so a plain HTTP GET
+// never pays for them.
+struct UpgradeHeaders {
+  bool has_upgrade_websocket = false;
+  bool has_connection_upgrade = false;
+  bool version13 = false;
+  std::string key;
+  bool protocol_ok = false;
+};
+
+UpgradeHeaders check_upgrade_headers(const ParsedRequest &req, const std::string &expected_subprotocol) {
+  UpgradeHeaders out;
+  out.has_upgrade_websocket = token_list_contains(header_value(req, "upgrade"), "websocket");
+  out.has_connection_upgrade = token_list_contains(header_value(req, "connection"), "upgrade");
+  out.version13 = trim(header_value(req, "sec-websocket-version")) == "13";
+  out.key = trim(header_value(req, "sec-websocket-key"));
+  out.protocol_ok =
+      token_list_contains(header_value(req, "sec-websocket-protocol"), to_lower(expected_subprotocol));
+  return out;
 }
 
 void set_nonblocking(int fd) {
@@ -250,10 +291,14 @@ void set_nonblocking(int fd) {
 
 const char *http_status_text(int status) {
   switch (status) {
+    case 304:
+      return "Not Modified";
     case 400:
       return "Bad Request";
     case 404:
       return "Not Found";
+    case 405:
+      return "Method Not Allowed";
     case 503:
       return "Service Unavailable";
     default:
@@ -265,6 +310,45 @@ std::vector<std::uint8_t> to_bytes(const std::string &s) {
   return std::vector<std::uint8_t>(s.begin(), s.end());
 }
 
+// Named Event constructors, one per Kind, each setting only the fields that Kind documents
+// (rs_ws.h). Event now has more fields than any one Kind uses, so positional aggregate
+// initialization at each call site would either miss some (-Wmissing-field-initializers) or
+// force every call site to spell out fields it does not care about; these centralize that once.
+Event make_opened_event(std::uint32_t conn) {
+  Event e;
+  e.kind = Event::Opened;
+  e.conn = conn;
+  return e;
+}
+
+Event make_text_event(std::uint32_t conn, std::string text) {
+  Event e;
+  e.kind = Event::Text;
+  e.conn = conn;
+  e.text = std::move(text);
+  return e;
+}
+
+Event make_closed_event(std::uint32_t conn, std::uint16_t code, std::string reason) {
+  Event e;
+  e.kind = Event::Closed;
+  e.conn = conn;
+  e.text = reason;  // duplicated into text for readability at call sites, as before.
+  e.code = code;
+  e.reason = std::move(reason);
+  return e;
+}
+
+Event make_http_get_event(std::uint32_t conn, std::string hash, std::uint16_t status, std::uint64_t bytes) {
+  Event e;
+  e.kind = Event::HttpGet;
+  e.conn = conn;
+  e.hash = std::move(hash);
+  e.http_status = status;
+  e.bytes = bytes;
+  return e;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -274,11 +358,14 @@ std::vector<std::uint8_t> to_bytes(const std::string &s) {
 struct Conn {
   int fd = -1;
   std::uint32_t id = 0;
-  enum class Phase { Handshaking, Open, HttpReject, Closed } phase = Phase::Handshaking;
+  // Handshaking also means "awaiting the next HTTP request line": an HTTP connection (unlike a
+  // WebSocket one) never leaves this phase, since every request on it is parsed the same way.
+  enum class Phase { Handshaking, Open, Closed } phase = Phase::Handshaking;
   std::vector<std::uint8_t> recv_buf;
   std::vector<std::uint8_t> send_buf;
   std::size_t send_off = 0;
-  bool opened = false;              // an Opened event was pushed for this connection.
+  bool opened = false;              // an Opened event was pushed for this connection (WebSocket only).
+  bool http_slot_held = false;      // this connection counts against max_http_clients.
   bool shutdown_after_flush = false;
   std::uint16_t pending_close_code = 1000;
   std::string pending_close_reason;
@@ -290,6 +377,7 @@ struct Conn {
 
 struct Server::Impl {
   ServerConfig config;
+  ResourceSource *resource_source = nullptr;  // never owned; may be null (every GET -> 404).
   int listen_fd = -1;
   int wake_r = -1;
   int wake_w = -1;
@@ -354,7 +442,7 @@ struct Server::Impl {
     if (c.phase == Conn::Phase::Closed) return;
     ::shutdown(c.fd, SHUT_RDWR);
     ::close(c.fd);
-    if (c.opened) push_event_locked(Event{Event::Closed, c.id, reason, code, reason});
+    if (c.opened) push_event_locked(make_closed_event(c.id, code, reason));
     c.phase = Conn::Phase::Closed;
   }
 
@@ -389,6 +477,9 @@ struct Server::Impl {
     }
   }
 
+  // Closes the TCP connection (no WS close frame: used for both a rejected WS handshake and any
+  // HTTP error that this server does not keep serving) once `resp` has flushed. `opened` stays
+  // false on every path that reaches this, so finalize_now() pushes no Closed event.
   void reject(Conn &c, int status, const std::string &detail) {
     (void)detail;
     std::string resp = "HTTP/1.1 " + std::to_string(status) + " " + http_status_text(status) +
@@ -398,7 +489,148 @@ struct Server::Impl {
     c.pending_close_code = 0;  // unused: opened stays false, so no Closed event is pushed.
   }
 
-  void try_handshake(Conn &c) {
+  // Counts other open WebSocket connections (against ServerConfig::max_clients).
+  std::size_t count_ws_open(const Conn &exclude) const {
+    std::size_t n = 0;
+    for (const auto &entry : conns) {
+      if (entry.second.id != exclude.id && entry.second.phase == Conn::Phase::Open) ++n;
+    }
+    return n;
+  }
+
+  // Counts other connections already holding an HTTP slot (against max_http_clients).
+  std::size_t count_http_slots(const Conn &exclude) const {
+    std::size_t n = 0;
+    for (const auto &entry : conns) {
+      if (entry.second.id != exclude.id && entry.second.http_slot_held) ++n;
+    }
+    return n;
+  }
+
+  // Sends one HTTP response on `c` that is not a 101 upgrade. `body` is empty for every status
+  // this server ever answers with one (200 carries a body via the overload below; every other
+  // status -- 304, 400, 404, 405, 503 -- has an empty body, Content-Length: 0 included, so a
+  // client that does not special-case bodyless statuses still frames the next response on a
+  // kept-alive connection correctly). Closes after flushing unless `keep_alive`.
+  void send_http_status(Conn &c, int status, const std::vector<std::pair<std::string, std::string>> &headers,
+                         bool keep_alive) {
+    std::string resp = "HTTP/1.1 " + std::to_string(status) + " " + http_status_text(status) + "\r\n";
+    for (const auto &h : headers) resp += h.first + ": " + h.second + "\r\n";
+    resp += "Content-Length: 0\r\n";
+    resp += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    resp += "\r\n";
+    enqueue_raw(c, to_bytes(resp), /*bypass_limit=*/true);
+    if (!keep_alive) {
+      c.shutdown_after_flush = true;
+      c.pending_close_code = 0;  // opened stays false on the HTTP route: no Closed event.
+    }
+  }
+
+  // 200 OK with a body (render-stream-2.md "HTTP (live)").
+  void send_http_ok(Conn &c, const std::string &hash, const std::vector<std::uint8_t> &body, bool keep_alive) {
+    std::string resp = "HTTP/1.1 200 OK\r\n";
+    resp += "Content-Type: application/octet-stream\r\n";
+    resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    resp += "Cache-Control: private, max-age=31536000, immutable\r\n";
+    resp += "ETag: \"" + hash + "\"\r\n";
+    resp += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    resp += "\r\n";
+    std::vector<std::uint8_t> out = to_bytes(resp);
+    out.insert(out.end(), body.begin(), body.end());
+    enqueue_raw(c, std::move(out), /*bypass_limit=*/true);
+    if (!keep_alive) {
+      c.shutdown_after_flush = true;
+      c.pending_close_code = 0;
+    }
+  }
+
+  // 304 Not Modified: the same cache headers as 200, no body (render-stream-2.md).
+  void send_http_not_modified(Conn &c, const std::string &hash, bool keep_alive) {
+    send_http_status(c, 304,
+                      {{"Cache-Control", "private, max-age=31536000, immutable"}, {"ETag", "\"" + hash + "\""}},
+                      keep_alive);
+  }
+
+  // Handles one resource GET (gate2-design.md D6, Q4; render-stream-2.md "HTTP (live)"). The
+  // path has already been confirmed to start with config.resource_prefix.
+  void dispatch_resource_get(Conn &c, const ParsedRequest &req) {
+    const bool keep_alive = !request_wants_close(req);
+    // Extracted before the method check so even a non-GET request's HttpGet event (below) names
+    // the hash it attempted -- useful evidence (Q3's hook log) for a misbehaving client.
+    const std::string hash = req.path.substr(config.resource_prefix.size());
+
+    if (req.method != "GET") {
+      send_http_status(c, 405, {{"Allow", "GET"}}, /*keep_alive=*/false);
+      push_event_locked(make_http_get_event(c.id, hash, 405, 0));
+      return;
+    }
+    if (!is_sha256_hex(hash)) {
+      send_http_status(c, 400, {}, /*keep_alive=*/false);
+      push_event_locked(make_http_get_event(c.id, hash, 400, 0));
+      return;
+    }
+    if (!c.http_slot_held) {
+      if (count_http_slots(c) >= config.max_http_clients) {
+        send_http_status(c, 503, {}, /*keep_alive=*/false);
+        push_event_locked(make_http_get_event(c.id, hash, 503, 0));
+        return;
+      }
+      c.http_slot_held = true;
+    }
+
+    const std::shared_ptr<const std::vector<std::uint8_t>> payload =
+        resource_source != nullptr ? resource_source->lookup(hash) : nullptr;
+    if (payload == nullptr) {
+      send_http_status(c, 404, {}, keep_alive);
+      push_event_locked(make_http_get_event(c.id, hash, 404, 0));
+      return;
+    }
+    const std::string if_none_match = unquote(trim(header_value(req, "if-none-match")));
+    if (if_none_match == hash) {
+      send_http_not_modified(c, hash, keep_alive);
+      push_event_locked(make_http_get_event(c.id, hash, 304, 0));
+      return;
+    }
+    send_http_ok(c, hash, *payload, keep_alive);
+    push_event_locked(make_http_get_event(c.id, hash, 200, payload->size()));
+  }
+
+  void dispatch_ws_upgrade(Conn &c, const ParsedRequest &req) {
+    if (req.method != "GET") {
+      reject(c, 400, "expected GET");
+      return;
+    }
+    const UpgradeHeaders up = check_upgrade_headers(req, config.subprotocol);
+    if (!up.has_upgrade_websocket || !up.has_connection_upgrade || !up.version13 || up.key.empty()) {
+      reject(c, 400, "malformed upgrade request");
+      return;
+    }
+    if (!up.protocol_ok) {
+      reject(c, 400, "missing subprotocol");
+      return;
+    }
+    if (count_ws_open(c) >= config.max_clients) {
+      reject(c, 503, "max_clients");
+      return;
+    }
+
+    const std::string accept_key = compute_accept_key(up.key);
+    const std::string resp = "HTTP/1.1 101 Switching Protocols\r\n"
+                              "Upgrade: websocket\r\n"
+                              "Connection: Upgrade\r\n"
+                              "Sec-WebSocket-Accept: " +
+                              accept_key + "\r\n" + "Sec-WebSocket-Protocol: " + config.subprotocol + "\r\n\r\n";
+    c.send_buf.insert(c.send_buf.end(), resp.begin(), resp.end());
+    c.phase = Conn::Phase::Open;
+    c.opened = true;
+    push_event_locked(make_opened_event(c.id));
+    if (!c.recv_buf.empty()) process_frames(c);
+  }
+
+  // Parses and routes one request head. A connection stays in Phase::Handshaking across any
+  // number of HTTP requests (handle_readable() calls this again for each); a WebSocket upgrade
+  // leaves it via dispatch_ws_upgrade(), after which this is never called again for `c`.
+  void try_request(Conn &c) {
     static const std::string kTerminator = "\r\n\r\n";
     const auto pos = std::search(c.recv_buf.begin(), c.recv_buf.end(), kTerminator.begin(), kTerminator.end());
     if (pos == c.recv_buf.end()) {
@@ -411,35 +643,28 @@ struct Server::Impl {
     std::vector<std::uint8_t> leftover(c.recv_buf.begin() + static_cast<std::ptrdiff_t>(consumed), c.recv_buf.end());
     c.recv_buf = std::move(leftover);
 
-    const ParsedRequest req = parse_http_head(head, config.subprotocol);
-    if (!req.parsed) {
+    const ParsedRequest req = parse_request_head(head);
+    if (!req.parsed || !req.version_ok) {
       reject(c, 400, "malformed request line");
       return;
     }
-    if (req.path != config.path) {
+
+    if (req.path == config.path) {
+      dispatch_ws_upgrade(c, req);
+    } else if (req.path.rfind(config.resource_prefix, 0) == 0) {
+      dispatch_resource_get(c, req);
+    } else {
       reject(c, 404, "unknown path");
       return;
     }
-    if (!req.has_upgrade_websocket || !req.has_connection_upgrade || !req.version13 || req.key.empty()) {
-      reject(c, 400, "malformed upgrade request");
-      return;
-    }
-    if (!req.protocol_ok) {
-      reject(c, 400, "missing subprotocol");
-      return;
-    }
 
-    const std::string accept_key = compute_accept_key(req.key);
-    const std::string resp = "HTTP/1.1 101 Switching Protocols\r\n"
-                              "Upgrade: websocket\r\n"
-                              "Connection: Upgrade\r\n"
-                              "Sec-WebSocket-Accept: " +
-                              accept_key + "\r\n" + "Sec-WebSocket-Protocol: " + config.subprotocol + "\r\n\r\n";
-    c.send_buf.insert(c.send_buf.end(), resp.begin(), resp.end());
-    c.phase = Conn::Phase::Open;
-    c.opened = true;
-    push_event_locked(Event{Event::Opened, c.id, "", 0, ""});
-    if (!c.recv_buf.empty()) process_frames(c);
+    // Non-pipelined, but a test client (or a real one racing ahead of this server's response) may
+    // still have put the next request's bytes in the same read. Keep parsing while this
+    // connection stays an HTTP one (never Open: a WebSocket upgrade already returned above) and
+    // isn't closing.
+    if (!c.shutdown_after_flush && c.phase == Conn::Phase::Handshaking && !c.recv_buf.empty()) {
+      try_request(c);
+    }
   }
 
   void process_frames(Conn &c) {
@@ -480,7 +705,7 @@ struct Server::Impl {
       switch (hdr.opcode) {
         case 0x1: {
           c.received_text++;
-          push_event_locked(Event{Event::Text, c.id, std::string(payload.begin(), payload.end()), 0, ""});
+          push_event_locked(make_text_event(c.id, std::string(payload.begin(), payload.end())));
           break;
         }
         case 0x9: {
@@ -521,12 +746,17 @@ struct Server::Impl {
     }
     c.recv_buf.insert(c.recv_buf.end(), buf, buf + n);
     if (c.phase == Conn::Phase::Handshaking) {
-      try_handshake(c);
+      try_request(c);
     } else if (c.phase == Conn::Phase::Open) {
       process_frames(c);
     }
   }
 
+  // Accepts every pending connection without classifying it: a new socket might become a
+  // WebSocket upgrade or a resource GET, and max_clients / max_http_clients are independent
+  // limits on those two roles (Q4 "coexisting with a live WebSocket on the same port"), so
+  // neither can be enforced before the first request's path is known. try_request() enforces
+  // both once it is.
   void accept_loop() {
     for (;;) {
       sockaddr_storage addr{};
@@ -537,18 +767,9 @@ struct Server::Impl {
       const int one = 1;
       ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-      std::size_t occupied = 0;
-      for (const auto &entry : conns) {
-        if (entry.second.phase != Conn::Phase::HttpReject) ++occupied;
-      }
-
       Conn c;
       c.fd = fd;
       c.id = next_id++;
-      if (occupied >= config.max_clients) {
-        c.phase = Conn::Phase::HttpReject;
-        reject(c, 503, "max_clients");
-      }
       conns.emplace(c.id, std::move(c));
     }
   }
@@ -674,7 +895,7 @@ Server::~Server() {
   if (impl_->wake_w >= 0) ::close(impl_->wake_w);
 }
 
-bool Server::start(const ServerConfig &config, std::string *error) {
+bool Server::start(const ServerConfig &config, ResourceSource *source, std::string *error) {
   if (impl_->running.load()) {
     if (error) *error = "already started";
     return false;
@@ -738,6 +959,7 @@ bool Server::start(const ServerConfig &config, std::string *error) {
   set_nonblocking(pipe_fds[1]);
 
   impl_->config = config;
+  impl_->resource_source = source;
   impl_->listen_fd = fd;
   impl_->wake_r = pipe_fds[0];
   impl_->wake_w = pipe_fds[1];
