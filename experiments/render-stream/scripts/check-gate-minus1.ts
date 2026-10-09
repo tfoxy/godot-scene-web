@@ -17,17 +17,21 @@ import {
   type Criterion,
   checkCaptureCounts,
   checkDisarmAndCompletion,
+  checkDrawPaths,
   checkFrameCallbackTicked,
   checkHeadlessNoGpu,
+  checkNewDrawingsVisible,
   checkNoMprotectAfterArm,
+  checkOlderRecord,
   checkPixelParity,
   checkPolygonBitExact,
   checkRenderedLegs,
   checkValidateAndRefusals,
-  type ExpectedJson,
+  type ExpectedWithDrawPaths,
 } from "./lib/gate-minus1-checks";
 
-/** Which of the handoff's eight gate -1 criteria each check id belongs to. */
+/** Which criterion each check id belongs to: the handoff's eight gate -1 criteria, then #9
+ * (calibrator-2 draw paths, toward gate -0.25) and #10 (older calibration records still load). */
 const CRITERION_NUMBER: Record<string, number> = {
   "frame-callback-ticked": 1,
   "headless-no-gpu": 1,
@@ -46,7 +50,17 @@ const CRITERION_NUMBER: Record<string, number> = {
   "armed-vs-unarmed-pixels": 7,
   "unarmed-not-blank": 7,
   "rendered-legs-armed-and-absent": 7,
+  "new-drawings-visible": 7,
   "no-mprotect-after-arm": 8,
+  "optional-hook-counts": 9,
+  "triangle-array-bit-exact": 9,
+  "stylebox-panel-native": 9,
+  "shader-material-path": 9,
+  "nine-patch-bit-exact": 9,
+  "scripted-shapes-bit-exact": 9,
+  "mesh-surface-and-draw": 9,
+  "mesh-region-updates": 9,
+  "older-record-loads": 10,
 };
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -74,7 +88,7 @@ export async function runChecks(outDir: string): Promise<NumberedCriterion[]> {
       join(EXPERIMENT_DIR, "fixtures/spike/expected.json"),
       "utf8",
     ),
-  ) as ExpectedJson;
+  ) as ExpectedWithDrawPaths;
 
   const results = await Promise.all([
     checkFrameCallbackTicked(outDir),
@@ -86,6 +100,9 @@ export async function runChecks(outDir: string): Promise<NumberedCriterion[]> {
     checkPixelParity(outDir, expected),
     checkRenderedLegs(outDir, expected),
     checkNoMprotectAfterArm(outDir),
+    checkDrawPaths(outDir, expected),
+    checkNewDrawingsVisible(outDir, expected),
+    checkOlderRecord(outDir, expected),
   ]);
 
   return results.flat().map((criterion) => {

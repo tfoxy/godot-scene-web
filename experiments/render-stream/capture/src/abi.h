@@ -15,6 +15,7 @@
 //   core/templates/vector.h     class Vector<T> { CowData<T> _cowdata; }
 //   core/templates/cowdata.h    class CowData<T> { T *_ptr; }
 //   core/object/ref_counted.h   class Ref<T> { T *reference; }
+//   servers/rendering_server.h  struct RenderingServer::SurfaceData (leading members only)
 
 #pragma once
 
@@ -118,5 +119,54 @@ struct Ref {
   bool is_null() const { return object == nullptr; }
 };
 static_assert(sizeof(Ref) == sizeof(void *), "Ref<T> is one pointer");
+
+//   core/math/vector3.h         struct Vector3 { real_t x, y, z; }  (inside a union with coord[3])
+//   core/math/aabb.h            struct AABB { Vector3 position, size; }
+struct Vector3 {
+  float x;
+  float y;
+  float z;
+};
+
+struct AABB {
+  Vector3 position;
+  Vector3 size;
+};
+static_assert(sizeof(Vector3) == 12, "single-precision Vector3");
+static_assert(sizeof(AABB) == 24, "single-precision AABB");
+
+// Leading members of RenderingServer::SurfaceData (servers/rendering_server.h:366-394), which
+// `mesh_add_surface` takes by const reference. Only this prefix is reproduced, and it is only ever
+// READ through the engine's pointer: never construct, copy or size one of these, because the real
+// struct continues past `aabb` (lods, bone_aabbs, mesh_to_skeleton_xform, blend_shape_data,
+// uv_scale, material; 240 bytes in total).
+//
+// The struct has no preprocessor conditions, so the release define set does not change it. The
+// offsets below were computed by hand (enum = 4 bytes, Vector<T> = two 8-aligned words, AABB = six
+// floats with 4-byte alignment) and cross-checked by compiling `offsetof` probes against the
+// pinned 4.5.1 header itself: primitive 0, format 8, vertex_data 16, attribute_data 32,
+// skin_data 48, vertex_count 64, index_data 72, index_count 88, aabb 92, lods 120, sizeof 240.
+struct SurfaceDataPrefix {
+  int32_t primitive;  // RS::PrimitiveType, an unscoped enum: 4 bytes
+  uint64_t format;    // RS::ArrayFormat bits
+  Vector<uint8_t> vertex_data;
+  Vector<uint8_t> attribute_data;
+  Vector<uint8_t> skin_data;
+  uint32_t vertex_count;
+  Vector<uint8_t> index_data;
+  uint32_t index_count;
+  AABB aabb;
+};
+static_assert(offsetof(SurfaceDataPrefix, primitive) == 0, "SurfaceData::primitive");
+static_assert(offsetof(SurfaceDataPrefix, format) == 8, "SurfaceData::format");
+static_assert(offsetof(SurfaceDataPrefix, vertex_data) == 16, "SurfaceData::vertex_data");
+static_assert(offsetof(SurfaceDataPrefix, attribute_data) == 32, "SurfaceData::attribute_data");
+static_assert(offsetof(SurfaceDataPrefix, skin_data) == 48, "SurfaceData::skin_data");
+static_assert(offsetof(SurfaceDataPrefix, vertex_count) == 64, "SurfaceData::vertex_count");
+static_assert(offsetof(SurfaceDataPrefix, index_data) == 72, "SurfaceData::index_data");
+static_assert(offsetof(SurfaceDataPrefix, index_count) == 88, "SurfaceData::index_count");
+static_assert(offsetof(SurfaceDataPrefix, aabb) == 92, "SurfaceData::aabb");
+// The prefix ends inside the real struct (the next member, `lods`, starts at 120).
+static_assert(sizeof(SurfaceDataPrefix) <= 120, "the prefix must not read past SurfaceData::aabb");
 
 }  // namespace grc

@@ -26,7 +26,30 @@
     "texture_2d_create": 24,
     "texture_2d_update": 30,
     "free": 549,
-    "get_default_clear_color": 577
+    "get_default_clear_color": 577,
+    "canvas_item_add_triangle_array": 474,
+    "canvas_item_add_mesh": 475,
+    "canvas_item_add_multimesh": 476,
+    "canvas_item_add_nine_patch": 471,
+    "canvas_item_add_primitive": 472,
+    "canvas_item_add_line": 462,
+    "canvas_item_add_polyline": 463,
+    "canvas_item_add_circle": 466,
+    "canvas_item_add_set_transform": 478,
+    "canvas_item_set_transform": 453,
+    "canvas_item_set_modulate": 457,
+    "canvas_item_create": 446,
+    "canvas_item_clear": 486,
+    "canvas_item_set_material": 488,
+    "mesh_create": 71,
+    "mesh_add_surface": 82,
+    "mesh_surface_update_vertex_region": 86,
+    "mesh_surface_update_attribute_region": 87,
+    "mesh_clear": 100,
+    "mesh_set_custom_aabb": 94,
+    "shader_create_from_code": 54,
+    "shader_set_code": 55,
+    "material_set_param": 66
   },
   "anchors": {
     "_global_shader_parameter_get_list": 23,
@@ -48,7 +71,7 @@
     "mesh_add_surface_from_planes": 575
   },
   "calibrator": {
-    "version": "1",
+    "version": "2",
     "header_sha256": "3e01fb10af9abb6955314abacd65d45b697a8ea57c7bf651e59c29e8a399b9d7"
   }
 }

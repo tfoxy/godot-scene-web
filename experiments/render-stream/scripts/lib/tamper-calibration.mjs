@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 // Produces a TAMPERED copy of a render-stream-calibration/1 record JSON, for the Gate -1 negative
-// legs (run-gate-minus1.sh's refuse-sha / refuse-prefix). Never touches the original file.
+// legs (run-gate-minus1.sh's refuse-sha / refuse-prefix), or the older-record copy of the
+// old-record leg. Never touches the original file.
 //
 //   node tamper-calibration.mjs sha <in.json> <out.json>     # altered engine.sha256
 //   node tamper-calibration.mjs prefix <in.json> <out.json>  # object_prefix, every slots/anchors
 //                                                             # value, all +1
+//   node tamper-calibration.mjs v1 <in.json> <out.json>      # not a tamper: the record calibrator
+//                                                             # version 1 would have written (only
+//                                                             # the gate -1 slots)
 //
 // The calibration record's exact shape is owned by the sibling capture/calibration work (see
 // experiments/render-stream CLAUDE.md); this only assumes the four documented keys
@@ -13,10 +17,23 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 
+/** The slot keys calibrator version 1 emitted: gate -1's hooks plus the behaviour probe. */
+const CALIBRATOR_V1_SLOTS = [
+  "canvas_item_add_rect",
+  "canvas_item_add_texture_rect",
+  "canvas_item_add_texture_rect_region",
+  "canvas_item_add_msdf_texture_rect_region",
+  "canvas_item_add_polygon",
+  "texture_2d_create",
+  "texture_2d_update",
+  "free",
+  "get_default_clear_color",
+];
+
 const [, , mode, inPath, outPath] = process.argv;
 if (!mode || !inPath || !outPath) {
   console.error(
-    "usage: tamper-calibration.mjs <sha|prefix> <in.json> <out.json>",
+    "usage: tamper-calibration.mjs <sha|prefix|v1> <in.json> <out.json>",
   );
   process.exit(2);
 }
@@ -67,9 +84,22 @@ if (mode === "sha") {
   if (record.anchors && typeof record.anchors === "object") {
     record.anchors = bumpIntegerValues(record.anchors);
   }
+} else if (mode === "v1") {
+  const slots = record?.slots ?? {};
+  const missing = CALIBRATOR_V1_SLOTS.filter((key) => !(key in slots));
+  if (missing.length > 0) {
+    console.error(
+      `tamper-calibration.mjs: record lacks gate -1 slots ${missing.join(",")}`,
+    );
+    process.exit(1);
+  }
+  record.slots = Object.fromEntries(
+    CALIBRATOR_V1_SLOTS.map((key) => [key, slots[key]]),
+  );
+  record.calibrator = { ...record.calibrator, version: "1" };
 } else {
   console.error(
-    `tamper-calibration.mjs: unknown mode "${mode}" (expected sha|prefix)`,
+    `tamper-calibration.mjs: unknown mode "${mode}" (expected sha|prefix|v1)`,
   );
   process.exit(2);
 }

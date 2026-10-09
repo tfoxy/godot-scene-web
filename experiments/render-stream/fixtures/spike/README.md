@@ -64,6 +64,34 @@ template, for both the headless legs and the rendered gamescope legs.
   `--headless` (`DisplayServer.get_name() == "headless"`) this is skipped with a log line instead
   of awaiting a signal a truly headless run may never fire. At frame 400 it calls
   `get_tree().quit(0)`, printing `[fixture] draws=<n> frames=<n>`.
+- Calibrator-2 draw paths, added for gate −0.25. Every literal is exactly
+  representable in float32. The exact values are in `expected.json`
+  `draw_paths`. The canvas items are:
+  - a `Panel` at (500, 20) with a rounded `StyleBoxFlat`, drawn natively through
+    `canvas_item_add_triangle_array`. In `_ready()` it is given a `modulate` and
+    a `ShaderMaterial`. That material's shader is created from code, then
+    re-coded, and gets a white `tint` parameter, so the pixels do not change.
+  - a `NinePatchRect` at (520, 140) on a 4×4 RGBA8 `ImageTexture` that
+    `_ready()` creates, drawn natively through `canvas_item_add_nine_patch`.
+
+  `_draw()` adds direct `RenderingServer` calls:
+  - `canvas_item_add_triangle_array` (indexed quad with colours and UVs)
+  - `canvas_item_add_nine_patch` (on the same texture, with tile and tile-fit
+    modes, `draw_center = false` and a modulate)
+  - `canvas_item_add_primitive`, `_line`, `_polyline`
+  - `canvas_item_add_mesh` and `canvas_item_add_multimesh` of an `ArrayMesh`
+  - `canvas_item_add_set_transform`, followed by `canvas_item_add_circle` in the
+    shifted space
+
+  The `ArrayMesh` has 3 `Vector2` vertices and colours, with
+  `ARRAY_FLAG_USE_DYNAMIC_UPDATE`. This is the shape spine-godot's `SpineMesh2D`
+  uses. Every `_process()` rewrites vertex 1 with
+  `mesh_surface_update_vertex_region` and vertex 2's colour with
+  `mesh_surface_update_attribute_region`, then sets a custom AABB. A scratch mesh
+  is created and cleared (`mesh_clear`). A `Node2D` added in `_ready()` creates a
+  canvas item after the capture armed. The scene's own items already exist
+  before the extension loads.
+
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See
   its own `"description"` fields for the Godot-source citations (`color_rect.cpp`,

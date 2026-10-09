@@ -33,14 +33,22 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "1"
+CALIBRATOR_VERSION = "2"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
 # Hooked slots plus read-only probe slots used for the behavioural method-bind
 # cross-check. A key keeps its name in the record even when the engine renamed
 # the method (4.6 renamed `RenderingServer::free` to `free_rid`).
+#
+# The first block is the gate -1 set, which the library requires. Everything
+# after it was added later and is optional to the library: a record written by
+# an older calibrator that lacks those keys still loads, and the library leaves
+# the missing hooks out and says so (README "Calibration records and hook
+# versions"). Adding a key here is therefore backward compatible; renaming or
+# removing one is not.
 WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # calibrator 1: gate -1
     ("canvas_item_add_rect", ("canvas_item_add_rect",)),
     ("canvas_item_add_texture_rect", ("canvas_item_add_texture_rect",)),
     ("canvas_item_add_texture_rect_region", ("canvas_item_add_texture_rect_region",)),
@@ -50,6 +58,31 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("texture_2d_update", ("texture_2d_update",)),
     ("free", ("free", "free_rid")),
     ("get_default_clear_color", ("get_default_clear_color",)),
+    # calibrator 2: geometry, nine-patch, canvas-item state, meshes (the
+    # spine-godot draw path), materials and shaders
+    ("canvas_item_add_triangle_array", ("canvas_item_add_triangle_array",)),
+    ("canvas_item_add_mesh", ("canvas_item_add_mesh",)),
+    ("canvas_item_add_multimesh", ("canvas_item_add_multimesh",)),
+    ("canvas_item_add_nine_patch", ("canvas_item_add_nine_patch",)),
+    ("canvas_item_add_primitive", ("canvas_item_add_primitive",)),
+    ("canvas_item_add_line", ("canvas_item_add_line",)),
+    ("canvas_item_add_polyline", ("canvas_item_add_polyline",)),
+    ("canvas_item_add_circle", ("canvas_item_add_circle",)),
+    ("canvas_item_add_set_transform", ("canvas_item_add_set_transform",)),
+    ("canvas_item_set_transform", ("canvas_item_set_transform",)),
+    ("canvas_item_set_modulate", ("canvas_item_set_modulate",)),
+    ("canvas_item_create", ("canvas_item_create",)),
+    ("canvas_item_clear", ("canvas_item_clear",)),
+    ("canvas_item_set_material", ("canvas_item_set_material",)),
+    ("mesh_create", ("mesh_create",)),
+    ("mesh_add_surface", ("mesh_add_surface",)),
+    ("mesh_surface_update_vertex_region", ("mesh_surface_update_vertex_region",)),
+    ("mesh_surface_update_attribute_region", ("mesh_surface_update_attribute_region",)),
+    ("mesh_clear", ("mesh_clear",)),
+    ("mesh_set_custom_aabb", ("mesh_set_custom_aabb",)),
+    ("shader_create_from_code", ("shader_create_from_code",)),
+    ("shader_set_code", ("shader_set_code",)),
+    ("material_set_param", ("material_set_param",)),
 )
 
 ET_EXEC = 2
@@ -530,7 +563,22 @@ def derive(
             raise CalibrationError(
                 f"{abstract_class}::{'/'.join(accepted)} not declared in the header"
             )
-        wanted[key] = index_by_name[match]
+        index = index_by_name[match]
+        # The library replaces every recorded slot (or, for the probe, calls it
+        # through the concrete table), and re-checks exactly this at runtime:
+        # pure in the abstract vtable, implemented in the concrete one. Do not
+        # write a record the library would refuse.
+        if implemented[index]:
+            raise CalibrationError(
+                f"{abstract_class}::{match} at slot {index} is implemented in the abstract "
+                "vtable; the library only hooks pure-virtual slots"
+            )
+        concrete_value = concrete["slots"][index]
+        if concrete_value is None or not elf.is_code(concrete_value):
+            raise CalibrationError(
+                f"{concrete_class}::{match} at slot {index} is not implemented in the concrete vtable"
+            )
+        wanted[key] = index
     return {
         "abstract": abstract,
         "concrete": concrete,
