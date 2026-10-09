@@ -8,6 +8,7 @@
 #include "abi.h"
 #include "iface.h"
 #include "report.h"
+#include "rs0_mirror.h"
 
 namespace grc {
 
@@ -82,14 +83,18 @@ using FnAddCircle = void (*)(void *, RID, const Point2 *, float, const Color *, 
 //   1561: virtual void canvas_item_set_transform(RID, const Transform2D &) = 0;
 using FnItemTransform = void (*)(void *, RID, const Transform2D *);
 //   1565: virtual void canvas_item_set_modulate(RID, const Color &) = 0;
+//   1566: virtual void canvas_item_set_self_modulate(RID, const Color &) = 0;
 using FnSetModulate = void (*)(void *, RID, const Color *);
 //   1550: virtual RID canvas_item_create() = 0;
 //    397: virtual RID mesh_create() = 0;
+//   1525: virtual RID canvas_create() = 0;
 using FnCreate = RID (*)(void *);
 //   1605: virtual void canvas_item_clear(RID) = 0;
 //    450: virtual void mesh_clear(RID) = 0;
 using FnRidOnly = void (*)(void *, RID);
 //   1608: virtual void canvas_item_set_material(RID, RID) = 0;
+//   1031: virtual void viewport_attach_canvas(RID p_viewport, RID p_canvas) = 0;
+//   1551: virtual void canvas_item_set_parent(RID p_item, RID p_parent) = 0;
 using FnSetMaterial = void (*)(void *, RID, RID);
 //    417: virtual void mesh_add_surface(RID, const SurfaceData &) = 0;
 using FnMeshAddSurface = void (*)(void *, RID, const SurfaceDataPrefix *);
@@ -107,6 +112,24 @@ using FnShaderSetCode = void (*)(void *, RID, const void *);
 //    267: virtual void material_set_param(RID, const StringName &, const Variant &) = 0;
 //         (StringName and Variant not decoded)
 using FnMaterialSetParam = void (*)(void *, RID, const void *, const void *);
+//
+// --- calibrator 3 (optional): gate 0's retained canvas mirror -----------------
+//
+//   1033: virtual void viewport_set_canvas_transform(RID p_viewport, RID p_canvas,
+//                                                    const Transform2D &p_offset) = 0;
+using FnViewportSetCanvasTransform = void (*)(void *, RID, RID, const Transform2D *);
+//   1556: virtual void canvas_item_set_visible(RID p_item, bool p_visible) = 0;
+//   1562: virtual void canvas_item_set_clip(RID p_item, bool p_clip) = 0;
+using FnRidBool = void (*)(void *, RID, bool);
+//   1564: virtual void canvas_item_set_custom_rect(RID p_item, bool p_custom_rect,
+//                                                  const Rect2 &p_rect = Rect2()) = 0;
+using FnSetCustomRect = void (*)(void *, RID, bool, const Rect2 *);
+//   1567: virtual void canvas_item_set_visibility_layer(RID p_item,
+//                                                       uint32_t p_visibility_layer) = 0;
+using FnRidU32 = void (*)(void *, RID, uint32_t);
+//   1599: virtual void canvas_item_set_z_index(RID p_item, int p_z) = 0;
+//   1606: virtual void canvas_item_set_draw_index(RID p_item, int p_index) = 0;
+using FnRidInt = void (*)(void *, RID, int);
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -143,6 +166,18 @@ enum HookId : size_t {
   kShaderCreateFromCode,
   kShaderSetCode,
   kMaterialSetParam,
+  // calibrator 3
+  kViewportAttachCanvas,
+  kViewportSetCanvasTransform,
+  kCanvasCreate,
+  kSetParent,
+  kSetVisible,
+  kSetClip,
+  kSetCustomRect,
+  kSetSelfModulate,
+  kSetVisibilityLayer,
+  kSetZIndex,
+  kSetDrawIndex,
   kHookCount,
 };
 
@@ -393,6 +428,24 @@ struct MeshAabbKey {
   AABB aabb;
 };
 
+// An item and one scalar state value (bool, int or uint32 widened to int64).
+struct ItemValueKey {
+  uint64_t item;
+  int64_t value;
+};
+
+struct ItemCustomRectKey {
+  uint64_t item;
+  bool enabled;
+  Rect2 rect;
+};
+
+struct ViewportCanvasTransformKey {
+  uint64_t viewport;
+  uint64_t canvas;
+  Transform2D transform;
+};
+
 std::vector<RectCapture> g_rects;
 std::vector<PolygonCapture> g_polygons;
 std::vector<ImageCapture> g_creates;
@@ -421,6 +474,18 @@ Log<PodEntry<MeshAabbKey>> g_mesh_aabbs;
 Log<PodEntry<RidTripleKey>> g_shader_creates;
 Log<PodEntry<RidTripleKey>> g_shader_codes;
 Log<PodEntry<RidTripleKey>> g_material_params;
+Log<PodEntry<RidTripleKey>> g_frees;
+Log<PodEntry<RidTripleKey>> g_viewport_attaches;
+Log<PodEntry<ViewportCanvasTransformKey>> g_viewport_canvas_transforms;
+Log<PodEntry<RidTripleKey>> g_canvas_creates;
+Log<PodEntry<RidTripleKey>> g_set_parents;
+Log<PodEntry<ItemValueKey>> g_set_visibles;
+Log<PodEntry<ItemValueKey>> g_set_clips;
+Log<PodEntry<ItemCustomRectKey>> g_set_custom_rects;
+Log<PodEntry<ItemColorKey>> g_set_self_modulates;
+Log<PodEntry<ItemValueKey>> g_set_visibility_layers;
+Log<PodEntry<ItemValueKey>> g_set_z_indices;
+Log<PodEntry<ItemValueKey>> g_set_draw_indices;
 
 template <typename Key>
 PodEntry<Key> pod(const Key &key) {
@@ -436,6 +501,40 @@ PodEntry<RidTripleKey> rids(uint64_t a, uint64_t b = 0, uint64_t c = 0) {
   key.b = b;
   key.c = c;
   return pod(key);
+}
+
+PodEntry<ItemValueKey> item_value(RID item, int64_t value) {
+  ItemValueKey key;
+  zero(&key);
+  key.item = item.id;
+  key.value = value;
+  return pod(key);
+}
+
+// --- the render-stream/0 mirror tap ------------------------------------------
+//
+// With no stream (mirror disabled) every tap is one atomic load, and the hooks
+// behave exactly as at gate -1. The tap never blocks or alters the forwarded
+// call.
+
+bool streaming() { return rs0::mirror_enabled(); }
+
+rs0::Mirror &mirror() { return rs0::mirror_instance(); }
+
+rs0::Xform to_xform(const Transform2D &t) {
+  return {t.columns[0].x, t.columns[0].y, t.columns[1].x, t.columns[1].y, t.columns[2].x,
+          t.columns[2].y};
+}
+
+rs0::Color4 to_color(const Color &c) { return {c.r, c.g, c.b, c.a}; }
+
+rs0::Rect4 to_rect(const Rect2 &r) { return {r.position.x, r.position.y, r.size.x, r.size.y}; }
+
+// Every hooked draw op except add_rect: recorded as an unsupported command.
+void tap_unsupported(RID item, const char *op) {
+  if (streaming()) {
+    mirror().add_unsupported(item.id, op, current_frame());
+  }
 }
 
 struct ImageBinds {
@@ -494,12 +593,16 @@ void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, 
       }
     }
   }
+  if (streaming() && rect != nullptr && color != nullptr) {
+    mirror().add_rect(item.id, to_rect(*rect), to_color(*color), antialiased, current_frame());
+  }
   original<FnAddRect>(kAddRect)(self, item, rect, color, antialiased);
 }
 
 void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture, bool tile,
                            const Color *modulate, bool transpose) {
   bump(kAddTextureRect);
+  tap_unsupported(item, "canvas_item_add_texture_rect");
   original<FnAddTextureRect>(kAddTextureRect)(self, item, rect, texture, tile, modulate,
                                               transpose);
 }
@@ -508,6 +611,7 @@ void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID t
                                   const Rect2 *source, const Color *modulate, bool transpose,
                                   bool clip_uv) {
   bump(kAddTextureRectRegion);
+  tap_unsupported(item, "canvas_item_add_texture_rect_region");
   original<FnAddTextureRectRegion>(kAddTextureRectRegion)(self, item, rect, texture, source,
                                                           modulate, transpose, clip_uv);
 }
@@ -516,6 +620,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
                                        const Rect2 *source, const Color *modulate,
                                        int outline_size, float px_range, float scale) {
   bump(kAddMsdfTextureRectRegion);
+  tap_unsupported(item, "canvas_item_add_msdf_texture_rect_region");
   original<FnAddMsdfTextureRectRegion>(kAddMsdfTextureRectRegion)(
       self, item, rect, texture, source, modulate, outline_size, px_range, scale);
 }
@@ -523,6 +628,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
 void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
                       const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPolygon);
+  tap_unsupported(item, "canvas_item_add_polygon");
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_polygons.size() < kMaxPolygons) {
@@ -578,6 +684,12 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
 
 void hook_free(void *self, RID rid) {
   bump(kFree);
+  log_entry(&g_frees, rids(rid.id));
+  if (streaming()) {
+    // Before forwarding, so the mapping is gone before the engine can hand the
+    // value out again.
+    mirror().free_rid(rid.id, current_frame());
+  }
   original<FnFree>(kFree)(self, rid);
 }
 
@@ -588,6 +700,7 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
                              const Vector<Point2> *uvs, const Vector<int32_t> *bones,
                              const Vector<float> *weights, RID texture, int count) {
   bump(kAddTriangleArray);
+  tap_unsupported(item, "canvas_item_add_triangle_array");
   GeometryEntry entry;
   entry.item = item.id;
   entry.indices_total = copy_head(indices, &entry.indices);
@@ -606,6 +719,7 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
 void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *transform,
                    const Color *modulate, RID texture) {
   bump(kAddMesh);
+  tap_unsupported(item, "canvas_item_add_mesh");
   if (mesh != nullptr && transform != nullptr && modulate != nullptr) {
     AddMeshKey key;
     zero(&key);
@@ -621,6 +735,7 @@ void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *tra
 
 void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
   bump(kAddMultimesh);
+  tap_unsupported(item, "canvas_item_add_multimesh");
   log_entry(&g_add_multimeshes, rids(item.id, mesh.id, texture.id));
   original<FnAddMultimesh>(kAddMultimesh)(self, item, mesh, texture);
 }
@@ -630,6 +745,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
                          int32_t x_axis_mode, int32_t y_axis_mode, bool draw_center,
                          const Color *modulate) {
   bump(kAddNinePatch);
+  tap_unsupported(item, "canvas_item_add_nine_patch");
   if (rect != nullptr && source != nullptr && topleft != nullptr && bottomright != nullptr &&
       modulate != nullptr) {
     NinePatchKey key;
@@ -653,6 +769,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
 void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPrimitive);
+  tap_unsupported(item, "canvas_item_add_primitive");
   GeometryEntry entry;
   entry.item = item.id;
   entry.points_total = copy_head(points, &entry.points);
@@ -666,6 +783,7 @@ void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
 void hook_add_line(void *self, RID item, const Point2 *from, const Point2 *to, const Color *color,
                    float width, bool antialiased) {
   bump(kAddLine);
+  tap_unsupported(item, "canvas_item_add_line");
   if (from != nullptr && to != nullptr && color != nullptr) {
     LineKey key;
     zero(&key);
@@ -683,6 +801,7 @@ void hook_add_line(void *self, RID item, const Point2 *from, const Point2 *to, c
 void hook_add_polyline(void *self, RID item, const Vector<Point2> *points,
                        const Vector<Color> *colors, float width, bool antialiased) {
   bump(kAddPolyline);
+  tap_unsupported(item, "canvas_item_add_polyline");
   GeometryEntry entry;
   entry.item = item.id;
   entry.points_total = copy_head(points, &entry.points);
@@ -696,6 +815,7 @@ void hook_add_polyline(void *self, RID item, const Vector<Point2> *points,
 void hook_add_circle(void *self, RID item, const Point2 *position, float radius,
                      const Color *color, bool antialiased) {
   bump(kAddCircle);
+  tap_unsupported(item, "canvas_item_add_circle");
   if (position != nullptr && color != nullptr) {
     CircleKey key;
     zero(&key);
@@ -719,6 +839,7 @@ PodEntry<ItemTransformKey> item_transform(RID item, const Transform2D &transform
 
 void hook_add_set_transform(void *self, RID item, const Transform2D *transform) {
   bump(kAddSetTransform);
+  tap_unsupported(item, "canvas_item_add_set_transform");
   if (transform != nullptr) {
     log_entry(&g_add_set_transforms, item_transform(item, *transform));
   }
@@ -729,6 +850,9 @@ void hook_set_transform(void *self, RID item, const Transform2D *transform) {
   bump(kSetTransform);
   if (transform != nullptr) {
     log_entry(&g_set_transforms, item_transform(item, *transform));
+    if (streaming()) {
+      mirror().set_transform(item.id, to_xform(*transform), current_frame());
+    }
   }
   original<FnItemTransform>(kSetTransform)(self, item, transform);
 }
@@ -741,6 +865,9 @@ void hook_set_modulate(void *self, RID item, const Color *color) {
     key.item = item.id;
     key.color = *color;
     log_entry(&g_set_modulates, pod(key));
+    if (streaming()) {
+      mirror().set_modulate(item.id, to_color(*color), current_frame());
+    }
   }
   original<FnSetModulate>(kSetModulate)(self, item, color);
 }
@@ -749,18 +876,27 @@ RID hook_canvas_item_create(void *self) {
   bump(kCanvasItemCreate);
   const RID result = original<FnCreate>(kCanvasItemCreate)(self);
   log_entry(&g_canvas_item_creates, rids(result.id));
+  if (streaming()) {
+    mirror().canvas_item_create(result.id, current_frame());
+  }
   return result;
 }
 
 void hook_canvas_item_clear(void *self, RID item) {
   bump(kCanvasItemClear);
   log_entry(&g_canvas_item_clears, rids(item.id));
+  if (streaming()) {
+    mirror().clear(item.id, current_frame());
+  }
   original<FnRidOnly>(kCanvasItemClear)(self, item);
 }
 
 void hook_set_material(void *self, RID item, RID material) {
   bump(kSetMaterial);
   log_entry(&g_set_materials, rids(item.id, material.id));
+  if (streaming()) {
+    mirror().set_material(item.id, material.id, current_frame());
+  }
   original<FnSetMaterial>(kSetMaterial)(self, item, material);
 }
 
@@ -860,6 +996,131 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
   original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
 }
 
+// --- calibrator 3 hooks --------------------------------------------------------
+
+void hook_viewport_attach_canvas(void *self, RID viewport, RID canvas) {
+  bump(kViewportAttachCanvas);
+  log_entry(&g_viewport_attaches, rids(viewport.id, canvas.id));
+  if (streaming()) {
+    mirror().viewport_attach_canvas(viewport.id, canvas.id, current_frame());
+  }
+  original<FnSetMaterial>(kViewportAttachCanvas)(self, viewport, canvas);
+}
+
+void hook_viewport_set_canvas_transform(void *self, RID viewport, RID canvas,
+                                        const Transform2D *transform) {
+  bump(kViewportSetCanvasTransform);
+  if (transform != nullptr) {
+    ViewportCanvasTransformKey key;
+    zero(&key);
+    key.viewport = viewport.id;
+    key.canvas = canvas.id;
+    key.transform = *transform;
+    log_entry(&g_viewport_canvas_transforms, pod(key));
+    if (streaming()) {
+      mirror().viewport_set_canvas_transform(viewport.id, canvas.id, to_xform(*transform),
+                                             current_frame());
+    }
+  }
+  original<FnViewportSetCanvasTransform>(kViewportSetCanvasTransform)(self, viewport, canvas,
+                                                                      transform);
+}
+
+RID hook_canvas_create(void *self) {
+  bump(kCanvasCreate);
+  const RID result = original<FnCreate>(kCanvasCreate)(self);
+  log_entry(&g_canvas_creates, rids(result.id));
+  if (streaming()) {
+    mirror().canvas_create(result.id, current_frame());
+  }
+  return result;
+}
+
+void hook_set_parent(void *self, RID item, RID parent) {
+  bump(kSetParent);
+  log_entry(&g_set_parents, rids(item.id, parent.id));
+  if (streaming()) {
+    mirror().set_parent(item.id, parent.id, current_frame());
+  }
+  original<FnSetMaterial>(kSetParent)(self, item, parent);
+}
+
+void hook_set_visible(void *self, RID item, bool visible) {
+  bump(kSetVisible);
+  log_entry(&g_set_visibles, item_value(item, visible ? 1 : 0));
+  if (streaming()) {
+    mirror().set_visible(item.id, visible, current_frame());
+  }
+  original<FnRidBool>(kSetVisible)(self, item, visible);
+}
+
+void hook_set_clip(void *self, RID item, bool clip) {
+  bump(kSetClip);
+  log_entry(&g_set_clips, item_value(item, clip ? 1 : 0));
+  if (streaming()) {
+    mirror().set_clip(item.id, clip, current_frame());
+  }
+  original<FnRidBool>(kSetClip)(self, item, clip);
+}
+
+void hook_set_custom_rect(void *self, RID item, bool enabled, const Rect2 *rect) {
+  bump(kSetCustomRect);
+  if (rect != nullptr) {
+    ItemCustomRectKey key;
+    zero(&key);
+    key.item = item.id;
+    key.enabled = enabled;
+    key.rect = *rect;
+    log_entry(&g_set_custom_rects, pod(key));
+    if (streaming()) {
+      mirror().set_custom_rect(item.id, enabled, to_rect(*rect), current_frame());
+    }
+  }
+  original<FnSetCustomRect>(kSetCustomRect)(self, item, enabled, rect);
+}
+
+void hook_set_self_modulate(void *self, RID item, const Color *color) {
+  bump(kSetSelfModulate);
+  if (color != nullptr) {
+    ItemColorKey key;
+    zero(&key);
+    key.item = item.id;
+    key.color = *color;
+    log_entry(&g_set_self_modulates, pod(key));
+    if (streaming()) {
+      mirror().set_self_modulate(item.id, to_color(*color), current_frame());
+    }
+  }
+  original<FnSetModulate>(kSetSelfModulate)(self, item, color);
+}
+
+void hook_set_visibility_layer(void *self, RID item, uint32_t layer) {
+  bump(kSetVisibilityLayer);
+  log_entry(&g_set_visibility_layers, item_value(item, static_cast<int64_t>(layer)));
+  if (streaming()) {
+    mirror().set_visibility_layer(item.id, layer, current_frame());
+  }
+  original<FnRidU32>(kSetVisibilityLayer)(self, item, layer);
+}
+
+void hook_set_z_index(void *self, RID item, int z) {
+  bump(kSetZIndex);
+  log_entry(&g_set_z_indices, item_value(item, z));
+  if (streaming()) {
+    mirror().set_z_index(item.id, z, current_frame());
+  }
+  original<FnRidInt>(kSetZIndex)(self, item, z);
+}
+
+void hook_set_draw_index(void *self, RID item, int index) {
+  bump(kSetDrawIndex);
+  log_entry(&g_set_draw_indices, item_value(item, index));
+  if (streaming()) {
+    mirror().set_draw_index(item.id, index, current_frame());
+  }
+  original<FnRidInt>(kSetDrawIndex)(self, item, index);
+}
+
 // --- hook table --------------------------------------------------------------
 
 struct HookSpec {
@@ -909,6 +1170,19 @@ const HookSpec kSpecs[] = {
     {kShaderCreateFromCode, "shader_create_from_code", as_ptr(&hook_shader_create_from_code)},
     {kShaderSetCode, "shader_set_code", as_ptr(&hook_shader_set_code)},
     {kMaterialSetParam, "material_set_param", as_ptr(&hook_material_set_param)},
+    {kViewportAttachCanvas, "viewport_attach_canvas", as_ptr(&hook_viewport_attach_canvas)},
+    {kViewportSetCanvasTransform, "viewport_set_canvas_transform",
+     as_ptr(&hook_viewport_set_canvas_transform)},
+    {kCanvasCreate, "canvas_create", as_ptr(&hook_canvas_create)},
+    {kSetParent, "canvas_item_set_parent", as_ptr(&hook_set_parent)},
+    {kSetVisible, "canvas_item_set_visible", as_ptr(&hook_set_visible)},
+    {kSetClip, "canvas_item_set_clip", as_ptr(&hook_set_clip)},
+    {kSetCustomRect, "canvas_item_set_custom_rect", as_ptr(&hook_set_custom_rect)},
+    {kSetSelfModulate, "canvas_item_set_self_modulate", as_ptr(&hook_set_self_modulate)},
+    {kSetVisibilityLayer, "canvas_item_set_visibility_layer",
+     as_ptr(&hook_set_visibility_layer)},
+    {kSetZIndex, "canvas_item_set_z_index", as_ptr(&hook_set_z_index)},
+    {kSetDrawIndex, "canvas_item_set_draw_index", as_ptr(&hook_set_draw_index)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -1093,6 +1367,12 @@ struct Snapshot {
   Log<PodEntry<MeshSurfaceKey>> mesh_surfaces;
   Log<PodEntry<RegionKey>> vertex_regions, attribute_regions;
   Log<PodEntry<MeshAabbKey>> mesh_aabbs;
+  Log<PodEntry<RidTripleKey>> frees, viewport_attaches, canvas_creates, set_parents;
+  Log<PodEntry<ViewportCanvasTransformKey>> viewport_canvas_transforms;
+  Log<PodEntry<ItemValueKey>> set_visibles, set_clips, set_visibility_layers, set_z_indices,
+      set_draw_indices;
+  Log<PodEntry<ItemCustomRectKey>> set_custom_rects;
+  Log<PodEntry<ItemColorKey>> set_self_modulates;
 };
 
 Snapshot take_snapshot() {
@@ -1125,6 +1405,18 @@ Snapshot take_snapshot() {
   s.shader_creates = g_shader_creates;
   s.shader_codes = g_shader_codes;
   s.material_params = g_material_params;
+  s.frees = g_frees;
+  s.viewport_attaches = g_viewport_attaches;
+  s.viewport_canvas_transforms = g_viewport_canvas_transforms;
+  s.canvas_creates = g_canvas_creates;
+  s.set_parents = g_set_parents;
+  s.set_visibles = g_set_visibles;
+  s.set_clips = g_set_clips;
+  s.set_custom_rects = g_set_custom_rects;
+  s.set_self_modulates = g_set_self_modulates;
+  s.set_visibility_layers = g_set_visibility_layers;
+  s.set_z_indices = g_set_z_indices;
+  s.set_draw_indices = g_set_draw_indices;
   return s;
 }
 
@@ -1414,6 +1706,59 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
             [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
               write_rid(j, "material", e.key.a);
             });
+  // Freed RIDs, deduplicated like the optional hooks (a RID is freed once, so
+  // in practice this is the first 32 frees and a dropped count).
+  write_log(&json, "free", s.frees,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
+  // Calibrator 3.
+  write_log(&json, "viewport_attach_canvas", s.viewport_attaches,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "viewport", e.key.a);
+              write_rid(j, "canvas", e.key.b);
+            });
+  write_log(&json, "viewport_set_canvas_transform", s.viewport_canvas_transforms,
+            [](JsonWriter *j, const PodEntry<ViewportCanvasTransformKey> &e) {
+              write_rid(j, "viewport", e.key.viewport);
+              write_rid(j, "canvas", e.key.canvas);
+              write_floats(j, "transform", e.key.transform);
+            });
+  write_log(&json, "canvas_create", s.canvas_creates,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
+  write_log(&json, "canvas_item_set_parent", s.set_parents,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "item", e.key.a);
+              write_rid(j, "parent", e.key.b);
+            });
+  const auto item_bool_writer = [](const char *name) {
+    return [name](JsonWriter *j, const PodEntry<ItemValueKey> &e) {
+      write_rid(j, "item", e.key.item);
+      j->field(name, e.key.value != 0);
+    };
+  };
+  const auto item_int_writer = [](const char *name) {
+    return [name](JsonWriter *j, const PodEntry<ItemValueKey> &e) {
+      write_rid(j, "item", e.key.item);
+      j->field(name, e.key.value);
+    };
+  };
+  write_log(&json, "canvas_item_set_visible", s.set_visibles, item_bool_writer("visible"));
+  write_log(&json, "canvas_item_set_clip", s.set_clips, item_bool_writer("clip"));
+  write_log(&json, "canvas_item_set_custom_rect", s.set_custom_rects,
+            [](JsonWriter *j, const PodEntry<ItemCustomRectKey> &e) {
+              write_rid(j, "item", e.key.item);
+              j->field("custom_rect", e.key.enabled);
+              write_floats(j, "rect", e.key.rect);
+            });
+  write_log(&json, "canvas_item_set_self_modulate", s.set_self_modulates,
+            [](JsonWriter *j, const PodEntry<ItemColorKey> &e) {
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "color", e.key.color);
+            });
+  write_log(&json, "canvas_item_set_visibility_layer", s.set_visibility_layers,
+            item_int_writer("visibility_layer"));
+  write_log(&json, "canvas_item_set_z_index", s.set_z_indices, item_int_writer("z_index"));
+  write_log(&json, "canvas_item_set_draw_index", s.set_draw_indices,
+            item_int_writer("draw_index"));
   json.object_end();
 
   // Distinct calls that arrived after an optional hook's log was full.
@@ -1443,6 +1788,20 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   json.field("shader_create_from_code", static_cast<int64_t>(s.shader_creates.dropped));
   json.field("shader_set_code", static_cast<int64_t>(s.shader_codes.dropped));
   json.field("material_set_param", static_cast<int64_t>(s.material_params.dropped));
+  json.field("free", static_cast<int64_t>(s.frees.dropped));
+  json.field("viewport_attach_canvas", static_cast<int64_t>(s.viewport_attaches.dropped));
+  json.field("viewport_set_canvas_transform",
+             static_cast<int64_t>(s.viewport_canvas_transforms.dropped));
+  json.field("canvas_create", static_cast<int64_t>(s.canvas_creates.dropped));
+  json.field("canvas_item_set_parent", static_cast<int64_t>(s.set_parents.dropped));
+  json.field("canvas_item_set_visible", static_cast<int64_t>(s.set_visibles.dropped));
+  json.field("canvas_item_set_clip", static_cast<int64_t>(s.set_clips.dropped));
+  json.field("canvas_item_set_custom_rect", static_cast<int64_t>(s.set_custom_rects.dropped));
+  json.field("canvas_item_set_self_modulate", static_cast<int64_t>(s.set_self_modulates.dropped));
+  json.field("canvas_item_set_visibility_layer",
+             static_cast<int64_t>(s.set_visibility_layers.dropped));
+  json.field("canvas_item_set_z_index", static_cast<int64_t>(s.set_z_indices.dropped));
+  json.field("canvas_item_set_draw_index", static_cast<int64_t>(s.set_draw_indices.dropped));
   json.object_end();
 
   json.object_end();

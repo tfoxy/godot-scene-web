@@ -1,6 +1,7 @@
 # Gate 0 design: independent reference and one rectangle
 
-Status: contract for gate 0, which is in progress. This document is self-contained: an agent
+Status: contract for gate 0, which passed on 2026-10-09 (see "Gate 0 result" in
+[../README.md](../README.md)). This document is self-contained: an agent
 implementing any work package below should need only this file,
 [render-stream-0.md](render-stream-0.md) (the bytes),
 [`capture/src/rs0_snapshot.h`](../capture/src/rs0_snapshot.h) (the C++ model) and the golden
@@ -53,7 +54,7 @@ experiments/render-stream/
   capture/test/rs0_mirror_test.cpp    WP1
   capture/test/rs0_codec_test.cpp     WP2  byte-identical to golden/minimal.bin
   scripts/lib/render-stream-0.ts      WP2  pure TS decoder/validator
-  scripts/test/self-test-render-stream-0.ts  WP2
+  scripts/test/self-test-rs0.ts       WP2
   fixtures/gate0/                     WP3  project.godot, loader.gd, gate0.tscn, gate0.gd,
                                            preexisting.tscn, expected.json, README.md
   scripts/lib/gate0-expected.ts       WP3  synthesize the expected 640x360 RGBA per step
@@ -118,7 +119,7 @@ succeeds and before the session record is written:
 6. `Viewport.get_canvas_cull_mask()` → `uint32`, which becomes session
    `viewport.canvas_cull_mask`.
 7. `Viewport.get_visible_rect()` → `Rect2`, which becomes session `host_visible_rect`. It is
-   `0,0,0,0` under `--headless` (see render-stream-0.md).
+   `0,0,64,64` under `--headless`, the root window's minimum size (see render-stream-0.md).
 8. `RenderingServer.get_default_clear_color()` → `Color`, which becomes session `clear_color`.
    The call goes through the method bind, as the gate −1 probe already does.
 
@@ -175,7 +176,8 @@ collision shapes (`:563`). A `CanvasLayer` would add a canvas (`scene/main/canva
 The fixture draws with **two `Node2D`s using `_draw` rects**, a subject and a step marker. It does
 not use `Control`. A Control's NOTIFICATION_DRAW calls `canvas_item_set_custom_rect` and
 `canvas_item_set_clip` on every redraw (`scene/gui/control.cpp:3899-3901`), and its size depends
-on the root size, which headless reports as `Size2i()` (`servers/display_server_headless.h:129`).
+on the root size. Headless reports the window as `Size2i()` (`servers/display_server_headless.h:129`),
+and the root then takes its 64×64 minimum (`scene/main/scene_tree.cpp:2035`), not 640×360.
 
 What a `Node2D` does to the RenderingServer:
 
@@ -389,8 +391,9 @@ Publisher sabotage. It applies to the copy that gets published, never to the mir
   session.
 - An unknown `GRC_SABOTAGE` kind, or a `GRC_SABOTAGE_FRAME` that is not an integer ≥ 1, **refuses
   to publish**: no file is created, the log gets
-  `[grc] stream: refused sabotage=<value>`, and `result.json` `stream.status` is `"refused"`.
-  Arming itself is unaffected.
+  `[grc] stream: refused sabotage=<value>` (then ` frame=<value>` when set, and the reason in
+  parentheses), and `result.json` `stream.status` is `"refused"` with that reason. Arming itself is
+  unaffected.
 
 The session's `sabotage` is `{"kind","frame"}` whenever a sabotage is active. The checker's
 classifier never reads it.
@@ -462,8 +465,8 @@ extension. `main.tscn` is a root `Node` with `receiver.gd`. Every output line st
    - Viewport check. When `DisplayServer.get_name() != "headless"`, require
      `get_viewport().get_visible_rect().size == Vector2(640, 360)`, or replay-failure
      `viewport-mismatch`. Under headless, record `size_check: "skipped-headless"` instead. The
-     headless root is 0×0 (`scene/main/window.cpp:1531`), so the plan's unconditional check would
-     fail every headless receiver run.
+     headless root is 64×64 (`scene/main/scene_tree.cpp:2035`, `scene/main/window.cpp:1144-1150`),
+     so the plan's unconditional check would fail every headless receiver run.
    - Map canvas 1 to `get_viewport().find_world_2d().canvas`. Then
      `viewport_set_canvas_transform(get_viewport().get_viewport_rid(), canvas, root_canvas_xform)`
      and `viewport_set_canvas_cull_mask(viewport_rid, canvas_cull_mask)`.
@@ -717,7 +720,7 @@ WP1–WP5 run in parallel against this document. WP6 integrates them.
 
 - **Files:** `capture/src/rs0_codec.{h,cpp}`, `capture/src/rs0_publish.{h,cpp}`,
   `capture/test/rs0_codec_test.cpp`, `CMakeLists.txt`, `scripts/lib/render-stream-0.ts` and
-  `scripts/test/self-test-render-stream-0.ts`.
+  `scripts/test/self-test-rs0.ts`.
 - **Passes when:**
   - The C++ encoding of the golden structures is byte-identical to `minimal.bin`.
   - The publisher test shows freeze and perturb from frame F, contiguous seqs, correct
@@ -786,8 +789,10 @@ tests/codec_selftest.gd, README.md}`.
 Each change is noted with its reason:
 
 1. **`host_visible_size` became a block, `host_visible_rect` (4 floats).** It is a float `Rect2`
-   in Godot, and floats never go in JSON. Under headless it is 0×0
-   (`servers/display_server_headless.h:129`, `scene/main/window.cpp:1531`).
+   in Godot, and floats never go in JSON. Under headless it is 64×64: the display server reports
+   `Size2i()` (`servers/display_server_headless.h:129`), and the root clamps to the 64×64 minimum
+   that `SceneTree` gives it (`scene/main/scene_tree.cpp:2035`). This contract first said 0×0;
+   gate 0 measured `0,0,64,64`.
 2. **The session has three named blocks** (`clear_color`, `root_canvas_xform` and
    `host_visible_rect`) instead of one unnamed 10-float list.
 3. **`origin` is on the wire for canvases and items.** The plan says wire ids carry origin but
@@ -795,7 +800,7 @@ Each change is noted with its reason:
 4. **`unsupported` entries carry `reason`, and `item` is nullable**, so that the session-level
    `non-root-viewport` and `extra-canvas` conditions fit the same list. The list is a
    de-duplicated snapshot of current conditions, with a fixed order.
-5. **The receiver's viewport-size check is skipped under headless.** A headless root is 0×0, so
+5. **The receiver's viewport-size check is skipped under headless.** A headless root is 64×64, so
    the unconditional check would make the WP4 headless runs and the `receiver-headless-trace` leg
    fail with `viewport-mismatch`.
 6. **`omit-update` never drops create and free**, so the sabotage stays a pixel fault and does not

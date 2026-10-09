@@ -100,7 +100,7 @@ async function writeScenePng(
     .toFile(path);
 }
 
-/** `{name: value}` for every calibrator-2 hook. */
+/** `{name: value}` for every optional hook (calibrators 2 and 3). */
 function optionalCounts(
   expected: ExpectedJson,
   value: number | null,
@@ -435,7 +435,7 @@ async function buildGoodEvidence(
     frame: 400,
   });
 
-  // old-record: a calibrator-1 record armed with every calibrator-2 hook left out.
+  // old-record: a calibrator-1 record armed with every optional hook left out.
   const oldDir = join(dir, "old-record", "evidence");
   await writeJson(join(oldDir, "result.json"), {
     status: "armed",
@@ -476,7 +476,7 @@ async function buildGoodEvidence(
       {
         name: "hook_plan",
         ok: true,
-        detail: `8 of 31 hooks named by the record; omitted (record predates them): ${expected.optional_hooks.join(",")}`,
+        detail: `8 of 42 hooks named by the record; omitted (record predates them): ${expected.optional_hooks.join(",")}`,
       },
     ],
   });

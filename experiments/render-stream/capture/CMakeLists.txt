@@ -31,6 +31,10 @@ add_library(render_stream_capture SHARED
   src/hooks.cpp
   src/iface.cpp
   src/report.cpp
+  src/rs0_codec.cpp
+  src/rs0_mirror.cpp
+  src/rs0_publish.cpp
+  src/rs0_root_query.cpp
   src/vtable.cpp
 )
 target_include_directories(render_stream_capture PRIVATE src vendor)
@@ -60,3 +64,23 @@ add_executable(abi_decode_test test/abi_decode.cpp)
 target_include_directories(abi_decode_test PRIVATE src)
 target_link_libraries(abi_decode_test PRIVATE grc_warnings)
 add_test(NAME abi_decode COMMAND abi_decode_test)
+
+# Gate 0 (WP1): the retained canvas mirror, driven through its public API with
+# no engine.
+add_executable(rs0_mirror_test test/rs0_mirror_test.cpp src/rs0_mirror.cpp)
+target_include_directories(rs0_mirror_test PRIVATE src)
+target_link_libraries(rs0_mirror_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs0_mirror COMMAND rs0_mirror_test)
+
+# Gate 0 (WP2): the codec is byte-identical to protocol/golden/minimal.bin.
+add_executable(rs0_codec_test
+  test/rs0_codec_test.cpp
+  src/rs0_codec.cpp
+  src/rs0_publish.cpp
+  src/report.cpp
+)
+target_include_directories(rs0_codec_test PRIVATE src)
+target_link_libraries(rs0_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs0_codec_test PRIVATE
+  GRC_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden")
+add_test(NAME rs0_codec COMMAND rs0_codec_test)

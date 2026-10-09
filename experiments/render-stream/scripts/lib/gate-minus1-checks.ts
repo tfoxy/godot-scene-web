@@ -241,11 +241,15 @@ export function successfulOpenats(straceText: string): string[] {
   return opened;
 }
 
-export async function checkHeadlessNoGpu(outDir: string): Promise<Criterion> {
+/** `legName` is the headless leg directory under `outDir`: gate -1's `headless-armed`, or gate
+ * 0's `capture` (scripts/lib/gate0-checks.ts). Both write the same files. */
+export async function checkHeadlessNoGpu(
+  outDir: string,
+  legName = "headless-armed",
+): Promise<Criterion> {
   const id = "headless-no-gpu";
-  const description =
-    "headless-armed host reports display server 'headless' and never opens a GPU device or driver library (whole-run strace openat + /proc maps/fd sampled after arming)";
-  const legDir = join(outDir, "headless-armed");
+  const description = `${legName} host reports display server 'headless' and never opens a GPU device or driver library (whole-run strace openat + /proc maps/fd sampled after arming)`;
+  const legDir = join(outDir, legName);
   const resultPath = join(legDir, "evidence", "result.json");
   const mapsPath = join(legDir, "maps.txt");
   const fdPath = join(legDir, "fd.txt");
@@ -624,7 +628,7 @@ export async function checkDisarmAndCompletion(
 // #7 armed.png vs unarmed.png byte-identical RGBA; sanity-check the images are not blank
 // ---------------------------------------------------------------------------------------------
 
-async function decodePngRgba(
+export async function decodePngRgba(
   path: string,
 ): Promise<{ data: Uint8Array; width: number; height: number } | undefined> {
   try {
@@ -1159,7 +1163,7 @@ interface ExpectedDrawPaths {
 
 export interface ExpectedWithDrawPaths extends ExpectedJson {
   draw_paths: ExpectedDrawPaths;
-  /** The calibrator-2 hooks: optional to the library, all exercised by the fixture. */
+  /** The optional hooks (calibrators 2 and 3): optional to the library, all exercised by the fixture. */
   optional_hooks: string[];
   optional_counters_must_be_positive: string[];
 }
@@ -1251,7 +1255,7 @@ function checkOptionalCounts(
     problems.push(`hooks_omitted=${JSON.stringify(omitted)}`);
   return verdict(
     "optional-hook-counts",
-    "every calibrator-2 hook is installed and its count is > 0 in the headless-armed leg",
+    "every optional hook (calibrators 2 and 3) is installed and its count is > 0 in the headless-armed leg",
     evidence,
     problems,
     names.map((name) => `${name}=${counts[name]}`).join(", "),
@@ -1682,7 +1686,7 @@ export async function checkNewDrawingsVisible(
 }
 
 // ---------------------------------------------------------------------------------------------
-// #10 a record written by calibrator version 1 (no calibrator-2 slots) still loads and arms: the
+// #10 a record written by calibrator version 1 (no calibrator-2 or -3 slots) still loads and arms: the
 //     missing hooks are left out and reported, never refused and never guessed.
 // ---------------------------------------------------------------------------------------------
 
@@ -1696,7 +1700,7 @@ export async function checkOlderRecord(
 ): Promise<Criterion> {
   const id = "older-record-loads";
   const description =
-    "a calibrator-1 record (gate -1 slots only) arms: required hooks counted, every calibrator-2 hook in hooks_omitted with a null count and named by calibration-check.json's hook_plan, clean disarm";
+    "a calibrator-1 record (gate -1 slots only) arms: required hooks counted, every optional hook (calibrators 2 and 3) in hooks_omitted with a null count and named by calibration-check.json's hook_plan, clean disarm";
   const legDir = join(outDir, "old-record");
   const resultPath = join(legDir, "evidence", "result.json");
   const countersPath = join(legDir, "evidence", "counters.json");

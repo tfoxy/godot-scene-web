@@ -1,0 +1,37 @@
+; render-stream/0 receiver for gate 0. See README.md. Its only input is a recording named by
+; RS_RECEIVER_RECORDING; it has no autoload, no extension and nothing from fixtures/.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-receiver"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://main.tscn"
+
+[debug]
+
+; Typed-GDScript discipline, as in the fixtures: untyped declarations and unsafe dynamic access
+; are errors (2 == GDScriptWarning::ERROR). 4.5.1 has no treat-warnings-as-errors key, so each
+; warning is leveled individually.
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+; Deliberately wrong: the recording's session clear_color must override it.
+environment/defaults/default_clear_color=Color(1, 0, 1, 1)

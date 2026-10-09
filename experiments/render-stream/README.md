@@ -1,7 +1,10 @@
-# render-stream experiment — gate −1: capture seam
+# render-stream experiment — gates −1 and 0: capture seam and first stream
 
-Gate 0 is in progress. Its contract is [protocol/gate0-design.md](protocol/gate0-design.md), and
-its wire format is [protocol/render-stream-0.md](protocol/render-stream-0.md).
+Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
+captured by the stock release template under `--headless`, replayed by a separate receiver
+project, pixel-exact against an independent reference. Its contract is
+[protocol/gate0-design.md](protocol/gate0-design.md), and its wire format is
+[protocol/render-stream-0.md](protocol/render-stream-0.md).
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -12,10 +15,10 @@ It answers one question before any protocol work starts:
 > damage a shipped game?
 
 **Answer: yes, measured.** A GDExtension copies the `RenderingServer` singleton's
-vtable into the heap, replaces up to 31 slots with pass-through recording hooks
-(the eight gate −1 hooks, plus 23 draw-path hooks added for gate −0.25), and
-publishes the copy with one aligned pointer store into the singleton object's
-first word. Native `Control` drawing, the `Label` glyph path and direct
+vtable into the heap, replaces up to 42 slots with pass-through recording hooks
+(the eight gate −1 hooks, 23 draw-path hooks added for gate −0.25, and 11 canvas
+and viewport state hooks added for gate 0), and publishes the copy with one
+aligned pointer store into the singleton object's first word. Native `Control` drawing, the `Label` glyph path and direct
 `RenderingServer` calls from GDScript are all intercepted; the engine's own call
 sites are **not** devirtualised away by the official build's LTO. Disarming
 restores the original vptr and the process exits 0.
@@ -106,10 +109,11 @@ assuming any particular sentinel.
 ### Hooked slots on the pinned binary
 
 "Tier" is the calibrator version that first emitted the slot. Tier 1 is gate −1's
-set and is required; tier 2 is optional (see "Calibration records and hook
-versions" below). "Captured" is what the hook records beside its count. Every
-signature is copied from the 4.5.1 header, with the line cited in
-`capture/src/hooks.cpp`.
+set and is required; tiers 2 and 3 are optional (see "Calibration records and hook
+versions" below). Tier 3 is gate 0's: the state the retained canvas mirror
+(`capture/src/rs0_mirror.h`) needs, beside the tier 1 and 2 hooks it also taps.
+"Captured" is what the hook records beside its count. Every signature is copied
+from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 
 | Method                                        | Slot | Tier | Captured                                                                                        |
 | --------------------------------------------- | ---- | ---- | ----------------------------------------------------------------------------------------------- |
@@ -124,9 +128,18 @@ signature is copied from the 4.5.1 header, with the line cited in
 | `mesh_surface_update_attribute_region`        | 87   | 2    | as above                                                                                        |
 | `mesh_set_custom_aabb`                        | 94   | 2    | mesh, AABB                                                                                      |
 | `mesh_clear`                                  | 100  | 2    | mesh                                                                                            |
+| `viewport_attach_canvas`                      | 313  | 3    | viewport, canvas                                                                                |
+| `viewport_set_canvas_transform`               | 315  | 3    | viewport, canvas, transform                                                                     |
+| `canvas_create`                               | 435  | 3    | returned RID                                                                                    |
 | `canvas_item_create`                          | 446  | 2    | returned RID                                                                                    |
+| `canvas_item_set_parent`                      | 447  | 3    | item, parent                                                                                    |
+| `canvas_item_set_visible`                     | 450  | 3    | item, visible                                                                                   |
 | `canvas_item_set_transform`                   | 453  | 2    | item, transform                                                                                 |
+| `canvas_item_set_clip`                        | 454  | 3    | item, clip                                                                                      |
+| `canvas_item_set_custom_rect`                 | 456  | 3    | item, enabled, rect                                                                             |
 | `canvas_item_set_modulate`                    | 457  | 2    | item, colour                                                                                    |
+| `canvas_item_set_self_modulate`               | 458  | 3    | item, colour                                                                                    |
+| `canvas_item_set_visibility_layer`            | 459  | 3    | item, layer                                                                                     |
 | `canvas_item_add_line`                        | 462  | 2    | item, from, to, colour, width, antialiased                                                      |
 | `canvas_item_add_polyline`                    | 463  | 2    | item, points, colours, width, antialiased                                                       |
 | `canvas_item_add_rect`                        | 465  | 1    | item, rect, colour, antialiased                                                                 |
@@ -141,13 +154,15 @@ signature is copied from the 4.5.1 header, with the line cited in
 | `canvas_item_add_mesh`                        | 475  | 2    | item, mesh (passed by reference), transform, modulate, texture                                  |
 | `canvas_item_add_multimesh`                   | 476  | 2    | item, multimesh, texture                                                                        |
 | `canvas_item_add_set_transform`               | 478  | 2    | item, transform                                                                                 |
+| `canvas_item_set_z_index`                     | 482  | 3    | item, z index                                                                                   |
 | `canvas_item_clear`                           | 486  | 2    | item                                                                                            |
+| `canvas_item_set_draw_index`                  | 487  | 3    | item, draw index                                                                                |
 | `canvas_item_set_material`                    | 488  | 2    | item, material                                                                                  |
-| `free`                                        | 549  | 1    | count only                                                                                      |
+| `free`                                        | 549  | 1    | freed RID (deduplicated log, as tier 2)                                                         |
 | `get_default_clear_color` (probe, not hooked) | 577  | 1    | —                                                                                               |
 
 Floats are written as values and as float32 bit patterns (`*_bits`). Arrays keep
-their first 64 elements, and `*_total` gives the real length. A tier-2 hook
+their first 64 elements, and `*_total` gives the real length. A tier-2 or tier-3 hook
 deduplicates identical calls into one entry with `calls`, `first_frame` and
 `last_frame`. It keeps at most 32 distinct entries and counts any further
 distinct calls in `captured_dropped`. Nothing that owns memory is decoded: no
@@ -177,7 +192,7 @@ That record may come from a sibling calibrating another binary with whatever
   omission is recorded in three places:
   - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
     omitted hooks, for example:
-    `8 of 31 hooks named by the record; omitted (record predates them): …`.
+    `8 of 42 hooks named by the record; omitted (record predates them): …`.
   - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
     is `null` rather than `0`. A `null` means "not installed", which is
     different from "never called".
@@ -233,16 +248,38 @@ check passed. Legs, evidence layout and criteria: [scripts/README.md](scripts/RE
 self-test: `mise exec -- pnpm exec tsx --conditions=development
 experiments/render-stream/scripts/test/self-test-checker.ts`.
 
+### Run gate 0
+
+```bash
+experiments/render-stream/scripts/build-capture.sh          # + rs0_mirror, rs0_codec ctests
+mise exec -- pnpm render-stream:gate0 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json"
+```
+
+About 105 seconds. It imports `fixtures/gate0/` and `receiver/` with the mise editor, runs the
+receiver's typed self-test, the headless capture hosts (the 400-frame capture, `preexisting`,
+`unsupported` and the three sabotage captures), the headless receivers (`corrupt`,
+`receiver-headless-trace`, `unsupported`), then the reference, the receiver and the three sabotage
+receivers in one private `gamescope --backend headless`, then the checker, which writes
+`artifacts/render-stream/gate0/<UTC timestamp>/result.json` and exits non-zero unless every check
+passed. Self-tests: `scripts/test/self-test-rs0.ts` (TS decoder against the golden vectors),
+`scripts/test/self-test-gate0.ts` (checker and classifier on synthetic evidence) and
+`python3 experiments/render-stream/protocol/golden/make_golden.py --check`.
+
 ## Runtime contract
 
 Environment, read once at SCENE initialisation:
 
-| Variable                  | Meaning                                                                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `GRC_CALIBRATION`         | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration` |
-| `GRC_MODE`                | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                    |
-| `GRC_EVIDENCE_DIR`        | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                 |
-| `GRC_DISARM_AFTER_FRAMES` | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                             |
+| Variable                  | Meaning                                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GRC_CALIBRATION`         | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                          |
+| `GRC_MODE`                | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                             |
+| `GRC_EVIDENCE_DIR`        | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                          |
+| `GRC_DISARM_AFTER_FRAMES` | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                      |
+| `GRC_STREAM_OUT`          | gate 0: absolute `.rs0` recording path. When set and armed, enable the canvas mirror, run the root query and publish `render-stream/0`. Unset → hooks behave as at gate −1 |
+| `GRC_SABOTAGE`            | gate 0 test sabotage: `freeze-frame`, `omit-update` or `perturb-transform`. Any other value refuses to publish (arming is unaffected)                                      |
+| `GRC_SABOTAGE_FRAME`      | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                    |
 
 Arming happens at the earliest point where the `RenderingServer` singleton is
 available. With a runtime `load_extension` from an autoload that is SCENE
@@ -274,8 +311,9 @@ Evidence files, exactly as the runner expects:
 
 - `result.json` — `render-stream-capture-result/1`: `status`
   (`armed|validated|refused|error`), `reason`, `vptr_written`, `disarmed`,
-  `display_server`, `rendering_driver`, `rendering_method`. Written at decision
-  time and rewritten at shutdown.
+  `display_server`, `rendering_driver`, `rendering_method`, and (gate 0, additive)
+  `stream`: `{path, status: off|open|closed|refused|open-failed, reason, transactions}`.
+  Written at decision time and rewritten at disarm and shutdown.
 - `fingerprint.json` — version string, sha256, build-id, pie, load bias, live
   vptr, singleton address, abstract address point, pure placeholder, pid, and the
   `/proc/self/maps` lines of the main binary.
@@ -310,6 +348,11 @@ Deviations from the drafted contract, all additive:
 
   `calibration-check.json` adds the `hook_plan` check.
 
+- Calibrator 3 (gate 0) also added keys only. `counters.json` gains a `counts`
+  entry, a `captured` array and a `captured_dropped` entry for each of the 11
+  tier-3 hooks, and a `captured.free` array of freed RIDs (with
+  `captured_dropped.free`).
+
 ## Safety model
 
 - **Refusing by default.** No `GRC_CALIBRATION`, no action. Default `GRC_MODE` is
@@ -340,7 +383,7 @@ What this does **not** establish:
 
 - that the shipped game's stripped fork has the same vtable layout. It needs its
   own record, which is exactly what the calibrator is for.
-- that the capture is complete. 31 of the 565 `RenderingServer` virtuals are
+- that the capture is complete. 42 of the 565 `RenderingServer` virtuals are
   hooked.
 - anything about performance.
 
@@ -563,6 +606,114 @@ the stock template's. The run was `GRC_MODE=arm` with `GRC_DISARM_AFTER_FRAMES=2
 
 - **Teardown.** Writing evidence by frame count matters here, because this game ends on SIGTERM by
   SIGABRT before any GDExtension shutdown callback runs.
+
+## Gate 0 WP1: calibrator 3, mirror and root query (2026-10-09)
+
+Calibrator 3 adds the 11 tier-3 hooks (slot table above). Gate −1 with them, run
+`artifacts/render-stream/gate-minus1/20261009T043727Z/` (ignored), passes 28 of 28 checks with
+42 hooks planned and none omitted, and `armed.png` is still byte-identical to `unarmed.png`. The
+headless-armed counts of the new hooks are `viewport_attach_canvas`, `viewport_set_canvas_transform`,
+`canvas_create`, `canvas_item_set_self_modulate` and `canvas_item_set_z_index` 1 each (the spike's
+post-arm `CanvasLayer` and `Node2D`); `canvas_item_set_parent`, `_set_visible`,
+`_set_visibility_layer` and `_set_draw_index` 6 each (the scene entering the tree after arming);
+and `canvas_item_set_clip` and `_set_custom_rect` 5 each (`Control` redraws). The captured values
+decode exactly: the `ColorRect`'s custom rect is `0,0,120,80`, `z_index` is 1, and the
+self-modulate bits are those of `Color(0.5, 0.75, 1, 1)`.
+
+A temporary `GRC_RS0_PROBE` hook (removed when the stream was wired) proved the mirror and the
+root query at runtime before the publisher existed. On a
+scratch fixture shaped like gate 0's (a root `Node` that creates its `Node2D`s in `_ready`), the
+root query returned the root viewport and canvas RIDs, an identity canvas transform, cull mask
+`0xffffffff` and the project's clear colour, and the snapshot was `ok`: two items on canvas 1 in
+append order with draw indices 0 and 1, the moved transform, the redrawn colour, and the freed
+child gone. On the spike, whose scene items exist before arming, it was `pre-existing-object` at
+the root node's `canvas_item_set_parent`, with the `CanvasLayer` reported as `extra-canvas`.
+
+One measured fact differed from the first contract text: under `--headless`, the root
+`Viewport.get_visible_rect()` at arm time is `0, 0, 64, 64`, not `0, 0, 0, 0`. The headless
+display server reports `Size2i()`, but `SceneTree` gives the root window a 64×64 minimum size
+(`scene/main/scene_tree.cpp:2035`), and `Window::_update_window_size` clamps to it
+(`scene/main/window.cpp:1144-1150`). The session records the value as read, so only the
+documentation was affected; both protocol documents now say 64×64.
+
+## Gate 0 result (2026-10-09)
+
+**Pass.** The integrated run is `artifacts/render-stream/gate0/20261009T050442Z/` (ignored, not
+committed; produced in the integration worktree). Its `result.json` has `gate_passed: true` and
+passes 19 of 19 checks ([protocol/gate0-design.md](protocol/gate0-design.md) "Checks"). Every leg
+classifies as expected. The capture host is the pinned release template under `--headless` with
+the 42-hook library armed at `scene-init` (calibrator 3, none omitted); the reference and the
+receiver are the same template rendering OpenGL 3.3 on the RTX 2060 inside one private gamescope.
+Gate −1 on the same build still passes 28 of 28
+(`artifacts/render-stream/gate-minus1/20261009T050631Z/`).
+
+| Leg                       | Class (expected = measured)           | Measured                                                                                                                                                                                                                                                    |
+| ------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capture`                 | `success`                             | 400 transactions, frames 1..400, every status `ok`; `bytes_total` 429 425 (file 429 610 with the end record), `max_record_bytes` 2 873 (the session; transactions 1 062–1 067), `encode_ns_total` 2 184 113, `snapshot_ns_total` 378 958                    |
+|                           |                                       | session: `display_server` `headless`, `clear_color` `0.2, 0.2, 0.4, 1`, identity root canvas transform, cull mask `4294967295`, `host_visible_rect` `0, 0, 64, 64`; no GPU device or library in the `openat` trace or the maps/fd sample                    |
+|                           |                                       | 39 intercepted calls in 400 frames: 2 `canvas_item_create` (the `Node2D`s, after arming), 4 `set_parent`, 2 `set_draw_index` (0 and 1), 4 `set_transform` (2 initial, 2 moves), 8 `clear` + 8 `add_rect` (3 subject and 5 marker draws), 6 `free`           |
+| `reference`               | support                               | 5 shots, each equal to `synthesizeExpected(k)` exactly                                                                                                                                                                                                      |
+| `receiver`                | `success`                             | 400 seqs applied in order, each `record_sha256` equal to the host's; shots of seqs 8, 18, 28, 38, 48 (the settle frames), each equal to `synthesizeExpected(k)` and to the reference: 0 mismatched pixels, max channel delta 0, full frame and both regions |
+| `receiver-headless-trace` | support                               | applied `ok`; no successful `openat` under `fixtures/`; no receiver file shares a sha256 with a fixture file                                                                                                                                                |
+| `sabotage-freeze`         | `pixel-mismatch`, steps {2,3,4}       | 52 transactions; steps 0–1 exact; step 2: 7 168 px (subject 6 144, marker 1 024), steps 3 and 4: 13 312 px each; max channel delta 255                                                                                                                      |
+| `sabotage-omit`           | `pixel-mismatch`, step {2}            | 52 transactions; steps 0–1 exact; step 2: 7 168 px (subject 6 144, marker 1 024), delta 255; steps 3–4 exact again (the next update repairs the snapshot)                                                                                                   |
+| `sabotage-perturb`        | `pixel-mismatch`, steps {2,3,4}       | 52 transactions; steps 0–1 exact; steps 2–4: 192 px each (subject 64, marker 32 inside the regions: one-pixel columns at both edges of each rect), delta 204                                                                                                |
+| `unsupported`             | `unsupported`                         | the recording carries `canvas_item_add_circle` as an `unsupported` command and an `unsupported-op` entry from step 2; the headless receiver reports it in `applied.json`, does not draw it, and ends `ok`                                                   |
+| `preexisting`             | `capture-failure`                     | every one of 52 transactions is `pre-existing-object`: `rid=… op=canvas_item_set_parent frame=1` (the `.tscn`'s `Node2D`, constructed before arming)                                                                                                        |
+| `corrupt`                 | `replay-failure` (seq 3, `meta-json`) | the receiver applied seqs 1–2 (24 and 0 RS calls), rejected seq 3 (`meta byte 0 is 0x00`) before any RS call for it, and exited 3                                                                                                                           |
+
+Images, all under the run directory:
+
+- Reference: `reference/shots/step-<k>.png` (k = 0..4).
+- Receiver: `receiver/shots/seq-{8,18,28,38,48}.png`; per-step diffs `receiver/diff/step-<k>.png`
+  (all blank).
+- Sabotage: `sabotage-{freeze,omit,perturb}/receiver/shots/seq-<n>.png` and
+  `sabotage-*/receiver/diff/step-<k>.png`; for example `sabotage-freeze/receiver/diff/step-3.png`
+  marks the stale marker, the stale subject and the missing moved subject.
+
+### The gate fails when it should
+
+| Sabotage (capture host)                                 | What the receiver drew                                    | Check that classifies it                        |
+| ------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------- |
+| `freeze-frame` at 21: republish the frame-20 snapshot   | step 1's picture from step 2 on                           | `leg-class-sabotage-freeze`                     |
+| `omit-update` at 21: mutations stamped 21 not mirrored  | step 1's picture at step 2 only; step 3 repairs it        | `leg-class-sabotage-omit`                       |
+| `perturb-transform` at 21: `origin.x + 1` on every item | everything one pixel to the right from step 2             | `leg-class-sabotage-perturb`                    |
+| fixture draws a circle (`RS_FIXTURE_VARIANT`)           | the rectangles, with the circle reported and not drawn    | `leg-class-unsupported`                         |
+| scene item constructed before arming                    | (no receiver: the capture is unusable)                    | `leg-class-preexisting` (`pre-existing-object`) |
+| seq 3's first meta byte zeroed in the receiver's copy   | seqs 1–2, then a replay failure with no RS call for seq 3 | `leg-class-corrupt`                             |
+
+In each sabotage leg steps 0 and 1 matched exactly, so the mismatch starts where the sabotage does.
+The classifier never reads `session.sabotage`. The publisher's refusal path was also run by hand
+(not a gate leg): `GRC_SABOTAGE=bogus` and `GRC_SABOTAGE_FRAME=0` each armed, created no file and
+left `stream.status: "refused"`; `GRC_DISARM_AFTER_FRAMES=30` ended a valid recording with
+`reason: "disarm"` after 30 transactions.
+
+### What this proves
+
+- The stock 4.5.1 release template under `--headless`, with no GPU device opened, can publish a
+  self-validating snapshot of the hooked canvas state every frame, through the gate −1
+  interposition alone, and the snapshot is enough to redraw this fixture exactly.
+- A separate Godot project that has no extension, no autoload and no copy of the fixture rebuilds
+  that canvas from the recording through ordinary `RenderingServer` calls, and renders it
+  pixel-identically to both the fixture rendered normally and an image synthesized from
+  `expected.json` at five checkpoints.
+- The receiver consumed exactly the bytes the host wrote (record hashes match), and a frozen,
+  dropped or shifted update shows up as a pixel mismatch at the step where it starts.
+
+### What this does not prove
+
+- One rectangle per item, opaque, axis-aligned, integer coordinates, colours that land exactly on
+  8-bit values, no overlap, no ties in `draw_index`. Every other draw op is only reported as
+  `unsupported`; textures, text, materials and meshes are not streamed.
+- The `unobserved` state in the session (texture filter/repeat, light mask, `z_as_relative`,
+  y-sort, `canvas_set_modulate`, ...) is not hooked, so a scene that changes it would replay
+  wrongly without any failure being reported.
+- Arming must precede every canvas item (route (a), a fixture autoload). Late join and the
+  deferred-arming path are gate 8; on them the capture is `pre-existing-object` by design.
+- The receiver replays from a file, one transaction per `_process`, with no pacing, transport,
+  credit or coalescing (gate 1). Cost numbers are for two items: about 5.4 µs encode and 0.95 µs
+  snapshot per frame, about 1 060 bytes per transaction.
+- Not run on MegaDot or the shipped game.
 
 ## Scratch verification (2026-10-08)
 

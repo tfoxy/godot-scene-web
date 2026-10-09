@@ -554,6 +554,22 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
         *error = "malformed anchors: " + parser.error();
         return false;
       }
+    } else if (key == "calibrator") {
+      // {"version": "<int>", ...}: only the version is read (the session's
+      // capture.calibrator_version); every other key is skipped.
+      if (!parser.parse_object_begin()) {
+        *error = "malformed calibrator: " + parser.error();
+        return false;
+      }
+      std::string sub;
+      while (parser.next_key(&sub)) {
+        if (sub == "version") {
+          parser.read_string(&out->calibrator_version);
+        } else if (!parser.skip_value()) {
+          *error = "malformed calibrator." + sub;
+          return false;
+        }
+      }
     } else if (!parser.skip_value()) {
       *error = "malformed value for " + key;
       return false;

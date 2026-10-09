@@ -92,6 +92,21 @@ template, for both the headless legs and the rendered gamescope legs.
   canvas item after the capture armed. The scene's own items already exist
   before the extension loads.
 
+- Calibrator-3 state hooks, added for gate 0. Nothing here draws, so the pixels
+  do not change:
+  - the post-arm `Node2D` gets `z_index = 1` (`canvas_item_set_z_index`) and a
+    non-white `self_modulate` (`canvas_item_set_self_modulate`). The colour is
+    not `Color.WHITE` because `CanvasItem::set_self_modulate` returns early on an
+    unchanged value (`scene/main/canvas_item.cpp:556`) and would never reach the
+    `RenderingServer`. The node draws nothing, so its self-modulate is invisible.
+  - an empty `CanvasLayer` added in `_ready()`: `canvas_create` in its
+    constructor, then `viewport_attach_canvas` and
+    `viewport_set_canvas_transform` when it enters the tree.
+  - the scene's own nodes enter the tree after arming (the autoload arms first),
+    which calls `canvas_item_set_parent`, `_set_visibility_layer`, `_set_visible`
+    and the deferred `_set_draw_index`. Each `Control` redraw calls
+    `canvas_item_set_custom_rect` and `_set_clip` (`scene/gui/control.cpp:3899-3901`).
+
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See
   its own `"description"` fields for the Godot-source citations (`color_rect.cpp`,

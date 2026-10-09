@@ -334,7 +334,18 @@
     "mesh_set_custom_aabb",
     "shader_create_from_code",
     "shader_set_code",
-    "material_set_param"
+    "material_set_param",
+    "viewport_attach_canvas",
+    "viewport_set_canvas_transform",
+    "canvas_create",
+    "canvas_item_set_parent",
+    "canvas_item_set_visible",
+    "canvas_item_set_clip",
+    "canvas_item_set_custom_rect",
+    "canvas_item_set_self_modulate",
+    "canvas_item_set_visibility_layer",
+    "canvas_item_set_z_index",
+    "canvas_item_set_draw_index"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",
@@ -359,6 +370,17 @@
     "mesh_set_custom_aabb",
     "shader_create_from_code",
     "shader_set_code",
-    "material_set_param"
+    "material_set_param",
+    "viewport_attach_canvas",
+    "viewport_set_canvas_transform",
+    "canvas_create",
+    "canvas_item_set_parent",
+    "canvas_item_set_visible",
+    "canvas_item_set_clip",
+    "canvas_item_set_custom_rect",
+    "canvas_item_set_self_modulate",
+    "canvas_item_set_visibility_layer",
+    "canvas_item_set_z_index",
+    "canvas_item_set_draw_index"
   ]
 }

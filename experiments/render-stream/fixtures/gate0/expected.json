@@ -1,0 +1,88 @@
+{
+  "schema": "render-stream-gate0-expected/1",
+  "description": "The only source of the per-step Subject/Marker rects, colours and frames for the gate 0 fixture (fixtures/gate0/gate0.gd). See ../../protocol/gate0-design.md 'Q2. Fixture' / 'Timeline'. rect_px is [x, y, w, h] in viewport pixels: the node's position plus its local draw rect. color is the Godot float [r, g, b, a] (each component in {0, .2, .4, .6, .8, 1}); rgba8 is the exact byte form (0, 51, 102, 153, 204, 255) -- that mapping is exact, not rounded. clear_rgba8 is project.godot's default_clear_color, Color(0.2, 0.2, 0.4, 1).",
+  "viewport": [640, 360],
+  "clear_rgba8": [51, 51, 102, 255],
+  "quit_frame_default": 52,
+  "steps": [
+    {
+      "step": 0,
+      "applied_frame": 1,
+      "settle_frame": 8,
+      "subject": {
+        "rect_px": [160, 96, 96, 64],
+        "color": [1, 0.4, 0, 1],
+        "rgba8": [255, 102, 0, 255]
+      },
+      "marker": {
+        "rect_px": [16, 16, 32, 32],
+        "color": [1, 1, 1, 1],
+        "rgba8": [255, 255, 255, 255]
+      }
+    },
+    {
+      "step": 1,
+      "applied_frame": 11,
+      "settle_frame": 18,
+      "subject": {
+        "rect_px": [288, 96, 96, 64],
+        "color": [1, 0.4, 0, 1],
+        "rgba8": [255, 102, 0, 255]
+      },
+      "marker": {
+        "rect_px": [16, 16, 32, 32],
+        "color": [1, 1, 0, 1],
+        "rgba8": [255, 255, 0, 255]
+      }
+    },
+    {
+      "step": 2,
+      "applied_frame": 21,
+      "settle_frame": 28,
+      "subject": {
+        "rect_px": [288, 96, 96, 64],
+        "color": [0, 0.6, 1, 1],
+        "rgba8": [0, 153, 255, 255]
+      },
+      "marker": {
+        "rect_px": [16, 16, 32, 32],
+        "color": [0, 1, 1, 1],
+        "rgba8": [0, 255, 255, 255]
+      }
+    },
+    {
+      "step": 3,
+      "applied_frame": 31,
+      "settle_frame": 38,
+      "subject": {
+        "rect_px": [416, 224, 96, 64],
+        "color": [0.8, 0.2, 0.6, 1],
+        "rgba8": [204, 51, 153, 255]
+      },
+      "marker": {
+        "rect_px": [16, 16, 32, 32],
+        "color": [1, 0, 1, 1],
+        "rgba8": [255, 0, 255, 255]
+      }
+    },
+    {
+      "step": 4,
+      "applied_frame": 41,
+      "settle_frame": 48,
+      "subject": {
+        "rect_px": [416, 224, 96, 64],
+        "color": [0.8, 0.2, 0.6, 1],
+        "rgba8": [204, 51, 153, 255]
+      },
+      "marker": {
+        "rect_px": [16, 16, 32, 32],
+        "color": [0, 1, 0, 1],
+        "rgba8": [0, 255, 0, 255]
+      }
+    }
+  ],
+  "unsupported_variant": {
+    "from_step": 2,
+    "op": "canvas_item_add_circle"
+  }
+}

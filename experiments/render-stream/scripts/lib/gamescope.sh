@@ -153,15 +153,45 @@ JSON
 # forces the x11 driver, and backgrounds it with stdout/stderr to $log_file. Sets GS_LAST_GODOT_PID.
 # Does NOT wait for godot to do anything -- callers decide what readiness means for their leg.
 #
-# Every inherited GRC_* capture variable is stripped too; the caller passes the ones a leg wants
-# through GS_GODOT_ENV (an array of NAME=value words).
+# Every inherited capture, fixture and receiver variable is stripped too (gs_strip_env_args); the
+# caller passes the ones a leg wants through GS_GODOT_ENV (an array of NAME=value words).
 GS_GODOT_ENV=()
+
+# The variables a launcher must never inherit (gate0-design.md "Environment"): gate -1's GRC_*
+# five plus its two spike screenshot variables, gate 0's stream and sabotage variables, and the
+# documented RS_* fixture/receiver variables. gs_strip_env_args adds every other inherited RS_* on
+# top, so a future fixture variable cannot leak in from the caller's shell either.
+GS_STRIP_VARS=(
+	GRC_EXTENSION GRC_MODE GRC_EVIDENCE_DIR GRC_CALIBRATION GRC_DISARM_AFTER_FRAMES
+	GRC_SCREENSHOT GRC_SCREENSHOT_FRAME
+	GRC_STREAM_OUT GRC_SABOTAGE GRC_SABOTAGE_FRAME
+	RS_FIXTURE_STEP_LOG RS_FIXTURE_SHOT_DIR RS_FIXTURE_VARIANT RS_FIXTURE_QUIT_FRAME
+	RS_RECEIVER_RECORDING RS_RECEIVER_OUT RS_RECEIVER_SHOT_SEQS RS_SELFTEST_GOLDEN_DIR
+)
+
+# Sets GS_STRIP_ARGS to `-u NAME` words for `env`: GS_STRIP_VARS plus every inherited RS_*.
+GS_STRIP_ARGS=()
+gs_strip_env_args() {
+	GS_STRIP_ARGS=()
+	local name
+	for name in "${GS_STRIP_VARS[@]}"; do
+		GS_STRIP_ARGS+=(-u "$name")
+	done
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		case " ${GS_STRIP_VARS[*]} " in
+		*" $name "*) ;;
+		*) GS_STRIP_ARGS+=(-u "$name") ;;
+		esac
+	done < <(compgen -e | grep '^RS_' || true)
+}
+
 gs_launch_godot() {
 	local display="$1" binary="$2" project_dir="$3" log_file="$4"
 	shift 4
 	gs_require_live
-	env -u WAYLAND_DISPLAY -u GRC_EXTENSION -u GRC_MODE -u GRC_EVIDENCE_DIR -u GRC_CALIBRATION \
-		-u GRC_DISARM_AFTER_FRAMES -u GRC_SCREENSHOT -u GRC_SCREENSHOT_FRAME \
+	gs_strip_env_args
+	env -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" \
 		XDG_SESSION_TYPE=x11 DISPLAY="$display" "${GS_GODOT_ENV[@]}" \
 		"$binary" --path "$project_dir" --rendering-driver opengl3 --display-driver x11 "$@" \
 		>"$log_file" 2>&1 &

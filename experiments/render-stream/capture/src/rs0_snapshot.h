@@ -169,7 +169,7 @@ struct Session {
   // Blocks, in this order.
   Color4 clear_color = {0.0f, 0.0f, 0.0f, 1.0f};  // RenderingServer::get_default_clear_color
   Xform root_canvas_xform = kIdentityXform;       // Viewport::get_canvas_transform
-  Rect4 host_visible_rect = kZeroRect;            // Viewport::get_visible_rect (0x0 under --headless)
+  Rect4 host_visible_rect = kZeroRect;            // Viewport::get_visible_rect (64x64 under --headless)
 };
 
 // ----------------------------------------------------------------------------- transaction

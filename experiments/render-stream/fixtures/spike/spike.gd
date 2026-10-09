@@ -101,6 +101,10 @@ const TINT_SHADER_A: String = "shader_type canvas_item;\nuniform vec4 tint = vec
 const TINT_SHADER_B: String = "shader_type canvas_item;\nuniform vec4 tint = vec4(1.0);\nvoid fragment() { COLOR = COLOR * tint; }\n"
 const PANEL_MODULATE: Color = Color(0.875, 1, 1, 1)
 
+# Calibrator-3 state hooks, on the empty post-arm Node2D (see _ready).
+const LATE_Z_INDEX: int = 1
+const LATE_SELF_MODULATE: Color = Color(0.5, 0.75, 1, 1)
+
 const RELABEL_FRAME: int = 30
 const QUIT_FRAME: int = 400
 const DEFAULT_SCREENSHOT_FRAME: int = 60
@@ -150,8 +154,19 @@ func _ready() -> void:
 	_multimesh.instance_count = 1
 	_multimesh.set_instance_transform_2d(0, Transform2D(Vector2(1, 0), Vector2(0, 1), MULTIMESH_OFFSET))
 
-	# A node created after the capture armed: its constructor calls canvas_item_create.
-	add_child(Node2D.new())
+	# A node created after the capture armed: its constructor calls canvas_item_create. It draws
+	# nothing, so its z_index (canvas_item_set_z_index) and self_modulate
+	# (canvas_item_set_self_modulate) change no pixels. The self_modulate is not white because
+	# CanvasItem::set_self_modulate returns early on an unchanged value and would never reach the
+	# RenderingServer.
+	var late: Node2D = Node2D.new()
+	late.z_index = LATE_Z_INDEX
+	late.self_modulate = LATE_SELF_MODULATE
+	add_child(late)
+	# An empty CanvasLayer created after arming: canvas_create in its constructor, then
+	# viewport_attach_canvas and viewport_set_canvas_transform when it enters the tree. It has no
+	# items, so the pixels do not change.
+	add_child(CanvasLayer.new())
 
 	# A throwaway mesh, cleared again: mesh_clear.
 	var scratch: ArrayMesh = ArrayMesh.new()

@@ -28,6 +28,9 @@ struct Calibration {
   int64_t anchors_total = 0;
   int64_t anchors_matched = 0;
 
+  // calibrator.version, as written (a decimal string); empty when absent.
+  std::string calibrator_version;
+
   std::vector<std::pair<std::string, int64_t>> slots;
   std::vector<std::pair<std::string, int64_t>> anchors;
 
