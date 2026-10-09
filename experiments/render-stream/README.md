@@ -7,7 +7,7 @@ project, pixel-exact against an independent reference. Its contract is
 [protocol/render-stream-0.md](protocol/render-stream-0.md).
 
 Gate 1's first increment, G1a, passed on the same day (see "Gate 1a result" below). Its fixture
-has eleven retained-state steps. The capture host gets the logical root size it needs
+has eleven retained-state steps (thirteen since G1e). The capture host gets the logical root size it needs
 (`GRC_ROOT_SIZE=enforce-min-size`) and declares it. Its contract is the G1a section of
 [protocol/gate1-design.md](protocol/gate1-design.md).
 
@@ -25,6 +25,9 @@ two seconds costs the host one pending target and no queue, catches up to the ne
 transaction, and resync, reconnect and a killed receiver all leave the host and the picture
 correct.
 
+G1e followed (see "Gate 1e result" below): calibrator 4 hooks `z_as_relative_to_parent` and
+`draw_behind_parent` (44 hooks), and the fixture grows to thirteen steps to prove both.
+
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
 
@@ -34,10 +37,11 @@ It answers one question before any protocol work starts:
 > damage a shipped game?
 
 **Answer: yes, measured.** A GDExtension copies the `RenderingServer` singleton's
-vtable into the heap, replaces up to 42 slots with pass-through recording hooks
-(the eight gate −1 hooks, 23 draw-path hooks added for gate −0.25, and 11 canvas
-and viewport state hooks added for gate 0), and publishes the copy with one
-aligned pointer store into the singleton object's first word. Native `Control` drawing, the `Label` glyph path and direct
+vtable into the heap, replaces up to 44 slots with pass-through recording hooks
+(the eight gate −1 hooks, 23 draw-path hooks added for gate −0.25, 11 canvas
+and viewport state hooks added for gate 0, and 2 more draw-order hooks added for
+gate 1 G1e), and publishes the copy with one aligned pointer store into the
+singleton object's first word. Native `Control` drawing, the `Label` glyph path and direct
 `RenderingServer` calls from GDScript are all intercepted; the engine's own call
 sites are **not** devirtualised away by the official build's LTO. Disarming
 restores the original vptr and the process exits 0.
@@ -128,9 +132,11 @@ assuming any particular sentinel.
 ### Hooked slots on the pinned binary
 
 "Tier" is the calibrator version that first emitted the slot. Tier 1 is gate −1's
-set and is required; tiers 2 and 3 are optional (see "Calibration records and hook
-versions" below). Tier 3 is gate 0's: the state the retained canvas mirror
-(`capture/src/rs0_mirror.h`) needs, beside the tier 1 and 2 hooks it also taps.
+set and is required; tiers 2, 3 and 4 are optional (see "Calibration records and
+hook versions" below). Tier 3 is gate 0's: the state the retained canvas mirror
+(`capture/src/rs_mirror.h`) needs, beside the tier 1 and 2 hooks it also taps.
+Tier 4 is gate 1 G1e's: the two draw-order fields the mirror held at
+RenderingServer defaults until then (`z_relative`, `behind`).
 "Captured" is what the hook records beside its count. Every signature is copied
 from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 
@@ -159,6 +165,7 @@ from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 | `canvas_item_set_modulate`                    | 457  | 2    | item, colour                                                                                    |
 | `canvas_item_set_self_modulate`               | 458  | 3    | item, colour                                                                                    |
 | `canvas_item_set_visibility_layer`            | 459  | 3    | item, layer                                                                                     |
+| `canvas_item_set_draw_behind_parent`          | 460  | 4    | item, behind                                                                                    |
 | `canvas_item_add_line`                        | 462  | 2    | item, from, to, colour, width, antialiased                                                      |
 | `canvas_item_add_polyline`                    | 463  | 2    | item, points, colours, width, antialiased                                                       |
 | `canvas_item_add_rect`                        | 465  | 1    | item, rect, colour, antialiased                                                                 |
@@ -174,6 +181,7 @@ from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 | `canvas_item_add_multimesh`                   | 476  | 2    | item, multimesh, texture                                                                        |
 | `canvas_item_add_set_transform`               | 478  | 2    | item, transform                                                                                 |
 | `canvas_item_set_z_index`                     | 482  | 3    | item, z index                                                                                   |
+| `canvas_item_set_z_as_relative_to_parent`     | 483  | 4    | item, z_relative                                                                                |
 | `canvas_item_clear`                           | 486  | 2    | item                                                                                            |
 | `canvas_item_set_draw_index`                  | 487  | 3    | item, draw index                                                                                |
 | `canvas_item_set_material`                    | 488  | 2    | item, material                                                                                  |
@@ -211,7 +219,7 @@ That record may come from a sibling calibrating another binary with whatever
   omission is recorded in three places:
   - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
     omitted hooks, for example:
-    `8 of 42 hooks named by the record; omitted (record predates them): …`.
+    `8 of 44 hooks named by the record; omitted (record predates them): …`.
   - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
     is `null` rather than `0`. A `null` means "not installed", which is
     different from "never called".
@@ -299,7 +307,7 @@ mise exec -- pnpm render-stream:gate1 -- \
   [--legs g1a,g1b,g1c,g1d]
 ```
 
-This takes about eight minutes and runs the landed groups, `g1a`, `g1b`, `g1c` and `g1d`. It imports
+This takes about nine minutes and runs the landed groups, `g1a`, `g1b`, `g1c` and `g1d`. It imports
 `fixtures/gate1/` and `receiver/`, then runs the receiver's typed self-test and the headless
 captures, each writing both sinks (`recording.rs1` full, `recording-patch.rs1` patch): the
 400-frame capture under `enforce-min-size`, the four `omit-update` sabotage captures and the
@@ -445,7 +453,7 @@ What this does **not** establish:
 
 - that the shipped game's stripped fork has the same vtable layout. It needs its
   own record, which is exactly what the calibrator is for.
-- that the capture is complete. 42 of the 565 `RenderingServer` virtuals are
+- that the capture is complete. 44 of the 565 `RenderingServer` virtuals are
   hooked.
 - anything about performance.
 
@@ -1176,19 +1184,85 @@ frame, a patch diff about 7 µs and its encoding about 2 µs (the ignore-credit 
 - Resources (no textures yet: pinning in-flight resource versions is gate 2), more than one
   receiver, arm-on-first-subscriber, non-loopback serving, other rates and constrained links.
 
+## Gate 1e result (2026-10-09)
+
+**Pass.** Calibrator 4 hooks `canvas_item_set_z_as_relative_to_parent` (slot 483) and
+`canvas_item_set_draw_behind_parent` (slot 460), feeding the mirror's `z_relative`/`behind` fields
+that render-stream/1 already carried since G1b1 (and the receiver already applied). Both leave
+the session's `unobserved` list. G1e was built on G1b2 and integrated after G1c2 and G1d; the runs
+below are on the integrated tree (ignored, not committed):
+
+- gate −1: `artifacts/render-stream/gate-minus1/g1e-onto-main/` passes 28 of 28, 44 hooks planned,
+  none omitted (the `older-record-loads` leg's calibrator-1 record still omits 36 and arms);
+  `optional-hook-counts` includes both new hooks (the spike's post-arm `Node2D` sets non-default
+  `z_as_relative`/`show_behind_parent`, so the setters' early return on an unchanged value does
+  not skip the `RenderingServer` call).
+- gate 0: `artifacts/render-stream/gate0/g1e-onto-main/` passes 19 of 19, `hooks_planned` exactly
+  the 44 names.
+- gate 1, all four groups, run twice: `artifacts/render-stream/gate1/g1e-onto-main-run1/` and
+  `…-run2/` each pass 65 of 65, every leg at its expected class.
+
+**Fixture.** Two appended steps, each adding new top-level items (so each ties with `P` at index 0
+for one frame, as `T` does at step 1):
+
+- step 11: `ZP` (z_index 1, draws nothing) with child `ZC` (z_index −1, `z_as_relative = false`,
+  so its effective z is −1, not 0 — its own z_index alone, ignoring the parent's).
+- step 12: `ZB` (a new top-level sibling at effective z 0, overlapping `ZC` by 32 px — the overlap
+  shows `ZB`, which proves the receiver applied step 11's setter) and `BP`/child `BC`
+  (`BC.show_behind_parent = true`, overlapping `BP` by 32 px — the overlap shows `BP`, not `BC`).
+
+`ZB` is deferred to step 12 rather than joining `ZP` at step 11: two new top-level items entering
+the same frame tie with each other too (not just with `P`), and a tie's harmlessness is a
+footprint check over each member's whole subtree — `ZC`/`ZB`'s by-design overlap would have made
+that tie `unsupported`. A step apart, `ZP` and `ZB`/`BP` each only tie with `P` (disjoint
+footprints, harmless), and `ZC` — not top-level — never ties with `ZB` at all. Measured:
+`draw-index-ties` reports 3 ties, all harmless (frame 11 `{P,T}`, frame 111 `{P,ZP}`, frame 121
+`{P,ZB,BP}`); `tie-overlap` still finds only frame 11's not harmless.
+
+**Sabotage step sets, extended.** The sabotages whose dropped state is never reset by a later step
+now mismatch through steps 11 and 12 too (measured): `sabotage-omit-modulate` {1..12},
+`sabotage-omit-transform` {2..12}, `sabotage-omit-visibility` {7..12}, `sabotage-omit-free`
+{8..12}. `sabotage-omit-order` ({3}) and `sabotage-omit-visible` ({6}) are unchanged: both
+re-converge with the reference before step 11.
+
+**Patch sink**, the same 400-frame capture: full 3 252 541 B (max record 8 447), patch 175 125 B
+(max record 7 623); median transaction 8 379 B full against 354 B patch. Resolved, the patch
+recording equals the full one at all 400 frames.
+
+**Live timeline, re-derived by running.** The fixture's default quit is now `S + 12N + 11`, so the
+live hosts' `S + 11N` (960) would be refused; they quit at `S + 13N` = 1080, and the receivers
+shoot 13 windows, step 12's being `[1027, 1080]`. Everything G1d measured lies before step 4 and
+is unchanged in both runs:
+
+| Measured (run 1 / run 2)                    | Value                                                                                                                                                     |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `live-stall`: stalled send → credit         | 367 → 488 / 367 → 489; steps 2 (420) and 3 (480) inside; coalesced 68 / 69 from frame 420; recovery patch 2 357 B, 0 frames after the credit              |
+| `sabotage-stale-coalesce`: first post-stall | frame 489, frame 420's state (`stale_from`), step 3 shot 2 048 px off, in both runs; run 2 also caught an ordinary-gap stale copy at frame 361 (step 1's) |
+| `sabotage-ignore-credit`                    | violations from frame 480 / 488 (sabotage frame 480); 49 / 33 sends without credit; up to 32 / 33 in flight                                               |
+| `live-receiver-killed`                      | killed at host frame 601, closed 1006, the fixture quit at 1080, both sinks complete                                                                      |
+| `live`                                      | 1 020 / 1 044 transactions, 13 shots equal to the reference; two more harmless one-frame ties (frames 960 and 1020)                                       |
+
+The step-3-before-credit margin `stale-coalesce` depends on (step 3 at 480, credit at 488–489) is
+untouched: steps 11 and 12 come after every G1d event.
+
+**What this does not prove.** A new top-level item's tie with an existing one other than `P`, or
+two new top-level items whose subtrees are disjoint but which overlap a third tied member — neither
+is exercised.
+
 ## Gate 1 summary
 
-Gate 1 passes as of 2026-10-09 with all four groups in one run (65 checks): G1a, G1b2, G1c2 and
-G1d, built on G1b1's codecs and G1c1's WebSocket server. G1e (calibrator 4: `z_as_relative`,
-`draw_behind_parent`) is optional for the gate and not part of this result.
+Gate 1 passes as of 2026-10-09 with all four groups in one run (65 checks): G1a, G1b2, G1c2, G1d
+and G1e, built on G1b1's codecs and G1c1's WebSocket server (G1e's calibrator 4 adds no check of
+its own; it extends the fixture, the hook set and the sabotage step sets).
 
 What gate 1 proves, on the pinned 4.5.1 release template under `--headless`:
 
 - **Retained state (1a).** Parent/child transforms and modulation, transform changes without a
   redraw, draw order (index swap, z over index, reparent, same-parent re-append), visibility and
   layer culling, content replacement and clearing, create/free/recreate and detach/re-attach, and a
-  canvas transform: eleven steps, each pixel-exact against the rendered reference and an image
-  painted from `expected.json`, each sabotage failing at exactly its predicted steps.
+  canvas transform, and (1e) `z_as_relative_to_parent` and `draw_behind_parent`: thirteen steps,
+  each pixel-exact against the rendered reference and an image painted from `expected.json`, each
+  sabotage failing at exactly its predicted steps.
 - **Root geometry (1a).** The headless host's degenerate 64×64 root is declared, never guessed;
   `GRC_ROOT_SIZE=enforce-min-size` makes it match the 640×360 logical size.
 - **render-stream/1 (1b).** Patch transactions resolve bit for bit to the full snapshots of the
@@ -1203,14 +1277,13 @@ What gate 1 proves, on the pinned 4.5.1 release template under `--headless`:
   resync, reconnect and receiver loss, as above.
 
 Unsupported or deferred, by design: textures and every resource payload (gate 2), clipping
-semantics (gate 3), `z_as_relative`/`draw_behind_parent` (G1e; RS defaults until then),
-`viewport_set_global_canvas_transform`, `canvas_set_modulate`, y-sort, light masks and texture
+semantics (gate 3), `viewport_set_global_canvas_transform`, `canvas_set_modulate`, y-sort, light masks and texture
 filter/repeat (in the session's `unobserved` list), equal-draw-index ties that can change pixels
 (`draw-index-tie`, unsupported), a degenerate host size (`degenerate-host-size`, unsupported),
 arm-on-first-subscriber and late join (gate 8), more than one receiver, publication-rate control
 and real presentation timing (gate 6), non-loopback serving and authorization (gate 2).
 
-Costs, measured on the gate 1 hosts (60 frames per second, the 21-item fixture): one mirror
+Costs, measured on the gate 1 hosts (60 frames per second, the 21-item fixture before G1e, 26 since): one mirror
 snapshot copy per frame, about 14 µs; a patch diff about 7 µs and its encoding about 2 µs; a
 transaction is a few hundred bytes (about 350 KB for 900 frames), a full snapshot about 8 KB; the
 credit round trip is 1–2 host frames for a rendered receiver (`submitted`) and about 1.5 ms for a

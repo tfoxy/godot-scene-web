@@ -345,7 +345,9 @@
     "canvas_item_set_self_modulate",
     "canvas_item_set_visibility_layer",
     "canvas_item_set_z_index",
-    "canvas_item_set_draw_index"
+    "canvas_item_set_draw_index",
+    "canvas_item_set_z_as_relative_to_parent",
+    "canvas_item_set_draw_behind_parent"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",
@@ -381,6 +383,8 @@
     "canvas_item_set_self_modulate",
     "canvas_item_set_visibility_layer",
     "canvas_item_set_z_index",
-    "canvas_item_set_draw_index"
+    "canvas_item_set_draw_index",
+    "canvas_item_set_z_as_relative_to_parent",
+    "canvas_item_set_draw_behind_parent"
   ]
 }

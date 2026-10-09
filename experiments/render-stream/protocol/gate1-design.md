@@ -1,8 +1,8 @@
 # Gate 1 design: retained canvas state and delivery
 
 Status: contract for gate 1, written 2026-10-09 after gate 0 passed (commit `fa906496`). G1a,
-G1b1, G1c1, G1b2, G1c2 and G1d are implemented (the G1a, G1b2, G1c2 and G1d "As built" notes
-record the differences); G1e is not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
+G1b1, G1c1, G1b2, G1c2, G1d and G1e are implemented (the G1a, G1b2, G1c2, G1d and G1e "As
+built" notes record the differences). It is meant to be handed out piecewise: each increment (G1a … G1e) below is
 one verified commit on `main`, implemented by one agent in its own worktree, against this file,
 [render-stream-1.md](render-stream-1.md) (the proposed wire format, finalized by G1b1) and the
 gate 0 documents it extends: [gate0-design.md](gate0-design.md) and
@@ -178,10 +178,10 @@ step. This proves both the declaration and that it was warranted.
   (`renderer_canvas_cull.cpp:420-425`). Items land in per-z lists, concatenated in ascending z
   (`:76-101`). `z_relative` defaults to true (`renderer_canvas_cull.h:93`).
   `CanvasItem::set_z_index` always reaches the server (`scene/main/canvas_item.cpp:646-652`);
-  `set_z_as_relative` returns early on an unchanged value (`:655-661`) and is not hooked (G1e).
+  `set_z_as_relative` returns early on an unchanged value (`:655-661`); hooked since G1e.
 - Within one z, tree order: parent, then children in child-list order, except `behind` children,
-  which are drawn before the parent (`renderer_canvas_cull.cpp:468-480`; `behind` is not hooked
-  until G1e).
+  which are drawn before the parent (`renderer_canvas_cull.cpp:468-480`; `behind` is hooked since
+  G1e).
 - Child lists are sorted by `index` (the draw index) lazily, at cull time, only when
   `children_order_dirty` (`:304-307` for items with `ItemIndexSort`, `renderer_canvas_cull.h:109-113`;
   `:490-493` for canvases with `ChildItem::operator<`, `renderer_canvas_cull.h:146-151`).
@@ -1042,7 +1042,8 @@ the differences from the text above, and what G1d inherits:
   `live` and `live-headless`, and a tap whose connection the receiver closed before the end record
   may lack it (render-stream-1.md "File layout").
 - **Timeline.** Live hosts quit at `S + 11 N` (960) instead of the fixture default `S + 10 N + 11`,
-  so step 10's window (`[907, 960]`) is as long as the others.
+  so step 10's window (`[907, 960]`) is as long as the others. (Since G1e, `S + 13 N` = 1080 and
+  step 12's window `[1027, 1080]`.)
 - **`live-credit-bounded`** recomputes in-flight from the log's own `ack`/`resync` lines (a send
   while an earlier send's credit-stage ack is missing is a violation), independently of the host's
   `credit` field, which it checks too. The queued-bytes bound is the largest binary message (the
@@ -1188,6 +1189,24 @@ counts are positive with identical pixels), and two appended gate 1 fixture step
 with `z_as_relative = false` and `z_index = −1` under a parent at z 1; 12: `show_behind_parent` on
 a child overlapping its parent), extending the sabotage step sets accordingly. Pass: gate −1 with
 44 hooks and none omitted, gate 0, gate 1 all green.
+
+**As built (2026-10-09; README "Gate 1e result").** Built on G1b2, integrated after G1c2 and G1d;
+gate 1 (all four groups) passed 65 of 65 twice on the integrated tree. The differences:
+
+- **Receiver: no change.** `RsApplier` already applied the /1 `z_relative`/`behind` fields (G1b2);
+  only the capture side was missing.
+- **Step 12 holds two new top-level groups.** `ZB` (the visual proof of step 11's setter, a z 0
+  sibling over `ZC`) enters at step 12, not with `ZP` at step 11: two new top-level items entering
+  together tie with each other, and `ZC`/`ZB`'s by-design overlap would make that tie
+  `unsupported`. `expected.json` declares three ties (frames `S+N`, `S+11N`, `S+12N`), all
+  harmless; the regions gain `z-relative` and `behind` (eleven in all).
+- **Sabotage step sets** that never recover extend through 12: modulate {1..12}, transform
+  {2..12}, visibility {7..12}, free {8..12}; order {3} and visible {6} are unchanged.
+- **Live timeline.** The fixture's default quit becomes `S + 12N + 11`, so live hosts quit at
+  `S + 13N` (1080) and receivers shoot 13 windows. Every G1d timing (stall 367 → 488/489 with
+  steps 2 and 3 inside, stale-coalesce's step 3 at 480 before the credit, ignore-credit from 480)
+  precedes the new steps and is unchanged. The g1c/g1d self-test's fabricated timeline quits at
+  `S + 13N` too.
 
 ## Deferred, with owners
 

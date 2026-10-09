@@ -774,7 +774,7 @@ const scenarios: Scenario[] = [
     checks: { "capture-armed": false },
   },
   {
-    name: "a session planning 41 hooks fails capture-armed",
+    name: "a session planning one fewer hook fails capture-armed",
     mutate: async (out) => {
       await writeFile(
         join(out, "capture", "recording.rs1"),

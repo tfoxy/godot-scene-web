@@ -279,6 +279,8 @@ void test_setters() {
   m.set_visibility_layer(100, 1, 1);
   m.set_z_index(100, -3, 1);
   m.set_draw_index(100, 7, 1);
+  m.set_z_relative(100, false, 1);
+  m.set_behind(100, true, 1);
   const Snapshot s = m.snapshot(1, 1);
   const auto *it = item(s, 1);
   check(it->modulate == Color4{0.5f, 0.5f, 0.5f, 1}, "modulate stored");
@@ -287,6 +289,7 @@ void test_setters() {
   check(it->custom_rect && it->custom_rect_rect == Rect4{1, 2, 3, 4}, "custom rect stored");
   check(it->visibility_layer == 1 && it->z_index == -3 && it->draw_index == 7,
         "visibility_layer, z_index and draw_index stored");
+  check(!it->z_relative && it->behind, "z_relative and behind stored");
   check(s.failures.empty(), "setters on a known item do not fail");
 }
 
@@ -640,7 +643,7 @@ void test_raw_parent_free_leaves_detached_child() {
 
 // --- gate 1 (G1b2) -------------------------------------------------------------
 
-// z_relative / behind are not hooked until G1e: RenderingServer defaults.
+// z_relative / behind start at the RenderingServer defaults until their setters tap (G1e).
 void test_rs_defaults() {
   Mirror m;
   bind_root(&m);
@@ -648,6 +651,29 @@ void test_rs_defaults() {
   const Snapshot s = m.snapshot(1, 1);
   check(item(s, 1)->z_relative && !item(s, 1)->behind,
         "a new item has z_relative true and behind false (RS defaults)");
+}
+
+// G1e: canvas_item_set_z_as_relative_to_parent / canvas_item_set_draw_behind_parent.
+void test_set_z_relative_and_behind() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_z_relative(100, false, 1);
+  m.set_behind(100, true, 1);
+  const Snapshot s = m.snapshot(1, 1);
+  check(!item(s, 1)->z_relative && item(s, 1)->behind,
+        "set_z_relative(false) and set_behind(true) are stored");
+
+  Mirror n;
+  bind_root(&n);
+  n.canvas_item_create(100, 1);
+  n.set_omit_op("canvas_item_set_z_as_relative_to_parent", 5);
+  n.set_z_relative(100, false, 5);
+  n.set_behind(100, true, 5);
+  const Snapshot t = n.snapshot(1, 5);
+  check(item(t, 1)->z_relative && item(t, 1)->behind,
+        "omit-op drops only canvas_item_set_z_as_relative_to_parent");
+  check(n.stats().dropped_omit_op == 1, "exactly the one matching tap was dropped");
 }
 
 // Three top-level items on canvas 1 at RIDs 100.. with one add_rect each.
@@ -1019,6 +1045,7 @@ int main() {
   test_detach_reattach_keeps_id();
   test_raw_parent_free_leaves_detached_child();
   test_rs_defaults();
+  test_set_z_relative_and_behind();
   test_tie_two_siblings();
   test_tie_non_drawing_never_ties();
   test_tie_children_only_counts_as_drawing();

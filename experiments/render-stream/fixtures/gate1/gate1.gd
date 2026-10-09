@@ -3,7 +3,7 @@ extends Node
 ##
 ## The root is a plain `Node`; every `CanvasItem` is created in `_ready()`, after `GrcLoader`
 ## armed the capture extension in its own `_enter_tree()` (gate 0 route (a)), so the mirror sees
-## each `canvas_item_create`. Eleven steps each exercise one retained behaviour; expected.json is
+## each `canvas_item_create`. Thirteen steps each exercise one retained behaviour; expected.json is
 ## the only source of the numbers below and this script's literals must match it exactly.
 ##
 ## Environment (all optional; an invalid value prints an error and quits 2):
@@ -12,7 +12,7 @@ extends Node
 ##   RS_FIXTURE_ROOT_LOG    absolute path: one JSONL root-geometry line per settle frame
 ##   RS_FIXTURE_START_FRAME S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES N >= 8, default 10 (step k >= 1 at S+N*k, settled at S+N*k+7)
-##   RS_FIXTURE_QUIT_FRAME  >= S+N*10+11 (the default)
+##   RS_FIXTURE_QUIT_FRAME  >= S+N*12+11 (the default)
 ##   RS_FIXTURE_SHOT_FRAMES CSV of frames >= 1: also frame-<n>.png at each (rendered runs only)
 ##   RS_FIXTURE_TIE         disjoint (default) or overlap: whether step 1's new top-level T sits
 ##                          alone (80,304, 32x32) or over P and Q's children (112,112, 224x32)
@@ -33,11 +33,11 @@ class RectNode extends Node2D:
 		queue_redraw()
 
 
-const LAST_STEP: int = 10
+const LAST_STEP: int = 12
 const SETTLE_OFFSET: int = 7
 const START_FRAME_DEFAULT: int = 1
 const STEP_FRAMES_DEFAULT: int = 10
-const QUIT_AFTER_LAST_SETTLE: int = 4  # quit default S + N*10 + 11 = last settle + 4
+const QUIT_AFTER_LAST_SETTLE: int = 4  # quit default S + N*12 + 11 = last settle + 4
 
 const MARKER_COLORS: Array[Color] = [
 	Color(0, 0, 0, 1),
@@ -51,6 +51,8 @@ const MARKER_COLORS: Array[Color] = [
 	Color(0.4, 0.6, 0.8, 1),
 	Color(0.8, 0.6, 0.4, 1),
 	Color(0.2, 0.6, 0.2, 1),
+	Color(1, 0.2, 1, 1),
+	Color(0.2, 1, 0.8, 1),
 ]
 
 var p: RectNode
@@ -72,6 +74,11 @@ var corner: ColorRect
 var marker: RectNode
 var l2: RectNode
 var t: RectNode
+var zb: RectNode
+var zp: RectNode
+var zc: RectNode
+var bp: RectNode
+var bc: RectNode
 var y: RID
 var x: RID
 
@@ -232,6 +239,42 @@ func _apply_step(step: int) -> void:
 			r.add_child(r1)
 		10:
 			get_viewport().canvas_transform = Transform2D(0.0, Vector2(8, 4))
+		11:
+			# G1e: z_as_relative. ZP is a top-level parent at z_index 1 with no draw of its own;
+			# ZC is ZP's child at z_index -1 with z_as_relative = false, so its effective z is
+			# -1 (its own z_index alone, ignoring the accumulated parent z), not 0
+			# (renderer_canvas_cull.cpp:420-425). ZP is the only new top-level item this step, so
+			# it ties with P at index 0 for this step's applied frame only (same one-frame lag as
+			# T at step 1); its footprint (ZC's rect, y 0..32) does not overlap P's (y 96..160),
+			# so the tie is harmless (expected.json draw_index_ties).
+			zp = _rect_node("ZP", Vector2(90, 0), [], [])
+			zp.z_index = 1
+			add_child(zp)
+			zc = _rect_node("ZC", Vector2(0, 0), [Rect2(0, 0, 64, 32)], [Color(1, 0.6, 0, 1)])
+			zc.z_index = -1
+			zc.z_as_relative = false
+			zp.add_child(zc)
+		12:
+			# G1e: show_behind_parent, plus ZB to complete step 11's visual proof. ZB is a new
+			# top-level sibling at effective z 0 (unlike ZC's -1), overlapping ZC by 32px; the
+			# overlap must show ZB (blue), proving the mirror/receiver applied step 11's setter.
+			# ZB is introduced here, not alongside ZP at step 11, so the two new top-level items
+			# never tie with each other: entering together, their (by-design, overlapping)
+			# footprints would make that tie unsupported, not harmless. Entering a step apart,
+			# each only ties with P (disjoint, harmless) -- ZC is not top-level, so it never ties
+			# with ZB at all. BC is BP's child, drawn after BP in tree order by default (so
+			# normally on top), but show_behind_parent = true draws it before the parent
+			# (renderer_canvas_cull.cpp:468-480), so the overlap must show BP (red), not BC
+			# (green). ZB and BP/BC are the two new top-level items this step; their footprints
+			# (y 0..32 and y 36..68) and P's (y 96..160) are pairwise disjoint, so that tie is
+			# harmless too.
+			zb = _rect_node("ZB", Vector2(122, 0), [Rect2(0, 0, 64, 32)], [Color(0, 0.4, 1, 1)])
+			add_child(zb)
+			bp = _rect_node("BP", Vector2(90, 36), [Rect2(0, 0, 64, 32)], [Color(1, 0, 0, 1)])
+			add_child(bp)
+			bc = _rect_node("BC", Vector2(32, 0), [Rect2(0, 0, 64, 32)], [Color(0, 0.8, 0, 1)])
+			bc.show_behind_parent = true
+			bp.add_child(bc)
 	marker.set_rects([Rect2(0, 0, 32, 32)], [MARKER_COLORS[step]])
 
 

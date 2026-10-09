@@ -33,7 +33,7 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "3"
+CALIBRATOR_VERSION = "4"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
@@ -96,6 +96,9 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("canvas_item_set_visibility_layer", ("canvas_item_set_visibility_layer",)),
     ("canvas_item_set_z_index", ("canvas_item_set_z_index",)),
     ("canvas_item_set_draw_index", ("canvas_item_set_draw_index",)),
+    # calibrator 4: draw-order items the mirror held at RS defaults (gate1-design.md G1e)
+    ("canvas_item_set_z_as_relative_to_parent", ("canvas_item_set_z_as_relative_to_parent",)),
+    ("canvas_item_set_draw_behind_parent", ("canvas_item_set_draw_behind_parent",)),
 )
 
 ET_EXEC = 2
