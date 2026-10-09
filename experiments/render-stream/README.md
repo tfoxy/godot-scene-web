@@ -20,6 +20,11 @@ G1c2 followed (see "Gate 1c result" below): the capture library serves the same 
 own loopback WebSocket server, one transaction in flight with credit returned from the receiver's
 paced render loop, and a live receiver draws the same pixels as the file replay of what it received.
 
+G1d completed gate 1 (see "Gate 1d result" and "Gate 1 summary" below): a receiver that stalls for
+two seconds costs the host one pending target and no queue, catches up to the newest state in one
+transaction, and resync, reconnect and a killed receiver all leave the host and the picture
+correct.
+
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
 
@@ -291,10 +296,10 @@ experiments/render-stream/scripts/build-capture.sh
 mise exec -- pnpm render-stream:gate1 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g1a,g1b,g1c]
+  [--legs g1a,g1b,g1c,g1d]
 ```
 
-This takes about six minutes and runs the landed groups, `g1a`, `g1b` and `g1c`. It imports
+This takes about eight minutes and runs the landed groups, `g1a`, `g1b`, `g1c` and `g1d`. It imports
 `fixtures/gate1/` and `receiver/`, then runs the receiver's typed self-test and the headless
 captures, each writing both sinks (`recording.rs1` full, `recording-patch.rs1` patch): the
 400-frame capture under `enforce-min-size`, the four `omit-update` sabotage captures and the
@@ -305,7 +310,9 @@ patch receiver, the sabotage receivers and the overlap variant's reference and r
 second private gamescope. Group g1c runs four live legs: a host serving on an ephemeral loopback
 port with a headless receiver, then, in a third private gamescope, a host with a rendered live
 receiver, a file-mode replay of what that receiver received, and the `drop-message` sabotage.
-Last, the checker writes
+Group g1d runs six more live hosts: one whose headless receiver is SIGKILLed at frame 600, then, in
+a fourth private gamescope, a stalled receiver, a reconnecting one, a resyncing one, and the
+`ignore-credit` and `stale-coalesce` sabotages. Last, the checker writes
 `artifacts/render-stream/gate1/<UTC>/result.json` (`render-stream-gate1-report/1`). Legs and
 criteria: [scripts/README.md](scripts/README.md) "Gate 1". Self-test:
 `scripts/test/self-test-gate1.ts`.
@@ -1065,6 +1072,150 @@ g1a and g1b classify exactly as in "Gate 1b result". Images, all under the run d
 - Presentation: `presented` is unavailable in Godot; `submitted` is "Godot submitted the frame".
 - Rates other than 60 frames per second, more than one receiver, non-loopback serving and
   constrained links (gate 6, gate 2).
+
+## Gate 1d result (2026-10-09)
+
+**Pass.** The run is `artifacts/render-stream/gate1/20261009T0930Z-g1d/` (ignored, not committed;
+produced in the G1d worktree). Its `result.json` has `gate_passed: true`, all four groups (`g1a`,
+`g1b`, `g1c`, `g1d`) run and none missing, and 65 of 65 checks pass
+([protocol/gate1-design.md](protocol/gate1-design.md) "G1d"). Every leg classifies as expected.
+Runs on the same library:
+
+- gate 0: `artifacts/render-stream/gate0/20261009T090439Z/` passes 19 of 19;
+- gate −1: `artifacts/render-stream/gate-minus1/20261009T090340Z/` still passes 28 of 28.
+
+**The stall.** `live-stall`'s receiver takes its step 1 shot (seq 332, host frame 367), then blocks
+its main loop for 2 000.05 ms with `OS.delay_msec` before that seq's `submitted` ack. The delay is
+injected and declared so (`live.stall.injected`, with the mechanism); it is not GPU-limited work,
+and the host cannot tell the difference: it only sees a credit that does not return.
+
+| Measured on the host (`tap/live-1.jsonl`)                       | `live-stall`                                     |
+| --------------------------------------------------------------- | ------------------------------------------------ |
+| frames simulated between the stalled send and its credit        | 121 (367 → 488), every one logged, 16.67 ms mean |
+| fixture steps applied inside the stall                          | 2 (frame 420) and 3 (frame 480)                  |
+| transactions sent during the stall                              | 0                                                |
+| coalesced callbacks during the stall                            | 68 (one per frame from 420 to 487)               |
+| pending targets at once                                         | at most 1 (a flag; the target is the mirror)     |
+| oldest pending target                                           | 68 frames, 1 133 ms                              |
+| max queued bytes (whole leg / during the stall)                 | 7 628 / 2 361 (bound 11 720)                     |
+| max in flight                                                   | 1                                                |
+| recovery: first transaction after the credit                    | seq 333, a 2 357-byte patch on seq 332           |
+| … sent after the credit arrived                                 | 0 frames (the same callback), 1.4 ms             |
+| … its `applied` / `submitted` ack after the credit (host clock) | 3.6 ms / 13.0 ms                                 |
+| … equal to the full recording at its frame (488)                | yes                                              |
+
+The coalesced count starts at frame 420, not at the start of the stall: the hub counts a callback
+only when the mirror changed since the last send, and this fixture changes the mirror only at step
+frames (see "Findings"). Step 2's window (`[427, 479]`) lies wholly inside the stall and is the
+only step without a shot, exactly as derived from the host log. The first shot after the stall
+(step 3, seq 333) equals the reference and shows all 9 216 pixels step 2 changed inside the stall
+(the hierarchy's new transforms and `R1`'s colour) that still show at step 3.
+
+| Leg                       | Group | Class (expected = measured)          | Measured                                                                                                                                                                                                                                   |
+| ------------------------- | ----- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `live-stall`              | g1d   | `success`                            | 569 transactions; 10 shots, all equal to the reference; step 2 missed inside the stall; numbers above                                                                                                                                      |
+| `live-reconnect`          | g1d   | `success`                            | connection 1: 505 sent, closed by the receiver with 1000 after the step 4 shot (seq 505); `dispose` freed 20 of 20 RIDs, 0 left; connection 2: fresh `stream_id`, same `session_id`, seq 1 full at frame 552, 403 sent; 6 shots, all equal |
+| `live-resync`             | g1d   | `success`                            | seq 629 (frame 667, step 6's window) refused unapplied, acked `received` only; the host credited the `resync` and sent seq 630 full (`base_seq` null); 2 full transactions in 922; every shot equal                                        |
+| `live-receiver-killed`    | g1d   | support                              | headless receiver SIGKILLed at host frame 601; the host's connection closed 1006 (connection reset) after frame 602; the fixture quit at 960, exit 0, both file sinks complete                                                             |
+| `sabotage-ignore-credit`  | g1d   | `delivery-violation`                 | from frame 488 (the receiver's 500 ms stall after its step 3 shot) 38 sends without credit, up to 31 in flight; nothing before the sabotage frame 480                                                                                      |
+| `sabotage-stale-coalesce` | g1d   | `delivery-violation` (`stale-state`) | the first post-stall transaction (seq 330, frame 488) carries frame 420's state (`stale_from: 420`); its step 3 shot also differs from the reference (2 048 px)                                                                            |
+
+g1a, g1b and g1c classify exactly as in "Gate 1c result". Images, all under the run directory:
+`live-stall/receiver/shots/seq-{…,332,333,…}.png` (step 1 before the stall, step 3 after it),
+`live-reconnect/receiver/shots/stream-2-seq-<n>.png` (steps 5–10 on connection 2),
+`live-resync/receiver/shots/seq-630.png` (step 6, the full transaction after the resync) and
+`sabotage-stale-coalesce/receiver/shots/seq-330.png` with `diff/step-3.png`.
+
+**Acks and bytes.** Credit round trips on the host clock (send → the credit-stage ack's receipt),
+p50 / p95: `live-stall` 7.3 / 18.4 ms outside the stall (max 2 015 ms, the stall),
+`live-reconnect` 13.8 / 14.5 ms and 14.4 / 14.7 ms (connections 1 and 2), `live-resync`
+6.8 / 7.1 ms. The g1c `live` leg measured 16.7 / 17.2 ms in this run against 10.9 / 11.3 ms in the
+G1c2 run: a rendered receiver's `submitted` stage follows the private gamescope's frame timing,
+which varies between runs; the credit still returned within 1–2 host frames. Bytes are G1c2's:
+patches of a few hundred bytes, the stall's recovery patch 2 357 bytes (two steps' changes at
+once), a fresh connection's seq 1 about 8 KB. On the host, one snapshot copy costs about 14 µs per
+frame, a patch diff about 7 µs and its encoding about 2 µs (the ignore-credit host's end stats).
+
+### Findings
+
+- **The contract's `coalesced` bound assumed a mirror that changes every frame.** The hub counts
+  a coalesced callback only when the mirror changed since the last send (Q4), and the fixture
+  changes it only at step frames, so a 121-frame stall coalesced 68 callbacks (from step 2's frame
+  to the credit), not "stall frames − 2". The check measures from the first in-stall change, and
+  requires one coalesced callback per pending frame line.
+- **ignore-credit is unobservable against a receiver that keeps up.** With credit returning in
+  well under a frame (p50 8.5 ms in the first full run), a host that ignores credit sends exactly
+  what a correct host sends, and that run classified the sabotage `success`. The leg now gives its
+  receiver a 500 ms stall after the step 3 shot, which ends before step 4's window: the host keeps
+  sending into it, 31 in flight.
+- **stale-coalesce is visible only because a step lands before the credit.** The stale copy is
+  frame 420's state; it differs from the newest state at the credit (488) only through step 3
+  (480). A stall that ended 8 frames sooner would hide the sabotage and fail its leg check.
+- **A reconnect's first stream stops short of the host's tap.** The host sends the next
+  transaction as soon as the reconnect step's `submitted` ack returns the credit; the receiver
+  closes without reading it. The received stream is a byte prefix of the tap, without an end
+  record, and the checker requires exactly that.
+
+### What this proves
+
+- A receiver that stops reading for two seconds costs the host nothing it would not spend anyway:
+  the simulation runs at 60 frames per second throughout, nothing is serialized for a target the
+  receiver will never see, at most one transaction is in flight and one target pending, and the
+  queue never grows past one message.
+- The receiver catches up in one transaction to the newest state, including changes made while
+  it was stalled, and draws exactly the reference afterwards.
+- `resync` turns a refused transaction into one full transaction on the same stream; a reconnect
+  is a fresh session that owes nothing to the old stream, with every receiver RID freed in
+  between; a receiver killed mid-stream leaves the host and its recordings intact.
+- A host that ignores credit, or that coalesces to a stale target, is caught by the checker.
+
+### What this does not prove
+
+- GPU-limited receivers: the stall is an injected main-loop block, and `submitted` is "Godot
+  submitted the frame", not presentation or GPU completion (gate 6 measures those).
+- Resources (no textures yet: pinning in-flight resource versions is gate 2), more than one
+  receiver, arm-on-first-subscriber, non-loopback serving, other rates and constrained links.
+
+## Gate 1 summary
+
+Gate 1 passes as of 2026-10-09 with all four groups in one run (65 checks): G1a, G1b2, G1c2 and
+G1d, built on G1b1's codecs and G1c1's WebSocket server. G1e (calibrator 4: `z_as_relative`,
+`draw_behind_parent`) is optional for the gate and not part of this result.
+
+What gate 1 proves, on the pinned 4.5.1 release template under `--headless`:
+
+- **Retained state (1a).** Parent/child transforms and modulation, transform changes without a
+  redraw, draw order (index swap, z over index, reparent, same-parent re-append), visibility and
+  layer culling, content replacement and clearing, create/free/recreate and detach/re-attach, and a
+  canvas transform: eleven steps, each pixel-exact against the rendered reference and an image
+  painted from `expected.json`, each sabotage failing at exactly its predicted steps.
+- **Root geometry (1a).** The headless host's degenerate 64×64 root is declared, never guessed;
+  `GRC_ROOT_SIZE=enforce-min-size` makes it match the 640×360 logical size.
+- **render-stream/1 (1b).** Patch transactions resolve bit for bit to the full snapshots of the
+  same frames and cost the receiver the same RenderingServer calls; a corrupt patch is caught as
+  `patch-divergence`. The one-frame draw-index tie of a top-level item added at runtime is
+  declared on the wire and classified by its effect.
+- **Live delivery (1c).** The capture library serves the stream from inside the game process over
+  its own loopback WebSocket server, encoding on the main thread at the frame boundary, one
+  transaction in flight, credit returned from the receiver's paced render loop; live pixels equal
+  the reference and a file replay of the received bytes; a lost message is a sequence gap.
+- **Slow receivers (1d).** Stall, coalescing to one pending target, newest-state recovery,
+  resync, reconnect and receiver loss, as above.
+
+Unsupported or deferred, by design: textures and every resource payload (gate 2), clipping
+semantics (gate 3), `z_as_relative`/`draw_behind_parent` (G1e; RS defaults until then),
+`viewport_set_global_canvas_transform`, `canvas_set_modulate`, y-sort, light masks and texture
+filter/repeat (in the session's `unobserved` list), equal-draw-index ties that can change pixels
+(`draw-index-tie`, unsupported), a degenerate host size (`degenerate-host-size`, unsupported),
+arm-on-first-subscriber and late join (gate 8), more than one receiver, publication-rate control
+and real presentation timing (gate 6), non-loopback serving and authorization (gate 2).
+
+Costs, measured on the gate 1 hosts (60 frames per second, the 21-item fixture): one mirror
+snapshot copy per frame, about 14 µs; a patch diff about 7 µs and its encoding about 2 µs; a
+transaction is a few hundred bytes (about 350 KB for 900 frames), a full snapshot about 8 KB; the
+credit round trip is 1–2 host frames for a rendered receiver (`submitted`) and about 1.5 ms for a
+headless one (`applied`); the receiver applies a transaction in about 0.6 ms (median, G1c2). The
+hook itself stays armed for the whole session (D6), a cost gate 1 does not measure.
 
 ## Scratch verification (2026-10-08)
 

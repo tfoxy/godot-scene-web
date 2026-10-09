@@ -1,8 +1,8 @@
 # Gate 1 design: retained canvas state and delivery
 
 Status: contract for gate 1, written 2026-10-09 after gate 0 passed (commit `fa906496`). G1a,
-G1b1, G1c1, G1b2 and G1c2 are implemented (the G1a, G1b2 and G1c2 "As built" notes record the
-differences); G1d and G1e are not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
+G1b1, G1c1, G1b2, G1c2 and G1d are implemented (the G1a, G1b2, G1c2 and G1d "As built" notes
+record the differences); G1e is not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
 one verified commit on `main`, implemented by one agent in its own worktree, against this file,
 [render-stream-1.md](render-stream-1.md) (the proposed wire format, finalized by G1b1) and the
 gate 0 documents it extends: [gate0-design.md](gate0-design.md) and
@@ -1117,6 +1117,63 @@ post-stall transaction must carry an update that happened while presentations we
 **Pass criteria**: `pnpm render-stream:gate1` (all groups) green; gate 0, gate −1 green; README
 "Gate 1 result" with the run directory, image paths, per-leg classes, stall/coalescing numbers,
 ack latency distributions and bytes, and an explicit "what this does not prove" list.
+
+**As built (2026-10-09; README "Gate 1d result").** Every g1d leg classified as expected; the full
+gate 1 run (all four groups) passes 65 of 65 checks. These are the differences from the text
+above:
+
+- **Host.** The pending target stays the mirror (G1c2); at most one per connection (a flag). The
+  hub now records when it became pending: frame lines carry `pending_since`, and the summary
+  `max_pending`, `pending_episodes`, `max_pending_frames`, `max_pending_age_us`,
+  `sent_without_credit` and `stale_sent`. `Hub::wants_snapshot(frame)` takes the frame, since the
+  two sabotages need a snapshot without credit. A credit-stage answer for any outstanding seq
+  settles it, so `max_in_flight` counts outstanding seqs when ignore-credit puts several in flight
+  (only the in-flight seq still returns the credit). `stale-coalesce` keeps a copy of the first
+  callback that coalesced since the last send and sends it, labelled with the current frame, when
+  credit returns; the sent JSON names it (`stale_from`). Both sabotages need `GRC_LIVE_LISTEN`.
+- **`coalesced` measured from the first in-stall change.** The hub counts a coalesced callback
+  only when the mirror changed since the last send (Q4), and the fixture changes the mirror only at
+  step frames, so the 121-frame stall coalesced 68 callbacks (step 2's frame 420 to the credit at
+  488). The check requires coalesced ≥ (credit frame − first pending frame) − 2, exactly one per
+  pending frame line, and the first pending frame at the first in-stall step's frame (or the next).
+  "Stall frames − 2" would hold only for a mirror that changes every frame.
+- **`stall-pixels`, "shows step 2's transforms and R1's colour"**, is checked as: every pixel that
+  the first in-stall step changed (against the stall step's synthesized image) and that still shows
+  at the first post-stall shot's step equals the reference there (9 216 pixels at step 3).
+  The missed-step set is derived from the host log: windows lying after the stalled seq's send and
+  before the recovery send.
+- **`sabotage-ignore-credit` runs its receiver with `RS_RECEIVER_STALL=3:500`.** Against a receiver
+  that returns credit in well under a frame, a host that ignores credit sends exactly what a correct
+  host sends: the first full run classified the leg `success` (credit round trip p50 8.5 ms). A
+  500 ms stall after the step 3 shot (frame 487 on, ending before step 4's window at 547) makes the
+  sabotage observable: 38 sends without credit, 31 in flight. The leg check also requires every
+  violation at or after the sabotage frame.
+- **`sabotage-stale-coalesce` depends on step 3 landing inside the stall.** The stale copy (frame 420) differs from the newest state at the credit (488) only through step 3 (480); the leg check
+  requires the first post-stall transaction to be stale, so a stall that ended before 480 fails
+  the leg rather than passing it. Its stale copies taken in ordinary one-frame gaps (3 in all) were
+  identical to the state at their send frame.
+- **`live-receiver-killed`** uses a headless receiver (credit stage `applied`), started in the
+  background and SIGKILLed once the host's `tap/live-1.jsonl` reaches frame `S + 5N`
+  (`receiver/killed.json`). The host's connection closes 1006 ("peer closed" or "connection
+  reset").
+- **Receiver.** The stall runs inside the `frame_post_draw` callback that took the shot, before the
+  `submitted` ack; `live.stall` adds `after_frame`, `injected: true` and the mechanism. A reconnect
+  waits (2 s at most) for connection 1's close handshake, then `dispose()`s and reconnects,
+  retrying while the host still answers 503 (one receiver at a time) until the connect timeout;
+  `live.reconnect` adds `created_rids`, `freed_by_apply`, `owned_before_dispose` and
+  `connect_attempts`, and `RsApplier` counts `created_rids` and `freed_by_apply`, so
+  `reconnect-clean-slate` compares the dispose against an independent count. Connection 2 writes
+  `received-2.rs1`, `shots/stream-2-seq-<n>.png` and `state/stream-2-seq-<n>.json` (state dumps are
+  keyed by that name, since seqs restart). A resync refuses the newest transaction of the step's
+  window at apply time, acks it `received` only, and would refuse (with another `resync`) any patch
+  before the full one. The G1d options need a shot window for their step (usage error otherwise).
+- **A reconnect's first stream stops short of its tap.** The host forms the next transaction as
+  soon as the step 4 `submitted` ack returns the credit, and the receiver closes without reading it,
+  so `received.rs1` is a byte prefix of `tap/stream-1.rs1`, without an end record. The checker
+  requires exactly that for every connection but the last; the last must equal its tap.
+- **Report.** The g1d legs are reported in a `g1d` object (per leg: connection summaries, the
+  recomputed delivery report per connection, the receiver's counts, and the stall, reconnect and
+  resync records), beside g1c's `live`.
 
 ---
 

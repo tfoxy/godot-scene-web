@@ -118,6 +118,9 @@ const RENDERED: Record<LiveHostLeg, boolean> = {
 
 export const TAP_NAME = "stream-1.rs1";
 export const LIVE_LOG_NAME = "live-1.jsonl";
+/** The tap and live log of connection `n` (G1d's reconnect makes a connection 2). */
+export const tapName = (n: number): string => `stream-${n}.rs1`;
+export const liveLogName = (n: number): string => `live-${n}.jsonl`;
 export const RECEIVED_NAME = "received.rs1";
 /** Queued bytes may exceed the largest message by this much (gate1-design.md Q7 class 4). */
 export const QUEUED_SLACK_BYTES = 4096;
@@ -158,6 +161,14 @@ export interface LiveConnectionSummary {
   full?: number;
   patch?: number;
   coalesced?: number;
+  /** G1d: pending targets (at most one at a time), their count and the oldest one's age */
+  max_pending?: number;
+  pending_episodes?: number;
+  max_pending_frames?: number;
+  max_pending_age_us?: number;
+  /** G1d sabotage evidence: sends without credit (ignore-credit), stale copies sent */
+  sent_without_credit?: number;
+  stale_sent?: number;
   max_in_flight?: number;
   max_queued_bytes?: number;
   max_message_sent?: number;
@@ -194,6 +205,8 @@ export interface LiveLogLine {
   credit?: boolean;
   in_flight?: number | null;
   pending?: boolean;
+  /** G1d: the frame the current pending target became pending, null when nothing is pending */
+  pending_since?: number | null;
   coalesced?: number;
   queued_bytes?: number;
   sent?: {
@@ -201,6 +214,8 @@ export interface LiveLogLine {
     encoding: string;
     bytes: number;
     dropped?: boolean;
+    /** stale-coalesce: the frame whose snapshot this transaction carries */
+    stale_from?: number;
   } | null;
   seq?: number;
   stage?: string;
@@ -270,11 +285,36 @@ export interface AppliedLive extends AppliedJson {
     inbound_buffer_bytes?: number;
     presented?: string;
     acks_sent?: { received?: number; applied?: number; submitted?: number };
+    /** G1d (gate1-design.md Q5) */
+    stall?: {
+      step?: number;
+      ms?: number;
+      after_seq?: number;
+      after_frame?: number;
+      start_us?: number;
+      end_us?: number;
+      injected?: boolean;
+      mechanism?: string;
+    } | null;
+    reconnect?: {
+      step?: number;
+      after_seq?: number;
+      after_frame?: number;
+      connect_attempts?: number;
+      created_rids?: number | null;
+      freed_by_apply?: number | null;
+      owned_before_dispose?: number | null;
+      freed_rids?: number | null;
+      leftover_rids?: number | null;
+    } | null;
+    resync?: { step?: number; seq?: number; frame?: number } | null;
   } | null;
 }
 
 export interface LiveHostEvidence {
   dir: string;
+  /** the connection whose tap and log these are (1 unless G1d reconnected) */
+  connection: number;
   captureResult:
     | (CaptureResultJson & {
         live?: { status?: string; port?: number; connections?: number };
@@ -291,19 +331,23 @@ export interface LiveHostEvidence {
   exit_code: number | null;
 }
 
-export async function loadLiveHost(dir: string): Promise<LiveHostEvidence> {
+export async function loadLiveHost(
+  dir: string,
+  connection = 1,
+): Promise<LiveHostEvidence> {
   return {
     dir,
+    connection,
     captureResult: await readJson(join(dir, "evidence", "result.json")),
     live: await readJson<LiveJson>(join(dir, "evidence", "live.json")),
     summary: await readJson<LiveSummaryJson>(
       join(dir, "evidence", "live-summary.json"),
     ),
     log: parseLiveLog(
-      await readTextOrUndefined(join(dir, "tap", LIVE_LOG_NAME)),
+      await readTextOrUndefined(join(dir, "tap", liveLogName(connection))),
     ),
-    tap: await loadRecording(join(dir, "tap", TAP_NAME)),
-    tapBytes: await readBytes(join(dir, "tap", TAP_NAME)),
+    tap: await loadRecording(join(dir, "tap", tapName(connection))),
+    tapBytes: await readBytes(join(dir, "tap", tapName(connection))),
     full: await loadRecording(join(dir, RECORDING_NAME)),
     patch: await loadRecording(join(dir, PATCH_RECORDING_NAME)),
     steps: parseStepLog(await readTextOrUndefined(join(dir, "steps.jsonl"))),
@@ -315,11 +359,20 @@ export async function loadLiveHost(dir: string): Promise<LiveHostEvidence> {
  * record may lack it (render-stream-1.md "File layout": "a stream the receiver itself closed may
  * lack the end record"); every other error stands. */
 export function tapErrors(host: LiveHostEvidence): string[] {
-  const c = host.summary?.connections?.[0];
+  const c = connectionSummary(host);
   const receiverClosedEarly =
     c?.closed_by === "receiver" && c.end_sent === false;
   return host.tap.errors.filter(
     (e) => !(receiverClosedEarly && e.startsWith("recording-incomplete:")),
+  );
+}
+
+/** The live-summary.json entry of the host evidence's own connection. */
+export function connectionSummary(
+  host: LiveHostEvidence,
+): LiveConnectionSummary | undefined {
+  return host.summary?.connections?.find(
+    (c) => c.connection === host.connection,
   );
 }
 
@@ -333,7 +386,7 @@ export function step0Settle(steps: StepLine[] | undefined): number | null {
 // ---------------------------------------------------------------------------------------------
 
 /** A resolved state as one comparable string: numbers bit-exact (-0 kept apart from 0). */
-function stateKey(t: RecordingSummary["transactions"][number]): string {
+export function stateKey(t: RecordingSummary["transactions"][number]): string {
   const { status, failures, unsupported, canvases, items } = t.meta;
   return JSON.stringify(
     { status, failures, unsupported, canvases, items },
@@ -432,7 +485,9 @@ export function deliveryReport(host: LiveHostEvidence): DeliveryReport {
     out.max_in_flight = Math.max(out.max_in_flight, outstanding.size);
   }
   if (host.log === undefined)
-    out.in_flight_violations.push(`${LIVE_LOG_NAME} missing or unparseable`);
+    out.in_flight_violations.push(
+      `${liveLogName(host.connection)} missing or unparseable`,
+    );
   const byFrame = new Map(host.full.transactions.map((t) => [t.meta.frame, t]));
   for (const t of host.tap.transactions) {
     out.compared_states++;
@@ -475,11 +530,11 @@ export interface LiveLegEvaluation {
   first_applied_frame: number | null;
 }
 
-function arr<T>(value: unknown): T[] {
+export function arr<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-function reclassify(
+export function reclassify(
   c: Gate1Classification,
   extra: string[],
   mismatchingSteps: number[] = c.mismatching_steps,
@@ -496,7 +551,7 @@ function reclassify(
   };
 }
 
-async function shotFiles(dir: string): Promise<number[]> {
+export async function shotFiles(dir: string): Promise<number[]> {
   try {
     return (await readdir(join(dir, "shots")))
       .map((n) => /^seq-(\d+)\.png$/.exec(n)?.[1])
@@ -507,7 +562,9 @@ async function shotFiles(dir: string): Promise<number[]> {
   }
 }
 
-function stepShotsOf(applied: AppliedLive | undefined): Map<number, number> {
+export function stepShotsOf(
+  applied: AppliedLive | undefined,
+): Map<number, number> {
   const out = new Map<number, number>();
   for (const s of arr<{ step?: number | null; seq?: number }>(applied?.shots)) {
     if (Number.isInteger(s.step) && Number.isInteger(s.seq))
@@ -516,7 +573,7 @@ function stepShotsOf(applied: AppliedLive | undefined): Map<number, number> {
   return out;
 }
 
-async function liveCheckpoints(
+export async function liveCheckpoints(
   leg: G1cLeg,
   outDir: string,
   receiverDir: string,
@@ -547,7 +604,7 @@ async function liveCheckpoints(
   );
 }
 
-function checkpointMismatch(c: Gate1Checkpoint): boolean {
+export function checkpointMismatch(c: Gate1Checkpoint): boolean {
   const bad = (n: number | null): boolean => n === null || n > 0;
   return (
     bad(c.mismatched_pixels) ||
@@ -556,12 +613,12 @@ function checkpointMismatch(c: Gate1Checkpoint): boolean {
   );
 }
 
-async function existing(paths: string[]): Promise<string[]> {
+export async function existing(paths: string[]): Promise<string[]> {
   const flags = await Promise.all(paths.map(fileExists));
   return [...new Set(paths.filter((_, i) => flags[i]))];
 }
 
-function processArtifacts(dirs: string[]): string[] {
+export function processArtifacts(dirs: string[]): string[] {
   return dirs.flatMap((dir) => [
     join(dir, "argv.txt"),
     join(dir, "env.txt"),
@@ -582,7 +639,7 @@ function processArtifacts(dirs: string[]): string[] {
 }
 
 /** The receiver-side rules of a live leg (rule 3, replay-failure). */
-function liveReplayReasons(
+export function liveReplayReasons(
   e: Pick<
     LiveLegEvaluation,
     | "applied"
@@ -652,7 +709,7 @@ function liveReplayReasons(
   return out;
 }
 
-function deliveryReasons(d: DeliveryReport): string[] {
+export function deliveryReasons(d: DeliveryReport): string[] {
   const out: string[] = [];
   const fire = (r: string) => out.push(`delivery-violation: ${r}`);
   if (d.in_flight_violations.length > 0)
@@ -1108,7 +1165,10 @@ export function checkLiveResolvesToRecording(evals: Evals): Gate1Check {
   );
 }
 
-async function samePng(a: string, b: string): Promise<string | undefined> {
+export async function samePng(
+  a: string,
+  b: string,
+): Promise<string | undefined> {
   const pa = await decodePngRgba(a);
   const pb = await decodePngRgba(b);
   if (!pa || !pb) return `${!pa ? a : b} missing or unreadable`;
@@ -1489,7 +1549,7 @@ export interface LiveLegReport {
   first_applied_frame: number | null;
 }
 
-function spread(
+export function spread(
   values: number[],
 ): { min: number; median: number; max: number } | null {
   if (values.length === 0) return null;

@@ -545,8 +545,11 @@ void test_parse_sabotage() {
       {"omit-update", "5", "free", false, SabotageKind::None, 0, "op with omit-update"},
       {"patch-drop-item", "5", "free", false, SabotageKind::None, 0, "op with patch-drop-item"},
       {"drop-message", "5", nullptr, true, SabotageKind::DropMessage, 5, "drop-message @5 (live)"},
-      {"ignore-credit", nullptr, nullptr, false, SabotageKind::None, 0, "ignore-credit"},
-      {"stale-coalesce", nullptr, nullptr, false, SabotageKind::None, 0, "stale-coalesce"},
+      {"ignore-credit", "480", nullptr, true, SabotageKind::IgnoreCredit, 480,
+       "ignore-credit @480 (live)"},
+      {"stale-coalesce", nullptr, nullptr, true, SabotageKind::StaleCoalesce, 21,
+       "stale-coalesce @21 (live)"},
+      {"ignore-credit", "5", "free", false, SabotageKind::None, 0, "op with ignore-credit"},
       {"not-a-real-kind", nullptr, nullptr, false, SabotageKind::None, 0, "unknown kind"},
       {"", nullptr, nullptr, false, SabotageKind::None, 0, "empty kind"},
       {"freeze-frame", "0", nullptr, false, SabotageKind::None, 0, "frame 0"},
@@ -570,9 +573,6 @@ void test_parse_sabotage() {
       check(!r.error.empty(), what + " (error text)");
     }
   }
-  check(parse_sabotage("stale-coalesce", nullptr, nullptr).error ==
-            "live sabotage stale-coalesce: not implemented until G1d",
-        "the G1d live kinds name the missing increment");
 }
 
 void test_generate_id() {

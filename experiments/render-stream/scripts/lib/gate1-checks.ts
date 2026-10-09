@@ -1,5 +1,6 @@
 // Gate 1 checks and leg classification (protocol/gate1-design.md "Q7", "G1a" and "G1b2"; the
-// live legs of "G1c2" are in gate1-live-checks.ts and joined in by runGate1).
+// live legs of "G1c2" are in gate1-live-checks.ts, those of "G1d" in gate1-g1d-checks.ts, both
+// joined in by runGate1).
 //
 // Everything here reads an evidence directory written by run-gate1.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate1.ts can drive it with fabricated trees.
@@ -27,6 +28,8 @@
 //   (g1b) tie-overlap/{capture,receiver,reference}/   RS_FIXTURE_TIE=overlap
 //   (g1c) live/{host,receiver}/, live-replay/, live-headless/{host,receiver}/,
 //         sabotage-drop-message/{host,receiver}/   (gate1-live-checks.ts)
+//   (g1d) live-{stall,reconnect,resync,receiver-killed}/{host,receiver}/,
+//         sabotage-{ignore-credit,stale-coalesce}/{host,receiver}/   (gate1-g1d-checks.ts)
 
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -76,6 +79,27 @@ import {
   stepFrames,
   synthesizeGate1,
 } from "./gate1-expected";
+import {
+  checkCoalesced,
+  checkG1dLegClass,
+  checkHostSurvivesReceiverLoss,
+  checkNewestAfterStall,
+  checkPendingBounded,
+  checkReconnectCleanSlate,
+  checkReconnectFreshSession,
+  checkResyncFull,
+  checkSimKeptRunning,
+  checkStallObserved,
+  checkStallPixels,
+  evaluateG1dLeg,
+  G1D_CLASSIFIED_LEGS,
+  G1D_SUPPORT_LEGS,
+  type G1dLeg,
+  type G1dLegEvaluation,
+  type G1dLegReport,
+  g1dLegReport,
+  loadKilled,
+} from "./gate1-g1d-checks";
 import {
   checkLiveAcksStaged,
   checkLiveCreditBounded,
@@ -127,7 +151,7 @@ export const GATE1_CLASS_PRECEDENCE: readonly Gate1Class[] = [
 
 /** Leg groups in increment order; LANDED_GROUPS are the ones a full run requires today. */
 export const ALL_GROUPS = ["g1a", "g1b", "g1c", "g1d"] as const;
-export const LANDED_GROUPS: readonly string[] = ["g1a", "g1b", "g1c"];
+export const LANDED_GROUPS: readonly string[] = ["g1a", "g1b", "g1c", "g1d"];
 
 export const G1A_CLASSIFIED_LEGS = [
   "capture",
@@ -778,6 +802,10 @@ export async function computeGate1Checkpoints(
   receiverShotsDir: string,
   diffDir: string,
   expected: Gate1Expected,
+  /** the receiver shot's file name for a step (default `seq-<seq>.png`; G1d's second live
+   * connection names its shots `stream-2-seq-<seq>.png`) */
+  shotName: (step: number, seq: number) => string = (_step, seq) =>
+    `seq-${seq}.png`,
 ): Promise<{ checkpoints: Gate1Checkpoint[]; compareOk: boolean }> {
   const checkpoints: Gate1Checkpoint[] = [];
   let compareOk = true;
@@ -787,7 +815,7 @@ export async function computeGate1Checkpoints(
     const receiverPng =
       entry.seq === null
         ? null
-        : join(receiverShotsDir, `seq-${entry.seq}.png`);
+        : join(receiverShotsDir, shotName(entry.step, entry.seq));
     const ref = await decodePngRgba(referencePng);
     const got = receiverPng ? await decodePngRgba(receiverPng) : undefined;
     const base = {
@@ -2167,6 +2195,9 @@ export interface Gate1Report {
   /** g1c: per live leg, the host's connection summaries, the recomputed delivery report and the
    * receiver's stage counts (null when g1c did not run) */
   live: Record<string, LiveLegReport> | null;
+  /** g1d: per leg, the same per connection plus the stall, reconnect and resync evidence
+   * (null when g1d did not run) */
+  g1d: Record<string, G1dLegReport> | null;
   root_geometry: RootGeometryReport | null;
 }
 
@@ -2195,6 +2226,10 @@ export function gate1ReceiverLogPaths(outDir: string): string[] {
     join(outDir, "live-replay", "stdout.log"),
     join(outDir, "live-headless", "receiver", "stdout.log"),
     join(outDir, "sabotage-drop-message", "receiver", "stdout.log"),
+    // g1d (G1d)
+    ...[...G1D_CLASSIFIED_LEGS, ...G1D_SUPPORT_LEGS].map((l) =>
+      join(outDir, l, "receiver", "stdout.log"),
+    ),
   ];
 }
 
@@ -2451,6 +2486,73 @@ export async function runGate1(
     );
   }
 
+  let g1d: Gate1Report["g1d"] = null;
+  if (groups.run.includes("g1d")) {
+    if (!evaluations.get("capture")) {
+      checks.push({
+        ...notRunCheck(
+          "g1d",
+          "g1d compares against g1a's reference; run it with g1a",
+        ),
+        status: "fail",
+      });
+    } else {
+      const g1dEvals = new Map<G1dLeg, G1dLegEvaluation>();
+      for (const leg of G1D_CLASSIFIED_LEGS)
+        g1dEvals.set(leg, await evaluateG1dLeg(outDir, leg, ctx.expected));
+      const killed = await loadKilled(outDir);
+      checks.push(
+        checkStallObserved(g1dEvals),
+        checkSimKeptRunning(g1dEvals),
+        checkPendingBounded(g1dEvals),
+        checkCoalesced(g1dEvals),
+        checkNewestAfterStall(g1dEvals),
+        await checkStallPixels(g1dEvals, ctx.expected),
+        checkReconnectFreshSession(g1dEvals),
+        checkReconnectCleanSlate(g1dEvals),
+        checkResyncFull(g1dEvals),
+        checkHostSurvivesReceiverLoss(killed),
+      );
+      g1d = {};
+      for (const leg of G1D_CLASSIFIED_LEGS) {
+        const e = g1dEvals.get(leg) as G1dLegEvaluation;
+        checks.push(checkG1dLegClass(e));
+        legs[leg] = {
+          group: "g1d",
+          expected_class: e.expected_class,
+          result_class: e.classification.result_class,
+          reasons: e.classification.reasons,
+          harmless_ties: e.classification.harmless_ties,
+          exit_code: e.exit_code,
+          artifacts: e.artifacts,
+        };
+        checkpoints = checkpoints.concat(e.checkpoints);
+        g1d[leg] = g1dLegReport(e);
+      }
+      legs["live-receiver-killed"] = {
+        group: "g1d",
+        expected_class: null,
+        result_class: null,
+        reasons: [],
+        exit_code: killed.host_exit,
+        artifacts: await existing([
+          join(killed.dir, "host", "stdout.log"),
+          join(killed.dir, "host", "exit-code.txt"),
+          join(killed.dir, "host", "evidence", "live-summary.json"),
+          join(killed.dir, "host", RECORDING_NAME),
+          join(killed.dir, "host", PATCH_RECORDING_NAME),
+          join(killed.dir, "host", "tap", "live-1.jsonl"),
+          join(killed.dir, "receiver", "killed.json"),
+          join(killed.dir, "receiver", "stdout.log"),
+        ]),
+      };
+    }
+  } else {
+    checks.push(
+      notRunCheck("g1d", "g1d was not in --legs; its checks are not-run"),
+    );
+  }
+
   const binary = await readJson<{ path?: string; sha256?: string }>(
     join(outDir, "binary.json"),
   );
@@ -2467,6 +2569,7 @@ export async function runGate1(
     patch_bytes: patchBytes,
     ties,
     live,
+    g1d,
     root_geometry: rootGeometry,
   };
 }

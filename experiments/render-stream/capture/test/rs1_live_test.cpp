@@ -2,7 +2,9 @@
 // "Q4. Delivery model" and "G1c2": credit (one in flight; credit only on the declared stage and
 // the in-flight seq; stale and foreign acks ignored), resync, message-too-large, hello timeout,
 // protocol errors, the drop-message sabotage, finish (end record without credit), receiver
-// close, the live log, and the control-message parser against protocol/golden-1/control/
+// close, the live log, coalescing under a stalled receiver with its pending-target bookkeeping
+// and newest-state recovery, the ignore-credit and stale-coalesce sabotages (G1d), and the
+// control-message parser against protocol/golden-1/control/
 // (valid and invalid) plus extra malformed cases. Driven through a fake transport: no socket, no
 // engine. The tap directory is under the build tree.
 
@@ -19,6 +21,7 @@
 
 #include "report.h"
 #include "rs1_codec.h"
+#include "rs1_diff.h"
 #include "rs1_golden_states.h"
 #include "rs1_live.h"
 #include "rs1_snapshot.h"
@@ -306,7 +309,7 @@ struct Rig {
     ++frame;
     const Snapshot snapshot = golden::state(state_n);
     hub.on_frame(frame, now_ns == 0 ? frame * 16000000ULL : now_ns,
-                 hub.wants_snapshot() ? &snapshot : nullptr, epoch, 1000);
+                 hub.wants_snapshot(frame) ? &snapshot : nullptr, epoch, 1000);
   }
   std::string stream_id() const { return hub.summaries().at(0).stream_id; }
 };
@@ -314,12 +317,12 @@ struct Rig {
 void test_hello_and_first_transaction() {
   Rig rig;
   rig.hub.on_event(opened(7), 0);
-  check(!rig.hub.wants_snapshot(), "no snapshot wanted before hello");
+  check(!rig.hub.wants_snapshot(rig.frame + 1), "no snapshot wanted before hello");
   rig.step(1);
   rig.step(1);
   check(rig.transport.sent.empty(), "nothing is sent before the hello");
   rig.hub.on_event(text(7, kHelloSubmitted), rig.frame);
-  check(rig.hub.wants_snapshot(), "a received hello wants a snapshot");
+  check(rig.hub.wants_snapshot(rig.frame + 1), "a received hello wants a snapshot");
   rig.step(1);
   const std::vector<Sent> bin = rig.transport.of(Sent::Binary);
   check(bin.size() == 2, "hello -> two binary messages (session, seq 1)");
@@ -700,6 +703,148 @@ void test_latency_stats() {
   check(latency_stats({7}).p95 == 7 && latency_stats({7}).median == 7, "one sample");
 }
 
+
+// The bytes of golden state `state_n` as transaction `seq` at `frame`, patched against golden
+// state `base_n` sent as `base_seq` at `base_frame` (what the hub must have sent).
+std::vector<std::uint8_t> expected_patch(int base_n, std::uint64_t base_seq,
+                                         std::uint64_t base_frame, int state_n,
+                                         std::uint64_t seq, std::uint64_t frame) {
+  Snapshot base = golden::state(base_n);
+  base.seq = base_seq;
+  base.frame = base_frame;
+  Snapshot cur = golden::state(state_n);
+  cur.seq = seq;
+  cur.frame = frame;
+  return encode_transaction(make_patch(base, cur));
+}
+
+// G1d: a receiver that holds its credit (a stall). The host keeps taking frame callbacks; while
+// the mirror is unchanged nothing is pending; once it moves, one target is pending (a flag, not
+// a queue), `coalesced` counts every such callback and the pending target's age grows; when the
+// credit returns the next transaction is the newest state, patched against the stalled seq.
+void test_stall_coalescing() {
+  const std::string tap = std::string(GRC_TEST_TMP_DIR) + "/stall";
+  grc::make_directories(tap);
+  std::remove((tap + "/stream-1.rs1").c_str());
+  std::remove((tap + "/live-1.jsonl").c_str());
+  LiveConfig config;
+  config.tap_dir = tap;
+  Rig rig(config);
+  rig.hub.on_event(opened(1), 0);
+  rig.hub.on_event(text(1, kHelloSubmitted), 0);
+  rig.step(1);  // frame 1: session + seq 1 (state 1, epoch 1)
+  const std::string sid = rig.stream_id();
+  rig.step(1);  // frame 2: no credit, mirror unchanged
+  rig.step(1);  // frame 3
+  check(!rig.hub.wants_snapshot(rig.frame + 1), "no snapshot wanted while stalled");
+  ConnectionSummary s = rig.hub.summaries().at(0);
+  check(s.coalesced == 0 && s.max_pending == 0, "an unchanged mirror coalesces nothing");
+  rig.epoch = 2;
+  rig.step(2);  // frame 4: the mirror moved -> pending since 4
+  rig.epoch = 3;
+  rig.step(3);  // frame 5
+  rig.epoch = 4;
+  rig.step(4);  // frame 6
+  rig.step(4);  // frame 7: unchanged since frame 6, still differs from the sent epoch
+  s = rig.hub.summaries().at(0);
+  check(s.coalesced == 4,
+        "four callbacks coalesced (frames 4-7), got " + std::to_string(s.coalesced));
+  check(s.max_pending == 1 && s.pending_episodes == 1, "one pending target, one episode");
+  check(s.max_pending_frames == 3, "pending target 3 frames old at frame 7 (got " +
+                                       std::to_string(s.max_pending_frames) + ")");
+  check(s.max_pending_age_us == 3 * 16000, "pending age 48 ms on the callback clock (got " +
+                                               std::to_string(s.max_pending_age_us) + ")");
+  check(rig.transport.of(Sent::Binary).size() == 2, "nothing is sent while stalled");
+  rig.hub.on_event(text(1, ack(sid, 1, "submitted")), rig.frame);
+  check(rig.hub.wants_snapshot(rig.frame + 1), "the returned credit wants a snapshot");
+  rig.step(4);  // frame 8: the newest state goes out
+  std::vector<Sent> bin = rig.transport.of(Sent::Binary);
+  check(bin.size() == 3, "one transaction after the credit");
+  if (bin.size() == 3) {
+    check(bin[2].bytes == expected_patch(1, 1, 1, 4, 2, 8),
+          "seq 2 is the newest state (4) at frame 8, patched against the stalled seq 1");
+  }
+  s = rig.hub.summaries().at(0);
+  check(s.max_pending_frames == 4 && s.max_pending_age_us == 4 * 16000,
+        "the send closes the pending episode at 4 frames / 64 ms");
+  check(s.max_in_flight == 1 && s.sent_without_credit == 0 && s.stale_sent == 0,
+        "one in flight, nothing sent without credit, nothing stale");
+  rig.step(4);  // frame 9: no credit, unchanged since the send
+  check(rig.hub.summaries().at(0).coalesced == 4, "nothing pending right after the recovery");
+
+  const std::vector<std::string> lines = read_lines(tap + "/live-1.jsonl");
+  std::size_t pending_lines = 0;
+  bool since_ok = true;
+  for (const std::string &line : lines) {
+    if (has(line, "\"pending\":true")) {
+      ++pending_lines;
+      since_ok = since_ok && has(line, "\"pending_since\":4,") && has(line, "\"sent\":null");
+    } else if (has(line, "\"pending\":false")) {
+      since_ok = since_ok && has(line, "\"pending_since\":null");
+    }
+  }
+  check(pending_lines == 4,
+        "four log lines with a pending target (got " + std::to_string(pending_lines) + ")");
+  check(since_ok, "pending lines name the frame the target became pending; others null");
+}
+
+// G1d sabotage ignore-credit: from its frame on, a transaction goes out at every callback.
+void test_ignore_credit() {
+  LiveConfig config;
+  config.ignore_credit_frame = 3;
+  Rig rig(config);
+  rig.hub.on_event(opened(1), 0);
+  rig.hub.on_event(text(1, kHelloSubmitted), 0);
+  rig.step(1);  // frame 1: seq 1
+  rig.step(1);  // frame 2: no credit, before the sabotage frame
+  check(rig.transport.of(Sent::Binary).size() == 2, "credit is honoured before the frame");
+  check(rig.hub.wants_snapshot(3), "ignore-credit wants a snapshot without credit");
+  rig.step(2);  // frame 3: seq 2 without credit
+  rig.step(3);  // frame 4: seq 3 without credit
+  const std::string sid = rig.stream_id();
+  rig.hub.on_event(text(1, ack(sid, 1, "submitted")), rig.frame);  // settles seq 1, no credit
+  rig.step(4);  // frame 5: seq 4
+  check(rig.transport.of(Sent::Binary).size() == 5, "a send at every callback from frame 3");
+  const ConnectionSummary s = rig.hub.summaries().at(0);
+  check(s.sent_without_credit == 3,
+        "three sends without credit (got " + std::to_string(s.sent_without_credit) + ")");
+  check(s.max_in_flight == 3,
+        "three in flight at once (got " + std::to_string(s.max_in_flight) + ")");
+  check(s.acks_ignored == 1, "the ack for an earlier seq is not the credit");
+}
+
+// G1d sabotage stale-coalesce: the first missed target is kept and sent when credit returns,
+// labelled with the current frame; the next transaction patches on to the newest state.
+void test_stale_coalesce() {
+  LiveConfig config;
+  config.stale_coalesce_frame = 2;
+  Rig rig(config);
+  rig.hub.on_event(opened(1), 0);
+  rig.hub.on_event(text(1, kHelloSubmitted), 0);
+  rig.step(1);  // frame 1: seq 1 (state 1)
+  const std::string sid = rig.stream_id();
+  check(rig.hub.wants_snapshot(2), "stale-coalesce wants a snapshot to keep");
+  rig.epoch = 2;
+  rig.step(2);  // frame 2: missed target, state 2 kept
+  rig.epoch = 3;
+  rig.step(3);  // frame 3: missed again; the kept copy stays state 2
+  check(!rig.hub.wants_snapshot(4), "one stale copy at most");
+  rig.hub.on_event(text(1, ack(sid, 1, "submitted")), rig.frame);
+  rig.step(4);  // frame 4: the stale copy goes out as seq 2
+  rig.hub.on_event(text(1, ack(sid, 2, "submitted")), rig.frame);
+  rig.step(4);  // frame 5: seq 3 patches from the stale state to the newest
+  const std::vector<Sent> bin = rig.transport.of(Sent::Binary);
+  check(bin.size() == 4, "session, seqs 1-3");
+  if (bin.size() == 4) {
+    check(bin[2].bytes == expected_patch(1, 1, 1, 2, 2, 4),
+          "seq 2 carries frame 2's state, labelled frame 4");
+    check(bin[3].bytes == expected_patch(2, 2, 4, 4, 3, 5),
+          "seq 3 patches from the stale state to the newest");
+  }
+  const ConnectionSummary s = rig.hub.summaries().at(0);
+  check(s.stale_sent == 1 && s.max_in_flight == 1, "one stale send, still one in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -713,6 +858,9 @@ int main() {
   test_drop_message_finish_and_log();
   test_receiver_close();
   test_latency_stats();
+  test_stall_coalescing();
+  test_ignore_credit();
+  test_stale_coalesce();
   std::printf("rs1_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }
