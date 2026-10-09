@@ -62,7 +62,18 @@
     "canvas_item_set_z_index": 482,
     "canvas_item_set_draw_index": 487,
     "canvas_item_set_z_as_relative_to_parent": 483,
-    "canvas_item_set_draw_behind_parent": 460
+    "canvas_item_set_draw_behind_parent": 460,
+    "texture_2d_placeholder_create": 34,
+    "texture_replace": 40,
+    "viewport_set_default_canvas_item_texture_filter": 321,
+    "viewport_set_default_canvas_item_texture_repeat": 322,
+    "canvas_texture_create": 441,
+    "canvas_texture_set_channel": 442,
+    "canvas_texture_set_texture_filter": 444,
+    "canvas_texture_set_texture_repeat": 445,
+    "canvas_item_set_default_texture_filter": 448,
+    "canvas_item_set_default_texture_repeat": 449,
+    "canvas_item_add_lcd_texture_rect_region": 470
   },
   "anchors": {
     "_global_shader_parameter_get_list": 23,
@@ -84,7 +95,7 @@
     "mesh_add_surface_from_planes": 575
   },
   "calibrator": {
-    "version": "4",
+    "version": "5",
     "header_sha256": "3e01fb10af9abb6955314abacd65d45b697a8ea57c7bf651e59c29e8a399b9d7"
   }
 }

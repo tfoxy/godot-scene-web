@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "calib.h"
+#include "rs_texture_payload.h"
 #include "vtable.h"
 
 namespace grc {
@@ -29,6 +30,19 @@ void hooks_init_image_binds();
 
 // True when Image.get_width/get_height/get_format/get_data_size all resolved.
 bool hooks_image_details_available();
+
+// Gate 2 (G2a): true when, beyond those, Image.has_mipmaps and the image_ptr
+// interface function resolved, so texture_2d_create/_update can copy payload
+// bytes at the hook (gate2-design.md D3). A stream refuses at arm without it.
+bool hooks_image_payload_available();
+
+// Records the calling thread as the main thread: the texture hook log marks
+// every other caller "other" (loader threads). Called at SCENE initialisation.
+void hooks_set_main_thread();
+
+// GRC_RESOURCE_FORMATS / GRC_RESOURCE_MAX_PAYLOAD_BYTES, set at arm before the
+// texture hook log starts.
+void hooks_set_resource_policy(const rs::FormatPolicy &formats, uint64_t max_payload_bytes);
 
 struct HookPlan {
   std::vector<SlotReplacement> replacements;

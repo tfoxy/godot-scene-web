@@ -1,0 +1,47 @@
+; Gate 2 fixture for the render-stream capture experiment: textures. Eleven steps (0..10) over one
+; procedural texture shared by four drawers, an identical twin, binary LA8 alpha, placeholders,
+; flips, regions, transposes, filter and repeat at the item and viewport levels, changing pixels,
+; replacement and lifetime (main- and worker-thread creates). See fixtures/gate2/README.md and
+; ../../protocol/gate2-design.md ("Q6. Fixture") for the contract this implements.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-gate2-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://gate2.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+
+[debug]
+
+; Typed-GDScript discipline (AGENTS.md "Languages and engine integration"): untyped declarations
+; and unsafe dynamic access are errors, not warnings. `:=` type inference stays allowed (its
+; warning, INFERRED_DECLARATION, is left at the engine default) because the repo prefers `:=`.
+; There is no `debug/gdscript/warnings/treat_warnings_as_errors` key in 4.5.1 (see
+; fixtures/spike/README.md "GDScript warning levels" for the source citations) -- each warning is
+; leveled individually instead, 2 == GDScriptWarning::ERROR.
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)
+textures/canvas_textures/default_texture_filter=0

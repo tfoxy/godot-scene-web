@@ -1,14 +1,20 @@
 #include "hooks.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <type_traits>
 
 #include "abi.h"
 #include "iface.h"
 #include "report.h"
 #include "rs_mirror.h"
+#include "rs_resource_log.h"
+#include "rs_sha256.h"
+#include "rs_texture_payload.h"
 
 namespace grc {
 
@@ -135,6 +141,34 @@ using FnRidInt = void (*)(void *, RID, int);
 //
 // --- calibrator 4 (optional): gate1-design.md G1e, the draw-order fields the
 // mirror held at RenderingServer defaults until now ---------------------------
+//
+// --- calibrator 5 (optional): gate2-design.md Q2, textures --------------------
+//
+//    150: virtual RID texture_2d_placeholder_create() = 0;
+//   1534: virtual RID canvas_texture_create() = 0;
+//         (FnCreate)
+//    158: virtual void texture_replace(RID p_texture, RID p_by_texture) = 0;
+//         (FnSetMaterial: two RIDs)
+//   1040: virtual void viewport_set_default_canvas_item_texture_filter(RID p_viewport,
+//                                                      CanvasItemTextureFilter p_filter) = 0;
+//   1041: virtual void viewport_set_default_canvas_item_texture_repeat(RID p_viewport,
+//                                                      CanvasItemTextureRepeat p_repeat) = 0;
+//   1545: virtual void canvas_texture_set_texture_filter(RID p_canvas_texture,
+//                                                        CanvasItemTextureFilter p_filter) = 0;
+//   1546: virtual void canvas_texture_set_texture_repeat(RID p_canvas_texture,
+//                                                        CanvasItemTextureRepeat p_repeat) = 0;
+//   1553: virtual void canvas_item_set_default_texture_filter(RID p_item,
+//                                                             CanvasItemTextureFilter p_filter) = 0;
+//   1554: virtual void canvas_item_set_default_texture_repeat(RID p_item,
+//                                                             CanvasItemTextureRepeat p_repeat) = 0;
+using FnRidEnum = void (*)(void *, RID, int32_t);
+//   1541: virtual void canvas_texture_set_channel(RID p_canvas_texture,
+//                                                 CanvasTextureChannel p_channel, RID p_texture) = 0;
+using FnCanvasTextureSetChannel = void (*)(void *, RID, int32_t, RID);
+//   1586: virtual void canvas_item_add_lcd_texture_rect_region(RID p_item, const Rect2 &p_rect,
+//             RID p_texture, const Rect2 &p_src_rect, const Color &p_modulate = Color(1, 1, 1)) = 0;
+using FnAddLcdTextureRectRegion = void (*)(void *, RID, const Rect2 *, RID, const Rect2 *,
+                                           const Color *);
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -186,6 +220,18 @@ enum HookId : size_t {
   // calibrator 4
   kSetZAsRelative,
   kSetDrawBehindParent,
+  // calibrator 5
+  kTexture2dPlaceholderCreate,
+  kTextureReplace,
+  kViewportSetDefaultTextureFilter,
+  kViewportSetDefaultTextureRepeat,
+  kCanvasTextureCreate,
+  kCanvasTextureSetChannel,
+  kCanvasTextureSetTextureFilter,
+  kCanvasTextureSetTextureRepeat,
+  kSetDefaultTextureFilter,
+  kSetDefaultTextureRepeat,
+  kAddLcdTextureRectRegion,
   kHookCount,
 };
 
@@ -276,7 +322,12 @@ template <typename Entry>
 struct Log {
   std::vector<Entry> entries;
   uint64_t dropped = 0;
+  size_t cap = kMaxEntries;  // distinct entries kept
 };
+
+// The two texture-rect draws (full capture since calibrator 5) keep more
+// distinct entries: a scene redraws them per glyph and per sprite.
+constexpr size_t kMaxTextureRectEntries = 256;
 
 std::mutex g_mutex;
 
@@ -293,7 +344,7 @@ void log_entry(Log<Entry> *log, Entry entry) {
       return;
     }
   }
-  if (log->entries.size() >= kMaxEntries) {
+  if (log->entries.size() >= log->cap) {
     ++log->dropped;
     return;
   }
@@ -454,6 +505,41 @@ struct ViewportCanvasTransformKey {
   Transform2D transform;
 };
 
+// Calibrator 5 (gate2-design.md Q2): the texture-rect draws' full arguments,
+// and the new texture hooks' arguments.
+struct TextureRectKey {
+  uint64_t item;
+  Rect2 rect;
+  uint64_t texture;
+  Color modulate;
+  bool tile;
+  bool transpose;
+};
+
+struct TextureRectRegionKey {
+  uint64_t item;
+  Rect2 rect;
+  uint64_t texture;
+  Rect2 source;
+  Color modulate;
+  bool transpose;
+  bool clip_uv;
+};
+
+struct LcdRectKey {
+  uint64_t item;
+  Rect2 rect;
+  uint64_t texture;
+  Rect2 source;
+  Color modulate;
+};
+
+struct ChannelKey {
+  uint64_t canvas_texture;
+  int64_t channel;
+  uint64_t texture;
+};
+
 std::vector<RectCapture> g_rects;
 std::vector<PolygonCapture> g_polygons;
 std::vector<ImageCapture> g_creates;
@@ -496,6 +582,20 @@ Log<PodEntry<ItemValueKey>> g_set_z_indices;
 Log<PodEntry<ItemValueKey>> g_set_draw_indices;
 Log<PodEntry<ItemValueKey>> g_set_z_as_relatives;
 Log<PodEntry<ItemValueKey>> g_set_draw_behinds;
+// calibrator 5
+Log<PodEntry<TextureRectKey>> g_texture_rects{{}, 0, kMaxTextureRectEntries};
+Log<PodEntry<TextureRectRegionKey>> g_texture_rect_regions{{}, 0, kMaxTextureRectEntries};
+Log<PodEntry<RidTripleKey>> g_placeholder_creates;
+Log<PodEntry<RidTripleKey>> g_texture_replaces;
+Log<PodEntry<ItemValueKey>> g_viewport_texture_filters;
+Log<PodEntry<ItemValueKey>> g_viewport_texture_repeats;
+Log<PodEntry<RidTripleKey>> g_canvas_texture_creates;
+Log<PodEntry<ChannelKey>> g_canvas_texture_channels;
+Log<PodEntry<ItemValueKey>> g_canvas_texture_filters;
+Log<PodEntry<ItemValueKey>> g_canvas_texture_repeats;
+Log<PodEntry<ItemValueKey>> g_item_texture_filters;
+Log<PodEntry<ItemValueKey>> g_item_texture_repeats;
+Log<PodEntry<LcdRectKey>> g_lcd_rects;
 
 template <typename Key>
 PodEntry<Key> pod(const Key &key) {
@@ -554,6 +654,9 @@ struct ImageBinds {
   GDExtensionMethodBindPtr get_height = nullptr;
   GDExtensionMethodBindPtr get_format = nullptr;
   GDExtensionMethodBindPtr get_data_size = nullptr;
+  // Gate 2 (G2a): the payload copy also needs has_mipmaps and image_ptr.
+  GDExtensionMethodBindPtr has_mipmaps = nullptr;
+  bool payload_available = false;
 };
 
 ImageBinds g_image_binds;
@@ -564,23 +667,132 @@ bool same_rect_capture(const RectCapture &a, const RectCapture &b) {
          std::memcmp(&a.color, &b.color, sizeof(Color)) == 0;
 }
 
-ImageCapture describe_image(const Ref *image, uint64_t rid, int64_t layer) {
-  ImageCapture out = {rid, current_frame(), layer, false, -1, -1, -1, -1};
+// What the Image method binds say about a texture argument. A failed read
+// leaves that value and every later one at -1, as gate -1's captures did.
+struct ImageFacts {
+  bool ok = false;  // width, height, format and data size all read
+  int64_t width = -1;
+  int64_t height = -1;
+  int64_t format = -1;
+  int64_t data_size = -1;
+  bool mipmaps_known = false;
+  bool mipmaps = false;
+};
+
+ImageFacts read_image(const Ref *image) {
+  ImageFacts facts;
   if (image == nullptr || image->object == nullptr || !g_image_binds.available) {
-    return out;
+    return facts;
   }
   int64_t value = 0;
   bool ok = true;
   ok = ok && call_int_getter(g_image_binds.get_width, image->object, &value);
-  out.width = ok ? value : -1;
+  facts.width = ok ? value : -1;
   ok = ok && call_int_getter(g_image_binds.get_height, image->object, &value);
-  out.height = ok ? value : -1;
+  facts.height = ok ? value : -1;
   ok = ok && call_int_getter(g_image_binds.get_format, image->object, &value);
-  out.format = ok ? value : -1;
+  facts.format = ok ? value : -1;
   ok = ok && call_int_getter(g_image_binds.get_data_size, image->object, &value);
-  out.data_size = ok ? value : -1;
-  out.details = ok;
-  return out;
+  facts.data_size = ok ? value : -1;
+  facts.ok = ok;
+  if (ok && g_image_binds.has_mipmaps != nullptr) {
+    // A bool return: ptrcall writes one byte into the zeroed slot.
+    value = 0;
+    if (call_int_getter(g_image_binds.has_mipmaps, image->object, &value)) {
+      facts.mipmaps_known = true;
+      facts.mipmaps = (value & 0xff) != 0;
+    }
+  }
+  return facts;
+}
+
+ImageCapture describe_image(const ImageFacts &facts, uint64_t rid, int64_t layer) {
+  return {rid,         current_frame(), layer,        facts.ok,
+          facts.width, facts.height,    facts.format, facts.data_size};
+}
+
+// --- texture payloads (gate2-design.md D3, Q3 "Copy") ------------------------
+//
+// With a stream enabled, texture_2d_create and texture_2d_update copy the Image
+// bytes into a canonical GRT1 payload and hash it, on the calling thread
+// (loader threads included), before the call is forwarded. No engine reference
+// is kept. G2a logs the copy (evidence/resources.jsonl) and keeps no payload;
+// G2b2's texture mirror will.
+
+struct ResourcePolicy {
+  rs::FormatPolicy formats;
+  uint64_t max_payload_bytes = rs::kDefaultMaxPayloadBytes;
+};
+
+ResourcePolicy g_resource_policy;
+std::thread::id g_main_thread;
+
+uint64_t now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now().time_since_epoch())
+                                   .count());
+}
+
+rs::TapContext tap_context() {
+  rs::TapContext ctx;
+  ctx.frame = current_frame();
+  ctx.t_ns = now_ns();
+  ctx.main_thread = std::this_thread::get_id() == g_main_thread;
+  return ctx;
+}
+
+rs::ResourceLog &resources() { return rs::resource_log(); }
+
+// Q3 "Copy", steps 1-3. Nothing is copied for an unreadable Image, a format
+// outside GRC_RESOURCE_FORMATS or a payload over GRC_RESOURCE_MAX_PAYLOAD_BYTES.
+rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image) {
+  rs::PayloadCopy copy;
+  copy.format = facts.format;
+  copy.width = facts.width;
+  copy.height = facts.height;
+  copy.mipmaps_known = facts.mipmaps_known;
+  copy.mipmaps = facts.mipmaps;
+  copy.data_bytes = facts.data_size;
+  if (!facts.ok || !facts.mipmaps_known || !g_image_binds.payload_available) {
+    copy.reason = "payload-unavailable";
+    return copy;
+  }
+  if (facts.format < 0 || facts.format >= rs::kImageFormatCount ||
+      !g_resource_policy.formats.permitted[facts.format]) {
+    copy.reason = "unsupported-format";
+    return copy;
+  }
+  const int64_t expected =
+      rs::expected_data_bytes(facts.format, facts.width, facts.height, facts.mipmaps);
+  if (expected < 0 || expected != facts.data_size) {
+    // The Image does not hold the bytes its shape implies: nothing safe to copy.
+    copy.reason = "payload-unavailable";
+    return copy;
+  }
+  const std::string meta = rs::payload_meta(rs::image_format_name(facts.format), facts.width,
+                                            facts.height, facts.mipmaps, facts.data_size);
+  if (rs::payload_size(meta, static_cast<uint64_t>(facts.data_size)) >
+      g_resource_policy.max_payload_bytes) {
+    copy.reason = "payload-too-large";
+    return copy;
+  }
+  const uint8_t *data = g_iface.image_ptr(image->object);
+  if (data == nullptr) {
+    copy.reason = "payload-unavailable";
+    return copy;
+  }
+  const uint64_t t0 = now_ns();
+  std::vector<uint8_t> payload;
+  rs::payload_header(meta, static_cast<uint64_t>(facts.data_size), &payload);
+  payload.insert(payload.end(), data, data + facts.data_size);
+  const uint64_t t1 = now_ns();
+  copy.hash = sha256_hex(payload.data(), payload.size());
+  const uint64_t t2 = now_ns();
+  copy.status = "ok";
+  copy.payload_bytes = static_cast<int64_t>(payload.size());
+  copy.copy_ns = static_cast<int64_t>(t1 - t0);
+  copy.hash_ns = static_cast<int64_t>(t2 - t1);
+  return copy;
 }
 
 // --- gate -1 hooks -----------------------------------------------------------
@@ -613,6 +825,19 @@ void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture,
                            const Color *modulate, bool transpose) {
   bump(kAddTextureRect);
   tap_unsupported(item, "canvas_item_add_texture_rect");
+  if (rect != nullptr && modulate != nullptr) {
+    // Full capture since calibrator 5 (gate2-design.md Q2): the raw arguments,
+    // negative sizes (flips) included.
+    TextureRectKey key;
+    zero(&key);
+    key.item = item.id;
+    key.rect = *rect;
+    key.texture = texture.id;
+    key.modulate = *modulate;
+    key.tile = tile;
+    key.transpose = transpose;
+    log_entry(&g_texture_rects, pod(key));
+  }
   original<FnAddTextureRect>(kAddTextureRect)(self, item, rect, texture, tile, modulate,
                                               transpose);
 }
@@ -622,6 +847,18 @@ void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID t
                                   bool clip_uv) {
   bump(kAddTextureRectRegion);
   tap_unsupported(item, "canvas_item_add_texture_rect_region");
+  if (rect != nullptr && source != nullptr && modulate != nullptr) {
+    TextureRectRegionKey key;
+    zero(&key);
+    key.item = item.id;
+    key.rect = *rect;
+    key.texture = texture.id;
+    key.source = *source;
+    key.modulate = *modulate;
+    key.transpose = transpose;
+    key.clip_uv = clip_uv;
+    log_entry(&g_texture_rect_regions, pod(key));
+  }
   original<FnAddTextureRectRegion>(kAddTextureRectRegion)(self, item, rect, texture, source,
                                                           modulate, transpose, clip_uv);
 }
@@ -668,7 +905,13 @@ void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
 
 RID hook_texture_2d_create(void *self, const Ref *image) {
   bump(kTexture2dCreate);
-  ImageCapture capture = describe_image(image, 0, -1);
+  const ImageFacts facts = read_image(image);
+  ImageCapture capture = describe_image(facts, 0, -1);
+  // D3: the bytes are copied and hashed here, on the calling thread, before the
+  // engine sees the call (a worker-thread create is initialized later, from
+  // whatever the Image then holds).
+  const bool logging = resources().active();
+  const rs::PayloadCopy copy = logging ? copy_payload(facts, image) : rs::PayloadCopy();
   const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, image);
   capture.rid = result.id;
   {
@@ -677,19 +920,28 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
       g_creates.push_back(capture);
     }
   }
+  if (logging) {
+    resources().texture_2d_create(tap_context(), result.id, copy);
+  }
   return result;
 }
 
 void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer) {
   bump(kTexture2dUpdate);
+  const ImageFacts facts = read_image(image);
   {
-    ImageCapture capture = describe_image(image, texture.id, layer);
+    ImageCapture capture = describe_image(facts, texture.id, layer);
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_updates.size() < kMaxTextures) {
       g_updates.push_back(capture);
     }
   }
+  const bool logging = resources().active();
+  const rs::PayloadCopy copy = logging ? copy_payload(facts, image) : rs::PayloadCopy();
   original<FnTexture2dUpdate>(kTexture2dUpdate)(self, texture, image, layer);
+  if (logging) {
+    resources().texture_2d_update(tap_context(), texture.id, copy, layer);
+  }
 }
 
 void hook_free(void *self, RID rid) {
@@ -700,6 +952,8 @@ void hook_free(void *self, RID rid) {
     // value out again.
     mirror().free_rid(rid.id, current_frame());
   }
+  // Likewise for the texture hook log, which logs only RIDs it knows as textures.
+  resources().free_rid(tap_context(), rid.id);
   original<FnFree>(kFree)(self, rid);
 }
 
@@ -1149,6 +1403,109 @@ void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
   original<FnRidBool>(kSetDrawBehindParent)(self, item, behind);
 }
 
+// --- calibrator 5 hooks (gate2-design.md Q2) -----------------------------------
+//
+// On render-stream/1 (G2a) these are counted, captured into counters.json and
+// written to the texture hook log; they make no mirror tap. In particular
+// canvas_item_add_lcd_texture_rect_region adds no unsupported command until /2
+// declares it in observed_unsupported_ops.
+
+RID hook_texture_2d_placeholder_create(void *self) {
+  bump(kTexture2dPlaceholderCreate);
+  const RID result = original<FnCreate>(kTexture2dPlaceholderCreate)(self);
+  log_entry(&g_placeholder_creates, rids(result.id));
+  resources().texture_2d_placeholder_create(tap_context(), result.id);
+  return result;
+}
+
+void hook_texture_replace(void *self, RID texture, RID by_texture) {
+  bump(kTextureReplace);
+  log_entry(&g_texture_replaces, rids(texture.id, by_texture.id));
+  original<FnSetMaterial>(kTextureReplace)(self, texture, by_texture);
+  resources().texture_replace(tap_context(), texture.id, by_texture.id);
+}
+
+void hook_viewport_set_default_texture_filter(void *self, RID viewport, int32_t filter) {
+  bump(kViewportSetDefaultTextureFilter);
+  log_entry(&g_viewport_texture_filters, item_value(viewport, filter));
+  original<FnRidEnum>(kViewportSetDefaultTextureFilter)(self, viewport, filter);
+  resources().viewport_set_default_texture_filter(tap_context(), viewport.id, filter);
+}
+
+void hook_viewport_set_default_texture_repeat(void *self, RID viewport, int32_t repeat) {
+  bump(kViewportSetDefaultTextureRepeat);
+  log_entry(&g_viewport_texture_repeats, item_value(viewport, repeat));
+  original<FnRidEnum>(kViewportSetDefaultTextureRepeat)(self, viewport, repeat);
+  resources().viewport_set_default_texture_repeat(tap_context(), viewport.id, repeat);
+}
+
+RID hook_canvas_texture_create(void *self) {
+  bump(kCanvasTextureCreate);
+  const RID result = original<FnCreate>(kCanvasTextureCreate)(self);
+  log_entry(&g_canvas_texture_creates, rids(result.id));
+  resources().canvas_texture_create(tap_context(), result.id);
+  return result;
+}
+
+void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t channel,
+                                     RID texture) {
+  bump(kCanvasTextureSetChannel);
+  ChannelKey key;
+  zero(&key);
+  key.canvas_texture = canvas_texture.id;
+  key.channel = channel;
+  key.texture = texture.id;
+  log_entry(&g_canvas_texture_channels, pod(key));
+  original<FnCanvasTextureSetChannel>(kCanvasTextureSetChannel)(self, canvas_texture, channel,
+                                                                texture);
+  resources().canvas_texture_set_channel(tap_context(), canvas_texture.id, channel, texture.id);
+}
+
+void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int32_t filter) {
+  bump(kCanvasTextureSetTextureFilter);
+  log_entry(&g_canvas_texture_filters, item_value(canvas_texture, filter));
+  original<FnRidEnum>(kCanvasTextureSetTextureFilter)(self, canvas_texture, filter);
+  resources().canvas_texture_set_filter(tap_context(), canvas_texture.id, filter);
+}
+
+void hook_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int32_t repeat) {
+  bump(kCanvasTextureSetTextureRepeat);
+  log_entry(&g_canvas_texture_repeats, item_value(canvas_texture, repeat));
+  original<FnRidEnum>(kCanvasTextureSetTextureRepeat)(self, canvas_texture, repeat);
+  resources().canvas_texture_set_repeat(tap_context(), canvas_texture.id, repeat);
+}
+
+void hook_set_default_texture_filter(void *self, RID item, int32_t filter) {
+  bump(kSetDefaultTextureFilter);
+  log_entry(&g_item_texture_filters, item_value(item, filter));
+  original<FnRidEnum>(kSetDefaultTextureFilter)(self, item, filter);
+  resources().canvas_item_set_default_texture_filter(tap_context(), item.id, filter);
+}
+
+void hook_set_default_texture_repeat(void *self, RID item, int32_t repeat) {
+  bump(kSetDefaultTextureRepeat);
+  log_entry(&g_item_texture_repeats, item_value(item, repeat));
+  original<FnRidEnum>(kSetDefaultTextureRepeat)(self, item, repeat);
+  resources().canvas_item_set_default_texture_repeat(tap_context(), item.id, repeat);
+}
+
+void hook_add_lcd_texture_rect_region(void *self, RID item, const Rect2 *rect, RID texture,
+                                      const Rect2 *source, const Color *modulate) {
+  bump(kAddLcdTextureRectRegion);
+  if (rect != nullptr && source != nullptr && modulate != nullptr) {
+    LcdRectKey key;
+    zero(&key);
+    key.item = item.id;
+    key.rect = *rect;
+    key.texture = texture.id;
+    key.source = *source;
+    key.modulate = *modulate;
+    log_entry(&g_lcd_rects, pod(key));
+  }
+  original<FnAddLcdTextureRectRegion>(kAddLcdTextureRectRegion)(self, item, rect, texture, source,
+                                                                modulate);
+}
+
 // --- hook table --------------------------------------------------------------
 
 struct HookSpec {
@@ -1214,6 +1571,26 @@ const HookSpec kSpecs[] = {
     {kSetZAsRelative, "canvas_item_set_z_as_relative_to_parent", as_ptr(&hook_set_z_as_relative)},
     {kSetDrawBehindParent, "canvas_item_set_draw_behind_parent",
      as_ptr(&hook_set_draw_behind_parent)},
+    {kTexture2dPlaceholderCreate, "texture_2d_placeholder_create",
+     as_ptr(&hook_texture_2d_placeholder_create)},
+    {kTextureReplace, "texture_replace", as_ptr(&hook_texture_replace)},
+    {kViewportSetDefaultTextureFilter, "viewport_set_default_canvas_item_texture_filter",
+     as_ptr(&hook_viewport_set_default_texture_filter)},
+    {kViewportSetDefaultTextureRepeat, "viewport_set_default_canvas_item_texture_repeat",
+     as_ptr(&hook_viewport_set_default_texture_repeat)},
+    {kCanvasTextureCreate, "canvas_texture_create", as_ptr(&hook_canvas_texture_create)},
+    {kCanvasTextureSetChannel, "canvas_texture_set_channel",
+     as_ptr(&hook_canvas_texture_set_channel)},
+    {kCanvasTextureSetTextureFilter, "canvas_texture_set_texture_filter",
+     as_ptr(&hook_canvas_texture_set_texture_filter)},
+    {kCanvasTextureSetTextureRepeat, "canvas_texture_set_texture_repeat",
+     as_ptr(&hook_canvas_texture_set_texture_repeat)},
+    {kSetDefaultTextureFilter, "canvas_item_set_default_texture_filter",
+     as_ptr(&hook_set_default_texture_filter)},
+    {kSetDefaultTextureRepeat, "canvas_item_set_default_texture_repeat",
+     as_ptr(&hook_set_default_texture_repeat)},
+    {kAddLcdTextureRectRegion, "canvas_item_add_lcd_texture_rect_region",
+     as_ptr(&hook_add_lcd_texture_rect_region)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -1402,6 +1779,14 @@ struct Snapshot {
   Log<PodEntry<ViewportCanvasTransformKey>> viewport_canvas_transforms;
   Log<PodEntry<ItemValueKey>> set_visibles, set_clips, set_visibility_layers, set_z_indices,
       set_draw_indices, set_z_as_relatives, set_draw_behinds;
+  // calibrator 5
+  Log<PodEntry<TextureRectKey>> texture_rects;
+  Log<PodEntry<TextureRectRegionKey>> texture_rect_regions;
+  Log<PodEntry<RidTripleKey>> placeholder_creates, texture_replaces, canvas_texture_creates;
+  Log<PodEntry<ItemValueKey>> viewport_texture_filters, viewport_texture_repeats,
+      canvas_texture_filters, canvas_texture_repeats, item_texture_filters, item_texture_repeats;
+  Log<PodEntry<ChannelKey>> canvas_texture_channels;
+  Log<PodEntry<LcdRectKey>> lcd_rects;
   Log<PodEntry<ItemCustomRectKey>> set_custom_rects;
   Log<PodEntry<ItemColorKey>> set_self_modulates;
 };
@@ -1450,6 +1835,19 @@ Snapshot take_snapshot() {
   s.set_draw_indices = g_set_draw_indices;
   s.set_z_as_relatives = g_set_z_as_relatives;
   s.set_draw_behinds = g_set_draw_behinds;
+  s.texture_rects = g_texture_rects;
+  s.texture_rect_regions = g_texture_rect_regions;
+  s.placeholder_creates = g_placeholder_creates;
+  s.texture_replaces = g_texture_replaces;
+  s.canvas_texture_creates = g_canvas_texture_creates;
+  s.viewport_texture_filters = g_viewport_texture_filters;
+  s.viewport_texture_repeats = g_viewport_texture_repeats;
+  s.canvas_texture_filters = g_canvas_texture_filters;
+  s.canvas_texture_repeats = g_canvas_texture_repeats;
+  s.item_texture_filters = g_item_texture_filters;
+  s.item_texture_repeats = g_item_texture_repeats;
+  s.canvas_texture_channels = g_canvas_texture_channels;
+  s.lcd_rects = g_lcd_rects;
   return s;
 }
 
@@ -1469,9 +1867,24 @@ void hooks_init_image_binds() {
                             g_image_binds.get_height != nullptr &&
                             g_image_binds.get_format != nullptr &&
                             g_image_binds.get_data_size != nullptr;
+  // Gate 2 (G2a): has_mipmaps (hash from the same dump) and the image_ptr
+  // interface function complete what a payload copy needs.
+  g_image_binds.has_mipmaps = method_bind("Image", "has_mipmaps", 36873697LL);
+  g_image_binds.payload_available = g_image_binds.available &&
+                                    g_image_binds.has_mipmaps != nullptr &&
+                                    g_iface.image_ptr != nullptr;
 }
 
 bool hooks_image_details_available() { return g_image_binds.available; }
+
+bool hooks_image_payload_available() { return g_image_binds.payload_available; }
+
+void hooks_set_main_thread() { g_main_thread = std::this_thread::get_id(); }
+
+void hooks_set_resource_policy(const rs::FormatPolicy &formats, uint64_t max_payload_bytes) {
+  g_resource_policy.formats = formats;
+  g_resource_policy.max_payload_bytes = max_payload_bytes;
+}
 
 void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_relaxed); }
 
@@ -1796,6 +2209,69 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
             item_bool_writer("z_relative"));
   write_log(&json, "canvas_item_set_draw_behind_parent", s.set_draw_behinds,
             item_bool_writer("behind"));
+  // Calibrator 5 (gate2-design.md Q2). The two texture-rect draws carry their
+  // full arguments (negative sizes, that is flips, as the engine received them);
+  // msdf stays count-only.
+  write_log(&json, "canvas_item_add_texture_rect", s.texture_rects,
+            [](JsonWriter *j, const PodEntry<TextureRectKey> &e) {
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "rect", e.key.rect);
+              write_rid(j, "texture", e.key.texture);
+              j->field("tile", e.key.tile);
+              write_floats(j, "modulate", e.key.modulate);
+              j->field("transpose", e.key.transpose);
+            });
+  write_log(&json, "canvas_item_add_texture_rect_region", s.texture_rect_regions,
+            [](JsonWriter *j, const PodEntry<TextureRectRegionKey> &e) {
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "rect", e.key.rect);
+              write_rid(j, "texture", e.key.texture);
+              write_floats(j, "source", e.key.source);
+              write_floats(j, "modulate", e.key.modulate);
+              j->field("transpose", e.key.transpose);
+              j->field("clip_uv", e.key.clip_uv);
+            });
+  write_log(&json, "texture_2d_placeholder_create", s.placeholder_creates,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
+  write_log(&json, "texture_replace", s.texture_replaces,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "texture", e.key.a);
+              write_rid(j, "by_texture", e.key.b);
+            });
+  const auto rid_int_writer = [](const char *rid_name, const char *name) {
+    return [rid_name, name](JsonWriter *j, const PodEntry<ItemValueKey> &e) {
+      write_rid(j, rid_name, e.key.item);
+      j->field(name, e.key.value);
+    };
+  };
+  write_log(&json, "viewport_set_default_canvas_item_texture_filter", s.viewport_texture_filters,
+            rid_int_writer("viewport", "filter"));
+  write_log(&json, "viewport_set_default_canvas_item_texture_repeat", s.viewport_texture_repeats,
+            rid_int_writer("viewport", "repeat"));
+  write_log(&json, "canvas_texture_create", s.canvas_texture_creates,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
+  write_log(&json, "canvas_texture_set_channel", s.canvas_texture_channels,
+            [](JsonWriter *j, const PodEntry<ChannelKey> &e) {
+              write_rid(j, "canvas_texture", e.key.canvas_texture);
+              j->field("channel", e.key.channel);
+              write_rid(j, "texture", e.key.texture);
+            });
+  write_log(&json, "canvas_texture_set_texture_filter", s.canvas_texture_filters,
+            rid_int_writer("canvas_texture", "filter"));
+  write_log(&json, "canvas_texture_set_texture_repeat", s.canvas_texture_repeats,
+            rid_int_writer("canvas_texture", "repeat"));
+  write_log(&json, "canvas_item_set_default_texture_filter", s.item_texture_filters,
+            rid_int_writer("item", "filter"));
+  write_log(&json, "canvas_item_set_default_texture_repeat", s.item_texture_repeats,
+            rid_int_writer("item", "repeat"));
+  write_log(&json, "canvas_item_add_lcd_texture_rect_region", s.lcd_rects,
+            [](JsonWriter *j, const PodEntry<LcdRectKey> &e) {
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "rect", e.key.rect);
+              write_rid(j, "texture", e.key.texture);
+              write_floats(j, "source", e.key.source);
+              write_floats(j, "modulate", e.key.modulate);
+            });
   json.object_end();
 
   // Distinct calls that arrived after an optional hook's log was full.
@@ -1843,7 +2319,35 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
              static_cast<int64_t>(s.set_z_as_relatives.dropped));
   json.field("canvas_item_set_draw_behind_parent",
              static_cast<int64_t>(s.set_draw_behinds.dropped));
+  json.field("canvas_item_add_texture_rect", static_cast<int64_t>(s.texture_rects.dropped));
+  json.field("canvas_item_add_texture_rect_region",
+             static_cast<int64_t>(s.texture_rect_regions.dropped));
+  json.field("texture_2d_placeholder_create",
+             static_cast<int64_t>(s.placeholder_creates.dropped));
+  json.field("texture_replace", static_cast<int64_t>(s.texture_replaces.dropped));
+  json.field("viewport_set_default_canvas_item_texture_filter",
+             static_cast<int64_t>(s.viewport_texture_filters.dropped));
+  json.field("viewport_set_default_canvas_item_texture_repeat",
+             static_cast<int64_t>(s.viewport_texture_repeats.dropped));
+  json.field("canvas_texture_create", static_cast<int64_t>(s.canvas_texture_creates.dropped));
+  json.field("canvas_texture_set_channel",
+             static_cast<int64_t>(s.canvas_texture_channels.dropped));
+  json.field("canvas_texture_set_texture_filter",
+             static_cast<int64_t>(s.canvas_texture_filters.dropped));
+  json.field("canvas_texture_set_texture_repeat",
+             static_cast<int64_t>(s.canvas_texture_repeats.dropped));
+  json.field("canvas_item_set_default_texture_filter",
+             static_cast<int64_t>(s.item_texture_filters.dropped));
+  json.field("canvas_item_set_default_texture_repeat",
+             static_cast<int64_t>(s.item_texture_repeats.dropped));
+  json.field("canvas_item_add_lcd_texture_rect_region",
+             static_cast<int64_t>(s.lcd_rects.dropped));
   json.object_end();
+
+  // G2a: the payload-copy capability and the texture hook log's counters.
+  json.field("image_payload_available", g_image_binds.payload_available);
+  json.field("texture_update_unknown",
+             static_cast<int64_t>(rs::resource_log().update_unknown()));
 
   json.object_end();
   return json.take();

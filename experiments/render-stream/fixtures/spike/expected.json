@@ -347,7 +347,18 @@
     "canvas_item_set_z_index",
     "canvas_item_set_draw_index",
     "canvas_item_set_z_as_relative_to_parent",
-    "canvas_item_set_draw_behind_parent"
+    "canvas_item_set_draw_behind_parent",
+    "texture_2d_placeholder_create",
+    "texture_replace",
+    "viewport_set_default_canvas_item_texture_filter",
+    "viewport_set_default_canvas_item_texture_repeat",
+    "canvas_texture_create",
+    "canvas_texture_set_channel",
+    "canvas_texture_set_texture_filter",
+    "canvas_texture_set_texture_repeat",
+    "canvas_item_set_default_texture_filter",
+    "canvas_item_set_default_texture_repeat",
+    "canvas_item_add_lcd_texture_rect_region"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",
@@ -385,6 +396,17 @@
     "canvas_item_set_z_index",
     "canvas_item_set_draw_index",
     "canvas_item_set_z_as_relative_to_parent",
-    "canvas_item_set_draw_behind_parent"
+    "canvas_item_set_draw_behind_parent",
+    "texture_2d_placeholder_create",
+    "texture_replace",
+    "viewport_set_default_canvas_item_texture_filter",
+    "viewport_set_default_canvas_item_texture_repeat",
+    "canvas_texture_create",
+    "canvas_texture_set_channel",
+    "canvas_texture_set_texture_filter",
+    "canvas_texture_set_texture_repeat",
+    "canvas_item_set_default_texture_filter",
+    "canvas_item_set_default_texture_repeat",
+    "canvas_item_add_lcd_texture_rect_region"
   ]
 }

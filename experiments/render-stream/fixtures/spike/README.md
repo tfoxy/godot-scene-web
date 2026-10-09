@@ -114,6 +114,18 @@ template, for both the headless legs and the rendered gamescope legs.
   `CanvasItem::set_z_as_relative` and `set_draw_behind_parent` return early on an unchanged value
   (`scene/main/canvas_item.cpp:655-661`, `:1155-1161`) and would never reach the RenderingServer.
 
+- Calibrator-5 texture hooks, added for gate 2 G2a (`gate2-design.md` Q2), all with non-default
+  values and none reaching the screen: the post-arm `Node2D` gets `texture_filter = NEAREST` and
+  `texture_repeat = ENABLED` (`canvas_item_set_default_texture_filter`/`_repeat`; the setters
+  return early on an unchanged value, `canvas_item.cpp:1626`, `:1680`); a raw placeholder is
+  replaced by a 2x2 image and freed (`texture_2d_placeholder_create`, `texture_replace`); a raw
+  `viewport_create()` viewport that is never attached gets NEAREST and ENABLED
+  (`viewport_set_default_canvas_item_texture_filter`/`_repeat`); a `CanvasTexture` no item uses
+  gets the nine-patch texture as diffuse, NEAREST and ENABLED (`canvas_texture_create`,
+  `_set_channel`, `_set_texture_filter`, `_set_texture_repeat`); and an LCD text rect lands on a
+  raw canvas item that has no parent canvas (`canvas_item_add_lcd_texture_rect_region`). Gate −1
+  then plans 55 hooks with every optional counter positive, and `armed.png == unarmed.png`.
+
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See
   its own `"description"` fields for the Godot-source citations (`color_rect.cpp`,
