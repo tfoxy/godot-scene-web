@@ -15,6 +15,10 @@
 //    synthesized from fixtures/gate3/expected.json), then perturbations: every check and the
 //    capture's class are failed by at least one of them. Each scenario runs the real runGate3 and
 //    asserts that exactly the checks it targets fail and every other check still passes.
+// 3. Group g3c (test/gate3x-cases.ts): synthesizeGate3x's coverage and band on a hand-computed
+//    8x8 rotated quad, the six D7 semantic probes against Q6d's table, checkExpectedSelfConsistentX
+//    on fixtures/gate3-xform/expected.json and broken copies, and the reference-side g3c checks on
+//    small synthesized trees, each passing and failing.
 //
 // Exits non-zero if any assertion fails.
 
@@ -42,6 +46,7 @@ import {
   stepFrames3,
   synthesizeGate3,
 } from "../lib/gate3-expected";
+import type { Gate3xExpected } from "../lib/gate3x-expected";
 import {
   buildFullTree,
   type CaptureOptions,
@@ -54,6 +59,7 @@ import {
   writeJson,
   writeText,
 } from "./gate3-fixture";
+import { gate3xCases } from "./gate3x-cases";
 import type { TState } from "./rs2-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -519,8 +525,10 @@ const G3_CHECKS = [
 let G3B_PROJECTS: G3bProjects | undefined;
 
 async function run(out: string, expected = EXPECTED): Promise<Gate3Report> {
+  // The fabricated trees are g3a's and g3b's: g3c's checks are exercised by gate3x-cases.ts.
   return runGate3(out, {
     expected,
+    landed: ["g3a", "g3b"],
     now: new Date(0),
     receiverProjectDir: G3B_PROJECTS?.receiverProjectDir,
     fixtureProjectDir: G3B_PROJECTS?.fixtureProjectDir,
@@ -1105,6 +1113,13 @@ async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "self-test-gate3-"));
   try {
     await scenarios(root);
+    const xform = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate3-xform", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate3xExpected;
+    await gate3xCases(assert, xform, root);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

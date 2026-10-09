@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { runGate3 } from "./lib/gate3-checks";
 import { formatClip, type Gate3Expected } from "./lib/gate3-expected";
+import type { Gate3xExpected } from "./lib/gate3x-expected";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -40,8 +41,16 @@ async function main(): Promise<void> {
     ),
   ) as Gate3Expected;
 
+  const xform = JSON.parse(
+    await readFile(
+      join(EXPERIMENT_DIR, "fixtures", "gate3-xform", "expected.json"),
+      "utf8",
+    ),
+  ) as Gate3xExpected;
+
   const report = await runGate3(out, {
     expected,
+    xform,
     receiverProjectDir: join(EXPERIMENT_DIR, "receiver"),
     fixtureProjectDir: join(EXPERIMENT_DIR, "fixtures", "gate3"),
   });
@@ -79,6 +88,14 @@ async function main(): Promise<void> {
       `  probes ${leg}: ${t.reduce((n, s) => n + s.total, 0)} total, ${t.reduce((n, s) => n + s.decisive, 0)} decisive pairs, ${t.reduce((n, s) => n + s.failed.length, 0)} failed`,
     );
   }
+  if (report.band)
+    console.log(
+      `  band (gate3-xform): ${report.band.band_pixels.join("/")} px per step; reference vs repeat differ in ${report.band.repeat_band_diffs.join("/")}; budget ${report.band.budget.pixels} px, delta ${report.band.budget.max_channel_delta}`,
+    );
+  for (const p of report.semantic_probes ?? [])
+    console.log(
+      `  semantic ${p.name} (${p.xy.join(",")}): reference ${p.measured?.join(",") ?? "<none>"}`,
+    );
   const passed = report.checks.filter((c) => c.passed).length;
   console.log(
     `\ngate 3 (groups ${report.groups.run.join(",") || "none"}${report.groups.not_run.length > 0 ? `; not run: ${report.groups.not_run.join(",")}` : ""}): ${report.gate_passed ? "PASS" : "FAIL"} ${passed}/${report.checks.length} (${join(out, "result.json")})`,

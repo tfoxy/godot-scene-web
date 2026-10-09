@@ -4,18 +4,20 @@
 #
 #   bash run-gate3.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g3a]
+#     [--legs g3a,g3c]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
 # artifacts/render-stream/gate3/<UTC>/ and must not already hold files. --legs selects leg groups
 # (comma-separated); the default is every group whose increment has landed: g3a (G3a: the
 # axis-aligned fixture's import, a 400-frame headless capture with both sinks, its rendered
-# reference, a same-build repeat and an extension-armed reference) and g3b (G3b: the receiver on
+# reference, a same-build repeat and an extension-armed reference), g3b (G3b: the receiver on
 # g3a's capture, full and patch, a headless trace, the host sabotages freeze/perturb/omit-clip/
 # omit-custom-rect on their own fresh captures, the receiver sabotages ignore-clip and
-# clip-before-clear on g3a's capture, and root-size-observe). g3c (the rotated/scaled fixture) and
-# g3d (clip_ignore refused) are known but have not landed.
+# clip-before-clear on g3a's capture, and root-size-observe) and g3c (G3c: the rotated/scaled
+# fixture fixtures/gate3-xform's import, capture, three rendered references, two rendered
+# receivers, a perturb sabotage and the receiver's ignore-clip sabotage). g3d (clip_ignore
+# refused) is known but has not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -29,6 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate3"
+XFORM_DIR="$EXPERIMENT_DIR/fixtures/gate3-xform"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # shellcheck source=lib/gamescope.sh
@@ -38,7 +41,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g3a g3b)
+LANDED_GROUPS=(g3a g3b g3c)
 KNOWN_GROUPS=(g3a g3b g3c g3d)
 
 EXTENSION=""
@@ -201,13 +204,16 @@ LEGS_LOG="run-gate3"
 # shellcheck source=lib/legs.sh
 source "$SCRIPT_DIR/lib/legs.sh"
 
-# A rendered fixture run (reference, reference-repeat, reference-armed): shots step-0..9 at the
+# A rendered fixture run (reference, reference-repeat, reference-armed): shots step-<k> at the
 # settle frames and the step log. REFERENCE_ARMED=1 loads the capture extension armed with a
-# full-sink stream and its store.
+# full-sink stream and its store. REFERENCE_FIXTURE (reset after the call) picks the project
+# (default fixtures/gate3).
 REFERENCE_ARMED=0
+REFERENCE_FIXTURE=""
 run_reference() {
-	local dir="$1" armed="$REFERENCE_ARMED"
+	local dir="$1" armed="$REFERENCE_ARMED" fixture="${REFERENCE_FIXTURE:-$FIXTURE_DIR}"
 	REFERENCE_ARMED=0
+	REFERENCE_FIXTURE=""
 	mkdir -p "$dir/shots"
 	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl")
 	if [ "$armed" = "1" ]; then
@@ -218,7 +224,7 @@ run_reference() {
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)
 	fi
-	run_rendered "$dir" "$FIXTURE_DIR"
+	run_rendered "$dir" "$fixture"
 }
 
 run_g3a() {
@@ -338,10 +344,72 @@ run_g3b() {
 	GS_RUN_DIR=""
 }
 
+# step_frame <k>: the frame step k is applied at (S + N*k with the fixture defaults).
+step_frame() {
+	echo $((START_FRAME + STEP_FRAMES * $1))
+}
+
+run_g3c() {
+	# import-xform: the rotated/scaled fixture and the receiver project.
+	echo "run-gate3: import-xform"
+	for project in fixture receiver; do
+		local project_dir="$XFORM_DIR"
+		[ "$project" = "receiver" ] && project_dir="$RECEIVER_DIR"
+		LEG_ENV=()
+		run_headless "$OUT/import-xform/$project" none -- mise exec -- godot --headless --path "$project_dir" --import
+		if [ "$(cat "$OUT/import-xform/$project/exit-code.txt")" != "0" ]; then
+			echo "run-gate3: import of $project_dir failed, see $OUT/import-xform/$project/stdout.log" >&2
+			exit 1
+		fi
+	done
+
+	# Capture hosts (headless, release template, armed, both sinks and the store, the fixture's
+	# default quit frame S + N*4 + 11).
+	echo "run-gate3: capture-xform"
+	CAPTURE_FIXTURE_DIR="$XFORM_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
+	run_capture "$OUT/capture-xform" "" none
+	local f1
+	f1="$(step_frame 1)"
+	echo "run-gate3: sabotage-xform-perturb (perturb-transform @$f1)"
+	CAPTURE_FIXTURE_DIR="$XFORM_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE=perturb-transform GRC_SABOTAGE_FRAME="$f1")
+	run_capture "$OUT/sabotage-xform-perturb/capture" "" none
+
+	echo "run-gate3: bringing up private gamescope for g3c's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-xform"
+
+	echo "run-gate3: reference-xform"
+	REFERENCE_FIXTURE="$XFORM_DIR"
+	run_reference "$OUT/reference-xform"
+	echo "run-gate3: reference-xform-repeat"
+	REFERENCE_FIXTURE="$XFORM_DIR"
+	run_reference "$OUT/reference-xform-repeat"
+	echo "run-gate3: reference-xform-armed (extension armed, stream on)"
+	REFERENCE_FIXTURE="$XFORM_DIR"
+	REFERENCE_ARMED=1
+	run_reference "$OUT/reference-xform-armed"
+
+	echo "run-gate3: receiver-xform"
+	run_rendered_receiver "$OUT/capture-xform" "$OUT/receiver-xform"
+	echo "run-gate3: receiver-xform-patch"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/capture-xform" "$OUT/receiver-xform-patch"
+	echo "run-gate3: sabotage-xform-perturb (receiver)"
+	run_rendered_receiver "$OUT/sabotage-xform-perturb/capture" "$OUT/sabotage-xform-perturb/receiver"
+	echo "run-gate3: sabotage-xform-receiver-ignore-clip"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=ignore-clip)
+	run_rendered_receiver "$OUT/capture-xform" "$OUT/sabotage-xform-receiver-ignore-clip"
+
+	gs_teardown "$OUT/gamescope-xform"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g3a) run_g3a ;;
 	g3b) run_g3b ;;
+	g3c) run_g3c ;;
 	esac
 done
 
