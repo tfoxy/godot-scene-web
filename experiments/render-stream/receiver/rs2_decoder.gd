@@ -19,7 +19,13 @@ extends RefCounted
 ## accepted only when it is finite, integral and within +-(2^53 - 1), then converted with int().
 
 const MAGIC_HEX: String = "475253320d0a1a0a"
+## render-stream-3.md (G4e1): the GRS3 magic, selected by `version == 3` on split_records()/
+## validate_recording(). /3 is implemented IN THIS SAME FILE behind that parameter, rather than a
+## forked Rs3Decoder, because it is only one new command and one new sabotage kind on top of /2
+## (gate4-design.md G4e1: "Renaming files is not part of this contract").
+const MAGIC_V3_HEX: String = "475253330d0a1a0a"
 const PROTOCOL: String = "render-stream/2"
+const PROTOCOL_V3: String = "render-stream/3"
 const MAX_SAFE_INT: float = 9007199254740991.0
 const U32_MAX: float = 4294967295.0
 const ITEM_FLOATS: int = 18
@@ -65,7 +71,7 @@ const SABOTAGE_KEYS: Array = ["kind", "frame", "op"]
 const SABOTAGE_KINDS: Array = [
 	"freeze-frame", "omit-update", "perturb-transform", "omit-op", "patch-drop-item",
 	"drop-message", "ignore-credit", "stale-coalesce", "stale-texture", "wrong-hash",
-	"spurious-texture-update", "drop-resource", "unpin",
+	"spurious-texture-update", "drop-resource", "unpin", "perturb-glyph",
 ]
 const TRANSACTION_KEYS: Array = [
 	"type", "seq", "frame", "encoding", "base_seq", "status", "failures", "unsupported",
@@ -95,6 +101,8 @@ const PARENT_KINDS: Array = ["canvas", "item"]
 const ADD_RECT_KEYS: Array = ["op", "aa", "f"]
 const ADD_TEXTURE_RECT_KEYS: Array = ["op", "tex", "tile", "transpose", "f"]
 const ADD_TEXTURE_RECT_REGION_KEYS: Array = ["op", "tex", "transpose", "clip_uv", "f"]
+## render-stream-3.md "Command" (new at /3).
+const ADD_MSDF_TEXTURE_RECT_REGION_KEYS: Array = ["op", "tex", "outline", "f"]
 const UNSUPPORTED_CMD_KEYS: Array = ["op", "name", "reason"]
 const UNSUPPORTED_CMD_REASONS: Array = ["unsupported-op", "unknown-texture", "canvas-texture-headless"]
 const FILTERS: Array = [
@@ -254,11 +262,15 @@ static func _frame(data: PackedByteArray, offset: int) -> Dictionary:
 	return out
 
 
-static func split_records(data: PackedByteArray) -> Dictionary:
+## `version` (2 or 3, render-stream-3.md) selects the expected magic -- GRS2 (default) or GRS3.
+## A /2 call refuses GRS3 the same way it already refuses GRS0/GRS1/anything else that is not
+## exactly GRS2; a /3 call refuses GRS2 the same way.
+static func split_records(data: PackedByteArray, version: int = 2) -> Dictionary:
 	var records: Array[Dictionary] = []
 	var errors := PackedStringArray()
-	if data.size() < 8 or data.slice(0, 8).hex_encode() != MAGIC_HEX:
-		errors.append(err("bad-magic", "first 8 bytes are %s, expected %s" % [data.slice(0, 8).hex_encode(), MAGIC_HEX]))
+	var expected_magic: String = MAGIC_V3_HEX if version == 3 else MAGIC_HEX
+	if data.size() < 8 or data.slice(0, 8).hex_encode() != expected_magic:
+		errors.append(err("bad-magic", "first 8 bytes are %s, expected %s" % [data.slice(0, 8).hex_encode(), expected_magic]))
 		return {"records": records, "errors": errors, "framed_to": 0}
 	var pos: int = 8
 	while pos < data.size():
@@ -444,7 +456,7 @@ class Schema:
 
 	func session(meta: Dictionary) -> void:
 		object(meta, Rs2Decoder.SESSION_KEYS, "meta")
-		exact(meta.get("protocol"), Rs2Decoder.PROTOCOL, "meta.protocol")
+		one_of(meta.get("protocol"), [Rs2Decoder.PROTOCOL, Rs2Decoder.PROTOCOL_V3], "meta.protocol")
 		hex(meta.get("session_id"), 32, "meta.session_id")
 		var stream: Dictionary = object(meta.get("stream"), Rs2Decoder.STREAM_KEYS, "meta.stream")
 		hex(stream.get("stream_id"), 32, "meta.stream.stream_id")
@@ -629,12 +641,19 @@ class Schema:
 						boolean(command.get("transpose"), cpath + ".transpose")
 						boolean(command.get("clip_uv"), cpath + ".clip_uv")
 						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_msdf_texture_rect_region":
+						object(command, Rs2Decoder.ADD_MSDF_TEXTURE_RECT_REGION_KEYS, cpath)
+						var tex3: Variant = command.get("tex")
+						if ok and tex3 != null:
+							integer(tex3, cpath + ".tex", 1, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("outline"), cpath + ".outline", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
 					elif op is String and op == "unsupported":
 						object(command, Rs2Decoder.UNSUPPORTED_CMD_KEYS, cpath)
 						string(command.get("name"), cpath + ".name")
 						one_of(command.get("reason"), Rs2Decoder.UNSUPPORTED_CMD_REASONS, cpath + ".reason")
 					else:
-						fail("%s.op is %s, expected add_rect, add_texture_rect, add_texture_rect_region or unsupported" % [cpath, JSON.stringify(op)])
+						fail("%s.op is %s, expected add_rect, add_texture_rect, add_texture_rect_region, add_msdf_texture_rect_region or unsupported" % [cpath, JSON.stringify(op)])
 		var textures: Array = array(meta.get("textures"), "meta.textures")
 		for i: int in textures.size():
 			texture_entry(textures[i], "meta.textures[%d]" % i)
@@ -804,6 +823,17 @@ static func _lift_item(item: Dictionary, item_f32: PackedFloat32Array, cmd_f32: 
 					"src": [cmd_f32[f3 + 4], cmd_f32[f3 + 5], cmd_f32[f3 + 6], cmd_f32[f3 + 7]],
 					"modulate": [cmd_f32[f3 + 8], cmd_f32[f3 + 9], cmd_f32[f3 + 10], cmd_f32[f3 + 11]],
 				})
+			elif op == "add_msdf_texture_rect_region":
+				# render-stream-3.md "Command": 14 floats (rect 4, src 4, modulate 4, px_range, scale).
+				var f4: int = as_int(command["f"])
+				commands.append({
+					"op": "add_msdf_texture_rect_region", "tex": command["tex"],
+					"outline": command["outline"],
+					"rect": [cmd_f32[f4], cmd_f32[f4 + 1], cmd_f32[f4 + 2], cmd_f32[f4 + 3]],
+					"src": [cmd_f32[f4 + 4], cmd_f32[f4 + 5], cmd_f32[f4 + 6], cmd_f32[f4 + 7]],
+					"modulate": [cmd_f32[f4 + 8], cmd_f32[f4 + 9], cmd_f32[f4 + 10], cmd_f32[f4 + 11]],
+					"px_range": cmd_f32[f4 + 12], "scale": cmd_f32[f4 + 13],
+				})
 			else:
 				commands.append({"op": "unsupported", "name": command["name"], "reason": command["reason"]})
 	var parent: Variant = item["parent"]
@@ -838,6 +868,8 @@ static func _command_float_count(command: Dictionary) -> int:
 		return 8
 	if op == "add_texture_rect_region":
 		return 12
+	if op == "add_msdf_texture_rect_region":
+		return 14
 	return 0
 
 
@@ -880,9 +912,9 @@ static func _dicts_equal(a: Dictionary, b: Dictionary) -> bool:
 # --------------------------------------------------------------------------- whole recording
 
 
-static func validate_recording(data: PackedByteArray) -> PackedStringArray:
+static func validate_recording(data: PackedByteArray, version: int = 2) -> PackedStringArray:
 	var errors := PackedStringArray()
-	var split: Dictionary = split_records(data)
+	var split: Dictionary = split_records(data, version)
 	var records: Array[Dictionary] = split["records"]
 	var split_errors: PackedStringArray = split["errors"]
 	if split_errors.size() > 0 and code_of(split_errors[0]) == "bad-magic":
@@ -1408,7 +1440,7 @@ class Stream:
 			for value: Variant in commands:
 				var command: Dictionary = value
 				var op: String = command["op"]
-				if op != "add_texture_rect" and op != "add_texture_rect_region":
+				if op != "add_texture_rect" and op != "add_texture_rect_region" and op != "add_msdf_texture_rect_region":
 					continue
 				var tex: Variant = command["tex"]
 				if tex == null:
@@ -1486,7 +1518,7 @@ class Stream:
 						var cmd_reason: String = command["reason"]
 						var reason: String = cmd_reason if cmd_reason == "unknown-texture" or cmd_reason == "canvas-texture-headless" else "unsupported-op"
 						actual_unsupported_ops["%d:%s" % [id, name]] = reason
-				elif op == "add_texture_rect" or op == "add_texture_rect_region":
+				elif op == "add_texture_rect" or op == "add_texture_rect_region" or op == "add_msdf_texture_rect_region":
 					var tex: Variant = command["tex"]
 					if tex == null:
 						continue
@@ -1502,7 +1534,15 @@ class Stream:
 							var diffuse_entry2: Dictionary = textures[Rs2Decoder.as_int(diffuse)]
 							unsupported_via_diffuse = diffuse_entry2["status"] == "unsupported"
 					if target["status"] == "unsupported" or unsupported_via_diffuse:
-						var rs_method: String = "canvas_item_add_texture_rect" if op == "add_texture_rect" else "canvas_item_add_texture_rect_region"
+						# The derived entry's `op` is the RenderingServer method name
+						# (canvas_item_add_texture_rect[_region] / _msdf_texture_rect_region).
+						var rs_method: String
+						if op == "add_texture_rect":
+							rs_method = "canvas_item_add_texture_rect"
+						elif op == "add_texture_rect_region":
+							rs_method = "canvas_item_add_texture_rect_region"
+						else:
+							rs_method = "canvas_item_add_msdf_texture_rect_region"
 						actual_unsupported_texture["%d:%s" % [id, rs_method]] = true
 
 		var last_item: int = -1

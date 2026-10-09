@@ -21,6 +21,11 @@ namespace rs2 {
 // The 8-byte file magic ("GRS2\r\n\x1a\n"), copied from kMagic.
 std::vector<std::uint8_t> magic();
 
+// render-stream-3.md: the 8-byte magic for `version` (kMagic for V2, kMagicV3 for V3). Added at
+// G4e1 as an overload rather than a change to magic() above, so every existing golden-2 call site
+// is unaffected.
+std::vector<std::uint8_t> magic(ProtocolVersion version);
+
 // Each function returns one complete wire record, length prefix included. Encoding is
 // deterministic: the same struct always yields the same bytes.
 //

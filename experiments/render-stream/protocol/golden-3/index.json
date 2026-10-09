@@ -1,0 +1,135 @@
+{
+  "schema": "render-stream-3-golden-index/1",
+  "protocol": "render-stream/3",
+  "valid": [
+    {
+      "file": "full.rs3",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "899c8c3a211a590d8433b3d29aeeee63af5e2bc35cfd69c62279e3ede334ad06"
+    },
+    {
+      "file": "patch.rs3",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "2ca84dc66f7fd03c241e73d552716fdc77bb2de5201fef14ab7af78615ef91ce"
+    },
+    {
+      "file": "inline.rs3",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "ce815250140ca02da62ba58add6db5625f3a3b375ae1ddc973f214cf5cb4f04c"
+    }
+  ],
+  "resolved": "resolved.json",
+  "inline_resources": [
+    {
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "bytes": 1135,
+      "record_index": 1
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 2
+    },
+    {
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "bytes": 1135,
+      "record_index": 5
+    },
+    {
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "bytes": 447,
+      "record_index": 7
+    },
+    {
+      "hash": "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437",
+      "bytes": 1135,
+      "record_index": 11
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs3",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs3 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs3",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '2' (GRS2), not '3'"
+    },
+    {
+      "file": "invalid/cmd-offset.rs3",
+      "code": "cmd-offset",
+      "description": "add_rect declares f=12, but the preceding add_msdf_texture_rect_region consumed 14 floats"
+    },
+    {
+      "file": "invalid/meta-schema.rs3",
+      "code": "meta-schema",
+      "description": "item 1's add_msdf_texture_rect_region declares outline -1 (must be an integer >= 0)"
+    },
+    {
+      "file": "invalid/texture-ref.rs3",
+      "code": "texture-ref",
+      "description": "item 1's add_msdf_texture_rect_region names texture 99, which has no entry in the resolved table"
+    },
+    {
+      "file": "invalid/unsupported-mismatch.rs3",
+      "code": "unsupported-mismatch",
+      "description": "item 1 draws an unsupported add_msdf_texture_rect_region with no derived unsupported[] entry"
+    }
+  ],
+  "payloads": [
+    {
+      "file": "payloads/a1.grt",
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/a2.grt",
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/f.grt",
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "format": "LA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 137
+    },
+    {
+      "file": "payloads/p.grt",
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "format": "RGBA8",
+      "width": 8,
+      "height": 8,
+      "mipmaps": true,
+      "bytes": 447
+    },
+    {
+      "file": "payloads/page.grt",
+      "hash": "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    }
+  ]
+}

@@ -3,6 +3,12 @@
 // docstring for the six-step scenario). Shared by rs2_codec_test.cpp (which builds Transactions
 // directly, bypassing rs2_diff) and rs2_diff_test.cpp (which builds these Snapshots and derives
 // Transactions through make_full()/make_patch()), mirroring rs1_golden_states.h's role at /1.
+//
+// state(7) and its helpers (below the six /2 states) are new at G4e1: the ground truth for
+// protocol/golden-3/{full,patch,inline}.rs3's seventh transaction, hand-transcribed from
+// protocol/golden-3/make_golden.py's state7() -- state(6) plus one new item (6) drawing three
+// add_msdf_texture_rect_region commands against one new texture (7, "the page"). Shared by
+// rs3_codec_test.cpp the same way the six base states are shared by rs2_codec_test.cpp.
 #ifndef GRC_RS2_GOLDEN_STATES_H
 #define GRC_RS2_GOLDEN_STATES_H
 
@@ -110,6 +116,25 @@ inline const std::vector<std::string> kFeatureUnobserved = {
 
 inline const std::vector<std::string> kPermittedFormats = {"L8", "LA8", "R8", "RG8", "RGB8", "RGBA8"};
 
+// new at /3 (render-stream-3.md "Features"): kFeatureOps plus add_msdf_texture_rect_region, and
+// kFeatureObservedUnsupported without it, both re-sorted ascending by byte value.
+inline const std::vector<std::string> kFeatureOpsV3 = {
+    "add_msdf_texture_rect_region", "add_rect", "add_texture_rect", "add_texture_rect_region"};
+
+inline const std::vector<std::string> kFeatureObservedUnsupportedV3 = {
+    "canvas_item_add_circle",
+    "canvas_item_add_lcd_texture_rect_region",
+    "canvas_item_add_line",
+    "canvas_item_add_mesh",
+    "canvas_item_add_multimesh",
+    "canvas_item_add_nine_patch",
+    "canvas_item_add_polygon",
+    "canvas_item_add_polyline",
+    "canvas_item_add_primitive",
+    "canvas_item_add_set_transform",
+    "canvas_item_add_triangle_array",
+    "canvas_item_set_material"};
+
 inline Session golden_session(Encoding stream_encoding, const std::string &stream_id,
                                const std::string &session_id, Delivery delivery) {
   Session session;
@@ -159,6 +184,17 @@ inline Session golden_session(Encoding stream_encoding, const std::string &strea
   session.host_visible_rect = {0.0f, 0.0f, 640.0f, 360.0f};
   session.host_final_xform = kIdentityXform;
   session.content_scale_factor = 1.0f;
+  return session;
+}
+
+// new at /3 (G4e1): golden_session() with Session::version flipped to V3 and the two features
+// lists /3 changes (render-stream-3.md "Features").
+inline Session golden_session_v3(Encoding stream_encoding, const std::string &stream_id,
+                                  const std::string &session_id, Delivery delivery) {
+  Session session = golden_session(stream_encoding, stream_id, session_id, delivery);
+  session.version = ProtocolVersion::V3;
+  session.features.ops = kFeatureOpsV3;
+  session.features.observed_unsupported_ops = kFeatureObservedUnsupportedV3;
   return session;
 }
 
@@ -217,6 +253,24 @@ inline Command unsupported_cmd(std::string name, UnsupportedCmdReason reason) {
   return c;
 }
 
+// new at /3 (render-stream-3.md "Command"): rect/src/modulate as add_texture_rect_region, plus
+// the engine's int outline_size, px_range and size/msdf_size scale.
+inline Command add_msdf_texture_rect_region(bool has_tex, std::uint32_t tex, std::int32_t outline,
+                                             Rect4 rect, Rect4 src, float px_range, float scale,
+                                             Color4 modulate = kWhite) {
+  Command c;
+  c.kind = CommandKind::AddMsdfTextureRectRegion;
+  c.has_tex = has_tex;
+  c.tex = tex;
+  c.msdf_outline = outline;
+  c.rect = rect;
+  c.src = src;
+  c.modulate = modulate;
+  c.msdf_px_range = px_range;
+  c.msdf_scale = scale;
+  return c;
+}
+
 inline const UnsupportedRef kUnsupportedItem3 = []() {
   UnsupportedRef u;
   u.op = "canvas_item_add_texture_rect";
@@ -236,6 +290,20 @@ inline const UnsupportedRef kUnsupportedTextureItem5 = []() {
 }();
 
 inline const std::vector<UnsupportedRef> kBaseUnsupported = {kUnsupportedItem3, kUnsupportedTextureItem5};
+
+// new at /3, state 7: item 6's third msdf command names an RID the capture never saw
+// (render-stream-3.md "Command": unsupported/unknown-texture, as for the other texture commands).
+inline const UnsupportedRef kUnsupportedMsdfItem6 = []() {
+  UnsupportedRef u;
+  u.op = "canvas_item_add_msdf_texture_rect_region";
+  u.has_item = true;
+  u.item = 6;
+  u.reason = UnsupportedReason::UnknownTexture;
+  return u;
+}();
+
+inline const std::vector<UnsupportedRef> kState7Unsupported = {kUnsupportedItem3, kUnsupportedTextureItem5,
+                                                                 kUnsupportedMsdfItem6};
 
 // --- the five items, constant except item 1 (seq 2) and item 4 (seq 5/6) -------------------
 
@@ -420,6 +488,47 @@ inline TextureEntry texture_n() {
   return t;
 }
 
+// --- item 6 and texture 7 ("the page"), new at /3's state 7 --------------------------------
+
+// payload_sha256() of protocol/golden-3/payloads/page.grt (make_golden.py HASH_PAGE): a 16x16
+// RGBA8 quadrant image -- a stand-in; the real atlas is 512x512 at msdf_size 48 (gate4-design.md
+// D5), but a codec-level golden only needs to exercise the wire shape, and 512x512 bloated
+// golden-3/ to 4.9 MB against golden-2's 0.8 MB (amended, "As built").
+inline const std::string kHashPage =
+    "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437";
+
+inline ItemState item6_msdf() {
+  ItemState it;
+  it.id = 6;
+  it.parent = ParentRef{ParentKind::Canvas, 1};
+  it.xform = {1.0f, 0.0f, 0.0f, 1.0f, 100.0f, 0.0f};
+  it.draw_index = 5;
+  it.content_version = 1;
+  it.commands = {
+      add_msdf_texture_rect_region(true, 7, 0, {100.0f, 0.0f, 24.0f, 24.0f},
+                                    {0.0f, 0.0f, 48.0f, 48.0f}, 24.0f, 0.5f),
+      add_msdf_texture_rect_region(true, 7, 4, {140.0f, 0.0f, -24.0f, 24.0f},
+                                    {48.0f, 0.0f, 48.0f, 48.0f}, 24.0f, 0.5f),
+      unsupported_cmd("canvas_item_add_msdf_texture_rect_region", UnsupportedCmdReason::UnknownTexture),
+  };
+  return it;
+}
+
+inline TextureEntry texture_page() {
+  TextureEntry t;
+  t.id = 7;
+  t.kind = TextureKind::Image;
+  t.version = 1;
+  t.has_hash = true;
+  t.hash = kHashPage;
+  t.has_format = true;
+  t.format = "RGBA8";
+  t.width = 16;
+  t.height = 16;
+  t.payload_bytes = 1135;  // the whole GRT1 payload (render-stream-2.md "Texture")
+  return t;
+}
+
 // --- the six states -------------------------------------------------------------------------
 
 inline Snapshot state(int n) {
@@ -469,6 +578,16 @@ inline Snapshot state(int n) {
     s.items = {item1_v2(), item2(), item3(), item4_v2(), item5()};
     s.textures = {texture_a(2, kHashA2), texture_atwin(), texture_u(), texture_p_replaced(),
                   texture_n()};
+    s.default_texture_filter = Filter::Linear;
+    break;
+  case 7:
+    // new at /3 (render-stream-3.md, G4e1): state 6 plus item 6 (three msdf commands) and
+    // texture 7 ("the page").
+    s.unsupported = kState7Unsupported;
+    s.canvases = {root_canvas({1, 2, 3, 4, 5, 6})};
+    s.items = {item1_v2(), item2(), item3(), item4_v2(), item5(), item6_msdf()};
+    s.textures = {texture_a(2, kHashA2), texture_atwin(), texture_u(), texture_p_replaced(),
+                  texture_n(), texture_page()};
     s.default_texture_filter = Filter::Linear;
     break;
   default:

@@ -218,10 +218,16 @@ std::vector<std::uint8_t> magic() {
   return std::vector<std::uint8_t>(kMagic.begin(), kMagic.end());
 }
 
+std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  return version == ProtocolVersion::V3
+             ? std::vector<std::uint8_t>(kMagicV3.begin(), kMagicV3.end())
+             : std::vector<std::uint8_t>(kMagic.begin(), kMagic.end());
+}
+
 std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
-  append_json_string(m, kProtocol);
+  append_json_string(m, session.version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol);
   m += ",\"session_id\":";
   append_json_string(m, session.session_id);
 
@@ -552,6 +558,25 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
           cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
           cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
           cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+          break;
+        case CommandKind::AddMsdfTextureRectRegion:
+          // render-stream-3.md "Command": 14 floats (rect 4, src 4, modulate 4, px_range, scale).
+          m += "{\"op\":\"add_msdf_texture_rect_region\",\"tex\":";
+          if (command.has_tex) {
+            append_json_int(m, command.tex);
+          } else {
+            m += "null";
+          }
+          m += ",\"outline\":";
+          append_json_int(m, command.msdf_outline);
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
+          cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
+          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+          cmd_f32.push_back(command.msdf_px_range);
+          cmd_f32.push_back(command.msdf_scale);
           break;
         case CommandKind::Unsupported:
           m += "{\"op\":\"unsupported\",\"name\":";

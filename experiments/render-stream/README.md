@@ -327,11 +327,14 @@ receivers in one private `gamescope --backend headless`, then the checker, which
 passed. Since G1b2 every capture runs under `GRC_ROOT_SIZE=enforce-min-size`; since G2b2 it runs
 on render-stream/2, every capture writing its payload store (`<capture>/store`, which holds only
 the engine's hue strip here) and every file-mode receiver getting a fresh cache and that store.
-Self-tests: `scripts/test/self-test-rs2.ts` (TS decoder against the /2 golden vectors),
+Self-tests: `scripts/test/self-test-rs2.ts` (TS decoder against the /2 golden vectors; since G4e1
+it also runs the same checks against /3's `golden-3/`, implemented in `render-stream-2.ts` itself
+behind a `version` parameter rather than a forked `render-stream-3.ts` -- `render-stream/3`
+[protocol/render-stream-3.md] is not yet spoken by the capture or the receiver, G4e2's job),
 `scripts/test/self-test-gate0.ts` (checker and classifier on synthetic evidence) and
-`python3 experiments/render-stream/protocol/golden-2/make_golden.py --check`; the frozen /0 and /1
-history stays checked by `scripts/test/self-test-rs0.ts`, `self-test-rs1.ts` and both older
-`make_golden.py --check`.
+`python3 experiments/render-stream/protocol/golden-2/make_golden.py --check` (plus `golden-3/`'s);
+the frozen /0 and /1 history stays checked by `scripts/test/self-test-rs0.ts`, `self-test-rs1.ts`
+and both older `make_golden.py --check`.
 
 ### Run gate 1
 

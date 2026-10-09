@@ -159,6 +159,15 @@ target_compile_definitions(rs2_diff_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2")
 add_test(NAME rs2_diff COMMAND rs2_diff_test)
 
+# Gate 4 (G4e1): render-stream/3 is a protocol-version switch on the SAME /2 codec/diff modules
+# (Session::version), proven byte-identical to protocol/golden-3/{full,patch,inline}.rs3.
+add_executable(rs3_codec_test test/rs3_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs3_codec_test PRIVATE src test)
+target_link_libraries(rs3_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs3_codec_test PRIVATE
+  GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3")
+add_test(NAME rs3_codec COMMAND rs3_codec_test)
+
 # Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
 # golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).
 add_executable(rs_sha256_test test/rs_sha256_test.cpp src/rs_sha256.cpp)

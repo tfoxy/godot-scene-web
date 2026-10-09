@@ -326,7 +326,11 @@ like any texture: through the store in recordings, and over HTTP live.
 - **Golden vectors** `protocol/golden-3/` (`make_golden.py --check`): /2's six states re-encoded
   as /3, plus seq 7 with three msdf commands. One has `outline` 0, one has `outline` 4 with a
   negative width (a flip), and one names an RID the capture never saw (→ `unsupported` /
-  `unknown-texture`). Seq 7 also has a new 512² RGBA8 page. `invalid/` vectors cover an msdf
+  `unknown-texture`). Seq 7 also has a new RGBA8 page. **Amended (G4e1, as built):** the vector
+  uses a 16×16 page, not D5's realistic 512² -- a codec-level golden only exercises the wire
+  shape, and a 512² page bloated `golden-3/` to 4.9 MB (inline.rs3 alone repeats the payload
+  inline) against golden-2's 0.8 MB; 16×16 matches the size already used for textures A/Atwin/N
+  in the shared six-state scene. `invalid/` vectors cover an msdf
   command with 12 floats (`cmd-offset`), a negative `outline` (`meta-schema`), a `tex` naming no
   entry (`texture-ref`), a missing derived `unsupported-texture` entry (`unsupported-mismatch`),
   and a `GRS2` stream (`bad-magic`).

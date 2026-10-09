@@ -1,21 +1,28 @@
 extends SceneTree
-## Rs2Decoder / RsTexturePayload self-test against the shared golden vectors (protocol/golden-2/).
+## Rs2Decoder / RsTexturePayload self-test against the shared golden vectors (protocol/golden-2/
+## AND protocol/golden-3/, G4e1).
 ##
 ##   godot --headless --path receiver --script res://tests/codec2_selftest.gd
 ##
-## RS_SELFTEST_GOLDEN_DIR overrides the golden directory (default <receiver>/../protocol/golden-2).
-## Prints "[rs2-selftest] ok" and quits 0, or prints each failure and quits 1.
+## RS_SELFTEST_GOLDEN_DIR overrides the golden-2 directory (default
+## <receiver>/../protocol/golden-2); golden-3 is always read from its sibling, <receiver>/../
+## protocol/golden-3 (not independently overridable -- this self-test is the one for BOTH
+## directories, per gate4-design.md G4e1: "Renaming files is not part of this contract", so a
+## separate codec3_selftest.gd was not added). Prints "[rs2-selftest] ok" and quits 0, or prints
+## each failure and quits 1.
 ##
-## Pure-codec properties only (gate2-design.md G2b1 "Pass criteria" -- the applier, RsApplier,
-## does not exist for /2 until G2b2):
+## Pure-codec properties only (gate2-design.md G2b1 "Pass criteria", and gate4-design.md G4e1's --
+## the applier, RsApplier, does not exist for /3 until G4e2):
 ##   1. decode_record()-equivalent (split_records + decode_record) deep-equals *.decoded.json for
-##      full/patch/inline.rs2;
+##      full/patch/inline.rs2 and .rs3;
 ##   2. the Stream's resolved state after each transaction deep-equals resolved.json's per-seq
-##      state (session_id/stream_id/encoding excepted, as self-test-rs2.ts), for all three;
-##   3. every invalid/*.rs2 yields its index.json code, and validate_recording() of all three
-##      valid vectors is [];
-##   4. corrupt-meta.rs2's broken transaction is rejected with "meta-json";
-##   5. every payload-invalid/*.grt yields its code from RsTexturePayload.decode();
+##      state (session_id/stream_id/encoding excepted, as self-test-rs2.ts), for all three streams
+##      in each golden directory;
+##   3. every invalid/*.rs2/.rs3 yields its index.json code, and validate_recording() of all three
+##      valid vectors in each directory is [];
+##   4. corrupt-meta.rs2/.rs3's broken transaction is rejected with "meta-json";
+##   5. every payload-invalid/*.grt (golden-2 only: /3 does not change the payload format) yields
+##      its code from RsTexturePayload.decode();
 ##   6. every payloads/*.grt hashes to its listed name, decodes to its listed shape, and an Image
 ##      rebuilt from it (RsTexturePayload.make_image()) has get_data() equal to the payload's data
 ##      bytes.
@@ -28,19 +35,25 @@ func _initialize() -> void:
 	_golden = OS.get_environment("RS_SELFTEST_GOLDEN_DIR")
 	if _golden == "":
 		_golden = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
-	print("[rs2-selftest] golden %s" % _golden)
+	var golden3: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-3").simplify_path()
+	_run_suite(_golden, 2)
+	_run_suite(golden3, 3)
+	_finish()
+
+
+func _run_suite(golden_dir: String, version: int) -> void:
+	_golden = golden_dir
+	print("[rs2-selftest] golden %s (version %d)" % [_golden, version])
 	var index: Dictionary = _read_json("index.json")
 	if index.is_empty():
-		_finish()
 		return
 	var resolved_file: String = index["resolved"]
 	var resolved: Dictionary = _read_json(resolved_file)
-	_test_valid(index, resolved)
-	_test_invalid(index)
-	_test_corrupt(index)
+	_test_valid(index, resolved, version)
+	_test_invalid(index, version)
+	_test_corrupt(index, version)
 	_test_payload_invalid(index)
-	_test_payloads(index)
-	_finish()
+	_test_payloads(index, version)
 
 
 func _finish() -> void:
@@ -79,8 +92,8 @@ func _read_json(relative: String) -> Dictionary:
 ## decodeRecording() in GDScript: the golden decoded form, built from Rs2Decoder's own API. A u8
 ## block decodes to {"u8_bytes","sha256"} (unchanged shape from decode_record()); an f32 block to
 ## a plain float Array.
-func _decode_recording(data: PackedByteArray) -> Dictionary:
-	var split: Dictionary = Rs2Decoder.split_records(data)
+func _decode_recording(data: PackedByteArray, version: int) -> Dictionary:
+	var split: Dictionary = Rs2Decoder.split_records(data, version)
 	var records: Array[Dictionary] = split["records"]
 	var split_errors: PackedStringArray = split["errors"]
 	_check(split_errors.is_empty(), "split_records errors: %s" % str(split_errors))
@@ -109,7 +122,7 @@ func _decode_recording(data: PackedByteArray) -> Dictionary:
 			"blocks": block_lists,
 		})
 	return {
-		"schema": "render-stream-2-decoded/1",
+		"schema": "render-stream-3-decoded/1" if version == 3 else "render-stream-2-decoded/1",
 		"magic": data.slice(0, 8).hex_encode(),
 		"records": decoded,
 	}
@@ -151,7 +164,7 @@ func _snapshot_state(stream: Rs2Decoder.Stream, meta: Dictionary) -> Dictionary:
 	}
 
 
-func _test_valid(index: Dictionary, resolved: Dictionary) -> void:
+func _test_valid(index: Dictionary, resolved: Dictionary, version: int) -> void:
 	var valid: Array = index["valid"]
 	for value: Variant in valid:
 		var vector: Dictionary = value
@@ -161,13 +174,13 @@ func _test_valid(index: Dictionary, resolved: Dictionary) -> void:
 
 		var decoded_file: String = vector["decoded"]
 		var expected_decoded: Dictionary = _read_json(decoded_file)
-		var actual_decoded: Dictionary = _decode_recording(data)
+		var actual_decoded: Dictionary = _decode_recording(data, version)
 		var diffs: Array[String] = []
 		_deep_equal(actual_decoded, expected_decoded, "$", diffs)
 		for diff: String in diffs.slice(0, 20):
 			_failures.append("%s decoded form: %s" % [file, diff])
 
-		var split: Dictionary = Rs2Decoder.split_records(data)
+		var split: Dictionary = Rs2Decoder.split_records(data, version)
 		var records: Array[Dictionary] = split["records"]
 		var stream := Rs2Decoder.Stream.new()
 		var expected_transactions: Array = resolved["transactions"]
@@ -203,24 +216,28 @@ func _test_valid(index: Dictionary, resolved: Dictionary) -> void:
 			if meta.get("type") == "resource":
 				resource_list.append({"hash": meta["hash"], "bytes": meta["bytes"], "record_index": i})
 		var inline_resources: Array = index["inline_resources"]
-		var expected_resources: Array = inline_resources if file == "inline.rs2" else []
+		var expected_resources: Array = inline_resources if file.begins_with("inline.") else []
 		var resource_diffs: Array[String] = []
 		_deep_equal(resource_list, expected_resources, "$", resource_diffs)
 		for diff: String in resource_diffs:
 			_failures.append("%s resources: %s" % [file, diff])
 
-		var errors: PackedStringArray = Rs2Decoder.validate_recording(data)
+		var errors: PackedStringArray = Rs2Decoder.validate_recording(data, version)
 		_check(errors.is_empty(), "%s should validate, got %s" % [file, str(errors)])
 
 
-func _test_invalid(index: Dictionary) -> void:
+func _test_invalid(index: Dictionary, version: int) -> void:
 	var invalid: Array = index["invalid"]
-	_check(invalid.size() == 12, "index.json lists %d invalid vectors, expected 12" % invalid.size())
+	# golden-2 has 12 invalid vectors (its full /2 rule set); golden-3 has exactly the 5 new
+	# failure modes /3 adds (gate4-design.md G4e1: every rule /3 leaves unchanged is already
+	# covered by golden-2's own vectors, and is not re-derived there).
+	var expected_count: int = 5 if version == 3 else 12
+	_check(invalid.size() == expected_count, "index.json lists %d invalid vectors, expected %d" % [invalid.size(), expected_count])
 	for value: Variant in invalid:
 		var vector: Dictionary = value
 		var file: String = vector["file"]
 		var code: String = vector["code"]
-		var errors: PackedStringArray = Rs2Decoder.validate_recording(_read_bytes(file))
+		var errors: PackedStringArray = Rs2Decoder.validate_recording(_read_bytes(file), version)
 		var found: bool = false
 		for error: String in errors:
 			if Rs2Decoder.code_of(error) == code:
@@ -229,7 +246,7 @@ func _test_invalid(index: Dictionary) -> void:
 		print("[rs2-selftest] %s -> %s" % [file, errors[0] if errors.size() > 0 else "(accepted)"])
 
 
-func _test_corrupt(index: Dictionary) -> void:
+func _test_corrupt(index: Dictionary, version: int) -> void:
 	var corrupt: Array = index["corrupt"]
 	for value: Variant in corrupt:
 		var vector: Dictionary = value
@@ -237,7 +254,7 @@ func _test_corrupt(index: Dictionary) -> void:
 		var code: String = vector["code"]
 		var record_index: int = Rs2Decoder.as_int(vector["record_index"])
 		var data: PackedByteArray = _read_bytes(file)
-		var split: Dictionary = Rs2Decoder.split_records(data)
+		var split: Dictionary = Rs2Decoder.split_records(data, version)
 		var split_errors: PackedStringArray = split["errors"]
 		_check(split_errors.is_empty(), "%s: framing must be intact, got %s" % [file, str(split_errors)])
 		var records: Array[Dictionary] = split["records"]
@@ -251,12 +268,16 @@ func _test_corrupt(index: Dictionary) -> void:
 				first_code = Rs2Decoder.code_of(errors[0])
 				break
 		_check(first_bad == record_index and first_code == code, "%s: first bad record is %d (%s), expected %d (%s)" % [file, first_bad, first_code, record_index, code])
-		var whole: PackedStringArray = Rs2Decoder.validate_recording(data)
+		var whole: PackedStringArray = Rs2Decoder.validate_recording(data, version)
 		_check(whole.size() > 0 and Rs2Decoder.code_of(whole[0]) == code, "%s: validate_recording gave %s" % [file, str(whole)])
 		print("[rs2-selftest] %s -> record %d %s" % [file, first_bad, first_code])
 
 
 func _test_payload_invalid(index: Dictionary) -> void:
+	# golden-3 carries no "payload_invalid" key: render-stream-3.md does not change the
+	# render-stream-texture/1 payload format, so golden-2's vectors are the only ones that exist.
+	if not index.has("payload_invalid"):
+		return
 	var payload_invalid: Array = index["payload_invalid"]
 	_check(payload_invalid.size() == 4, "index.json lists %d payload-invalid vectors, expected 4" % payload_invalid.size())
 	for value: Variant in payload_invalid:
@@ -269,9 +290,11 @@ func _test_payload_invalid(index: Dictionary) -> void:
 		print("[rs2-selftest] %s -> %s" % [file, decoded.get("code", "(ok)")])
 
 
-func _test_payloads(index: Dictionary) -> void:
+func _test_payloads(index: Dictionary, version: int) -> void:
 	var payloads: Array = index["payloads"]
-	_check(payloads.size() == 4, "index.json lists %d payloads, expected 4" % payloads.size())
+	# golden-3 has one more payload than golden-2: the new 512x512 "page" (state 7).
+	var expected_count: int = 5 if version == 3 else 4
+	_check(payloads.size() == expected_count, "index.json lists %d payloads, expected %d" % [payloads.size(), expected_count])
 	for value: Variant in payloads:
 		var vector: Dictionary = value
 		var file: String = vector["file"]
