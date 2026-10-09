@@ -315,3 +315,41 @@ It first runs unit cases: `classifyGate1` (a missing `root.json` or a failed enf
 model. It then builds a passing g1a evidence tree from a model of the fixture's retained state,
 encoded as render-stream/0, with PNGs synthesized from `expected.json`. Each check gets at least
 one failing perturbation, and the real `runGate1` runs on each tree: 28 scenarios, 110 assertions.
+
+# Gate 1, G1c1: `rs_ws` interop
+
+`rs_ws` (`../capture/src/rs_ws.{h,cpp}`, `../protocol/gate1-design.md` G1c1) is a dependency-free
+RFC 6455 WebSocket server on its own I/O thread. Its C++ unit test (`rs_ws` in `ctest`, run by
+`build-capture.sh`) covers the handshake, framing, masking and limits against an in-process raw
+socket. These two interop tests additionally prove it against two real WebSocket clients, driving
+`../capture/test/rs_ws_echo.cpp` (a test-only echo server built alongside the unit test, not linked
+into `render_stream_capture`): a text message that is all ASCII digits requests a binary push of
+that many bytes (deterministic, `byte[i] = i % 256`); anything else is echoed back as text.
+
+Run both from the repo root, after `build-capture.sh`:
+
+```bash
+experiments/render-stream/scripts/build-capture.sh
+experiments/render-stream/scripts/test/run-rs-ws-interop.sh
+```
+
+Or by hand:
+
+```bash
+# Node (built-in WebSocket, Node >= 22; this repo pins Node 24 and has no `ws` package):
+# spawns and kills its own rs_ws_echo.
+mise exec -- pnpm exec tsx --conditions=development \
+  experiments/render-stream/scripts/test/self-test-rs-ws.ts
+
+# Godot (WebSocketPeer), against a separately started rs_ws_echo:
+experiments/render-stream/capture/build/rs_ws_echo --port=0   # note the printed port
+mise exec -- godot --headless --path experiments/render-stream/receiver --import   # once
+RS_WS_ECHO_PORT=<port> mise exec -- godot --headless \
+  --path experiments/render-stream/receiver --script res://tests/ws_selftest.gd
+```
+
+`self-test-rs-ws.ts` checks: the subprotocol negotiates, a text message is echoed verbatim, a
+1 MiB and an 8 MiB binary push arrive byte-exact, and the close is clean. `ws_selftest.gd` checks
+the same shapes from the engine's own client: with `inbound_buffer_size` raised to 16 MiB before
+`connect_to_url`, an 8 MiB push arrives byte-exact; with the engine's 65535-byte default left in
+place, a 1 MiB push closes the connection with 1009 (`modules/websocket/wsl_peer.cpp:405-410`).
