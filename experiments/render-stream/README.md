@@ -1,4 +1,4 @@
-# render-stream experiment — gates −1, 0 and 1: capture seam, first stream, retained state, live delivery
+# render-stream experiment — gates −1, 0, 1 and 2a: capture seam, first stream, retained state, live delivery, texture capture
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
@@ -28,6 +28,13 @@ correct.
 G1e followed (see "Gate 1e result" below): calibrator 4 hooks `z_as_relative_to_parent` and
 `draw_behind_parent` (44 hooks), and the fixture grows to thirteen steps to prove both.
 
+Gate 2's first increment, G2a, followed (see "Gate 2a result" below): calibrator 5 hooks eleven
+texture calls (55 hooks); with a stream enabled, every `texture_2d_create` and `texture_2d_update`
+copies its image into a canonical payload and hashes it on the calling thread, and every
+texture call lands in a hook log; a texture fixture's rendered reference, call census and payload
+hashes agree with an independent derivation. Still on render-stream/1: textures reach the wire with
+G2b2. Its contract is the G2a section of [protocol/gate2-design.md](protocol/gate2-design.md).
+
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
 
@@ -37,10 +44,10 @@ It answers one question before any protocol work starts:
 > damage a shipped game?
 
 **Answer: yes, measured.** A GDExtension copies the `RenderingServer` singleton's
-vtable into the heap, replaces up to 44 slots with pass-through recording hooks
+vtable into the heap, replaces up to 55 slots with pass-through recording hooks
 (the eight gate −1 hooks, 23 draw-path hooks added for gate −0.25, 11 canvas
-and viewport state hooks added for gate 0, and 2 more draw-order hooks added for
-gate 1 G1e), and publishes the copy with one aligned pointer store into the
+and viewport state hooks added for gate 0, 2 more draw-order hooks added for
+gate 1 G1e, and 11 texture hooks added for gate 2 G2a), and publishes the copy with one aligned pointer store into the
 singleton object's first word. Native `Control` drawing, the `Label` glyph path and direct
 `RenderingServer` calls from GDScript are all intercepted; the engine's own call
 sites are **not** devirtualised away by the official build's LTO. Disarming
@@ -132,61 +139,76 @@ assuming any particular sentinel.
 ### Hooked slots on the pinned binary
 
 "Tier" is the calibrator version that first emitted the slot. Tier 1 is gate −1's
-set and is required; tiers 2, 3 and 4 are optional (see "Calibration records and
+set and is required; tiers 2, 3, 4 and 5 are optional (see "Calibration records and
 hook versions" below). Tier 3 is gate 0's: the state the retained canvas mirror
 (`capture/src/rs_mirror.h`) needs, beside the tier 1 and 2 hooks it also taps.
 Tier 4 is gate 1 G1e's: the two draw-order fields the mirror held at
-RenderingServer defaults until then (`z_relative`, `behind`).
+RenderingServer defaults until then (`z_relative`, `behind`). Tier 5 is gate 2
+G2a's: texture placeholders, replacement, canvas textures, the three levels of
+texture filter and repeat, and the LCD text draw (gate2-design.md Q2). With a
+stream enabled the texture calls also go to the hook log
+(`evidence/resources.jsonl`, "Runtime contract" below).
 "Captured" is what the hook records beside its count. Every signature is copied
 from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 
-| Method                                        | Slot | Tier | Captured                                                                                        |
-| --------------------------------------------- | ---- | ---- | ----------------------------------------------------------------------------------------------- |
-| `texture_2d_create`                           | 24   | 1    | returned RID, image size/format/bytes, frame                                                    |
-| `texture_2d_update`                           | 30   | 1    | RID, layer, image size/format/bytes, frame                                                      |
-| `shader_create_from_code`                     | 54   | 2    | returned RID (code and path `String`s not decoded)                                              |
-| `shader_set_code`                             | 55   | 2    | shader RID (code `String` not decoded)                                                          |
-| `material_set_param`                          | 66   | 2    | material RID (`StringName` and `Variant` not decoded)                                           |
-| `mesh_create`                                 | 71   | 2    | returned RID                                                                                    |
-| `mesh_add_surface`                            | 82   | 2    | mesh, and from `SurfaceData`: primitive, format, vertex/index counts, four buffer sizes, `aabb` |
-| `mesh_surface_update_vertex_region`           | 86   | 2    | mesh, surface, byte offset, byte count, first 64 bytes                                          |
-| `mesh_surface_update_attribute_region`        | 87   | 2    | as above                                                                                        |
-| `mesh_set_custom_aabb`                        | 94   | 2    | mesh, AABB                                                                                      |
-| `mesh_clear`                                  | 100  | 2    | mesh                                                                                            |
-| `viewport_attach_canvas`                      | 313  | 3    | viewport, canvas                                                                                |
-| `viewport_set_canvas_transform`               | 315  | 3    | viewport, canvas, transform                                                                     |
-| `canvas_create`                               | 435  | 3    | returned RID                                                                                    |
-| `canvas_item_create`                          | 446  | 2    | returned RID                                                                                    |
-| `canvas_item_set_parent`                      | 447  | 3    | item, parent                                                                                    |
-| `canvas_item_set_visible`                     | 450  | 3    | item, visible                                                                                   |
-| `canvas_item_set_transform`                   | 453  | 2    | item, transform                                                                                 |
-| `canvas_item_set_clip`                        | 454  | 3    | item, clip                                                                                      |
-| `canvas_item_set_custom_rect`                 | 456  | 3    | item, enabled, rect                                                                             |
-| `canvas_item_set_modulate`                    | 457  | 2    | item, colour                                                                                    |
-| `canvas_item_set_self_modulate`               | 458  | 3    | item, colour                                                                                    |
-| `canvas_item_set_visibility_layer`            | 459  | 3    | item, layer                                                                                     |
-| `canvas_item_set_draw_behind_parent`          | 460  | 4    | item, behind                                                                                    |
-| `canvas_item_add_line`                        | 462  | 2    | item, from, to, colour, width, antialiased                                                      |
-| `canvas_item_add_polyline`                    | 463  | 2    | item, points, colours, width, antialiased                                                       |
-| `canvas_item_add_rect`                        | 465  | 1    | item, rect, colour, antialiased                                                                 |
-| `canvas_item_add_circle`                      | 466  | 2    | item, position, radius, colour, antialiased                                                     |
-| `canvas_item_add_texture_rect`                | 467  | 1    | count only                                                                                      |
-| `canvas_item_add_texture_rect_region`         | 468  | 1    | count only                                                                                      |
-| `canvas_item_add_msdf_texture_rect_region`    | 469  | 1    | count only                                                                                      |
-| `canvas_item_add_nine_patch`                  | 471  | 2    | every argument                                                                                  |
-| `canvas_item_add_primitive`                   | 472  | 2    | item, points, colours, UVs, texture                                                             |
-| `canvas_item_add_polygon`                     | 473  | 1    | item, points, colours, UV count, texture                                                        |
-| `canvas_item_add_triangle_array`              | 474  | 2    | item, indices, points, colours, UVs, bone/weight counts, texture, count                         |
-| `canvas_item_add_mesh`                        | 475  | 2    | item, mesh (passed by reference), transform, modulate, texture                                  |
-| `canvas_item_add_multimesh`                   | 476  | 2    | item, multimesh, texture                                                                        |
-| `canvas_item_add_set_transform`               | 478  | 2    | item, transform                                                                                 |
-| `canvas_item_set_z_index`                     | 482  | 3    | item, z index                                                                                   |
-| `canvas_item_set_z_as_relative_to_parent`     | 483  | 4    | item, z_relative                                                                                |
-| `canvas_item_clear`                           | 486  | 2    | item                                                                                            |
-| `canvas_item_set_draw_index`                  | 487  | 3    | item, draw index                                                                                |
-| `canvas_item_set_material`                    | 488  | 2    | item, material                                                                                  |
-| `free`                                        | 549  | 1    | freed RID (deduplicated log, as tier 2)                                                         |
-| `get_default_clear_color` (probe, not hooked) | 577  | 1    | —                                                                                               |
+| Method                                            | Slot | Tier | Captured                                                                                           |
+| ------------------------------------------------- | ---- | ---- | -------------------------------------------------------------------------------------------------- |
+| `texture_2d_create`                               | 24   | 1    | returned RID, image size/format/bytes, frame; with a stream, the GRT1 payload copy + SHA-256 (G2a) |
+| `texture_2d_update`                               | 30   | 1    | RID, layer, image size/format/bytes, frame; with a stream, the payload copy + SHA-256 (G2a)        |
+| `shader_create_from_code`                         | 54   | 2    | returned RID (code and path `String`s not decoded)                                                 |
+| `shader_set_code`                                 | 55   | 2    | shader RID (code `String` not decoded)                                                             |
+| `material_set_param`                              | 66   | 2    | material RID (`StringName` and `Variant` not decoded)                                              |
+| `mesh_create`                                     | 71   | 2    | returned RID                                                                                       |
+| `mesh_add_surface`                                | 82   | 2    | mesh, and from `SurfaceData`: primitive, format, vertex/index counts, four buffer sizes, `aabb`    |
+| `mesh_surface_update_vertex_region`               | 86   | 2    | mesh, surface, byte offset, byte count, first 64 bytes                                             |
+| `mesh_surface_update_attribute_region`            | 87   | 2    | as above                                                                                           |
+| `mesh_set_custom_aabb`                            | 94   | 2    | mesh, AABB                                                                                         |
+| `mesh_clear`                                      | 100  | 2    | mesh                                                                                               |
+| `viewport_attach_canvas`                          | 313  | 3    | viewport, canvas                                                                                   |
+| `viewport_set_canvas_transform`                   | 315  | 3    | viewport, canvas, transform                                                                        |
+| `canvas_create`                                   | 435  | 3    | returned RID                                                                                       |
+| `canvas_item_create`                              | 446  | 2    | returned RID                                                                                       |
+| `canvas_item_set_parent`                          | 447  | 3    | item, parent                                                                                       |
+| `canvas_item_set_visible`                         | 450  | 3    | item, visible                                                                                      |
+| `canvas_item_set_transform`                       | 453  | 2    | item, transform                                                                                    |
+| `canvas_item_set_clip`                            | 454  | 3    | item, clip                                                                                         |
+| `canvas_item_set_custom_rect`                     | 456  | 3    | item, enabled, rect                                                                                |
+| `canvas_item_set_modulate`                        | 457  | 2    | item, colour                                                                                       |
+| `canvas_item_set_self_modulate`                   | 458  | 3    | item, colour                                                                                       |
+| `canvas_item_set_visibility_layer`                | 459  | 3    | item, layer                                                                                        |
+| `canvas_item_set_draw_behind_parent`              | 460  | 4    | item, behind                                                                                       |
+| `canvas_item_add_line`                            | 462  | 2    | item, from, to, colour, width, antialiased                                                         |
+| `canvas_item_add_polyline`                        | 463  | 2    | item, points, colours, width, antialiased                                                          |
+| `canvas_item_add_rect`                            | 465  | 1    | item, rect, colour, antialiased                                                                    |
+| `canvas_item_add_circle`                          | 466  | 2    | item, position, radius, colour, antialiased                                                        |
+| `canvas_item_add_texture_rect`                    | 467  | 1    | item, rect, texture, tile, modulate, transpose (count only before calibrator 5)                    |
+| `canvas_item_add_texture_rect_region`             | 468  | 1    | item, rect, texture, source, modulate, transpose, clip_uv (count only before calibrator 5)         |
+| `canvas_item_add_msdf_texture_rect_region`        | 469  | 1    | count only                                                                                         |
+| `canvas_item_add_nine_patch`                      | 471  | 2    | every argument                                                                                     |
+| `canvas_item_add_primitive`                       | 472  | 2    | item, points, colours, UVs, texture                                                                |
+| `canvas_item_add_polygon`                         | 473  | 1    | item, points, colours, UV count, texture                                                           |
+| `canvas_item_add_triangle_array`                  | 474  | 2    | item, indices, points, colours, UVs, bone/weight counts, texture, count                            |
+| `canvas_item_add_mesh`                            | 475  | 2    | item, mesh (passed by reference), transform, modulate, texture                                     |
+| `canvas_item_add_multimesh`                       | 476  | 2    | item, multimesh, texture                                                                           |
+| `canvas_item_add_set_transform`                   | 478  | 2    | item, transform                                                                                    |
+| `canvas_item_set_z_index`                         | 482  | 3    | item, z index                                                                                      |
+| `canvas_item_set_z_as_relative_to_parent`         | 483  | 4    | item, z_relative                                                                                   |
+| `canvas_item_clear`                               | 486  | 2    | item                                                                                               |
+| `canvas_item_set_draw_index`                      | 487  | 3    | item, draw index                                                                                   |
+| `canvas_item_set_material`                        | 488  | 2    | item, material                                                                                     |
+| `free`                                            | 549  | 1    | freed RID (deduplicated log, as tier 2)                                                            |
+| `texture_2d_placeholder_create`                   | 34   | 5    | returned RID                                                                                       |
+| `texture_replace`                                 | 40   | 5    | texture, by-texture                                                                                |
+| `viewport_set_default_canvas_item_texture_filter` | 321  | 5    | viewport, filter                                                                                   |
+| `viewport_set_default_canvas_item_texture_repeat` | 322  | 5    | viewport, repeat                                                                                   |
+| `canvas_texture_create`                           | 441  | 5    | returned RID                                                                                       |
+| `canvas_texture_set_channel`                      | 442  | 5    | canvas texture, channel, texture                                                                   |
+| `canvas_texture_set_texture_filter`               | 444  | 5    | canvas texture, filter                                                                             |
+| `canvas_texture_set_texture_repeat`               | 445  | 5    | canvas texture, repeat                                                                             |
+| `canvas_item_set_default_texture_filter`          | 448  | 5    | item, filter                                                                                       |
+| `canvas_item_set_default_texture_repeat`          | 449  | 5    | item, repeat                                                                                       |
+| `canvas_item_add_lcd_texture_rect_region`         | 470  | 5    | item, rect, texture, source, modulate                                                              |
+| `get_default_clear_color` (probe, not hooked)     | 577  | 1    | —                                                                                                  |
 
 Floats are written as values and as float32 bit patterns (`*_bits`). Arrays keep
 their first 64 elements, and `*_total` gives the real length. A tier-2 or tier-3 hook
@@ -219,7 +241,7 @@ That record may come from a sibling calibrating another binary with whatever
   omission is recorded in three places:
   - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
     omitted hooks, for example:
-    `8 of 44 hooks named by the record; omitted (record predates them): …`.
+    `8 of 55 hooks named by the record; omitted (record predates them): …`.
   - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
     is `null` rather than `0`. A `null` means "not installed", which is
     different from "never called".
@@ -325,26 +347,45 @@ a fourth private gamescope, a stalled receiver, a reconnecting one, a resyncing 
 criteria: [scripts/README.md](scripts/README.md) "Gate 1". Self-test:
 `scripts/test/self-test-gate1.ts`.
 
+### Run gate 2
+
+```bash
+experiments/render-stream/scripts/build-capture.sh          # + rs_sha256, rs_texture_payload, rs_resource_log ctests
+mise exec -- pnpm render-stream:gate2 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g2a]
+```
+
+About a minute for group `g2a`. It imports `fixtures/gate2/`, runs the headless capture (400
+frames, `enforce-min-size`, strace) and the `unsupported` variant's capture, then the reference,
+its same-build repeat and the extension-armed reference in one private gamescope, then the
+checker, which writes `artifacts/render-stream/gate2/<UTC>/result.json`
+(`render-stream-gate2-report/1`). Legs and criteria: [scripts/README.md](scripts/README.md) "Gate
+2". Self-test: `scripts/test/self-test-gate2.ts`; `fixtures/gate2/make_expected.py --check`.
+
 ## Runtime contract
 
 Environment, read once at SCENE initialisation:
 
-| Variable                     | Meaning                                                                                                                                                                                                                                                               |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GRC_CALIBRATION`            | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                                                                                     |
-| `GRC_MODE`                   | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                        |
-| `GRC_EVIDENCE_DIR`           | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                     |
-| `GRC_DISARM_AFTER_FRAMES`    | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                 |
-| `GRC_STREAM_OUT`             | absolute `.rs1` path of the full-encoding sink (render-stream/1 since G1b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                           |
-| `GRC_STREAM_PATCH_OUT`       | G1b2: absolute `.rs1` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                    |
-| `GRC_SABOTAGE`               | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message` (G1c2, needs `GRC_LIVE_LISTEN`). `ignore-credit`, `stale-coalesce` (G1d) and any other value refuse to publish (arming is unaffected) |
-| `GRC_SABOTAGE_OP`            | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                             |
-| `GRC_SABOTAGE_FRAME`         | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                               |
-| `GRC_ROOT_SIZE`              | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                 |
-| `GRC_LIVE_LISTEN`            | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves render-stream/1 over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`)              |
-| `GRC_LIVE_TAP_DIR`           | G1c2: absolute directory for `stream-<n>.rs1` (every binary message formed for connection n) and `live-<n>.jsonl` (the live log)                                                                                                                                      |
-| `GRC_LIVE_MAX_MESSAGE_BYTES` | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                 |
-| `GRC_LIVE_HELLO_TIMEOUT_MS`  | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                   |
+| Variable                         | Meaning                                                                                                                                                                                                                                                               |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GRC_CALIBRATION`                | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                                                                                     |
+| `GRC_MODE`                       | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                        |
+| `GRC_EVIDENCE_DIR`               | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                     |
+| `GRC_DISARM_AFTER_FRAMES`        | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                 |
+| `GRC_STREAM_OUT`                 | absolute `.rs1` path of the full-encoding sink (render-stream/1 since G1b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                           |
+| `GRC_STREAM_PATCH_OUT`           | G1b2: absolute `.rs1` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                    |
+| `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message` (G1c2, needs `GRC_LIVE_LISTEN`). `ignore-credit`, `stale-coalesce` (G1d) and any other value refuse to publish (arming is unaffected) |
+| `GRC_SABOTAGE_OP`                | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                             |
+| `GRC_SABOTAGE_FRAME`             | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                               |
+| `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                 |
+| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves render-stream/1 over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`)              |
+| `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs1` (every binary message formed for connection n) and `live-<n>.jsonl` (the live log)                                                                                                                                      |
+| `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                 |
+| `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                   |
+| `GRC_RESOURCE_FORMATS`           | G2a, read at arm with a stream: the `Image` formats whose bytes are copied, a comma-separated subset of `L8,LA8,R8,RG8,RGB8,RGBA8` (the default); any other name refuses to publish                                                                                   |
+| `GRC_RESOURCE_MAX_PAYLOAD_BYTES` | G2a: the largest canonical payload copied, a decimal integer ≥ 1, default 67108864 (64 MiB); a larger texture is logged `payload-too-large` and not copied. An engine without the `Image` binds or `image_ptr` refuses to publish (`image-access-unavailable`)        |
 
 Arming happens at the earliest point where the `RenderingServer` singleton is
 available. With a runtime `load_extension` from an autoload that is SCENE
@@ -392,6 +433,18 @@ reason, connections}`. Written at decision time and rewritten at disarm and shut
   at shutdown. Floats are printed with `%.9g` **and** as IEEE-754 float32 hex
   bits.
 - `disarm.json` — `disarmed`, `vptr_was_shadow`, `vptr_restored`, `frame`.
+- `resources.jsonl` (G2a, whenever a stream is enabled) — `render-stream-resource-log/1`, the
+  texture hook log (`capture/src/rs_resource_log.h`): one line per texture-related
+  RenderingServer call after it was forwarded (a free is logged only for a RID created as a
+  texture), drained at every frame callback. Keys, in order: gate2-design.md Q3's `frame`, `t_us`
+  (since the stream opened), `thread` (`main` or `other`), `op`, `id` and `by_id` (the wire ids
+  G2b2's mirror will use: one per-session counter, never reused), `rid`, `version`, `kind`,
+  `status`, `reason`, `format`, `width`, `height`, `mipmaps`, `data_bytes`, `payload_bytes`,
+  `hash` (SHA-256 of the GRT1 payload, copied and hashed on the calling thread before the call
+  was forwarded), `copy_ns`, `hash_ns`, `conn` and `http_status` (null until G2c2), then G2a's
+  additions `target` (the item, viewport or other texture RID the call names), `ref_id` (that
+  texture's id), `value` (the filter, repeat or channel argument), `layer` and `root_viewport`.
+  A `texture_replace` line carries the payload fields of the content its target now holds.
 - `armed.marker` — empty file, created immediately after the vptr store.
 
 Deviations from the drafted contract, all additive:
@@ -422,6 +475,13 @@ Deviations from the drafted contract, all additive:
   entry, a `captured` array and a `captured_dropped` entry for each of the 11
   tier-3 hooks, and a `captured.free` array of freed RIDs (with
   `captured_dropped.free`).
+- Calibrator 5 (G2a) also added keys only. `counters.json` gains a `counts`
+  entry, a `captured` array and a `captured_dropped` entry for each of the 11
+  tier-5 hooks; `captured.canvas_item_add_texture_rect` and `_region` arrays with
+  the full arguments (256 distinct entries each instead of 32);
+  `image_payload_available`; and `texture_update_unknown`. `root.json` gains
+  `texture_defaults` (`filter`, `repeat`: the root `Viewport`'s scene enums read at
+  arm, −1 when unread).
 
 ## Safety model
 
@@ -453,7 +513,7 @@ What this does **not** establish:
 
 - that the shipped game's stripped fork has the same vtable layout. It needs its
   own record, which is exactly what the calibrator is for.
-- that the capture is complete. 44 of the 565 `RenderingServer` virtuals are
+- that the capture is complete. 55 of the 565 `RenderingServer` virtuals are
   hooked.
 - anything about performance.
 
@@ -1289,6 +1349,129 @@ transaction is a few hundred bytes (about 350 KB for 900 frames), a full snapsho
 credit round trip is 1–2 host frames for a rendered receiver (`submitted`) and about 1.5 ms for a
 headless one (`applied`); the receiver applies a transaction in about 0.6 ms (median, G1c2). The
 hook itself stays armed for the whole session (D6), a cost gate 1 does not measure.
+
+## Gate 2a result (2026-10-09)
+
+G2a ([protocol/gate2-design.md](protocol/gate2-design.md) "G2a") passes:
+`pnpm render-stream:gate2 -- --legs g2a` is 15/15 in
+`artifacts/render-stream/gate2/20261009T110836Z/` (an earlier run with the same build,
+`20261009T105103Z`, matched every image and hash and taught the census one engine call, below).
+The same build passed gate −1 28/28 with 55 hooks planned and none omitted
+(`artifacts/render-stream/gate-minus1/20261009T104748Z/`, `armed.png == unarmed.png`), gate 0 19/19
+(`artifacts/render-stream/gate0/20261009T105733Z/`) and gate 1 65/65 with all four groups
+(`artifacts/render-stream/gate1/20261009T105916Z/`). Nothing changed on the render-stream/1 wire:
+the capture leg classifies `unsupported`, and only because its texture draws are unsupported
+commands.
+
+What landed:
+
+- **Calibrator 5**, eleven optional slots at exactly the contract's indices: placeholder create 34,
+  `texture_replace` 40, the root default filter/repeat 321/322, canvas textures 441/442/444/445,
+  item default filter/repeat 448/449, LCD text 470. `calibrate.sh --check` is clean. On /1 the new
+  hooks are counted, captured into `counters.json` and logged; they make no mirror tap. The two
+  texture-rect draws now capture every argument. The spike drives all eleven off-screen.
+- **Copy and hash at the hook.** With a stream enabled, `texture_2d_create` and `_update` read the
+  image's shape through the `Image` binds (`has_mipmaps` added), copy `image_ptr`'s bytes into a
+  GRT1 payload and SHA-256 it on the calling thread before forwarding
+  (`capture/src/rs_texture_payload.*`, `rs_sha256.*`; ctests on the FIPS vectors and on literal
+  payload bytes for golden-2's four shapes). Formats outside `GRC_RESOURCE_FORMATS` and payloads
+  over `GRC_RESOURCE_MAX_PAYLOAD_BYTES` are logged and not copied. G2a keeps no payload.
+- **The hook log**, `evidence/resources.jsonl` (`capture/src/rs_resource_log.*`, ctest), with the
+  wire ids and versions G2b2's mirror will assign.
+- **The arm-time root texture defaults**, read through the two `Viewport` binds into `root.json`.
+- **The gate 2 fixture and runner** (`fixtures/gate2/`, `scripts/run-gate2.sh`, `check-gate2.ts`,
+  `lib/gate2-*.ts`, `test/self-test-gate2.ts`).
+
+Images (all under the run directory): `reference/shots/step-{0..10}.png`,
+`reference-repeat/shots/step-{0..10}.png` and `reference-armed/shots/step-{0..10}.png`. Every
+reference shot equals `synthesizeGate2` exactly outside its `synth_exclude` regions (the linear,
+mipmapped and semi-transparent ones: `s2` from step 3, all eight default-filter drawers at step 4,
+`sb` from step 7, `mm` from step 9). The repeat is identical in every region of every step, so the
+recorded budget is 0 everywhere. The armed reference is byte-identical to the unarmed one.
+
+The measured census, per step window, identical in the headless capture and the rendered armed
+reference and equal to `expected.json` (`<op>@other` is off the main thread):
+
+| step | RenderingServer texture calls                                                                    |
+| ---- | ------------------------------------------------------------------------------------------------ |
+| 0    | `texture_2d_create` 5, `texture_2d_placeholder_create` 2, item default filter 11, item repeat 11 |
+| 1    | none (flips, region, transpose are draw arguments)                                               |
+| 2    | none (transform only)                                                                            |
+| 3    | item default filter 1 (`S2`)                                                                     |
+| 4    | `viewport_set_default_canvas_item_texture_filter` 1 (LINEAR, 2)                                  |
+| 5    | `viewport_set_default_canvas_item_texture_filter` 1 (NEAREST, 1), item repeat 1 (`DR` MIRROR)    |
+| 6    | `texture_2d_update` 1                                                                            |
+| 7    | `texture_2d_create` 2, `texture_replace` 2                                                       |
+| 8    | `texture_2d_create` 1, `texture_2d_create@other` 1, `free` 2                                     |
+| 9    | `texture_2d_create` 1, `texture_replace` 1, item default filter 1 (`MM`)                         |
+| 10   | none (transform only)                                                                            |
+
+After the quit frame the scene teardown frees five textures (A, B, M, C, D); `P2` and the two raw
+items are left to the engine's exit, as gate 1's raw items were. The `unsupported` variant adds
+U1's create (logged `unsupported-format`, not copied) and two items' filter/repeat calls at step
+0, and draws exactly one texture RID the log never saw created (`PRE`, made before arming); the
+main capture draws none.
+
+Copy and hash at the hook, headless capture, median ns (copy = header + `memcpy`, hash = SHA-256
+of the whole payload):
+
+| shape                | payload bytes | copy  | hash   |
+| -------------------- | ------------- | ----- | ------ |
+| LA8 4×4              | 137           | 140   | 1 120  |
+| RGBA8 4×4            | 171           | 130   | 970    |
+| RGBA8 16×16          | 1 135         | 1 160 | 5 330  |
+| RGBA8 32×32          | 4 207         | 1 030 | 13 310 |
+| RGBA8 800×6 (theme)  | 19 312        | 1 830 | 55 380 |
+| RGBA8 64×64, mipmaps | 21 955        | 2 200 | 62 880 |
+
+The rendered armed reference measures the same within noise. The portable SHA-256 runs at about
+350 MB/s, so hashing, not copying, is the cost; lazy hashing stays a gate 6 measurement.
+
+### Findings
+
+- **The engine makes a texture of its own after arming.** The default theme gives ColorPicker an
+  800×6 `GradientTexture2D` hue strip (`scene/theme/default_theme.cpp:1093-1097`) whose deferred
+  `update_now` (`scene/resources/gradient_texture.cpp:220-225`) runs at the first MessageQueue
+  flush, in frame 1, as a plain `texture_2d_create` (`:273-278`). It is the "800×6 format-5 image"
+  gate −1 counted without explaining. Every armed run sees it, so `expected.json` declares it
+  (`engine_textures`) and the census counts it.
+- **Every texture prediction held on the first run.** The synthesized flips, the transposed
+  region, `S3`'s 90° turn (transpose + flip in the shader's sampling), the flipped tile, mirror
+  repeat, the LA8 alpha, the freed `P1` drawing white (D11), the placeholder becoming `E` through
+  `texture_replace`, and `C` showing its pre-fill content all matched the reference exactly.
+- **Copy at the hook is proven twice.** `C`'s hook hash equals the fixture's hash of the image
+  before `fill(black)`, and the reference shows those colours. `D`'s create is the only line off
+  the main thread, and its hash equals the worker's own.
+- **Two independent encoders agree.** The C++ hook and the fixture's GDScript `payload.gd`
+  produce the same SHA-256 for all twenty creates and updates across the capture and the armed
+  reference; A0's and B's hashes also equal the ctest's Python-derived literals.
+
+### Deviations from the contract
+
+- Every sprite is `centered = false`: the layout table's regions put each sprite's top-left at its
+  position. `DR`'s step-1 source is (4,0,8,8), not (8,0,8,8), which lies wholly in A0's green
+  quadrant and would look the same with or without the transpose.
+- The hook log appends five keys to Q3's (`target`, `ref_id`, `value`, `layer`,
+  `root_viewport`): the census, `replace-retires-temp` and `viewport-defaults` need the argument
+  an op names. A `texture_replace` line repeats its by-texture's payload fields. The census keys
+  thread as `<op>@other`.
+- `GRC_RESOURCE_MAX_PAYLOAD_BYTES` defaults to 64 MiB; the contract names no default.
+- `reference-armed` runs with the default root-size policy (`observe`), so the only difference
+  from `reference` is the armed extension and its stream; its window is 640×360, so it declares
+  `match`.
+- One check beyond the contract's list, `unsupported-variant`, judges the `capture-unsupported`
+  support leg ("census of unknown RIDs"). `expected.json` is generated by
+  `fixtures/gate2/make_expected.py`, which encodes the hand derivation and cites its sources.
+- `gate0-checks.ts` `GATE0_HOOKS` grows to the 55 names the shared record plans, so gates 0 and 1
+  keep requiring exactly the committed record's hooks.
+
+### What G2a does not prove
+
+- Anything a receiver does with textures: the wire is still render-stream/1 (G2b2).
+- Payload retention, the store, HTTP delivery and pinning (G2b2, G2c1, G2c2), or the
+  `CanvasTexture` hooks beyond their counts (G2d).
+- That the texture capture covers formats other than the six 8-bit uncompressed ones, textures
+  created before arming, or the target game's 1 526 textures (gate 8).
 
 ## Scratch verification (2026-10-08)
 

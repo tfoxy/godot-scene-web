@@ -125,6 +125,7 @@ var _attribute_stride: int = 0
 var _vertex_update: PackedByteArray
 var _attribute_update: PackedByteArray = PackedByteArray(MESH_NEW_COLOR_BYTES)
 var _multimesh: MultiMesh = MultiMesh.new()
+var _canvas_texture: CanvasTexture
 
 
 func _ready() -> void:
@@ -168,6 +169,15 @@ func _ready() -> void:
 	late.z_as_relative = false
 	late.show_behind_parent = true
 	add_child(late)
+	# Calibrator-5 texture hooks (gate2-design.md Q2), on the same post-arm Node2D and on objects
+	# nothing draws, so the pixels do not change. The item's own filter/repeat are set to
+	# non-default values (canvas_item_set_default_texture_filter/_repeat; its tree entry above
+	# already called both with DEFAULT): CanvasItem's setters return early on an unchanged value
+	# (scene/main/canvas_item.cpp:1626-1628, :1680-1682).
+	late.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	late.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+	_exercise_texture_hooks()
+
 	# An empty CanvasLayer created after arming: canvas_create in its constructor, then
 	# viewport_attach_canvas and viewport_set_canvas_transform when it enters the tree. It has no
 	# items, so the pixels do not change.
@@ -192,6 +202,33 @@ func _ready() -> void:
 	panel.modulate = PANEL_MODULATE
 
 	queue_redraw()
+
+
+## The other nine calibrator-5 hooks, each with a non-default value, on objects that never reach
+## the screen: a placeholder replaced by a 2x2 image (texture_2d_placeholder_create,
+## texture_replace), a RenderingServer viewport that is never attached or drawn
+## (viewport_set_default_canvas_item_texture_filter/_repeat), a CanvasTexture no item uses
+## (canvas_texture_create, _set_channel, _set_texture_filter, _set_texture_repeat), and an LCD
+## text rect on a canvas item with no parent canvas (canvas_item_add_lcd_texture_rect_region).
+func _exercise_texture_hooks() -> void:
+	var placeholder: RID = RenderingServer.texture_2d_placeholder_create()
+	var by_texture: RID = RenderingServer.texture_2d_create(Image.create_empty(2, 2, false, Image.FORMAT_RGBA8))
+	RenderingServer.texture_replace(placeholder, by_texture)
+	RenderingServer.free_rid(placeholder)
+
+	var offscreen_viewport: RID = RenderingServer.viewport_create()
+	RenderingServer.viewport_set_default_canvas_item_texture_filter(offscreen_viewport, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_NEAREST)
+	RenderingServer.viewport_set_default_canvas_item_texture_repeat(offscreen_viewport, RenderingServer.CANVAS_ITEM_TEXTURE_REPEAT_ENABLED)
+	RenderingServer.free_rid(offscreen_viewport)
+
+	_canvas_texture = CanvasTexture.new()
+	_canvas_texture.diffuse_texture = _nine_texture
+	_canvas_texture.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_canvas_texture.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+
+	var orphan_item: RID = RenderingServer.canvas_item_create()
+	RenderingServer.canvas_item_add_lcd_texture_rect_region(orphan_item, Rect2(0, 0, 4, 4), _nine_texture.get_rid(), Rect2(0, 0, 4, 4), Color(1, 1, 1, 1))
+	RenderingServer.free_rid(orphan_item)
 
 
 func _process(_delta: float) -> void:

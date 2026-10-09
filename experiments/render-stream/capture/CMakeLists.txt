@@ -36,8 +36,11 @@ add_library(render_stream_capture SHARED
   src/rs1_live.cpp
   src/rs1_publish.cpp
   src/rs_mirror.cpp
+  src/rs_resource_log.cpp
   src/rs_root_query.cpp
   src/rs_sha1.cpp
+  src/rs_sha256.cpp
+  src/rs_texture_payload.cpp
   src/rs_ws.cpp
   src/vtable.cpp
 )
@@ -162,3 +165,22 @@ target_link_libraries(rs2_diff_test PRIVATE grc_warnings)
 target_compile_definitions(rs2_diff_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2")
 add_test(NAME rs2_diff COMMAND rs2_diff_test)
+
+# Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
+# golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).
+add_executable(rs_sha256_test test/rs_sha256_test.cpp src/rs_sha256.cpp)
+target_include_directories(rs_sha256_test PRIVATE src)
+target_link_libraries(rs_sha256_test PRIVATE grc_warnings)
+add_test(NAME rs_sha256 COMMAND rs_sha256_test)
+
+add_executable(rs_texture_payload_test
+  test/rs_texture_payload_test.cpp src/rs_texture_payload.cpp src/rs_sha256.cpp)
+target_include_directories(rs_texture_payload_test PRIVATE src)
+target_link_libraries(rs_texture_payload_test PRIVATE grc_warnings)
+add_test(NAME rs_texture_payload COMMAND rs_texture_payload_test)
+
+add_executable(rs_resource_log_test
+  test/rs_resource_log_test.cpp src/rs_resource_log.cpp src/rs_texture_payload.cpp)
+target_include_directories(rs_resource_log_test PRIVATE src)
+target_link_libraries(rs_resource_log_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_resource_log COMMAND rs_resource_log_test)

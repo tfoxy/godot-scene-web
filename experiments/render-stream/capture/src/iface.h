@@ -36,6 +36,10 @@ struct Iface {
   GDExtensionInterfaceRefSetObject ref_set_object = nullptr;
   GDExtensionInterfaceClassdbGetClassTag classdb_get_class_tag = nullptr;
   GDExtensionInterfaceObjectCastTo object_cast_to = nullptr;
+  // Gate 2 (G2a): the Image data pointer (core/extension/gdextension_interface.cpp:1085-1088,
+  // since 4.3) the texture hooks copy payload bytes through. Optional like the four above: a
+  // host without it still arms, and a stream refuses at arm (`image-access-unavailable`).
+  GDExtensionInterfaceImagePtr image_ptr = nullptr;
   // Name of the first interface function that failed to resolve, if any.
   std::string missing;
 };

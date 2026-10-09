@@ -49,6 +49,17 @@
 // evidence/live-summary.json. At shutdown the linger blocks (the game is
 // quitting); after a disarm it runs across the following frame callbacks, so
 // the simulation never waits on a socket.
+//
+// Textures (G2a, gate2-design.md D3, Q3): whenever a stream is enabled,
+// texture_2d_create and texture_2d_update copy the Image bytes into a GRT1
+// payload and hash it on the calling thread before forwarding, and every
+// texture-related call is written to evidence/resources.jsonl
+// (render-stream-resource-log/1, rs_resource_log.h), drained at each frame
+// callback. GRC_RESOURCE_FORMATS (default L8,LA8,R8,RG8,RGB8,RGBA8) and
+// GRC_RESOURCE_MAX_PAYLOAD_BYTES (default 64 MiB) are read at arm; an invalid
+// value, or an engine without the Image binds and image_ptr
+// (image-access-unavailable), refuses to publish. Nothing changes on the
+// render-stream/1 wire: texture draws stay unsupported commands until G2b2.
 
 #include <chrono>
 #include <cstdio>
@@ -66,7 +77,9 @@
 #include "rs1_live.h"
 #include "rs1_publish.h"
 #include "rs_mirror.h"
+#include "rs_resource_log.h"
 #include "rs_root_query.h"
+#include "rs_texture_payload.h"
 #include "rs_ws.h"
 #include "vtable.h"
 
@@ -119,6 +132,10 @@ struct Stream {
   std::unique_ptr<rs1::FileRecordSink> full_sink;
   std::unique_ptr<rs1::FileRecordSink> patch_sink;
   std::unique_ptr<rs1::Publisher> publisher;
+  // Gate 2 (G2a): evidence/resources.jsonl, the texture hook log
+  // (rs_resource_log.h), written whenever a stream is enabled.
+  std::FILE *resources_file = nullptr;
+  std::string resources_path;
 };
 
 Stream g_stream;
@@ -366,8 +383,51 @@ std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before
   json.field_or_null("detail", enforce_detail);
   json.object_end();
   json.field_or_null("root_query_failed_step", after.ok ? std::string() : after.failed_step);
+  // Additive (G2a, gate2-design.md Q1d): the root's default canvas-item texture
+  // filter and repeat as read at arm, as Viewport scene enums (-1: unread).
+  json.key("texture_defaults").object_begin();
+  json.field("filter", before.default_texture_filter);
+  json.field("repeat", before.default_texture_repeat);
+  json.object_end();
   json.object_end();
   return json.take();
+}
+
+// --- the texture hook log (G2a) ----------------------------------------------
+
+// Appends whatever the hooks logged since the last call to
+// evidence/resources.jsonl. Main thread (frame callback, stream end).
+void resources_drain() {
+  const std::string lines = rs::resource_log().take_lines();
+  if (lines.empty() || g_stream.resources_file == nullptr) {
+    return;
+  }
+  if (std::fwrite(lines.data(), 1, lines.size(), g_stream.resources_file) != lines.size() ||
+      std::fflush(g_stream.resources_file) != 0) {
+    log_line("resources: write failed: " + g_stream.resources_path);
+  }
+}
+
+// Starts the log for a stream that just opened: GRC_RESOURCE_* were validated
+// by the caller; the root viewport RID marks root-viewport filter calls.
+void resources_start(uint64_t root_viewport_rid) {
+  if (g_state.evidence_ready) {
+    g_stream.resources_path = path_join(g_state.evidence_dir, "resources.jsonl");
+    g_stream.resources_file = std::fopen(g_stream.resources_path.c_str(), "w");
+    if (g_stream.resources_file == nullptr) {
+      log_line("resources: cannot open " + g_stream.resources_path);
+    }
+  }
+  rs::resource_log().start(monotonic_ns(), root_viewport_rid);
+}
+
+void resources_finish() {
+  rs::resource_log().stop();
+  resources_drain();
+  if (g_stream.resources_file != nullptr) {
+    std::fclose(g_stream.resources_file);
+    g_stream.resources_file = nullptr;
+  }
 }
 
 std::string size_text(const int32_t size[2]) {
@@ -524,6 +584,31 @@ void stream_start() {
       live_decided("refused", "stream refused: " + error);
     }
     return;
+  }
+  // Gate 2 (G2a): the resource policy and the payload copy capability
+  // (gate2-design.md D3, Q3). A stream never runs with texture copies it cannot
+  // make, so either failure refuses to publish, as an invalid GRC_ROOT_SIZE does.
+  {
+    rs::FormatPolicy formats;
+    uint64_t max_payload_bytes = 0;
+    std::string error;
+    if (!rs::parse_format_policy(std::getenv("GRC_RESOURCE_FORMATS"), &formats, &error) ||
+        !rs::parse_max_payload_bytes(std::getenv("GRC_RESOURCE_MAX_PAYLOAD_BYTES"),
+                                     &max_payload_bytes, &error)) {
+      // error says which variable
+    } else if (!hooks_image_payload_available()) {
+      error = "image-access-unavailable";
+    }
+    if (!error.empty()) {
+      log_line("stream: refused resource policy (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    hooks_set_resource_policy(formats, max_payload_bytes);
   }
   if (!sabotage.ok && !g_live.listen.empty()) {
     live_decided("refused", "sabotage refused: " + sabotage.error);
@@ -750,6 +835,7 @@ void stream_start() {
     }
   }
   g_stream.status = "open";
+  resources_start(root.viewport_rid);
   const rs1::Publisher *publisher = g_stream.publisher.get();
   const auto stream_id = [publisher](rs1::Encoding encoding) {
     return publisher != nullptr && publisher->has_sink(encoding)
@@ -764,7 +850,8 @@ void stream_start() {
            " live=" +
            (g_live.hub != nullptr ? g_live.address + ":" + std::to_string(g_live.port)
                                   : std::string("<off>")) +
-           " sabotage=" + sabotage_text(sabotage.config));
+           " sabotage=" + sabotage_text(sabotage.config) + " resources=" +
+           (g_stream.resources_file != nullptr ? g_stream.resources_path : std::string("<off>")));
 }
 
 // Drains the server's events into the hub (frame callback, main thread).
@@ -852,6 +939,7 @@ void stream_finish(rs1::EndReason reason) {
     return;
   }
   rs::mirror_enable(false);
+  resources_finish();
   live_finish(reason, reason == rs1::EndReason::Shutdown);
   if (g_stream.publisher == nullptr) {
     g_stream.status = "closed";
@@ -892,6 +980,7 @@ void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
   }
+  resources_drain();
   live_drain(frame);
   const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot(frame);
   const uint64_t epoch = rs::mirror_epoch();
@@ -1083,6 +1172,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
+  hooks_set_main_thread();
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);
     if (!g_state.evidence_ready) {

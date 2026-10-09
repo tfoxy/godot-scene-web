@@ -24,6 +24,10 @@
 //  11. Window.get_size()                   -> host window size
 //  12. Viewport.get_final_transform()      -> stretch transform * global canvas transform
 //
+// Gate 2 (G2a) adds, as evidence only (a failure does not fail the query):
+//
+//  13. Viewport.get_default_canvas_item_texture_filter/_repeat() -> the root's texture defaults
+//
 // and the one write, Window.set_min_size(content_scale_size), made only under
 // GRC_ROOT_SIZE=enforce-min-size (root_enforce_min_size). Since G1b2 these
 // are the session's `viewport` object and its `host_*` / `content_scale_factor`
@@ -62,6 +66,12 @@ struct RootInfo {
   double content_scale_factor = 0.0;
   std::int32_t window_size[2] = {0, 0};   // Window.size
   rs1::Xform final_transform = {0, 0, 0, 0, 0, 0};
+
+  // Gate 2 (G2a), evidence only: Viewport.get_default_canvas_item_texture_filter/_repeat on the
+  // root, as the scene enums (filter 0 Nearest, 1 Linear, 2 Linear Mipmap, 3 Nearest Mipmap;
+  // repeat 0 Disabled, 1 Enabled, 2 Mirror), -1 when the read failed (13).
+  std::int64_t default_texture_filter = -1;
+  std::int64_t default_texture_repeat = -1;
 
   // The root Window object (not owned; valid on the main thread at arm). Only
   // root_enforce_min_size uses it.

@@ -35,6 +35,11 @@ constexpr int64_t kWindowGetContentScaleStretch = 536857316LL;   // Window.get_c
 constexpr int64_t kWindowGetContentScaleFactor = 1740695150LL;   // Window.get_content_scale_factor() -> float (double on ptrcall)
 constexpr int64_t kWindowGetSize = 3690982128LL;                 // Window.get_size() -> Vector2i
 constexpr int64_t kViewportGetFinalTransform = 3814499831LL;     // Viewport.get_final_transform() -> Transform2D
+// Gate 2 (G2a): the root viewport's default canvas-item texture filter and repeat, read once at
+// arm because main.cpp sets them before the extension loads (gate2-design.md Q1d). Hashes from
+// the same dump. Evidence only in G2a; G2b2 makes them the transaction scalars.
+constexpr int64_t kViewportGetDefaultTextureFilter = 896601198LL;   // -> Viewport.DefaultCanvasItemTextureFilter
+constexpr int64_t kViewportGetDefaultTextureRepeat = 4049774160LL;  // -> Viewport.DefaultCanvasItemTextureRepeat
 // The one write (GRC_ROOT_SIZE=enforce-min-size only).
 constexpr int64_t kWindowSetMinSize = 1130785943LL;              // Window.set_min_size(Vector2i) -> void
 
@@ -224,6 +229,23 @@ RootInfo root_query_run() {
                               xform.columns[1].y, xform.columns[2].x, xform.columns[2].y};
     } else {
       note(&info, "Viewport.get_final_transform");
+    }
+  }
+
+  // 13. Viewport.get_default_canvas_item_texture_filter/_repeat (G2a, evidence only: a failed
+  // read leaves -1 and does not fail the root query, which gates 0 and 1 rely on).
+  {
+    int64_t value = 0;
+    if (call_int_getter(method_bind("Viewport", "get_default_canvas_item_texture_filter",
+                                    kViewportGetDefaultTextureFilter),
+                        root, &value)) {
+      info.default_texture_filter = value;
+    }
+    value = 0;
+    if (call_int_getter(method_bind("Viewport", "get_default_canvas_item_texture_repeat",
+                                    kViewportGetDefaultTextureRepeat),
+                        root, &value)) {
+      info.default_texture_repeat = value;
     }
   }
 

@@ -485,3 +485,93 @@ RS_WS_ECHO_PORT=<port> mise exec -- godot --headless \
 the same shapes from the engine's own client: with `inbound_buffer_size` raised to 16 MiB before
 `connect_to_url`, an 8 MiB push arrives byte-exact; with the engine's 65535-byte default left in
 place, a 1 MiB push closes the connection with 1009 (`modules/websocket/wsl_peer.cpp:405-410`).
+
+# Gate 2
+
+Drives `../fixtures/gate2/` through the leg groups of
+[`../protocol/gate2-design.md`](../protocol/gate2-design.md) "Q7", then checks them. Group `g2a`
+(increment G2a: the fixture, its rendered reference and a same-build repeat, the extension-armed
+reference, the RenderingServer texture-call census and the copy and hash at the hook) has landed;
+`g2b`-`g2e` arrive with their increments and are refused until then. G2a still runs on
+render-stream/1, so it has no receiver leg. Run it from the repo root:
+
+```bash
+mise exec -- pnpm render-stream:gate2 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g2a]
+```
+
+The arguments and refusals are gate 1's; `--out` defaults to `artifacts/render-stream/gate2/<UTC>/`.
+The runner takes about a minute. It uses `lib/legs.sh` unchanged (`run_headless`, `run_capture`,
+`run_rendered`) and one private gamescope for the three rendered legs. `GS_STRIP_VARS` lists every
+`GRC_*` and `RS_*` variable gate2-design.md introduces, landed or not.
+
+## Gate 2 files
+
+- `run-gate2.sh`: the orchestrator (`run_g2a`, `run_reference`).
+- `lib/gate2-expected.ts`: the `render-stream-gate2-expected/1` types, `stepFrames2`,
+  `stepOfFrame` (the census windows), `texel`, `sampleAt` and `synthesizeGate2(expected, step,
+{variant, frame})`: the clear colour, then every draw in paint order, flat or sampled the way the
+  GLES3 canvas shader samples (flip, transpose, then nearest at pixel centres with clamp, modulo or
+  mirror wrap), alpha 255 replacing and 0 skipping.
+- `lib/gate2-checks.ts`: the hook-log and fixture-log parsers (`render-stream-resource-log/1`
+  lines are validated key by key, in order), `censusOf`/`expectedCensus`, every G2a check,
+  `copyCosts` and `runGate2`. It reuses gate 0's capture, no-GPU and recording checks and its
+  `classifyLeg`.
+- `check-gate2.ts`: writes `<out>/result.json` (`render-stream-gate2-report/1`) and exits non-zero
+  unless `gate_passed`.
+- `test/self-test-gate2.ts`: see below.
+
+## Gate 2 legs and evidence under `--out`
+
+| Leg                   | Directory              | Runs                                                                                                                   |
+| --------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `import`              | `import/fixture/`      | the mise editor's `--import` of `fixtures/gate2`                                                                       |
+| `capture`             | `capture/`             | the release template, `--headless`, armed, `GRC_STREAM_OUT`, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps |
+| `capture-unsupported` | `capture-unsupported/` | the same with `RS_FIXTURE_VARIANT=unsupported`, the fixture's own quit frame, no strace                                |
+| `reference`           | `reference/`           | rendered in gamescope, extension absent: `shots/step-0..10.png`                                                        |
+| `reference-repeat`    | `reference-repeat/`    | the same again                                                                                                         |
+| `reference-armed`     | `reference-armed/`     | rendered, extension armed with `GRC_STREAM_OUT` (so the hooks copy and hash), shots                                    |
+
+Every fixture run writes `steps.jsonl` and `textures.jsonl` (`RS_FIXTURE_TEXTURE_LOG`). Every armed
+run writes `evidence/resources.jsonl` (the hook log) and `evidence/root.json`, whose additive
+`texture_defaults` holds the arm-time root filter and repeat. No payload is written anywhere: G2a
+hashes and drops.
+
+## Gate 2 criteria (g2a)
+
+`capture-armed` (55 hooks), `headless-no-gpu` and `recording-decodes` (400 transactions) are gate
+0's. `step-alignment` reads the four step logs and the capture's marker colours.
+`expected-image-reference` compares every reference shot with `synthesizeGate2` exactly outside the
+step's `synth_exclude` regions. `reference-repeat-budget` diffs `reference` against
+`reference-repeat` per region per step, fails on any difference outside `synth_exclude`, and
+records the per-region maxima as the budget for later increments (`result.json` `repeat_budget`).
+`armed-transparent` requires `reference-armed`'s shots to equal `reference`'s byte for byte.
+`census` counts the hook log per step window in the capture and in `reference-armed` and requires
+`expected.json` `census` exactly; only frees may follow the quit frame (scene teardown).
+`hook-bytes-exact` pairs every fixture create and update in a permitted format with a hook line at
+the same frame and thread and the same SHA-256, and every other content line with an
+`engine_textures` entry. `worker-thread-create` requires D's create to be the only `other`-thread
+line. `replace-retires-temp` follows each `texture_replace` back to its by-texture's create in the
+same frame and forward to make sure that RID never appears again. `viewport-defaults` checks
+`root.json` and the two root viewport filter calls. `unsupported-variant` checks U1's uncopied
+`unsupported-format` line, the census with the variant's extras, and the drawn texture RIDs
+(`counters.json` texture-rect captures) the log never saw created: none in `capture`, exactly
+`PRE` in `capture-unsupported`. `leg-class-capture` requires class `unsupported` with no
+unsupported op beyond the two texture-rect draws.
+
+## Gate 2 self-test
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate2.ts
+```
+
+Unit cases cover `sampleAt` (flips, transpose, S3's rotation, the region across four quadrants,
+tile, mirror, clamp, LA8 alpha), `synthesizeGate2` (binary alpha over BG, the freed RAW1, C's
+pre-fill content, partial alpha, the animate variant), the step windows, the census helpers, the
+hook-log line validation and `checkExpectedSelfConsistent` on the committed file and five broken
+copies. A passing g2a tree is then fabricated (a render-stream/1 capture recording from
+`test/rs1-test-encoder.ts`, hook and fixture logs from a model of the fixture's texture calls,
+PNGs from `synthesizeGate2`), and each check gets at least one failing perturbation; the real
+`runGate2` runs on every tree.

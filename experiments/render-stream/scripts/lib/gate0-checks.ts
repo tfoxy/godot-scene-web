@@ -70,10 +70,12 @@ export const PATCH_RECORDING_NAME = "recording-patch.rs1";
 /** Every hook the committed calibration record installs, sorted by byte value
  * (render-stream-0.md, golden session): calibrator 3's 42, plus calibrator 4's
  * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent` (gate1-design.md
- * G1e) -- the record is shared by gate -1, gate 0 and gate 1, so every one of them plans all 44. */
+ * G1e) and calibrator 5's eleven texture hooks (gate2-design.md Q2) -- the record is shared by
+ * gate -1, gate 0, gate 1 and gate 2, so every one of them plans all 55. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
   "canvas_item_add_circle",
+  "canvas_item_add_lcd_texture_rect_region",
   "canvas_item_add_line",
   "canvas_item_add_mesh",
   "canvas_item_add_msdf_texture_rect_region",
@@ -91,6 +93,8 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_item_create",
   "canvas_item_set_clip",
   "canvas_item_set_custom_rect",
+  "canvas_item_set_default_texture_filter",
+  "canvas_item_set_default_texture_repeat",
   "canvas_item_set_draw_behind_parent",
   "canvas_item_set_draw_index",
   "canvas_item_set_material",
@@ -102,6 +106,10 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_item_set_visible",
   "canvas_item_set_z_as_relative_to_parent",
   "canvas_item_set_z_index",
+  "canvas_texture_create",
+  "canvas_texture_set_channel",
+  "canvas_texture_set_texture_filter",
+  "canvas_texture_set_texture_repeat",
   "free",
   "material_set_param",
   "mesh_add_surface",
@@ -113,9 +121,13 @@ export const GATE0_HOOKS: readonly string[] = [
   "shader_create_from_code",
   "shader_set_code",
   "texture_2d_create",
+  "texture_2d_placeholder_create",
   "texture_2d_update",
+  "texture_replace",
   "viewport_attach_canvas",
   "viewport_set_canvas_transform",
+  "viewport_set_default_canvas_item_texture_filter",
+  "viewport_set_default_canvas_item_texture_repeat",
 ];
 
 /** Session `features` at gate 1 / render-stream/1, exactly (render-stream-1.md "Session record"):

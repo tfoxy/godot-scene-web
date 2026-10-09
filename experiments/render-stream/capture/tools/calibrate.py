@@ -33,7 +33,7 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "4"
+CALIBRATOR_VERSION = "5"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
@@ -99,6 +99,26 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # calibrator 4: draw-order items the mirror held at RS defaults (gate1-design.md G1e)
     ("canvas_item_set_z_as_relative_to_parent", ("canvas_item_set_z_as_relative_to_parent",)),
     ("canvas_item_set_draw_behind_parent", ("canvas_item_set_draw_behind_parent",)),
+    # calibrator 5: textures -- placeholders, replacement, canvas textures and the
+    # three levels of texture filter/repeat (gate2-design.md Q2), plus the LCD
+    # text draw so a silent op becomes visible
+    ("texture_2d_placeholder_create", ("texture_2d_placeholder_create",)),
+    ("texture_replace", ("texture_replace",)),
+    (
+        "viewport_set_default_canvas_item_texture_filter",
+        ("viewport_set_default_canvas_item_texture_filter",),
+    ),
+    (
+        "viewport_set_default_canvas_item_texture_repeat",
+        ("viewport_set_default_canvas_item_texture_repeat",),
+    ),
+    ("canvas_texture_create", ("canvas_texture_create",)),
+    ("canvas_texture_set_channel", ("canvas_texture_set_channel",)),
+    ("canvas_texture_set_texture_filter", ("canvas_texture_set_texture_filter",)),
+    ("canvas_texture_set_texture_repeat", ("canvas_texture_set_texture_repeat",)),
+    ("canvas_item_set_default_texture_filter", ("canvas_item_set_default_texture_filter",)),
+    ("canvas_item_set_default_texture_repeat", ("canvas_item_set_default_texture_repeat",)),
+    ("canvas_item_add_lcd_texture_rect_region", ("canvas_item_add_lcd_texture_rect_region",)),
 )
 
 ET_EXEC = 2
