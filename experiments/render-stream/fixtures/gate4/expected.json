@@ -1,0 +1,1304 @@
+{
+  "schema": "render-stream-gate4-expected/1",
+  "fixture": "gate4",
+  "viewport": [640, 360],
+  "clear_rgba8": [51, 51, 102, 255],
+  "start_frame_default": 1,
+  "step_frames_default": 10,
+  "settle_offset": 7,
+  "quit_frame_default": 102,
+  "last_step": 9,
+  "early_shot_steps": [1, 4, 7],
+  "creation_order": ["P", "L1", "L3", "LD", "LT", "L2", "LA", "LH", "Marker"],
+  "created_later": [],
+  "text_nodes": ["L1", "L3", "LD", "LT", "L2", "LA", "LH"],
+  "fonts": {
+    "F": {
+      "file": "OpenSans_SemiBold.woff2",
+      "kind": "FontFile",
+      "sizes": [16, 24]
+    },
+    "DF": {
+      "file": "OpenSans_SemiBold.woff2",
+      "kind": "default theme",
+      "sizes": [16]
+    }
+  },
+  "cache_keys": ["DF@16", "F@16", "F@24"],
+  "page": {
+    "format": "LA8",
+    "width": 256,
+    "height": 256,
+    "mipmaps": false,
+    "data_bytes": 131072,
+    "empty_texel": [255, 0]
+  },
+  "panel": {
+    "rect": [320, 24, 248, 240],
+    "rgba8": [255, 255, 204, 255]
+  },
+  "marker_rect": [592, 16, 32, 32],
+  "regions": {
+    "marker": [584, 8, 48, 48],
+    "panel": [320, 24, 248, 240]
+  },
+  "backgrounds": {
+    "dark": [51, 51, 102, 255],
+    "panel": [255, 255, 204, 255]
+  },
+  "engine_textures": [
+    {
+      "frame": 1,
+      "op": "texture_2d_create",
+      "format": "RGBA8",
+      "width": 800,
+      "height": 6
+    }
+  ],
+  "quiet_steps": [2, 3, 5, 6, 8],
+  "hook_versions_total": {
+    "DF@16": 2,
+    "F@16": 5,
+    "F@24": 1
+  },
+  "hand_table": {
+    "0": {
+      "ink_glyphs": {
+        "L1": 5,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_f16": "Helo",
+      "f16_uploads": "create",
+      "other_pages": { "F@24": "create", "DF@16": "create" }
+    },
+    "1": {
+      "ink_glyphs": {
+        "L1": 11,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_f16": "Quartz",
+      "f16_uploads": 1,
+      "other_pages": {}
+    },
+    "2": {
+      "ink_glyphs": {
+        "L1": 11,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_f16": "",
+      "f16_uploads": 0,
+      "other_pages": {}
+    },
+    "3": {
+      "ink_glyphs": {
+        "L1": 11,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_f16": "",
+      "f16_uploads": 0,
+      "other_pages": {}
+    },
+    "4": {
+      "ink_glyphs": {
+        "L1": 11,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_f16": "Wyvn",
+      "f16_uploads": 1,
+      "other_pages": {}
+    },
+    "5": {
+      "ink_glyphs": {
+        "L1": 0,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_f16": "",
+      "f16_uploads": 0,
+      "other_pages": {}
+    },
+    "6": {
+      "ink_glyphs": {
+        "L1": 11,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_f16": "",
+      "f16_uploads": 0,
+      "other_pages": {}
+    },
+    "7": {
+      "ink_glyphs": {
+        "L1": 5,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_f16": "JmpFjd!",
+      "f16_uploads": 2,
+      "other_pages": {}
+    },
+    "8": {
+      "ink_glyphs": {
+        "L1": 5,
+        "L2": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_f16": "",
+      "f16_uploads": 0,
+      "other_pages": {}
+    },
+    "9": {
+      "ink_glyphs": {
+        "L1": 5,
+        "L2": 5,
+        "L3": 6,
+        "LD": 8,
+        "LT": 4,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_f16": "",
+      "f16_uploads": 0,
+      "other_pages": { "DF@16": 1 }
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "applied_frame": 1,
+      "settle_frame": 8,
+      "marker_rgba8": [0, 0, 0, 255],
+      "texts": {
+        "L1": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": false,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["L1", "L3", "LD", "LT", "L2", "LA"],
+      "ink_glyphs": {
+        "L1": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_glyphs": { "DF@16": "Default", "F@16": "Helo", "F@24": "Sphinx" },
+      "page_uploads": {},
+      "page_creates": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "hook_versions": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 4, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": false,
+        "L3": false,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 1,
+      "applied_frame": 11,
+      "settle_frame": 18,
+      "marker_rgba8": [255, 255, 0, 255],
+      "texts": {
+        "L1": {
+          "text": "Hello Quartz",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": false,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["L1"],
+      "ink_glyphs": {
+        "L1": 11,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_glyphs": { "F@16": "Quartz" },
+      "page_uploads": { "F@16": 1 },
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 2, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 2, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 10, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": true,
+        "L3": false,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 2,
+      "applied_frame": 21,
+      "settle_frame": 28,
+      "marker_rgba8": [0, 255, 255, 255],
+      "texts": {
+        "L1": {
+          "text": "Hello Quartz",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": false,
+          "position": [344, 152]
+        }
+      },
+      "draws": [],
+      "ink_glyphs": {
+        "L1": 11,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 2, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 2, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 10, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": false,
+        "L3": true,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 3,
+      "applied_frame": 31,
+      "settle_frame": 38,
+      "marker_rgba8": [102, 0, 102, 255],
+      "texts": {
+        "L1": {
+          "text": "Hello Quartz",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "Wyvern",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": false,
+          "position": [344, 152]
+        }
+      },
+      "draws": [],
+      "ink_glyphs": {
+        "L1": 11,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 0
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 2, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 2, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 10, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": false,
+        "L3": false,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 4,
+      "applied_frame": 41,
+      "settle_frame": 48,
+      "marker_rgba8": [0, 102, 0, 255],
+      "texts": {
+        "L1": {
+          "text": "Hello Quartz",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "Wyvern",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["LH"],
+      "ink_glyphs": {
+        "L1": 11,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_glyphs": { "F@16": "Wyvn" },
+      "page_uploads": { "F@16": 1 },
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 3, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 3, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 14, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": false,
+        "L3": false,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": true
+      }
+    },
+    {
+      "step": 5,
+      "applied_frame": 51,
+      "settle_frame": 58,
+      "marker_rgba8": [102, 0, 0, 255],
+      "texts": {
+        "L1": {
+          "text": "",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "Wyvern",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["L1"],
+      "ink_glyphs": {
+        "L1": 0,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 3, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 3, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 14, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": true,
+        "L3": false,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 6,
+      "applied_frame": 61,
+      "settle_frame": 68,
+      "marker_rgba8": [0, 0, 102, 255],
+      "texts": {
+        "L1": {
+          "text": "Quartz Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Hello",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "Wyvern",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["L1"],
+      "ink_glyphs": {
+        "L1": 11,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 3, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 3, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 14, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": true,
+        "L3": false,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 7,
+      "applied_frame": 71,
+      "settle_frame": 78,
+      "marker_rgba8": [204, 102, 204, 255],
+      "texts": {
+        "L1": {
+          "text": "Fjord",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Jump!",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "Wyvern",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["L2", "L1"],
+      "ink_glyphs": {
+        "L1": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_glyphs": { "F@16": "Jmp!Fjd" },
+      "page_uploads": { "F@16": 2 },
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 5, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 5, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 21, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": true,
+        "L3": false,
+        "LD": false,
+        "LT": false,
+        "L2": true,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 8,
+      "applied_frame": 81,
+      "settle_frame": 88,
+      "marker_rgba8": [102, 153, 204, 255],
+      "texts": {
+        "L1": {
+          "text": "Fjord",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Jump!",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "Wyvern",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["L3"],
+      "ink_glyphs": {
+        "L1": 5,
+        "L3": 6,
+        "LD": 7,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "DF@16": 1, "F@16": 5, "F@24": 1 },
+      "wire_versions": { "DF@16": 1, "F@16": 5, "F@24": 1 },
+      "page_glyphs": { "DF@16": 7, "F@16": 21, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": false,
+        "L3": true,
+        "LD": false,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    },
+    {
+      "step": 9,
+      "applied_frame": 91,
+      "settle_frame": 98,
+      "marker_rgba8": [204, 153, 102, 255],
+      "texts": {
+        "L1": {
+          "text": "Fjord",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 32]
+        },
+        "L3": {
+          "text": "Sphinx",
+          "font_key": "F",
+          "size": 24,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [32, 88]
+        },
+        "LD": {
+          "text": "Default 2",
+          "font_key": "DF",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 152]
+        },
+        "LT": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [1, 1, 1, 0.6],
+          "visible": true,
+          "position": [24, 208]
+        },
+        "L2": {
+          "text": "Jump!",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 32]
+        },
+        "LA": {
+          "text": "Hole",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [344, 88]
+        },
+        "LH": {
+          "text": "Wyvern",
+          "font_key": "F",
+          "size": 16,
+          "colour": [0, 0, 0.2, 1],
+          "visible": true,
+          "position": [344, 152]
+        }
+      },
+      "draws": ["LD"],
+      "ink_glyphs": {
+        "L1": 5,
+        "L3": 6,
+        "LD": 8,
+        "LT": 4,
+        "L2": 5,
+        "LA": 4,
+        "LH": 6
+      },
+      "new_glyphs": { "DF@16": "2" },
+      "page_uploads": { "DF@16": 1 },
+      "page_creates": {},
+      "hook_versions": { "DF@16": 2, "F@16": 5, "F@24": 1 },
+      "wire_versions": { "DF@16": 2, "F@16": 5, "F@24": 1 },
+      "page_glyphs": { "DF@16": 8, "F@16": 21, "F@24": 6 },
+      "page_counts": { "DF@16": 1, "F@16": 1, "F@24": 1 },
+      "text_regions": {
+        "L1": [16, 24, 312, 64],
+        "L3": [16, 80, 312, 128],
+        "LD": [16, 144, 312, 184],
+        "LT": [16, 200, 312, 240],
+        "L2": [336, 24, 568, 64],
+        "LA": [336, 80, 568, 120],
+        "LH": [336, 144, 568, 184]
+      },
+      "background": {
+        "L1": [51, 51, 102, 255],
+        "L3": [51, 51, 102, 255],
+        "LD": [51, 51, 102, 255],
+        "LT": [51, 51, 102, 255],
+        "L2": [255, 255, 204, 255],
+        "LA": [255, 255, 204, 255],
+        "LH": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "L1": false,
+        "L3": false,
+        "LD": true,
+        "LT": false,
+        "L2": false,
+        "LA": false,
+        "LH": false
+      }
+    }
+  ],
+  "predictions": {
+    "sabotage-freeze": {
+      "frame": 11,
+      "steps": [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    },
+    "sabotage-perturb": {
+      "frame": 21,
+      "steps": [2, 3, 4, 5, 6, 7, 8, 9]
+    },
+    "sabotage-omit-atlas": {
+      "frame": 41,
+      "op": "texture_2d_update",
+      "steps": [4, 5, 6, 7, 8, 9],
+      "atlas_hash_parity_fails": { "DF@16": [9], "F@16": [4, 5, 6, 7, 8, 9] }
+    }
+  }
+}

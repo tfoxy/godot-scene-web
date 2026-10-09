@@ -1970,6 +1970,85 @@ Control redraw re-sent clear, custom rect and clip, and no engine redraw was una
 - Rotated or scaled clip owners (G3c), `clip_ignore` (G3d), text clipping (gate 4), or clipping
   under stretch (gates 6 and 7).
 
+## Gate 4a result (2026-10-09)
+
+G4a ([protocol/gate4-design.md](protocol/gate4-design.md) "G4a") passes:
+`pnpm render-stream:gate4 -- --legs g4a` is 21/21 in
+`artifacts/render-stream/gate4/20261009T231107Z/`. The first run on the same build,
+`20261009T230526Z`, was 20/21: only `oracle-agrees` failed, on colour floats printed at 15
+digits. The same build passed gate −1 28/28 with 55 hooks (`gate-minus1/20261009T230733Z/`),
+gate 0 19/19 (`gate0/20261009T230858Z/`), gate 1 65/65 with all four groups
+(`gate1/20261009T231230Z/`), gate 2 85/85 with all five groups (`gate2/20261009T232533Z/`) and
+gate 3 `--legs g3a` 16/16
+(`gate3/20261009T234532Z/`). Nothing on the capture side or the wire changed: grayscale text is
+render-stream/2 as it stands, and the capture leg classifies `success`.
+
+What landed: the Latin grayscale fixture (`fixtures/gate4/`). Its font is provisioned from
+`fonts.lock.json` by `scripts/lib/provision-fonts.sh`, so no second copy of a binary is
+committed. Also landed: the reference-side glyph oracle (`glyph_oracle.gd`), `make_expected.py`
+(the census derived from the strings by Q1c), and the runner, checker and self-test
+(`run-gate4.sh`, `check-gate4.ts`, `lib/gate4-*.ts`, `test/self-test-gate4.ts`, 66 assertions).
+
+Images (under the run directory): `reference/shots/step-{0..9}.png`, `early-{1,4,7}.png` (one
+frame after each upload step), and the same under `reference-repeat/` and `reference-armed/`.
+Outside the text regions every shot equals `synthesizeGate4` exactly. Every text region has ink
+exactly when its Label is visible with text, and it changes exactly when expected. The repeat and
+the armed reference are byte-identical to the reference, so the **budget is 0** in every region.
+Each early shot already equals its settle shot.
+
+Census as measured (hook log, frame of each call; it equals the prediction of gate4-design.md Q6b
+in every cell):
+
+| step | frame | F@16 (wire id 2)        | F@24 (3) | DF@16 (4) | other                          | glyph commands |
+| ---- | ----- | ----------------------- | -------- | --------- | ------------------------------ | -------------- |
+| 0    | 1     | create v1 (H e l o)     | create   | create    | the engine's 800×6 RGBA8 strip | 31             |
+| 1    | 11    | update v2 (Q u a r t z) | —        | —         |                                | 37             |
+| 2, 3 | —     | —                       | —        | —         | no texture call at all         | 37, 37         |
+| 4    | 41    | update v3 (W y v n)     | —        | —         |                                | 43             |
+| 5, 6 | —     | —                       | —        | —         | no texture call at all         | 32, 43         |
+| 7    | 71    | update v4 **and** v5    | —        | —         | wire publishes v5 only         | 37             |
+| 8    | —     | —                       | —        | —         | no texture call at all         | 37             |
+| 9    | 91    | —                       | —        | update v2 |                                | 38             |
+
+Each upload is a whole 256² LA8 page: 131 072 data bytes, 131 185 payload bytes. That is 412 867
+B published at step 0 (three pages and the hue strip) and 131 185 B at each of steps 1, 4, 7 and 9.
+At the hook a page copy costs 10–100 µs and its SHA-256 about 0.4 ms. Teardown frees the runtime
+font's two pages at frame 401; the default theme font's page outlives the run.
+
+Atlas parity: at every settle step each page the rendered reference dumps
+(`font_get_texture_image` as a GRT1 payload) has the hash of exactly one wire texture:
+
+| steps | F@16              | F@24                | DF@16               |
+| ----- | ----------------- | ------------------- | ------------------- |
+| 0     | v1 `607c200f69…`  | v1 `366798e78b…`    | v1 `e9fd3088be…`    |
+| 1–3   | v2 `ab83b838df…`  | same                | same                |
+| 4–6   | v3 `4deb468ed7…`  | same                | same                |
+| 7, 8  | v5 `b446a2d32c…`  | same                | same                |
+| 9     | same              | same                | v2 `8477ff7922…`    |
+
+Headless rasterization is therefore byte-identical to the rendered reference's. All 372 glyph
+commands (both sinks) equal the oracle's quads and source rects as float32 exactly, with the font
+colour as modulate. The four consecutive version pairs wrote 1 105 texels, all onto empty `(255,0)`
+texels.
+
+### Findings
+
+- **Every census prediction held on the first run.** These include the step 7 double upload, the
+  hidden Label that rasterizes nothing until shown, zero texture traffic on the transform-only,
+  hidden-text, emptied, reordered and recoloured steps, and the default theme font's own page.
+- **The oracle needs the engine's own paragraph.** A Label shapes `text + U+200B`. An oracle that
+  shapes the bare text would differ for any font that kerns or ligates against it.
+- **Amendments** (gate4-design.md G4a "As built"): the capture quits at 400 as in gates 0–3, the
+  early shots are `early-<k>.png`, the oracle prints floats at full precision, and glyph sets are
+  compared by glyph index.
+
+### What G4a does not prove
+
+- That a receiver draws any of this: that is G4b, which replays the recording with the unchanged
+  receiver.
+- Subpixel variants, outlines, shadows, wrapping, alignment, `clip_text`, multiple pages, cache
+  lifetime (G4c), RichTextLabel (G4d), MSDF (G4e), or complex scripts and fallback (G4f).
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

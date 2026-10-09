@@ -1,0 +1,63 @@
+; Gate 4 fixture for the render-stream capture experiment: Latin grayscale text (G4a). Ten steps
+; (0..9) over Labels on one runtime FontFile at 16 and 24 px and the default theme font: new
+; glyphs after frame one, a transform-only move, a hidden Label that shapes nothing until shown,
+; emptied and reordered text, two Labels filling one atlas page in one frame, a colour change and
+; the default font's own page. See fixtures/gate4/README.md and ../../protocol/gate4-design.md
+; ("Q6b") for the contract. Every font and text input is pinned here (gate4-design.md Q1e).
+
+config_version=5
+
+[application]
+
+config/name="render-stream-gate4-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://gate4.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as gates 0-3: each warning leveled individually, 2 == ERROR.
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/stretch/scale=1.0
+window/vsync/vsync_mode=0
+
+[gui]
+
+theme/custom=""
+theme/custom_font=""
+theme/default_theme_scale=1.0
+theme/default_font_antialiasing=1
+theme/default_font_hinting=1
+theme/default_font_subpixel_positioning=0
+theme/default_font_multichannel_signed_distance_field=false
+theme/default_font_generate_mipmaps=false
+theme/lcd_subpixel_layout=1
+common/snap_controls_to_pixels=true
+
+[internationalization]
+
+rendering/text_driver=""
+rendering/root_node_layout_direction=1
+locale/test="en"
+locale/fallback="en"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)

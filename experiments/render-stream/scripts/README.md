@@ -829,3 +829,84 @@ committed file and on six broken copies. A passing g3a tree is then fabricated:
 both sinks through `test/rs2-test-encoder.ts`, and synthesizes the PNGs. Every check gets at least
 one failing perturbation, the pre-gate-3 mirror (clear keeps clip) among them, and the real
 `runGate3` runs on every tree.
+
+## Gate 4 files
+
+```bash
+mise exec -- pnpm render-stream:gate4 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g4a]
+```
+
+- `run-gate4.sh`: the orchestrator (`run_g4a`, `run_reference` with `REFERENCE_ORACLE` and
+  `REFERENCE_ARMED`). It provisions fonts before the import and stops on any mismatch. Groups
+  g4b–g4f are known but have not landed, so asking for them exits 2.
+- `lib/provision-fonts.sh <fixture>`: copies each `fonts.lock.json` entry into `<fixture>/fonts/`
+  after checking the source's and the copy's size and SHA-256 and that its licence file exists.
+  A source starting with `../` (the engine checkout) also resolves against the main checkout's
+  root, so worktrees find it. Exit 2 on any mismatch or missing source.
+- `lib/gate4-expected.ts`: the `render-stream-gate4-expected/1` and
+  `render-stream-gate4-glyphs/1` types, `stepFrames4`, `stepOfFrame4`, `synthesizeGate4` (the
+  clear colour, the panel and the marker, with a mask of the text regions), `inkPixels`,
+  `boxEqual`, `deriveCensus` (gate4-design.md Q1c over expected.json's own strings and draws) and
+  `appendOnlyViolations`.
+- `lib/gate4-checks.ts`: every G4a check, each a pure `evaluate*` function plus a thin loader, and
+  `runGate4`. It reuses gate 0's capture and no-GPU checks, gate 2's `store-complete` and
+  `texture-versions-current`, and gate 3's recording, patch, tie and capture-class checks.
+- `check-gate4.ts`: writes `<out>/result.json` (`render-stream-gate4-report/1`: gate 3's shape
+  with `text` per fixture and step (glyph commands, pages with wire id, hook and wire versions and
+  payload bytes, bytes published, copy and hash ns), `parity` (each oracle page against the
+  capture's table per step), `budgets` (reference against repeat per region), `census` and `ink`)
+  and exits non-zero unless `gate_passed`.
+- `test/self-test-gate4.ts`: see below.
+
+## Gate 4 legs and evidence under `--out`
+
+| Leg                | Group | Directory           | Runs                                                                                                                                         |
+| ------------------ | ----- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `import`           | g4a   | `import/`           | `provision-fonts.sh` (`fonts.log`), then the mise editor's `--import` of `fixtures/gate4` (`fixture/`)                                       |
+| `capture`          | g4a   | `capture/`          | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, `env.json`, quit 400, strace + maps/fd |
+| `reference`        | g4a   | `reference/`        | rendered in gamescope, extension absent, oracle on: `shots/step-0..9.png`, `shots/early-{1,4,7}.png`, `oracle/glyphs.jsonl`, `oracle/pages/` |
+| `reference-repeat` | g4a   | `reference-repeat/` | the same again                                                                                                                               |
+| `reference-armed`  | g4a   | `reference-armed/`  | rendered, extension armed with `GRC_STREAM_OUT` and a store, oracle off, shots                                                              |
+
+## Gate 4 criteria (g4a)
+
+`capture-armed` (55 hooks), `headless-no-gpu`, `recording-decodes` (both sinks),
+`patch-resolves-to-full`, `no-draw-index-ties` and `leg-class-capture` are gate 3's;
+`store-complete` and `texture-versions-current` are gate 2's. `step-alignment` reads the four step
+logs and the capture's marker colours. `fixture-env` requires `env.json` to be identical across
+capture, reference and repeat and to equal the lock's font hash, D3's `FontFile` properties, Q1e's
+settings, oversampling 1.0 and the Advanced TextServer. `oracle-agrees` requires the oracle's
+visible nodes, texts, fonts, colours, ink-glyph counts, pages and distinct glyphs per cache to
+equal `expected.json`, and both oracle logs to be byte-identical. `glyph-commands` compares every
+text item's commands on both sinks' settle transactions with the oracle's quads, source rects,
+colours and pages, float32 exact. `atlas-hash-parity` requires each oracle page's GRT1 hash to be
+the hash of exactly one wire texture at every settle step, with a fixed wire id per page.
+`atlas-append-only` decodes consecutive published versions of each page from the store and
+requires every changed texel to have been empty (LA8 `(255,0)`). `atlas-census` reads the hook log
+per step window: creates and updates per page, all in the applied frame, hook and wire versions,
+nothing in the quiet steps, and the engine's hue strip as the only other upload.
+`expected-image-reference` compares every shot with `synthesizeGate4` exactly outside the text
+regions. `ink-presence-reference` counts ink pixels per region (≥ 6 per glyph, 0 when blank),
+checks freshness against the previous step and requires each early shot's text to equal its
+settle shot. `reference-repeat-budget` requires identical shots (budget 0) and reports per-region
+maxima. `armed-transparent` requires `reference-armed`'s shots to equal the reference's.
+`support-legs-exit` requires a provisioned font and the import and rendered legs to exit 0.
+
+## Gate 4 self-test
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate4.ts
+python3 experiments/render-stream/fixtures/gate4/make_expected.py --check
+```
+
+GRT1 hashing is checked against SHA-256 values computed independently with Python (an empty
+256×256 LA8 page, the size of every gate 4 page, and an 8×8 one), and append-only on a hand-built
+8×8 LA8 pair. A synthetic world is then built from `expected.json` alone: an oracle log, a
+recording whose settle transactions carry matching glyph commands and page versions, a hook log, a
+store and shots. Every check passes on it and fails on at least one perturbation, among them a
+quarter-pixel glyph shift, the omit-atlas sabotage (failing exactly at `predictions`' parity
+cells), a single upload at step 7, an upload in a quiet step, an atlas published a frame late, and
+a rewritten inked texel.

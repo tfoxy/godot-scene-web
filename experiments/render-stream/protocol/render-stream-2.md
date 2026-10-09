@@ -228,6 +228,10 @@ reused, as for items. `version` starts at 1 and increases whenever the texture's
 changes. Versions need not be contiguous on the wire, because a version that was never published
 is never seen.
 
+Glyph atlas pages are ordinary `image` entries (LA8 or RGBA8). A page grows by whole-page
+`texture_2d_update`s, so a step that adds glyphs publishes a new version of each touched page and
+nothing else. (Informative, gate4-design.md Q4.)
+
 Field rules, checked by `texture-entry`:
 
 | kind / status            | `hash` | `format`       | `width`,`height` | `mipmaps` | `payload_bytes`      | `canvas` | `reason` |

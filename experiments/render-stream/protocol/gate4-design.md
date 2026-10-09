@@ -662,6 +662,26 @@ g4a–g4f (g4e is G4e2's group).
 --check` is clean. The README gains "Gate 4a result" with the run directory, image paths, the
 census table as measured, and the parity table.
 
+**As built (G4a, 2026-10-09).** Every census prediction in Q6b held on the first run, headless and
+rendered: one 256² LA8 page per cache (`F@16`, `F@24`, `DF@16`), created in frame 1 next to the
+engine's 800×6 hue strip; one `F@16` update at frames 11 and 41; **two** at frame 71 (hook v4
+and v5, only v5 published or stored); one `DF@16` update at frame 91; no texture call at all in
+steps 2, 3, 5, 6 and 8; 21 glyphs on `F@16`. The ink counts and wire versions (F16 1, 2, 3, 5)
+match the oracle and the wire. Every page the rendered reference dumps hashes to exactly one wire
+texture at every step, so headless rasterization is byte-identical. Every glyph command equals the
+oracle's quad and source rect as float32, and every new version wrote only empty texels. Scene
+teardown frees the runtime font's two pages at quit+1; the default theme font's page is never
+freed while armed. Amendments: (1) the capture leg quits at **400**, not 102, as in gates 0–3, so
+that the `/proc` maps/fd sample has time to run. Census windows end at that quit frame and are quiet
+after frame 91. (2) The early shots are `shots/early-<k>.png`. `ink-presence-reference` also
+requires their text regions to equal the step's settle shot, and they did. (3) The oracle writes
+floats at full precision, and colours compare as float32. (4) `oracle-agrees` compares glyph sets
+as the distinct glyph indices drawn per cache so far against `page_glyphs`. It does not compare
+codepoints: the oracle only sees glyph indices. (5) `fixture-env` pins on `DF` only what the engine
+sets from `gui/theme/default_font_*`. The default font keeps `allow_system_fallback = true`, a
+`FontFile` default, which the Latin strings never exercise. (6) Cache keys in `expected.json` are
+`<font>@<size>`, and page keys in reports are `<font>@<size>/<outline>#<index>`.
+
 ---
 
 ### G4b — receiver legs, text synthesis, sabotages (sonnet)
