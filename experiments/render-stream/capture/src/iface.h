@@ -29,7 +29,7 @@ struct Iface {
   // True when every pointer above resolved.
   bool complete = false;
 
-  // Used only by the gate-0 root query (rs0_root_query). Resolved by
+  // Used only by the root query (rs_root_query). Resolved by
   // iface_load but not part of `complete`: a host without them still runs the
   // gate -1 capture, and the root query reports `root-query-failed`.
   GDExtensionInterfaceRefGetObject ref_get_object = nullptr;

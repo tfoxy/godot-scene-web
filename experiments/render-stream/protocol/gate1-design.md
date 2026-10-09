@@ -1,7 +1,8 @@
 # Gate 1 design: retained canvas state and delivery
 
-Status: contract for gate 1, written 2026-10-09 after gate 0 passed (commit `fa906496`). G1a is
-implemented (its "As built" note records the differences); the other increments are not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
+Status: contract for gate 1, written 2026-10-09 after gate 0 passed (commit `fa906496`). G1a,
+G1b1, G1c1 and G1b2 are implemented (the G1a and G1b2 "As built" notes record the differences);
+G1c2, G1d and G1e are not. It is meant to be handed out piecewise: each increment (G1a … G1e) below is
 one verified commit on `main`, implemented by one agent in its own worktree, against this file,
 [render-stream-1.md](render-stream-1.md) (the proposed wire format, finalized by G1b1) and the
 gate 0 documents it extends: [gate0-design.md](gate0-design.md) and
@@ -49,18 +50,18 @@ hook-completeness diff (no oracle build exists yet; it stays optional).
 
 ## Decisions
 
-| #   | Question                                  | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| --- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Patches: new version or a /0 record type? | **`render-stream/1`**, magic byte 3 `0x31`. Patches need new transaction keys (`encoding`, `base_seq`, `removed_*`), a nullable `commands`, new session keys (stream identity, root geometry), new enum spellings (unsupported reasons, sabotage kinds). render-stream-0.md "Versioning" makes every one of these a new version, and a /0 decoder rejects unknown record types anyway.                                                                                                                      |
-| D2  | Patch base                                | The **previous transaction of the same stream** (`base_seq == seq − 1`). Live delivery never sends transaction n+1 before the credit for n arrives, and the credit stage is at or after "applied", so the base is always the receiver's last acknowledged, applied snapshot (handoff: "patch against the receiver's last acknowledged snapshot"). The first transaction of every stream and every resync is full.                                                                                           |
-| D3  | Where the WebSocket server lives          | **In the C++ capture library**, a minimal dependency-free RFC 6455 server on its own I/O thread (`rs_ws`). Reasons in "Q3. Live transport placement".                                                                                                                                                                                                                                                                                                                                                       |
-| D4  | Root size / canvas transform              | The stream carries root-canvas space; **the receiver applies its own stretch**. The session declares logical size, stretch settings, host window size, visible rect, final transform and a `host_size_status`. `GRC_ROOT_SIZE=enforce-min-size` makes a headless host match the logical size; otherwise a mismatch is the session-level unsupported condition `degenerate-host-size`. See Q1.                                                                                                               |
-| D5  | Receivers per host                        | **One at a time** at gate 1 (`busy` refusal for a second). The host's delivery state is per connection, so more is a configuration change later, not a redesign.                                                                                                                                                                                                                                                                                                                                            |
-| D6  | Arm on first subscriber, disarm on last   | **Deferred** past gate 1. The mirror is built from mutation hooks only and cannot adopt items that exist before arming ([gate 0 route (a)](gate0-design.md#q1-arming-root-adoption-and-unknown-rids)); arming on subscription would make every live session `pre-existing-object`. It needs the adoption pass planned for late join (gate 8). Gate 1 arms at load and keeps the mirror running; only delivery is per subscriber. The handoff's "no permanent hook" goal stays open and is recorded as such. |
-| D7  | Equal `draw_index` ties                   | **Reported, not reproduced.** The engine's sibling sort is stable only up to 16 children and its result depends on each process's own sort history (Q2c). A tie between two drawing siblings becomes the item-level unsupported entry `draw-index-tie`. Node-driven scenes never produce ties (Q2c).                                                                                                                                                                                                        |
-| D8  | Credit point                              | The ack stage the receiver declares in `hello`: `submitted` (after `RenderingServer.frame_post_draw` following the apply) for rendered receivers, `applied` for headless ones, where `frame_post_draw` never fires. `presented` is reported as unavailable: Godot exposes no presentation feedback.                                                                                                                                                                                                         |
-| D9  | Runner                                    | A new `run-gate1.sh` with `--legs` groups, sharing process plumbing with `run-gate0.sh` through an extracted `scripts/lib/legs.sh` (G1a). Gate 0's runner keeps its legs and its 19 checks.                                                                                                                                                                                                                                                                                                                 |
-| D10 | Where the receiver learns step boundaries | From the runner, as absolute host-frame windows computed from `expected.json` and the fixture's timeline parameters. Live legs delay the timeline (`RS_FIXTURE_START_FRAME`) so a receiver is connected before step 0 settles; the checker fails a leg whose receiver joined late.                                                                                                                                                                                                                          |
+| #   | Question                                  | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Patches: new version or a /0 record type? | **`render-stream/1`**, magic byte 3 `0x31`. Patches need new transaction keys (`encoding`, `base_seq`, `removed_*`), a nullable `commands`, new session keys (stream identity, root geometry), new enum spellings (unsupported reasons, sabotage kinds). render-stream-0.md "Versioning" makes every one of these a new version, and a /0 decoder rejects unknown record types anyway.                                                                                                                                                              |
+| D2  | Patch base                                | The **previous transaction of the same stream** (`base_seq == seq − 1`). Live delivery never sends transaction n+1 before the credit for n arrives, and the credit stage is at or after "applied", so the base is always the receiver's last acknowledged, applied snapshot (handoff: "patch against the receiver's last acknowledged snapshot"). The first transaction of every stream and every resync is full.                                                                                                                                   |
+| D3  | Where the WebSocket server lives          | **In the C++ capture library**, a minimal dependency-free RFC 6455 server on its own I/O thread (`rs_ws`). Reasons in "Q3. Live transport placement".                                                                                                                                                                                                                                                                                                                                                                                               |
+| D4  | Root size / canvas transform              | The stream carries root-canvas space; **the receiver applies its own stretch**. The session declares logical size, stretch settings, host window size, visible rect, final transform and a `host_size_status`. `GRC_ROOT_SIZE=enforce-min-size` makes a headless host match the logical size; otherwise a mismatch is the session-level unsupported condition `degenerate-host-size`. See Q1.                                                                                                                                                       |
+| D5  | Receivers per host                        | **One at a time** at gate 1 (`busy` refusal for a second). The host's delivery state is per connection, so more is a configuration change later, not a redesign.                                                                                                                                                                                                                                                                                                                                                                                    |
+| D6  | Arm on first subscriber, disarm on last   | **Deferred** past gate 1. The mirror is built from mutation hooks only and cannot adopt items that exist before arming ([gate 0 route (a)](gate0-design.md#q1-arming-root-adoption-and-unknown-rids)); arming on subscription would make every live session `pre-existing-object`. It needs the adoption pass planned for late join (gate 8). Gate 1 arms at load and keeps the mirror running; only delivery is per subscriber. The handoff's "no permanent hook" goal stays open and is recorded as such.                                         |
+| D7  | Equal `draw_index` ties                   | **Reported, not reproduced.** The engine's sibling sort is stable only up to 16 children and its result depends on each process's own sort history (Q2c). A tie between two drawing siblings becomes the item-level unsupported entry `draw-index-tie`. Node-driven scenes tie for one frame when a top-level item enters a canvas at runtime (G1a "As built"). Amended by G1b2: a declared tie whose drawing members paint pairwise disjoint footprints is harmless and does not make a leg `unsupported`; every other tie does (G1b2 "As built"). |
+| D8  | Credit point                              | The ack stage the receiver declares in `hello`: `submitted` (after `RenderingServer.frame_post_draw` following the apply) for rendered receivers, `applied` for headless ones, where `frame_post_draw` never fires. `presented` is reported as unavailable: Godot exposes no presentation feedback.                                                                                                                                                                                                                                                 |
+| D9  | Runner                                    | A new `run-gate1.sh` with `--legs` groups, sharing process plumbing with `run-gate0.sh` through an extracted `scripts/lib/legs.sh` (G1a). Gate 0's runner keeps its legs and its 19 checks.                                                                                                                                                                                                                                                                                                                                                         |
+| D10 | Where the receiver learns step boundaries | From the runner, as absolute host-frame windows computed from `expected.json` and the fixture's timeline parameters. Live legs delay the timeline (`RS_FIXTURE_START_FRAME`) so a receiver is connected before step 0 settles; the checker fails a leg whose receiver joined late.                                                                                                                                                                                                                                                                  |
 
 ## Q1. Root viewport size and canvas transform
 
@@ -872,6 +873,68 @@ the receiver's work does not depend on encoding); `patch-bytes` (recorded, not g
 per-transaction bytes for both sinks); the gate 0 and G1a checks on /1; `leg-class-*`.
 
 **Pass criteria**: `--legs g1a,g1b` all green; gate 0 19/19 on /1; gate −1 green; README section.
+
+**As built (2026-10-09; README "Gate 1b result").** Every leg classified as expected on the first
+full run. These are the differences from the text above, and the decisions it left open:
+
+- **The one-frame top-level tie (G1a "As built"), decided: declared on the wire, classified by
+  effect.** Engine facts: a top-level item's index comes from `_top_level_raise_self`
+  (`scene/main/canvas_item.cpp:224-235`), queued by `update_draw_order` as a unique deferred
+  group call (`:433-442`) that the next iteration's first `_flush_ugc` runs
+  (`scene/main/scene_tree.cpp:644`, queued after `:708-709`). The frame in between is rendered:
+  `render_canvas` sorts the canvas's `child_items` when dirty (`renderer_canvas_cull.cpp:490-493`)
+  with `SortArray`, an insertion sort up to 16 elements (`core/templates/sort_array.h:289-301`),
+  which is stable, and `canvas_item_set_parent` appends (`renderer_canvas_cull.cpp:595`). So the
+  new item is drawn right after its equal-index sibling for one frame, then above everything.
+  Above 16 siblings the sort is an introsort and not stable, and between equal indices of items
+  that were already siblings the order is whatever the process's own sort history left, which a
+  receiver that skips frames cannot reproduce. Decision:
+  - the mirror declares every invariant-9 tie, unchanged (structural, cheap, and checkable from
+    the stream alone, which an engine-history rule would not be);
+  - the checker classifies a declared tie by what it can do to pixels: when the drawing members'
+    paint footprints are pairwise disjoint (every visible `add_rect` of each member's subtree,
+    corners mapped through the transforms, grown by 1 px; an unsupported command makes a
+    footprint unbounded; clip ignored, as it only shrinks), every order paints the same pixels,
+    so the tie is **harmless**: listed in the leg's `harmless_ties`, not a reason. Any other tie
+    is `unsupported`, as D7 says. Classifying it as a declared transient instead was rejected:
+    one frame drawn in the wrong order is still a wrong frame, and a receiver cannot know at
+    apply time whether a tie will last.
+  - Fixture step 1 now provokes it: a new top-level `T` (id 20, so `L2` is 21) ties with `P` at
+    index 0 on frame 11 and only there (raised to 10 on frame 12), clear of everything, so
+    harmless. `RS_FIXTURE_TIE=overlap` (leg `tie-overlap`, not in the table above) widens `T`
+    over `P` and `Q`'s children: the same tie, not harmless, `unsupported`. Its tie frame and the
+    next are shot on both sides as a measurement, not gated.
+- **`patch-transform-only` text corrected.** `G` (a child of `C`) does not change at step 2, so it
+  has no entry in that patch at all; and the `Marker` is recoloured at every step, step 10
+  included, so its entry carries commands there. The check asserts exactly that.
+- **`degenerate-host-size` and `root-size-enforce-failed` together.** render-stream-1.md says the
+  session-level entry is present exactly when `host_size_status != "match"`; Q1 says an enforced
+  host that misses is the failure "instead". The capture emits both under enforcement (the wire
+  rule holds), and the failure makes the leg `capture-failure` by precedence. The failure is also
+  recorded when the `Window.set_min_size` call itself cannot be made.
+- **Root geometry from the session.** `evidence/root.json` is still written and quoted in the
+  report (`root_geometry.host_evidence`), but classification and `root-geometry` read the /1
+  session (`viewport` and the `host_visible_rect`/`host_final_xform` blocks).
+- **Every gate 1 capture writes both sinks**, so `patch-divergence` is evaluated for every leg,
+  not only `sabotage-patch-drop`. `patch-drop-item` keeps diffing later patches against the true
+  snapshot, so the divergence lasts until the dropped item changes again (frames 51–60).
+- **`omit-op free` drops the RenderingServer `free` only.** A `queue_free`d node leaves the tree
+  first (`canvas_item_set_parent(item, RID())`), so `L`, `M` and `M1` are detached and undrawn
+  either way; what stays drawn is the raw `Y` and its child `X` (1 280 px at steps 8–10).
+- **Mirror epoch** (for G1c2): advances on every applied tap, on a tap naming an unknown RID, on
+  `set_root`, the failures and the degenerate flag; `reset()` bumps it, so values never repeat.
+- **Sabotage parsing**: the live kinds (`drop-message`, `ignore-credit`, `stale-coalesce`) refuse
+  to publish until G1c2; `GRC_SABOTAGE_OP` is required for `omit-op` and refused with any other
+  kind.
+- **Receiver** (`applied/2`, file mode): `streams[0]` exists from the file read, with
+  `stream_id: null` until the session decodes; extra failure reasons `state-unavailable` (a
+  requested state seq never applied) and `state-failed` (cannot write a dump). New items get every
+  setter, `z_relative` and `behind` included, as gate 0's applier did. `receiver-typecheck` replays
+  `golden-1/full.rs1`, and `receiver-typed-clean` derives the expected `unsupported` list from the
+  golden itself instead of a hard-coded count.
+- **Runner**: `--legs g1b` without `g1a` refuses (g1b compares against g1a's capture, reference and
+  receiver); `result.json` `stream` gains `patch_path`; `RS_FIXTURE_SHOT_FRAMES` and
+  `RS_FIXTURE_TIE` joined `GS_STRIP_VARS`.
 
 ---
 

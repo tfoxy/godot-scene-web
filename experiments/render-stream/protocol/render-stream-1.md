@@ -1,11 +1,14 @@
 # render-stream/1 wire format
 
-Status: implemented for gate 1 (increment G1b1): C++ encoder/diff (`capture/src/rs1_codec.*`,
-`rs1_diff.*`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-1.ts`) and
-GDScript decoder (`receiver/rs1_decoder.gd`), all checked byte-for-byte and state-for-state
-against `protocol/golden-1/`. Not yet wired into `entry.cpp`, the publisher, `receiver.gd` or any
-runner (G1b2) and not yet served live (G1c1/G1c2); until G1b2 lands,
-[render-stream-0.md](render-stream-0.md) is the wire format actually produced and consumed.
+Status: the wire format the capture library publishes and the receiver consumes since G1b2
+(2026-10-09). Codecs (G1b1): C++ encoder/diff (`capture/src/rs1_codec.*`, `rs1_diff.*`),
+TypeScript decoder/validator/resolver (`scripts/lib/render-stream-1.ts`) and GDScript decoder
+(`receiver/rs1_decoder.gd`), all checked byte-for-byte and state-for-state against
+`protocol/golden-1/`. Wiring (G1b2): the mirror (`capture/src/rs_mirror.*`, including the
+invariant 9 tie detection below) and the two file sinks of `capture/src/rs1_publish.*`
+(`GRC_STREAM_OUT` full, `GRC_STREAM_PATCH_OUT` patch), the receiver's file mode
+(`receiver/receiver.gd`, `rs_applier.gd`) and the gate 0 and gate 1 runners. Not yet served live
+(G1c2). [render-stream-0.md](render-stream-0.md) is superseded and kept as frozen history.
 Behaviour (what the capture puts into these records, delivery, credit) is in
 [gate1-design.md](gate1-design.md).
 
@@ -153,6 +156,11 @@ In every container (a canvas's `items`, an item's `children`), group the childre
 non-empty `children`) needs exactly one item-level entry
 `{"op":"canvas_item_set_draw_index","item":<smallest drawing id in the group>,"reason":"draw-index-tie"}`,
 and no such entry may exist otherwise (`unsupported-mismatch`).
+
+The entry is structural: the capture declares every such group, whether or not the order of its
+members can change a pixel. How a gate classifies a declared tie is checker policy, not wire
+format (gate1-design.md D7 as amended by G1b2: a tie whose drawing members paint pairwise
+disjoint pixel footprints is declared but harmless; any other tie makes the leg `unsupported`).
 
 ### Unsupported reasons
 

@@ -7,13 +7,14 @@
 //
 // 1. classifyLeg unit cases (pure): every class alone, every pair of classes (the earlier one in
 //    the precedence wins and both reasons are listed), each sub-rule of rules 1 and 3, rules 3-4
-//    skipped without a receiver, and session.sabotage ignored.
+//    skipped without a receiver, session.sabotage ignored, and draw-index ties (a tie whose
+//    members paint disjoint pixels is harmless; any other is unsupported).
 // 2. Evidence-tree scenarios: a fabricated passing tree for the whole runner layout (recordings
-//    encoded here in render-stream/0 bytes, PNGs synthesized from the timeline), then one
+//    encoded in render-stream/1 by rs1-test-encoder.ts, PNGs synthesized from the timeline), then one
 //    perturbation per failure mode. Each scenario runs the real runGate0 and asserts the verdict
 //    of the checks and leg classes it targets.
-// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden/corrupt-meta.bin from
-//    golden/minimal.bin byte for byte; joinSettleSeqs fails on a missing frame.
+// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-1/corrupt-meta.rs1 from
+//    golden-1/patch.rs1 byte for byte; joinSettleSeqs fails on a missing frame.
 //
 // Exits non-zero if any assertion fails.
 
@@ -30,7 +31,8 @@ import {
   type ClassifyInput,
   classifyLeg,
   corruptTransactionMeta,
-  GATE0_FEATURES,
+  drawIndexTies,
+  expectedReceiverUnsupported,
   GATE0_HOOKS,
   type Gate0Context,
   type Gate0Expected,
@@ -38,17 +40,25 @@ import {
   joinSettleSeqs,
   LEG_EXPECTATIONS,
   type LegClass,
+  type ResolvedCommand,
+  type ResolvedItem,
   runGate0,
   SUPPORT_LEGS,
   summarizeRecording,
   type Transaction,
 } from "../lib/gate0-checks";
 import { synthesizeExpected } from "../lib/gate0-expected";
-import { validateRecording } from "../lib/render-stream-0";
+import { validateRecording } from "../lib/render-stream-1";
+import {
+  encodeRs1Recording,
+  type TCommand,
+  type TItem,
+  type TState,
+} from "./rs1-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden");
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-1");
 
 let assertions = 0;
 let failures = 0;
@@ -117,38 +127,15 @@ const EXPECTED = {
 } as unknown as Gate0Expected;
 
 // ---------------------------------------------------------------------------------------------
-// A test-side render-stream/0 encoder (canonical meta: objects built in key order, blocks last).
+// Recordings: the fixture's two items per frame, encoded in render-stream/1 by
+// rs1-test-encoder.ts (full encoding, as the gate 0 capture writes).
 // ---------------------------------------------------------------------------------------------
-
-const MAGIC = Buffer.from([0x47, 0x52, 0x53, 0x30, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-function encodeRecord(
-  meta: Record<string, unknown>,
-  blocks: number[][],
-): Buffer {
-  const metaBytes = Buffer.from(JSON.stringify(meta), "ascii");
-  const recordLen =
-    8 + metaBytes.length + blocks.reduce((n, b) => n + 4 + 4 * b.length, 0);
-  const out = Buffer.alloc(4 + recordLen);
-  let p = out.writeUInt32LE(recordLen, 0);
-  p = out.writeUInt32LE(metaBytes.length, p);
-  p += metaBytes.copy(out, p);
-  p = out.writeUInt32LE(blocks.length, p);
-  for (const block of blocks) {
-    p = out.writeUInt32LE(4 * block.length, p);
-    for (const v of block) p = out.writeFloatLE(v, p);
-  }
-  return out;
-}
-
-const blockSpecs = (names: string[], blocks: number[][]) =>
-  names.map((name, i) => ({ name, type: "f32", count: blocks[i].length }));
 
 interface RecordingOptions {
   quit: number;
   variant?: "unsupported";
   preexisting?: boolean;
-  sabotage?: { kind: string; frame: number } | null;
+  sabotage?: { kind: string; frame: number; op?: string | null } | null;
   hooksPlanned?: string[];
   /** publish step `step`'s change `frames` frames late */
   delay?: { step: number; frames: number };
@@ -156,41 +143,8 @@ interface RecordingOptions {
   noEnd?: boolean;
 }
 
-function encodeRecording(opts: RecordingOptions): Buffer {
-  const sessionBlocks = [
-    [0.2, 0.2, 0.4, 1],
-    [1, 0, 0, 1, 0, 0],
-    [0, 0, 0, 0],
-  ];
-  const session = encodeRecord(
-    {
-      type: "session",
-      protocol: "render-stream/0",
-      session_id: "0123456789abcdef0123456789abcdef",
-      engine: {
-        version_string: "Godot Engine v4.5.1.stable.official",
-        sha256:
-          "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
-        display_server: "headless",
-        rendering_driver: "opengl3",
-        rendering_method: "gl_compatibility",
-      },
-      capture: {
-        calibrator_version: 3,
-        hooks_planned: opts.hooksPlanned ?? [...GATE0_HOOKS],
-        hooks_omitted: [],
-      },
-      viewport: { canvas_cull_mask: 4294967295, root_canvas: 1 },
-      features: JSON.parse(JSON.stringify(GATE0_FEATURES)),
-      sabotage: opts.sabotage ?? null,
-      blocks: blockSpecs(
-        ["clear_color", "root_canvas_xform", "host_visible_rect"],
-        sessionBlocks,
-      ),
-    },
-    sessionBlocks,
-  );
-  const records: Buffer[] = [session];
+function gate0States(opts: RecordingOptions): TState[] {
+  const states: TState[] = [];
   const applied = (k: number): number =>
     EXPECTED.steps[k].applied_frame +
     (opts.delay?.step === k ? opts.delay.frames : 0);
@@ -204,114 +158,72 @@ function encodeRecording(opts: RecordingOptions): Buffer {
       id: number,
       drawIndex: number,
       version: number,
-      commands: unknown[],
-    ) => ({
+      at: readonly number[],
+      size: readonly number[],
+      color: readonly number[],
+      extra: TCommand[] = [],
+    ): TItem => ({
       id,
-      origin: "created",
       parent: { kind: "canvas", id: 1 },
       children: [],
       visible: true,
       draw_index: drawIndex,
       z_index: 0,
-      clip: false,
-      custom_rect: false,
       visibility_layer: 1,
       content_version: version,
-      commands,
+      xform: [1, 0, 0, 1, at[0], at[1]],
+      modulate: [1, 1, 1, 1],
+      self_modulate: [1, 1, 1, 1],
+      commands: [
+        { op: "add_rect", rect: [0, 0, size[0], size[1]], color: [...color] },
+        ...extra,
+      ],
     });
-    const blocks = [
-      [
-        ...[1, 0, 0, 1, s.subject.rect_px[0], s.subject.rect_px[1]],
-        ...[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
-        ...[1, 0, 0, 1, s.marker.rect_px[0], s.marker.rect_px[1]],
-        ...[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
-      ],
-      [1, 0, 0, 1, 0, 0],
-      [
-        0,
-        0,
-        SUBJECT_SIZE[0],
-        SUBJECT_SIZE[1],
-        ...s.subject.color,
-        0,
-        0,
-        MARKER_SIZE[0],
-        MARKER_SIZE[1],
-        ...s.marker.color,
-      ],
-    ];
-    records.push(
-      encodeRecord(
-        {
-          type: "transaction",
-          seq: frame,
-          frame,
-          status: opts.preexisting ? "capture-failure" : "ok",
-          failures: opts.preexisting
-            ? [
-                {
-                  reason: "pre-existing-object",
-                  detail: "rid=4294967296123 op=canvas_item_set_parent frame=1",
-                },
-              ]
-            : [],
-          unsupported: circle
-            ? [
-                {
-                  op: "canvas_item_add_circle",
-                  item: 2,
-                  reason: "unsupported-op",
-                },
-              ]
-            : [],
-          canvases: [
+    states.push({
+      frame,
+      failures: opts.preexisting
+        ? [
             {
-              id: 1,
-              origin: "root-query",
-              role: "root",
-              attached: true,
-              items: [1, 2],
+              reason: "pre-existing-object",
+              detail: "rid=4294967296123 op=canvas_item_set_parent frame=1",
             },
-          ],
-          items: [
-            item(1, 1, 1 + Math.min(k, 3), [
-              { op: "add_rect", aa: false, f: 0 },
-            ]),
-            item(2, 2, 1 + k, [
-              { op: "add_rect", aa: false, f: 8 },
-              ...(circle
-                ? [{ op: "unsupported", name: "canvas_item_add_circle" }]
-                : []),
-            ]),
-          ],
-          blocks: blockSpecs(["item_f32", "canvas_f32", "cmd_f32"], blocks),
-        },
-        blocks,
-      ),
-    );
+          ]
+        : [],
+      unsupported: circle
+        ? [{ op: "canvas_item_add_circle", item: 2, reason: "unsupported-op" }]
+        : [],
+      canvases: [{ id: 1, items: [1, 2], xform: [1, 0, 0, 1, 0, 0] }],
+      items: [
+        item(
+          1,
+          1,
+          1 + Math.min(k, 3),
+          s.subject.rect_px,
+          SUBJECT_SIZE,
+          s.subject.color,
+        ),
+        item(
+          2,
+          2,
+          1 + k,
+          s.marker.rect_px,
+          MARKER_SIZE,
+          s.marker.color,
+          circle ? [{ op: "unsupported", name: "canvas_item_add_circle" }] : [],
+        ),
+      ],
+    });
   }
-  const bytesTotal = MAGIC.length + records.reduce((n, r) => n + r.length, 0);
-  const maxRecord = Math.max(...records.map((r) => r.length));
-  if (!opts.noEnd) {
-    records.push(
-      encodeRecord(
-        {
-          type: "end",
-          transactions: opts.quit,
-          reason: "shutdown",
-          stats: {
-            bytes_total: bytesTotal,
-            encode_ns_total: 1000 * opts.quit,
-            snapshot_ns_total: 100 * opts.quit,
-            max_record_bytes: maxRecord,
-          },
-          blocks: [],
-        },
-        [],
-      ),
-    );
-  }
-  return Buffer.concat([MAGIC, ...records]);
+  return states;
+}
+
+function encodeRecording(opts: RecordingOptions): Buffer {
+  return encodeRs1Recording(gate0States(opts), {
+    encoding: "full",
+    hooksPlanned: opts.hooksPlanned ?? [...GATE0_HOOKS],
+    sabotage: opts.sabotage ?? null,
+    noEnd: opts.noEnd,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -371,7 +283,8 @@ function appliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/1",
+    schema: "render-stream-receiver-applied/2",
+    mode: "file",
     recording: {
       path: recordingPath,
       sha256: summary.sha256,
@@ -461,8 +374,8 @@ async function writeCaptureLeg(
   withTrace: boolean,
 ): Promise<Buffer> {
   const bytes = encodeRecording(opts);
-  await writeText(join(dir, "recording.rs0"), "");
-  await writeFile(join(dir, "recording.rs0"), bytes);
+  await writeText(join(dir, "recording.rs1"), "");
+  await writeFile(join(dir, "recording.rs1"), bytes);
   await writeJson(join(dir, "evidence", "result.json"), {
     schema: "render-stream-capture-result/1",
     status: "armed",
@@ -473,7 +386,8 @@ async function writeCaptureLeg(
     rendering_driver: "opengl3",
     rendering_method: "gl_compatibility",
     stream: {
-      path: join(dir, "recording.rs0"),
+      path: join(dir, "recording.rs1"),
+      patch_path: null,
       status: "closed",
       reason: null,
       transactions: opts.quit,
@@ -502,7 +416,7 @@ async function writeCaptureLeg(
   await writeProcess(
     dir,
     ["/tpl/linux_release.x86_64", "--headless", "--path", "/fixture"],
-    ["GRC_MODE=arm", `GRC_STREAM_OUT=${join(dir, "recording.rs0")}`],
+    ["GRC_MODE=arm", `GRC_STREAM_OUT=${join(dir, "recording.rs1")}`],
     "[fixture] extension load status=0\n",
     0,
   );
@@ -536,10 +450,10 @@ async function writeReceiverProcess(
   rendered: boolean,
 ): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "recording.rs0"), bytes);
+  await writeFile(join(dir, "recording.rs1"), bytes);
   await writeJson(
     join(dir, "applied.json"),
-    appliedFor(join(dir, "recording.rs0"), bytes, shotSeqs, join(dir, "shots")),
+    appliedFor(join(dir, "recording.rs1"), bytes, shotSeqs, join(dir, "shots")),
   );
   await writeProcess(
     dir,
@@ -560,7 +474,7 @@ async function writeReceiverProcess(
           projects.receiverProjectDir,
         ],
     [
-      `RS_RECEIVER_RECORDING=${join(dir, "recording.rs0")}`,
+      `RS_RECEIVER_RECORDING=${join(dir, "recording.rs1")}`,
       `RS_RECEIVER_OUT=${join(dir, "applied.json")}`,
     ],
     "[receiver] ok\n",
@@ -579,7 +493,7 @@ async function writeTraceStrace(
     [
       `42 10:00:00.000000 openat(AT_FDCWD, "${projects.receiverProjectDir}/project.godot", O_RDONLY|O_CLOEXEC) = 3`,
       `42 10:00:00.100000 openat(AT_FDCWD, "${projects.fixtureProjectDir}/gate0.tscn", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)`,
-      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs0")}", O_RDONLY|O_CLOEXEC) = 4`,
+      `42 10:00:00.200000 openat(AT_FDCWD, "${join(leg, "recording.rs1")}", O_RDONLY|O_CLOEXEC) = 4`,
       "",
     ].join("\n"),
   );
@@ -610,26 +524,21 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
       "--path",
       projects.receiverProjectDir,
       "--script",
-      "res://tests/codec_selftest.gd",
+      "res://tests/codec1_selftest.gd",
     ],
     [],
-    "[rs0-selftest] ok\n",
+    "[rs1-selftest] ok\n",
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "minimal.bin"));
+  const minimal = await readFile(join(GOLDEN_DIR, "full.rs1"));
   await writeReceiverProcess(minimalDir, projects, minimal, [], false);
   const minimalApplied = await readJsonFile<Record<string, unknown>>(
     join(minimalDir, "applied.json"),
   );
-  minimalApplied.unsupported = [
-    {
-      seq: 1,
-      item: 2,
-      name: "canvas_item_add_circle",
-      reason: "unsupported-op",
-    },
-  ];
+  minimalApplied.unsupported = expectedReceiverUnsupported(
+    summarizeRecording("golden", new Uint8Array(minimal)),
+  );
   await writeJson(join(minimalDir, "applied.json"), minimalApplied);
 
   // capture + its receivers
@@ -868,7 +777,7 @@ const scenarios: Scenario[] = [
     name: "a session planning 41 hooks fails capture-armed",
     mutate: async (out) => {
       await writeFile(
-        join(out, "capture", "recording.rs0"),
+        join(out, "capture", "recording.rs1"),
         encodeRecording({
           quit: 400,
           hooksPlanned: GATE0_HOOKS.filter((h) => h !== "canvas_create"),
@@ -916,7 +825,7 @@ const scenarios: Scenario[] = [
     name: "a recording without its end record fails recording-decodes and classifies capture-failure",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs0"),
+        join(out, "capture", "recording.rs1"),
         encodeRecording({ quit: 400, noEnd: true }),
       ),
     checks: { "recording-decodes": false, "leg-class-capture": false },
@@ -926,7 +835,7 @@ const scenarios: Scenario[] = [
     name: "a 52-transaction capture fails recording-decodes",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs0"),
+        join(out, "capture", "recording.rs1"),
         encodeRecording({ quit: 52 }),
       ),
     checks: { "recording-decodes": false },
@@ -935,7 +844,7 @@ const scenarios: Scenario[] = [
     name: "a capture session with sabotage set fails manifest-present (the classifier ignores it)",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs0"),
+        join(out, "capture", "recording.rs1"),
         encodeRecording({
           quit: 400,
           sabotage: { kind: "omit-update", frame: 21 },
@@ -957,7 +866,7 @@ const scenarios: Scenario[] = [
     name: "a marker colour published one frame late fails step-alignment",
     mutate: (out) =>
       writeFile(
-        join(out, "capture", "recording.rs0"),
+        join(out, "capture", "recording.rs1"),
         encodeRecording({ quit: 400, delay: { step: 2, frames: 1 } }),
       ),
     checks: { "step-alignment": false, "recording-decodes": true },
@@ -993,7 +902,7 @@ const scenarios: Scenario[] = [
       const seq = settleSeqs(
         summarizeRecording(
           "c",
-          new Uint8Array(await readFile(join(out, "capture", "recording.rs0"))),
+          new Uint8Array(await readFile(join(out, "capture", "recording.rs1"))),
         ).transactions,
       )[4];
       await writePng(
@@ -1022,7 +931,7 @@ const scenarios: Scenario[] = [
       const seq = settleSeqs(
         summarizeRecording(
           "c",
-          new Uint8Array(await readFile(join(out, "capture", "recording.rs0"))),
+          new Uint8Array(await readFile(join(out, "capture", "recording.rs1"))),
         ).transactions,
       )[1];
       await writePng(
@@ -1082,7 +991,7 @@ const scenarios: Scenario[] = [
       const seq = settleSeqs(
         summarizeRecording(
           "c",
-          new Uint8Array(await readFile(join(out, "capture", "recording.rs0"))),
+          new Uint8Array(await readFile(join(out, "capture", "recording.rs1"))),
         ).transactions,
       )[2];
       await rm(join(out, "receiver", "shots", `seq-${seq}.png`));
@@ -1144,7 +1053,7 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeText(
         join(out, "receiver-typecheck", "selftest", "stdout.log"),
-        "SCRIPT WARNING: UNTYPED_DECLARATION\n[rs0-selftest] ok\n",
+        "SCRIPT WARNING: UNTYPED_DECLARATION\n[rs1-selftest] ok\n",
       ),
     checks: { "receiver-typed-clean": false },
   },
@@ -1175,7 +1084,7 @@ const scenarios: Scenario[] = [
         "f",
         new Uint8Array(
           await readFile(
-            join(out, "sabotage-freeze", "capture", "recording.rs0"),
+            join(out, "sabotage-freeze", "capture", "recording.rs1"),
           ),
         ),
       ).transactions;
@@ -1196,7 +1105,7 @@ const scenarios: Scenario[] = [
         "o",
         new Uint8Array(
           await readFile(
-            join(out, "sabotage-omit", "capture", "recording.rs0"),
+            join(out, "sabotage-omit", "capture", "recording.rs1"),
           ),
         ),
       ).transactions;
@@ -1221,7 +1130,7 @@ const scenarios: Scenario[] = [
         "p",
         new Uint8Array(
           await readFile(
-            join(out, "sabotage-perturb", "capture", "recording.rs0"),
+            join(out, "sabotage-perturb", "capture", "recording.rs1"),
           ),
         ),
       ).transactions;
@@ -1254,7 +1163,7 @@ const scenarios: Scenario[] = [
     mutate: async (out, projects) => {
       const bytes = encodeRecording({ quit: 52 });
       await writeFile(
-        join(out, "unsupported", "capture", "recording.rs0"),
+        join(out, "unsupported", "capture", "recording.rs1"),
         bytes,
       );
       await writeReceiverProcess(
@@ -1272,7 +1181,7 @@ const scenarios: Scenario[] = [
     name: "a preexisting capture without failures fails its leg class",
     mutate: (out) =>
       writeFile(
-        join(out, "preexisting", "recording.rs0"),
+        join(out, "preexisting", "recording.rs1"),
         encodeRecording({ quit: 52 }),
       ),
     checks: { "leg-class-preexisting": false },
@@ -1382,23 +1291,71 @@ async function runScenarios(): Promise<void> {
 // classifyLeg unit cases
 // ---------------------------------------------------------------------------------------------
 
+function ritem(
+  id: number,
+  commands: ResolvedCommand[],
+  extra: Partial<ResolvedItem> = {},
+): ResolvedItem {
+  return {
+    id,
+    origin: "created",
+    parent: { kind: "canvas", id: 1 },
+    children: [],
+    visible: true,
+    draw_index: id,
+    z_index: 0,
+    z_relative: true,
+    behind: false,
+    clip: false,
+    custom_rect: false,
+    visibility_layer: 1,
+    content_version: 1,
+    xform: [1, 0, 0, 1, 0, 0],
+    modulate: [1, 1, 1, 1],
+    self_modulate: [1, 1, 1, 1],
+    custom_rect_rect: [0, 0, 0, 0],
+    commands,
+    ...extra,
+  };
+}
+
+const RECT = (x: number, y: number): ResolvedCommand => ({
+  op: "add_rect",
+  aa: false,
+  rect: [x, y, 10, 10],
+  color: [1, 1, 1, 1],
+});
+
 function tx(
   seq: number,
   extra: Partial<Transaction["meta"]> = {},
 ): Transaction {
+  const items = extra.items ?? [ritem(1, [RECT(0, 0)])];
   return {
     meta: {
       type: "transaction",
       seq,
       frame: seq,
+      encoding: "full",
+      base_seq: null,
       status: "ok",
       failures: [],
       unsupported: [],
-      items: [{ id: 1, commands: [{ op: "add_rect", aa: false, f: 0 }] }],
-      blocks: [],
+      items,
+      canvases: [
+        {
+          id: 1,
+          origin: "root-query",
+          role: "root",
+          attached: true,
+          items: items
+            .filter((i) => i.parent?.kind === "canvas")
+            .map((i) => i.id),
+          xform: [1, 0, 0, 1, 0, 0],
+        },
+      ],
       ...extra,
     },
-    blocks: [[], [], [0, 0, 1, 1, 1, 1, 1, 1]],
     sha256: `sha-${seq}`,
   };
 }
@@ -1576,10 +1533,7 @@ function classifyUnitCases(): void {
     (i) => {
       i.recording.transactions[0] = tx(1, {
         items: [
-          {
-            id: 1,
-            commands: [{ op: "unsupported", name: "canvas_item_add_line" }],
-          },
+          ritem(1, [{ op: "unsupported", name: "canvas_item_add_line" }]),
         ],
       });
       i.recording.transactions[0].sha256 = "sha-1";
@@ -1654,6 +1608,113 @@ function classifyUnitCases(): void {
     "pixel-mismatch",
   );
 
+  // Draw-index ties (G1b2): every tie is declared on the wire; one whose members paint disjoint
+  // pixels is harmless and does not make the leg unsupported.
+  {
+    const tieEntry = [
+      {
+        op: "canvas_item_set_draw_index",
+        item: 1,
+        reason: "draw-index-tie",
+      },
+    ];
+    for (const overlap of [false, true]) {
+      const items = [
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(2, [RECT(overlap ? 5 : 100, 0)], { draw_index: 0 }),
+      ];
+      const t = tx(2, { items, unsupported: tieEntry });
+      const ties = drawIndexTies(t.meta);
+      assert(
+        `drawIndexTies: one ${overlap ? "overlapping" : "disjoint"} tie {1,2}, harmless ${!overlap}`,
+        ties.length === 1 &&
+          ties[0].harmless === !overlap &&
+          ties[0].members.join(",") === "1,2" &&
+          ties[0].container === "canvas:1",
+        JSON.stringify(ties),
+      );
+      const want = overlap ? "unsupported" : "success";
+      const input = baseInput();
+      input.recording.transactions[1] = t;
+      const r = classifyLeg(input);
+      assert(
+        `classifyLeg: a recording with a ${overlap ? "overlapping" : "disjoint"} tie -> ${want}`,
+        r.result_class === want && r.harmless_ties.length === (overlap ? 0 : 1),
+        JSON.stringify(r),
+      );
+      const reported = baseInput();
+      reported.recording.transactions[1] = t;
+      if (reported.receiver?.applied)
+        reported.receiver.applied.unsupported = [
+          {
+            seq: 2,
+            item: 1,
+            name: "canvas_item_set_draw_index",
+            reason: "draw-index-tie",
+          },
+        ];
+      assert(
+        `classifyLeg: applied.json reporting that ${overlap ? "overlapping" : "disjoint"} tie -> ${want}`,
+        classifyLeg(reported).result_class === want,
+      );
+    }
+    const harmless = (items: ResolvedItem[]): boolean | undefined =>
+      drawIndexTies(tx(2, { items }).meta)[0]?.harmless;
+    assert(
+      "drawIndexTies: a hidden member draws nothing, so the tie is harmless",
+      harmless([
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(2, [RECT(5, 0)], { draw_index: 0, visible: false }),
+      ]) === true,
+    );
+    assert(
+      "drawIndexTies: a member outside the cull mask draws nothing",
+      harmless([
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(2, [RECT(5, 0)], { draw_index: 0, visibility_layer: 0 }),
+      ]) === true,
+    );
+    assert(
+      "drawIndexTies: an unsupported command makes a footprint unbounded",
+      harmless([
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(2, [{ op: "unsupported", name: "canvas_item_add_circle" }], {
+          draw_index: 0,
+        }),
+      ]) === false,
+    );
+    assert(
+      "drawIndexTies: adjacent rects count as overlapping (1 px guard)",
+      harmless([
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(2, [RECT(10, 0)], { draw_index: 0 }),
+      ]) === false,
+    );
+    assert(
+      "drawIndexTies: a child's rect counts through its parent's transform",
+      harmless([
+        ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+        ritem(2, [], {
+          draw_index: 0,
+          children: [3],
+          xform: [1, 0, 0, 1, 100, 0],
+        }),
+        ritem(3, [RECT(-95, 0)], { parent: { kind: "item", id: 2 } }),
+      ]) === false,
+    );
+    assert(
+      "drawIndexTies: a member with no commands and no children is not drawing",
+      drawIndexTies(
+        tx(2, {
+          items: [
+            ritem(1, [RECT(0, 0)], { draw_index: 0 }),
+            ritem(2, [], { draw_index: 0 }),
+          ],
+        }).meta,
+      ).length === 0,
+    );
+  }
+
   // Legs without a receiver stop after rule 2.
   {
     const input = baseInput();
@@ -1672,7 +1733,7 @@ function classifyUnitCases(): void {
     const sabotaged = baseInput();
     sabotaged.recording.session = {
       type: "session",
-      sabotage: { kind: "freeze-frame", frame: 21 },
+      sabotage: { kind: "freeze-frame", frame: 21, op: null },
     };
     if (cls !== "success") {
       TOGGLES[cls](plain);
@@ -1709,15 +1770,13 @@ function classifyUnitCases(): void {
 }
 
 async function helperCases(): Promise<void> {
-  const minimal = new Uint8Array(
-    await readFile(join(GOLDEN_DIR, "minimal.bin")),
-  );
+  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs1")));
   const corrupt = new Uint8Array(
-    await readFile(join(GOLDEN_DIR, "corrupt-meta.bin")),
+    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs1")),
   );
-  const made = corruptTransactionMeta(minimal, 2);
+  const made = corruptTransactionMeta(minimal, 3);
   assert(
-    "corruptTransactionMeta(minimal.bin, 2) is golden/corrupt-meta.bin byte for byte",
+    "corruptTransactionMeta(golden-1 patch.rs1, 3) is golden-1/corrupt-meta.rs1 byte for byte",
     made.length === corrupt.length && made.every((b, i) => b === corrupt[i]),
   );
   const rec = new Uint8Array(encodeRecording({ quit: 52 }));

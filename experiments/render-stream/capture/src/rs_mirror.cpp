@@ -1,12 +1,16 @@
-#include "rs0_mirror.h"
+#include "rs_mirror.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <iterator>
+#include <map>
 #include <utility>
 
 namespace grc {
-namespace rs0 {
+namespace rs {
+
+using namespace rs1;  // NOLINT: the wire types are the mirror's own types
 
 namespace {
 
@@ -30,7 +34,11 @@ Mirror::Mirror() { reset(); }
 
 void Mirror::reset() {
   std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
   drop_frame_ = 0;
+  omit_op_.clear();
+  omit_from_frame_ = 0;
+  degenerate_host_size_ = false;
   next_canvas_id_ = kRootCanvasId + 1;
   next_item_id_ = 1;
   root_viewport_rid_ = 0;
@@ -44,7 +52,7 @@ void Mirror::reset() {
   stats_ = MirrorStats();
 
   // Canvas 1 always exists, so every snapshot has its root canvas
-  // (render-stream-0.md invariant `root-canvas`), even when the root query
+  // (render-stream-0.md invariant `root-canvas`, unchanged at /1), even when the root query
   // failed and no RID is bound to it.
   Canvas root;
   root.state.id = kRootCanvasId;
@@ -57,6 +65,7 @@ void Mirror::reset() {
 void Mirror::set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid,
                       const Xform &canvas_xform) {
   std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
   Canvas &root = canvases_.at(kRootCanvasId);
   if (root.rid != 0) {
     canvas_by_rid_.erase(root.rid);
@@ -71,7 +80,20 @@ void Mirror::set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid,
 
 void Mirror::fail_root_query(const std::string &detail) {
   std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
   fail(FailureReason::RootQueryFailed, detail);
+}
+
+void Mirror::fail_root_size_enforce(const std::string &detail) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  fail(FailureReason::RootSizeEnforceFailed, detail);
+}
+
+void Mirror::set_degenerate_host_size(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  degenerate_host_size_ = on;
 }
 
 void Mirror::set_drop_frame(std::uint64_t frame) {
@@ -79,13 +101,42 @@ void Mirror::set_drop_frame(std::uint64_t frame) {
   drop_frame_ = frame;
 }
 
+void Mirror::set_omit_op(const std::string &op, std::uint64_t from_frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  omit_op_ = op;
+  omit_from_frame_ = from_frame;
+}
+
+std::uint64_t Mirror::epoch() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return epoch_;
+}
+
 // --- helpers (mutex_ held) ----------------------------------------------------
 
-bool Mirror::dropped(std::uint64_t frame) {
+bool Mirror::omit_op_matches(const char *op, std::uint64_t frame) const {
+  return !omit_op_.empty() && frame >= omit_from_frame_ && omit_op_ == op;
+}
+
+bool Mirror::dropped_identity(const char *op, std::uint64_t frame) {
+  if (omit_op_matches(op, frame)) {
+    ++stats_.dropped_omit_op;
+    return true;
+  }
+  ++epoch_;
+  return false;
+}
+
+bool Mirror::dropped(const char *op, std::uint64_t frame) {
+  if (omit_op_matches(op, frame)) {
+    ++stats_.dropped_omit_op;
+    return true;
+  }
   if (drop_frame_ != 0 && frame == drop_frame_) {
     ++stats_.dropped_omit_update;
     return true;
   }
+  ++epoch_;
   return false;
 }
 
@@ -186,7 +237,7 @@ void Mirror::detach(Item *item) {
 
 void Mirror::canvas_create(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (rid == 0) {
+  if (rid == 0 || dropped_identity("canvas_create", frame)) {
     return;
   }
   if (canvases_.size() >= kMaxLiveItems) {
@@ -207,7 +258,7 @@ void Mirror::canvas_create(std::uint64_t rid, std::uint64_t frame) {
 
 void Mirror::canvas_item_create(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (rid == 0) {
+  if (rid == 0 || dropped_identity("canvas_item_create", frame)) {
     return;
   }
   if (items_.size() >= kMaxLiveItems) {
@@ -225,9 +276,16 @@ void Mirror::canvas_item_create(std::uint64_t rid, std::uint64_t frame) {
   items_.emplace(item.state.id, std::move(item));
 }
 
-void Mirror::free_rid(std::uint64_t rid, std::uint64_t /*frame*/) {
+void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (omit_op_matches("free", frame)) {
+    // omit-op `free`: the item (or canvas) stays, with its parent link and
+    // its place in its parent's list.
+    ++stats_.dropped_omit_op;
+    return;
+  }
   if (Item *item = find_item(rid)) {
+    ++epoch_;
     // renderer_canvas_cull.cpp:2585-2600: leave the parent, orphan the children.
     detach(item);
     for (std::uint32_t child : item->state.children) {
@@ -243,6 +301,7 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t /*frame*/) {
   }
   const auto canvas_it = canvas_by_rid_.find(rid);
   if (canvas_it != canvas_by_rid_.end()) {
+    ++epoch_;
     // renderer_canvas_cull.cpp:2566: the canvas's child items lose their parent.
     Canvas &canvas = canvases_.at(canvas_it->second);
     for (std::uint32_t child : canvas.state.items) {
@@ -264,6 +323,7 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t /*frame*/) {
     return;
   }
   if (untracked_items_.erase(rid) != 0) {
+    ++epoch_;
     return;
   }
   ++stats_.free_unknown;  // textures, meshes, materials, ... share this slot
@@ -274,10 +334,10 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t /*frame*/) {
 void Mirror::viewport_attach_canvas(std::uint64_t viewport, std::uint64_t canvas,
                                     std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  static const char kOp[] = "viewport_attach_canvas";
+  if (dropped(kOp, frame)) {
     return;
   }
-  static const char kOp[] = "viewport_attach_canvas";
   if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
     session_unsupported(kOp, UnsupportedReason::NonRootViewport);
     return;
@@ -297,10 +357,10 @@ void Mirror::viewport_attach_canvas(std::uint64_t viewport, std::uint64_t canvas
 void Mirror::viewport_set_canvas_transform(std::uint64_t viewport, std::uint64_t canvas,
                                            const Xform &xform, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  static const char kOp[] = "viewport_set_canvas_transform";
+  if (dropped(kOp, frame)) {
     return;
   }
-  static const char kOp[] = "viewport_set_canvas_transform";
   if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
     session_unsupported(kOp, UnsupportedReason::NonRootViewport);
     return;
@@ -317,10 +377,10 @@ void Mirror::viewport_set_canvas_transform(std::uint64_t viewport, std::uint64_t
 
 void Mirror::set_parent(std::uint64_t item_rid, std::uint64_t parent_rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  static const char kOp[] = "canvas_item_set_parent";
+  if (dropped(kOp, frame)) {
     return;
   }
-  static const char kOp[] = "canvas_item_set_parent";
   Item *item = item_for(item_rid, kOp, frame);
   if (item == nullptr) {
     return;
@@ -353,7 +413,7 @@ void Mirror::set_parent(std::uint64_t item_rid, std::uint64_t parent_rid, std::u
 
 void Mirror::set_transform(std::uint64_t rid, const Xform &xform, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_transform", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_transform", frame)) {
@@ -363,7 +423,7 @@ void Mirror::set_transform(std::uint64_t rid, const Xform &xform, std::uint64_t 
 
 void Mirror::set_modulate(std::uint64_t rid, const Color4 &color, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_modulate", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_modulate", frame)) {
@@ -373,7 +433,7 @@ void Mirror::set_modulate(std::uint64_t rid, const Color4 &color, std::uint64_t 
 
 void Mirror::set_self_modulate(std::uint64_t rid, const Color4 &color, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_self_modulate", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_self_modulate", frame)) {
@@ -383,7 +443,7 @@ void Mirror::set_self_modulate(std::uint64_t rid, const Color4 &color, std::uint
 
 void Mirror::set_visible(std::uint64_t rid, bool visible, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_visible", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_visible", frame)) {
@@ -393,7 +453,7 @@ void Mirror::set_visible(std::uint64_t rid, bool visible, std::uint64_t frame) {
 
 void Mirror::set_clip(std::uint64_t rid, bool clip, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_clip", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_clip", frame)) {
@@ -404,7 +464,7 @@ void Mirror::set_clip(std::uint64_t rid, bool clip, std::uint64_t frame) {
 void Mirror::set_custom_rect(std::uint64_t rid, bool enabled, const Rect4 &rect,
                              std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_custom_rect", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_custom_rect", frame)) {
@@ -415,7 +475,7 @@ void Mirror::set_custom_rect(std::uint64_t rid, bool enabled, const Rect4 &rect,
 
 void Mirror::set_visibility_layer(std::uint64_t rid, std::uint32_t layer, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_visibility_layer", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_visibility_layer", frame)) {
@@ -425,7 +485,7 @@ void Mirror::set_visibility_layer(std::uint64_t rid, std::uint32_t layer, std::u
 
 void Mirror::set_z_index(std::uint64_t rid, std::int32_t z, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_z_index", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_z_index", frame)) {
@@ -435,7 +495,7 @@ void Mirror::set_z_index(std::uint64_t rid, std::int32_t z, std::uint64_t frame)
 
 void Mirror::set_draw_index(std::uint64_t rid, std::int32_t index, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_draw_index", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_draw_index", frame)) {
@@ -445,17 +505,17 @@ void Mirror::set_draw_index(std::uint64_t rid, std::int32_t index, std::uint64_t
 
 void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_set_material", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_set_material", frame)) {
-    item->state.unsupported_state = material != 0;
+    item->unsupported_state = material != 0;
   }
 }
 
 void Mirror::clear(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_clear", frame)) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_clear", frame)) {
@@ -467,7 +527,7 @@ void Mirror::clear(std::uint64_t rid, std::uint64_t frame) {
 void Mirror::add_rect(std::uint64_t rid, const Rect4 &rect, const Color4 &color, bool antialiased,
                       std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped("canvas_item_add_rect", frame)) {
     return;
   }
   Item *item = item_for(rid, "canvas_item_add_rect", frame);
@@ -491,7 +551,7 @@ void Mirror::add_rect(std::uint64_t rid, const Rect4 &rect, const Color4 &color,
 
 void Mirror::add_unsupported(std::uint64_t rid, const char *op, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped(frame)) {
+  if (dropped(op, frame)) {
     return;
   }
   Item *item = item_for(rid, op, frame);
@@ -513,6 +573,44 @@ void Mirror::add_unsupported(std::uint64_t rid, const char *op, std::uint64_t fr
 
 // --- publication ----------------------------------------------------------------
 
+void Mirror::find_ties(const std::vector<std::uint32_t> &children,
+                       std::vector<UnsupportedRef> *out) const {
+  // render-stream-1.md "Invariant 9": group the container's children by
+  // draw_index; a group with at least two *drawing* members (non-empty
+  // commands or non-empty children) gets exactly one entry, at the smallest
+  // drawing id. The engine's order among equal indices depends on its sort
+  // history (gate1-design.md Q2c, D7), which a receiver cannot reproduce.
+  std::map<std::int32_t, std::pair<std::uint32_t, std::uint32_t>> groups;  // index -> (count, min id)
+  for (std::uint32_t child : children) {
+    const auto it = items_.find(child);
+    if (it == items_.end()) {
+      continue;
+    }
+    const ItemState &state = it->second.state;
+    if (state.commands.empty() && state.children.empty()) {
+      continue;  // not drawing
+    }
+    auto group = groups.find(state.draw_index);
+    if (group == groups.end()) {
+      groups.emplace(state.draw_index, std::make_pair(1u, state.id));
+    } else {
+      ++group->second.first;
+      group->second.second = std::min(group->second.second, state.id);
+    }
+  }
+  for (const auto &group : groups) {
+    if (group.second.first < 2) {
+      continue;
+    }
+    UnsupportedRef ref;
+    ref.op = "canvas_item_set_draw_index";
+    ref.has_item = true;
+    ref.item = group.second.second;
+    ref.reason = UnsupportedReason::DrawIndexTie;
+    out->push_back(std::move(ref));
+  }
+}
+
 Snapshot Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) const {
   std::lock_guard<std::mutex> lock(mutex_);
   Snapshot out;
@@ -520,36 +618,60 @@ Snapshot Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) const {
   out.frame = frame;
   out.failures = failures_;
 
-  // render-stream-0.md "Transaction": session-level entries in first-observed
-  // order, then item-level entries by item id, then op (byte order).
-  out.unsupported = session_unsupported_;
+  // Session-level entries first: degenerate-host-size (observed at session
+  // start, so always the first one -- render-stream-1.md "Unsupported
+  // reasons"), then the others in first-observed order (render-stream-0.md
+  // "Transaction").
+  if (degenerate_host_size_) {
+    UnsupportedRef ref;
+    ref.op = "root_viewport_size";
+    ref.has_item = false;
+    ref.reason = UnsupportedReason::DegenerateHostSize;
+    out.unsupported.push_back(std::move(ref));
+  }
+  out.unsupported.insert(out.unsupported.end(), session_unsupported_.begin(),
+                         session_unsupported_.end());
+
+  // Item-level entries: unsupported-op once per distinct command name,
+  // unsupported-state for a material, draw-index-tie per container; then
+  // ordered by item id, then op (byte order).
+  std::vector<UnsupportedRef> item_level;
   for (const auto &entry : items_) {
-    const ItemState &state = entry.second.state;
-    std::vector<std::pair<std::string, UnsupportedReason>> own;
+    const Item &item = entry.second;
+    const ItemState &state = item.state;
+    std::vector<std::string> seen;
     for (const Command &command : state.commands) {
-      if (command.kind != CommandKind::Unsupported) {
+      if (command.kind != CommandKind::Unsupported ||
+          std::find(seen.begin(), seen.end(), command.name) != seen.end()) {
         continue;
       }
-      const bool seen = std::any_of(own.begin(), own.end(),
-                                    [&](const auto &pair) { return pair.first == command.name; });
-      if (!seen) {
-        own.emplace_back(command.name, UnsupportedReason::UnsupportedOp);
-      }
-    }
-    if (state.unsupported_state) {
-      own.emplace_back("canvas_item_set_material", UnsupportedReason::UnsupportedState);
-    }
-    std::sort(own.begin(), own.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
-    for (auto &pair : own) {
+      seen.push_back(command.name);
       UnsupportedRef ref;
-      ref.op = std::move(pair.first);
+      ref.op = command.name;
       ref.has_item = true;
       ref.item = state.id;
-      ref.reason = pair.second;
-      out.unsupported.push_back(std::move(ref));
+      ref.reason = UnsupportedReason::UnsupportedOp;
+      item_level.push_back(std::move(ref));
     }
+    if (item.unsupported_state) {
+      UnsupportedRef ref;
+      ref.op = "canvas_item_set_material";
+      ref.has_item = true;
+      ref.item = state.id;
+      ref.reason = UnsupportedReason::UnsupportedState;
+      item_level.push_back(std::move(ref));
+    }
+    find_ties(state.children, &item_level);
   }
+  for (const auto &entry : canvases_) {
+    find_ties(entry.second.state.items, &item_level);
+  }
+  std::sort(item_level.begin(), item_level.end(),
+            [](const UnsupportedRef &a, const UnsupportedRef &b) {
+              return a.item != b.item ? a.item < b.item : a.op < b.op;
+            });
+  out.unsupported.insert(out.unsupported.end(), std::make_move_iterator(item_level.begin()),
+                         std::make_move_iterator(item_level.end()));
 
   out.canvases.reserve(canvases_.size());
   for (const auto &entry : canvases_) {
@@ -600,7 +722,19 @@ void mirror_fail_root_query(const std::string &detail) {
   mirror_instance().fail_root_query(detail);
 }
 
+void mirror_fail_root_size_enforce(const std::string &detail) {
+  mirror_instance().fail_root_size_enforce(detail);
+}
+
+void mirror_set_degenerate_host_size(bool on) { mirror_instance().set_degenerate_host_size(on); }
+
 void mirror_set_drop_frame(std::uint64_t frame) { mirror_instance().set_drop_frame(frame); }
+
+void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame) {
+  mirror_instance().set_omit_op(op, from_frame);
+}
+
+std::uint64_t mirror_epoch() { return mirror_instance().epoch(); }
 
 Snapshot mirror_snapshot(std::uint64_t seq, std::uint64_t frame) {
   return mirror_instance().snapshot(seq, frame);
@@ -608,5 +742,5 @@ Snapshot mirror_snapshot(std::uint64_t seq, std::uint64_t frame) {
 
 MirrorStats mirror_stats() { return mirror_instance().stats(); }
 
-}  // namespace rs0
+}  // namespace rs
 }  // namespace grc

@@ -101,7 +101,9 @@ failure mode, and asserts each check's verdict: 30 scenarios, 73 assertions.
 
 Drives `../fixtures/gate0/` (capture host and rendered reference) and `../receiver/` through every
 leg of [`../protocol/gate0-design.md`](../protocol/gate0-design.md) "Q6", then checks the gate.
-Run it from the repo root:
+Since G1b2 it runs on render-stream/1 (`recording.rs1`, full encoding), and every capture leg sets
+`GRC_ROOT_SIZE=enforce-min-size`: without it the 64×64 headless host would declare
+`degenerate-host-size` and every leg would classify `unsupported`. Run it from the repo root:
 
 ```bash
 mise exec -- pnpm render-stream:gate0 -- \
@@ -126,12 +128,15 @@ and tears down the compositor.
 ## Gate 0 files
 
 - `run-gate0.sh`: the orchestrator.
-- `gate0-tool.ts`: two helpers the runner calls between legs, on the checker's own decoder.
+- `gate0-tool.ts`: helpers the runners call between legs, on the checker's own decoder.
   `settle-seqs` is the step join that becomes `RS_RECEIVER_SHOT_SEQS`. `corrupt` writes the
   `corrupt` leg's copy, with the first meta byte of transaction seq 3 set to `0x00`.
-- `lib/gate0-checks.ts`: `classifyLeg` (pure), every check, and `runGate0`, which builds the
-  report. It reuses gate −1's `checkHeadlessNoGpu(outDir, "capture")`, `successfulOpenats` and PNG
-  decoding.
+  `seq-at-frame` names the transaction published at a frame (gate 1's tie-frame shots).
+- `lib/gate0-checks.ts`: `summarizeRecording` (validates and resolves a /1 recording, patches
+  included, to full per-transaction states), `drawIndexTies` / `harmlessTieKeys` (invariant 9
+  groups and their paint footprints), `classifyLeg` (pure), every check, and `runGate0`, which
+  builds the report. It reuses gate −1's `checkHeadlessNoGpu(outDir, "capture")`,
+  `successfulOpenats` and PNG decoding.
 - `check-gate0.ts`: writes `<out>/result.json` (`render-stream-gate0-report/1`) and exits non-zero
   unless `gate_passed`.
 - `test/self-test-gate0.ts`: see "Gate 0 self-test" below.
@@ -142,22 +147,22 @@ Every process directory holds `argv.txt` (one argument per line), `env.txt`, `st
 and stderr together) and `exit-code.txt`. `binary.json` at the top holds the template path and
 sha256, and `gamescope/` holds the compositor's log and identity.
 
-| Leg                       | Directory                                | Runs                                                                                                                                                            | Expected class                           |
-| ------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| `import`                  | `import/{fixture,receiver}/`             | `mise exec -- godot --headless --path <project> --import`. The runner stops if either fails                                                                     | — (exit 0)                               |
-| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR`, then a headless replay of `golden/minimal.bin`                             | —                                        |
-| `capture`                 | `capture/`                               | template `--headless`, `GRC_MODE=arm`, `GRC_STREAM_OUT`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_QUIT_FRAME=400`, under strace; maps/fd sampled at `armed.marker`    | `success`                                |
-| `preexisting`             | `preexisting/`                           | the capture host on `res://preexisting.tscn`, quit 52                                                                                                           | `capture-failure`                        |
-| `unsupported`             | `unsupported/{capture,receiver}/`        | capture with `RS_FIXTURE_VARIANT=unsupported`, quit 52, then a headless receiver                                                                                | `unsupported`                            |
-| `sabotage-<kind>`         | `sabotage-<kind>/{capture,receiver}/`    | capture, quit 52, `GRC_SABOTAGE` `freeze-frame` / `omit-update` / `perturb-transform`, `GRC_SABOTAGE_FRAME=21`, then a gamescope receiver with the settle shots | `pixel-mismatch` {2,3,4} / {2} / {2,3,4} |
-| `corrupt`                 | `corrupt/`                               | headless receiver on a copy of `capture/recording.rs0` whose seq 3 has its first meta byte set to `0x00`                                                        | `replay-failure` (seq 3, `meta-json`)    |
-| `receiver-headless-trace` | `receiver-headless-trace/`               | headless receiver on a copy of the capture recording, under `strace -f -e trace=openat`                                                                         | — (applied ok)                           |
-| `reference`               | `reference/`                             | template in gamescope, extension absent, `RS_FIXTURE_SHOT_DIR` → `shots/step-<k>.png`, `RS_FIXTURE_STEP_LOG`                                                    | — (5 shots)                              |
-| `receiver`                | `receiver/`                              | template in gamescope on a copy of the capture recording, `RS_RECEIVER_SHOT_SEQS` set to the settle seqs (`shot-seqs.txt`)                                      | `success`                                |
+| Leg                       | Directory                                | Runs                                                                                                                                                                                           | Expected class                           |
+| ------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `import`                  | `import/{fixture,receiver}/`             | `mise exec -- godot --headless --path <project> --import`. The runner stops if either fails                                                                                                    | — (exit 0)                               |
+| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec1_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR`, then a headless replay of `golden-1/full.rs1`                                                            | —                                        |
+| `capture`                 | `capture/`                               | template `--headless`, `GRC_MODE=arm`, `GRC_STREAM_OUT`, `GRC_ROOT_SIZE=enforce-min-size`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_QUIT_FRAME=400`, under strace; maps/fd sampled at `armed.marker` | `success`                                |
+| `preexisting`             | `preexisting/`                           | the capture host on `res://preexisting.tscn`, quit 52                                                                                                                                          | `capture-failure`                        |
+| `unsupported`             | `unsupported/{capture,receiver}/`        | capture with `RS_FIXTURE_VARIANT=unsupported`, quit 52, then a headless receiver                                                                                                               | `unsupported`                            |
+| `sabotage-<kind>`         | `sabotage-<kind>/{capture,receiver}/`    | capture, quit 52, `GRC_SABOTAGE` `freeze-frame` / `omit-update` / `perturb-transform`, `GRC_SABOTAGE_FRAME=21`, then a gamescope receiver with the settle shots                                | `pixel-mismatch` {2,3,4} / {2} / {2,3,4} |
+| `corrupt`                 | `corrupt/`                               | headless receiver on a copy of `capture/recording.rs1` whose seq 3 has its first meta byte set to `0x00`                                                                                       | `replay-failure` (seq 3, `meta-json`)    |
+| `receiver-headless-trace` | `receiver-headless-trace/`               | headless receiver on a copy of the capture recording, under `strace -f -e trace=openat`                                                                                                        | — (applied ok)                           |
+| `reference`               | `reference/`                             | template in gamescope, extension absent, `RS_FIXTURE_SHOT_DIR` → `shots/step-<k>.png`, `RS_FIXTURE_STEP_LOG`                                                                                   | — (5 shots)                              |
+| `receiver`                | `receiver/`                              | template in gamescope on a copy of the capture recording, `RS_RECEIVER_SHOT_SEQS` set to the settle seqs (`shot-seqs.txt`)                                                                     | `success`                                |
 
-Capture directories add `evidence/` (`GRC_EVIDENCE_DIR`), `recording.rs0` and `steps.jsonl`, and
+Capture directories add `evidence/` (`GRC_EVIDENCE_DIR`), `recording.rs1` and `steps.jsonl`, and
 the `capture` leg adds `strace.txt`, `maps.txt` and `fd.txt`. Receiver directories add their own
-`recording.rs0` copy and `applied.json`. Rendered ones also add `shots/seq-<n>.png`,
+`recording.rs1` copy and `applied.json` (`render-stream-receiver-applied/2`). Rendered ones also add `shots/seq-<n>.png`,
 `display-ownership.json` and the checker's `diff/step-<k>.png`. A rendered receiver whose step join
 fails is not launched: `step-join.log` says why, and the leg classifies as `capture-failure`.
 
@@ -171,7 +176,11 @@ first class that fires wins, and `reasons` lists every rule that fired:
 1. `capture-failure`: status not `armed`; `stream.status` not `closed`; recording missing; any
    `validateRecording` error; any `capture-failure` transaction; `step-join-failed`.
 2. `unsupported`: any transaction `unsupported` entry or `unsupported` command, or a non-empty
-   `applied.json` `unsupported`.
+   `applied.json` `unsupported`, except a `draw-index-tie` entry whose tie is harmless: its
+   drawing members' paint footprints (every visible `add_rect` of the subtree, mapped through the
+   transforms, grown by 1 px; unbounded with an unsupported command) are pairwise disjoint, so no
+   order of the group changes a pixel (gate1-design.md D7 as amended by G1b2). The leg lists
+   those in `harmless_ties`.
 3. `replay-failure`: `applied.json` missing or unparseable, status not `ok`, `end_seen` false,
    applied seqs not exactly 1..N with the host's `record_sha256`s, or a requested shot missing.
 4. `pixel-mismatch`: any checkpoint (full frame, subject or marker region) with mismatched pixels
@@ -182,20 +191,20 @@ Legs without a receiver (`capture`, `preexisting`) stop after rule 2.
 
 ## Gate 0 criteria
 
-| Check                           | Passes when                                                                                                                                                                                                                               |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `capture-armed`                 | `capture` `result.json` is `armed` with `stream.status` `closed`; `counters.json` and session `hooks_omitted` are empty; `hooks_planned` is exactly the 42 calibrator-3 hooks                                                             |
-| `headless-no-gpu`               | gate −1's check over `capture/`: display server `headless`, and no GPU device or library in the successful `openat`s, `maps.txt` or `fd.txt`                                                                                              |
-| `recording-decodes`             | `validateRecording` is `[]`, the first transaction has frame 1, and there are 400 transactions                                                                                                                                            |
-| `manifest-present`              | session `protocol`, the exact gate-0 `features`, `engine.display_server` `headless`, `viewport.root_canvas` 1 and `sabotage` null                                                                                                         |
-| `step-alignment`                | `capture` and `reference` `steps.jsonl` equal `expected.json`'s frames, and each step's marker colour (as float32) first appears at its applied frame                                                                                     |
-| `expected-image-reference`      | every `reference/shots/step-<k>.png` equals `synthesizeExpected(k)` exactly                                                                                                                                                               |
-| `expected-image-receiver`       | every receiver settle shot equals `synthesizeExpected(k)` exactly                                                                                                                                                                         |
-| `receiver-vs-reference`         | receiver vs reference at every step, full frame and both regions: 0 mismatched pixels and max channel delta 0 (`compareRgbaBuffers` with exact budgets)                                                                                   |
-| `receiver-consumed-stream`      | `receiver` `applied.json` seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, and `recording.sha256` equal to the capture file's                                                                    |
-| `receiver-never-loaded-fixture` | the traced receiver opens its recording and nothing under `fixtures/`; no file in `receiver/` (outside `.godot/`) is byte-identical to one in `fixtures/gate0/`; no receiver log has a `[fixture]` line; argv has `--path <abs receiver>` |
-| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs0-selftest] ok` and exited 0; the minimal replay is ok with exactly 1 unsupported                           |
-| `leg-class-<leg>`               | each classified leg has its expected class; sabotage legs mismatch at exactly the expected steps with steps 0–1 matching; `preexisting` names `pre-existing-object`; `corrupt` fails at `{seq:3, reason:"meta-json"}`                     |
+| Check                           | Passes when                                                                                                                                                                                                                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capture-armed`                 | `capture` `result.json` is `armed` with `stream.status` `closed`; `counters.json` and session `hooks_omitted` are empty; `hooks_planned` is exactly the 42 calibrator-3 hooks                                                                                                    |
+| `headless-no-gpu`               | gate −1's check over `capture/`: display server `headless`, and no GPU device or library in the successful `openat`s, `maps.txt` or `fd.txt`                                                                                                                                     |
+| `recording-decodes`             | `validateRecording` is `[]`, the first transaction has frame 1, and there are 400 transactions                                                                                                                                                                                   |
+| `manifest-present`              | session `protocol` `render-stream/1`, a full file stream, the exact /1 `features`, `engine.display_server` `headless`, `viewport.root_canvas` 1, `root_size_policy` `enforce-min-size` with `host_size_status` `match` and 640×360 logical and window sizes, and `sabotage` null |
+| `step-alignment`                | `capture` and `reference` `steps.jsonl` equal `expected.json`'s frames, and each step's marker colour (as float32) first appears at its applied frame                                                                                                                            |
+| `expected-image-reference`      | every `reference/shots/step-<k>.png` equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                      |
+| `expected-image-receiver`       | every receiver settle shot equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                                |
+| `receiver-vs-reference`         | receiver vs reference at every step, full frame and both regions: 0 mismatched pixels and max channel delta 0 (`compareRgbaBuffers` with exact budgets)                                                                                                                          |
+| `receiver-consumed-stream`      | `receiver` `applied.json` seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, and `recording.sha256` equal to the capture file's                                                                                                           |
+| `receiver-never-loaded-fixture` | the traced receiver opens its recording and nothing under `fixtures/`; no file in `receiver/` (outside `.godot/`) is byte-identical to one in `fixtures/gate0/`; no receiver log has a `[fixture]` line; argv has `--path <abs receiver>`                                        |
+| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs1-selftest] ok` and exited 0; the `golden-1/full.rs1` replay is ok and reports exactly the golden's unsupported entries, each at its first seq     |
+| `leg-class-<leg>`               | each classified leg has its expected class; sabotage legs mismatch at exactly the expected steps with steps 0–1 matching; `preexisting` names `pre-existing-object`; `corrupt` fails at `{seq:3, reason:"meta-json"}`                                                            |
 
 `gate_passed` is true only when every check passed.
 
@@ -211,97 +220,124 @@ It runs `classifyLeg` over:
 - every pair of classes, checking precedence and that both reasons are listed;
 - each sub-rule;
 - a leg without a receiver;
-- a session whose `sabotage` is set, or whose getter throws.
+- a session whose `sabotage` is set, or whose getter throws;
+- draw-index ties: disjoint (harmless, `success`) against overlapping (`unsupported`), hidden or
+  culled members, an unbounded footprint, adjacent rects, a child's rect through its parent.
 
 It then builds a passing evidence tree for the whole layout, with recordings encoded in
-render-stream/0 bytes and PNGs synthesized from the timeline, plus one perturbation per failure
-mode. It runs the real `runGate0` on each: 37 scenarios, 178 assertions. It also checks that
-`corruptTransactionMeta(minimal.bin, 2)` reproduces `golden/corrupt-meta.bin` byte for byte.
+render-stream/1 by `test/rs1-test-encoder.ts` and PNGs synthesized from the timeline, plus one
+perturbation per failure mode. It runs the real `runGate0` on each: 37 scenarios, 190 assertions.
+It also checks that `corruptTransactionMeta(golden-1/patch.rs1, 3)` reproduces
+`golden-1/corrupt-meta.rs1` byte for byte.
 
 # Gate 1
 
 Drives `../fixtures/gate1/` and `../receiver/` through the leg groups of
-[`../protocol/gate1-design.md`](../protocol/gate1-design.md) "Q7", then checks them. Only group
-`g1a` (increment G1a: retained-state fixture, root geometry) has landed. It still runs on
-render-stream/0. Run it from the repo root:
+[`../protocol/gate1-design.md`](../protocol/gate1-design.md) "Q7", then checks them. Groups `g1a`
+(increment G1a: retained-state fixture, root geometry) and `g1b` (G1b2: render-stream/1, the patch
+sink and its equivalence with the full sink, the omit-op and patch-drop sabotages, the one-frame
+draw-index tie) have landed. Run it from the repo root:
 
 ```bash
 mise exec -- pnpm render-stream:gate1 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g1a]
+  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g1a,g1b]
 ```
 
 The arguments and the refusals are gate 0's. `--out` defaults to
 `artifacts/render-stream/gate1/<UTC>/`. `--legs` takes a comma-separated list of groups and
-defaults to every landed group. Asking for a group that has not landed (`g1b`, `g1c`, `g1d`)
-refuses with exit 2. `legs.json` records the groups that ran. The checker evaluates only the checks
-of groups that ran. A landed group that did not run is reported as `not-run` and fails the gate.
-The runner takes about 2 minutes 10 seconds.
+defaults to every landed group. Asking for a group that has not landed (`g1c`, `g1d`) refuses with
+exit 2, and so does `g1b` without `g1a`: g1b compares against g1a's capture, reference and
+receiver. `legs.json` records the groups that ran. The checker evaluates only the checks of groups
+that ran. A landed group that did not run is reported as `not-run` and fails the gate. The runner
+takes about 4 minutes.
 
 The process plumbing is shared with `run-gate0.sh` through `lib/legs.sh`: `write_invocation`,
 `wait_owned`, `run_headless`, `run_capture`, `prepare_recording`, `run_receiver_headless`,
-`settle_seqs`, `run_rendered` and `run_rendered_receiver`. They were moved out of `run-gate0.sh`
-without changing its behaviour. `run_capture` takes an empty quit frame to mean the fixture's own
-default. Every launch strips `GS_STRIP_VARS`, which now lists every variable gate1-design.md
-introduces, plus every other inherited `GRC_*` and `RS_*`. Rendered legs share one private
-gamescope, as at gate 0.
+`settle_seqs`, `seq_at_frame`, `run_rendered` and `run_rendered_receiver`. `run_capture` takes an
+empty quit frame to mean the fixture's own default, and with `CAPTURE_WITH_PATCH=1` (every gate 1
+capture) also sets `GRC_STREAM_PATCH_OUT`, so each capture writes `recording.rs1` (full) and
+`recording-patch.rs1` (patch). `run_rendered_receiver` takes `RECEIVER_SOURCE` (replay the patch
+recording), `RECEIVER_EXTRA_SHOTS` (the tie seq) and `RECEIVER_STATE=1` (`RS_RECEIVER_STATE_SEQS`
+at the settle seqs). Every launch strips `GS_STRIP_VARS`, which lists every variable
+gate1-design.md introduces plus `RS_FIXTURE_SHOT_FRAMES` and `RS_FIXTURE_TIE`, and every other
+inherited `GRC_*` and `RS_*`. Each group's rendered legs share one private gamescope.
 
 ## Gate 1 files
 
-- `run-gate1.sh`: the orchestrator (`--legs` groups; `run_g1a`).
+- `run-gate1.sh`: the orchestrator (`--legs` groups; `run_g1a`, `run_g1b`).
 - `lib/legs.sh`: the shared leg plumbing (above).
-- `lib/gate1-expected.ts`: the `render-stream-gate1-expected/1` types, `stepFrames`, and
-  `synthesizeGate1(expected, step)` (clear colour, then every draw in paint order, clipped).
-- `lib/gate1-checks.ts`: `decodeStates` (the full per-transaction state that `summarizeRecording`
-  drops), `mapNames`, `evaluateInvariants`, `findDrawIndexTies`, `classifyGate1`, every check and
-  `runGate1`. It reuses gate 0's `classifyLeg`, the capture, manifest, consumption, fixture-access
-  and typed-receiver checks, and the step join.
+- `lib/gate1-expected.ts`: the `render-stream-gate1-expected/1` types (with `draw_index_ties`),
+  `stepFrames`, and `synthesizeGate1(expected, step)` (clear colour, then every draw in paint
+  order, clipped).
+- `lib/gate1-checks.ts`: `statesOf` (resolved per-transaction states from gate 0's
+  `summarizeRecording`), `mapNames`, `evaluateInvariants`, `patchDivergence`, `classifyGate1`,
+  `recordingTies`, every check and `runGate1`. It reuses gate 0's `classifyLeg`, the capture,
+  manifest, consumption, fixture-access and typed-receiver checks, the step join and the tie
+  analysis.
 - `check-gate1.ts`: writes `<out>/result.json` (`render-stream-gate1-report/1`) and exits
   non-zero unless `gate_passed`.
-- `test/self-test-gate1.ts`: see "Gate 1 self-test" below.
+- `test/self-test-gate1.ts` and `test/rs1-test-encoder.ts`: see "Gate 1 self-test" below.
 
-## Gate 1 legs (group `g1a`) and evidence under `--out`
+## Gate 1 legs and evidence under `--out`
 
-Process directories are laid out as at gate 0. Capture directories also hold `evidence/root.json`
-(`render-stream-root-geometry/1`). The `capture` and `root-size-observe` captures and the
-`reference` also hold `root.jsonl` (`RS_FIXTURE_ROOT_LOG`).
+Process directories are laid out as at gate 0. Capture directories hold both recordings and
+`evidence/root.json` (`render-stream-root-geometry/1`, quoted in the report; the root geometry the
+checks use is the /1 session's). The `capture` and `root-size-observe` captures and the
+`reference` also hold `root.jsonl` (`RS_FIXTURE_ROOT_LOG`). The tie frame is `S + N` (11).
 
-| Leg                       | Directory                                  | Runs                                                                                                                                 | Expected class                                                                                         |
-| ------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `import`                  | `import/{fixture,receiver}/`               | mise editor `--import` of `fixtures/gate1` and `receiver`                                                                            | — (exit 0)                                                                                             |
-| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/`   | as gate 0, for `receiver-typed-clean`                                                                                                | —                                                                                                      |
-| `capture`                 | `capture/`                                 | template `--headless`, `GRC_MODE=arm`, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, root log, under strace; maps/fd at `armed.marker` | `success`                                                                                              |
-| `sabotage-omit-<name>`    | `sabotage-omit-<name>/{capture,receiver}/` | capture (enforce, default quit 112) with `GRC_SABOTAGE=omit-update` at step k's frame `1+10k`, then a rendered receiver              | `pixel-mismatch`: modulate (k=1) {1..10}, transform (2) {2..10}, order (3) {3}, visibility (7) {7..10} |
-| `root-size-observe`       | `root-size-observe/{capture,receiver}/`    | capture with `GRC_ROOT_SIZE` unset (root log), then a rendered receiver                                                              | `unsupported` (`degenerate-host-size`), mismatching only in `corner` and `corner-degenerate`           |
-| `receiver-headless-trace` | `receiver-headless-trace/`                 | headless receiver on the capture recording under `strace -e openat`                                                                  | — (applied ok)                                                                                         |
-| `reference`               | `reference/`                               | template in gamescope, extension absent, shots `step-0..10`, step log, root log                                                      | — (11 shots)                                                                                           |
-| `receiver`                | `receiver/`                                | template in gamescope on the capture recording, shots at the 11 settle seqs                                                          | `success`                                                                                              |
+| Group | Leg                       | Directory                                   | Runs                                                                                                                                             | Expected class                                                                                         |
+| ----- | ------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| g1a   | `import`                  | `import/{fixture,receiver}/`                | mise editor `--import` of `fixtures/gate1` and `receiver`                                                                                        | — (exit 0)                                                                                             |
+| g1a   | `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/`    | as gate 0, for `receiver-typed-clean`                                                                                                            | —                                                                                                      |
+| g1a   | `capture`                 | `capture/`                                  | template `--headless`, `GRC_MODE=arm`, `GRC_ROOT_SIZE=enforce-min-size`, both sinks, quit 400, root log, under strace; maps/fd at `armed.marker` | `success` (its one tie, at frame 11, is harmless)                                                      |
+| g1a   | `sabotage-omit-<name>`    | `sabotage-omit-<name>/{capture,receiver}/`  | capture (enforce, default quit 112) with `GRC_SABOTAGE=omit-update` at step k's frame `1+10k`, then a rendered receiver                          | `pixel-mismatch`: modulate (k=1) {1..10}, transform (2) {2..10}, order (3) {3}, visibility (7) {7..10} |
+| g1a   | `root-size-observe`       | `root-size-observe/{capture,receiver}/`     | capture with `GRC_ROOT_SIZE` unset (root log), then a rendered receiver                                                                          | `unsupported` (`degenerate-host-size`), mismatching only in `corner` and `corner-degenerate`           |
+| g1a   | `receiver-headless-trace` | `receiver-headless-trace/`                  | headless receiver on the capture recording under `strace -e openat`                                                                              | — (applied ok)                                                                                         |
+| g1a   | `reference`               | `reference/`                                | template in gamescope, extension absent, shots `step-0..10` and `frame-11` (`RS_FIXTURE_SHOT_FRAMES`), step log, root log                        | — (12 shots)                                                                                           |
+| g1a   | `receiver`                | `receiver/`                                 | template in gamescope on `capture/recording.rs1`, shots at the 11 settle seqs and the tie seq, state dumps at the settle seqs                    | `success`                                                                                              |
+| g1b   | `receiver-patch`          | `receiver-patch/`                           | as `receiver`, on `capture/recording-patch.rs1`                                                                                                  | `success`                                                                                              |
+| g1b   | `sabotage-omit-free`      | `sabotage-omit-free/{capture,receiver}/`    | capture with `GRC_SABOTAGE=omit-op`, `GRC_SABOTAGE_OP=free` from step 8's frame (81), then a rendered receiver                                   | `pixel-mismatch` {8,9,10}                                                                              |
+| g1b   | `sabotage-omit-visible`   | `sabotage-omit-visible/{capture,receiver}/` | `omit-op` `canvas_item_set_visible` from step 6's frame (61)                                                                                     | `pixel-mismatch` {6}                                                                                   |
+| g1b   | `sabotage-patch-drop`     | `sabotage-patch-drop/{capture,receiver}/`   | capture with `GRC_SABOTAGE=patch-drop-item` at step 5's frame (51), then a rendered receiver on its patch recording                              | `capture-failure` (`patch-divergence`)                                                                 |
+| g1b   | `tie-overlap`             | `tie-overlap/{capture,reference,receiver}/` | capture with `RS_FIXTURE_TIE=overlap` (T over P), the variant's rendered reference with `frame-11`, a rendered receiver shooting the tie seq     | `unsupported` (`draw-index-tie`); the tie frame's pixels are measured, not gated                       |
 
 ## Gate 1 classification
 
-`classifyGate1` takes gate 0's `classifyLeg` result and the leg's capture `evidence/root.json`.
-It adds two rules. A missing `root.json`, or `enforce.called` without `enforce.ok`
-(`root-size-enforce-failed`), is `capture-failure`. A `host_size_status` other than `match` under
-`observe` is `unsupported` (`degenerate-host-size`). The precedence is gate1-design.md Q7's:
-`capture-failure`, `unsupported`, `replay-failure`, `delivery-violation` (G1c on; nothing fires
-it yet), `pixel-mismatch`, `success`. Checkpoints compare the full frame, all eight
-`expected.json` regions, and count the mismatching pixels outside every region.
+`classifyGate1` takes gate 0's `classifyLeg` result (draw-index ties included: a harmless tie is
+listed, not a reason), the leg's /1 session and the frame-by-frame comparison of its capture's two
+sinks. It adds three rules. A recording without a session is `capture-failure`. A patch sink that
+does not resolve, bit for bit, to the full sink's state at every frame is `capture-failure`
+(`patch-divergence`). A session `host_size_status` other than `match` is `unsupported`
+(`degenerate-host-size`); under `enforce-min-size` the recording also carries the
+`root-size-enforce-failed` failure, which gate 0's rules already make `capture-failure`. The
+precedence is gate1-design.md Q7's: `capture-failure`, `unsupported`, `replay-failure`,
+`delivery-violation` (G1c on; nothing fires it yet), `pixel-mismatch`, `success`. Checkpoints
+compare the full frame, all nine `expected.json` regions, and count the mismatching pixels outside
+every region; a checkpoint names its leg and stream (`full` or `patch`).
 
-## Gate 1 criteria (group `g1a`)
+## Gate 1 criteria
 
-| Check                                                                                                                           | Passes when                                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `expected-self-consistent`                                                                                                      | `expected.json` obeys its rules: 640×360, steps 0..10, every colour on the 51-step grid with alpha 255, every draw inside a region and none in `[0,0,72,72]`, one marker colour per step used by nothing else, known names, step 10 = step 9 shifted                                                                       |
-| `capture-armed`, `headless-no-gpu`, `recording-decodes`, `manifest-present`, `receiver-consumed-stream`, `receiver-typed-clean` | gate 0's checks, on the gate 1 layout (400 transactions, gate 0's feature arrays)                                                                                                                                                                                                                                          |
-| `step-alignment`                                                                                                                | capture and reference `steps.jsonl` list 0..10 at `S+N·k` (settle `+7`); each step's marker colour first appears at its applied frame                                                                                                                                                                                      |
-| `expected-image-reference`, `expected-image-receiver`                                                                           | every reference shot, and every receiver settle shot, equals `synthesizeGate1(k)` exactly                                                                                                                                                                                                                                  |
-| `receiver-vs-reference`                                                                                                         | 11 steps, full frame and every region, 0 mismatched pixels and max channel delta 0                                                                                                                                                                                                                                         |
-| `retained-invariants`                                                                                                           | every `expected.json` invariant holds on its step's settle transaction. Names map to wire ids in creation order, cross-checked against the step-0 rect colours                                                                                                                                                             |
-| `no-draw-index-ties`                                                                                                            | in no transaction of the capture recording does a container have two drawing children (a command anywhere in the subtree) with equal `draw_index`                                                                                                                                                                          |
-| `root-geometry`                                                                                                                 | gate1-design.md Q1 1–3: logical size = the reference's content scale size, visible size and window size; the enforced host is `match`, `0,0,640,360`, identity final transform, and its `root.jsonl` equals the reference's except `display_server`; canvas 1's transform at every settle equals the reference's (float32) |
-| `receiver-never-loaded-fixture`                                                                                                 | gate 0's check, against `fixtures/gate1/`, scanning every g1a receiver log                                                                                                                                                                                                                                                 |
-| `leg-class-<leg>`                                                                                                               | each classified leg has its expected class; sabotage legs mismatch at exactly their step sets; `root-size-observe` names `degenerate-host-size`, declares `degenerate-visible` with a 64×64 visible rect, and at every step mismatches in exactly `corner` and `corner-degenerate` and nowhere outside the regions         |
+| Check                                                                                                                           | Passes when                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `expected-self-consistent`                                                                                                      | `expected.json` obeys its rules: 640×360, steps 0..10, every colour on the 51-step grid with alpha 255, every draw inside a region and none in `[0,0,72,72]`, one marker colour per step used by nothing else, known names, step 10 = step 9 shifted                                                                                                                                          |
+| `capture-armed`, `headless-no-gpu`, `recording-decodes`, `manifest-present`, `receiver-consumed-stream`, `receiver-typed-clean` | gate 0's checks, on the gate 1 layout (400 transactions, the /1 feature arrays, an enforced `match` host)                                                                                                                                                                                                                                                                                     |
+| `step-alignment`                                                                                                                | capture and reference `steps.jsonl` list 0..10 at `S+N·k` (settle `+7`); each step's marker colour first appears at its applied frame                                                                                                                                                                                                                                                         |
+| `expected-image-reference`, `expected-image-receiver`                                                                           | every reference shot, and every receiver settle shot, equals `synthesizeGate1(k)` exactly                                                                                                                                                                                                                                                                                                     |
+| `receiver-vs-reference`                                                                                                         | 11 steps, full frame and every region, 0 mismatched pixels and max channel delta 0                                                                                                                                                                                                                                                                                                            |
+| `retained-invariants`                                                                                                           | every `expected.json` invariant holds on its step's settle transaction. Names map to wire ids in creation order, cross-checked against the step-0 rect colours                                                                                                                                                                                                                                |
+| `root-geometry`                                                                                                                 | gate1-design.md Q1 1–3 from the session: logical size = the reference's content scale size, visible size and window size; the enforced host declares `match`, `host_visible_rect` `0,0,640,360`, identity `host_final_xform` and a 640×360 window, and its `root.jsonl` equals the reference's except `display_server`; canvas 1's transform at every settle equals the reference's (float32) |
+| `receiver-never-loaded-fixture`                                                                                                 | gate 0's check, against `fixtures/gate1/`, scanning every g1a and g1b receiver log                                                                                                                                                                                                                                                                                                            |
+| `patch-resolves-to-full` (g1b)                                                                                                  | the capture's patch sink is valid and resolves to the full sink's state at every frame, floats bit for bit                                                                                                                                                                                                                                                                                    |
+| `patch-first-full` (g1b)                                                                                                        | patch sink: seq 1 full, every later seq a patch on `seq-1`; full sink all full; one `session_id`, two `stream_id`s; end stats agree                                                                                                                                                                                                                                                           |
+| `patch-transform-only` (g1b)                                                                                                    | at step 2's frame `P` and `C` carry `commands:null` (`G` unchanged, absent) and `cmd_f32` holds only `R1`'s and the `Marker`'s floats; at step 10's frame canvas 1 is present and every item entry but the `Marker`'s carries `commands:null`                                                                                                                                                 |
+| `patch-vs-full-pixels` (g1b)                                                                                                    | `receiver-patch`'s 11 settle shots equal `receiver`'s and the reference's exactly                                                                                                                                                                                                                                                                                                             |
+| `patch-vs-full-receiver-state` (g1b)                                                                                            | at every settle seq both receivers' state dumps equal each other and the full recording's resolved state, and both made the same RenderingServer calls at every seq                                                                                                                                                                                                                           |
+| `patch-bytes` (g1b)                                                                                                             | recorded, not gated: both sinks' end stats and per-transaction bytes                                                                                                                                                                                                                                                                                                                          |
+| `draw-index-ties` (g1b)                                                                                                         | the capture recording's invariant-9 ties are exactly `expected.json`'s `draw_index_ties` (frame 11, canvas 1, `{P, T}`, harmless), each declared on the wire                                                                                                                                                                                                                                  |
+| `tie-frame-pixels` (g1b)                                                                                                        | `reference/shots/frame-11.png` equals both receivers' shot of the frame-11 transaction exactly                                                                                                                                                                                                                                                                                                |
+| `leg-class-<leg>`                                                                                                               | each classified leg has its expected class; sabotage legs mismatch at exactly their step sets; `root-size-observe` names `degenerate-host-size`, declares `degenerate-visible` with a 64×64 `host_visible_rect`, and mismatches in exactly `corner` and `corner-degenerate`; `tie-overlap`'s only tie is the step-1 tie, not harmless                                                         |
 
 ## Gate 1 self-test
 
@@ -309,12 +345,14 @@ it yet), `pixel-mismatch`, `success`. Checkpoints compare the full frame, all ei
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate1.ts
 ```
 
-It first runs unit cases: `classifyGate1` (a missing `root.json` or a failed enforcement is
-`capture-failure`, a degenerate `observe` host is `unsupported`, and its precedence against gate
-0's classes) and `synthesizeGate1`, `mapNames`, `evaluateInvariants` and `findDrawIndexTies` on a
-model. It then builds a passing g1a evidence tree from a model of the fixture's retained state,
-encoded as render-stream/0, with PNGs synthesized from `expected.json`. Each check gets at least
-one failing perturbation, and the real `runGate1` runs on each tree: 28 scenarios, 110 assertions.
+It first runs unit cases: `classifyGate1` (no session or a divergent patch sink is
+`capture-failure`, a degenerate host is `unsupported`, and the precedence against gate 0's
+classes) and `synthesizeGate1`, `mapNames`, `evaluateInvariants` and `recordingTies` on a model of
+the fixture's retained state (T's one harmless tie; the overlapping variant; a step-3 tie under
+`Q`). It then builds a passing g1a+g1b evidence tree from that model, encoded in render-stream/1
+in both encodings by `test/rs1-test-encoder.ts`, with PNGs synthesized from `expected.json`.
+Each check gets at least one failing perturbation, and the real `runGate1` runs on each tree: 46
+scenarios, 225 assertions.
 
 # Gate 1, G1c1: `rs_ws` interop
 

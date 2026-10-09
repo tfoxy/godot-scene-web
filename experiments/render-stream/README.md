@@ -11,6 +11,11 @@ has eleven retained-state steps. The capture host gets the logical root size it 
 (`GRC_ROOT_SIZE=enforce-min-size`) and declares it. Its contract is the G1a section of
 [protocol/gate1-design.md](protocol/gate1-design.md).
 
+G1b2 followed (see "Gate 1b result" below): the capture, the receiver and both gate runners moved
+to [protocol/render-stream-1.md](protocol/render-stream-1.md), with a patch-encoded sink that
+resolves bit for bit to the full one, and the one-frame draw-index tie of a top-level item added
+at runtime is now provoked, declared and classified. render-stream/0 is superseded.
+
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
 
@@ -256,7 +261,7 @@ experiments/render-stream/scripts/test/self-test-checker.ts`.
 ### Run gate 0
 
 ```bash
-experiments/render-stream/scripts/build-capture.sh          # + rs0_mirror, rs0_codec ctests
+experiments/render-stream/scripts/build-capture.sh          # + rs_mirror, rs1_publish ctests
 mise exec -- pnpm render-stream:gate0 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json"
@@ -268,9 +273,12 @@ receiver's typed self-test, the headless capture hosts (the 400-frame capture, `
 `receiver-headless-trace`, `unsupported`), then the reference, the receiver and the three sabotage
 receivers in one private `gamescope --backend headless`, then the checker, which writes
 `artifacts/render-stream/gate0/<UTC timestamp>/result.json` and exits non-zero unless every check
-passed. Self-tests: `scripts/test/self-test-rs0.ts` (TS decoder against the golden vectors),
-`scripts/test/self-test-gate0.ts` (checker and classifier on synthetic evidence) and
-`python3 experiments/render-stream/protocol/golden/make_golden.py --check`.
+passed. Since G1b2 it runs on render-stream/1 with every capture under
+`GRC_ROOT_SIZE=enforce-min-size`. Self-tests: `scripts/test/self-test-rs1.ts` (TS decoder against
+the /1 golden vectors), `scripts/test/self-test-gate0.ts` (checker and classifier on synthetic
+evidence) and `python3 experiments/render-stream/protocol/golden-1/make_golden.py --check`; the
+frozen /0 history stays checked by `scripts/test/self-test-rs0.ts` and
+`protocol/golden/make_golden.py --check`.
 
 ### Run gate 1
 
@@ -279,14 +287,18 @@ experiments/render-stream/scripts/build-capture.sh
 mise exec -- pnpm render-stream:gate1 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g1a]
+  [--legs g1a,g1b]
 ```
 
-This takes about 130 seconds and runs the landed groups (only `g1a` so far). It imports
+This takes about four minutes and runs the landed groups, `g1a` and `g1b`. It imports
 `fixtures/gate1/` and `receiver/`, then runs the receiver's typed self-test and the headless
-captures: the 400-frame capture under `enforce-min-size`, the four `omit-update` sabotage
-captures and the `root-size-observe` capture. Next it runs the headless traced receiver. The
-reference and the six rendered receivers share one private gamescope. Last, the checker writes
+captures, each writing both sinks (`recording.rs1` full, `recording-patch.rs1` patch): the
+400-frame capture under `enforce-min-size`, the four `omit-update` sabotage captures and the
+`root-size-observe` capture. Next it runs the headless traced receiver. The reference and the six
+g1a rendered receivers share one private gamescope. Group g1b then captures the two `omit-op`
+sabotages, the `patch-drop-item` sabotage and the `RS_FIXTURE_TIE=overlap` variant, and runs the
+patch receiver, the sabotage receivers and the overlap variant's reference and receiver in a
+second private gamescope. Last, the checker writes
 `artifacts/render-stream/gate1/<UTC>/result.json` (`render-stream-gate1-report/1`). Legs and
 criteria: [scripts/README.md](scripts/README.md) "Gate 1". Self-test:
 `scripts/test/self-test-gate1.ts`.
@@ -295,16 +307,18 @@ criteria: [scripts/README.md](scripts/README.md) "Gate 1". Self-test:
 
 Environment, read once at SCENE initialisation:
 
-| Variable                  | Meaning                                                                                                                                                                                               |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GRC_CALIBRATION`         | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                     |
-| `GRC_MODE`                | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                        |
-| `GRC_EVIDENCE_DIR`        | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                     |
-| `GRC_DISARM_AFTER_FRAMES` | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                 |
-| `GRC_STREAM_OUT`          | gate 0: absolute `.rs0` recording path. When set and armed, enable the canvas mirror, run the root query and publish `render-stream/0`. Unset → hooks behave as at gate −1                            |
-| `GRC_SABOTAGE`            | gate 0 test sabotage: `freeze-frame`, `omit-update` or `perturb-transform`. Any other value refuses to publish (arming is unaffected)                                                                 |
-| `GRC_SABOTAGE_FRAME`      | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                               |
-| `GRC_ROOT_SIZE`           | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish |
+| Variable                  | Meaning                                                                                                                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GRC_CALIBRATION`         | absolute path to the record. Absent or unreadable → refuse `no-calibration`; present but malformed → refuse `invalid-calibration`                                                                                                                |
+| `GRC_MODE`                | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                   |
+| `GRC_EVIDENCE_DIR`        | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                |
+| `GRC_DISARM_AFTER_FRAMES` | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                            |
+| `GRC_STREAM_OUT`          | absolute `.rs1` path of the full-encoding sink (render-stream/1 since G1b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1      |
+| `GRC_STREAM_PATCH_OUT`    | G1b2: absolute `.rs1` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                               |
+| `GRC_SABOTAGE`            | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2). The live kinds (`drop-message`, `ignore-credit`, `stale-coalesce`) and any other value refuse to publish (arming is unaffected) |
+| `GRC_SABOTAGE_OP`         | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                        |
+| `GRC_SABOTAGE_FRAME`      | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                          |
+| `GRC_ROOT_SIZE`           | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                            |
 
 Arming happens at the earliest point where the `RenderingServer` singleton is
 available. With a runtime `load_extension` from an autoload that is SCENE
@@ -337,7 +351,8 @@ Evidence files, exactly as the runner expects:
 - `result.json` — `render-stream-capture-result/1`: `status`
   (`armed|validated|refused|error`), `reason`, `vptr_written`, `disarmed`,
   `display_server`, `rendering_driver`, `rendering_method`, and (gate 0, additive)
-  `stream`: `{path, status: off|open|closed|refused|open-failed, reason, transactions}`.
+  `stream`: `{path, patch_path, status: off|open|closed|refused|open-failed, reason,
+transactions}` (`patch_path` since G1b2).
   Written at decision time and rewritten at disarm and shutdown.
 - `fingerprint.json` — version string, sha256, build-id, pie, load bias, live
   vptr, singleton address, abstract address point, pure placeholder, pid, and the
@@ -850,6 +865,106 @@ timeline) logs step 1 at frame 360 and step 10 at frame 900.
   (G1b2 declares it on the wire).
 - The fixture is still axis-aligned opaque rects on integer pixels (the one rotation is exactly
   90°), with no textures or text.
+
+## Gate 1b result (2026-10-09)
+
+**Pass.** The run is `artifacts/render-stream/gate1/20261009T070813Z/` (ignored, not committed;
+produced in the G1b2 worktree). Its `result.json` has `gate_passed: true`, groups `g1a` and `g1b`
+run and none missing, and 34 of 34 checks pass
+([protocol/gate1-design.md](protocol/gate1-design.md) "G1b2"). Every leg classifies as expected.
+The capture library, the receiver and both runners now speak
+[render-stream/1](protocol/render-stream-1.md); render-stream/0's encoder, publisher and GDScript
+decoder are gone, and its goldens stay as checked history. Runs on the same build:
+
+- gate 0: `artifacts/render-stream/gate0/20261009T071223Z/` passes 19 of 19 on /1, every capture
+  under `GRC_ROOT_SIZE=enforce-min-size` (400 transactions, `bytes_total` 486 354,
+  `max_record_bytes` 3 402);
+- gate −1: `artifacts/render-stream/gate-minus1/20261009T071402Z/` still passes 28 of 28.
+
+**Full sink against patch sink.** Every gate 1 capture writes both from one mirror snapshot per
+frame. For the 400-frame `capture` leg (end records, rounded per frame):
+
+| Sink                          | `bytes_total` | `max_record_bytes` | median / max transaction | `encode_ns_total` | `diff_ns_total`  | `snapshot_ns_total` (shared) |
+| ----------------------------- | ------------- | ------------------ | ------------------------ | ----------------- | ---------------- | ---------------------------- |
+| full (`recording.rs1`)        | 2 728 254     | 8 078              | 6 532 / 8 078 B          | 8 255 748 (21 µs) | 0                | 3 304 783 (8.3 µs)           |
+| patch (`recording-patch.rs1`) | 171 195       | 7 623 (seq 1)      | 354 / 3 496 B            | 878 177 (2.2 µs)  | 1 999 967 (5 µs) | 3 304 783                    |
+
+The patch sink is 6.3 % of the full one. Its seq 1 is the one full transaction (7 623 bytes); the
+largest patch, 3 496 bytes, is a step that redraws several items. Resolved, the patch recording
+equals the full one at all 400 frames, floats bit for bit.
+
+| Leg                      | Group | Class (expected = measured)            | Measured                                                                                                                                                             |
+| ------------------------ | ----- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capture`                | g1a   | `success`                              | 400 transactions, 21 item ids (P=1 … X=19, T=20, L2=21); all 48 invariants hold; one declared tie, frame 11, harmless                                                |
+| `receiver`               | g1a   | `success`                              | shots at the 11 settle seqs equal the reference and `synthesizeGate1(k)`; state dumps at the settle seqs                                                             |
+| `sabotage-omit-*` (four) | g1a   | `pixel-mismatch`                       | step sets as at G1a: {1..10}, {2..10}, {3}, {7..10}                                                                                                                  |
+| `root-size-observe`      | g1a   | `unsupported` (`degenerate-host-size`) | now declared in the session (`degenerate-visible`, `host_visible_rect` 0,0,64,64) and in every transaction; mismatch only in `corner` and `corner-degenerate`        |
+| `receiver-patch`         | g1b   | `success`                              | on the patch recording: the same 11 shots as `receiver`, pixel for pixel; equal state dumps; identical RS calls at all 400 seqs (378 in all)                         |
+| `sabotage-omit-free`     | g1b   | `pixel-mismatch`, steps {8,9,10}       | 1 280 px in `lifetime`: the raw `Y` and its child `X` stay drawn; `L`, `M`, `M1` left the tree (`set_parent` to none) before their `free`, so they vanish either way |
+| `sabotage-omit-visible`  | g1b   | `pixel-mismatch`, steps {6}            | 6 400 px: `V` and `V1` drawn while hidden; step 7 shows them again in both worlds                                                                                    |
+| `sabotage-patch-drop`    | g1b   | `capture-failure` (`patch-divergence`) | the patch sink drops the `Marker` entry at frame 51; frames 51–60 resolve differently from the full sink (the receiver on it shows the stale marker at step 5)       |
+| `tie-overlap`            | g1b   | `unsupported` (`draw-index-tie`)       | the same frame-11 tie with a 224×32 `T` over `P` and `Q`'s children, not harmless                                                                                    |
+
+Images, all under the run directory:
+
+- Reference: `reference/shots/step-<k>.png` (k = 0..10) and `reference/shots/frame-11.png`.
+- Receivers: `receiver/shots/seq-{8,…,108}.png` and `seq-11.png`, the same names under
+  `receiver-patch/shots/`; state dumps `receiver{,-patch}/state/seq-<n>.json`.
+- Sabotage: `sabotage-omit-{free,visible}/receiver/diff/step-<k>.png`,
+  `sabotage-patch-drop/receiver/diff/step-5.png` (the stale marker).
+- Tie: `tie-overlap/reference/shots/frame-{11,12}.png`, `tie-overlap/receiver/shots/seq-{11,12}.png`.
+
+### The one-frame draw-index tie, decided
+
+A top-level item added at runtime keeps the RenderingServer default index 0 for one rendered frame
+(G1a finding). Fixture step 1 now provokes it: `T` enters at frame 11 while `P` holds 0. The
+capture declares exactly one tie in 400 transactions: frame 11, canvas 1, `{P, T}`. On frame 12 the
+raise gives `T` 10. The decision (gate1-design.md D7 and G1b2 "As built") is:
+
+- the wire declares every tie, as render-stream-1.md invariant 9 requires;
+- the checker classifies a tie by what it can do to pixels. `P`'s subtree paints
+  `[79,79]–[209,169]` and `T` paints `[79,303]–[113,337]` (footprints grown by 1 px), which are
+  disjoint, so every order paints the same frame. The tie is **harmless**: listed in
+  `harmless_ties` (`11:1`), no reason, and the legs stay `success`;
+- `tie-frame-pixels` confirms it: `reference/shots/frame-11.png` equals both receivers' shot of
+  seq 11 exactly;
+- with `T` over `P` and `Q`'s children (`tie-overlap`) the same tie is not harmless and the leg is
+  `unsupported`.
+
+The overlap legs also measure what the engine and the receiver actually drew. This is not gated.
+The variant reference's frames 11 and 12 differ in 1 536 px: on the tie frame `T` is drawn right
+after `P` and under `Q`'s children, and one frame later it is raised over them. That matches the
+stable insertion sort of `render_canvas` (`renderer_canvas_cull.cpp:490-493`,
+`core/templates/sort_array.h:289-301`), which keeps the appended `T` after `P`. The receiver drew
+both frames exactly as the reference did (0 px each). That is the expected outcome for an appended
+item in a container of at most 16 siblings. In general (more siblings, or ties between items that
+were already siblings) the order depends on each process's sort history, which is why a tie that
+can change pixels stays `unsupported`.
+
+### What this proves
+
+- One mirror snapshot per frame feeds a full and a patch sink that resolve to the same state at
+  every frame, bit for bit. A receiver replaying the patch recording does the same RenderingServer
+  work per transaction and draws the same pixels as one replaying the full recording.
+- Transform-only and canvas-only changes travel as `commands: null`: at step 2 only `R1`'s and the
+  marker's rects are encoded, and at step 10 only the marker's.
+- A dropped patch entry is caught by the full/patch comparison before any pixel is looked at, and
+  dropping `free` or `canvas_item_set_visible` from the mirror shows up at exactly the steps the
+  engine semantics predict.
+- The runtime top-level tie is declared on the frame it happens and only then, and a harmless tie
+  costs nothing on screen.
+
+### What this does not prove
+
+- Live delivery, credit, stalls, resync and reconnect (G1c2, G1d). The patch base here is always
+  the previous frame of a file stream.
+- That ties between items that were already siblings, or in containers of more than 16 children,
+  replay in the engine's order. They are declared and classified `unsupported` unless their
+  footprints are disjoint.
+- The footprint analysis knows only `add_rect`; any unsupported command makes a footprint
+  unbounded.
+- `z_as_relative` and `draw_behind_parent` are still unobserved (G1e). The fixture is still
+  axis-aligned opaque rects.
 
 ## Scratch verification (2026-10-08)
 

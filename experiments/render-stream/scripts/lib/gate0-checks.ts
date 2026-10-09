@@ -1,20 +1,22 @@
-// Gate 0 checks and leg classification (protocol/gate0-design.md "Q6. Runner, legs and checker").
+// Gate 0 checks and leg classification (protocol/gate0-design.md "Q6. Runner, legs and checker"),
+// on render-stream/1 since G1b2 (protocol/gate1-design.md "G1b2"). The resolved-state recording
+// summary and the draw-index-tie analysis here are shared with gate1-checks.ts.
 //
 // Everything here reads an evidence directory written by run-gate0.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate0.ts can drive it with fabricated trees.
 // Nothing launches a process. `classifyLeg` is pure and never reads `session.sabotage`.
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 0"):
-//   capture/                   the 400-frame capture host: evidence/, recording.rs0, steps.jsonl,
+//   capture/                   the 400-frame capture host: evidence/, recording.rs1, steps.jsonl,
 //                              strace.txt, maps.txt, fd.txt
 //   reference/                 rendered fixture, extension absent: shots/step-<k>.png, steps.jsonl
-//   receiver/                  rendered receiver on a copy of capture/recording.rs0:
-//                              recording.rs0, applied.json, shots/seq-<n>.png, diff/step-<k>.png
-//   receiver-headless-trace/   headless receiver under strace: recording.rs0, applied.json, strace.txt
+//   receiver/                  rendered receiver on a copy of capture/recording.rs1:
+//                              recording.rs1, applied.json, shots/seq-<n>.png, diff/step-<k>.png
+//   receiver-headless-trace/   headless receiver under strace: recording.rs1, applied.json, strace.txt
 //   sabotage-{freeze,omit,perturb}/{capture,receiver}/
 //   unsupported/{capture,receiver}/
 //   preexisting/               a capture-shaped leg (no receiver)
-//   corrupt/                   headless receiver on capture/recording.rs0 with seq 3's meta broken
+//   corrupt/                   headless receiver on capture/recording.rs1 with seq 3's meta broken
 //   import/{fixture,receiver}/, receiver-typecheck/{selftest,minimal}/
 // Every process directory holds argv.txt (one argument per line), env.txt, stdout.log (stdout and
 // stderr) and exit-code.txt.
@@ -34,10 +36,21 @@ import {
 } from "./gate-minus1-checks";
 import { synthesizeExpected } from "./gate0-expected";
 import {
+  applyTransaction,
   decodeRecord,
+  emptyResolvedState,
+  type ResolvedCanvas,
+  type ResolvedCommand,
+  type ResolvedItem,
+  type ResolvedState,
+  type EndMeta as Rs1EndMeta,
+  type SessionMeta as Rs1SessionMeta,
+  type TransactionMeta as Rs1TransactionMeta,
+  sortedResolvedCanvases,
+  sortedResolvedItems,
   splitRecords,
   validateRecording,
-} from "./render-stream-0";
+} from "./render-stream-1";
 
 /** WP3's `render-stream-gate0-expected/1` type, whatever it is named there. */
 export type Gate0Expected = Parameters<typeof synthesizeExpected>[0];
@@ -48,6 +61,11 @@ export type Gate0Expected = Parameters<typeof synthesizeExpected>[0];
 
 /** The capture leg's `RS_FIXTURE_QUIT_FRAME`: one transaction per frame, so 400 transactions. */
 export const CAPTURE_QUIT_FRAME = 400;
+
+/** The full-sink recording every capture writes (GRC_STREAM_OUT) and every receiver copy uses. */
+export const RECORDING_NAME = "recording.rs1";
+/** The patch-sink recording (GRC_STREAM_PATCH_OUT), written by the gate 1 capture legs. */
+export const PATCH_RECORDING_NAME = "recording-patch.rs1";
 
 /** Every hook calibrator 3 installs, sorted by byte value (render-stream-0.md, golden session). */
 export const GATE0_HOOKS: readonly string[] = [
@@ -95,10 +113,12 @@ export const GATE0_HOOKS: readonly string[] = [
   "viewport_set_canvas_transform",
 ];
 
-/** Session `features` at gate 0, exactly (render-stream-0.md "Session record"). */
-export const GATE0_FEATURES = {
+/** Session `features` at gate 1 / render-stream/1, exactly (render-stream-1.md "Session record"):
+ * gate 0's lists plus `behind`/`z_relative` and `viewport_set_global_canvas_transform`. */
+export const RS1_FEATURES = {
   ops: ["add_rect"],
   item_state: [
+    "behind",
     "children",
     "clip",
     "custom_rect",
@@ -110,6 +130,7 @@ export const GATE0_FEATURES = {
     "visibility_layer",
     "visible",
     "z_index",
+    "z_relative",
   ],
   observed_unsupported_ops: [
     "canvas_item_add_circle",
@@ -139,8 +160,9 @@ export const GATE0_FEATURES = {
     "canvas_set_modulate",
     "viewport_remove_canvas",
     "viewport_set_canvas_cull_mask",
+    "viewport_set_global_canvas_transform",
   ],
-  publication: "complete-snapshot-per-frame",
+  publication: "snapshot-or-patch",
 } as const;
 
 export type LegClass =
@@ -268,6 +290,7 @@ export interface CaptureResultJson {
   display_server?: string;
   stream?: {
     path?: string | null;
+    patch_path?: string | null;
     status?: string;
     reason?: string | null;
     transactions?: number;
@@ -288,47 +311,39 @@ export interface WireUnsupported {
   item: number | null;
   reason: string;
 }
-export type WireCommand =
-  | { op: "add_rect"; aa: boolean; f: number }
-  | { op: "unsupported"; name: string };
-export interface WireItem {
-  id: number;
-  commands: WireCommand[];
-}
+export type { ResolvedCanvas, ResolvedCommand, ResolvedItem };
+
+/** One transaction of a recording, RESOLVED (render-stream-1.md "Resolution"): `items` and
+ * `canvases` are the complete state after it, whatever its encoding. */
 export interface TransactionMeta {
   type: "transaction";
   seq: number;
   frame: number;
+  encoding: "full" | "patch";
+  base_seq: number | null;
   status: string;
   failures: WireFailure[];
   unsupported: WireUnsupported[];
-  items: WireItem[];
-  blocks: { name: string; count: number }[];
+  /** resolved items, ascending id */
+  items: ResolvedItem[];
+  /** resolved canvases, ascending id */
+  canvases: ResolvedCanvas[];
 }
-export interface SessionMeta {
+export type SessionMeta = Partial<Omit<Rs1SessionMeta, "type">> & {
   type: "session";
-  protocol?: string;
-  engine?: { display_server?: string };
-  capture?: { hooks_planned?: string[]; hooks_omitted?: string[] };
-  viewport?: { root_canvas?: number };
-  features?: Record<string, unknown>;
-  sabotage?: unknown;
-}
-export interface EndMeta {
+};
+export type EndMeta = Partial<Omit<Rs1EndMeta, "type" | "stats">> & {
   type: "end";
-  transactions?: number;
-  reason?: string;
-  stats?: {
-    bytes_total?: number;
-    encode_ns_total?: number;
-    snapshot_ns_total?: number;
-    max_record_bytes?: number;
-  };
-}
+  stats?: Partial<Rs1EndMeta["stats"]>;
+};
 
 export interface Transaction {
   meta: TransactionMeta;
-  blocks: number[][];
+  /** the record's own wire form (a patch's partial lists, nullable commands); absent in
+   * hand-built test values */
+  wire?: Rs1TransactionMeta;
+  /** the record's byte length, length prefix included */
+  bytes?: number;
   sha256: string;
 }
 
@@ -340,6 +355,9 @@ export interface RecordingSummary {
   /** validateRecording() */
   errors: string[];
   session?: SessionMeta;
+  /** the session record's blocks: clear_color, root_canvas_xform, host_visible_rect,
+   * host_final_xform, content_scale_factor */
+  session_blocks?: number[][];
   transactions: Transaction[];
   end?: EndMeta;
 }
@@ -351,9 +369,33 @@ export interface AppliedJson {
   status?: string;
   failure?: { seq: number | null; reason: string; detail?: string } | null;
   end_seen?: boolean;
-  transactions?: { seq?: number; frame?: number; record_sha256?: string }[];
-  shots?: { seq?: number; path?: string; applied_through?: number }[];
-  unsupported?: { seq?: number; item?: number | null; name?: string }[];
+  /** render-stream-receiver-applied/2 (gate1-design.md Q5) */
+  mode?: string;
+  viewport?: {
+    display_server?: string;
+    size?: number[];
+    size_check?: string | null;
+    logical_size?: number[] | null;
+  };
+  transactions?: {
+    seq?: number;
+    frame?: number;
+    encoding?: string;
+    record_sha256?: string;
+    rs_calls?: number;
+  }[];
+  shots?: {
+    seq?: number;
+    path?: string;
+    applied_through?: number;
+    state_path?: string | null;
+  }[];
+  unsupported?: {
+    seq?: number;
+    item?: number | null;
+    name?: string;
+    reason?: string;
+  }[];
 }
 
 export interface StepLine {
@@ -417,8 +459,9 @@ function sha256Hex(data: Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
-/** Decode and validate one recording file's bytes (undefined = the file is missing). Records that
- * fail to decode are skipped; `errors` (validateRecording) says why. */
+/** Decode, validate and resolve one recording file's bytes (undefined = the file is missing).
+ * Resolution stops at the first record that fails to decode; `errors` (validateRecording) says
+ * why. */
 export function summarizeRecording(
   path: string,
   data: Uint8Array | undefined,
@@ -442,36 +485,200 @@ export function summarizeRecording(
     transactions: [],
   };
   const split = splitRecords(data);
+  let state: ResolvedState = emptyResolvedState();
   for (const raw of split.records) {
     const { record } = decodeRecord(raw);
-    if (!record) continue;
-    const meta = record.meta as unknown as { type?: string };
+    if (!record) break;
+    const meta = record.meta;
     if (meta.type === "session" && !summary.session) {
-      summary.session = record.meta as unknown as SessionMeta;
+      summary.session = meta as SessionMeta;
+      summary.session_blocks = record.blocks;
     } else if (meta.type === "transaction") {
-      const t = record.meta as unknown as Partial<TransactionMeta>;
+      state = applyTransaction(state, meta, record.blocks);
       summary.transactions.push({
         meta: {
           type: "transaction",
-          seq: Number(t.seq),
-          frame: Number(t.frame),
-          status: String(t.status),
-          failures: arr<WireFailure>(t.failures),
-          unsupported: arr<WireUnsupported>(t.unsupported),
-          items: arr<WireItem>(t.items).map((item) => ({
-            id: item.id,
-            commands: arr<WireCommand>(item.commands),
-          })),
-          blocks: arr<{ name: string; count: number }>(t.blocks),
+          seq: meta.seq,
+          frame: meta.frame,
+          encoding: meta.encoding,
+          base_seq: meta.base_seq,
+          status: meta.status,
+          failures: arr<WireFailure>(meta.failures),
+          unsupported: arr<WireUnsupported>(meta.unsupported),
+          items: sortedResolvedItems(state),
+          canvases: sortedResolvedCanvases(state),
         },
-        blocks: record.blocks,
+        wire: meta,
+        bytes: record.byte_length,
         sha256: record.sha256,
       });
     } else if (meta.type === "end") {
-      summary.end = record.meta as unknown as EndMeta;
+      summary.end = meta as EndMeta;
     }
   }
   return summary;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Draw-index ties (render-stream-1.md "Invariant 9") and whether one can change a pixel
+// ---------------------------------------------------------------------------------------------
+
+/** One tie group: siblings of one container sharing a draw_index, at least two of them drawing
+ * (non-empty `commands` or non-empty `children`, exactly as invariant 9 defines it). */
+export interface DrawIndexTie {
+  seq: number;
+  frame: number;
+  /** "canvas:<id>" or "item:<id>" */
+  container: string;
+  draw_index: number;
+  /** the drawing members, ascending id; the wire entry names members[0] */
+  members: number[];
+  /** each member's conservative paint footprint [x0, y0, x1, y1] in its container's space
+   * ([0,0,0,0] when it draws nothing), or null when unbounded (an unsupported command in its
+   * subtree) */
+  footprints: ([number, number, number, number] | null)[];
+  /** every pair of footprints is disjoint: every order of the group paints the same pixels */
+  harmless: boolean;
+}
+
+type Affine = [number, number, number, number, number, number];
+
+function mulAffine(a: readonly number[], b: readonly number[]): Affine {
+  // Godot Transform2D columns (x.x, x.y, y.x, y.y, o.x, o.y); a * b applies b first.
+  return [
+    a[0] * b[0] + a[2] * b[1],
+    a[1] * b[0] + a[3] * b[1],
+    a[0] * b[2] + a[2] * b[3],
+    a[1] * b[2] + a[3] * b[3],
+    a[0] * b[4] + a[2] * b[5] + a[4],
+    a[1] * b[4] + a[3] * b[5] + a[5],
+  ];
+}
+
+/**
+ * The pixels member `id`'s subtree can touch, in its container's space: the axis-aligned bounds
+ * of every add_rect of every item in the subtree the engine would draw (an invisible item, or one
+ * outside the cull mask, is skipped with its subtree: renderer_canvas_cull.cpp:296-302), each
+ * rect's four corners mapped through the transforms from the member down, grown by one pixel for
+ * antialiasing and rounding. Clip only ever shrinks what is drawn, so it is ignored, and the
+ * members share every transform above their container. "empty" when nothing is drawn; null
+ * (unbounded) when the subtree holds an unsupported command.
+ */
+function subtreeFootprint(
+  items: ReadonlyMap<number, ResolvedItem>,
+  id: number,
+  cullMask: number,
+): [number, number, number, number] | null | "empty" {
+  let box: [number, number, number, number] | undefined;
+  let unbounded = false;
+  const visit = (itemId: number, parent: Affine, depth: number): void => {
+    const it = items.get(itemId);
+    if (!it || depth > 4096) return;
+    if (!it.visible || (it.visibility_layer & cullMask) >>> 0 === 0) return;
+    const xform = mulAffine(parent, it.xform);
+    for (const c of it.commands) {
+      if (c.op !== "add_rect" || !c.rect) {
+        unbounded = true;
+        continue;
+      }
+      const [x, y, w, h] = c.rect;
+      const corners: [number, number][] = [
+        [x, y],
+        [x + w, y],
+        [x, y + h],
+        [x + w, y + h],
+      ];
+      for (const [px, py] of corners) {
+        const qx = xform[0] * px + xform[2] * py + xform[4];
+        const qy = xform[1] * px + xform[3] * py + xform[5];
+        box = box
+          ? [
+              Math.min(box[0], qx),
+              Math.min(box[1], qy),
+              Math.max(box[2], qx),
+              Math.max(box[3], qy),
+            ]
+          : [qx, qy, qx, qy];
+      }
+    }
+    for (const child of it.children) visit(child, xform, depth + 1);
+  };
+  visit(id, [1, 0, 0, 1, 0, 0], 0);
+  if (unbounded) return null;
+  if (!box) return "empty";
+  return [
+    Math.floor(box[0]) - 1,
+    Math.floor(box[1]) - 1,
+    Math.ceil(box[2]) + 1,
+    Math.ceil(box[3]) + 1,
+  ];
+}
+
+/** Every invariant-9 tie group of one resolved transaction, with its footprint analysis. */
+export function drawIndexTies(
+  t: Pick<TransactionMeta, "seq" | "frame" | "items" | "canvases">,
+  cullMask = 0xffffffff,
+): DrawIndexTie[] {
+  const items = new Map(t.items.map((i) => [i.id, i] as const));
+  const containers: [string, number[]][] = [
+    ...t.canvases.map((c) => [`canvas:${c.id}`, c.items] as [string, number[]]),
+    ...t.items.map((i) => [`item:${i.id}`, i.children] as [string, number[]]),
+  ];
+  const out: DrawIndexTie[] = [];
+  for (const [container, children] of containers) {
+    const groups = new Map<number, number[]>();
+    for (const child of children) {
+      const it = items.get(child);
+      if (!it || (it.commands.length === 0 && it.children.length === 0))
+        continue;
+      const list = groups.get(it.draw_index) ?? [];
+      list.push(child);
+      groups.set(it.draw_index, list);
+    }
+    for (const [drawIndex, group] of groups) {
+      if (group.length < 2) continue;
+      const members = [...group].sort((a, b) => a - b);
+      const raw = members.map((m) => subtreeFootprint(items, m, cullMask));
+      const boxes = raw.filter((f) => f !== "empty");
+      let harmless = !boxes.includes(null);
+      for (let i = 0; harmless && i < boxes.length; i++) {
+        for (let j = i + 1; harmless && j < boxes.length; j++) {
+          const a = boxes[i] as number[];
+          const b = boxes[j] as number[];
+          if (a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3])
+            harmless = false;
+        }
+      }
+      out.push({
+        seq: t.seq,
+        frame: t.frame,
+        container,
+        draw_index: drawIndex,
+        members,
+        footprints: raw.map((f) => (f === "empty" ? [0, 0, 0, 0] : f)),
+        harmless,
+      });
+    }
+  }
+  return out;
+}
+
+/** "<seq>:<item>" keys of the draw-index-tie entries whose tie is harmless (every member's paint
+ * footprint disjoint from every other's). Classification ignores exactly these entries: the entry
+ * stays on the wire and in applied.json, but no order of the group can change a pixel, so the
+ * receiver cannot draw that frame differently from the engine. Every other tie is `unsupported`
+ * (gate1-design.md D7, as amended by G1b2). */
+export function harmlessTieKeys(
+  transactions: readonly Pick<Transaction, "meta">[],
+  cullMask = 0xffffffff,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const t of transactions) {
+    for (const tie of drawIndexTies(t.meta, cullMask)) {
+      if (tie.harmless) keys.add(`${tie.seq}:${tie.members[0]}`);
+    }
+  }
+  return keys;
 }
 
 /** `RS_FIXTURE_STEP_LOG` JSONL; undefined when missing, empty or not one object per line. */
@@ -526,16 +733,13 @@ export function firstTransactionWithRectColor(
   color: readonly number[],
 ): Transaction | undefined {
   const want = color.map((c) => Math.fround(c));
-  return transactions.find((t) => {
-    const cmdIndex = t.meta.blocks.findIndex((b) => b.name === "cmd_f32");
-    const cmd = t.blocks[cmdIndex >= 0 ? cmdIndex : 2] ?? [];
-    return t.meta.items.some((item) =>
+  return transactions.find((t) =>
+    t.meta.items.some((item) =>
       item.commands.some(
-        (c) =>
-          c.op === "add_rect" && want.every((v, i) => cmd[c.f + 4 + i] === v),
+        (c) => c.op === "add_rect" && want.every((v, i) => c.color?.[i] === v),
       ),
-    );
-  });
+    ),
+  );
 }
 
 /** Exact per-pixel comparison of two RGBA8 buffers, optionally inside rect [x, y, w, h]. */
@@ -627,6 +831,8 @@ export interface Classification {
   result_class: LegClass;
   reasons: string[];
   mismatching_steps: number[];
+  /** "<seq>:<item>" of every declared draw-index tie judged harmless (not a reason) */
+  harmless_ties: string[];
 }
 
 export function classifyLeg(input: ClassifyInput): Classification {
@@ -688,11 +894,24 @@ export function classifyLeg(input: ClassifyInput): Classification {
     );
   }
 
-  // 2. unsupported
+  // 2. unsupported. A draw-index-tie entry whose tied members paint disjoint pixels is declared
+  // but harmless (harmlessTieKeys): it never makes the leg unsupported. Every other entry does.
+  const cullMask = Number(
+    rec.session?.viewport?.canvas_cull_mask ?? 0xffffffff,
+  );
+  const harmless = harmlessTieKeys(rec.transactions, cullMask);
+  const isHarmlessTie = (
+    seq: unknown,
+    u: { item?: unknown; reason?: unknown },
+  ) => u.reason === "draw-index-tie" && harmless.has(`${seq}:${u.item}`);
   const unsupportedOps = new Set<string>();
+  const harmlessTies = new Set<string>();
   for (const t of rec.transactions) {
-    for (const u of t.meta.unsupported)
-      unsupportedOps.add(`${u.op}/${u.reason}`);
+    for (const u of t.meta.unsupported) {
+      if (isHarmlessTie(t.meta.seq, u))
+        harmlessTies.add(`${t.meta.seq}:${u.item}`);
+      else unsupportedOps.add(`${u.op}/${u.reason}`);
+    }
     for (const item of t.meta.items) {
       for (const c of item.commands) {
         if (c.op === "unsupported") unsupportedOps.add(`${c.name}/command`);
@@ -707,12 +926,16 @@ export function classifyLeg(input: ClassifyInput): Classification {
   }
   const receiver = input.receiver;
   const applied = receiver?.applied;
-  if (applied && arr(applied.unsupported).length > 0) {
+  const appliedUnsupported = arr<{
+    seq?: number;
+    item?: number | null;
+    name?: string;
+    reason?: string;
+  }>(applied?.unsupported).filter((u) => !isHarmlessTie(u.seq, u));
+  if (applied && appliedUnsupported.length > 0) {
     fire(
       "unsupported",
-      `applied.json unsupported: ${arr<{ name?: string }>(applied.unsupported)
-        .map((u) => u.name)
-        .join(", ")}`,
+      `applied.json unsupported: ${appliedUnsupported.map((u) => u.name).join(", ")}`,
     );
   }
 
@@ -787,6 +1010,7 @@ export function classifyLeg(input: ClassifyInput): Classification {
     result_class: resultClass,
     reasons,
     mismatching_steps: mismatchingSteps,
+    harmless_ties: [...harmlessTies],
   };
 }
 
@@ -941,7 +1165,7 @@ export async function evaluateLeg(
     join(layout.captureDir, "evidence", "result.json"),
   );
   const recording = await loadRecording(
-    join(layout.captureDir, "recording.rs0"),
+    join(layout.captureDir, RECORDING_NAME),
   );
   let stepJoin: StepJoin | undefined;
   if (layout.shots) {
@@ -1006,7 +1230,7 @@ export async function evaluateLeg(
       join(dir, "stdout.log"),
       join(dir, "exit-code.txt"),
       join(dir, "evidence", "result.json"),
-      join(dir, "recording.rs0"),
+      join(dir, RECORDING_NAME),
       join(dir, "steps.jsonl"),
       join(dir, "applied.json"),
       join(dir, "strace.txt"),
@@ -1125,7 +1349,7 @@ export async function checkHeadlessNoGpuGate0(
 
 export function checkRecordingDecodes(recording: RecordingSummary): Gate0Check {
   const problems: string[] = [];
-  if (!recording.present) problems.push("capture/recording.rs0 missing");
+  if (!recording.present) problems.push(`capture/${RECORDING_NAME} missing`);
   if (recording.errors.length > 0 && recording.present) {
     problems.push(
       `validateRecording: ${recording.errors.slice(0, 5).join(" | ")}`,
@@ -1161,19 +1385,18 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
   if (!s) {
     problems.push("no session record");
   } else {
-    if (s.protocol !== "render-stream/0")
+    if (s.protocol !== "render-stream/1")
       problems.push(`protocol=${JSON.stringify(s.protocol)}`);
-    for (const [key, want] of Object.entries(GATE0_FEATURES)) {
-      const got = s.features?.[key];
+    const features = (s.features ?? {}) as Record<string, unknown>;
+    for (const [key, want] of Object.entries(RS1_FEATURES)) {
+      const got = features[key];
       const ok =
         typeof want === "string"
           ? got === want
           : sameStrings(got as unknown[] | undefined, want);
       if (!ok) problems.push(`features.${key}=${JSON.stringify(got)}`);
     }
-    const extraKeys = Object.keys(s.features ?? {}).filter(
-      (k) => !(k in GATE0_FEATURES),
-    );
+    const extraKeys = Object.keys(features).filter((k) => !(k in RS1_FEATURES));
     if (extraKeys.length > 0)
       problems.push(`features has extra keys ${JSON.stringify(extraKeys)}`);
     if (s.engine?.display_server !== "headless") {
@@ -1181,16 +1404,38 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
         `engine.display_server=${JSON.stringify(s.engine?.display_server)}`,
       );
     }
-    if (s.viewport?.root_canvas !== 1)
+    if (s.stream?.transport !== "file" || s.stream?.encoding !== "full")
       problems.push(
-        `viewport.root_canvas=${JSON.stringify(s.viewport?.root_canvas)}`,
+        `stream=${JSON.stringify(s.stream ?? null)}, expected a file stream with encoding full`,
+      );
+    const vp = s.viewport;
+    if (vp?.root_canvas !== 1)
+      problems.push(`viewport.root_canvas=${JSON.stringify(vp?.root_canvas)}`);
+    if (vp?.host_size_status !== "match")
+      problems.push(
+        `viewport.host_size_status=${JSON.stringify(vp?.host_size_status)}, expected "match"`,
+      );
+    if (vp?.root_size_policy !== "enforce-min-size")
+      problems.push(
+        `viewport.root_size_policy=${JSON.stringify(vp?.root_size_policy)}, expected "enforce-min-size"`,
+      );
+    if (
+      JSON.stringify(vp?.logical_size) !== "[640,360]" ||
+      JSON.stringify(vp?.host_window_size) !== "[640,360]"
+    )
+      problems.push(
+        `viewport.logical_size=${JSON.stringify(vp?.logical_size)} host_window_size=${JSON.stringify(vp?.host_window_size)}, expected 640x360 both`,
+      );
+    if (vp?.stretch_applied_by !== "receiver")
+      problems.push(
+        `viewport.stretch_applied_by=${JSON.stringify(vp?.stretch_applied_by)}`,
       );
     if (s.sabotage !== null)
       problems.push(`sabotage=${JSON.stringify(s.sabotage)}, expected null`);
   }
   return check(
     "manifest-present",
-    "the capture session carries protocol render-stream/0, the exact gate-0 features, engine.display_server headless, viewport.root_canvas 1 and sabotage null",
+    "the capture session carries protocol render-stream/1, a full file stream, the exact /1 features, engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
     problems,
     "session manifest as specified",
     [recording.path],
@@ -1468,7 +1713,7 @@ export async function checkReceiverNeverLoadedFixture(
   const stracePath = join(legDir, "strace.txt");
   const argvPath = join(legDir, "argv.txt");
   const appliedPath = join(legDir, "applied.json");
-  const recordingPath = join(legDir, "recording.rs0");
+  const recordingPath = join(legDir, RECORDING_NAME);
   const fixturesRoot = join(paths.fixtureProjectDir, "..");
   const problems: string[] = [];
 
@@ -1550,6 +1795,36 @@ export async function checkReceiverNeverLoadedFixture(
   );
 }
 
+/** The receiver reports each unsupported entry the transaction it first appears in (new since the
+ * previous transaction): the entries a correct receiver lists for `recording`. */
+export function expectedReceiverUnsupported(
+  recording: Pick<RecordingSummary, "transactions">,
+): { seq: number; item: number | null; name: string; reason: string }[] {
+  const out: {
+    seq: number;
+    item: number | null;
+    name: string;
+    reason: string;
+  }[] = [];
+  let previous = new Set<string>();
+  for (const t of recording.transactions) {
+    const current = new Set<string>();
+    for (const u of t.meta.unsupported) {
+      const key = JSON.stringify([u.op, u.item, u.reason]);
+      current.add(key);
+      if (!previous.has(key))
+        out.push({
+          seq: t.meta.seq,
+          item: u.item,
+          name: u.op,
+          reason: u.reason,
+        });
+    }
+    previous = current;
+  }
+  return out;
+}
+
 export async function checkReceiverTypedClean(
   outDir: string,
 ): Promise<Gate0Check> {
@@ -1558,6 +1833,7 @@ export async function checkReceiverTypedClean(
   const selftestLog = join(selftestDir, "stdout.log");
   const minimalLog = join(minimalDir, "stdout.log");
   const minimalApplied = join(minimalDir, "applied.json");
+  const minimalRecording = join(minimalDir, RECORDING_NAME);
   const bad = /SCRIPT ERROR|SCRIPT WARNING|Parse Error|Failed to load script/;
   const problems: string[] = [];
   for (const log of [selftestLog, minimalLog]) {
@@ -1570,8 +1846,8 @@ export async function checkReceiverTypedClean(
     if (line) problems.push(`${log}: ${line.trim()}`);
   }
   const selftest = (await readTextOrUndefined(selftestLog)) ?? "";
-  if (!selftest.includes("[rs0-selftest] ok"))
-    problems.push("selftest did not print [rs0-selftest] ok");
+  if (!selftest.includes("[rs1-selftest] ok"))
+    problems.push("selftest did not print [rs1-selftest] ok");
   const selftestExit = await readExitCode(selftestDir);
   if (selftestExit !== 0) problems.push(`selftest exit=${selftestExit}`);
   const applied = await readJson<AppliedJson>(minimalApplied);
@@ -1579,16 +1855,31 @@ export async function checkReceiverTypedClean(
     problems.push(
       `minimal applied.json status=${JSON.stringify(applied?.status)}`,
     );
-  const unsupported = arr(applied?.unsupported);
-  if (unsupported.length !== 1)
+  const golden = await loadRecording(minimalRecording);
+  const want = expectedReceiverUnsupported(golden);
+  const got = arr<{
+    seq?: number;
+    item?: number | null;
+    name?: string;
+    reason?: string;
+  }>(applied?.unsupported).map((u) => ({
+    seq: u.seq,
+    item: u.item,
+    name: u.name,
+    reason: u.reason,
+  }));
+  if (!golden.present) problems.push(`${minimalRecording} missing`);
+  if (want.length === 0)
+    problems.push("the golden recording declares no unsupported entry");
+  if (JSON.stringify(got) !== JSON.stringify(want))
     problems.push(
-      `minimal applied.json has ${unsupported.length} unsupported, expected 1`,
+      `minimal applied.json unsupported ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`,
     );
   return check(
     "receiver-typed-clean",
-    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest printed [rs0-selftest] ok and exited 0; the minimal.bin run is ok with exactly 1 unsupported",
+    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest printed [rs1-selftest] ok and exited 0; the replay of golden-1/full.rs1 is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
     problems,
-    "selftest ok, minimal replay ok with 1 unsupported, no script diagnostics",
+    `selftest ok, golden replay ok with ${want.length} unsupported entries, no script diagnostics`,
     [selftestLog, minimalLog, minimalApplied],
   );
 }

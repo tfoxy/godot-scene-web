@@ -13,6 +13,9 @@ extends Node
 ##   RS_FIXTURE_START_FRAME S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES N >= 8, default 10 (step k >= 1 at S+N*k, settled at S+N*k+7)
 ##   RS_FIXTURE_QUIT_FRAME  >= S+N*10+11 (the default)
+##   RS_FIXTURE_SHOT_FRAMES CSV of frames >= 1: also frame-<n>.png at each (rendered runs only)
+##   RS_FIXTURE_TIE         disjoint (default) or overlap: whether step 1's new top-level T sits
+##                          alone (80,304, 32x32) or over P and Q's children (112,112, 224x32)
 
 
 ## A `Node2D` whose `_draw()` paints a list of axis-aligned (Rect2, Color) pairs, in order.
@@ -68,6 +71,7 @@ var d: RectNode
 var corner: ColorRect
 var marker: RectNode
 var l2: RectNode
+var t: RectNode
 var y: RID
 var x: RID
 
@@ -76,6 +80,8 @@ var _start_frame: int = START_FRAME_DEFAULT
 var _step_frames: int = STEP_FRAMES_DEFAULT
 var _quit_frame: int = 0
 var _shot_dir: String = ""
+var _shot_frames: Array[int] = []
+var _tie_overlap: bool = false
 var _step_log_file: FileAccess
 var _root_log_file: FileAccess
 var _failed: bool = false
@@ -158,7 +164,9 @@ func _process(_delta: float) -> void:
 	var settle_step: int = _step_at(_frame, SETTLE_OFFSET)
 	if settle_step >= 0:
 		_log_root(settle_step)
-		_maybe_take_shot(settle_step)
+		_maybe_take_shot("step-%d.png" % settle_step)
+	if _shot_frames.has(_frame):
+		_maybe_take_shot("frame-%d.png" % _frame)
 
 	if _frame >= _quit_frame:
 		print("[fixture] quitting frame=%d" % _frame)
@@ -179,6 +187,16 @@ func _apply_step(step: int) -> void:
 		1:
 			p.modulate = Color(1, 0, 1, 1)
 			c.self_modulate = Color(0, 1, 1, 1)
+			# A top-level item entering the canvas at runtime keeps the RenderingServer default
+			# draw index 0 until the deferred _top_level_raise_self runs next frame, so for this
+			# one frame it ties with P (index 0). README "Gate 1b result": the tie is reported.
+			# RS_FIXTURE_TIE=overlap: a 224x32 T over P and Q's children, so the tie frame (T drawn
+			# right after P, under Q) looks different from the next one (T raised over everything).
+			if _tie_overlap:
+				t = _rect_node("T", Vector2(112, 112), [Rect2(0, 0, 224, 32)], [Color(0.6, 1, 0.4, 1)])
+			else:
+				t = _rect_node("T", Vector2(80, 304), [Rect2(0, 0, 32, 32)], [Color(0.6, 1, 0.4, 1)])
+			add_child(t)
 		2:
 			p.position = Vector2(80, 96)
 			c.transform = Transform2D(Vector2(0, 1), Vector2(-1, 0), Vector2(160, 0))
@@ -228,7 +246,7 @@ func _rect_node(node_name: String, at: Vector2, rects: Array[Rect2], colors: Arr
 
 func _read_environment() -> bool:
 	if OS.has_environment("RS_FIXTURE_VARIANT"):
-		_error("RS_FIXTURE_VARIANT is a gate 0 variable; the gate 1 fixture has no variants")
+		_error("RS_FIXTURE_VARIANT is a gate 0 variable; the gate 1 fixture's only variant knob is RS_FIXTURE_TIE")
 		return false
 	var start: int = _int_env("RS_FIXTURE_START_FRAME", START_FRAME_DEFAULT, 1)
 	var span: int = _int_env("RS_FIXTURE_STEP_FRAMES", STEP_FRAMES_DEFAULT, SETTLE_OFFSET + 1)
@@ -241,6 +259,20 @@ func _read_environment() -> bool:
 	if quit < 0:
 		return false
 	_quit_frame = quit
+
+	var tie: String = OS.get_environment("RS_FIXTURE_TIE") if OS.has_environment("RS_FIXTURE_TIE") else "disjoint"
+	if tie != "disjoint" and tie != "overlap":
+		_error("RS_FIXTURE_TIE must be disjoint or overlap (got %s)" % JSON.stringify(tie))
+		return false
+	_tie_overlap = tie == "overlap"
+	if OS.has_environment("RS_FIXTURE_SHOT_FRAMES"):
+		var frames_text: String = OS.get_environment("RS_FIXTURE_SHOT_FRAMES").strip_edges()
+		for part: String in frames_text.split(","):
+			var token: String = part.strip_edges()
+			if not token.is_valid_int() or token.to_int() < 1:
+				_error("RS_FIXTURE_SHOT_FRAMES must be a CSV of frames >= 1 (got %s)" % JSON.stringify(frames_text))
+				return false
+			_shot_frames.append(token.to_int())
 
 	var step_log: String = _path_env("RS_FIXTURE_STEP_LOG")
 	var shot_dir: String = _path_env("RS_FIXTURE_SHOT_DIR")
@@ -323,13 +355,13 @@ static func _xform_list(t: Transform2D) -> Array[float]:
 
 ## Rendered runs only: headless has no draw path, so frame_post_draw never fires there. Called
 ## without `await` from `_process`, so the coroutine finishes while frames keep advancing.
-func _maybe_take_shot(step: int) -> void:
+func _maybe_take_shot(file_name: String) -> void:
 	if _shot_dir == "":
 		return
 	if DisplayServer.get_name() == "headless":
 		print("[fixture] shot skipped (headless)")
 		return
-	var out_path: String = _shot_dir.path_join("step-%d.png" % step)
+	var out_path: String = _shot_dir.path_join(file_name)
 	await RenderingServer.frame_post_draw
 	var image: Image = get_viewport().get_texture().get_image()
 	var err: Error = image.save_png(out_path)

@@ -31,10 +31,11 @@ add_library(render_stream_capture SHARED
   src/hooks.cpp
   src/iface.cpp
   src/report.cpp
-  src/rs0_codec.cpp
-  src/rs0_mirror.cpp
-  src/rs0_publish.cpp
-  src/rs0_root_query.cpp
+  src/rs1_codec.cpp
+  src/rs1_diff.cpp
+  src/rs1_publish.cpp
+  src/rs_mirror.cpp
+  src/rs_root_query.cpp
   src/vtable.cpp
 )
 target_include_directories(render_stream_capture PRIVATE src vendor)
@@ -65,25 +66,28 @@ target_include_directories(abi_decode_test PRIVATE src)
 target_link_libraries(abi_decode_test PRIVATE grc_warnings)
 add_test(NAME abi_decode COMMAND abi_decode_test)
 
-# Gate 0 (WP1): the retained canvas mirror, driven through its public API with
-# no engine.
-add_executable(rs0_mirror_test test/rs0_mirror_test.cpp src/rs0_mirror.cpp)
-target_include_directories(rs0_mirror_test PRIVATE src)
-target_link_libraries(rs0_mirror_test PRIVATE grc_warnings Threads::Threads)
-add_test(NAME rs0_mirror COMMAND rs0_mirror_test)
+# Gate 0 (WP1) / gate 1 (G1b2): the retained canvas mirror, driven through its
+# public API with no engine, including draw-index ties, root geometry and the
+# omit-op sabotage.
+add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp)
+target_include_directories(rs_mirror_test PRIVATE src)
+target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_mirror COMMAND rs_mirror_test)
 
-# Gate 0 (WP2): the codec is byte-identical to protocol/golden/minimal.bin.
-add_executable(rs0_codec_test
-  test/rs0_codec_test.cpp
-  src/rs0_codec.cpp
-  src/rs0_publish.cpp
+# Gate 1 (G1b2): the render-stream/1 publisher -- full and patch sinks from one
+# snapshot per frame, patch/full equivalence, sabotages, per-sink stats --
+# against memory sinks, fed by a real mirror.
+add_executable(rs1_publish_test
+  test/rs1_publish_test.cpp
+  src/rs1_codec.cpp
+  src/rs1_diff.cpp
+  src/rs1_publish.cpp
+  src/rs_mirror.cpp
   src/report.cpp
 )
-target_include_directories(rs0_codec_test PRIVATE src)
-target_link_libraries(rs0_codec_test PRIVATE grc_warnings)
-target_compile_definitions(rs0_codec_test PRIVATE
-  GRC_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden")
-add_test(NAME rs0_codec COMMAND rs0_codec_test)
+target_include_directories(rs1_publish_test PRIVATE src test)
+target_link_libraries(rs1_publish_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs1_publish COMMAND rs1_publish_test)
 
 # G1c1: rs_ws, a dependency-free RFC 6455 server on its own I/O thread
 # (protocol/gate1-design.md D3, Q3, Q4). Pure transport: no mirror, no engine,
@@ -100,8 +104,7 @@ add_executable(rs_ws_echo test/rs_ws_echo.cpp src/rs_ws.cpp src/rs_sha1.cpp)
 target_include_directories(rs_ws_echo PRIVATE src)
 target_link_libraries(rs_ws_echo PRIVATE grc_warnings Threads::Threads)
 
-# Gate 1 (G1b1): the /1 codec is byte-identical to protocol/golden-1/{full,patch}.rs1. Pure code,
-# not wired into the shared library (that is G1b2).
+# Gate 1 (G1b1): the /1 codec is byte-identical to protocol/golden-1/{full,patch}.rs1.
 add_executable(rs1_codec_test test/rs1_codec_test.cpp src/rs1_codec.cpp)
 target_include_directories(rs1_codec_test PRIVATE src test)
 target_link_libraries(rs1_codec_test PRIVATE grc_warnings)

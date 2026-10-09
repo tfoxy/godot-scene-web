@@ -1,27 +1,29 @@
-// Unit test for the render-stream/0 retained canvas mirror (src/rs0_mirror.h).
+// Unit test for the retained canvas mirror (src/rs_mirror.h).
 //
 // Drives the mirror through its public API exactly as the hooks do, with plain
 // uint64 RIDs and no engine, and checks the snapshots against
-// protocol/gate0-design.md "Q1" and "Q3" and render-stream-0.md "Transaction".
+// protocol/gate0-design.md "Q1" and "Q3", render-stream-0.md "Transaction",
+// and (gate 1, G1b2) render-stream-1.md "Invariant 9" / "Unsupported reasons"
+// and gate1-design.md "Q1", "Q4" and "G1b2" (omit-op, mutation epoch).
 
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
-#include "rs0_mirror.h"
+#include "rs_mirror.h"
 
 namespace {
 
-using grc::rs0::Color4;
-using grc::rs0::CommandKind;
-using grc::rs0::FailureReason;
-using grc::rs0::Mirror;
-using grc::rs0::ParentKind;
-using grc::rs0::Rect4;
-using grc::rs0::Snapshot;
-using grc::rs0::UnsupportedReason;
-using grc::rs0::Xform;
+using grc::rs1::Color4;
+using grc::rs1::CommandKind;
+using grc::rs1::FailureReason;
+using grc::rs::Mirror;
+using grc::rs1::ParentKind;
+using grc::rs1::Rect4;
+using grc::rs1::Snapshot;
+using grc::rs1::UnsupportedReason;
+using grc::rs1::Xform;
 
 int g_failures = 0;
 int g_checks = 0;
@@ -47,14 +49,14 @@ void bind_root(Mirror *mirror) {
   mirror->set_root(kRootViewport, kRootCanvas, kRootXform);
 }
 
-const grc::rs0::ItemState *item(const Snapshot &s, uint32_t id) {
+const grc::rs1::ItemState *item(const Snapshot &s, uint32_t id) {
   for (const auto &it : s.items) {
     if (it.id == id) return &it;
   }
   return nullptr;
 }
 
-const grc::rs0::CanvasState *canvas(const Snapshot &s, uint32_t id) {
+const grc::rs1::CanvasState *canvas(const Snapshot &s, uint32_t id) {
   for (const auto &c : s.canvases) {
     if (c.id == id) return &c;
   }
@@ -70,17 +72,54 @@ bool has_failure(const Snapshot &s, FailureReason reason) {
 
 std::vector<uint32_t> ids(const std::vector<uint32_t> &list) { return list; }
 
+// The item-level entries of a snapshot, as (item, op, reason) in order.
+struct Entry {
+  uint32_t item;
+  std::string op;
+  UnsupportedReason reason;
+  bool operator==(const Entry &o) const {
+    return item == o.item && op == o.op && reason == o.reason;
+  }
+};
+
+std::vector<Entry> item_entries(const Snapshot &s) {
+  std::vector<Entry> out;
+  for (const auto &u : s.unsupported) {
+    if (u.has_item) out.push_back({u.item, u.op, u.reason});
+  }
+  return out;
+}
+
+std::vector<Entry> ties(const Snapshot &s) {
+  std::vector<Entry> out;
+  for (const auto &u : s.unsupported) {
+    if (u.reason == UnsupportedReason::DrawIndexTie) out.push_back({u.item, u.op, u.reason});
+  }
+  return out;
+}
+
+Entry tie(uint32_t id) { return {id, "canvas_item_set_draw_index", UnsupportedReason::DrawIndexTie}; }
+
+bool has_material_entry(const Snapshot &s, uint32_t id) {
+  for (const auto &u : s.unsupported) {
+    if (u.has_item && u.item == id && u.reason == UnsupportedReason::UnsupportedState &&
+        u.op == "canvas_item_set_material")
+      return true;
+  }
+  return false;
+}
+
 void test_fresh_session() {
   Mirror m;
   bind_root(&m);
   const Snapshot s = m.snapshot(7, 9);
   check(s.seq == 7 && s.frame == 9, "seq and frame are copied");
   check(s.failures.empty(), "a bound root has no failure");
-  check(s.status() == grc::rs0::TransactionStatus::Ok, "status ok");
+  check(s.status() == grc::rs1::TransactionStatus::Ok, "status ok");
   check(s.canvases.size() == 1, "only the root canvas");
   const auto *root = canvas(s, 1);
-  check(root != nullptr && root->origin == grc::rs0::Origin::RootQuery &&
-            root->role == grc::rs0::CanvasRole::Root && root->attached && root->items.empty(),
+  check(root != nullptr && root->origin == grc::rs1::Origin::RootQuery &&
+            root->role == grc::rs1::CanvasRole::Root && root->attached && root->items.empty(),
         "canvas 1 is the root: root-query, role root, attached, no items");
   check(s.items.empty() && s.unsupported.empty(), "no items, no unsupported");
 }
@@ -93,11 +132,11 @@ void test_ids_and_recycled_rid() {
   m.canvas_create(200, 1);
   Snapshot s = m.snapshot(1, 1);
   check(item(s, 1) != nullptr && item(s, 2) != nullptr, "items get ids 1, 2");
-  check(canvas(s, 2) != nullptr && canvas(s, 2)->origin == grc::rs0::Origin::Created &&
-            canvas(s, 2)->role == grc::rs0::CanvasRole::None && !canvas(s, 2)->attached,
+  check(canvas(s, 2) != nullptr && canvas(s, 2)->origin == grc::rs1::Origin::Created &&
+            canvas(s, 2)->role == grc::rs1::CanvasRole::None && !canvas(s, 2)->attached,
         "a created canvas gets id 2 (after the root), role none, not attached");
   check(item(s, 1)->visibility_layer == 0xFFFFFFFFu && item(s, 1)->visible &&
-            item(s, 1)->modulate == grc::rs0::kWhite && item(s, 1)->content_version == 0 &&
+            item(s, 1)->modulate == grc::rs1::kWhite && item(s, 1)->content_version == 0 &&
             item(s, 1)->parent.kind == ParentKind::None,
         "a new item has the RenderingServer defaults");
 
@@ -270,7 +309,7 @@ void test_unsupported_and_material() {
             two->commands[2].name == "canvas_item_add_circle",
         "unsupported commands keep their place in command order");
   check(two->content_version == 4, "each add_* bumps content_version (material does not)");
-  check(two->unsupported_state, "a non-null material sets unsupported_state");
+  check(has_material_entry(s, 2), "a non-null material gives an unsupported-state entry");
 
   // Item order, then op order (byte order); one entry per distinct name.
   check(s.unsupported.size() == 4, "4 de-duplicated unsupported entries");
@@ -290,7 +329,7 @@ void test_unsupported_and_material() {
   m.set_material(101, 0, 2);
   m.clear(101, 2);
   s = m.snapshot(2, 2);
-  check(!item(s, 2)->unsupported_state, "a null material clears unsupported_state");
+  check(!has_material_entry(s, 2), "a null material clears the unsupported-state entry");
   check(s.unsupported.size() == 1 && s.unsupported[0].item == 1,
         "only item 1's add_polygon is left after clear + null material");
 }
@@ -361,7 +400,7 @@ void test_unknown_rid() {
   m.set_transform(0xDEF, kRootXform, 2);  // a second unknown: not recorded again
   m.set_parent(100, 0x777, 3);            // unknown parent: not recorded again either
   Snapshot s = m.snapshot(1, 3);
-  check(s.status() == grc::rs0::TransactionStatus::CaptureFailure, "status capture-failure");
+  check(s.status() == grc::rs1::TransactionStatus::CaptureFailure, "status capture-failure");
   check(s.failures.size() == 1 && s.failures[0].reason == FailureReason::PreExistingObject &&
             s.failures[0].detail == "rid=2748 op=canvas_item_set_parent frame=1",
         "pre-existing-object names the first event only");
@@ -439,7 +478,7 @@ void test_omit_update() {
   check(a->xform == b->xform && a->modulate == b->modulate &&
             a->self_modulate == b->self_modulate && a->visible && !a->clip && !a->custom_rect &&
             a->visibility_layer == b->visibility_layer && a->z_index == 0 &&
-            a->draw_index == 0 && !a->unsupported_state,
+            a->draw_index == 0 && !has_material_entry(after, 1),
         "frame-21 setters dropped");
   check(a->parent.kind == ParentKind::Canvas, "frame-21 set_parent dropped");
   check(canvas(after, 1)->xform == kRootXform, "frame-21 canvas transform dropped");
@@ -457,18 +496,18 @@ void test_omit_update() {
 void test_capacity() {
   Mirror m;
   bind_root(&m);
-  for (uint64_t i = 0; i < grc::rs0::kMaxLiveItems; ++i) {
+  for (uint64_t i = 0; i < grc::rs1::kMaxLiveItems; ++i) {
     m.canvas_item_create(1000 + i, 1);
   }
   Snapshot s = m.snapshot(1, 1);
-  check(s.items.size() == grc::rs0::kMaxLiveItems && s.failures.empty(),
+  check(s.items.size() == grc::rs1::kMaxLiveItems && s.failures.empty(),
         "exactly the cap of live items is fine");
-  const uint64_t over = 1000 + grc::rs0::kMaxLiveItems;
+  const uint64_t over = 1000 + grc::rs1::kMaxLiveItems;
   m.canvas_item_create(over, 2);
   m.set_parent(over, kRootCanvas, 2);  // untracked: ignored, not pre-existing
   m.add_rect(over, kRect, kRed, false, 2);
   s = m.snapshot(2, 2);
-  check(s.items.size() == grc::rs0::kMaxLiveItems, "the item over the cap is not tracked");
+  check(s.items.size() == grc::rs1::kMaxLiveItems, "the item over the cap is not tracked");
   check(s.failures.size() == 1 && s.failures[0].reason == FailureReason::MirrorCapacity,
         "live items over the cap -> mirror-capacity only (no pre-existing-object)");
   check(m.stats().ignored_untracked == 2, "calls on the untracked item are counted");
@@ -479,26 +518,26 @@ void test_capacity() {
   m.free_rid(1000, 4);
   m.canvas_item_create(9, 4);
   s = m.snapshot(3, 4);
-  check(s.items.size() == grc::rs0::kMaxLiveItems && s.items.back().id ==
-                                                         grc::rs0::kMaxLiveItems + 1,
+  check(s.items.size() == grc::rs1::kMaxLiveItems && s.items.back().id ==
+                                                         grc::rs1::kMaxLiveItems + 1,
         "after a free there is room; the new item gets the next id");
   check(s.failures.size() == 1, "mirror-capacity is sticky");
 
   Mirror n;
   bind_root(&n);
   n.canvas_item_create(100, 1);
-  for (size_t i = 0; i < grc::rs0::kMaxCommandsPerItem; ++i) {
+  for (size_t i = 0; i < grc::rs1::kMaxCommandsPerItem; ++i) {
     n.add_rect(100, kRect, kRed, false, 1);
   }
   s = n.snapshot(1, 1);
-  check(s.failures.empty() && item(s, 1)->commands.size() == grc::rs0::kMaxCommandsPerItem,
+  check(s.failures.empty() && item(s, 1)->commands.size() == grc::rs1::kMaxCommandsPerItem,
         "exactly the command cap is fine");
   n.add_rect(100, kRect, kGreen, false, 2);
   n.add_unsupported(100, "canvas_item_add_line", 2);
   s = n.snapshot(2, 2);
-  check(item(s, 1)->commands.size() == grc::rs0::kMaxCommandsPerItem,
+  check(item(s, 1)->commands.size() == grc::rs1::kMaxCommandsPerItem,
         "commands over the cap are dropped");
-  check(item(s, 1)->content_version == grc::rs0::kMaxCommandsPerItem,
+  check(item(s, 1)->content_version == grc::rs1::kMaxCommandsPerItem,
         "dropped commands do not bump content_version");
   check(s.failures.size() == 1 && s.failures[0].reason == FailureReason::MirrorCapacity &&
             s.failures[0].detail == "commands > 1024 item=1 frame=2",
@@ -506,7 +545,7 @@ void test_capacity() {
 }
 
 void test_process_wide_gate() {
-  using namespace grc::rs0;
+  using namespace grc::rs;
   check(!mirror_enabled(), "the process-wide mirror starts disabled");
   mirror_enable(true);
   check(mirror_enabled(), "enabled");
@@ -599,6 +638,370 @@ void test_raw_parent_free_leaves_detached_child() {
   check(m.stats().free_unknown == 0, "neither free was of an unknown RID");
 }
 
+// --- gate 1 (G1b2) -------------------------------------------------------------
+
+// z_relative / behind are not hooked until G1e: RenderingServer defaults.
+void test_rs_defaults() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  const Snapshot s = m.snapshot(1, 1);
+  check(item(s, 1)->z_relative && !item(s, 1)->behind,
+        "a new item has z_relative true and behind false (RS defaults)");
+}
+
+// Three top-level items on canvas 1 at RIDs 100.. with one add_rect each.
+void drawing_siblings(Mirror *m, int count) {
+  for (int i = 0; i < count; ++i) {
+    const uint64_t rid = 100 + static_cast<uint64_t>(i);
+    m->canvas_item_create(rid, 1);
+    m->set_parent(rid, kRootCanvas, 1);
+    m->add_rect(rid, kRect, kRed, false, 1);
+  }
+}
+
+void test_tie_two_siblings() {
+  Mirror m;
+  bind_root(&m);
+  drawing_siblings(&m, 2);
+  const Snapshot s = m.snapshot(1, 1);
+  check(ties(s) == std::vector<Entry>{tie(1)},
+        "two drawing siblings at draw_index 0 on canvas 1 -> one tie entry at the smaller id");
+  check(s.failures.empty(), "a tie is unsupported, not a capture failure");
+}
+
+void test_tie_non_drawing_never_ties() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);  // 1: no commands, no children
+  m.canvas_item_create(101, 1);  // 2: no commands, no children
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, kRootCanvas, 1);
+  check(ties(m.snapshot(1, 1)).empty(), "two non-drawing siblings never tie");
+  m.add_rect(101, kRect, kRed, false, 2);
+  check(ties(m.snapshot(2, 2)).empty(), "one drawing and one non-drawing sibling do not tie");
+  // A cleared item stops drawing.
+  m.canvas_item_create(102, 3);  // 3
+  m.set_parent(102, kRootCanvas, 3);
+  m.add_rect(102, kRect, kGreen, false, 3);
+  check(ties(m.snapshot(3, 3)) == std::vector<Entry>{tie(2)}, "two drawing siblings tie");
+  m.clear(102, 4);
+  check(ties(m.snapshot(4, 4)).empty(), "clear empties the commands: no longer drawing");
+}
+
+void test_tie_children_only_counts_as_drawing() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);  // 1: non-drawing sibling
+  m.canvas_item_create(101, 1);  // 2: children only
+  m.canvas_item_create(102, 1);  // 3: commands
+  m.canvas_item_create(103, 1);  // 4: child of 2, no commands
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, kRootCanvas, 1);
+  m.set_parent(102, kRootCanvas, 1);
+  m.set_parent(103, 101, 1);
+  m.add_rect(102, kRect, kRed, false, 1);
+  const Snapshot s = m.snapshot(1, 1);
+  check(ties(s) == std::vector<Entry>{tie(2)},
+        "an item with only children is drawing; the entry names the smallest drawing id");
+}
+
+void test_tie_three_way() {
+  Mirror m;
+  bind_root(&m);
+  drawing_siblings(&m, 3);
+  check(ties(m.snapshot(1, 1)) == std::vector<Entry>{tie(1)}, "a three-way tie is one entry");
+  m.set_draw_index(100, 5, 2);
+  check(ties(m.snapshot(2, 2)) == std::vector<Entry>{tie(2)},
+        "moving the smallest out leaves a tie named by the next smallest");
+}
+
+void test_tie_under_item_children() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);  // 1: P
+  m.canvas_item_create(101, 1);  // 2: C1
+  m.canvas_item_create(102, 1);  // 3: C2
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(102, 100, 1);
+  m.set_parent(101, 100, 1);
+  m.add_rect(101, kRect, kRed, false, 1);
+  m.add_rect(102, kRect, kGreen, false, 1);
+  Snapshot s = m.snapshot(1, 1);
+  check(ties(s) == std::vector<Entry>{tie(2)},
+        "two drawing children of an item tie; the entry names the smaller id");
+  m.set_draw_index(101, 1, 2);
+  m.set_draw_index(102, 0, 2);
+  s = m.snapshot(2, 2);
+  check(ties(s).empty(), "distinct indices under an item: no tie");
+}
+
+void test_tie_resolved_by_set_draw_index() {
+  Mirror m;
+  bind_root(&m);
+  drawing_siblings(&m, 2);
+  check(ties(m.snapshot(1, 1)).size() == 1, "tied first");
+  m.set_draw_index(101, 1, 2);
+  const Snapshot s = m.snapshot(2, 2);
+  check(ties(s).empty() && s.unsupported.empty(), "set_draw_index resolving the tie removes it");
+}
+
+void test_tie_ordering_with_unsupported_op() {
+  Mirror m;
+  bind_root(&m);
+  drawing_siblings(&m, 2);
+  m.add_unsupported(100, "canvas_item_add_circle", 1);
+  m.set_material(101, 0x77, 1);
+  m.viewport_attach_canvas(0x9999, kRootCanvas, 1);  // a session-level entry
+  const Snapshot s = m.snapshot(1, 1);
+  check(!s.unsupported.empty() && !s.unsupported[0].has_item,
+        "session-level entries come before item-level ones");
+  const std::vector<Entry> expected = {
+      {1, "canvas_item_add_circle", UnsupportedReason::UnsupportedOp},
+      tie(1),
+      {2, "canvas_item_set_material", UnsupportedReason::UnsupportedState},
+  };
+  check(item_entries(s) == expected,
+        "item-level entries by item id, then op byte order "
+        "(canvas_item_add_circle < canvas_item_set_draw_index)");
+}
+
+// G1a runtime case: a node entering the tree is appended at the RS default
+// draw index 0 before the deferred _top_level_raise_self gives every
+// top-level item a fresh index (gate1-design.md Q2c).
+void test_tie_new_top_level_item_until_raise() {
+  Mirror m;
+  bind_root(&m);
+  drawing_siblings(&m, 2);
+  m.set_draw_index(100, 0, 1);
+  m.set_draw_index(101, 1, 1);
+  check(ties(m.snapshot(1, 1)).empty(), "raised siblings do not tie");
+  m.canvas_item_create(102, 2);  // 3
+  m.set_parent(102, kRootCanvas, 2);
+  m.add_rect(102, kRect, kGreen, false, 2);
+  check(ties(m.snapshot(2, 2)) == std::vector<Entry>{tie(1)},
+        "a new top-level item at default index 0 ties with the existing index-0 sibling");
+  m.set_draw_index(100, 2, 3);
+  m.set_draw_index(101, 3, 3);
+  m.set_draw_index(102, 4, 3);
+  check(ties(m.snapshot(3, 3)).empty(), "the tie is gone after the raise");
+}
+
+void test_degenerate_host_size_first() {
+  Mirror m;
+  bind_root(&m);
+  m.viewport_attach_canvas(0x9999, kRootCanvas, 1);  // observed first
+  m.set_degenerate_host_size(true);
+  drawing_siblings(&m, 2);  // and a tie
+  Snapshot s = m.snapshot(1, 1);
+  check(s.unsupported.size() == 3, "degenerate, non-root-viewport, tie");
+  if (s.unsupported.size() == 3) {
+    check(!s.unsupported[0].has_item && s.unsupported[0].op == "root_viewport_size" &&
+              s.unsupported[0].reason == UnsupportedReason::DegenerateHostSize,
+          "degenerate-host-size is the first entry even when observed after another");
+    check(std::string(grc::rs1::to_wire(s.unsupported[0].reason)) == "degenerate-host-size",
+          "wire spelling degenerate-host-size");
+    check(s.unsupported[1].reason == UnsupportedReason::NonRootViewport,
+          "then the other session-level entries");
+    check(s.unsupported[2].reason == UnsupportedReason::DrawIndexTie, "then item-level entries");
+  }
+  check(s.failures.empty(), "degenerate-host-size is unsupported, not a failure");
+  m.set_draw_index(100, 9, 2);
+  s = m.snapshot(2, 50);
+  check(s.unsupported.size() == 2 && s.unsupported[0].op == "root_viewport_size",
+        "present in every later snapshot");
+  m.set_degenerate_host_size(false);
+  check(m.snapshot(3, 51).unsupported.size() == 1, "off removes it");
+  m.set_degenerate_host_size(true);
+  m.reset();
+  check(m.snapshot(4, 52).unsupported.empty(), "reset() clears it");
+}
+
+void test_root_size_enforce_failed() {
+  Mirror m;
+  bind_root(&m);
+  m.fail_root_size_enforce("degenerate-visible: window 64x64, visible 64x64, logical 640x360");
+  m.fail_root_size_enforce("again");
+  m.canvas_item_create(100, 2);
+  Snapshot s = m.snapshot(1, 2);
+  check(s.failures.size() == 1 && s.failures[0].reason == FailureReason::RootSizeEnforceFailed &&
+            s.failures[0].detail ==
+                "degenerate-visible: window 64x64, visible 64x64, logical 640x360",
+        "root-size-enforce-failed is sticky and keeps the first detail");
+  check(std::string(grc::rs1::to_wire(s.failures[0].reason)) == "root-size-enforce-failed",
+        "wire spelling root-size-enforce-failed");
+  check(s.status() == grc::rs1::TransactionStatus::CaptureFailure, "status capture-failure");
+  m.fail_root_query("Viewport.get_world_2d");
+  s = m.snapshot(2, 3);
+  check(s.failures.size() == 2 && has_failure(s, FailureReason::RootQueryFailed),
+        "it is a reason of its own, not a root-query-failed detail");
+  m.reset();
+  check(m.snapshot(3, 4).failures.empty(), "reset() clears it");
+}
+
+void test_omit_op_free() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);  // 1: A, on canvas 1
+  m.canvas_item_create(101, 1);  // 2: B, child of A
+  m.canvas_item_create(102, 1);  // 3: C, on canvas 1
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, 100, 1);
+  m.set_parent(102, kRootCanvas, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  m.set_omit_op("free", 10);
+
+  m.free_rid(102, 9);  // F-1: applies
+  Snapshot s = m.snapshot(1, 9);
+  check(item(s, 3) == nullptr && canvas(s, 1)->items == ids({1}), "a free at F-1 applies");
+
+  m.free_rid(100, 10);  // F: dropped
+  s = m.snapshot(2, 10);
+  check(item(s, 1) != nullptr && item(s, 1)->parent.kind == ParentKind::Canvas &&
+            item(s, 1)->parent.id == 1 && canvas(s, 1)->items == ids({1}),
+        "omit-op free at F keeps the item and its parent link");
+  check(item(s, 1)->children == ids({2}) && item(s, 2)->parent.kind == ParentKind::Item,
+        "its child is not orphaned");
+  check(item(s, 1)->commands.size() == 1, "it keeps its commands");
+
+  m.free_rid(101, 11);  // later frame: dropped
+  s = m.snapshot(3, 11);
+  check(item(s, 2) != nullptr && item(s, 2)->parent.kind == ParentKind::Item &&
+            item(s, 2)->parent.id == 1,
+        "omit-op free at a later frame keeps the child and its parent link");
+  check(m.stats().dropped_omit_op == 2, "two frees counted as dropped_omit_op");
+  check(m.stats().free_unknown == 0, "a dropped free is not an unknown free");
+
+  // The RID is still known: a later call on it is no pre-existing-object.
+  m.set_visible(100, false, 12);
+  s = m.snapshot(4, 12);
+  check(s.failures.empty() && !item(s, 1)->visible, "the kept item still takes updates");
+
+  m.set_omit_op("", 0);
+  m.free_rid(100, 13);
+  check(item(m.snapshot(5, 13), 1) == nullptr, "an empty op disables omit-op");
+}
+
+void test_omit_op_visible_only() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_omit_op("canvas_item_set_visible", 6);
+  m.set_visible(100, false, 5);  // before F: applies
+  Snapshot s = m.snapshot(1, 5);
+  check(!item(s, 1)->visible, "set_visible before F applies");
+  m.set_visible(100, true, 6);  // F: dropped
+  m.set_modulate(100, kRed, 6);
+  m.set_self_modulate(100, kGreen, 6);
+  m.set_z_index(100, 2, 6);
+  m.add_rect(100, kRect, kRed, false, 6);
+  m.set_visible(100, true, 7);  // later: dropped
+  m.free_rid(100, 8);           // not the omitted op: applies
+  s = m.snapshot(2, 7);
+  check(item(s, 1) == nullptr, "free is not the omitted op");
+  check(m.stats().dropped_omit_op == 2, "only the two set_visible calls were dropped");
+
+  Mirror n;
+  bind_root(&n);
+  n.canvas_item_create(100, 1);
+  n.set_omit_op("canvas_item_set_visible", 6);
+  n.set_visible(100, false, 6);
+  n.set_modulate(100, kRed, 6);
+  n.add_rect(100, kRect, kRed, false, 6);
+  s = n.snapshot(1, 6);
+  check(item(s, 1)->visible && item(s, 1)->modulate == kRed && item(s, 1)->commands.size() == 1,
+        "omit-op canvas_item_set_visible drops only that op");
+  check(n.stats().dropped_omit_update == 0, "omit-op is not counted as omit-update");
+}
+
+void test_omit_op_identity_creates() {
+  Mirror m;
+  bind_root(&m);
+  m.set_omit_op("canvas_item_create", 3);
+  m.canvas_item_create(100, 2);  // applies
+  m.canvas_item_create(101, 3);  // dropped
+  m.set_parent(101, kRootCanvas, 3);
+  Snapshot s = m.snapshot(1, 3);
+  check(s.items.size() == 1 && item(s, 1) != nullptr, "canvas_item_create at F is dropped");
+  check(has_failure(s, FailureReason::PreExistingObject),
+        "the dropped item is unknown to later calls (identity ops are not exempt)");
+
+  Mirror n;
+  bind_root(&n);
+  n.set_omit_op("canvas_create", 1);
+  n.canvas_create(200, 1);
+  check(n.snapshot(1, 1).canvases.size() == 1 && n.stats().dropped_omit_op == 1,
+        "omit-op canvas_create drops the create");
+  n.set_omit_op("viewport_set_canvas_transform", 1);
+  n.viewport_set_canvas_transform(kRootViewport, kRootCanvas, {2, 0, 0, 2, 0, 0}, 1);
+  check(canvas(n.snapshot(2, 1), 1)->xform == kRootXform, "omit-op on a viewport op");
+  n.set_omit_op("canvas_item_add_circle", 1);
+  n.canvas_item_create(100, 1);
+  n.add_unsupported(100, "canvas_item_add_circle", 1);
+  n.add_unsupported(100, "canvas_item_add_line", 1);
+  s = n.snapshot(3, 1);
+  check(item(s, 1)->commands.size() == 1 && item(s, 1)->commands[0].name == "canvas_item_add_line",
+        "an unsupported add op is omitted by its own name");
+}
+
+void test_epoch() {
+  Mirror m;
+  bind_root(&m);
+  m.set_drop_frame(5);
+  m.set_omit_op("canvas_item_set_clip", 1);
+  uint64_t e = m.epoch();
+  m.canvas_item_create(100, 1);
+  check(m.epoch() == e + 1, "an applied create advances the epoch");
+  e = m.epoch();
+  m.set_transform(100, {1, 0, 0, 1, 3, 4}, 2);
+  check(m.epoch() == e + 1, "an applied setter advances the epoch");
+  e = m.epoch();
+  m.set_transform(100, {1, 0, 0, 1, 5, 6}, 5);
+  check(m.epoch() == e, "a tap dropped by omit-update does not");
+  m.set_clip(100, true, 2);
+  check(m.epoch() == e, "a tap dropped by omit-op does not");
+  m.free_rid(0x5151, 2);
+  check(m.epoch() == e, "a free of an untracked RID (texture, mesh) does not");
+  (void)m.snapshot(1, 2);
+  (void)m.stats();
+  check(m.epoch() == e, "reading does not");
+  m.add_rect(100, kRect, kRed, false, 3);
+  m.set_visible(100, false, 3);
+  check(m.epoch() == e + 2, "every applied tap counts");
+  e = m.epoch();
+  m.set_visible(0x7777, false, 3);  // unknown RID: a failure is recorded
+  check(m.epoch() == e + 1, "an applied tap on an unknown RID counts (the failure changed)");
+  e = m.epoch();
+  m.free_rid(100, 4);
+  check(m.epoch() == e + 1, "a free of a tracked item counts");
+  e = m.epoch();
+  m.set_degenerate_host_size(true);
+  check(m.epoch() == e + 1, "session-level setters count");
+  e = m.epoch();
+  m.reset();
+  check(m.epoch() > e, "reset() never takes the epoch back");
+}
+
+void test_process_wide_g1b2() {
+  using namespace grc::rs;
+  mirror_enable(true);
+  mirror_set_root(kRootViewport, kRootCanvas, kRootXform);
+  const uint64_t e = mirror_epoch();
+  mirror_instance().canvas_item_create(100, 1);
+  check(mirror_epoch() == e + 1, "mirror_epoch");
+  mirror_set_degenerate_host_size(true);
+  mirror_fail_root_size_enforce("enforce");
+  mirror_set_omit_op("canvas_item_set_z_index", 2);
+  mirror_instance().set_z_index(100, 3, 2);
+  Snapshot s = mirror_snapshot(1, 2);
+  check(!s.unsupported.empty() && s.unsupported[0].op == "root_viewport_size",
+        "mirror_set_degenerate_host_size");
+  check(has_failure(s, FailureReason::RootSizeEnforceFailed), "mirror_fail_root_size_enforce");
+  check(s.items.size() == 1 && s.items[0].z_index == 0 && mirror_stats().dropped_omit_op == 1,
+        "mirror_set_omit_op");
+  mirror_enable(false);
+}
+
 int main() {
   test_fresh_session();
   test_ids_and_recycled_rid();
@@ -615,10 +1018,26 @@ int main() {
   test_process_wide_gate();
   test_detach_reattach_keeps_id();
   test_raw_parent_free_leaves_detached_child();
+  test_rs_defaults();
+  test_tie_two_siblings();
+  test_tie_non_drawing_never_ties();
+  test_tie_children_only_counts_as_drawing();
+  test_tie_three_way();
+  test_tie_under_item_children();
+  test_tie_resolved_by_set_draw_index();
+  test_tie_ordering_with_unsupported_op();
+  test_tie_new_top_level_item_until_raise();
+  test_degenerate_host_size_first();
+  test_root_size_enforce_failed();
+  test_omit_op_free();
+  test_omit_op_visible_only();
+  test_omit_op_identity_creates();
+  test_epoch();
+  test_process_wide_g1b2();
   if (g_failures != 0) {
-    std::fprintf(stderr, "rs0_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
+    std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;
   }
-  std::printf("rs0_mirror_test: all %d checks passed\n", g_checks);
+  std::printf("rs_mirror_test: all %d checks passed\n", g_checks);
   return 0;
 }

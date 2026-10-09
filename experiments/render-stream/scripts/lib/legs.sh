@@ -18,8 +18,12 @@
 # Every launch strips GS_STRIP_VARS and every inherited GRC_* / RS_* (gs_strip_env_args) and
 # passes only the NAME=value words in LEG_ENV (env.txt records them).
 
-# The recording file name every capture writes and every receiver copy uses.
-RECORDING_NAME="${RECORDING_NAME:-recording.rs0}"
+# The recording file names: the full sink every capture writes (GRC_STREAM_OUT) and every receiver
+# copy uses, and the patch sink (GRC_STREAM_PATCH_OUT) a capture also writes when
+# CAPTURE_WITH_PATCH=1 (gate 1).
+RECORDING_NAME="${RECORDING_NAME:-recording.rs1}"
+PATCH_RECORDING_NAME="${PATCH_RECORDING_NAME:-recording-patch.rs1}"
+CAPTURE_WITH_PATCH="${CAPTURE_WITH_PATCH:-0}"
 
 # The process the runner currently owns (its cleanup trap stops it).
 CURRENT_CHILD_PID=""
@@ -132,6 +136,9 @@ run_capture() {
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
 	)
+	if [ "$CAPTURE_WITH_PATCH" = "1" ]; then
+		LEG_ENV+=(GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME")
+	fi
 	# An empty quit frame leaves the fixture at its own default.
 	if [ -n "$quit" ]; then
 		LEG_ENV+=(RS_FIXTURE_QUIT_FRAME="$quit")
@@ -210,13 +217,34 @@ run_rendered() {
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
 }
 
+# seq_at_frame <recording> <frame>: prints the seq of the transaction published at <frame>.
+seq_at_frame() {
+	gate0_tool seq-at-frame "$1" "$2"
+}
+
 # run_rendered_receiver <capture dir> <receiver dir>: a rendered receiver on a copy of the
-# capture's recording, shooting the settle seqs of its steps.jsonl.
+# capture's recording, shooting the settle seqs of its steps.jsonl. Optional, reset after the call:
+#   RECEIVER_SOURCE      the capture recording to replay (default $RECORDING_NAME); the copy is
+#                        always <receiver dir>/$RECORDING_NAME
+#   RECEIVER_EXTRA_SHOTS CSV of extra seqs to shoot
+#   RECEIVER_STATE=1     also dump the resolved state at the settle seqs (RS_RECEIVER_STATE_SEQS)
+RECEIVER_SOURCE=""
+RECEIVER_EXTRA_SHOTS=""
+RECEIVER_STATE=0
 run_rendered_receiver() {
-	local capture_dir="$1" dir="$2" seqs
-	prepare_recording "$capture_dir/$RECORDING_NAME" "$dir" || return 0
+	local capture_dir="$1" dir="$2" seqs shots source="${RECEIVER_SOURCE:-$RECORDING_NAME}"
+	local extra="$RECEIVER_EXTRA_SHOTS" state="$RECEIVER_STATE"
+	RECEIVER_SOURCE=""
+	RECEIVER_EXTRA_SHOTS=""
+	RECEIVER_STATE=0
+	prepare_recording "$capture_dir/$source" "$dir" || return 0
 	seqs="$(settle_seqs "$capture_dir" "$dir")" || return 0
+	shots="$seqs"
+	[ -n "$extra" ] && shots="$seqs,$extra"
 	mkdir -p "$dir/shots"
-	LEG_ENV=(RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_SHOT_SEQS="$seqs")
+	LEG_ENV=(RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_SHOT_SEQS="$shots")
+	if [ "$state" = "1" ]; then
+		LEG_ENV+=(RS_RECEIVER_STATE_SEQS="$seqs")
+	fi
 	run_rendered "$dir" "$RECEIVER_DIR"
 }

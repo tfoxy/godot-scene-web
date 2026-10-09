@@ -13,7 +13,7 @@ namespace {
 // ----------------------------------------------------------------- bytes
 //
 // Record framing is unchanged from render-stream-0.md ("Record framing"); these helpers are the
-// same as rs0_codec.cpp's.
+// same as the gate 0 rs0_codec.cpp's (removed in G1b2).
 
 void append_u32le(std::string &out, std::uint32_t value) {
   out.push_back(static_cast<char>(value & 0xFF));
