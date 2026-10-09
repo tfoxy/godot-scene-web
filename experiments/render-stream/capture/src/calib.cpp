@@ -452,6 +452,9 @@ int64_t Calibration::slot(const std::string &name) const {
 }
 
 bool load_calibration(const std::string &path, Calibration *out, std::string *error) {
+  // Start from an empty record: a deferred attempt calls this again, and the
+  // parser appends to the slot and anchor lists.
+  *out = Calibration{};
   std::string text;
   if (!read_file(path, &text) || text.empty()) {
     *error = "cannot read " + path;
@@ -589,6 +592,8 @@ bool ProcessFingerprint::in_exec_range(uint64_t address) const {
 }
 
 bool collect_fingerprint(ProcessFingerprint *out, std::string *error) {
+  // Start empty for the same reason: the maps scan appends.
+  *out = ProcessFingerprint{};
   char exe[4096] = {};
   const ssize_t length = ::readlink("/proc/self/exe", exe, sizeof(exe) - 1);
   if (length <= 0) {
