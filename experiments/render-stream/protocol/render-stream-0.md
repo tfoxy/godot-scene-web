@@ -146,10 +146,12 @@ Blocks, in this order:
 | `host_visible_rect` | 4     | root `Viewport.get_visible_rect()`: position.x, position.y, size.x, size.y |
 
 `host_visible_rect` is a block, not a JSON integer pair, because Godot's value is a float `Rect2`.
-Under `--headless` it is `0, 0, 0, 0`: `DisplayServerHeadless::window_get_size` returns `Size2i()`
-(`servers/display_server_headless.h:129`), and the root window takes its size from it
-(`scene/main/window.cpp:1531`, `scene/main/viewport.cpp:1166-1174`). Gate 0 records the value and
-does not judge it. Gate 1 compares it with the rendered reference.
+Under `--headless` it is `0, 0, 64, 64`, measured at gate 0. `DisplayServerHeadless::window_get_size`
+returns `Size2i()` (`servers/display_server_headless.h:129`), and the root window takes its size
+from it (`scene/main/window.cpp:1531`), but `SceneTree` gives the root a 64×64 minimum size
+(`scene/main/scene_tree.cpp:2035`) and `Window::_update_window_size` clamps to it
+(`scene/main/window.cpp:1144-1150`). Gate 0 records the value and does not judge it. Gate 1
+compares it with the rendered reference.
 
 ## Transaction record
 

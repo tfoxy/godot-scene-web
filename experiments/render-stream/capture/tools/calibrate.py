@@ -33,7 +33,7 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "2"
+CALIBRATOR_VERSION = "3"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
@@ -83,6 +83,19 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("shader_create_from_code", ("shader_create_from_code",)),
     ("shader_set_code", ("shader_set_code",)),
     ("material_set_param", ("material_set_param",)),
+    # calibrator 3: gate 0's retained canvas mirror -- canvas and viewport
+    # identity, parenting and per-item state (protocol/gate0-design.md Q2b)
+    ("viewport_attach_canvas", ("viewport_attach_canvas",)),
+    ("viewport_set_canvas_transform", ("viewport_set_canvas_transform",)),
+    ("canvas_create", ("canvas_create",)),
+    ("canvas_item_set_parent", ("canvas_item_set_parent",)),
+    ("canvas_item_set_visible", ("canvas_item_set_visible",)),
+    ("canvas_item_set_clip", ("canvas_item_set_clip",)),
+    ("canvas_item_set_custom_rect", ("canvas_item_set_custom_rect",)),
+    ("canvas_item_set_self_modulate", ("canvas_item_set_self_modulate",)),
+    ("canvas_item_set_visibility_layer", ("canvas_item_set_visibility_layer",)),
+    ("canvas_item_set_z_index", ("canvas_item_set_z_index",)),
+    ("canvas_item_set_draw_index", ("canvas_item_set_draw_index",)),
 )
 
 ET_EXEC = 2

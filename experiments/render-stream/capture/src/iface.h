@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -27,6 +28,14 @@ struct Iface {
 
   // True when every pointer above resolved.
   bool complete = false;
+
+  // Used only by the gate-0 root query (rs0_root_query). Resolved by
+  // iface_load but not part of `complete`: a host without them still runs the
+  // gate -1 capture, and the root query reports `root-query-failed`.
+  GDExtensionInterfaceRefGetObject ref_get_object = nullptr;
+  GDExtensionInterfaceRefSetObject ref_set_object = nullptr;
+  GDExtensionInterfaceClassdbGetClassTag classdb_get_class_tag = nullptr;
+  GDExtensionInterfaceObjectCastTo object_cast_to = nullptr;
   // Name of the first interface function that failed to resolve, if any.
   std::string missing;
 };
@@ -74,5 +83,51 @@ std::string singleton_string(const char *singleton, const char *class_name,
 
 // The engine singleton object, or nullptr when it is not registered yet.
 void *singleton_object(const char *name);
+
+// --- read-only getters for the gate-0 root query ------------------------------
+//
+// Each one ptrcalls a bound, argument-less, read-only method and decodes the
+// return slot the way core/variant/method_ptrcall.h encodes it. Each returns
+// false (leaving `out` untouched) when the bind, the instance or an interface
+// function it needs is missing.
+
+// Object-pointer return (`PtrToArg<T *>::encode`, method_ptrcall.h:256-258).
+bool call_object_getter(GDExtensionMethodBindPtr bind, void *instance, void **out);
+
+// RID return: one uint64 (`PtrToArg<RID>`).
+bool call_rid_getter(GDExtensionMethodBindPtr bind, void *instance, uint64_t *out);
+
+// A plain value return (Transform2D, Rect2, Color): the engine assigns the
+// value into the slot, so `size` bytes are written.
+bool call_value_getter(GDExtensionMethodBindPtr bind, void *instance, void *out, size_t size);
+
+// A `Ref<T>` return. ptrcall assigns into a `Ref<RefCounted>` slot, which takes
+// a reference (core/object/ref_counted.h:251-254). The holder passes a zeroed,
+// pointer-sized slot, reads the object with ref_get_object, and drops the
+// reference again with ref_set_object(slot, nullptr), which calls
+// reference_ptr(nullptr) and so unrefs
+// (core/extension/gdextension_interface.cpp:1436-1442).
+class RefHolder {
+ public:
+  RefHolder() = default;
+  ~RefHolder();
+  RefHolder(const RefHolder &) = delete;
+  RefHolder &operator=(const RefHolder &) = delete;
+
+  // Calls `bind` on `instance` into the slot. Returns false when anything
+  // needed is missing; object() is then nullptr.
+  bool call(GDExtensionMethodBindPtr bind, void *instance);
+  void *object() const;
+  // Drops the reference now (also done by the destructor). Idempotent.
+  void release();
+
+ private:
+  void *slot_ = nullptr;  // a Ref<RefCounted>: one pointer, zero = null
+  bool filled_ = false;
+};
+
+// `object` when it is an instance of `class_name` (or a subclass), else
+// nullptr, via classdb_get_class_tag + object_cast_to.
+void *cast_to(void *object, const char *class_name);
 
 }  // namespace grc

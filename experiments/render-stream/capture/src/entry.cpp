@@ -4,10 +4,19 @@
 // `calib.h` has passed and `GRC_MODE=arm` was asked for. `validate` runs the
 // identical checks and writes the identical evidence, but never touches the
 // vptr.
+//
+// With GRC_STREAM_OUT set and the library armed, it also publishes the
+// render-stream/0 recording (protocol/gate0-design.md "Publication"): the
+// canvas mirror is enabled and the root viewport queried right after the vptr
+// store, the session record is written at arm, one transaction per armed frame
+// callback, and the end record exactly once at disarm or shutdown. Without
+// GRC_STREAM_OUT the mirror stays off and the hooks behave as at gate -1.
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -15,6 +24,9 @@
 #include "hooks.h"
 #include "iface.h"
 #include "report.h"
+#include "rs0_mirror.h"
+#include "rs0_publish.h"
+#include "rs0_root_query.h"
 #include "vtable.h"
 
 namespace grc {
@@ -51,7 +63,22 @@ struct State {
   std::string display_server;
   std::string rendering_driver;
   std::string rendering_method;
+
+  // The hook plan of the arm decision (session capture.hooks_*).
+  HookPlan plan;
 };
+
+// The render-stream/0 publication (gate 0). `status` is result.json
+// `stream.status`: off | open | closed | refused | open-failed.
+struct Stream {
+  std::string path;  // GRC_STREAM_OUT; empty when unset
+  std::string status = "off";
+  std::string reason;  // empty -> null
+  std::unique_ptr<rs0::FileRecordSink> sink;
+  std::unique_ptr<rs0::Publisher> publisher;
+};
+
+Stream g_stream;
 
 State g_state;
 
@@ -88,6 +115,15 @@ std::string result_json() {
   json.field_or_null("display_server", g_state.display_server);
   json.field_or_null("rendering_driver", g_state.rendering_driver);
   json.field_or_null("rendering_method", g_state.rendering_method);
+  // Additive (gate 0): the schema string is unchanged.
+  json.key("stream").object_begin();
+  json.field_or_null("path", g_stream.path);
+  json.field("status", g_stream.status);
+  json.field_or_null("reason", g_stream.reason);
+  json.field("transactions",
+             static_cast<int64_t>(g_stream.publisher != nullptr ? g_stream.publisher->transactions()
+                                                                : 0));
+  json.object_end();
   json.object_end();
   return json.take();
 }
@@ -173,6 +209,131 @@ void decide(const std::string &status, const std::string &reason) {
 
 void refuse(const std::string &reason) { decide("refused", reason); }
 
+uint64_t monotonic_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now().time_since_epoch())
+                                   .count());
+}
+
+// At arm, right after the vptr store: validates the sabotage environment,
+// opens the recording, enables the mirror, runs the root query and writes the
+// session record. A refusal or an open failure leaves the mirror off and
+// publishes nothing; arming itself is unaffected.
+void stream_start() {
+  if (g_stream.path.empty()) {
+    return;
+  }
+  const char *sabotage_kind = std::getenv("GRC_SABOTAGE");
+  const char *sabotage_frame = std::getenv("GRC_SABOTAGE_FRAME");
+  // GRC_SABOTAGE_FRAME is read only when GRC_SABOTAGE is set.
+  const rs0::ParseResult sabotage =
+      rs0::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr);
+  if (!sabotage.ok) {
+    log_line(std::string("stream: refused sabotage=") +
+             (sabotage_kind != nullptr ? sabotage_kind : "") +
+             (sabotage_frame != nullptr ? std::string(" frame=") + sabotage_frame
+                                        : std::string()) +
+             " (" + sabotage.error + ")");
+    g_stream.status = "refused";
+    g_stream.reason = sabotage.error;
+    return;
+  }
+
+  rs0::Session session;
+  session.session_id = rs0::generate_session_id();
+  session.engine.version_string = g_state.fp.version_string;
+  session.engine.sha256 = g_state.fp.exe_sha256;
+  session.engine.display_server = g_state.display_server;
+  session.engine.rendering_driver = g_state.rendering_driver;
+  session.engine.rendering_method = g_state.rendering_method;
+  session.capture.calibrator_version =
+      static_cast<uint32_t>(std::strtoul(g_state.calib.calibrator_version.c_str(), nullptr, 10));
+  session.capture.hooks_planned = g_state.plan.planned;
+  session.capture.hooks_omitted = g_state.plan.omitted;
+  session.features = rs0::gate0_features();
+  if (sabotage.config.kind != rs0::SabotageKind::None) {
+    session.sabotage.kind = sabotage.config.kind;
+    session.sabotage.frame = sabotage.config.frame;
+  }
+
+  g_stream.sink = std::make_unique<rs0::FileRecordSink>();
+  if (!g_stream.sink->open(g_stream.path)) {
+    log_line("stream: cannot open " + g_stream.path);
+    g_stream.status = "open-failed";
+    g_stream.reason = "cannot open the recording";
+    g_stream.sink.reset();
+    return;
+  }
+
+  rs0::mirror_enable(true);  // off -> on: a fresh mirror session
+  const rs0::RootInfo root = rs0::root_query_run();
+  rs0::root_query_apply(root);  // a failure becomes the sticky root-query-failed
+  if (sabotage.config.kind == rs0::SabotageKind::OmitUpdate) {
+    rs0::mirror_set_drop_frame(sabotage.config.frame);
+  }
+  session.viewport.canvas_cull_mask = root.canvas_cull_mask;
+  session.viewport.root_canvas = rs0::kRootCanvasId;
+  session.clear_color = root.clear_color;
+  session.root_canvas_xform = root.canvas_xform;
+  session.host_visible_rect = root.visible_rect;
+
+  g_stream.publisher = std::make_unique<rs0::Publisher>(*g_stream.sink, sabotage.config);
+  if (!g_stream.publisher->start(session)) {
+    log_line("stream: cannot write the session record to " + g_stream.path);
+    rs0::mirror_enable(false);
+    g_stream.sink->close();
+    g_stream.status = "open-failed";
+    g_stream.reason = "session write failed";
+    return;
+  }
+  g_stream.status = "open";
+  log_line("stream: open " + g_stream.path + " session=" + session.session_id +
+           " root_query=" + (root.ok ? std::string("ok") : "failed at " + root.failed_step) +
+           " sabotage=" +
+           (sabotage.config.kind == rs0::SabotageKind::None
+                ? std::string("none")
+                : std::string(rs0::to_wire(sabotage.config.kind)) + "@" +
+                      std::to_string(sabotage.config.frame)));
+}
+
+// Writes the end record and closes the recording. Only the first call while
+// the stream is open does anything, so disarm, shutdown and deinitialize can
+// all call it.
+void stream_finish(rs0::EndReason reason) {
+  if (g_stream.status != "open") {
+    return;
+  }
+  rs0::mirror_enable(false);
+  const bool ok = g_stream.publisher->finish(reason);
+  g_stream.status = "closed";
+  if (!ok && g_stream.reason.empty()) {
+    g_stream.reason = "end record write failed";
+  }
+  const rs0::EndStats &stats = g_stream.publisher->stats();
+  log_line(std::string("stream: closed (") + rs0::to_wire(reason) +
+           ") transactions=" + std::to_string(g_stream.publisher->transactions()) +
+           " bytes_total=" + std::to_string(stats.bytes_total) +
+           " max_record_bytes=" + std::to_string(stats.max_record_bytes) +
+           " encode_ns_total=" + std::to_string(stats.encode_ns_total) +
+           " snapshot_ns_total=" + std::to_string(stats.snapshot_ns_total));
+}
+
+// One transaction for the frame callback at the end of iteration `frame`.
+// The snapshot is copied under the mirror lock (timed) and encoded outside it.
+void stream_publish(uint64_t frame) {
+  if (g_stream.status != "open") {
+    return;
+  }
+  const uint64_t t0 = monotonic_ns();
+  rs0::Snapshot snapshot = rs0::mirror_snapshot(0, frame);
+  const uint64_t snapshot_ns = monotonic_ns() - t0;
+  if (!g_stream.publisher->publish_transaction(std::move(snapshot), frame, snapshot_ns)) {
+    log_line("stream: write failed at frame " + std::to_string(frame));
+    g_stream.reason = "transaction write failed";
+    stream_finish(rs0::EndReason::Shutdown);
+  }
+}
+
 // Runs the full check pipeline, and arms when asked to. `phase` names the
 // callback it runs from, for the log. Returns true once a decision was made.
 bool attempt(const char *phase) {
@@ -229,7 +390,7 @@ bool attempt(const char *phase) {
   // not name refuses in both modes, so validate predicts arm; an optional hook
   // it does not name (a record from an older calibrator) is left out and
   // reported, not refused. Pure bookkeeping: nothing is called or written.
-  HookPlan plan;
+  HookPlan &plan = g_state.plan;
   const bool plan_ok = hooks_plan(g_state.calib, &plan);
   g_state.checks.push_back({"hook_plan", plan_ok, hooks_plan_detail(plan)});
   if (!plan.omitted.empty()) {
@@ -257,6 +418,7 @@ bool attempt(const char *phase) {
   }
   g_state.armed = true;
   g_state.vptr_written = true;
+  stream_start();
   if (g_state.evidence_ready) {
     touch_file(path_join(g_state.evidence_dir, "armed.marker"));
   }
@@ -289,19 +451,27 @@ void on_startup() { attempt("startup"); }
 void on_frame() {
   ++g_state.frames_total;
   hooks_set_frame(g_state.frames_total + 1);
+  // Only a library armed before this callback publishes for this frame: one
+  // armed by the deferred attempt below saw none of the frame's calls.
+  const bool armed_at_start = g_state.armed;
   if (!g_state.decided) {
     attempt("frame");
+  }
+  if (armed_at_start) {
+    stream_publish(g_state.frames_total);
   }
   if (g_state.armed) {
     ++g_state.frames_armed;
     if (g_state.disarm_after_frames >= 0 &&
         static_cast<int64_t>(g_state.frames_armed) >= g_state.disarm_after_frames) {
+      stream_finish(rs0::EndReason::Disarm);
       do_disarm("frame");
     }
   }
 }
 
 void on_shutdown() {
+  stream_finish(rs0::EndReason::Shutdown);
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
   emit("result.json", result_json());
@@ -320,6 +490,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_state.mode = mode.empty() ? std::string("validate") : mode;
   const std::string frames = env_string("GRC_DISARM_AFTER_FRAMES");
   g_state.disarm_after_frames = frames.empty() ? -1 : std::strtoll(frames.c_str(), nullptr, 10);
+  g_stream.path = env_string("GRC_STREAM_OUT");
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);
     if (!g_state.evidence_ready) {
@@ -329,7 +500,8 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   log_line("scene init: mode=" + g_state.mode + " calibration=" +
            (g_state.calibration_path.empty() ? "<unset>" : g_state.calibration_path) +
            " evidence=" + (g_state.evidence_dir.empty() ? "<stdout>" : g_state.evidence_dir) +
-           " disarm_after_frames=" + std::to_string(g_state.disarm_after_frames));
+           " disarm_after_frames=" + std::to_string(g_state.disarm_after_frames) +
+           " stream=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path));
   attempt("scene-init");
 }
 
@@ -339,6 +511,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   }
   // The shutdown callback normally gets here first; this is the backstop for an
   // unload that happens without it.
+  stream_finish(rs0::EndReason::Shutdown);
   do_disarm("deinitialize");
 }
 

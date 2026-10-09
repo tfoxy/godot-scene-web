@@ -43,6 +43,15 @@ bool iface_load(GDExtensionInterfaceGetProcAddress get_proc_address,
   ok &= bind_one(get_proc_address, "register_main_loop_callbacks",
                  &g_iface.register_main_loop_callbacks);
   g_iface.complete = ok;
+  // Optional (see iface.h): a miss is not recorded in `missing`.
+  g_iface.ref_get_object =
+      reinterpret_cast<GDExtensionInterfaceRefGetObject>(get_proc_address("ref_get_object"));
+  g_iface.ref_set_object =
+      reinterpret_cast<GDExtensionInterfaceRefSetObject>(get_proc_address("ref_set_object"));
+  g_iface.classdb_get_class_tag = reinterpret_cast<GDExtensionInterfaceClassdbGetClassTag>(
+      get_proc_address("classdb_get_class_tag"));
+  g_iface.object_cast_to =
+      reinterpret_cast<GDExtensionInterfaceObjectCastTo>(get_proc_address("object_cast_to"));
   return ok;
 }
 
@@ -138,6 +147,75 @@ std::string singleton_string(const char *singleton, const char *class_name,
     return std::string();
   }
   return text;
+}
+
+bool call_object_getter(GDExtensionMethodBindPtr bind, void *instance, void **out) {
+  if (bind == nullptr || instance == nullptr || g_iface.object_method_bind_ptrcall == nullptr) {
+    return false;
+  }
+  void *object = nullptr;
+  g_iface.object_method_bind_ptrcall(bind, instance, nullptr, &object);
+  *out = object;
+  return true;
+}
+
+bool call_rid_getter(GDExtensionMethodBindPtr bind, void *instance, uint64_t *out) {
+  return call_value_getter(bind, instance, out, sizeof(uint64_t));
+}
+
+bool call_value_getter(GDExtensionMethodBindPtr bind, void *instance, void *out, size_t size) {
+  if (bind == nullptr || instance == nullptr || g_iface.object_method_bind_ptrcall == nullptr ||
+      size > 64) {
+    return false;
+  }
+  // Aligned scratch the size of the largest value read here, so a callee that
+  // writes its full type never writes past the caller's object.
+  alignas(16) unsigned char scratch[64] = {};
+  g_iface.object_method_bind_ptrcall(bind, instance, nullptr, scratch);
+  std::memcpy(out, scratch, size);
+  return true;
+}
+
+RefHolder::~RefHolder() { release(); }
+
+bool RefHolder::call(GDExtensionMethodBindPtr bind, void *instance) {
+  release();
+  if (bind == nullptr || instance == nullptr || g_iface.object_method_bind_ptrcall == nullptr ||
+      g_iface.ref_get_object == nullptr || g_iface.ref_set_object == nullptr) {
+    return false;
+  }
+  slot_ = nullptr;
+  g_iface.object_method_bind_ptrcall(bind, instance, nullptr, &slot_);
+  filled_ = true;
+  return true;
+}
+
+void *RefHolder::object() const {
+  if (!filled_ || g_iface.ref_get_object == nullptr) {
+    return nullptr;
+  }
+  return g_iface.ref_get_object(&slot_);
+}
+
+void RefHolder::release() {
+  if (filled_ && g_iface.ref_set_object != nullptr) {
+    g_iface.ref_set_object(&slot_, nullptr);
+  }
+  filled_ = false;
+  slot_ = nullptr;
+}
+
+void *cast_to(void *object, const char *class_name) {
+  if (object == nullptr || g_iface.classdb_get_class_tag == nullptr ||
+      g_iface.object_cast_to == nullptr) {
+    return nullptr;
+  }
+  StringName name(class_name);
+  void *tag = g_iface.classdb_get_class_tag(name.ptr());
+  if (tag == nullptr) {
+    return nullptr;
+  }
+  return g_iface.object_cast_to(object, tag);
 }
 
 }  // namespace grc

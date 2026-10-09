@@ -33,6 +33,7 @@
     "text:report": "tsx --conditions=development packages/perf-harness/src/text-report.ts",
     "release:check-tag": "tsx scripts/validate-release-tag.ts",
     "render-stream:gate-minus1": "bash experiments/render-stream/scripts/run-gate-minus1.sh",
+    "render-stream:gate0": "bash experiments/render-stream/scripts/run-gate0.sh",
     "typecheck": "pnpm -r --filter './packages/**' --filter './apps/**' run typecheck"
   },
   "devDependencies": {
