@@ -1,11 +1,24 @@
 // rs_ws: a minimal, dependency-free RFC 6455 WebSocket server on its own I/O
 // thread (protocol/gate1-design.md D3, Q3, Q4 "Where the WebSocket server
-// lives" / "Live transport placement").
+// lives" / "Live transport placement"), plus plain HTTP/1.1 GET serving on
+// the same loopback listener (protocol/gate2-design.md D6, Q4 "Live: server,
+// store and pins", G2c1; protocol/render-stream-2.md "HTTP (live)").
 //
 // Transport only: it moves opaque binary messages out and small text
-// messages in. It knows nothing about render-stream records, the mirror or
-// any protocol framing above RFC 6455 -- that is G1c2's rs1_live layer,
-// built on top of this one.
+// messages in over the WebSocket path, and serves byte blobs by content hash
+// over plain HTTP GET. It knows nothing about render-stream records, the
+// mirror, payload formats or any protocol framing above RFC 6455 / RFC 7230
+// -- that is G1c2's rs1_live layer and G2c2's rs_resource_store, built on
+// top of this one.
+//
+// Routing: every accepted connection starts out unclassified. The first
+// (and, for an HTTP connection, every subsequent) request line's target path
+// decides the route: an exact match against ServerConfig::path is a
+// WebSocket upgrade attempt; a prefix match against
+// ServerConfig::resource_prefix is a resource GET; anything else is 404.
+// Once a connection becomes a WebSocket (a successful 101), it never serves
+// HTTP again; an HTTP connection may serve any number of further requests,
+// sequentially (no pipelining), until it or the peer closes it.
 //
 // Threading: start() spawns one I/O thread that owns every socket and never
 // touches anything outside this file. Every public method below may be
@@ -14,7 +27,10 @@
 // the caller's thread communicate only through the Server's internal mutex
 // and a self-pipe used to wake poll(2) -- never a callback, so encoding and
 // mirror access stay entirely on the caller's thread (gate1-design.md Q3,
-// "All encoding happens on the main thread").
+// "All encoding happens on the main thread"). ResourceSource::lookup() is
+// the one exception: it is called directly from the I/O thread (never the
+// caller's thread), so it must be thread-safe and must not block on
+// anything slower than memory (gate2-design.md Q4).
 //
 // Protocol subset implemented (gate1-design.md G1c1 "Protocol subset"):
 //   - Handshake: GET <path> HTTP/1.1 with Upgrade: websocket, a Connection
@@ -38,6 +54,36 @@
 //     expected to.
 //   - Bind is loopback-only: ServerConfig::host must be exactly "127.0.0.1"
 //     or "::1"; start() refuses (error "non-loopback") for anything else.
+//
+// HTTP GET subset implemented (gate2-design.md G2c1, render-stream-2.md
+// "HTTP (live)"):
+//   - `GET <resource_prefix><hash> HTTP/1.1` where <hash> is exactly 64
+//     lowercase hex characters. ResourceSource::lookup(hash) decides the
+//     body: non-null -> 200 with Content-Type: application/octet-stream,
+//     Content-Length, `Cache-Control: private, max-age=31536000, immutable`
+//     and `ETag: "<hash>"`; null -> 404. `If-None-Match: "<hash>"` on a hash
+//     the source holds gets 304 (same cache headers, no body) instead of
+//     200. A malformed path under resource_prefix (wrong hash length or
+//     case, non-hex) -> 400. A non-GET method under resource_prefix -> 405
+//     with `Allow: GET`. Every response carries an explicit Content-Length
+//     (0 for every bodyless response) so a client that does not special-case
+//     204/304 framing (Godot's HTTPClientTCP among them) still frames the
+//     next response on the same connection correctly.
+//   - `source` may be null (no provider registered yet): every resource GET
+//     then answers 404. The source is consulted on every GET; the server
+//     does no caching of its own.
+//   - Keep-alive is the default; a request with `Connection: close` (or a
+//     request this server cannot safely keep parsing past, such as an
+//     unreadable request line) closes the TCP connection after the response
+//     is flushed. No pipelining: this server only starts parsing the next
+//     request once the previous one's response has been fully framed (it
+//     does not wait for the peer to have read it, which it cannot observe).
+//   - max_http_clients bounds the number of TCP connections concurrently
+//     classified as HTTP (independently of max_clients, which bounds only
+//     WebSocket connections -- a resource fetch over HTTP must be able to
+//     proceed while the one WebSocket slot is in use). Exceeding it ->
+//     503, connection closed. A WebSocket connection never counts against
+//     it, and vice versa.
 #ifndef GRC_RS_WS_H
 #define GRC_RS_WS_H
 
@@ -45,6 +91,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace grc {
@@ -58,14 +105,36 @@ struct ServerConfig {
   std::string path = "/render-stream";
   std::string subprotocol = "render-stream.1";
   std::size_t max_queued_bytes = 64u << 20;  // safety net, closes 1008.
+  std::string resource_prefix = "/resources/sha256/";
+  std::size_t max_http_clients = 8;  // concurrent HTTP (non-WebSocket) connections.
+};
+
+// What the server asks for the bytes behind a resource hash. Implemented by
+// G2c2's rs_resource_store; rs_ws knows nothing about where the bytes come
+// from or what they mean.
+class ResourceSource {
+ public:
+  virtual ~ResourceSource() = default;
+
+  // Called on the I/O thread for every resource GET whose hash is already
+  // validated (exactly 64 lowercase hex characters). Must be thread-safe
+  // (the caller's thread may be forming a snapshot concurrently) and must
+  // never block on anything slower than memory -- the I/O thread serves
+  // every other connection, WebSocket included, from the same poll() loop.
+  // Returns the payload bytes, or null to answer 404.
+  virtual std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) = 0;
 };
 
 struct Event {
-  enum Kind { Opened, Text, Closed } kind;
+  enum Kind { Opened, Text, Closed, HttpGet } kind;
   std::uint32_t conn = 0;
   std::string text;          // Kind::Text: the message. Kind::Closed: the reason, if any.
   std::uint16_t code = 0;    // Kind::Closed only.
   std::string reason;        // Kind::Closed only (duplicates text for readability at call sites).
+  std::string hash;          // Kind::HttpGet only: the hash from the request path (as received;
+                             // may be malformed -- that is part of what the 400/405 cases report).
+  std::uint16_t http_status = 0;  // Kind::HttpGet only: the status sent (200, 304, 400, 404, 405, 503).
+  std::uint64_t bytes = 0;        // Kind::HttpGet only: the response body size (0 unless 200).
   // steady_clock nanoseconds when the I/O thread observed the event (set by the server; G1c2
   // measures credit round trips from it, independently of when the main thread drains events).
   std::uint64_t t_ns = 0;
@@ -78,10 +147,13 @@ class Server {
   Server(const Server &) = delete;
   Server &operator=(const Server &) = delete;
 
-  // Binds and starts the I/O thread. Returns false and sets *error without
-  // starting anything if host is not a loopback literal ("non-loopback"),
-  // the bind/listen fails (errno text), or start() was already called.
-  bool start(const ServerConfig &config, std::string *error);
+  // Binds and starts the I/O thread. `source` answers resource GETs (D6);
+  // it may be null, in which case every resource GET answers 404. `source`
+  // is never owned by the Server and must outlive it. Returns false and
+  // sets *error without starting anything if host is not a loopback literal
+  // ("non-loopback"), the bind/listen fails (errno text), or start() was
+  // already called.
+  bool start(const ServerConfig &config, ResourceSource *source, std::string *error);
 
   // The actually-bound port (meaningful once start() returned true); useful
   // when ServerConfig::port was 0.
@@ -90,7 +162,9 @@ class Server {
   // Drains and returns every event observed since the last call, in the
   // order the I/O thread observed them. Events for one connection are never
   // reordered: Opened precedes every Text for that connection, and Closed is
-  // always last.
+  // always last. An HTTP (non-WebSocket) connection produces one HttpGet
+  // event per request and never an Opened or Closed event -- Closed is
+  // reserved for a connection that reached Opened.
   std::vector<Event> take_events();
 
   // Queues one complete message for conn. Returns false, enqueuing nothing,
