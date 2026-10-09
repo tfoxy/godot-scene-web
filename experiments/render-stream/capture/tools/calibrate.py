@@ -467,10 +467,18 @@ def parse_virtuals(header_path: str, class_name: str, defines: set[str]) -> list
 # ---------------------------------------------------------------------------
 
 
-def engine_version_string(elf: Elf) -> str:
-    """The exact `GDExtensionGodotVersion2::string` literal (VERSION_FULL_NAME)."""
+DEFAULT_VERSION_NAME = "Godot Engine"
+
+
+def engine_version_string(elf: Elf, version_name: str = DEFAULT_VERSION_NAME) -> str:
+    """The exact `GDExtensionGodotVersion2::string` literal (VERSION_FULL_NAME).
+
+    That literal is `GODOT_VERSION_NAME " v" GODOT_VERSION_FULL_BUILD`; an engine
+    fork can rebrand `GODOT_VERSION_NAME`, so the name is a parameter.
+    """
     candidates = set()
-    for match in re.finditer(rb"Godot Engine v[0-9][ -~]{0,80}?\x00", elf.data):
+    pattern = re.escape(version_name.encode("ascii")) + rb" v[0-9][ -~]{0,80}?\x00"
+    for match in re.finditer(pattern, elf.data):
         if elf.offset_to_vaddr(match.start()) is None:
             continue
         candidates.add(match.group()[:-1].decode("ascii"))
@@ -600,7 +608,7 @@ def build_record(args: argparse.Namespace) -> dict:
     return {
         "schema": SCHEMA,
         "engine": {
-            "version_string": engine_version_string(elf),
+            "version_string": engine_version_string(elf, args.version_name),
             "build_id": elf.build_id(),
             "sha256": sha256_file(args.binary),
             "platform": "linux-x86_64",
@@ -639,7 +647,7 @@ def report_mask(args: argparse.Namespace) -> int:
     concrete = find_vtable(elf, concrete_ti, args.concrete_class)
     implemented = [i for i, v in enumerate(abstract["slots"]) if v is not None and elf.is_code(v)]
     print(f"binary: {args.binary}")
-    print(f"version: {engine_version_string(elf)}")
+    print(f"version: {engine_version_string(elf, args.version_name)}")
     print(f"sha256: {sha256_file(args.binary)}")
     print(f"pie: {elf.pie}  build_id: {elf.build_id()}")
     print(f"{args.abstract_class} vtable: {hex(abstract['vtable_vaddr'])} slots {len(abstract['slots'])}")
@@ -666,6 +674,11 @@ def main(argv: list[str]) -> int:
         action="append",
         default=[],
         help="preprocessor define active in the build (default: the release set, none)",
+    )
+    parser.add_argument(
+        "--version-name",
+        default=DEFAULT_VERSION_NAME,
+        help="the engine's GODOT_VERSION_NAME, which a fork may rebrand (default: %(default)s)",
     )
     parser.add_argument(
         "--flavor",
