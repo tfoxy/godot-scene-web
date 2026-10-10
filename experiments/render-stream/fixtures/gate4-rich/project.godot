@@ -1,0 +1,64 @@
+; Gate 4 fixture for the render-stream capture experiment: RichTextLabel spans (G4d). Six steps
+; (0..5) cumulatively add a colour span, a font_size span, a bold span (its own FontVariation
+; cache), an italic span (its own FontVariation cache), a bgcolor span (an add_rect) and an
+; outlined span (its own bitmap-outline cache), then append_text adds one more coloured span on a
+; new line. See fixtures/gate4-rich/README.md and ../../protocol/gate4-design.md ("G4d") for the
+; contract. Every font and text input is pinned here (gate4-design.md Q1e), copied from
+; fixtures/gate4/project.godot.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-gate4-rich-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://gate4-rich.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as gates 0-4: each warning leveled individually, 2 == ERROR.
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/stretch/scale=1.0
+window/vsync/vsync_mode=0
+
+[gui]
+
+theme/custom=""
+theme/custom_font=""
+theme/default_theme_scale=1.0
+theme/default_font_antialiasing=1
+theme/default_font_hinting=1
+theme/default_font_subpixel_positioning=0
+theme/default_font_multichannel_signed_distance_field=false
+theme/default_font_generate_mipmaps=false
+theme/lcd_subpixel_layout=1
+common/snap_controls_to_pixels=true
+
+[internationalization]
+
+rendering/text_driver=""
+rendering/root_node_layout_direction=1
+locale/test="en"
+locale/fallback="en"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)

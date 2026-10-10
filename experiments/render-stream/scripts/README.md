@@ -1029,8 +1029,30 @@ mise exec -- pnpm render-stream:gate4 -- \
   payload bytes, bytes published, copy and hash ns), `parity` (each oracle page against the
   capture's table per step), `budgets` (reference against repeat per region), `census` and `ink`)
   and exits non-zero unless `gate_passed`. It passes `receiverDir`/`fixtureDir` (G4b) in
-  `Gate4Context`.
-- `test/self-test-gate4.ts`: see below.
+  `Gate4Context`. When group `g4d` ran, it separately loads `fixtures/gate4-rich/expected.json`,
+  calls `runGate4d` (lib/gate4d-checks.ts) and merges its checks/legs/text/parity/budgets/census/
+  ink into the same report under the fixture key `"gate4-rich"`, ANDing `gate_passed` -- `runGate4`
+  itself stays unaware of G4d (no circular import: gate4d-checks.ts already imports gate4-checks.ts
+  for the pieces it reuses).
+- `fixtures/gate4-rich/`: G4d's own fixture (a `RichTextLabel`), see its own `README.md`.
+- `lib/gate4d-checks.ts`: G4d's checks (fixtures/gate4-rich/, `RichTextLabel` spans). Every check
+  id is prefixed `rich-` so it never collides with g4a/g4b's identically-shaped checks in the same
+  flat `report.checks` array. It reuses G4a/G4b's `shotsOf`/`loadShots`/`gate4Regions`/
+  `compareLegs`/`evaluateExpectedImage`/`evaluateInkPresence`/`markerAlignment`/
+  `receiverStepSeqs`/`loadReceiverShots`/`computeGate4Checkpoints`/`checkLegClass`/
+  `evaluateResourceQuiet`/`checkAtlasHashParity`/`checkAtlasAppendOnly`/`checkAtlasCensus`/
+  `textReport` unchanged (none of them depend on `OracleLine.nodes`'s per-glyph quads, which this
+  fixture's oracle never produces: Q6c, "the oracle reports glyph sets and counts per span, not
+  quads"). New: `evaluateRichOracleAgrees` (groups an outlined span's two expanded oracle entries
+  -- fill and outline pass, sharing its `key` -- rather than assuming one entry per span),
+  `evaluateRichGlyphCommands` (per-wire-id glyph counts against the oracle, bold/italic "own page",
+  `[bgcolor]` `add_rect`s), `checkRichClipRects` (gate 3's `deriveClipRects` over `RTL`'s fixed
+  clip rect), `evaluateRichCapture`/`checkRichCaptureArmed`/`checkRichHeadlessNoGpu`/
+  `checkRichStepAlignment`/`checkRichFixtureEnv` (directory-parameterized equivalents of gate0/
+  gate2b/gate3/gate4's own helpers, which hardcode the leg name `"capture"`; this fixture's legs
+  live under `rich-*/`), and `checkRichUnsupportedCaptureClass`/`checkMismatchConfinedToRegion`
+  for the underline variant.
+- `test/self-test-gate4.ts`, `test/self-test-gate4d.ts`: see below.
 
 ## Gate 4 legs and evidence under `--out`
 
@@ -1055,6 +1077,13 @@ mise exec -- pnpm render-stream:gate4 -- \
 | `receiver-layout-headless-trace`         | g4c   | `layout/receiver-headless-trace/` | the receiver, headless, `strace -f -e openat`, on `capture-layout`'s full sink |
 | `sabotage-layout-omit-atlas`             | g4c   | `layout/sabotage-omit-atlas/{capture,receiver}` | `omit-op texture_2d_update` at frame 71 (step 7, the multi-page step), default quit 102, then its receiver |
 | `capture-lcd`, `reference-lcd`, `receiver-lcd` | g4c | `layout/lcd/{capture,reference,receiver}` | `RS_FIXTURE_VARIANT=lcd` (one LCD Label `LC`): headless capture (quit 102), rendered reference (oracle off), receiver |
+| `rich-import`                            | g4d   | `rich-import/`            | `provision-fonts.sh` and `--import` of `fixtures/gate4-rich` |
+| `rich-capture`                           | g4d   | `rich-capture/`           | headless, armed, both sinks, the store, `env.json`, quit 400, strace + maps/fd |
+| `rich-reference`, `rich-reference-repeat`, `rich-reference-armed` | g4d | `rich-reference*/` | as g4a's `reference`/`reference-repeat`/`reference-armed`, for `fixtures/gate4-rich` (no "early" shots) |
+| `rich-receiver`, `rich-receiver-patch`   | g4d   | `rich-receiver*/`         | the unchanged receiver on `rich-capture`'s full and patch sinks |
+| `rich-underline/capture`                 | g4d   | `rich-underline/capture/` | headless, `RS_FIXTURE_VARIANT=underline`, the fixture's own default quit (62) |
+| `rich-underline/reference`               | g4d   | `rich-underline/reference/` | rendered, `RS_FIXTURE_VARIANT=underline`, no oracle (ground truth for the real underline stroke; not named in gate4-design.md's leg list, added here as built, mirroring G4c's three-leg LCD variant) |
+| `rich-underline/receiver`                | g4d   | `rich-underline/receiver/` | the receiver on `rich-underline/capture`'s recording |
 
 ## Gate 4 criteria (g4a)
 
@@ -1128,12 +1157,40 @@ exactly `clip_rects` and no other Label a clip), `leg-class-sabotage-layout-omit
 `unsupported-op`, its RGBA8 page `ok`) and `leg-class-receiver-lcd` (`unsupported`, differing
 from `reference-lcd` only inside LC's region).
 
+## Gate 4 criteria (g4d)
+
+`rich-capture-armed`, `rich-headless-no-gpu`, `rich-step-alignment`, `rich-fixture-env`,
+`rich-leg-class-capture`, `rich-receiver-vs-reference`, `rich-expected-image-{reference,receiver}`,
+`rich-ink-presence-{reference,receiver}`, `rich-reference-repeat-budget`, `rich-armed-transparent`,
+`rich-resource-quiet` and `rich-leg-class-receiver{,-patch}` are g4a/g4b's own checks run over
+`fixtures/gate4-rich/` (its own `RTL` region in place of the seven Label regions, no panel).
+`rich-atlas-hash-parity`, `rich-atlas-append-only` and `rich-atlas-census` are g4a's
+`checkAtlasHashParity`/`checkAtlasAppendOnly`/`checkAtlasCensus` reused unchanged, over the five
+caches `F@16`, `F@24`, `FB@16`, `FI@16` and `FO@16` (the outlined span's outline-pass cache,
+relabelled so it never collides with `F@16` under `cacheKeyOf`'s `font_key@size` grouping).
+`rich-oracle-agrees` requires the oracle's per-span glyph_count and cache (an outlined span's two
+expanded entries, grouped by `key`) to equal `expected.json`'s independent derivation, and both
+reference legs to write byte-identical oracle logs. `rich-glyph-commands` groups `RTL`'s
+`add_texture_rect_region` commands by wire id and requires the sum to equal the oracle's per-span
+glyph_count grouped by the same id (through `rich-atlas-hash-parity`'s mapping), requires bold and
+italic to map to a wire id distinct from the plain fill cache ("own page"), and requires each
+`[bgcolor]` span to have exactly one colour-matching `add_rect`. `rich-clip-rects-derived` requires
+`deriveClipRects` (lib/clip-derive.ts) over `RTL` on each settle transaction of both sinks to equal
+`expected.json`'s fixed clip rect for every step. `rich-underline-capture-class` requires
+`rich-underline/capture`'s own recording to classify `unsupported` purely from an observed
+`canvas_item_add_line` command (no receiver or pixel comparison). `leg-class-rich-underline-
+receiver` requires `unsupported` with every step a predicted mismatch, and `rich-underline-
+confined` requires that mismatch to sit entirely inside `RTL`'s region at every step, with every
+other region (the marker) exact.
+
 ## Gate 4 self-test
 
 ```bash
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate4.ts
 python3 experiments/render-stream/fixtures/gate4/make_expected.py --check
 python3 experiments/render-stream/fixtures/gate4-layout/make_expected.py --check
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate4d.ts
+python3 experiments/render-stream/fixtures/gate4-rich/make_expected.py --check
 ```
 
 Group g4c's cases are in `test/gate4c-cases.ts`: `expected.json`'s rules and hand-typed census
@@ -1154,3 +1211,12 @@ background whose channels are hand-computed (no rounding ambiguity), a pixel out
 stays the background, an identical copy compares with zero mismatch, a perturbed pixel is reported
 with its exact delta, and a glyph naming a page the caller never loaded is recorded as missing
 rather than synthesized wrong.
+
+`self-test-gate4d.ts` covers only what G4d adds (every reused check already has its own case
+above, against the same functions): `evaluateRichOracleAgrees` over an oracle synthesized from
+`fixtures/gate4-rich/expected.json`'s own `spans` (independent of `glyph_oracle.gd`, as
+`buildWorld` is independent of `fixtures/gate4/glyph_oracle.gd`) passes, then fails on a
+byte-differing second leg, a wrong `glyph_count`, a missing outline-pass entry for the outlined
+span (an outlined span needs exactly two oracle entries sharing its key, not one), and a wrong
+`page_glyphs` prediction; `checkMismatchConfinedToRegion` passes when only `RTL` differs and fails
+when the marker also differs or when `RTL` itself has no mismatch.

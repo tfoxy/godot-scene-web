@@ -14,8 +14,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type FontLockEntry, runGate4 } from "./lib/gate4-checks";
+import { type FontLockEntry, readGroups, runGate4 } from "./lib/gate4-checks";
 import type { Gate4Expected } from "./lib/gate4-expected";
+import { type Gate4RichExpected, runGate4d } from "./lib/gate4d-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -48,6 +49,32 @@ async function main(): Promise<void> {
     receiverDir: join(EXPERIMENT_DIR, "receiver"),
     fixtureDir: fixture,
   });
+
+  // G4d: fixtures/gate4-rich/ is its own fixture with its own expected.json and legs
+  // (rich-*/ under the same --out), evaluated by runGate4d and merged into the same report so
+  // `--legs g4a,g4b,g4d` gives one gate_passed verdict.
+  const groups = await readGroups(out);
+  if (groups.run.includes("g4d")) {
+    const richFixture = join(EXPERIMENT_DIR, "fixtures", "gate4-rich");
+    const richExpected = JSON.parse(
+      await readFile(join(richFixture, "expected.json"), "utf8"),
+    ) as Gate4RichExpected;
+    const rich = await runGate4d(out, {
+      expected: richExpected,
+      fixtureDir: richFixture,
+      receiverDir: join(EXPERIMENT_DIR, "receiver"),
+    });
+    report.checks.push(...rich.checks);
+    Object.assign(report.legs, rich.legs);
+    report.text = { ...(report.text ?? {}), "gate4-rich": rich.text };
+    report.parity = { ...(report.parity ?? {}), "gate4-rich": rich.parity };
+    report.budgets = { ...(report.budgets ?? {}), "gate4-rich": rich.budgets };
+    report.census = { ...(report.census ?? {}), "gate4-rich": rich.census };
+    report.ink = { ...(report.ink ?? {}), "gate4-rich": rich.ink };
+    report.gate_passed =
+      report.gate_passed && rich.checks.every((c) => c.status === "pass");
+  }
+
   await writeFile(
     join(out, "result.json"),
     `${JSON.stringify(report, null, 2)}\n`,

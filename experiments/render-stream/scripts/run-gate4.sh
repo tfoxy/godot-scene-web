@@ -19,8 +19,12 @@
 # fixtures/gate4-layout -- sizes, pages, wrapping, alignment, clip_text, outline, shadow, subpixel,
 # page lifetime -- through G4a's and G4b's legs under <out>/layout/, plus the LCD variant's
 # capture, reference and receiver and sabotage-layout-omit-atlas; independent of g4a/g4b). g4d
-# (RichTextLabel), g4e (MSDF on render-stream/3) and g4f (multilingual shaping) are known but have
-# not landed.
+# (G4d: fixtures/gate4-rich/, a RichTextLabel with colour, font_size, bold, italic, bgcolor and
+# outlined spans plus an append_text step, under its own rich-*/ directories so it never collides
+# with g4a/g4b; three rendered references, two rendered receivers, and an underline variant --
+# rich-underline/{capture,reference,receiver} -- whose add_line is typed unsupported) is also
+# independent of g4a/g4b and can run alone. g4e (MSDF on render-stream/3) and g4f (multilingual
+# shaping) are known but have not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -44,7 +48,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g4a g4b g4c)
+LANDED_GROUPS=(g4a g4b g4c g4d)
 KNOWN_GROUPS=(g4a g4b g4c g4d g4e g4f)
 
 # The fixture's default timeline (fixtures/gate4/expected.json): S=1, N=10, so step k's applied
@@ -53,6 +57,12 @@ KNOWN_GROUPS=(g4a g4b g4c g4d g4e g4f)
 START_FRAME4=1
 STEP_FRAMES4=10
 step_frame4() { echo $((START_FRAME4 + STEP_FRAMES4 * $1)); }
+
+# fixtures/gate4-rich/ (G4d): its own fixture (RichTextLabel spans), so its legs live under
+# rich-*/ to avoid colliding with g4a/g4b's capture/, reference/, receiver/. Its timeline is
+# S=1, N=10 too, but only 6 steps (0..5, no "early" shots).
+RICH_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate4-rich"
+step_frame4d() { echo $((START_FRAME4 + STEP_FRAMES4 * $1)); }
 
 EXTENSION=""
 CALIBRATION=""
@@ -475,11 +485,102 @@ run_g4c() {
 	GS_RUN_DIR=""
 }
 
+# run_rich_reference <dir> [variant]: as run_reference, for fixtures/gate4-rich. `variant`
+# (optional, e.g. "underline") sets RS_FIXTURE_VARIANT. REFERENCE_ARMED/REFERENCE_ORACLE as
+# run_reference (both reset to 0 after the call).
+run_rich_reference() {
+	local dir="$1" variant="${2:-}" armed="$REFERENCE_ARMED" oracle="$REFERENCE_ORACLE"
+	REFERENCE_ARMED=0
+	REFERENCE_ORACLE=0
+	mkdir -p "$dir/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_ENV_LOG="$dir/env.json")
+	if [ -n "$variant" ]; then
+		LEG_ENV+=(RS_FIXTURE_VARIANT="$variant")
+	fi
+	if [ "$oracle" = "1" ]; then
+		mkdir -p "$dir/oracle"
+		LEG_ENV+=(RS_FIXTURE_GLYPH_LOG="$dir/oracle/glyphs.jsonl")
+	fi
+	if [ "$armed" = "1" ]; then
+		mkdir -p "$dir/evidence"
+		LEG_ENV+=(
+			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+			GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+			GRC_RESOURCE_STORE_DIR="$dir/store"
+		)
+	fi
+	run_rendered "$dir" "$RICH_FIXTURE_DIR"
+}
+
+# run_g4d: fixtures/gate4-rich/ (RichTextLabel spans). Its own fixture, provisioned and imported
+# like g4a's, then a 400-frame capture (env.json, both sinks, store), three rendered references
+# (oracle on, oracle on again, extension-armed with oracle off) and two rendered receivers (full
+# and patch sinks) -- all under rich-*/ so they never collide with g4a/g4b's directories in the
+# same --out. The underline variant (RS_FIXTURE_VARIANT=underline) gets its own fresh capture,
+# rendered reference and rendered receiver under rich-underline/ (gate4-design.md "G4d": "capture-
+# underline and receiver-underline -> unsupported, mismatch only in its region", which needs a
+# rendered reference-underline too, to know where the real stroke pixels are -- not named in the
+# contract's leg list, added here as built, mirroring G4c's three-leg LCD variant).
+run_g4d() {
+	echo "run-gate4: provisioning fonts (gate4-rich)"
+	mkdir -p "$OUT/rich-import"
+	if ! bash "$SCRIPT_DIR/lib/provision-fonts.sh" "$RICH_FIXTURE_DIR" >"$OUT/rich-import/fonts.log" 2>&1; then
+		cat "$OUT/rich-import/fonts.log" >&2
+		echo "run-gate4: font provisioning failed (gate4-rich), see $OUT/rich-import/fonts.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate4: import (gate4-rich)"
+	LEG_ENV=()
+	run_headless "$OUT/rich-import/fixture" none -- mise exec -- godot --headless --path "$RICH_FIXTURE_DIR" --import
+	if [ "$(cat "$OUT/rich-import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate4: import of $RICH_FIXTURE_DIR failed, see $OUT/rich-import/fixture/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate4: rich-capture"
+	CAPTURE_FIXTURE_DIR="$RICH_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_ENV_LOG="$OUT/rich-capture/env.json")
+	run_capture "$OUT/rich-capture" "$CAPTURE_QUIT_FRAME" capture
+
+	echo "run-gate4: rich-underline capture (headless, fixture's own default quit)"
+	CAPTURE_FIXTURE_DIR="$RICH_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=underline)
+	run_capture "$OUT/rich-underline/capture" "" none
+
+	echo "run-gate4: bringing up private gamescope for g4d rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g4d"
+
+	echo "run-gate4: rich-reference (oracle on)"
+	REFERENCE_ORACLE=1
+	run_rich_reference "$OUT/rich-reference"
+	echo "run-gate4: rich-reference-repeat (oracle on)"
+	REFERENCE_ORACLE=1
+	run_rich_reference "$OUT/rich-reference-repeat"
+	echo "run-gate4: rich-reference-armed (extension armed, stream on, oracle off)"
+	REFERENCE_ARMED=1
+	run_rich_reference "$OUT/rich-reference-armed"
+	echo "run-gate4: rich-underline reference (no oracle)"
+	run_rich_reference "$OUT/rich-underline/reference" underline
+
+	echo "run-gate4: rich-receiver (full sink)"
+	run_rendered_receiver "$OUT/rich-capture" "$OUT/rich-receiver"
+	echo "run-gate4: rich-receiver-patch"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/rich-capture" "$OUT/rich-receiver-patch"
+	echo "run-gate4: rich-underline receiver"
+	run_rendered_receiver "$OUT/rich-underline/capture" "$OUT/rich-underline/receiver"
+
+	gs_teardown "$OUT/gamescope-g4d"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g4a) run_g4a ;;
 	g4b) run_g4b ;;
 	g4c) run_g4c ;;
+	g4d) run_g4d ;;
 	esac
 done
 

@@ -806,6 +806,48 @@ also imports `receiver/`, since a fresh worktree has never imported it.
 
 **Pass criteria**: `--legs …,g4d` is green. The README gains "Gate 4d result".
 
+**As built (G4d, 2026-10-10).** Four things the contract did not predict, all confirmed against
+the rendered reference and amended rather than hidden:
+
+1. **`RichTextLabel` is never `leg-class` `success`.** Its line-draw pass (the background/
+   foreground box loop, `scene/gui/rich_text_label.cpp`) unconditionally calls
+   `draw_set_transform_matrix` once per line to reset the transform after drawing boxes --
+   identity or not, every line, every `RichTextLabel`, regardless of content. That lowers to
+   `canvas_item_add_set_transform`, which `render-stream-0.md`'s `observed_unsupported_ops` types
+   `unsupported` (unrelated to spans, outlines or the underline variant). So `rich-capture`,
+   `rich-receiver` and `rich-receiver-patch` classify `unsupported`, not `success`; G4d's checks
+   require that and nothing else unsupported (`rich-leg-class-capture`), and separately require
+   zero pixel mismatch at every step (the reset is visually inert here, since no span uses
+   `[transform]`). The underline variant's `leg-class` is `unsupported` for two reasons once this
+   is accounted for, not one -- `rich-underline-capture-class` only asserts `canvas_item_add_line`
+   is *among* the reasons, not the only one.
+2. **`RichTextLabel` always has an internal `VScrollBar` child**, its own `CanvasItem` created
+   right after `RTL`'s own and before `Marker`'s (`scene/gui/rich_text_label.cpp:8064-8068`),
+   present regardless of `scroll_active` and drawing nothing here. `creation_order` is
+   `["RTL", "RTL_VScrollBar", "Marker"]`, not two names: a fixture with exactly two `CanvasItem`
+   constructions and a `RichTextLabel` among them is not possible.
+3. **The outlined span's two-pass predictions held exactly.** `glyph_oracle.gd` expands one
+   `outline > 0` span into two reports sharing its `key` (fill, cache `font_key@size`; outline,
+   relabelled `font_key + "O"`); `make_expected.py`'s independent derivation and the real
+   `FO@16` page (own `texture_2d_create`, 8 glyphs, distinct wire id from `F@16`) agreed on the
+   first run.
+4. **A fill cache uploads once per redraw; an outline cache uploads once per new glyph.** The
+   first `make_expected.py` draft modelled every cache like a fill cache (Q1c's "each Label draw
+   that introduced new glyphs into a page uploads it exactly once"), predicting one hook-level
+   event for `FO@16`'s first 8 glyphs; the measured capture showed 8 (`atlas-census` failed
+   61/62, one checker re-run against the unchanged evidence after the fix: 62/62, memory
+   rs-g4b-receiver-checker-facts' pattern one gate later). The difference is in the source:
+   `_font_draw_glyph` rasterizes every glyph a redraw needs during shaping, before any drawing, so
+   the whole fill batch dirties and uploads its page once; `_font_draw_glyph_outline`
+   (`ts_adv:4068-4136`) calls `_ensure_glyph` and checks its own texture's `dirty` flag itself,
+   inline in the per-glyph draw loop, with no shaping-time pre-rasterization of its own -- so each
+   newly-rasterized outline glyph dirties the page and is immediately re-uploaded before the next
+   glyph rasterizes. `page_creates`/`page_uploads`/`hook_versions` for an outline cache are
+   therefore `1` create plus one update *per newly-rasterized glyph that step*, not one event for
+   the whole span; a fill cache (any font_key@size, including `F@24`, `FB@16`, `FI@16`) stays one
+   event for every span's fresh codepoints combined, since `RichTextLabel` is one `CanvasItem`
+   with one redraw, not one `Label` per span.
+
 ---
 
 ### G4e1 — render-stream/3 codecs and goldens (sonnet)

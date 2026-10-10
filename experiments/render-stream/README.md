@@ -2430,6 +2430,78 @@ LC's region (437 px per step).
 - Overrun trimming, ellipses, `max_lines_visible`, paragraph separators and stacked outlines or
   shadows. The oracle refuses ellipses and models one paragraph.
 
+## Gate 4d result (2026-10-10)
+
+G4d ([protocol/gate4-design.md](protocol/gate4-design.md) "G4d", "As built (G4d)") passes:
+`pnpm render-stream:gate4 -- --legs g4a,g4b,g4d` is 62/63 in
+`artifacts/render-stream/gate4/20261010T031556Z/` (the one non-pass is the expected `not-run`
+placeholder for `g4c`, landed but not requested in this `--legs`; g4d's own 24 checks are all
+`pass`). The same build passed `build-capture.sh` (11/11 ctests), gate −1 28/28
+(`gate-minus1/20261010T015258Z/`), gate 0 19/19 (`gate0/20261010T015440Z/`), gate 1 65/65
+(`gate1/20261010T015728Z/`), gate 2 85/85 (`gate2/20261010T020936Z/`) and gate 3 49/49 with
+g3a–g3c (`gate3/20261010T030336Z/`). No capture, receiver or protocol file changed.
+
+What landed: `fixtures/gate4-rich/` (a `RichTextLabel` with `[color]`, plain, `[font_size=24]`,
+`[b]` (a `FontVariation` embolden 1.2), `[i]` (a `FontVariation` transform skewed 0.2),
+`[bgcolor]` and an outlined (`[outline_size=2]`) span, cumulative over six steps, plus an
+`append_text` step), its own glyph oracle (`glyph_oracle.gd`, per-span glyph sets and counts, not
+quads: Q6c), `make_expected.py`, group `g4d` in `run-gate4.sh` (legs under `rich-*/`) and
+`lib/gate4d-checks.ts`. Images: `rich-reference/shots/step-{0..5}.png`,
+`rich-receiver{,-patch}/shots/`, `rich-underline/{reference,receiver}/shots/`.
+
+Every glyph command (176 over the six settle steps x 2 sinks) sums by wire id to the oracle's
+per-span `glyph_count` exactly; bold and italic map to their own wire ids (`FB@16`=4, `FI@16`=5,
+distinct from `F@16`=2); every `[bgcolor]` span has its matching `add_rect`. Every oracle page
+hashes to exactly one wire texture at every step, and `deriveClipRects` (gate 3's) gives `RTL`
+its fixed clip rect `[24,32,424,222)` on both sinks at every step (`fit_content` never needs to
+grow it: the chosen 190 px height covers every step's content). `reference-repeat-budget` is 0 in
+every region. Census as measured (c = create, u = update):
+
+| step | change                                        | uploads                                          |
+| ---- | ---------------------------------------------- | ------------------------------------------------- |
+| 0    | `[color]Amber[/color] plain [font_size=24]Big` | `F@16`: c (10 glyphs); `F@24`: c (3)              |
+| 1    | `+ [b]Bold[/b]`                                 | `FB@16`: c (4)                                    |
+| 2    | `+ [i]Italic[/i]`                               | `FI@16`: c (6)                                    |
+| 3    | `+ [bgcolor=cyan]Marked[/bgcolor]`              | `F@16`: u1 (M, k, d)                               |
+| 4    | `+ [outline_size=2]Outlined[/outline_size]`     | `F@16`: u1 (O, u, t); `FO@16`: c + u7 (8 glyphs, one event per glyph) |
+| 5    | `append_text("\n[color=magenta]More[/color]")` | `F@16`: u1 (o)                                    |
+
+### Findings
+
+- **`RichTextLabel` is never `leg-class` `success`.** Its per-line box-drawing pass unconditionally
+  emits `canvas_item_add_set_transform` (identity or not), which `render-stream-0.md` types
+  `unsupported`, unrelated to any span. `rich-leg-class-capture` requires `unsupported` with
+  *exactly* that op and nothing else, and separately requires zero pixel mismatch (the reset is
+  visually inert here). The underline variant's `leg-class` is `unsupported` for two reasons once
+  this is accounted for; `rich-underline-capture-class` only asserts `canvas_item_add_line` is
+  among the reasons, not the only one.
+- **An outline cache uploads once per new glyph, not once per redraw.** The first `make_expected.py`
+  draft modelled it like a fill cache (one event for the whole span) and `rich-atlas-census` failed
+  61/62 against the real capture, which showed 8 events (1 create + 7 updates) for the 8-glyph
+  "Outlined" span's first use; a checker/model re-run against the *unchanged* evidence after fixing
+  the model (memory rs-g4b-receiver-checker-facts' pattern one gate later) turned it 62/62. Source
+  (`_font_draw_glyph_outline`, `ts_adv:4068-4136`) confirms why: it checks its own texture's
+  `dirty` flag inline, per glyph, with no shaping-time pre-rasterization pass of its own -- unlike
+  the fill path, which rasterizes a whole redraw's new glyphs together before any drawing. G4c
+  found the same fact independently for its own outline and subpixel caches.
+- **`RichTextLabel` always has an internal `VScrollBar` child**, its own `CanvasItem` created right
+  after `RTL`'s and before `Marker`'s, present regardless of `scroll_active` and drawing nothing
+  here; `creation_order` needed a third name.
+- **The outlined span's two-pass oracle design held on the first measurement**: `glyph_oracle.gd`
+  expands one `outline > 0` span into two entries sharing its `key` (fill `F@16`, outline `FO@16`),
+  and `evaluateRichOracleAgrees`'s zero-problem result against the real oracle confirmed the model
+  before any capture comparison ran (D7).
+
+### What G4d does not prove
+
+- Exact glyph placement for `RichTextLabel`: the oracle reports per-span counts and sets, not
+  quads (Q6c), so there is no `rich-expected-text-*` (D8's exact synthesis). `rich-expected-image-*`
+  and `rich-ink-presence-*` (quad-independent) still hold exactly.
+- Wrapping, alignment, multiple pages, cache lifetime and LCD for `RichTextLabel` specifically
+  (G4c covers these for `Label`); MSDF spans (G4e); multilingual spans (G4f).
+- `[u]` underline placement beyond "confined to `RTL`'s region": the stroke's own geometry is not
+  checked, only that dropping it changes no pixel outside `RTL`.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —
