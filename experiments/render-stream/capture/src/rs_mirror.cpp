@@ -1637,10 +1637,13 @@ void Mirror::canvas_texture_create(std::uint64_t rid, std::uint64_t frame) {
   if (dropped_identity("canvas_texture_create", frame)) {
     return;
   }
-  // D11 (gate5-design.md, G5d): counted even when the dummy storage handed back RID(), which is
-  // exactly the headless case that makes RID() on the /4 geometry ops ambiguous.
-  canvas_texture_created_ = true;
+  // D11 (gate5-design.md, G5d): only a create that handed back RID() -- the dummy storage's
+  // answer -- makes RID() on the /4 geometry ops ambiguous. With the opt-in headless shim
+  // (protocol/canvas-texture-headless.md "Experiment (a) result") every create made while armed
+  // carries a private, non-null RID, so RID() can only mean "no texture" and nothing is refused;
+  // with the shim off every headless create is RID(), exactly as before.
   if (rid == 0) {
+    canvas_texture_created_ = true;
     return;
   }
   const auto stale = texture_by_rid_.find(rid);

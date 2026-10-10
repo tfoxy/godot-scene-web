@@ -4,7 +4,7 @@
 #
 #   bash run-gate2.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g2a,g2b,g2c,g2e]
+#     [--legs g2a,g2b,g2c,g2e,g2f]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -23,6 +23,13 @@
 # the wrong token while its upgrade carries the right one). g2b, g2c and g2d need g2a's captures and
 # reference, and g2d also needs g2b's, so each only runs together with the groups it needs; g2e
 # needs none of them (three fresh live hosts of its own).
+#
+# g2f is OPT-IN (never in the default set, never reported not-run): the headless CanvasTexture
+# shim experiment (protocol/canvas-texture-headless.md "Experiment (a) result",
+# GRC_HEADLESS_CANVAS_TEXTURE=synthesize). It is standalone -- its own import (when g2a did not
+# run), its own rendered `canvas` reference, headless shim captures with rendered receivers, an
+# omit-op sabotage, the explicit-off control, and the refusals on a rendered host and on an
+# invalid value. Pass it explicitly: --legs g2f, or with the others.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -46,7 +53,9 @@ EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a
 
 # Groups whose increment has landed, in run order.
 LANDED_GROUPS=(g2a g2b g2c g2d g2e)
-KNOWN_GROUPS=(g2a g2b g2c g2d g2e)
+# Experiment groups that run only when --legs names them (and are never reported not-run).
+OPTIN_GROUPS=(g2f)
+KNOWN_GROUPS=(g2a g2b g2c g2d g2e g2f)
 
 EXTENSION=""
 CALIBRATION=""
@@ -144,7 +153,7 @@ else
 			exit 2
 			;;
 		esac
-		case " ${LANDED_GROUPS[*]} " in
+		case " ${LANDED_GROUPS[*]} ${OPTIN_GROUPS[*]} " in
 		*" $group "*) ;;
 		*)
 			echo "run-gate2: leg group $group has not landed yet (landed: ${LANDED_GROUPS[*]})" >&2
@@ -709,6 +718,88 @@ run_g2d() {
 	GS_RUN_DIR=""
 }
 
+# g2f (opt-in): the headless CanvasTexture shim experiment (protocol/canvas-texture-headless.md
+# "Experiment (a) result"). Standalone: every leg is its own process, none replays another's
+# capture.
+#   reference-canvas                  rendered fixture, `canvas` variant, extension absent: the
+#                                     pixels Godot itself draws for this variant
+#   shim-headless                     headless capture (strace, no GPU), `canvas` variant,
+#                                     GRC_HEADLESS_CANVAS_TEXTURE=synthesize, + a rendered receiver:
+#                                     success, every step byte-exact against reference-canvas
+#   shim-sabotage-omit-canvas-filter  as shim-headless, omit-op canvas_texture_set_texture_filter
+#                                     from step 11's frame: pixel-mismatch {11} (the CT's filter
+#                                     reaches the pixels)
+#   shim-off                          headless capture with GRC_HEADLESS_CANVAS_TEXTURE=off, + a
+#                                     headless receiver: unsupported (canvas-texture-headless),
+#                                     exactly the default refusal
+#   shim-refused-rendered             a rendered capture host (gamescope) with the opt-in: the
+#                                     capture refuses (canvas-texture-shim-not-headless), nothing is
+#                                     hooked, the fixture still renders
+#   shim-invalid                      headless with GRC_HEADLESS_CANVAS_TEXTURE=bogus: refused
+#                                     (canvas-texture-shim-invalid)
+#   shim-gate5-canvas                 fixtures/gate5's `canvas` variant, headless, the opt-in: gate
+#                                     5's D11 refuses nothing (success, the main fixture's commands)
+G2F_SHIM=GRC_HEADLESS_CANVAS_TEXTURE=synthesize
+GATE5_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate5"
+run_g2f() {
+	local f11 project project_dir
+	f11="$(step_frame 11)"
+
+	if [ ! -f "$OUT/import/fixture/exit-code.txt" ]; then
+		echo "run-gate2: import (g2f without g2a)"
+		for project in fixture receiver; do
+			project_dir="$FIXTURE_DIR"
+			[ "$project" = "receiver" ] && project_dir="$RECEIVER_DIR"
+			LEG_ENV=()
+			run_headless "$OUT/import/$project" none -- mise exec -- godot --headless --path "$project_dir" --import
+			if [ "$(cat "$OUT/import/$project/exit-code.txt")" != "0" ]; then
+				echo "run-gate2: import of $project_dir failed, see $OUT/import/$project/stdout.log" >&2
+				exit 1
+			fi
+		done
+	fi
+
+	echo "run-gate2: shim-headless (canvas, $G2F_SHIM, headless capture host under strace)"
+	g2_capture "$OUT/shim-headless/capture" "$CAPTURE_QUIT_FRAME" capture RS_FIXTURE_VARIANT=canvas "$G2F_SHIM"
+	echo "run-gate2: shim-sabotage-omit-canvas-filter (as shim-headless, omit-op canvas_texture_set_texture_filter @$f11)"
+	g2_capture "$OUT/shim-sabotage-omit-canvas-filter/capture" "" none RS_FIXTURE_VARIANT=canvas "$G2F_SHIM" \
+		GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=canvas_texture_set_texture_filter GRC_SABOTAGE_FRAME="$f11"
+	echo "run-gate2: shim-off (canvas, GRC_HEADLESS_CANVAS_TEXTURE=off, headless capture host)"
+	g2_capture "$OUT/shim-off/capture" "" none RS_FIXTURE_VARIANT=canvas GRC_HEADLESS_CANVAS_TEXTURE=off
+	echo "run-gate2: shim-off receiver (headless)"
+	g2_receiver "$OUT/shim-off/capture" "$OUT/shim-off/receiver" headless
+	echo "run-gate2: shim-invalid (GRC_HEADLESS_CANVAS_TEXTURE=bogus, headless)"
+	g2_capture "$OUT/shim-invalid/capture" "" none RS_FIXTURE_VARIANT=canvas GRC_HEADLESS_CANVAS_TEXTURE=bogus
+
+	# Gate 5's D11 under the shim: fixtures/gate5's `canvas` variant (a CanvasTexture created in
+	# _ready, never drawn) on a headless host. Without the shim gate 5's capture-canvas refuses
+	# every RID() geometry draw from then on; with it the capture must equal the main fixture's.
+	if [ ! -f "$OUT/import/gate5-fixture/exit-code.txt" ]; then
+		echo "run-gate2: import (fixtures/gate5, for shim-gate5-canvas)"
+		LEG_ENV=()
+		run_headless "$OUT/import/gate5-fixture" none -- mise exec -- godot --headless --path "$GATE5_FIXTURE_DIR" --import
+	fi
+	echo "run-gate2: shim-gate5-canvas (fixtures/gate5 canvas variant, $G2F_SHIM, headless)"
+	CAPTURE_FIXTURE_DIR="$GATE5_FIXTURE_DIR"
+	g2_capture "$OUT/shim-gate5-canvas" "" none RS_FIXTURE_VARIANT=canvas "$G2F_SHIM"
+
+	echo "run-gate2: bringing up private gamescope for g2f rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g2f"
+
+	echo "run-gate2: reference-canvas (rendered fixture, RS_FIXTURE_VARIANT=canvas, extension absent)"
+	REFERENCE_VARIANT=canvas
+	run_reference "$OUT/reference-canvas"
+	echo "run-gate2: shim-refused-rendered (canvas, $G2F_SHIM, rendered capture host: must refuse)"
+	g2_capture_rendered "$OUT/shim-refused-rendered/capture" RS_FIXTURE_VARIANT=canvas "$G2F_SHIM"
+	echo "run-gate2: shim-headless receiver (rendered)"
+	g2_receiver "$OUT/shim-headless/capture" "$OUT/shim-headless/receiver" rendered
+	echo "run-gate2: shim-sabotage-omit-canvas-filter receiver (rendered)"
+	g2_receiver "$OUT/shim-sabotage-omit-canvas-filter/capture" "$OUT/shim-sabotage-omit-canvas-filter/receiver" rendered
+
+	gs_teardown "$OUT/gamescope-g2f"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g2a) run_g2a ;;
@@ -716,6 +807,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g2c) run_g2c ;;
 	g2d) run_g2d ;;
 	g2e) run_g2e ;;
+	g2f) run_g2f ;;
 	esac
 done
 

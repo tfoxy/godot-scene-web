@@ -1681,6 +1681,26 @@ void test_geometry_texture_ambiguity() {
   check(item(h.snapshot(1, 1).state, 1)->commands[0].kind == CommandKind::AddPrimitive,
         "reset() clears the canvas-texture-created flag");
 
+  // The opt-in headless shim (canvas-texture-headless.md "Experiment (a) result"): the create
+  // carries a private, non-null RID, so RID() stays unambiguous on a headless host and the
+  // canvas texture itself is drawable.
+  Mirror sh;
+  bind_root(&sh);
+  sh.set_canvas_texture_headless(true);
+  const std::uint64_t kPrivate = (0x47524354ull << 32) | 0x80000000ull;
+  sh.canvas_texture_create(kPrivate, 1);
+  sh.canvas_item_create(100, 1);
+  sh.set_parent(100, kRootCanvas, 1);
+  sh.add_primitive(100, {{0, 0}, {4, 0}, {0, 4}}, {kRed}, {}, 0, true, 1);
+  sh.add_primitive(100, {{0, 0}, {4, 0}, {0, 4}}, {kRed}, {}, kPrivate, true, 1);
+  const Snapshot ss = sh.snapshot(1, 1).state;
+  const auto &sc = item(ss, 1)->commands;
+  check(sc.size() == 2 && sc[0].kind == CommandKind::AddPolygon && !sc[0].has_tex,
+        "headless with a shim RID canvas texture: RID() is still tex null");
+  check(sc.size() == 2 && sc[1].kind == CommandKind::AddPolygon && sc[1].has_tex,
+        "headless with a shim RID canvas texture: the canvas texture itself is drawable");
+  check(item_entries(ss).empty(), "headless with a shim RID canvas texture: nothing refused");
+
   Mirror r;  // a rendered host: never headless, so RID() always means no texture
   bind_root(&r);
   r.canvas_texture_create(900, 1);
