@@ -81,7 +81,7 @@ add_test(NAME abi_decode COMMAND abi_decode_test)
 # sabotage, the texture table (ids, versions, tombstones, replace, derived unsupported entries)
 # and the clip reset of canvas_item_clear (diffed against the previous snapshot).
 add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp
-  src/rs_texture_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
+  src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
 target_include_directories(rs_mirror_test PRIVATE src)
 target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_mirror COMMAND rs_mirror_test)
@@ -97,6 +97,7 @@ add_executable(rs_publish_test
   src/rs_mirror.cpp
   src/rs_resource_store.cpp
   src/rs_texture_payload.cpp
+  src/rs_mesh_payload.cpp
   src/rs_sha256.cpp
   src/report.cpp
 )

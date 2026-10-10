@@ -875,23 +875,23 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
                                   std::uint64_t snapshot_ns, bool first,
                                   std::uint64_t stale_from) {
   // G2b2: the inline payloads this connection has not carried yet, one resource record per
-  // message, ahead of the transaction that needs them (render-stream-2.md "Live transport").
-  for (const TextureEntry &entry : snapshot.state.textures) {
-    if (entry.kind != TextureKind::Image || entry.status != TextureStatus::Ok || !entry.has_hash ||
-        entry.payload_bytes > template_.resources.inline_max_bytes ||
-        c.carried.count(entry.hash) != 0) {
+  // message, ahead of the transaction that needs them (render-stream-2.md "Live transport");
+  // since G5e every `ok` mesh's surfaces too, after the textures.
+  for (const rs::PayloadRef &ref : rs::payload_refs(snapshot.state)) {
+    const std::string &hash = *ref.hash;
+    if (ref.payload_bytes > template_.resources.inline_max_bytes || c.carried.count(hash) != 0) {
       continue;
     }
-    const auto payload = snapshot.payloads.find(entry.hash);
+    const auto payload = snapshot.payloads.find(hash);
     if (payload == snapshot.payloads.end() || payload->second == nullptr) {
-      continue;  // never happens: a Captured holds every ok image's payload
+      continue;  // never happens: a Captured holds every payload its tables name
     }
     ResourceRecord record;
-    record.hash = entry.hash;
+    record.hash = hash;
     record.payload = *payload->second;
     const std::vector<std::uint8_t> bytes = encode_resource(record);
     if (bytes.size() > c.s.max_message_bytes) {
-      const std::string detail = "resource " + entry.hash + " is " +
+      const std::string detail = "resource " + hash + " is " +
                                  std::to_string(bytes.size()) + " bytes, the cap is " +
                                  std::to_string(c.s.max_message_bytes);
       transport_->send_text(c.id, encode_error("message-too-large", detail));
@@ -907,7 +907,7 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
       return "null";
     }
     deliver(c, bytes, true);
-    c.carried.insert(entry.hash);
+    c.carried.insert(hash);
     ++c.s.resource_records;
     c.s.resource_bytes += record.payload.size();
     ++c.stats.resource_records;
@@ -918,7 +918,7 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
                     .num("frame", frame)
                     .num("t_us", now_ns / 1000)
                     .str("event", "resource")
-                    .str("hash", entry.hash)
+                    .str("hash", hash)
                     .num("bytes", record.payload.size())
                     .take());
   }

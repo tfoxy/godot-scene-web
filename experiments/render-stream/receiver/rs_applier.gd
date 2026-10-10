@@ -8,8 +8,9 @@ extends RefCounted
 ## /4's immediate geometry ops, add_set_transform and add_clip_ignore replay in order as the
 ## engine's own canvas_item_add_* calls with the wire's floats, ints and counts unchanged -- the
 ## receiver never computes geometry, and the engine's per-item draw transform (reset per item,
-## replaced not composed) and clip-ignore spans follow from the in-order replay alone. /4's
-## add_mesh is skipped and recorded until G5e brings mesh residency).
+## replaced not composed) and clip-ignore spans follow from the in-order replay alone; and since
+## G5e /4's mesh table: every `ok` mesh a command names is made resident from its GRM1 surface
+## payloads -- see "Meshes" below -- and add_mesh replays as canvas_item_add_mesh).
 ##
 ## The applier never reads a patch. It takes the state Rs2Decoder.Stream resolved for a
 ## transaction (render-stream-2.md "Decoded and resolved forms": `canvases`/`items`/`textures`
@@ -28,6 +29,19 @@ extends RefCounted
 ## changed. Placeholders are the receiver's own texture_2d_placeholder_create(). Commands naming
 ## an `unsupported` texture, and `unsupported` commands (unknown-texture, unsupported-op), are
 ## skipped and recorded, never drawn with a substitute.
+##
+## Meshes (gate5-design.md Q5, D5, D8, G5e): a mesh becomes resident when a command of an applied
+## state first names it (lazy, as textures), and is freed when its entry leaves the table or
+## becomes a `freed` tombstone; its RID never changes. A new one gets mesh_create, one
+## mesh_add_surface per surface (the Dictionary bind, from the decoded GRM1 payload: buffers,
+## counts, AABB, uv_scale) and mesh_set_custom_aabb. A resident one whose surface layout (count,
+## primitive, format, counts, buffer lengths, AABB and uv_scale) is unchanged gets
+## mesh_surface_update_{vertex,attribute,skin,index}_region(mesh, s, 0, buffer) for each buffer
+## whose bytes changed -- exactly what the host's engine did, so the surface AABB stays the one
+## fixed at add_surface (D8) -- and any layout change gets mesh_clear and every surface again. The
+## custom AABB is set whenever it changes (a non-zero one wins in mesh_get_aabb). A command naming
+## a `freed`, `unsupported` or absent mesh is skipped and recorded (the engine would draw nothing
+## for a freed one, Q1d), never drawn with a substitute.
 ##
 ## It owns the wire id -> RID maps and makes every RenderingServer call the receiver makes,
 ## counting each one in `rs_calls`. `accept_record` decodes and validates one record completely
@@ -86,12 +100,21 @@ var sabotage_ignore_clip_ignore: bool = false
 ## RS_RECEIVER_SABOTAGE=ignore-nine-patch-axis (gate5-design.md "G5g"): every add_nine_patch is
 ## drawn with both axes `stretch`, whatever the command says. Exists only to fail checks.
 var sabotage_ignore_nine_patch_axis: bool = false
+## RS_RECEIVER_SABOTAGE=drop-mesh-surface (gate5-design.md Q5, G5e): a mesh build or rebuild never
+## adds the surface at index 1 (and in-place updates of it are dropped). Exists only to fail
+## checks.
+var sabotage_drop_mesh_surface: bool = false
+## RS_RECEIVER_SABOTAGE=stale-mesh (gate5-design.md Q5, G5e): in-place payload changes of a resident
+## surface are ignored (no region update); layout changes still rebuild. Exists only to fail
+## checks.
+var sabotage_stale_mesh: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
 var _canvases: Dictionary[int, CanvasState] = {}
 var _items: Dictionary[int, ItemState] = {}
 var _textures: Dictionary[int, TextureState] = {}
+var _meshes: Dictionary[int, MeshState] = {}
 var _root_xform := PackedFloat32Array()
 var _default_filter: String = ""
 var _default_repeat: String = ""
@@ -143,6 +166,17 @@ class TextureState:
 	var canvas_version: int = -1
 
 
+## Receiver-side mirror of one resident mesh (G5e): what was last sent to the RenderingServer.
+class MeshState:
+	extends RefCounted
+	var rid: RID
+	## Per wire surface: the hash whose bytes are on the GPU (the wire's, unless stale-mesh kept an
+	## older one) and its layout key.
+	var hashes: Array[String] = []
+	var layouts: Array[String] = []
+	var custom_aabb := PackedFloat32Array()
+
+
 ## `viewport` is the root viewport; `root_canvas` is its World2D canvas, which wire canvas 1 maps to.
 func _init(viewport: RID, root_canvas: RID) -> void:
 	_viewport = viewport
@@ -190,9 +224,28 @@ func root_canvas_xform() -> PackedFloat32Array:
 ## The `ok` image and placeholder entries a command of `items` names that are not resident, or
 ## resident with another content (gate2-design.md Q5 step 2): {images: Array[String] of hashes to
 ## have available, ids: Array[int]}. With the reupload sabotage every resident image counts.
-func needed(items: Dictionary, textures: Dictionary) -> Dictionary:
+## G5e (gate5-design.md Q5): `meshes` adds every surface hash of each `ok` mesh an add_mesh names
+## that is not resident with that hash at that index; those hashes are also in `mesh_hashes`
+## (their payloads are GRM1, `<hash>.grm` in a store or cache).
+func needed(items: Dictionary, textures: Dictionary, meshes: Dictionary = {}) -> Dictionary:
 	var hashes: Array[String] = []
 	var ids: Array[int] = []
+	var mesh_hashes: Array[String] = []
+	for mesh_id: int in _named_mesh_ids(items):
+		if not meshes.has(mesh_id):
+			continue
+		var mesh_entry: Dictionary = meshes[mesh_id]
+		if mesh_entry["status"] != "ok":
+			continue
+		var mesh_surfaces: Array = mesh_entry["surfaces"]
+		for k: int in mesh_surfaces.size():
+			var surface: Dictionary = mesh_surfaces[k]
+			var surface_hash: String = surface["hash"]
+			if _meshes.has(mesh_id) and k < _meshes[mesh_id].hashes.size() and _meshes[mesh_id].hashes[k] == surface_hash:
+				continue
+			if not hashes.has(surface_hash):
+				hashes.append(surface_hash)
+				mesh_hashes.append(surface_hash)
 	for id: int in _named_texture_ids(items):
 		if not textures.has(id):
 			continue
@@ -207,7 +260,22 @@ func needed(items: Dictionary, textures: Dictionary) -> Dictionary:
 		ids.append(id)
 		if not hashes.has(hash):
 			hashes.append(hash)
-	return {"hashes": hashes, "ids": ids}
+	return {"hashes": hashes, "ids": ids, "mesh_hashes": mesh_hashes}
+
+
+## Every mesh id an add_mesh command of `items` names (ascending, each once).
+static func _named_mesh_ids(items: Dictionary) -> Array[int]:
+	var seen: Dictionary[int, bool] = {}
+	for item_id: int in items:
+		var item: Dictionary = items[item_id]
+		for value: Variant in item["commands"]:
+			var command: Dictionary = value
+			if command["op"] == "add_mesh":
+				seen[Rs2Decoder.as_int(command["mesh"])] = true
+	var out: Array[int] = []
+	out.assign(seen.keys())
+	out.sort()
+	return out
 
 
 ## Every texture id a command of `items` names (ascending, each once).
@@ -243,7 +311,11 @@ static func _named_texture_ids(items: Dictionary) -> Array[int]:
 ## canvas_item_add_texture_rect_region / canvas_item_set_clip calls this apply actually made, in
 ## call order (test instrumentation for Q5's apply-order cases), msdf_commands: the
 ## canvas_item_add_msdf_texture_rect_region calls it made (G4e2), geometry_commands: the /4
-## immediate-geometry, add_set_transform and add_clip_ignore calls it made (G5d)}.
+## immediate-geometry, add_set_transform and add_clip_ignore calls it made (G5d), mesh_commands:
+## the canvas_item_add_mesh calls it made, mesh_resources: {meshes_created, meshes_rebuilt,
+## meshes_freed, surface_updates, mesh_upload_bytes, skipped_mesh_commands}, mesh_uploads:
+## Array[Dictionary] of {id, op (create | rebuild | update | free | custom_aabb), surfaces,
+## buffers, bytes} (G5e)}.
 func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionary:
 	var calls_before: int = rs_calls
 	var created: int = 0
@@ -256,6 +328,9 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 	var canvases: Dictionary = stream.canvases
 	var items: Dictionary = stream.items
 	var textures: Dictionary = stream.textures
+	var meshes: Dictionary = stream.meshes
+	var mesh_commands: int = 0
+	var skipped_mesh: int = 0
 
 	# Textures (Q5 step 3): free what left the table or became a tombstone, then make resident
 	# (or re-upload) every texture a command names.
@@ -391,6 +466,9 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		texture_state.mipmaps = mipmaps
 		upload_bytes += data.size()
 		uploads.append({"id": id, "hash": hash, "op": op, "data_bytes": data.size()})
+
+	# Meshes (gate5-design.md Q5 step 3b, G5e).
+	var mesh_stats: Dictionary = _apply_meshes(items, meshes, cache)
 
 	# The root viewport's defaults (Q5 step 3), only when they change.
 	var default_filter: String = stream.default_texture_filter
@@ -669,10 +747,38 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 						geometry_replayed += 1
 						item_calls.append({"item": id, "op": op_name})
 					"add_mesh":
-						# Mesh residency and replay are G5e's (gate5-design.md Q5); until then the
-						# command is skipped and recorded, never drawn with a substitute.
-						skipped += 1
-						unsupported_commands.append({"item": id, "name": "canvas_item_add_mesh", "reason": "mesh-not-replayed"})
+						# gate5-design.md Q5 (G5e): the resident mesh's RID, the wire's transform and
+						# modulate. A freed, unsupported or absent mesh is skipped and recorded.
+						var mesh_id: int = Rs2Decoder.as_int(command["mesh"])
+						var mesh_reason: String = ""
+						if not meshes.has(mesh_id):
+							mesh_reason = "unknown-mesh"
+						else:
+							var named: Dictionary = meshes[mesh_id]
+							var named_status: String = named["status"]
+							if named_status == "freed":
+								mesh_reason = "mesh-freed"
+							elif named_status != "ok":
+								mesh_reason = "unsupported-mesh"
+							elif not _meshes.has(mesh_id):
+								mesh_reason = "mesh-not-resident"
+						if mesh_reason != "":
+							skipped_mesh += 1
+							unsupported_commands.append({"item": id, "name": "canvas_item_add_mesh", "reason": mesh_reason})
+							continue
+						var mesh_texture: Dictionary = _texture_for(command, textures)
+						if not mesh_texture["drawable"]:
+							skipped += 1
+							unsupported_commands.append({"item": id, "name": "canvas_item_add_mesh", "reason": "unsupported-texture"})
+							continue
+						var mesh_tex: RID = mesh_texture["rid"]
+						var mesh_xform: PackedFloat32Array = _floats(command["transform"])
+						var mesh_modulate: PackedFloat32Array = _floats(command["modulate"])
+						RenderingServer.canvas_item_add_mesh(state.rid, _meshes[mesh_id].rid, _xform(mesh_xform, 0), _color(mesh_modulate, 0), mesh_tex)
+						rs_calls += 1
+						replayed += 1
+						mesh_commands += 1
+						item_calls.append({"item": id, "op": op_name})
 					_:
 						skipped += 1
 						var name: String = command["name"]
@@ -710,7 +816,191 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		"item_calls": item_calls,
 		"msdf_commands": msdf_replayed,
 		"geometry_commands": geometry_replayed,
+		"mesh_commands": mesh_commands,
+		"mesh_resources": {
+			"meshes_created": mesh_stats["meshes_created"],
+			"meshes_rebuilt": mesh_stats["meshes_rebuilt"],
+			"meshes_freed": mesh_stats["meshes_freed"],
+			"surface_updates": mesh_stats["surface_updates"],
+			"mesh_upload_bytes": mesh_stats["mesh_upload_bytes"],
+			"skipped_mesh_commands": skipped_mesh,
+		},
+		"mesh_uploads": mesh_stats["uploads"],
 	}
+
+
+## gate5-design.md Q5 step 3b (G5e): frees every resident mesh whose entry left the table or became
+## a tombstone, then makes every `ok` mesh an add_mesh names resident and current (see "Meshes" in
+## the class docs). Every payload needed() named must be in `cache`. Returns {meshes_created,
+## meshes_rebuilt, meshes_freed, surface_updates, mesh_upload_bytes, uploads}.
+func _apply_meshes(items: Dictionary, meshes: Dictionary, cache: RsResourceCache) -> Dictionary:
+	var created: int = 0
+	var rebuilt: int = 0
+	var mesh_freed: int = 0
+	var updates: int = 0
+	var upload_bytes: int = 0
+	var uploads: Array[Dictionary] = []
+	var resident: Array[int] = []
+	resident.assign(_meshes.keys())
+	resident.sort()
+	for id: int in resident:
+		var gone: bool = not meshes.has(id)
+		if not gone:
+			var entry: Dictionary = meshes[id]
+			gone = entry["status"] == "freed"
+		if not gone:
+			continue
+		RenderingServer.free_rid(_meshes[id].rid)
+		rs_calls += 1
+		freed_by_apply += 1
+		mesh_freed += 1
+		_meshes.erase(id)
+		uploads.append({"id": id, "op": "free", "surfaces": [], "buffers": [], "bytes": 0})
+	for id: int in _named_mesh_ids(items):
+		if not meshes.has(id):
+			continue
+		var entry: Dictionary = meshes[id]
+		if entry["status"] != "ok":
+			continue
+		var surfaces: Array = entry["surfaces"]
+		var wire_hashes: Array[String] = []
+		var decoded: Array[Dictionary] = []
+		var layouts: Array[String] = []
+		for value: Variant in surfaces:
+			var surface: Dictionary = value
+			var surface_hash: String = surface["hash"]
+			wire_hashes.append(surface_hash)
+			var payload: Dictionary = cache.decoded(surface_hash)
+			decoded.append(payload)
+			layouts.append(_layout_key(payload))
+		var custom_aabb: PackedFloat32Array = _floats(entry["custom_aabb"])
+		if not _meshes.has(id) or layouts != _meshes[id].layouts:
+			var op: String = "rebuild"
+			if not _meshes.has(id):
+				var fresh_state := MeshState.new()
+				fresh_state.rid = RenderingServer.mesh_create()
+				rs_calls += 1
+				created_rids += 1
+				_meshes[id] = fresh_state
+				created += 1
+				op = "create"
+			else:
+				RenderingServer.mesh_clear(_meshes[id].rid)
+				rs_calls += 1
+				rebuilt += 1
+			var mesh_state: MeshState = _meshes[id]
+			var added: Array[int] = []
+			var built_bytes: int = 0
+			for k: int in decoded.size():
+				if sabotage_drop_mesh_surface and k == 1:
+					continue
+				RenderingServer.mesh_add_surface(mesh_state.rid, _surface_dictionary(decoded[k]))
+				rs_calls += 1
+				added.append(k)
+				built_bytes += _data_bytes(decoded[k])
+			mesh_state.hashes = wire_hashes
+			mesh_state.layouts = layouts
+			upload_bytes += built_bytes
+			uploads.append({"id": id, "op": op, "surfaces": added, "buffers": [], "bytes": built_bytes})
+			# A new mesh always gets its custom AABB (part of its create row); a rebuild keeps the
+			# old one (GLES3's mesh_clear does not reset it) and sets it only when it changed.
+			if op == "create" or custom_aabb != mesh_state.custom_aabb:
+				RenderingServer.mesh_set_custom_aabb(mesh_state.rid, _aabb(custom_aabb))
+				rs_calls += 1
+				mesh_state.custom_aabb = custom_aabb
+				if op == "rebuild":
+					uploads.append({"id": id, "op": "custom_aabb", "surfaces": [], "buffers": [], "bytes": 0})
+			continue
+		var current: MeshState = _meshes[id]
+		for k: int in wire_hashes.size():
+			if current.hashes[k] == wire_hashes[k]:
+				continue
+			if sabotage_stale_mesh:
+				continue
+			if sabotage_drop_mesh_surface and k == 1:
+				current.hashes[k] = wire_hashes[k]
+				continue
+			var before: Dictionary = cache.decoded(current.hashes[k])
+			var after: Dictionary = decoded[k]
+			var changed: Array[String] = []
+			var surface_bytes: int = 0
+			for buffer: String in ["vertex", "attribute", "skin", "index"]:
+				var key: String = buffer + "_data"
+				var old_bytes: PackedByteArray = before[key]
+				var new_bytes: PackedByteArray = after[key]
+				if old_bytes == new_bytes:
+					continue
+				match buffer:
+					"vertex":
+						RenderingServer.mesh_surface_update_vertex_region(current.rid, k, 0, new_bytes)
+					"attribute":
+						RenderingServer.mesh_surface_update_attribute_region(current.rid, k, 0, new_bytes)
+					"skin":
+						RenderingServer.mesh_surface_update_skin_region(current.rid, k, 0, new_bytes)
+					"index":
+						RenderingServer.mesh_surface_update_index_region(current.rid, k, 0, new_bytes)
+				rs_calls += 1
+				updates += 1
+				changed.append(buffer)
+				surface_bytes += new_bytes.size()
+			current.hashes[k] = wire_hashes[k]
+			upload_bytes += surface_bytes
+			uploads.append({"id": id, "op": "update", "surfaces": [k], "buffers": changed, "bytes": surface_bytes})
+		if custom_aabb != current.custom_aabb:
+			RenderingServer.mesh_set_custom_aabb(current.rid, _aabb(custom_aabb))
+			rs_calls += 1
+			current.custom_aabb = custom_aabb
+			uploads.append({"id": id, "op": "custom_aabb", "surfaces": [], "buffers": [], "bytes": 0})
+	return {
+		"meshes_created": created, "meshes_rebuilt": rebuilt, "meshes_freed": mesh_freed,
+		"surface_updates": updates, "mesh_upload_bytes": upload_bytes, "uploads": uploads,
+	}
+
+
+## A decoded GRM1 payload's layout (Q5): everything but the buffer contents -- primitive, format,
+## counts, the four buffer lengths and the 40-byte geometry block (the AABB fixed at add_surface,
+## uv_scale) -- as one comparable string.
+static func _layout_key(payload: Dictionary) -> String:
+	var aabb: PackedFloat32Array = payload["aabb"]
+	var uv_scale: PackedFloat32Array = payload["uv_scale"]
+	return "%s/%d/%d/%d/%d/%d/%d/%d/%s/%s" % [
+		payload["primitive"], Rs2Decoder.as_int(payload["format"]),
+		Rs2Decoder.as_int(payload["vertex_count"]), Rs2Decoder.as_int(payload["index_count"]),
+		Rs2Decoder.as_int(payload["vertex_bytes"]), Rs2Decoder.as_int(payload["attribute_bytes"]),
+		Rs2Decoder.as_int(payload["skin_bytes"]), Rs2Decoder.as_int(payload["index_bytes"]),
+		aabb.to_byte_array().hex_encode(), uv_scale.to_byte_array().hex_encode(),
+	]
+
+
+static func _data_bytes(payload: Dictionary) -> int:
+	return Rs2Decoder.as_int(payload["vertex_bytes"]) + Rs2Decoder.as_int(payload["attribute_bytes"]) + Rs2Decoder.as_int(payload["skin_bytes"]) + Rs2Decoder.as_int(payload["index_bytes"])
+
+
+## The RenderingServer.mesh_add_surface Dictionary (rendering_server.cpp _dict_to_surf) for one
+## decoded GRM1 payload: the surface exactly as the host's SurfaceData held it.
+static func _surface_dictionary(payload: Dictionary) -> Dictionary:
+	var aabb: PackedFloat32Array = payload["aabb"]
+	var uv_scale: PackedFloat32Array = payload["uv_scale"]
+	var primitive_name: String = payload["primitive"]
+	var surface: Dictionary = {
+		"primitive": RsMeshPayload.PRIMITIVES.find(primitive_name),
+		"format": Rs2Decoder.as_int(payload["format"]),
+		"vertex_data": payload["vertex_data"],
+		"attribute_data": payload["attribute_data"],
+		"skin_data": payload["skin_data"],
+		"vertex_count": Rs2Decoder.as_int(payload["vertex_count"]),
+		"aabb": AABB(Vector3(aabb[0], aabb[1], aabb[2]), Vector3(aabb[3], aabb[4], aabb[5])),
+		"uv_scale": Vector4(uv_scale[0], uv_scale[1], uv_scale[2], uv_scale[3]),
+	}
+	var index_count: int = Rs2Decoder.as_int(payload["index_count"])
+	if index_count > 0:
+		surface["index_data"] = payload["index_data"]
+		surface["index_count"] = index_count
+	return surface
+
+
+static func _aabb(f: PackedFloat32Array) -> AABB:
+	return AABB(Vector3(f[0], f[1], f[2]), Vector3(f[3], f[4], f[5]))
 
 
 ## One /4 immediate-geometry or command-list-state command as the engine's own
@@ -802,7 +1092,7 @@ func _texture_for(command: Dictionary, textures: Dictionary) -> Dictionary:
 	return {"drawable": true, "rid": _textures[id].rid}
 
 
-## Frees every RID this applier created (items, then owned canvases, then textures; canvas 1 is
+## Frees every RID this applier created (items, then owned canvases, textures, meshes; canvas 1 is
 ## the viewport's) and forgets all state, so a later begin_session starts clean. Returns how many
 ## RIDs it freed, also kept in `disposed_frees`.
 func dispose() -> int:
@@ -833,6 +1123,14 @@ func dispose() -> int:
 		rs_calls += 1
 		count += 1
 	_textures.clear()
+	var mesh_ids: Array[int] = []
+	mesh_ids.assign(_meshes.keys())
+	mesh_ids.sort()
+	for id: int in mesh_ids:
+		RenderingServer.free_rid(_meshes[id].rid)
+		rs_calls += 1
+		count += 1
+	_meshes.clear()
 	_root_xform = PackedFloat32Array()
 	_default_filter = ""
 	_default_repeat = ""
@@ -840,9 +1138,10 @@ func dispose() -> int:
 	return count
 
 
-## How many RIDs the applier currently owns (items, canvases it created, resident textures).
+## How many RIDs the applier currently owns (items, canvases it created, resident textures and
+## meshes).
 func owned_rids() -> int:
-	var count: int = _items.size() + _textures.size()
+	var count: int = _items.size() + _textures.size() + _meshes.size()
 	for id: int in _canvases:
 		if _canvases[id].owned:
 			count += 1
@@ -852,6 +1151,11 @@ func owned_rids() -> int:
 ## How many textures are resident.
 func resident_textures() -> int:
 	return _textures.size()
+
+
+## How many meshes are resident (G5e).
+func resident_meshes() -> int:
+	return _meshes.size()
 
 
 # --------------------------------------------------------------------------- helpers

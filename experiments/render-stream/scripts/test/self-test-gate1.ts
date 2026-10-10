@@ -14,7 +14,7 @@
 //    render-stream/2, both sinks, by rs2-test-encoder.ts from a model of the fixture's retained
 //    state, every texture table holding the engine's own unreferenced hue strip; live streams
 //    inline, the hue strip's resource record ahead of seq 1; applied.json
-//    render-stream-receiver-applied/3; PNGs synthesized from fixtures/gate1/expected.json), then
+//    render-stream-receiver-applied/4; PNGs synthesized from fixtures/gate1/expected.json), then
 //    one perturbation per failure mode. Each scenario runs the real runGate1 and asserts the
 //    verdict of the checks and leg classes it targets.
 //
@@ -856,7 +856,7 @@ function appliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/3",
+    schema: "render-stream-receiver-applied/4",
     mode: "file",
     recording: {
       path: recordingPath,
@@ -1149,7 +1149,7 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   await mkdir(minimalDir, { recursive: true });
   await writeFile(join(minimalDir, "recording.rs2"), minimal);
   await writeJson(join(minimalDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/3",
+    schema: "render-stream-receiver-applied/4",
     status: "ok",
     end_seen: true,
     unsupported: expectedReceiverUnsupported(
@@ -1702,7 +1702,7 @@ function liveApplied(
     submitted: opts.rendered ? tx.length : 0,
   };
   return {
-    schema: "render-stream-receiver-applied/3",
+    schema: "render-stream-receiver-applied/4",
     mode: "live",
     recording: {
       path: join(dir, "received.rs2"),
@@ -2542,7 +2542,7 @@ async function writeG1dLeg(
         };
   const reconnectSeq = first.shots.get(G1D_RECONNECT_STEP);
   await writeJson(join(recvDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/3",
+    schema: "render-stream-receiver-applied/4",
     mode: "live",
     recording: null,
     session_id: LIVE_SESSION,

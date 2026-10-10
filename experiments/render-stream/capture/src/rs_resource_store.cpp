@@ -64,11 +64,34 @@ std::size_t ResourceStore::first_data_offset(const std::vector<std::uint8_t> &pa
 ResourceStore::Put ResourceStore::put(const rs2::TextureEntry &entry,
                                       const std::vector<std::uint8_t> &payload,
                                       std::uint64_t frame, std::string *error) {
+  // render-stream-4.md "Mesh payload": index lines gain "type" (texture-2d | mesh-surface).
+  const std::string fields = ",\"type\":\"texture-2d\",\"format\":\"" + entry.format +
+                             "\",\"width\":" + std::to_string(entry.width) +
+                             ",\"height\":" + std::to_string(entry.height) +
+                             ",\"mipmaps\":" + (entry.mipmaps ? "true" : "false");
+  return put_bytes(entry.hash, ".grt", fields, payload, frame, error);
+}
+
+ResourceStore::Put ResourceStore::put_mesh(const rs2::MeshSurface &surface,
+                                           const std::vector<std::uint8_t> &payload,
+                                           std::uint64_t frame, std::string *error) {
+  const std::string fields = ",\"type\":\"mesh-surface\",\"primitive\":\"" +
+                             std::string(rs2::to_wire(surface.primitive)) +
+                             "\",\"format\":" + std::to_string(surface.format) +
+                             ",\"vertex_count\":" + std::to_string(surface.vertex_count) +
+                             ",\"index_count\":" + std::to_string(surface.index_count);
+  return put_bytes(surface.hash, ".grm", fields, payload, frame, error);
+}
+
+ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char *extension,
+                                            const std::string &index_fields,
+                                            const std::vector<std::uint8_t> &payload,
+                                            std::uint64_t frame, std::string *error) {
   if (index_ == nullptr) {
     *error = "the resource store is not open";
     return Put::Failed;
   }
-  if (hashes_.count(entry.hash) != 0) {
+  if (hashes_.count(hash) != 0) {
     return Put::Present;
   }
   const std::uint8_t *data = payload.data();
@@ -79,9 +102,9 @@ ResourceStore::Put ResourceStore::put(const rs2::TextureEntry &entry,
     const std::size_t offset = first_data_offset(corrupted);
     corrupted[offset] ^= 0xFF;
     data = corrupted.data();
-    corrupted_ = entry.hash;
+    corrupted_ = hash;
   }
-  const std::string final_path = path_join(path_join(dir_, "sha256"), entry.hash + ".grt");
+  const std::string final_path = path_join(path_join(dir_, "sha256"), hash + extension);
   const std::string temp_path = final_path + ".tmp-" + std::to_string(::getpid());
   std::FILE *file = std::fopen(temp_path.c_str(), "wb");
   if (file == nullptr) {
@@ -101,17 +124,15 @@ ResourceStore::Put ResourceStore::put(const rs2::TextureEntry &entry,
     std::remove(temp_path.c_str());
     return Put::Failed;
   }
-  std::string line = "{\"hash\":\"" + entry.hash + "\",\"bytes\":" + std::to_string(payload.size()) +
-                     ",\"format\":\"" + entry.format + "\",\"width\":" +
-                     std::to_string(entry.width) + ",\"height\":" + std::to_string(entry.height) +
-                     ",\"mipmaps\":" + (entry.mipmaps ? "true" : "false") +
-                     ",\"first_frame\":" + std::to_string(frame) + "}\n";
+  const std::string line = "{\"hash\":\"" + hash + "\",\"bytes\":" +
+                           std::to_string(payload.size()) + index_fields +
+                           ",\"first_frame\":" + std::to_string(frame) + "}\n";
   if (std::fwrite(line.data(), 1, line.size(), index_) != line.size() ||
       std::fflush(index_) != 0) {
     *error = "cannot append to " + path_join(dir_, "index.jsonl") + ": " + errno_text();
     return Put::Failed;
   }
-  hashes_.insert(entry.hash);
+  hashes_.insert(hash);
   bytes_ += payload.size();
   return Put::Stored;
 }

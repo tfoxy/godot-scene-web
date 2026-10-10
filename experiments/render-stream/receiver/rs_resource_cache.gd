@@ -16,6 +16,11 @@ extends RefCounted
 ##
 ## Errors are render-stream "<code>: <detail>" strings with the gate 2 replay-failure codes:
 ## resource-unavailable, resource-hash-mismatch, resource-invalid, cache-not-fresh.
+##
+## Since G5e (render-stream-4.md "Mesh payload") the same cache holds render-stream-mesh/1 (GRM1)
+## surface payloads: their files are `sha256/<hash>.grm` (here and in the store), the callers say
+## which kind a hash is (`mesh`), and a payload is decoded by its own magic (RsMeshPayload for
+## GRM1, RsTexturePayload otherwise), so decoded() returns the matching shape.
 
 const CACHE_SUBDIR: String = "sha256"
 
@@ -25,7 +30,8 @@ var store_dir: String = ""
 ## RS_RECEIVER_SABOTAGE=ignore-cache: a cache hit is fetched from the origin anyway.
 var ignore_cache: bool = false
 var entries_before: int = 0
-## hash -> decoded payload ({format, width, height, mipmaps, data}), verified.
+## hash -> decoded payload ({format, width, height, mipmaps, data} for a texture, RsMeshPayload's
+## decode() for a mesh surface), verified.
 var _memory: Dictionary[String, Dictionary] = {}
 ## hash -> the raw payload length, for the same entries.
 var _lengths: Dictionary[String, int] = {}
@@ -60,25 +66,25 @@ static func _has_any_entry(path: String) -> bool:
 	return listing.get_files().size() > 0 or listing.get_directories().size() > 0
 
 
-## The number of `.grt` files in the cache.
+## The number of `.grt` and (G5e) `.grm` files in the cache.
 func entries() -> int:
 	if dir == "":
 		return 0
 	var count: int = 0
 	for file_name: String in DirAccess.get_files_at(dir.path_join(CACHE_SUBDIR)):
-		if file_name.ends_with(".grt"):
+		if file_name.ends_with(".grt") or file_name.ends_with(".grm"):
 			count += 1
 	return count
 
 
-## The total size of the cache's `.grt` files.
+## The total size of the cache's `.grt` and `.grm` files.
 func bytes() -> int:
 	if dir == "":
 		return 0
 	var total: int = 0
 	var base: String = dir.path_join(CACHE_SUBDIR)
 	for file_name: String in DirAccess.get_files_at(base):
-		if not file_name.ends_with(".grt"):
+		if not (file_name.ends_with(".grt") or file_name.ends_with(".grm")):
 			continue
 		var file: FileAccess = FileAccess.open(base.path_join(file_name), FileAccess.READ)
 		if file != null:
@@ -94,18 +100,10 @@ func has_in_memory(hash: String) -> bool:
 
 ## Records an inline resource record's payload (already verified by Rs2Decoder.Stream: its
 ## SHA-256 is its hash and it decodes). Returns "" or a resource-invalid error.
-## Since G5d an inline record may also carry a render-stream-mesh/1 (GRM1) payload
-## (render-stream-4.md): it is decoded and verified with RsMeshPayload and kept in memory like a
-## texture's, though nothing replays meshes before G5e (out-of-band .grm fetches are G5e's too).
+## An inline record may also carry a render-stream-mesh/1 (GRM1) payload (render-stream-4.md,
+## since G5d): it is decoded by its magic like any other payload.
 func add_inline(hash: String, payload: PackedByteArray) -> String:
-	if payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsMeshPayload.GRM1_MAGIC_HEX:
-		var mesh: Dictionary = RsMeshPayload.decode(payload)
-		if not mesh["ok"]:
-			return Rs2Decoder.err("resource-invalid", "inline mesh payload %s: %s" % [hash, mesh["detail"]])
-		_memory[hash] = mesh
-		_lengths[hash] = payload.size()
-		return ""
-	var decoded: Dictionary = RsTexturePayload.decode(payload)
+	var decoded: Dictionary = decode_payload(payload)
 	if not decoded["ok"]:
 		return Rs2Decoder.err("resource-invalid", "inline payload %s: %s" % [hash, decoded["detail"]])
 	_memory[hash] = decoded
@@ -113,9 +111,29 @@ func add_inline(hash: String, payload: PackedByteArray) -> String:
 	return ""
 
 
+## True when `payload` starts with the GRM1 magic (a mesh surface, render-stream-4.md).
+static func is_mesh_payload(payload: PackedByteArray) -> bool:
+	return payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsMeshPayload.GRM1_MAGIC_HEX
+
+
+## Decodes a payload by its magic: RsMeshPayload.decode() for GRM1, RsTexturePayload.decode()
+## otherwise. Both return {ok: bool, ..., detail on failure}.
+static func decode_payload(payload: PackedByteArray) -> Dictionary:
+	if is_mesh_payload(payload):
+		return RsMeshPayload.decode(payload)
+	return RsTexturePayload.decode(payload)
+
+
+## The file name a payload has in a cache or store directory: `<hash>.grm` for a mesh surface,
+## `<hash>.grt` for a texture.
+static func file_name(hash: String, mesh: bool) -> String:
+	return hash + (".grm" if mesh else ".grt")
+
+
 ## Whether the cache directory holds a file for `hash` (a hit for obtain(), unless ignore_cache).
-func cache_has(hash: String) -> bool:
-	return dir != "" and FileAccess.file_exists(dir.path_join(CACHE_SUBDIR).path_join(hash + ".grt"))
+## `mesh`: the hash names a mesh surface (G5e).
+func cache_has(hash: String, mesh: bool = false) -> bool:
+	return dir != "" and FileAccess.file_exists(dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh)))
 
 
 ## Forgets every payload held in memory (a live reconnect: the new session's payloads come from
@@ -131,7 +149,7 @@ func clear_memory() -> void:
 func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> String:
 	if RsTexturePayload.sha256_hex(payload) != hash:
 		return Rs2Decoder.err("resource-hash-mismatch", "%s (%d bytes) does not hash to its name" % [origin, payload.size()])
-	var fetched_decoded: Dictionary = RsTexturePayload.decode(payload)
+	var fetched_decoded: Dictionary = decode_payload(payload)
 	if not fetched_decoded["ok"]:
 		return Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, fetched_decoded["detail"]])
 	if dir != "":
@@ -151,13 +169,14 @@ func decoded(hash: String) -> Dictionary:
 ## Makes `hash` available in memory. Returns {error: "" or "<code>: <detail>", source:
 ## "memory" | "cache" | "directory", bytes: int, verified: bool, start_us: int, end_us: int}.
 ## A cache hit is a read of the cache; a miss (or ignore_cache) is a fetch from the store
-## directory, verified, decoded and written to the cache.
-func obtain(hash: String) -> Dictionary:
+## directory, verified, decoded and written to the cache. `mesh`: the hash names a mesh surface
+## (G5e), whose files are `<hash>.grm`.
+func obtain(hash: String, mesh: bool = false) -> Dictionary:
 	var out: Dictionary = {"error": "", "source": "memory", "bytes": 0, "verified": true, "start_us": 0, "end_us": 0}
 	if _memory.has(hash):
 		out["bytes"] = _lengths[hash]
 		return out
-	var cached: String = dir.path_join(CACHE_SUBDIR).path_join(hash + ".grt") if dir != "" else ""
+	var cached: String = dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh)) if dir != "" else ""
 	if cached != "" and not ignore_cache and FileAccess.file_exists(cached):
 		var cache_bytes: PackedByteArray = FileAccess.get_file_as_bytes(cached)
 		out["source"] = "cache"
@@ -166,7 +185,7 @@ func obtain(hash: String) -> Dictionary:
 			out["verified"] = false
 			out["error"] = Rs2Decoder.err("resource-hash-mismatch", "cached %s does not hash to its name" % cached)
 			return out
-		var cache_decoded: Dictionary = RsTexturePayload.decode(cache_bytes)
+		var cache_decoded: Dictionary = decode_payload(cache_bytes)
 		if not cache_decoded["ok"]:
 			out["error"] = Rs2Decoder.err("resource-invalid", "cached %s: %s" % [cached, cache_decoded["detail"]])
 			return out
@@ -181,7 +200,7 @@ func obtain(hash: String) -> Dictionary:
 		out["verified"] = false
 		out["error"] = Rs2Decoder.err("resource-unavailable", "payload %s is not in memory or the cache, and RS_RECEIVER_STORE_DIR is unset" % hash)
 		return out
-	var origin: String = store_dir.path_join(CACHE_SUBDIR).path_join(hash + ".grt")
+	var origin: String = store_dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh))
 	if not FileAccess.file_exists(origin):
 		out["end_us"] = Time.get_ticks_usec()
 		out["verified"] = false
@@ -194,7 +213,7 @@ func obtain(hash: String) -> Dictionary:
 		out["verified"] = false
 		out["error"] = Rs2Decoder.err("resource-hash-mismatch", "%s (%d bytes) does not hash to its name" % [origin, fetched.size()])
 		return out
-	var fetched_decoded: Dictionary = RsTexturePayload.decode(fetched)
+	var fetched_decoded: Dictionary = decode_payload(fetched)
 	if not fetched_decoded["ok"]:
 		out["error"] = Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, fetched_decoded["detail"]])
 		return out
@@ -208,10 +227,11 @@ func obtain(hash: String) -> Dictionary:
 	return out
 
 
-## Writes a verified payload to the cache: a temporary file, then a rename.
+## Writes a verified payload to the cache: a temporary file, then a rename (`.grm` for a GRM1
+## payload, `.grt` otherwise).
 func _write_cache(hash: String, payload: PackedByteArray) -> String:
 	var base: String = dir.path_join(CACHE_SUBDIR)
-	var final_path: String = base.path_join(hash + ".grt")
+	var final_path: String = base.path_join(file_name(hash, is_mesh_payload(payload)))
 	var temp_path: String = base.path_join(".%s.tmp" % hash)
 	var file: FileAccess = FileAccess.open(temp_path, FileAccess.WRITE)
 	if file == null:

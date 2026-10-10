@@ -3,8 +3,9 @@
 Status: specified and golden-tested at G5w (2026-10-10). Since G5d (2026-10-10) the capture, the
 receiver and every gate runner speak /4 (gate5-design.md D1, D17); /3 decoding remains only for
 `golden-3/`. The capture records every immediate geometry op, `add_set_transform` and
-`add_clip_ignore` as /4 commands; `add_mesh` and the mesh table stay empty-or-typed until G5e
-(gate5-design.md "As built (G5d)"). Written with [gate5-design.md](gate5-design.md) D1-D16 and Q4, which
+`add_clip_ignore` as /4 commands; since G5e (2026-10-10) also `add_mesh` and the mesh table, with
+GRM1 surface payloads in the store (`.grm`), inline and over HTTP (gate5-design.md "As built
+(G5d)", "As built (G5e)"). Written with [gate5-design.md](gate5-design.md) D1-D16 and Q4, which
 this document implements. Codecs (G5w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`,
 behind `Session::version`), TypeScript decoder/validator/resolver
 (`scripts/lib/render-stream-2.ts`, behind an explicit `version` parameter) and GDScript decoder

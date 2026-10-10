@@ -660,7 +660,7 @@ const G3B_NO_RESOURCES = {
   skipped_commands: 0,
 };
 
-/** A receiver's applied.json (render-stream-receiver-applied/3), derived from the recording
+/** A receiver's applied.json (render-stream-receiver-applied/4 since G5e), derived from the recording
  * bytes it actually replayed (self-test-gate1.ts's appliedFor): every transaction 1..N, and a
  * shot (plus, when `stateSeqs` names it, a resolved-state dump) at each of `shotSeqs`. */
 function g3bAppliedFor(
@@ -672,7 +672,7 @@ function g3bAppliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/3",
+    schema: "render-stream-receiver-applied/4",
     mode: "file",
     recording: {
       path: recordingPath,

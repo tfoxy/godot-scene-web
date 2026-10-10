@@ -36,6 +36,14 @@ The model (source lines are in ../godot-4.5.1-stable; `rs` is servers/rendering_
   frame (`free` first); on every other frame `update_vertex_region`, `update_attribute_region` and
   `mesh_set_custom_aabb`, then the item redraws (`canvas_item_clear` + `canvas_item_add_mesh`).
 - Freshness. A region is fresh at a step exactly when its modelled pixels change.
+- The wire and the receiver (G5e, gate5-design.md Q3b, Q5). Every item's settle commands are its
+  /4 add_mesh (mesh by name, identity transform, white modulate, TEXG for DF). Each mesh's wire
+  lifetime (created, last live frame, the frames a `freed` tombstone stays named) follows from the
+  timeline, and the rendered receiver's mesh uploads per frame from the byte model frame by frame:
+  a mesh first named is a create (every surface, its custom AABB), a surface layout change
+  (count, primitive, format, counts, buffer lengths, AABB, uv_scale) a rebuild, a same-layout
+  change one update per surface listing the buffers whose bytes changed, a custom AABB change
+  its own row, and a mesh whose entry leaves or is tombstoned a free.
 """
 
 from __future__ import annotations
@@ -566,13 +574,28 @@ def item_shapes(name, step, st):
     return [surface_shape(f"{mesh}.s{k}", s, texture) for k, s in enumerate(surfaces)]
 
 
+ITEM_MESH = {"MI": "AM1", "RM": "RMS", "M2": "M2", "P2": "P2", "LD": "LD", "FR": "FM"}
+
+
+def item_mesh(name, step):
+    """The fixture mesh an item's add_mesh names at `step` (DF's rebuild names DF2), or None."""
+    if name == "DF":
+        return "DF2" if step >= 5 else "DF"
+    if name == "FR" and step >= 8:
+        return None
+    return ITEM_MESH.get(name)
+
+
 def item_commands(name, step):
-    """Each item's recorded commands at a settle frame, as the RS calls that made them."""
+    """Each item's recorded commands at a settle frame, as the RS calls that made them: every mesh
+    item draws with identity and white (MeshInstance2D's draw_mesh, Polygon2D's add_mesh and the raw
+    items alike), DF with TEXG, the others with RID()."""
     if name == "Marker":
         return [{"op": "canvas_item_add_rect", "rect": [0.0, 0.0, 32.0, 32.0], "color": [f32(v) for v in MARKER_COLOURS[step]], "antialiased": False}]
-    if name == "FR" and step >= 8:
+    mesh = item_mesh(name, step)
+    if mesh is None:
         return []
-    return [{"op": "canvas_item_add_mesh"}]
+    return [{"op": "canvas_item_add_mesh", "mesh": mesh, "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "modulate": [1.0, 1.0, 1.0, 1.0], "texture": "TEXG" if name == "DF" else None}]
 
 
 def redraws(step):
@@ -806,7 +829,7 @@ def build():
         "engine_textures": [{"frame": 1, "op": "texture_2d_create", "format": "RGBA8", "width": 800, "height": 6}],
         "mesh_order": MESH_ORDER,
         "mesh_items": MESH_ITEM,
-        "typed_ops": ["canvas_item_add_mesh"],
+        "typed_ops": [],
         "draw_census": draw_census(),
         "tie_free_edges_checked": tie_checked,
         "census": {"frames": frames, "df_rule": df_rule, "df_frame_ops": DF_FRAME_OPS},
@@ -842,11 +865,104 @@ def draw_census():
     }
 
 
-def predictions():
-    """G5e's sabotage sets (Q6d), kept here so G5e inherits them from the same model."""
+def step_of(frame):
+    """The step whose changes are in effect at `frame`."""
+    return 0 if frame < S + N else min((frame - S) // N, LAST_STEP)
+
+
+def layout(s):
+    """A surface's layout (gate5-design.md Q5): everything but the buffer bytes."""
+    return [s["primitive"], s["format"], s["vertex_count"], s["index_count"], len(s["vertex"]), len(s["attribute"]), len(s["skin"]), len(s["index"]), [f32(v) for v in s["aabb"]], s["uv_scale"]]
+
+
+def data_bytes(s):
+    return len(s["vertex"]) + len(s["attribute"]) + len(s["skin"]) + len(s["index"])
+
+
+def receiver_uploads(quit_frame):
+    """The rendered receiver's mesh uploads per frame (applied.json mesh_uploads, G5e), from the
+    byte model frame by frame: rows [mesh, op, surfaces, buffers, bytes], frees first (by mesh id),
+    then each named mesh by id."""
+    resident = {}
+    out = {}
+    for f in range(1, quit_frame + 1):
+        step = step_of(f)
+        st, custom = mesh_state(step, f)
+        rows = []
+        for name in MESH_ORDER:
+            if name in resident and (st[name] is None or st[name] == "freed"):
+                rows.append([name, "free", [], [], 0])
+                del resident[name]
+        named = {item_mesh(item, step) for item in CREATION_ORDER} - {None}
+        for name in MESH_ORDER:
+            if name not in named or st[name] is None or st[name] == "freed":
+                continue
+            surfaces = st[name]
+            layouts = [layout(x) for x in surfaces]
+            if name not in resident:
+                rows.append([name, "create", list(range(len(surfaces))), [], sum(data_bytes(x) for x in surfaces)])
+            elif layouts != resident[name]["layouts"]:
+                rows.append([name, "rebuild", list(range(len(surfaces))), [], sum(data_bytes(x) for x in surfaces)])
+                if custom[name] != resident[name]["custom"]:
+                    rows.append([name, "custom_aabb", [], [], 0])
+            else:
+                for k, x in enumerate(surfaces):
+                    before = resident[name]["surfaces"][k]
+                    changed = [b for b in ("vertex", "attribute", "skin", "index") if x[b] != before[b]]
+                    if changed:
+                        rows.append([name, "update", [k], changed, sum(len(x[b]) for b in changed)])
+                if custom[name] != resident[name]["custom"]:
+                    rows.append([name, "custom_aabb", [], [], 0])
+            resident[name] = {"layouts": layouts, "surfaces": surfaces, "custom": custom[name]}
+        if rows:
+            out[str(f)] = rows
+    return out
+
+
+def mesh_lifetimes():
+    """Per fixture mesh, its wire table lifetime (Q3b): [first frame, last live frame or null,
+    last frame a `freed` tombstone is still named or null]. DF's entry leaves in its rebuild frame
+    (its item re-adds DF2 the same frame); FM stays a tombstone while FR still names it."""
+    rebuild = S + N * 5
     return {
+        "AM1": [S, None, None], "RMS": [S, None, None], "M2": [S, None, None],
+        "DF": [S, rebuild - 1, None], "P2": [S, None, None], "LD": [S, None, None],
+        "FM": [S, S + N * 7 - 1, S + N * 8 - 1], "DF2": [rebuild, None, None],
+    }
+
+
+def omitted_vertex_regions(from_frame):
+    """omit-op mesh_surface_update_vertex_region from `from_frame` (Q6d): the steps at which each
+    region's displayed vertices differ from the truth. The capture's copy of RMS keeps its creation
+    vertices (its one vertex update is omitted); DF keeps the vertices of its last update before
+    the frame, and DF2 those it was created with (a mesh_add_surface, not omitted), while their
+    attribute updates still apply. DF's displacement repeats every 8 frames, so a settle frame
+    congruent to DF's frozen frame mod 8 shows the truth (G5e: step 2's frame 28 against 20)."""
+    out = {"RM": [], "DF": []}
+    for step in range(LAST_STEP + 1):
+        settle = S + N * step + SETTLE
+        if settle < from_frame:
+            continue
+        rms = mesh_state(step, settle)[0]["RMS"][0]["vertex"]
+        if rms != vertex_bytes(RMS_QUAD):
+            out["RM"].append(step)
+        if step < 5:
+            frozen, truth = df_points(from_frame - 1, DF_GRID), df_points(settle, DF_GRID)
+        else:
+            frozen, truth = df_points(rebuild_frame(), DF2_GRID), df_points(settle, DF2_GRID)
+        if vertex_bytes(frozen) != vertex_bytes(truth):
+            out["DF"].append(step)
+    return out
+
+
+def predictions():
+    """G5e's sabotage sets (Q6d), kept here so G5e inherits them from the same model, and its wire
+    and receiver predictions (mesh lifetimes, receiver uploads per frame over the capture run)."""
+    return {
+        "mesh-lifetimes": mesh_lifetimes(),
+        "receiver-mesh-uploads": receiver_uploads(CAPTURE_QUIT),
         "sabotage-mesh-freeze": {"frame": S + N, "steps": list(range(1, LAST_STEP + 1))},
-        "sabotage-mesh-omit-vertex-region": {"frame": S + N * 2, "regions": {"RM": list(range(2, 10)), "DF": list(range(2, 10))}},
+        "sabotage-mesh-omit-vertex-region": {"frame": S + N * 2, "regions": omitted_vertex_regions(S + N * 2)},
         "sabotage-mesh-perturb-vertex": {"frame": S + N * 2, "regions": {"RM": list(range(2, 10)), "DF": list(range(2, 10)), "P2": list(range(7, 10)), "MI": [8, 9]}},
         "sabotage-mesh-receiver-drop-surface": {"regions": {"M2": list(range(0, 6))}},
         "sabotage-mesh-receiver-stale": {"regions": {"MI": list(range(1, 8)), "RM": list(range(2, 10)), "DF": list(range(0, 10))}},

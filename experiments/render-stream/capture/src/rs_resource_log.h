@@ -68,8 +68,9 @@
 //
 // G5a (gate5-design.md Q3d) adds mesh lines, `kind: "mesh"`: one per mesh-related
 // RenderingServer call (mesh_create, mesh_create_from_surfaces, mesh_add_surface, the four region
-// updates, mesh_surface_remove, mesh_clear, mesh_set_custom_aabb, free). There is no mesh mirror
-// table yet (that is G5e), so this module keeps its own minimal mesh registry too -- RID -> wire
+// updates, mesh_surface_remove, mesh_clear, mesh_set_custom_aabb, free). Independently of the
+// mirror's mesh table (G5e, rs_mirror.h: the checker compares the two, `mesh-versions-current`),
+// this module keeps its own minimal mesh registry too -- RID -> wire
 // id, version, status, reason and, per surface, the current whole-buffer bytes needed to re-hash
 // after a region update -- with its own per-session id counter (from 1, never reused, independent
 // of the texture counter: D5). `hash` is the GRM1 payload's SHA-256 (rs_mesh_payload.h) and

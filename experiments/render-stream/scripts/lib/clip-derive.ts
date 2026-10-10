@@ -38,13 +38,25 @@
 //     add_polyline / add_multiline with width < 0 the bounding box of their points.
 //   - Rects that depend on the server's lowering beyond that -- antialiased lines (feather
 //     primitives), wide polylines and multilines (bisector strips, per-segment quads), circles
-//     (cosf/sinf fans) -- and add_mesh (the mesh's AABB, G5e) are unknown, exactly as an
-//     unsupported command is.
+//     (cosf/sinf fans) -- are unknown, exactly as an unsupported command is.
+//   - add_mesh (G5e, gate5-design.md Q1f): mesh_get_aabb as a Rect2 (position.xy, size.xy),
+//     ignoring the command's own transform, then the draw transform: the mesh entry's custom AABB
+//     when it is non-zero, else the merge of its surfaces' AABBs, which the wire does not carry
+//     (they are in the GRM1 payloads): DeriveOptions.surfaceAabbs supplies them by hash, and
+//     without it such a mesh's rect is unknown. A `freed` mesh (or one with no surface) is AABB(),
+//     a zero rect at the origin; an id absent from the state's `meshes` is unknown. Item::get_rect
+//     caches its rect until a command is added or cleared (renderer_canvas_render.h:426, :456),
+//     so a custom AABB change without a redraw keeps the old rect on the engine; one state cannot
+//     see that, and fixtures never do it (Q1f).
 // GLES3 drops an item's scissor between add_clip_ignore(true) and add_clip_ignore(false) while it
 // has a clip owner (rasterizer_canvas_gles3.cpp:1260-1274); clipIgnoredCommands() names the
 // commands drawn that way, and deriveClipRects() reports them on the item's entry (`ignored`).
 
-import type { ResolvedCanvas, ResolvedItem } from "./render-stream-2";
+import type {
+  ResolvedCanvas,
+  ResolvedItem,
+  ResolvedMesh,
+} from "./render-stream-2";
 
 /** [x0, y0, x1, y1): integer, half-open. */
 export type ClipRect = [number, number, number, number];
@@ -61,8 +73,15 @@ export interface DerivedClip {
 
 export type DerivedEntry = DerivedClip | "skipped" | "unknown";
 
+/** G5e: a mesh table entry as itemRect needs it (render-stream-4.md resolved form). */
+export type DeriveMesh = Pick<ResolvedMesh, "id" | "status" | "custom_aabb"> & {
+  surfaces: readonly { hash: string }[];
+};
+
 export interface DeriveInput {
   canvases: readonly Pick<ResolvedCanvas, "id" | "role" | "items" | "xform">[];
+  /** render-stream/4 (G5e): the resolved mesh table, for add_mesh rects */
+  meshes?: readonly DeriveMesh[];
   items: readonly Pick<
     ResolvedItem,
     | "id"
@@ -83,6 +102,42 @@ export interface DeriveOptions {
   cullMask?: number;
   /** the canvas to walk (default: the one whose role is "root") */
   canvas?: number;
+  /** G5e: each GRM1 surface payload's AABB (position xyz, size xyz) by hash, for add_mesh rects
+   * of meshes without a custom AABB */
+  surfaceAabbs?: ReadonlyMap<string, readonly number[]>;
+}
+
+/** Resolves an add_mesh command's mesh id to its rect (before the draw transform), or null. */
+export type MeshRectOf = (id: number) => Box | null;
+
+/** A MeshRectOf over a state's mesh table (see the header's add_mesh rule). */
+export function meshRects(
+  meshes: readonly DeriveMesh[] | undefined,
+  surfaceAabbs?: ReadonlyMap<string, readonly number[]>,
+): MeshRectOf {
+  const byId = new Map((meshes ?? []).map((m) => [m.id, m] as const));
+  return (id) => {
+    const m = byId.get(id);
+    if (!m) return null;
+    if (m.status === "freed") return [0, 0, 0, 0];
+    const c = m.custom_aabb;
+    if (c.some((v) => v !== 0)) return [f(c[0]), f(c[1]), f(c[3]), f(c[4])];
+    if (m.surfaces.length === 0) return [0, 0, 0, 0];
+    let lo: [number, number] | undefined;
+    let hi: [number, number] | undefined;
+    for (const s of m.surfaces) {
+      const a = surfaceAabbs?.get(s.hash);
+      if (!a) return null;
+      const x0 = f(a[0]);
+      const y0 = f(a[1]);
+      const x1 = f(a[0] + a[3]);
+      const y1 = f(a[1] + a[4]);
+      lo = lo ? [Math.min(lo[0], x0), Math.min(lo[1], y0)] : [x0, y0];
+      hi = hi ? [Math.max(hi[0], x1), Math.max(hi[1], y1)] : [x1, y1];
+    }
+    if (!lo || !hi) return [0, 0, 0, 0];
+    return [lo[0], lo[1], f(hi[0] - lo[0]), f(hi[1] - lo[1])];
+  };
 }
 
 type Affine = [number, number, number, number, number, number];
@@ -199,8 +254,12 @@ export function linePoints(
  * for a command get_rect skips (add_set_transform, add_clip_ignore), or null when unknown. */
 function commandRect(
   c: DeriveInput["items"][number]["commands"][number],
+  meshRect?: MeshRectOf,
 ): Box | "none" | null {
   switch (c.op) {
+    case "add_mesh":
+      // G5e: the mesh's AABB, ignoring the command's own transform (Q1f).
+      return meshRect && c.mesh !== undefined ? meshRect(c.mesh) : null;
     case "add_set_transform":
     case "add_clip_ignore":
       return "none";
@@ -242,13 +301,17 @@ function commandRect(
       if (!c.points || c.width === undefined || c.width >= 0) return null;
       return pointsBox(c.points);
     default:
-      // unsupported, add_circle, add_mesh: bounds the derivation does not model.
+      // unsupported, add_circle: bounds the derivation does not model.
       return null;
   }
 }
 
-/** An item's cull rect (step 1), or null when a command makes it unknown. */
-export function itemRect(item: DeriveInput["items"][number]): Box | null {
+/** An item's cull rect (step 1), or null when a command makes it unknown. `meshRect` resolves
+ * add_mesh commands (G5e); without it they are unknown. */
+export function itemRect(
+  item: DeriveInput["items"][number],
+  meshRect?: MeshRectOf,
+): Box | null {
   if (item.custom_rect) {
     const [x, y, w, h] = item.custom_rect_rect;
     return [x, y, w, h];
@@ -262,7 +325,7 @@ export function itemRect(item: DeriveInput["items"][number]): Box | null {
       xf = c.transform;
       continue;
     }
-    const own = commandRect(c);
+    const own = commandRect(c, meshRect);
     if (own === null) return null;
     if (own === "none") continue;
     const r = xf ? xformRect(xf, own) : own;
@@ -320,6 +383,7 @@ export function deriveClipRects(
   if (!canvas) return out;
   const mask = (opts.cullMask ?? 0xffffffff) >>> 0;
   const vp: Box = [0, 0, viewport[0], viewport[1]];
+  const meshRect = meshRects(state.meshes, opts.surfaceAabbs);
 
   const mark = (id: number, value: "skipped" | "unknown", depth: number) => {
     const it = items.get(id);
@@ -344,7 +408,7 @@ export function deriveClipRects(
     const xf = mulAffine(parentXf, it.xform);
     let own = owner;
     if (it.clip) {
-      const rect = itemRect(it);
+      const rect = itemRect(it, meshRect);
       if (rect === null) {
         mark(id, "unknown", depth);
         return;

@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { readGroups, runGate5 } from "./lib/gate5-checks";
 import type { Gate5Expected } from "./lib/gate5-expected";
 import { type Gate5MeshExpected, runGate5c } from "./lib/gate5c-checks";
+import { runGate5e } from "./lib/gate5e-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -84,6 +85,18 @@ async function main(): Promise<void> {
     // runGate5 counts a run without g5b as failed; with g5b run, g5c's checks join the verdict.
     report.gate_passed =
       report.gate_passed && mesh.checks.every((c) => c.status === "pass");
+    // G5e: the mesh fixture's wire, receivers and sabotages (needs g5c's legs in the same run).
+    if (groups.run.includes("g5e")) {
+      const g5e = await runGate5e(out, meshExpected, {
+        receiverProjectDir: join(EXPERIMENT_DIR, "receiver"),
+        fixtureProjectDir: join(EXPERIMENT_DIR, "fixtures", "gate5-mesh"),
+      });
+      report.checks.push(...g5e.checks);
+      Object.assign(report.legs, g5e.legs);
+      report.g5e = g5e.report;
+      report.gate_passed =
+        report.gate_passed && g5e.checks.every((c) => c.status === "pass");
+    }
   }
   await writeFile(
     join(out, "result.json"),
@@ -170,6 +183,45 @@ async function main(): Promise<void> {
           .join(" ")}`,
       );
     console.log(`  capture-canvas entries: ${g.canvas_entries.join(", ")}`);
+  }
+  if (report.g5e) {
+    const g = report.g5e;
+    console.log(
+      `  g5e: ${g.hash_parity_surfaces} wire surface-steps equal the oracle; store ${g.store.mesh_payloads} GRM1 payloads, ${g.store.mesh_bytes} B`,
+    );
+    console.log(
+      `  g5e wire mesh tables (frame: {id:status}): ${Object.entries(
+        g.wire_census,
+      )
+        .map(([f, v]) => `${f}:{${v}}`)
+        .join(" ")}`,
+    );
+    for (const [leg, u] of Object.entries(g.uploads))
+      console.log(
+        `  ${leg} uploads: ${u.rows} rows, ${u.bytes} B (${Object.entries(
+          u.by_op,
+        )
+          .map(([op, n]) => `${op} ${n}`)
+          .join(
+            ", ",
+          )}); fetched ${g.fetches[leg]?.fetched ?? 0} mesh payloads, ${g.fetches[leg]?.fetched_bytes ?? 0} B`,
+      );
+    for (const [leg, table] of Object.entries(g.sabotage_regions))
+      console.log(
+        `  ${leg}: mismatching regions per step ${Object.entries(table)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(" ")}`,
+      );
+    console.log(
+      `  g5e mesh cost per step (lines, payloads, median copy/hash ns, live surface bytes): ${Object.entries(
+        g.per_step,
+      )
+        .map(
+          ([k, v]) =>
+            `${k}:${v.mesh_lines}/${v.payloads_made}/${v.copy_ns_median}/${v.hash_ns_median}/${v.live_surface_bytes}`,
+        )
+        .join(" ")}`,
+    );
   }
   const passed = report.checks.filter((c) => c.passed).length;
   console.log(

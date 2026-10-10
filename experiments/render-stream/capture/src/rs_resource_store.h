@@ -3,11 +3,15 @@
 //
 //   <dir>/sha256/<hash>.grt     one render-stream-texture/1 payload per hash, written once
 //                               (temporary file + rename)
-//   <dir>/index.jsonl           {"hash","bytes","format","width","height","mipmaps","first_frame"}
-//                               per hash, in the order they were stored
+//   <dir>/sha256/<hash>.grm     one render-stream-mesh/1 payload per hash (G5e, render-stream-4.md
+//                               "Mesh payload"), the same way
+//   <dir>/index.jsonl           per hash, in the order they were stored:
+//                               {"hash","bytes","type":"texture-2d","format","width","height",
+//                               "mipmaps","first_frame"} or {"hash","bytes","type":"mesh-surface",
+//                               "primitive","format","vertex_count","index_count","first_frame"}
 //
-// The publisher (rs_publish.h) puts every `ok` image hash of each published snapshot that the
-// store lacks. A write failure is the caller's sticky `resource-store-failed`.
+// The publisher (rs_publish.h) puts every `ok` image hash and (G5e) every `ok` mesh's surface
+// hash of each published snapshot that the store lacks. A write failure is the caller's sticky `resource-store-failed`.
 //
 // The `wrong-hash` sabotage lives here: the first hash first stored at or after the sabotage
 // frame is written with its first data byte flipped, under its true name, so a receiver that
@@ -74,6 +78,9 @@ class ResourceStore {
   // already holds that hash. `entry` supplies the index line's shape.
   Put put(const rs2::TextureEntry &entry, const std::vector<std::uint8_t> &payload,
           std::uint64_t frame, std::string *error);
+  // Stores a complete GRM1 payload whose SHA-256 is `surface.hash` (G5e), as put() does.
+  Put put_mesh(const rs2::MeshSurface &surface, const std::vector<std::uint8_t> &payload,
+               std::uint64_t frame, std::string *error);
 
   bool has(const std::string &hash) const { return hashes_.count(hash) != 0; }
   std::uint64_t hashes() const { return hashes_.size(); }
@@ -86,6 +93,9 @@ class ResourceStore {
   static std::size_t first_data_offset(const std::vector<std::uint8_t> &payload);
 
  private:
+  Put put_bytes(const std::string &hash, const char *extension, const std::string &index_fields,
+                const std::vector<std::uint8_t> &payload, std::uint64_t frame, std::string *error);
+
   std::string dir_;
   std::FILE *index_ = nullptr;
   std::set<std::string> hashes_;
