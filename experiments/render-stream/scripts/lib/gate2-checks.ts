@@ -121,15 +121,28 @@ export const TEXTURE_DRAW_OPS: readonly string[] = [
 ];
 
 /** RenderingServer texture calls the hook log records (Q3 "Hook log"), plus (G5a,
- * gate5-design.md Q3d) the mesh calls it gains kind:"mesh" lines for. */
+ * gate5-design.md Q3d) the mesh calls it gains kind:"mesh" lines for and (G55a,
+ * gate5_5-design.md Q3d) the shader/material/item-material calls it gains lines for --
+ * including shader_create_from_code/shader_set_code/material_set_param, which only logged a
+ * counters.json entry (RID only) before G55a, and canvas_item_set_material (hooked since
+ * calibrator 2), logged now for the material census though its item field stays G55d's. */
 export const RESOURCE_LOG_OPS: readonly string[] = [
   "canvas_item_set_default_texture_filter",
   "canvas_item_set_default_texture_repeat",
+  "canvas_item_set_instance_shader_parameter",
+  "canvas_item_set_material",
+  "canvas_item_set_use_parent_material",
+  "canvas_light_attach_to_canvas",
+  "canvas_set_modulate",
   "canvas_texture_create",
   "canvas_texture_set_channel",
   "canvas_texture_set_texture_filter",
   "canvas_texture_set_texture_repeat",
   "free",
+  "material_create",
+  "material_create_from_shader",
+  "material_set_param",
+  "material_set_shader",
   "mesh_add_surface",
   "mesh_clear",
   "mesh_create",
@@ -140,6 +153,10 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
   "mesh_surface_update_index_region",
   "mesh_surface_update_skin_region",
   "mesh_surface_update_vertex_region",
+  "shader_create",
+  "shader_create_from_code",
+  "shader_set_code",
+  "shader_set_default_texture_parameter",
   "texture_2d_create",
   "texture_2d_placeholder_create",
   "texture_2d_update",
@@ -149,9 +166,10 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
 ];
 
 /** Exact key order of a render-stream-resource-log/1 line (the contract's keys, then G2a's, then
- * G5a's mesh trailing columns, gate5-design.md Q3d). Since G2b2 a sabotage's own line appends
- * `sabotage` (and `omitted` for an op the omit-op sabotage dropped from the capture), and the
- * publisher writes `store` / `inline` lines. */
+ * G5a's mesh trailing columns (gate5-design.md Q3d), then G55a's shader/material/item-material
+ * trailing columns (gate5_5-design.md Q3d)). Since G2b2 a sabotage's own line appends `sabotage`
+ * (and `omitted` for an op the omit-op sabotage dropped from the capture), and the publisher
+ * writes `store` / `inline` lines. */
 export const RESOURCE_LINE_KEYS: readonly string[] = [
   "frame",
   "t_us",
@@ -188,6 +206,15 @@ export const RESOURCE_LINE_KEYS: readonly string[] = [
   "vertex_count",
   "index_count",
   "outcome",
+  "mode",
+  "source",
+  "builtin",
+  "uses",
+  "scan_ns",
+  "param",
+  "type",
+  "n",
+  "decode_ns",
 ];
 
 // Viewport.DefaultCanvasItemTextureFilter / _Repeat scene enums (root.json texture_defaults), and
@@ -254,6 +281,23 @@ export interface ResourceLine {
   vertex_count: number | null;
   index_count: number | null;
   outcome: "applied" | "rejected" | "unknown" | null;
+  /** G55a (gate5_5-design.md Q3d): shader/material/item-material trailing columns, null on every
+   * other line. `builtin` is the D7 CanvasItemMaterial recognition, or null when unrecognized or
+   * not a shader line. */
+  mode: string | null;
+  source: "payload" | null;
+  builtin: {
+    kind: "canvas_item_material";
+    blend_mode: string;
+    light_mode: string;
+    particles_animation: boolean;
+  } | null;
+  uses: string[] | null;
+  scan_ns: number | null;
+  param: string | null;
+  type: string | null;
+  n: number | null;
+  decode_ns: number | null;
   /** G2b2: a sabotage's own line; `omitted` for an op the omit-op sabotage dropped */
   sabotage?: boolean;
   omitted?: boolean;

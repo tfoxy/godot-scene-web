@@ -204,4 +204,78 @@ static_assert(offsetof(SurfaceDataPrefix, uv_scale) == 216, "SurfaceData::uv_sca
 static_assert(offsetof(SurfaceDataPrefix, material) == 232, "SurfaceData::material");
 static_assert(sizeof(SurfaceDataPrefix) == 240, "SurfaceData is 240 bytes (gate5-design.md Q2)");
 
+// --- gate 5.5 (G55a): material parameter decode (gate5_5-design.md D8) -------
+//
+// The integer and extended-float math types `get_variant_to_type_constructor` can write a
+// material parameter into, reproduced the same way as the float ones above: a plain POD, laid
+// out exactly like the engine's.
+//   core/math/vector2i.h   struct Vector2i { int32_t x, y; }
+//   core/math/vector3i.h   struct Vector3i { int32_t x, y, z; }
+//   core/math/vector4i.h   struct Vector4i { int32_t x, y, z, w; }
+//   core/math/rect2i.h     struct Rect2i { Point2i position; Size2i size; }
+//   core/math/plane.h      class Plane { Vector3 normal; real_t d; }
+//   core/math/quaternion.h class Quaternion { real_t x, y, z, w; }
+//   core/math/basis.h      class Basis { Vector3 rows[3]; }   (row-major)
+//   core/math/projection.h class Projection { Vector4 columns[4]; }
+struct Vector2i {
+  int32_t x;
+  int32_t y;
+};
+
+struct Vector3i {
+  int32_t x;
+  int32_t y;
+  int32_t z;
+};
+
+struct Vector4i {
+  int32_t x;
+  int32_t y;
+  int32_t z;
+  int32_t w;
+};
+
+struct Rect2i {
+  Vector2i position;
+  Vector2i size;
+};
+
+struct Plane {
+  Vector3 normal;
+  float d;
+};
+
+struct Quaternion {
+  float x;
+  float y;
+  float z;
+  float w;
+};
+
+struct Basis {
+  Vector3 rows[3];
+};
+
+struct Projection {
+  Vector4 columns[4];
+};
+
+static_assert(sizeof(Vector2i) == 8, "single-precision Vector2i");
+static_assert(sizeof(Vector3i) == 12, "single-precision Vector3i");
+static_assert(sizeof(Vector4i) == 16, "single-precision Vector4i");
+static_assert(sizeof(Rect2i) == 16, "single-precision Rect2i");
+static_assert(sizeof(Plane) == 16, "single-precision Plane");
+static_assert(sizeof(Quaternion) == 16, "single-precision Quaternion");
+static_assert(sizeof(Basis) == 36, "single-precision Basis (row-major)");
+static_assert(sizeof(Projection) == 64, "single-precision Projection (by column)");
+
+// core/string/ustring.h:267 `class String { CowData<char32_t> _cowdata; ... }`: one pointer, the
+// same CowData shape `Vector<T>` wraps, but String has no leading write-proxy member (that one is
+// `Vector<T>`-only, vector.h:65). Never read directly: always passed to the GDExtension string
+// interface (`string_to_utf8_chars`). Zero-initialized, it is a valid empty String.
+struct RawString {
+  const void *cowdata = nullptr;
+};
+static_assert(sizeof(RawString) == sizeof(void *), "String is one CowData pointer");
+
 }  // namespace grc

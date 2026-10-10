@@ -33,7 +33,7 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "7"
+CALIBRATOR_VERSION = "8"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
@@ -133,6 +133,21 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("mesh_surface_update_skin_region", ("mesh_surface_update_skin_region",)),
     ("mesh_surface_update_index_region", ("mesh_surface_update_index_region",)),
     ("mesh_surface_remove", ("mesh_surface_remove",)),
+    # calibrator 8: gate5_5-design.md Q2, D2 -- three silent holes (every material's shader,
+    # every CanvasItemMaterial shader, inherited materials), a canvas field and two typed
+    # refusals (an unknown shader, canvas_light_attach_to_canvas).
+    ("shader_create", ("shader_create",)),
+    ("shader_set_default_texture_parameter", ("shader_set_default_texture_parameter",)),
+    ("material_create", ("material_create",)),
+    ("material_create_from_shader", ("material_create_from_shader",)),
+    ("material_set_shader", ("material_set_shader",)),
+    ("canvas_set_modulate", ("canvas_set_modulate",)),
+    ("canvas_item_set_use_parent_material", ("canvas_item_set_use_parent_material",)),
+    (
+        "canvas_item_set_instance_shader_parameter",
+        ("canvas_item_set_instance_shader_parameter",),
+    ),
+    ("canvas_light_attach_to_canvas", ("canvas_light_attach_to_canvas",)),
 )
 
 ET_EXEC = 2

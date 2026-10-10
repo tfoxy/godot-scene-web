@@ -67,6 +67,16 @@ struct ResourceLog::Line {
   bool has_bytes = false;
   std::int64_t bytes = 0;
   std::string outcome;   // "applied" | "rejected" | "unknown"
+  // G55a (gate5_5-design.md Q3d): shader/material/item-material trailing columns. `hash`/
+  // `payload_bytes`/`copy_ns`/`hash_ns` share the texture/mesh columns above through this
+  // pointer, as a mesh line shares them through `mesh_payload`.
+  const ShaderCopy *shader_copy = nullptr;
+  std::string param;       // the decoded StringName, present on a material/item-material line
+  std::string param_type;  // rs::DecodedParam::type
+  bool has_n = false;
+  std::int64_t n = 0;
+  bool has_decode_ns = false;
+  std::int64_t decode_ns = 0;
 };
 
 void ResourceLog::emit(const Line &l) {
@@ -125,6 +135,7 @@ void ResourceLog::emit(const Line &l) {
   str_or_null(l.reason);
   const PayloadCopy *p = l.payload;
   const MeshSurfaceCopy *mp = l.mesh_payload;
+  const ShaderCopy *sp = l.shader_copy;
   key("format");
   const char *format = p != nullptr ? image_format_name(p->format) : nullptr;
   if (format != nullptr) {
@@ -147,20 +158,26 @@ void ResourceLog::emit(const Line &l) {
   key("data_bytes");
   i64_or_null(p != nullptr && p->data_bytes >= 0, p != nullptr ? p->data_bytes : 0);
   key("payload_bytes");
-  i64_or_null(p != nullptr, p != nullptr ? p->payload_bytes : 0);
+  i64_or_null(p != nullptr || sp != nullptr,
+             p != nullptr ? p->payload_bytes : (sp != nullptr ? sp->payload_bytes : 0));
   key("hash");
-  str_or_null(p != nullptr ? p->hash : (mp != nullptr ? mp->hash : std::string()));
+  str_or_null(p != nullptr ? p->hash
+                           : (mp != nullptr ? mp->hash : (sp != nullptr ? sp->hash : std::string())));
   key("copy_ns");
   if (p != nullptr) {
     i64_or_null(p->copy_ns >= 0, p->copy_ns);
+  } else if (mp != nullptr) {
+    i64_or_null(mp->copy_ns >= 0, mp->copy_ns);
   } else {
-    i64_or_null(mp != nullptr && mp->copy_ns >= 0, mp != nullptr ? mp->copy_ns : 0);
+    i64_or_null(sp != nullptr && sp->copy_ns >= 0, sp != nullptr ? sp->copy_ns : 0);
   }
   key("hash_ns");
   if (p != nullptr) {
     i64_or_null(p->hash_ns >= 0, p->hash_ns);
+  } else if (mp != nullptr) {
+    i64_or_null(mp->hash_ns >= 0, mp->hash_ns);
   } else {
-    i64_or_null(mp != nullptr && mp->hash_ns >= 0, mp != nullptr ? mp->hash_ns : 0);
+    i64_or_null(sp != nullptr && sp->hash_ns >= 0, sp != nullptr ? sp->hash_ns : 0);
   }
   key("conn");
   u64_or_null(l.conn);
@@ -202,6 +219,47 @@ void ResourceLog::emit(const Line &l) {
   i64_or_null(mp != nullptr && mp->index_count >= 0, mp != nullptr ? mp->index_count : 0);
   key("outcome");
   str_or_null(l.outcome);
+  // G55a (gate5_5-design.md Q3d): shader/material/item-material trailing columns, null on every
+  // other line.
+  key("mode");
+  str_or_null(sp != nullptr ? sp->mode : std::string());
+  key("source");
+  str_or_null(sp != nullptr && !sp->hash.empty() ? std::string("payload") : std::string());
+  key("builtin");
+  if (sp != nullptr && sp->builtin) {
+    o += "{\"kind\":\"canvas_item_material\",\"blend_mode\":";
+    append_string(&o, sp->builtin_blend_mode);
+    o += ",\"light_mode\":";
+    append_string(&o, sp->builtin_light_mode);
+    o += ",\"particles_animation\":";
+    o += sp->builtin_particles_animation ? "true" : "false";
+    o += "}";
+  } else {
+    o += "null";
+  }
+  key("uses");
+  if (sp != nullptr) {
+    o += "[";
+    for (std::size_t i = 0; i < sp->uses.size(); ++i) {
+      if (i != 0) {
+        o += ",";
+      }
+      append_string(&o, sp->uses[i]);
+    }
+    o += "]";
+  } else {
+    o += "null";
+  }
+  key("scan_ns");
+  i64_or_null(sp != nullptr && sp->scan_ns >= 0, sp != nullptr ? sp->scan_ns : 0);
+  key("param");
+  str_or_null(l.param);
+  key("type");
+  str_or_null(l.param_type);
+  key("n");
+  i64_or_null(l.has_n, l.n);
+  key("decode_ns");
+  i64_or_null(l.has_decode_ns, l.decode_ns);
   // G2b2: present only on a sabotage's own lines (spurious-texture-update's version bump; an
   // op the omit-op sabotage left out of the registry, `omitted`).
   if (l.sabotage) {
@@ -227,6 +285,10 @@ void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid) {
   by_rid_.clear();
   next_mesh_id_ = 1;
   mesh_by_rid_.clear();
+  next_shader_id_ = 1;
+  shader_by_rid_.clear();
+  next_material_id_ = 1;
+  material_by_rid_.clear();
   pending_.clear();
   update_unknown_ = 0;
 }
@@ -472,25 +534,78 @@ void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitte
   // G5a: a mesh RID the log knows (every other free -- items, canvases, ... -- changes nothing
   // here, as before).
   MeshEntry *mesh = find_mesh(rid);
-  if (mesh == nullptr) {
-    return;
-  }
-  Line line = base_line(ctx, "free");
-  line.rid = rid;
-  line.kind = "mesh";
-  line.id = mesh->id;
-  line.version = mesh->version;
-  if (omitted) {
-    line.status = mesh->status;
-    line.reason = mesh->reason;
-    line.sabotage = true;
-    line.omitted = true;
+  if (mesh != nullptr) {
+    Line line = base_line(ctx, "free");
+    line.rid = rid;
+    line.kind = "mesh";
+    line.id = mesh->id;
+    line.version = mesh->version;
+    if (omitted) {
+      line.status = mesh->status;
+      line.reason = mesh->reason;
+      line.sabotage = true;
+      line.omitted = true;
+      emit(line);
+      return;
+    }
+    line.status = "freed";
     emit(line);
+    mesh_by_rid_.erase(rid);
     return;
   }
-  line.status = "freed";
-  emit(line);
-  mesh_by_rid_.erase(rid);
+  // G55a: a shader or material RID the log knows.
+  ShaderEntry *shader = find_shader(rid);
+  if (shader != nullptr) {
+    ShaderCopy snapshot;
+    snapshot.status = shader->status;
+    snapshot.reason = shader->reason;
+    snapshot.mode = shader->mode;
+    snapshot.uses = shader->uses;
+    snapshot.builtin = shader->builtin;
+    snapshot.builtin_blend_mode = shader->builtin_blend_mode;
+    snapshot.builtin_light_mode = shader->builtin_light_mode;
+    snapshot.builtin_particles_animation = shader->builtin_particles_animation;
+    snapshot.hash = shader->hash;
+    snapshot.payload_bytes = shader->payload_bytes;
+    Line line = base_line(ctx, "free");
+    line.rid = rid;
+    line.kind = "shader";
+    line.id = shader->id;
+    line.version = shader->version;
+    line.shader_copy = &snapshot;
+    if (omitted) {
+      line.status = shader->status;
+      line.reason = shader->reason;
+      line.sabotage = true;
+      line.omitted = true;
+      emit(line);
+      return;
+    }
+    line.status = "freed";
+    emit(line);
+    shader_by_rid_.erase(rid);
+    return;
+  }
+  MaterialEntry *material = find_material(rid);
+  if (material != nullptr) {
+    Line line = base_line(ctx, "free");
+    line.rid = rid;
+    line.kind = "material";
+    line.id = material->id;
+    line.version = material->version;
+    if (omitted) {
+      line.status = material->status;
+      line.reason = material->reason;
+      line.sabotage = true;
+      line.omitted = true;
+      emit(line);
+      return;
+    }
+    line.status = "freed";
+    emit(line);
+    material_by_rid_.erase(rid);
+    return;
+  }
 }
 
 void ResourceLog::spurious_update(const TapContext &ctx, std::uint64_t rid) {
@@ -1107,6 +1222,425 @@ void ResourceLog::mesh_set_custom_aabb(const TapContext &ctx, std::uint64_t rid,
   emit(line);
 }
 
+// --- shaders and materials (gate5_5-design.md Q3d, G55a) --------------------
+
+ResourceLog::ShaderEntry *ResourceLog::find_shader(std::uint64_t rid) {
+  auto it = shader_by_rid_.find(rid);
+  return it == shader_by_rid_.end() ? nullptr : &it->second;
+}
+
+ResourceLog::MaterialEntry *ResourceLog::find_material(std::uint64_t rid) {
+  auto it = material_by_rid_.find(rid);
+  return it == material_by_rid_.end() ? nullptr : &it->second;
+}
+
+void ResourceLog::recompute_material_status(MaterialEntry *entry) {
+  if (entry->shader_rid != 0 && find_shader(entry->shader_rid) == nullptr) {
+    entry->status = "unsupported";
+    entry->reason = "unknown-shader";
+  } else {
+    entry->status = "ok";
+    entry->reason.clear();
+  }
+}
+
+void ResourceLog::copy_shader_fields(ShaderEntry *entry, const ShaderCopy &copy) {
+  entry->status = copy.status;
+  entry->reason = copy.reason;
+  entry->mode = copy.mode;
+  entry->uses = copy.uses;
+  entry->builtin = copy.builtin;
+  entry->builtin_blend_mode = copy.builtin_blend_mode;
+  entry->builtin_light_mode = copy.builtin_light_mode;
+  entry->builtin_particles_animation = copy.builtin_particles_animation;
+  entry->hash = copy.hash;
+  entry->payload_bytes = copy.payload_bytes;
+}
+
+void ResourceLog::shader_create(const TapContext &ctx, std::uint64_t rid, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = base_line(ctx, "shader_create");
+    line.rid = rid;
+    line.kind = "shader";
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  ShaderEntry entry;
+  entry.id = next_shader_id_++;
+  shader_by_rid_[rid] = entry;
+  Line line = base_line(ctx, "shader_create");
+  line.rid = rid;
+  line.kind = "shader";
+  line.id = entry.id;
+  line.version = entry.version;
+  line.status = entry.status;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::shader_create_from_code(const TapContext &ctx, std::uint64_t rid,
+                                          const ShaderCopy &copy, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = base_line(ctx, "shader_create_from_code");
+    line.rid = rid;
+    line.kind = "shader";
+    line.shader_copy = &copy;
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  ShaderEntry entry;
+  entry.id = next_shader_id_++;
+  copy_shader_fields(&entry, copy);
+  shader_by_rid_[rid] = entry;
+  Line line = base_line(ctx, "shader_create_from_code");
+  line.rid = rid;
+  line.kind = "shader";
+  line.id = entry.id;
+  line.version = entry.version;
+  line.status = entry.status;
+  line.reason = entry.reason;
+  line.shader_copy = &copy;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::shader_set_code(const TapContext &ctx, std::uint64_t rid, const ShaderCopy &copy,
+                                  bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "shader_set_code");
+  line.rid = rid;
+  line.kind = "shader";
+  line.shader_copy = &copy;
+  ShaderEntry *entry = find_shader(rid);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    line.outcome = "unknown";
+    emit(line);
+    return;
+  }
+  entry->version += 1;
+  copy_shader_fields(entry, copy);
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::shader_set_default_texture_parameter(const TapContext &ctx, std::uint64_t shader,
+                                                        const std::string &name,
+                                                        std::uint64_t texture, std::int32_t index,
+                                                        bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "shader_set_default_texture_parameter");
+  line.rid = shader;
+  line.kind = "shader";
+  line.param = name;
+  line.has_target = true;
+  line.target = texture;
+  if (const Entry *tex = find(texture)) {
+    line.ref_id = tex->id;
+  }
+  line.has_value = true;
+  line.value = index;
+  ShaderEntry *entry = find_shader(shader);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    line.outcome = "unknown";
+    emit(line);
+    return;
+  }
+  entry->version += 1;
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::material_create(const TapContext &ctx, std::uint64_t rid, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = base_line(ctx, "material_create");
+    line.rid = rid;
+    line.kind = "material";
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  MaterialEntry entry;
+  entry.id = next_material_id_++;
+  material_by_rid_[rid] = entry;
+  Line line = base_line(ctx, "material_create");
+  line.rid = rid;
+  line.kind = "material";
+  line.id = entry.id;
+  line.version = entry.version;
+  line.status = entry.status;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::material_create_from_shader(const TapContext &ctx, std::uint64_t rid,
+                                              std::uint64_t shader, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "material_create_from_shader");
+  line.rid = rid;
+  line.kind = "material";
+  if (shader != 0) {
+    line.has_target = true;
+    line.target = shader;
+  }
+  if (const ShaderEntry *s = find_shader(shader)) {
+    line.ref_id = s->id;
+  }
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  MaterialEntry entry;
+  entry.id = next_material_id_++;
+  entry.shader_rid = shader;
+  recompute_material_status(&entry);
+  material_by_rid_[rid] = entry;
+  line.id = entry.id;
+  line.version = entry.version;
+  line.status = entry.status;
+  line.reason = entry.reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::material_set_shader(const TapContext &ctx, std::uint64_t material,
+                                      std::uint64_t shader, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "material_set_shader");
+  line.rid = material;
+  line.kind = "material";
+  if (shader != 0) {
+    line.has_target = true;
+    line.target = shader;
+  }
+  if (const ShaderEntry *s = find_shader(shader)) {
+    line.ref_id = s->id;
+  }
+  MaterialEntry *entry = find_material(material);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    line.outcome = "unknown";
+    emit(line);
+    return;
+  }
+  entry->shader_rid = shader;
+  entry->version += 1;
+  recompute_material_status(entry);
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::material_set_param(const TapContext &ctx, std::uint64_t material,
+                                     const std::string &name, const MaterialParamCopy &copy,
+                                     bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "material_set_param");
+  line.rid = material;
+  line.kind = "material";
+  line.param = name;
+  line.param_type = copy.type;
+  line.has_n = true;
+  line.n = copy.n;
+  line.has_decode_ns = true;
+  line.decode_ns = copy.decode_ns;
+  line.outcome = copy.outcome;
+  MaterialEntry *entry = find_material(material);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    emit(line);
+    return;
+  }
+  // D6: an OBJECT value is rejected outright (no change); every other outcome, including an
+  // erasing NIL and an unsupported-type value that is still stored, bumps the version.
+  if (copy.outcome != "rejected") {
+    entry->version += 1;
+  }
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  emit(line);
+}
+
+void ResourceLog::canvas_item_set_material(const TapContext &ctx, std::uint64_t item,
+                                           std::uint64_t material) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_item_set_material");
+  line.rid = item;
+  line.kind = "item-material";
+  if (material != 0) {
+    line.has_target = true;
+    line.target = material;
+  }
+  if (const MaterialEntry *m = find_material(material)) {
+    line.ref_id = m->id;
+  }
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::canvas_item_set_use_parent_material(const TapContext &ctx, std::uint64_t item,
+                                                      bool enable) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_item_set_use_parent_material");
+  line.rid = item;
+  line.kind = "item-material";
+  line.has_value = true;
+  line.value = enable ? 1 : 0;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::canvas_item_set_instance_shader_parameter(const TapContext &ctx,
+                                                             std::uint64_t item,
+                                                             const std::string &name,
+                                                             const MaterialParamCopy &copy) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_item_set_instance_shader_parameter");
+  line.rid = item;
+  line.kind = "item-material";
+  line.param = name;
+  line.param_type = copy.type;
+  line.has_n = true;
+  line.n = copy.n;
+  line.has_decode_ns = true;
+  line.decode_ns = copy.decode_ns;
+  line.outcome = copy.outcome;
+  emit(line);
+}
+
+void ResourceLog::canvas_set_modulate(const TapContext &ctx, std::uint64_t canvas) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_set_modulate");
+  line.rid = canvas;
+  line.kind = "item-material";
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::canvas_light_attach_to_canvas(const TapContext &ctx, std::uint64_t light,
+                                                std::uint64_t canvas) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_light_attach_to_canvas");
+  line.rid = light;
+  line.kind = "item-material";
+  // D10/D16: a non-null canvas is the typed, sticky session-level refusal; this hook log only
+  // notes it per call (the sticky, once-ever session entry is G55d's mirror work).
+  if (canvas != 0) {
+    line.has_target = true;
+    line.target = canvas;
+    line.status = "unsupported";
+    line.reason = "canvas-light";
+  }
+  emit(line);
+}
+
 std::uint64_t ResourceLog::texture_id(std::uint64_t rid) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = by_rid_.find(rid);
@@ -1117,6 +1651,18 @@ std::uint64_t ResourceLog::mesh_id(std::uint64_t rid) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = mesh_by_rid_.find(rid);
   return it == mesh_by_rid_.end() ? 0 : it->second.id;
+}
+
+std::uint64_t ResourceLog::shader_id(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = shader_by_rid_.find(rid);
+  return it == shader_by_rid_.end() ? 0 : it->second.id;
+}
+
+std::uint64_t ResourceLog::material_id(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = material_by_rid_.find(rid);
+  return it == material_by_rid_.end() ? 0 : it->second.id;
 }
 
 std::string ResourceLog::take_lines() {

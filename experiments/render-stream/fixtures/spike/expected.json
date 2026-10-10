@@ -367,7 +367,16 @@
     "canvas_item_add_multiline",
     "canvas_item_add_particles",
     "canvas_item_add_animation_slice",
-    "canvas_item_attach_skeleton"
+    "canvas_item_attach_skeleton",
+    "shader_create",
+    "shader_set_default_texture_parameter",
+    "material_create",
+    "material_create_from_shader",
+    "material_set_shader",
+    "canvas_set_modulate",
+    "canvas_item_set_use_parent_material",
+    "canvas_item_set_instance_shader_parameter",
+    "canvas_light_attach_to_canvas"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",
@@ -425,6 +434,15 @@
     "canvas_item_add_multiline",
     "canvas_item_add_particles",
     "canvas_item_add_animation_slice",
-    "canvas_item_attach_skeleton"
+    "canvas_item_attach_skeleton",
+    "shader_create",
+    "shader_set_default_texture_parameter",
+    "material_create",
+    "material_create_from_shader",
+    "material_set_shader",
+    "canvas_set_modulate",
+    "canvas_item_set_use_parent_material",
+    "canvas_item_set_instance_shader_parameter",
+    "canvas_light_attach_to_canvas"
   ]
 }

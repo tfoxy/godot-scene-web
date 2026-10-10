@@ -141,8 +141,21 @@ template, for both the headless legs and the rendered gamescope legs.
   (`mesh_create_from_surfaces`, the only place a loaded `ArrayMesh`'s surfaces are seen,
   `rsd.h:332-356`); a mesh with bones, weights and an index buffer gets a skin-region and an
   index-region update (`mesh_surface_update_skin_region`, `_index_region`) and its only surface
-  removed (`mesh_surface_remove`). None of this draws, so the pixels do not change. Gate −1 then
-  plans 64 hooks with every optional counter positive, and `armed.png == unarmed.png`.
+  removed (`mesh_surface_remove`). None of this draws, so the pixels do not change.
+
+- Calibrator-8 hooks, added for gate 5.5 G55a (`gate5_5-design.md` Q2), materials and canvas
+  shaders: `_ready()`'s existing `Shader`/`ShaderMaterial` on the Panel gains a `set_default_
+  texture_parameter` call (naming a uniform `TINT_SHADER_B` does not declare) and an instance
+  parameter on the Panel itself (`shader_set_default_texture_parameter`,
+  `canvas_item_set_instance_shader_parameter`; `material_create_from_shader` and
+  `material_set_param` were already exercised by that `ShaderMaterial`). A fresh
+  `CanvasItemMaterial`, recognized by D7, is set on a raw canvas item (`shader_create`,
+  `material_create` from its own constructor, `material_set_shader`); a raw child item gets
+  `use_parent_material` (`canvas_item_set_use_parent_material`); a default-colour (white)
+  `CanvasModulate` is added as a child (`canvas_set_modulate`; white changes no pixel, D10); and
+  a raw canvas gets a light attached (`canvas_light_create`, `canvas_light_attach_to_canvas`).
+  None of this draws, so the pixels do not change. Gate −1 then plans 73 hooks with every
+  optional counter positive, and `armed.png == unarmed.png`.
 
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See

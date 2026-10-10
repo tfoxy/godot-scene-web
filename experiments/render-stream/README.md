@@ -175,7 +175,7 @@ assuming any particular sentinel.
 ### Hooked slots on the pinned binary
 
 "Tier" is the calibrator version that first emitted the slot. Tier 1 is gate −1's
-set and is required; tiers 2, 3, 4 and 5 are optional (see "Calibration records and
+set and is required; tiers 2, 3, 4, 5 and 8 are optional (see "Calibration records and
 hook versions" below). Tier 3 is gate 0's: the state the retained canvas mirror
 (`capture/src/rs_mirror.h`) needs, beside the tier 1 and 2 hooks it also taps.
 Tier 4 is gate 1 G1e's: the two draw-order fields the mirror held at
@@ -183,7 +183,20 @@ RenderingServer defaults until then (`z_relative`, `behind`). Tier 5 is gate 2
 G2a's: texture placeholders, replacement, canvas textures, the three levels of
 texture filter and repeat, and the LCD text draw (gate2-design.md Q2). With a
 stream enabled the texture calls also go to the hook log
-(`evidence/resources.jsonl`, "Runtime contract" below).
+(`evidence/resources.jsonl`, "Runtime contract" below). Tiers 6 and 7 (clip_ignore;
+gate5-design.md Q2's eight geometry/mesh hooks) are covered in their own gate 3/5
+result sections below, not repeated in this table. Tier 8 is gate 5.5 G55a's:
+materials and canvas shaders (gate5_5-design.md Q2), closing three previously-silent
+holes (every material's shader, every `CanvasItemMaterial` shader, inherited
+materials), a canvas field and two typed refusals; `material_set_param`,
+`shader_create_from_code` and `shader_set_code` (tier 2, below) start decoding their
+`StringName`/`Variant`/`String` arguments at the same time, copying and classifying
+a shader's code into a `render-stream-shader/1` (GRP1) payload (`capture/src/rs_
+shader_payload.h`) and a parameter's Variant into D8's typed, float64-component
+shape (`capture/src/rs_variant.h`). As with tier 2's material hooks, none of the
+decoded content crosses into `counters.json` -- only `evidence/resources.jsonl`
+(`kind`:"shader"/"material"/"item-material" lines) and, once gate 5.5 has a
+mirror (G55d), the mirror.
 "Captured" is what the hook records beside its count. Every signature is copied
 from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 
@@ -191,9 +204,9 @@ from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 | ------------------------------------------------- | ---- | ---- | -------------------------------------------------------------------------------------------------- |
 | `texture_2d_create`                               | 24   | 1    | returned RID, image size/format/bytes, frame; with a stream, the GRT1 payload copy + SHA-256 (G2a) |
 | `texture_2d_update`                               | 30   | 1    | RID, layer, image size/format/bytes, frame; with a stream, the payload copy + SHA-256 (G2a)        |
-| `shader_create_from_code`                         | 54   | 2    | returned RID (code and path `String`s not decoded)                                                 |
-| `shader_set_code`                                 | 55   | 2    | shader RID (code `String` not decoded)                                                             |
-| `material_set_param`                              | 66   | 2    | material RID (`StringName` and `Variant` not decoded)                                              |
+| `shader_create_from_code`                         | 54   | 2    | returned RID (count only); with a stream, the code decoded, GRP1-encoded and hashed (tier 8)       |
+| `shader_set_code`                                 | 55   | 2    | shader RID (count only); as above with a stream (tier 8)                                           |
+| `material_set_param`                              | 66   | 2    | material RID (count only); with a stream, the `StringName`/`Variant` decoded (tier 8)              |
 | `mesh_create`                                     | 71   | 2    | returned RID                                                                                       |
 | `mesh_add_surface`                                | 82   | 2    | mesh, and from `SurfaceData`: primitive, format, vertex/index counts, four buffer sizes, `aabb`    |
 | `mesh_surface_update_vertex_region`               | 86   | 2    | mesh, surface, byte offset, byte count, first 64 bytes                                             |
@@ -231,7 +244,7 @@ from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 | `canvas_item_set_z_as_relative_to_parent`         | 483  | 4    | item, z_relative                                                                                   |
 | `canvas_item_clear`                               | 486  | 2    | item                                                                                               |
 | `canvas_item_set_draw_index`                      | 487  | 3    | item, draw index                                                                                   |
-| `canvas_item_set_material`                        | 488  | 2    | item, material                                                                                     |
+| `canvas_item_set_material`                        | 488  | 2    | item, material (count only); with a stream, also an `item-material` hook-log line (tier 8)         |
 | `free`                                            | 549  | 1    | freed RID (deduplicated log, as tier 2)                                                            |
 | `texture_2d_placeholder_create`                   | 34   | 5    | returned RID                                                                                       |
 | `texture_replace`                                 | 40   | 5    | texture, by-texture                                                                                |
@@ -244,6 +257,15 @@ from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 | `canvas_item_set_default_texture_filter`          | 448  | 5    | item, filter                                                                                       |
 | `canvas_item_set_default_texture_repeat`          | 449  | 5    | item, repeat                                                                                       |
 | `canvas_item_add_lcd_texture_rect_region`         | 470  | 5    | item, rect, texture, source, modulate                                                              |
+| `shader_create`                                   | 53   | 8    | returned RID; with a stream, logged with no code yet                                               |
+| `shader_set_default_texture_parameter`            | 60   | 8    | shader, texture, index (`StringName` name decoded with a stream)                                   |
+| `material_create`                                 | 63   | 8    | returned RID                                                                                        |
+| `material_create_from_shader`                     | 64   | 8    | returned RID, shader (next_pass/priority not carried, D6)                                          |
+| `material_set_shader`                             | 65   | 8    | material, shader                                                                                    |
+| `canvas_set_modulate`                              | 438  | 8    | canvas, colour (full colour; not a material parameter, Q2 does not cover it)                        |
+| `canvas_item_set_use_parent_material`             | 489  | 8    | item, enable                                                                                         |
+| `canvas_item_set_instance_shader_parameter`       | 490  | 8    | item (`StringName`/`Variant` decoded with a stream, never into `counters.json`)                     |
+| `canvas_light_attach_to_canvas`                   | 503  | 8    | light, canvas                                                                                        |
 | `get_default_clear_color` (probe, not hooked)     | 577  | 1    | —                                                                                                  |
 
 Floats are written as values and as float32 bit patterns (`*_bits`). Arrays keep
@@ -277,7 +299,7 @@ That record may come from a sibling calibrating another binary with whatever
   omission is recorded in three places:
   - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
     omitted hooks, for example:
-    `8 of 64 hooks named by the record; omitted (record predates them): …`.
+    `8 of 73 hooks named by the record; omitted (record predates them): …`.
   - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
     is `null` rather than `0`. A `null` means "not installed", which is
     different from "never called".
@@ -3489,6 +3511,115 @@ three entries (memory: rs-schema-self-coded-errors).
   first contact with a live shader/material.
 - Pixel exactness, budgets, or any rendering at all: /5 carries tables and resources; nothing
   paints yet.
+
+## Gate 5.5a result (2026-10-10)
+
+G55a ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55a") passes, rebased in turn onto
+G5d (render-stream/4 everywhere) and G55b (the `gate55-cim` fixture and its material census):
+`build-capture.sh` **15/15** ctests (`rs_shader_payload` and `rs_variant` new), `scripts/
+calibrate.sh --check` clean, gate −1 **28/28** with **73 hooks** planned, none omitted, and every
+one of calibrator 8's nine hooks reporting a positive count (the `old-record` leg still arms a
+calibrator-1 record with 65 hooks omitted), gate 0 **19/19**, gate 1 **65/65**, gate 2 **85/85**
+(no `live-animate` retry needed on either rebase's run), gate 3 **56/56**, gate 4 **185/185**, gate
+5 `--legs g5b,g5c,g5d` **49/49** and gate 5.5 `--legs g55b,g55c` **52/52** (confirming the census
+fix below). Every pure self-test (checker, gate 0–5, gate 4d, gate 5c, gate 55b, gate 55c, rs0–rs2,
+rs-ws) and every `make_golden.py`/`make_expected.py --check` (`golden/`, `golden-1/`–`golden-4/`,
+every gate 2–5 and gate 55b/55c fixture) stayed clean.
+
+What landed:
+
+- **Calibrator 8, nine new optional slots** (gate5_5-design.md D2, Q2), confirmed by
+  `calibrate.py`/`scripts/calibrate.sh` against the pinned binary exactly as the contract
+  predicted: `shader_create` 53, `shader_set_default_texture_parameter` 60, `material_create` 63,
+  `material_create_from_shader` 64, `material_set_shader` 65, `canvas_set_modulate` 438,
+  `canvas_item_set_use_parent_material` 489, `canvas_item_set_instance_shader_parameter` 490 and
+  `canvas_light_attach_to_canvas` 503. The committed record now names 74 slots (73 hooks plus the
+  `get_default_clear_color` probe).
+- **`rs_variant.{h,cpp}`**: D8's decode through the GDExtension interface alone
+  (`variant_get_type`, `get_variant_to_type_constructor`, `variant_get_ptr_constructor`,
+  `variant_get_ptr_destructor`, `string_to_utf8_chars`) — every supported scalar and packed-array
+  Variant type (the `int` ±2^53 range check, `rid`'s bare id, D8's exact float64 member order for
+  every matrix/vector type) and the `StringName`→`String` builtin constructor (index 2 in
+  `STRING`'s registration order). No ctest here runs inside a live Godot process, so
+  `rs_variant_test` builds its own fake implementation of those five interface functions (a
+  test-chosen "Variant"/"StringName" representation the decoder never assumes a shape for) and
+  round-trips all 29 supported types plus the catch-all `param-type`/`param-range` refusals.
+- **`rs_shader_payload.{h,cpp}`**: the `render-stream-shader/1` (GRP1) encoder; the D11 token scan
+  (comment- and dot-aware, typing `TIME`, `hint_screen_texture`, the `texture_sdf` family, `global
+  uniform`/`instance uniform`/`light` and a non-`canvas_item` `shader_type`); and the D7
+  `CanvasItemMaterial` template recognizer, independently retyped in `rs_shader_payload_test` from
+  `canvas_item_material.cpp:80-137` (tabs and the missing newline before the particles block's
+  `UV /=` line included) and cross-checked against all six blend modes, all three light modes and
+  particles on/off.
+- **Decoding added to the three existing material hooks** (`shader_create_from_code`,
+  `shader_set_code`, `material_set_param`), gated behind `resources().active()` exactly as the
+  texture and mesh hooks are; the decoded name/value/code never reach `counters.json` (Q2) — only
+  `evidence/resources.jsonl` and, eventually, the mirror.
+- **`rs_resource_log`'s own shader and material registries** (no mirror table yet, as G5a's mesh
+  registry): their own per-session id counters, `kind:"shader"`/`"material"`/`"item-material"`
+  lines, and nine new trailing columns (`mode`, `source`, `builtin`, `uses`, `scan_ns`, `param`,
+  `type`, `n`, `decode_ns`) — `target`/`ref_id` are reused for a material's current shader exactly
+  as `texture_replace` already reuses them, and `value` for a plain bool/int state value. A
+  material's `status` here reflects only whether its shader RID is known (`unknown-shader`, D16);
+  it is never recomputed from historical parameters as the future mirror will (D6) — this log is
+  evidence for the census, never the stream. `RESOURCE_LINE_KEYS` (`gate0-checks.ts`,
+  `gate2-checks.ts`), `RESOURCE_LOG_OPS` and `GATE0_HOOKS` all extended to match.
+- **`canvas_item_set_material` (slot 488, hooked since calibrator 2) now logs a `kind:"item-
+  material"` line too**, for the material census alone: its item field on the wire/mirror still
+  waits for G55d (D2, D9); this hook gained no new state, no registry lookup result it did not
+  already have, and no decoding.
+- **`fixtures/spike/`** exercises all nine (Q2's own list): a `CanvasItemMaterial` with a
+  `light_mode` change, recognized by D7; a default-texture parameter and an instance parameter on
+  the Panel's existing `Shader`/`ShaderMaterial` (which already exercised
+  `material_create_from_shader`); `use_parent_material` on a child item; a default-colour (white)
+  `CanvasModulate`; and a raw `canvas_light_create` + `canvas_light_attach_to_canvas`. None of it
+  draws, so `armed.png == unarmed.png` held unchanged.
+
+### Findings
+
+- **A `CanvasItemMaterial` built only as a local variable never gets its shader.**
+  `_update_shader()` (`shader_create`/`material_set_shader`) runs on a *later* idle callback
+  (`scene/register_scene_types.cpp:855`), not the frame that queues it
+  (`Material::_mark_initialized`'s "straightforward conditions" branch calls `_queue_shader_change`
+  synchronously, but that only adds a `SelfList` entry to `dirty_materials`). A local
+  `CanvasItemMaterial.new()` inside a helper function is refcounted to zero — taking its
+  `dirty_materials` entry with it — the moment that function returns, so the deferred flush never
+  fires: the first full run showed `shader_create=0; material_set_shader=0` while the other seven
+  calibrator-8 hooks were already positive. Keeping it as a script-level field (as `_nine_texture`/
+  `_mesh`/`_multimesh` already are) fixed it on the next run.
+- **`expected.json` carries the optional-hook list twice.** `optional_hooks` (gate −1's
+  `older-record-loads` check, comparing against `hooks_omitted`) and
+  `optional_counters_must_be_positive` (`optional-hook-counts`) are separate arrays with the same
+  64 names before this change; missing the first while updating the second passed every check but
+  `older-record-loads`, which is easy to miss since its own `hooks_omitted` printout looks like
+  the *expected* value at a glance.
+- **The GRP1 hashes were cross-checked independently**, as G5a's GRM1 hashes were. A headless run
+  of `fixtures/spike/` with a stream enabled produced `shader_create_from_code`/`shader_set_code`
+  lines whose hashes were recomputed byte-for-byte in a standalone Python script (magic, meta
+  JSON, code bytes) from `TINT_SHADER_A`/`TINT_SHADER_B`'s own literals: both matched exactly. The
+  same run's `shader_set_code` line for the CIM's shader carries
+  `"builtin":{"kind":"canvas_item_material","blend_mode":"mix","light_mode":"unshaded","particles_animation":false}`
+  — `mix` is `CanvasItemMaterial`'s default, `unshaded` is the one property the fixture changes.
+- **G55b's own census needed one more op in the log than G55a had shipped.** `gate55-cim`'s
+  `cim-material-census` check groups every `evidence/resources.jsonl` line by `op` and compares the
+  counts to `expected.json`'s prediction, which (correctly) counts `canvas_item_set_material`
+  alongside `material_create`/`material_set_param`/etc. since it is just as much a "material op" as
+  those; G55a's own log never wrote a line for it (its item field was out of scope, D2), so the
+  first `--legs g55b,g55c` run failed on exactly that one op at three windows (step 0, 4, 5) in both
+  `gate55-cim` variants. Adding the line (no registry change, no decoding — `canvas_item_set_
+  material` carries two RIDs, nothing to decode) fixed both legs without needing another gate
+  rebuild logic change; gates 0–5 were re-run afterward to confirm the new, previously-absent line
+  doesn't disturb any other fixture's census or schema checks (none do: it is purely additive).
+
+### What G55a does not prove
+
+- Any wire support: render-stream/4 and /5 are untouched; the shader and material tables, the
+  `f64` block, and every new item/canvas field stay off every protocol version (G55w writes the
+  codecs, G55d switches the runners and receiver).
+- A resident mirror shader/material table, `GRC_SHADER_POLICY`'s `params`/`exclude` branches, or a
+  material's `status` recomputed from more than its own shader reference: all G55d/G55e.
+- That a receiver, or anything downstream, can compile a shader or apply a parameter: nothing here
+  is on any wire yet.
 
 ## Scratch verification (2026-10-08)
 

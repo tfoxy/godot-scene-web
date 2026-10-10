@@ -42,7 +42,9 @@ add_library(render_stream_capture SHARED
   src/rs_root_query.cpp
   src/rs_sha1.cpp
   src/rs_sha256.cpp
+  src/rs_shader_payload.cpp
   src/rs_texture_payload.cpp
+  src/rs_variant.cpp
   src/rs_ws.cpp
   src/vtable.cpp
 )
@@ -223,3 +225,21 @@ add_executable(rs_mesh_payload_test
 target_include_directories(rs_mesh_payload_test PRIVATE src)
 target_link_libraries(rs_mesh_payload_test PRIVATE grc_warnings)
 add_test(NAME rs_mesh_payload COMMAND rs_mesh_payload_test)
+
+# Gate 5.5 (G55a): the GRP1 shader payload encoder, the D11 token scan and the D7
+# CanvasItemMaterial template recognizer (gate5_5-design.md Q3a, Q4). Engine-free, as the GRM1
+# test is.
+add_executable(rs_shader_payload_test
+  test/rs_shader_payload_test.cpp src/rs_shader_payload.cpp src/rs_sha256.cpp)
+target_include_directories(rs_shader_payload_test PRIVATE src)
+target_link_libraries(rs_shader_payload_test PRIVATE grc_warnings)
+add_test(NAME rs_shader_payload COMMAND rs_shader_payload_test)
+
+# Gate 5.5 (G55a): D8's Variant decode -- every supported type round-trips through a fake
+# GDExtension interface built for the test (gdextension_interface.h's own function-pointer
+# shapes, never a live engine: iface.h's g_iface is a plain global the test fills in itself, as
+# no ctest here ever runs inside Godot).
+add_executable(rs_variant_test test/rs_variant_test.cpp src/rs_variant.cpp src/iface.cpp)
+target_include_directories(rs_variant_test PRIVATE src vendor)
+target_link_libraries(rs_variant_test PRIVATE grc_warnings)
+add_test(NAME rs_variant COMMAND rs_variant_test)

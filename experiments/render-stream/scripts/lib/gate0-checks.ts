@@ -77,9 +77,10 @@ export const STORE_DIR_NAME = "store";
  * (render-stream-0.md, golden session): calibrator 3's 42, plus calibrator 4's
  * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent` (gate1-design.md
  * G1e), calibrator 5's eleven texture hooks (gate2-design.md Q2), calibrator 6's
- * `canvas_item_add_clip_ignore` (gate3-design.md Q2) and calibrator 7's eight hooks
- * (gate5-design.md Q2) -- the record is shared by gate -1, gate 0, gate 1, gate 2, gate 3 and
- * gate 4, so every one of them plans all 64. */
+ * `canvas_item_add_clip_ignore` (gate3-design.md Q2), calibrator 7's eight hooks
+ * (gate5-design.md Q2) and calibrator 8's nine materials/canvas-shader hooks (gate5_5-design.md
+ * Q2) -- the record is shared by gate -1, gate 0, gate 1, gate 2, gate 3, gate 4 and gate 5, so
+ * every one of them plans all 73. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
   "canvas_item_add_animation_slice",
@@ -110,21 +111,28 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_item_set_default_texture_repeat",
   "canvas_item_set_draw_behind_parent",
   "canvas_item_set_draw_index",
+  "canvas_item_set_instance_shader_parameter",
   "canvas_item_set_material",
   "canvas_item_set_modulate",
   "canvas_item_set_parent",
   "canvas_item_set_self_modulate",
   "canvas_item_set_transform",
+  "canvas_item_set_use_parent_material",
   "canvas_item_set_visibility_layer",
   "canvas_item_set_visible",
   "canvas_item_set_z_as_relative_to_parent",
   "canvas_item_set_z_index",
+  "canvas_light_attach_to_canvas",
+  "canvas_set_modulate",
   "canvas_texture_create",
   "canvas_texture_set_channel",
   "canvas_texture_set_texture_filter",
   "canvas_texture_set_texture_repeat",
   "free",
+  "material_create",
+  "material_create_from_shader",
   "material_set_param",
+  "material_set_shader",
   "mesh_add_surface",
   "mesh_clear",
   "mesh_create",
@@ -135,8 +143,10 @@ export const GATE0_HOOKS: readonly string[] = [
   "mesh_surface_update_index_region",
   "mesh_surface_update_skin_region",
   "mesh_surface_update_vertex_region",
+  "shader_create",
   "shader_create_from_code",
   "shader_set_code",
+  "shader_set_default_texture_parameter",
   "texture_2d_create",
   "texture_2d_placeholder_create",
   "texture_2d_update",
