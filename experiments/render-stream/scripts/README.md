@@ -885,12 +885,15 @@ them against would mean regenerating four legs' worth of evidence for every g3a-
 mise exec -- pnpm render-stream:gate4 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g4a]
+  [--legs g4a,g4b]
 ```
 
-- `run-gate4.sh`: the orchestrator (`run_g4a`, `run_reference` with `REFERENCE_ORACLE` and
-  `REFERENCE_ARMED`). It provisions fonts before the import and stops on any mismatch. Groups
-  g4b–g4f are known but have not landed, so asking for them exits 2.
+- `run-gate4.sh`: the orchestrator (`run_g4a`, `run_g4b`, `run_reference` with `REFERENCE_ORACLE`
+  and `REFERENCE_ARMED`, `g4_capture` for a sabotage capture at the fixture's own default quit
+  frame, `early_shots_csv` for Q6b's "Intermediate shots" on a receiver). It provisions fonts
+  before the import and stops on any mismatch. `g4b` needs `g4a` in the same `--legs` (one
+  capture and reference, shared). Groups g4c–g4f are known but have not landed, so asking for
+  them exits 2.
 - `lib/provision-fonts.sh <fixture>`: copies each `fonts.lock.json` entry into `<fixture>/fonts/`
   after checking the source's and the copy's size and SHA-256 and that its licence file exists.
   A source starting with `../` (the engine checkout) also resolves against the main checkout's
@@ -898,27 +901,44 @@ mise exec -- pnpm render-stream:gate4 -- \
 - `lib/gate4-expected.ts`: the `render-stream-gate4-expected/1` and
   `render-stream-gate4-glyphs/1` types, `stepFrames4`, `stepOfFrame4`, `synthesizeGate4` (the
   clear colour, the panel and the marker, with a mask of the text regions), `inkPixels`,
-  `boxEqual`, `deriveCensus` (gate4-design.md Q1c over expected.json's own strings and draws) and
-  `appendOnlyViolations`.
-- `lib/gate4-checks.ts`: every G4a check, each a pure `evaluate*` function plus a thin loader, and
-  `runGate4`. It reuses gate 0's capture and no-GPU checks, gate 2's `store-complete` and
-  `texture-versions-current`, and gate 3's recording, patch, tie and capture-class checks.
+  `boxEqual`, `deriveCensus` (gate4-design.md Q1c over expected.json's own strings and draws),
+  `appendOnlyViolations`, and G4b's `synthesizeText`/`compareSynthesizedText` (D8: one oracle
+  node's glyphs, straight-alpha blended over its region's background from its page's LA8 alpha,
+  against a real frame).
+- `lib/gate4-checks.ts`: every G4a and G4b check, each a pure `evaluate*` function plus a thin
+  loader, and `runGate4`. It reuses gate 0's capture, no-GPU and
+  `classifyLeg`/`joinSettleSeqs`/`checkReceiverNeverLoadedFixture` machinery, gate 2's
+  `store-complete` and `texture-versions-current`, and gate 3's recording, patch, tie and
+  capture-class checks. G4b adds `receiverStepSeqs`/`loadReceiverShots` (a receiver's wire-seq
+  shots re-keyed to the reference's filenames, so every G4a shot evaluator runs over a receiver
+  unchanged), `computeGate4Checkpoints` plus `checkLegClass` (classifyLeg against a leg's class
+  and, for a sabotage, its exact predicted mismatching steps), `loadAtlasPageImages`/
+  `loadPagesByStep`, `evaluateExpectedText`/`checkExpectedText`, `evaluateResourceQuiet`,
+  `checkReceiverNeverShapes`, `checkReceiverConsumedStream`, `checkReceiverTypedClean` and
+  `checkAtlasHashParitySabotage`.
 - `check-gate4.ts`: writes `<out>/result.json` (`render-stream-gate4-report/1`: gate 3's shape
   with `text` per fixture and step (glyph commands, pages with wire id, hook and wire versions and
   payload bytes, bytes published, copy and hash ns), `parity` (each oracle page against the
   capture's table per step), `budgets` (reference against repeat per region), `census` and `ink`)
-  and exits non-zero unless `gate_passed`.
+  and exits non-zero unless `gate_passed`. It passes `receiverDir`/`fixtureDir` (G4b) in
+  `Gate4Context`.
 - `test/self-test-gate4.ts`: see below.
 
 ## Gate 4 legs and evidence under `--out`
 
-| Leg                | Group | Directory           | Runs                                                                                                                                         |
-| ------------------ | ----- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `import`           | g4a   | `import/`           | `provision-fonts.sh` (`fonts.log`), then the mise editor's `--import` of `fixtures/gate4` (`fixture/`)                                       |
-| `capture`          | g4a   | `capture/`          | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, `env.json`, quit 400, strace + maps/fd |
-| `reference`        | g4a   | `reference/`        | rendered in gamescope, extension absent, oracle on: `shots/step-0..9.png`, `shots/early-{1,4,7}.png`, `oracle/glyphs.jsonl`, `oracle/pages/` |
-| `reference-repeat` | g4a   | `reference-repeat/` | the same again                                                                                                                               |
-| `reference-armed`  | g4a   | `reference-armed/`  | rendered, extension armed with `GRC_STREAM_OUT` and a store, oracle off, shots                                                              |
+| Leg                                      | Group | Directory                | Runs                                                                                                                                         |
+| ----------------------------------------- | ----- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `import`                                 | g4a   | `import/`                 | `provision-fonts.sh` (`fonts.log`), then the mise editor's `--import` of `fixtures/gate4` (`fixture/`)                                       |
+| `capture`                                | g4a   | `capture/`                | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, `env.json`, quit 400, strace + maps/fd |
+| `reference`                              | g4a   | `reference/`              | rendered in gamescope, extension absent, oracle on: `shots/step-0..9.png`, `shots/early-{1,4,7}.png`, `oracle/glyphs.jsonl`, `oracle/pages/` |
+| `reference-repeat`                       | g4a   | `reference-repeat/`       | the same again                                                                                                                               |
+| `reference-armed`                        | g4a   | `reference-armed/`        | rendered, extension armed with `GRC_STREAM_OUT` and a store, oracle off, shots                                                              |
+| `receiver`                               | g4b   | `receiver/`               | the unchanged receiver, rendered, on a copy of `capture`'s full sink, settle and early (12, 42, 72) shots |
+| `receiver-patch`                         | g4b   | `receiver-patch/`         | the same, on a copy of `capture`'s patch sink (same seq space as the full sink) |
+| `receiver-headless-trace`                | g4b   | `receiver-headless-trace/` | the receiver, headless, `strace -f -e openat` (`receiver-never-shapes`, `receiver-never-loaded-fixture`) |
+| `sabotage-freeze/{capture,receiver}`     | g4b   | `sabotage-freeze/`        | a fresh headless capture (`GRC_SABOTAGE=freeze-frame` at frame 11, step 1) at the fixture's own default quit (102), then its rendered receiver |
+| `sabotage-perturb/{capture,receiver}`    | g4b   | `sabotage-perturb/`       | `GRC_SABOTAGE=perturb-transform` at frame 21 (step 2), then its receiver |
+| `sabotage-omit-atlas/{capture,receiver}` | g4b   | `sabotage-omit-atlas/`    | `GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=texture_2d_update` at frame 41 (step 4), then its receiver |
 
 ## Gate 4 criteria (g4a)
 
@@ -944,6 +964,31 @@ settle shot. `reference-repeat-budget` requires identical shots (budget 0) and r
 maxima. `armed-transparent` requires `reference-armed`'s shots to equal the reference's.
 `support-legs-exit` requires a provisioned font and the import and rendered legs to exit 0.
 
+## Gate 4 criteria (g4b)
+
+`leg-class-receiver`/`leg-class-receiver-patch` require class `success` (classifyLeg over
+checkpoints built from the receiver's re-keyed shots against the reference's). `leg-class-
+sabotage-{freeze,perturb,omit-atlas}` require class `pixel-mismatch` with exactly the predicted
+mismatching steps (`expected.json` `predictions`, from `make_expected.py`; never hand-edited) and
+every other step matching. `receiver-vs-reference` requires the receiver and receiver-patch legs'
+shots to equal the reference's exactly, full frame and every region. `expected-image-receiver`
+and `ink-presence-receiver` are g4a's `expected-image-reference`/`ink-presence-reference` run
+over the receiver's shots. `expected-text-reference` and `expected-text-receiver` compare
+`synthesizeText` (D8: an oracle node's glyph quads sampled against its page's LA8 alpha, in the
+node's font colour, straight-alpha blended over the region's background) with the real shot
+inside every visible text node's region, budget `maxChannelDelta` 1 (UNORM8 blend rounding).
+`resource-quiet` requires the quiet steps (2, 3, 5, 6, 8) to fetch and upload nothing on either
+sink's receiver (`applied.json`'s per-transaction `resources`). `receiver-never-shapes` requires
+`receiver-headless-trace`'s openat trace to open no `*.ttf`/`*.otf`/`*.woff`/`*.woff2`/`*.fnt`/
+`*.fontdata`, and no file under `receiver/**/*.gd` to reference `TextServer`,
+`TextServerManager`, `Font`, `FontFile`, `Label`, `RichTextLabel`, `draw_string` or `draw_char`.
+`receiver-consumed-stream` requires every file-mode receiver's `applied.json` to report status
+`ok`, `end_seen` true and `recording.sha256` equal to its own local copy. `receiver-never-loaded-
+fixture` (gate 0's check, with `fixtureProjectDir` = `fixtures/gate4/`) and `receiver-typed-clean`
+cover the same six receiver legs. `atlas-hash-parity-sabotage-omit-atlas` re-runs
+`evaluateAtlasParity` against `sabotage-omit-atlas`'s own recording and requires its failing
+cells to equal `predictions["sabotage-omit-atlas"].atlas_hash_parity_fails` exactly.
+
 ## Gate 4 self-test
 
 ```bash
@@ -958,4 +1003,9 @@ recording whose settle transactions carry matching glyph commands and page versi
 store and shots. Every check passes on it and fails on at least one perturbation, among them a
 quarter-pixel glyph shift, the omit-atlas sabotage (failing exactly at `predictions`' parity
 cells), a single upload at step 7, an upload in a quiet step, an atlas published a frame late, and
-a rewritten inked texel.
+a rewritten inked texel. `synthesizeText`/`compareSynthesizedText` (G4b, D8) are covered directly:
+a hand-built 8×8 LA8 page and a one-glyph oracle node blend red ink at exactly 2/3 coverage over a
+background whose channels are hand-computed (no rounding ambiguity), a pixel outside the glyph
+stays the background, an identical copy compares with zero mismatch, a perturbed pixel is reported
+with its exact delta, and a glyph naming a page the caller never loaded is recorded as missing
+rather than synthesized wrong.

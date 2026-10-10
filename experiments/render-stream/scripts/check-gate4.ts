@@ -42,7 +42,12 @@ async function main(): Promise<void> {
     await readFile(join(fixture, "fonts.lock.json"), "utf8"),
   ) as FontLockEntry[];
 
-  const report = await runGate4(out, { expected, lock });
+  const report = await runGate4(out, {
+    expected,
+    lock,
+    receiverDir: join(EXPERIMENT_DIR, "receiver"),
+    fixtureDir: fixture,
+  });
   await writeFile(
     join(out, "result.json"),
     `${JSON.stringify(report, null, 2)}\n`,

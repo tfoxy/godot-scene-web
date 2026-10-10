@@ -325,6 +325,108 @@ export function deriveCensus(expected: Gate4Expected): {
   return out;
 }
 
+// ---------------------------------------------------------------------------------------------
+// synthesizeText (G4b, D8): the ink one oracle node's glyphs paint over a background.
+// ---------------------------------------------------------------------------------------------
+
+/** A decoded LA8 atlas page: `data` is 2 bytes/texel (L, A), as render-stream-2.ts's
+ * decodeTexturePayload returns it. */
+export interface AtlasPageImage {
+  width: number;
+  height: number;
+  data: Uint8Array;
+}
+
+/**
+ * D8's synthesized ink for one oracle node (a Label's shaped glyphs), as an RGBA8 image the size
+ * of `box` (root-canvas pixels, offset by box[0], box[1]). Every pixel starts opaque at
+ * `background`; each glyph is blended in draw order with straight alpha (GL_SRC_ALPHA,
+ * GL_ONE_MINUS_SRC_ALPHA, `drivers/gles3/rasterizer_canvas_gles3.cpp:755-761`): colour is the
+ * node's font colour, and coverage is the glyph's page LA8 alpha channel at its uv rect (D4:
+ * `quad.size == uv.size` at scale 1, so sampling is a plain 1:1 texel copy, no filtering). The
+ * node's `global_xform` places the glyph quad (already in Label-local pixel space) in root-canvas
+ * pixels. A glyph naming a page not in `pages` is skipped and its key recorded in `missingPages`
+ * (the caller decides whether that is itself a problem) rather than synthesizing a wrong pixel.
+ * Backgrounds here are always fully opaque (gate4-design.md Q6: alpha 1 or the deliberate .6 is a
+ * *text* colour, never a background), so the result stays opaque throughout.
+ */
+export function synthesizeText(
+  node: OracleNode,
+  pages: ReadonlyMap<string, AtlasPageImage>,
+  box: Box4,
+  background: Rgba8,
+): { frame: SynthesizedFrame; missingPages: string[] } {
+  const width = box[2] - box[0];
+  const height = box[3] - box[1];
+  const rgba = new Uint8Array(Math.max(0, width) * Math.max(0, height) * 4);
+  for (let i = 0; i < width * height; i++) rgba.set(background, i * 4);
+  const missingPages: string[] = [];
+  const [xx, xy, yx, yy, ox, oy] = node.global_xform;
+  const [cr, cg, cb, ca] = node.colour;
+  for (const g of node.glyphs) {
+    const key = `${g.font_key}@${g.size}/0#${g.page}`;
+    const page = pages.get(key);
+    if (!page) {
+      if (!missingPages.includes(key)) missingPages.push(key);
+      continue;
+    }
+    const [qx, qy, qw, qh] = g.quad;
+    const [ux, uy] = g.uv;
+    for (let ly = 0; ly < qh; ly++) {
+      for (let lx = 0; lx < qw; lx++) {
+        const worldX = Math.round(xx * (qx + lx) + yx * (qy + ly) + ox);
+        const worldY = Math.round(xy * (qx + lx) + yy * (qy + ly) + oy);
+        const bx = worldX - box[0];
+        const by = worldY - box[1];
+        if (bx < 0 || bx >= width || by < 0 || by >= height) continue;
+        const sx = Math.round(ux) + lx;
+        const sy = Math.round(uy) + ly;
+        if (sx < 0 || sx >= page.width || sy < 0 || sy >= page.height) continue;
+        const coverage = page.data[(sy * page.width + sx) * 2 + 1] / 255;
+        const a = coverage * ca;
+        if (a === 0) continue;
+        const idx = (by * width + bx) * 4;
+        rgba[idx] = Math.round(cr * 255 * a + rgba[idx] * (1 - a));
+        rgba[idx + 1] = Math.round(cg * 255 * a + rgba[idx + 1] * (1 - a));
+        rgba[idx + 2] = Math.round(cb * 255 * a + rgba[idx + 2] * (1 - a));
+        rgba[idx + 3] = 255;
+      }
+    }
+  }
+  return { frame: { width, height, rgba }, missingPages };
+}
+
+/** `got` (a full-size frame) against `synth` (box-sized, from synthesizeText) inside `box`. */
+export function compareSynthesizedText(
+  got: Pick<Frame4, "width" | "rgba">,
+  box: Box4,
+  synth: SynthesizedFrame,
+): { mismatched: number; maxDelta: number } {
+  let mismatched = 0;
+  let maxDelta = 0;
+  const w = box[2] - box[0];
+  for (let y = box[1]; y < box[3]; y++) {
+    for (let x = box[0]; x < box[2]; x++) {
+      const gi = (y * got.width + x) * 4;
+      const si = ((y - box[1]) * w + (x - box[0])) * 4;
+      let d = 0;
+      for (let c = 0; c < 4; c++)
+        d = Math.max(d, Math.abs(got.rgba[gi + c] - synth.rgba[si + c]));
+      if (d === 0) continue;
+      mismatched++;
+      maxDelta = Math.max(maxDelta, d);
+    }
+  }
+  return { mismatched, maxDelta };
+}
+
+/** Minimal shape compareSynthesizedText needs (matches gate4-checks.ts's `Frame`). */
+interface Frame4 {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+}
+
 /** Texel indices where `next` differs from `prev`, each with whether `prev` was empty there
  * (`empty` the format's empty texel, e.g. LA8 [255, 0]). Both are raw image data of one shape. */
 export function appendOnlyViolations(

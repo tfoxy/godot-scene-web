@@ -2130,6 +2130,83 @@ texels.
 - Subpixel variants, outlines, shadows, wrapping, alignment, `clip_text`, multiple pages, cache
   lifetime (G4c), RichTextLabel (G4d), MSDF (G4e), or complex scripts and fallback (G4f).
 
+## Gate 4b result (2026-10-09)
+
+G4b ([protocol/gate4-design.md](protocol/gate4-design.md) "G4b") passes:
+`pnpm render-stream:gate4 -- --legs g4a,g4b` is 37/37 in
+`artifacts/render-stream/gate4/20261010T003432Z/` (a first, identical-logic run at
+`20261010T002835Z` caught a checker bug, below). The same build passed `build-capture.sh` (10/10
+ctests), gate −1 (`gate-minus1/verify-g4b/`), gate 0 19/19 (`gate0/20261010T002934Z/`), gate 1
+65/65 with all four groups (`gate1/20261010T003023Z/`), gate 2 85/85 with all five groups
+(`gate2/20261010T003027Z/`) and gate 3 `--legs g3a` 16/16 (`gate3/20261010T003042Z/`). No
+receiver, mirror or fixture file changed; the receiver is the one gates 0–3 already exercise.
+
+What landed: `synthesizeText`/`compareSynthesizedText` in `lib/gate4-expected.ts` (D8's ink:
+oracle quads sampled against a page's LA8 alpha, in the node's font colour, straight-alpha
+blended over the region's background); `receiverStepSeqs`/`loadReceiverShots` in
+`lib/gate4-checks.ts`, which re-key a receiver's wire-seq shots to the reference's filenames so
+every G4a shot evaluator runs over a receiver unchanged; `computeGate4Checkpoints` plus
+`checkLegClass` (classifyLeg against a leg's class and, for a sabotage, its exact predicted
+mismatching steps); `loadAtlasPageImages`/`loadPagesByStep`; `evaluateExpectedText`/
+`checkExpectedText`; `evaluateResourceQuiet`; `checkReceiverNeverShapes`;
+`checkReceiverConsumedStream`; `checkReceiverTypedClean`; and `checkAtlasHashParitySabotage`. The
+runner (`run_g4b`, `g4_capture`, `early_shots_csv`) adds group `g4b`: the unchanged receiver on
+the main capture's full and patch sinks (plus the early shots at frames 12, 42 and 72), a headless
+openat trace, and three fresh sabotage captures at the fixture's own 102-frame default — each with
+its own rendered receiver.
+
+Images (under the run directory): `receiver/shots/` and `receiver-patch/shots/` (`seq-<n>.png`,
+re-keyed to `step-<k>.png`/`early-<k>.png` by the checker), and
+`sabotage-{freeze,perturb,omit-atlas}/receiver/shots/`. `receiver-vs-reference` is exact on both
+sinks, full frame and every region (budget 0, as the reference-repeat budget already was).
+`expected-text-reference` and `expected-text-receiver` (D8's new, independent check) hold the
+budget exactly: **max channel delta 1**, 5 301 pixels at delta ≥ 1 across the ten steps' seven
+text regions — every one of them inside the documented UNORM8-blend-rounding allowance, with none
+at delta 2 or more.
+
+Sabotage outcomes, matched to G4a's predictions exactly:
+
+| Leg                    | Sabotage                                   | Class          | Mismatching steps | atlas-hash-parity                      |
+| ----------------------- | ------------------------------------------- | -------------- | ------------------ | --------------------------------------- |
+| `sabotage-freeze`      | `freeze-frame` @ frame 11 (step 1)         | `pixel-mismatch` | {1..9}            | n/a                                      |
+| `sabotage-perturb`     | `perturb-transform` @ frame 21 (step 2)    | `pixel-mismatch` | {2..9}            | n/a                                      |
+| `sabotage-omit-atlas`  | `omit-op texture_2d_update` @ frame 41 (step 4) | `pixel-mismatch` | {4..9}       | fails exactly at `F@16` {4..9}, `DF@16` {9} |
+
+Every step outside a leg's predicted set matches the reference exactly (`checkLegClass` asserts
+this explicitly, not just the overall class). `receiver-never-shapes` found no `*.ttf`/`*.otf`/
+`*.woff`/`*.woff2`/`*.fnt`/`*.fontdata` opened by the traced receiver and no `TextServer`, `Font`,
+`Label`, `RichTextLabel`, `draw_string` or `draw_char` symbol in any of the receiver's 11 `.gd`
+files. `receiver-consumed-stream`, `receiver-never-loaded-fixture` and `receiver-typed-clean` are
+clean across all six receiver legs. `resource-quiet` confirms the five no-texture-traffic steps
+(2, 3, 5, 6, 8) fetch and upload nothing on either sink.
+
+### Findings
+
+- **The checker, not the runner, had the only bug.** The first run's three sabotage legs
+  classified `replay-failure` instead of `pixel-mismatch`: the checker's `requestedShotSeqs`
+  wrongly included the early-frame seqs (12/42/72) for a sabotage receiver, which `run_g4b` never
+  requests (only the plain `receiver`/`receiver-patch` legs shoot them). Fixed by restricting a
+  sabotage leg's `requestedShotSeqs` to its settle seqs; re-running only the checker against the
+  same evidence (no Godot re-run needed) turned all three green, and a full fresh run confirmed
+  it byte-for-byte.
+- **D8's budget held at exactly its ceiling, not below it.** 5 301 pixels sit at delta 1 and none
+  at 2+, across both the reference's own shots (a sanity check on the synthesizer itself) and the
+  receiver's (the real claim). This is the first evidence that the synthesizer's blend model
+  (straight alpha, node colour, LA8 coverage, no filtering) matches the GPU's UNORM8 rounding to
+  within its documented tolerance and no further.
+- **Reusing G4a's shot evaluators needed one seam, not a rewrite.** Re-keying a receiver's
+  `seq-<n>.png` files to the reference's `step-<k>.png`/`early-<k>.png` names
+  (`loadReceiverShots`) let `evaluateExpectedImage`, `evaluateInkPresence`, `compareLegs` and the
+  new `evaluateExpectedText` run unchanged over either side.
+
+### What G4b does not prove
+
+- Anything G4c–G4f own: sizes, pages, wrapping, alignment, `clip_text`, outlines, shadows,
+  subpixel, cache lifetime and LCD (G4c); `RichTextLabel` spans (G4d); MSDF and `render-stream/3`
+  (G4e); multilingual shaping (G4f).
+- That the receiver's apply order for clipped text is correct: G4c and G4d wait for G3b for that
+  reason (D13); G4b's Labels never clip.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —
