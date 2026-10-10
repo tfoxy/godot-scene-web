@@ -171,6 +171,10 @@ class Mirror {
   void set_z_relative(std::uint64_t item, bool relative, std::uint64_t frame);
   void set_behind(std::uint64_t item, bool behind, std::uint64_t frame);
   void set_material(std::uint64_t item, std::uint64_t material, std::uint64_t frame);
+  // canvas_item_attach_skeleton (gate5-design.md D2, D16, calibrator 7): a non-null skeleton is
+  // reported in Snapshot::unsupported only, as a non-null material is -- its own op name,
+  // {"op":"canvas_item_attach_skeleton","reason":"unsupported-state"} -- never content_version.
+  void attach_skeleton(std::uint64_t item, std::uint64_t skeleton, std::uint64_t frame);
 
   // canvas_item_clear: empties the commands, bumps content_version and resets
   // `clip` to false, as the engine's Item::clear() does (gate3-design.md D3);
@@ -303,6 +307,8 @@ class Mirror {
     // Non-null material: reported in Snapshot::unsupported only (rs2::ItemState
     // has no field for it).
     bool unsupported_state = false;
+    // Non-null skeleton (gate5-design.md D2, calibrator 7): same idea, its own op name.
+    bool unsupported_skeleton = false;
   };
   struct Canvas {
     rs2::CanvasState state;

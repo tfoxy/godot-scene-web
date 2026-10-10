@@ -11,6 +11,7 @@
 #include "abi.h"
 #include "iface.h"
 #include "report.h"
+#include "rs_mesh_payload.h"
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
 #include "rs_sha256.h"
@@ -174,6 +175,28 @@ using FnAddLcdTextureRectRegion = void (*)(void *, RID, const Rect2 *, RID, cons
 //
 //   1595: virtual void canvas_item_add_clip_ignore(RID p_item, bool p_ignore) = 0;
 //         (FnRidBool: the same ABI as canvas_item_set_clip)
+//
+// --- calibrator 7 (optional): gate5-design.md Q2, D2 -- two silent holes closed
+// (draw_multiline / draw_dashed_line's canvas_item_add_multiline, and a loaded ArrayMesh's
+// mesh_create_from_surfaces), typed refusals (particles, animation slice, skeleton attach), and
+// the remaining mesh region/removal hooks ---------------------------------------------------
+//
+//    396: virtual RID mesh_create_from_surfaces(const Vector<SurfaceData> &, int) = 0;
+using FnMeshCreateFromSurfaces = RID (*)(void *, const Vector<SurfaceDataPrefix> *, int32_t);
+//    431: virtual void mesh_surface_update_skin_region(RID, int, int, const Vector<uint8_t> &) = 0;
+//    432: virtual void mesh_surface_update_index_region(RID, int, int, const Vector<uint8_t> &) = 0;
+//         (FnMeshUpdateRegion: the same ABI as the vertex/attribute region updates)
+//    449: virtual void mesh_surface_remove(RID, int) = 0;
+//         (FnRidInt: the same ABI as canvas_item_set_z_index / canvas_item_set_draw_index)
+//   1580: virtual void canvas_item_add_multiline(RID, const Vector<Point2> &, const Vector<Color> &,
+//             float = -1.0, bool = false) = 0;
+//         (FnAddPolyline: the same ABI as canvas_item_add_polyline)
+//   1593: virtual void canvas_item_add_particles(RID, RID, RID) = 0;
+//         (FnAddMultimesh: the same ABI as canvas_item_add_multimesh)
+//   1596: virtual void canvas_item_add_animation_slice(RID, double, double, double, double) = 0;
+using FnAddAnimationSlice = void (*)(void *, RID, double, double, double, double);
+//   1603: virtual void canvas_item_attach_skeleton(RID, RID) = 0;
+//         (FnSetMaterial: the same ABI as canvas_item_set_material)
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -239,6 +262,15 @@ enum HookId : size_t {
   kAddLcdTextureRectRegion,
   // calibrator 6
   kAddClipIgnore,
+  // calibrator 7
+  kMeshCreateFromSurfaces,
+  kMeshUpdateSkinRegion,
+  kMeshUpdateIndexRegion,
+  kMeshSurfaceRemove,
+  kAddMultiline,
+  kAddParticles,
+  kAddAnimationSlice,
+  kAttachSkeleton,
   kHookCount,
 };
 
@@ -560,6 +592,17 @@ struct ChannelKey {
   uint64_t texture;
 };
 
+// Calibrator 7 (gate5-design.md Q2): canvas_item_add_animation_slice's four doubles, narrowed to
+// float32 for the capture log -- the op is permanently typed unsupported (D16), so nothing needs
+// it bit-exact.
+struct AnimationSliceKey {
+  uint64_t item;
+  float animation_length;
+  float slice_begin;
+  float slice_end;
+  float offset;
+};
+
 std::vector<RectCapture> g_rects;
 std::vector<PolygonCapture> g_polygons;
 std::vector<ImageCapture> g_creates;
@@ -619,6 +662,14 @@ Log<PodEntry<ItemValueKey>> g_item_texture_repeats;
 Log<PodEntry<LcdRectKey>> g_lcd_rects;
 // calibrator 6
 Log<PodEntry<ItemValueKey>> g_clip_ignores;
+// calibrator 7
+Log<PodEntry<RidTripleKey>> g_mesh_create_from_surfaces_calls;
+Log<PodEntry<RegionKey>> g_skin_regions, g_index_regions;
+Log<PodEntry<ItemValueKey>> g_mesh_surface_removes;
+Log<GeometryEntry> g_multilines;
+Log<PodEntry<RidTripleKey>> g_add_particles;
+Log<PodEntry<AnimationSliceKey>> g_animation_slices;
+Log<PodEntry<RidTripleKey>> g_attach_skeletons;
 
 template <typename Key>
 PodEntry<Key> pod(const Key &key) {
@@ -834,6 +885,129 @@ bool omitted(const char *op) { return streaming() && mirror().omits(op, current_
 // order and assign the same ids (`texture-versions-current` compares them).
 std::mutex g_texture_order;
 
+// --- gate 5 (G5a): mesh payload copy at the hook (gate5-design.md D6, D7, Q3a) ---------------
+//
+// mesh_add_surface and mesh_create_from_surfaces copy every buffer of the SurfaceData, exactly as
+// texture_2d_create copies an Image's bytes. Unlike a texture, a region update only ever carries
+// the changed bytes (`p_data` at `offset`): the dummy renderer discards region updates entirely
+// (rs-gate5-geometry-engine-facts), so the hook's own retained copy of each surface's whole
+// buffers -- kept here, one entry per mesh RID the hook has seen created or added to, in creation
+// order -- is the only place a region update's result exists on a headless host. A refused
+// surface (D7) keeps its descriptive fields but no bytes: nothing will ever re-hash it (a region
+// update on it is "version + 1 only", gate5-design.md Q3b).
+struct MeshSurfaceBuffer {
+  bool ok = false;
+  int32_t primitive = -1;
+  uint64_t format = 0;
+  uint32_t vertex_count = 0;
+  uint32_t index_count = 0;
+  // The surface's own AABB and uv_scale, fixed at creation (D8: region updates never move the
+  // AABB) and needed again to re-encode the GRM1 geometry block after a region update.
+  AABB aabb{};
+  Vector4 uv_scale{};
+  std::vector<uint8_t> vertex_data, attribute_data, skin_data, index_data;
+};
+
+std::map<uint64_t, std::vector<MeshSurfaceBuffer>> g_mesh_buffers;  // guarded by g_mutex
+
+// Classifies and, when ok, copies and hashes one SurfaceData-shaped pointer. `copy_ns`/`hash_ns`
+// time the GRM1 encode and the SHA-256 separately, as copy_payload does for textures. Nothing is
+// copied or hashed for a refused surface (D7) or one over GRC_RESOURCE_MAX_PAYLOAD_BYTES.
+rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBuffer *buffer) {
+  rs::MeshSurfaceCopy copy;
+  copy.primitive = sd.primitive;
+  copy.format = sd.format;
+  copy.vertex_count = sd.vertex_count;
+  copy.index_count = sd.index_count;
+
+  rs::SurfaceFacts facts;
+  facts.primitive = sd.primitive;
+  facts.format = sd.format;
+  facts.vertex_data_bytes = sd.vertex_data.size();
+  facts.attribute_data_bytes = sd.attribute_data.size();
+  facts.skin_data_bytes = sd.skin_data.size();
+  facts.index_data_bytes = sd.index_data.size();
+  facts.vertex_count = sd.vertex_count;
+  facts.index_count = sd.index_count;
+  facts.blend_shape_data_bytes = sd.blend_shape_data.size();
+  const rs::SurfaceClassification classification = rs::classify_surface(facts);
+
+  buffer->ok = false;
+  buffer->primitive = sd.primitive;
+  buffer->format = sd.format;
+  buffer->vertex_count = sd.vertex_count;
+  buffer->index_count = sd.index_count;
+  buffer->aabb = sd.aabb;
+  buffer->uv_scale = sd.uv_scale;
+  buffer->vertex_data.clear();
+  buffer->attribute_data.clear();
+  buffer->skin_data.clear();
+  buffer->index_data.clear();
+  if (!classification.ok) {
+    copy.status = "unsupported";
+    copy.reason = classification.reason;
+    return copy;
+  }
+
+  const std::string meta = rs::payload_meta(
+      sd.primitive, sd.format, sd.vertex_count, sd.index_count,
+      static_cast<int64_t>(sd.vertex_data.size()), static_cast<int64_t>(sd.attribute_data.size()),
+      static_cast<int64_t>(sd.skin_data.size()), static_cast<int64_t>(sd.index_data.size()));
+  const uint64_t data_bytes = static_cast<uint64_t>(sd.vertex_data.size()) +
+                              static_cast<uint64_t>(sd.attribute_data.size()) +
+                              static_cast<uint64_t>(sd.skin_data.size()) +
+                              static_cast<uint64_t>(sd.index_data.size());
+  if (rs::mesh_payload_size(meta, data_bytes) > g_resource_policy.max_payload_bytes) {
+    copy.status = "unsupported";
+    copy.reason = "payload-too-large";
+    return copy;
+  }
+
+  const uint64_t t0 = now_ns();
+  buffer->vertex_data.assign(sd.vertex_data.ptr(), sd.vertex_data.ptr() + sd.vertex_data.size());
+  buffer->attribute_data.assign(sd.attribute_data.ptr(),
+                                sd.attribute_data.ptr() + sd.attribute_data.size());
+  buffer->skin_data.assign(sd.skin_data.ptr(), sd.skin_data.ptr() + sd.skin_data.size());
+  buffer->index_data.assign(sd.index_data.ptr(), sd.index_data.ptr() + sd.index_data.size());
+  const std::vector<uint8_t> payload = rs::encode_payload(
+      sd.primitive, sd.format, sd.vertex_count, sd.index_count, sd.aabb, sd.uv_scale,
+      buffer->vertex_data.data(), buffer->vertex_data.size(), buffer->attribute_data.data(),
+      buffer->attribute_data.size(), buffer->skin_data.data(), buffer->skin_data.size(),
+      buffer->index_data.data(), buffer->index_data.size());
+  const uint64_t t1 = now_ns();
+  copy.hash = sha256_hex(payload.data(), payload.size());
+  const uint64_t t2 = now_ns();
+  copy.status = "ok";
+  copy.copy_ns = static_cast<int64_t>(t1 - t0);
+  copy.hash_ns = static_cast<int64_t>(t2 - t1);
+  buffer->ok = true;
+  return copy;
+}
+
+// Re-encodes and re-hashes a surface already in `buffer` (whole payload, D6): used after a region
+// update is applied in place. `buffer.ok` must already be true (a refused surface is never
+// re-hashed; its region updates are "version + 1 only").
+rs::MeshSurfaceCopy rehash_mesh_surface(const MeshSurfaceBuffer &buffer) {
+  rs::MeshSurfaceCopy copy;
+  copy.primitive = buffer.primitive;
+  copy.format = buffer.format;
+  copy.vertex_count = buffer.vertex_count;
+  copy.index_count = buffer.index_count;
+  const uint64_t t0 = now_ns();
+  const std::vector<uint8_t> payload = rs::encode_payload(
+      buffer.primitive, buffer.format, buffer.vertex_count, buffer.index_count, buffer.aabb,
+      buffer.uv_scale, buffer.vertex_data.data(), buffer.vertex_data.size(),
+      buffer.attribute_data.data(), buffer.attribute_data.size(), buffer.skin_data.data(),
+      buffer.skin_data.size(), buffer.index_data.data(), buffer.index_data.size());
+  const uint64_t t1 = now_ns();
+  copy.hash = sha256_hex(payload.data(), payload.size());
+  const uint64_t t2 = now_ns();
+  copy.status = "ok";
+  copy.copy_ns = static_cast<int64_t>(t1 - t0);
+  copy.hash_ns = static_cast<int64_t>(t2 - t1);
+  return copy;
+}
+
 // --- gate -1 hooks -----------------------------------------------------------
 
 void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, bool antialiased) {
@@ -1031,8 +1205,16 @@ void hook_free(void *self, RID rid) {
       // value out again. (The mirror applies omit-op `free` itself.)
       mirror().free_rid(rid.id, current_frame());
     }
-    // Likewise for the texture hook log, which logs only RIDs it knows as textures.
+    // Likewise for the texture and mesh hook logs, which log only RIDs they know.
     resources().free_rid(tap_context(), rid.id, omit);
+    if (resources().active()) {
+      // G5a: the hook's own retained mesh-buffer cache leaves with the mesh, omit-op included --
+      // a stale free is the same contradiction a stale texture update is, left to show as pixels.
+      std::lock_guard<std::mutex> lock(g_mutex);
+      if (!omit) {
+        g_mesh_buffers.erase(rid.id);
+      }
+    }
   }
   original<FnFree>(kFree)(self, rid);
 }
@@ -1248,6 +1430,15 @@ RID hook_mesh_create(void *self) {
   bump(kMeshCreate);
   const RID result = original<FnCreate>(kMeshCreate)(self);
   log_entry(&g_mesh_creates, rids(result.id));
+  const bool logging = resources().active();
+  if (logging) {
+    const bool omit = omitted("mesh_create");
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!omit) {
+      g_mesh_buffers[result.id];  // an empty surface list, value-initialized
+    }
+    resources().mesh_create(tap_context(), result.id, omit);
+  }
   return result;
 }
 
@@ -1267,6 +1458,19 @@ void hook_mesh_add_surface(void *self, RID mesh, const SurfaceDataPrefix *surfac
     key.index_count = surface->index_count;
     key.aabb = surface->aabb;
     log_entry(&g_mesh_surfaces, pod(key));
+  }
+  // Gate 5 (G5a, D6): whole-surface copy at the hook, classified (D7), hashed into a GRM1
+  // payload, and appended to the hook's own retained-buffer cache (so a later region update can
+  // re-hash the whole surface) and to evidence/resources.jsonl.
+  if (surface != nullptr && resources().active()) {
+    const bool omit = omitted("mesh_add_surface");
+    MeshSurfaceBuffer buffer;
+    const rs::MeshSurfaceCopy copy = copy_mesh_surface(*surface, &buffer);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!omit) {
+      g_mesh_buffers[mesh.id].push_back(std::move(buffer));
+    }
+    resources().mesh_add_surface(tap_context(), mesh.id, copy, omit);
   }
   original<FnMeshAddSurface>(kMeshAddSurface)(self, mesh, surface);
 }
@@ -1288,10 +1492,101 @@ PodEntry<RegionKey> region(RID mesh, int surface, int offset, const Vector<uint8
   return pod(key);
 }
 
+// Gate 5 (G5a, D6, D8, Q3a): one of the four mesh_surface_update_*_region hooks. `which` selects
+// the retained buffer; the counters.json capture (`region()` above) is unchanged -- it still
+// keeps only a 64-byte head for deduplication -- but the hook's own copy for resources.jsonl is
+// always the whole `p_data` applied in place, as D6 requires. Bounds are checked exactly as
+// GLES3 would (gles3m:536-594): out of range or empty is "rejected" and changes nothing; an
+// unknown mesh or surface index is "unknown"; a surface already `unsupported` (D7) only bumps the
+// version (gate5-design.md Q3b). The omit-op sabotage (G5d) leaves the retained bytes stale, as
+// for a texture.
+enum class MeshBuffer { kVertex, kAttribute, kSkin, kIndex };
+
+const char *mesh_buffer_name(MeshBuffer which) {
+  switch (which) {
+    case MeshBuffer::kVertex:
+      return "vertex";
+    case MeshBuffer::kAttribute:
+      return "attribute";
+    case MeshBuffer::kSkin:
+      return "skin";
+    case MeshBuffer::kIndex:
+      return "index";
+  }
+  return "";
+}
+
+const char *mesh_region_op_name(MeshBuffer which) {
+  switch (which) {
+    case MeshBuffer::kVertex:
+      return "mesh_surface_update_vertex_region";
+    case MeshBuffer::kAttribute:
+      return "mesh_surface_update_attribute_region";
+    case MeshBuffer::kSkin:
+      return "mesh_surface_update_skin_region";
+    case MeshBuffer::kIndex:
+      return "mesh_surface_update_index_region";
+  }
+  return "";
+}
+
+std::vector<uint8_t> *mesh_buffer_field(MeshSurfaceBuffer *buffer, MeshBuffer which) {
+  switch (which) {
+    case MeshBuffer::kVertex:
+      return &buffer->vertex_data;
+    case MeshBuffer::kAttribute:
+      return &buffer->attribute_data;
+    case MeshBuffer::kSkin:
+      return &buffer->skin_data;
+    case MeshBuffer::kIndex:
+      return &buffer->index_data;
+  }
+  return nullptr;
+}
+
+void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int32_t offset,
+                               const Vector<uint8_t> *data) {
+  if (!resources().active()) {
+    return;
+  }
+  const int64_t bytes = data != nullptr ? data->size() : 0;
+  const bool omit = omitted(mesh_region_op_name(which));
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const char *outcome = "unknown";
+  rs::MeshSurfaceCopy updated;
+  const rs::MeshSurfaceCopy *new_surface = nullptr;
+  auto it = g_mesh_buffers.find(mesh.id);
+  if (it != g_mesh_buffers.end() && surface >= 0 &&
+      static_cast<size_t>(surface) < it->second.size()) {
+    MeshSurfaceBuffer &buffer = it->second[static_cast<size_t>(surface)];
+    if (!buffer.ok) {
+      outcome = "applied";  // Q3b: an already-unsupported surface only bumps the version.
+    } else {
+      std::vector<uint8_t> *field = mesh_buffer_field(&buffer, which);
+      const bool in_bounds = data != nullptr && bytes > 0 && offset >= 0 &&
+                             static_cast<uint64_t>(offset) + static_cast<uint64_t>(bytes) <=
+                                 field->size();
+      if (!in_bounds) {
+        outcome = "rejected";
+      } else {
+        outcome = "applied";
+        if (!omit) {
+          std::memcpy(field->data() + offset, data->ptr(), static_cast<size_t>(bytes));
+          updated = rehash_mesh_surface(buffer);
+          new_surface = &updated;
+        }
+      }
+    }
+  }
+  resources().mesh_surface_update_region(tap_context(), mesh.id, mesh_buffer_name(which), surface,
+                                         offset, bytes, outcome, new_surface, omit);
+}
+
 void hook_mesh_update_vertex_region(void *self, RID mesh, int surface, int offset,
                                     const Vector<uint8_t> *data) {
   bump(kMeshUpdateVertexRegion);
   log_entry(&g_vertex_regions, region(mesh, surface, offset, data));
+  handle_mesh_region_update(MeshBuffer::kVertex, mesh, surface, offset, data);
   original<FnMeshUpdateRegion>(kMeshUpdateVertexRegion)(self, mesh, surface, offset, data);
 }
 
@@ -1299,12 +1594,24 @@ void hook_mesh_update_attribute_region(void *self, RID mesh, int surface, int of
                                        const Vector<uint8_t> *data) {
   bump(kMeshUpdateAttributeRegion);
   log_entry(&g_attribute_regions, region(mesh, surface, offset, data));
+  handle_mesh_region_update(MeshBuffer::kAttribute, mesh, surface, offset, data);
   original<FnMeshUpdateRegion>(kMeshUpdateAttributeRegion)(self, mesh, surface, offset, data);
 }
 
 void hook_mesh_clear(void *self, RID mesh) {
   bump(kMeshClear);
   log_entry(&g_mesh_clears, rids(mesh.id));
+  if (resources().active()) {
+    const bool omit = omitted("mesh_clear");
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!omit) {
+      auto it = g_mesh_buffers.find(mesh.id);
+      if (it != g_mesh_buffers.end()) {
+        it->second.clear();
+      }
+    }
+    resources().mesh_clear(tap_context(), mesh.id, omit);
+  }
   original<FnRidOnly>(kMeshClear)(self, mesh);
 }
 
@@ -1317,7 +1624,129 @@ void hook_mesh_set_custom_aabb(void *self, RID mesh, const AABB *aabb) {
     key.aabb = *aabb;
     log_entry(&g_mesh_aabbs, pod(key));
   }
+  if (resources().active()) {
+    resources().mesh_set_custom_aabb(tap_context(), mesh.id, omitted("mesh_set_custom_aabb"));
+  }
   original<FnMeshSetCustomAabb>(kMeshSetCustomAabb)(self, mesh, aabb);
+}
+
+// --- calibrator 7 hooks (gate5-design.md Q2) --------------------------------
+
+// mesh_create_from_surfaces: RenderingServerDefault allocates and adds every surface directly in
+// mesh storage (rsd.h:332-356), so neither mesh_create nor mesh_add_surface is called through the
+// vtable -- this is the ONLY place a loaded ArrayMesh's surfaces are seen. Each surface is copied,
+// classified and hashed exactly as a plain mesh_add_surface's is.
+RID hook_mesh_create_from_surfaces(void *self, const Vector<SurfaceDataPrefix> *surfaces,
+                                   int32_t blend_shape_count) {
+  bump(kMeshCreateFromSurfaces);
+  const RID result =
+      original<FnMeshCreateFromSurfaces>(kMeshCreateFromSurfaces)(self, surfaces, blend_shape_count);
+  log_entry(&g_mesh_create_from_surfaces_calls,
+           rids(result.id, surfaces != nullptr ? static_cast<uint64_t>(surfaces->size()) : 0));
+  if (resources().active()) {
+    const bool omit = omitted("mesh_create_from_surfaces");
+    std::vector<MeshSurfaceBuffer> buffers;
+    std::vector<rs::MeshSurfaceCopy> copies;
+    const int64_t count = surfaces != nullptr ? surfaces->size() : 0;
+    for (int64_t i = 0; i < count; ++i) {
+      MeshSurfaceBuffer buffer;
+      copies.push_back(copy_mesh_surface(surfaces->ptr()[i], &buffer));
+      buffers.push_back(std::move(buffer));
+    }
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!omit) {
+      g_mesh_buffers[result.id] = std::move(buffers);
+    }
+    resources().mesh_create_from_surfaces(tap_context(), result.id, copies, omit);
+  }
+  return result;
+}
+
+void hook_mesh_update_skin_region(void *self, RID mesh, int surface, int offset,
+                                  const Vector<uint8_t> *data) {
+  bump(kMeshUpdateSkinRegion);
+  log_entry(&g_skin_regions, region(mesh, surface, offset, data));
+  handle_mesh_region_update(MeshBuffer::kSkin, mesh, surface, offset, data);
+  original<FnMeshUpdateRegion>(kMeshUpdateSkinRegion)(self, mesh, surface, offset, data);
+}
+
+void hook_mesh_update_index_region(void *self, RID mesh, int surface, int offset,
+                                   const Vector<uint8_t> *data) {
+  bump(kMeshUpdateIndexRegion);
+  log_entry(&g_index_regions, region(mesh, surface, offset, data));
+  handle_mesh_region_update(MeshBuffer::kIndex, mesh, surface, offset, data);
+  original<FnMeshUpdateRegion>(kMeshUpdateIndexRegion)(self, mesh, surface, offset, data);
+}
+
+void hook_mesh_surface_remove(void *self, RID mesh, int surface) {
+  bump(kMeshSurfaceRemove);
+  log_entry(&g_mesh_surface_removes, item_value(mesh, surface));
+  if (resources().active()) {
+    const bool omit = omitted("mesh_surface_remove");
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!omit) {
+      auto it = g_mesh_buffers.find(mesh.id);
+      if (it != g_mesh_buffers.end() && surface >= 0 &&
+          static_cast<size_t>(surface) < it->second.size()) {
+        it->second.erase(it->second.begin() + surface);
+      }
+    }
+    resources().mesh_surface_remove(tap_context(), mesh.id, surface, omit);
+  }
+  original<FnRidInt>(kMeshSurfaceRemove)(self, mesh, surface);
+}
+
+// canvas_item_add_multiline: draw_multiline and draw_dashed_line's dashes (ci.cpp:697-731,
+// :771-784) reach this hook, which was unhooked before calibrator 7 and silently dropped both
+// (rs-gate5-geometry-engine-facts). Typed unsupported until /4 (G5d); the capture (counters.json)
+// is truncated like every other optional geometry op.
+void hook_add_multiline(void *self, RID item, const Vector<Point2> *points,
+                        const Vector<Color> *colors, float width, bool antialiased) {
+  bump(kAddMultiline);
+  tap_unsupported(item, "canvas_item_add_multiline");
+  GeometryEntry entry;
+  entry.item = item.id;
+  entry.points_total = copy_head(points, &entry.points);
+  entry.colors_total = copy_head(colors, &entry.colors);
+  entry.width = width;
+  entry.antialiased = antialiased;
+  log_entry(&g_multilines, std::move(entry));
+  original<FnAddPolyline>(kAddMultiline)(self, item, points, colors, width, antialiased);
+}
+
+void hook_add_particles(void *self, RID item, RID particles, RID texture) {
+  bump(kAddParticles);
+  tap_unsupported(item, "canvas_item_add_particles");
+  log_entry(&g_add_particles, rids(item.id, particles.id, texture.id));
+  original<FnAddMultimesh>(kAddParticles)(self, item, particles, texture);
+}
+
+void hook_add_animation_slice(void *self, RID item, double animation_length, double slice_begin,
+                              double slice_end, double offset) {
+  bump(kAddAnimationSlice);
+  tap_unsupported(item, "canvas_item_add_animation_slice");
+  AnimationSliceKey key;
+  zero(&key);
+  key.item = item.id;
+  key.animation_length = static_cast<float>(animation_length);
+  key.slice_begin = static_cast<float>(slice_begin);
+  key.slice_end = static_cast<float>(slice_end);
+  key.offset = static_cast<float>(offset);
+  log_entry(&g_animation_slices, pod(key));
+  original<FnAddAnimationSlice>(kAddAnimationSlice)(self, item, animation_length, slice_begin,
+                                                    slice_end, offset);
+}
+
+// canvas_item_attach_skeleton: a null skeleton (Polygon2D's per-draw call, D1d) is free and
+// leaves no trace; a non-null one is reported in Snapshot::unsupported only, as a non-null
+// material is (D2, D16).
+void hook_attach_skeleton(void *self, RID item, RID skeleton) {
+  bump(kAttachSkeleton);
+  log_entry(&g_attach_skeletons, rids(item.id, skeleton.id));
+  if (streaming()) {
+    mirror().attach_skeleton(item.id, skeleton.id, current_frame());
+  }
+  original<FnSetMaterial>(kAttachSkeleton)(self, item, skeleton);
 }
 
 RID hook_shader_create_from_code(void *self, const void *code, const void *path_hint) {
@@ -1731,6 +2160,15 @@ const HookSpec kSpecs[] = {
     {kAddLcdTextureRectRegion, "canvas_item_add_lcd_texture_rect_region",
      as_ptr(&hook_add_lcd_texture_rect_region)},
     {kAddClipIgnore, "canvas_item_add_clip_ignore", as_ptr(&hook_add_clip_ignore)},
+    {kMeshCreateFromSurfaces, "mesh_create_from_surfaces", as_ptr(&hook_mesh_create_from_surfaces)},
+    {kMeshUpdateSkinRegion, "mesh_surface_update_skin_region", as_ptr(&hook_mesh_update_skin_region)},
+    {kMeshUpdateIndexRegion, "mesh_surface_update_index_region",
+     as_ptr(&hook_mesh_update_index_region)},
+    {kMeshSurfaceRemove, "mesh_surface_remove", as_ptr(&hook_mesh_surface_remove)},
+    {kAddMultiline, "canvas_item_add_multiline", as_ptr(&hook_add_multiline)},
+    {kAddParticles, "canvas_item_add_particles", as_ptr(&hook_add_particles)},
+    {kAddAnimationSlice, "canvas_item_add_animation_slice", as_ptr(&hook_add_animation_slice)},
+    {kAttachSkeleton, "canvas_item_attach_skeleton", as_ptr(&hook_attach_skeleton)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -1830,7 +2268,7 @@ std::string hex_bytes(const uint8_t *data, size_t size) {
   return out;
 }
 
-enum class GeometryKind { kTriangleArray, kPrimitive, kPolyline };
+enum class GeometryKind { kTriangleArray, kPrimitive, kPolyline, kMultiline };
 
 void write_geometry(JsonWriter *json, const GeometryEntry &e, GeometryKind kind) {
   json->object_begin();
@@ -1853,7 +2291,7 @@ void write_geometry(JsonWriter *json, const GeometryEntry &e, GeometryKind kind)
   json->key("color_bits");
   write_color_array(json, e.colors, true);
   json->field("colors_total", e.colors_total);
-  if (kind != GeometryKind::kPolyline) {
+  if (kind != GeometryKind::kPolyline && kind != GeometryKind::kMultiline) {
     json->key("uvs");
     write_vector2_array(json, e.uvs, false);
     json->key("uv_bits");
@@ -1866,7 +2304,7 @@ void write_geometry(JsonWriter *json, const GeometryEntry &e, GeometryKind kind)
     json->field("weights_total", e.weights_total);
     json->field("count", e.count);
   }
-  if (kind == GeometryKind::kPolyline) {
+  if (kind == GeometryKind::kPolyline || kind == GeometryKind::kMultiline) {
     write_floats(json, "width", &e.width, 1);
     json->field("antialiased", e.antialiased);
   }
@@ -1932,6 +2370,14 @@ struct Snapshot {
   Log<PodEntry<ItemColorKey>> set_self_modulates;
   // calibrator 6
   Log<PodEntry<ItemValueKey>> clip_ignores;
+  // calibrator 7
+  Log<PodEntry<RidTripleKey>> mesh_create_from_surfaces_calls;
+  Log<PodEntry<RegionKey>> skin_regions, index_regions;
+  Log<PodEntry<ItemValueKey>> mesh_surface_removes;
+  Log<GeometryEntry> multilines;
+  Log<PodEntry<RidTripleKey>> add_particles;
+  Log<PodEntry<AnimationSliceKey>> animation_slices;
+  Log<PodEntry<RidTripleKey>> attach_skeletons;
 };
 
 Snapshot take_snapshot() {
@@ -1993,6 +2439,14 @@ Snapshot take_snapshot() {
   s.msdf_rects = g_msdf_rects;
   s.lcd_rects = g_lcd_rects;
   s.clip_ignores = g_clip_ignores;
+  s.mesh_create_from_surfaces_calls = g_mesh_create_from_surfaces_calls;
+  s.skin_regions = g_skin_regions;
+  s.index_regions = g_index_regions;
+  s.mesh_surface_removes = g_mesh_surface_removes;
+  s.multilines = g_multilines;
+  s.add_particles = g_add_particles;
+  s.animation_slices = g_animation_slices;
+  s.attach_skeletons = g_attach_skeletons;
   return s;
 }
 
@@ -2197,6 +2651,12 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   json.key("canvas_item_add_polyline").array_begin();
   for (const GeometryEntry &e : s.polylines.entries) {
     write_geometry(&json, e, GeometryKind::kPolyline);
+  }
+  json.array_end();
+  // Calibrator 7 (gate5-design.md Q2): draw_multiline / draw_dashed_line.
+  json.key("canvas_item_add_multiline").array_begin();
+  for (const GeometryEntry &e : s.multilines.entries) {
+    write_geometry(&json, e, GeometryKind::kMultiline);
   }
   json.array_end();
 
@@ -2431,6 +2891,36 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   // Calibrator 6 (gate3-design.md Q2): the bool crosses only into counters.json's captured; the
   // mirror tap (add_unsupported) ignores it.
   write_log(&json, "canvas_item_add_clip_ignore", s.clip_ignores, item_bool_writer("ignore"));
+  // Calibrator 7 (gate5-design.md Q2).
+  write_log(&json, "mesh_create_from_surfaces", s.mesh_create_from_surfaces_calls,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "rid", e.key.a);
+              j->field("surface_count", static_cast<int64_t>(e.key.b));
+            });
+  write_log(&json, "mesh_surface_update_skin_region", s.skin_regions,
+            [](JsonWriter *j, const PodEntry<RegionKey> &e) { write_region(j, e); });
+  write_log(&json, "mesh_surface_update_index_region", s.index_regions,
+            [](JsonWriter *j, const PodEntry<RegionKey> &e) { write_region(j, e); });
+  write_log(&json, "mesh_surface_remove", s.mesh_surface_removes, item_int_writer("surface"));
+  write_log(&json, "canvas_item_add_particles", s.add_particles,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "item", e.key.a);
+              write_rid(j, "particles", e.key.b);
+              write_rid(j, "texture", e.key.c);
+            });
+  write_log(&json, "canvas_item_add_animation_slice", s.animation_slices,
+            [](JsonWriter *j, const PodEntry<AnimationSliceKey> &e) {
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "animation_length", &e.key.animation_length, 1);
+              write_floats(j, "slice_begin", &e.key.slice_begin, 1);
+              write_floats(j, "slice_end", &e.key.slice_end, 1);
+              write_floats(j, "offset", &e.key.offset, 1);
+            });
+  write_log(&json, "canvas_item_attach_skeleton", s.attach_skeletons,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "item", e.key.a);
+              write_rid(j, "skeleton", e.key.b);
+            });
   json.object_end();
 
   // Distinct calls that arrived after an optional hook's log was full.
@@ -2504,6 +2994,15 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   json.field("canvas_item_add_lcd_texture_rect_region",
              static_cast<int64_t>(s.lcd_rects.dropped));
   json.field("canvas_item_add_clip_ignore", static_cast<int64_t>(s.clip_ignores.dropped));
+  json.field("mesh_create_from_surfaces",
+             static_cast<int64_t>(s.mesh_create_from_surfaces_calls.dropped));
+  json.field("mesh_surface_update_skin_region", static_cast<int64_t>(s.skin_regions.dropped));
+  json.field("mesh_surface_update_index_region", static_cast<int64_t>(s.index_regions.dropped));
+  json.field("mesh_surface_remove", static_cast<int64_t>(s.mesh_surface_removes.dropped));
+  json.field("canvas_item_add_multiline", static_cast<int64_t>(s.multilines.dropped));
+  json.field("canvas_item_add_particles", static_cast<int64_t>(s.add_particles.dropped));
+  json.field("canvas_item_add_animation_slice", static_cast<int64_t>(s.animation_slices.dropped));
+  json.field("canvas_item_attach_skeleton", static_cast<int64_t>(s.attach_skeletons.dropped));
   json.object_end();
 
   // G2a: the payload-copy capability and the texture hook log's counters.

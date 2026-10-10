@@ -135,17 +135,40 @@ struct AABB {
 static_assert(sizeof(Vector3) == 12, "single-precision Vector3");
 static_assert(sizeof(AABB) == 24, "single-precision AABB");
 
-// Leading members of RenderingServer::SurfaceData (servers/rendering_server.h:366-394), which
-// `mesh_add_surface` takes by const reference. Only this prefix is reproduced, and it is only ever
-// READ through the engine's pointer: never construct, copy or size one of these, because the real
-// struct continues past `aabb` (lods, bone_aabbs, mesh_to_skeleton_xform, blend_shape_data,
-// uv_scale, material; 240 bytes in total).
+// core/math/transform_3d.h: struct Transform3D { Basis basis; Vector3 origin; }; Basis
+// (core/math/basis.h) is three Vector3 rows. Never used for anything but computing
+// SurfaceData's tail offsets (gate5-design.md Q2): its contents are not decoded.
+struct Transform3D {
+  float basis[9];
+  Vector3 origin;
+};
+static_assert(sizeof(Transform3D) == 48, "single-precision Transform3D (Basis + Vector3)");
+
+// core/math/vector4.h: struct Vector4 { real_t x, y, z, w; } (real_t = float). SurfaceData::uv_scale.
+struct Vector4 {
+  float x;
+  float y;
+  float z;
+  float w;
+};
+static_assert(sizeof(Vector4) == 16, "single-precision Vector4");
+
+// RenderingServer::SurfaceData (servers/rendering_server.h:366-394), which `mesh_add_surface`
+// takes by const reference and `mesh_create_from_surfaces` walks as `Vector<SurfaceData>`. It is
+// only ever READ through the engine's pointer: never construct, copy or size one of these.
 //
 // The struct has no preprocessor conditions, so the release define set does not change it. The
 // offsets below were computed by hand (enum = 4 bytes, Vector<T> = two 8-aligned words, AABB = six
-// floats with 4-byte alignment) and cross-checked by compiling `offsetof` probes against the
-// pinned 4.5.1 header itself: primitive 0, format 8, vertex_data 16, attribute_data 32,
-// skin_data 48, vertex_count 64, index_data 72, index_count 88, aabb 92, lods 120, sizeof 240.
+// floats with 4-byte alignment, Transform3D = 48 bytes 4-aligned, Vector4 = 16 bytes) and
+// cross-checked by compiling `offsetof` probes against the pinned 4.5.1 header itself: primitive 0,
+// format 8, vertex_data 16, attribute_data 32, skin_data 48, vertex_count 64, index_data 72,
+// index_count 88, aabb 92, lods 120, bone_aabbs 136, mesh_to_skeleton_xform 152,
+// blend_shape_data 200, uv_scale 216, material 232, sizeof 240 (gate5-design.md Q2).
+//
+// `lods` (Vector<SurfaceData::LOD>) and `bone_aabbs` (Vector<AABB>) are reproduced as
+// Vector<uint8_t>: a Vector<T>'s own layout (two words: the write-proxy and the CowData pointer) is
+// the same for every T, and gate 5 never reads their element type, only the field offsets after
+// them.
 struct SurfaceDataPrefix {
   int32_t primitive;  // RS::PrimitiveType, an unscoped enum: 4 bytes
   uint64_t format;    // RS::ArrayFormat bits
@@ -156,6 +179,12 @@ struct SurfaceDataPrefix {
   Vector<uint8_t> index_data;
   uint32_t index_count;
   AABB aabb;
+  Vector<uint8_t> lods;        // Vector<SurfaceData::LOD>; element type irrelevant here
+  Vector<uint8_t> bone_aabbs;  // Vector<AABB>; element type irrelevant here
+  Transform3D mesh_to_skeleton_xform;
+  Vector<uint8_t> blend_shape_data;
+  Vector4 uv_scale;
+  RID material;
 };
 static_assert(offsetof(SurfaceDataPrefix, primitive) == 0, "SurfaceData::primitive");
 static_assert(offsetof(SurfaceDataPrefix, format) == 8, "SurfaceData::format");
@@ -166,7 +195,13 @@ static_assert(offsetof(SurfaceDataPrefix, vertex_count) == 64, "SurfaceData::ver
 static_assert(offsetof(SurfaceDataPrefix, index_data) == 72, "SurfaceData::index_data");
 static_assert(offsetof(SurfaceDataPrefix, index_count) == 88, "SurfaceData::index_count");
 static_assert(offsetof(SurfaceDataPrefix, aabb) == 92, "SurfaceData::aabb");
-// The prefix ends inside the real struct (the next member, `lods`, starts at 120).
-static_assert(sizeof(SurfaceDataPrefix) <= 120, "the prefix must not read past SurfaceData::aabb");
+static_assert(offsetof(SurfaceDataPrefix, lods) == 120, "SurfaceData::lods");
+static_assert(offsetof(SurfaceDataPrefix, bone_aabbs) == 136, "SurfaceData::bone_aabbs");
+static_assert(offsetof(SurfaceDataPrefix, mesh_to_skeleton_xform) == 152,
+              "SurfaceData::mesh_to_skeleton_xform");
+static_assert(offsetof(SurfaceDataPrefix, blend_shape_data) == 200, "SurfaceData::blend_shape_data");
+static_assert(offsetof(SurfaceDataPrefix, uv_scale) == 216, "SurfaceData::uv_scale");
+static_assert(offsetof(SurfaceDataPrefix, material) == 232, "SurfaceData::material");
+static_assert(sizeof(SurfaceDataPrefix) == 240, "SurfaceData is 240 bytes (gate5-design.md Q2)");
 
 }  // namespace grc

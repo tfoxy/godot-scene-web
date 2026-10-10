@@ -359,7 +359,15 @@
     "canvas_item_set_default_texture_filter",
     "canvas_item_set_default_texture_repeat",
     "canvas_item_add_lcd_texture_rect_region",
-    "canvas_item_add_clip_ignore"
+    "canvas_item_add_clip_ignore",
+    "mesh_create_from_surfaces",
+    "mesh_surface_update_skin_region",
+    "mesh_surface_update_index_region",
+    "mesh_surface_remove",
+    "canvas_item_add_multiline",
+    "canvas_item_add_particles",
+    "canvas_item_add_animation_slice",
+    "canvas_item_attach_skeleton"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",
@@ -409,6 +417,14 @@
     "canvas_item_set_default_texture_filter",
     "canvas_item_set_default_texture_repeat",
     "canvas_item_add_lcd_texture_rect_region",
-    "canvas_item_add_clip_ignore"
+    "canvas_item_add_clip_ignore",
+    "mesh_create_from_surfaces",
+    "mesh_surface_update_skin_region",
+    "mesh_surface_update_index_region",
+    "mesh_surface_remove",
+    "canvas_item_add_multiline",
+    "canvas_item_add_particles",
+    "canvas_item_add_animation_slice",
+    "canvas_item_attach_skeleton"
   ]
 }

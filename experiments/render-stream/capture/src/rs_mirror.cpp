@@ -564,6 +564,16 @@ void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64
   }
 }
 
+void Mirror::attach_skeleton(std::uint64_t rid, std::uint64_t skeleton, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_attach_skeleton", frame)) {
+    return;
+  }
+  if (Item *item = item_for(rid, "canvas_item_attach_skeleton", frame)) {
+    item->unsupported_skeleton = skeleton != 0;
+  }
+}
+
 void Mirror::clear(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (dropped("canvas_item_clear", frame)) {
@@ -1355,6 +1365,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     }
     if (item.unsupported_state) {
       add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnsupportedState);
+    }
+    if (item.unsupported_skeleton) {
+      add_item_entry(state.id, "canvas_item_attach_skeleton", UnsupportedReason::UnsupportedState);
     }
     find_ties(state.children, &item_level);
   }

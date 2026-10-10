@@ -97,6 +97,22 @@ const MESH_CUSTOM_AABB: AABB = AABB(Vector3(20.25, 310.5, 0), Vector3(90, 39.75,
 # canvas_item_add_multimesh: one 2D instance of the same mesh, shifted right.
 const MULTIMESH_OFFSET: Vector2 = Vector2(260.5, 0)
 
+# Calibrator-7 hooks (gate5-design.md Q2), closing two previously-silent holes.
+# draw_dashed_line with a dash shorter than the segment goes through canvas_item_add_multiline,
+# not canvas_item_add_line (scene/main/canvas_item.cpp:697-731); alpha 0 so it changes no pixel
+# wherever it lands.
+const DASH_FROM: Vector2 = Vector2(500.5, 40.25)
+const DASH_TO: Vector2 = Vector2(540.5, 40.25)
+const DASH_COLOR: Color = Color(1, 1, 1, 0)
+const DASH_LENGTH: float = 8.0
+# canvas_item_add_animation_slice is a command, not a draw, with a time-dependent "skipping"
+# state that reaches every later command on the same item (drivers/gles3/rasterizer_canvas_gles3.cpp:1276-1282)
+# -- it is called last in _draw(), after every other command, so that state never matters.
+const ANIM_LENGTH: float = 1.0
+const ANIM_SLICE_BEGIN: float = 0.0
+const ANIM_SLICE_END: float = 1.0
+const ANIM_OFFSET: float = 0.0
+
 const TINT_SHADER_A: String = "shader_type canvas_item;\nuniform vec4 tint = vec4(1.0);\nvoid fragment() { COLOR *= tint; }\n"
 const TINT_SHADER_B: String = "shader_type canvas_item;\nuniform vec4 tint = vec4(1.0);\nvoid fragment() { COLOR = COLOR * tint; }\n"
 const PANEL_MODULATE: Color = Color(0.875, 1, 1, 1)
@@ -178,6 +194,7 @@ func _ready() -> void:
 	late.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	_exercise_texture_hooks()
 	_exercise_clip_ignore_hook()
+	_exercise_calibrator7_hooks()
 
 	# An empty CanvasLayer created after arming: canvas_create in its constructor, then
 	# viewport_attach_canvas and viewport_set_canvas_transform when it enters the tree. It has no
@@ -243,6 +260,59 @@ func _exercise_clip_ignore_hook() -> void:
 	RenderingServer.free_rid(orphan_item)
 
 
+## Calibrator-7 hooks that are not scene draws (gate5-design.md Q2), on an orphan item (never
+## drawn, so armed/unarmed pixels stay identical, as the calibrator-5/6 hooks above): particles
+## and a null skeleton attach; a loaded-mesh path (mesh_create_from_surfaces, rsd.h:332-356, the
+## only place a loaded ArrayMesh's surfaces are seen); and a mesh with bones, weights and an index
+## buffer to exercise the new skin/index region updates and mesh_surface_remove.
+func _exercise_calibrator7_hooks() -> void:
+	var orphan_item: RID = RenderingServer.canvas_item_create()
+	var particles_rid: RID = RenderingServer.particles_create()
+	RenderingServer.canvas_item_add_particles(orphan_item, particles_rid, RID())
+	RenderingServer.canvas_item_attach_skeleton(orphan_item, RID())
+	RenderingServer.free_rid(orphan_item)
+	RenderingServer.free_rid(particles_rid)
+
+	var loaded_surface: Dictionary = {
+		"primitive": Mesh.PRIMITIVE_TRIANGLES,
+		"format": (1 << 0) | (1 << 25),  # ARRAY_FORMAT_VERTEX | ARRAY_FLAG_USE_2D_VERTICES
+		"vertex_data": PackedFloat32Array([0.0, 0.0, 10.0, 0.0, 0.0, 10.0]).to_byte_array(),
+		"vertex_count": 3,
+		"aabb": AABB(Vector3(0, 0, 0), Vector3(10, 10, 0)),
+	}
+	var loaded_surfaces: Array[Dictionary] = [loaded_surface]
+	var loaded_mesh: RID = RenderingServer.mesh_create_from_surfaces(loaded_surfaces)
+	RenderingServer.free_rid(loaded_mesh)
+
+	var skin_bytes: PackedByteArray = PackedByteArray()
+	skin_bytes.resize(48)  # 3 vertices * (4 bone u16 + 4 weight u16)
+	var index_bytes: PackedByteArray = PackedByteArray()
+	for i: int in [0, 1, 2]:
+		index_bytes.append(i)
+		index_bytes.append(0)
+	var skin_surface: Dictionary = {
+		"primitive": Mesh.PRIMITIVE_TRIANGLES,
+		# ARRAY_FORMAT_VERTEX | ARRAY_FORMAT_BONES | ARRAY_FORMAT_WEIGHTS | ARRAY_FORMAT_INDEX |
+		# ARRAY_FLAG_USE_2D_VERTICES
+		"format": (1 << 0) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 25),
+		"vertex_data": PackedFloat32Array([0.0, 0.0, 10.0, 0.0, 0.0, 10.0]).to_byte_array(),
+		"vertex_count": 3,
+		"skin_data": skin_bytes,
+		"index_data": index_bytes,
+		"index_count": 3,
+		"aabb": AABB(Vector3(0, 0, 0), Vector3(10, 10, 0)),
+	}
+	var skin_mesh: RID = RenderingServer.mesh_create()
+	RenderingServer.mesh_add_surface(skin_mesh, skin_surface)
+	RenderingServer.mesh_surface_update_skin_region(skin_mesh, 0, 0, skin_bytes)
+	var updated_index: PackedByteArray = PackedByteArray()
+	updated_index.append(1)
+	updated_index.append(0)
+	RenderingServer.mesh_surface_update_index_region(skin_mesh, 0, 0, updated_index)
+	RenderingServer.mesh_surface_remove(skin_mesh, 0)
+	RenderingServer.free_rid(skin_mesh)
+
+
 func _process(_delta: float) -> void:
 	frame_count += 1
 
@@ -281,9 +351,13 @@ func _draw() -> void:
 	RenderingServer.canvas_item_add_polyline(item, _polyline_points, _polyline_colors, POLYLINE_WIDTH)
 	RenderingServer.canvas_item_add_mesh(item, _mesh.get_rid(), Transform2D(Vector2(1, 0), Vector2(0, 1), MESH_ORIGIN), MESH_MODULATE)
 	RenderingServer.canvas_item_add_multimesh(item, _multimesh.get_rid())
+	draw_dashed_line(DASH_FROM, DASH_TO, DASH_COLOR, -1.0, DASH_LENGTH)
 	# Last: everything after an add_set_transform is drawn in its space.
 	RenderingServer.canvas_item_add_set_transform(item, Transform2D(Vector2(1, 0), Vector2(0, 1), SET_TRANSFORM_ORIGIN))
 	RenderingServer.canvas_item_add_circle(item, CIRCLE_POSITION, CIRCLE_RADIUS, CIRCLE_COLOR)
+	# Last of all: its time-dependent "skipping" state (see the constants above) must never reach
+	# another command.
+	draw_animation_slice(ANIM_LENGTH, ANIM_SLICE_BEGIN, ANIM_SLICE_END, ANIM_OFFSET)
 
 
 ## Rendered legs only: a truly headless run has no draw/present path to wait on (frame_post_draw

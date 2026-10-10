@@ -69,11 +69,12 @@ It answers one question before any protocol work starts:
 > damage a shipped game?
 
 **Answer: yes, measured.** A GDExtension copies the `RenderingServer` singleton's
-vtable into the heap, replaces up to 56 slots with pass-through recording hooks
+vtable into the heap, replaces up to 64 slots with pass-through recording hooks
 (the eight gate −1 hooks, 23 draw-path hooks added for gate −0.25, 11 canvas
 and viewport state hooks added for gate 0, 2 more draw-order hooks added for
-gate 1 G1e, 11 texture hooks added for gate 2 G2a, and one `clip_ignore` hook
-added for gate 3 G3d), and publishes the copy with one aligned pointer store into the
+gate 1 G1e, 11 texture hooks added for gate 2 G2a, one `clip_ignore` hook
+added for gate 3 G3d, and eight geometry/mesh hooks added for gate 5 G5a),
+and publishes the copy with one aligned pointer store into the
 singleton object's first word. Native `Control` drawing, the `Label` glyph path and direct
 `RenderingServer` calls from GDScript are all intercepted; the engine's own call
 sites are **not** devirtualised away by the official build's LTO. Disarming
@@ -267,7 +268,7 @@ That record may come from a sibling calibrating another binary with whatever
   omission is recorded in three places:
   - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
     omitted hooks, for example:
-    `8 of 56 hooks named by the record; omitted (record predates them): …`.
+    `8 of 64 hooks named by the record; omitted (record predates them): …`.
   - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
     is `null` rather than `0`. A `null` means "not installed", which is
     different from "never called".
@@ -2993,6 +2994,120 @@ golden-2/3 resolved-state check, not just golden-4's (recorded in
   mirror. G5c's mesh oracle and G5a's calibrator 7 are the first contact with a live mesh.
 - Pixel exactness, budgets, or any rendering at all: /4 carries commands and resources; nothing
   paints yet.
+
+## Gate 5a result (2026-10-10)
+
+G5a ([protocol/gate5-design.md](protocol/gate5-design.md) "G5a") passes, rebased onto G4e2 (MSDF
+on render-stream/3), G5b (the gate 5 immediate-geometry fixture) and G5w (render-stream/4 codecs)
+in turn: `build-capture.sh` **13/13** ctests (the new `rs4_codec` included), `scripts/calibrate.sh
+--check` clean, gate −1 **28/28** with **64 hooks** planned and none omitted
+(`gate-minus1/g5a-final/result.json`), gate 0 **19/19** (`gate0/20261010T133158Z`), gate 1
+**65/65** (`gate1/20261010T085201Z`), gate 2 **85/85** (`gate2/20261010T131658Z`; one earlier
+attempt scored 83/85 on `pins-bounded`/`obsolete-retired` under `live-animate`'s known
+load-timing flake, clean on every rerun since — not a regression), gate 3 **56/56**
+(`gate3/20261010T134140Z`), gate 4 **185/185** with every landed group g4a–g4f, g4e (MSDF)
+included (`gate4/20261010T135125Z`) and gate 5 `--legs g5b` **15/15**
+(`gate5/20261010T133647Z`, confirming the census now reports `add_multiline` instead of silently
+dropping it, as G5b's own "What G5b does not prove" predicted it would once calibrator 7 landed).
+Every pure self-test (checker, gate 0–4, gate 4d, gate 5, rs0–rs2, rs-ws) and every
+`make_golden.py`/`make_expected.py --check` (`golden/`, `golden-1/`, `golden-2/`, `golden-3/`,
+`golden-4/`, every gate 2–5 fixture) stayed clean throughout.
+
+What landed:
+
+- **Calibrator 7, eight new optional slots** (gate5-design.md D2, Q2), confirmed by
+  `calibrate.py`/`scripts/calibrate.sh` against the pinned binary exactly as predicted:
+  `canvas_item_add_multiline` 464, `canvas_item_add_particles` 477,
+  `canvas_item_add_animation_slice` 480, `canvas_item_attach_skeleton` 485,
+  `mesh_create_from_surfaces` 70, `mesh_surface_update_skin_region` 88,
+  `mesh_surface_update_index_region` 89 and `mesh_surface_remove` 99. The committed record now
+  names 65 slots (64 hooks plus the `get_default_clear_color` probe). `canvas_item_add_multiline`
+  and `mesh_create_from_surfaces` close the two silent holes the contract predicted: before this,
+  `draw_dashed_line`'s dashes and a loaded `ArrayMesh`'s surfaces vanished from every capture
+  without a trace.
+- **`abi.h`'s `SurfaceDataPrefix` grows to the full 240-byte `SurfaceData`**: `Transform3D` (48
+  bytes) and `Vector4` (16 bytes) stand-ins, `lods`/`bone_aabbs` reproduced as `Vector<uint8_t>`
+  (a `Vector<T>`'s own layout never depends on `T`), then `mesh_to_skeleton_xform`,
+  `blend_shape_data`, `uv_scale` and `material`. Every offset (120, 136, 152, 200, 216, 232, 240)
+  matches the contract's hand-derived prediction exactly; `abi_decode_test` pins all of them plus a
+  round-trip decode of `blend_shape_data`/`uv_scale`/`material`.
+- **`rs_mesh_payload.{h,cpp}`**: the `render-stream-mesh/1` (GRM1) encoder, D7's format
+  classification (`classify_surface`: 2D positions, no compressed attributes, no `NORMAL`/
+  `TANGENT`/`TEX_UV2`/custom channels, blend-shape data refused first and independently), and the
+  primitive name table. `rs_mesh_payload_test` pins one literal payload (header hex, length 243,
+  SHA-256) derived independently with Python, plus every refusal reason.
+- **Whole-surface copy at the hook (D6)**: `mesh_add_surface`, `mesh_create_from_surfaces` and the
+  four region updates now classify, copy and hash the complete surface, timed the same way
+  `copy_payload` times a texture (`copy_ns`/`hash_ns` split at the encode/hash boundary). Because a
+  region update only ever carries the changed bytes, `hooks.cpp` keeps its own retained-buffer
+  cache (`g_mesh_buffers`, one entry per mesh RID the hook has seen, with each surface's AABB and
+  `uv_scale` fixed at creation per D8) so a later update can re-encode and re-hash the whole
+  surface; `mesh_surface_update_*_region` classifies each call `applied` (the common case, or
+  "version + 1 only" on an already-`unsupported` surface, Q3b), `rejected` (out of bounds or
+  empty, as GLES3 would refuse it) or `unknown` (an unseen mesh or surface index), gated behind the
+  omit-op sabotage's hook exactly as a texture update is.
+- **The mesh hook log** (`evidence/resources.jsonl`, `kind:"mesh"`, gate5-design.md Q3d): one line
+  per mesh call, with its own per-session id counter from 1 (no mirror mesh table yet, as gate 2's
+  log worked before G2b2) and eight new trailing columns (`surface`, `buffer`, `offset`, `bytes`,
+  `primitive`, `vertex_count`, `index_count`, `outcome`), null on every non-mesh line; `format`
+  shares its column with a texture line's format name (the raw `ArrayFormat` bitfield on a mesh
+  line, a quoted name on a texture line — never both on the same line).
+- **`rs_mirror`**: `canvas_item_add_multiline`/`_particles` go through the existing generic
+  `add_unsupported` tap (zero new mirror code, clip_ignore's G3d precedent); `attach_skeleton`
+  gets its own small `unsupported_skeleton` item field and `Mirror::attach_skeleton`, reported in
+  `Snapshot::unsupported` exactly like a non-null material, under its own op name, never bumping
+  `content_version`. A null skeleton (Polygon2D's per-draw call, and the spike's own exercise) is
+  free.
+- **Feature-list amendment**: `observed_unsupported_ops` gains `canvas_item_add_animation_slice`,
+  `canvas_item_add_multiline`, `canvas_item_add_particles` and `canvas_item_attach_skeleton`, in
+  `capture/src/rs_publish.cpp` (`gate2_features`) and its TypeScript mirror
+  (`scripts/lib/gate0-checks.ts` `RS2_FEATURES`); `protocol/render-stream-3.md`'s "Features"
+  section gets the amendment note. `golden-2/`, `golden-3/` and `rs_publish_test`'s golden-session
+  fixtures keep their own frozen, pre-G5a copies of the list (`make_golden.py --check` stayed
+  clean both before and after, unaffected since it never calls the live function).
+- **`fixtures/spike/`** exercises every new hook (Q2's own list): a `draw_dashed_line` longer than
+  its dash (alpha 0, so it never changes a pixel) to force `canvas_item_add_multiline` instead of
+  `canvas_item_add_line`; a `draw_animation_slice` called *last* in `_draw()`, after every other
+  command, because its "skipping" state is time-dependent
+  (`drivers/gles3/rasterizer_canvas_gles3.cpp:1276-1282`) and reaches every later command on the
+  same item; an orphan item's `particles_create()` particles and a null skeleton attach; a
+  `mesh_create_from_surfaces` of one triangle; and a mesh with bones, weights and an index buffer
+  exercising the new skin/index region updates and `mesh_surface_remove`.
+
+### Findings
+
+- **The resources.jsonl schema check is a shared, ordered key list.** `scripts/lib/gate2-checks.ts`
+  `RESOURCE_LINE_KEYS` enumerates every column of a `render-stream-resource-log/1` line, in order,
+  and gates 0, 2, 3 and 4 all import it. The first full run after adding the eight mesh trailing
+  columns failed six checks across gate 2 (`census`, `hook-bytes-exact`, `worker-thread-create`,
+  `replace-retires-temp`, `viewport-defaults`, `unsupported-variant`) with the same root cause:
+  *every* `resources.jsonl` line, mesh or not, now has eight more columns, so the shared key-order
+  validator rejected line 1 of every capture before any mesh-specific check even ran. Fixing
+  `RESOURCE_LINE_KEYS` (and the `ResourceLine` TypeScript type, including widening `format` to
+  `string | number | null`) fixed all six at once; a one-off build-capture.sh/gate −1 pass alone
+  would never have caught this, because gate −1 does not read `resources.jsonl` at all.
+- **A stream needs `GRC_RESOURCE_STORE_DIR`, not just `GRC_STREAM_OUT`.** Verifying the spike's
+  mesh hashes by hand (gate −1's own runner never opens a stream) first refused with
+  `resource-store-missing`; both env vars are required before `resources.jsonl` exists.
+- **The GRM1 hashes were cross-checked independently.** A headless run of `fixtures/spike/` with a
+  stream enabled produced `mesh_add_surface`/`mesh_surface_update_{skin,index}_region` lines whose
+  hashes were recomputed byte-for-byte in a standalone Python script (magic, meta JSON, geometry
+  block, buffers) from the same literals `spike.gd` passes: all four matched exactly, including the
+  skin-region update that rewrites identical bytes (hash unchanged) and the index-region update
+  that changes two bytes (hash changed, recomputed correctly). Copy/hash cost on these tiny
+  surfaces (24–48 byte buffers, n=125): copy median 1220 ns (530–5070 ns), hash median 1870 ns
+  (1290–3570 ns).
+
+### What G5a does not prove
+
+- Any wire support: every new op and the mesh table stay off `render-stream/2` and `/3` entirely
+  (G5w writes `/4`, G5d switches the runners and receiver).
+- A resident mirror mesh table, tombstones or budget-wide `GRC_RESOURCE_BUDGET_BYTES` enforcement
+  across a whole session: the retained-buffer cache here is the hook's own, scoped to re-hashing
+  after a region update, not the mirror's eventual mesh table (G5e); only the per-payload
+  `GRC_RESOURCE_MAX_PAYLOAD_BYTES` cap is checked, exactly as for a texture.
+- That a receiver, or anything downstream, can reproduce a mesh or the new immediate ops: nothing
+  here is on any wire yet.
 
 ## Scratch verification (2026-10-08)
 

@@ -74,7 +74,15 @@
     "canvas_item_set_default_texture_filter": 448,
     "canvas_item_set_default_texture_repeat": 449,
     "canvas_item_add_lcd_texture_rect_region": 470,
-    "canvas_item_add_clip_ignore": 479
+    "canvas_item_add_clip_ignore": 479,
+    "canvas_item_add_multiline": 464,
+    "canvas_item_add_particles": 477,
+    "canvas_item_add_animation_slice": 480,
+    "canvas_item_attach_skeleton": 485,
+    "mesh_create_from_surfaces": 70,
+    "mesh_surface_update_skin_region": 88,
+    "mesh_surface_update_index_region": 89,
+    "mesh_surface_remove": 99
   },
   "anchors": {
     "_global_shader_parameter_get_list": 23,
@@ -96,7 +104,7 @@
     "mesh_add_surface_from_planes": 575
   },
   "calibrator": {
-    "version": "6",
+    "version": "7",
     "header_sha256": "3e01fb10af9abb6955314abacd65d45b697a8ea57c7bf651e59c29e8a399b9d7"
   }
 }

@@ -76,19 +76,23 @@ export const STORE_DIR_NAME = "store";
 /** Every hook the committed calibration record installs, sorted by byte value
  * (render-stream-0.md, golden session): calibrator 3's 42, plus calibrator 4's
  * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent` (gate1-design.md
- * G1e), calibrator 5's eleven texture hooks (gate2-design.md Q2) and calibrator 6's
- * `canvas_item_add_clip_ignore` (gate3-design.md Q2) -- the record is shared by gate -1, gate 0,
- * gate 1, gate 2 and gate 3, so every one of them plans all 56. */
+ * G1e), calibrator 5's eleven texture hooks (gate2-design.md Q2), calibrator 6's
+ * `canvas_item_add_clip_ignore` (gate3-design.md Q2) and calibrator 7's eight hooks
+ * (gate5-design.md Q2) -- the record is shared by gate -1, gate 0, gate 1, gate 2, gate 3 and
+ * gate 4, so every one of them plans all 64. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
+  "canvas_item_add_animation_slice",
   "canvas_item_add_circle",
   "canvas_item_add_clip_ignore",
   "canvas_item_add_lcd_texture_rect_region",
   "canvas_item_add_line",
   "canvas_item_add_mesh",
   "canvas_item_add_msdf_texture_rect_region",
+  "canvas_item_add_multiline",
   "canvas_item_add_multimesh",
   "canvas_item_add_nine_patch",
+  "canvas_item_add_particles",
   "canvas_item_add_polygon",
   "canvas_item_add_polyline",
   "canvas_item_add_primitive",
@@ -97,6 +101,7 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_item_add_texture_rect",
   "canvas_item_add_texture_rect_region",
   "canvas_item_add_triangle_array",
+  "canvas_item_attach_skeleton",
   "canvas_item_clear",
   "canvas_item_create",
   "canvas_item_set_clip",
@@ -123,8 +128,12 @@ export const GATE0_HOOKS: readonly string[] = [
   "mesh_add_surface",
   "mesh_clear",
   "mesh_create",
+  "mesh_create_from_surfaces",
   "mesh_set_custom_aabb",
+  "mesh_surface_remove",
   "mesh_surface_update_attribute_region",
+  "mesh_surface_update_index_region",
+  "mesh_surface_update_skin_region",
   "mesh_surface_update_vertex_region",
   "shader_create_from_code",
   "shader_set_code",
@@ -152,7 +161,9 @@ export const GATE0_HOOKS: readonly string[] = [
  * Since G4e2 every capture speaks render-stream/3 (render-stream-3.md "Features"): `ops` gains
  * `add_msdf_texture_rect_region` and `observed_unsupported_ops` loses
  * `canvas_item_add_msdf_texture_rect_region`. The name keeps its /2 spelling, as the rs2 modules
- * do (gate4-design.md G4e1). */
+ * do (gate4-design.md G4e1). Since G5a (calibrator 7, gate5-design.md D2):
+ * `observed_unsupported_ops` also gains `canvas_item_add_animation_slice`,
+ * `canvas_item_add_multiline`, `canvas_item_add_particles` and `canvas_item_attach_skeleton`. */
 export const RS2_FEATURES = {
   ops: [
     "add_msdf_texture_rect_region",
@@ -182,18 +193,22 @@ export const RS2_FEATURES = {
     { resource: "canvas_texture", reason: "canvas-texture-headless" },
   ],
   observed_unsupported_ops: [
+    "canvas_item_add_animation_slice",
     "canvas_item_add_circle",
     "canvas_item_add_clip_ignore",
     "canvas_item_add_lcd_texture_rect_region",
     "canvas_item_add_line",
     "canvas_item_add_mesh",
+    "canvas_item_add_multiline",
     "canvas_item_add_multimesh",
     "canvas_item_add_nine_patch",
+    "canvas_item_add_particles",
     "canvas_item_add_polygon",
     "canvas_item_add_polyline",
     "canvas_item_add_primitive",
     "canvas_item_add_set_transform",
     "canvas_item_add_triangle_array",
+    "canvas_item_attach_skeleton",
     "canvas_item_set_material",
   ],
   unobserved: [
