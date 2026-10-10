@@ -738,6 +738,54 @@ budget and transparency checks.
 **Pass criteria**: `--legs g55b,g55c` green; "Gate 5.5c result" with the census as measured
 (including whether canvas `instance uniform` rendered, Q1c).
 
+**As built (G55c phase 1, 2026-10-10; before G55a's log).** Every prediction `make_expected.py`
+makes held on the first engine run: images on every pixel, the oracle's 320 parameter values,
+and every shader's code as the reference holds it. Amendments:
+
+1. **Step-0 counts.** The fixture has 7 `ShaderMaterial`s (`MT`, `MP`, `MI`, `MY`, `MPh`, `MR`,
+   `MS`) on 8 items (`I1` and `I2` share `MI`). Frame 1 therefore has 6 `shader_create_from_code`,
+   1 `shader_set_default_texture_parameter`, **7** `material_create_from_shader`, 11 creation
+   parameters plus `PH`'s first `phase`, 1 instance parameter and **8** `canvas_item_set_material`.
+   The step-0 row above counted 6 and 7.
+2. **`TI`'s colours.** With `gain` 0.5, the contract's `tint` values give .1 and .3 components,
+   off the 0.2 grid that D13's exact class needs. As built, `tint` is (.4,.8,.4,1) and
+   (.8,.4,0,1) at step 1.
+3. **`PH`** has no creation parameter. `_process` writes `phase` = frame from frame 1, so
+   `material_set_param` is 417 over a 400-frame capture.
+4. **Canvas `instance uniform` renders in Compatibility 4.5.1** (Q1c's prediction). The unset
+   `I2` reads back as `Vector4(1,1,1,1)`, not a `Color`: `constant_value_to_variant` makes a
+   `vec4` without a colour hint a `Vector4` (`shader_language.cpp:4440-4463`), and
+   `instance_uniforms.cpp:139-170` stores it once the item's materials are processed. No capture
+   call carries that value, so G55e's `param-parity` must exempt an instance parameter the script
+   never set.
+5. **The server's code is not the file's text.** Besides the include markers, the preprocessor's
+   tokenizer collapses every run of spaces and tabs to one space (`shader_preprocessor.cpp:192-210`).
+   The directive line's newline is re-emitted after the `@@<` line (`:102-121`, `:766-768`).
+   `make_expected.py` ports this and predicts every GRP1 hash. The oracle agreed on all 170
+   shader-steps, so G55a's hook copy has a predicted target, not only the oracle.
+6. **The refused regions are exact.** `TIME` and `texture_sdf` enter the colour as
+   `0.0 * step(0.0, x)`, which is deterministic even for a NaN SDF. The screen texture inverts the
+   clear colour. `g_tint` comes from the project's `shader_globals`. The spatial material draws as
+   no material. `reference-refused` matches its raster on every pixel, so G55e's
+   receiver-without-material has an exact reference.
+7. **The oracle also runs on `reference-refused`.** It writes a GRP1 library
+   (`shader-library/sha256/<hash>.grp`) next to `materials.jsonl`, the library G55e's `params` leg
+   uses. Its Variant spelling is the snake-case Godot type name (`packed_float32_array`,
+   `vector2i`, `rid` as `{"tex":<fixture name>}`).
+8. **Q6c's sabotage sets, recomputed by the model.**
+   - `freeze-frame`: `RM` is {3, 4, 9}, because `MR2` under `tint_b` draws frame 10's colour
+     again.
+   - `ignore-material`: `PA` is {6..9}, because `pal` with its default texture draws exactly the
+     `TEX16` the item draws without a material. `I2` alone would never mismatch before step 2.
+   - `stale-param`: `PH` is every step, because its first applied `phase` is frame 1's.
+
+   The sets are in `expected.json` `predictions` for G55e.
+9. **Evidence** is under `<out>/shader/` and `<out>/shader-refused/` (the capture checks read
+   `<dir>/capture`). `capture-refused` and `capture-shader` both print no shader error.
+   `material-census`, `shader-hook-hash-parity` and the refused `uses` check wait for G55a's
+   shader and material log (phase 2). Their predictions are already in `expected.json` `census`,
+   `shader_codes` and `shader_scan`.
+
 ---
 
 ### G55w — render-stream/5 codecs, GRP1, goldens (sonnet)

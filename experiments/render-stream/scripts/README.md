@@ -1445,3 +1445,81 @@ fails it on a missing line, a version, an extra mesh, a line off the main thread
 update; replays a hand hook log (adds, an update, a remove, a clear, a free, a single-surface
 `create_from_surfaces`); and runs the oracle, parity, draw-census and capture checks on synthetic
 values, failing each on one field, hash, flag or command.
+
+## Gate 5.5 files
+
+```bash
+mise exec -- pnpm render-stream:gate55 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g55c]
+```
+
+- `run-gate55.sh`: the orchestrator (`run_g55c`, `run_reference` with `REFERENCE_ARMED`,
+  `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MATERIAL_ORACLE`). Groups g55b, g55d,
+  g55e and g55f are known but have not landed, so asking for them exits 2. The captures write both
+  sinks under gate 2's `.rs2` names whatever wire version `main` speaks.
+- `check-gate55.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate55-report/1`:
+  gate 5's shape with `materials` (per fixture: the material `counters.json` counts, the oracle's
+  shader hash per step and the capture's `content_version`s per item), `budgets` and `freshness`).
+- `lib/gate55c-checks.ts`: the g55c checks (fixtures/gate55-shader): `expected.json`'s types, the
+  refused variant's view, the oracle checks, the capture typing, `runGate55c`. Image, presence,
+  freshness and leg comparisons are gate 5's (`lib/gate5-checks.ts`, `lib/geometry-raster.ts`).
+- `test/self-test-gate55c.ts`: below.
+
+## Gate 5.5 legs and evidence under `--out`
+
+| Leg                       | Group | Directory                    | Runs                                                                                              |
+| ------------------------- | ----- | ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `import-shader`           | g55c  | `shader/import/fixture/`     | the mise editor's `--import` of `fixtures/gate55-shader`                                          |
+| `capture-shader`          | g55c  | `shader/capture/`            | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps/fd |
+| `capture-refused`         | g55c  | `shader-refused/capture/`    | the same with `RS_FIXTURE_VARIANT=refused`                                                        |
+| `reference-shader`        | g55c  | `shader/reference/`          | rendered in gamescope, extension absent, material oracle on (`RS_FIXTURE_MATERIAL_LOG`): `shots/step-0..9.png`, `steps.jsonl`, `materials.jsonl`, `shader-library/sha256/*.grp` |
+| `reference-shader-repeat` | g55c  | `shader/reference-repeat/`   | the same again                                                                                    |
+| `reference-shader-armed`  | g55c  | `shader/reference-armed/`    | rendered, extension armed with `GRC_STREAM_OUT` and a store, oracle off                           |
+| `reference-refused`       | g55c  | `shader-refused/reference/`  | rendered, variant `refused`, oracle on                                                            |
+
+## Gate 5.5 criteria (g55c)
+
+`shader-expected-self-consistent` and `refused-expected-self-consistent` re-derive in TypeScript
+what `make_expected.py` asserts: grid colours at alpha 1, disjoint regions with nothing synthesized
+outside them, `fresh` against the raster, only the marker redrawn after step 0, the oracle views in
+shader and material order with their declared parameters and statuses moving absent → live →
+freed, and `PH`'s phase the settle frame. The capture checks are gate 3's under `shader-` and
+`refused-` names (`shader-capture-armed`, `shader-headless-no-gpu`, `shader-recording-decodes`,
+`shader-patch-resolves-to-full`, `shader-step-alignment`, `shader-no-draw-index-ties`,
+`refused-capture-armed`, `refused-recording-decodes`, `refused-step-alignment`). `shader-counters`
+requires both captures' `counters.json` to equal `expected.json` `counters`: the four material calls
+the record hooks before calibrator 8, with `PH`'s `phase` on every frame, the draws and three
+textures. `capture-shader-log-clean` requires neither capture host to print `SHADER ERROR` or
+`Shader compilation failed`. `oracle-agrees` requires every oracle log (both references and
+`reference-refused`) to report each shader's and material's status and every declared parameter
+and instance parameter with `expected.json`'s Variant type and value (float32 components widened,
+compared exactly), and the two reference logs to be byte-identical. `shader-code-model` requires
+each live shader's GRP1 hash, size and include markers, as the oracle reads them through
+`shader_get_code`, to equal `make_expected.py`'s preprocessor port. The image checks are gate 5's
+on the shader fixture (`shader-expected-image-reference`, `shader-presence-reference`,
+`shader-freshness-reference` with `TI` fresh at 1, 3 and 4 and its `content_version` constant,
+`shader-reference-repeat-budget`, `shader-armed-transparent`) and on the refused reference
+(`refused-expected-image-reference`, every region exact). `leg-class-capture-shader` and
+`leg-class-capture-refused` require class `unsupported`, `canvas_item_set_material`
+(`unsupported-state`) as the only unsupported op, on exactly the material items at every settle
+frame, and every item's `content_version` constant but the marker's. `shader-support-legs-exit`
+requires the import and rendered legs to exit 0.
+
+## Gate 5.5 self-test
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55c.ts
+python3 experiments/render-stream/fixtures/gate55-shader/make_expected.py --check
+```
+
+`self-test-gate55c.ts` runs both self-consistency checks on the committed `expected.json` and
+fails them on an off-grid colour, a wrong `fresh`, overlapping regions, a freed shader coming back
+and a phase off its settle frame. It runs `oracle-agrees` and `shader-code-model` on oracle lines
+made from `expected.json`, then fails them on a parameter typed `int`, a colour written as a
+double instead of float32, `I2`'s default typed `color`, `MR` not freed, a frame off, the repeat's
+bytes differing, `tint`'s hash unchanged at step 3 and include markers on `pal`. The counter,
+stdout, step-log and capture-typing checks run on synthetic values, failing on a short count, an
+unexpected draw, a compile error, a missing step, class `success`, a redrawn item, an untyped item
+and another reason.

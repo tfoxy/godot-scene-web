@@ -39,6 +39,7 @@
     "render-stream:gate3": "bash experiments/render-stream/scripts/run-gate3.sh",
     "render-stream:gate4": "bash experiments/render-stream/scripts/run-gate4.sh",
     "render-stream:gate5": "bash experiments/render-stream/scripts/run-gate5.sh",
+    "render-stream:gate55": "bash experiments/render-stream/scripts/run-gate55.sh",
     "typecheck": "pnpm -r --filter './packages/**' --filter './apps/**' run typecheck"
   },
   "devDependencies": {

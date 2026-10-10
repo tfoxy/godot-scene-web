@@ -3176,6 +3176,66 @@ RID. Median hook cost per change (tiny surfaces): copy 0.8–5.9 µs, hash 1.4�
 - Multi-surface `mesh_create_from_surfaces` hashes in the log (still unnamed; one-surface only).
 - Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
 
+## Gate 5.5c result (2026-10-10)
+
+G55c phase 1 ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55c", "As built (G55c
+phase 1)") passes. `pnpm render-stream:gate55 -- --legs g55c` is **24/24** in
+`artifacts/render-stream/gate55/g55c-run1/`, on the wire `main` speaks. The same build passed
+`build-capture.sh` (13/13 ctests), gate −1 28/28 with 64 hooks (`gate-minus1/g55c-run1/`),
+`self-test-gate55c.ts` 35/35 and `make_expected.py --check`. No capture, wire or receiver file
+changed.
+
+What landed:
+
+- the `ShaderMaterial` fixture (`fixtures/gate55-shader/`, with synthetic shaders only);
+- `make_expected.py`, which holds the calls with exact Variant values, a port of the shader
+  preprocessor, a Python twin of every `fragment()`, freshness, the oracle's view, a per-frame
+  census and G55e's sabotage sets;
+- the material oracle (`material_oracle.gd`);
+- `run-gate55.sh`, `check-gate55.ts` and `lib/gate55c-checks.ts`, group g55c.
+
+Images (under the run directory): `shader/reference/shots/step-{0..9}.png`, the same under
+`shader/reference-repeat/` and `shader/reference-armed/`, and
+`shader-refused/reference/shots/step-{0..9}.png`. Every shot equals the model on every pixel
+(2 304 000 per leg), refused variant included. Repeat and armed are byte-identical to the
+reference, so the budget is 0. Fresh regions per step are exactly as predicted:
+
+- `TI` at 1, 3 and 4, with every material item's `content_version` constant over all 400
+  capture frames (fresh without redraw);
+- `IN` at 2, `RM` at 3 and 5, `PA` at 6, `TY` at 7, `SH` at 8;
+- `PH` at every step.
+
+Measured on the reference by the oracle:
+
+- All 320 parameter values (and 160 on `reference-refused`) equal the model's type and value,
+  float32 components exact. Both reference logs are byte-identical.
+- Every shader's `shader_get_code` GRP1 hash equals the model's: 170 shader-steps, `tint`
+  changing at 3 only, include markers on `tint` only.
+
+`counters.json` on the capture holds 7 `shader_create_from_code`, 1 `shader_set_code`, 417
+`material_set_param` (400 of them `PH`'s) and 9 `canvas_item_set_material`. Both captures
+classify `unsupported`: `canvas_item_set_material` / `unsupported-state` on exactly the 8 (refused:
+13) material items. Neither prints a shader error.
+
+### Findings
+
+- **Canvas `instance uniform` renders in Compatibility 4.5.1.** An unset one reads back as
+  `Vector4`, the `vec4` default without a colour hint, and no capture call carries it.
+- **The server's shader code is not the file's text.** The preprocessor collapses every run of
+  spaces and tabs to one space as well as inserting `@@>`/`@@<` include markers. The port of it
+  predicted every hash.
+- **`TIME`, screen texture, SDF and global uniforms can be made pixel-exact on the reference**
+  (`0.0 * step(0.0, x)`), so G55e's refused receiver has an exact reference.
+- **The contract's step-0 row miscounted.** It has 7 materials and 8 `canvas_item_set_material`,
+  not 6 and 7. The contract's `TI` colours were off the 0.2 grid with `gain` .5 and were changed.
+
+### What G55c phase 1 does not prove
+
+- The census and hook-hash parity. Both need G55a's shader and material log, and their
+  predictions already sit in `expected.json`.
+- That any shader or material reaches a receiver: that is G55d/G55e.
+- Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —
