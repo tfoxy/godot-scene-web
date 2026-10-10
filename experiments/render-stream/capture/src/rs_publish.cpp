@@ -144,6 +144,7 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"drop-resource", SabotageKind::DropResource},
       {"unpin", SabotageKind::Unpin},
       {"perturb-glyph", SabotageKind::PerturbGlyph},
+      {"perturb-vertex", SabotageKind::PerturbVertex},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -229,6 +230,17 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
   if (version == ProtocolVersion::V3) {
     // render-stream-3.md "Features": sorted ascending by byte value.
     features.ops.insert(features.ops.begin(), "add_msdf_texture_rect_region");
+  } else if (version == ProtocolVersion::V4) {
+    // render-stream-4.md "Features": /3's four plus the eleven /4 ops, sorted by byte value.
+    features.ops = {"add_circle",         "add_clip_ignore",
+                    "add_line",           "add_mesh",
+                    "add_msdf_texture_rect_region",
+                    "add_multiline",      "add_nine_patch",
+                    "add_polygon",        "add_polyline",
+                    "add_primitive",      "add_rect",
+                    "add_set_transform",  "add_texture_rect",
+                    "add_texture_rect_region",
+                    "add_triangle_array"};
   }
   features.item_state = {"behind",         "children",         "clip",           "custom_rect",
                          "draw_index",     "modulate",         "parent",         "self_modulate",
@@ -239,6 +251,11 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
     features.unsupported_resources = {{"canvas_texture", "canvas-texture-headless"}};
   } else {
     features.resources = {"canvas_texture", "texture_2d", "texture_2d_placeholder"};
+  }
+  if (version == ProtocolVersion::V4) {
+    // render-stream-4.md "Features": `resources` gains "mesh", kept sorted by byte value.
+    features.resources.push_back("mesh");
+    std::sort(features.resources.begin(), features.resources.end());
   }
   features.observed_unsupported_ops = {"canvas_item_add_animation_slice",
                                        "canvas_item_add_circle",
@@ -264,6 +281,14 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
         std::find(features.observed_unsupported_ops.begin(),
                   features.observed_unsupported_ops.end(),
                   "canvas_item_add_msdf_texture_rect_region"));
+  } else if (version == ProtocolVersion::V4) {
+    // render-stream-4.md "Features": the ten ops that became commands leave; six remain.
+    features.observed_unsupported_ops = {"canvas_item_add_animation_slice",
+                                         "canvas_item_add_lcd_texture_rect_region",
+                                         "canvas_item_add_multimesh",
+                                         "canvas_item_add_particles",
+                                         "canvas_item_attach_skeleton",
+                                         "canvas_item_set_material"};
   }
   features.unobserved = {"canvas_item_set_canvas_group_mode",
                          "canvas_item_set_instance_shader_parameter",
@@ -276,6 +301,11 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                          "viewport_remove_canvas",
                          "viewport_set_canvas_cull_mask",
                          "viewport_set_global_canvas_transform"};
+  if (version == ProtocolVersion::V4) {
+    // render-stream-4.md "Features" (gate3-design.md "Deferred"): the two snap-to-pixel settings.
+    features.unobserved.push_back("viewport_set_snap_2d_transforms_to_pixel");
+    features.unobserved.push_back("viewport_set_snap_2d_vertices_to_pixel");
+  }
   features.publication = kPublication;
   return features;
 }

@@ -58,6 +58,7 @@ import {
   shotPng,
   writeCaptureDir,
   writeClipIgnoreCaptureDir,
+  writeClipIgnoreReceiver,
   writeJson,
   writeText,
 } from "./gate3-fixture";
@@ -459,6 +460,24 @@ function selfConsistentCases(): void {
         e.steps[3].marker_rgba8 = e.steps[2].marker_rgba8;
       },
     ],
+    [
+      "a clip-ignore receiver that clips RI's second rect (the render-stream/3 prediction, wrong since G5d)",
+      (e) => {
+        const vci = e.variant_clip_ignore;
+        if (vci)
+          vci.receiver_draws[4][1].clip_px = vci.receiver_draws[4][0].clip_px;
+      },
+    ],
+    [
+      "a clip-ignore reference whose second rect clips",
+      (e) => {
+        const vci = e.variant_clip_ignore;
+        if (vci) {
+          vci.reference_draws[0][1].clip_px = vci.reference_draws[0][0].clip_px;
+          vci.receiver_draws[0][1].clip_px = vci.receiver_draws[0][0].clip_px;
+        }
+      },
+    ],
   ];
   for (const [what, edit] of broken) {
     const e = clone(EXPECTED);
@@ -520,7 +539,7 @@ const G3D_CHECKS = [
   "manifest-present",
   "recording-decodes-clip-ignore",
   "expected-image-reference-clip-ignore",
-  "clip-ignore-typed",
+  "clip-ignore-commands",
   "leg-class-capture-clip-ignore",
   "leg-class-receiver-clip-ignore",
 ];
@@ -619,6 +638,26 @@ function recapture(o: CaptureOptions) {
   return async (out: string) => {
     await rm(join(out, "capture"), { recursive: true, force: true });
     await writeCaptureDir(join(out, "capture"), EXPECTED, o);
+  };
+}
+
+/** Rewrites capture-clip-ignore with other model options, then receiver-clip-ignore against the
+ * new bytes: since G5d that receiver classifies success, which needs its applied.json hashes to
+ * match the recording it replayed (as g3b's receivers), so it cannot stay baked against "good". */
+function recaptureClipIgnore(o: CaptureOptions) {
+  return async (out: string) => {
+    for (const leg of ["capture-clip-ignore", "receiver-clip-ignore"])
+      await rm(join(out, leg), { recursive: true, force: true });
+    await writeClipIgnoreCaptureDir(
+      join(out, "capture-clip-ignore"),
+      EXPECTED,
+      o,
+    );
+    await writeClipIgnoreReceiver(
+      join(out, "receiver-clip-ignore"),
+      EXPECTED,
+      join(out, "capture-clip-ignore", "recording.rs2"),
+    );
   };
 }
 
@@ -1173,80 +1212,136 @@ async function scenarios(root: string): Promise<void> {
     root,
     good,
     "clip-ignore-401-transactions",
-    async (out) => {
-      await rm(join(out, "capture-clip-ignore"), {
-        recursive: true,
-        force: true,
-      });
-      await writeClipIgnoreCaptureDir(
-        join(out, "capture-clip-ignore"),
-        EXPECTED,
-        { quit: 401 },
-      );
-    },
+    recaptureClipIgnore({ quit: 401 }),
     ["recording-decodes-clip-ignore"],
   );
 
-  // RI never calls add_clip_ignore: the two unsupported commands and the item-level entry
-  // vanish, so the capture no longer carries canvas_item_add_clip_ignore as unsupported.
+  // The render-stream/3 shape (G3d as first built): both add_clip_ignore calls typed as
+  // unsupported commands plus one item-level unsupported-op entry. Since G5d that is wrong twice
+  // over: RI's commands are not the /4 ones, and the capture no longer classifies success -- nor
+  // does a receiver replaying it, since its class follows the recording's own content.
   await scenario(
     root,
     good,
-    "clip-ignore-no-unsupported",
-    async (out) => {
-      await rm(join(out, "capture-clip-ignore"), {
-        recursive: true,
-        force: true,
-      });
-      await writeClipIgnoreCaptureDir(
-        join(out, "capture-clip-ignore"),
-        EXPECTED,
-        {
-          states: (states) =>
-            states.map((s) => ({
-              ...s,
-              items: s.items.map((it) =>
-                it.id === ID_RI
-                  ? {
-                      ...it,
-                      commands: it.commands.filter(
-                        (c) => c.op !== "unsupported",
-                      ),
-                    }
-                  : it,
-              ),
-              unsupported: (s.unsupported ?? []).filter(
-                (u) => u.op !== "canvas_item_add_clip_ignore",
-              ),
-            })),
-        },
-      );
-    },
-    ["clip-ignore-typed", "leg-class-capture-clip-ignore"],
+    "clip-ignore-typed-unsupported",
+    recaptureClipIgnore({
+      states: (states) =>
+        states.map((s) => ({
+          ...s,
+          items: s.items.map((it) =>
+            it.id === ID_RI
+              ? {
+                  ...it,
+                  commands: it.commands.map((c) =>
+                    c.op === "add_clip_ignore"
+                      ? {
+                          op: "unsupported" as const,
+                          name: "canvas_item_add_clip_ignore",
+                          reason: "unsupported-op" as const,
+                        }
+                      : c,
+                  ),
+                }
+              : it,
+          ),
+          unsupported: [
+            ...(s.unsupported ?? []),
+            {
+              op: "canvas_item_add_clip_ignore",
+              item: ID_RI,
+              reason: "unsupported-op",
+            },
+          ],
+        })),
+    }),
+    [
+      "clip-ignore-commands",
+      "leg-class-capture-clip-ignore",
+      "leg-class-receiver-clip-ignore",
+    ],
   );
 
+  // RI never calls add_clip_ignore: the capture still classifies success, but RI's command list
+  // is not the four the fixture scripts.
+  await scenario(
+    root,
+    good,
+    "clip-ignore-commands-dropped",
+    recaptureClipIgnore({
+      states: editItem(ID_RI, 0, (it) => {
+        it.commands = it.commands.filter((c) => c.op !== "add_clip_ignore");
+      }),
+    }),
+    ["clip-ignore-commands"],
+  );
+
+  // The two bools swapped (false, then true): the calls were recorded but not their values.
+  await scenario(
+    root,
+    good,
+    "clip-ignore-bools-swapped",
+    recaptureClipIgnore({
+      states: editItem(ID_RI, 0, (it) => {
+        for (const c of it.commands)
+          if (c.op === "add_clip_ignore") c.ignore = !c.ignore;
+      }),
+    }),
+    ["clip-ignore-commands"],
+  );
+
+  // A wrong reference shot: since G5d the receiver must equal the reference everywhere, so the
+  // receiver comparison sees it too (on /3 the ri mismatch was predicted and masked part of it).
   await scenario(
     root,
     good,
     "clip-ignore-reference-pixel-off",
     async (out) => shot(out, "reference-clip-ignore", 0, { x: 10, y: 10 }),
-    ["expected-image-reference-clip-ignore"],
+    ["expected-image-reference-clip-ignore", "leg-class-receiver-clip-ignore"],
   );
 
-  // The receiver draws RI's second rect exactly as the reference would (clip_ignore honoured):
-  // the two images no longer differ anywhere, so the predicted mismatch region "ri" never fires.
+  // The render-stream/3 receiver: it skips both add_clip_ignore commands and clips RI's second
+  // rect to RI's own scissor at every step. Since G5d that is a mismatch in region ri.
   await scenario(
     root,
     good,
-    "clip-ignore-receiver-matches-reference",
+    "clip-ignore-receiver-clips-second-rect",
     async (out) => {
-      for (const s of EXPECTED.steps) {
-        const seq = stepFrames3(EXPECTED, s.step).settle;
-        await cp(
-          join(out, "reference-clip-ignore", "shots", `step-${s.step}.png`),
-          join(out, "receiver-clip-ignore", "shots", `seq-${seq}.png`),
-        );
-      }
+      const e = clone(EXPECTED);
+      const vci = e.variant_clip_ignore;
+      if (vci)
+        for (const draws of vci.receiver_draws)
+          draws[1].clip_px = draws[0].clip_px;
+      await rm(join(out, "receiver-clip-ignore"), {
+        recursive: true,
+        force: true,
+      });
+      await writeClipIgnoreReceiver(
+        join(out, "receiver-clip-ignore"),
+        e,
+        join(out, "capture-clip-ignore", "recording.rs2"),
+      );
+    },
+    ["leg-class-receiver-clip-ignore"],
+  );
+
+  // The receiver still lists add_clip_ignore as unsupported (as a /3 receiver did): its pixels
+  // are right, but the leg classifies unsupported, not success.
+  await scenario(
+    root,
+    good,
+    "clip-ignore-receiver-unsupported",
+    async (out) => {
+      const path = join(out, "receiver-clip-ignore", "applied.json");
+      const a = JSON.parse(await readFile(path, "utf8"));
+      a.unsupported = [
+        {
+          seq: 1,
+          item: ID_RI,
+          name: "canvas_item_add_clip_ignore",
+          reason: "unsupported-op",
+        },
+      ];
+      await writeJson(path, a);
     },
     ["leg-class-receiver-clip-ignore"],
   );

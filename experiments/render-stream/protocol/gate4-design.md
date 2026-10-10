@@ -848,6 +848,20 @@ the rendered reference and amended rather than hidden:
    event for every span's fresh codepoints combined, since `RichTextLabel` is one `CanvasItem`
    with one redraw, not one `Label` per span.
 
+**Amended by gate5-design.md G5d (2026-10-10).** On render-stream/4 every G4d leg classifies
+`success`: `rich-capture` with no unsupported op at all, `rich-receiver` and `rich-receiver-patch`
+with no mismatching step, and the underline variant's capture and receiver too (the `[u]` stroke is
+one wide `add_line` per redraw, width 1.203125 -- the font's underline thickness,
+`MAX(1, uth × base_scale)` -- replayed; the receiver equals its reference exactly). Item 1's source
+reading was wrong in detail: the transform commands are not one per line after the boxes but two
+per glyph per text and outline pass -- `draw_set_transform_matrix(char_final_xform)` before the
+glyph and a reset to `Transform2D()` after it (`scene/gui/rich_text_label.cpp:1358-1378`, `:1427`),
+both identity without an `[fx]` effect, spaces and a paragraph's trailing break glyph included.
+Measured on the real `rich-capture` (`artifacts/render-stream/gate4/sub-g4-1/`): 30, 40, 54, 68,
+102 and 112 commands on `RTL` at steps 0-5, all 406 identity, i.e. `2 × glyphs` for a plain line
+(15, 20, 27, 34 glyphs on the one line of steps 0-3) plus `2 × 8` for the outlined span's outline
+pass (step 4: `2 × (43 + 8)`), and at step 5's two lines `2 × (44 + 8) = 104` and `2 × 4 = 8`.
+
 ---
 
 ### G4e1 — render-stream/3 codecs and goldens (sonnet)

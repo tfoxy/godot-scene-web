@@ -101,8 +101,9 @@ failure mode, and asserts each check's verdict: 30 scenarios, 73 assertions.
 
 Drives `../fixtures/gate0/` (capture host and rendered reference) and `../receiver/` through every
 leg of [`../protocol/gate0-design.md`](../protocol/gate0-design.md) "Q6", then checks the gate.
-Since G4e2 it runs on render-stream/3 (`recording.rs2`, full encoding; the file keeps its `.rs2`
-name; render-stream/2 from G2b2 to G4e2, render-stream/1 from G1b2 to G2b2), and every capture leg sets `GRC_ROOT_SIZE=enforce-min-size`: without it the 64×64
+Since G5d it runs on render-stream/4 (`recording.rs2`, full encoding; the file keeps its `.rs2`
+name; render-stream/3 from G4e2 to G5d, render-stream/2 from G2b2 to G4e2, render-stream/1 from
+G1b2 to G2b2), and every capture leg sets `GRC_ROOT_SIZE=enforce-min-size`: without it the 64×64
 headless host would declare `degenerate-host-size` and every leg would classify `unsupported`.
 Every capture also writes its out-of-band resource store to `<capture>/store`
 (`GRC_RESOURCE_STORE_DIR`; without it the capture refuses to publish with
@@ -158,7 +159,7 @@ sha256, and `gamescope/` holds the compositor's log and identity.
 | Leg                       | Directory                                | Runs                                                                                                                                                                                           | Expected class                           |
 | ------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `import`                  | `import/{fixture,receiver}/`             | `mise exec -- godot --headless --path <project> --import`. The runner stops if either fails                                                                                                    | — (exit 0)                               |
-| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec2_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR=protocol/golden-2`, then a headless replay of `golden-3/inline.rs3` (inline, no store; a fresh cache; `golden-2/inline.rs2` before G4e2)      | —                                        |
+| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec2_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR=protocol/golden-2`, then a headless replay of `golden-4/inline.rs4` (inline, no store; a fresh cache; `golden-3/inline.rs3` from G4e2 to G5d, `golden-2/inline.rs2` before)      | —                                        |
 | `capture`                 | `capture/`                               | template `--headless`, `GRC_MODE=arm`, `GRC_STREAM_OUT`, `GRC_ROOT_SIZE=enforce-min-size`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_QUIT_FRAME=400`, under strace; maps/fd sampled at `armed.marker` | `success`                                |
 | `preexisting`             | `preexisting/`                           | the capture host on `res://preexisting.tscn`, quit 52                                                                                                                                          | `capture-failure`                        |
 | `unsupported`             | `unsupported/{capture,receiver}/`        | capture with `RS_FIXTURE_VARIANT=unsupported`, quit 52, then a headless receiver                                                                                                               | `unsupported`                            |
@@ -205,14 +206,14 @@ Legs without a receiver (`capture`, `preexisting`) stop after rule 2.
 | `capture-armed`                 | `capture` `result.json` is `armed` with `stream.status` `closed`; `counters.json` and session `hooks_omitted` are empty; `hooks_planned` is exactly the 44 hooks named by the committed calibration record (calibrators 3 and 4)                                                                                                                                                                     |
 | `headless-no-gpu`               | gate −1's check over `capture/`: display server `headless`, and no GPU device or library in the successful `openat`s, `maps.txt` or `fd.txt`                                                                                                                                                                                                                                                         |
 | `recording-decodes`             | `validateRecording` is `[]`, the first transaction has frame 1, and there are 400 transactions                                                                                                                                                                                                                                                                                                       |
-| `manifest-present`              | session `protocol` `render-stream/3` (since G4e2), a full file stream, the exact /3 `features` (`resources` key included; `ops` with `add_msdf_texture_rect_region`, which `observed_unsupported_ops` no longer lists), the file sinks' `resources` (out-of-band, `directory` fetch, the six permitted formats), `engine.display_server` `headless`, `viewport.root_canvas` 1, `root_size_policy` `enforce-min-size` with `host_size_status` `match` and 640×360 logical and window sizes, and `sabotage` null |
+| `manifest-present`              | session `protocol` `render-stream/4` (since G5d; `render-stream/3` from G4e2), a full file stream, the exact /4 `features` (fifteen `ops`, the six still-refused methods in `observed_unsupported_ops`, `resources` with `mesh`), the file sinks' `resources` (`payloads` mesh and texture, out-of-band, `directory` fetch, the six permitted formats), `engine.display_server` `headless`, `viewport.root_canvas` 1, `root_size_policy` `enforce-min-size` with `host_size_status` `match` and 640×360 logical and window sizes, and `sabotage` null |
 | `step-alignment`                | `capture` and `reference` `steps.jsonl` equal `expected.json`'s frames, and each step's marker colour (as float32) first appears at its applied frame                                                                                                                                                                                                                                                |
 | `expected-image-reference`      | every `reference/shots/step-<k>.png` equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                                                                                                                                          |
 | `expected-image-receiver`       | every receiver settle shot equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                                                                                                                                                    |
 | `receiver-vs-reference`         | receiver vs reference at every step, full frame and both regions: 0 mismatched pixels and max channel delta 0 (`compareRgbaBuffers` with exact budgets)                                                                                                                                                                                                                                              |
 | `receiver-consumed-stream`      | `receiver` `applied.json` is `render-stream-receiver-applied/3`, seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, `recording.sha256` equal to the capture file's, and `resources_summary` shows nothing fetched and nothing uploaded                                                                                                                        |
 | `receiver-never-loaded-fixture` | the traced receiver opens its recording and nothing under `fixtures/`; no file in `receiver/` (outside `.godot/`) is byte-identical to one in `fixtures/gate0/`; no receiver log has a `[fixture]` line; argv has `--path <abs receiver>`                                                                                                                                                            |
-| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs2-selftest] ok` and exited 0; the `golden-3/inline.rs3` replay is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
+| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs2-selftest] ok` and exited 0; the `golden-4/inline.rs4` replay (since G5d) is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
 | `leg-class-<leg>`               | each classified leg has its expected class; sabotage legs mismatch at exactly the expected steps with steps 0–1 matching; `preexisting` names `pre-existing-object`; `corrupt` fails at `{seq:3, reason:"meta-json"}`                                                                                                                                                                                |
 
 `gate_passed` is true only when every check passed.
@@ -234,7 +235,7 @@ It runs `classifyLeg` over:
   culled members, an unbounded footprint, adjacent rects, a child's rect through its parent.
 
 It then builds a passing evidence tree for the whole layout, with recordings encoded in
-render-stream/3 (since G4e2) by `test/rs2-test-encoder.ts` (every texture table holding the engine's hue
+render-stream/4 (since G5d; /3 from G4e2) by `test/rs2-test-encoder.ts` (every texture table holding the engine's hue
 strip), `applied.json` on `/3`, and PNGs synthesized from the timeline, plus one perturbation per
 failure mode (since G2b2 also: an applied `/2` schema, a receiver that fetched the hue strip, an
 inline capture session). It runs the real `runGate0` on each: 40 scenarios, 205 assertions. It
@@ -253,7 +254,7 @@ draw-index tie), `g1c` (G1c2: live delivery over the capture library's WebSocket
 recording/live equivalence, the drop-message sabotage) and `g1d` (G1d: a two-second receiver stall
 with coalescing and newest-state recovery, resync, reconnect, a killed receiver, and the
 ignore-credit and stale-coalesce sabotages) have landed. Since G2b2 every group runs on
-render-stream/3 since G4e2 (render-stream/2 from G2b2, render-stream/1 from G1b2 to G2b2). Run it from the repo root:
+render-stream/4 since G5d (render-stream/3 from G4e2, render-stream/2 from G2b2, render-stream/1 from G1b2 to G2b2). Run it from the repo root:
 
 ```bash
 mise exec -- pnpm render-stream:gate1 -- \
@@ -912,22 +913,21 @@ receiver legs need G3b's apply order (clear before clip) and its `ignore-clip` s
 
 `capture-armed-clip-ignore` is `capture-armed`'s own check against `capture-clip-ignore/`'s
 `evidence/`, since `checkCaptureArmed` always reads `capture/`. `manifest-present` is gate 0's,
-confirming `observed_unsupported_ops` carries `canvas_item_add_clip_ignore` and `unobserved`
-carries `canvas_item_set_visibility_notifier`. `recording-decodes-clip-ignore` runs gate 0's check
+confirming the current wire's exact features (since G5d `ops` carries `add_clip_ignore`; on /3
+`observed_unsupported_ops` carried `canvas_item_add_clip_ignore`) and that `unobserved` carries
+`canvas_item_set_visibility_notifier`. `recording-decodes-clip-ignore` runs gate 0's check
 on both of `capture-clip-ignore`'s sinks. `expected-image-reference-clip-ignore` compares every
 `reference-clip-ignore` shot with `synthesizeGate3` plus `expected.json`'s
 `variant_clip_ignore.reference_draws` appended (the second rect drawn unclipped, Q1d).
-`clip-ignore-typed` reads the capture's last transaction for the one item with RI's exact four
-commands (`add_rect`, `unsupported canvas_item_add_clip_ignore`, `add_rect`, `unsupported
-canvas_item_add_clip_ignore`) and the one item-level `unsupported-op` entry.
-`leg-class-capture-clip-ignore` requires class `unsupported` and the recording to carry
-`canvas_item_add_clip_ignore` as unsupported. `leg-class-receiver-clip-ignore` requires the
-receiver to classify `unsupported`, its step join to be clean, and every one of its `seq-<n>.png`
-shots (all ten settle steps, now that G3b's apply-order fix is in) to mismatch
-`reference-clip-ignore`'s matching `step-<k>.png` in region `ri` alone, at every step (the
-receiver drops both `add_clip_ignore` calls and clips RI's second rect like any other command;
-`RI` never redraws, so the base scene's own clipping Controls, now fixed, never contaminate the
-comparison).
+`clip-ignore-commands` (`clip-ignore-typed` before G5d) reads the capture's last transaction for
+the one item with RI's exact four commands (`add_rect`, `add_clip_ignore(true)`, `add_rect`,
+`add_clip_ignore(false)`) and requires no item-level unsupported entry. Since G5d
+(render-stream/4, gate5-design.md D10 and Q6g) `leg-class-capture-clip-ignore` requires class
+`success` with no unsupported entry or command, and `leg-class-receiver-clip-ignore` requires the
+receiver to classify `success`, its step join to be clean, and every one of its `seq-<n>.png` shots
+(all ten settle steps) to equal `reference-clip-ignore`'s matching `step-<k>.png` in every region,
+`ri` included: the receiver replays both `add_clip_ignore` commands. On render-stream/3 both legs
+were `unsupported` and the receiver's shots differed in region `ri` alone.
 
 ## Gate 3 self-test
 
@@ -997,7 +997,7 @@ mise exec -- pnpm render-stream:gate4 -- \
   `run_g4e` (G4e2) runs `fixtures/gate4-msdf` under `<out>/msdf/` (it imports the fixture and
   `receiver/`; `msdf_early_csv` gives its early steps 1 and 7) plus `sabotage-gray-perturb-glyph`
   on `fixtures/gate4`, so `g4e` needs `g4a` in the same `--legs`. Every capture speaks
-  render-stream/3 since G4e2; the recordings keep their `.rs2` names.
+  render-stream/4 since G5d (/3 from G4e2); the recordings keep their `.rs2` names.
 - `lib/provision-fonts.sh <fixture>`: copies each `fonts.lock.json` entry into `<fixture>/fonts/`
   after checking the source's and the copy's size and SHA-256 and that its licence file exists.
   A source starting with `../` (the engine checkout) also resolves against the main checkout's
@@ -1065,8 +1065,8 @@ mise exec -- pnpm render-stream:gate4 -- \
   clip rect), `evaluateRichCapture`/`checkRichCaptureArmed`/`checkRichHeadlessNoGpu`/
   `checkRichStepAlignment`/`checkRichFixtureEnv` (directory-parameterized equivalents of gate0/
   gate2b/gate3/gate4's own helpers, which hardcode the leg name `"capture"`; this fixture's legs
-  live under `rich-*/`), and `checkRichUnsupportedCaptureClass`/`checkMismatchConfinedToRegion`
-  for the underline variant.
+  live under `rich-*/`), and `checkRichUnderlineCaptureClass` for the underline variant
+  (`checkRichUnsupportedCaptureClass`/`checkMismatchConfinedToRegion` before G5d).
 - `fixtures/gate4-msdf/`: G4e2's fixture (five Labels on one MSDF `FontFile`, msdf_size 48, range
   24), see its own `README.md`.
 - `lib/gate4e-checks.ts`: group g4e (`runG4e`, loaded on demand by `runGate4`). It points G4a's and
@@ -1218,12 +1218,16 @@ glyph_count grouped by the same id (through `rich-atlas-hash-parity`'s mapping),
 italic to map to a wire id distinct from the plain fill cache ("own page"), and requires each
 `[bgcolor]` span to have exactly one colour-matching `add_rect`. `rich-clip-rects-derived` requires
 `deriveClipRects` (lib/clip-derive.ts) over `RTL` on each settle transaction of both sinks to equal
-`expected.json`'s fixed clip rect for every step. `rich-underline-capture-class` requires
-`rich-underline/capture`'s own recording to classify `unsupported` purely from an observed
-`canvas_item_add_line` command (no receiver or pixel comparison). `leg-class-rich-underline-
-receiver` requires `unsupported` with every step a predicted mismatch, and `rich-underline-
-confined` requires that mismatch to sit entirely inside `RTL`'s region at every step, with every
-other region (the marker) exact.
+`expected.json`'s fixed clip rect for every step. Since G5d (render-stream/4, gate5-design.md Q6g)
+every G4d leg classifies `success`: `rich-leg-class-capture` requires no unsupported op at all and
+`RTL`'s per-glyph `add_set_transform` set/reset pairs as real commands, every one identity, at
+every settle step (it reports the count per step); `rich-leg-class-receiver{,-patch}` require
+`success` with no mismatching step. `rich-underline-capture-class` requires
+`rich-underline/capture`'s own recording to classify `success` with the `[u]` stroke as real, wide
+`add_line` commands (no receiver or pixel comparison); `leg-class-rich-underline-receiver` requires
+`success`, and `rich-underline-receiver-vs-reference` (`rich-underline-confined` before G5d)
+requires its shots to equal `rich-underline/reference`'s exactly at every step. On render-stream/3
+every one of these legs was `unsupported`, the underline receiver's mismatch confined to `RTL`.
 
 ## Gate 4 criteria (g4f)
 
@@ -1320,8 +1324,11 @@ above, against the same functions): `evaluateRichOracleAgrees` over an oracle sy
 `buildWorld` is independent of `fixtures/gate4/glyph_oracle.gd`) passes, then fails on a
 byte-differing second leg, a wrong `glyph_count`, a missing outline-pass entry for the outlined
 span (an outlined span needs exactly two oracle entries sharing its key, not one), and a wrong
-`page_glyphs` prediction; `checkMismatchConfinedToRegion` passes when only `RTL` differs and fails
-when the marker also differs or when `RTL` itself has no mismatch.
+`page_glyphs` prediction. Since G5d `checkRichCaptureLegClass` passes on per-glyph identity
+`add_set_transform` pairs and fails on the /3 class (`unsupported`), on a set_transform still typed
+`unsupported`, on an `RTL` with no `add_set_transform` and on a non-identity one;
+`checkRichUnderlineCaptureClass` passes on a wide `add_line` and fails with no `add_line`, on a thin
+one and on one still typed `unsupported`.
 
 ## Gate 5 files
 
@@ -1329,26 +1336,39 @@ when the marker also differs or when `RTL` itself has no mismatch.
 mise exec -- pnpm render-stream:gate5 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g5b,g5c]
+  [--legs g5b,g5c,g5d]
 ```
 
-- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_g5c`, `run_reference` with `REFERENCE_ARMED`,
-  `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MESH_ORACLE`). Groups g5d, g5e, g5f
-  and g5g are known but have not landed, so asking for them exits 2. The capture writes both sinks under gate 2's `.rs2` names whatever wire version
-  `main` speaks.
+- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_g5c`, `run_g5d`, `run_reference` with
+  `REFERENCE_ARMED`, `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MESH_ORACLE`,
+  `g5_capture` for g5d's variant and sabotage captures). g5d needs g5b's capture and reference in
+  the same run. Groups g5e, g5f and g5g are known but have not landed, so asking for them exits 2.
+  Every capture speaks render-stream/4 since G5d (/3 before) and writes both sinks under gate 2's
+  `.rs2` names.
 - `check-gate5.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate5-report/1`:
   gate 4's shape with `geometry` (the hook census as measured, the capture's commands per op per
   step, the raster's pixel classes per step), `meshes` (G5c: per fixture mesh its hook-log lines,
-  last version and median copy/hash cost, and `_parity`, the agreed hash per mesh and step),
-  `budgets` (reference against repeat per region and pixel class) and `freshness`). With g5c it
-  merges `runGate5c`'s checks and legs into the same report.
+  last version and median copy/hash cost, and `_parity`, the agreed hash per mesh and step), `g5d`
+  (the /4 commands compared and how many used their 2-ulp allowance, the lowering counts, CG's
+  derived scissor and clip-ignored commands per step, the receivers' mismatches against the
+  reference, each sabotage leg's mismatching regions per step and the `canvas` variant's refused
+  entries), `budgets` (reference against repeat per region and pixel class) and `freshness`). With
+  g5c it merges `runGate5c`'s checks and legs into the same report.
 - `lib/gate5-expected.ts`: `expected.json`'s types, `stepFrames5`, transforms and texel decoding.
 - `lib/geometry-raster.ts`: the reference rasterizer (`rasterizeGate5`, `rasterizeItems`). Pixel
   centre coverage, undecided within 1/16 px of a boundary edge (welded vertices; shared edges are
   not boundaries), flat colours exact, gradients and `.6` blends delta 1, nearest sampling decided
   only where the texels within 1/16 texel agree, `map_ninepatch_axis` per axis, draw transforms
   replaced (D9), clip-ignore spans (D10), band pixels for antialiased shapes and thin lines.
-- `lib/gate5-checks.ts`: the g5b checks, pure over evidence already read.
+- `lib/gate5-checks.ts`: the g5b checks, pure over evidence already read, and the g5d
+  orchestration (`runG5d`).
+- `lib/gate5d-checks.ts`: the g5d evaluators: expected.json `calls` as /4 commands
+  (`wireCommandOf`, `expectedCommandsByStep`), `ulpDistance`/`sameValue`, geometry-commands,
+  lowering-predictions, clip-rects-derived over sink states and receiver state dumps, receiver
+  shots by settle seq, per-region checkpoints and `evaluateLegClass5`, and capture-canvas.
+- `lib/clip-derive.ts` (gate 3's, extended by G5d): `itemRect` follows `Item::get_rect` for the /4
+  commands with D9's draw transform (replaced, never composed; every later command's rect goes
+  through it), and `clipIgnoredCommands`/`DerivedClip.ignored` report D10's clip-ignore spans.
 - `lib/gate5c-checks.ts`: the g5c checks (fixtures/gate5-mesh): `expected.json`'s types, the census
   expansion, the hook-log hash replay, the oracle and parity checks, `runGate5c`.
 - `test/self-test-gate5.ts`, `test/self-test-gate5c.ts`: below.
@@ -1367,6 +1387,14 @@ mise exec -- pnpm render-stream:gate5 -- \
 | `reference-mesh`   | g5c   | `mesh/reference/`   | rendered, extension absent, mesh oracle on (`RS_FIXTURE_MESH_LOG`): shots, `steps.jsonl`, `meshes.jsonl`             |
 | `reference-mesh-repeat` | g5c | `mesh/reference-repeat/` | the same again                                                                                               |
 | `reference-mesh-armed` | g5c | `mesh/reference-armed/` | rendered, extension armed with a stream and a store, oracle off: shots and its own hook log                    |
+| `import` (receiver) | g5d  | `import/receiver/`  | the mise editor's `--import` of `receiver/`                                                                           |
+| `receiver-headless-trace` | g5d | `receiver-headless-trace/` | the template, `--headless`, on `capture/`'s full sink under strace (openat)                              |
+| `capture-canvas`   | g5d   | `capture-canvas/`   | headless capture, `RS_FIXTURE_VARIANT=canvas` (one CanvasTexture in `_ready`, D11), the fixture's own 102 frames      |
+| `sabotage-freeze`, `sabotage-perturb-vertex`, `sabotage-omit-polygon` | g5d | `sabotage-<kind>/capture/` | headless captures with `freeze-frame` @11, `perturb-vertex` @21, `omit-op canvas_item_add_polygon` @21 |
+| `receiver`         | g5d   | `receiver/`         | rendered receiver on `capture/recording.rs2`: `applied.json`, `shots/seq-<n>.png` at the settle seqs                  |
+| `receiver-patch`   | g5d   | `receiver-patch/`   | the same on `recording-patch.rs2`, plus `state/seq-<n>.json` at the settle seqs                                       |
+| sabotage receivers | g5d   | `sabotage-<kind>/receiver/` | rendered receivers on the three sabotage captures                                                         |
+| `sabotage-receiver-ignore-set-transform`, `-ignore-clip-ignore` | g5d | `sabotage-receiver-<kind>/` | rendered receivers on `capture/` with `RS_RECEIVER_SABOTAGE=<kind>` |
 
 ## Gate 5 criteria (g5b)
 
@@ -1384,10 +1412,10 @@ band included, to change at least half its covered pixel count from what the ras
 it. `freshness-reference` requires a region to change between consecutive shots exactly when
 `fresh` says. `reference-repeat-budget` requires identical shots and reports the maxima per region
 and pixel class (exact, delta1, band, undecided). `armed-transparent` requires the armed
-reference's shots to equal the reference's. `leg-class-capture` requires class `unsupported`, the
-unsupported ops to be exactly `typed_ops` (plus `calibrator7_ops` once planned), every entry
-`unsupported-op`, and at every settle frame each item's commands to be its expected typed list in
-call order (`add_rect` float32-exact). `support-legs-exit` requires the import and rendered legs to
+reference's shots to equal the reference's. `leg-class-capture` requires class `success` on
+render-stream/4 (it was `unsupported`, every op but `add_rect` typed, on /3 before G5d): no
+unsupported entry or command, and at every settle frame each item's commands carry exactly its
+expected calls' /4 ops in call order. `support-legs-exit` requires the import and rendered legs to
 exit 0.
 
 ## Gate 5 criteria (g5c)
@@ -1411,9 +1439,32 @@ exact regions (`DF` is band), `mesh-presence-reference` every surface's presence
 `mesh-freshness-reference` `fresh` with `RM` changing at 2, 3 and 4 without a redraw,
 `mesh-reference-repeat-budget` and `mesh-armed-transparent` the legs pixel for pixel.
 `leg-class-capture-mesh` requires class `unsupported` with `canvas_item_add_mesh` the only
-unsupported op, each item's commands per settle frame (`FR`'s empty from 8) and `RM`'s
-`content_version` constant over the run. `mesh-support-legs-exit` requires the import and rendered
+unsupported op (on render-stream/4 too: the capture keeps typing `add_mesh` until G5e's mesh
+table), each item's commands per settle frame (`FR`'s empty from 8) and `RM`'s `content_version`
+constant over the run. `mesh-support-legs-exit` requires the import and rendered
 legs to exit 0.
+
+## Gate 5 criteria (g5d)
+
+`geometry-commands` requires, at every settle frame of both sinks, each item's commands to equal
+`expected.json`'s calls as /4 commands (render-stream-4.md's resolved forms), set_transform and
+clip_ignore included: passthrough arguments float32-exact, computed ones (`ulp: 2`) within 2 ulp,
+texture names mapped to the capture's wire ids. `lowering-predictions` checks the capture against
+`lowering_predictions` (Line2D one triangle array of 6 vertices, 12 indices, count -1; the dashed
+line one multiline of 16 points; the unfilled rect and circle closed polylines of 5 and 65 points)
+at every settle frame, and that L2's command is identical across step 3 although it redraws.
+`leg-class-receiver` and `leg-class-receiver-patch` require `success` with every region of every
+shot equal to the reference's; `receiver-vs-reference` requires identical shots (budget 0);
+`expected-image-receiver` and `presence-receiver` are g5b's image checks on the receiver's shots.
+`clip-rects-derived` runs `deriveClipRects` over both sinks' settle states and receiver-patch's state
+dumps (each dump must also equal the recording's resolved state): every item's scissor is its
+`clip_px` and CG's clip-ignored commands are exactly those between its `add_clip_ignore` pair.
+`leg-class-capture-canvas` requires `unsupported` with exactly `predictions["capture-canvas"]`'s
+(item, op) pairs refused as `canvas-texture-headless`, in place, every other command as on the main
+capture. The five sabotage legs (`leg-class-sabotage-*`) require `pixel-mismatch` with exactly the
+predicted steps (freeze) or, per step, exactly the predicted regions (the others).
+`receiver-never-loaded-fixture` is gate 0's, over every g5d receiver log; `receiver-typed-clean`
+scans them for script errors.
 
 ## Gate 5 self-test
 
@@ -1433,9 +1484,21 @@ strip. `checkExpectedSelfConsistent` passes on the committed file and fails on a
 overlapping regions, an even-parity edge, a census cell and a wrong `fresh`. The image checks run
 on frames built from the raster (band areas painted) and fail on an exact pixel off by 1, a
 delta-1 pixel off by 2, a missing polygon or thin line, a stale or a spuriously changed region and
-a differing band pixel. `geometry-hook-census` and `leg-class-capture` run on synthetic counters
-and recordings, before and after calibrator 7 hooks `add_multiline`, and fail on a count, an
-unexpected op, a class, an `add_rect` argument and a command order.
+a differing band pixel. `geometry-hook-census` runs on synthetic counters, before and after
+calibrator 7 hooks `add_multiline`, and fails on a count, an unexpected op and the texture creates.
+`leg-class-capture` runs on a synthetic /4 recording built from `expected.json` and fails on a
+class, a command still typed `unsupported` and a command order. The g5d evaluators run on the same
+synthetic recording: `geometry-commands` passes, accepts a computed value 2 ulp off (and counts
+it), and fails on 3 ulp, on a passthrough argument 1 ulp off, a missing `add_clip_ignore` and a
+wrong texture id; `lowering-predictions` fails on a changed Line2D command and a missing dash;
+`evaluateLegClass5` passes perturb-vertex's predicted regions and freeze's steps and fails on an
+extra region, a missing one and a mismatch where `success` is expected; `capture-canvas` passes the
+predicted refusals and fails on `tex: null` draws and a refused textured polygon. `clip-derive.ts`
+is checked on hand cases: rects after a `set_transform` go through it and a second one replaces the
+first, two in a row do not compose, a wide line's rect is its quad, a circle's is unknown, the
+clip-ignore span is the commands between the pair and is reported only under a clip owner; and
+`clip-rects-derived` passes on synthetic states built from `expected.json` and fails without CG's
+`add_clip_ignore` pair.
 
 `self-test-gate5c.ts` runs `checkMeshExpectedSelfConsistent` on the committed mesh expected.json
 and fails it on a wrong `fresh`, a surface count and a census version; checks `expandCensus`'s

@@ -1,6 +1,7 @@
 // Retained canvas mirror (gate 0 WP1; render-stream/1 since gate 1 G1b2;
 // render-stream/2 with textures since gate 2 G2b2; render-stream/3's msdf command
-// since gate 4 G4e2).
+// since gate 4 G4e2; render-stream/4's immediate geometry, add_set_transform and
+// add_clip_ignore since gate 5 G5d -- every snapshot is stamped ProtocolVersion::V4).
 //
 // A tap on the RenderingServer hooks that keeps the canvas state a receiver
 // needs to rebuild the frame: canvases, canvas items, their parenting and
@@ -86,7 +87,8 @@ class Mirror {
   // Forgets everything and starts a new session: canvas 1 (the root, origin
   // root-query, attached) exists with no RIDs bound, ids restart, failures and
   // session-level unsupported entries are cleared (the degenerate-host-size
-  // flag included), and the sabotages (drop frame, omit-op, perturb-glyph) are reset. The
+  // flag included), and the sabotages (drop frame, omit-op, perturb-glyph, perturb-vertex) and
+  // the canvas-texture-created flag (D11) are reset. The
   // epoch is not reset: it advances by one, so it never repeats a value.
   void reset();
 
@@ -209,6 +211,53 @@ class Mirror {
                                     std::uint64_t texture, const rs2::Rect4 &src,
                                     const rs2::Color4 &modulate, std::int32_t outline_size,
                                     float px_range, float scale, std::uint64_t frame);
+
+  // --- render-stream/4 immediate geometry (G5d; gate5-design.md Q3b, render-stream-4.md
+  // "Command") --------------------------------------------------------------------------------
+  //
+  // Each tap records the RenderingServer call argument for argument (every array whole, copied
+  // by the hook on the calling thread), never its server-side lowering (D3), and bumps
+  // content_version like add_rect. The omit-op name of each is its RenderingServer method name
+  // (canvas_item_add_line, ...). `texture` arguments follow D11: a RID the mirror knows becomes
+  // its wire id, an unknown non-null RID an `unsupported` command with `unknown-texture`, and
+  // RID() becomes `tex: null` -- unless this is a headless host on which the session has already
+  // created a canvas texture (canvas_texture_create), whose RID() is ambiguous with "no
+  // texture": from then on every such op naming RID() is `unsupported` with
+  // `canvas-texture-headless`. From set_perturb_vertex's frame on, the first point's x of every
+  // add_line (from), add_polyline, add_multiline, add_primitive, add_polygon and
+  // add_triangle_array gains +1.0 in the recorded command (Q3c); the engine is unaffected.
+  void add_line(std::uint64_t item, const rs2::Point2 &from, const rs2::Point2 &to,
+                const rs2::Color4 &color, float width, bool antialiased, std::uint64_t frame);
+  // add_polyline and (multiline = true) add_multiline: width, aa, every point and colour as given.
+  void add_polyline(std::uint64_t item, std::vector<rs2::Point2> points,
+                    std::vector<rs2::Color4> colors, float width, bool antialiased, bool multiline,
+                    std::uint64_t frame);
+  void add_circle(std::uint64_t item, const rs2::Point2 &position, float radius,
+                  const rs2::Color4 &color, bool antialiased, std::uint64_t frame);
+  // add_primitive and (polygon = true) add_polygon: points, colours and UVs as given.
+  void add_primitive(std::uint64_t item, std::vector<rs2::Point2> points,
+                     std::vector<rs2::Color4> colors, std::vector<rs2::Point2> uvs,
+                     std::uint64_t texture, bool polygon, std::uint64_t frame);
+  // add_triangle_array: `skinned` (non-empty bones or weights) makes it `unsupported` with
+  // `skinned-geometry` (D16); `count` is carried verbatim.
+  void add_triangle_array(std::uint64_t item, std::vector<std::int32_t> indices,
+                          std::vector<rs2::Point2> points, std::vector<rs2::Color4> colors,
+                          std::vector<rs2::Point2> uvs, bool skinned, std::uint64_t texture,
+                          std::int32_t count, std::uint64_t frame);
+  // add_nine_patch: the engine's NinePatchAxisMode ints (0 stretch, 1 tile, 2 tile_fit; anything
+  // else is recorded as an `unsupported-op` command).
+  void add_nine_patch(std::uint64_t item, const rs2::Rect4 &rect, const rs2::Rect4 &source,
+                      std::uint64_t texture, const rs2::Point2 &margin_tl,
+                      const rs2::Point2 &margin_br, std::int32_t x_axis, std::int32_t y_axis,
+                      bool draw_center, const rs2::Color4 &modulate, std::uint64_t frame);
+  // add_set_transform / add_clip_ignore: ordered command-list state (D9, D10). The mirror keeps
+  // no transform or clip-ignore state of its own: a receiver that replays the commands in order
+  // reproduces the engine's per-item draw transform (reset per item, replaced not composed).
+  void add_set_transform(std::uint64_t item, const rs2::Xform &transform, std::uint64_t frame);
+  void add_clip_ignore(std::uint64_t item, bool ignore, std::uint64_t frame);
+
+  // perturb-vertex sabotage (gate5-design.md Q3c, render-stream-4.md "Sabotage"); 0 disables it.
+  void set_perturb_vertex(std::uint64_t from_frame);
 
   // canvas_item_set_default_texture_filter / _repeat: the item's own fields
   // (RenderingServer enums; an out-of-range value is ignored, as the server's
@@ -363,6 +412,14 @@ class Mirror {
   void push_command(Item *item, rs2::Command command, std::uint64_t frame);
   // `rect` with perturb-glyph applied when it is active at `frame`.
   rs2::Rect4 perturbed_glyph(const rs2::Rect4 &rect, std::uint64_t frame) const;
+  // `point` with perturb-vertex applied when it is active at `frame` (G5d).
+  rs2::Point2 perturbed_vertex(const rs2::Point2 &point, std::uint64_t frame) const;
+  // D11 for a /4 op's texture argument: fills command->has_tex/tex and returns true, or turns
+  // the command into an `unsupported` one named `op` (canvas-texture-headless or
+  // unknown-texture) and returns false.
+  bool geometry_texture(std::uint64_t texture, const char *op, rs2::Command *command) const;
+  // Shared prologue of the /4 taps: the item to record into, or nullptr (dropped / unknown).
+  Item *geometry_item(std::uint64_t rid, const char *op, std::uint64_t frame);
   // A texture argument as a command: tex id / null, or false for an unknown RID.
   bool texture_ref(std::uint64_t rid, bool *has_tex, std::uint32_t *tex) const;
   Texture *find_texture(std::uint64_t rid);
@@ -381,8 +438,12 @@ class Mirror {
   std::string omit_op_;
   std::uint64_t omit_from_frame_ = 0;
   std::uint64_t perturb_glyph_frame_ = 0;
+  std::uint64_t perturb_vertex_frame_ = 0;
   bool degenerate_host_size_ = false;
   bool canvas_texture_headless_ = false;
+  // D11 (G5d): a canvas texture was created this session (sticky until reset()). On a headless
+  // host it makes RID() on the /4 geometry ops ambiguous.
+  bool canvas_texture_created_ = false;
   std::uint32_t next_canvas_id_ = rs2::kRootCanvasId + 1;
   std::uint32_t next_item_id_ = 1;
   std::uint64_t root_viewport_rid_ = 0;
@@ -416,6 +477,7 @@ void mirror_set_canvas_texture_headless(bool on);
 void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
 void mirror_set_perturb_glyph(std::uint64_t from_frame);
+void mirror_set_perturb_vertex(std::uint64_t from_frame);
 std::uint64_t mirror_epoch();
 Captured mirror_snapshot(std::uint64_t seq, std::uint64_t frame);
 MirrorStats mirror_stats();

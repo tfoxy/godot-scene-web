@@ -75,19 +75,22 @@ export interface Gate3Prediction {
 
 /** Variant `clip-ignore` (gate3-design.md Q6b, G3d): a static raw item `RI`, present only under
  * `RS_FIXTURE_VARIANT=clip-ignore`, whose second rect escapes its own clip in the real engine
- * (Q1d) but not on a receiver, which only sees the two `canvas_item_add_clip_ignore` calls as
- * unsupported commands. Each draw list is in paint order (`RI`'s first rect, then its second), to
- * append to a step's `draws` before synthesis.
+ * (Q1d). Each draw list is in paint order (`RI`'s first rect, then its second), to append to a
+ * step's `draws` before synthesis.
  *
  * Both `reference_draws[step]` and `receiver_draws[step]` are per step: `RI` is static, but the
  * step-9 canvas shift (Q6b) still moves it like every other top-level item -- that shift is not
- * gate 3b's D3 fix, just `RI` inheriting the canvas transform, so it applies on both sides. With
- * gate 3b's receiver apply-order fix landed, `receiver-clip-ignore` is compared at every step,
- * same as `reference-clip-ignore`; the only expected difference at any step is `RI`'s second
- * draw's `clip_px` (unclipped on the reference, clipped to `RI`'s own scissor on the receiver). */
+ * gate 3b's D3 fix, just `RI` inheriting the canvas transform, so it applies on both sides.
+ *
+ * Since G5d (gate5-design.md D10 and Q6g, render-stream/4) `add_clip_ignore` is a real command the
+ * receiver replays in order, so `receiver_draws` equals `reference_draws` at every step and
+ * `receiver-clip-ignore` matches `reference-clip-ignore` in every region, `ri` included. On
+ * render-stream/3 the receiver saw two unsupported commands and clipped the second rect to `RI`'s
+ * own scissor: region `ri` was the one predicted difference. */
 export interface Gate3VariantClipIgnore {
   name: "clip-ignore";
-  /** the only region a correct receiver's image differs from the reference in, at every step */
+  /** RI's region (until G5d the only region a receiver's image differed from the reference in;
+   * since G5d it differs nowhere) */
   region_name: string;
   region: Rect4;
   /** RI's own scissor at step 0: custom_rect translated by its origin */

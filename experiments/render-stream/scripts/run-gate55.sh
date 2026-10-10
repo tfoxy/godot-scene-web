@@ -189,7 +189,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The capture writes both sinks under gate 2's .rs2 names whatever wire version main speaks
-# (render-stream/4 once G5d lands, /5 from G55d), and its payload store <capture>/store.
+# (render-stream/4 since G5d, /5 from G55d), and its payload store <capture>/store.
 RECORDING_NAME=recording.rs2
 PATCH_RECORDING_NAME=recording-patch.rs2
 CAPTURE_WITH_PATCH=1

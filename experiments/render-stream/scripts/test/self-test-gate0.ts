@@ -15,8 +15,8 @@
 //    render-stream-receiver-applied/3; PNGs synthesized from the timeline), then one perturbation
 //    per failure mode. Each scenario runs the real runGate0 and asserts the verdict of the checks
 //    and leg classes it targets.
-// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-3/corrupt-meta.rs3 from
-//    golden-3/patch.rs3 byte for byte (render-stream/3 since G4e2) and finds its target by seq when resource records precede
+// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-4/corrupt-meta.rs4 from
+//    golden-4/patch.rs4 byte for byte (render-stream/4 since G5d, /3 from G4e2) and finds its target by seq when resource records precede
 //    it; summarizeRecording skips resource records; joinSettleSeqs fails on a missing frame.
 //
 // Exits non-zero if any assertion fails.
@@ -65,8 +65,8 @@ import {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-// render-stream/3 since G4e2: the receiver replays golden-3, and the checkers decode /3.
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-3");
+// render-stream/4 since G5d (/3 from G4e2): the receiver replays golden-4, and the checkers decode /4.
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-4");
 
 let assertions = 0;
 let failures = 0;
@@ -131,7 +131,7 @@ const EXPECTED = {
     subject: shape(t.pos, SUBJECT_SIZE, t.subject),
     marker: shape([16, 16], MARKER_SIZE, t.marker),
   })),
-  unsupported_variant: { from_step: 2, op: "canvas_item_add_circle" },
+  unsupported_variant: { from_step: 2, op: "canvas_item_add_animation_slice" },
 } as unknown as Gate0Expected;
 
 // ---------------------------------------------------------------------------------------------
@@ -582,7 +582,7 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs3"));
+  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs4"));
   await writeReceiverProcess(minimalDir, projects, minimal, [], false);
   const minimalApplied = await readJsonFile<Record<string, unknown>>(
     join(minimalDir, "applied.json"),
@@ -915,7 +915,7 @@ const scenarios: Scenario[] = [
           quit: 400,
           resources: {
             hash: "sha256",
-            payload: "render-stream-texture/1",
+            payloads: ["render-stream-mesh/1", "render-stream-texture/1"],
             delivery: "inline",
             inline_max_bytes: 67108864,
             max_payload_bytes: 67108864,
@@ -1903,13 +1903,13 @@ function classifyUnitCases(): void {
 }
 
 async function helperCases(): Promise<void> {
-  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs3")));
+  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs4")));
   const corrupt = new Uint8Array(
-    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs3")),
+    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs4")),
   );
   const made = corruptTransactionMeta(minimal, 3);
   assert(
-    "corruptTransactionMeta(golden-3 patch.rs3, 3) is golden-3/corrupt-meta.rs3 byte for byte",
+    "corruptTransactionMeta(golden-4 patch.rs4, 3) is golden-4/corrupt-meta.rs4 byte for byte",
     made.length === corrupt.length && made.every((b, i) => b === corrupt[i]),
   );
   const rec = new Uint8Array(encodeRecording({ quit: 52 }));

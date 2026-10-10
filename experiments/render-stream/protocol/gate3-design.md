@@ -752,6 +752,14 @@ gates 0–2 are green with the new feature arrays; `--legs g3a,g3d` is green. Th
 paths, per-leg classes, the measured probe and semantic-probe tables, the census, and an explicit
 "what this does not prove" list.
 
+**Amended by gate5-design.md G5d (2026-10-10).** On render-stream/4 `add_clip_ignore` is a real
+command (gate5-design.md D10), so `capture-clip-ignore` classifies `success` (RI's commands are
+`add_rect`, `add_clip_ignore(true)`, `add_rect`, `add_clip_ignore(false)` in all 400 transactions,
+no unsupported entry: `clip-ignore-typed` became `clip-ignore-commands`), and `receiver-clip-ignore`
+replays the engine's own call and classifies `success`, equal to `reference-clip-ignore` at every
+one of the ten steps in every region, `ri` included (gate 3 `--legs g3a,g3b,g3c,g3d` 56/56,
+`artifacts/render-stream/gate3/sub-g3-1/`).
+
 ## Deferred, with owners
 
 - **`clip_ignore` as a supported command**: gate 5's own wire bump (`/4`), owned by gate 5 (the

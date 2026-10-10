@@ -52,13 +52,22 @@ rotated/scaled Control clips both resolve to the engine's own scissor — the ro
 of the item's transformed rect intersected with the nearest clipping ancestor's — with a mirror
 fix for `canvas_item_clear` and a receiver apply-order fix behind it, and
 `canvas_item_add_clip_ignore` hooked and typed `unsupported` until gate 5's own wire bump
-(render-stream/4).
+(render-stream/4, G5d, which made it a command the receiver replays).
 
 G4a through G4f completed gate 4 (see "Gate 4 summary" below): grayscale, layout, RichTextLabel,
 multilingual and MSDF text all reach the wire host-evaluated and host-rasterized, with atlas bytes
 byte-identical to the rendered reference and every glyph command float32-exact against an
-independent oracle; LCD text and `RichTextLabel`'s `canvas_item_add_set_transform` stay typed
-`unsupported`; MSDF text landed on the new `render-stream/3`, which every gate now runs on.
+independent oracle; LCD text stays typed `unsupported`, and `RichTextLabel`'s
+`canvas_item_add_set_transform` did until G5d; MSDF text landed on `render-stream/3`.
+
+Gate 5 is in progress (see "Gate 5b result" onward below): G5b's immediate-geometry fixture and
+reference rasterizer, G5w's render-stream/4 codecs, G5a's calibrator 7, G5c, and G5d (see "Gate 5d
+result"), which moved the capture, the receiver and every gate runner to
+[protocol/render-stream-4.md](protocol/render-stream-4.md), which every gate now runs on: every
+immediate geometry op, `add_set_transform` and `add_clip_ignore` travel as the engine's own call
+arguments and replay pixel-exact, so G3d's clip-ignore variant and every G4d `RichTextLabel` leg
+now classify `success`. G5c's mesh fixture, oracle and census have landed too; meshes on the
+wire (G5e), styleboxes (G5g) and live meshes (G5f) remain.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -342,14 +351,17 @@ receivers in one private `gamescope --backend headless`, then the checker, which
 passed. Since G1b2 every capture runs under `GRC_ROOT_SIZE=enforce-min-size`; since G2b2 every
 capture writes its payload store (`<capture>/store`, which holds only the engine's hue strip here)
 and every file-mode receiver gets a fresh cache and that store. Every gate runs on
-[protocol/render-stream-3.md](protocol/render-stream-3.md) since G4e2 (render-stream/2 from G2b2
-to G4e2; /3 is /2 plus the MSDF glyph command): the capture, the receiver and every checker speak
-it, the recordings keep their `.rs2` names, and the receiver's typecheck replays `golden-3/`.
+[protocol/render-stream-4.md](protocol/render-stream-4.md) since G5d (render-stream/3 from G4e2
+to G5d, render-stream/2 from G2b2 to G4e2; /3 is /2 plus the MSDF glyph command, /4 is /3 plus
+the immediate geometry ops, `add_set_transform`, `add_clip_ignore`, `add_mesh` and a mesh table):
+the capture, the receiver and every checker speak it, the recordings keep their `.rs2` names, and
+the receiver's typecheck replays `golden-4/`.
 Self-tests: `scripts/test/self-test-rs2.ts` (TS decoder against the /2 golden vectors and, since
-G4e1, against /3's `golden-3/`, implemented in `render-stream-2.ts` itself behind a `version`
-parameter rather than a forked `render-stream-3.ts`; since G4e2 the parameter defaults to 3),
+G4e1 and G5w, against `golden-3/` and `golden-4/`, implemented in `render-stream-2.ts` itself
+behind a `version` parameter rather than forked modules; since G5d the parameter defaults to 4),
 `scripts/test/self-test-gate0.ts` (checker and classifier on synthetic evidence) and
-`python3 experiments/render-stream/protocol/golden-2/make_golden.py --check` (plus `golden-3/`'s);
+`python3 experiments/render-stream/protocol/golden-2/make_golden.py --check` (plus `golden-3/`'s
+and `golden-4/`'s);
 the frozen /0 and /1 history stays checked by `scripts/test/self-test-rs0.ts`, `self-test-rs1.ts`
 and both older `make_golden.py --check`.
 
@@ -366,7 +378,8 @@ mise exec -- pnpm render-stream:gate1 -- \
 This takes about nine minutes and runs the landed groups, `g1a`, `g1b`, `g1c` and `g1d`. It imports
 `fixtures/gate1/` and `receiver/`, then runs the receiver's typed self-test and the headless
 captures, each writing both sinks (`recording.rs2` full, `recording-patch.rs2` patch,
-render-stream/2 since G2b2, render-stream/3 since G4e2) and its payload store: the
+render-stream/2 since G2b2, render-stream/3 since G4e2, render-stream/4 since G5d) and its payload
+store: the
 400-frame capture under `enforce-min-size`, the four `omit-update` sabotage captures and the
 `root-size-observe` capture. Next it runs the headless traced receiver. The reference and the six
 g1a rendered receivers share one private gamescope. Group g1b then captures the two `omit-op`
@@ -485,13 +498,13 @@ Environment, read once at SCENE initialisation:
 | `GRC_MODE`                       | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                                                                                                                                                            |
 | `GRC_EVIDENCE_DIR`               | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                                                                                                                                                         |
 | `GRC_DISARM_AFTER_FRAMES`        | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                                                                                                                                                     |
-| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2, render-stream/3 since G4e2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
+| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2, render-stream/3 since G4e2, render-stream/4 since G5d). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
 | `GRC_STREAM_PATCH_OUT`           | G1b2: absolute `.rs2` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                                                                                                                                                        |
 | `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`, and G4e2's `perturb-glyph` (the mirror records rect.x + 0.25 on every glyph command from the frame on). `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected)                   |
 | `GRC_SABOTAGE_OP`                | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                                                                                                                                                                 |
 | `GRC_SABOTAGE_FRAME`             | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                                                                                                                                                                   |
 | `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                                                                                                                                                     |
-| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/3 since G4e2, subprotocol `render-stream.3`; /2 from G2b2; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
+| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/4 since G5d, subprotocol `render-stream.4`; /3 from G4e2; /2 from G2b2; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
 | `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                                               |
 | `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                                     |
 | `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                                       |
@@ -3175,6 +3188,81 @@ RID. Median hook cost per change (tiny surfaces): copy 0.8–5.9 µs, hash 1.4�
   residency and `receiver-vs-reference` on `DF` are G5e's; dropped presentations are G5f's.
 - Multi-surface `mesh_create_from_surfaces` hashes in the log (still unnamed; one-surface only).
 - Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
+
+## Gate 5d result (2026-10-10)
+
+G5d ([protocol/gate5-design.md](protocol/gate5-design.md) "G5d", "As built (G5d)") passes:
+the capture, the receiver and every gate runner now speak
+[render-stream/4](protocol/render-stream-4.md), and `pnpm render-stream:gate5 -- --legs
+g5b,g5c,g5d` is 49/49 in `artifacts/render-stream/gate5/f2/` (ignored, not committed). On the same
+build, rebased onto G5c: `build-capture.sh` 13/13 ctests, `calibrate.sh --check` clean, gate −1
+28/28 with 64 hooks (`gate-minus1/f2/`), gate 0 19/19 (`gate0/f2/`), gate 1 65/65 (`gate1/f2/`),
+gate 2 85/85 (`gate2/f2/`, live-animate included, no retry needed), gate 3 56/56 (`gate3/f2/`),
+gate 4 185/185 (`gate4/f2/`), and after a further rebase onto gate 5.5c, gate 5.5 24/24
+(`gate55/f3/`, its capture legs still `unsupported` with `canvas_item_set_material` typed on /4),
+every pure self-test (gate 5's 88 assertions and gate 5c's 37
+included), both receiver self-tests (`codec2_selftest.gd`, `applier2_selftest.gd`, now on
+`golden-4/`) and all fifteen `make_golden.py`/`make_expected.py --check`.
+
+What landed: the mirror records every immediate geometry op (`add_line`, `add_polyline`,
+`add_multiline`, `add_circle`, `add_primitive`, `add_polygon`, `add_triangle_array`,
+`add_nine_patch`), `add_set_transform` and `add_clip_ignore` as /4 commands, every array copied
+whole at the hook; D11's `RID()` rule and the `perturb-vertex` sabotage; the publisher and live hub
+write GRS4 with the fifteen-op features. The receiver replays each command in order with the
+engine's own call and gains the `ignore-set-transform` and `ignore-clip-ignore` sabotages.
+`clip-derive.ts` models D9 and D10. Group g5d adds the receiver, canvas-variant and sabotage legs
+(`lib/gate5d-checks.ts`).
+
+Images (under the run directory): `reference/shots/step-{0..9}.png` and the receivers'
+`receiver/shots/seq-<n>.png` and `receiver-patch/shots/seq-<n>.png` at the settle seqs (twenty
+shots, every pixel equal to the reference's, band pixels included: budget 0), and the sabotage
+receivers' shots under `sabotage-*/receiver/shots/` and `sabotage-receiver-*/shots/`.
+
+- **Commands.** All 760 settle-frame commands of both sinks equal `expected.json`'s calls,
+  passthrough arguments float32-exact; not one computed argument needed its 2-ulp allowance.
+  Line2D is one triangle array (6 vertices, 12 indices, count −1, identical across step 3's
+  redraw), the dashed line one 16-point multiline, the unfilled rect and circle closed polylines
+  of 5 and 65 points. The full sink is 4 148 170 bytes over 400 transactions, the patch sink
+  259 457.
+- **Clipping.** `deriveClipRects` gives CG `[344,120,408,168]` (moved at step 7, shifted at 9) and
+  exactly one clip-ignored command (index 2) at every step, on both sinks and on receiver-patch's
+  own state dumps, each of which equals the recording's resolved state.
+- **D11.** The `canvas` variant's capture classifies `unsupported` with exactly five refusals,
+  each `canvas-texture-headless`: BL's and PG's polygons, PR's primitives and triangle array, and
+  Line2D's triangle array; the textured polygon, the nine-patches and every op without a texture
+  argument stay commands.
+- **Sabotages**, each exactly as `make_expected.py` predicts: freeze-frame @11 at steps 1..9;
+  perturb-vertex @21 in LN {8,9}, PL {3..9}, PG {2..9}, PR {4..9}, CI {6..9} and L2 {3..9};
+  omit-op `canvas_item_add_polygon` @21 in PG {2..9}; the receiver's ignore-set-transform in ST and
+  ignore-clip-ignore in CG at every step.
+- **Gates 3 and 4 flipped to `success`** (Q6g): G3d's `capture-clip-ignore` and
+  `receiver-clip-ignore` (equal to the reference in every region, `ri` included), and every G4d
+  leg, the underline variant included (one wide `add_line` per redraw, width 1.203125).
+
+### Findings
+
+- **`RichTextLabel` emits two `add_set_transform` per glyph per pass**, not one per line: the
+  glyph's own transform before it and `Transform2D()` after, in the text pass and again in the
+  outline pass, identity without `[fx]`, spaces and the paragraph's trailing break included. G4d's
+  `RTL` carries 30, 40, 54, 68, 102 and 112 of them at steps 0–5 (`2 × glyphs`, plus `2 × 8` for the
+  outlined span); gate4-design.md's G4d note is amended.
+- **Gate 0's `unsupported` variant had to change**: its marker circle became a command, so the
+  circle now sits inside a whole-period `draw_animation_slice`, which stays typed.
+- **The snapshot needs the version stamp too**: the mirror stamps `ProtocolVersion::V4`, or
+  `make_full` would encode three-block transactions under a GRS4 session.
+- `golden-4/`'s state-8 triangle array (`count` 3 over 6 indices) is one the engine refuses; a
+  receiver replaying it logs the engine's `count > p_indices.size()` error, harmlessly.
+
+### What G5d does not prove
+
+- Meshes on the wire: `add_mesh` stays a typed refusal in the capture and is skipped by the
+  receiver (`mesh-not-replayed`) until G5e brings the mirror's mesh table; `capture-mesh` stays
+  `unsupported`.
+- Styleboxes, `TabBar`'s flipped box and the focused `RichTextLabel`'s clip-ignore pair at scale
+  (G5g); live geometry through dropped presentations (G5f).
+- Browser receivers (gate 7): `clip-derive.ts` leaves rects that need the server's lowering
+  (antialiased lines, wide polylines, circles, meshes) unknown.
+- Pixel exactness on another GPU or driver: one RTX 2060 under GLES3.
 
 ## Gate 5.5c result (2026-10-10)
 

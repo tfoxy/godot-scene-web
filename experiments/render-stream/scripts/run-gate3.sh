@@ -17,8 +17,9 @@
 # clip-before-clear on g3a's capture, and root-size-observe), g3c (G3c: the rotated/scaled
 # fixture fixtures/gate3-xform's import, capture, three rendered references, two rendered
 # receivers, a perturb sabotage and the receiver's ignore-clip sabotage) and g3d (G3d: calibrator
-# 6, `canvas_item_add_clip_ignore` refused and typed -- a headless capture of the `clip-ignore`
-# variant, its rendered reference and a rendered receiver on the capture's recording).
+# 6, `canvas_item_add_clip_ignore` -- refused and typed on render-stream/3, a real command replayed
+# by the receiver since G5d (render-stream/4) -- a headless capture of the `clip-ignore` variant,
+# its rendered reference and a rendered receiver on the capture's recording).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -416,13 +417,15 @@ run_g3c() {
 	GS_RUN_DIR=""
 }
 
-# group g3d: calibrator 6, canvas_item_add_clip_ignore refused and typed (gate3-design.md "G3d").
+# group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d"; refused and typed on
+# render-stream/3, a real command since G5d, gate5-design.md D10 and Q6g).
 # RS_FIXTURE_VARIANT=clip-ignore adds the static raw item RI; it is disjoint from every other
 # fixture region, so the main (non-variant) legs of g3a are untouched. Now that g3b's receiver
 # apply-order fix has landed, receiver-clip-ignore replays and compares every one of the ten
 # settle steps, same as g3a's own receiver would -- RI never redraws, so the only question is
 # whether the base scene's own clipping Controls still replay correctly alongside it, which g3b's
-# own legs already answer; this leg only has to show region `ri` disagreeing.
+# own legs already answer. On /3 this leg showed region `ri` alone disagreeing; since G5d the
+# receiver replays add_clip_ignore and matches the reference everywhere.
 run_g3d() {
 	echo "run-gate3: capture-clip-ignore"
 	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=clip-ignore)

@@ -13,8 +13,9 @@
 //     truth for what happened to meshes and when, with a whole-surface GRM1 hash per change;
 //   - the reference's mesh oracle (mesh_oracle.gd), which reads the rendered reference's own GPU
 //     buffers back through RenderingServer.mesh_get_surface and hashes them as GRM1.
-// On render-stream/3 no mesh reaches the wire: canvas_item_add_mesh is a typed `unsupported`
-// command, so the capture leg classifies `unsupported` (G5e moves meshes onto /4).
+// No mesh reaches the wire yet: on render-stream/3, and on /4 since G5d until G5e brings the mirror's
+// mesh table, canvas_item_add_mesh is a typed `unsupported` command, so the capture leg classifies
+// `unsupported`.
 //
 // Evidence layout under <out>/mesh/ (see scripts/README.md "Gate 5"):
 //   import/fixture/                editor --import of fixtures/gate5-mesh
@@ -1044,7 +1045,7 @@ export async function runGate5c(
     ),
     check(
       "leg-class-capture-mesh",
-      "the capture-mesh leg classifies as unsupported on the pre-/4 wire: armed, stream closed, both sinks valid, the only unsupported op canvas_item_add_mesh (unsupported-op), each item's commands at every settle frame as expected (FR's cleared at 8), and RM's content_version constant over the whole run",
+      "the capture-mesh leg classifies as unsupported (render-stream/4 since G5d, which keeps canvas_item_add_mesh typed until G5e): armed, stream closed, both sinks valid, the only unsupported op canvas_item_add_mesh (unsupported-op), each item's commands at every settle frame as expected (FR's cleared at 8), and RM's content_version constant over the whole run",
       typed.problems,
       `${capture.result_class}: ${typed.ops.join(", ")} typed; RM content_version ${typed.rm_versions.join(",")}`,
       capture.artifacts,

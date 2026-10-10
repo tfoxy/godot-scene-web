@@ -31,10 +31,9 @@
 // new commands, a mesh table and the cmd_i32 block, too small a delta (gate4-design.md G4e1:
 // "Renaming files is not part of this contract") to justify duplicating this module. `version`
 // selects the expected magic (GRS2/GRS3/GRS4) and the decoded/resolved schema strings. Since
-// G4e2 the capture, the receiver and every gate checker speak /3 (G5d switches them to /4), so
-// the parameter defaults to 3; /2 decoding remains only for golden-2/ and /4 decoding is
-// exercised only against golden-4/ until G5d lands (self-test-rs2.ts passes 2/3/4 explicitly per
-// golden directory). Every new command, sabotage kind and the mesh table are always
+// G5d the capture, the receiver and every gate checker speak /4 (/3 from G4e2), so the parameter
+// defaults to 4; /2 and /3 decoding remain only for golden-2/ and golden-3/ (self-test-rs2.ts
+// passes 2/3/4 explicitly per golden directory). Every new command, sabotage kind and the mesh table are always
 // representable regardless of `version` -- a /2 or /3 stream simply never contains them in
 // practice, since the capture never emits them below its own version.
 //
@@ -1722,7 +1721,7 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 3,
+  version: 2 | 3 | 4 = 4,
 ): {
   records: RawRecord[];
   errors: string[];
@@ -1787,7 +1786,7 @@ export interface DecodedRecord {
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 = 3,
+  version: 2 | 3 | 4 = 4,
 ): {
   record?: DecodedRecord;
   errors: string[];
@@ -1936,7 +1935,7 @@ export function decodeRecord(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 3,
+  version: 2 | 3 | 4 = 4,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -3252,7 +3251,7 @@ function checkResolvedInvariants(
 
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 3,
+  version: 2 | 3 | 4 = 4,
 ): string[] {
   const isV4 = version === 4;
   const split = splitRecords(data, version);
@@ -3848,7 +3847,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 3,
+  version: 2 | 3 | 4 = 4,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];

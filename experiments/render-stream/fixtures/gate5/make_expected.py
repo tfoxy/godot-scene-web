@@ -888,20 +888,32 @@ def check(steps, op_lists):
 
 
 def lowering_predictions(steps):
+    """Engine-lowering predictions checked on the capture (D12 (5), G5d `lowering-predictions`).
+    `item` and `index` (G5d) name the command: the index-th command of that item's command list
+    (its calls in order at step 0)."""
     s0 = steps[0]
     l2 = s0["calls"]["L2"][0]
     p = {
-        "L2": {"op": "canvas_item_add_triangle_array", "vertices": len(l2["points"]), "indices": len(l2["indices"]), "colors": 1, "uvs": 0, "count": -1},
-        "L5": {"op": "canvas_item_add_multiline", "points": len(s0["calls"]["LN"][4]["points"]), "colors": 1},
-        "P2": {"op": "canvas_item_add_polyline", "points": 5, "colors": 1},
-        "C3": {"op": "canvas_item_add_polyline", "points": 65, "colors": 1},
+        "L2": {"op": "canvas_item_add_triangle_array", "item": "L2", "index": 0, "vertices": len(l2["points"]), "indices": len(l2["indices"]), "colors": 1, "uvs": 0, "count": -1},
+        "L5": {"op": "canvas_item_add_multiline", "item": "LN", "index": 4, "points": len(s0["calls"]["LN"][4]["points"]), "colors": 1},
+        "P2": {"op": "canvas_item_add_polyline", "item": "PL", "index": 1, "points": 5, "colors": 1},
+        "C3": {"op": "canvas_item_add_polyline", "item": "CI", "index": 2, "points": 65, "colors": 1},
     }
     # Hand values (Q1a, Q6b): Line2D sharp, no caps -> strip_begin + one quad per point after the
     # first = 6 vertices, 12 indices; the dashed line has 8 dashes.
     assert p["L2"]["vertices"] == 6 and p["L2"]["indices"] == 12, p["L2"]
     assert p["L5"]["points"] == 16, p["L5"]
+    for key, pred in p.items():
+        calls = [c for c in s0["calls"][PARENT.get(pred["item"], pred["item"])] if c["item"] == pred["item"]]
+        call = calls[pred["index"]]
+        assert call["op"] == pred["op"], (key, call["op"])
+        if "points" in pred:
+            assert len(call["points"]) == pred["points"], (key, len(call["points"]))
     return p
 
+
+# The /4 ops with a texture argument (render-stream-4.md "Command": `tex`), D11's scope.
+TEXTURE_ARG_OPS = {"canvas_item_add_primitive", "canvas_item_add_polygon", "canvas_item_add_triangle_array", "canvas_item_add_nine_patch"}
 
 GEOMETRY_OPS = {"canvas_item_add_line", "canvas_item_add_polyline", "canvas_item_add_multiline", "canvas_item_add_primitive", "canvas_item_add_polygon", "canvas_item_add_triangle_array"}
 
@@ -930,7 +942,14 @@ def predictions(steps):
         k = first_redraw(r, S + N * 2, {"canvas_item_add_polygon"})
         if k is not None:
             omit[r] = mismatch_from(k)
+    # D11, variant `canvas` (G5d `capture-canvas`): a headless capture that has created a
+    # CanvasTexture refuses every /4 op naming RID() -- here the untextured polygons, primitives and
+    # triangle arrays (Line2D's included) -- as `canvas-texture-headless`; the textured ones (G3,
+    # the nine-patches) and the ops without a texture argument stay commands.
+    refused = sorted({(c["item"], c["op"]) for s in steps for calls in s["calls"].values() for c in calls if c["op"] in TEXTURE_ARG_OPS and c.get("texture") is None})
+    assert refused == [("BL", "canvas_item_add_polygon"), ("L2", "canvas_item_add_triangle_array"), ("PG", "canvas_item_add_polygon"), ("PR", "canvas_item_add_primitive"), ("PR", "canvas_item_add_triangle_array")], refused
     out = {
+        "capture-canvas": {"class": "unsupported", "reason": "canvas-texture-headless", "entries": [list(e) for e in refused]},
         "sabotage-freeze": {"frame": S + N, "steps": list(range(1, LAST_STEP + 1))},
         "sabotage-perturb-vertex": {"frame": S + N * 2, "regions": perturb},
         "sabotage-omit-polygon": {"frame": S + N * 2, "op": "canvas_item_add_polygon", "regions": omit},

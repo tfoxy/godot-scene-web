@@ -124,9 +124,11 @@ def rgba8(r, g, b):
 
 # Variant clip-ignore (gate3-design.md Q6b "Variant clip-ignore", G3d): a raw item RI, present
 # only under RS_FIXTURE_VARIANT=clip-ignore, static for the whole run. Its second rect is drawn
-# unclipped by the real engine between the two add_clip_ignore calls (Q1d), but a receiver -- which
-# only sees them as unsupported commands with no numeric effect -- clips both rects to RI's own
-# scissor. The only region the two images differ in is "ri".
+# unclipped by the real engine between the two add_clip_ignore calls (Q1d). On render-stream/3 a
+# receiver only saw them as unsupported commands and clipped both rects to RI's own scissor, so
+# the images differed in region "ri". Since G5d (gate5-design.md D10 and Q6g, render-stream/4)
+# add_clip_ignore is a real command the receiver replays in order, so the receiver draws exactly
+# what the reference draws and the two images differ nowhere.
 RI_REGION_NAME = "ri"
 RI_REGION = [464, 176, 88, 64]
 RI_ORIGIN = (472, 184)
@@ -691,23 +693,26 @@ def ri_clip_px_at(shift):
 
 def variant_clip_ignore():
     """gate3-design.md Q6b "Variant clip-ignore": RI's two draws under the engine's real clip_ignore
-    semantics (reference) and under a receiver that cannot see them (receiver). RI is static, but
-    the step-9 canvas shift (Q6b) still moves it like every other top-level item -- the shift is
-    not gate 3b's D3 fix, it is RI simply inheriting the canvas transform, so both reference_draws
-    and receiver_draws are per step. Now that gate 3b's receiver apply-order fix is in,
-    receiver-clip-ignore is compared at every step, same as reference-clip-ignore; the only
-    expected difference is the clip_px of RI's second rect (unclipped on the reference, clipped to
-    RI's own scissor on the receiver, which only sees the two add_clip_ignore calls as unsupported
-    commands with no numeric effect)."""
+    semantics. RI is static, but the step-9 canvas shift (Q6b) still moves it like every other
+    top-level item -- the shift is not gate 3b's D3 fix, it is RI simply inheriting the canvas
+    transform, so both reference_draws and receiver_draws are per step.
+
+    Since G5d (gate5-design.md D10 and Q6g, render-stream/4), add_clip_ignore travels as a real
+    command ({"op": "add_clip_ignore", "ignore": bool}) that the receiver replays in order with the
+    engine's own RenderingServer call, so receiver_draws equals reference_draws at every step (the
+    second rect unclipped on both) and receiver-clip-ignore matches reference-clip-ignore in every
+    region, "ri" included. Before G5d (render-stream/3) the receiver saw two unsupported commands
+    with no numeric effect and clipped the second rect to RI's own scissor: region "ri" was the
+    one predicted difference."""
     clip0 = ri_clip_px()
     reference_draws = []
     receiver_draws = []
     for step in range(LAST_STEP + 1):
         shift = (8, 4) if step >= 9 else (0, 0)
         clip = ri_clip_px_at(shift)
-        first = ri_draw(RI_RECT_1[0], RI_RECT_1[1], clip, shift)
-        reference_draws.append([first, ri_draw(RI_RECT_2[0], RI_RECT_2[1], None, shift)])
-        receiver_draws.append([first, ri_draw(RI_RECT_2[0], RI_RECT_2[1], clip, shift)])
+        draws = [ri_draw(RI_RECT_1[0], RI_RECT_1[1], clip, shift), ri_draw(RI_RECT_2[0], RI_RECT_2[1], None, shift)]
+        reference_draws.append(draws)
+        receiver_draws.append([dict(d) for d in draws])
     return {
         "name": "clip-ignore",
         "region_name": RI_REGION_NAME,
@@ -715,8 +720,8 @@ def variant_clip_ignore():
         "clip_px": clip0,
         # Between add_clip_ignore(true) and add_clip_ignore(false) the second rect is unclipped.
         "reference_draws": reference_draws,
-        # A receiver drops both add_clip_ignore calls (unsupported, no numeric effect) and clips
-        # every command of RI to its own scissor as usual.
+        # Since G5d the receiver replays both add_clip_ignore commands (D10), so it draws exactly
+        # what the reference draws: the second rect unclipped here too.
         "receiver_draws": receiver_draws,
     }
 

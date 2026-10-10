@@ -1435,7 +1435,7 @@ export function checkCaptureLegClass(e: Gate2LegEvaluation): Gate2Check {
     if (!drawn.has(op)) problems.push(`no ${op} command in the recording`);
   return check(
     "leg-class-capture",
-    "the capture leg classifies as success on render-stream/3 (render-stream/2 from G2b2 to G4e2): no unsupported entry or command, and the fixture's texture draws are add_texture_rect / add_texture_rect_region commands; the recording decodes",
+    "the capture leg classifies as success on render-stream/4 (render-stream/2 from G2b2 to G4e2, /3 to G5d): no unsupported entry or command, and the fixture's texture draws are add_texture_rect / add_texture_rect_region commands; the recording decodes",
     problems,
     `${e.result_class}: commands ${[...drawn].sort().join(", ")}`,
     e.artifacts,

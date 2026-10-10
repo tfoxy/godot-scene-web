@@ -12,7 +12,8 @@ extends SceneTree
 ## "[rs2-selftest] ok" and quits 0, or prints each failure and quits 1.
 ##
 ## Pure-codec properties only (gate2-design.md G2b1 "Pass criteria", gate4-design.md G4e1's and
-## render-stream-4.md G5w's -- the applier, RsApplier, does not speak /4 until G5d):
+## render-stream-4.md G5w's -- the applier, RsApplier, speaks /4 since G5d, and
+## applier2_selftest.gd covers it):
 ##   1. decode_record()-equivalent (split_records + decode_record) deep-equals *.decoded.json for
 ##      full/patch/inline.rs2, .rs3 and .rs4;
 ##   2. the Stream's resolved state after each transaction deep-equals resolved.json's per-seq

@@ -147,7 +147,7 @@ export const GATE0_HOOKS: readonly string[] = [
   "viewport_set_default_canvas_item_texture_repeat",
 ];
 
-/** Session `features` of a HEADLESS host at render-stream/3, exactly (render-stream-2.md "Session
+/** Session `features` of a HEADLESS host at render-stream/4, exactly (render-stream-2.md "Session
  * record"; protocol/golden-2/make_golden.py FEATURE_*): /1's lists with the two texture-rect draws
  * captured (they leave observed_unsupported_ops for `ops`), calibrator 5's
  * `canvas_item_add_lcd_texture_rect_region` hooked (observed, unsupported), the default texture
@@ -163,13 +163,28 @@ export const GATE0_HOOKS: readonly string[] = [
  * `canvas_item_add_msdf_texture_rect_region`. The name keeps its /2 spelling, as the rs2 modules
  * do (gate4-design.md G4e1). Since G5a (calibrator 7, gate5-design.md D2):
  * `observed_unsupported_ops` also gains `canvas_item_add_animation_slice`,
- * `canvas_item_add_multiline`, `canvas_item_add_particles` and `canvas_item_attach_skeleton`. */
+ * `canvas_item_add_multiline`, `canvas_item_add_particles` and `canvas_item_attach_skeleton`.
+ * Since G5d every capture speaks render-stream/4 (render-stream-4.md "Features"): fifteen `ops`
+ * (the ten geometry and command-list ops plus `add_multiline` leave `observed_unsupported_ops`,
+ * which keeps the six still-refused methods), `resources` gains `mesh`, and `unobserved` gains the
+ * two snap-to-pixel viewport settings. */
 export const RS2_FEATURES = {
   ops: [
+    "add_circle",
+    "add_clip_ignore",
+    "add_line",
+    "add_mesh",
     "add_msdf_texture_rect_region",
+    "add_multiline",
+    "add_nine_patch",
+    "add_polygon",
+    "add_polyline",
+    "add_primitive",
     "add_rect",
+    "add_set_transform",
     "add_texture_rect",
     "add_texture_rect_region",
+    "add_triangle_array",
   ],
   item_state: [
     "behind",
@@ -188,26 +203,15 @@ export const RS2_FEATURES = {
     "z_index",
     "z_relative",
   ],
-  resources: ["texture_2d", "texture_2d_placeholder"],
+  resources: ["mesh", "texture_2d", "texture_2d_placeholder"],
   unsupported_resources: [
     { resource: "canvas_texture", reason: "canvas-texture-headless" },
   ],
   observed_unsupported_ops: [
     "canvas_item_add_animation_slice",
-    "canvas_item_add_circle",
-    "canvas_item_add_clip_ignore",
     "canvas_item_add_lcd_texture_rect_region",
-    "canvas_item_add_line",
-    "canvas_item_add_mesh",
-    "canvas_item_add_multiline",
     "canvas_item_add_multimesh",
-    "canvas_item_add_nine_patch",
     "canvas_item_add_particles",
-    "canvas_item_add_polygon",
-    "canvas_item_add_polyline",
-    "canvas_item_add_primitive",
-    "canvas_item_add_set_transform",
-    "canvas_item_add_triangle_array",
     "canvas_item_attach_skeleton",
     "canvas_item_set_material",
   ],
@@ -223,26 +227,30 @@ export const RS2_FEATURES = {
     "viewport_remove_canvas",
     "viewport_set_canvas_cull_mask",
     "viewport_set_global_canvas_transform",
+    "viewport_set_snap_2d_transforms_to_pixel",
+    "viewport_set_snap_2d_vertices_to_pixel",
   ],
   publication: "snapshot-or-patch",
 } as const;
 
-/** The session protocol every capture publishes since G4e2 (render-stream-3.md). */
-export const WIRE_PROTOCOL = "render-stream/3";
+/** The session protocol every capture publishes since G5d (render-stream-4.md; render-stream/3
+ * from G4e2). */
+export const WIRE_PROTOCOL = "render-stream/4";
 
 /** The session `features` of a rendered (GPU-backed) host: RS2_FEATURES with `canvas_texture`
  * supported and nothing refused. */
 export const RS2_FEATURES_RENDERED = {
   ...RS2_FEATURES,
-  resources: ["canvas_texture", "texture_2d", "texture_2d_placeholder"],
+  resources: ["canvas_texture", "mesh", "texture_2d", "texture_2d_placeholder"],
   unsupported_resources: [],
 } as const;
 
 /** Session `resources` of a file capture (gate2-design.md Q4 "File sinks"): out-of-band through
- * the store directory, nothing inline, the gate 2 permitted formats. */
+ * the store directory, nothing inline, the gate 2 permitted formats. Since G5d (render-stream-4.md
+ * "Resources") `payload` is `payloads`, the mesh and texture payload formats sharing one policy. */
 export const FILE_RESOURCES = {
   hash: "sha256",
-  payload: "render-stream-texture/1",
+  payloads: ["render-stream-mesh/1", "render-stream-texture/1"],
   delivery: "out-of-band",
   inline_max_bytes: 0,
   max_payload_bytes: 67108864,
@@ -1601,7 +1609,7 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
   }
   return check(
     "manifest-present",
-    "the capture session carries protocol render-stream/3, a full file stream, the exact /3 features, the file sinks' resources (out-of-band, directory fetch, the six permitted formats), engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
+    "the capture session carries protocol render-stream/4, a full file stream, the exact /4 features, the file sinks' resources (out-of-band, directory fetch, the six permitted formats), engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
     problems,
     "session manifest as specified",
     [recording.path],
@@ -2055,7 +2063,7 @@ export async function checkReceiverTypedClean(
     );
   return check(
     "receiver-typed-clean",
-    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-3/inline.rs3 (render-stream/3 since G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
+    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-4/inline.rs4 (render-stream/4 since G5d; golden-3/inline.rs3 from G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
     problems,
     `selftest ok, golden replay ok with ${want.length} unsupported entries, no script diagnostics`,
     [selftestLog, minimalLog, minimalApplied],

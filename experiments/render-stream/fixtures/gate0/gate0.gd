@@ -15,7 +15,10 @@ extends Node
 
 ## A `Node2D` whose `_draw()` paints one axis-aligned rect and, when `circle` is set, one black
 ## circle on top -- the extra `canvas_item_add_circle` call the `unsupported` variant adds on the
-## Marker (an op gate 0's mirror does not model; see render-stream-0.md).
+## Marker (an op gate 0's mirror did not model; see render-stream-0.md). Since G5d
+## (render-stream/4, gate5-design.md) add_circle is a supported command, so the circle is wrapped
+## in an animation slice spanning the whole period (`canvas_item_add_animation_slice`, still typed
+## unsupported on /4): it draws every frame on a renderer, and the variant stays `unsupported`.
 class RectNode extends Node2D:
 	var rect: Rect2
 	var color: Color
@@ -24,7 +27,9 @@ class RectNode extends Node2D:
 	func _draw() -> void:
 		draw_rect(rect, color)
 		if circle:
+			draw_animation_slice(1.0, 0.0, 1.0)
 			draw_circle(Vector2(16, 16), 8.0, Color(0, 0, 0, 1))
+			draw_end_animation()
 
 
 const QUIT_FRAME_DEFAULT: int = 52

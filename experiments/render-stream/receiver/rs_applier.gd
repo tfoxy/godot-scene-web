@@ -1,10 +1,15 @@
 class_name RsApplier
 extends RefCounted
-## Applies RESOLVED render-stream/3 state onto the RenderingServer (gate0-design.md "Q5.
+## Applies RESOLVED render-stream/4 state onto the RenderingServer (gate0-design.md "Q5.
 ## Receiver", gate1-design.md "Q5. Receiver" and "G1b2", gate2-design.md "Q5. Receiver" and
 ## "G2b2", gate4-design.md "Q5. Receiver" and "G4e2": /3's add_msdf_texture_rect_region replays
 ## as RenderingServer.canvas_item_add_msdf_texture_rect_region with the wire's floats, under the
-## same residency rules as the other texture commands).
+## same residency rules as the other texture commands; gate5-design.md "Q5. Receiver" and "G5d":
+## /4's immediate geometry ops, add_set_transform and add_clip_ignore replay in order as the
+## engine's own canvas_item_add_* calls with the wire's floats, ints and counts unchanged -- the
+## receiver never computes geometry, and the engine's per-item draw transform (reset per item,
+## replaced not composed) and clip-ignore spans follow from the in-order replay alone. /4's
+## add_mesh is skipped and recorded until G5e brings mesh residency).
 ##
 ## The applier never reads a patch. It takes the state Rs2Decoder.Stream resolved for a
 ## transaction (render-stream-2.md "Decoded and resolved forms": `canvases`/`items`/`textures`
@@ -36,6 +41,14 @@ const FILTERS: Array[String] = [
 	"nearest_mipmaps_anisotropic", "linear_mipmaps_anisotropic",
 ]
 const REPEATS: Array[String] = ["default", "disabled", "enabled", "mirror"]
+## Every command op that names a texture through `tex` (render-stream-2.md "Commands",
+## render-stream-3.md, render-stream-4.md "Command").
+const TEXTURE_OPS: Array[String] = [
+	"add_texture_rect", "add_texture_rect_region", "add_msdf_texture_rect_region",
+	"add_primitive", "add_polygon", "add_triangle_array", "add_nine_patch", "add_mesh",
+]
+## render-stream-4.md add_nine_patch axis spellings, indexed by RenderingServer.NinePatchAxisMode.
+const NINE_PATCH_AXES: Array[String] = ["stretch", "tile", "tile_fit"]
 
 ## Every RenderingServer call made through this applier.
 var rs_calls: int = 0
@@ -64,6 +77,12 @@ var sabotage_clip_before_clear: bool = false
 ## is skipped without a typed record -- the pre-/3 receiver's picture, silently. Exists only to
 ## fail checks.
 var sabotage_drop_msdf: bool = false
+## RS_RECEIVER_SABOTAGE=ignore-set-transform (gate5-design.md Q5, G5d): every add_set_transform
+## is skipped without a record, so later commands draw untransformed. Exists only to fail checks.
+var sabotage_ignore_set_transform: bool = false
+## RS_RECEIVER_SABOTAGE=ignore-clip-ignore (gate5-design.md Q5, G5d): every add_clip_ignore is
+## skipped without a record, so the span stays clipped. Exists only to fail checks.
+var sabotage_ignore_clip_ignore: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
@@ -131,7 +150,7 @@ func _init(viewport: RID, root_canvas: RID) -> void:
 ## stream.accept). Makes no RenderingServer call. Returns {record: decode_record()'s result,
 ## errors: PackedStringArray, kind: String ("" when the record did not decode)}.
 static func accept_record(data: PackedByteArray, offset: int, stream: Rs2Decoder.Stream) -> Dictionary:
-	var record: Dictionary = Rs2Decoder.decode_record(data, offset)
+	var record: Dictionary = Rs2Decoder.decode_record(data, offset, stream.version)
 	var errors: PackedStringArray = record["errors"]
 	var out: Dictionary = {"record": record, "errors": errors, "kind": ""}
 	if errors.size() > 0:
@@ -196,7 +215,7 @@ static func _named_texture_ids(items: Dictionary) -> Array[int]:
 		for value: Variant in item["commands"]:
 			var command: Dictionary = value
 			var op: String = command["op"]
-			if (op == "add_texture_rect" or op == "add_texture_rect_region" or op == "add_msdf_texture_rect_region") and command["tex"] != null:
+			if TEXTURE_OPS.has(op) and command["tex"] != null:
 				seen[Rs2Decoder.as_int(command["tex"])] = true
 	var out: Array[int] = []
 	out.assign(seen.keys())
@@ -220,7 +239,8 @@ static func _named_texture_ids(items: Dictionary) -> Array[int]:
 ## canvas_item_clear / canvas_item_add_rect / canvas_item_add_texture_rect /
 ## canvas_item_add_texture_rect_region / canvas_item_set_clip calls this apply actually made, in
 ## call order (test instrumentation for Q5's apply-order cases), msdf_commands: the
-## canvas_item_add_msdf_texture_rect_region calls it made (G4e2)}.
+## canvas_item_add_msdf_texture_rect_region calls it made (G4e2), geometry_commands: the /4
+## immediate-geometry, add_set_transform and add_clip_ignore calls it made (G5d)}.
 func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionary:
 	var calls_before: int = rs_calls
 	var created: int = 0
@@ -228,6 +248,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 	var reparented: int = 0
 	var replayed: int = 0
 	var msdf_replayed: int = 0
+	var geometry_replayed: int = 0
 	var unsupported_commands: Array[Dictionary] = []
 	var canvases: Dictionary = stream.canvases
 	var items: Dictionary = stream.items
@@ -625,6 +646,30 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 						replayed += 1
 						msdf_replayed += 1
 						item_calls.append({"item": id, "op": op_name})
+					"add_line", "add_polyline", "add_multiline", "add_circle", "add_primitive", "add_polygon", "add_triangle_array", "add_nine_patch", "add_set_transform", "add_clip_ignore":
+						# gate5-design.md Q5 (G5d): the engine's own call, the wire's values unchanged.
+						if op_name == "add_set_transform" and sabotage_ignore_set_transform:
+							continue
+						if op_name == "add_clip_ignore" and sabotage_ignore_clip_ignore:
+							continue
+						var geometry_tex := RID()
+						if TEXTURE_OPS.has(op_name):
+							var geometry_texture: Dictionary = _texture_for(command, textures)
+							if not geometry_texture["drawable"]:
+								skipped += 1
+								unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": "unsupported-texture"})
+								continue
+							geometry_tex = geometry_texture["rid"]
+						_replay_geometry(state.rid, command, geometry_tex)
+						rs_calls += 1
+						replayed += 1
+						geometry_replayed += 1
+						item_calls.append({"item": id, "op": op_name})
+					"add_mesh":
+						# Mesh residency and replay are G5e's (gate5-design.md Q5); until then the
+						# command is skipped and recorded, never drawn with a substitute.
+						skipped += 1
+						unsupported_commands.append({"item": id, "name": "canvas_item_add_mesh", "reason": "mesh-not-replayed"})
 					_:
 						skipped += 1
 						var name: String = command["name"]
@@ -661,7 +706,63 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		"uploads": uploads,
 		"item_calls": item_calls,
 		"msdf_commands": msdf_replayed,
+		"geometry_commands": geometry_replayed,
 	}
+
+
+## One /4 immediate-geometry or command-list-state command as the engine's own
+## RenderingServer.canvas_item_add_* call (gate5-design.md Q5, D3, D9, D10): points, colours, UVs
+## and indices are rebuilt as packed arrays from the wire's float32/int32 values in order, counts
+## and flags as given. `texture` is the command's resolved texture RID (RID() for tex null or a
+## tombstone).
+func _replay_geometry(item: RID, command: Dictionary, texture: RID) -> void:
+	var op_name: String = command["op"]
+	match op_name:
+		"add_line":
+			var from: PackedFloat32Array = _floats(command["from"])
+			var to: PackedFloat32Array = _floats(command["to"])
+			var line_color: PackedFloat32Array = _floats(command["colour"])
+			var line_width: float = command["width"]
+			var line_aa: bool = command["aa"]
+			RenderingServer.canvas_item_add_line(item, Vector2(from[0], from[1]), Vector2(to[0], to[1]), _color(line_color, 0), line_width, line_aa)
+		"add_polyline", "add_multiline":
+			var poly_points: PackedVector2Array = _points(command["points"])
+			var poly_colors: PackedColorArray = _colors(command["colors"])
+			var poly_width: float = command["width"]
+			var poly_aa: bool = command["aa"]
+			if op_name == "add_polyline":
+				RenderingServer.canvas_item_add_polyline(item, poly_points, poly_colors, poly_width, poly_aa)
+			else:
+				RenderingServer.canvas_item_add_multiline(item, poly_points, poly_colors, poly_width, poly_aa)
+		"add_circle":
+			var position: PackedFloat32Array = _floats(command["position"])
+			var circle_color: PackedFloat32Array = _floats(command["colour"])
+			var radius: float = command["radius"]
+			var circle_aa: bool = command["aa"]
+			RenderingServer.canvas_item_add_circle(item, Vector2(position[0], position[1]), radius, _color(circle_color, 0), circle_aa)
+		"add_primitive":
+			RenderingServer.canvas_item_add_primitive(item, _points(command["points"]), _colors(command["colors"]), _points(command["uvs"]), texture)
+		"add_polygon":
+			RenderingServer.canvas_item_add_polygon(item, _points(command["points"]), _colors(command["colors"]), _points(command["uvs"]), texture)
+		"add_triangle_array":
+			var indices: PackedInt32Array = _ints(command["indices"])
+			var count: int = Rs2Decoder.as_int(command["count"])
+			RenderingServer.canvas_item_add_triangle_array(item, indices, _points(command["points"]), _colors(command["colors"]), _points(command["uvs"]), PackedInt32Array(), PackedFloat32Array(), texture, count)
+		"add_nine_patch":
+			var np_rect: PackedFloat32Array = _floats(command["rect"])
+			var np_source: PackedFloat32Array = _floats(command["source"])
+			var margins: PackedFloat32Array = _floats(command["margins"])
+			var np_modulate: PackedFloat32Array = _floats(command["modulate"])
+			var x_axis: String = command["x_axis"]
+			var y_axis: String = command["y_axis"]
+			var draw_center: bool = command["draw_center"]
+			RenderingServer.canvas_item_add_nine_patch(item, _rect(np_rect, 0), _rect(np_source, 0), texture, Vector2(margins[0], margins[1]), Vector2(margins[2], margins[3]), NINE_PATCH_AXES.find(x_axis) as RenderingServer.NinePatchAxisMode, NINE_PATCH_AXES.find(y_axis) as RenderingServer.NinePatchAxisMode, draw_center, _color(np_modulate, 0))
+		"add_set_transform":
+			var transform: PackedFloat32Array = _floats(command["transform"])
+			RenderingServer.canvas_item_add_set_transform(item, _xform(transform, 0))
+		"add_clip_ignore":
+			var ignore: bool = command["ignore"]
+			RenderingServer.canvas_item_add_clip_ignore(item, ignore)
 
 
 ## The `clip` setter (apply_state()'s docstring, D3/G3b): a call only when the wire value differs
@@ -816,6 +917,35 @@ static func _first_divergence(current: Array[int], wire: Array[int]) -> int:
 static func _floats(values: Variant) -> PackedFloat32Array:
 	var list: Array = values
 	return PackedFloat32Array(list)
+
+
+## A resolved [[x, y], ...] list as a PackedVector2Array (float32 values unchanged).
+static func _points(values: Variant) -> PackedVector2Array:
+	var list: Array = values
+	var out := PackedVector2Array()
+	for value: Variant in list:
+		var pair: PackedFloat32Array = _floats(value)
+		out.append(Vector2(pair[0], pair[1]))
+	return out
+
+
+## A resolved [[r, g, b, a], ...] list as a PackedColorArray.
+static func _colors(values: Variant) -> PackedColorArray:
+	var list: Array = values
+	var out := PackedColorArray()
+	for value: Variant in list:
+		var rgba: PackedFloat32Array = _floats(value)
+		out.append(Color(rgba[0], rgba[1], rgba[2], rgba[3]))
+	return out
+
+
+## A resolved int list as a PackedInt32Array.
+static func _ints(values: Variant) -> PackedInt32Array:
+	var list: Array = values
+	var out := PackedInt32Array()
+	for value: Variant in list:
+		out.append(Rs2Decoder.as_int(value))
+	return out
 
 
 static func _xform(f: PackedFloat32Array, at: int) -> Transform2D:

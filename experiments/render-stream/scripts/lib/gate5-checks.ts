@@ -1,12 +1,13 @@
-// Gate 5 checks and leg classification (protocol/gate5-design.md "Q7" and "G5b").
+// Gate 5 checks and leg classification (protocol/gate5-design.md "Q7", "G5b" and "G5d").
 //
 // Everything here reads an evidence directory written by run-gate5.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate5.ts can drive each check with synthetic
 // values. Nothing launches a process. Classification never reads `session.sabotage`.
 //
-// Group g5b: the immediate-geometry fixture (fixtures/gate5). Its capture runs on the wire main
-// speaks before G5d (render-stream/3 since G4e2), where every geometry op but add_rect is typed
-// `unsupported`; the capture leg must classify exactly that. The pixels are checked against an
+// Group g5b: the immediate-geometry fixture (fixtures/gate5). Its capture classified `unsupported`
+// on render-stream/3 (every geometry op but add_rect typed); since G5d it runs on render-stream/4,
+// where every op is a command, and the capture leg must classify `success` with every item's
+// commands in the expected op order (group g5d checks their values). The pixels are checked against an
 // independent model: make_expected.py's hand lowering of every RenderingServer call, rasterized by
 // lib/geometry-raster.ts. Exact pixels must match exactly (delta 1 where colours interpolate or
 // blend), band pixels (antialiased feathers, thin GL lines) must show presence, and a same-build
@@ -23,6 +24,8 @@
 //                                  steps.jsonl
 //   reference-armed/               rendered, extension armed with a full-sink stream: shots,
 //                                  steps.jsonl, evidence/, recording.rs2, store/
+// Group g5d (G5d) adds the receiver, sabotage and canvas-variant legs; their evaluators and
+// layout are in lib/gate5d-checks.ts.
 
 import { join } from "node:path";
 
@@ -33,11 +36,15 @@ import {
   readTextOrUndefined,
 } from "./gate-minus1-checks";
 import {
+  type AppliedJson,
   type CaptureResultJson,
   checkCaptureArmed,
   checkHeadlessNoGpuGate0,
+  checkReceiverNeverLoadedFixture,
+  classifyLeg,
   firstTransactionWithRectColor,
   type Gate0Check,
+  loadRecording,
   parseStepLog,
   RECORDING_NAME,
   type RecordingSummary,
@@ -55,11 +62,28 @@ import {
 } from "./gate3-checks";
 import {
   type Box,
-  type Gate5Call,
   type Gate5Expected,
   isShape,
   stepFrames5,
 } from "./gate5-expected";
+import {
+  computeGate5Checkpoints,
+  evaluateCaptureCanvas,
+  evaluateClipRectsDerived,
+  evaluateGeometryCommands,
+  evaluateLegClass5,
+  evaluateLoweringPredictions,
+  expectedCommandsByStep,
+  G5D_SABOTAGE_CAPTURE_KINDS,
+  G5D_SABOTAGE_RECEIVER_KINDS,
+  type Gate5LegExpectation,
+  itemIdsByName,
+  loadReceiverShots5,
+  receiverStates,
+  settleSeqs,
+  shotSeqsPresent5,
+  sinkStates,
+} from "./gate5d-checks";
 import {
   type Gate5Raster,
   meshTopology,
@@ -77,7 +101,7 @@ export type Gate5Check = Gate3Check;
 
 export const ALL_GROUPS = ["g5b", "g5c", "g5d", "g5e", "g5f", "g5g"] as const;
 /** Groups whose increment has landed; run-gate5.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g5b", "g5c"];
+export const LANDED_GROUPS: readonly string[] = ["g5b", "g5c", "g5d"];
 
 export const G5B_SUPPORT_LEGS = [
   "import",
@@ -113,7 +137,7 @@ function fromGate0(c: Gate0Check): Gate5Check {
   return { ...c, status: c.passed ? "pass" : "fail" };
 }
 
-const f32 = (v: number): number => Math.fround(v);
+const _f32 = (v: number): number => Math.fround(v);
 
 // ---------------------------------------------------------------------------------------------
 // Shots and rasters
@@ -497,101 +521,28 @@ export async function checkGeometryHookCensus(
 }
 
 // ---------------------------------------------------------------------------------------------
-// leg-class-capture: unsupported, every geometry op typed
+// leg-class-capture: success on render-stream/4 (G5d; `unsupported` with every op typed on /3)
 // ---------------------------------------------------------------------------------------------
 
-/** The /0-/3 command a fixture call records: add_rect is supported, every other hooked op is an
- * `unsupported` command named by its RS method, and an unhooked op records nothing. */
-export function typedCommandOf(
-  call: Gate5Call,
-  hooked: ReadonlySet<string>,
-): {
-  op: string;
-  name?: string;
-  rect?: number[];
-  color?: number[];
-  aa?: boolean;
-} | null {
-  if (!hooked.has(call.op)) return null;
-  if (call.op === "canvas_item_add_rect")
-    return {
-      op: "add_rect",
-      rect: (call.rect as number[]).map(f32),
-      color: (call.color as number[]).map(f32),
-      aa: call.antialiased as boolean,
-    };
-  return { op: "unsupported", name: call.op };
-}
-
-/** Per step, each item's typed command list as of that step (carried from its last redraw). */
-export function typedCommandsByStep(
-  expected: Pick<Gate5Expected, "steps">,
-  hooked: ReadonlySet<string>,
-): Map<number, Map<string, ReturnType<typeof typedCommandOf>[]>> {
-  const out = new Map<
-    number,
-    Map<string, ReturnType<typeof typedCommandOf>[]>
-  >();
-  const current = new Map<string, ReturnType<typeof typedCommandOf>[]>();
-  for (const s of expected.steps) {
-    const fresh = new Map<string, ReturnType<typeof typedCommandOf>[]>();
-    for (const calls of Object.values(s.calls))
-      for (const c of calls) {
-        const list = fresh.get(c.item) ?? [];
-        const typed = typedCommandOf(c, hooked);
-        if (typed) list.push(typed);
-        fresh.set(c.item, list);
-      }
-    for (const [item, list] of fresh) current.set(item, list);
-    out.set(s.step, new Map(current));
-  }
-  return out;
-}
-
-/** Pure: the capture classifies `unsupported`, the unsupported ops it carries are exactly
- * typed_ops (plus calibrator 7's when planned), every unsupported entry is `unsupported-op`, and at
- * every settle frame each fixture item's resolved commands are its expected typed list (add_rect
- * float32-exact, every other op an `unsupported` command named by its RS method, in call order). */
-export function evaluateCaptureTyped(
+/** Pure: the capture classifies `success` on render-stream/4: no unsupported entry or command
+ * (draw-index ties aside), and at every settle frame each fixture item's commands carry exactly
+ * its expected calls' /4 ops, in call order (group g5d's geometry-commands compares the values). */
+export function evaluateCaptureLegClass5(
   expected: Gate5Expected,
   capture: Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full">,
-  hooksPlanned: readonly string[] | undefined,
 ): { problems: string[]; ops: string[] } {
   const problems: string[] = [];
-  if (capture.result_class !== "unsupported")
+  if (capture.result_class !== "success")
     problems.push(
-      `class ${capture.result_class}, expected unsupported: ${capture.reasons.slice(0, 2).join(" | ")}`,
+      `class ${capture.result_class}, expected success: ${capture.reasons.slice(0, 2).join(" | ")}`,
     );
-  const planned = new Set(hooksPlanned ?? []);
-  const want = [
-    ...expected.typed_ops,
-    ...expected.calibrator7_ops.filter((op) => planned.has(op)),
-  ].sort();
-  const ops = unsupportedOps(capture.full);
-  if (JSON.stringify(ops) !== JSON.stringify(want))
-    problems.push(
-      `unsupported ops ${JSON.stringify(ops)} != ${JSON.stringify(want)}`,
-    );
-  const reasons = new Set<string>();
-  for (const t of capture.full.transactions)
-    for (const u of t.meta.unsupported)
-      if (u.reason !== "draw-index-tie") reasons.add(u.reason);
-  if ([...reasons].some((r) => r !== "unsupported-op"))
-    problems.push(
-      `unsupported entry reasons ${[...reasons].sort().join(",")}, expected unsupported-op only`,
-    );
-  // Item names by creation order.
-  const ids = new Set<number>();
-  for (const t of capture.full.transactions)
-    for (const i of t.meta.items) ids.add(i.id);
-  const sorted = [...ids].sort((a, b) => a - b);
-  if (sorted.length !== expected.creation_order.length)
-    problems.push(
-      `${sorted.length} item ids in the recording, expected ${expected.creation_order.length}`,
-    );
-  const idOf = new Map(expected.creation_order.map((n, k) => [n, sorted[k]]));
-  const hooked = new Set(hooksPlanned ?? []);
-  const typed = typedCommandsByStep(expected, hooked);
+  const unsupported = unsupportedOps(capture.full);
+  if (unsupported.length > 0)
+    problems.push(`the recording carries unsupported ${unsupported.join(",")}`);
+  const ids = itemIdsByName(expected, capture.full);
+  problems.push(...ids.problems);
+  const byStep = expectedCommandsByStep(expected, new Map());
+  const ops = new Set<string>();
   for (const s of expected.steps) {
     const t = capture.full.transactions.find(
       (x) => x.meta.frame === s.settle_frame,
@@ -602,33 +553,30 @@ export function evaluateCaptureTyped(
       );
       continue;
     }
-    for (const [name, want2] of typed.get(s.step) ?? []) {
-      const item = t.meta.items.find((i) => i.id === idOf.get(name));
-      const got = (item?.commands ?? []).map((c) =>
-        c.op === "add_rect"
-          ? { op: c.op, rect: c.rect, color: c.color, aa: c.aa }
-          : { op: c.op, name: c.name },
-      );
-      if (JSON.stringify(got) !== JSON.stringify(want2))
+    for (const [name, want] of byStep.get(s.step) ?? []) {
+      const item = t.meta.items.find((i) => i.id === ids.ids.get(name));
+      const got = (item?.commands ?? []).map((c) => c.op);
+      for (const op of got) ops.add(op);
+      const wantOps = want.map((w) => w.command?.op ?? `?${w.call.op}`);
+      if (JSON.stringify(got) !== JSON.stringify(wantOps))
         problems.push(
-          `step ${s.step} ${name}: commands ${JSON.stringify(got).slice(0, 200)} != ${JSON.stringify(want2).slice(0, 200)}`,
+          `step ${s.step} ${name}: ops ${got.join(",")} != ${wantOps.join(",")}`,
         );
     }
   }
-  return { problems, ops };
+  return { problems, ops: [...ops].sort() };
 }
 
 export function checkCaptureLegClass5(
   expected: Gate5Expected,
   capture: Gate3CaptureEvaluation,
-  hooksPlanned: readonly string[] | undefined,
 ): Gate5Check {
-  const r = evaluateCaptureTyped(expected, capture, hooksPlanned);
+  const r = evaluateCaptureLegClass5(expected, capture);
   return check(
     "leg-class-capture",
-    "the capture leg classifies as unsupported on the pre-/4 wire: armed, stream closed, both sinks valid and equivalent, no capture failure; the unsupported ops are exactly expected.json typed_ops (plus calibrator 7's once hooked), all unsupported-op; and at every settle frame each item's commands are its expected typed list (add_rect float32-exact)",
+    "the capture leg classifies as success on render-stream/4 (unsupported, every geometry op typed, on /3 before G5d): armed, stream closed, both sinks valid and equivalent, no capture failure, no unsupported entry or command, and at every settle frame each item's commands carry exactly its expected calls' /4 ops in call order",
     r.problems,
-    `${capture.result_class}: ${r.ops.map((op) => op.replace(DRAW_OP_PREFIX, "")).join(", ")} typed${capture.harmless_ties.length > 0 ? ` (${capture.harmless_ties.length} harmless tie entries)` : ""}`,
+    `${capture.result_class}: ${r.ops.join(", ")}${capture.harmless_ties.length > 0 ? ` (${capture.harmless_ties.length} harmless tie entries)` : ""}`,
     capture.artifacts,
   );
 }
@@ -921,6 +869,17 @@ export interface Gate5Report {
   > | null;
   /** per mesh id (G5c/G5e); null until then */
   meshes: Record<string, unknown> | null;
+  /** G5d: the /4 commands compared, lowering counts, scissors, receiver budgets and the
+   * mismatching regions of each sabotage leg, per step */
+  g5d: {
+    commands_compared: number;
+    commands_within_ulp: number;
+    lowering: Record<string, string>;
+    clip_rects: Record<string, string>;
+    receiver_budgets: Record<string, RegionBudget5[]>;
+    sabotage_regions: Record<string, Record<string, string>>;
+    canvas_entries: string[];
+  } | null;
   /** per fixture: reference vs reference-repeat per region and pixel class, every shot */
   budgets: Record<string, RegionBudget5[]> | null;
   /** per fixture: per step, the regions whose reference pixels changed */
@@ -930,6 +889,9 @@ export interface Gate5Report {
 export interface Gate5Context {
   expected: Gate5Expected;
   now?: Date;
+  /** absolute receiver/ and fixtures/gate5/ (g5d's receiver-never-loaded-fixture) */
+  receiverProjectDir?: string;
+  fixtureProjectDir?: string;
 }
 
 function notRunCheck(group: string, detail: string): Gate5Check {
@@ -1054,11 +1016,8 @@ export async function runGate5(
 
   if (groups.run.includes("g5b")) {
     const capture = await evaluateCapture(outDir, {
-      expectedClass: "unsupported",
+      expectedClass: "success",
     });
-    const counters = await readJson<CountersLike>(
-      join(outDir, "capture", "evidence", "counters.json"),
-    );
     const reference = await loadShots5(outDir, "reference", expected);
     const repeat = await loadShots5(outDir, "reference-repeat", expected);
     const armed = await loadShots5(outDir, "reference-armed", expected);
@@ -1162,7 +1121,7 @@ export async function runGate5(
         shotPaths5(outDir, "reference-armed", expected),
       ),
       await checkSupportLegsExit(outDir),
-      checkCaptureLegClass5(expected, capture, counters?.hooks_planned),
+      checkCaptureLegClass5(expected, capture),
     );
     legs.capture = {
       group: "g5b",
@@ -1190,6 +1149,13 @@ export async function runGate5(
     );
   }
 
+  let g5d: Gate5Report["g5d"] = null;
+  if (groups.run.includes("g5d")) {
+    const r = await runG5d(outDir, ctx, rasters, legs);
+    checks.push(...r.checks);
+    g5d = r.report;
+  }
+
   for (const group of notRun)
     if (group !== "g5b")
       checks.push(notRunCheck(group, `${group} was not in --legs`));
@@ -1211,7 +1177,437 @@ export async function runGate5(
     checkpoints,
     geometry,
     meshes: null,
+    g5d,
     budgets,
     freshness,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Group g5d (G5d): render-stream/4 end to end
+// ---------------------------------------------------------------------------------------------
+
+/** Every g5d receiver-bearing leg directory, relative to the run. */
+export function g5dReceiverDirs(): string[] {
+  return [
+    "receiver",
+    "receiver-patch",
+    "receiver-headless-trace",
+    ...G5D_SABOTAGE_CAPTURE_KINDS.map((k) => `sabotage-${k}/receiver`),
+    ...G5D_SABOTAGE_RECEIVER_KINDS.map((k) => `sabotage-receiver-${k}`),
+  ];
+}
+
+/** gate 1's receiver-typed-clean, as gate 3 adapts it: every g5d receiver leg's stdout.log is
+ * free of SCRIPT ERROR, SCRIPT WARNING, Parse Error and Failed to load script lines. */
+async function checkReceiverTypedClean5(outDir: string): Promise<Gate5Check> {
+  const bad = /SCRIPT ERROR|SCRIPT WARNING|Parse Error|Failed to load script/;
+  const problems: string[] = [];
+  const paths = g5dReceiverDirs().map((d) => join(outDir, d, "stdout.log"));
+  for (const log of paths) {
+    const text = await readTextOrUndefined(log);
+    if (text === undefined) {
+      problems.push(`${log} missing`);
+      continue;
+    }
+    const line = text.split("\n").find((l) => bad.test(l));
+    if (line) problems.push(`${log}: ${line.trim()}`);
+  }
+  return check(
+    "receiver-typed-clean",
+    "no g5d receiver leg's stdout.log has a SCRIPT ERROR, SCRIPT WARNING, Parse Error or Failed to load script line",
+    problems,
+    `${paths.length} receiver logs clean`,
+    paths,
+  );
+}
+
+async function runG5d(
+  outDir: string,
+  ctx: Gate5Context,
+  rasters: Map<number, Gate5Raster>,
+  legs: Gate5Report["legs"],
+): Promise<{ checks: Gate5Check[]; report: NonNullable<Gate5Report["g5d"]> }> {
+  const expected = ctx.expected;
+  const checks: Gate5Check[] = [];
+  const capture = await evaluateCapture(outDir, { expectedClass: "success" });
+  const referenceDir = join(outDir, "reference");
+  const reference = await loadShots5(outDir, "reference", expected);
+  const seqs = settleSeqs(expected, capture.full);
+  const patchSeqs = settleSeqs(expected, capture.patch);
+  const requested = (s: ReadonlyMap<number, number>) => [...s.values()];
+
+  // geometry-commands and lowering-predictions on the capture (D12 (1), (5)).
+  const geometry = evaluateGeometryCommands(expected, [
+    { label: "full", recording: capture.full },
+    { label: "patch", recording: capture.patch },
+  ]);
+  const lowering = evaluateLoweringPredictions(expected, capture.full);
+  checks.push(
+    check(
+      "geometry-commands",
+      "at every settle frame of both sinks, each fixture item's /4 commands equal expected.json's calls argument for argument and in order -- set_transform and clip_ignore included: passthrough arguments float32-exact, computed ones (ulp: 2) within 2 ulp; texture names map to the capture's wire ids",
+      geometry.problems,
+      `${geometry.compared} commands equal (${geometry.ulpUsed} used their 2-ulp allowance)`,
+      [capture.full.path, capture.patch.path],
+    ),
+    check(
+      "lowering-predictions",
+      "on the capture, Line2D is one triangle array of the predicted vertex/index/colour/UV counts and count -1, the dashed line one multiline of 16 points, the unfilled rect and circle closed polylines of 5 and 65 points, at every settle frame; L2's command is identical across step 3 although it redraws (Line2D.antialiased is unused)",
+      lowering.problems,
+      Object.entries(lowering.measured)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("; "),
+      [capture.full.path],
+    ),
+  );
+
+  // Receivers on the main capture (full and patch sinks).
+  const receiverDir = join(outDir, "receiver");
+  const patchDir = join(outDir, "receiver-patch");
+  const receiverShots = await loadReceiverShots5(receiverDir, expected, seqs);
+  const patchShots = await loadReceiverShots5(patchDir, expected, patchSeqs);
+  const receiverApplied = await readJson<AppliedJson>(
+    join(receiverDir, "applied.json"),
+  );
+  const patchApplied = await readJson<AppliedJson>(
+    join(patchDir, "applied.json"),
+  );
+  const receiverCps = computeGate5Checkpoints(
+    expected,
+    referenceDir,
+    reference,
+    receiverDir,
+    receiverShots,
+    seqs,
+  );
+  const patchCps = computeGate5Checkpoints(
+    expected,
+    referenceDir,
+    reference,
+    patchDir,
+    patchShots,
+    patchSeqs,
+  );
+  const receiverClass = classifyLeg({
+    captureResult: capture.captureResult,
+    recording: capture.full,
+    receiver: {
+      applied: receiverApplied,
+      requestedShotSeqs: requested(seqs),
+      shotFiles: await shotSeqsPresent5(receiverDir),
+    },
+    checkpoints: receiverCps,
+  });
+  const patchClass = classifyLeg({
+    captureResult: capture.captureResult,
+    recording: capture.patch,
+    receiver: {
+      applied: patchApplied,
+      requestedShotSeqs: requested(patchSeqs),
+      shotFiles: await shotSeqsPresent5(patchDir),
+    },
+    checkpoints: patchCps,
+  });
+  const vsRef = compareLegs5(expected, reference, receiverShots, rasters, [
+    "reference",
+    "receiver",
+  ]);
+  const vsRefPatch = compareLegs5(expected, reference, patchShots, rasters, [
+    "reference",
+    "receiver-patch",
+  ]);
+  const imageReceiver = evaluateExpectedImage5(
+    expected,
+    "receiver",
+    receiverShots,
+    rasters,
+    join(receiverDir, "shots"),
+  );
+  const presenceReceiver = evaluatePresence5(
+    expected,
+    "receiver",
+    receiverShots,
+    rasters,
+  );
+  const legClass = (
+    leg: string,
+    classification: ReturnType<typeof classifyLeg>,
+    cps: ReturnType<typeof computeGate5Checkpoints>,
+    exp: Gate5LegExpectation,
+    artifacts: string[],
+  ) => {
+    const r = evaluateLegClass5(classification, cps, exp);
+    return {
+      table: r.table,
+      check: check(
+        `leg-class-${leg}`,
+        `the ${leg} leg classifies as ${exp.class}${exp.regions ? ` with mismatching regions exactly ${JSON.stringify(exp.regions)}` : exp.steps ? ` with mismatching steps exactly {${exp.steps.join(",")}}` : " with every region of every shot matching the reference"}`,
+        r.problems,
+        `${classification.result_class}${
+          Object.keys(r.table).length > 0
+            ? `; mismatching regions per step ${Object.entries(r.table)
+                .map(([k, v]) => `${k}:${v}`)
+                .join(" ")}`
+            : ""
+        }`,
+        artifacts,
+      ),
+    };
+  };
+  const receiverLeg = legClass(
+    "receiver",
+    receiverClass,
+    receiverCps,
+    { class: "success" },
+    [join(receiverDir, "applied.json")],
+  );
+  const patchLeg = legClass(
+    "receiver-patch",
+    patchClass,
+    patchCps,
+    { class: "success" },
+    [join(patchDir, "applied.json")],
+  );
+  checks.push(
+    receiverLeg.check,
+    patchLeg.check,
+    check(
+      "receiver-vs-reference",
+      "receiver and receiver-patch: every pixel of every settle shot equals the reference's, band and undecided pixels included (budget 0, as reference-repeat measured)",
+      [...vsRef.problems, ...vsRefPatch.problems],
+      `${expected.steps.length * 2} shots identical to the reference`,
+      [join(receiverDir, "shots"), join(patchDir, "shots")],
+    ),
+    check(
+      "expected-image-receiver",
+      "every receiver settle shot equals rasterizeGate5(k) on every decided pixel, as the reference's does",
+      imageReceiver.problems,
+      `${imageReceiver.checkpoints.length} receiver shots match on ${imageReceiver.checkpoints.reduce((n, c) => n + (c.compared ?? 0), 0)} decided pixels`,
+      [join(receiverDir, "shots")],
+    ),
+    check(
+      "presence-receiver",
+      "in every receiver shot, every sub-shape covers at least half its expected area",
+      presenceReceiver.problems,
+      `${presenceReceiver.shapes} shape-shots present`,
+      [join(receiverDir, "shots")],
+    ),
+  );
+  legs.receiver = {
+    group: "g5d",
+    expected_class: "success",
+    result_class: receiverClass.result_class,
+    reasons: receiverClass.reasons,
+    harmless_ties: receiverClass.harmless_ties,
+    exit_code: await readExitCode(receiverDir),
+    artifacts: [join(receiverDir, "applied.json")],
+  };
+  legs["receiver-patch"] = {
+    group: "g5d",
+    expected_class: "success",
+    result_class: patchClass.result_class,
+    reasons: patchClass.reasons,
+    harmless_ties: patchClass.harmless_ties,
+    exit_code: await readExitCode(patchDir),
+    artifacts: [join(patchDir, "applied.json")],
+  };
+
+  // clip-rects-derived: both sinks and receiver-patch's own state dumps (D9, D10).
+  const ids = itemIdsByName(expected, capture.full).ids;
+  const clipFull = evaluateClipRectsDerived(
+    expected,
+    "full",
+    sinkStates(expected, capture.full),
+    ids,
+  );
+  const clipPatch = evaluateClipRectsDerived(
+    expected,
+    "patch",
+    sinkStates(expected, capture.patch),
+    ids,
+  );
+  const dumps = await receiverStates(expected, patchDir, capture.patch);
+  const clipDumps = evaluateClipRectsDerived(
+    expected,
+    "receiver-patch state",
+    dumps.states,
+    ids,
+  );
+  checks.push(
+    check(
+      "clip-rects-derived",
+      "deriveClipRects (lib/clip-derive.ts, with D9's draw transform and D10's clip-ignore spans) over each settle state of both sinks and of receiver-patch's own state dumps gives every item expected.json's clip_px (CG's scissor, null elsewhere) and CG's clip-ignored commands exactly those between its add_clip_ignore pair; each dump equals the recording's resolved state",
+      [
+        ...clipFull.problems,
+        ...clipPatch.problems,
+        ...dumps.problems.map((p) => `receiver-patch: ${p}`),
+        ...clipDumps.problems,
+      ],
+      Object.entries(clipFull.table)
+        .filter(
+          ([k]) => k.endsWith("@0") || k.endsWith("@7") || k.endsWith("@9"),
+        )
+        .map(([k, v]) => `${k} ${v}`)
+        .join("; "),
+      [capture.full.path, capture.patch.path, join(patchDir, "state")],
+    ),
+  );
+
+  // capture-canvas (D11).
+  const canvas = await evaluateCapture(outDir, {
+    legDir: "capture-canvas",
+    expectedClass: "unsupported",
+  });
+  const canvasEval = evaluateCaptureCanvas(expected, canvas);
+  checks.push(
+    check(
+      "leg-class-capture-canvas",
+      "the canvas variant's headless capture (one CanvasTexture created in _ready) classifies as unsupported: every /4 op naming RID() -- the untextured polygons, primitives and triangle arrays -- is an unsupported canvas-texture-headless command in place, with its item-level entry, exactly as expected.json predictions[capture-canvas] lists; every other command is the main capture's",
+      canvasEval.problems,
+      `${canvas.result_class}: ${canvasEval.entries.join(", ")}`,
+      canvas.artifacts,
+    ),
+  );
+  legs["capture-canvas"] = {
+    group: "g5d",
+    expected_class: "unsupported",
+    result_class: canvas.result_class,
+    reasons: canvas.reasons,
+    harmless_ties: canvas.harmless_ties,
+    exit_code: canvas.exit_code,
+    artifacts: canvas.artifacts,
+  };
+
+  // Sabotages: captures with a rendered receiver, then the two receiver sabotages.
+  const sabotageRegions: Record<string, Record<string, string>> = {};
+  for (const kind of G5D_SABOTAGE_CAPTURE_KINDS) {
+    const leg = `sabotage-${kind}`;
+    const captureDir = join(outDir, leg, "capture");
+    const sabReceiverDir = join(outDir, leg, "receiver");
+    const sabResult = await readJson<CaptureResultJson>(
+      join(captureDir, "evidence", "result.json"),
+    );
+    const sabFull = await loadRecording(join(captureDir, RECORDING_NAME));
+    const sabSeqs = settleSeqs(expected, sabFull);
+    const sabShots = await loadReceiverShots5(
+      sabReceiverDir,
+      expected,
+      sabSeqs,
+    );
+    const sabCps = computeGate5Checkpoints(
+      expected,
+      referenceDir,
+      reference,
+      sabReceiverDir,
+      sabShots,
+      sabSeqs,
+    );
+    const sabClass = classifyLeg({
+      captureResult: sabResult,
+      recording: sabFull,
+      receiver: {
+        applied: await readJson<AppliedJson>(
+          join(sabReceiverDir, "applied.json"),
+        ),
+        requestedShotSeqs: requested(sabSeqs),
+        shotFiles: await shotSeqsPresent5(sabReceiverDir),
+      },
+      checkpoints: sabCps,
+    });
+    const pred = expected.predictions[leg];
+    const exp: Gate5LegExpectation = pred?.regions
+      ? { class: "pixel-mismatch", regions: pred.regions }
+      : { class: "pixel-mismatch", steps: pred?.steps ?? [] };
+    const r = legClass(leg, sabClass, sabCps, exp, [
+      join(captureDir, RECORDING_NAME),
+      join(sabReceiverDir, "applied.json"),
+    ]);
+    checks.push(r.check);
+    sabotageRegions[leg] = r.table;
+    legs[leg] = {
+      group: "g5d",
+      expected_class: "pixel-mismatch",
+      result_class: sabClass.result_class,
+      reasons: sabClass.reasons,
+      harmless_ties: sabClass.harmless_ties,
+      exit_code: await readExitCode(sabReceiverDir),
+      artifacts: [
+        join(captureDir, RECORDING_NAME),
+        join(sabReceiverDir, "applied.json"),
+      ],
+    };
+  }
+  for (const kind of G5D_SABOTAGE_RECEIVER_KINDS) {
+    const leg = `sabotage-receiver-${kind}`;
+    const dir = join(outDir, leg);
+    const shots = await loadReceiverShots5(dir, expected, seqs);
+    const cps = computeGate5Checkpoints(
+      expected,
+      referenceDir,
+      reference,
+      dir,
+      shots,
+      seqs,
+    );
+    const cls = classifyLeg({
+      captureResult: capture.captureResult,
+      recording: capture.full,
+      receiver: {
+        applied: await readJson<AppliedJson>(join(dir, "applied.json")),
+        requestedShotSeqs: requested(seqs),
+        shotFiles: await shotSeqsPresent5(dir),
+      },
+      checkpoints: cps,
+    });
+    const pred = expected.predictions[leg];
+    const r = legClass(
+      leg,
+      cls,
+      cps,
+      { class: "pixel-mismatch", regions: pred?.regions ?? {} },
+      [join(dir, "applied.json")],
+    );
+    checks.push(r.check);
+    sabotageRegions[leg] = r.table;
+    legs[leg] = {
+      group: "g5d",
+      expected_class: "pixel-mismatch",
+      result_class: cls.result_class,
+      reasons: cls.reasons,
+      harmless_ties: cls.harmless_ties,
+      exit_code: await readExitCode(dir),
+      artifacts: [join(dir, "applied.json")],
+    };
+  }
+
+  checks.push(
+    fromGate0(
+      await checkReceiverNeverLoadedFixture(outDir, {
+        receiverProjectDir: ctx.receiverProjectDir ?? "",
+        fixtureProjectDir: ctx.fixtureProjectDir ?? "",
+        receiverLogs: g5dReceiverDirs().map((d) =>
+          join(outDir, d, "stdout.log"),
+        ),
+      }),
+    ),
+    await checkReceiverTypedClean5(outDir),
+  );
+  return {
+    checks,
+    report: {
+      commands_compared: geometry.compared,
+      commands_within_ulp: geometry.ulpUsed,
+      lowering: lowering.measured,
+      clip_rects: clipFull.table,
+      receiver_budgets: {
+        receiver: vsRef.budgets.filter((b) => b.mismatched_pixels > 0),
+        "receiver-patch": vsRefPatch.budgets.filter(
+          (b) => b.mismatched_pixels > 0,
+        ),
+      },
+      sabotage_regions: sabotageRegions,
+      canvas_entries: canvasEval.entries,
+    },
   };
 }

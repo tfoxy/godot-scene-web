@@ -6,9 +6,10 @@
 // vptr.
 //
 // With GRC_STREAM_OUT and/or GRC_STREAM_PATCH_OUT set and the library armed,
-// it also publishes render-stream/3 recordings (protocol/render-stream-3.md, /2 plus the msdf
-// command since gate4-design.md "G4e2"; protocol/gate1-design.md "G1b2", gate2-design.md
-// "G2b2"): GRC_STREAM_OUT is
+// it also publishes render-stream/4 recordings (protocol/render-stream-4.md: /3 plus the
+// immediate geometry ops, add_set_transform and add_clip_ignore since gate5-design.md "G5d"; /3
+// added the msdf command at gate4-design.md "G4e2"; protocol/gate1-design.md "G1b2",
+// gate2-design.md "G2b2"): GRC_STREAM_OUT is
 // the `full`-encoding file sink, GRC_STREAM_PATCH_OUT the `patch`-encoding
 // one; either or both.
 // The canvas mirror is enabled and the root viewport queried right after the
@@ -20,7 +21,8 @@
 //
 // Sabotage (GRC_SABOTAGE / GRC_SABOTAGE_FRAME / GRC_SABOTAGE_OP, validated by
 // rs2::parse_sabotage; a refusal publishes nothing): omit-update and omit-op
-// act in the mirror, as does G4e2's perturb-glyph, freeze-frame, perturb-transform and
+// act in the mirror, as do G4e2's perturb-glyph and G5d's perturb-vertex, freeze-frame,
+// perturb-transform and
 // patch-drop-item in
 // the publisher, drop-message (G1c2), ignore-credit and stale-coalesce (G1d)
 // in the live hub; G2b2's stale-texture in the publisher, wrong-hash in the
@@ -857,8 +859,9 @@ void stream_start() {
   }
 
   rs2::Session session;
-  // G4e2 (gate4-design.md "G4e2", render-stream-3.md): the capture speaks render-stream/3.
-  session.version = rs2::ProtocolVersion::V3;
+  // G5d (gate5-design.md D1, render-stream-4.md): the capture speaks render-stream/4 (/3 since
+  // G4e2). The mirror stamps its snapshots V4 to match.
+  session.version = rs2::ProtocolVersion::V4;
   session.session_id = rs2::generate_id();
   session.engine.version_string = g_state.fp.version_string;
   session.engine.sha256 = g_state.fp.exe_sha256;
@@ -976,6 +979,8 @@ void stream_start() {
     rs::mirror_set_omit_op(sabotage.config.op, sabotage.config.frame);
   } else if (sabotage.config.kind == rs2::SabotageKind::PerturbGlyph) {
     rs::mirror_set_perturb_glyph(sabotage.config.frame);
+  } else if (sabotage.config.kind == rs2::SabotageKind::PerturbVertex) {
+    rs::mirror_set_perturb_vertex(sabotage.config.frame);
   }
   // render-stream-1.md "Session record": `viewport` and the blocks, all read
   // after the root-size policy.
@@ -1027,7 +1032,7 @@ void stream_start() {
     server_config.host = live_host;
     server_config.port = live_port;
     server_config.max_clients = 1;  // D5: one receiver at a time (a second gets 503)
-    server_config.subprotocol = "render-stream.3";  // render-stream-3.md "Live transport"
+    server_config.subprotocol = "render-stream.4";  // render-stream-4.md "Live transport"
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();

@@ -40,7 +40,11 @@ async function main(): Promise<void> {
     await readFile(join(fixture, "expected.json"), "utf8"),
   ) as Gate5Expected;
 
-  const report = await runGate5(out, { expected });
+  const report = await runGate5(out, {
+    expected,
+    receiverProjectDir: join(EXPERIMENT_DIR, "receiver"),
+    fixtureProjectDir: fixture,
+  });
 
   // G5c: fixtures/gate5-mesh/ is its own fixture with its own expected.json and legs (mesh/ under
   // the same --out), evaluated by runGate5c and merged into the same report so
@@ -137,6 +141,28 @@ async function main(): Promise<void> {
         )
         .join(", ")}`,
     );
+  if (report.g5d) {
+    const g = report.g5d;
+    console.log(
+      `  g5d: ${g.commands_compared} /4 commands compared (${g.commands_within_ulp} within 2 ulp); lowering: ${Object.entries(
+        g.lowering,
+      )
+        .map(([k, v]) => `${k} ${v}`)
+        .join("; ")}`,
+    );
+    console.log(
+      `  g5d scissors (full sink): ${Object.entries(g.clip_rects)
+        .map(([k, v]) => `${k} ${v}`)
+        .join("; ")}`,
+    );
+    for (const [leg, table] of Object.entries(g.sabotage_regions))
+      console.log(
+        `  ${leg}: mismatching regions per step ${Object.entries(table)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(" ")}`,
+      );
+    console.log(`  capture-canvas entries: ${g.canvas_entries.join(", ")}`);
+  }
   const passed = report.checks.filter((c) => c.passed).length;
   console.log(
     `\ngate 5 (groups ${report.groups.run.join(",") || "none"}${report.groups.not_run.length > 0 ? `; not run: ${report.groups.not_run.join(",")}` : ""}): ${report.gate_passed ? "PASS" : "FAIL"} ${passed}/${report.checks.length} (${join(out, "result.json")})`,

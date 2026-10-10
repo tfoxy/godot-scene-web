@@ -992,44 +992,31 @@ function riItem(): TItem {
     clip: true,
     custom_rect: true,
     custom_rect_rect: [0, 0, 48, 32],
+    // Since G5d (gate5-design.md D10, render-stream/4) both add_clip_ignore calls are real
+    // commands; on /3 they were unsupported commands with an item-level unsupported-op entry.
     commands: [
       { op: "add_rect", rect: [0, 0, 48, 32], color: [0.4, 0.8, 0.4, 1] },
-      {
-        op: "unsupported",
-        name: "canvas_item_add_clip_ignore",
-        reason: "unsupported-op",
-      },
+      { op: "add_clip_ignore", ignore: true },
       { op: "add_rect", rect: [32, 16, 32, 32], color: [1, 0.4, 0, 1] },
-      {
-        op: "unsupported",
-        name: "canvas_item_add_clip_ignore",
-        reason: "unsupported-op",
-      },
+      { op: "add_clip_ignore", ignore: false },
     ],
   };
 }
 
 /** `buildStates` plus the variant's static raw item RI (gate3-design.md Q6b "Variant
- * clip-ignore"), present in every frame unmodified -- the session-level unsupported entry it
- * gives RI's item is likewise unmodified. */
+ * clip-ignore"), present in every frame unmodified. Since G5d RI carries no unsupported entry. */
 export function buildStatesWithRI(
   e: Gate3Expected,
   quit = CAPTURE_QUIT,
   o: ModelOptions = {},
 ): TState[] {
   const ri = riItem();
-  const entry = {
-    op: "canvas_item_add_clip_ignore",
-    item: ID_RI,
-    reason: "unsupported-op",
-  };
   return buildStates(e, quit, o).map((s) => ({
     ...s,
     canvases: s.canvases.map((c) =>
       c.id === 1 ? { ...c, items: [...c.items, ID_RI] } : c,
     ),
     items: [...s.items, ri],
-    unsupported: [...(s.unsupported ?? []), entry],
   }));
 }
 
@@ -1102,23 +1089,21 @@ export async function writeClipIgnoreReference(
 
 /** A receiver on capture-clip-ignore's recording: a shot per settle step, named by seq (`==
  * frame`, since `buildStates` publishes one transaction per frame), synthesized with that step's
- * RI receiver draws -- the two `add_clip_ignore` calls skipped, so its second rect clips like any
- * other command. Gate 3b's receiver apply-order fix is what makes every step comparable: RI
- * never redraws, so it was never the blocker; the base scene's own clipping Controls were. */
+ * RI receiver draws. Since G5d (render-stream/4, gate5-design.md D10) the receiver replays both
+ * `add_clip_ignore` commands, so those draws equal the reference's (second rect unclipped) and
+ * applied.json -- derived from the bytes of `recordingPath` (capture-clip-ignore's full sink), as
+ * g3b's receivers are, so the classification reaches `success` -- lists nothing unsupported.
+ * Gate 3b's receiver apply-order fix is what makes every step comparable: RI never redraws, so it
+ * was never the blocker; the base scene's own clipping Controls were. */
 export async function writeClipIgnoreReceiver(
   dir: string,
   e: Gate3Expected,
-  quit = CAPTURE_QUIT,
+  recordingPath: string,
 ): Promise<void> {
   await writeProcess(dir);
   const vci = e.variant_clip_ignore;
   const withRi = withExtraDraws(e, (step) => vci?.receiver_draws[step] ?? []);
-  const shots: {
-    seq: number;
-    path: string;
-    applied_through: number;
-    state_path: string | null;
-  }[] = [];
+  const shotSeqs: number[] = [];
   for (const s of e.steps) {
     const seq = stepFrames3(e, s.step).settle;
     const path = join(dir, "shots", `seq-${seq}.png`);
@@ -1130,40 +1115,13 @@ export async function writeClipIgnoreReceiver(
       .png()
       .toBuffer();
     await writeFile(path, png);
-    shots.push({ seq, path, applied_through: seq, state_path: null });
+    shotSeqs.push(seq);
   }
-  await writeJson(join(dir, "applied.json"), {
-    schema: "render-stream-receiver-applied/3",
-    recording: { path: "recording.rs2", sha256: "x", bytes: 0 },
-    session_id: null,
-    status: "ok",
-    failure: null,
-    end_seen: true,
-    mode: "file",
-    viewport: {
-      display_server: "x11",
-      size: [640, 360],
-      size_check: "match",
-      logical_size: [640, 360],
-    },
-    transactions: Array.from({ length: quit }, (_, i) => ({
-      seq: i + 1,
-      frame: i + 1,
-      encoding: "full",
-      record_sha256: "x",
-      rs_calls: 0,
-      resources: null,
-    })),
-    shots,
-    unsupported: [
-      {
-        seq: 1,
-        item: ID_RI,
-        name: "canvas_item_add_clip_ignore",
-        reason: "unsupported-op",
-      },
-    ],
-  });
+  const bytes = await readFile(recordingPath);
+  await writeJson(
+    join(dir, "applied.json"),
+    g3bAppliedFor(recordingPath, bytes, shotSeqs, [], dir),
+  );
 }
 
 /** A passing g3d evidence tree alongside g3a's: capture-clip-ignore, reference-clip-ignore and a
@@ -1178,7 +1136,7 @@ export async function buildG3dTree(
   await writeClipIgnoreReceiver(
     join(out, "receiver-clip-ignore"),
     e,
-    o.quit ?? CAPTURE_QUIT,
+    join(out, "capture-clip-ignore", "recording.rs2"),
   );
 }
 

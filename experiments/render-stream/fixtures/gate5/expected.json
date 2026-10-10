@@ -68,6 +68,8 @@
   "lowering_predictions": {
     "L2": {
       "op": "canvas_item_add_triangle_array",
+      "item": "L2",
+      "index": 0,
       "vertices": 6,
       "indices": 12,
       "colors": 1,
@@ -76,16 +78,22 @@
     },
     "L5": {
       "op": "canvas_item_add_multiline",
+      "item": "LN",
+      "index": 4,
       "points": 16,
       "colors": 1
     },
     "P2": {
       "op": "canvas_item_add_polyline",
+      "item": "PL",
+      "index": 1,
       "points": 5,
       "colors": 1
     },
     "C3": {
       "op": "canvas_item_add_polyline",
+      "item": "CI",
+      "index": 2,
       "points": 65,
       "colors": 1
     }
@@ -1270,6 +1278,11 @@
     }
   ],
   "predictions": {
+    "capture-canvas": {
+      "class": "unsupported",
+      "reason": "canvas-texture-headless",
+      "entries": [["BL","canvas_item_add_polygon"],["L2","canvas_item_add_triangle_array"],["PG","canvas_item_add_polygon"],["PR","canvas_item_add_primitive"],["PR","canvas_item_add_triangle_array"]]
+    },
     "sabotage-freeze": {
       "frame": 11,
       "steps": [1,2,3,4,5,6,7,8,9]

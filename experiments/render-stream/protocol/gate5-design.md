@@ -1002,6 +1002,41 @@ Q6b's sets; `receiver-typed-clean`.
 green; "Gate 5d result", including the measured count of `add_set_transform` commands per
 `RichTextLabel` line.
 
+**As built (G5d, 2026-10-10).** Every prediction G5d can observe held on the first run, against
+`expected.json` and never against the capture: all 760 settle-frame commands of both sinks equal
+the fixture's calls as /4 commands, and none needed the 2-ulp allowance (every computed argument
+`make_expected.py` flags `ulp: 2` — unfilled rect and circle, dashes, `draw_set_transform`'s
+matrix, Line2D's strip — was float32-exact); the lowering counts (Line2D 6 vertices / 12 indices /
+count −1, 16 dash points, the 5- and 65-point closed polylines, L2 unchanged across step 3); both
+receivers equal the reference
+at every pixel (budget 0); `deriveClipRects` gives CG its scissor and exactly its one clip-ignored
+command at every step, on both sinks and on the receiver's own state dumps; and every sabotage
+mismatches in exactly Q6b's regions and steps. `RichTextLabel` (Q1g, measured on G4d's fixture)
+emits **two `add_set_transform` per glyph per text and outline pass** — `char_final_xform` before
+the glyph and `Transform2D()` after it, both identity without `[fx]`, spaces and the paragraph's
+trailing break glyph included — so a plain line of n glyphs is 2n commands (30 to 112 per settle
+step on G4d's `RTL`), not one reset per line as G4d's note had it. Amendments:
+(1) **`add_mesh` stays a typed `unsupported-op` until G5e.** /4 carries it, but the capture has no
+mesh table yet, so `canvas_item_add_mesh` keeps the generic refusal while `features.ops` lists
+`add_mesh` (the feature list describes the version); the receiver skips an `add_mesh` command and
+records it `mesh-not-replayed` (only `golden-4/` has any), and its cache accepts inline GRM1
+records so `golden-4/inline.rs4` replays. `applied.json` stays `render-stream-receiver-applied/3`,
+and the receiver's state dumps carry every /4 command but no `meshes` (both G5e's). (2) **D11's
+flag counts a `canvas_texture_create` that returned `RID()`**: on the headless host that is the
+only kind there is, so the mirror sets "a canvas texture exists" before it drops a zero RID.
+(3) **Gate 0's `unsupported` variant had to change**: its marker circle (`add_circle`) is a command
+on /4, so the circle is now wrapped in a whole-period `draw_animation_slice` (still typed); see
+gate0-design.md's amendment. (4) `clip-derive.ts`'s `itemRect` models every /4 op whose rect needs
+no server lowering (rects, nine-patches, primitives, polygons, triangle arrays, a non-antialiased
+line's quad, thin polylines) and leaves antialiased lines, wide polylines and multilines, circles
+and meshes unknown; D10's spans are reported as `DerivedClip.ignored`. (5) `make_expected.py`'s
+`lowering_predictions` gained `item`/`index`, and `predictions` gained `capture-canvas` (the five
+refused (item, op) pairs: BL's and PG's polygons, PR's primitives and triangle array, Line2D's
+triangle array). (6) `golden-4/` state 8's `add_triangle_array` (`count` 3 over 6 indices) is one
+the engine refuses (`count × 3` exceeds the indices, `renderer_canvas_render.h:144`): harmless to
+the codecs, but a receiver replaying it logs an engine error; gate 7's conformance notes should
+say so. (7) g5d needs g5b's capture and reference in the same run.
+
 ---
 
 ### G5e — meshes on render-stream/4 end to end (opus)

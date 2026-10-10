@@ -784,6 +784,13 @@ tests/codec_selftest.gd, README.md}`.
     class, and the artifact paths quoted in the README.
   - Gate −1 is still green.
 
+**Amended by gate5-design.md G5d (2026-10-10).** render-stream/4 carries `canvas_item_add_circle`
+as a supported command, so the `unsupported` variant's circle no longer makes the leg
+`unsupported`. The fixture now wraps the same circle in `draw_animation_slice(1.0, 0.0, 1.0)` and
+`draw_end_animation()`: `canvas_item_add_animation_slice` stays typed `unsupported` on /4, the slice
+spans the whole period (the circle draws every frame on a renderer), and `expected.json`'s
+`unsupported_variant.op` is `canvas_item_add_animation_slice`.
+
 ## Changes from the orchestrator's plan
 
 Each change is noted with its reason:

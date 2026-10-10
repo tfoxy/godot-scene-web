@@ -42,8 +42,10 @@ void Mirror::reset() {
   omit_op_.clear();
   omit_from_frame_ = 0;
   perturb_glyph_frame_ = 0;
+  perturb_vertex_frame_ = 0;
   degenerate_host_size_ = false;
   canvas_texture_headless_ = false;
+  canvas_texture_created_ = false;
   next_canvas_id_ = kRootCanvasId + 1;
   next_item_id_ = 1;
   root_viewport_rid_ = 0;
@@ -126,6 +128,11 @@ void Mirror::set_omit_op(const std::string &op, std::uint64_t from_frame) {
 void Mirror::set_perturb_glyph(std::uint64_t from_frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   perturb_glyph_frame_ = from_frame;
+}
+
+void Mirror::set_perturb_vertex(std::uint64_t from_frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  perturb_vertex_frame_ = from_frame;
 }
 
 std::uint64_t Mirror::epoch() const {
@@ -640,11 +647,45 @@ void Mirror::push_command(Item *item, Command command, std::uint64_t frame) {
 namespace {
 
 // A command that names a texture-table entry through `tex` (render-stream-2.md "Commands";
-// render-stream-3.md "Command" adds the msdf region).
+// render-stream-3.md "Command" adds the msdf region; render-stream-4.md "Command" the /4 ops
+// that carry `tex`). AddMesh is never recorded before G5e (its tap stays a typed refusal).
 bool names_texture(const Command &command) {
-  return command.kind == CommandKind::AddTextureRect ||
-         command.kind == CommandKind::AddTextureRectRegion ||
-         command.kind == CommandKind::AddMsdfTextureRectRegion;
+  switch (command.kind) {
+    case CommandKind::AddTextureRect:
+    case CommandKind::AddTextureRectRegion:
+    case CommandKind::AddMsdfTextureRectRegion:
+    case CommandKind::AddPrimitive:
+    case CommandKind::AddPolygon:
+    case CommandKind::AddTriangleArray:
+    case CommandKind::AddNinePatch:
+    case CommandKind::AddMesh:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The RenderingServer method a supported command came from (the item-level entry's `op`).
+const char *rs_method_name(CommandKind kind) {
+  switch (kind) {
+    case CommandKind::AddRect: return "canvas_item_add_rect";
+    case CommandKind::AddTextureRect: return "canvas_item_add_texture_rect";
+    case CommandKind::AddTextureRectRegion: return "canvas_item_add_texture_rect_region";
+    case CommandKind::AddMsdfTextureRectRegion: return "canvas_item_add_msdf_texture_rect_region";
+    case CommandKind::AddLine: return "canvas_item_add_line";
+    case CommandKind::AddPolyline: return "canvas_item_add_polyline";
+    case CommandKind::AddMultiline: return "canvas_item_add_multiline";
+    case CommandKind::AddCircle: return "canvas_item_add_circle";
+    case CommandKind::AddPrimitive: return "canvas_item_add_primitive";
+    case CommandKind::AddPolygon: return "canvas_item_add_polygon";
+    case CommandKind::AddTriangleArray: return "canvas_item_add_triangle_array";
+    case CommandKind::AddNinePatch: return "canvas_item_add_nine_patch";
+    case CommandKind::AddMesh: return "canvas_item_add_mesh";
+    case CommandKind::AddSetTransform: return "canvas_item_add_set_transform";
+    case CommandKind::AddClipIgnore: return "canvas_item_add_clip_ignore";
+    case CommandKind::Unsupported: break;
+  }
+  return "";
 }
 
 bool reason_from_text(const std::string &text, TextureReason *out) {
@@ -907,6 +948,202 @@ Rect4 Mirror::perturbed_glyph(const Rect4 &rect, std::uint64_t frame) const {
   return out;
 }
 
+// --- render-stream/4 immediate geometry (G5d) ----------------------------------------------
+
+Point2 Mirror::perturbed_vertex(const Point2 &point, std::uint64_t frame) const {
+  Point2 out = point;
+  if (perturb_vertex_frame_ != 0 && frame >= perturb_vertex_frame_) {
+    out[0] += 1.0f;  // gate5-design.md Q3c "perturb-vertex": first point's x + 1.0, recorded only
+  }
+  return out;
+}
+
+bool Mirror::geometry_texture(std::uint64_t texture, const char *op, Command *command) const {
+  if (texture == 0 && canvas_texture_headless_ && canvas_texture_created_) {
+    // D11: on a headless host that has created a canvas texture, RID() may be that texture.
+    command->kind = CommandKind::Unsupported;
+    command->name = op;
+    command->unsupported_reason = UnsupportedCmdReason::CanvasTextureHeadless;
+    return false;
+  }
+  if (!texture_ref(texture, &command->has_tex, &command->tex)) {
+    command->kind = CommandKind::Unsupported;
+    command->name = op;
+    command->unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+    return false;
+  }
+  return true;
+}
+
+Mirror::Item *Mirror::geometry_item(std::uint64_t rid, const char *op, std::uint64_t frame) {
+  if (dropped(op, frame)) {
+    return nullptr;
+  }
+  return item_for(rid, op, frame);
+}
+
+void Mirror::add_line(std::uint64_t rid, const Point2 &from, const Point2 &to, const Color4 &color,
+                      float width, bool antialiased, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Item *item = geometry_item(rid, "canvas_item_add_line", frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  command.kind = CommandKind::AddLine;
+  command.antialiased = antialiased;
+  command.line_from = perturbed_vertex(from, frame);
+  command.line_to = to;
+  command.color = color;
+  command.width = width;
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_polyline(std::uint64_t rid, std::vector<Point2> points,
+                          std::vector<Color4> colors, float width, bool antialiased,
+                          bool multiline, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Item *item = geometry_item(
+      rid, multiline ? "canvas_item_add_multiline" : "canvas_item_add_polyline", frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  command.kind = multiline ? CommandKind::AddMultiline : CommandKind::AddPolyline;
+  command.antialiased = antialiased;
+  command.width = width;
+  command.points = std::move(points);
+  if (!command.points.empty()) {
+    command.points[0] = perturbed_vertex(command.points[0], frame);
+  }
+  command.colors = std::move(colors);
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_circle(std::uint64_t rid, const Point2 &position, float radius,
+                        const Color4 &color, bool antialiased, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Item *item = geometry_item(rid, "canvas_item_add_circle", frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  command.kind = CommandKind::AddCircle;
+  command.antialiased = antialiased;
+  command.circle_position = position;  // Q3c: add_circle is outside perturb-vertex's scope
+  command.circle_radius = radius;
+  command.color = color;
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_primitive(std::uint64_t rid, std::vector<Point2> points,
+                           std::vector<Color4> colors, std::vector<Point2> uvs,
+                           std::uint64_t texture, bool polygon, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const char *op = polygon ? "canvas_item_add_polygon" : "canvas_item_add_primitive";
+  Item *item = geometry_item(rid, op, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  if (geometry_texture(texture, op, &command)) {
+    command.kind = polygon ? CommandKind::AddPolygon : CommandKind::AddPrimitive;
+    command.points = std::move(points);
+    if (!command.points.empty()) {
+      command.points[0] = perturbed_vertex(command.points[0], frame);
+    }
+    command.colors = std::move(colors);
+    command.uvs = std::move(uvs);
+  }
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_triangle_array(std::uint64_t rid, std::vector<std::int32_t> indices,
+                                std::vector<Point2> points, std::vector<Color4> colors,
+                                std::vector<Point2> uvs, bool skinned, std::uint64_t texture,
+                                std::int32_t count, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_triangle_array";
+  Item *item = geometry_item(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  if (skinned) {
+    // D16: bones or weights make it skinned geometry, typed, not copied.
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::SkinnedGeometry;
+  } else if (geometry_texture(texture, kOp, &command)) {
+    command.kind = CommandKind::AddTriangleArray;
+    command.indices = std::move(indices);
+    command.points = std::move(points);
+    if (!command.points.empty()) {
+      command.points[0] = perturbed_vertex(command.points[0], frame);
+    }
+    command.colors = std::move(colors);
+    command.uvs = std::move(uvs);
+    command.triangle_count = count;
+  }
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_nine_patch(std::uint64_t rid, const Rect4 &rect, const Rect4 &source,
+                            std::uint64_t texture, const Point2 &margin_tl,
+                            const Point2 &margin_br, std::int32_t x_axis, std::int32_t y_axis,
+                            bool draw_center, const Color4 &modulate, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_nine_patch";
+  Item *item = geometry_item(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  static const AxisStretchMode kModes[] = {AxisStretchMode::Stretch, AxisStretchMode::Tile,
+                                           AxisStretchMode::TileFit};
+  Command command;
+  if (x_axis < 0 || x_axis > 2 || y_axis < 0 || y_axis > 2) {
+    // RenderingServer::NinePatchAxisMode has three values; anything else has no wire spelling.
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
+  } else if (geometry_texture(texture, kOp, &command)) {
+    command.kind = CommandKind::AddNinePatch;
+    command.rect = rect;
+    command.src = source;
+    command.np_margin_tl = margin_tl;
+    command.np_margin_br = margin_br;
+    command.x_axis = kModes[x_axis];
+    command.y_axis = kModes[y_axis];
+    command.draw_center = draw_center;
+    command.modulate = modulate;
+  }
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_set_transform(std::uint64_t rid, const Xform &transform, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Item *item = geometry_item(rid, "canvas_item_add_set_transform", frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  command.kind = CommandKind::AddSetTransform;
+  command.transform = transform;
+  push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_clip_ignore(std::uint64_t rid, bool ignore, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Item *item = geometry_item(rid, "canvas_item_add_clip_ignore", frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  command.kind = CommandKind::AddClipIgnore;
+  command.clip_ignore = ignore;
+  push_command(item, std::move(command), frame);
+}
+
 void Mirror::set_texture_filter(std::uint64_t rid, std::int32_t filter, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   static const char kOp[] = "canvas_item_set_default_texture_filter";
@@ -1094,7 +1331,13 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
 
 void Mirror::canvas_texture_create(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (rid == 0 || dropped_identity("canvas_texture_create", frame)) {
+  if (dropped_identity("canvas_texture_create", frame)) {
+    return;
+  }
+  // D11 (gate5-design.md, G5d): counted even when the dummy storage handed back RID(), which is
+  // exactly the headless case that makes RID() on the /4 geometry ops ambiguous.
+  canvas_texture_created_ = true;
+  if (rid == 0) {
     return;
   }
   const auto stale = texture_by_rid_.find(rid);
@@ -1264,6 +1507,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   Captured captured;
   Snapshot &out = captured.state;
+  // G5d (gate5-design.md D1): the capture speaks render-stream/4; the stamp makes make_full /
+  // make_patch carry the (empty until G5e) mesh table and the cmd_i32 / mesh_f32 blocks.
+  out.version = ProtocolVersion::V4;
   out.seq = seq;
   out.frame = frame;
   out.failures = failures_;
@@ -1338,6 +1584,10 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
           reason = UnsupportedReason::UnknownTexture;
         } else if (command.unsupported_reason == UnsupportedCmdReason::CanvasTextureHeadless) {
           reason = UnsupportedReason::CanvasTextureHeadless;
+        } else if (command.unsupported_reason == UnsupportedCmdReason::SkinnedGeometry) {
+          reason = UnsupportedReason::SkinnedGeometry;  // render-stream-4.md, D16
+        } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMesh) {
+          reason = UnsupportedReason::UnknownMesh;
         }
         add_item_entry(state.id, command.name, reason);
       } else if (names_texture(command) && command.has_tex) {
@@ -1353,12 +1603,7 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
               diffuse != textures_.end() && diffuse->second.status == TextureStatus::Unsupported;
         }
         if (unsupported_ref) {
-          add_item_entry(state.id,
-                         command.kind == CommandKind::AddTextureRect
-                             ? "canvas_item_add_texture_rect"
-                         : command.kind == CommandKind::AddMsdfTextureRectRegion
-                             ? "canvas_item_add_msdf_texture_rect_region"
-                             : "canvas_item_add_texture_rect_region",
+          add_item_entry(state.id, rs_method_name(command.kind),
                          UnsupportedReason::UnsupportedTexture);
         }
       }
@@ -1466,6 +1711,10 @@ void mirror_set_drop_frame(std::uint64_t frame) { mirror_instance().set_drop_fra
 
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame) {
   mirror_instance().set_omit_op(op, from_frame);
+}
+
+void mirror_set_perturb_vertex(std::uint64_t from_frame) {
+  mirror_instance().set_perturb_vertex(from_frame);
 }
 
 void mirror_set_perturb_glyph(std::uint64_t from_frame) {

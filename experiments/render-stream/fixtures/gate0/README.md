@@ -32,7 +32,9 @@ This is cheap and idempotent; re-run it whenever the fixture changes.
 - `gate0.tscn`: a root `Node` (NOT a `CanvasItem`) with script `gate0.gd`, and nothing else.
 - `gate0.gd`: an inner class `RectNode extends Node2D` with `rect: Rect2`, `color: Color`,
   `circle: bool`, and a `_draw()` that calls `draw_rect(rect, color)`, then (when `circle` is set)
-  `draw_circle(Vector2(16, 16), 8.0, Color(0, 0, 0, 1))`. `_ready()` creates `Subject`, then
+  `draw_circle(Vector2(16, 16), 8.0, Color(0, 0, 0, 1))` -- since G5d between
+  `draw_animation_slice(1.0, 0.0, 1.0)` and `draw_end_animation()`, because render-stream/4 carries
+  `add_circle` and the variant needs an op that stays typed `unsupported`. `_ready()` creates `Subject`, then
   `Marker`, with `add_child` in that order -- both strictly after the capture extension would have
   armed (see "Startup order on 4.5.1" in the design doc), so the mirror sees each one's
   `canvas_item_create`. `_process()` advances the timeline below. All output lines start with
@@ -78,7 +80,7 @@ All optional:
 | `GRC_EXTENSION`         | absolute `.gdextension` path for `loader.gd` to load in `_enter_tree`                                                                                                                   |
 | `RS_FIXTURE_STEP_LOG`   | absolute path. At each step's applied frame, one JSONL line `{"step":k,"applied_frame":a,"settle_frame":s}` (keys in that order) is appended and flushed                                |
 | `RS_FIXTURE_SHOT_DIR`   | absolute directory. At each settle frame, if the display server is not `headless`, awaits `RenderingServer.frame_post_draw` then saves `step-<k>.png`. Under `headless`, logs and skips |
-| `RS_FIXTURE_VARIANT`    | unset/empty runs the normal fixture. `unsupported` makes the Marker also `draw_circle` from step 2 on. Any other value prints an error and quits with code 2                            |
+| `RS_FIXTURE_VARIANT`    | unset/empty runs the normal fixture. `unsupported` makes the Marker also `draw_circle` (inside a whole-period animation slice since G5d) from step 2 on. Any other value prints an error and quits with code 2                            |
 | `RS_FIXTURE_QUIT_FRAME` | integer ≥ 52, default 52                                                                                                                                                                |
 
 ## expected.json schema
@@ -109,7 +111,7 @@ All optional:
     },
     // ... one entry per step, 0..4
   ],
-  "unsupported_variant": { "from_step": 2, "op": "canvas_item_add_circle" },
+  "unsupported_variant": { "from_step": 2, "op": "canvas_item_add_animation_slice" }, // canvas_item_add_circle before G5d
 }
 ```
 

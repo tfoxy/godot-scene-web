@@ -343,7 +343,9 @@ const char *to_wire(AckStage stage) {
 
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
                    ProtocolVersion version) {
-  const char *const protocol = version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol;
+  const char *const protocol = version == ProtocolVersion::V4   ? kProtocolV4
+                               : version == ProtocolVersion::V3 ? kProtocolV3
+                                                                : kProtocol;
   std::vector<std::pair<std::string, Value>> fields;
   Parser parser(text);
   if (!parser.parse(&fields, error)) {
@@ -722,8 +724,9 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         protocol_error(c, "second hello", frame, event.t_ns);
         return;
       }
-      const char *const protocol =
-          template_.version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol;
+      const char *const protocol = template_.version == ProtocolVersion::V4   ? kProtocolV4
+                                   : template_.version == ProtocolVersion::V3 ? kProtocolV3
+                                                                              : kProtocol;
       if (message.protocol != protocol) {
         protocol_error(c, "hello.protocol \"" + message.protocol + "\" is not " + protocol,
                        frame, event.t_ns);
