@@ -1,0 +1,64 @@
+; Gate 4 multilingual fixture for the render-stream capture experiment (G4f): shaping with the
+; pinned fallback fonts -- Greek, Cyrillic and NFD Vietnamese on Open Sans, Arabic and Persian on
+; Vazirmatn, Hebrew with niqqud and mixed bidi on Noto Sans Hebrew, Devanagari conjuncts and
+; i-matra reordering on Noto Sans Devanagari UI, and a hex box for a codepoint no pinned font has.
+; Ten steps (0..9) over Labels on one runtime FontFile with three fallbacks. See
+; fixtures/gate4-i18n/README.md and ../../protocol/gate4-design.md ("G4f", "Q6e") for the
+; contract. Every font and text input is pinned here, as in fixtures/gate4 (gate4-design.md Q1e).
+
+config_version=5
+
+[application]
+
+config/name="render-stream-gate4-i18n-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://gate4_i18n.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as gates 0-3: each warning leveled individually, 2 == ERROR.
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/stretch/scale=1.0
+window/vsync/vsync_mode=0
+
+[gui]
+
+theme/custom=""
+theme/custom_font=""
+theme/default_theme_scale=1.0
+theme/default_font_antialiasing=1
+theme/default_font_hinting=1
+theme/default_font_subpixel_positioning=0
+theme/default_font_multichannel_signed_distance_field=false
+theme/default_font_generate_mipmaps=false
+theme/lcd_subpixel_layout=1
+common/snap_controls_to_pixels=true
+
+[internationalization]
+
+rendering/text_driver=""
+rendering/root_node_layout_direction=1
+locale/test="en"
+locale/fallback="en"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)

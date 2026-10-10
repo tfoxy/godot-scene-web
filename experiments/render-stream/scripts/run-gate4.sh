@@ -23,8 +23,11 @@
 # outlined spans plus an append_text step, under its own rich-*/ directories so it never collides
 # with g4a/g4b; three rendered references, two rendered receivers, and an underline variant --
 # rich-underline/{capture,reference,receiver} -- whose add_line is typed unsupported) is also
-# independent of g4a/g4b and can run alone. g4e (MSDF on render-stream/3) and g4f (multilingual
-# shaping) are known but have not landed.
+# independent of g4a/g4b and can run alone. g4f (G4f: fixtures/gate4-i18n -- multilingual shaping
+# with Open Sans and the three pinned engine fallbacks: Greek, Cyrillic, NFD Vietnamese, Arabic,
+# Persian, Hebrew with niqqud, mixed bidi, Devanagari and a hex box -- through G4a's and G4b's legs
+# under <out>/i18n/, plus sabotage-i18n-omit-atlas) is independent of the others too. g4e (MSDF on
+# render-stream/3) is known but has not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -48,7 +51,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g4a g4b g4c g4d)
+LANDED_GROUPS=(g4a g4b g4c g4d g4f)
 KNOWN_GROUPS=(g4a g4b g4c g4d g4e g4f)
 
 # The fixture's default timeline (fixtures/gate4/expected.json): S=1, N=10, so step k's applied
@@ -575,12 +578,107 @@ run_g4d() {
 	GS_RUN_DIR=""
 }
 
+# --- g4f: fixtures/gate4-i18n (gate4-design.md "G4f"), every leg under $OUT/i18n/ ---
+
+I18N_DIR="$EXPERIMENT_DIR/fixtures/gate4-i18n"
+# The i18n fixture's early shots (one frame after each step that uploads: its expected.json
+# early_shot_steps) and the step that first shows Devanagari (sabotage-i18n-omit-atlas).
+I18N_EARLY_STEPS=(1 2 3 4 5)
+I18N_OMIT_STEP=5
+
+# i18n_early_csv <recording>: CSV of the seqs published at S+N*k+1 for the i18n early steps.
+i18n_early_csv() {
+	local rec="$1" out="" sep="" seq k
+	for k in "${I18N_EARLY_STEPS[@]}"; do
+		seq="$(seq_at_frame "$rec" "$(($(step_frame4 "$k") + 1))" || true)"
+		if [ -n "$seq" ]; then
+			out="$out$sep$seq"
+			sep=","
+		fi
+	done
+	echo "$out"
+}
+
+run_g4f() {
+	local I="$OUT/i18n"
+	mkdir -p "$I/import"
+	echo "run-gate4: g4f: provisioning fonts for fixtures/gate4-i18n (Open Sans and the three engine fallbacks)"
+	if ! bash "$SCRIPT_DIR/lib/provision-fonts.sh" "$I18N_DIR" >"$I/import/fonts.log" 2>&1; then
+		cat "$I/import/fonts.log" >&2
+		echo "run-gate4: font provisioning failed, see $I/import/fonts.log" >&2
+		exit 1
+	fi
+	# import: the release template cannot load a loose project (or resolve the receiver's
+	# class_name scripts) until the editor generated its .godot/; a fresh worktree has none.
+	echo "run-gate4: g4f: import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$I/import/fixture" none -- mise exec -- godot --headless --path "$I18N_DIR" --import
+	if [ "$(cat "$I/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate4: import of $I18N_DIR failed, see $I/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	LEG_ENV=()
+	run_headless "$I/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$I/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate4: import of $RECEIVER_DIR failed, see $I/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	# capture-i18n: as g4a's capture (400 frames, both sinks, store, strace + maps, env.json).
+	echo "run-gate4: capture-i18n"
+	CAPTURE_FIXTURE_DIR="$I18N_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_ENV_LOG="$I/capture/env.json")
+	run_capture "$I/capture" "$CAPTURE_QUIT_FRAME" capture
+
+	echo "run-gate4: sabotage-i18n-omit-atlas (capture, omit-op texture_2d_update @$(step_frame4 "$I18N_OMIT_STEP"))"
+	CAPTURE_FIXTURE_DIR="$I18N_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=texture_2d_update
+		GRC_SABOTAGE_FRAME="$(step_frame4 "$I18N_OMIT_STEP")")
+	run_capture "$I/sabotage-omit-atlas/capture" "" none
+
+	echo "run-gate4: g4f: receiver-headless-trace"
+	if prepare_recording "$I/capture/$RECORDING_NAME" "$I/receiver-headless-trace"; then
+		RECEIVER_STORE_DIR="$I/capture/store"
+		run_receiver_headless "$I/receiver-headless-trace" openat
+	fi
+
+	echo "run-gate4: bringing up private gamescope for g4f rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g4f"
+
+	echo "run-gate4: reference-i18n (oracle on)"
+	REFERENCE_FIXTURE_DIR="$I18N_DIR"
+	REFERENCE_ORACLE=1
+	run_reference "$I/reference"
+	echo "run-gate4: reference-i18n-repeat (oracle on)"
+	REFERENCE_FIXTURE_DIR="$I18N_DIR"
+	REFERENCE_ORACLE=1
+	run_reference "$I/reference-repeat"
+	echo "run-gate4: reference-i18n-armed (extension armed, stream on, oracle off)"
+	REFERENCE_FIXTURE_DIR="$I18N_DIR"
+	REFERENCE_ARMED=1
+	run_reference "$I/reference-armed"
+
+	echo "run-gate4: receiver-i18n (full sink)"
+	RECEIVER_EXTRA_SHOTS="$(i18n_early_csv "$I/capture/$RECORDING_NAME")"
+	run_rendered_receiver "$I/capture" "$I/receiver"
+	echo "run-gate4: receiver-i18n-patch"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_EXTRA_SHOTS="$(i18n_early_csv "$I/capture/$RECORDING_NAME")"
+	run_rendered_receiver "$I/capture" "$I/receiver-patch"
+	echo "run-gate4: sabotage-i18n-omit-atlas (receiver)"
+	run_rendered_receiver "$I/sabotage-omit-atlas/capture" "$I/sabotage-omit-atlas/receiver"
+
+	gs_teardown "$OUT/gamescope-g4f"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g4a) run_g4a ;;
 	g4b) run_g4b ;;
 	g4c) run_g4c ;;
 	g4d) run_g4d ;;
+	g4f) run_g4f ;;
 	esac
 done
 

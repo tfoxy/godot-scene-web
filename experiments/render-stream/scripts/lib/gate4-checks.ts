@@ -108,7 +108,13 @@ export type Gate4Check = Gate3Check;
 
 export const ALL_GROUPS = ["g4a", "g4b", "g4c", "g4d", "g4e", "g4f"] as const;
 /** Groups whose increment has landed; run-gate4.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g4a", "g4b", "g4c", "g4d"];
+export const LANDED_GROUPS: readonly string[] = [
+  "g4a",
+  "g4b",
+  "g4c",
+  "g4d",
+  "g4f",
+];
 
 /** G4b: the unchanged receiver on the main capture's full and patch sinks, a headless openat
  * trace, and the three sabotage legs (gate4-design.md "G4b"). */
@@ -2191,6 +2197,13 @@ export interface Gate4Report {
     subpixel: Record<string, unknown>;
     clips: Record<string, unknown>;
   } | null;
+  /** G4f (lib/gate4f-checks.ts): the multilingual fixture's hook-log census per page, its script
+   * predictions and its fallback pages */
+  i18n: {
+    census: Record<string, unknown>;
+    scripts: unknown[];
+    fallback: Record<string, unknown>;
+  } | null;
 }
 
 export interface Gate4Context {
@@ -2206,6 +2219,9 @@ export interface Gate4Context {
   /** absolute path to experiments/render-stream/fixtures/gate4-layout (G4c); default: the
    * sibling of fixtureDir */
   layoutFixtureDir?: string;
+  /** absolute path to experiments/render-stream/fixtures/gate4-i18n (G4f); default: the sibling
+   * of fixtureDir */
+  i18nFixtureDir?: string;
 }
 
 function notRunCheck(group: string, detail: string): Gate4Check {
@@ -2813,6 +2829,35 @@ export async function runGate4(
     layout = { census: r.census, subpixel: r.subpixel, clips: r.clips };
   }
 
+  let i18n: Gate4Report["i18n"] = null;
+  if (groups.run.includes("g4f")) {
+    // Loaded on demand: gate4f-checks builds on this module and gate4c-checks.
+    const { runG4f } = await import("./gate4f-checks");
+    const i18nDir =
+      ctx.i18nFixtureDir ?? join(ctx.fixtureDir, "..", "gate4-i18n");
+    const i18nExpected = JSON.parse(
+      await readFile(join(i18nDir, "expected.json"), "utf8"),
+    );
+    const i18nLock = JSON.parse(
+      await readFile(join(i18nDir, "fonts.lock.json"), "utf8"),
+    ) as FontLockEntry[];
+    const r = await runG4f(outDir, {
+      expected: i18nExpected,
+      lock: i18nLock,
+      receiverDir: ctx.receiverDir,
+      fixtureDir: i18nDir,
+    });
+    checks.push(...r.checks);
+    Object.assign(legs, r.legs);
+    checkpoints = [...checkpoints, ...r.checkpoints];
+    const fixture = i18nExpected.fixture as string;
+    text = { ...(text ?? {}), [fixture]: r.text };
+    parity = { ...(parity ?? {}), [fixture]: r.parity };
+    budgets = { ...(budgets ?? {}), [fixture]: r.budgets };
+    ink = { ...(ink ?? {}), [fixture]: r.ink };
+    i18n = { census: r.census, scripts: r.scripts, fallback: r.fallback };
+  }
+
   for (const group of notRun)
     if (group !== "g4a" && group !== "g4b")
       checks.push(notRunCheck(group, `${group} was not in --legs`));
@@ -2838,5 +2883,6 @@ export async function runGate4(
     census,
     ink,
     layout,
+    i18n,
   };
 }
