@@ -1973,6 +1973,84 @@ Control redraw re-sent clear, custom rect and clip, and no engine redraw was una
 - Rotated or scaled clip owners (G3c), `clip_ignore` (G3d), text clipping (gate 4), or clipping
   under stretch (gates 6 and 7).
 
+## Gate 3b result (2026-10-09)
+
+G3b ([protocol/gate3-design.md](protocol/gate3-design.md) "G3b") passes:
+`pnpm render-stream:gate3 -- --legs g3a,g3b` is 31/31 in
+`artifacts/render-stream/gate3/20261010T003234Z/`. The same build passed gate −1 28/28 with 55
+hooks and none omitted, gate 0 19/19, gate 1 65/65 (all four groups) and gate 2 85/85 (all five
+groups) -- proving the reordered applier is still correct for every receiver leg gates 0–2
+already exercise. `pnpm exec tsx --conditions=development
+experiments/render-stream/scripts/test/self-test-gate3.ts` is 171/171 and
+`fixtures/gate3/make_expected.py --check` is clean.
+
+What landed:
+
+- **The receiver apply order (D3).** `rs_applier.gd`'s `clip` setter now runs after the content
+  block. A content rebuild's `canvas_item_clear` resets the shadow clip to false first (the
+  engine's own reset), so the setter only re-sends `canvas_item_set_clip` when the wire value then
+  differs from that shadow -- exactly the three cases of Q5: a redraw with `clip` unchanged
+  re-sends it (`clear`, the adds, `set_clip(true)`); a transform-only change sends neither; a
+  redraw that also flips `clip` to `false` sends no `set_clip` call, because the post-clear shadow
+  already agrees. `receiver/tests/applier2_selftest.gd` gained `_test_applier_clip_order` (the
+  three cases plus the new-item path) and two sabotage tests, all against the recorded
+  `item_calls` sequence (new test instrumentation on `apply_state()`'s return value, not a wire
+  field). Gates 0–2's own receiver legs stayed green because none of their fixtures ever clip.
+- **Two receiver sabotages** (`RS_RECEIVER_SABOTAGE=ignore-clip` / `clip-before-clear`): the first
+  corrupts every `canvas_item_set_clip` argument to `false` while the shadow still tracks the true
+  wire value (same call cadence as an honest receiver); the second restores the pre-gate-3 bug
+  outright (clip before content, no shadow reset).
+- **`receiver`, `receiver-patch` and `receiver-headless-trace`** replay g3a's own capture
+  (full and patch); **`sabotage-freeze`, `sabotage-perturb`, `sabotage-omit-clip` and
+  `sabotage-omit-custom-rect`** each capture their own fresh recording with /1's host sabotages;
+  **`root-size-observe`** captures with `GRC_ROOT_SIZE` unset. `scripts/lib/gate3-checks.ts` gained
+  `evaluateG3bLeg`, `computeGate3ReceiverCheckpoints`, `probeTallyReceiver` and `checkLegClass3`,
+  which reads every leg's expected mismatching steps, mismatching regions and failing probes
+  straight out of `expected.json` `predictions[leg]` rather than a hand-typed table, so a
+  disagreement with gate3-design.md Q7 would be a finding, not a silently-passing copy.
+  `checkClipRectsDerived` gained a fourth, optional argument: once g3b runs, the same check also
+  runs `deriveClipRects` over `receiver-patch`'s own resolved `state/seq-<n>.json` dumps, not just
+  the capture's two sinks.
+
+Every leg classified exactly as gate3-design.md Q7 and G3a's "As built" predictions say, with no
+hand-derivation needed on this side either:
+
+| Leg                                    | Class            | Mismatching steps     |
+| --------------------------------------- | ---------------- | ---------------------- |
+| `receiver`, `receiver-patch`           | `success`        | none                    |
+| `sabotage-freeze`                       | `pixel-mismatch` | `{2,3,4,5,6,7,8,9}`     |
+| `sabotage-perturb`                      | `pixel-mismatch` | `{1,2,3,4,5,6,7,8,9}`   |
+| `sabotage-omit-clip`                    | `pixel-mismatch` | `{3,4,5,6,7,8,9}`       |
+| `sabotage-omit-custom-rect`             | `pixel-mismatch` | `{7,8,9}`               |
+| `sabotage-receiver-ignore-clip`         | `pixel-mismatch` | `{0,1,2,3,4,5,6,7,8,9}` (625 failing probes, exactly `predictions`) |
+| `sabotage-receiver-clip-before-clear`   | `pixel-mismatch` | `{3,4,5,6,7,8,9}`       |
+| `root-size-observe`                      | `unsupported` (`degenerate-host-size`) | `{0..9}`, mismatching only in region `anchored` |
+
+`receiver`'s and `receiver-patch`'s shots (`receiver/shots/seq-{8,18,28,...,98}.png`,
+`receiver-patch/shots/seq-{8,18,...,98}.png`) equal `synthesizeGate3` exactly, full frame and
+every region: all 1314 probes across the ten steps (591 decisive pairs) have exactly their
+expected colour, same as the reference. `sabotage-receiver-ignore-clip`'s shots
+(`sabotage-receiver-ignore-clip/shots/seq-*.png`) fail exactly the predicted 625 probes (every
+decisive outside probe plus the 34 inside probes `BF`/`BZ`/`CF` cover once unclipped, G3a's "As
+built" amendment). `clip-rects-derived` reproduces Q6b's table over both sinks' settle
+transactions and, now, over `receiver-patch`'s own resolved state dumps -- the same table as
+G3a's, unchanged.
+
+### Findings
+
+- **No surprises.** Every mismatching-step, mismatching-region and failing-probe set matched
+  gate3-design.md Q7's tables and `expected.json` `predictions` exactly on the first run; no
+  amendment was needed to either.
+- **The gamescope teardown segfault recurred twice** (benign, memory:
+  gamescope-teardown-segfault-benign): the run still reported 31/31 with every leg at its
+  expected class.
+
+### What G3b does not prove
+
+- Rotated or scaled clip owners, `clip_ignore`, text clipping, or clipping under stretch (G3c,
+  G3d, gates 4, 6 and 7, same as G3a).
+- Late-join adoption of clip state, or a live leg exercising clip (both deferred, D10, gate 8).
+
 ## Gate 4a result (2026-10-09)
 
 G4a ([protocol/gate4-design.md](protocol/gate4-design.md) "G4a") passes:

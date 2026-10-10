@@ -71,6 +71,9 @@ func _run_applier_tests() -> void:
 	_test_applier_reupload()
 	_test_applier_reconnect()
 	_test_applier_canvas_texture()
+	_test_applier_clip_order()
+	_test_applier_sabotage_ignore_clip()
+	_test_applier_sabotage_clip_before_clear()
 	_finish()
 
 
@@ -338,6 +341,126 @@ func _test_applier_canvas_texture() -> void:
 	_check(applier.rs_calls > calls_before, "a version bump re-issues CT's setters: %d -> %d" % [calls_before, applier.rs_calls])
 
 	_dispose_checked(applier, "canvas texture")
+
+
+## Every `item_calls` op recorded for one item id, in call order (test instrumentation,
+## apply_state()'s docstring).
+static func _item_ops(item_calls: Variant, id: int) -> Array:
+	var list: Array = item_calls
+	var out: Array = []
+	for value: Variant in list:
+		var entry: Dictionary = value
+		if entry["item"] == id:
+			out.append(entry["op"])
+	return out
+
+
+## A hand-built resolved item (gate3-design.md Q5, G3b): one clipping item with a single
+## add_rect, parented straight to canvas 1.
+static func _clip_test_item(id: int) -> Dictionary:
+	return {
+		"id": id, "parent": {"kind": "canvas", "id": 1}, "children": [],
+		"xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "modulate": [1.0, 1.0, 1.0, 1.0],
+		"self_modulate": [1.0, 1.0, 1.0, 1.0], "visible": true, "clip": true,
+		"custom_rect": false, "custom_rect_rect": [0.0, 0.0, 0.0, 0.0],
+		"visibility_layer": 1, "z_index": 0, "z_relative": true, "behind": false,
+		"draw_index": 0, "texture_filter": "default", "texture_repeat": "default",
+		"content_version": 1,
+		"commands": [{"op": "add_rect", "aa": false, "rect": [0.0, 0.0, 10.0, 10.0], "color": [1.0, 1.0, 1.0, 1.0]}],
+	}
+
+
+## gate3-design.md Q5 "Apply order (G3b)": the clip setter moves after the content block, and a
+## content rebuild's clear resets the shadow clip to false, asserted through apply_state()'s
+## item_calls log (the recorded RS call sequence; the three cases of the contract plus the new
+## item's path, which keeps today's ordering since a new item never clears).
+func _test_applier_clip_order() -> void:
+	var applier: RsApplier = _new_applier()
+	var cache := RsResourceCache.new()
+	var stream := Rs2Decoder.Stream.new()
+	stream.canvases = {1: {"items": [30], "xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]}}
+	stream.textures = {}
+
+	# Setup: a new item with clip true -- no clear, and the setter still fires (is_new).
+	stream.items = {30: _clip_test_item(30)}
+	var setup: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(setup["item_calls"], 30) == ["add_rect", "set_clip"], "new item: item_calls %s" % str(_item_ops(setup["item_calls"], 30)))
+
+	# Case 1: content changed (version bump, an extra command), clip unchanged (true): clear, the
+	# adds, then set_clip(true) -- the post-clear shadow (false) differs from the wire (true).
+	var case1: Dictionary = _clip_test_item(30)
+	case1["content_version"] = 2
+	case1["commands"] = [
+		{"op": "add_rect", "aa": false, "rect": [0.0, 0.0, 10.0, 10.0], "color": [1.0, 1.0, 1.0, 1.0]},
+		{"op": "add_rect", "aa": false, "rect": [2.0, 2.0, 4.0, 4.0], "color": [0.0, 1.0, 0.0, 1.0]},
+	]
+	stream.items = {30: case1}
+	var r1: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(r1["item_calls"], 30) == ["clear", "add_rect", "add_rect", "set_clip"], "case 1 (content changed, clip unchanged true): item_calls %s" % str(_item_ops(r1["item_calls"], 30)))
+
+	# Case 2: only the transform changed (same content_version, same clip): no set_clip, no clear.
+	var case2: Dictionary = case1.duplicate(true)
+	case2["xform"] = [1.0, 0.0, 0.0, 1.0, 5.0, 0.0]
+	stream.items = {30: case2}
+	var r2: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(r2["item_calls"], 30) == [], "case 2 (transform only): item_calls %s" % str(_item_ops(r2["item_calls"], 30)))
+
+	# Case 3: clip true -> false together with a content change: clear, adds, and no set_clip
+	# call, because the shadow is already false after the clear.
+	var case3: Dictionary = case2.duplicate(true)
+	case3["clip"] = false
+	case3["content_version"] = 3
+	case3["commands"] = [{"op": "add_rect", "aa": false, "rect": [0.0, 0.0, 6.0, 6.0], "color": [0.0, 0.0, 1.0, 1.0]}]
+	stream.items = {30: case3}
+	var r3: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(r3["item_calls"], 30) == ["clear", "add_rect"], "case 3 (clip true -> false with content change): item_calls %s" % str(_item_ops(r3["item_calls"], 30)))
+
+	_dispose_checked(applier, "clip order")
+
+
+## RS_RECEIVER_SABOTAGE=ignore-clip: the call cadence is exactly case 1's (the shadow still
+## tracks the true wire value), only the RS argument is corrupted to false -- unobservable through
+## item_calls (which logs the op, not its argument), so this proves the cadence is unchanged.
+func _test_applier_sabotage_ignore_clip() -> void:
+	var applier: RsApplier = _new_applier()
+	applier.sabotage_ignore_clip = true
+	var cache := RsResourceCache.new()
+	var stream := Rs2Decoder.Stream.new()
+	stream.canvases = {1: {"items": [31], "xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]}}
+	stream.textures = {}
+	stream.items = {31: _clip_test_item(31)}
+	var setup: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(setup["item_calls"], 31) == ["add_rect", "set_clip"], "ignore-clip setup: the call still happens, only its argument is corrupted")
+
+	var case1: Dictionary = _clip_test_item(31)
+	case1["content_version"] = 2
+	stream.items = {31: case1}
+	var r1: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(r1["item_calls"], 31) == ["clear", "add_rect", "set_clip"], "ignore-clip case 1 (content changed, clip unchanged true): same cadence as an honest receiver, %s" % str(_item_ops(r1["item_calls"], 31)))
+	_dispose_checked(applier, "sabotage ignore-clip")
+
+
+## RS_RECEIVER_SABOTAGE=clip-before-clear: the pre-gate-3 order (Q1b's receiver bug) -- the clip
+## setter runs before the content block, and a clear does not reset the shadow, so a clipping
+## item's next content rebuild loses its clip for good (no set_clip call, because the un-reset
+## shadow already agrees with the unchanged wire value).
+func _test_applier_sabotage_clip_before_clear() -> void:
+	var applier: RsApplier = _new_applier()
+	applier.sabotage_clip_before_clear = true
+	var cache := RsResourceCache.new()
+	var stream := Rs2Decoder.Stream.new()
+	stream.canvases = {1: {"items": [32], "xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]}}
+	stream.textures = {}
+	stream.items = {32: _clip_test_item(32)}
+	var setup: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(setup["item_calls"], 32) == ["set_clip", "add_rect"], "clip-before-clear setup: the old order, clip before content, %s" % str(_item_ops(setup["item_calls"], 32)))
+
+	var case1: Dictionary = _clip_test_item(32)
+	case1["content_version"] = 2
+	stream.items = {32: case1}
+	var r1: Dictionary = applier.apply_state(stream, cache)
+	_check(_item_ops(r1["item_calls"], 32) == ["clear", "add_rect"], "clip-before-clear case 1: no set_clip call -- the bug this sabotage reproduces, %s" % str(_item_ops(r1["item_calls"], 32)))
+	_dispose_checked(applier, "sabotage clip-before-clear")
 
 
 # --------------------------------------------------------------------------- cache

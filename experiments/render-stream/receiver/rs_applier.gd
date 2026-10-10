@@ -48,6 +48,16 @@ var freed_by_apply: int = 0
 ## RS_RECEIVER_SABOTAGE=reupload: every resident image is uploaded again at every applied
 ## transaction (exists only to fail the redundant-upload check).
 var sabotage_reupload: bool = false
+## RS_RECEIVER_SABOTAGE=ignore-clip (gate3-design.md Q5, G3b): every canvas_item_set_clip call
+## this applier makes passes false, whatever the wire says. The shadow (ItemState.clip) still
+## tracks the true wire value, so the call cadence is exactly an honest receiver's -- only the RS
+## argument is corrupted. Exists only to fail checks.
+var sabotage_ignore_clip: bool = false
+## RS_RECEIVER_SABOTAGE=clip-before-clear (gate3-design.md Q5, G3b): restores the pre-gate-3 bug
+## (Q1b) -- the clip setter runs before the content block, in its old position between `visible`
+## and `custom_rect`, and a content rebuild's canvas_item_clear does not reset the shadow clip to
+## false. Exists only to fail checks.
+var sabotage_clip_before_clear: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
@@ -191,10 +201,19 @@ static func _named_texture_ids(items: Dictionary) -> Array[int]:
 ## Reconciles the RenderingServer with one resolved state (Rs2Decoder.Stream's `canvases`,
 ## `items`, `textures` and default filter/repeat). Every payload needed() named must already be
 ## in `cache`. Steps follow gate2-design.md Q5 "Apply order per transaction" 3-4 (textures, the
-## root defaults, then gate 0/1's canvases and items with the /2 item fields). Returns {created,
-## freed, reparented, commands_replayed, rs_calls, unsupported_commands: Array[Dictionary] of
-## {item, name, reason}, resources: {created, updated, replaced, freed, upload_bytes,
-## skipped_commands}, uploads: Array[Dictionary] of {id, hash, op, data_bytes}}.
+## root defaults, then gate 0/1's canvases and items with the /2 item fields). Per item, the
+## `clip` setter runs after the content block (gate3-design.md Q5, D3, G3b): a content rebuild's
+## canvas_item_clear first resets the shadow clip to false (the engine's own reset,
+## renderer_canvas_render.h:455), and the setter below only calls canvas_item_set_clip when the
+## wire value then differs from that shadow -- RS_RECEIVER_SABOTAGE=clip-before-clear restores the
+## pre-gate-3 order and skips the shadow reset; RS_RECEIVER_SABOTAGE=ignore-clip keeps the ordering
+## but corrupts the RS argument to false. Returns {created, freed, reparented, commands_replayed,
+## rs_calls, unsupported_commands: Array[Dictionary] of {item, name, reason}, resources: {created,
+## updated, replaced, freed, upload_bytes, skipped_commands}, uploads: Array[Dictionary] of {id,
+## hash, op, data_bytes}, item_calls: Array[Dictionary] of {item, op}, the per-item
+## canvas_item_clear / canvas_item_add_rect / canvas_item_add_texture_rect /
+## canvas_item_add_texture_rect_region / canvas_item_set_clip calls this apply actually made, in
+## call order (test instrumentation for Q5's apply-order cases)}.
 func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionary:
 	var calls_before: int = rs_calls
 	var created: int = 0
@@ -457,8 +476,11 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 			current.append(child)
 
 	# 6. Setters (all for a new item, changed ones otherwise; floats compared as float32) and
-	# 7. content (rebuilt only when content_version changed).
+	# 7. content (rebuilt only when content_version changed). `clip` moves after the content
+	# block (render-stream-2.md "Item", D3, G3b): see apply_state()'s docstring for the shadow
+	# reset and the two sabotages.
 	var skipped: int = 0
+	var item_calls: Array[Dictionary] = []
 	for id: int in item_order:
 		var wire: Dictionary = items[id]
 		var state: ItemState = _items[id]
@@ -485,10 +507,8 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 			rs_calls += 1
 			state.visible = visible
 		var clip: bool = wire["clip"]
-		if is_new or clip != state.clip:
-			RenderingServer.canvas_item_set_clip(state.rid, clip)
-			rs_calls += 1
-			state.clip = clip
+		if sabotage_clip_before_clear:
+			_apply_clip(state, clip, is_new, id, item_calls)
 		var custom_rect: bool = wire["custom_rect"]
 		if is_new or custom_rect != state.custom_rect or crect != state.custom_rect_floats:
 			RenderingServer.canvas_item_set_custom_rect(state.rid, custom_rect, _rect(crect, 0))
@@ -538,6 +558,11 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 			if not is_new:
 				RenderingServer.canvas_item_clear(state.rid)
 				rs_calls += 1
+				item_calls.append({"item": id, "op": "clear"})
+				# D3 (gate3-design.md Q1b): the engine's own clear resets its clip flag, so the
+				# shadow does too -- unless the clip-before-clear sabotage keeps the pre-gate-3 bug.
+				if not sabotage_clip_before_clear:
+					state.clip = false
 			var commands: Array = wire["commands"]
 			for value: Variant in commands:
 				var command: Dictionary = value
@@ -550,6 +575,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 						RenderingServer.canvas_item_add_rect(state.rid, _rect(rect, 0), _color(color, 0), aa)
 						rs_calls += 1
 						replayed += 1
+						item_calls.append({"item": id, "op": "add_rect"})
 					"add_texture_rect", "add_texture_rect_region":
 						var texture: Dictionary = _texture_for(command, textures)
 						if not texture["drawable"]:
@@ -569,12 +595,16 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 							RenderingServer.canvas_item_add_texture_rect_region(state.rid, _rect(dest, 0), tex_rid, _rect(src, 0), _color(tint, 0), transpose, clip_uv)
 						rs_calls += 1
 						replayed += 1
+						item_calls.append({"item": id, "op": op_name})
 					_:
 						skipped += 1
 						var name: String = command["name"]
 						var reason: String = command["reason"]
 						unsupported_commands.append({"item": id, "name": name, "reason": reason})
 			state.content_version = version
+
+		if not sabotage_clip_before_clear:
+			_apply_clip(state, clip, is_new, id, item_calls)
 
 	# 8. Canvas 1 transform on the root viewport. Other canvases are never attached.
 	var root: Dictionary = canvases[1]
@@ -600,7 +630,21 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 			"skipped_commands": skipped,
 		},
 		"uploads": uploads,
+		"item_calls": item_calls,
 	}
+
+
+## The `clip` setter (apply_state()'s docstring, D3/G3b): a call only when the wire value differs
+## from the shadow (always true for a new item). RS_RECEIVER_SABOTAGE=ignore-clip corrupts the RS
+## argument to false without touching the shadow, so the call cadence still matches an honest
+## receiver's; the shadow always ends up holding the true wire value. `item_calls` logs the call
+## (test instrumentation).
+func _apply_clip(state: ItemState, clip: bool, is_new: bool, id: int, item_calls: Array[Dictionary]) -> void:
+	if is_new or clip != state.clip:
+		RenderingServer.canvas_item_set_clip(state.rid, false if sabotage_ignore_clip else clip)
+		rs_calls += 1
+		state.clip = clip
+		item_calls.append({"item": id, "op": "set_clip"})
 
 
 ## A texture command's texture (gate2-design.md Q5 step 4): {drawable: bool, rid: RID}. `tex:
