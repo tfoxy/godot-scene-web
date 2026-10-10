@@ -333,7 +333,7 @@ def timeline(variant):
     return ev
 
 
-PHASE_RULE = {"material": "MPh", "param": "phase", "from_frame": 1, "to_frame": None, "value": "frame"}
+PHASE_RULE = {"material": "MPh", "param": "phase", "type": "int", "from_frame": 1, "to_frame": None, "base_version": 1, "value": "frame"}
 
 
 class State:
@@ -624,10 +624,20 @@ def material_calls(variant, step):
     return out
 
 
+def wire_type(value):
+    """D8's type spelling of a model value (packed arrays by element type, NIL as `nil`)."""
+    if value is None:
+        return "nil"
+    return {"packed_float32_array": "float32"}.get(value[0], value[0])
+
+
 def census(variant):
     """Every material-related RenderingServer call per frame (D12 (4)), PH's per-frame
     material_set_param excluded (`phase_rule`): [kind, entity, version, detail]. Versions follow D5:
-    1 at creation, +1 per accepted mutating call; a free carries the entity's last version."""
+    1 at creation, +1 per accepted mutating call; a free carries the entity's last version. The
+    detail is the shader a material names, the default texture's sampler, `param:type` for a
+    parameter (D8's spelling), the material an item names, or the kind a free releases. Frees at
+    teardown (after the quit frame) are not part of the census."""
     version = {}
     frames = {}
     for f, kind, a in timeline(variant):
@@ -645,17 +655,21 @@ def census(variant):
             entity = ("material", a["material"])
             version[entity] = 1
             line = [kind, a["material"], 1, a["shader"]]
-        elif kind in ("material_set_param", "material_set_shader"):
+        elif kind == "material_set_shader":
             entity = ("material", a["material"])
             version[entity] += 1
-            line = [kind, a["material"], version[entity], a.get("param", a.get("shader"))]
+            line = [kind, a["material"], version[entity], a["shader"]]
+        elif kind == "material_set_param":
+            entity = ("material", a["material"])
+            version[entity] += 1
+            line = [kind, a["material"], version[entity], f"{a['param']}:{wire_type(a['value'])}"]
         elif kind == "free":
             entity = ("shader", a["shader"]) if "shader" in a else ("material", a["material"])
             line = [kind, entity[1], version[entity], entity[0]]
         elif kind == "canvas_item_set_material":
             line = [kind, a["item"], None, a["material"]]
         elif kind == "canvas_item_set_instance_shader_parameter":
-            line = [kind, a["item"], None, a["param"]]
+            line = [kind, a["item"], None, f"{a['param']}:{wire_type(a['value'])}"]
         else:
             raise AssertionError(kind)
         frames.setdefault(str(f), []).append(line)

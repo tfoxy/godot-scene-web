@@ -839,6 +839,30 @@ and every shader's code as the reference holds it. Amendments:
    shader and material log (phase 2). Their predictions are already in `expected.json` `census`,
    `shader_codes` and `shader_scan`.
 
+**As built (G55c phase 2, 2026-10-10; on G55a's log).** The census, hook-hash parity and scan
+predictions held on the first run against G55a's log, unchanged except for one detail: each
+census parameter line now names its D8 type (`param:type`, packed arrays by element type,
+`lv:float32`; an erase is `gain:nil`). Counts as measured:
+
+- **`capture-shader`**: 448 shader, material and item-material lines over frames 1 to 400, every
+  frame matching. The 400 `phase` writes give `MPh` version f + 1 at frame f. 13 teardown frees
+  fall at 401.
+- **`reference-shader-armed`**: 150 lines to its quit frame 102.
+- **`capture-refused`**: 463 lines to frame 400.
+
+Further results:
+
+- **Ids.** The hook log's shader ids are `shader_order` (`pal` 1 to `sh_b` 7) and its material
+  ids `material_order` (`MT` 1 to `MR2` 8).
+- **Frees and versions.** `free(MR)` carries v2 and `free(sh_a)` v1.
+- **The default texture** is a shader version (`pal` v2, `ref_id` the texture id).
+- **Hook-hash parity.** The hook copy's GRP1 hash equals the reference oracle's `shader_get_code`
+  hash and the model's on 230 shader-steps, on both hosts and the refused variant. So the headless
+  copy is byte-for-byte the reference's own preprocessed code (amendment 5).
+- **The token scan** classifies the five refused shaders as predicted: `shader-time`,
+  `shader-screen-texture`, `shader-sdf`, `shader-global-uniform` and `shader-mode` (`mode` spatial,
+  `uses` empty). `inst` alone uses `instance_uniform`, and every other shader is `ok`.
+
 ---
 
 ### G55w — render-stream/5 codecs, GRP1, goldens (sonnet)

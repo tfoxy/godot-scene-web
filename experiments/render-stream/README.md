@@ -3406,10 +3406,28 @@ classify `unsupported`: `canvas_item_set_material` / `unsupported-state` on exac
 - **The contract's step-0 row miscounted.** It has 7 materials and 8 `canvas_item_set_material`,
   not 6 and 7. The contract's `TI` colours were off the 0.2 grid with `gain` .5 and were changed.
 
-### What G55c phase 1 does not prove
+### Phase 2: the census against G55a's log
 
-- The census and hook-hash parity. Both need G55a's shader and material log, and their
-  predictions already sit in `expected.json`.
+On G55a's shader and material hook log, three checks join g55c. With them,
+`pnpm render-stream:gate55 -- --legs g55b,g55c` is **55/55** in
+`artifacts/render-stream/gate55/g55c-p2/`, and gate −1 is 28/28 with 73 hooks
+(`gate-minus1/g55c-p2/`).
+
+- **`material-census`**: the log equals the census frame by frame.
+  - `capture-shader`: 448 lines to frame 400, plus 13 teardown frees at 401.
+  - `reference-shader-armed`: 150 lines to frame 102.
+  - `capture-refused`: 463 lines.
+
+  Every line names the right entity, version, shader, material and parameter type.
+- **`shader-hook-hash-parity`**: the hook's GRP1 hash, the reference oracle's and the model's are
+  one value on 230 shader-steps.
+- **`shader-scan`**: the refused shaders carry exactly `shader-time`, `shader-screen-texture`,
+  `shader-sdf`, `shader-global-uniform` and `shader-mode`.
+
+Every prediction held on the first run.
+
+### What G55c does not prove
+
 - That any shader or material reaches a receiver: that is G55d/G55e.
 - Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
 

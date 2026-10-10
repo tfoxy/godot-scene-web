@@ -1656,6 +1656,21 @@ on the shader fixture (`shader-expected-image-reference`, `shader-presence-refer
 frame, and every item's `content_version` constant but the marker's. `shader-support-legs-exit`
 requires the import and rendered legs to exit 0.
 
+Three checks read G55a's shader and material hook log (`evidence/resources.jsonl`, kinds `shader`,
+`material` and `item-material`):
+
+- `material-census` requires the log, frame by frame up to each quit frame, to equal the census
+  expanded with `PH`'s per-frame rule. It reads `capture-shader` (to 400),
+  `reference-shader-armed` (to 102) and `capture-refused` (to 400). The comparison covers op,
+  entity, version and the shader or material named, or `param:type` in D8's spelling, with ids
+  1.. in `shader_order` and `material_order`. Lines must be on the main thread and `applied`.
+  Teardown frees after the quit frame are reported, not compared.
+- `shader-hook-hash-parity` requires, at every settle step, each shader's last hook hash to equal
+  the reference oracle's `shader_get_code` hash and the model's, on both hosts and the refused
+  variant. A freed shader must be freed in the log too.
+- `shader-scan` requires every code line's mode, `uses` and status and reason to equal
+  `shader_scan`: the five refused reasons, and `inst`'s `instance_uniform`.
+
 ## Gate 5.5 self-test
 
 ```bash
@@ -1688,4 +1703,8 @@ double instead of float32, `I2`'s default typed `color`, `MR` not freed, a frame
 bytes differing, `tint`'s hash unchanged at step 3 and include markers on `pal`. The counter,
 stdout, step-log and capture-typing checks run on synthetic values, failing on a short count, an
 unexpected draw, a compile error, a missing step, class `success`, a redrawn item, an untyped item
-and another reason.
+and another reason. The hook-log checks run on a log written out from the census itself (passing, with a
+teardown free after the quit frame, for both variants and the armed reference's quit). They then
+fail on a `material_set_shader` missing, a version off, `gain`'s erase not typed `nil`, an extra
+material, a line off the main thread, the step-3 code change never hooked, `sh_a` never freed and
+`TIME` not refused.

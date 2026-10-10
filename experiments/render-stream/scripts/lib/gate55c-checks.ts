@@ -13,8 +13,9 @@
 //     shader code, material parameters and instance parameters back through the RenderingServer;
 //   - the capture: until G55e the wire types `canvas_item_set_material` as `unsupported-state`,
 //     so the capture legs classify `unsupported`; counters.json counts the four material calls the
-//     record hooks before calibrator 8. G55a's shader/material hook log adds the census and
-//     hook-hash parity (phase 2 of G55c).
+//     record hooks before calibrator 8;
+//   - the capture's shader/material hook log (G55a, evidence/resources.jsonl kind shader,
+//     material and item-material lines): the census, hook-hash parity and the D11 scan.
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 5.5"):
 //   shader/import/fixture/       editor --import of fixtures/gate55-shader
@@ -39,7 +40,12 @@ import {
   readExitCode,
   type StepLine,
 } from "./gate0-checks";
-import { parseJsonl } from "./gate2-checks";
+import {
+  engineCall,
+  loadResourceLog,
+  parseJsonl,
+  type ResourceLine,
+} from "./gate2-checks";
 import {
   checkNoDrawIndexTies,
   checkPatchResolvesToFull,
@@ -152,8 +158,12 @@ export interface Gate55Census {
   phase_rule: {
     material: string;
     param: string;
+    /** D8's type spelling of the value the rule writes */
+    type: string;
     from_frame: number;
     to_frame: number | null;
+    /** the material's version before the rule's first write */
+    base_version: number;
     value: string;
   };
 }
@@ -750,6 +760,337 @@ export function evaluateStepLog(
 }
 
 // ---------------------------------------------------------------------------------------------
+// The shader and material hook log (G55a: evidence/resources.jsonl kind shader/material/
+// item-material lines), against the census and the oracle
+// ---------------------------------------------------------------------------------------------
+
+const MATERIAL_KINDS = new Set(["shader", "material", "item-material"]);
+
+/** The hook log's shader, material and item-material lines that are engine calls (never a
+ * publisher event or a sabotage's own line). */
+export function materialLines(lines: readonly ResourceLine[]): ResourceLine[] {
+  return lines.filter(
+    (l) => l.kind !== null && MATERIAL_KINDS.has(l.kind) && engineCall(l),
+  );
+}
+
+/** Every census line expected up to `quitFrame`: census.frames plus PH's per-frame rule (one
+ * `material_set_param` a frame, its version base_version + frames since from_frame + 1). */
+export function expandMaterialCensus(
+  census: Gate55Census,
+  quitFrame: number,
+): Map<number, MaterialCensusLine[]> {
+  const out = new Map<number, MaterialCensusLine[]>();
+  for (const [f, lines] of Object.entries(census.frames))
+    if (Number(f) <= quitFrame)
+      out.set(
+        Number(f),
+        lines.map((l) => [...l] as MaterialCensusLine),
+      );
+  const r = census.phase_rule;
+  const last = Math.min(r.to_frame ?? quitFrame, quitFrame);
+  for (let f = r.from_frame; f <= last; f++) {
+    const list = out.get(f) ?? [];
+    list.push([
+      "material_set_param",
+      r.material,
+      r.base_version + (f - r.from_frame + 1),
+      `${r.param}:${r.type}`,
+    ]);
+    out.set(f, list);
+  }
+  return out;
+}
+
+/** Fixture names for the log's own ids and RIDs: the k-th shader (material) the log creates is
+ * shader_order[k] (material_order[k]); items are named by the order in which their first
+ * canvas_item_set_material appears, against the same order in the census. */
+export function materialNames(
+  lines: readonly ResourceLine[],
+  expected: Pick<
+    Gate55ShaderExpected,
+    "shader_order" | "material_order" | "census"
+  >,
+): {
+  shaders: Map<number, string>;
+  materials: Map<number, string>;
+  items: Map<string, string>;
+} {
+  const shaders = new Map<number, string>();
+  const materials = new Map<number, string>();
+  const items = new Map<string, string>();
+  const itemOrder: string[] = [];
+  for (const f of Object.keys(expected.census.frames)
+    .map(Number)
+    .sort((a, b) => a - b))
+    for (const [op, entity] of expected.census.frames[String(f)])
+      if (op === "canvas_item_set_material" && !itemOrder.includes(entity))
+        itemOrder.push(entity);
+  for (const l of lines) {
+    if (
+      l.kind === "shader" &&
+      (l.op === "shader_create" || l.op === "shader_create_from_code") &&
+      l.id !== null &&
+      !shaders.has(l.id)
+    )
+      shaders.set(l.id, expected.shader_order[shaders.size] ?? `#${l.id}`);
+    if (
+      l.kind === "material" &&
+      (l.op === "material_create" || l.op === "material_create_from_shader") &&
+      l.id !== null &&
+      !materials.has(l.id)
+    )
+      materials.set(
+        l.id,
+        expected.material_order[materials.size] ?? `#${l.id}`,
+      );
+    if (
+      l.kind === "item-material" &&
+      l.op === "canvas_item_set_material" &&
+      l.rid !== null &&
+      !items.has(l.rid)
+    )
+      items.set(l.rid, itemOrder[items.size] ?? `item ${l.rid}`);
+  }
+  return { shaders, materials, items };
+}
+
+const censusLineText = (l: MaterialCensusLine): string =>
+  `${l[0]} ${l[1]} ${l[2] === null ? "-" : `v${l[2]}`} ${l[3] ?? "-"}`;
+
+/** One log line as a census line (names from materialNames). */
+export function censusLineOf(
+  l: ResourceLine,
+  names: ReturnType<typeof materialNames>,
+): MaterialCensusLine {
+  const shaderName = (id: number | null) =>
+    id === null ? null : (names.shaders.get(id) ?? `#${id}`);
+  const materialName = (id: number | null) =>
+    id === null ? null : (names.materials.get(id) ?? `#${id}`);
+  const entity =
+    l.kind === "shader"
+      ? shaderName(l.id)
+      : l.kind === "material"
+        ? materialName(l.id)
+        : (names.items.get(l.rid ?? "") ?? `item ${l.rid}`);
+  let detail: string | null = null;
+  switch (l.op) {
+    case "shader_set_default_texture_parameter":
+      detail = l.param;
+      break;
+    case "material_create_from_shader":
+    case "material_set_shader":
+      detail = shaderName(l.ref_id);
+      break;
+    case "material_set_param":
+    case "canvas_item_set_instance_shader_parameter":
+      detail = `${l.param}:${l.type}`;
+      break;
+    case "free":
+      detail = l.kind;
+      break;
+    case "canvas_item_set_material":
+      detail = materialName(l.ref_id);
+      break;
+  }
+  return [
+    l.op,
+    entity ?? "?",
+    l.kind === "item-material" ? null : l.version,
+    detail,
+  ];
+}
+
+/** Pure: the hook log's shader, material and item-material lines up to `quitFrame`, frame by
+ * frame, equal the census expanded with PH's rule (as multisets per frame: versions order each
+ * entity's own lines). Every line is on the main thread and `applied` (a free: `freed`); ids are
+ * 1.. in shader_order and material_order. Lines after the quit frame (teardown frees) are
+ * reported, not compared. */
+export function evaluateMaterialCensus(
+  expected: Pick<
+    Gate55ShaderExpected,
+    "shader_order" | "material_order" | "census"
+  >,
+  lines: readonly ResourceLine[],
+  quitFrame: number,
+): {
+  problems: string[];
+  lines: number;
+  frames: number;
+  after_quit: number;
+} {
+  const problems: string[] = [];
+  const own = materialLines(lines);
+  const names = materialNames(own, expected);
+  for (const [label, map, order] of [
+    ["shader", names.shaders, expected.shader_order],
+    ["material", names.materials, expected.material_order],
+  ] as const) {
+    [...map.keys()].forEach((id, k) => {
+      if (id !== k + 1)
+        problems.push(`${label} id ${id} is the ${k + 1}th created`);
+    });
+    if (map.size !== order.length)
+      problems.push(
+        `${map.size} ${label}s created, expected ${order.length} (${order.join(", ")})`,
+      );
+  }
+  const got = new Map<number, string[]>();
+  let afterQuit = 0;
+  let counted = 0;
+  for (const l of own) {
+    if (l.frame > quitFrame) {
+      afterQuit++;
+      continue;
+    }
+    counted++;
+    if (l.thread !== "main")
+      problems.push(`frame ${l.frame}: ${l.op} off the main thread`);
+    const ok = l.op === "free" ? l.status === "freed" : l.outcome === "applied";
+    if (!ok)
+      problems.push(
+        `frame ${l.frame}: ${l.op} outcome ${l.outcome} status ${l.status}`,
+      );
+    const list = got.get(l.frame) ?? [];
+    list.push(censusLineText(censusLineOf(l, names)));
+    got.set(l.frame, list);
+  }
+  const want = expandMaterialCensus(expected.census, quitFrame);
+  let reported = 0;
+  for (const f of [...new Set([...got.keys(), ...want.keys()])].sort(
+    (a, b) => a - b,
+  )) {
+    const g = (got.get(f) ?? []).slice().sort();
+    const w = (want.get(f) ?? []).map(censusLineText).sort();
+    if (JSON.stringify(g) !== JSON.stringify(w) && reported++ < 6)
+      problems.push(
+        `frame ${f}: hook log [${g.join("; ")}] != census [${w.join("; ")}]`,
+      );
+  }
+  if (reported > 6) problems.push(`... ${reported - 6} more frames differ`);
+  return { problems, lines: counted, frames: got.size, after_quit: afterQuit };
+}
+
+/** Pure: per fixture shader name, its GRP1 hash in the hook log at the end of each frame in
+ * `frames` (ascending): the last shader_create_from_code / shader_set_code hash, `freed` after a
+ * free, null for a shader_create with no code yet; a shader not yet created is absent. */
+export function replayShaderHashes(
+  lines: readonly ResourceLine[],
+  expected: Pick<
+    Gate55ShaderExpected,
+    "shader_order" | "material_order" | "census"
+  >,
+  frames: readonly number[],
+): Map<number, Map<string, string | null>> {
+  const own = materialLines(lines).filter((l) => l.kind === "shader");
+  const names = materialNames(own, expected);
+  const state = new Map<string, string | null>();
+  const out = new Map<number, Map<string, string | null>>();
+  let k = 0;
+  for (const f of frames) {
+    while (k < own.length && own[k].frame <= f) {
+      const l = own[k++];
+      const name = l.id !== null ? names.shaders.get(l.id) : undefined;
+      if (!name) continue;
+      if (l.op === "free") state.set(name, "freed");
+      else if (l.op === "shader_create") state.set(name, null);
+      else if (l.op === "shader_create_from_code" || l.op === "shader_set_code")
+        state.set(name, l.hash);
+    }
+    out.set(f, new Map(state));
+  }
+  return out;
+}
+
+/** Pure: at every settle step each fixture shader's hook-log hash (each host given) equals the
+ * oracle's `shader_get_code` GRP1 hash on the reference, and make_expected.py's model: the
+ * headless copy is the reference's own code, include markers and collapsed whitespace included.
+ * A freed shader is freed in the log, an absent one absent. */
+export function evaluateShaderHookParity(
+  expected: Pick<
+    Gate55ShaderExpected,
+    "steps" | "shader_order" | "material_order" | "census"
+  >,
+  oracle: OracleLog,
+  hosts: readonly { leg: string; lines: readonly ResourceLine[] }[],
+): { problems: string[]; compared: number } {
+  const problems: string[] = [];
+  let compared = 0;
+  if (oracle.problem)
+    problems.push(`${oracle.leg} materials.jsonl: ${oracle.problem}`);
+  const frames = expected.steps.map((s) => s.settle_frame);
+  const replays = hosts.map((h) => ({
+    leg: h.leg,
+    at: replayShaderHashes(h.lines, expected, frames),
+  }));
+  for (const s of expected.steps) {
+    const o = oracle.lines.find((l) => l.step === s.step);
+    for (const want of s.oracle.shaders) {
+      const where = `step ${s.step} ${want.name}`;
+      const fromOracle = o?.shaders.find((x) => x.name === want.name);
+      if (want.status === "live" && fromOracle?.sha256 !== want.sha256)
+        problems.push(
+          `${where}: ${oracle.leg} oracle ${fromOracle?.sha256 ?? "missing"} != model ${want.sha256}`,
+        );
+      for (const r of replays) {
+        const hook = r.at.get(s.settle_frame)?.get(want.name);
+        const hookWant =
+          want.status === "live"
+            ? want.sha256
+            : want.status === "freed"
+              ? "freed"
+              : undefined;
+        if (hook !== hookWant)
+          problems.push(`${where}: ${r.leg} hook ${hook} != ${hookWant}`);
+        else if (want.status === "live") compared++;
+      }
+    }
+  }
+  return { problems, compared };
+}
+
+/** Pure: every shader code line (shader_create_from_code, shader_set_code) in the hook log
+ * classifies as expected.json `shader_scan` says (D11, Q3a): its mode, its `uses` (sorted) and
+ * its status and reason (`unsupported` exactly when a reason is predicted). */
+export function evaluateShaderScan(
+  expected: Pick<
+    Gate55ShaderExpected,
+    "shader_scan" | "shader_order" | "material_order" | "census"
+  >,
+  lines: readonly ResourceLine[],
+): { problems: string[]; table: Record<string, string> } {
+  const problems: string[] = [];
+  const table: Record<string, string> = {};
+  const own = materialLines(lines).filter((l) => l.kind === "shader");
+  const names = materialNames(own, expected);
+  for (const l of own) {
+    if (l.op !== "shader_create_from_code" && l.op !== "shader_set_code")
+      continue;
+    const name = l.id !== null ? names.shaders.get(l.id) : undefined;
+    const want = name ? expected.shader_scan[name] : undefined;
+    if (!name || !want) {
+      problems.push(`frame ${l.frame}: shader id ${l.id} is no fixture shader`);
+      continue;
+    }
+    const uses = [...(l.uses ?? [])].sort();
+    const status = want.reason === null ? "ok" : "unsupported";
+    table[name] = want.reason ?? "ok";
+    if (
+      l.mode !== want.mode ||
+      JSON.stringify(uses) !== JSON.stringify(want.uses) ||
+      l.status !== status ||
+      l.reason !== want.reason
+    )
+      problems.push(
+        `frame ${l.frame} ${name}: mode ${l.mode} uses ${JSON.stringify(uses)} ${l.status}/${l.reason}, expected ${want.mode} ${JSON.stringify(want.uses)} ${status}/${want.reason}`,
+      );
+  }
+  for (const name of expected.shader_order)
+    if (!(name in table)) problems.push(`${name}: no code line in the log`);
+  return { problems, table };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------------------------
 
@@ -1118,6 +1459,78 @@ export async function runGate55c(
       refusedTyped.problems,
       `${refusedCapture.result_class}: ${refusedTyped.ops.join(", ")} typed`,
       refusedCapture.artifacts,
+    ),
+  );
+
+  // G55a's shader and material hook log: the census, hook-hash parity and the D11 scan.
+  const captureLog = await loadResourceLog(join(dir, "capture"));
+  const armedLog = await loadResourceLog(join(dir, "reference-armed"));
+  const refusedLog = await loadResourceLog(join(refusedDir, "capture"));
+  const logProblems = [
+    ["capture-shader", captureLog],
+    ["reference-shader-armed", armedLog],
+    ["capture-refused", refusedLog],
+  ].flatMap(([leg, log]) =>
+    (log as { problem: string | null }).problem
+      ? [`${leg} resources.jsonl: ${(log as { problem: string }).problem}`]
+      : [],
+  );
+  const census = evaluateMaterialCensus(
+    expected,
+    captureLog.lines,
+    expected.capture_quit_frame,
+  );
+  const armedCensus = evaluateMaterialCensus(
+    expected,
+    armedLog.lines,
+    expected.quit_frame_default,
+  );
+  const refusedCensus = evaluateMaterialCensus(
+    refused,
+    refusedLog.lines,
+    refused.capture_quit_frame,
+  );
+  const parity = evaluateShaderHookParity(expected, oracles[0], [
+    { leg: "capture-shader", lines: captureLog.lines },
+    { leg: "reference-shader-armed", lines: armedLog.lines },
+  ]);
+  const refusedParity = evaluateShaderHookParity(refused, refusedOracle, [
+    { leg: "capture-refused", lines: refusedLog.lines },
+  ]);
+  const scan = evaluateShaderScan(expected, captureLog.lines);
+  const refusedScan = evaluateShaderScan(refused, refusedLog.lines);
+  const logPaths = [captureLog.path, armedLog.path, refusedLog.path];
+  checks.push(
+    check(
+      "material-census",
+      "the shader/material hook log (G55a's evidence/resources.jsonl kind shader, material and item-material lines) equals make_expected.py's census frame by frame on capture-shader (to quit 400), reference-shader-armed (to quit 102) and capture-refused (to quit 400): every shader_create_from_code, shader_set_code, default texture, material_create_from_shader, material_set_shader, material_set_param (name and D8 type, PH's phase on every frame), free, canvas_item_set_material and instance parameter with its version; nothing else; ids 1.. in shader and material order; all on the main thread and applied",
+      [
+        ...logProblems,
+        ...census.problems.map((p) => `capture-shader: ${p}`),
+        ...armedCensus.problems.map((p) => `reference-shader-armed: ${p}`),
+        ...refusedCensus.problems.map((p) => `capture-refused: ${p}`),
+      ],
+      `capture-shader ${census.lines} lines over ${census.frames} frames (+${census.after_quit} teardown frees), reference-shader-armed ${armedCensus.lines} (+${armedCensus.after_quit}), capture-refused ${refusedCensus.lines} (+${refusedCensus.after_quit})`,
+      logPaths,
+    ),
+    check(
+      "shader-hook-hash-parity",
+      "at every settle step each fixture shader's last hook-log GRP1 hash (capture-shader and reference-shader-armed; capture-refused for the refused variant) equals the reference oracle's shader_get_code hash and make_expected.py's preprocessor model: the headless copy is the reference's own code before any wire exists; freed shaders are freed in the log, absent ones absent",
+      [...parity.problems, ...refusedParity.problems],
+      `${parity.compared + refusedParity.compared} shader-steps agree three ways`,
+      [...logPaths, oracles[0].path, refusedOracle.path],
+    ),
+    check(
+      "shader-scan",
+      "every shader code line in the hook log classifies as expected.json shader_scan (D11): the refused variant's time, screen, sdf, global and spatial shaders carry exactly shader-time, shader-screen-texture, shader-sdf, shader-global-uniform and shader-mode with their uses, inst uses instance_uniform, every other fixture shader is ok with no uses",
+      [
+        ...scan.problems.map((p) => `capture-shader: ${p}`),
+        ...refusedScan.problems.map((p) => `capture-refused: ${p}`),
+      ],
+      Object.entries(refusedScan.table)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" "),
+      [captureLog.path, refusedLog.path],
     ),
   );
 
