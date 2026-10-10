@@ -536,13 +536,18 @@ animate legs, and the unpin, drop-resource and live wrong-hash sabotages), `g2d`
 `canvas-normal` variant and the omit-canvas-filter sabotage on a rendered host) and `g2e` (G2e:
 bearer-token authorization) have landed. g2b, g2c and g2d need g2a's captures and reference, and g2d also
 g2b's (`runG2b` judges g2d's legs with g2b's receiver checks), so `--legs g2b`, `--legs g2c` or
-`--legs g2a,g2d` is refused. Run it from the repo root:
+`--legs g2a,g2d` is refused. Group `g2f` is **opt-in**: the headless `CanvasTexture` shim
+experiment (`GRC_HEADLESS_CANVAS_TEXTURE=synthesize`,
+[`../protocol/canvas-texture-headless.md`](../protocol/canvas-texture-headless.md) "Experiment (a)
+result"). It is never in the default set and never reported not-run. Name it in `--legs`, alone or
+with the others. It is standalone, with its own import when g2a did not run. Run it from the repo
+root:
 
 ```bash
 mise exec -- pnpm render-stream:gate2 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g2a,g2b,g2c,g2d,g2e]
+  [--binary /abs/path/to/linux_release.x86_64] [--out /abs/path/to/fresh/dir] [--legs g2a,g2b,g2c,g2d,g2e[,g2f]]
 ```
 
 The arguments and refusals are gate 1's; `--out` defaults to `artifacts/render-stream/gate2/<UTC>/`.
@@ -553,7 +558,7 @@ run 971 frames at 60 frames per second each). It uses `lib/legs.sh` (`run_headle
 
 ## Gate 2 files
 
-- `run-gate2.sh`: the orchestrator (`run_g2a`, `run_g2b`, `run_g2c`, `run_g2d`, `run_g2e`,
+- `run-gate2.sh`: the orchestrator (`run_g2a`, `run_g2b`, `run_g2c`, `run_g2d`, `run_g2e`, `run_g2f`,
   `run_reference`, `g2_capture`, `g2_capture_rendered`, `g2_receiver`, `start_live_host`,
   `live_windows`, `g2c_receiver`, `g2c_leg`).
 - `lib/gate2-expected.ts`: the `render-stream-gate2-expected/1` types, `stepFrames2`,
@@ -584,6 +589,9 @@ run 971 frames at 60 frames per second each). It uses `lib/legs.sh` (`run_headle
   401s exactly for the sabotage requests), `checkTokenNotLogged` (a raw byte search of every file
   under each g2e leg for its own host-generated token, `evidence/live-token` itself excepted) and
   `runG2e`.
+- `lib/gate2f-checks.ts`: group g2f (opt-in): the shim's evidence (`canvas-texture-shim.json`,
+  `result.json` `canvas_texture_shim`), private-RID helpers (`isSyntheticRid`, `ridIndex`), every
+  g2f check and `runG2f` (classification through `classifyG2bLeg`).
 - `check-gate2.ts`: writes `<out>/result.json` (`render-stream-gate2-report/1`) and exits non-zero
   unless `gate_passed`.
 - `test/self-test-gate2.ts`, `test/gate2b-fixture.ts`, `test/gate2c-fixture.ts`: see below.
@@ -626,6 +634,13 @@ run 971 frames at 60 frames per second each). It uses `lib/legs.sh` (`run_headle
 | `live-auth`                   | g2e   | `live-auth/{host,receiver}/`          | host `GRC_LIVE_AUTH=token` (writes `evidence/live-token`) + rendered live receiver, `RS_RECEIVER_TOKEN_FILE` the host's token, shot windows for the 12 steps                                                      |
 | `sabotage-no-token`           | g2e   | `sabotage-no-token/{host,receiver}/`  | same host; headless receiver, no `RS_RECEIVER_TOKEN_FILE` -- the upgrade itself is refused (401)                                                                                                                  |
 | `sabotage-bad-http-token`     | g2e   | `sabotage-bad-http-token/{host,…}/`   | same host; headless receiver, `RS_RECEIVER_TOKEN_FILE` the host's token (correct on the upgrade) and `RS_RECEIVER_SABOTAGE=wrong-http-token` (wrong on every resource GET)                                        |
+| `reference-canvas`            | g2f   | `reference-canvas/`                   | rendered in gamescope, extension absent, `RS_FIXTURE_VARIANT=canvas`: Godot's own `shots/step-0..11.png` for the variant                                                                                         |
+| `shim-headless`               | g2f   | `shim-headless/{capture,receiver}/`   | headless capture, `canvas` variant, `GRC_HEADLESS_CANVAS_TEXTURE=synthesize`, quit 400, strace + maps; rendered receiver -- success                                                                              |
+| `shim-sabotage-omit-canvas-filter` | g2f | `shim-sabotage-omit-canvas-filter/{…}/` | as `shim-headless` (fixture quit), `omit-op canvas_texture_set_texture_filter` @111; rendered receiver -- pixel-mismatch {11}                                                                              |
+| `shim-off`                    | g2f   | `shim-off/{capture,receiver}/`        | headless capture, `canvas`, `GRC_HEADLESS_CANVAS_TEXTURE=off`; headless receiver -- unsupported (`canvas-texture-headless`), the default                                                                          |
+| `shim-refused-rendered`       | g2f   | `shim-refused-rendered/capture/`      | RENDERED capture host (gamescope), `canvas`, the opt-in set: refused `canvas-texture-shim-not-headless`, nothing hooked, the fixture's own `shots/`                                                               |
+| `shim-invalid`                | g2f   | `shim-invalid/capture/`               | headless, `GRC_HEADLESS_CANVAS_TEXTURE=bogus`: refused `canvas-texture-shim-invalid`                                                                                                                              |
+| `shim-gate5-canvas`           | g2f   | `shim-gate5-canvas/`                  | headless capture of `fixtures/gate5` (its own import under `import/gate5-fixture/`), `RS_FIXTURE_VARIANT=canvas`, the opt-in: gate 5's D11 refuses nothing -- success                                          |
 
 Every fixture run writes `steps.jsonl` and `textures.jsonl` (`RS_FIXTURE_TEXTURE_LOG`). Every armed
 run writes `evidence/resources.jsonl` (the hook log) and `evidence/root.json`, whose additive
@@ -733,6 +748,27 @@ since gate2-design.md G2e's "Checks" list asks for neither. The WebSocket-upgrad
 entry.cpp's `live_drain()` to the host's `stdout.log` (`rs_ws`'s `AuthRejected` event carries no
 hash to put in the structured hook log); the resource-GET 401 is an ordinary `http-get` line in
 `evidence/resources.jsonl` with `http_status` 401, already covered by G2c2's logging path.
+
+## Gate 2 criteria (g2f, opt-in)
+
+Each maps onto a pass criterion of canvas-texture-headless.md's experiment (a):
+
+| Check                              | Pass condition                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shim-headless-no-gpu`             | the shim capture host is `headless` and never opens or maps a GPU device or driver library (gate −1's check on `shim-headless/capture`)                                                                                                                                         |
+| `shim-reference-canvas`            | `reference-canvas` shot every step; its step-11 region `sc` equals `synthesizeGate2` (nearest, repeat enabled)                                                                                                                                                                  |
+| `shim-receiver-vs-reference` (1)   | `shim-headless`'s rendered receiver equals `reference-canvas` byte for byte at every settle seq, full frame; step 11's region `sc` is 0 px off both the reference and `synthesizeGate2`                                                                                          |
+| `shim-wire`                        | the headless session declares `canvas_texture` supported, no `unsupported_resources`; every `canvas_texture_*` hook line ok with an id and a private RID; nothing refused; CT at step 11 is canvas/ok/diffuse A/nearest/enabled, version > 1                                      |
+| `shim-private-rids` (2)            | every private RID is `0x47524354 << 32` with index ≥ 2^31; disjoint from every RID the hooked creators logged (none dropped, engine indices < 2^31); the create log names exactly the private RIDs; each freed once through `free()`; `engine_allocated` and `foreign_frees` 0 |
+| `shim-stdout-clean` (2)            | `shim-headless`'s engine `ERROR`/`WARNING` lines equal `shim-off`'s exactly, and none names a canvas texture or a private RID                                                                                                                                                     |
+| `shim-refuses-off-headless` (3)    | `shim-refused-rendered` refused `canvas-texture-shim-not-headless` (non-headless display server, no vptr write, no private RID, no recording, SC still rendered right); `shim-invalid` refused `canvas-texture-shim-invalid`                                                       |
+| `shim-off-is-default` (4)          | `=off`: the shim off, no private RID, `canvas_texture` under `unsupported_resources` (`canvas-texture-headless`), every `canvas_texture_*` hook line the typed refusal                                                                                                         |
+| `shim-gate5-canvas`                | gate 5's D11 under the shim: `shim-gate5-canvas` classifies success with no unsupported entry, every settle frame's commands are the main gate 5 fixture's expected /4 commands (gate 5's `evaluateCaptureCanvas` with no refusals), one private RID                                  |
+| `leg-class-<leg>`                  | `shim-headless` success, `shim-sabotage-omit-canvas-filter` pixel-mismatch {11}, `shim-off` unsupported (`canvas-texture-headless`)                                                                                                                                           |
+
+`test/self-test-gate2f.ts` fails every g2f check except `shim-gate5-canvas` (gate 5's own
+`evaluateCaptureCanvas`, covered by `self-test-gate5.ts`) at least once on small fabricated evidence (JSON,
+stdout logs, PNGs from `synthesizeGate2`) and passes each on its unperturbed form.
 
 ## Gate 2 self-test
 

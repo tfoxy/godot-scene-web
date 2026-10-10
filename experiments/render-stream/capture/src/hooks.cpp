@@ -11,6 +11,7 @@
 #include "abi.h"
 #include "iface.h"
 #include "report.h"
+#include "rs_canvas_texture_shim.h"
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
@@ -1378,6 +1379,9 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
 void hook_free(void *self, RID rid) {
   bump(kFree);
   log_entry(&g_frees, rids(rid.id));
+  // A private CanvasTexture RID of the headless shim is recorded, then forwarded like any other:
+  // every owner of the dummy server rejects its index silently (rs_canvas_texture_shim.h).
+  rs::canvas_texture_shim().on_free(rid.id, current_frame());
   {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("free");
@@ -2373,7 +2377,11 @@ void hook_viewport_set_default_texture_repeat(void *self, RID viewport, int32_t 
 
 RID hook_canvas_texture_create(void *self) {
   bump(kCanvasTextureCreate);
-  const RID result = original<FnCreate>(kCanvasTextureCreate)(self);
+  RID result = original<FnCreate>(kCanvasTextureCreate)(self);
+  // The opt-in headless shim (GRC_HEADLESS_CANVAS_TEXTURE=synthesize, rs_canvas_texture_shim.h):
+  // the dummy storage's RID() becomes a private RID before anything -- log, mirror, engine --
+  // sees it. Off, or a non-null engine result: unchanged.
+  result.id = rs::canvas_texture_shim().on_create(result.id, current_frame());
   log_entry(&g_canvas_texture_creates, rids(result.id));
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_create");

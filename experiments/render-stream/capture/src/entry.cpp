@@ -118,6 +118,7 @@
 #include "hooks.h"
 #include "iface.h"
 #include "report.h"
+#include "rs_canvas_texture_shim.h"
 #include "rs_live.h"
 #include "rs_mirror.h"
 #include "rs_publish.h"
@@ -165,6 +166,15 @@ struct State {
 
   // The hook plan of the arm decision (session capture.hooks_*).
   HookPlan plan;
+
+  // GRC_HEADLESS_CANVAS_TEXTURE as given (empty: unset), the parsed mode, and the shim's state:
+  // "off" (not asked for), "armed", or "refused" with `ct_shim_reason`
+  // (protocol/canvas-texture-headless.md "Experiment (a) result"; rs_canvas_texture_shim.h).
+  std::string ct_shim_env;
+  bool ct_shim_env_set = false;
+  rs::CanvasTextureShimMode ct_shim_mode = rs::CanvasTextureShimMode::Off;
+  std::string ct_shim_state = "off";
+  std::string ct_shim_reason;
 };
 
 // The render-stream/2 file publication (G1b2, G2b2). `status` is result.json
@@ -339,8 +349,27 @@ std::string result_json() {
   json.field("connections",
              static_cast<int64_t>(g_live.hub != nullptr ? g_live.hub->connections() : 0));
   json.object_end();
+  // Additive (the headless CanvasTexture shim): present only when GRC_HEADLESS_CANVAS_TEXTURE is
+  // set, so every run without the opt-in keeps its result.json unchanged.
+  if (g_state.ct_shim_env_set) {
+    json.key("canvas_texture_shim").object_begin();
+    json.field("env", g_state.ct_shim_env);
+    json.field("state", g_state.ct_shim_state);
+    json.field_or_null("reason", g_state.ct_shim_reason);
+    json.field("synthesized", static_cast<int64_t>(rs::canvas_texture_shim().synthesized()));
+    json.object_end();
+  }
   json.object_end();
   return json.take();
+}
+
+// evidence/canvas-texture-shim.json, written with the arm decision and with counters.json, only
+// when the opt-in is set.
+void emit_canvas_texture_shim() {
+  if (g_state.ct_shim_env_set) {
+    emit("canvas-texture-shim.json",
+         rs::canvas_texture_shim().evidence_json(g_state.ct_shim_state, g_state.ct_shim_reason));
+  }
 }
 
 std::string fingerprint_json() {
@@ -873,9 +902,14 @@ void stream_start() {
   session.capture.hooks_planned = g_state.plan.planned;
   session.capture.hooks_omitted = g_state.plan.omitted;
   // protocol/canvas-texture-headless.md: a headless host (RasterizerDummy,
-  // servers/display_server_headless.h:51) declares canvas_texture unsupported.
+  // servers/display_server_headless.h:51) declares canvas_texture unsupported -- unless the opt-in
+  // shim gives every CanvasTexture created while armed its own identity ("Experiment (a)
+  // result"), in which case it declares canvas_texture supported like a rendered host. The
+  // mirror's RID() refusal below stays on either way: RID() in a texture draw is still ambiguous
+  // on a headless host (a CanvasTexture created before arming, or no texture).
   const bool headless_host = g_state.display_server == "headless";
-  session.features = rs2::gate2_features(headless_host, session.version);
+  const bool ct_synthesized = rs::canvas_texture_shim().armed();
+  session.features = rs2::gate2_features(headless_host && !ct_synthesized, session.version);
   if (sabotage.config.kind != rs2::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
     session.sabotage.frame = sabotage.config.frame;
@@ -1433,6 +1467,35 @@ bool attempt(const char *phase) {
     return true;
   }
 
+  // The headless CanvasTexture shim (opt-in; protocol/canvas-texture-headless.md "Experiment (a)
+  // result"). It hands the engine RIDs the server never returned, which only the dummy rasterizer
+  // of a `headless` display server ignores, so an opt-in on any other host refuses the whole
+  // capture -- typed, before anything is hooked -- rather than arming without it. Decided in both
+  // modes, so validate predicts arm.
+  if (g_state.ct_shim_env_set) {
+    std::string why;
+    bool ok = rs::parse_canvas_texture_shim_mode(g_state.ct_shim_env.c_str(),
+                                                 &g_state.ct_shim_mode, &why);
+    if (!ok) {
+      log_line("canvas texture shim: " + why);
+      why = "canvas-texture-shim-invalid";
+    } else {
+      ok = rs::canvas_texture_shim_may_arm(g_state.ct_shim_mode, g_state.display_server, &why);
+    }
+    g_state.checks.push_back(
+        {"canvas_texture_shim", ok,
+         "GRC_HEADLESS_CANVAS_TEXTURE=" + g_state.ct_shim_env + " display_server=" +
+             g_state.display_server + (ok ? std::string() : " -> " + why)});
+    if (!ok) {
+      g_state.ct_shim_state = "refused";
+      g_state.ct_shim_reason = why;
+      rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
+      emit_canvas_texture_shim();
+      refuse(why);
+      return true;
+    }
+  }
+
   if (g_state.mode != "arm") {
     decide("validated", std::string());
     return true;
@@ -1442,9 +1505,21 @@ bool attempt(const char *phase) {
   if (!hooks_image_details_available()) {
     log_line("Image method binds unavailable: texture captures will omit details");
   }
+  // Configured before the vptr store, so the first hooked canvas_texture_create already sees it.
+  rs::canvas_texture_shim().configure(g_state.ct_shim_mode, g_state.display_server);
+  if (g_state.ct_shim_mode == rs::CanvasTextureShimMode::Synthesize) {
+    g_state.ct_shim_state = "armed";
+    log_line("canvas texture shim: synthesize armed (display server " + g_state.display_server +
+             ")");
+  }
   if (!g_state.shadow.arm(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
                           plan.replacements, &error)) {
     log_line("arm: " + error);
+    if (g_state.ct_shim_state == "armed") {
+      rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
+      g_state.ct_shim_state = "refused";
+      g_state.ct_shim_reason = "arm-failed";
+    }
     refuse("arm-failed");
     return true;
   }
@@ -1475,6 +1550,7 @@ void do_disarm(const char *phase) {
            " restored=" + (restored ? "true" : "false"));
   emit("disarm.json", disarm_json());
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  emit_canvas_texture_shim();
   emit("result.json", result_json());
 }
 
@@ -1508,6 +1584,7 @@ void on_shutdown() {
   live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  emit_canvas_texture_shim();
   emit("result.json", result_json());
   log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +
            " frames_armed=" + std::to_string(g_state.frames_armed) + " intercepted=" +
@@ -1527,6 +1604,8 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
+  g_state.ct_shim_env_set = std::getenv("GRC_HEADLESS_CANVAS_TEXTURE") != nullptr;
+  g_state.ct_shim_env = env_string("GRC_HEADLESS_CANVAS_TEXTURE");
   hooks_set_main_thread();
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);

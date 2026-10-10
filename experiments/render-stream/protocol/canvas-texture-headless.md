@@ -4,6 +4,8 @@ Status: decision record and options study, 2026-10-09, written with G2d
 ([gate2-design.md](gate2-design.md) "G2d"). The decision is the user's: **a headless capture host
 refuses `CanvasTexture`, typed, until one of the options below is proven.** Source citations are
 `path:line` in the pinned `../godot-4.5.1-stable` checkout unless another version is named.
+Update 2026-10-10: option (a) is built as an opt-in experiment. It passes criteria 1–4, and the
+refusal is still the default. See "Experiment (a) result" at the end.
 
 ## The problem
 
@@ -288,3 +290,163 @@ headless shim** (`GRC_HEADLESS_CANVAS_TEXTURE=synthesize`). Pass criteria:
    `unsupported` (`canvas-texture-headless`) with it off.
 5. The same leg on the target game (gate −0.25's harness) arms, publishes, and disarms by frames
    with exit 0.
+
+## Experiment (a) result (2026-10-10)
+
+Approved by the user on 2026-10-10 and built on branch `rs/canvas-texture-shim`. **Criteria 1–4 pass on the
+pinned 4.5.1 release template. Criterion 5 (the target game) is pending: launching it needs a
+separate approval.** The typed refusal is still the default. Without the opt-in, nothing changes,
+not even an evidence file.
+
+### As built
+
+- **`GRC_HEADLESS_CANVAS_TEXTURE`**: unset, empty or `off` leaves the shim off (G2d's refusal).
+  `synthesize` turns it on. Any other value refuses the capture as `canvas-texture-shim-invalid`.
+- **Arm-time fence.** The arm decision (`entry.cpp` `attempt`) checks the shim after the hook plan
+  and before the vptr store, in both `validate` and `arm` modes. With `synthesize` on a display
+  server other than `headless`, it **refuses the whole capture** (`result.json` `status: refused`,
+  reason `canvas-texture-shim-not-headless`), and nothing is hooked. The alternative was to arm
+  without the shim. It was rejected: the operator asked for something the host cannot honour, and
+  a real renderer would dereference a private RID.
+- **The id-synthesis table** (`capture/src/rs_canvas_texture_shim.{h,cpp}`) is engine-free and
+  covered by the `rs_canvas_texture_shim` ctest. A private RID is `0x47524354 << 32 | (2^31 + n)`
+  (the high word spells "GRCT"). The `canvas_texture_create` hook asks the table for a RID **only
+  when the forwarded engine call returned `RID()`**. A non-null engine result passes through and
+  is counted as `engine_allocated`, so a dummy that starts allocating gets plain pass-through, not a
+  collision. The hooked `free()` records each private RID's free and then forwards it unchanged.
+  Every owner rejects the index silently (see (a) above). The other three `canvas_texture_*` hooks
+  are untouched. They already forward whatever RID the engine names, which is now the private one.
+- **What the stream says.** The session of a headless host with the shim armed declares
+  `canvas_texture` in `features.resources`, with no `unsupported_resources`, the same as a rendered
+  host. The wire format is unchanged. The shim is declared in the evidence:
+  `result.json` `canvas_texture_shim {env, state, reason, synthesized}` (present only when the
+  variable is set), `calibration-check.json` check `canvas_texture_shim`, and
+  `evidence/canvas-texture-shim.json` (`render-stream-canvas-texture-shim/1`: every private RID,
+  its index, create frame, free frame and free count, plus `engine_allocated` and
+  `foreign_frees`). A session-level wire declaration (for example `capture.shims`) is a follow-up.
+  It touches all three codecs and their goldens, so it is a separate change.
+- **`RID()` stays refused in texture draws.** The mirror keeps the G2d rule even with the shim
+  armed: a texture-rect, region or MSDF draw naming `RID()` is still `unsupported`
+  `canvas-texture-headless`. The shim gives identities only to canvas textures created **while
+  armed**. A `CanvasTexture` created before arming (late join, gate 8) still holds `RID()`, and
+  `RID()` is still also what `draw_texture(null)` names.
+
+### Evidence
+
+Gate 2 group **`g2f`** is opt-in. It is never in the default set and never reported not-run, so
+run it with `--legs g2f` or together with the other groups. It is standalone: it runs its own
+import when `g2a` did not run, and its own reference. Every leg is a separate process, and none
+replays another leg's capture:
+
+| leg                                | host                                                                            | class (expected)                         |
+| ---------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------- |
+| `reference-canvas`                 | rendered, extension absent                                                      | support: Godot's own pixels for `canvas` |
+| `shim-headless`                    | headless capture (strace) + rendered receiver                                   | success                                  |
+| `shim-sabotage-omit-canvas-filter` | headless + rendered receiver, omit-op `canvas_texture_set_texture_filter` @111 | pixel-mismatch {11}                      |
+| `shim-off`                         | headless, `=off`, + headless receiver                                           | unsupported (`canvas-texture-headless`)  |
+| `shim-refused-rendered`            | rendered capture host (gamescope), `=synthesize`                                | support: refused, typed                  |
+| `shim-invalid`                     | headless, `=bogus`                                                              | support: refused, typed                  |
+| `shim-gate5-canvas`                | headless, `fixtures/gate5` `canvas` variant, `=synthesize`                      | success (gate 5's D11 refuses nothing)   |
+
+Runs: `artifacts/render-stream/gate2/ctshim-probe1/` (g2f alone, first run, every g2f check
+green), `ctshim-v1/` (all groups g2a–g2f before the rebase onto G5d, 96/96), `ctshim-probe2/`
+(g2f alone after the rebase, with `shim-gate5-canvas`), `ctshim-v3/` (all groups on
+render-stream/4, 97/97), and `ctshim-v5/` (the final run on calibrator 8, 97/97). The README's
+"Gate 2f result" has the other gates and the one live-animate flake in `ctshim-v2/`.
+
+1. **Criterion 1, pass.** `shim-receiver-vs-reference`: the rendered receiver of `shim-headless`
+   (a `--headless` capture host, `display_server: headless`, with no GPU device or driver library
+   opened or mapped, per `shim-headless-no-gpu`) equals `reference-canvas` byte for byte at all 12
+   settle seqs, full frame. Step 11's region `sc` differs by 0 px, both from `reference-canvas` and
+   from `synthesizeGate2` (nearest, repeat enabled). `shim-wire`: CT is on the wire from a headless
+   host as `kind: canvas`, status ok, diffuse A, nearest/enabled, version 4. All four
+   `canvas_texture_*` hook lines are `ok`, have an id and name the private RID, and no hook line,
+   command or entry is refused. `leg-class-shim-headless`: success. The sabotage's 1 088 px at
+   step 11 (the same count as G2d's rendered-host sabotage) show the pixel comparison can tell
+   whether the CT's own filter arrived.
+2. **Criterion 2, pass.** `shim-private-rids`: one private RID,
+   `5139244154986954752` = `0x4752435480000000`, index 2^31, created at frame 111 and freed once
+   at frame 401 by the `CanvasTexture` destructor through the hooked `free()`. It is disjoint from
+   the 26 engine RIDs that the 8 hooked creators logged in `counters.json` (none dropped, every
+   engine index below 2^31). `engine_allocated` and `foreign_frees` are 0. `shim-stdout-clean`:
+   the engine `ERROR`/`WARNING` lines of `shim-headless/capture/stdout.log` are exactly those of
+   `shim-off` (two exit-time leak reports that every headless gate-2 capture prints, opt-in or
+   not), and none names a canvas texture or the private RID.
+3. **Criterion 3, pass.** `shim-refuses-off-headless`: on the gamescope host (`display_server:
+   X11`), `shim-refused-rendered` is `refused` with `canvas-texture-shim-not-headless`.
+   `vptr_written` is false, no recording is written, `canvas-texture-shim.json` lists no private
+   RID, and the fixture still renders SC correctly (its own step-11 region `sc` is 0 px off the
+   model). `shim-invalid` is refused with `canvas-texture-shim-invalid`.
+4. **Criterion 4, pass.** With the opt-in unset, gates −1, 0, 1, 2 (g2a–g2e), 3, 4 and 5's landed
+   groups (g5b, g5c, g5d) pass on this build (README "Gate 2f result"). g2d's `canvas-headless` still
+   classifies `unsupported` (`canvas-texture-headless`). In-group, `shim-off-is-default` shows
+   that `=off` is exactly the default: the shim is off, no private RID exists, `canvas_texture` is
+   under `unsupported_resources`, and every `canvas_texture_*` hook line is the typed refusal.
+5. **Criterion 5, pending user approval.** Not run: this experiment does not launch STS2 or
+   anything under `~/.steam`. It needs gate −0.25's couch-coop harness (the env-gated
+   `LoadExtension` hook, `GRC_DISARM_AFTER_FRAMES`, `--version-name MegaDot` calibration) with
+   `GRC_HEADLESS_CANVAS_TEXTURE=synthesize`, started on a `--headless` launch of the game, plus
+   the user's go-ahead for that launch. It passes if the game arms, publishes, and disarms by
+   frames with exit 0, `canvas-texture-shim.json` shows `engine_allocated` 0 and no foreign frees,
+   and `stdout.log` shows no engine error that a shim-off control launch lacks.
+
+### Interaction with gate 5's empty-texture rule (D11)
+
+D11 ([gate5-design.md](gate5-design.md)) treats `RID()` on the /4 geometry ops (polygon,
+primitive, triangle array, nine-patch, mesh) as "no texture" until the session creates a canvas
+texture on a headless host. From then on such draws are refused (`canvas-texture-headless`).
+D11's premise is that a created `CanvasTexture` is `RID()` too. With the shim armed, every
+`CanvasTexture` created while armed has a private, non-null RID, so a geometry draw naming `RID()`
+can no longer mean that texture. It is "no texture", or a `CanvasTexture` from before arming,
+which D11 already accepts as a blind spot. **So with the opt-in on, D11 no longer needs to refuse.**
+The precise rule: the sticky "a canvas texture exists" flag should be set only by a
+`canvas_texture_create` whose result was `RID()`. With the shim on, no such create happens while
+armed. With it off, every headless create is `RID()`, so the default is unchanged.
+
+**Decision: implemented (G5d landed on `main` while this experiment was in flight).**
+`Mirror::canvas_texture_create` now sets `canvas_texture_created_` only when the create returned
+`RID()`, so nothing changes with the opt-in off. A rendered host never consulted the flag. The
+change is local: three lines in `rs_mirror.cpp`, the flag's comment in `rs_mirror.h`, and an
+`rs_mirror_test` case. In that case a private-RID canvas texture leaves `RID()` geometry as
+`tex: null`, the canvas texture itself stays drawable, and nothing is refused.
+
+Evidence: g2f's `shim-gate5-canvas` leg runs `fixtures/gate5`'s `canvas` variant (a
+`CanvasTexture` created in `_ready`, never drawn) headless with the opt-in. Check
+`shim-gate5-canvas` requires `success`, no unsupported entry, and every settle frame's commands
+equal to the main fixture's expected /4 commands. It reuses gate 5's `evaluateCaptureCanvas` with
+an empty refusal list, and it requires exactly one private RID. Gate 5's own `capture-canvas`
+(opt-in off) on the same build still refuses its five predicted (item, op) pairs as
+`canvas-texture-headless`.
+
+Consequence for gate 8: spine-godot draws its meshes through a `CanvasTexture`. With the opt-in on,
+those draws name a private RID that the texture table resolves. That unblocks STS2's spine on a
+headless host once G5e carries `add_mesh` and criterion 5 passes.
+
+### Skeleton2D and GPUParticles2D
+
+They share the stub ("One of a class"). The table's mechanism is generic: a tagged high word, a
+private index range at or above 2^31, and free bookkeeping. It would carry them with a per-kind tag
+or a kind field. Extending it is not mechanical, though:
+
+- **No hook.** `skeleton_create` and `particles_create` are not among calibrator 7's hooks, so this
+  needs a calibrator bump and a new record.
+- **Different code paths.** A non-null RID changes which code runs above the stub. For example,
+  `RendererCanvasCull` takes the `skeleton.is_valid()` branch and calls
+  `mesh_instance_set_skeleton` (`renderer_canvas_cull.cpp:1760-1762`, `:1855-1859`). That branch is
+  a no-op on the dummy, but someone has to read the source for it, call site by call site.
+  `CanvasTexture` needed only a short read: every draw op of the cull layer just stores the texture
+  RID (`renderer_canvas_cull.cpp:1541-1793`), and the four `canvas_texture_*` calls forward it to
+  the empty stubs (`:2419-2439`).
+
+Each kind therefore needs its own source read, its own leg and its own refusal fence before it
+joins the table.
+
+### What this experiment does not prove
+
+- `CanvasTexture`s created before arming (late join): `RID()` stays refused.
+- `canvas_texture_set_shading_parameters`, which is unhooked. It is a no-op on the dummy and has no
+  wire representation.
+- Any engine other than the pinned 4.5.1 release template's dummy rasterizer. A fork whose dummy
+  allocates canvas textures gets pass-through (`engine_allocated`). A fork whose dummy validates
+  RIDs is unchecked.
+- The target game (criterion 5).

@@ -63,6 +63,7 @@ import {
   runG2c,
 } from "./gate2c-checks";
 import { runG2e } from "./gate2e-checks";
+import { runG2f } from "./gate2f-checks";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract
@@ -91,7 +92,7 @@ export const GATE2_CLASS_PRECEDENCE: readonly Gate2Class[] = [
   "success",
 ];
 
-export const ALL_GROUPS = ["g2a", "g2b", "g2c", "g2d", "g2e"] as const;
+export const ALL_GROUPS = ["g2a", "g2b", "g2c", "g2d", "g2e", "g2f"] as const;
 /** Groups whose increment has landed; run-gate2.sh's LANDED_GROUPS must say the same. */
 export const LANDED_GROUPS: readonly string[] = [
   "g2a",
@@ -100,6 +101,10 @@ export const LANDED_GROUPS: readonly string[] = [
   "g2d",
   "g2e",
 ];
+/** Experiment groups judged only when --legs named them, never reported not-run; run-gate2.sh's
+ * OPTIN_GROUPS must say the same. g2f: the headless CanvasTexture shim
+ * (protocol/canvas-texture-headless.md "Experiment (a) result"). */
+export const OPTIN_GROUPS: readonly string[] = ["g2f"];
 
 /** Legs with an expected class. G2a has one: the capture, which since G2b2 (render-stream/2)
  * carries its texture draws as real commands and classifies success. */
@@ -1783,6 +1788,12 @@ export async function runGate2(
     const g2e = await runG2e(outDir, ctx.expected);
     checks.push(...g2e.checks);
     Object.assign(legs, g2e.legs);
+  }
+  if (groups.run.includes("g2f")) {
+    const g2f = await runG2f(outDir, ctx.expected);
+    checks.push(...g2f.checks);
+    Object.assign(legs, g2f.legs);
+    receiverCheckpoints = [...(receiverCheckpoints ?? []), ...g2f.checkpoints];
   }
   if (groups.run.includes("g2d") && !groups.run.includes("g2b"))
     checks.push(

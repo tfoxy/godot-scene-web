@@ -531,8 +531,9 @@ class Mirror {
   std::uint64_t perturb_vertex_frame_ = 0;
   bool degenerate_host_size_ = false;
   bool canvas_texture_headless_ = false;
-  // D11 (G5d): a canvas texture was created this session (sticky until reset()). On a headless
-  // host it makes RID() on the /4 geometry ops ambiguous.
+  // D11 (G5d): a canvas_texture_create returned RID() this session (sticky until reset()). On a
+  // headless host it makes RID() on the /4 geometry ops ambiguous. A create with a non-null RID
+  // (a rendered host, or the opt-in headless shim's private RID) does not set it.
   bool canvas_texture_created_ = false;
   std::uint32_t next_canvas_id_ = rs2::kRootCanvasId + 1;
   std::uint32_t next_item_id_ = 1;

@@ -33,6 +33,7 @@ add_library(render_stream_capture SHARED
   src/report.cpp
   src/rs2_codec.cpp
   src/rs2_diff.cpp
+  src/rs_canvas_texture_shim.cpp
   src/rs_live.cpp
   src/rs_mirror.cpp
   src/rs_publish.cpp
@@ -132,6 +133,7 @@ add_executable(rs_live_test
   test/rs_live_test.cpp
   src/rs2_codec.cpp
   src/rs2_diff.cpp
+  src/rs_canvas_texture_shim.cpp
   src/rs_live.cpp
   src/rs_publish.cpp
   src/rs_resource_store.cpp
@@ -203,6 +205,15 @@ add_executable(rs_sha256_test test/rs_sha256_test.cpp src/rs_sha256.cpp)
 target_include_directories(rs_sha256_test PRIVATE src)
 target_link_libraries(rs_sha256_test PRIVATE grc_warnings)
 add_test(NAME rs_sha256 COMMAND rs_sha256_test)
+
+# The opt-in headless CanvasTexture shim (protocol/canvas-texture-headless.md "Experiment (a)
+# result"): mode parsing, the headless-only arm decision, private RIDs at index >= 2^31 only for an
+# RID() engine result, pass-through when off or when the engine allocated, free bookkeeping.
+add_executable(rs_canvas_texture_shim_test
+  test/rs_canvas_texture_shim_test.cpp src/rs_canvas_texture_shim.cpp src/report.cpp)
+target_include_directories(rs_canvas_texture_shim_test PRIVATE src)
+target_link_libraries(rs_canvas_texture_shim_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_canvas_texture_shim COMMAND rs_canvas_texture_shim_test)
 
 add_executable(rs_texture_payload_test
   test/rs_texture_payload_test.cpp src/rs_texture_payload.cpp src/rs_sha256.cpp)

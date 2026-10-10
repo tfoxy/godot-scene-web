@@ -442,10 +442,11 @@ private gamescope the rendered `live` receiver, its file replay, the warm, stall
 animate receivers and the unpin sabotage. Group g2d runs the `canvas` variant on a headless capture
 host (the typed refusal), then, in a fourth gamescope, three rendered capture hosts with their
 rendered receivers (host-renderer evidence). Group g2e runs three live hosts with
-`GRC_LIVE_AUTH=token`. The checker writes `artifacts/render-stream/gate2/<UTC>/result.json`
+`GRC_LIVE_AUTH=token`. Group g2f is opt-in (`--legs …,g2f`, never in the default set). It runs the
+headless `CanvasTexture` shim experiment ("Gate 2f result" below), and it is standalone. The checker writes `artifacts/render-stream/gate2/<UTC>/result.json`
 (`render-stream-gate2-report/1`). Legs and criteria: [scripts/README.md](scripts/README.md) "Gate
-2". Self-tests: `scripts/test/self-test-gate2.ts`; `fixtures/gate2/make_expected.py --check`; the
-receiver's `tests/applier2_selftest.gd`.
+2". Self-tests: `scripts/test/self-test-gate2.ts`, `scripts/test/self-test-gate2f.ts`;
+`fixtures/gate2/make_expected.py --check`; the receiver's `tests/applier2_selftest.gd`.
 
 ### Run gate 3
 
@@ -1968,6 +1969,74 @@ each leg's token excluded only from its own `evidence/live-token` file) with zer
   beyond one static bearer token per host process.
 - Canvas textures (G2d, landing in parallel); gate 2's full summary waits for it.
 
+## Gate 2f result: the headless CanvasTexture shim, opt-in (2026-10-10)
+
+The user approved option (a) of
+[protocol/canvas-texture-headless.md](protocol/canvas-texture-headless.md) as an experiment, and it
+passes that doc's criteria 1–4 ("Experiment (a) result"). With
+`GRC_HEADLESS_CANVAS_TEXTURE=synthesize`, the `canvas_texture_create` hook replaces the dummy
+storage's `RID()` with a private RID, `0x47524354 << 32 | (2^31 + n)`, which no engine owner can
+own. A headless host then captures `CanvasTexture` like a rendered one. Without the variable,
+nothing changes, and the typed refusal (`canvas-texture-headless`) stays the default. The capture
+refuses typed when the opt-in is set on a host that is not `headless`
+(`canvas-texture-shim-not-headless`), and when the value is invalid
+(`canvas-texture-shim-invalid`).
+
+The final run is on `main` at `0605ea75` (calibrator 8). It is on render-stream/4, after G5d,
+the /5 codecs and G5g. `pnpm render-stream:gate2 -- --legs g2a,g2b,g2c,g2d,g2e,g2f` is 97/97 in
+`artifacts/render-stream/gate2/ctshim-v5/`: g2a–g2e's 85 unchanged, plus g2f's 12. The same build
+passed:
+
+- `build-capture.sh` 17/17 ctests
+- `calibrate.sh --check`
+- gate −1 28/28
+- gate 0 19/19
+- gate 1 65/65
+- gate 3 56/56
+- gate 4 185/185
+- gate 5 (g5b, g5c, g5d, g5g) 78/78
+- gate 5.5 (g55b, g55c) 52/52
+
+All are in `artifacts/render-stream/<gate>/ctshim-v5/`. Every pure self-test and every
+`make_expected`/`make_golden --check` also passed. g2d's `canvas-headless` is still `unsupported`
+(`canvas-texture-headless`). Earlier full runs on earlier bases are `ctshim-v1` (before G5d,
+96/96 with 11 g2f checks) and `ctshim-v3` (after G5d, 97/97).
+
+An earlier full run, `ctshim-v2`, was 95/97. Its two failures were g2c's `pins-bounded` and
+`obsolete-retired` on `live-animate`, at quit frame 971: one hash was still servable that nothing
+named. It ran beside the pure self-tests. This is the known live-animate load flake: no
+`CanvasTexture` and no shim in those legs. Every g2f check passed in that run, and the next full
+run, `ctshim-v3`, passed.
+
+| leg                                | host                                          | class                                   | why                                                                                                                                            |
+| ---------------------------------- | --------------------------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shim-headless`                    | headless capture (no GPU) + rendered receiver | success                                 | all 12 settle shots byte-exact against `reference-canvas` (rendered, extension absent), step 11's region `sc` included; CT on the wire as canvas/diffuse A/nearest/enabled |
+| `shim-sabotage-omit-canvas-filter` | headless + rendered receiver                  | pixel-mismatch {11}                     | 1 088 px at step 11, the same as G2d's rendered-host sabotage                                                                                 |
+| `shim-off`                         | headless, `=off` + headless receiver          | unsupported (`canvas-texture-headless`) | exactly the default                                                                                                                            |
+| `shim-refused-rendered`            | gamescope capture host, `=synthesize`         | refused, typed                          | `canvas-texture-shim-not-headless`; no vptr write, no private RID, no recording                                                                |
+| `shim-invalid`                     | headless, `=bogus`                            | refused, typed                          | `canvas-texture-shim-invalid`                                                                                                                  |
+| `shim-gate5-canvas`                | headless, `fixtures/gate5` `canvas`, `=synthesize` | success                            | gate 5's D11 refuses no `RID()` geometry draw; commands equal the main gate 5 fixture's                                                        |
+
+**Gate 5's D11 is relaxed under the opt-in.** G5d landed while this experiment was in flight. Its
+sticky "a canvas texture exists" flag is now set only by a `canvas_texture_create` that returned
+`RID()`. With the opt-in on, `RID()` geometry stays `tex: null` after a `CanvasTexture` is created.
+With it off, nothing changes: gate 5's `capture-canvas` still refuses its five predicted draws. The
+g2f leg `shim-gate5-canvas` (`fixtures/gate5`'s `canvas` variant, headless, opt-in) classifies
+`success`, with the main fixture's commands at every settle frame.
+
+One private RID, `0x4752435480000000`, was created at frame 111 and freed once through the hooked
+`free()` at teardown. It is disjoint from all 26 RIDs that the 8 hooked creators returned. The
+run's engine `ERROR`/`WARNING` lines are exactly the shim-off run's: two exit-time leak reports
+that every headless gate-2 capture prints.
+
+Open items:
+
+- **Criterion 5**, the same leg on the target game. Pending the user's approval for the launch.
+- **A session-level wire declaration of the shim.** Today it is declared only in the evidence.
+
+The doc's "Experiment (a) result" has the details, including why `Skeleton2D` and
+`GPUParticles2D`, which share the stub, are not a mechanical extension.
+
 ## Gate 2 summary
 
 Gate 2 passes: `pnpm render-stream:gate2` with all groups g2a-g2e is 85/85 in
@@ -2001,7 +2070,9 @@ finding**, every `CanvasTexture` on a headless host (`canvas-texture-headless`).
 that `--headless` forces allocates no canvas texture on 4.5.1, 4.6.2 or 4.7.2, so no pass-through
 tap can see one. The options (a synthesized-identity shim, a software-GL host, a host-renderer
 opt-in) and the recommended next experiment are in
-[protocol/canvas-texture-headless.md](protocol/canvas-texture-headless.md).
+[protocol/canvas-texture-headless.md](protocol/canvas-texture-headless.md). That experiment, an
+opt-in shim that synthesizes the identities (`GRC_HEADLESS_CANVAS_TEXTURE=synthesize`), passes
+criteria 1–4 (group g2f, "Gate 2f result" above). The refusal stays the default.
 
 Costs measured in this run:
 
