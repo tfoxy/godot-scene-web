@@ -24,6 +24,9 @@
 //                                  steps.jsonl
 //   reference-armed/               rendered, extension armed with a full-sink stream: shots,
 //                                  steps.jsonl, evidence/, recording.rs2, store/
+// Group g5g (lib/gate5g-checks.ts, G5g) runs the same checks, receivers and a nine-patch axis
+// sabotage on fixtures/gate5-style under <out>/style/; runGate5 merges them into this report.
+//
 // Group g5d (G5d) adds the receiver, sabotage and canvas-variant legs; their evaluators and
 // layout are in lib/gate5d-checks.ts.
 
@@ -101,7 +104,7 @@ export type Gate5Check = Gate3Check;
 
 export const ALL_GROUPS = ["g5b", "g5c", "g5d", "g5e", "g5f", "g5g"] as const;
 /** Groups whose increment has landed; run-gate5.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g5b", "g5c", "g5d"];
+export const LANDED_GROUPS: readonly string[] = ["g5b", "g5c", "g5d", "g5g"];
 
 export const G5B_SUPPORT_LEGS = [
   "import",
@@ -241,17 +244,23 @@ export function checkExpectedSelfConsistent(
       problems.push(`step ${s.step}: marker ${s.marker_rgba8} off the grid`);
   const onGrid = (v: number) =>
     [0, 0.2, 0.4, 0.6, 0.8, 1].some((g) => Math.abs(v - g) < 5e-4);
+  // Alpha 1, except .6 for the named translucent shapes, and 0 or .6 at a band shape's vertices
+  // (an antialiasing or shadow ring fades to 0); the default theme's own colours are exempt.
+  const translucent = new Set(expected.translucent_shapes ?? ["T"]);
+  const theme = new Set(expected.theme_shapes ?? []);
   let tieEdges = 0;
   for (const [key, ops] of Object.entries(expected.op_lists))
     for (const op of ops) {
-      if (!isShape(op)) continue;
+      if (!isShape(op) || theme.has(op.name)) continue;
       const colours = op.kind === "nine_patch" ? [op.modulate] : op.colors;
+      const band = op.kind !== "nine_patch" && op.band_px !== undefined;
       for (const c of colours) {
         if (!c.slice(0, 3).every(onGrid))
           problems.push(`${key}/${op.name}: colour ${c} off the 0.2 grid`);
         const alphaOk =
           Math.abs(c[3] - 1) < 1e-6 ||
-          (op.name === "T" && Math.abs(c[3] - 0.6) < 5e-4);
+          (translucent.has(op.name) && Math.abs(c[3] - 0.6) < 5e-4) ||
+          (band && (Math.abs(c[3]) < 1e-6 || Math.abs(c[3] - 0.6) < 5e-4));
         if (!alphaOk) problems.push(`${key}/${op.name}: alpha ${c[3]}`);
       }
     }
@@ -892,6 +901,10 @@ export interface Gate5Context {
   /** absolute receiver/ and fixtures/gate5/ (g5d's receiver-never-loaded-fixture) */
   receiverProjectDir?: string;
   fixtureProjectDir?: string;
+  /** fixtures/gate5-style/expected.json and its project dir, needed when g5g ran
+   * (lib/gate5g-checks.ts) */
+  styleExpected?: Gate5Expected;
+  styleProjectDir?: string;
 }
 
 function notRunCheck(group: string, detail: string): Gate5Check {
@@ -961,7 +974,7 @@ export async function readGroups(
 }
 
 /** Per step, the capture's resolved commands per op (unsupported ones by name), over the items. */
-function commandCensus(
+export function commandCensus(
   expected: Gate5Expected,
   full: RecordingSummary,
 ): Record<string, Record<string, number>> {
@@ -979,7 +992,7 @@ function commandCensus(
   return out;
 }
 
-function exactnessTable(
+export function exactnessTable(
   expected: Gate5Expected,
   rasters: Map<number, Gate5Raster>,
 ): Record<string, Record<PixelClass, number>> {
@@ -1154,6 +1167,26 @@ export async function runGate5(
     const r = await runG5d(outDir, ctx, rasters, legs);
     checks.push(...r.checks);
     g5d = r.report;
+  }
+
+  // G5g: fixtures/gate5-style/ is its own fixture with its own expected.json and legs (style/
+  // under the same --out), merged into this report so `--legs ...,g5g` gives one verdict.
+  if (groups.run.includes("g5g")) {
+    if (!ctx.styleExpected)
+      throw new Error("runGate5: g5g ran but no styleExpected was given");
+    const { runG5g } = await import("./gate5g-checks");
+    const style = await runG5g(outDir, {
+      expected: ctx.styleExpected,
+      receiverProjectDir: ctx.receiverProjectDir ?? "",
+      fixtureProjectDir: ctx.styleProjectDir ?? "",
+    });
+    checks.push(...style.checks);
+    Object.assign(legs, style.legs);
+    checkpoints = [...checkpoints, ...style.checkpoints];
+    const name = ctx.styleExpected.fixture;
+    geometry = { ...(geometry ?? {}), [name]: style.geometry };
+    budgets = { ...(budgets ?? {}), [name]: style.budgets };
+    freshness = { ...(freshness ?? {}), [name]: style.freshness };
   }
 
   for (const group of notRun)

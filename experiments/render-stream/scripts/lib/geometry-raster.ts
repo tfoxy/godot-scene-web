@@ -13,6 +13,7 @@
 //     rounded values), RGBA8 out with round-to-nearest. Per-vertex colours interpolate
 //     barycentrically (allowed delta 1), and straight-alpha blending (GL_SRC_ALPHA,
 //     GL_ONE_MINUS_SRC_ALPHA) runs in float with UNORM8 rounding (delta 1, gate4-design.md D8).
+//     A texel times a modulate that lands between two UNORM8 levels is delta 1 too (G5g).
 //   - Nearest texture sampling is floor(uv * size) at the pixel centre, decided only when every
 //     texel within 1/16 texel of that point has one colour. Nine-patches map each axis as
 //     drivers/gles3/shaders/canvas.glsl:521-558 does (`map_ninepatch_axis`), and an undrawn centre
@@ -200,6 +201,12 @@ export function meshTopology(
 
 const to8 = (v: number): number =>
   Math.round(Math.max(0, Math.min(1, v)) * 255);
+
+/** A modulated texel whose product falls between two UNORM8 levels (0.2 x 0.6 = 30.6/255): the
+ * GPU's conversion of such a fraction is not round-to-nearest (G5g measured 30.6 -> 30), so it is
+ * synthesized at delta 1 like a gradient. Products on a level (any texel times 1) stay exact. */
+const offLevel = (c: Rgba): boolean =>
+  c.slice(0, 3).some((v) => Math.abs(v * 255 - Math.round(v * 255)) > 1e-3);
 
 /** The texel colour (0..1) at texel coordinates (tx, ty), or null when a texel within
  * `edge` of the point has another colour (`extraX`/`extraY`: further candidate texels, the far
@@ -508,6 +515,7 @@ function meshActions(
           c[2] * texel[2],
           c[3] * texel[3],
         ];
+        if (offLevel(c)) tol = 1;
       }
       actions.push({ i, kind: "paint", c, tol, blend: shape.blend });
     }
@@ -640,13 +648,14 @@ function ninePatchActions(
         actions.push({ i, kind: "undecided" });
         continue;
       }
-      const c = shape.modulate;
-      actions.push({
-        i,
-        kind: "paint",
-        c: [c[0] * texel[0], c[1] * texel[1], c[2] * texel[2], c[3] * texel[3]],
-        tol: 0,
-      });
+      const m = shape.modulate;
+      const c: Rgba = [
+        m[0] * texel[0],
+        m[1] * texel[1],
+        m[2] * texel[2],
+        m[3] * texel[3],
+      ];
+      actions.push({ i, kind: "paint", c, tol: offLevel(c) ? 1 : 0 });
     }
   return { actions, covered, area };
 }

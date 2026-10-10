@@ -134,12 +134,18 @@ export interface Gate5Expected {
   last_step: number;
   creation_order: string[];
   created_later: { name: string; step: number }[];
+  /** items that stay invisible the whole run (G5g's RichTextLabel scrollbar): no draw, no scissor */
+  hidden_items?: string[];
   /** [x0, y0, x1, y1) per region */
   regions: Record<string, Box>;
   marker_rect: [number, number, number, number];
   exact_edge_px: number;
   aa_band_px: number;
   thin_band_px: number;
+  /** non-band shapes allowed alpha .6 (absent: `["T"]`, gate 5's blend polygon) */
+  translucent_shapes?: string[];
+  /** shapes coloured by the default theme, exempt from the 0.2 grid and the alpha rule (G5g) */
+  theme_shapes?: string[];
   textures: Record<string, Gate5Texture>;
   engine_textures: {
     frame: number;
