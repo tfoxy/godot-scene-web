@@ -1,0 +1,262 @@
+{
+  "schema": "render-stream-5-resolved/1",
+  "transactions": [
+    {
+      "seq": 1,
+      "frame": 1,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "items": [
+              1,
+              2
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 10,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": 1,
+            "use_parent_material": false,
+            "instance_params": [],
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              200.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "color": [
+                  0.25,
+                  0.75,
+                  0.25,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": 2,
+            "use_parent_material": false,
+            "instance_params": [],
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              20.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "color": [
+                  0.25,
+                  0.75,
+                  0.5,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mode": "canvas_item",
+            "source": "payload",
+            "hash": "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17",
+            "payload_bytes": 203,
+            "builtin": {
+              "kind": "canvas_item_material",
+              "blend_mode": "add",
+              "light_mode": "normal",
+              "particles_animation": false
+            },
+            "uses": [],
+            "default_textures": []
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mode": "canvas_item",
+            "source": "withheld",
+            "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+            "payload_bytes": 157,
+            "builtin": null,
+            "uses": [],
+            "default_textures": []
+          }
+        ],
+        "materials": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "shader": 1,
+            "params": [
+              {
+                "name": "particles_anim_h_frames",
+                "type": "int",
+                "value": 1.0
+              },
+              {
+                "name": "particles_anim_loop",
+                "type": "bool",
+                "value": 0.0
+              },
+              {
+                "name": "particles_anim_v_frames",
+                "type": "int",
+                "value": 1.0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "shader": 2,
+            "params": [
+              {
+                "name": "tint",
+                "type": "color",
+                "value": [
+                  0.2,
+                  0.4,
+                  0.6,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

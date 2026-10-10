@@ -22,26 +22,30 @@
 // expectedDataBytes() below are the read side, needed to validate `resource` records and
 // `payloads/*.grt` golden vectors.
 //
-// render-stream/3 (../../protocol/render-stream-3.md, G4e1) and render-stream/4
-// (../../protocol/render-stream-4.md, G5w) are implemented IN THIS SAME FILE behind an explicit
-// `version: 2 | 3 | 4` parameter on every exported entry point
-// (splitRecords/decodeRecording/validateRecording/resolveRecording), rather than forked
-// render-stream-3.ts/render-stream-4.ts modules -- /3 is /2 plus one draw command
-// (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), and /4 is /3 plus eleven
-// new commands, a mesh table and the cmd_i32 block, too small a delta (gate4-design.md G4e1:
-// "Renaming files is not part of this contract") to justify duplicating this module. `version`
-// selects the expected magic (GRS2/GRS3/GRS4) and the decoded/resolved schema strings. Since
-// G5d the capture, the receiver and every gate checker speak /4 (/3 from G4e2), so the parameter
-// defaults to 4; /2 and /3 decoding remain only for golden-2/ and golden-3/ (self-test-rs2.ts
-// passes 2/3/4 explicitly per golden directory). Every new command, sabotage kind and the mesh table are always
-// representable regardless of `version` -- a /2 or /3 stream simply never contains them in
-// practice, since the capture never emits them below its own version.
+// render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
+// (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5` parameter
+// on every exported entry point (splitRecords/decodeRecording/validateRecording/
+// resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
+// one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
+// plus eleven new commands, a mesh table and the cmd_i32 block, and /5 is /4 plus a shader table,
+// a material table, canvas modulate, item material/use_parent_material/instance_params and the
+// param_f64 (f64) block -- too small a delta each (gate4-design.md G4e1: "Renaming files is not
+// part of this contract") to justify duplicating this module. `version` selects the expected
+// magic (GRS2/GRS3/GRS4/GRS5) and the decoded/resolved schema strings. Since G5d the capture, the
+// receiver and every gate checker speak /4 (/3 from G4e2 to G5d; G55d later switches them to /5),
+// so the parameter defaults to 4; /2 and /3 decoding remain only for golden-2/ and golden-3/, and
+// /5 decoding is exercised only against golden-5/ (self-test-rs2.ts passes 2/3/4/5 explicitly per
+// golden directory). Every new command, sabotage kind, the mesh table and the shader/material
+// tables are always representable regardless of `version` -- an older stream simply never
+// contains them in practice, since the capture never emits them below its own version.
 //
-// The mesh payload format (render-stream-mesh/1, GRM1) has its own module,
-// render-stream-mesh.ts, parallel to how render-stream-texture/1 (GRT1) decode lives in THIS
-// file (decodeTexturePayload() below) rather than a separate one -- G5w's contract explicitly
-// calls for a new file here, to keep the payload-format growth (two now, not one) out of this
-// already-large module.
+// The mesh payload format (render-stream-mesh/1, GRM1) and the shader payload format
+// (render-stream-shader/1, GRP1) each have their own module (render-stream-mesh.ts,
+// render-stream-shader.ts), parallel to how render-stream-texture/1 (GRT1) decode lives in THIS
+// file (decodeTexturePayload() below) rather than a separate one -- G5w's contract (carried
+// forward by G55w) calls for a new file per NEW payload format, to keep the payload-format growth
+// out of this already-large module.
 
 import { createHash } from "node:crypto";
 import {
@@ -49,6 +53,11 @@ import {
   decodeMeshPayload,
   GRM1_MAGIC,
 } from "./render-stream-mesh";
+import {
+  type DecodedShaderPayload,
+  decodeShaderPayload,
+  GRP1_MAGIC,
+} from "./render-stream-shader";
 
 // --------------------------------------------------------------------------------------- wire types
 
@@ -73,7 +82,11 @@ export type UnsupportedReason =
   | "canvas-texture-headless"
   | "unknown-mesh"
   | "skinned-geometry"
-  | "unsupported-mesh";
+  | "unsupported-mesh"
+  | "unsupported-material"
+  | "unknown-material"
+  | "param-type"
+  | "canvas-light";
 /** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
  * storage never allocates a canvas texture (protocol/canvas-texture-headless.md).
  * unknown-mesh/skinned-geometry: new at /4 (render-stream-4.md "Command"). */
@@ -98,7 +111,8 @@ export type SabotageKind =
   | "drop-resource"
   | "unpin"
   | "perturb-glyph"
-  | "perturb-vertex";
+  | "perturb-vertex"
+  | "perturb-shader";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -154,18 +168,143 @@ export type MeshReason =
   | "mesh-blend-shapes"
   | "payload-too-large";
 
+// --- new at /5 (render-stream-5.md "Shader table"/"Material table", gate5_5-design.md D8) -----
+
+/** The Variant type names a material or instance-shader param may carry on the wire, plus the
+ * numeric packed array types. As built (G55w): these wire spellings (snake_case, matching the
+ * engine's own type names) are this codec's own decision -- see render-stream-5.md "As built". */
+export type VariantType =
+  | "nil"
+  | "bool"
+  | "int"
+  | "float"
+  | "vector2"
+  | "vector2i"
+  | "rect2"
+  | "rect2i"
+  | "vector3"
+  | "vector3i"
+  | "transform2d"
+  | "vector4"
+  | "vector4i"
+  | "plane"
+  | "quaternion"
+  | "aabb"
+  | "basis"
+  | "transform3d"
+  | "projection"
+  | "color"
+  | "rid"
+  | "packed_int32_array"
+  | "packed_int64_array"
+  | "packed_float32_array"
+  | "packed_float64_array"
+  | "packed_vector2_array"
+  | "packed_vector3_array"
+  | "packed_vector4_array"
+  | "packed_color_array";
+export type ShaderMode =
+  | "canvas_item"
+  | "spatial"
+  | "particles"
+  | "sky"
+  | "fog";
+export type ShaderStatus = "ok" | "unsupported";
+export type ShaderReason =
+  | "shader-mode"
+  | "shader-screen-texture"
+  | "shader-sdf"
+  | "shader-time"
+  | "shader-global-uniform"
+  | "shader-excluded"
+  | "payload-too-large"
+  | "payload-unavailable";
+export type ShaderUse =
+  | "global_uniform"
+  | "instance_uniform"
+  | "light"
+  | "screen_texture"
+  | "sdf"
+  | "time";
+export type ShaderSource = "payload" | "withheld";
+export type BlendMode =
+  | "mix"
+  | "add"
+  | "sub"
+  | "mul"
+  | "premul_alpha"
+  | "disabled";
+export type LightMode = "normal" | "unshaded" | "light_only";
+export type MaterialStatus = "ok" | "unsupported";
+export type MaterialReason =
+  | "unknown-shader"
+  | "unknown-texture"
+  | "param-type"
+  | "param-range";
+export type ShaderPolicy = "source" | "params" | "exclude";
+
+export interface BuiltinCanvasItemMaterial {
+  kind: "canvas_item_material";
+  blend_mode: BlendMode;
+  light_mode: LightMode;
+  particles_animation: boolean;
+}
+
+export interface DefaultTextureRef {
+  name: string;
+  index: number;
+  tex: number;
+}
+
+/** <param> on the wire (render-stream-5.md "Material table"). "f" is a running offset into
+ * param_f64 over materials in table order, then items in item order. */
+export interface TransactionParam {
+  name: string;
+  type: VariantType;
+  n: number;
+  tex: number | null;
+  f: number;
+}
+
+export interface TransactionShader {
+  id: number;
+  origin: "created";
+  status: ShaderStatus;
+  reason: ShaderReason | null;
+  version: number;
+  mode: ShaderMode | null;
+  source: ShaderSource | null;
+  hash: string | null;
+  payload_bytes: number;
+  builtin: BuiltinCanvasItemMaterial | null;
+  uses: ShaderUse[];
+  default_textures: DefaultTextureRef[];
+}
+
+export interface TransactionMaterial {
+  id: number;
+  origin: "created";
+  status: MaterialStatus;
+  reason: MaterialReason | null;
+  version: number;
+  shader: number | null;
+  params: TransactionParam[];
+}
+
 export interface BlockDescriptor {
   name: string;
   /** "i32" is new at /4 (render-stream-4.md "Block type i32"): legal only as a transaction's
-   * fourth block, "cmd_i32". */
-  type: "f32" | "u8" | "i32";
+   * fourth block, "cmd_i32". "f64" is new at /5 (render-stream-5.md "Block type f64"): legal
+   * only as a transaction's sixth block, "param_f64". */
+  type: "f32" | "u8" | "i32" | "f64";
   count: number;
 }
 
 export interface ResourcesMeta {
   hash: "sha256";
-  /** V2/V3: a single payload-schema string. V4 (render-stream-4.md "Resources"): "payload"
-   * becomes "payloads", a sorted array of schema strings (mesh and texture share one policy). */
+  /** V2/V3: a single payload-schema string. V4/V5 (render-stream-4.md "Resources";
+   * render-stream-5.md "Session"): "payload" becomes "payloads", a sorted array of schema
+   * strings (mesh, shader and texture share one resource policy at /5). */
   payload?: string;
   payloads?: string[];
   delivery: Delivery;
@@ -175,6 +314,11 @@ export interface ResourcesMeta {
   fetch: Fetch;
   http_path: string | null;
   auth: Auth;
+}
+
+/** render-stream-5.md "Session": a new "materials" session key, right after "resources". */
+export interface MaterialsMeta {
+  shader_policy: ShaderPolicy;
 }
 
 export interface SessionMeta {
@@ -214,9 +358,13 @@ export interface SessionMeta {
     host_window_size: [number, number];
   };
   resources: ResourcesMeta;
+  /** new at /5 (render-stream-5.md "Session"): present only when decoded at version 5. */
+  materials?: MaterialsMeta;
   features: {
     ops: string[];
     item_state: string[];
+    /** new at /5: present only when decoded at version 5, right after item_state. */
+    canvas_state?: string[];
     resources: string[];
     /** G2d: resource kinds the host refuses, sorted by resource (a headless host:
      * canvas_texture, canvas-texture-headless). */
@@ -368,6 +516,11 @@ export interface TransactionItem {
   visibility_layer: number;
   texture_filter: Filter;
   texture_repeat: Repeat;
+  /** new at /5 (render-stream-5.md "Item"): present only when decoded at version 5, in this
+   * order, before content_version. */
+  material?: number | null;
+  use_parent_material?: boolean;
+  instance_params?: TransactionParam[];
   content_version: number;
   commands: Command[] | null;
 }
@@ -441,11 +594,17 @@ export interface TransactionMeta {
   removed_textures: number[];
   /** new at /4 (render-stream-4.md "Mesh table"): present only when decoded at version 4. */
   removed_meshes?: number[];
+  /** new at /5: present only when decoded at version 5. */
+  removed_shaders?: number[];
+  removed_materials?: number[];
   canvases: TransactionCanvas[];
   items: TransactionItem[];
   textures: TransactionTexture[];
   /** new at /4: present only when decoded at version 4. */
   meshes?: TransactionMesh[];
+  /** new at /5: present only when decoded at version 5. */
+  shaders?: TransactionShader[];
+  materials?: TransactionMaterial[];
   blocks: BlockDescriptor[];
 }
 
@@ -493,6 +652,12 @@ export const MAGIC_V3: Uint8Array = new Uint8Array([
 export const MAGIC_V4: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x34, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-5.md: the GRS5 magic, selected by `version: 5`. The capture and receiver still
+// speak /4 (G55d switches them), so `version` keeps defaulting to 3 everywhere below; /5
+// decoding is exercised only against golden-5/ until then.
+export const MAGIC_V5: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x35, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -506,6 +671,21 @@ const SESSION_KEYS = [
   "capture",
   "viewport",
   "resources",
+  "features",
+  "sabotage",
+  "blocks",
+];
+// render-stream-5.md "Session": a new "materials" key, right after "resources".
+const SESSION_KEYS_V5 = [
+  "type",
+  "protocol",
+  "session_id",
+  "stream",
+  "engine",
+  "capture",
+  "viewport",
+  "resources",
+  "materials",
   "features",
   "sabotage",
   "blocks",
@@ -541,7 +721,8 @@ const RESOURCES_KEYS = [
   "http_path",
   "auth",
 ];
-// render-stream-4.md "Resources": "payload" (a string) becomes "payloads" (a sorted array) at /4.
+// render-stream-4.md "Resources": "payload" (a string) becomes "payloads" (a sorted array) at /4;
+// unchanged in shape at /5 (just one more schema string in the array).
 const RESOURCES_KEYS_V4 = [
   "hash",
   "payloads",
@@ -562,6 +743,18 @@ const FEATURES_KEYS = [
   "unobserved",
   "publication",
 ];
+// render-stream-5.md "Session": a new "canvas_state" key, right after "item_state".
+const FEATURES_KEYS_V5 = [
+  "ops",
+  "item_state",
+  "canvas_state",
+  "resources",
+  "unsupported_resources",
+  "observed_unsupported_ops",
+  "unobserved",
+  "publication",
+];
+const MATERIALS_KEYS = ["shader_policy"];
 const SABOTAGE_KEYS = ["kind", "frame", "op"];
 const SABOTAGE_KINDS = [
   "freeze-frame",
@@ -579,6 +772,7 @@ const SABOTAGE_KINDS = [
   "unpin",
   "perturb-glyph",
   "perturb-vertex",
+  "perturb-shader",
 ] as const;
 
 const TRANSACTION_KEYS = [
@@ -622,6 +816,33 @@ const TRANSACTION_KEYS_V4 = [
   "meshes",
   "blocks",
 ];
+// render-stream-5.md "Shader table"/"Material table": removed_shaders/removed_materials after
+// removed_meshes, shaders/materials after meshes.
+const TRANSACTION_KEYS_V5 = [
+  "type",
+  "seq",
+  "frame",
+  "encoding",
+  "base_seq",
+  "status",
+  "failures",
+  "unsupported",
+  "default_texture_filter",
+  "default_texture_repeat",
+  "removed_canvases",
+  "removed_items",
+  "removed_textures",
+  "removed_meshes",
+  "removed_shaders",
+  "removed_materials",
+  "canvases",
+  "items",
+  "textures",
+  "meshes",
+  "shaders",
+  "materials",
+  "blocks",
+];
 const FAILURE_KEYS = ["reason", "detail"];
 const UNSUPPORTED_KEYS = ["op", "item", "reason"];
 const CANVAS_KEYS = ["id", "origin", "role", "attached", "items"];
@@ -640,6 +861,29 @@ const ITEM_KEYS = [
   "visibility_layer",
   "texture_filter",
   "texture_repeat",
+  "content_version",
+  "commands",
+];
+// render-stream-5.md "Item": material, use_parent_material, instance_params -- in that order,
+// before content_version.
+const ITEM_KEYS_V5 = [
+  "id",
+  "origin",
+  "parent",
+  "children",
+  "visible",
+  "draw_index",
+  "z_index",
+  "z_relative",
+  "behind",
+  "clip",
+  "custom_rect",
+  "visibility_layer",
+  "texture_filter",
+  "texture_repeat",
+  "material",
+  "use_parent_material",
+  "instance_params",
   "content_version",
   "commands",
 ];
@@ -713,6 +957,39 @@ const MESH_SURFACE_KEYS = [
   "index_count",
 ];
 
+// render-stream-5.md "Shader table"/"Material table" (new at /5).
+const SHADER_KEYS = [
+  "id",
+  "origin",
+  "status",
+  "reason",
+  "version",
+  "mode",
+  "source",
+  "hash",
+  "payload_bytes",
+  "builtin",
+  "uses",
+  "default_textures",
+];
+const BUILTIN_KEYS = [
+  "kind",
+  "blend_mode",
+  "light_mode",
+  "particles_animation",
+];
+const DEFAULT_TEXTURE_KEYS = ["name", "index", "tex"];
+const MATERIAL_KEYS = [
+  "id",
+  "origin",
+  "status",
+  "reason",
+  "version",
+  "shader",
+  "params",
+];
+const PARAM_KEYS = ["name", "type", "n", "tex", "f"];
+
 const RESOURCE_KEYS = ["type", "hash", "bytes", "blocks"];
 
 const END_KEYS = ["type", "transactions", "reason", "stats", "blocks"];
@@ -753,6 +1030,23 @@ const TRANSACTION_BLOCK_TYPES_V4: Array<"f32" | "i32"> = [
   "f32",
   "i32",
   "f32",
+];
+// render-stream-5.md "Transaction blocks": six blocks; param_f64 is type "f64", the rest as /4.
+const TRANSACTION_BLOCK_NAMES_V5 = [
+  "item_f32",
+  "canvas_f32",
+  "cmd_f32",
+  "cmd_i32",
+  "mesh_f32",
+  "param_f64",
+];
+const TRANSACTION_BLOCK_TYPES_V5: Array<"f32" | "i32" | "f64"> = [
+  "f32",
+  "f32",
+  "f32",
+  "i32",
+  "f32",
+  "f64",
 ];
 
 const FILTERS = [
@@ -804,6 +1098,30 @@ const ITEM_UNSUPPORTED_REASONS = [
   "skinned-geometry",
   "unsupported-mesh",
 ] as const;
+// render-stream-5.md "Decoders accept 'unsupported-state' for canvas_item_attach_skeleton only at
+// /5": canvas_item_set_material's unsupported-state no longer occurs (superseded by item-level
+// material state), so /5 decoders reject it -- gate5_5-design.md Q4: "/5 decoders reject it."
+const ITEM_UNSUPPORTED_REASONS_V5 = [
+  "unsupported-op",
+  "unsupported-state",
+  "draw-index-tie",
+  "unknown-texture",
+  "unsupported-texture",
+  "canvas-texture-headless",
+  "unknown-mesh",
+  "skinned-geometry",
+  "unsupported-mesh",
+  "unsupported-material",
+  "unknown-material",
+  "param-type",
+] as const;
+// new at /5: the session-level ("item": null) canvas-light entry (gate5_5-design.md D10, D16).
+const SESSION_UNSUPPORTED_REASONS_V5 = [
+  "non-root-viewport",
+  "extra-canvas",
+  "degenerate-host-size",
+  "canvas-light",
+] as const;
 const AXIS_STRETCH_MODES = ["stretch", "tile", "tile_fit"] as const;
 const PRIMITIVES = [
   "points",
@@ -818,6 +1136,116 @@ const MESH_REASONS = [
   "mesh-blend-shapes",
   "payload-too-large",
 ] as const;
+
+// --- new at /5 (render-stream-5.md "Shader table"/"Material table") ---------------------------
+
+const VARIANT_TYPES = [
+  "nil",
+  "bool",
+  "int",
+  "float",
+  "vector2",
+  "vector2i",
+  "rect2",
+  "rect2i",
+  "vector3",
+  "vector3i",
+  "transform2d",
+  "vector4",
+  "vector4i",
+  "plane",
+  "quaternion",
+  "aabb",
+  "basis",
+  "transform3d",
+  "projection",
+  "color",
+  "rid",
+  "packed_int32_array",
+  "packed_int64_array",
+  "packed_float32_array",
+  "packed_float64_array",
+  "packed_vector2_array",
+  "packed_vector3_array",
+  "packed_vector4_array",
+  "packed_color_array",
+] as const;
+// gate5_5-design.md D8: float64 components per element of a Variant type (0 for nil/rid).
+const VARIANT_COMPONENTS: Record<string, number> = {
+  nil: 0,
+  bool: 1,
+  int: 1,
+  float: 1,
+  vector2: 2,
+  vector2i: 2,
+  rect2: 4,
+  rect2i: 4,
+  vector3: 3,
+  vector3i: 3,
+  transform2d: 6,
+  vector4: 4,
+  vector4i: 4,
+  plane: 4,
+  quaternion: 4,
+  aabb: 6,
+  basis: 9,
+  transform3d: 12,
+  projection: 16,
+  color: 4,
+  rid: 0,
+  packed_int32_array: 1,
+  packed_int64_array: 1,
+  packed_float32_array: 1,
+  packed_float64_array: 1,
+  packed_vector2_array: 2,
+  packed_vector3_array: 3,
+  packed_vector4_array: 4,
+  packed_color_array: 4,
+};
+const SHADER_MODES = [
+  "canvas_item",
+  "spatial",
+  "particles",
+  "sky",
+  "fog",
+] as const;
+const SHADER_STATUSES = ["ok", "unsupported"] as const;
+const SHADER_REASONS = [
+  "shader-mode",
+  "shader-screen-texture",
+  "shader-sdf",
+  "shader-time",
+  "shader-global-uniform",
+  "shader-excluded",
+  "payload-too-large",
+  "payload-unavailable",
+] as const;
+const SHADER_USES = [
+  "global_uniform",
+  "instance_uniform",
+  "light",
+  "screen_texture",
+  "sdf",
+  "time",
+] as const;
+const SHADER_SOURCES = ["payload", "withheld"] as const;
+const BLEND_MODES = [
+  "mix",
+  "add",
+  "sub",
+  "mul",
+  "premul_alpha",
+  "disabled",
+] as const;
+const LIGHT_MODES = ["normal", "unshaded", "light_only"] as const;
+const MATERIAL_STATUSES = ["ok", "unsupported"] as const;
+const MATERIAL_REASONS = [
+  "unknown-shader",
+  "unknown-texture",
+  "param-type",
+  "param-range",
+] as const;
+const SHADER_POLICIES = ["source", "params", "exclude"] as const;
 
 // render-stream-2.md "Texture payload": pixel size (bytes/texel) of the permitted uncompressed
 // formats. Only these ever have an expected size computed.
@@ -927,7 +1355,10 @@ function checkBlocksField(value: unknown, offset: number): string | null {
     }
     if (
       typeof entry.name !== "string" ||
-      (entry.type !== "f32" && entry.type !== "u8" && entry.type !== "i32") ||
+      (entry.type !== "f32" &&
+        entry.type !== "u8" &&
+        entry.type !== "i32" &&
+        entry.type !== "f64") ||
       !isInt(entry.count) ||
       entry.count < 0
     ) {
@@ -944,7 +1375,7 @@ function checkFixedBlockNames(
   blocks: BlockDescriptor[],
   names: readonly string[],
   offset: number,
-  types?: ReadonlyArray<"f32" | "i32">,
+  types?: ReadonlyArray<"f32" | "i32" | "f64">,
 ): string | null {
   if (blocks.length !== names.length) {
     return `meta-schema: record at offset ${offset}: expected ${names.length} blocks (${names.join(", ")}), got ${blocks.length}`;
@@ -977,19 +1408,20 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4,
+  version: 2 | 3 | 4 | 5,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
   ];
-  const keys = version === 4 ? RESOURCES_KEYS_V4 : RESOURCES_KEYS;
+  const isV4OrLater = version === 4 || version === 5;
+  const keys = isV4OrLater ? RESOURCES_KEYS_V4 : RESOURCES_KEYS;
   if (!isPlainObject(resources) || !hasExactKeys(resources, keys)) {
     return err("has the wrong keys");
   }
   if (resources.hash !== "sha256") return err('"hash" must be "sha256"');
-  if (version === 4) {
+  if (isV4OrLater) {
     // render-stream-4.md "Resources": "payloads" is a sorted array of schema strings (mesh and
-    // texture share one resource policy).
+    // texture share one resource policy; /5 adds shader to that set).
     if (!isStringArray(resources.payloads)) {
       return err('"payloads" is not an array of strings');
     }
@@ -1041,15 +1473,17 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4,
+  version: 2 | 3 | 4 | 5,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  if (!hasExactKeys(meta, SESSION_KEYS))
+  const isV5 = version === 5;
+  if (!hasExactKeys(meta, isV5 ? SESSION_KEYS_V5 : SESSION_KEYS))
     return err("session has the wrong top-level keys or order");
-  const expectedProtocol =
-    version === 4
+  const expectedProtocol = isV5
+    ? "render-stream/5"
+    : version === 4
       ? "render-stream/4"
       : version === 3
         ? "render-stream/3"
@@ -1140,12 +1574,25 @@ function checkSessionSchema(
   const resourcesErr = checkResourcesSchema(meta.resources, offset, version);
   if (resourcesErr.length > 0) return resourcesErr;
 
+  if (isV5) {
+    // render-stream-5.md "Session": a new "materials" key, right after "resources".
+    const materials = meta.materials;
+    if (
+      !isPlainObject(materials) ||
+      !hasExactKeys(materials, MATERIALS_KEYS) ||
+      !isOneOf(materials.shader_policy, SHADER_POLICIES)
+    ) {
+      return err('"materials" has the wrong keys or an invalid field');
+    }
+  }
+
   const features = meta.features;
   if (
     !isPlainObject(features) ||
-    !hasExactKeys(features, FEATURES_KEYS) ||
+    !hasExactKeys(features, isV5 ? FEATURES_KEYS_V5 : FEATURES_KEYS) ||
     !isStringArray(features.ops) ||
     !isStringArray(features.item_state) ||
+    (isV5 && !isStringArray(features.canvas_state)) ||
     !isStringArray(features.resources) ||
     !isUnsupportedResources(features.unsupported_resources) ||
     !isStringArray(features.observed_unsupported_ops) ||
@@ -1294,16 +1741,180 @@ function checkMeshEntrySchema(m: unknown, offset: number): string[] {
   return [];
 }
 
+// render-stream-5.md "Material table" (new at /5): the wire shape of one <param> object.
+// "param-entry"'s type/n/tex coupling (tex non-null iff type "rid") is checked here; "param-
+// offset" (the running "f" sequence) needs the whole material/item context and is checked later
+// (checkResolvedInvariants).
+function checkParamEntrySchema(
+  p: unknown,
+  offset: number,
+  where: string,
+): string[] {
+  const err = (detail: string) => [
+    `param-entry: record at offset ${offset}: a ${where} param ${detail}`,
+  ];
+  if (!isPlainObject(p) || !hasExactKeys(p, PARAM_KEYS)) {
+    return err("has the wrong keys");
+  }
+  if (typeof p.name !== "string") return err('"name" is not a string');
+  if (!isOneOf(p.type, VARIANT_TYPES)) return err("has an invalid type");
+  if (!isInt(p.n) || p.n < 1) return err('"n" is not an integer >= 1');
+  if (!(p.tex === null || (isInt(p.tex) && p.tex >= 1))) {
+    return err('"tex" is neither null nor an integer >= 1');
+  }
+  if ((p.type === "rid") !== (p.tex !== null)) {
+    return err('"tex" must be non-null exactly for type "rid"');
+  }
+  if (!isInt(p.f) || p.f < 0) return err('"f" is not a non-negative integer');
+  return [];
+}
+
+function checkShaderEntrySchema(s: unknown, offset: number): string[] {
+  const err = (detail: string) => [
+    `shader-entry: record at offset ${offset}: a shaders[] entry ${detail}`,
+  ];
+  if (!isPlainObject(s) || !hasExactKeys(s, SHADER_KEYS)) {
+    return err("has the wrong keys");
+  }
+  if (!isInt(s.id) || s.id < 1) return err('"id" is not an integer >= 1');
+  if (s.origin !== "created") return err('"origin" must be "created"');
+  if (!isOneOf(s.status, SHADER_STATUSES)) return err("has an invalid status");
+  if (!(s.reason === null || isOneOf(s.reason, SHADER_REASONS))) {
+    return err('"reason" is neither null nor a valid shader reason');
+  }
+  if ((s.status === "ok") !== (s.reason === null)) {
+    return err('"reason" must be null exactly for status "ok"');
+  }
+  if (!isInt(s.version) || s.version < 1) {
+    return err('"version" is not an integer >= 1');
+  }
+  if (!(s.mode === null || isOneOf(s.mode, SHADER_MODES))) {
+    return err('"mode" is neither null nor a valid shader mode');
+  }
+  if (!(s.source === null || isOneOf(s.source, SHADER_SOURCES))) {
+    return err('"source" is neither null nor a valid shader source');
+  }
+  if ((s.mode === null) !== (s.source === null)) {
+    return err('"mode" and "source" must be null together (no code yet)');
+  }
+  if (!(s.hash === null || isLowerHex(s.hash, 64))) {
+    return err('"hash" is neither null nor 64 lowercase hex digits');
+  }
+  if (!isInt(s.payload_bytes) || s.payload_bytes < 0) {
+    return err('"payload_bytes" is not a non-negative integer');
+  }
+  const builtin = s.builtin;
+  if (builtin !== null) {
+    if (
+      !isPlainObject(builtin) ||
+      !hasExactKeys(builtin, BUILTIN_KEYS) ||
+      builtin.kind !== "canvas_item_material" ||
+      !isOneOf(builtin.blend_mode, BLEND_MODES) ||
+      !isOneOf(builtin.light_mode, LIGHT_MODES) ||
+      typeof builtin.particles_animation !== "boolean"
+    ) {
+      return err('"builtin" has the wrong keys or an invalid field');
+    }
+  }
+  if (
+    !Array.isArray(s.uses) ||
+    !s.uses.every((u: unknown) => isOneOf(u, SHADER_USES))
+  ) {
+    return err('"uses" is not an array of valid shader uses');
+  }
+  const sortedUses = [...s.uses].sort();
+  if (JSON.stringify(s.uses) !== JSON.stringify(sortedUses)) {
+    return err('"uses" is not sorted ascending');
+  }
+  if (!Array.isArray(s.default_textures)) {
+    return err('"default_textures" is not an array');
+  }
+  let lastKey: [string, number] | null = null;
+  for (const d of s.default_textures) {
+    if (
+      !isPlainObject(d) ||
+      !hasExactKeys(d, DEFAULT_TEXTURE_KEYS) ||
+      typeof d.name !== "string" ||
+      !isInt(d.index) ||
+      d.index < 0 ||
+      !isInt(d.tex) ||
+      d.tex < 1
+    ) {
+      return err(
+        'a "default_textures" entry has the wrong keys or an invalid field',
+      );
+    }
+    const key: [string, number] = [d.name, d.index];
+    if (
+      lastKey !== null &&
+      !(lastKey[0] < key[0] || (lastKey[0] === key[0] && lastKey[1] < key[1]))
+    ) {
+      return err(
+        '"default_textures" is not sorted strictly ascending by (name, index)',
+      );
+    }
+    lastKey = key;
+  }
+  return [];
+}
+
+function checkMaterialEntrySchema(m: unknown, offset: number): string[] {
+  const err = (detail: string) => [
+    `material-entry: record at offset ${offset}: a materials[] entry ${detail}`,
+  ];
+  if (!isPlainObject(m) || !hasExactKeys(m, MATERIAL_KEYS)) {
+    return err("has the wrong keys");
+  }
+  if (!isInt(m.id) || m.id < 1) return err('"id" is not an integer >= 1');
+  if (m.origin !== "created") return err('"origin" must be "created"');
+  if (!isOneOf(m.status, MATERIAL_STATUSES))
+    return err("has an invalid status");
+  if (!(m.reason === null || isOneOf(m.reason, MATERIAL_REASONS))) {
+    return err('"reason" is neither null nor a valid material reason');
+  }
+  if ((m.status === "ok") !== (m.reason === null)) {
+    return err('"reason" must be null exactly for status "ok"');
+  }
+  if (!isInt(m.version) || m.version < 1) {
+    return err('"version" is not an integer >= 1');
+  }
+  if (!(m.shader === null || (isInt(m.shader) && m.shader >= 1))) {
+    return err('"shader" is neither null nor an integer >= 1');
+  }
+  if (!Array.isArray(m.params)) return err('"params" is not an array');
+  let lastName: string | null = null;
+  for (const p of m.params) {
+    const paramErr = checkParamEntrySchema(p, offset, "materials[]");
+    if (paramErr.length > 0) return paramErr;
+    const name = (p as { name: string }).name;
+    if (lastName !== null && !(lastName < name)) {
+      return err('"params" is not sorted strictly ascending by name');
+    }
+    lastName = name;
+  }
+  return [];
+}
+
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4,
+  version: 2 | 3 | 4 | 5,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV4 = version === 4;
-  if (!hasExactKeys(meta, isV4 ? TRANSACTION_KEYS_V4 : TRANSACTION_KEYS))
+  const isV5 = version === 5;
+  const isV4 = isV5 || version === 4;
+  if (
+    !hasExactKeys(
+      meta,
+      isV5
+        ? TRANSACTION_KEYS_V5
+        : isV4
+          ? TRANSACTION_KEYS_V4
+          : TRANSACTION_KEYS,
+    )
+  )
     return err("transaction has the wrong top-level keys or order");
   if (!isInt(meta.seq) || meta.seq < 1)
     return err('"seq" is not an integer >= 1');
@@ -1347,8 +1958,13 @@ function checkTransactionSchema(
     ) {
       return err("an unsupported[] entry is malformed");
     }
-    const allowedReasons =
-      u.item === null ? SESSION_UNSUPPORTED_REASONS : ITEM_UNSUPPORTED_REASONS;
+    const allowedReasons = isV5
+      ? u.item === null
+        ? SESSION_UNSUPPORTED_REASONS_V5
+        : ITEM_UNSUPPORTED_REASONS_V5
+      : u.item === null
+        ? SESSION_UNSUPPORTED_REASONS
+        : ITEM_UNSUPPORTED_REASONS;
     if (!isOneOf(u.reason, allowedReasons)) {
       return err("an unsupported[] entry is malformed");
     }
@@ -1375,6 +1991,14 @@ function checkTransactionSchema(
     return err('"removed_textures" is not an array of integers');
   if (isV4 && !isIntArray(meta.removed_meshes))
     return err('"removed_meshes" is not an array of integers');
+  if (
+    isV5 &&
+    (!isIntArray(meta.removed_shaders) || !isIntArray(meta.removed_materials))
+  ) {
+    return err(
+      '"removed_shaders"/"removed_materials" is not an array of integers',
+    );
+  }
 
   if (!Array.isArray(meta.canvases)) return err('"canvases" is not an array');
   for (const c of meta.canvases) {
@@ -1395,7 +2019,7 @@ function checkTransactionSchema(
   for (const it of meta.items) {
     if (
       !isPlainObject(it) ||
-      !hasExactKeys(it, ITEM_KEYS) ||
+      !hasExactKeys(it, isV5 ? ITEM_KEYS_V5 : ITEM_KEYS) ||
       !isInt(it.id) ||
       !isOneOf(it.origin, ["created", "root-query", "adopted"] as const) ||
       typeof it.visible !== "boolean" ||
@@ -1413,6 +2037,33 @@ function checkTransactionSchema(
       !(it.commands === null || Array.isArray(it.commands))
     ) {
       return err("an items[] entry is malformed");
+    }
+    if (isV5) {
+      if (
+        !(it.material === null || (isInt(it.material) && it.material >= 1)) ||
+        typeof it.use_parent_material !== "boolean" ||
+        !Array.isArray(it.instance_params)
+      ) {
+        return err(
+          'an items[] entry has an invalid "material"/"use_parent_material"/"instance_params"',
+        );
+      }
+      let lastParamName: string | null = null;
+      for (const p of it.instance_params) {
+        const paramErr = checkParamEntrySchema(
+          p,
+          offset,
+          "items[].instance_params",
+        );
+        if (paramErr.length > 0) return paramErr;
+        const name = (p as { name: string }).name;
+        if (lastParamName !== null && !(lastParamName < name)) {
+          return err(
+            'an items[] entry\'s "instance_params" is not sorted strictly ascending by name',
+          );
+        }
+        lastParamName = name;
+      }
     }
     const parent = it.parent;
     if (
@@ -1609,20 +2260,41 @@ function checkTransactionSchema(
     }
   }
 
+  if (isV5) {
+    if (!Array.isArray(meta.shaders)) return err('"shaders" is not an array');
+    for (const s of meta.shaders) {
+      const shaderErr = checkShaderEntrySchema(s, offset);
+      if (shaderErr.length > 0) return shaderErr;
+    }
+    if (!Array.isArray(meta.materials))
+      return err('"materials" is not an array');
+    for (const m of meta.materials) {
+      const materialErr = checkMaterialEntrySchema(m, offset);
+      if (materialErr.length > 0) return materialErr;
+    }
+  }
+
   const blocksError = checkBlocksField(meta.blocks, offset);
   if (blocksError !== null) return [blocksError];
-  const nameError = isV4
+  const nameError = isV5
     ? checkFixedBlockNames(
         meta.blocks as BlockDescriptor[],
-        TRANSACTION_BLOCK_NAMES_V4,
+        TRANSACTION_BLOCK_NAMES_V5,
         offset,
-        TRANSACTION_BLOCK_TYPES_V4,
+        TRANSACTION_BLOCK_TYPES_V5,
       )
-    : checkFixedBlockNames(
-        meta.blocks as BlockDescriptor[],
-        TRANSACTION_BLOCK_NAMES,
-        offset,
-      );
+    : isV4
+      ? checkFixedBlockNames(
+          meta.blocks as BlockDescriptor[],
+          TRANSACTION_BLOCK_NAMES_V4,
+          offset,
+          TRANSACTION_BLOCK_TYPES_V4,
+        )
+      : checkFixedBlockNames(
+          meta.blocks as BlockDescriptor[],
+          TRANSACTION_BLOCK_NAMES,
+          offset,
+        );
   if (nameError !== null) return [nameError];
   return [];
 }
@@ -1695,7 +2367,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4,
+  version: 2 | 3 | 4 | 5,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -1721,13 +2393,19 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 4,
+  version: 2 | 3 | 4 | 5 = 4,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 4 ? MAGIC_V4 : version === 3 ? MAGIC_V3 : MAGIC;
+    version === 5
+      ? MAGIC_V5
+      : version === 4
+        ? MAGIC_V4
+        : version === 3
+          ? MAGIC_V3
+          : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -1786,7 +2464,7 @@ export interface DecodedRecord {
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 = 4,
+  version: 2 | 3 | 4 | 5 = 4,
 ): {
   record?: DecodedRecord;
   errors: string[];
@@ -1878,7 +2556,9 @@ export function decodeRecord(
     const expectedLen =
       descriptor.type === "f32" || descriptor.type === "i32"
         ? 4 * descriptor.count
-        : descriptor.count;
+        : descriptor.type === "f64"
+          ? 8 * descriptor.count
+          : descriptor.count;
     if (blockLen !== expectedLen) {
       return {
         errors: [
@@ -1904,6 +2584,12 @@ export function decodeRecord(
       for (let f = 0; f < descriptor.count; f++)
         ints.push(view.getInt32(pos + f * 4, true));
       blocks.push(ints);
+    } else if (descriptor.type === "f64") {
+      // render-stream-5.md "Block type f64": little-endian IEEE 754 binary64.
+      const doubles: number[] = [];
+      for (let f = 0; f < descriptor.count; f++)
+        doubles.push(view.getFloat64(pos + f * 8, true));
+      blocks.push(doubles);
     } else {
       const payload = raw.bytes.subarray(pos, pos + blockLen);
       blocks.push({ u8_bytes: blockLen, sha256: hashBytes(payload) });
@@ -1935,12 +2621,13 @@ export function decodeRecord(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 4,
+  version: 2 | 3 | 4 | 5 = 4,
 ): {
   schema:
     | "render-stream-2-decoded/1"
     | "render-stream-3-decoded/1"
-    | "render-stream-4-decoded/1";
+    | "render-stream-4-decoded/1"
+    | "render-stream-5-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -1957,14 +2644,23 @@ export function decodeRecording(
     }
     records.push(decoded.record);
   }
-  const magic = version === 4 ? MAGIC_V4 : version === 3 ? MAGIC_V3 : MAGIC;
+  const magic =
+    version === 5
+      ? MAGIC_V5
+      : version === 4
+        ? MAGIC_V4
+        : version === 3
+          ? MAGIC_V3
+          : MAGIC;
   return {
     schema:
-      version === 4
-        ? "render-stream-4-decoded/1"
-        : version === 3
-          ? "render-stream-3-decoded/1"
-          : "render-stream-2-decoded/1",
+      version === 5
+        ? "render-stream-5-decoded/1"
+        : version === 4
+          ? "render-stream-4-decoded/1"
+          : version === 3
+            ? "render-stream-3-decoded/1"
+            : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -2190,6 +2886,18 @@ export interface ResolvedCanvas {
   attached: boolean;
   items: number[];
   xform: [number, number, number, number, number, number];
+  /** new at /5 (render-stream-5.md "Canvas"): present only when resolved at version 5. */
+  modulate?: [number, number, number, number];
+}
+
+/** render-stream-5.md "Decoded and resolved forms": a <param> resolves to {"name","type",
+ * "value"}, with "value" a number (n=1, non-rid, non-nil), an array of numbers (a flat packed
+ * scalar array), an array of arrays (a packed vector/color array, grouped by component count),
+ * {"tex": <id>} (rid) or null (nil). */
+export interface ResolvedParam {
+  name: string;
+  type: VariantType;
+  value: number | number[] | number[][] | { tex: number } | null;
 }
 
 export interface ResolvedItem {
@@ -2207,6 +2915,10 @@ export interface ResolvedItem {
   visibility_layer: number;
   texture_filter: Filter;
   texture_repeat: Repeat;
+  /** new at /5 (render-stream-5.md "Item"): present only when resolved at version 5. */
+  material?: number | null;
+  use_parent_material?: boolean;
+  instance_params?: ResolvedParam[];
   content_version: number;
   xform: [number, number, number, number, number, number];
   modulate: [number, number, number, number];
@@ -2229,11 +2941,27 @@ export interface ResolvedMesh {
   surfaces: TransactionMeshSurface[];
 }
 
+/** new at /5: a shader-table entry, unchanged in shape from the wire's (no floats to lift). */
+export type ResolvedShader = TransactionShader;
+
+/** new at /5: a material-table entry with its params resolved to {"name","type","value"}. */
+export interface ResolvedMaterial {
+  id: number;
+  origin: "created";
+  status: MaterialStatus;
+  reason: MaterialReason | null;
+  version: number;
+  shader: number | null;
+  params: ResolvedParam[];
+}
+
 export interface ResolvedState {
   canvases: Map<number, ResolvedCanvas>;
   items: Map<number, ResolvedItem>;
   textures: Map<number, ResolvedTexture>;
   meshes: Map<number, ResolvedMesh>;
+  shaders: Map<number, ResolvedShader>;
+  materials: Map<number, ResolvedMaterial>;
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
 }
@@ -2244,20 +2972,79 @@ export function emptyResolvedState(): ResolvedState {
     items: new Map(),
     textures: new Map(),
     meshes: new Map(),
+    shaders: new Map(),
+    materials: new Map(),
     default_texture_filter: "nearest",
     default_texture_repeat: "disabled",
   };
 }
 
-function liftCanvas(c: TransactionCanvas, xform: number[]): ResolvedCanvas {
+// render-stream-5.md "Decoded and resolved forms": lifts one <param> from the wire's {name,type,
+// n,tex,f} into {name,type,value}, reading its floats out of paramF64 starting at `f`.
+function liftParam(p: TransactionParam, paramF64: number[]): ResolvedParam {
+  const components = VARIANT_COMPONENTS[p.type] ?? 0;
+  let value: ResolvedParam["value"];
+  if (p.type === "nil") {
+    value = null;
+  } else if (p.type === "rid") {
+    value = { tex: p.tex as number };
+  } else if (p.type.startsWith("packed_")) {
+    const flat = paramF64.slice(p.f, p.f + p.n * components);
+    value =
+      components === 1
+        ? flat
+        : Array.from({ length: p.n }, (_, i) =>
+            flat.slice(i * components, i * components + components),
+          );
+  } else {
+    const flat = paramF64.slice(p.f, p.f + components);
+    value = components === 1 ? flat[0] : flat;
+  }
+  return { name: p.name, type: p.type, value };
+}
+
+function liftShader(s: TransactionShader): ResolvedShader {
+  return s;
+}
+
+function liftMaterial(
+  m: TransactionMaterial,
+  paramF64: number[],
+): ResolvedMaterial {
   return {
+    id: m.id,
+    origin: m.origin,
+    status: m.status,
+    reason: m.reason,
+    version: m.version,
+    shader: m.shader,
+    params: m.params.map((p) => liftParam(p, paramF64)),
+  };
+}
+
+// `floats` is the canvas's full slice of canvas_f32: 6 floats (xform only) before /5, 10 at /5
+// (xform 6, modulate 4 -- render-stream-5.md "Canvas").
+function liftCanvas(c: TransactionCanvas, floats: number[]): ResolvedCanvas {
+  const xform = floats.slice(0, 6) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const out: ResolvedCanvas = {
     id: c.id,
     origin: c.origin,
     role: c.role,
     attached: c.attached,
     items: c.items,
-    xform: xform as [number, number, number, number, number, number],
+    xform,
   };
+  if (floats.length >= 10) {
+    out.modulate = floats.slice(6, 10) as [number, number, number, number];
+  }
+  return out;
 }
 
 function liftCommand(
@@ -2543,8 +3330,9 @@ function liftItem(
   itemF32: number[],
   cmdF32: number[],
   cmdI32: number[],
+  paramF64: number[],
 ): ResolvedItem {
-  return {
+  const base = {
     id: it.id,
     origin: it.origin,
     parent: it.parent,
@@ -2559,6 +3347,26 @@ function liftItem(
     visibility_layer: it.visibility_layer,
     texture_filter: it.texture_filter,
     texture_repeat: it.texture_repeat,
+  };
+  // new at /5 (render-stream-5.md "Item"): material, use_parent_material, instance_params --
+  // right after texture_repeat and before content_version, matching the wire's own key order
+  // (render-stream-2-resolved/1's statesEqual() comparison is JSON.stringify-based, so key
+  // ORDER, not just content, must match protocol/golden-5/make_golden.py's resolved_state()).
+  // Spread in, rather than assigned after object construction, so JS's own key-insertion-order
+  // rule places them correctly even though this function builds the object in one literal.
+  const materialFields =
+    it.material !== undefined
+      ? {
+          material: it.material,
+          use_parent_material: it.use_parent_material,
+          instance_params: (it.instance_params ?? []).map((p) =>
+            liftParam(p, paramF64),
+          ),
+        }
+      : {};
+  return {
+    ...base,
+    ...materialFields,
     content_version: it.content_version,
     xform: itemF32.slice(0, 6) as [
       number,
@@ -2622,20 +3430,47 @@ export function applyTransaction(
       ? new Map<number, ResolvedTexture>()
       : new Map(base.textures);
   const isV4 = meta.meshes !== undefined;
+  const isV5 = meta.shaders !== undefined;
   const meshes =
     meta.encoding === "full"
       ? new Map<number, ResolvedMesh>()
       : new Map(base.meshes);
+  const shaders =
+    meta.encoding === "full"
+      ? new Map<number, ResolvedShader>()
+      : new Map(base.shaders);
+  const materials =
+    meta.encoding === "full"
+      ? new Map<number, ResolvedMaterial>()
+      : new Map(base.materials);
   if (meta.encoding === "patch") {
     for (const id of meta.removed_canvases) canvases.delete(id);
     for (const id of meta.removed_items) items.delete(id);
     for (const id of meta.removed_textures) textures.delete(id);
     if (isV4) for (const id of meta.removed_meshes ?? []) meshes.delete(id);
+    if (isV5) {
+      for (const id of meta.removed_shaders ?? []) shaders.delete(id);
+      for (const id of meta.removed_materials ?? []) materials.delete(id);
+    }
   }
-  const [itemF32, canvasF32, cmdF32, cmdI32, meshF32] = blocks;
+  const [itemF32, canvasF32, cmdF32, cmdI32, meshF32, paramF64] = blocks;
+  const canvasStride = isV5 ? 10 : 6;
   for (let i = 0; i < meta.canvases.length; i++) {
     const c = meta.canvases[i];
-    canvases.set(c.id, liftCanvas(c, canvasF32.slice(i * 6, i * 6 + 6)));
+    canvases.set(
+      c.id,
+      liftCanvas(
+        c,
+        canvasF32.slice(i * canvasStride, i * canvasStride + canvasStride),
+      ),
+    );
+  }
+  // render-stream-5.md "Material table" (D8 "param-offset"): materials claim their param_f64
+  // offsets before any item's instance_params, so lift them first.
+  if (isV5) {
+    for (const m of meta.materials ?? []) {
+      materials.set(m.id, liftMaterial(m, paramF64 ?? []));
+    }
   }
   for (let i = 0; i < meta.items.length; i++) {
     const raw = meta.items[i];
@@ -2644,6 +3479,7 @@ export function applyTransaction(
       itemF32.slice(i * 18, i * 18 + 18),
       cmdF32,
       isV4 ? (cmdI32 ?? []) : [],
+      isV5 ? (paramF64 ?? []) : [],
     );
     if (raw.commands === null) {
       const prev = base.items.get(raw.id);
@@ -2659,11 +3495,18 @@ export function applyTransaction(
       meshes.set(m.id, liftMesh(m, meshF32 ?? []));
     }
   }
+  if (isV5) {
+    for (const s of meta.shaders ?? []) {
+      shaders.set(s.id, liftShader(s));
+    }
+  }
   return {
     canvases,
     items,
     textures,
     meshes,
+    shaders,
+    materials,
     default_texture_filter: meta.default_texture_filter,
     default_texture_repeat: meta.default_texture_repeat,
   };
@@ -2679,6 +3522,16 @@ export function sortedResolvedItems(state: ResolvedState): ResolvedItem[] {
 
 export function sortedResolvedMeshes(state: ResolvedState): ResolvedMesh[] {
   return [...state.meshes.values()].sort((a, b) => a.id - b.id);
+}
+
+export function sortedResolvedShaders(state: ResolvedState): ResolvedShader[] {
+  return [...state.shaders.values()].sort((a, b) => a.id - b.id);
+}
+
+export function sortedResolvedMaterials(
+  state: ResolvedState,
+): ResolvedMaterial[] {
+  return [...state.materials.values()].sort((a, b) => a.id - b.id);
 }
 
 export function sortedResolvedTextures(
@@ -2886,21 +3739,78 @@ function meshVersionRegressed(
   return false;
 }
 
+// render-stream-5.md "Shader table"/"Material table" ("shader-entry"/"material-entry"): status
+// "ok" has reason null, "unsupported" has a non-null reason. checkShaderEntrySchema()/
+// checkMaterialEntrySchema() already enforce this at the raw-wire level; these mirror it over the
+// RESOLVED entry for symmetry with meshEntryFieldErrors(), though with the coupling already
+// schema-enforced there is nothing further to find here except for completeness.
+function shaderEntryFieldErrors(s: ResolvedShader, offset: number): string[] {
+  const err = (detail: string) => [
+    `shader-entry: record at offset ${offset}: shader ${s.id}: ${detail}`,
+  ];
+  if ((s.status === "ok") !== (s.reason === null)) {
+    return err('"reason" must be null exactly for status "ok"');
+  }
+  return [];
+}
+
+function materialEntryFieldErrors(
+  m: ResolvedMaterial,
+  offset: number,
+): string[] {
+  const err = (detail: string) => [
+    `material-entry: record at offset ${offset}: material ${m.id}: ${detail}`,
+  ];
+  if ((m.status === "ok") !== (m.reason === null)) {
+    return err('"reason" must be null exactly for status "ok"');
+  }
+  return [];
+}
+
+// render-stream-5.md ("shader-version"/"material-version"): the texture-version rule, mirrored
+// for shaders and materials -- within one stream, an id's version never decreases; at an equal
+// version the entry is identical.
+function shaderVersionRegressed(
+  previous: ResolvedShader | undefined,
+  current: ResolvedShader,
+): boolean {
+  if (previous === undefined) return false;
+  if (current.version < previous.version) return true;
+  if (current.version > previous.version) return false;
+  return !statesEqual(previous, current);
+}
+
+function materialVersionRegressed(
+  previous: ResolvedMaterial | undefined,
+  current: ResolvedMaterial,
+): boolean {
+  if (previous === undefined) return false;
+  if (current.version < previous.version) return true;
+  if (current.version > previous.version) return false;
+  return !statesEqual(previous, current);
+}
+
 function checkResolvedInvariants(
   meta: TransactionMeta,
   state: ResolvedState,
   offset: number,
 ): string[] {
   const where = `transaction seq ${meta.seq}`;
+  const isV5 = meta.shaders !== undefined;
   const canvases = sortedResolvedCanvases(state);
   const items = sortedResolvedItems(state);
   const textures = sortedResolvedTextures(state);
   const meshes = sortedResolvedMeshes(state);
+  const shaders = sortedResolvedShaders(state);
+  const materials = sortedResolvedMaterials(state);
   const canvasIds = new Set(canvases.map((c) => c.id));
   const itemIds = new Set(items.map((i) => i.id));
   const textureIds = new Set(textures.map((t) => t.id));
   const textureById = new Map(textures.map((t) => [t.id, t] as const));
   const meshIds = new Set(meshes.map((m) => m.id));
+  const shaderIds = new Set(shaders.map((s) => s.id));
+  const materialIds = new Set(materials.map((m) => m.id));
+  const materialById = new Map(materials.map((m) => [m.id, m] as const));
 
   for (const t of textures) {
     const fieldErrors = textureEntryFieldErrors(t, offset);
@@ -2909,6 +3819,43 @@ function checkResolvedInvariants(
   for (const m of meshes) {
     const fieldErrors = meshEntryFieldErrors(m, offset);
     if (fieldErrors.length > 0) return fieldErrors;
+  }
+  for (const s of shaders) {
+    const fieldErrors = shaderEntryFieldErrors(s, offset);
+    if (fieldErrors.length > 0) return fieldErrors;
+  }
+  for (const m of materials) {
+    const fieldErrors = materialEntryFieldErrors(m, offset);
+    if (fieldErrors.length > 0) return fieldErrors;
+  }
+  if (isV5) {
+    // shader-ref: every material's non-null "shader" must name an entry in the resolved shader
+    // table.
+    for (const m of materials) {
+      if (m.shader !== null && !shaderIds.has(m.shader)) {
+        return [
+          `shader-ref: ${where}: material ${m.id} names shader ${m.shader}, which has no entry`,
+        ];
+      }
+    }
+    // material-ref: every item's non-null "material" must name an entry in the resolved material
+    // table.
+    for (const item of items) {
+      if (
+        item.material !== undefined &&
+        item.material !== null &&
+        !materialIds.has(item.material)
+      ) {
+        return [
+          `material-ref: ${where}: item ${item.id} names material ${item.material}, which has no entry`,
+        ];
+      }
+    }
+    // canvas-offset itself (canvas_f32 must carry 10 floats per canvas) is checked earlier, in
+    // validateRecording(), alongside cmd-offset/mesh-offset/param-offset -- by the time
+    // checkResolvedInvariants() runs, every resolved canvas is already known to carry a
+    // `modulate` (liftCanvas() only omits it when its input slice is under 10 floats long, which
+    // that earlier check already catches and reports first).
   }
 
   const roots = canvases.filter((c) => c.role === "root");
@@ -3079,6 +4026,50 @@ function checkResolvedInvariants(
   const actualUnsupportedOps = new Map<string, UnsupportedReason>();
   const actualUnsupportedTexture = new Set<string>();
   const actualUnsupportedMesh = new Set<string>();
+  // new at /5 (render-stream-5.md "Derived item-level entries"): unsupported-material is the
+  // only one of the three new derived reasons that is independently reconstructable from the
+  // resolved state (an item's effective material -- here, its OWN "material" field; G55w's own
+  // golden-5 vectors never exercise use_parent_material's cross-item effective-material walk,
+  // which is D9's mirror concern, not this codec/validator's -- is unsupported, names an
+  // unsupported shader, or names a texture parameter or default texture whose entry is
+  // unsupported). unknown-material and the instance param-type entry both describe a value the
+  // wire could not represent at all (an unknown RID, an unsupported-typed parameter), so there is
+  // no independent "actual" signal to cross-check them against; those two are checked forward-
+  // only (the referenced item exists, and -- for unknown-material -- its resolved "material" is
+  // null) below, in the per-entry loop.
+  const actualUnsupportedMaterial = new Set<string>();
+  if (isV5) {
+    for (const item of items) {
+      if (item.material === undefined || item.material === null) continue;
+      const mat = materialById.get(item.material);
+      if (mat === undefined) continue;
+      let unsupported = mat.status === "unsupported";
+      if (!unsupported && mat.shader !== null) {
+        const shaderEntry = state.shaders.get(mat.shader);
+        if (shaderEntry !== undefined) {
+          if (shaderEntry.status === "unsupported") unsupported = true;
+          for (const d of shaderEntry.default_textures) {
+            if (textureById.get(d.tex)?.status === "unsupported")
+              unsupported = true;
+          }
+        }
+      }
+      for (const p of mat.params) {
+        if (
+          p.type === "rid" &&
+          p.value !== null &&
+          typeof p.value === "object" &&
+          "tex" in p.value &&
+          textureById.get(p.value.tex)?.status === "unsupported"
+        ) {
+          unsupported = true;
+        }
+      }
+      if (unsupported) {
+        actualUnsupportedMaterial.add(`${item.id}:canvas_item_set_material`);
+      }
+    }
+  }
   for (const item of items) {
     const seenOps = new Set<string>();
     for (const command of item.commands) {
@@ -3133,11 +4124,23 @@ function checkResolvedInvariants(
   const declaredTieItems = new Set<number>();
   const declaredUnsupportedTexture = new Set<string>();
   const declaredUnsupportedMesh = new Set<string>();
+  const declaredUnsupportedMaterial = new Set<string>();
   for (const entry of meta.unsupported) {
     if (entry.item === null) {
       if (itemLevelStarted) {
         return [
           `unsupported-mismatch: ${where}: session-level entry ${entry.op} follows an item-level entry`,
+        ];
+      }
+      // new at /5: the sticky canvas-light entry (gate5_5-design.md D10) has no independent
+      // "actual" signal to cross-check against -- forward-only (well-formedness) is all this
+      // validator can do.
+      if (
+        entry.reason === "canvas-light" &&
+        entry.op !== "canvas_light_attach_to_canvas"
+      ) {
+        return [
+          `unsupported-mismatch: ${where}: canvas-light entry names op ${entry.op}, expected canvas_light_attach_to_canvas`,
         ];
       }
       continue;
@@ -3186,9 +4189,16 @@ function checkResolvedInvariants(
       }
       declaredTieItems.add(entry.item);
     } else if (entry.reason === "unsupported-state") {
-      // unsupported-state covers canvas_item_set_material (/2) and, new at /4, calibrator-7's
+      // unsupported-state covers canvas_item_set_material (/2-/4) and, new at /4, calibrator-7's
       // canvas_item_attach_skeleton (render-stream-4.md "Decoders accept 'unsupported-state'
-      // for canvas_item_attach_skeleton as well as canvas_item_set_material").
+      // for canvas_item_attach_skeleton as well as canvas_item_set_material"). render-stream-5.md
+      // "Derived item-level entries": /4's unsupported-state for canvas_item_set_material no
+      // longer occurs at /5 (superseded by item-level material state), and /5 decoders reject it.
+      if (isV5 && entry.op === "canvas_item_set_material") {
+        return [
+          `unsupported-mismatch: ${where}: unsupported-state entry for item ${entry.item} names canvas_item_set_material, which /5 decoders reject (superseded by unsupported-material/unknown-material)`,
+        ];
+      }
       if (
         entry.op !== "canvas_item_set_material" &&
         entry.op !== "canvas_item_attach_skeleton"
@@ -3213,6 +4223,46 @@ function checkResolvedInvariants(
         ];
       }
       declaredUnsupportedMesh.add(pair);
+    } else if (entry.reason === "unsupported-material") {
+      if (entry.op !== "canvas_item_set_material") {
+        return [
+          `unsupported-mismatch: ${where}: unsupported-material entry for item ${entry.item} names ${entry.op}, expected canvas_item_set_material`,
+        ];
+      }
+      const pair = `${entry.item}:${entry.op}`;
+      if (!actualUnsupportedMaterial.has(pair)) {
+        return [
+          `unsupported-mismatch: ${where}: unsupported-material entry (${entry.item}, ${entry.op}) does not correspond to an item whose effective material is unsupported`,
+        ];
+      }
+      declaredUnsupportedMaterial.add(pair);
+    } else if (entry.reason === "unknown-material") {
+      // No independent "actual" signal exists for this reason (see the comment above
+      // actualUnsupportedMaterial): forward-only. The referenced item's resolved "material"
+      // must be null, matching Q3b's "an unknown non-null RID -> material: null".
+      if (entry.op !== "canvas_item_set_material") {
+        return [
+          `unsupported-mismatch: ${where}: unknown-material entry for item ${entry.item} names ${entry.op}, expected canvas_item_set_material`,
+        ];
+      }
+      const item = byId.get(entry.item);
+      if (
+        item !== undefined &&
+        item.material !== undefined &&
+        item.material !== null
+      ) {
+        return [
+          `unsupported-mismatch: ${where}: unknown-material entry for item ${entry.item}, whose resolved material is non-null`,
+        ];
+      }
+    } else if (entry.reason === "param-type") {
+      // Likewise forward-only: an instance parameter of an unsupported type is never carried in
+      // instance_params at all.
+      if (entry.op !== "canvas_item_set_instance_shader_parameter") {
+        return [
+          `unsupported-mismatch: ${where}: param-type entry for item ${entry.item} names ${entry.op}, expected canvas_item_set_instance_shader_parameter`,
+        ];
+      }
     }
   }
   for (const [pair, reason] of actualUnsupportedOps) {
@@ -3243,6 +4293,13 @@ function checkResolvedInvariants(
       ];
     }
   }
+  for (const pair of actualUnsupportedMaterial) {
+    if (!declaredUnsupportedMaterial.has(pair)) {
+      return [
+        `unsupported-mismatch: ${where}: item (${pair.replace(":", ", ")})'s effective material is unsupported, with no unsupported-material entry`,
+      ];
+    }
+  }
 
   return [];
 }
@@ -3251,9 +4308,10 @@ function checkResolvedInvariants(
 
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 4,
+  version: 2 | 3 | 4 | 5 = 4,
 ): string[] {
-  const isV4 = version === 4;
+  const isV5 = version === 5;
+  const isV4 = isV5 || version === 4;
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
   if (split.records.length === 0)
@@ -3282,7 +4340,14 @@ export function validateRecording(
   let prevSeq = 0;
   let prevFrame = -Infinity;
   let state = emptyResolvedState();
-  const maxIdSeen = { canvas: 0, item: 0, texture: 0, mesh: 0 };
+  const maxIdSeen = {
+    canvas: 0,
+    item: 0,
+    texture: 0,
+    mesh: 0,
+    shader: 0,
+    material: 0,
+  };
   const carriedHashes = new Set<string>();
   const lastSeenTexture = new Map<number, TransactionTexture>();
   const lastSeenMesh = new Map<number, ResolvedMesh>();
@@ -3293,6 +4358,10 @@ export function validateRecording(
   const resourcePayloadLengths = new Map<string, number>();
   const meshPayloadShapes = new Map<string, DecodedMeshPayload>();
   const meshPayloadLengths = new Map<string, number>();
+  const shaderPayloadShapes = new Map<string, DecodedShaderPayload>();
+  const shaderPayloadLengths = new Map<string, number>();
+  const lastSeenShader = new Map<number, ResolvedShader>();
+  const lastSeenMaterial = new Map<number, ResolvedMaterial>();
   let endSeen = false;
 
   for (let i = 1; i < split.records.length; i++) {
@@ -3318,11 +4387,29 @@ export function validateRecording(
         ];
       }
       const rawPayload = rawResourcePayload(split.records[i]);
-      // render-stream-4.md "Resources": mesh (GRM1) and texture (GRT1) payloads share one hash
-      // namespace and one resource record shape; tell them apart by their own 8-byte magic.
+      // render-stream-4.md "Resources": mesh (GRM1), shader (GRP1, new at /5) and texture (GRT1)
+      // payloads share one hash namespace and one resource record shape; tell them apart by
+      // their own 8-byte magic.
       const isMeshPayload =
         isV4 && bytesEqual(rawPayload.subarray(0, 8), GRM1_MAGIC);
-      if (isMeshPayload) {
+      const isShaderPayload =
+        isV5 && bytesEqual(rawPayload.subarray(0, 8), GRP1_MAGIC);
+      if (isShaderPayload) {
+        let decodedShader: DecodedShaderPayload;
+        try {
+          decodedShader = decodeShaderPayload(rawPayload);
+        } catch (e) {
+          return [(e as Error).message];
+        }
+        const actualHash = block.sha256;
+        if (actualHash !== meta.hash) {
+          return [
+            `resource-hash: record at offset ${offset}: payload sha256 ${actualHash} disagrees with declared hash ${meta.hash}`,
+          ];
+        }
+        shaderPayloadShapes.set(meta.hash, decodedShader);
+        shaderPayloadLengths.set(meta.hash, block.u8_bytes);
+      } else if (isMeshPayload) {
         let decodedMesh: DecodedMeshPayload;
         try {
           decodedMesh = decodeMeshPayload(rawPayload);
@@ -3395,6 +4482,22 @@ export function validateRecording(
               ),
             ]
           : []),
+        ...(isV5
+          ? [
+              ...checkIdOrdering("shaders", meta.shaders ?? [], offset),
+              ...checkIdOrdering("materials", meta.materials ?? [], offset),
+              ...checkIdListAscendingNoDup(
+                "removed_shaders",
+                meta.removed_shaders ?? [],
+                offset,
+              ),
+              ...checkIdListAscendingNoDup(
+                "removed_materials",
+                meta.removed_materials ?? [],
+                offset,
+              ),
+            ]
+          : []),
       ];
       if (idOrderErrors.length > 0) return idOrderErrors;
 
@@ -3412,6 +4515,7 @@ export function validateRecording(
         sessionMeta.stream.encoding,
         state,
         isV4,
+        isV5,
       );
       if (patchErrors.length > 0) return patchErrors;
       if (meta.frame <= prevFrame) {
@@ -3464,18 +4568,69 @@ export function validateRecording(
           totalMeshFloats += 6;
         }
       }
+      // param-offset (render-stream-5.md "Material table", gate5_5-design.md D8): a running
+      // offset into param_f64 over materials IN TABLE ORDER FIRST, then items' instance_params
+      // in item order -- mirroring cmd-offset/mesh-offset, but spanning two different arrays.
+      let totalParamFloats = 0;
+      if (isV5) {
+        let runningParamOffset = 0;
+        const checkParam = (
+          p: TransactionParam,
+          where: string,
+        ): string[] | null => {
+          if (p.f !== runningParamOffset) {
+            return [
+              `param-offset: record at offset ${offset}: ${where} param "${p.name}" f=${p.f}, expected ${runningParamOffset}`,
+            ];
+          }
+          runningParamOffset += p.n * (VARIANT_COMPONENTS[p.type] ?? 0);
+          return null;
+        };
+        for (const m of meta.materials ?? []) {
+          for (const p of m.params) {
+            const err = checkParam(p, `material ${m.id}`);
+            if (err !== null) return err;
+          }
+        }
+        for (const it of meta.items) {
+          for (const p of it.instance_params ?? []) {
+            const err = checkParam(p, `item ${it.id} instance`);
+            if (err !== null) return err;
+          }
+        }
+        totalParamFloats = runningParamOffset;
+      }
+      const canvasStride = isV5 ? 10 : 6;
       const blockByName = new Map(
         meta.blocks.map((b) => [b.name, b.count] as const),
       );
+      // canvas-offset (render-stream-5.md "Canvas"): canvas_f32's own expected length gets its
+      // own named code at /5 (10 floats per canvas: xform 6, modulate 4), checked ahead of the
+      // generic block-count sweep below -- mirroring how cmd-offset/mesh-offset are distinct
+      // named codes from the generic block-count check for the blocks that carry a per-entry
+      // offset. Pre-/5, a canvas_f32 mismatch is still reported generically as block-count.
+      const expectedCanvasFloats = canvasStride * meta.canvases.length;
+      const actualCanvasFloats = blockByName.get("canvas_f32");
+      if (actualCanvasFloats !== expectedCanvasFloats) {
+        return isV5
+          ? [
+              `canvas-offset: record at offset ${offset}: block "canvas_f32" declares count ${actualCanvasFloats}, expected ${expectedCanvasFloats} (10 floats per canvas: xform 6, modulate 4)`,
+            ]
+          : [
+              `block-count: record at offset ${offset}: block "canvas_f32" declares count ${actualCanvasFloats}, expected ${expectedCanvasFloats}`,
+            ];
+      }
       const expectedBlocks: Array<[string, number]> = [
         ["item_f32", 18 * meta.items.length],
-        ["canvas_f32", 6 * meta.canvases.length],
         ["cmd_f32", totalCmdFloats],
         ...(isV4
           ? ([
               ["cmd_i32", totalCmdInts],
               ["mesh_f32", totalMeshFloats],
             ] as Array<[string, number]>)
+          : []),
+        ...(isV5
+          ? ([["param_f64", totalParamFloats]] as Array<[string, number]>)
           : []),
       ];
       for (const [name, count] of expectedBlocks) {
@@ -3494,17 +4649,18 @@ export function validateRecording(
         ];
       }
 
-      const [itemF32, canvasF32, , cmdI32, meshF32] = decoded.record
+      const [itemF32, canvasF32, , cmdI32, meshF32, paramF64] = decoded.record
         .blocks as number[][];
       if (
         itemF32.length !== 18 * meta.items.length ||
-        canvasF32.length !== 6 * meta.canvases.length ||
+        canvasF32.length !== canvasStride * meta.canvases.length ||
         (isV4 &&
           ((cmdI32?.length ?? 0) !== totalCmdInts ||
-            (meshF32?.length ?? 0) !== totalMeshFloats))
+            (meshF32?.length ?? 0) !== totalMeshFloats)) ||
+        (isV5 && (paramF64?.length ?? 0) !== totalParamFloats)
       ) {
         return [
-          `block-count: record at offset ${offset}: decoded block lengths disagree with items/canvases/commands/meshes counts`,
+          `block-count: record at offset ${offset}: decoded block lengths disagree with items/canvases/commands/meshes/materials counts`,
         ];
       }
       const nextState = applyTransaction(
@@ -3538,6 +4694,30 @@ export function validateRecording(
             ];
           }
           lastSeenMesh.set(m.id, resolvedMesh);
+        }
+      }
+      if (isV5) {
+        for (const s of meta.shaders ?? []) {
+          const resolvedShader = nextState.shaders.get(s.id);
+          if (resolvedShader === undefined) continue;
+          const previous = lastSeenShader.get(s.id);
+          if (shaderVersionRegressed(previous, resolvedShader)) {
+            return [
+              `shader-version: record at offset ${offset}: shader ${s.id}'s version/content is inconsistent with its earlier entry`,
+            ];
+          }
+          lastSeenShader.set(s.id, resolvedShader);
+        }
+        for (const m of meta.materials ?? []) {
+          const resolvedMaterial = nextState.materials.get(m.id);
+          if (resolvedMaterial === undefined) continue;
+          const previous = lastSeenMaterial.get(m.id);
+          if (materialVersionRegressed(previous, resolvedMaterial)) {
+            return [
+              `material-version: record at offset ${offset}: material ${m.id}'s version/content is inconsistent with its earlier entry`,
+            ];
+          }
+          lastSeenMaterial.set(m.id, resolvedMaterial);
         }
       }
 
@@ -3592,23 +4772,53 @@ export function validateRecording(
           }
         }
       }
+      if (isV5) {
+        // shader source "withheld" (gate5_5-design.md D4) never has a resource record -- the
+        // policy deliberately keeps the code byte off the wire, the store and HTTP.
+        for (const s of sortedResolvedShaders(nextState)) {
+          if (s.status !== "ok" || s.hash === null || s.source !== "payload")
+            continue;
+          if (s.payload_bytes > inlineMaxBytes) continue;
+          if (!carriedHashes.has(s.hash)) {
+            return [
+              `resource-missing: record at offset ${offset}: shader ${s.id}'s hash ${s.hash} (payload_bytes ${s.payload_bytes} <= inline_max_bytes ${inlineMaxBytes}) never arrived as a resource record`,
+            ];
+          }
+          const shape = shaderPayloadShapes.get(s.hash);
+          if (
+            shape !== undefined &&
+            (shaderPayloadLengths.get(s.hash) ?? -1) !== s.payload_bytes
+          ) {
+            return [
+              `resource-payload: record at offset ${offset}: the resource for hash ${s.hash} is ${shaderPayloadLengths.get(s.hash)} bytes, shader ${s.id} declares payload_bytes ${s.payload_bytes}`,
+            ];
+          }
+        }
+      }
 
       // id-reused: resolved ids this transaction vs. the previous one.
       const currentCanvasIds = new Set(nextState.canvases.keys());
       const currentItemIds = new Set(nextState.items.keys());
       const currentTextureIds = new Set(nextState.textures.keys());
       const currentMeshIds = new Set(nextState.meshes.keys());
+      const currentShaderIds = new Set(nextState.shaders.keys());
+      const currentMaterialIds = new Set(nextState.materials.keys());
       const previousCanvasIds = new Set(state.canvases.keys());
       const previousItemIds = new Set(state.items.keys());
       const previousTextureIds = new Set(state.textures.keys());
       const previousMeshIds = new Set(state.meshes.keys());
+      const previousShaderIds = new Set(state.shaders.keys());
+      const previousMaterialIds = new Set(state.materials.keys());
       for (const [kind, currentIds, previousIds] of [
         ["canvas", currentCanvasIds, previousCanvasIds] as const,
         ["item", currentItemIds, previousItemIds] as const,
         ["texture", currentTextureIds, previousTextureIds] as const,
         ["mesh", currentMeshIds, previousMeshIds] as const,
+        ["shader", currentShaderIds, previousShaderIds] as const,
+        ["material", currentMaterialIds, previousMaterialIds] as const,
       ]) {
         if (kind === "mesh" && !isV4) continue;
+        if ((kind === "shader" || kind === "material") && !isV5) continue;
         for (const id of currentIds) {
           if (!previousIds.has(id) && id <= maxIdSeen[kind]) {
             return [
@@ -3672,6 +4882,7 @@ function checkPatchRules(
   sessionEncoding: Encoding,
   baseState: ResolvedState,
   isV4: boolean,
+  isV5: boolean,
 ): string[] {
   if (meta.encoding === "full") {
     if (
@@ -3679,7 +4890,10 @@ function checkPatchRules(
       meta.removed_canvases.length > 0 ||
       meta.removed_items.length > 0 ||
       meta.removed_textures.length > 0 ||
-      (isV4 && (meta.removed_meshes?.length ?? 0) > 0)
+      (isV4 && (meta.removed_meshes?.length ?? 0) > 0) ||
+      (isV5 &&
+        ((meta.removed_shaders?.length ?? 0) > 0 ||
+          (meta.removed_materials?.length ?? 0) > 0))
     ) {
       return [
         `patch-encoding: record at offset ${offset}: a full transaction carries a non-null base_seq or a non-empty removed list`,
@@ -3789,6 +5003,50 @@ function checkPatchRules(
       }
     }
   }
+  if (isV5) {
+    const removedShaderSet = new Set<number>();
+    for (const id of meta.removed_shaders ?? []) {
+      if (removedShaderSet.has(id)) {
+        return [
+          `patch-removed: record at offset ${offset}: shader ${id} is removed twice`,
+        ];
+      }
+      removedShaderSet.add(id);
+      if (!baseState.shaders.has(id)) {
+        return [
+          `patch-removed: record at offset ${offset}: removed shader ${id} is absent from the base`,
+        ];
+      }
+    }
+    for (const s of meta.shaders ?? []) {
+      if (removedShaderSet.has(s.id)) {
+        return [
+          `patch-removed: record at offset ${offset}: shader ${s.id} is both removed and present`,
+        ];
+      }
+    }
+    const removedMaterialSet = new Set<number>();
+    for (const id of meta.removed_materials ?? []) {
+      if (removedMaterialSet.has(id)) {
+        return [
+          `patch-removed: record at offset ${offset}: material ${id} is removed twice`,
+        ];
+      }
+      removedMaterialSet.add(id);
+      if (!baseState.materials.has(id)) {
+        return [
+          `patch-removed: record at offset ${offset}: removed material ${id} is absent from the base`,
+        ];
+      }
+    }
+    for (const m of meta.materials ?? []) {
+      if (removedMaterialSet.has(m.id)) {
+        return [
+          `patch-removed: record at offset ${offset}: material ${m.id} is both removed and present`,
+        ];
+      }
+    }
+  }
 
   for (const it of meta.items) {
     const base = baseState.items.get(it.id);
@@ -3825,6 +5083,9 @@ export interface ResolvedTransaction {
     textures: ResolvedTexture[];
     /** new at /4: present only when resolved at version 4. */
     meshes?: ResolvedMesh[];
+    /** new at /5: present only when resolved at version 5. */
+    shaders?: ResolvedShader[];
+    materials?: ResolvedMaterial[];
   };
 }
 
@@ -3838,7 +5099,8 @@ export interface ResolvedRecording {
   schema:
     | "render-stream-2-resolved/1"
     | "render-stream-3-resolved/1"
-    | "render-stream-4-resolved/1";
+    | "render-stream-4-resolved/1"
+    | "render-stream-5-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -3847,7 +5109,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 = 4,
+  version: 2 | 3 | 4 | 5 = 4,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -3880,17 +5142,27 @@ export function resolveRecording(
         canvases: sortedResolvedCanvases(state),
         items: sortedResolvedItems(state),
         textures: sortedResolvedTextures(state),
-        ...(version === 4 ? { meshes: sortedResolvedMeshes(state) } : {}),
+        ...(version === 4 || version === 5
+          ? { meshes: sortedResolvedMeshes(state) }
+          : {}),
+        ...(version === 5
+          ? {
+              shaders: sortedResolvedShaders(state),
+              materials: sortedResolvedMaterials(state),
+            }
+          : {}),
       },
     });
   }
   return {
     schema:
-      version === 4
-        ? "render-stream-4-resolved/1"
-        : version === 3
-          ? "render-stream-3-resolved/1"
-          : "render-stream-2-resolved/1",
+      version === 5
+        ? "render-stream-5-resolved/1"
+        : version === 4
+          ? "render-stream-4-resolved/1"
+          : version === 3
+            ? "render-stream-3-resolved/1"
+            : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

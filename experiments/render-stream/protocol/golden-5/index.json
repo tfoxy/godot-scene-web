@@ -1,0 +1,309 @@
+{
+  "schema": "render-stream-5-golden-index/1",
+  "protocol": "render-stream/5",
+  "valid": [
+    {
+      "file": "full.rs5",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "995cbe8581620997da54825065233510dd99acc6b0535df1ea2c3012579e72cd"
+    },
+    {
+      "file": "patch.rs5",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "73078d49fd607c140b23c155645e405b2feaa502c418ced1cd4714d932e4dc5f"
+    },
+    {
+      "file": "inline.rs5",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "a573fbe761bdea9284e40dddfb18cd7da4f6570d57fe8f1d0c01ac0839ce9398"
+    }
+  ],
+  "resolved": "resolved.json",
+  "params_leg": {
+    "file": "params.rs5",
+    "hex": "params.hex",
+    "decoded": "params.decoded.json",
+    "sha256": "b2a334a3381fab4e956af7102f70ca18993b8dfdd72d6f03374e766612c23e30",
+    "resolved": "resolved-params.json"
+  },
+  "inline_resources": [
+    {
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "bytes": 1135,
+      "record_index": 1
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 2
+    },
+    {
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "bytes": 1135,
+      "record_index": 5
+    },
+    {
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "bytes": 447,
+      "record_index": 7
+    },
+    {
+      "hash": "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437",
+      "bytes": 1135,
+      "record_index": 11
+    },
+    {
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "bytes": 256,
+      "record_index": 14
+    },
+    {
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "bytes": 297,
+      "record_index": 15
+    },
+    {
+      "hash": "62c07418eb102e442122992cdacefc057a530ee24bb47e3ea3034bd7c75f387a",
+      "bytes": 281,
+      "record_index": 16
+    },
+    {
+      "hash": "1c68b94d68817069d53580212d0fcceac80eec854e5d1bd6399b9b7160e98bbc",
+      "bytes": 281,
+      "record_index": 18
+    },
+    {
+      "hash": "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17",
+      "bytes": 203,
+      "record_index": 21
+    },
+    {
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157,
+      "record_index": 22
+    },
+    {
+      "hash": "586e44786613868036df5a0a72e1c2a512397d6300502e87d927be6ff7329dbe",
+      "bytes": 163,
+      "record_index": 25
+    },
+    {
+      "hash": "f50e1b48065c02d118f568210a9bb22b6923f89b2810db7d041ffc9da440394c",
+      "bytes": 131,
+      "record_index": 26
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs5",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs5 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs5",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '4' (GRS4), not '5'"
+    },
+    {
+      "file": "invalid/shader-entry.rs5",
+      "code": "shader-entry",
+      "description": "shader 1's status is \"ok\" but it declares a non-null reason"
+    },
+    {
+      "file": "invalid/material-entry.rs5",
+      "code": "material-entry",
+      "description": "material 1's status is \"ok\" but it declares a non-null reason"
+    },
+    {
+      "file": "invalid/param-entry.rs5",
+      "code": "param-entry",
+      "description": "a \"rid\" param declares \"tex\": null, but tex must be non-null exactly for type rid"
+    },
+    {
+      "file": "invalid/param-offset.rs5",
+      "code": "param-offset",
+      "description": "material 1's second param (\"tint\") declares f=0, but the first param (\"gain\") already consumed one float"
+    },
+    {
+      "file": "invalid/material-ref.rs5",
+      "code": "material-ref",
+      "description": "item 1 names material 99, which has no entry in the resolved table"
+    },
+    {
+      "file": "invalid/shader-ref.rs5",
+      "code": "shader-ref",
+      "description": "material 1 names shader 99, which has no entry in the resolved table"
+    },
+    {
+      "file": "invalid/shader-version.rs5",
+      "code": "shader-version",
+      "description": "shader 1's version decreases from 2 (seq 1) to 1 (seq 2)"
+    },
+    {
+      "file": "invalid/material-version.rs5",
+      "code": "material-version",
+      "description": "material 1's version decreases from 2 (seq 1) to 1 (seq 2)"
+    },
+    {
+      "file": "invalid/canvas-offset.rs5",
+      "code": "canvas-offset",
+      "description": "canvas_f32 carries 6 floats for one canvas; /5 requires 10 (xform 6, modulate 4)"
+    },
+    {
+      "file": "invalid/unsupported-mismatch.rs5",
+      "code": "unsupported-mismatch",
+      "description": "item 1 names material 1, whose shader is unsupported, with no derived unsupported-material entry"
+    },
+    {
+      "file": "invalid/patch-removed.rs5",
+      "code": "patch-removed",
+      "description": "seq 2 both removes material 1 and lists it present in materials[]"
+    },
+    {
+      "file": "invalid/meta-schema.rs5",
+      "code": "meta-schema",
+      "description": "the mesh_f32 block is declared type \"f64\" instead of \"f32\""
+    },
+    {
+      "file": "invalid/resource-payload.rs5",
+      "code": "resource-payload",
+      "description": "the GRP1 payload is longer than the shader table entry's declared payload_bytes"
+    }
+  ],
+  "payload_invalid": [
+    {
+      "file": "payload-invalid/payload-magic.grp",
+      "code": "payload-magic",
+      "description": "the fourth magic byte is 'X', not '1'"
+    },
+    {
+      "file": "payload-invalid/payload-meta.grp",
+      "code": "payload-meta",
+      "description": "meta_len is shortened by one byte, breaking the JSON"
+    },
+    {
+      "file": "payload-invalid/payload-length.grp",
+      "code": "payload-length",
+      "description": "meta.code_bytes is declared larger than the bytes actually present"
+    },
+    {
+      "file": "payload-invalid/payload-utf8.grp",
+      "code": "payload-utf8",
+      "description": "the data section's last byte (0x80) is not valid UTF-8 on its own"
+    }
+  ],
+  "payloads": [
+    {
+      "file": "payloads/a1.grt",
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/a2.grt",
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/f.grt",
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "format": "LA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 137
+    },
+    {
+      "file": "payloads/p.grt",
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "format": "RGBA8",
+      "width": 8,
+      "height": 8,
+      "mipmaps": true,
+      "bytes": 447
+    },
+    {
+      "file": "payloads/page.grt",
+      "hash": "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    }
+  ],
+  "mesh_payloads": [
+    {
+      "file": "payloads/mesh1-a.grm",
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "primitive": "triangles",
+      "format": 33554440,
+      "vertex_count": 3,
+      "index_count": 0,
+      "bytes": 256
+    },
+    {
+      "file": "payloads/mesh1-b.grm",
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "primitive": "triangles",
+      "format": 33558544,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 297
+    },
+    {
+      "file": "payloads/mesh2-v1.grm",
+      "hash": "62c07418eb102e442122992cdacefc057a530ee24bb47e3ea3034bd7c75f387a",
+      "primitive": "triangles",
+      "format": 33558536,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 281
+    },
+    {
+      "file": "payloads/mesh2-v2.grm",
+      "hash": "1c68b94d68817069d53580212d0fcceac80eec854e5d1bd6399b9b7160e98bbc",
+      "primitive": "triangles",
+      "format": 33558536,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 281
+    }
+  ],
+  "shader_payloads": [
+    {
+      "file": "payloads/shader1-add.grp",
+      "hash": "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17",
+      "bytes": 203
+    },
+    {
+      "file": "payloads/shader2-tint-v1.grp",
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157
+    },
+    {
+      "file": "payloads/shader2-tint-v2.grp",
+      "hash": "586e44786613868036df5a0a72e1c2a512397d6300502e87d927be6ff7329dbe",
+      "bytes": 163
+    },
+    {
+      "file": "payloads/shader3-time.grp",
+      "hash": "f50e1b48065c02d118f568210a9bb22b6923f89b2810db7d041ffc9da440394c",
+      "bytes": 131
+    }
+  ]
+}

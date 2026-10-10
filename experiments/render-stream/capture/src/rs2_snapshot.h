@@ -68,7 +68,16 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV4 = {0x47, 0x52, 0x53, 0x34,
 inline constexpr const char *kProtocolV4 = "render-stream/4";
 inline constexpr const char *kMeshPayloadSchema = "render-stream-mesh/1";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4 };
+// render-stream/5 (G55w, render-stream-5.md): /4 plus a shader table, a material table, canvas
+// modulate, item material/use_parent_material/instance_params and a new `f64` block
+// (`param_f64`). As with /3 and /4 (gate5_5-design.md D1), /5 is a protocol-version switch on
+// Session, not a fork: the capture and the receiver keep speaking /4 until G55d.
+inline constexpr std::array<std::uint8_t, 8> kMagicV5 = {0x47, 0x52, 0x53, 0x35,
+                                                          0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV5 = "render-stream/5";
+inline constexpr const char *kShaderPayloadSchema = "render-stream-shader/1";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5 };
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
@@ -174,6 +183,10 @@ enum class UnsupportedReason : std::uint8_t {
   UnknownMesh,          // new at /4: derived from an unsupported "unknown-mesh" command
   SkinnedGeometry,      // new at /4: derived from an unsupported "skinned-geometry" command
   UnsupportedMesh,      // new at /4: an add_mesh command naming an unsupported mesh entry
+  UnsupportedMaterial,  // new at /5: an item's effective material (or a texture it names) is unsupported
+  UnknownMaterial,      // new at /5: canvas_item_set_material named a material RID the mirror never saw
+  ParamType,            // new at /5: an instance shader parameter of an unsupported Variant type
+  CanvasLight,          // new at /5: session-level, sticky -- canvas_light_attach_to_canvas observed
 };
 
 enum class SabotageKind : std::uint8_t {
@@ -193,6 +206,7 @@ enum class SabotageKind : std::uint8_t {
   Unpin,                   // new at /2 (G2c2)
   PerturbGlyph,            // new at /3 (G4e1/G4e2, render-stream-3.md)
   PerturbVertex,           // new at /4 (G5w, render-stream-4.md)
+  PerturbShader,           // new at /5 (G55w, render-stream-5.md; gate5_5-design.md Q3c)
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -244,6 +258,47 @@ enum class Primitive : std::uint8_t { Points, Lines, LineStrip, Triangles, Trian
 enum class MeshStatus : std::uint8_t { Ok, Unsupported, Freed };
 enum class MeshReason : std::uint8_t { MeshFormat, MeshBlendShapes, PayloadTooLarge };
 
+// --- new at /5: shader table, material table, param_f64 (render-stream-5.md) ------------------
+
+// gate5_5-design.md D8: the Variant type names a material or instance parameter may carry on the
+// wire, plus the numeric packed array types. "As built" (G55w): wire spellings are this codec's
+// own decision (snake_case, matching the engine's own type names) -- the design doc lists the
+// scalar names and the packed-array component words without committing to one concrete array
+// spelling; render-stream-5.md "As built" documents the choice.
+enum class VariantType : std::uint8_t {
+  Nil, Bool, Int, Float, Vector2, Vector2i, Rect2, Rect2i, Vector3, Vector3i,
+  Transform2D, Vector4, Vector4i, Plane, Quaternion, Aabb, Basis, Transform3D,
+  Projection, Color, Rid,
+  PackedInt32Array, PackedInt64Array, PackedFloat32Array, PackedFloat64Array,
+  PackedVector2Array, PackedVector3Array, PackedVector4Array, PackedColorArray,
+};
+
+// render-stream-5.md "Shader table".
+enum class ShaderMode : std::uint8_t { CanvasItem, Spatial, Particles, Sky, Fog };
+enum class ShaderStatus : std::uint8_t { Ok, Unsupported };
+enum class ShaderReason : std::uint8_t {
+  ShaderMode, ShaderScreenTexture, ShaderSdf, ShaderTime, ShaderGlobalUniform,
+  ShaderExcluded, PayloadTooLarge, PayloadUnavailable,
+};
+// gate5_5-design.md D11/Q3a: listed in `uses`, for information only (never drives `reason` except
+// in the priority order D11 states: time, screen-texture, sdf, global-uniform, mode).
+enum class ShaderUse : std::uint8_t {
+  GlobalUniform, InstanceUniform, Light, ScreenTexture, Sdf, Time,
+};
+// D4: whether a shader's code travels as a GRP1 payload, is withheld by policy, or (shader has no
+// code yet) is null on the wire -- represented here by ShaderEntry::has_source.
+enum class ShaderSource : std::uint8_t { Payload, Withheld };
+// gate5_5-design.md D7: the CanvasItemMaterial-generated shader's recognized blend/light modes.
+enum class BlendMode : std::uint8_t { Mix, Add, Sub, Mul, PremulAlpha, Disabled };
+enum class LightMode : std::uint8_t { Normal, Unshaded, LightOnly };
+
+// render-stream-5.md "Material table".
+enum class MaterialStatus : std::uint8_t { Ok, Unsupported };
+enum class MaterialReason : std::uint8_t { UnknownShader, UnknownTexture, ParamType, ParamRange };
+
+// gate5_5-design.md D4: the session's declared shader-source policy.
+enum class ShaderPolicy : std::uint8_t { Source, Params, Exclude };
+
 // Wire spellings (render-stream-2.md). Each returns a string literal.
 inline const char *to_wire(Origin v) {
   switch (v) {
@@ -282,6 +337,10 @@ inline const char *to_wire(UnsupportedReason v) {
   case UnsupportedReason::UnknownMesh: return "unknown-mesh";
   case UnsupportedReason::SkinnedGeometry: return "skinned-geometry";
   case UnsupportedReason::UnsupportedMesh: return "unsupported-mesh";
+  case UnsupportedReason::UnsupportedMaterial: return "unsupported-material";
+  case UnsupportedReason::UnknownMaterial: return "unknown-material";
+  case UnsupportedReason::ParamType: return "param-type";
+  case UnsupportedReason::CanvasLight: return "canvas-light";
   }
   return "unsupported-op";
 }
@@ -313,6 +372,7 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::Unpin: return "unpin";
   case SabotageKind::PerturbGlyph: return "perturb-glyph";
   case SabotageKind::PerturbVertex: return "perturb-vertex";
+  case SabotageKind::PerturbShader: return "perturb-shader";
   }
   return "";
 }
@@ -450,6 +510,160 @@ inline const char *to_wire(MeshReason v) {
   return "mesh-format";
 }
 
+// --- new at /5 (render-stream-5.md) ------------------------------------------------------------
+
+inline const char *to_wire(VariantType v) {
+  switch (v) {
+  case VariantType::Nil: return "nil";
+  case VariantType::Bool: return "bool";
+  case VariantType::Int: return "int";
+  case VariantType::Float: return "float";
+  case VariantType::Vector2: return "vector2";
+  case VariantType::Vector2i: return "vector2i";
+  case VariantType::Rect2: return "rect2";
+  case VariantType::Rect2i: return "rect2i";
+  case VariantType::Vector3: return "vector3";
+  case VariantType::Vector3i: return "vector3i";
+  case VariantType::Transform2D: return "transform2d";
+  case VariantType::Vector4: return "vector4";
+  case VariantType::Vector4i: return "vector4i";
+  case VariantType::Plane: return "plane";
+  case VariantType::Quaternion: return "quaternion";
+  case VariantType::Aabb: return "aabb";
+  case VariantType::Basis: return "basis";
+  case VariantType::Transform3D: return "transform3d";
+  case VariantType::Projection: return "projection";
+  case VariantType::Color: return "color";
+  case VariantType::Rid: return "rid";
+  case VariantType::PackedInt32Array: return "packed_int32_array";
+  case VariantType::PackedInt64Array: return "packed_int64_array";
+  case VariantType::PackedFloat32Array: return "packed_float32_array";
+  case VariantType::PackedFloat64Array: return "packed_float64_array";
+  case VariantType::PackedVector2Array: return "packed_vector2_array";
+  case VariantType::PackedVector3Array: return "packed_vector3_array";
+  case VariantType::PackedVector4Array: return "packed_vector4_array";
+  case VariantType::PackedColorArray: return "packed_color_array";
+  }
+  return "nil";
+}
+
+// gate5_5-design.md D8: the number of float64 components `param_f64` holds per element of this
+// type (0 for nil/rid, which never contribute floats), in Godot's own member order.
+inline int variant_components(VariantType v) {
+  switch (v) {
+  case VariantType::Nil: return 0;
+  case VariantType::Bool: return 1;
+  case VariantType::Int: return 1;
+  case VariantType::Float: return 1;
+  case VariantType::Vector2: return 2;
+  case VariantType::Vector2i: return 2;
+  case VariantType::Rect2: return 4;
+  case VariantType::Rect2i: return 4;
+  case VariantType::Vector3: return 3;
+  case VariantType::Vector3i: return 3;
+  case VariantType::Transform2D: return 6;
+  case VariantType::Vector4: return 4;
+  case VariantType::Vector4i: return 4;
+  case VariantType::Plane: return 4;
+  case VariantType::Quaternion: return 4;
+  case VariantType::Aabb: return 6;
+  case VariantType::Basis: return 9;
+  case VariantType::Transform3D: return 12;
+  case VariantType::Projection: return 16;
+  case VariantType::Color: return 4;
+  case VariantType::Rid: return 0;
+  case VariantType::PackedInt32Array: return 1;
+  case VariantType::PackedInt64Array: return 1;
+  case VariantType::PackedFloat32Array: return 1;
+  case VariantType::PackedFloat64Array: return 1;
+  case VariantType::PackedVector2Array: return 2;
+  case VariantType::PackedVector3Array: return 3;
+  case VariantType::PackedVector4Array: return 4;
+  case VariantType::PackedColorArray: return 4;
+  }
+  return 0;
+}
+
+inline const char *to_wire(ShaderMode v) {
+  switch (v) {
+  case ShaderMode::CanvasItem: return "canvas_item";
+  case ShaderMode::Spatial: return "spatial";
+  case ShaderMode::Particles: return "particles";
+  case ShaderMode::Sky: return "sky";
+  case ShaderMode::Fog: return "fog";
+  }
+  return "canvas_item";
+}
+inline const char *to_wire(ShaderStatus v) {
+  return v == ShaderStatus::Ok ? "ok" : "unsupported";
+}
+inline const char *to_wire(ShaderReason v) {
+  switch (v) {
+  case ShaderReason::ShaderMode: return "shader-mode";
+  case ShaderReason::ShaderScreenTexture: return "shader-screen-texture";
+  case ShaderReason::ShaderSdf: return "shader-sdf";
+  case ShaderReason::ShaderTime: return "shader-time";
+  case ShaderReason::ShaderGlobalUniform: return "shader-global-uniform";
+  case ShaderReason::ShaderExcluded: return "shader-excluded";
+  case ShaderReason::PayloadTooLarge: return "payload-too-large";
+  case ShaderReason::PayloadUnavailable: return "payload-unavailable";
+  }
+  return "shader-mode";
+}
+inline const char *to_wire(ShaderUse v) {
+  switch (v) {
+  case ShaderUse::GlobalUniform: return "global_uniform";
+  case ShaderUse::InstanceUniform: return "instance_uniform";
+  case ShaderUse::Light: return "light";
+  case ShaderUse::ScreenTexture: return "screen_texture";
+  case ShaderUse::Sdf: return "sdf";
+  case ShaderUse::Time: return "time";
+  }
+  return "time";
+}
+inline const char *to_wire(ShaderSource v) {
+  return v == ShaderSource::Payload ? "payload" : "withheld";
+}
+inline const char *to_wire(BlendMode v) {
+  switch (v) {
+  case BlendMode::Mix: return "mix";
+  case BlendMode::Add: return "add";
+  case BlendMode::Sub: return "sub";
+  case BlendMode::Mul: return "mul";
+  case BlendMode::PremulAlpha: return "premul_alpha";
+  case BlendMode::Disabled: return "disabled";
+  }
+  return "mix";
+}
+inline const char *to_wire(LightMode v) {
+  switch (v) {
+  case LightMode::Normal: return "normal";
+  case LightMode::Unshaded: return "unshaded";
+  case LightMode::LightOnly: return "light_only";
+  }
+  return "normal";
+}
+inline const char *to_wire(MaterialStatus v) {
+  return v == MaterialStatus::Ok ? "ok" : "unsupported";
+}
+inline const char *to_wire(MaterialReason v) {
+  switch (v) {
+  case MaterialReason::UnknownShader: return "unknown-shader";
+  case MaterialReason::UnknownTexture: return "unknown-texture";
+  case MaterialReason::ParamType: return "param-type";
+  case MaterialReason::ParamRange: return "param-range";
+  }
+  return "unknown-shader";
+}
+inline const char *to_wire(ShaderPolicy v) {
+  switch (v) {
+  case ShaderPolicy::Source: return "source";
+  case ShaderPolicy::Params: return "params";
+  case ShaderPolicy::Exclude: return "exclude";
+  }
+  return "source";
+}
+
 // ----------------------------------------------------------------------------------- session
 
 struct EngineInfo {
@@ -517,6 +731,9 @@ struct Features {
   std::vector<std::string> observed_unsupported_ops;
   std::vector<std::string> unobserved;
   std::string publication = kPublication;
+  // render-stream-5.md "Session": a new key, right after item_state, present only at /5
+  // (gate5_5-design.md Q4: "A new features.canvas_state: [\"modulate\",\"transform\"]").
+  std::vector<std::string> canvas_state;
 };
 
 struct Sabotage {
@@ -524,6 +741,12 @@ struct Sabotage {
   std::uint64_t frame = 0;
   bool has_op = false;
   std::string op;
+};
+
+// render-stream-5.md "Session": the session's declared shader-source policy (gate5_5-design.md
+// D4), new at /5, following `resources`.
+struct MaterialsInfo {
+  ShaderPolicy shader_policy = ShaderPolicy::Source;
 };
 
 struct Session {
@@ -537,6 +760,7 @@ struct Session {
   CaptureInfo capture;
   ViewportInfo viewport;
   ResourcesInfo resources;  // new at /2, between viewport and features
+  MaterialsInfo materials;  // new at /5, between resources and features
   Features features;
   Sabotage sabotage;
   Color4 clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -617,6 +841,76 @@ struct Command {
   bool clip_ignore = false;               // AddClipIgnore
 };
 
+// --- new at /5: a material or instance-shader-parameter value (render-stream-5.md "Material
+// table", gate5_5-design.md D8) -----------------------------------------------------------------
+//
+// `floats` holds `n * variant_components(type)` values in Godot's own member order
+// (transform2d as /0's xforms; basis row-major; projection by column); it is empty for `nil` and
+// `rid`. `has_tex` is true exactly for `type == Rid`, naming an entry in the texture table. `n` is
+// 1 for every non-array type and the element count for a packed array.
+struct Param {
+  std::string name;
+  VariantType type = VariantType::Nil;
+  std::int32_t n = 1;
+  bool has_tex = false;
+  std::uint32_t tex = 0;
+  std::vector<double> floats;
+};
+
+// --- new at /5: the shader table (render-stream-5.md "Shader table") --------------------------
+
+// gate5_5-design.md D7: a CanvasItemMaterial-recognized engine-generated shader, described rather
+// than carried as a GRP1 payload-identified blob of unrecognized text.
+struct BuiltinCanvasItemMaterial {
+  BlendMode blend_mode = BlendMode::Mix;
+  LightMode light_mode = LightMode::Normal;
+  bool particles_animation = false;
+};
+
+// `shader_set_default_texture_parameter` entries, sorted by (name, index).
+struct DefaultTextureRef {
+  std::string name;
+  std::int32_t index = 0;
+  std::uint32_t tex = 0;
+};
+
+// One shader-table entry (render-stream-5.md "Shader table"). `mode`/`source`/`hash` are null
+// (has_mode/has_source/has_hash false) exactly for a shader with no code yet (`shader_create`
+// before any `shader_set_code`); `payload_bytes` is 0 in that case too.
+struct ShaderEntry {
+  std::uint32_t id = 0;
+  ShaderStatus status = ShaderStatus::Ok;
+  bool has_reason = false;
+  ShaderReason reason = ShaderReason::ShaderMode;
+  std::uint64_t version = 1;
+  bool has_mode = false;
+  ShaderMode mode = ShaderMode::CanvasItem;
+  bool has_source = false;
+  ShaderSource source = ShaderSource::Payload;
+  bool has_hash = false;  // false -> "hash": null
+  std::string hash;       // 64 lowercase hex, the sha256 of the whole GRP1 payload
+  std::uint64_t payload_bytes = 0;
+  bool has_builtin = false;  // false -> "builtin": null
+  BuiltinCanvasItemMaterial builtin;
+  std::vector<ShaderUse> uses;                      // sorted ascending by wire spelling (As built)
+  std::vector<DefaultTextureRef> default_textures;  // sorted by (name, index)
+};
+
+// --- new at /5: the material table (render-stream-5.md "Material table") ----------------------
+
+// One material-table entry. `shader` is null (has_shader false) exactly when the material has no
+// shader bound (a fresh `material_create()`, or after `material_set_shader(RID())`).
+struct MaterialEntry {
+  std::uint32_t id = 0;
+  MaterialStatus status = MaterialStatus::Ok;
+  bool has_reason = false;
+  MaterialReason reason = MaterialReason::UnknownShader;
+  std::uint64_t version = 1;
+  bool has_shader = false;
+  std::uint32_t shader = 0;
+  std::vector<Param> params;  // sorted by name (byte order)
+};
+
 // The mirror's full state for one item at one frame: always carries its complete `commands`.
 // Never encoded directly -- see ItemEntry for the wire-level, possibly-null-commands form.
 struct ItemState {
@@ -640,6 +934,11 @@ struct ItemState {
   Repeat texture_repeat = Repeat::Default;   // new at /2
   std::uint64_t content_version = 0;
   std::vector<Command> commands;
+  // --- new at /5 (render-stream-5.md "Item"): before content_version on the wire --------------
+  bool has_material = false;  // false -> "material": null
+  std::uint32_t material = 0;
+  bool use_parent_material = false;
+  std::vector<Param> instance_params;  // sorted by name (byte order; As built)
 };
 
 struct CanvasState {
@@ -649,6 +948,7 @@ struct CanvasState {
   bool attached = false;
   Xform xform = kIdentityXform;
   std::vector<std::uint32_t> items;
+  Color4 modulate = kWhite;  // new at /5 (render-stream-5.md "Canvas"): canvas_f32 grows 6 -> 10
 };
 
 // A canvas texture's own state (render-stream-2.md "Texture", G2d); null ("has_canvas = false")
@@ -727,7 +1027,8 @@ struct UnsupportedRef {
 struct Snapshot {
   // Which wire format make_full()/make_patch() (rs2_diff.cpp) produce from this Snapshot, exactly
   // mirroring Transaction::version's reasoning: V2 and V3 are byte-identical here, so this only
-  // ever needs to distinguish V4 (meshes) from everything before it. Defaults to V2.
+  // ever needs to distinguish V4 (meshes) and V5 (shaders/materials) from everything before them.
+  // Defaults to V2.
   ProtocolVersion version = ProtocolVersion::V2;
   std::uint64_t seq = 0;
   std::uint64_t frame = 0;
@@ -739,6 +1040,8 @@ struct Snapshot {
   std::vector<ItemState> items;       // sorted by id ascending
   std::vector<TextureEntry> textures; // sorted by id ascending; new at /2
   std::vector<MeshEntry> meshes;      // sorted by id ascending; new at /4
+  std::vector<ShaderEntry> shaders;      // sorted by id ascending; new at /5
+  std::vector<MaterialEntry> materials;  // sorted by id ascending; new at /5
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;
@@ -757,11 +1060,13 @@ struct ItemEntry {
 // complete, never patched (render-stream-2.md "Transaction record": "Both are present in full and
 // in patch transactions").
 struct Transaction {
-  // Which wire format encode_transaction() produces (render-stream-4.md): V2 and V3 transactions
+  // Which wire format encode_transaction() produces (render-stream-5.md): V2 and V3 transactions
   // are byte-identical in shape (/3 added only a command kind and a sabotage kind, never touching
   // the transaction's own keys or blocks), so this only ever needs to distinguish V4 (the mesh
-  // table, removed_meshes, cmd_i32, mesh_f32) from everything before it. Defaults to V2, so every
-  // existing /2 and /3 caller that never sets this field is unaffected.
+  // table, removed_meshes, cmd_i32, mesh_f32) and V5 (shader/material tables, removed_shaders,
+  // removed_materials, param_f64, item material/use_parent_material/instance_params, canvas
+  // modulate) from everything before them. Defaults to V2, so every existing /2 and /3 caller
+  // that never sets this field is unaffected.
   ProtocolVersion version = ProtocolVersion::V2;
   std::uint64_t seq = 0;
   std::uint64_t frame = 0;
@@ -775,10 +1080,14 @@ struct Transaction {
   std::vector<std::uint32_t> removed_items;     // ascending
   std::vector<std::uint32_t> removed_textures;  // ascending; new at /2
   std::vector<std::uint32_t> removed_meshes;    // ascending; new at /4
+  std::vector<std::uint32_t> removed_shaders;    // ascending; new at /5
+  std::vector<std::uint32_t> removed_materials;  // ascending; new at /5
   std::vector<CanvasState> canvases;             // ascending by id; full entries
   std::vector<ItemEntry> items;                  // ascending by id
   std::vector<TextureEntry> textures;            // ascending by id; new at /2; full entries
   std::vector<MeshEntry> meshes;                 // ascending by id; new at /4; full entries
+  std::vector<ShaderEntry> shaders;      // ascending by id; new at /5; full entries
+  std::vector<MaterialEntry> materials;  // ascending by id; new at /5; full entries
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;

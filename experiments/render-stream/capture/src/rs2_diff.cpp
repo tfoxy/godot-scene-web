@@ -28,10 +28,59 @@ bool arrays_equal_bits(const Arr &a, const Arr &b) {
   return true;
 }
 
+// new at /5: param_f64 carries float64 (double), not float32, so Param values need their own
+// bit-exact comparison (gate5_5-design.md D8: "Float64 keeps FLOAT (a double) and INT exact").
+bool doubles_equal_bits(double a, double b) {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof(ba));
+  std::memcpy(&bb, &b, sizeof(bb));
+  return ba == bb;
+}
+
+bool double_vectors_equal_bits(const std::vector<double> &a, const std::vector<double> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!doubles_equal_bits(a[i], b[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// render-stream-5.md "Material table"/"Item": every JSON field of a <param> participates, plus
+// its floats (bit-exact).
+bool param_equal(const Param &a, const Param &b) {
+  if (a.name != b.name || a.type != b.type || a.n != b.n || a.has_tex != b.has_tex) {
+    return false;
+  }
+  if (a.has_tex && a.tex != b.tex) {
+    return false;
+  }
+  return double_vectors_equal_bits(a.floats, b.floats);
+}
+
+bool params_equal(const std::vector<Param> &a, const std::vector<Param> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!param_equal(a[i], b[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // render-stream-1.md "Patch transactions", unchanged at /2: "An entry differs when any JSON
 // value or any of its block floats differs; floats compare by their 32-bit pattern. `commands`
 // do not take part in the comparison; `content_version` stands for them." texture_filter/
 // texture_repeat are new JSON fields that participate like any other.
+// gate5_5-design.md D9: "material, use_parent_material and instance_params are item state, never
+// content_version" -- they participate here unconditionally, exactly like texture_filter/
+// texture_repeat, never exempted by a content_version match the way `commands` is.
 bool item_state_equal(const ItemState &a, const ItemState &b) {
   if (a.parent.kind != b.parent.kind) {
     return false;
@@ -43,7 +92,14 @@ bool item_state_equal(const ItemState &a, const ItemState &b) {
       a.z_index != b.z_index || a.z_relative != b.z_relative || a.behind != b.behind ||
       a.clip != b.clip || a.custom_rect != b.custom_rect ||
       a.visibility_layer != b.visibility_layer || a.texture_filter != b.texture_filter ||
-      a.texture_repeat != b.texture_repeat || a.content_version != b.content_version) {
+      a.texture_repeat != b.texture_repeat || a.content_version != b.content_version ||
+      a.has_material != b.has_material || a.use_parent_material != b.use_parent_material) {
+    return false;
+  }
+  if (a.has_material && a.material != b.material) {
+    return false;
+  }
+  if (!params_equal(a.instance_params, b.instance_params)) {
     return false;
   }
   return arrays_equal_bits(a.xform, b.xform) && arrays_equal_bits(a.modulate, b.modulate) &&
@@ -55,7 +111,9 @@ bool canvas_state_equal(const CanvasState &a, const CanvasState &b) {
   if (a.origin != b.origin || a.role != b.role || a.attached != b.attached || a.items != b.items) {
     return false;
   }
-  return arrays_equal_bits(a.xform, b.xform);
+  // new at /5: canvas modulate participates too (render-stream-5.md "Canvas"); every pre-/5
+  // CanvasState leaves it at the default kWhite, so this is a no-op for /2-/4 comparisons.
+  return arrays_equal_bits(a.xform, b.xform) && arrays_equal_bits(a.modulate, b.modulate);
 }
 
 bool canvas_texture_info_equal(const CanvasTextureInfo &a, const CanvasTextureInfo &b) {
@@ -100,6 +158,78 @@ bool mesh_entry_equal(const MeshEntry &a, const MeshEntry &b) {
     }
   }
   return true;
+}
+
+// render-stream-5.md "Shader table"/"Material table": exactly the texture/mesh table's full,
+// patch and resolve semantics (gate5_5-design.md D1), so every JSON field participates.
+bool default_texture_ref_equal(const DefaultTextureRef &a, const DefaultTextureRef &b) {
+  return a.name == b.name && a.index == b.index && a.tex == b.tex;
+}
+
+bool builtin_cim_equal(const BuiltinCanvasItemMaterial &a, const BuiltinCanvasItemMaterial &b) {
+  return a.blend_mode == b.blend_mode && a.light_mode == b.light_mode &&
+         a.particles_animation == b.particles_animation;
+}
+
+bool shader_entry_equal(const ShaderEntry &a, const ShaderEntry &b) {
+  if (a.status != b.status || a.has_reason != b.has_reason) {
+    return false;
+  }
+  if (a.has_reason && a.reason != b.reason) {
+    return false;
+  }
+  if (a.version != b.version || a.has_mode != b.has_mode) {
+    return false;
+  }
+  if (a.has_mode && a.mode != b.mode) {
+    return false;
+  }
+  if (a.has_source != b.has_source) {
+    return false;
+  }
+  if (a.has_source && a.source != b.source) {
+    return false;
+  }
+  if (a.has_hash != b.has_hash) {
+    return false;
+  }
+  if (a.has_hash && a.hash != b.hash) {
+    return false;
+  }
+  if (a.payload_bytes != b.payload_bytes || a.has_builtin != b.has_builtin) {
+    return false;
+  }
+  if (a.has_builtin && !builtin_cim_equal(a.builtin, b.builtin)) {
+    return false;
+  }
+  if (a.uses != b.uses) {
+    return false;
+  }
+  if (a.default_textures.size() != b.default_textures.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.default_textures.size(); ++i) {
+    if (!default_texture_ref_equal(a.default_textures[i], b.default_textures[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool material_entry_equal(const MaterialEntry &a, const MaterialEntry &b) {
+  if (a.status != b.status || a.has_reason != b.has_reason) {
+    return false;
+  }
+  if (a.has_reason && a.reason != b.reason) {
+    return false;
+  }
+  if (a.version != b.version || a.has_shader != b.has_shader) {
+    return false;
+  }
+  if (a.has_shader && a.shader != b.shader) {
+    return false;
+  }
+  return params_equal(a.params, b.params);
 }
 
 bool texture_entry_equal(const TextureEntry &a, const TextureEntry &b) {
@@ -153,8 +283,12 @@ Transaction make_full(const Snapshot &cur) {
   t.default_texture_repeat = cur.default_texture_repeat;
   t.canvases = cur.canvases;
   t.textures = cur.textures;
-  if (cur.version == ProtocolVersion::V4) {
+  if (cur.version == ProtocolVersion::V4 || cur.version == ProtocolVersion::V5) {
     t.meshes = cur.meshes;
+  }
+  if (cur.version == ProtocolVersion::V5) {
+    t.shaders = cur.shaders;
+    t.materials = cur.materials;
   }
   t.items.reserve(cur.items.size());
   for (const ItemState &item : cur.items) {
@@ -191,6 +325,14 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   for (const MeshEntry &mesh : base.meshes) {
     base_meshes[mesh.id] = &mesh;
   }
+  std::map<std::uint32_t, const ShaderEntry *> base_shaders;
+  for (const ShaderEntry &shader : base.shaders) {
+    base_shaders[shader.id] = &shader;
+  }
+  std::map<std::uint32_t, const MaterialEntry *> base_materials;
+  for (const MaterialEntry &material : base.materials) {
+    base_materials[material.id] = &material;
+  }
   std::set<std::uint32_t> cur_canvas_ids;
   for (const CanvasState &c : cur.canvases) {
     cur_canvas_ids.insert(c.id);
@@ -206,6 +348,14 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   std::set<std::uint32_t> cur_mesh_ids;
   for (const MeshEntry &mesh : cur.meshes) {
     cur_mesh_ids.insert(mesh.id);
+  }
+  std::set<std::uint32_t> cur_shader_ids;
+  for (const ShaderEntry &shader : cur.shaders) {
+    cur_shader_ids.insert(shader.id);
+  }
+  std::set<std::uint32_t> cur_material_ids;
+  for (const MaterialEntry &material : cur.materials) {
+    cur_material_ids.insert(material.id);
   }
 
   for (const auto &[id, ptr] : base_canvases) {
@@ -226,11 +376,27 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
       t.removed_textures.push_back(id);
     }
   }
-  if (cur.version == ProtocolVersion::V4) {
+  const bool is_v5 = cur.version == ProtocolVersion::V5;
+  const bool is_v4_or_later = is_v5 || cur.version == ProtocolVersion::V4;
+  if (is_v4_or_later) {
     for (const auto &[id, ptr] : base_meshes) {
       (void)ptr;
       if (cur_mesh_ids.find(id) == cur_mesh_ids.end()) {
         t.removed_meshes.push_back(id);
+      }
+    }
+  }
+  if (is_v5) {
+    for (const auto &[id, ptr] : base_shaders) {
+      (void)ptr;
+      if (cur_shader_ids.find(id) == cur_shader_ids.end()) {
+        t.removed_shaders.push_back(id);
+      }
+    }
+    for (const auto &[id, ptr] : base_materials) {
+      (void)ptr;
+      if (cur_material_ids.find(id) == cur_material_ids.end()) {
+        t.removed_materials.push_back(id);
       }
     }
   }
@@ -267,13 +433,30 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
     t.textures.push_back(tex);
   }
 
-  if (cur.version == ProtocolVersion::V4) {
+  if (is_v4_or_later) {
     for (const MeshEntry &mesh : cur.meshes) {
       auto it = base_meshes.find(mesh.id);
       if (it != base_meshes.end() && mesh_entry_equal(*it->second, mesh)) {
         continue;
       }
       t.meshes.push_back(mesh);
+    }
+  }
+
+  if (is_v5) {
+    for (const ShaderEntry &shader : cur.shaders) {
+      auto it = base_shaders.find(shader.id);
+      if (it != base_shaders.end() && shader_entry_equal(*it->second, shader)) {
+        continue;
+      }
+      t.shaders.push_back(shader);
+    }
+    for (const MaterialEntry &material : cur.materials) {
+      auto it = base_materials.find(material.id);
+      if (it != base_materials.end() && material_entry_equal(*it->second, material)) {
+        continue;
+      }
+      t.materials.push_back(material);
     }
   }
 
@@ -290,11 +473,18 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   out.default_texture_filter = txn.default_texture_filter;
   out.default_texture_repeat = txn.default_texture_repeat;
 
+  const bool is_v5 = txn.version == ProtocolVersion::V5;
+  const bool is_v4_or_later = is_v5 || txn.version == ProtocolVersion::V4;
+
   if (txn.encoding == Encoding::Full) {
     out.canvases = txn.canvases;
     out.textures = txn.textures;
-    if (txn.version == ProtocolVersion::V4) {
+    if (is_v4_or_later) {
       out.meshes = txn.meshes;
+    }
+    if (is_v5) {
+      out.shaders = txn.shaders;
+      out.materials = txn.materials;
     }
     out.items.reserve(txn.items.size());
     for (const ItemEntry &entry : txn.items) {
@@ -344,7 +534,7 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   }
 
   std::map<std::uint32_t, MeshEntry> meshes;
-  if (txn.version == ProtocolVersion::V4) {
+  if (is_v4_or_later) {
     for (const MeshEntry &mesh : base.meshes) {
       meshes[mesh.id] = mesh;
     }
@@ -353,6 +543,29 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
     }
     for (const MeshEntry &mesh : txn.meshes) {
       meshes[mesh.id] = mesh;
+    }
+  }
+
+  std::map<std::uint32_t, ShaderEntry> shaders;
+  std::map<std::uint32_t, MaterialEntry> materials;
+  if (is_v5) {
+    for (const ShaderEntry &shader : base.shaders) {
+      shaders[shader.id] = shader;
+    }
+    for (std::uint32_t id : txn.removed_shaders) {
+      shaders.erase(id);
+    }
+    for (const ShaderEntry &shader : txn.shaders) {
+      shaders[shader.id] = shader;
+    }
+    for (const MaterialEntry &material : base.materials) {
+      materials[material.id] = material;
+    }
+    for (std::uint32_t id : txn.removed_materials) {
+      materials.erase(id);
+    }
+    for (const MaterialEntry &material : txn.materials) {
+      materials[material.id] = material;
     }
   }
 
@@ -375,6 +588,16 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   for (auto &[id, mesh] : meshes) {
     (void)id;
     out.meshes.push_back(mesh);
+  }
+  out.shaders.reserve(shaders.size());
+  for (auto &[id, shader] : shaders) {
+    (void)id;
+    out.shaders.push_back(shader);
+  }
+  out.materials.reserve(materials.size());
+  for (auto &[id, material] : materials) {
+    (void)id;
+    out.materials.push_back(material);
   }
   return out;
 }
