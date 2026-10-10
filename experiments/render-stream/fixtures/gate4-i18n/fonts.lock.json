@@ -1,0 +1,38 @@
+[
+  {
+    "file": "OpenSans_SemiBold.woff2",
+    "source": "packages/html/vendor/OpenSans_SemiBold.woff2",
+    "bytes": 46392,
+    "sha256": "661e2d9975d3029aeb32bf37b1b963c31c7c3ce08ac1bab2c8ebe27e135c4ec2",
+    "license": "Apache-2.0",
+    "license_file": "packages/html/vendor/LICENSE-OpenSans",
+    "upstream": "Open Sans SemiBold 1.10, byte-identical to Godot 4.5.1 thirdparty/fonts/OpenSans_SemiBold.woff2"
+  },
+  {
+    "file": "Vazirmatn_Regular.woff2",
+    "source": "../godot-4.5.1-stable/thirdparty/fonts/Vazirmatn_Regular.woff2",
+    "bytes": 50596,
+    "sha256": "ce58edf0377c327417034a10ba7274cc61b61999552fcb992c33f87539942bbf",
+    "license": "OFL-1.1",
+    "license_file": "../godot-4.5.1-stable/thirdparty/fonts/LICENSE.Vazirmatn.txt",
+    "upstream": "Vazirmatn 33.003 (83629f877e8f084cc07b47030b5d3a0ff06c76ec), Godot 4.5.1 thirdparty/fonts (thirdparty/README.md:329-332)"
+  },
+  {
+    "file": "NotoSansDevanagariUI_Regular.woff2",
+    "source": "../godot-4.5.1-stable/thirdparty/fonts/NotoSansDevanagariUI_Regular.woff2",
+    "bytes": 51880,
+    "sha256": "b930a3a143378200d85e452010cc553e3fc61a3aabbd22fe51a050bf31da24b4",
+    "license": "OFL-1.1",
+    "license_file": "../godot-4.5.1-stable/thirdparty/fonts/LICENSE.Noto.txt",
+    "upstream": "Noto Sans Devanagari UI 2.004 (f8f27e49da0ec9e5e38ecf3628671f05b24dd955), Godot 4.5.1 thirdparty/fonts (thirdparty/README.md:289-292)"
+  },
+  {
+    "file": "NotoSansHebrew_Regular.woff2",
+    "source": "../godot-4.5.1-stable/thirdparty/fonts/NotoSansHebrew_Regular.woff2",
+    "bytes": 6200,
+    "sha256": "1bf7680cfba1ab56e0b985aabaec186b957903769df2acd0fc7b9bca4231bfc8",
+    "license": "OFL-1.1",
+    "license_file": "../godot-4.5.1-stable/thirdparty/fonts/LICENSE.Noto.txt",
+    "upstream": "Noto Sans Hebrew 2.003 (caa7ab0614fb5b37cc003d9bf3d7d3e765331110), Godot 4.5.1 thirdparty/fonts (thirdparty/README.md:297-300)"
+  }
+]

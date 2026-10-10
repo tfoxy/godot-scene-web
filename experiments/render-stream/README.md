@@ -2502,6 +2502,86 @@ every region. Census as measured (c = create, u = update):
 - `[u]` underline placement beyond "confined to `RTL`'s region": the stroke's own geometry is not
   checked, only that dropping it changes no pixel outside `RTL`.
 
+## Gate 4f result (2026-10-10)
+
+G4f ([protocol/gate4-design.md](protocol/gate4-design.md) "G4f", "As built (G4f)") passes:
+`pnpm render-stream:gate4 -- --legs g4a,g4b,g4c,g4d,g4f` is 142/142 in
+`artifacts/render-stream/gate4/20261010T041606Z/` (g4f's own 38 checks; g4f alone was 38/38 on
+its first run). The same build passed `build-capture.sh` (11/11 ctests), gate −1 28/28
+(`gate-minus1/20261010T043254Z/`), gate 0 19/19 (`gate0/20261010T043412Z/`), gate 1 65/65
+(`gate1/20261010T043647Z/`), gate 2 85/85 (`gate2/20261010T044740Z/`) and gate 3 56/56 with
+g3a–g3d (`gate3/20261010T050200Z/`). No capture, receiver or protocol file changed.
+
+What landed: `fixtures/gate4-i18n/` (ten Labels at 16 px on one runtime `FontFile`, Open Sans,
+whose fallbacks are the engine's Vazirmatn, Noto Sans Devanagari UI and Noto Sans Hebrew, pinned
+in `fonts.lock.json` from `../godot-4.5.1-stable/thirdparty/fonts/` with their SHA-256 and OFL-1.1
+licence files and provisioned, never committed), its oracle (shaped clusters, fallback font keys,
+hex boxes), `make_expected.py`, group g4f in `run-gate4.sh` (legs under `<out>/i18n/`) and
+`lib/gate4f-checks.ts`. Images: `i18n/reference/shots/step-<k>.png` and `early-{1..5}.png`,
+`i18n/receiver{,-patch}/shots/`, `i18n/sabotage-omit-atlas/receiver/shots/`.
+
+Every glyph command (441 per sink over the ten settle steps) and every hex-box `add_rect` equals
+the oracle float32-exact, each glyph names its own font's page, every oracle page hashes to
+exactly one wire texture, and the receivers equal the reference exactly. Reference against repeat
+is 0 in every region. D8's synthesized ink holds at **max channel delta 1** (6 312 px at delta 1;
+the hex box at 0). Census as measured, with the atlas bytes published per step and the copy/hash
+cost per step in µs:
+
+| step | change                                       | uploads (c = create, u = update) | bytes   | copy/hash |
+| ---- | -------------------------------------------- | -------------------------------- | ------- | --------- |
+| 0    | `LG` Greek, `LCy` Cyrillic, `LV` NFD Vietnamese | OS@16: c (+ the 800×6 hue strip) | 150 497 | 15/434    |
+| 1    | `LAr` Arabic                                  | VZ@16: c                         | 131 185 | 12/466    |
+| 2    | `LFa` Persian with ZWNJ                       | VZ@16: u1                        | 131 185 | 11/472    |
+| 3    | `LHe` Hebrew with niqqud                      | HE@16: c                         | 131 185 | 10/403    |
+| 4    | `LBi` `abc אבג 123`                            | OS@16: u1, HE@16: u1             | 262 370 | 241/951   |
+| 5    | `LD1` `क्षत्रिय`, `LD2` `कि` (one frame)        | DV@16: c + u1 (hook v1, v2; wire v2) | 131 185 | 77/746 |
+| 6–9  | colour, U+2603, a move, old glyphs in two scripts | none                         | 0       | 0/0       |
+
+Script predictions (`script-predictions`, on the oracle and on both sinks), all held: the NFD
+`e + U+0302 + U+0301` is 1 glyph, OS's U+1EBF (828); lam-alef is 1 Vazirmatn glyph; ZWNJ is an
+invisible index-0 glyph; shin + qamats + shin dot is one 3-glyph cluster with one advancing glyph,
+the marks over the base; `क्षत्रिय` is 4 glyphs for 8 codepoints; `कि`'s i-matra quad is at x −1,
+left of KA's at 3; the Hebrew run's quads go 75 > 67 > 61 in logical order; U+2603 is 26
+`add_rect`s and no texture command. `fallback-pages`: OS's page at step 0 (wire id 2), VZ's at 1
+(3), HE's at 3 (4), DV's at 5 (5), each created once in its step's applied frame. Atlas parity:
+
+| step | OS@16       | VZ@16       | HE@16       | DV@16       |
+| ---- | ----------- | ----------- | ----------- | ----------- |
+| 0    | 2@v1 9d6955 | —           | —           | —           |
+| 1    | 2@v1 9d6955 | 3@v1 55a318 | —           | —           |
+| 2    | 2@v1 9d6955 | 3@v2 01d278 | —           | —           |
+| 3    | 2@v1 9d6955 | 3@v2 01d278 | 4@v1 47b3a5 | —           |
+| 4    | 2@v2 95d9e4 | 3@v2 01d278 | 4@v2 e723bc | —           |
+| 5–9  | 2@v2 95d9e4 | 3@v2 01d278 | 4@v2 e723bc | 5@v2 faf885 |
+
+`sabotage-i18n-omit-atlas` (omit `texture_2d_update` from frame 51) is `pixel-mismatch` at
+exactly {5..9}, all 94 differing pixels per step inside LD2, and its parity fails exactly at DV@16
+{5..9}.
+
+### Findings
+
+- **`Label.text_direction` defaults to AUTO** (`scene/gui/label.h:70`), so the Arabic, Persian and
+  Hebrew Labels are RTL paragraphs; the oracle shapes in the Label's own direction.
+- **`Font.get_rids`, `has_char` and `get_height` walk the fallback chain.** The oracle keys fonts
+  by `get_rids()[0]`, the fixture tests coverage with `TextServer.font_has_char`, and the line
+  height is the chain's maximum (26 at 16 px), which leaves a 23 px line's pen at y 19.5.
+- **Every fallback's cache exists from step 0, empty** (`Font::get_height` asks each fallback's
+  metrics); only the pages wait for the script.
+- **The hex box sits on half pixels** (y 7.5) because glyph quads floor the pen but `add_rect`s do
+  not; it rasterizes by the half-open pixel-centre rule exactly.
+- **Two Devanagari Labels in one frame** give a create and an update of DV's page in frame 51, and
+  only the second carries anything new (KA; the i-matra glyph is shared), so the sabotage is
+  LD2-only.
+
+### What G4f does not prove
+
+- Glyph counts for complex scripts from first principles: the oracle is their only source, and
+  the hand model predicts only which caches gain glyphs.
+- Autowrap, alignment or ellipses with complex scripts, RTL layout direction
+  (`root_node_layout_direction` stays LTR), explicit `language` tags (`locl`), system fallback,
+  colour or emoji fonts, and `RichTextLabel` spans in other scripts.
+- Subpixel positioning or MSDF on the fallbacks (G4e2 owns MSDF).
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

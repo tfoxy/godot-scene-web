@@ -1,0 +1,514 @@
+{
+  "schema": "render-stream-gate4-expected/1",
+  "fixture": "gate4-i18n",
+  "viewport": [640, 360],
+  "clear_rgba8": [51, 51, 102, 255],
+  "start_frame_default": 1,
+  "step_frames_default": 10,
+  "settle_offset": 7,
+  "quit_frame_default": 102,
+  "last_step": 9,
+  "early_shot_steps": [1, 2, 3, 4, 5],
+  "creation_order": ["P", "LG", "LCy", "LV", "LAr", "LBi", "LX", "LD1", "LD2", "LHe", "LFa", "Marker"],
+  "created_later": [],
+  "text_nodes": ["LG", "LCy", "LV", "LAr", "LBi", "LX", "LD1", "LD2", "LHe", "LFa"],
+  "fonts": {
+    "OS": {
+      "file": "OpenSans_SemiBold.woff2",
+      "kind": "FontFile",
+      "fallbacks": ["VZ", "DV", "HE"],
+      "sizes": [16]
+    },
+    "VZ": {
+      "file": "Vazirmatn_Regular.woff2",
+      "kind": "FontFile (OS fallback 1)",
+      "fallbacks": [],
+      "sizes": [16]
+    },
+    "DV": {
+      "file": "NotoSansDevanagariUI_Regular.woff2",
+      "kind": "FontFile (OS fallback 2)",
+      "fallbacks": [],
+      "sizes": [16]
+    },
+    "HE": {
+      "file": "NotoSansHebrew_Regular.woff2",
+      "kind": "FontFile (OS fallback 3)",
+      "fallbacks": [],
+      "sizes": [16]
+    }
+  },
+  "fallback_order": ["OS", "VZ", "DV", "HE"],
+  "fallback_first_steps": {
+    "OS": 0,
+    "VZ": 1,
+    "DV": 5,
+    "HE": 3
+  },
+  "units_model": {
+    "coverage": {
+      "\u039a\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1": "OS",
+      "\u041f\u0440\u0438\u0432\u0435\u0442": "OS",
+      "Tie\u0302\u0301ng": "OS",
+      "\u0645\u0631\u062d\u0628\u0627 \u0644\u0627": "VZ",
+      "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645": "VZ",
+      "\u05e9\u05b8\u05c1\u05dc\u05d5\u05b9\u05dd": "HE",
+      "abc \u05d0\u05d1\u05d2 123": "HE",
+      "\u0915\u094d\u0937\u0924\u094d\u0930\u093f\u092f": "DV",
+      "\u0915\u093f": "DV"
+    },
+    "unit_overrides": {
+      "\u0915\u094d\u0937\u0924\u094d\u0930\u093f\u092f": ["क्ष", "त्र", "ि", "य"],
+      "\u0915\u093f": ["क", "ि"]
+    },
+    "nfd": {
+      "sequence": "ế",
+      "composed": "ế"
+    },
+    "zero_width": ["‌"],
+    "unmapped": ["☃"]
+  },
+  "cache_keys": ["DV@16", "HE@16", "OS@16", "VZ@16"],
+  "caches": {
+    "OS@16": {
+      "format": "LA8",
+      "width": 256,
+      "height": 256,
+      "mipmaps": false,
+      "data_bytes": 131072,
+      "outline": 0,
+      "subpixel": false
+    },
+    "VZ@16": {
+      "format": "LA8",
+      "width": 256,
+      "height": 256,
+      "mipmaps": false,
+      "data_bytes": 131072,
+      "outline": 0,
+      "subpixel": false
+    },
+    "DV@16": {
+      "format": "LA8",
+      "width": 256,
+      "height": 256,
+      "mipmaps": false,
+      "data_bytes": 131072,
+      "outline": 0,
+      "subpixel": false
+    },
+    "HE@16": {
+      "format": "LA8",
+      "width": 256,
+      "height": 256,
+      "mipmaps": false,
+      "data_bytes": 131072,
+      "outline": 0,
+      "subpixel": false
+    }
+  },
+  "subpixel_caches": [],
+  "page": {
+    "format": "LA8",
+    "width": 256,
+    "height": 256,
+    "mipmaps": false,
+    "data_bytes": 131072,
+    "empty_texel": [255, 0]
+  },
+  "panel": {
+    "rect": [400, 8, 176, 240],
+    "rgba8": [255, 255, 204, 255]
+  },
+  "marker_rect": [592, 16, 32, 32],
+  "regions": {
+    "marker": [584, 8, 48, 48],
+    "panel": [400, 8, 176, 240]
+  },
+  "backgrounds": {
+    "dark": [51, 51, 102, 255],
+    "panel": [255, 255, 204, 255]
+  },
+  "engine_textures": [
+    {
+      "frame": 1,
+      "op": "texture_2d_create",
+      "format": "RGBA8",
+      "width": 800,
+      "height": 6
+    }
+  ],
+  "quiet_steps": [6, 7, 8, 9],
+  "hook_versions_total": {
+    "DV@16/0#0": 2,
+    "HE@16/0#0": 2,
+    "OS@16/0#0": 2,
+    "VZ@16/0#0": 2
+  },
+  "hand_table": {
+    "0": {
+      "uploads": {"OS@16": "c"}
+    },
+    "1": {
+      "uploads": {"VZ@16": "c"}
+    },
+    "2": {
+      "uploads": {"VZ@16": 1}
+    },
+    "3": {
+      "uploads": {"HE@16": "c"}
+    },
+    "4": {
+      "uploads": {"OS@16": 1, "HE@16": 1}
+    },
+    "5": {
+      "uploads": {"DV@16": "c+1"}
+    },
+    "6": {
+      "uploads": {}
+    },
+    "7": {
+      "uploads": {}
+    },
+    "8": {
+      "uploads": {}
+    },
+    "9": {
+      "uploads": {}
+    }
+  },
+  "script_predictions": [
+    {
+      "id": "nfd-composition",
+      "node": "LV",
+      "text": "Tiếng",
+      "cluster": [2, 5],
+      "glyphs": 1,
+      "cmap": "OS:1EBF",
+      "claim": "the NFD e + U+0302 + U+0301 shapes to one glyph, OS's glyph for U+1EBF (HarfBuzz composes when the font maps the composition)"
+    },
+    {
+      "id": "lam-alef",
+      "node": "LAr",
+      "text": "مرحبا لا",
+      "cluster": [6, 8],
+      "glyphs": 1,
+      "font": "VZ",
+      "claim": "lam + alef is one Vazirmatn ligature glyph"
+    },
+    {
+      "id": "zwnj-invisible",
+      "node": "LFa",
+      "text": "می‌خواهم",
+      "cluster": [2, 3],
+      "glyphs": 1,
+      "commands": 0,
+      "advance": 0,
+      "claim": "the ZWNJ is one zero-width index-0 glyph that draws nothing"
+    },
+    {
+      "id": "niqqud-marks",
+      "node": "LHe",
+      "text": "שָׁלוֹם",
+      "cluster": [0, 3],
+      "glyphs": 3,
+      "spacing": 1,
+      "font": "HE",
+      "claim": "shin + qamats + shin dot is one cluster of three glyphs, only the base advancing (marks positioned over it)"
+    },
+    {
+      "id": "devanagari-conjuncts",
+      "node": "LD1",
+      "text": "क्षत्रिय",
+      "fewer_glyphs_than": 8,
+      "font": "DV",
+      "claim": "the conjuncts make fewer glyphs than the 8 codepoints"
+    },
+    {
+      "id": "i-matra-reorder",
+      "node": "LD2",
+      "text": "कि",
+      "consonant": "DV:0915",
+      "matra": [1, 2],
+      "claim": "the i-matra's quad lies left of its consonant KA's although it follows KA in logical order"
+    },
+    {
+      "id": "rtl-run",
+      "node": "LBi",
+      "text": "abc אבג 123",
+      "logical": [4, 5, 6],
+      "font": "HE",
+      "claim": "the RTL run's letters have quads whose x decreases in logical order"
+    },
+    {
+      "id": "hex-box",
+      "node": "LX",
+      "text": "☃",
+      "codepoint": 9731,
+      "add_rects": 26,
+      "texture_commands": 0,
+      "claim": "U+2603, which no pinned font maps, draws a hex box of add_rects only and no texture command"
+    }
+  ],
+  "steps": [
+    {
+      "step": 0,
+      "applied_frame": 1,
+      "settle_frame": 8,
+      "marker_rgba8": [0, 0, 0, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LG", "LCy", "LV", "LAr", "LBi", "LX", "LD1", "LD2", "LHe", "LFa"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 0, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 0},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 0, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 0},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 0, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 0},
+      "hex_rects": {},
+      "new_glyphs": {"OS@16": "ΚαλημέρПриветTiếng"},
+      "page_uploads": {},
+      "page_creates": {"OS@16": 1},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"OS@16/0#0": 1},
+      "wire_versions": {"OS@16/0#0": 1},
+      "page_glyphs": {"OS@16": 18},
+      "page_counts": {"OS@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": false, "LBi": false, "LX": false, "LD1": false, "LD2": false, "LHe": false, "LFa": false}
+    },
+    {
+      "step": 1,
+      "applied_frame": 11,
+      "settle_frame": 18,
+      "marker_rgba8": [255, 255, 0, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LAr"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 0},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 0},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 0},
+      "hex_rects": {},
+      "new_glyphs": {"VZ@16": "مرحبال"},
+      "page_uploads": {},
+      "page_creates": {"VZ@16": 1},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"OS@16/0#0": 1, "VZ@16/0#0": 1},
+      "wire_versions": {"OS@16/0#0": 1, "VZ@16/0#0": 1},
+      "page_glyphs": {"OS@16": 18},
+      "page_counts": {"OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": true, "LBi": false, "LX": false, "LD1": false, "LD2": false, "LHe": false, "LFa": false}
+    },
+    {
+      "step": 2,
+      "applied_frame": 21,
+      "settle_frame": 28,
+      "marker_rgba8": [0, 255, 255, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LFa"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 0, "LFa": null},
+      "hex_rects": {},
+      "new_glyphs": {"VZ@16": "یخوه"},
+      "page_uploads": {"VZ@16": 1},
+      "page_creates": {},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"OS@16/0#0": 1, "VZ@16/0#0": 2},
+      "wire_versions": {"OS@16/0#0": 1, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 18},
+      "page_counts": {"OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": false, "LBi": false, "LX": false, "LD1": false, "LD2": false, "LHe": false, "LFa": true}
+    },
+    {
+      "step": 3,
+      "applied_frame": 31,
+      "settle_frame": 38,
+      "marker_rgba8": [102, 0, 102, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "שָׁלוֹם", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LHe"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 4, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 4, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 0, "LX": 0, "LD1": 0, "LD2": 0, "LHe": null, "LFa": null},
+      "hex_rects": {},
+      "new_glyphs": {"HE@16": "שָׁלוֹם"},
+      "page_uploads": {},
+      "page_creates": {"HE@16": 1},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"HE@16/0#0": 1, "OS@16/0#0": 1, "VZ@16/0#0": 2},
+      "wire_versions": {"HE@16/0#0": 1, "OS@16/0#0": 1, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 18},
+      "page_counts": {"HE@16": 1, "OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": false, "LBi": false, "LX": false, "LD1": false, "LD2": false, "LHe": true, "LFa": false}
+    },
+    {
+      "step": 4,
+      "applied_frame": 41,
+      "settle_frame": 48,
+      "marker_rgba8": [0, 102, 0, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "abc אבג 123", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "שָׁלוֹם", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LBi"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 4, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 0, "LD1": 0, "LD2": 0, "LHe": 4, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 9, "LX": 0, "LD1": 0, "LD2": 0, "LHe": null, "LFa": null},
+      "hex_rects": {},
+      "new_glyphs": {"HE@16": "אבג", "OS@16": "abc123"},
+      "page_uploads": {"HE@16": 1, "OS@16": 1},
+      "page_creates": {},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "wire_versions": {"HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 24},
+      "page_counts": {"HE@16": 1, "OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": false, "LBi": true, "LX": false, "LD1": false, "LD2": false, "LHe": false, "LFa": false}
+    },
+    {
+      "step": 5,
+      "applied_frame": 51,
+      "settle_frame": 58,
+      "marker_rgba8": [102, 0, 0, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "abc אבג 123", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "क्षत्रिय", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "कि", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "שָׁלוֹם", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LD1", "LD2"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 0, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 0, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 9, "LX": 0, "LD1": null, "LD2": null, "LHe": null, "LFa": null},
+      "hex_rects": {},
+      "new_glyphs": {"DV@16": "क्षत्रियक"},
+      "page_uploads": {"DV@16": 1},
+      "page_creates": {"DV@16": 1},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "wire_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 24},
+      "page_counts": {"DV@16": 1, "HE@16": 1, "OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": false, "LBi": false, "LX": false, "LD1": true, "LD2": true, "LHe": false, "LFa": false}
+    },
+    {
+      "step": 6,
+      "applied_frame": 61,
+      "settle_frame": 68,
+      "marker_rgba8": [0, 0, 102, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [0.4, 1, 0.6, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "abc אבג 123", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "क्षत्रिय", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "कि", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "שָׁלוֹם", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LAr"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 0, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 0, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 9, "LX": 0, "LD1": null, "LD2": null, "LHe": null, "LFa": null},
+      "hex_rects": {},
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "wire_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 24},
+      "page_counts": {"DV@16": 1, "HE@16": 1, "OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": true, "LBi": false, "LX": false, "LD1": false, "LD2": false, "LHe": false, "LFa": false}
+    },
+    {
+      "step": 7,
+      "applied_frame": 71,
+      "settle_frame": 78,
+      "marker_rgba8": [204, 102, 204, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [0.4, 1, 0.6, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "abc אבג 123", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [16, 128]}, "LX": {"text": "☃", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "क्षत्रिय", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "कि", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "שָׁלוֹם", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LX"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 1, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 1, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 9, "LX": 0, "LD1": null, "LD2": null, "LHe": null, "LFa": null},
+      "hex_rects": {"LX": 26},
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "wire_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 24},
+      "page_counts": {"DV@16": 1, "HE@16": 1, "OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": false, "LBi": false, "LX": true, "LD1": false, "LD2": false, "LHe": false, "LFa": false}
+    },
+    {
+      "step": 8,
+      "applied_frame": 81,
+      "settle_frame": 88,
+      "marker_rgba8": [102, 153, 204, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [0.4, 1, 0.6, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "abc אבג 123", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [24, 128]}, "LX": {"text": "☃", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "क्षत्रिय", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "कि", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "שָׁלוֹם", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LBi"],
+      "ink_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 1, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 6, "LV": 5, "LAr": 6, "LBi": 9, "LX": 1, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 6, "LV": 5, "LAr": null, "LBi": 9, "LX": 0, "LD1": null, "LD2": null, "LHe": null, "LFa": null},
+      "hex_rects": {"LX": 26},
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "wire_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 24},
+      "page_counts": {"DV@16": 1, "HE@16": 1, "OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": false, "LV": false, "LAr": false, "LBi": true, "LX": false, "LD1": false, "LD2": false, "LHe": false, "LFa": false}
+    },
+    {
+      "step": 9,
+      "applied_frame": 91,
+      "settle_frame": 98,
+      "marker_rgba8": [204, 153, 102, 255],
+      "texts": {"LG": {"text": "Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [16, 16]}, "LCy": {"text": "Привет Καλημέρα", "font_key": "OS", "size": 16, "colour": [1, 0.8, 0.2, 1], "visible": true, "position": [208, 16]}, "LV": {"text": "Tiếng", "font_key": "OS", "size": 16, "colour": [0.8, 0.8, 1, 1], "visible": true, "position": [16, 72]}, "LAr": {"text": "مرحبا لا", "font_key": "OS", "size": 16, "colour": [0.4, 1, 0.6, 1], "visible": true, "position": [208, 72]}, "LBi": {"text": "abc אבג 123", "font_key": "OS", "size": 16, "colour": [1, 1, 1, 0.6], "visible": true, "position": [24, 128]}, "LX": {"text": "☃", "font_key": "OS", "size": 16, "colour": [1, 0.6, 0.6, 1], "visible": true, "position": [208, 128]}, "LD1": {"text": "क्षत्रिय", "font_key": "OS", "size": 16, "colour": [0, 0, 0.2, 1], "visible": true, "position": [416, 24]}, "LD2": {"text": "कि", "font_key": "OS", "size": 16, "colour": [0.2, 0, 0, 1], "visible": true, "position": [416, 72]}, "LHe": {"text": "שָׁלוֹם", "font_key": "OS", "size": 16, "colour": [0, 0, 0, 0.6], "visible": true, "position": [416, 120]}, "LFa": {"text": "می‌خواهم", "font_key": "OS", "size": 16, "colour": [0, 0.2, 0, 1], "visible": true, "position": [416, 168]}},
+      "draws": ["LCy"],
+      "ink_glyphs": {"LG": 8, "LCy": 14, "LV": 5, "LAr": 6, "LBi": 9, "LX": 1, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "ink_min_glyphs": {"LG": 8, "LCy": 14, "LV": 5, "LAr": 6, "LBi": 9, "LX": 1, "LD1": 3, "LD2": 1, "LHe": 4, "LFa": 7},
+      "glyph_commands": {"LG": 8, "LCy": 14, "LV": 5, "LAr": null, "LBi": 9, "LX": 0, "LD1": null, "LD2": null, "LHe": null, "LFa": null},
+      "hex_rects": {"LX": 26},
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "subpixel_bounded": [],
+      "frees": [],
+      "hook_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "wire_versions": {"DV@16/0#0": 2, "HE@16/0#0": 2, "OS@16/0#0": 2, "VZ@16/0#0": 2},
+      "page_glyphs": {"OS@16": 24},
+      "page_counts": {"DV@16": 1, "HE@16": 1, "OS@16": 1, "VZ@16": 1},
+      "text_regions": {"LG": [8, 8, 200, 56], "LCy": [200, 8, 392, 56], "LV": [8, 64, 200, 112], "LAr": [200, 64, 392, 112], "LBi": [8, 120, 200, 168], "LX": [200, 120, 392, 168], "LD1": [408, 16, 576, 64], "LD2": [408, 64, 576, 112], "LHe": [408, 112, 576, 160], "LFa": [408, 160, 576, 208]},
+      "background": {"LG": [51, 51, 102, 255], "LCy": [51, 51, 102, 255], "LV": [51, 51, 102, 255], "LAr": [51, 51, 102, 255], "LBi": [51, 51, 102, 255], "LX": [51, 51, 102, 255], "LD1": [255, 255, 204, 255], "LD2": [255, 255, 204, 255], "LHe": [255, 255, 204, 255], "LFa": [255, 255, 204, 255]},
+      "clip_rects": {},
+      "fresh": {"LG": false, "LCy": true, "LV": false, "LAr": false, "LBi": false, "LX": false, "LD1": false, "LD2": false, "LHe": false, "LFa": false}
+    }
+  ],
+  "predictions": {
+    "sabotage-i18n-omit-atlas": {
+      "frame": 51,
+      "op": "texture_2d_update",
+      "steps": [5, 6, 7, 8, 9],
+      "regions": {"5": ["LD2"], "6": ["LD2"], "7": ["LD2"], "8": ["LD2"], "9": ["LD2"]},
+      "atlas_hash_parity_fails": {"DV@16": [5, 6, 7, 8, 9]}
+    }
+  }
+}

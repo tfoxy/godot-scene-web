@@ -14,7 +14,8 @@
 // values computed independently (Python hashlib over the render-stream-2.md layout), and
 // append-only on a hand-built 8x8 LA8 pair.
 //
-// Group g4c's cases (lib/gate4c-checks.ts, fixtures/gate4-layout) live in test/gate4c-cases.ts.
+// Group g4c's cases (lib/gate4c-checks.ts, fixtures/gate4-layout) live in test/gate4c-cases.ts,
+// group g4f's (lib/gate4f-checks.ts, fixtures/gate4-i18n) in test/gate4f-cases.ts.
 //
 // Exits non-zero if any assertion fails.
 
@@ -80,6 +81,7 @@ import {
   type ResolvedTexture,
 } from "../lib/render-stream-2";
 import { gate4cCases } from "./gate4c-cases";
+import { gate4fCases } from "./gate4f-cases";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -1263,6 +1265,8 @@ async function main(): Promise<void> {
   await fileCases(w);
   // Group g4c (test/gate4c-cases.ts): the layout fixture's evaluators.
   await gate4cCases(assert, EXPERIMENT_DIR);
+  // Group g4f (test/gate4f-cases.ts): the multilingual fixture's evaluators.
+  await gate4fCases(assert, EXPERIMENT_DIR);
   console.log(
     `\nself-test-gate4: ${assertions - failures}/${assertions} assertions passed`,
   );

@@ -131,6 +131,34 @@ async function main(): Promise<void> {
           .join(" ")}`,
       );
   }
+  if (report.i18n) {
+    const scripts = report.i18n.scripts as {
+      id: string;
+      steps: number[];
+      oracle: string;
+      capture: string;
+      ok: boolean;
+    }[];
+    console.log(
+      "  script predictions (gate4-i18n): id [steps]: oracle | capture",
+    );
+    for (const r of scripts)
+      console.log(
+        `    ${r.id} [${r.steps.join(",")}]: ${r.oracle} | ${r.capture}${r.ok ? "" : " FAIL"}`,
+      );
+    const fallback = report.i18n.fallback as Record<
+      string,
+      { first_step: number; wire_id: number; empty_cache_steps: number[] }
+    >;
+    console.log(
+      `  fallback pages (gate4-i18n): ${Object.entries(fallback)
+        .map(
+          ([k, r]) =>
+            `${k} page from step ${r.first_step} (wire id ${r.wire_id}; empty cache at steps ${r.empty_cache_steps.join(",") || "-"})`,
+        )
+        .join("; ")}`,
+    );
+  }
   const passed = report.checks.filter((c) => c.passed).length;
   console.log(
     `\ngate 4 (groups ${report.groups.run.join(",") || "none"}${report.groups.not_run.length > 0 ? `; not run: ${report.groups.not_run.join(",")}` : ""}): ${report.gate_passed ? "PASS" : "FAIL"} ${passed}/${report.checks.length} (${join(out, "result.json")})`,

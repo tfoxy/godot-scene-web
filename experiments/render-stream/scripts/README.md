@@ -982,7 +982,7 @@ to g3a and g3b.
 mise exec -- pnpm render-stream:gate4 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g4a,g4b,g4c]
+  [--legs g4a,g4b,g4c,g4f]
 ```
 
 - `run-gate4.sh`: the orchestrator (`run_g4a`, `run_g4b`, `run_reference` with `REFERENCE_ORACLE`
@@ -992,7 +992,9 @@ mise exec -- pnpm render-stream:gate4 -- \
   capture and reference, shared). `run_g4c` runs `fixtures/gate4-layout` under `<out>/layout/`
   (it also imports `receiver/`, which a fresh worktree has never imported); `run_reference` takes
   `REFERENCE_FIXTURE_DIR` and `REFERENCE_VARIANT` for it, and `layout_early_csv` its early
-  steps. Groups g4d–g4f are known but have not landed, so asking for them exits 2.
+  steps. `run_g4f` runs `fixtures/gate4-i18n` under `<out>/i18n/` the same way (four fonts
+  provisioned, the fixture and `receiver/` imported, `i18n_early_csv` for its early steps).
+  Groups g4d and g4e are known but have not landed, so asking for them exits 2.
 - `lib/provision-fonts.sh <fixture>`: copies each `fonts.lock.json` entry into `<fixture>/fonts/`
   after checking the source's and the copy's size and SHA-256 and that its licence file exists.
   A source starting with `../` (the engine checkout) also resolves against the main checkout's
@@ -1024,12 +1026,21 @@ mise exec -- pnpm render-stream:gate4 -- \
   `evaluateLayoutClips` (gate 3's `deriveClipRects`), `synthesizeLayoutText`/`evaluateLayoutText`
   (D8 with per-glyph colours, outline pages and the Labels' clips), `evaluateLcdCommands` and
   `evaluateLcdRegions`. Its check ids end in `-layout` or name the leg.
+- `lib/gate4f-checks.ts`: group g4f (`runG4f`, loaded on demand by `runGate4`). It points the
+  same helpers at `<out>/i18n/` (G4c's `layoutCensusFromLog`, `evaluateLayoutCensus` and
+  `loadLayoutPages` included) and adds `unitsOf`/`deriveI18nCensus` (a TypeScript re-derivation
+  of `make_expected.py`'s glyph-unit model from `expected.json` `units_model`),
+  `evaluateI18nEnv` (OS with three fallbacks), `evaluateI18nOracle` (each shaped glyph from the
+  font the fallback order gives its codepoint), `evaluateI18nCommands` (texture glyphs and
+  hex-box `add_rect`s in draw order), `evaluateFallbackPages`, `evaluateScriptPredictions` and
+  `synthesizeI18nText`/`evaluateI18nText` (D8 with each glyph's own font page and the hex box's
+  half-open pixel-centre rects). Its check ids end in `-i18n` or name the check.
 - `check-gate4.ts`: writes `<out>/result.json` (`render-stream-gate4-report/1`: gate 3's shape
   with `text` per fixture and step (glyph commands, pages with wire id, hook and wire versions and
   payload bytes, bytes published, copy and hash ns), `parity` (each oracle page against the
   capture's table per step), `budgets` (reference against repeat per region), `census` and `ink`)
-  and exits non-zero unless `gate_passed`. It passes `receiverDir`/`fixtureDir` (G4b) in
-  `Gate4Context`. When group `g4d` ran, it separately loads `fixtures/gate4-rich/expected.json`,
+  and exits non-zero unless `gate_passed`; g4c adds `layout` and g4f `i18n` (census, script
+  predictions, fallback pages). It passes `receiverDir`/`fixtureDir` (G4b) in `Gate4Context`. When group `g4d` ran, it separately loads `fixtures/gate4-rich/expected.json`,
   calls `runGate4d` (lib/gate4d-checks.ts) and merges its checks/legs/text/parity/budgets/census/
   ink into the same report under the fixture key `"gate4-rich"`, ANDing `gate_passed` -- `runGate4`
   itself stays unaware of G4d (no circular import: gate4d-checks.ts already imports gate4-checks.ts
@@ -1084,6 +1095,13 @@ mise exec -- pnpm render-stream:gate4 -- \
 | `rich-underline/capture`                 | g4d   | `rich-underline/capture/` | headless, `RS_FIXTURE_VARIANT=underline`, the fixture's own default quit (62) |
 | `rich-underline/reference`               | g4d   | `rich-underline/reference/` | rendered, `RS_FIXTURE_VARIANT=underline`, no oracle (ground truth for the real underline stroke; not named in gate4-design.md's leg list, added here as built, mirroring G4c's three-leg LCD variant) |
 | `rich-underline/receiver`                | g4d   | `rich-underline/receiver/` | the receiver on `rich-underline/capture`'s recording |
+| `import` (i18n)                          | g4f   | `i18n/import/`            | `provision-fonts.sh fixtures/gate4-i18n` (`fonts.log`, four fonts), then `--import` of the fixture (`fixture/`) and of `receiver/` (`receiver/`) |
+| `capture-i18n`                           | g4f   | `i18n/capture/`           | as `capture`, on `fixtures/gate4-i18n` (quit 400, both sinks, store, strace + maps/fd, `env.json`) |
+| `reference-i18n`, `-repeat`              | g4f   | `i18n/reference/`, `i18n/reference-repeat/` | rendered, extension absent, the i18n oracle on: `shots/step-0..9.png`, `shots/early-{1,2,3,4,5}.png`, `oracle/` |
+| `reference-i18n-armed`                   | g4f   | `i18n/reference-armed/`   | rendered, extension armed with a stream and a store, oracle off |
+| `receiver-i18n`, `-patch`                | g4f   | `i18n/receiver/`, `i18n/receiver-patch/` | the receiver on `capture-i18n`'s full and patch sinks, settle and early shots |
+| `receiver-i18n-headless-trace`           | g4f   | `i18n/receiver-headless-trace/` | the receiver, headless, `strace -f -e openat`, on `capture-i18n`'s full sink |
+| `sabotage-i18n-omit-atlas`               | g4f   | `i18n/sabotage-omit-atlas/{capture,receiver}` | `omit-op texture_2d_update` at frame 51 (step 5, the first Devanagari), default quit 102, then its receiver |
 
 ## Gate 4 criteria (g4a)
 
@@ -1183,6 +1201,27 @@ receiver` requires `unsupported` with every step a predicted mismatch, and `rich
 confined` requires that mismatch to sit entirely inside `RTL`'s region at every step, with every
 other region (the marker) exact.
 
+## Gate 4 criteria (g4f)
+
+G4a's and G4b's checks run on the multilingual fixture with an `-i18n` suffix
+(`capture-armed-i18n` … `receiver-typed-clean-i18n`), with these differences: `fixture-env-i18n`
+pins OS (three fallbacks, in the order VZ, DV, HE) and each fallback with D3's properties and all
+four font hashes; `oracle-agrees-i18n` compares glyph counts only where `make_expected.py`
+predicts them (OS strings and the bidi string; the oracle is the only source for complex
+scripts), the hex-box `add_rect` counts, the font of every shaped glyph (the first of the
+fallback chain that maps its codepoint) and the pages per cache; `glyph-commands-i18n` compares
+every command in draw order, texture glyphs against their own font's page and hex-box bars as
+`add_rect`; `ink-presence-*-i18n` uses `ink_min_glyphs` (spacing clusters); `expected-text-*-i18n`
+synthesizes texture glyphs and hex-box rects (pixel centres in the half-open rect). New:
+`script-predictions` (Q6e's eight hand predictions, on the oracle and on both sinks: NFD
+composition to OS's U+1EBF glyph, lam-alef one glyph, ZWNJ an invisible index-0 glyph, niqqud
+marks in their base's cluster over its quad, Devanagari fewer glyphs than codepoints, the i-matra
+left of KA, the Hebrew run's x decreasing in logical order, the hex box with 26 `add_rect`s and
+no texture command), `fallback-pages` (each font's page absent from the oracle before its first
+script, created once at that step's applied frame and first in either sink's table there),
+`leg-class-sabotage-i18n-omit-atlas` (steps {5..9}), `sabotage-i18n-omit-atlas-regions` (every
+differing pixel inside LD2) and `atlas-hash-parity-sabotage-i18n-omit-atlas` (DV@16 {5..9}).
+
 ## Gate 4 self-test
 
 ```bash
@@ -1191,12 +1230,18 @@ python3 experiments/render-stream/fixtures/gate4/make_expected.py --check
 python3 experiments/render-stream/fixtures/gate4-layout/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate4d.ts
 python3 experiments/render-stream/fixtures/gate4-rich/make_expected.py --check
+python3 experiments/render-stream/fixtures/gate4-i18n/make_expected.py --check
 ```
 
 Group g4c's cases are in `test/gate4c-cases.ts`: `expected.json`'s rules and hand-typed census
 facts of `deriveLayoutCensus`; a synthetic layout oracle and recording (oracle, glyph commands,
 census, lifetime); the subpixel bound on hand-built pairs; `synthesizeLayoutText` on a 4×4 page
 (per-glyph colour, outline page keys, clip); and the LCD region rule — each passing and failing.
+Group g4f's are in `test/gate4f-cases.ts`: `expected.json`'s rules, `unitsOf` and
+`deriveI18nCensus`; a synthetic shaped world (oracle, commands, script predictions, fallback
+pages) that passes and then fails on a glyph from the wrong fallback, a moved quad or hex bar, an
+i-matra right of KA, a left-to-right Hebrew run, a texture command in the hex box, an early
+fallback page and a late create; and a half-pixel hex bar in `synthesizeI18nText`.
 
 GRT1 hashing is checked against SHA-256 values computed independently with Python (an empty
 256×256 LA8 page, the size of every gate 4 page, and an 8×8 one), and append-only on a hand-built

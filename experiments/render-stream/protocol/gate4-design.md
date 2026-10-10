@@ -931,6 +931,30 @@ increment lands, "Gate 4 summary". The summary lists the run directory, image pa
 classes, census, parity and budget tables, measured atlas bytes and copy/hash cost per step, and an
 explicit "what this does not prove" list.
 
+**As built (G4f, 2026-10-10).** The fixture is `fixtures/gate4-i18n/` (its README has the layout
+and timeline): ten Labels at 16 px on one `FontFile` `OS` with fallbacks `VZ`, `DV` and `HE`, in
+that order, each fallback's script first shown at its own step. Its legs live under `<out>/i18n/`,
+with G4a's and G4b's checks suffixed `-i18n`. Every prediction held on the first run, and every
+glyph command equals the oracle's float32-exact on both sinks. Census: OS created at step 0, VZ
+created at 1 and updated at 2, HE created at 3, OS and HE updated at 4, DV created and updated in
+frame 51 (step 5, two Labels in one frame). The script predictions are all in `script-predictions`,
+which adds two to Q6e's list: ZWNJ is an invisible zero-width glyph, and niqqud marks share their
+base's cluster with zero advance. The engine refined the contract in four places. (1) **Label's
+`text_direction` defaults to AUTO** (`scene/gui/label.h:70`), so the Arabic, Persian and Hebrew
+Labels shape as RTL paragraphs. The oracle shapes in the Label's own direction; G4a's and G4c's
+oracles set LTR, which is AUTO's result for their Latin strings. (2) **Every font's 16 px cache
+exists from step 0, empty.** `Font::get_height` asks each fallback's ascent and descent at the
+Label's size (`scene/resources/font.cpp:209-219`). So `fallback-pages` is about pages, and each
+fallback's page appears exactly at its script's first step. (3) **The hex box sits on a half
+pixel.** The Label's font height is the maximum over the chain (26 at 16 px), so a 23 px line is
+centred with an ascent of 19.5. Glyph quads floor it, but `draw_hex_code_box`'s `add_rect`s keep it
+(y 7.5). They rasterize by the half-open pixel-centre rule, which the synthesizer uses (delta 0).
+(4) **ZWNJ and the paragraph's U+200B are shaped by OS**, the first font of the chain, as
+zero-width index-0 glyphs. They split the Persian run into sub-runs, with no visible effect. The
+sabotage omits `texture_2d_update` from frame 51. That drops only LD2's update: DV's create carries
+LD1's glyphs, KA is LD2's one new glyph, and the i-matra glyph is shared. The mismatch is therefore
+LD2-only at {5..9}, 94 px per step.
+
 ## Deferred, with owners
 
 - **LCD subpixel text**: stays typed `unsupported` (calibrator 5). Its pixels depend on the
