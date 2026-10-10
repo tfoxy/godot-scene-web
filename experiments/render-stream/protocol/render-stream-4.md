@@ -1,8 +1,10 @@
 # render-stream/4 wire format
 
-Status: specified and golden-tested at G5w (2026-10-10); the codecs exist but nothing speaks /4
-yet -- the capture, the receiver and every gate runner keep speaking render-stream/3 until G5d
-(gate5-design.md D1, D17). Written with [gate5-design.md](gate5-design.md) D1-D16 and Q4, which
+Status: specified and golden-tested at G5w (2026-10-10). Since G5d (2026-10-10) the capture, the
+receiver and every gate runner speak /4 (gate5-design.md D1, D17); /3 decoding remains only for
+`golden-3/`. The capture records every immediate geometry op, `add_set_transform` and
+`add_clip_ignore` as /4 commands; `add_mesh` and the mesh table stay empty-or-typed until G5e
+(gate5-design.md "As built (G5d)"). Written with [gate5-design.md](gate5-design.md) D1-D16 and Q4, which
 this document implements. Codecs (G5w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`,
 behind `Session::version`), TypeScript decoder/validator/resolver
 (`scripts/lib/render-stream-2.ts`, behind an explicit `version` parameter) and GDScript decoder
@@ -17,7 +19,7 @@ As with /3 (memory g4e1-rs3-version-switch-pattern), /4 is **not** a new forked 
 version-parameterized C++/TypeScript/GDScript modules /3 already extended grow a third value:
 C++'s `Session::version` gains `ProtocolVersion::V4` (still defaulting to `V2`, so every existing
 /2/3 caller is unaffected), and the TypeScript/GDScript `version` parameter widens to `2 | 3 | 4`
-(still defaulting to `3`, since the capture and receiver still speak /3 until G5d). Renaming
+(defaulting to `3` until G5d, `4` since). Renaming
 `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document.
 
 render-stream/4 is render-stream/3 plus:
@@ -358,8 +360,7 @@ already covered by `golden-2/invalid/` and `golden-3/invalid/`):
 ## Live transport
 
 As /3, except the subprotocol is `render-stream.4` and the hello's `protocol` is
-`"render-stream/4"`. Not wired anywhere yet -- G5d switches the capture's listener and the
-receiver's live client to /4.
+`"render-stream/4"`. The capture's listener and the receiver's live client speak it since G5d.
 
 ## Versioning
 

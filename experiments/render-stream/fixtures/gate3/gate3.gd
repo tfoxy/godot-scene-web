@@ -53,9 +53,10 @@ const RC_RECT: Rect2 = Rect2(8, 8, 16, 16)
 const RC_COLOR: Color = Color(1, 1, 0.2, 1)
 
 ## Variant `clip-ignore` (gate3-design.md Q6b, G3d): a raw item whose second rect's clip is
-## ignored by the real GLES3 rasterizer between the two `add_clip_ignore` calls (Q1d), but not by
-## a receiver, which sees them only as unsupported commands with no numeric effect. Static: never
-## touched after step 0.
+## ignored by the real GLES3 rasterizer between the two `add_clip_ignore` calls (Q1d). On
+## render-stream/3 a receiver saw them only as unsupported commands and clipped both rects; since
+## G5d (render-stream/4) they are real commands the receiver replays, so it draws what the
+## reference draws. Static: never touched after step 0.
 const RI_ORIGIN: Vector2 = Vector2(472, 184)
 const RI_CUSTOM_RECT: Rect2 = Rect2(0, 0, 48, 32)
 const RI_RECT_1: Rect2 = Rect2(0, 0, 48, 32)

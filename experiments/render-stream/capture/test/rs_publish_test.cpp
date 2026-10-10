@@ -557,6 +557,9 @@ void test_parse_sabotage() {
       {"perturb-transform", "100", nullptr, true, SabotageKind::PerturbTransform, 100,
        "perturb-transform"},
       {"perturb-glyph", "41", nullptr, true, SabotageKind::PerturbGlyph, 41, "perturb-glyph"},
+      {"perturb-vertex", "21", nullptr, true, SabotageKind::PerturbVertex, 21, "perturb-vertex"},
+      {"perturb-vertex", "21", "canvas_item_add_line", false, SabotageKind::None, 0,
+       "perturb-vertex with an op"},
       {"perturb-glyph", "41", "canvas_item_add_rect", false, SabotageKind::None, 0,
        "perturb-glyph with an op"},
       {"patch-drop-item", "51", nullptr, true, SabotageKind::PatchDropItem, 51, "patch-drop-item"},
@@ -692,6 +695,69 @@ void test_start_v3() {
         "both session records say render-stream/3");
   check(contains(nth_write(full, 1), "\"add_msdf_texture_rect_region\""),
         "the session's ops name the msdf command");
+}
+
+// G5d (render-stream-4.md "File layout", "Features"): a V4 template starts every sink with GRS4
+// and a "render-stream/4" session (resources.payloads, the fifteen ops); a mirror snapshot with
+// /4 commands publishes as a five-block transaction whose cmd_i32 holds the triangle indices.
+void test_start_v4() {
+  MemoryRecordSink full;
+  MemoryRecordSink patch;
+  full.open("memory://full");
+  patch.open("memory://patch");
+  Publisher publisher(&full, &patch, SabotageConfig(), golden_policy());
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V4;
+  tmpl.features = gate2_features(true, ProtocolVersion::V4);
+  check(publisher.start(tmpl), "start() with a V4 template");
+  const std::vector<std::uint8_t> magic4 = magic(ProtocolVersion::V4);
+  check(magic4.size() == 8 && magic4[3] == 0x34, "the /4 magic GRS4");
+  check(nth_write(full, 0) == magic4 && nth_write(patch, 0) == magic4,
+        "both sinks start with the /4 magic");
+  check(contains(nth_write(full, 1), "\"protocol\":\"render-stream/4\"") &&
+            contains(nth_write(full, 1), "\"payloads\":[\"render-stream-mesh/1\""),
+        "the session says render-stream/4 with resources.payloads");
+  Mirror m;
+  m.reset();
+  m.set_root(0x1000, 0x2000, kIdentityXform);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, 0x2000, 1);
+  m.add_set_transform(100, {2, 0, 0, 2, 4, 0}, 1);
+  m.add_triangle_array(100, {0, 1, 2}, {{0, 0}, {8, 0}, {0, 8}}, {{1, 0, 0, 1}}, {}, false, 0, -1,
+                       1);
+  m.add_clip_ignore(100, true, 1);
+  check(publisher.publish(m.snapshot(0, 1), 1, 0), "a /4 snapshot publishes");
+  const std::vector<std::uint8_t> txn = nth_write(full, 2);
+  check(contains(txn, "\"op\":\"add_set_transform\"") &&
+            contains(txn, "\"op\":\"add_triangle_array\"") &&
+            contains(txn, "\"op\":\"add_clip_ignore\",\"ignore\":true") &&
+            contains(txn, "\"cmd_i32\"") && contains(txn, "\"meshes\":[]"),
+        "the transaction carries the /4 commands, cmd_i32 and an empty mesh table");
+}
+
+void test_gate2_features_v4() {
+  const Features v3 = gate2_features(true, ProtocolVersion::V3);
+  const Features v4 = gate2_features(true, ProtocolVersion::V4);
+  const Features v4r = gate2_features(false, ProtocolVersion::V4);
+  check(v4.ops.size() == 15 && std::is_sorted(v4.ops.begin(), v4.ops.end()) &&
+            std::find(v4.ops.begin(), v4.ops.end(), "add_clip_ignore") != v4.ops.end() &&
+            std::find(v4.ops.begin(), v4.ops.end(), "add_msdf_texture_rect_region") !=
+                v4.ops.end(),
+        "V4 ops: fifteen, sorted, /3's four included");
+  const std::vector<std::string> observed = {
+      "canvas_item_add_animation_slice", "canvas_item_add_lcd_texture_rect_region",
+      "canvas_item_add_multimesh",       "canvas_item_add_particles",
+      "canvas_item_attach_skeleton",     "canvas_item_set_material"};
+  check(v4.observed_unsupported_ops == observed, "V4 observed_unsupported_ops: the six refused");
+  check(v4.resources == std::vector<std::string>{"mesh", "texture_2d", "texture_2d_placeholder"} &&
+            v4r.resources == std::vector<std::string>{"canvas_texture", "mesh", "texture_2d",
+                                                      "texture_2d_placeholder"},
+        "V4 resources gain mesh");
+  check(v4.unobserved.size() == v3.unobserved.size() + 2 &&
+            std::is_sorted(v4.unobserved.begin(), v4.unobserved.end()) &&
+            v4.unobserved.back() == "viewport_set_snap_2d_vertices_to_pixel",
+        "V4 unobserved gains the two snap settings, sorted");
+  check(v4.item_state == v3.item_state, "V4 item_state is /3's");
 }
 
 void test_gate2_features_v3() {
@@ -1024,6 +1090,8 @@ int main() {
   test_gate2_features();
   test_gate2_features_v3();
   test_start_v3();
+  test_gate2_features_v4();
+  test_start_v4();
   test_resources_info();
   test_store_directory();
   test_inline_records();

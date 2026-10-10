@@ -16,8 +16,8 @@
 #
 # Since G1b2 (protocol/gate1-design.md) every capture runs under GRC_ROOT_SIZE=enforce-min-size;
 # without the policy the 64x64 headless host would declare degenerate-host-size and classify
-# unsupported. Since G2b2 (protocol/gate2-design.md) every capture publishes render-stream/2 (and
-# since G4e2 render-stream/3, gate4-design.md)
+# unsupported. Since G2b2 (protocol/gate2-design.md) every capture publishes render-stream/2 (since
+# G4e2 render-stream/3, gate4-design.md; since G5d render-stream/4, gate5-design.md)
 # (recording.rs2) with its out-of-band resource store at <capture>/store (GRC_RESOURCE_STORE_DIR),
 # and every file-mode receiver gets a fresh cache (<receiver>/cache) and that store.
 
@@ -29,9 +29,9 @@ REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate0"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden-2"
-# G4e2: the receiver speaks render-stream/3, so the typecheck replay is golden-3's inline vector
-# (codec2_selftest.gd still checks golden-2 at version 2 and golden-3 at version 3).
-GOLDEN3_DIR="$EXPERIMENT_DIR/protocol/golden-3"
+# G5d: the receiver speaks render-stream/4, so the typecheck replay is golden-4's inline vector
+# (golden-3's from G4e2; codec2_selftest.gd checks golden-2, -3 and -4 at their own versions).
+GOLDEN4_DIR="$EXPERIMENT_DIR/protocol/golden-4"
 
 # shellcheck source=lib/gamescope.sh
 source "$SCRIPT_DIR/lib/gamescope.sh"
@@ -170,7 +170,7 @@ done
 
 # ---------------------------------------------------------------------------------------------
 # receiver-typecheck: the mise editor (a debug build, so GDScript warnings are live) runs the
-# render-stream/2 and /3 codec self-test, then one headless replay of golden-3/inline.rs3 (inline
+# render-stream/2, /3 and /4 codec self-test, then one headless replay of golden-4/inline.rs4 (inline
 # resource records, so it needs no store; it still gets a fresh cache).
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: receiver-typecheck"
@@ -178,7 +178,7 @@ LEG_ENV=(RS_SELFTEST_GOLDEN_DIR="$GOLDEN_DIR")
 run_headless "$OUT/receiver-typecheck/selftest" none -- \
 	mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec2_selftest.gd
 MINIMAL_DIR="$OUT/receiver-typecheck/minimal"
-prepare_recording "$GOLDEN3_DIR/inline.rs3" "$MINIMAL_DIR"
+prepare_recording "$GOLDEN4_DIR/inline.rs4" "$MINIMAL_DIR"
 LEG_ENV=(
 	RS_RECEIVER_RECORDING="$MINIMAL_DIR/$RECORDING_NAME" RS_RECEIVER_OUT="$MINIMAL_DIR/applied.json"
 	RS_RECEIVER_CACHE_DIR="$MINIMAL_DIR/cache"

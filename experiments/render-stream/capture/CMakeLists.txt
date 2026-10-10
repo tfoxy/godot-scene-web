@@ -141,6 +141,7 @@ target_link_libraries(rs_live_test PRIVATE grc_warnings Threads::Threads)
 target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2"
   GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3"
+  GRC_GOLDEN4_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-4"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 

@@ -126,8 +126,8 @@ struct ControlMessage {
 // error message parses), although the host treats one arriving from a receiver as a protocol
 // error. Returns false with *error set on anything else.
 // `version` (G4e2) selects the hello protocol a receiver must announce: "render-stream/2" (the
-// default, golden-2's control vectors) or "render-stream/3" (render-stream-3.md "Live
-// transport"; what the capture speaks since G4e2).
+// default, golden-2's control vectors), "render-stream/3" (render-stream-3.md "Live transport")
+// or "render-stream/4" (render-stream-4.md "Live transport"; what the capture speaks since G5d).
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
                    ProtocolVersion version = ProtocolVersion::V2);
 

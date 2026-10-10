@@ -22,7 +22,8 @@
 # (G4d: fixtures/gate4-rich/, a RichTextLabel with colour, font_size, bold, italic, bgcolor and
 # outlined spans plus an append_text step, under its own rich-*/ directories so it never collides
 # with g4a/g4b; three rendered references, two rendered receivers, and an underline variant --
-# rich-underline/{capture,reference,receiver} -- whose add_line is typed unsupported) is also
+# rich-underline/{capture,reference,receiver} -- whose add_line was typed unsupported on /3 and is
+# a replayed wide line since G5d, render-stream/4) is also
 # independent of g4a/g4b and can run alone. g4f (G4f: fixtures/gate4-i18n -- multilingual shaping
 # with Open Sans and the three pinned engine fallbacks: Greek, Cyrillic, NFD Vietnamese, Arabic,
 # Persian, Hebrew with niqqud, mixed bidi, Devanagari and a hex box -- through G4a's and G4b's legs
@@ -537,9 +538,10 @@ run_rich_reference() {
 # and patch sinks) -- all under rich-*/ so they never collide with g4a/g4b's directories in the
 # same --out. The underline variant (RS_FIXTURE_VARIANT=underline) gets its own fresh capture,
 # rendered reference and rendered receiver under rich-underline/ (gate4-design.md "G4d": "capture-
-# underline and receiver-underline -> unsupported, mismatch only in its region", which needs a
-# rendered reference-underline too, to know where the real stroke pixels are -- not named in the
-# contract's leg list, added here as built, mirroring G4c's three-leg LCD variant).
+# underline and receiver-underline -> unsupported, mismatch only in its region" on /3; both
+# success, receiver equal to the reference, since G5d), which needs a rendered reference-underline
+# too, to know where the real stroke pixels are -- not named in the contract's leg list, added
+# here as built, mirroring G4c's three-leg LCD variant).
 run_g4d() {
 	echo "run-gate4: provisioning fonts (gate4-rich)"
 	mkdir -p "$OUT/rich-import"

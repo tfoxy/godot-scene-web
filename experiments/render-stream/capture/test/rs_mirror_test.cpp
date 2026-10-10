@@ -7,9 +7,10 @@
 // and gate1-design.md "Q1", "Q4" and "G1b2" (omit-op, mutation epoch), and
 // (gate 2, G2b2) gate2-design.md Q3 "Texture mirror" with render-stream-2.md
 // "Texture" and "Item-level unsupported entries", and (gate 3, G3a)
-// gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip, and (gate 3, G3d) Q3
-// "Clip-ignore tap": canvas_item_add_clip_ignore is an unsupported command like any other, and
-// (gate 4, G4e2) gate4-design.md Q3 "MSDF tap" and "perturb-glyph".
+// gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip, and (gate 4, G4e2)
+// gate4-design.md Q3 "MSDF tap" and "perturb-glyph", and (gate 5, G5d) gate5-design.md Q3b/Q3c:
+// the render-stream/4 immediate geometry taps, add_set_transform, add_clip_ignore (a typed
+// refusal from G3d until G5d), D11's RID() ambiguity and perturb-vertex.
 
 #include <cstdint>
 #include <cstdio>
@@ -1495,44 +1496,226 @@ void test_omit_clip_then_clear() {
 // the `ignore` argument itself kept out of the wire entirely (it is counters.json's job, at the
 // hook, not the mirror's).
 void test_clip_ignore_tap() {
+  // G5d (gate5-design.md D10, render-stream-4.md): canvas_item_add_clip_ignore is the /4
+  // add_clip_ignore command, the bool carried, in order; G3d's typed refusal is gone.
   Mirror m;
   bind_root(&m);
   m.canvas_item_create(100, 1);
   m.set_parent(100, kRootCanvas, 1);
   m.add_rect(100, kRect, kGreen, false, 1);
-  m.add_unsupported(100, "canvas_item_add_clip_ignore", 1);  // add_clip_ignore(true)
+  m.add_clip_ignore(100, true, 1);
   m.add_rect(100, kRect, kRed, false, 1);
-  m.add_unsupported(100, "canvas_item_add_clip_ignore", 1);  // add_clip_ignore(false)
+  m.add_clip_ignore(100, false, 1);
   const Snapshot s = m.snapshot(1, 1).state;
   const auto *it = item(s, 1);
-  check(it->commands.size() == 4 && it->commands[1].kind == CommandKind::Unsupported &&
-            it->commands[1].name == "canvas_item_add_clip_ignore" &&
-            it->commands[3].kind == CommandKind::Unsupported &&
-            it->commands[3].name == "canvas_item_add_clip_ignore",
-        "canvas_item_add_clip_ignore keeps its place between the two add_rects, both directions");
+  check(it->commands.size() == 4 && it->commands[1].kind == CommandKind::AddClipIgnore &&
+            it->commands[1].clip_ignore && it->commands[3].kind == CommandKind::AddClipIgnore &&
+            !it->commands[3].clip_ignore,
+        "add_clip_ignore keeps its place between the two add_rects, with its bool, both directions");
   check(it->content_version == 4, "each call bumps content_version like any add");
-  check(s.unsupported.size() == 1 && s.unsupported[0].has_item && s.unsupported[0].item == 1 &&
-            s.unsupported[0].op == "canvas_item_add_clip_ignore" &&
-            s.unsupported[0].reason == UnsupportedReason::UnsupportedOp,
-        "one de-duplicated item-level entry, reason unsupported-op, true and false folded together");
+  check(s.unsupported.empty(), "no item-level entry any more (D10: supported in /4)");
 
   m.set_omit_op("canvas_item_add_clip_ignore", 2);
-  m.add_unsupported(100, "canvas_item_add_clip_ignore", 2);
+  m.add_clip_ignore(100, true, 2);
   m.add_rect(100, kRect, kGreen, false, 2);
   const Snapshot s2 = m.snapshot(2, 2).state;
-  // (Fixed at G4e2, when this test was first actually run from main(): the add_rect after the
-  // dropped call is the fifth command and the only bump.)
   check(item(s2, 1)->commands.size() == 5 &&
             item(s2, 1)->commands[4].kind == CommandKind::AddRect &&
             item(s2, 1)->content_version == 5,
         "omit-op canvas_item_add_clip_ignore drops the call: no command and no content_version bump");
   check(m.stats().dropped_omit_op == 1, "the drop is counted");
 
-  // An unknown item is the same pre-existing-object failure every other tap gives (with the
-  // omit-op off again, or the call would be dropped before the item lookup).
   m.set_omit_op("", 0);
-  m.add_unsupported(999, "canvas_item_add_clip_ignore", 2);
+  m.add_clip_ignore(999, true, 2);
   check(m.snapshot(2, 2).state.failures.size() == 1, "an unknown item fails like any other tap");
+}
+
+// G5d (gate5-design.md Q3b, render-stream-4.md "Command"): every immediate geometry tap records
+// the call, argument for argument and every array whole, in call order, and the snapshot is
+// stamped V4 so make_full carries the /4 blocks.
+void test_geometry_taps() {
+  using grc::rs2::AxisStretchMode;
+  using grc::rs2::Point2;
+  Mirror m;
+  bind_root(&m);
+  grc::rs::PayloadPtr bytes;
+  const auto tex = rgba8_copy(4, 4, fill(4, 4, 7), &bytes);
+  m.texture_2d_create(500, tex, bytes, 1);  // texture id 1
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_line(100, {8, 8.5f}, {136, 8.5f}, kRed, 1.0f, false, 1);
+  m.add_polyline(100, {{8, 8}, {64, 8}, {64, 40}, {80, 40}}, {kRed, kGreen}, 4.0f, true, false, 1);
+  m.add_polyline(100, {{0, 0}, {4, 0}, {8, 0}, {12, 0}}, {kGreen}, -1.0f, false, true, 1);
+  m.add_circle(100, {32, 40}, 24.0f, kGreen, true, 1);
+  m.add_primitive(100, {{8, 8}, {40, 8}, {8, 41}}, {kRed}, {}, 0, false, 1);
+  m.add_primitive(100, {{0, 0}, {16, 0}, {16, 16}, {0, 16}}, {kGreen},
+                  {{0, 0}, {1, 0}, {1, 1}, {0, 1}}, 500, true, 1);
+  m.add_set_transform(100, {2, 0, 0, 2, 32, 0}, 1);
+  m.add_triangle_array(100, {0, 1, 2, 0, 2, 3}, {{0, 0}, {8, 0}, {8, 8}, {0, 8}}, {kRed}, {}, false,
+                       0, 1, 1);
+  m.add_nine_patch(100, {8, 8, 56, 40}, {0, 0, 0, 0}, 500, {4, 4}, {4, 4}, 2, 1, false, kGreen, 1);
+  m.add_set_transform(100, {1, 0, 0, 1, 0, 0}, 1);
+  grc::rs::Captured c = m.snapshot(1, 1);
+  const Snapshot &s = c.state;
+  check(s.version == grc::rs2::ProtocolVersion::V4, "snapshots are stamped render-stream/4");
+  const auto *it = item(s, 1);
+  check(it != nullptr && it->commands.size() == 10 && it->content_version == 10,
+        "ten taps, ten commands, ten content_version bumps");
+  if (it == nullptr || it->commands.size() != 10) return;
+  const auto &c0 = it->commands[0];
+  check(c0.kind == CommandKind::AddLine && c0.line_from == Point2{8, 8.5f} &&
+            c0.line_to == Point2{136, 8.5f} && c0.color == kRed && c0.width == 1.0f &&
+            !c0.antialiased,
+        "add_line: from, to, colour, width, aa as called");
+  const auto &c1 = it->commands[1];
+  check(c1.kind == CommandKind::AddPolyline && c1.points.size() == 4 && c1.colors.size() == 2 &&
+            c1.width == 4.0f && c1.antialiased && c1.points[3] == Point2{80, 40},
+        "add_polyline: every point and the hold-last colour list as given, never normalized");
+  const auto &c2 = it->commands[2];
+  check(c2.kind == CommandKind::AddMultiline && c2.points.size() == 4 && c2.colors.size() == 1 &&
+            c2.width == -1.0f,
+        "add_multiline: its own kind, width < 0 kept");
+  const auto &c3 = it->commands[3];
+  check(c3.kind == CommandKind::AddCircle && c3.circle_position == Point2{32, 40} &&
+            c3.circle_radius == 24.0f && c3.antialiased,
+        "add_circle: position, radius, colour, aa");
+  const auto &c4 = it->commands[4];
+  check(c4.kind == CommandKind::AddPrimitive && !c4.has_tex && c4.points.size() == 3 &&
+            c4.uvs.empty(),
+        "add_primitive with RID(): tex null (D11, no canvas texture this session)");
+  const auto &c5 = it->commands[5];
+  check(c5.kind == CommandKind::AddPolygon && c5.has_tex && c5.tex == 1 && c5.uvs.size() == 4,
+        "add_polygon names its texture by wire id, UVs whole");
+  check(it->commands[6].kind == CommandKind::AddSetTransform &&
+            it->commands[6].transform == Xform{2, 0, 0, 2, 32, 0},
+        "add_set_transform: the transform, in order (no mirror transform state)");
+  const auto &c7 = it->commands[7];
+  check(c7.kind == CommandKind::AddTriangleArray && c7.indices.size() == 6 &&
+            c7.triangle_count == 1 && c7.points.size() == 4 && !c7.has_tex,
+        "add_triangle_array: indices whole, count verbatim");
+  const auto &c8 = it->commands[8];
+  check(c8.kind == CommandKind::AddNinePatch && c8.tex == 1 && c8.x_axis == AxisStretchMode::TileFit &&
+            c8.y_axis == AxisStretchMode::Tile && !c8.draw_center && c8.modulate == kGreen &&
+            c8.np_margin_tl == Point2{4, 4} && c8.rect == Rect4{8, 8, 56, 40},
+        "add_nine_patch: rect, source, margins, axis modes, draw_center, modulate");
+  check(it->commands[9].transform == Xform{1, 0, 0, 1, 0, 0},
+        "a reset to identity is its own command (replaced, not composed)");
+  check(s.unsupported.empty(), "no item-level entry: every /4 op is a command");
+  // The texture is named, so freeing it leaves a tombstone, as for the texture-rect ops.
+  m.free_rid(500, 2);
+  check(m.snapshot(2, 2).state.textures.size() == 1 &&
+            m.snapshot(2, 2).state.textures[0].status == grc::rs2::TextureStatus::Freed,
+        "a /4 op naming a freed texture keeps its tombstone");
+  const grc::rs2::Transaction full = grc::rs2::make_full(s);
+  check(full.version == grc::rs2::ProtocolVersion::V4, "make_full carries the V4 stamp");
+
+  // Skinned triangle arrays and out-of-range axis modes are typed refusals.
+  Mirror k;
+  bind_root(&k);
+  k.canvas_item_create(100, 1);
+  k.set_parent(100, kRootCanvas, 1);
+  k.add_triangle_array(100, {}, {}, {}, {}, true, 0, -1, 1);
+  k.add_nine_patch(100, kRect, kRect, 0, {1, 1}, {1, 1}, 3, 0, true, kRed, 1);
+  const Snapshot ks = k.snapshot(1, 1).state;
+  check(item(ks, 1)->commands[0].kind == CommandKind::Unsupported &&
+            item(ks, 1)->commands[0].unsupported_reason ==
+                grc::rs2::UnsupportedCmdReason::SkinnedGeometry,
+        "bones or weights: unsupported skinned-geometry (D16)");
+  check(item_entries(ks) ==
+            std::vector<Entry>{
+                {1, "canvas_item_add_nine_patch", UnsupportedReason::UnsupportedOp},
+                {1, "canvas_item_add_triangle_array", UnsupportedReason::SkinnedGeometry}},
+        "their item-level entries, sorted by op");
+}
+
+// D11: RID() is `tex: null` until a headless host has created a canvas texture; from then on the
+// /4 ops naming RID() are canvas-texture-headless refusals (sticky), while a rendered host keeps
+// writing null. An unknown non-null RID is unknown-texture.
+void test_geometry_texture_ambiguity() {
+  Mirror h;
+  bind_root(&h);
+  h.set_canvas_texture_headless(true);
+  h.canvas_item_create(100, 1);
+  h.set_parent(100, kRootCanvas, 1);
+  h.add_primitive(100, {{0, 0}, {4, 0}, {0, 4}}, {kRed}, {}, 0, true, 1);
+  check(item(h.snapshot(1, 1).state, 1)->commands[0].kind == CommandKind::AddPolygon &&
+            !item(h.snapshot(1, 1).state, 1)->commands[0].has_tex,
+        "headless, no canvas texture yet: RID() is tex null");
+  h.canvas_texture_create(0, 2);  // the dummy storage hands back RID()
+  h.add_primitive(100, {{0, 0}, {4, 0}, {0, 4}}, {kRed}, {}, 0, true, 2);
+  h.add_nine_patch(100, kRect, kRect, 0, {1, 1}, {1, 1}, 0, 0, true, kRed, 2);
+  h.add_line(100, {0, 0}, {4, 4}, kRed, 1.0f, false, 2);  // no texture argument: unaffected
+  h.add_triangle_array(100, {0, 1, 2}, {{0, 0}, {4, 0}, {0, 4}}, {}, {}, false, 777, -1, 2);
+  const Snapshot s = h.snapshot(2, 2).state;
+  const auto &cmds = item(s, 1)->commands;
+  check(cmds.size() == 5 && cmds[1].kind == CommandKind::Unsupported &&
+            cmds[1].unsupported_reason == grc::rs2::UnsupportedCmdReason::CanvasTextureHeadless &&
+            cmds[1].name == "canvas_item_add_polygon" &&
+            cmds[2].unsupported_reason == grc::rs2::UnsupportedCmdReason::CanvasTextureHeadless &&
+            cmds[2].name == "canvas_item_add_nine_patch",
+        "after a headless canvas_texture_create, RID() on a /4 op is canvas-texture-headless");
+  check(cmds.size() == 5 && cmds[0].kind == CommandKind::AddPolygon,
+        "a command recorded before the canvas texture existed keeps tex null");
+  check(cmds.size() == 5 && cmds[3].kind == CommandKind::AddLine,
+        "ops without a texture argument are never ambiguous");
+  check(cmds.size() == 5 && cmds[4].kind == CommandKind::Unsupported &&
+            cmds[4].unsupported_reason == grc::rs2::UnsupportedCmdReason::UnknownTexture,
+        "an unknown non-null RID is unknown-texture");
+  check(item_entries(s) ==
+            std::vector<Entry>{
+                {1, "canvas_item_add_nine_patch", UnsupportedReason::CanvasTextureHeadless},
+                {1, "canvas_item_add_polygon", UnsupportedReason::CanvasTextureHeadless},
+                {1, "canvas_item_add_triangle_array", UnsupportedReason::UnknownTexture}},
+        "item-level entries for the refused draws");
+  h.reset();
+  h.set_root(kRootViewport, kRootCanvas, kRootXform);
+  h.set_canvas_texture_headless(true);
+  h.canvas_item_create(100, 1);
+  h.set_parent(100, kRootCanvas, 1);
+  h.add_primitive(100, {{0, 0}, {4, 0}, {0, 4}}, {kRed}, {}, 0, false, 1);
+  check(item(h.snapshot(1, 1).state, 1)->commands[0].kind == CommandKind::AddPrimitive,
+        "reset() clears the canvas-texture-created flag");
+
+  Mirror r;  // a rendered host: never headless, so RID() always means no texture
+  bind_root(&r);
+  r.canvas_texture_create(900, 1);
+  r.canvas_item_create(100, 1);
+  r.set_parent(100, kRootCanvas, 1);
+  r.add_primitive(100, {{0, 0}, {4, 0}, {0, 4}}, {kRed}, {}, 0, true, 1);
+  check(item(r.snapshot(1, 1).state, 1)->commands[0].kind == CommandKind::AddPolygon &&
+            !item(r.snapshot(1, 1).state, 1)->commands[0].has_tex,
+        "rendered host with a canvas texture: RID() is still tex null");
+}
+
+// perturb-vertex (gate5-design.md Q3c): from its frame on, the first point's x of every
+// line/polyline/multiline/primitive/polygon/triangle-array command gains +1.0; earlier commands,
+// circles and other points never move.
+void test_perturb_vertex() {
+  using grc::rs2::Point2;
+  Mirror m;
+  bind_root(&m);
+  m.set_perturb_vertex(21);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_line(100, {8, 8}, {16, 8}, kRed, 2.0f, false, 20);
+  m.add_line(100, {8, 8}, {16, 8}, kRed, 2.0f, false, 21);
+  m.add_polyline(100, {{1, 1}, {2, 2}}, {kRed}, 1.0f, false, false, 21);
+  m.add_polyline(100, {{1, 1}, {2, 2}}, {kRed}, 1.0f, false, true, 21);
+  m.add_primitive(100, {{1, 1}, {2, 2}, {3, 1}}, {kRed}, {}, 0, false, 21);
+  m.add_primitive(100, {{1, 1}, {2, 2}, {3, 1}}, {kRed}, {}, 0, true, 21);
+  m.add_triangle_array(100, {0, 1, 2}, {{1, 1}, {2, 2}, {3, 1}}, {}, {}, false, 0, -1, 21);
+  m.add_circle(100, {5, 5}, 3.0f, kRed, false, 21);
+  const Snapshot snap = m.snapshot(1, 21).state;
+  const auto &cmds = item(snap, 1)->commands;
+  check(cmds[0].line_from == Point2{8, 8}, "before the sabotage frame nothing moves");
+  check(cmds[1].line_from == Point2{9, 8} && cmds[1].line_to == Point2{16, 8},
+        "add_line: from.x + 1, to unchanged");
+  bool all = true;
+  for (int i = 2; i <= 6; ++i) {
+    all = all && cmds[i].points[0] == Point2{2, 1} && cmds[i].points[1] == Point2{2, 2};
+  }
+  check(all, "polyline, multiline, primitive, polygon, triangle array: points[0].x + 1 only");
+  check(cmds[7].circle_position == Point2{5, 5}, "add_circle is outside perturb-vertex's scope");
 }
 
 // gate4-design.md Q3 "MSDF tap" (G4e2), render-stream-3.md "Command": the msdf draw is a /3
@@ -1743,6 +1926,9 @@ int main() {
   test_clear_then_reassert_clip();
   test_omit_clip_then_clear();
   test_clip_ignore_tap();
+  test_geometry_taps();
+  test_geometry_texture_ambiguity();
+  test_perturb_vertex();
   test_msdf_command_with_outline();
   test_msdf_unknown_texture();
   test_msdf_omit_op();

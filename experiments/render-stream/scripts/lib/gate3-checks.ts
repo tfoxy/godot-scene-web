@@ -343,11 +343,12 @@ export function checkExpectedSelfConsistent(
       n + s.probes.filter((p) => p.decisive && p.side === "outside").length,
     0,
   );
-  // Variant clip-ignore (gate3-design.md Q6b, G3d): RI's second draw is the only difference
-  // between the reference and the receiver, and it is exactly the clip_px toggle, at every step
-  // (gate 3b's receiver apply-order fix lets receiver-clip-ignore be compared at every step, not
-  // just step 0). RI is static, so every step's draws are the same shape, shifted only by that
-  // step's canvas transform (Q6b).
+  // Variant clip-ignore (gate3-design.md Q6b, G3d): RI's first draw clips to its own scissor and
+  // its second (between add_clip_ignore(true) and (false)) is unclipped, at every step. RI is
+  // static, so every step's draws are the same shape, shifted only by that step's canvas
+  // transform (Q6b). Since G5d (gate5-design.md D10 and Q6g, render-stream/4) the receiver
+  // replays add_clip_ignore, so its draws equal the reference's exactly at every step; on
+  // render-stream/3 its second draw clipped instead (the one predicted difference, region ri).
   const vci = expected.variant_clip_ignore;
   if (vci) {
     if (vci.reference_draws.length !== steps.length) {
@@ -370,27 +371,20 @@ export function checkExpectedSelfConsistent(
         continue;
       }
       const [r1, r2] = refDraws;
-      const [c1, c2] = recvDraws;
-      if (JSON.stringify(r1) !== JSON.stringify(c1))
+      if (r1.clip_px === null)
         problems.push(
-          `variant_clip_ignore: step ${step.step}'s first draw must be identical in reference_draws and receiver_draws`,
+          `variant_clip_ignore: step ${step.step}'s reference first draw must clip (clip_px not null)`,
         );
       if (r2.clip_px !== null)
         problems.push(
           `variant_clip_ignore: step ${step.step}'s reference second draw must be unclipped (clip_px null)`,
         );
-      if (JSON.stringify(c2.clip_px) === JSON.stringify(r2.clip_px))
-        problems.push(
-          `variant_clip_ignore: step ${step.step}'s receiver second draw must clip (reference and receiver clip_px must differ)`,
-        );
-      if (
-        JSON.stringify(c2.rect_px) !== JSON.stringify(r2.rect_px) ||
-        JSON.stringify(c2.rgba8) !== JSON.stringify(r2.rgba8)
-      )
-        problems.push(
-          `variant_clip_ignore: step ${step.step}'s receiver second draw must share the reference's rect and colour`,
-        );
-      for (const d of [r1, r2, c2])
+      for (const i of [0, 1])
+        if (JSON.stringify(refDraws[i]) !== JSON.stringify(recvDraws[i]))
+          problems.push(
+            `variant_clip_ignore: step ${step.step}'s draw ${i} must be identical in reference_draws and receiver_draws (the receiver replays add_clip_ignore since G5d)`,
+          );
+      for (const d of [r1, r2])
         if (
           !inside(visibleRect(d, expected.viewport) ?? [0, 0, 0, 0], vci.region)
         )
@@ -1804,7 +1798,8 @@ async function supportLegG3b(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Group g3d: calibrator 6, canvas_item_add_clip_ignore refused and typed (gate3-design.md "G3d")
+// Group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d"): refused and typed
+// on render-stream/3; a real command, captured and replayed, since G5d (gate5-design.md D10, Q6g)
 // ---------------------------------------------------------------------------------------------
 
 /** `checkCaptureArmed` (gate0-checks.ts) hardcodes `<outDir>/capture/evidence/...`, which the g3a
@@ -1906,64 +1901,77 @@ export function checkCaptureClipIgnoreLegClass(
       `class ${e.result_class}, expected ${e.expected_class}: ${e.reasons.slice(0, 2).join(" | ")}`,
     );
   const ops = unsupportedOps(e.full);
-  if (!ops.includes("canvas_item_add_clip_ignore"))
-    problems.push(
-      `the recording does not carry canvas_item_add_clip_ignore as unsupported (got ${ops.join(",") || "none"})`,
-    );
+  if (ops.length > 0)
+    problems.push(`the recording carries unsupported ${ops.join(",")}`);
   return check(
     "leg-class-capture-clip-ignore",
-    "the capture-clip-ignore leg classifies as unsupported: armed, stream closed, both sinks valid and equivalent, and the recording carries canvas_item_add_clip_ignore as an unsupported command",
+    "the capture-clip-ignore leg classifies as success (since G5d, render-stream/4: add_clip_ignore is a real command, gate5-design.md D10): armed, stream closed, both sinks valid and equivalent, and no unsupported entry or command anywhere",
     problems,
     `${e.result_class}`,
     e.artifacts,
   );
 }
 
-/** The recording has RI's exact command shape (gate3-design.md Q3 "Clip-ignore tap"): add_rect,
- * unsupported canvas_item_add_clip_ignore, add_rect, unsupported canvas_item_add_clip_ignore, in
- * place between the two add_rects, plus the one de-duplicated item-level unsupported-op entry. */
-export function checkClipIgnoreTyped(full: RecordingSummary): Gate3Check {
+/** `clip-ignore-commands` (gate5-design.md D10 and Q6g, G5d): on render-stream/4 the recording
+ * carries RI's commands in order as real commands -- add_rect, add_clip_ignore(true), add_rect,
+ * add_clip_ignore(false) -- in every full-sink transaction that names RI, and no unsupported entry
+ * mentions canvas_item_add_clip_ignore or RI. Until G5d (render-stream/3, the check was
+ * `clip-ignore-typed`) the two calls were unsupported commands with one item-level unsupported-op
+ * entry. RI is found as the one item carrying any add_clip_ignore command. */
+export function checkClipIgnoreCommands(full: RecordingSummary): Gate3Check {
   const problems: string[] = [];
-  const last = full.transactions[full.transactions.length - 1];
-  const candidates = (last?.meta.items ?? []).filter(
-    (it) => it.commands.length === 4,
-  );
-  if (candidates.length !== 1) {
+  const riIds = new Set<number>();
+  let riTransactions = 0;
+  for (const t of full.transactions)
+    for (const it of t.meta.items)
+      if (it.commands.some((c) => c.op === "add_clip_ignore")) {
+        riIds.add(it.id);
+        riTransactions++;
+        const [c0, c1, c2, c3] = it.commands;
+        const fail = (msg: string) =>
+          problems.push(`seq ${t.meta.seq} item ${it.id}: ${msg}`);
+        if (it.commands.length !== 4)
+          fail(`${it.commands.length} commands, expected 4`);
+        if (c0?.op !== "add_rect")
+          fail(`command 0 is ${c0?.op}, expected add_rect`);
+        if (c1?.op !== "add_clip_ignore" || c1?.ignore !== true)
+          fail(
+            `command 1 is ${JSON.stringify(c1)}, expected add_clip_ignore ignore true`,
+          );
+        if (c2?.op !== "add_rect")
+          fail(`command 2 is ${c2?.op}, expected add_rect`);
+        if (c3?.op !== "add_clip_ignore" || c3?.ignore !== false)
+          fail(
+            `command 3 is ${JSON.stringify(c3)}, expected add_clip_ignore ignore false`,
+          );
+      }
+  if (riIds.size !== 1)
     problems.push(
-      `expected exactly one item with 4 commands (RI), found ${candidates.length}`,
+      `expected exactly one item carrying add_clip_ignore (RI), found ${riIds.size}`,
     );
-  } else {
-    const [c0, c1, c2, c3] = candidates[0].commands;
-    if (c0?.op !== "add_rect")
-      problems.push(`command 0 is ${c0?.op}, expected add_rect`);
-    if (c1?.op !== "unsupported" || c1?.name !== "canvas_item_add_clip_ignore")
-      problems.push(
-        `command 1 is ${JSON.stringify(c1)}, expected unsupported canvas_item_add_clip_ignore`,
-      );
-    if (c2?.op !== "add_rect")
-      problems.push(`command 2 is ${c2?.op}, expected add_rect`);
-    if (c3?.op !== "unsupported" || c3?.name !== "canvas_item_add_clip_ignore")
-      problems.push(
-        `command 3 is ${JSON.stringify(c3)}, expected unsupported canvas_item_add_clip_ignore`,
-      );
-  }
-  const entries = (last?.meta.unsupported ?? []).filter(
-    (u) => u.op === "canvas_item_add_clip_ignore",
-  );
+  const last = full.transactions[full.transactions.length - 1];
   if (
-    entries.length !== 1 ||
-    entries[0]?.reason !== "unsupported-op" ||
-    entries[0]?.item === null
+    !(last?.meta.items ?? []).some((it) => riIds.has(it.id)) &&
+    riIds.size === 1
   )
+    problems.push("RI is not in the last full-sink transaction");
+  const entries = full.transactions.flatMap((t) =>
+    t.meta.unsupported.filter(
+      (u) =>
+        u.op === "canvas_item_add_clip_ignore" ||
+        (u.item !== null && riIds.has(u.item)),
+    ),
+  );
+  if (entries.length > 0)
     problems.push(
-      `expected exactly one item-level entry {op: canvas_item_add_clip_ignore, reason: unsupported-op}, got ${JSON.stringify(entries)}`,
+      `expected no unsupported entry for canvas_item_add_clip_ignore or RI, got ${JSON.stringify(entries.slice(0, 2))}`,
     );
   return check(
-    "clip-ignore-typed",
-    "capture-clip-ignore's recording carries RI's commands in order (add_rect, unsupported canvas_item_add_clip_ignore, add_rect, unsupported canvas_item_add_clip_ignore) and one item-level unsupported-op entry",
+    "clip-ignore-commands",
+    "capture-clip-ignore's recording carries RI's commands in order as real render-stream/4 commands (add_rect, add_clip_ignore true, add_rect, add_clip_ignore false) in every full-sink transaction naming RI, and no unsupported entry for canvas_item_add_clip_ignore or RI (since G5d; until then clip-ignore-typed)",
     problems,
-    "RI's commands and item-level entry match exactly",
-    [],
+    `RI's four commands in ${riTransactions} transaction(s), no unsupported entry`,
+    [full.path],
   );
 }
 
@@ -2029,13 +2037,15 @@ function arr<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-/** `leg-class-receiver-clip-ignore` (gate3-design.md "G3d" Checks): the receiver classifies as
- * unsupported, its step join is clean, and every one of receiver-clip-ignore's shots matches
- * reference-clip-ignore's matching shot in every region except "ri" (the one region the variant
- * predicts a mismatch in), at every step. Gate 3b's receiver apply-order fix is what makes every
- * step comparable here: RI is static, so only the base scene's own clipping Controls could have
- * contaminated regions other than "ri", and gate 3b's own legs already prove those replay
- * correctly. */
+/** `leg-class-receiver-clip-ignore` (gate3-design.md "G3d" Checks, as amended by gate5-design.md
+ * Q6g): the receiver classifies as success, its step join is clean, and every one of
+ * receiver-clip-ignore's shots equals reference-clip-ignore's matching shot exactly -- full frame
+ * and every region, "ri" included -- at every step. Since G5d (render-stream/4, D10) the receiver
+ * replays add_clip_ignore with the engine's own call, so RI's second rect escapes its scissor on
+ * both sides. Until G5d the class was unsupported and the mismatch set was exactly {ri}. Gate 3b's
+ * receiver apply-order fix is what makes every step comparable: RI is static, so only the base
+ * scene's own clipping Controls could have contaminated other regions, and gate 3b's own legs
+ * prove those replay correctly. */
 export async function checkClipIgnoreRegionSet(
   outDir: string,
   expected: Gate3Expected,
@@ -2043,15 +2053,17 @@ export async function checkClipIgnoreRegionSet(
 ): Promise<Gate3Check> {
   const problems: string[] = [];
   const paths: string[] = [...receiver.artifacts];
-  if (receiver.classification.result_class !== "unsupported")
+  const criterion =
+    "the receiver-clip-ignore leg classifies as success (since G5d, render-stream/4: add_clip_ignore is replayed, gate5-design.md D10), its step join is clean, and its shots equal reference-clip-ignore's exactly at every step, full frame and every region, ri included";
+  if (receiver.classification.result_class !== "success")
     problems.push(
-      `class ${receiver.classification.result_class}, expected unsupported: ${receiver.classification.reasons.slice(0, 2).join(" | ")}`,
+      `class ${receiver.classification.result_class}, expected success: ${receiver.classification.reasons.slice(0, 2).join(" | ")}`,
     );
   if (!receiver.stepOk) {
     problems.push(...receiver.stepProblems);
     return check(
       "leg-class-receiver-clip-ignore",
-      "the receiver-clip-ignore leg classifies as unsupported, its step join is clean, and its shots mismatch reference-clip-ignore's in region ri alone, at every step",
+      criterion,
       problems,
       "",
       paths,
@@ -2061,7 +2073,7 @@ export async function checkClipIgnoreRegionSet(
   if (!vci) {
     return check(
       "leg-class-receiver-clip-ignore",
-      "receiver-clip-ignore vs reference-clip-ignore differs in region ri alone, at every step",
+      criterion,
       ["expected.json has no variant_clip_ignore"],
       "",
       [],
@@ -2072,6 +2084,7 @@ export async function checkClipIgnoreRegionSet(
     [vci.region_name]: vci.region,
   };
   const mismatching = new Set<string>();
+  const mismatchSteps: number[] = [];
   for (const e of receiver.stepJoin.entries) {
     if (e.seq === null) {
       problems.push(`step ${e.step}: no transaction at its settle frame`);
@@ -2107,20 +2120,21 @@ export async function checkClipIgnoreRegionSet(
       const d = diffRgba(ref.data, recv.data, ref.width, ref.height, rect);
       if (d.mismatched_pixels > 0) mismatching.add(name);
     }
+    const whole = diffRgba(ref.data, recv.data, ref.width, ref.height);
+    if (whole.mismatched_pixels > 0) {
+      mismatching.add("(full frame)");
+      mismatchSteps.push(e.step);
+    }
   }
-  const expectedMismatching = new Set([vci.region_name]);
-  if (
-    mismatching.size !== expectedMismatching.size ||
-    ![...mismatching].every((r) => expectedMismatching.has(r))
-  )
+  if (mismatching.size > 0)
     problems.push(
-      `mismatching regions are {${[...mismatching].sort().join(",")}}, expected {${[...expectedMismatching].join(",")}}`,
+      `mismatching regions are {${[...mismatching].sort().join(",")}} at step(s) ${mismatchSteps.join(",")}, expected none`,
     );
   return check(
     "leg-class-receiver-clip-ignore",
-    `receiver-clip-ignore's shots mismatch reference-clip-ignore's in region ${vci.region_name} alone, at every step, and match every other region exactly`,
+    criterion,
     problems,
-    `mismatching regions: {${[...mismatching].sort().join(",")}}`,
+    `${receiver.classification.result_class}; mismatching regions: {${[...mismatching].sort().join(",")}} over ${receiver.stepJoin.entries.length} steps`,
     paths,
   );
 }
@@ -2401,7 +2415,7 @@ export async function runGate3(
   if (groups.run.includes("g3d")) {
     const g3dCapture = await evaluateCapture(outDir, {
       legDir: "capture-clip-ignore",
-      expectedClass: "unsupported",
+      expectedClass: "success",
     });
     const image = await checkExpectedImageReferenceClipIgnore(
       outDir,
@@ -2419,7 +2433,7 @@ export async function runGate3(
       fromGate0(checkManifestPresent(g3dCapture.full)),
       { ...recordingsDecode, id: "recording-decodes-clip-ignore" },
       image.check,
-      checkClipIgnoreTyped(g3dCapture.full),
+      checkClipIgnoreCommands(g3dCapture.full),
       checkCaptureClipIgnoreLegClass(g3dCapture),
       await checkClipIgnoreRegionSet(outDir, ctx.expected, receiver),
     );
@@ -2442,7 +2456,7 @@ export async function runGate3(
     };
     legs["receiver-clip-ignore"] = {
       group: "g3d",
-      expected_class: "unsupported",
+      expected_class: "success",
       result_class: receiver.classification.result_class as Gate3Class,
       reasons: receiver.classification.reasons,
       exit_code: await readExitCode(join(outDir, "receiver-clip-ignore")),

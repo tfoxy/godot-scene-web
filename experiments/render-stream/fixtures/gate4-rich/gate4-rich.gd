@@ -21,8 +21,9 @@ extends Node
 ## `add_rect`), and `[outline_size=2][outline_color]` (its own bitmap-outline cache, alongside the
 ## ordinary fill glyphs on `F@16`). Step 5 is `append_text`, which appends a new paragraph without
 ## re-parsing the existing one. `RS_FIXTURE_VARIANT=underline` wraps the first span's word in
-## `[u]...[/u]` (every step), which draws `canvas_item_add_line` -- typed `unsupported`
-## (gate4-design.md Q2) -- confined to `RTL`'s own region.
+## `[u]...[/u]` (every step), which draws `canvas_item_add_line` inside `RTL`'s own region --
+## typed `unsupported` on render-stream/3 (gate4-design.md Q2), a wide line the receiver replays
+## since G5d (render-stream/4, gate5-design.md Q6g).
 ##
 ## Environment (all optional; an invalid value prints an error and quits 2):
 ##   RS_FIXTURE_STEP_LOG    absolute path: one JSONL line per step at its applied frame

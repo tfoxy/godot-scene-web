@@ -1,8 +1,10 @@
 extends Node
-## render-stream/3 receiver (gate0-design.md "Q5. Receiver", extended by gate1-design.md "Q5.
-## Receiver", "G1b2" and "G1c2", by gate2-design.md "Q5. Receiver" and "G2b2", and since G4e2 by
-## gate4-design.md "Q5. Receiver": /3 is /2 plus the msdf command). Its only
-## input is a render-stream/3 byte stream: a recording file (file mode) or the binary messages of
+## render-stream/4 receiver (gate0-design.md "Q5. Receiver", extended by gate1-design.md "Q5.
+## Receiver", "G1b2" and "G1c2", by gate2-design.md "Q5. Receiver" and "G2b2", since G4e2 by
+## gate4-design.md "Q5. Receiver" -- /3 is /2 plus the msdf command -- and since G5d by
+## gate5-design.md "Q5. Receiver": /4 adds the immediate geometry ops, add_set_transform and
+## add_clip_ignore, replayed in order; add_mesh replay is G5e's). Its only
+## input is a render-stream/4 byte stream: a recording file (file mode) or the binary messages of
 ## one WebSocket connection (live mode), plus the texture payloads that stream names.
 ##
 ## File mode (RS_RECEIVER_MODE unset or "file"):
@@ -35,8 +37,10 @@ extends Node
 ##                                (G3b: the pre-gate-3 apply order, the clip setter before content
 ##                                with no shadow reset on clear) or drop-msdf (gate4-design.md
 ##                                Q5, G4e2: every add_msdf_texture_rect_region is skipped with no
-##                                typed record, the pre-/3 picture); all six exist only to fail
-##                                checks
+##                                typed record, the pre-/3 picture), ignore-set-transform or
+##                                ignore-clip-ignore (gate5-design.md Q5, G5d: every
+##                                add_set_transform / add_clip_ignore is skipped with no record);
+##                                all eight exist only to fail checks
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash) is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
@@ -95,8 +99,8 @@ const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
-## gate4-design.md Q5, G4e2).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf"]
+## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d).
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -504,6 +508,8 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_ignore_clip = _sabotage == "ignore-clip"
 	_applier.sabotage_clip_before_clear = _sabotage == "clip-before-clear"
 	_applier.sabotage_drop_msdf = _sabotage == "drop-msdf"
+	_applier.sabotage_ignore_set_transform = _sabotage == "ignore-set-transform"
+	_applier.sabotage_ignore_clip_ignore = _sabotage == "ignore-clip-ignore"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
@@ -726,6 +732,84 @@ func _state_json(meta: Dictionary) -> Dictionary:
 						"src": _float_list(command["src"]),
 						"modulate": _float_list(command["modulate"]),
 					})
+				"add_msdf_texture_rect_region":
+					commands.append({
+						"op": "add_msdf_texture_rect_region",
+						"tex": _int_or_null(command["tex"]),
+						"outline": Rs2Decoder.as_int(command["outline"]),
+						"rect": _float_list(command["rect"]),
+						"src": _float_list(command["src"]),
+						"modulate": _float_list(command["modulate"]),
+						"px_range": _float32(command["px_range"]),
+						"scale": _float32(command["scale"]),
+					})
+				"add_line":
+					commands.append({
+						"op": "add_line",
+						"aa": command["aa"],
+						"from": _float_list(command["from"]),
+						"to": _float_list(command["to"]),
+						"colour": _float_list(command["colour"]),
+						"width": _float32(command["width"]),
+					})
+				"add_polyline", "add_multiline":
+					commands.append({
+						"op": command["op"],
+						"aa": command["aa"],
+						"width": _float32(command["width"]),
+						"points": _float_lists(command["points"]),
+						"colors": _float_lists(command["colors"]),
+					})
+				"add_circle":
+					commands.append({
+						"op": "add_circle",
+						"aa": command["aa"],
+						"position": _float_list(command["position"]),
+						"radius": _float32(command["radius"]),
+						"colour": _float_list(command["colour"]),
+					})
+				"add_primitive", "add_polygon":
+					commands.append({
+						"op": command["op"],
+						"tex": _int_or_null(command["tex"]),
+						"points": _float_lists(command["points"]),
+						"colors": _float_lists(command["colors"]),
+						"uvs": _float_lists(command["uvs"]),
+					})
+				"add_triangle_array":
+					commands.append({
+						"op": "add_triangle_array",
+						"tex": _int_or_null(command["tex"]),
+						"count": Rs2Decoder.as_int(command["count"]),
+						"points": _float_lists(command["points"]),
+						"colors": _float_lists(command["colors"]),
+						"uvs": _float_lists(command["uvs"]),
+						"indices": Rs2Decoder.int_list(command["indices"]),
+					})
+				"add_nine_patch":
+					commands.append({
+						"op": "add_nine_patch",
+						"tex": _int_or_null(command["tex"]),
+						"rect": _float_list(command["rect"]),
+						"source": _float_list(command["source"]),
+						"margins": _float_list(command["margins"]),
+						"x_axis": command["x_axis"],
+						"y_axis": command["y_axis"],
+						"draw_center": command["draw_center"],
+						"modulate": _float_list(command["modulate"]),
+					})
+				"add_mesh":
+					commands.append({
+						"op": "add_mesh",
+						"mesh": Rs2Decoder.as_int(command["mesh"]),
+						"tex": _int_or_null(command["tex"]),
+						"transform": _float_list(command["transform"]),
+						"modulate": _float_list(command["modulate"]),
+					})
+				"add_set_transform":
+					commands.append({"op": "add_set_transform", "transform": _float_list(command["transform"])})
+				"add_clip_ignore":
+					commands.append({"op": "add_clip_ignore", "ignore": command["ignore"]})
 				_:
 					commands.append({"op": "unsupported", "name": command["name"], "reason": command["reason"]})
 		items.append({
@@ -790,6 +874,21 @@ func _state_json(meta: Dictionary) -> Dictionary:
 
 static func _int_or_null(value: Variant) -> Variant:
 	return null if value == null else Rs2Decoder.as_int(value)
+
+
+## One float as a float32 value (JSON keeps it as a double holding that value).
+static func _float32(value: Variant) -> float:
+	var one: PackedFloat32Array = PackedFloat32Array([value])
+	return one[0]
+
+
+## A list of float lists (points, colours, UVs), each element a float32 value.
+static func _float_lists(values: Variant) -> Array:
+	var list: Array = values
+	var out: Array = []
+	for value: Variant in list:
+		out.append(_float_list(value))
+	return out
 
 
 ## A float list as JSON floats holding float32 values.

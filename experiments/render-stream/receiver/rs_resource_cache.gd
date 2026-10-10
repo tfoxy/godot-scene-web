@@ -94,7 +94,17 @@ func has_in_memory(hash: String) -> bool:
 
 ## Records an inline resource record's payload (already verified by Rs2Decoder.Stream: its
 ## SHA-256 is its hash and it decodes). Returns "" or a resource-invalid error.
+## Since G5d an inline record may also carry a render-stream-mesh/1 (GRM1) payload
+## (render-stream-4.md): it is decoded and verified with RsMeshPayload and kept in memory like a
+## texture's, though nothing replays meshes before G5e (out-of-band .grm fetches are G5e's too).
 func add_inline(hash: String, payload: PackedByteArray) -> String:
+	if payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsMeshPayload.GRM1_MAGIC_HEX:
+		var mesh: Dictionary = RsMeshPayload.decode(payload)
+		if not mesh["ok"]:
+			return Rs2Decoder.err("resource-invalid", "inline mesh payload %s: %s" % [hash, mesh["detail"]])
+		_memory[hash] = mesh
+		_lengths[hash] = payload.size()
+		return ""
 	var decoded: Dictionary = RsTexturePayload.decode(payload)
 	if not decoded["ok"]:
 		return Rs2Decoder.err("resource-invalid", "inline payload %s: %s" % [hash, decoded["detail"]])

@@ -22,6 +22,27 @@
 //
 // An unsupported command contributes bounds the wire does not carry, so an item without a custom
 // rect that holds one has an unknown rect: if it clips, it and its subtree derive as "unknown".
+//
+// render-stream/4 (gate5-design.md D9, D10, G5d). Step 1 follows Item::get_rect
+// (renderer_canvas_render.cpp:36-132) for the /4 commands too:
+//   - add_set_transform replaces the item's draw transform (never composed, reset per item, never
+//     inherited by children): every LATER command's rect is the bounding box of its own rect
+//     through it (Transform2D::xform(Rect2)), and once one has been seen every later rect is
+//     transformed, identity included (`found_xform`). It contributes no rect of its own.
+//   - add_clip_ignore contributes no rect (get_rect's default branch).
+//   - add_nine_patch contributes its rect; add_primitive, add_polygon and add_triangle_array the
+//     bounding box of their points (the Primitive points / Polygon::create's rect_cache; a
+//     triangle array whose count x 3 exceeds its indices is refused by Polygon::create after the
+//     command is allocated, leaving Rect2()); add_line the 2 points of a thin line (width < 0) or
+//     the 4 corners of its quad (from/to +- the normalized orthogonal x width / 2, float32), and
+//     add_polyline / add_multiline with width < 0 the bounding box of their points.
+//   - Rects that depend on the server's lowering beyond that -- antialiased lines (feather
+//     primitives), wide polylines and multilines (bisector strips, per-segment quads), circles
+//     (cosf/sinf fans) -- and add_mesh (the mesh's AABB, G5e) are unknown, exactly as an
+//     unsupported command is.
+// GLES3 drops an item's scissor between add_clip_ignore(true) and add_clip_ignore(false) while it
+// has a clip owner (rasterizer_canvas_gles3.cpp:1260-1274); clipIgnoredCommands() names the
+// commands drawn that way, and deriveClipRects() reports them on the item's entry (`ignored`).
 
 import type { ResolvedCanvas, ResolvedItem } from "./render-stream-2";
 
@@ -33,6 +54,9 @@ export interface DerivedClip {
   owner: number | null;
   /** that scissor, or null when no ancestor (and not the item) clips */
   rect: ClipRect | null;
+  /** D10 (G5d): the item's own commands drawn without that scissor (clipIgnoredCommands), present
+   * only when the item has an owner and at least one such command */
+  ignored?: number[];
 }
 
 export type DerivedEntry = DerivedClip | "skipped" | "unknown";
@@ -122,26 +146,127 @@ export function roundHalfAway(v: number): number {
   return v < 0 ? -Math.round(-v) : Math.round(v);
 }
 
-/** An item's cull rect (step 1), or null when an unsupported command makes it unknown. */
+/** Rect2(points[0]) expanded to every later point (Rect2::expand_to), float32. */
+function pointsBox(points: readonly (readonly number[])[]): Box {
+  if (points.length === 0) return [0, 0, 0, 0];
+  let x0 = points[0][0];
+  let y0 = points[0][1];
+  let x1 = x0;
+  let y1 = y0;
+  for (const p of points.slice(1)) {
+    x0 = Math.min(x0, p[0]);
+    y0 = Math.min(y0, p[1]);
+    x1 = Math.max(x1, p[0]);
+    y1 = Math.max(y1, p[1]);
+  }
+  return [x0, y0, f(x1 - x0), f(y1 - y0)];
+}
+
+/** canvas_item_add_line's stored points (renderer_canvas_cull.cpp:717-756), float32: the two end
+ * points for width < 0, else the quad from/to +- orthogonal().normalized() * width * 0.5. */
+export function linePoints(
+  from: readonly number[],
+  to: readonly number[],
+  width: number,
+): [number, number][] {
+  if (width < 0)
+    return [
+      [from[0], from[1]],
+      [to[0], to[1]],
+    ];
+  const dx = f(from[0] - to[0]);
+  const dy = f(from[1] - to[1]);
+  // Vector2::orthogonal() is (y, -x); normalized() divides by sqrtf(x^2 + y^2) when non-zero.
+  let ox = dy;
+  let oy = f(-dx);
+  const l2 = f(f(ox * ox) + f(oy * oy));
+  if (l2 !== 0) {
+    const l = f(Math.sqrt(l2));
+    ox = f(ox / l);
+    oy = f(oy / l);
+  }
+  const tx = f(f(ox * width) * 0.5);
+  const ty = f(f(oy * width) * 0.5);
+  return [
+    [f(from[0] + tx), f(from[1] + ty)],
+    [f(from[0] - tx), f(from[1] - ty)],
+    [f(to[0] - tx), f(to[1] - ty)],
+    [f(to[0] + tx), f(to[1] + ty)],
+  ];
+}
+
+/** One command's own rect for Item::get_rect (step 1), before the draw transform: a Box, "none"
+ * for a command get_rect skips (add_set_transform, add_clip_ignore), or null when unknown. */
+function commandRect(
+  c: DeriveInput["items"][number]["commands"][number],
+): Box | "none" | null {
+  switch (c.op) {
+    case "add_set_transform":
+    case "add_clip_ignore":
+      return "none";
+    case "add_rect": {
+      if (!c.rect) return null;
+      let [x, y, w, h] = c.rect;
+      // Stored as given; a negative size spans the same corners.
+      if (w < 0) [x, w] = [x + w, -w];
+      if (h < 0) [y, h] = [y + h, -h];
+      return [x, y, w, h];
+    }
+    case "add_texture_rect":
+    case "add_texture_rect_region":
+    case "add_msdf_texture_rect_region": {
+      if (!c.rect) return null;
+      const [x, y] = c.rect;
+      // Texture rects: sizes made positive in place, then swapped when transposed.
+      let w = Math.abs(c.rect[2]);
+      let h = Math.abs(c.rect[3]);
+      if (c.transpose) [w, h] = [h, w];
+      return [x, y, w, h];
+    }
+    case "add_nine_patch":
+      return c.rect ? [c.rect[0], c.rect[1], c.rect[2], c.rect[3]] : null;
+    case "add_primitive":
+    case "add_polygon":
+      return c.points ? pointsBox(c.points) : null;
+    case "add_triangle_array": {
+      if (!c.points || !c.indices) return null;
+      const count = c.count ?? -1;
+      if (count >= 0 && count * 3 > c.indices.length) return [0, 0, 0, 0];
+      return pointsBox(c.points);
+    }
+    case "add_line":
+      if (!c.from || !c.to || c.width === undefined || c.aa) return null;
+      return pointsBox(linePoints(c.from, c.to, c.width));
+    case "add_polyline":
+    case "add_multiline":
+      if (!c.points || c.width === undefined || c.width >= 0) return null;
+      return pointsBox(c.points);
+    default:
+      // unsupported, add_circle, add_mesh: bounds the derivation does not model.
+      return null;
+  }
+}
+
+/** An item's cull rect (step 1), or null when a command makes it unknown. */
 export function itemRect(item: DeriveInput["items"][number]): Box | null {
   if (item.custom_rect) {
     const [x, y, w, h] = item.custom_rect_rect;
     return [x, y, w, h];
   }
   let box: [number, number, number, number] | undefined;
+  let xf: readonly number[] | null = null;
   for (const c of item.commands) {
-    if (c.op === "unsupported" || !c.rect) return null;
-    let [x, y, w, h] = c.rect;
-    if (c.op === "add_rect") {
-      // Stored as given; a negative size spans the same corners.
-      if (w < 0) [x, w] = [x + w, -w];
-      if (h < 0) [y, h] = [y + h, -h];
-    } else {
-      // Texture rects: sizes made positive in place, then swapped when transposed.
-      w = Math.abs(w);
-      h = Math.abs(h);
-      if (c.transpose) [w, h] = [h, w];
+    if (c.op === "add_set_transform") {
+      // D9: replaced, not composed; applies to every later command of this item only.
+      if (!c.transform) return null;
+      xf = c.transform;
+      continue;
     }
+    const own = commandRect(c);
+    if (own === null) return null;
+    if (own === "none") continue;
+    const r = xf ? xformRect(xf, own) : own;
+    const [x, y, w, h] = r;
     box = box
       ? [
           Math.min(box[0], x),
@@ -153,6 +278,27 @@ export function itemRect(item: DeriveInput["items"][number]): Box | null {
   }
   if (!box) return [0, 0, 0, 0];
   return [box[0], box[1], f(box[2] - box[0]), f(box[3] - box[1])];
+}
+
+/**
+ * D10: the indices of an item's commands GLES3 draws with its scissor dropped -- those after an
+ * add_clip_ignore(true) and before the next add_clip_ignore(false) -- assuming the item has a clip
+ * owner (without one the commands change nothing). Repeated calls in the same direction are
+ * no-ops (`ignore != reclip`); the state starts unclipped-ignore = false for every item.
+ */
+export function clipIgnoredCommands(
+  item: Pick<DeriveInput["items"][number], "commands">,
+): number[] {
+  const out: number[] = [];
+  let ignoring = false;
+  item.commands.forEach((c, i) => {
+    if (c.op === "add_clip_ignore") {
+      ignoring = c.ignore === true;
+      return;
+    }
+    if (ignoring && c.op !== "add_set_transform") out.push(i);
+  });
+  return out;
 }
 
 /**
@@ -218,7 +364,7 @@ export function deriveClipRects(
         ],
       };
     }
-    out.set(id, {
+    const entry: DerivedClip = {
       owner: own ? own.id : null,
       rect: own
         ? [
@@ -228,7 +374,12 @@ export function deriveClipRects(
             own.rect[1] + own.rect[3],
           ]
         : null,
-    });
+    };
+    if (own) {
+      const ignored = clipIgnoredCommands(it);
+      if (ignored.length > 0) entry.ignored = ignored;
+    }
+    out.set(id, entry);
     for (const c of it.children) visit(c, xf, own, a, depth + 1);
   };
 

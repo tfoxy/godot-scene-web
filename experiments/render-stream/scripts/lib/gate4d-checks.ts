@@ -44,7 +44,6 @@ import {
 import {
   type AppliedJson,
   type CaptureResultJson,
-  type Checkpoint,
   checkReceiverNeverLoadedFixture,
   classifyLeg,
   GATE0_HOOKS,
@@ -603,15 +602,16 @@ export async function evaluateRichCapture(
   ])
     if (await fileExists(join(dir, p))) artifacts.push(join(dir, p));
   return {
-    // As built (G4d): RichTextLabel's per-line box-drawing pass unconditionally emits
-    // canvas_item_add_set_transform (scene/gui/rich_text_label.cpp's DRAW_STEP_BACKGROUND/
-    // _FOREGROUND loop resets the transform once per line, identity or not), which render-
-    // stream-0.md types unsupported -- unrelated to any span this fixture chose. Every
-    // RichTextLabel capture is therefore "unsupported", not "success": the contract's "G4a's
-    // leg-class-capture" shape does not transfer unchanged. It is otherwise clean (armed,
-    // closed, equivalent sinks, no *other* unsupported op), which checkRichCaptureLegClass
-    // verifies explicitly rather than trusting an unqualified "unsupported".
-    expected_class: "unsupported",
+    // As built (G4d): RichTextLabel unconditionally emits canvas_item_add_set_transform while
+    // drawing text, unrelated to any span this fixture chose, which render-stream/3 typed
+    // unsupported, so every RichTextLabel capture classified "unsupported" then. Corrected since
+    // G5d (gate5-design.md D9, Q1g, Q6g): the emission is per glyph, not per line --
+    // _draw_line's text/outline passes call draw_set_transform_matrix(char_final_xform) before
+    // each glyph and draw_set_transform_matrix(Transform2D()) after it
+    // (scene/gui/rich_text_label.cpp:1358-1378, :1427), both identity without a [fx] effect --
+    // and render-stream/4 carries add_set_transform as a real command the receiver replays, so
+    // rich-capture classifies "success" with no unsupported op at all.
+    expected_class: "success",
     result_class: c.result_class as LegClass,
     reasons: c.reasons,
     harmless_ties: c.harmless_ties,
@@ -623,27 +623,87 @@ export async function evaluateRichCapture(
   };
 }
 
-const EXPECTED_RICH_UNSUPPORTED_OPS = ["canvas_item_add_set_transform"];
+const IDENTITY_XFORM = [1, 0, 0, 1, 0, 0];
 
-export function checkRichCaptureLegClass(e: RichCaptureEvaluation): Gate4Check {
+/** RTL's add_set_transform commands at one settle transaction: how many, how many are identity,
+ * and how many glyph (add_texture_rect_region) commands they surround. */
+export interface RichSetTransformStep {
+  step: number;
+  set_transform: number;
+  identity: number;
+  glyph_commands: number;
+}
+
+/** Per settle step, RTL's add_set_transform commands on `recording` (gate5-design.md Q1g's
+ * measurement): RichTextLabel brackets every glyph of its text and outline passes with
+ * draw_set_transform_matrix(char_final_xform) and draw_set_transform_matrix(Transform2D())
+ * (scene/gui/rich_text_label.cpp:1358-1378, :1427), both identity without a [fx] effect. */
+export function richSetTransformSteps(
+  expected: Gate4RichExpected,
+  recording: RecordingSummary,
+): { steps: RichSetTransformStep[]; problems: string[] } {
+  const names = mapRichNames(expected, recording);
+  const problems = [...names.problems];
+  const rtlId = names.byName.get("RTL");
+  const steps: RichSetTransformStep[] = [];
+  for (const s of expected.steps) {
+    const tx = recording.transactions.find(
+      (t) => t.meta.frame === s.settle_frame,
+    );
+    const item = tx?.meta.items.find((i) => i.id === rtlId);
+    if (!item) {
+      problems.push(`step ${s.step}: RTL is not in the settle transaction`);
+      continue;
+    }
+    const xforms = item.commands.filter((c) => c.op === "add_set_transform");
+    steps.push({
+      step: s.step,
+      set_transform: xforms.length,
+      identity: xforms.filter((c) =>
+        IDENTITY_XFORM.every((v, k) => c.transform?.[k] === v),
+      ).length,
+      glyph_commands: item.commands.filter(
+        (c) => c.op === "add_texture_rect_region",
+      ).length,
+    });
+  }
+  return { steps, problems };
+}
+
+/** `rich-leg-class-capture` (as amended by gate5-design.md Q6g, G5d): the rich-capture leg
+ * classifies success with no unsupported op at all, and RTL's text pass reaches the wire as real
+ * render-stream/4 add_set_transform commands -- at least two per settle step (one glyph's
+ * set-and-reset), every one identity (this fixture uses no [fx] effect). Until G5d
+ * (render-stream/3) the class was "unsupported", from canvas_item_add_set_transform alone. */
+export function checkRichCaptureLegClass(
+  e: RichCaptureEvaluation,
+  expected: Gate4RichExpected,
+): Gate4Check {
   const problems: string[] = [];
   if (e.result_class !== e.expected_class)
     problems.push(
       `class ${e.result_class}, expected ${e.expected_class}: ${e.reasons.slice(0, 2).join(" | ")}`,
     );
   const ops = unsupportedOps(e.full);
-  const extra = ops.filter((op) => !EXPECTED_RICH_UNSUPPORTED_OPS.includes(op));
-  if (extra.length > 0)
-    problems.push(`unexpected unsupported ops: ${extra.join(", ")}`);
-  if (ops.length === 0)
-    problems.push(
-      "no unsupported op at all (expected canvas_item_add_set_transform, RichTextLabel's per-line transform reset)",
-    );
+  if (ops.length > 0)
+    problems.push(`the recording carries unsupported ${ops.join(", ")}`);
+  const xf = richSetTransformSteps(expected, e.full);
+  problems.push(...xf.problems);
+  for (const s of xf.steps) {
+    if (s.set_transform < 2 || s.set_transform % 2 !== 0)
+      problems.push(
+        `step ${s.step}: RTL carries ${s.set_transform} add_set_transform command(s), expected a set and a reset per glyph (an even count, at least 2)`,
+      );
+    if (s.identity !== s.set_transform)
+      problems.push(
+        `step ${s.step}: ${s.set_transform - s.identity} of RTL's add_set_transform commands are not identity`,
+      );
+  }
   return check(
     "rich-leg-class-capture",
-    "the rich-capture leg classifies as unsupported, armed/closed/equivalent-sinks otherwise clean, and the only unsupported op is canvas_item_add_set_transform (RichTextLabel's per-line box-drawing transform reset, Q2/render-stream-0.md; unrelated to any span)",
+    "the rich-capture leg classifies as success (since G5d, render-stream/4: add_set_transform is a real command, gate5-design.md D9): armed, closed, equivalent sinks, no unsupported op at all; RTL carries its per-glyph add_set_transform set/reset pairs as real commands at every settle step, every one identity",
     problems,
-    `${e.result_class}${e.harmless_ties.length > 0 ? ` (${e.harmless_ties.length} harmless tie entries)` : ""}; unsupported ops: ${ops.join(", ") || "none"}`,
+    `${e.result_class}${e.harmless_ties.length > 0 ? ` (${e.harmless_ties.length} harmless tie entries)` : ""}; unsupported ops: ${ops.join(", ") || "none"}; add_set_transform/glyph commands per step: ${xf.steps.map((s) => `${s.step}:${s.set_transform}/${s.glyph_commands}`).join(" ")}`,
     e.artifacts,
   );
 }
@@ -800,52 +860,62 @@ export async function checkRichFixtureEnv(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Underline variant: capture-underline / receiver-underline -> unsupported, confined to RTL
+// Underline variant: capture-underline / receiver-underline. On render-stream/3 both classified
+// unsupported (canvas_item_add_line), the receiver's mismatch confined to RTL; since G5d
+// (gate5-design.md Q6g) both classify success and the receiver matches the reference exactly.
 // ---------------------------------------------------------------------------------------------
 
-export function checkRichUnsupportedCaptureClass(
+/** The underline [u] strokes on `recording`: every add_line command of any item at any
+ * transaction (RichTextLabel's draw_line, scene/gui/rich_text_label.cpp:1161-1174, a wide line:
+ * width = MAX(1, underline thickness)). */
+export function richUnderlineLines(
+  recording: RecordingSummary,
+): { seq: number; item: number; width: number | undefined }[] {
+  const lines: { seq: number; item: number; width: number | undefined }[] = [];
+  for (const t of recording.transactions)
+    for (const it of t.meta.items)
+      for (const c of it.commands)
+        if (c.op === "add_line")
+          lines.push({ seq: t.meta.seq, item: it.id, width: c.width });
+  return lines;
+}
+
+/** `rich-underline-capture-class` (as amended by gate5-design.md Q6g, G5d): rich-underline/capture
+ * classifies success purely from the recording's own content -- no unsupported op at all -- and
+ * the [u] underline reaches the wire as at least one real add_line command, a wide line (width
+ * >= 1, never the thin GL-line form). Until G5d (render-stream/3) add_line was an unsupported
+ * command and the class was "unsupported". */
+export function checkRichUnderlineCaptureClass(
   full: RecordingSummary,
   captureResult: CaptureResultJson | undefined,
 ): Gate4Check {
   const c = classifyLeg({ captureResult, recording: full, checkpoints: [] });
   const problems: string[] = [];
-  if (c.result_class !== "unsupported")
-    problems.push(`class ${c.result_class}, expected unsupported`);
-  if (!c.reasons.some((r) => r.includes("canvas_item_add_line")))
+  if (c.result_class !== "success")
     problems.push(
-      `reasons do not name canvas_item_add_line: ${c.reasons.join(" | ")}`,
+      `class ${c.result_class}, expected success: ${c.reasons.slice(0, 2).join(" | ")}`,
     );
+  const ops = unsupportedOps(full);
+  if (ops.length > 0)
+    problems.push(`the recording carries unsupported ${ops.join(", ")}`);
+  const lines = richUnderlineLines(full);
+  if (lines.length === 0)
+    problems.push("no add_line command anywhere (expected the [u] underline)");
+  const thin = lines.filter(
+    (l) => !(typeof l.width === "number" && l.width >= 1),
+  );
+  if (thin.length > 0)
+    problems.push(
+      `${thin.length} add_line command(s) are not wide (width ${JSON.stringify(thin[0].width)})`,
+    );
+  const widths = [...new Set(lines.map((l) => l.width))];
   return check(
     "rich-underline-capture-class",
-    "rich-underline/capture classifies as unsupported purely from the recording's own content (an item carries canvas_item_add_line as an unsupported command, [u] on the underline variant), with no receiver or pixel comparison needed",
+    "rich-underline/capture classifies as success (since G5d, render-stream/4) purely from the recording's own content: no unsupported op at all, and the [u] underline travels as real add_line commands, each a wide line (width >= 1)",
     problems,
-    `${c.result_class} (${c.reasons.slice(0, 1).join("")})`,
+    `${c.result_class}; ${lines.length} add_line command(s) over the run, widths ${JSON.stringify(widths)}`,
     [full.path],
   );
-}
-
-/** Every checkpoint's mismatch (if any) is confined to `regionName`: every other named region
- * (gate4Regions, here just "marker") has zero mismatched pixels at every step. */
-export function checkMismatchConfinedToRegion(
-  checkpoints: readonly Checkpoint[],
-  regionName: string,
-): string[] {
-  const problems: string[] = [];
-  for (const cp of checkpoints) {
-    for (const r of cp.regions) {
-      if (r.name === regionName) continue;
-      if ((r.mismatched_pixels ?? 0) > 0)
-        problems.push(
-          `step ${cp.step}: region ${r.name} has ${r.mismatched_pixels} mismatched pixels (expected the mismatch confined to ${regionName})`,
-        );
-    }
-    const rtl = cp.regions.find((r) => r.name === regionName);
-    if (!rtl || (rtl.mismatched_pixels ?? 0) === 0)
-      problems.push(
-        `step ${cp.step}: region ${regionName} has no mismatch (expected the dropped underline stroke)`,
-      );
-  }
-  return problems;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -996,7 +1066,7 @@ export async function runGate4d(
       `${shotsOf(expected).length} armed shots byte-identical to the reference`,
       shotPaths("rich-reference-armed"),
     ),
-    checkRichCaptureLegClass(capture),
+    checkRichCaptureLegClass(capture, expected),
     checkRichClipRects(expected, capture.full, capture.patch),
   );
   legs["rich-capture"] = {
@@ -1097,13 +1167,11 @@ export async function runGate4d(
     G4D_CAPTURE_QUIT_FRAME,
   );
 
-  // As built (G4d): RichTextLabel's per-line canvas_item_add_set_transform (checkRichCaptureLegClass's
-  // header note) makes every receiver leg here "unsupported" too, not "success" -- but it is
-  // visually inert (always resets to identity in this fixture), so no step's pixels mismatch.
-  const g4dExp: Gate4LegExpectation = {
-    class: "unsupported",
-    mismatchSteps: [],
-  };
+  // As built (G4d): RichTextLabel's canvas_item_add_set_transform (evaluateRichCapture's note)
+  // made every receiver leg here "unsupported" on render-stream/3, with no step's pixels
+  // mismatching. Since G5d (gate5-design.md Q6g, render-stream/4) the receiver replays the
+  // commands, so both receivers classify "success": no mismatch at any step.
+  const g4dExp: Gate4LegExpectation = { class: "success" };
   checks.push(
     checkLegClass("rich-receiver", receiverClass, receiverCheckpoints, g4dExp, [
       join(outDir, "rich-receiver", "applied.json"),
@@ -1154,7 +1222,7 @@ export async function runGate4d(
   );
   legs["rich-receiver"] = {
     group: "g4d",
-    expected_class: "unsupported",
+    expected_class: "success",
     result_class: receiverClass.result_class,
     reasons: receiverClass.reasons,
     harmless_ties: receiverClass.harmless_ties,
@@ -1163,7 +1231,7 @@ export async function runGate4d(
   };
   legs["rich-receiver-patch"] = {
     group: "g4d",
-    expected_class: "unsupported",
+    expected_class: "success",
     result_class: patchClass.result_class,
     reasons: patchClass.reasons,
     harmless_ties: patchClass.harmless_ties,
@@ -1171,18 +1239,20 @@ export async function runGate4d(
     artifacts: [join(outDir, "rich-receiver-patch", "applied.json")],
   };
 
-  // Underline variant: capture-underline (classified alone, no receiver) and receiver-underline
-  // (mismatch confined to RTL's region).
+  // Underline variant: capture-underline (classified alone, no receiver) and receiver-underline.
+  // On render-stream/3 both were unsupported (canvas_item_add_line) and the receiver's mismatch
+  // was confined to RTL's region; since G5d (gate5-design.md Q6g) the underline is a replayed
+  // wide add_line, so both classify success and the receiver equals the reference exactly.
   const ulCaptureResult = await readJson<CaptureResultJson>(
     join(outDir, "rich-underline", "capture", "evidence", "result.json"),
   );
   const ulFull = await loadRecording(
     join(outDir, "rich-underline", "capture", RECORDING_NAME),
   );
-  checks.push(checkRichUnsupportedCaptureClass(ulFull, ulCaptureResult));
+  checks.push(checkRichUnderlineCaptureClass(ulFull, ulCaptureResult));
   legs["rich-underline-capture"] = {
     group: "g4d",
-    expected_class: "unsupported",
+    expected_class: "success",
     result_class: classifyLeg({
       captureResult: ulCaptureResult,
       recording: ulFull,
@@ -1226,29 +1296,36 @@ export async function runGate4d(
     },
     checkpoints: ulCheckpoints,
   });
-  const allSteps = expected.steps.map((s) => s.step);
+  const ulVsReference = compareLegs(
+    expected,
+    ulReferenceShots,
+    ulReceiverShots,
+  );
   checks.push(
     checkLegClass(
       "rich-underline-receiver",
       ulClass,
       ulCheckpoints,
-      { class: "unsupported", mismatchSteps: allSteps },
+      { class: "success" },
       [
         join(outDir, "rich-underline", "capture", RECORDING_NAME),
         join(outDir, "rich-underline", "receiver", "applied.json"),
       ],
     ),
     check(
-      "rich-underline-confined",
-      "the underline receiver's mismatch (the dropped canvas_item_add_line stroke) is confined to RTL's region at every step; every other region (the marker) matches exactly",
-      checkMismatchConfinedToRegion(ulCheckpoints, "RTL"),
-      `${ulCheckpoints.length} steps confined to RTL`,
-      [join(outDir, "rich-underline", "receiver", "shots")],
+      "rich-underline-receiver-vs-reference",
+      "the underline receiver's shots equal rich-underline/reference's exactly at every step, full frame and every region (since G5d the [u] stroke is a replayed add_line; on render-stream/3 it was dropped and the mismatch was confined to RTL's region, check rich-underline-confined)",
+      ulVsReference.problems,
+      `${ulCheckpoints.length} steps identical; budgets: ${ulVsReference.budgets.map((b) => `${b.region} ${b.max_channel_delta}`).join(", ")}`,
+      [
+        join(outDir, "rich-underline", "reference", "shots"),
+        join(outDir, "rich-underline", "receiver", "shots"),
+      ],
     ),
   );
   legs["rich-underline-receiver"] = {
     group: "g4d",
-    expected_class: "unsupported",
+    expected_class: "success",
     result_class: ulClass.result_class,
     reasons: ulClass.reasons,
     harmless_ties: ulClass.harmless_ties,

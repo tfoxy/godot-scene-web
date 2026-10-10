@@ -102,6 +102,11 @@ export interface Gate5Prediction {
   op?: string;
   steps?: number[];
   regions?: Record<string, number[]>;
+  /** capture-canvas (G5d, D11): the expected class, the refusal reason and the refused
+   * [item, RS method] pairs */
+  class?: string;
+  reason?: string;
+  entries?: [string, string][];
 }
 
 export interface Gate5Expected {

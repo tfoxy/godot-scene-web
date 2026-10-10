@@ -1,6 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for gate 5b: lib/geometry-raster.ts on hand cases and the g5b checks of
-// lib/gate5-checks.ts on synthetic values, each with a passing and a failing case.
+// Self-test for gate 5b and 5d: lib/geometry-raster.ts on hand cases, the g5b checks of
+// lib/gate5-checks.ts and the g5d evaluators of lib/gate5d-checks.ts and lib/clip-derive.ts on
+// synthetic values, each with a passing and a failing case.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate5.ts
@@ -13,8 +14,12 @@
 // 2. checkExpectedSelfConsistent on the committed expected.json and on broken copies.
 // 3. The image checks (expected-image, presence, freshness, leg comparison) on frames built from
 //    the raster itself, and on frames perturbed where each check must notice.
-// 4. geometry-hook-census and the capture's typed-command classification on synthetic counters and
-//    recordings.
+// 4. geometry-hook-census and the capture's render-stream/4 classification (success, every op a
+//    command in order; G5d) on synthetic counters and recordings.
+// 5. (G5d) geometry-commands (float32-exact passthroughs, 2-ulp computed values, texture ids),
+//    lowering-predictions, the per-region sabotage classification, capture-canvas (D11), and
+//    clip-derive's D9 (a set_transform replaces, never composes, the draw transform of later
+//    commands' rects) and D10 (clip-ignore spans) with clip-rects-derived.
 //
 // Exits non-zero if any assertion fails.
 
@@ -22,12 +27,18 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { RecordingSummary } from "../lib/gate0-checks";
+import {
+  clipIgnoredCommands,
+  type DeriveInput,
+  deriveClipRects,
+  itemRect,
+} from "../lib/clip-derive";
+import type { Checkpoint, RecordingSummary } from "../lib/gate0-checks";
 import type { Gate3CaptureEvaluation } from "../lib/gate3-checks";
 import {
   checkExpectedSelfConsistent,
   compareLegs5,
-  evaluateCaptureTyped,
+  evaluateCaptureLegClass5,
   evaluateExpectedImage5,
   evaluateFreshness5,
   evaluateGeometryHookCensus,
@@ -35,7 +46,6 @@ import {
   type Frame,
   rastersOf,
   type Shots,
-  typedCommandsByStep,
 } from "../lib/gate5-checks";
 import type {
   Gate5Expected,
@@ -44,6 +54,16 @@ import type {
   Gate5Texture,
   Rgba8,
 } from "../lib/gate5-expected";
+import {
+  evaluateCaptureCanvas,
+  evaluateClipRectsDerived,
+  evaluateGeometryCommands,
+  evaluateLegClass5,
+  evaluateLoweringPredictions,
+  expectedCommandsByStep,
+  ulpDistance,
+  type WireCommand,
+} from "../lib/gate5d-checks";
 import {
   type Gate5Raster,
   mapNinePatchAxis,
@@ -766,32 +786,53 @@ function censusCases(expected: Gate5Expected): void {
   );
 }
 
-/** A recording whose settle transactions carry exactly the typed commands, ids 2.. by creation
- * order, and one unsupported-op entry per typed op. */
+/** Wire ids the synthetic recordings give the fixture textures (the hue strip is 1). */
+const TEX_IDS = new Map([
+  ["TEX16", 2],
+  ["TEX9", 3],
+]);
+
+/** A /4 recording whose settle transactions carry exactly expected.json's calls as commands
+ * (ids 2.. by creation order), the three textures, no unsupported entry, and every item's
+ * content_version bumped at each of its redraws. */
 function syntheticCapture(
   expected: Gate5Expected,
-  hooked: Set<string>,
 ): Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full"> {
-  const typed = typedCommandsByStep(expected, hooked);
+  const byStep = expectedCommandsByStep(expected, TEX_IDS);
+  const versions = new Map<string, number>();
+  const textures = [
+    { id: 1, kind: "image", status: "ok", width: 800, height: 6 },
+    ...[...TEX_IDS].map(([name, id]) => ({
+      id,
+      kind: "image",
+      status: "ok",
+      width: expected.textures[name].width,
+      height: expected.textures[name].height,
+    })),
+  ];
   const transactions = expected.steps.map((s, k) => {
+    for (const name of s.redraws)
+      versions.set(name, (versions.get(name) ?? 0) + 2);
     const items = expected.creation_order.map((name, j) => ({
       id: j + 2,
-      commands: (typed.get(s.step)?.get(name) ?? []).map((c) => ({ ...c })),
-    }));
-    const unsupported = [
-      ...new Set(
-        items.flatMap((i) =>
-          i.commands.filter((c) => c?.op === "unsupported").map((c) => c?.name),
-        ),
+      content_version: versions.get(name) ?? 0,
+      commands: clone(
+        (byStep.get(s.step)?.get(name) ?? []).map((c) => c.command),
       ),
-    ].map((op) => ({ op, item: 2, reason: "unsupported-op" }));
+    }));
     return {
-      meta: { seq: k + 1, frame: s.settle_frame, items, unsupported },
+      meta: {
+        seq: k + 1,
+        frame: s.settle_frame,
+        items,
+        unsupported: [],
+        textures,
+      },
       sha256: "",
     };
   });
   return {
-    result_class: "unsupported",
+    result_class: "success",
     reasons: [],
     full: {
       path: "synthetic",
@@ -804,72 +845,496 @@ function syntheticCapture(
   };
 }
 
+/** The commands of fixture item `name` at transaction `k` of a synthetic capture. */
+function commandsOf(
+  expected: Gate5Expected,
+  rec: RecordingSummary,
+  k: number,
+  name: string,
+): WireCommand[] {
+  return rec.transactions[k].meta.items[expected.creation_order.indexOf(name)]
+    .commands as unknown as WireCommand[];
+}
+
+/** Command `index` of commandsOf(...), viewed as `T` (test mutation only). */
+function commandAt<T>(
+  expected: Gate5Expected,
+  rec: RecordingSummary,
+  k: number,
+  name: string,
+  index: number,
+): T {
+  return commandsOf(expected, rec, k, name)[index] as unknown as T;
+}
+
 function captureCases(expected: Gate5Expected): void {
-  const hooked = new Set([
-    ...Object.keys(expected.hook_census).filter(
-      (op) => op !== "canvas_item_add_multiline",
-    ),
-  ]);
-  const planned = [...hooked];
-  const good = syntheticCapture(expected, hooked);
+  const good = syntheticCapture(expected);
   passes(
-    "leg-class-capture",
-    evaluateCaptureTyped(expected, good, planned).problems,
-  );
-  const g5a = syntheticCapture(
-    expected,
-    new Set([...hooked, "canvas_item_add_multiline"]),
-  );
-  passes(
-    "leg-class-capture (calibrator 7 types multiline)",
-    evaluateCaptureTyped(expected, g5a, [
-      ...planned,
-      "canvas_item_add_multiline",
-    ]).problems,
+    "leg-class-capture (/4: success, every op a command)",
+    evaluateCaptureLegClass5(expected, good).problems,
   );
   fails(
-    "leg-class-capture (multiline hooked but not typed)",
-    evaluateCaptureTyped(expected, good, [
-      ...planned,
-      "canvas_item_add_multiline",
-    ]).problems,
-    "unsupported ops",
+    "leg-class-capture (class unsupported)",
+    evaluateCaptureLegClass5(expected, {
+      ...good,
+      result_class: "unsupported",
+    }).problems,
+    "class unsupported",
   );
-  const success = { ...good, result_class: "success" as const };
+  const typed = clone(syntheticCapture(expected));
+  commandsOf(expected, typed.full, 0, "ST")[1] = {
+    op: "unsupported",
+    name: "canvas_item_add_set_transform",
+    reason: "unsupported-op",
+  };
   fails(
-    "leg-class-capture (class success)",
-    evaluateCaptureTyped(expected, success, planned).problems,
-    "class success",
+    "leg-class-capture (a set_transform still typed unsupported)",
+    evaluateCaptureLegClass5(expected, typed).problems,
+    "unsupported canvas_item_add_set_transform",
   );
-  const wrongRect = clone(syntheticCapture(expected, hooked));
-  const st =
-    wrongRect.full.transactions[0].meta.items[
-      expected.creation_order.indexOf("ST")
-    ];
-  (st.commands[0] as { rect: number[] }).rect = [4, 4, 24, 17];
-  fails(
-    "leg-class-capture (an add_rect argument off)",
-    evaluateCaptureTyped(
-      expected,
-      { ...wrongRect, full: wrongRect.full },
-      planned,
-    ).problems,
-    "step 0 ST",
-  );
-  const reordered = clone(syntheticCapture(expected, hooked));
-  const cg =
-    reordered.full.transactions[0].meta.items[
-      expected.creation_order.indexOf("CG")
-    ];
-  cg.commands.reverse();
+  const reordered = clone(syntheticCapture(expected));
+  // LN's ops (four lines, a multiline, a line) are not a palindrome, so reversing reorders them.
+  commandsOf(expected, reordered.full, 0, "LN").reverse();
   fails(
     "leg-class-capture (commands out of order)",
-    evaluateCaptureTyped(
-      expected,
-      { ...reordered, full: reordered.full },
-      planned,
+    evaluateCaptureLegClass5(expected, reordered).problems,
+    "step 0 LN",
+  );
+}
+
+/** The next float32 above `v`, `n` times. */
+function ulpsUp(v: number, n: number): number {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setFloat32(0, v, true);
+  view.setInt32(0, view.getInt32(0, true) + (v >= 0 ? n : -n), true);
+  return view.getFloat32(0, true);
+}
+
+function geometryCommandCases(expected: Gate5Expected): void {
+  const good = syntheticCapture(expected);
+  const sinks = (full: RecordingSummary) => [
+    { label: "full", recording: full },
+    { label: "patch", recording: good.full },
+  ];
+  const r = evaluateGeometryCommands(expected, sinks(good.full));
+  passes("geometry-commands (expected calls as /4 commands)", r.problems);
+  assert(
+    "geometry-commands compares every command of both sinks",
+    r.compared > 100 && r.ulpUsed === 0,
+    `${r.compared} compared, ${r.ulpUsed} within ulp`,
+  );
+  assert(
+    "ulpDistance counts float32 steps across zero",
+    ulpDistance(1, ulpsUp(1, 2)) === 2 &&
+      ulpDistance(-0, 0) === 0 &&
+      ulpDistance(ulpsUp(0, 1), -ulpsUp(0, 1)) === 2,
+  );
+  // ST's first set_transform is computed (draw_set_transform: ulp 2).
+  const stIndex = 1;
+  const within = clone(good.full);
+  const st = commandAt<{ transform: number[] }>(
+    expected,
+    within,
+    0,
+    "ST",
+    stIndex,
+  );
+  st.transform[0] = ulpsUp(st.transform[0], 2);
+  const w = evaluateGeometryCommands(expected, sinks(within));
+  assert(
+    "geometry-commands: a computed value 2 ulp off passes, counted",
+    w.problems.length === 0 && w.ulpUsed === 1,
+    w.problems.slice(0, 2).join(" | "),
+  );
+  const beyond = clone(good.full);
+  commandAt<{ transform: number[] }>(
+    expected,
+    beyond,
+    0,
+    "ST",
+    stIndex,
+  ).transform[0] = ulpsUp(2, 3);
+  fails(
+    "geometry-commands (a computed value 3 ulp off)",
+    evaluateGeometryCommands(expected, sinks(beyond)).problems,
+    "full step 0 ST command 1",
+  );
+  const passthrough = clone(good.full);
+  commandAt<{ from: number[] }>(expected, passthrough, 0, "LN", 0).from[0] =
+    ulpsUp(8, 1);
+  fails(
+    "geometry-commands (a passthrough argument 1 ulp off)",
+    evaluateGeometryCommands(expected, sinks(passthrough)).problems,
+    "full step 0 LN command 0",
+  );
+  const dropped = clone(good.full);
+  commandsOf(expected, dropped, 0, "CG").splice(1, 1);
+  fails(
+    "geometry-commands (a clip_ignore missing)",
+    evaluateGeometryCommands(expected, sinks(dropped)).problems,
+    "full step 0 CG: 4 commands",
+  );
+  const wrongTex = clone(good.full);
+  commandAt<{ tex: number }>(expected, wrongTex, 0, "NP", 0).tex = 2;
+  fails(
+    "geometry-commands (a nine-patch naming the wrong texture)",
+    evaluateGeometryCommands(expected, sinks(wrongTex)).problems,
+    "full step 0 NP command 0",
+  );
+
+  passes(
+    "lowering-predictions",
+    evaluateLoweringPredictions(expected, good.full).problems,
+  );
+  const l2 = clone(good.full);
+  commandAt<{ points: number[][] }>(expected, l2, 3, "L2", 0).points[0][0] = 9;
+  fails(
+    "lowering-predictions (Line2D's bytes change at step 3)",
+    evaluateLoweringPredictions(expected, l2).problems,
+    "L2's commands differ",
+  );
+  const dash = clone(good.full);
+  commandAt<{ points: number[][] }>(expected, dash, 0, "LN", 4).points.pop();
+  fails(
+    "lowering-predictions (a dash missing)",
+    evaluateLoweringPredictions(expected, dash).problems,
+    "L5 step 0: points 15",
+  );
+}
+
+/** Checkpoints over the gate 5 regions where `bad` (step -> regions) mismatch by one pixel. */
+function regionCheckpoints(
+  expected: Gate5Expected,
+  bad: Record<number, string[]>,
+): Checkpoint[] {
+  return expected.steps.map((s) => {
+    const regions = Object.entries(expected.regions).map(([name, r]) => ({
+      name,
+      rect_px: [r[0], r[1], r[2] - r[0], r[3] - r[1]],
+      mismatched_pixels: (bad[s.step] ?? []).includes(name) ? 1 : 0,
+      max_channel_delta: (bad[s.step] ?? []).includes(name) ? 9 : 0,
+    }));
+    const n = regions.reduce((a, r) => a + r.mismatched_pixels, 0);
+    return {
+      step: s.step,
+      settle_frame: s.settle_frame,
+      seq: s.step + 1,
+      reference_png: "",
+      receiver_png: "",
+      diff_png: null,
+      mismatched_pixels: n,
+      max_channel_delta: n > 0 ? 9 : 0,
+      regions,
+    };
+  });
+}
+
+function legClassCases(expected: Gate5Expected): void {
+  const pv = expected.predictions["sabotage-perturb-vertex"];
+  const bad: Record<number, string[]> = {};
+  for (const [region, steps] of Object.entries(pv.regions ?? {}))
+    for (const k of steps) bad[k] = [...(bad[k] ?? []), region];
+  const mismatch = { result_class: "pixel-mismatch" as const, reasons: [] };
+  passes(
+    "leg-class (perturb-vertex's predicted regions)",
+    evaluateLegClass5(mismatch, regionCheckpoints(expected, bad), {
+      class: "pixel-mismatch",
+      regions: pv.regions,
+    }).problems,
+  );
+  fails(
+    "leg-class (a region the prediction does not name)",
+    evaluateLegClass5(
+      mismatch,
+      regionCheckpoints(expected, { ...bad, 9: [...(bad[9] ?? []), "NP"] }),
+      { class: "pixel-mismatch", regions: pv.regions },
     ).problems,
-    "step 0 CG",
+    "step 9",
+  );
+  fails(
+    "leg-class (a predicted region that matches)",
+    evaluateLegClass5(
+      mismatch,
+      regionCheckpoints(expected, { ...bad, 2: [] }),
+      { class: "pixel-mismatch", regions: pv.regions },
+    ).problems,
+    "step 2",
+  );
+  const freeze = expected.predictions["sabotage-freeze"].steps ?? [];
+  passes(
+    "leg-class (freeze: exactly its steps)",
+    evaluateLegClass5(
+      mismatch,
+      regionCheckpoints(
+        expected,
+        Object.fromEntries(freeze.map((k) => [k, ["Marker"]])),
+      ),
+      { class: "pixel-mismatch", steps: freeze },
+    ).problems,
+  );
+  fails(
+    "leg-class (success expected, one region differs)",
+    evaluateLegClass5(
+      { result_class: "success", reasons: [] },
+      regionCheckpoints(expected, { 4: ["ST"] }),
+      { class: "success" },
+    ).problems,
+    "step 4",
+  );
+}
+
+/** The canvas variant: the predicted (item, op) pairs typed canvas-texture-headless in place. */
+function syntheticCanvas(
+  expected: Gate5Expected,
+): Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full"> {
+  const good = syntheticCapture(expected);
+  const entries = (
+    expected.predictions["capture-canvas"] as {
+      entries: [string, string][];
+    }
+  ).entries;
+  const refused = new Set(entries.map(([i, op]) => `${i}:${op}`));
+  const byStep = expectedCommandsByStep(expected, TEX_IDS);
+  good.full.transactions.forEach((t, k) => {
+    const step = expected.steps[k].step;
+    for (const name of expected.creation_order) {
+      const list = byStep.get(step)?.get(name) ?? [];
+      const item = t.meta.items[expected.creation_order.indexOf(name)];
+      item.commands = list.map((c) =>
+        refused.has(`${name}:${c.call.op}`) && c.call.texture === null
+          ? {
+              op: "unsupported",
+              name: c.call.op,
+              reason: "canvas-texture-headless",
+            }
+          : clone(c.command),
+      ) as unknown as typeof item.commands;
+    }
+    t.meta.unsupported = entries.map(([name, op]) => ({
+      op,
+      item: expected.creation_order.indexOf(name) + 2,
+      reason: "canvas-texture-headless",
+    })) as unknown as typeof t.meta.unsupported;
+  });
+  return { ...good, result_class: "unsupported" };
+}
+
+function canvasCases(expected: Gate5Expected): void {
+  const good = syntheticCanvas(expected);
+  passes(
+    "capture-canvas (D11)",
+    evaluateCaptureCanvas(expected, good).problems,
+  );
+  const plain = syntheticCapture(expected);
+  fails(
+    "capture-canvas (RID() drawn as tex null)",
+    evaluateCaptureCanvas(expected, { ...plain, result_class: "unsupported" })
+      .problems,
+    "unsupported entries",
+  );
+  const textured = clone(syntheticCanvas(expected));
+  // G3 (TEX16) must stay a command; a refusal of it is a wrong D11 rule.
+  commandsOf(expected, textured.full, 0, "PG")[2] = {
+    op: "unsupported",
+    name: "canvas_item_add_polygon",
+    reason: "canvas-texture-headless",
+  };
+  fails(
+    "capture-canvas (a textured polygon refused)",
+    evaluateCaptureCanvas(expected, textured).problems,
+    "step 0 PG",
+  );
+}
+
+type DItem = DeriveInput["items"][number];
+const ditem = (
+  id: number,
+  commands: unknown[],
+  extra: Partial<DItem> = {},
+): DItem =>
+  ({
+    id,
+    children: [],
+    visible: true,
+    visibility_layer: 1,
+    clip: false,
+    custom_rect: false,
+    custom_rect_rect: [0, 0, 0, 0],
+    xform: [1, 0, 0, 1, 0, 0],
+    modulate: [1, 1, 1, 1],
+    commands,
+    ...extra,
+  }) as DItem;
+
+/** One flat state per step: every item top-level under its final transform, CG clipping with its
+ * 64x48 custom rect, every item's expected /4 commands. */
+function syntheticStates(expected: Gate5Expected): {
+  states: Map<number, DeriveInput>;
+  ids: Map<string, number>;
+} {
+  const byStep = expectedCommandsByStep(expected, TEX_IDS);
+  const ids = new Map(expected.creation_order.map((n, j) => [n, j + 2]));
+  const states = new Map<number, DeriveInput>();
+  for (const s of expected.steps)
+    states.set(s.step, {
+      canvases: [
+        {
+          id: 1,
+          role: "root",
+          items: s.items.map((i) => ids.get(i.name) ?? 0),
+          xform: [1, 0, 0, 1, 0, 0],
+        },
+      ],
+      items: s.items.map((i) =>
+        ditem(
+          ids.get(i.name) ?? 0,
+          (byStep.get(s.step)?.get(i.name) ?? []).map((c) => c.command),
+          i.name === "CG"
+            ? {
+                clip: true,
+                custom_rect: true,
+                custom_rect_rect: [0, 0, 64, 48],
+                xform: i.xform,
+              }
+            : { xform: i.xform },
+        ),
+      ),
+    });
+  return { states, ids };
+}
+
+function clipDeriveCases(expected: Gate5Expected): void {
+  // D9: replaced, not composed; the rect of every later command goes through the last one.
+  const rect = (r: number[]) => ({
+    op: "add_rect",
+    aa: false,
+    rect: r,
+    color: [1, 1, 1, 1],
+  });
+  const st = (t: number[]) => ({ op: "add_set_transform", transform: t });
+  const r = itemRect(
+    ditem(1, [
+      rect([0, 0, 10, 10]),
+      st([2, 0, 0, 2, 32, 0]),
+      rect([2, 2, 8, 8]),
+      st([1, 0, 0, 1, 0, 40]),
+      rect([0, 0, 4, 4]),
+    ]),
+  );
+  assert(
+    "clip-derive D9: rects after a set_transform go through it, the second replaces the first",
+    JSON.stringify(r) === JSON.stringify([0, 0, 52, 44]),
+    JSON.stringify(r),
+  );
+  const composed = itemRect(
+    ditem(1, [
+      st([2, 0, 0, 2, 32, 0]),
+      st([1, 0, 0, 1, 0, 40]),
+      rect([0, 0, 4, 4]),
+    ]),
+  );
+  assert(
+    "clip-derive D9: two set_transforms do not compose",
+    JSON.stringify(composed) === JSON.stringify([0, 40, 4, 4]),
+    JSON.stringify(composed),
+  );
+  const line = itemRect(
+    ditem(1, [
+      {
+        op: "add_line",
+        aa: false,
+        from: [8, 20],
+        to: [136, 20],
+        colour: [1, 1, 1, 1],
+        width: 2,
+      },
+    ]),
+  );
+  assert(
+    "clip-derive: a wide line's rect is its quad",
+    JSON.stringify(line) === JSON.stringify([8, 19, 128, 2]),
+    JSON.stringify(line),
+  );
+  assert(
+    "clip-derive: an antialiased line or a circle leaves the rect unknown",
+    itemRect(
+      ditem(1, [
+        {
+          op: "add_circle",
+          aa: false,
+          position: [0, 0],
+          radius: 4,
+          colour: [1, 1, 1, 1],
+        },
+      ]),
+    ) === null,
+  );
+  // D10.
+  const ci = (ignore: boolean) => ({ op: "add_clip_ignore", ignore });
+  const cmds = [
+    rect([0, 0, 1, 1]),
+    ci(true),
+    rect([0, 0, 1, 1]),
+    st([1, 0, 0, 1, 0, 0]),
+    rect([0, 0, 1, 1]),
+    ci(false),
+    rect([0, 0, 1, 1]),
+  ];
+  assert(
+    "clip-derive D10: the commands between add_clip_ignore(true) and (false)",
+    JSON.stringify(clipIgnoredCommands(ditem(1, cmds))) === "[2,4]",
+  );
+  const owned = deriveClipRects(
+    {
+      canvases: [
+        { id: 1, role: "root", items: [1, 2], xform: [1, 0, 0, 1, 0, 0] },
+      ],
+      items: [
+        ditem(1, cmds, {
+          clip: true,
+          custom_rect: true,
+          custom_rect_rect: [0, 0, 10, 10],
+        }),
+        ditem(2, cmds),
+      ],
+    },
+    [640, 360],
+  );
+  const o1 = owned.get(1);
+  const o2 = owned.get(2);
+  assert(
+    "clip-derive D10: reported on an item with a clip owner, not on one without",
+    typeof o1 === "object" &&
+      JSON.stringify(o1.ignored) === "[2,4]" &&
+      typeof o2 === "object" &&
+      o2.ignored === undefined,
+  );
+
+  const { states, ids } = syntheticStates(expected);
+  passes(
+    "clip-rects-derived (expected.json's scissors and CG's clip-ignore span)",
+    evaluateClipRectsDerived(expected, "synthetic", states, ids).problems,
+  );
+  const noIgnore = new Map(
+    [...states].map(([k, v]) => [
+      k,
+      {
+        ...v,
+        items: v.items.map((i) =>
+          i.id === ids.get("CG")
+            ? {
+                ...i,
+                commands: i.commands.filter((c) => c.op !== "add_clip_ignore"),
+              }
+            : i,
+        ),
+      },
+    ]),
+  );
+  fails(
+    "clip-rects-derived (CG without its add_clip_ignore pair)",
+    evaluateClipRectsDerived(expected, "synthetic", noIgnore, ids).problems,
+    "clip-ignored commands",
   );
 }
 
@@ -886,6 +1351,10 @@ async function main(): Promise<void> {
   imageCases(expected, rasters);
   censusCases(expected);
   captureCases(expected);
+  geometryCommandCases(expected);
+  legClassCases(expected);
+  canvasCases(expected);
+  clipDeriveCases(expected);
   console.log(
     `\nself-test-gate5: ${assertions - failures}/${assertions} assertions passed`,
   );

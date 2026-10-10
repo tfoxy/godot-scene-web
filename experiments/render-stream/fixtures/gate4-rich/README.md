@@ -8,7 +8,9 @@ a `[font_size=24]` span, a `[b]` span (its own `FontVariation` cache, `variation
 (an `add_rect`), and an outlined span (`[outline_size=2][outline_color]`, its own bitmap-outline
 cache alongside the ordinary fill glyphs). Step 5 is `append_text`, not a full `.text=` replace.
 `RS_FIXTURE_VARIANT=underline` wraps the first span's word in `[u]...[/u]`, which draws
-`canvas_item_add_line` -- typed `unsupported` (gate4-design.md Q2) -- confined to `RTL`'s region.
+`canvas_item_add_line` inside `RTL`'s region -- typed `unsupported` on render-stream/3
+(gate4-design.md Q2), a wide line the receiver replays since G5d (render-stream/4,
+gate5-design.md Q6g), so every leg of this fixture classifies `success`.
 
 Like gates 0-4a, the project does not know about the capture library and runs the same whether
 `GRC_EXTENSION` is set or not.

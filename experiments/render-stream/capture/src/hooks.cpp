@@ -171,7 +171,8 @@ using FnCanvasTextureSetChannel = void (*)(void *, RID, int32_t, RID);
 using FnAddLcdTextureRectRegion = void (*)(void *, RID, const Rect2 *, RID, const Rect2 *,
                                            const Color *);
 //
-// --- calibrator 6 (optional): gate3-design.md Q2, clip_ignore refused, typed ------------------
+// --- calibrator 6 (optional): gate3-design.md Q2, clip_ignore (typed until G5d, a /4 command
+// since) -----------------------------------------------------------------------------------
 //
 //   1595: virtual void canvas_item_add_clip_ignore(RID p_item, bool p_ignore) = 0;
 //         (FnRidBool: the same ABI as canvas_item_set_clip)
@@ -714,11 +715,51 @@ rs2::Color4 to_color(const Color &c) { return {c.r, c.g, c.b, c.a}; }
 
 rs2::Rect4 to_rect(const Rect2 &r) { return {r.position.x, r.position.y, r.size.x, r.size.y}; }
 
-// Every hooked draw op except add_rect: recorded as an unsupported command.
+// Every hooked draw op the wire has no command for: recorded as an unsupported command.
 void tap_unsupported(RID item, const char *op) {
   if (streaming()) {
     mirror().add_unsupported(item.id, op, current_frame());
   }
+}
+
+// render-stream/4 (G5d; gate5-design.md Q3a): every array argument of an immediate geometry op is
+// copied WHOLE here, on the calling thread, through the two-word Vector ABI (CoW-shared, so a
+// later caller write cannot change what was copied). counters.json keeps its own 64-element
+// truncation; the wire never does.
+rs2::Point2 to_point(const Point2 &p) { return {p.x, p.y}; }
+
+std::vector<rs2::Point2> whole_points(const Vector<Point2> *vector) {
+  std::vector<rs2::Point2> out;
+  if (vector == nullptr) {
+    return out;
+  }
+  const int64_t n = vector->size();
+  out.reserve(static_cast<size_t>(n > 0 ? n : 0));
+  for (int64_t i = 0; i < n; ++i) {
+    out.push_back(to_point(vector->ptr()[i]));
+  }
+  return out;
+}
+
+std::vector<rs2::Color4> whole_colors(const Vector<Color> *vector) {
+  std::vector<rs2::Color4> out;
+  if (vector == nullptr) {
+    return out;
+  }
+  const int64_t n = vector->size();
+  out.reserve(static_cast<size_t>(n > 0 ? n : 0));
+  for (int64_t i = 0; i < n; ++i) {
+    out.push_back(to_color(vector->ptr()[i]));
+  }
+  return out;
+}
+
+std::vector<int32_t> whole_ints(const Vector<int32_t> *vector) {
+  std::vector<int32_t> out;
+  if (vector != nullptr && vector->size() > 0) {
+    out.assign(vector->ptr(), vector->ptr() + vector->size());
+  }
+  return out;
 }
 
 struct ImageBinds {
@@ -1113,7 +1154,10 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
 void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
                       const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPolygon);
-  tap_unsupported(item, "canvas_item_add_polygon");
+  if (streaming()) {
+    mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
+                           texture.id, /*polygon=*/true, current_frame());
+  }
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_polygons.size() < kMaxPolygons) {
@@ -1226,7 +1270,15 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
                              const Vector<Point2> *uvs, const Vector<int32_t> *bones,
                              const Vector<float> *weights, RID texture, int count) {
   bump(kAddTriangleArray);
-  tap_unsupported(item, "canvas_item_add_triangle_array");
+  if (streaming()) {
+    const bool skinned =
+        (bones != nullptr && bones->size() > 0) || (weights != nullptr && weights->size() > 0);
+    mirror().add_triangle_array(item.id, skinned ? std::vector<int32_t>() : whole_ints(indices),
+                                skinned ? std::vector<rs2::Point2>() : whole_points(points),
+                                skinned ? std::vector<rs2::Color4>() : whole_colors(colors),
+                                skinned ? std::vector<rs2::Point2>() : whole_points(uvs), skinned,
+                                texture.id, count, current_frame());
+  }
   GeometryEntry entry;
   entry.item = item.id;
   entry.indices_total = copy_head(indices, &entry.indices);
@@ -1245,6 +1297,8 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
 void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *transform,
                    const Color *modulate, RID texture) {
   bump(kAddMesh);
+  // /4 carries add_mesh (render-stream-4.md), but the mirror's mesh table is G5e's
+  // (gate5-design.md Q3b); until then the capture keeps refusing it as a typed unsupported-op.
   tap_unsupported(item, "canvas_item_add_mesh");
   if (mesh != nullptr && transform != nullptr && modulate != nullptr) {
     AddMeshKey key;
@@ -1271,7 +1325,12 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
                          int32_t x_axis_mode, int32_t y_axis_mode, bool draw_center,
                          const Color *modulate) {
   bump(kAddNinePatch);
-  tap_unsupported(item, "canvas_item_add_nine_patch");
+  if (streaming() && rect != nullptr && source != nullptr && topleft != nullptr &&
+      bottomright != nullptr && modulate != nullptr) {
+    mirror().add_nine_patch(item.id, to_rect(*rect), to_rect(*source), texture.id,
+                            to_point(*topleft), to_point(*bottomright), x_axis_mode, y_axis_mode,
+                            draw_center, to_color(*modulate), current_frame());
+  }
   if (rect != nullptr && source != nullptr && topleft != nullptr && bottomright != nullptr &&
       modulate != nullptr) {
     NinePatchKey key;
@@ -1295,7 +1354,10 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
 void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPrimitive);
-  tap_unsupported(item, "canvas_item_add_primitive");
+  if (streaming()) {
+    mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
+                           texture.id, /*polygon=*/false, current_frame());
+  }
   GeometryEntry entry;
   entry.item = item.id;
   entry.points_total = copy_head(points, &entry.points);
@@ -1309,7 +1371,10 @@ void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
 void hook_add_line(void *self, RID item, const Point2 *from, const Point2 *to, const Color *color,
                    float width, bool antialiased) {
   bump(kAddLine);
-  tap_unsupported(item, "canvas_item_add_line");
+  if (streaming() && from != nullptr && to != nullptr && color != nullptr) {
+    mirror().add_line(item.id, to_point(*from), to_point(*to), to_color(*color), width,
+                      antialiased, current_frame());
+  }
   if (from != nullptr && to != nullptr && color != nullptr) {
     LineKey key;
     zero(&key);
@@ -1327,7 +1392,10 @@ void hook_add_line(void *self, RID item, const Point2 *from, const Point2 *to, c
 void hook_add_polyline(void *self, RID item, const Vector<Point2> *points,
                        const Vector<Color> *colors, float width, bool antialiased) {
   bump(kAddPolyline);
-  tap_unsupported(item, "canvas_item_add_polyline");
+  if (streaming()) {
+    mirror().add_polyline(item.id, whole_points(points), whole_colors(colors), width, antialiased,
+                          /*multiline=*/false, current_frame());
+  }
   GeometryEntry entry;
   entry.item = item.id;
   entry.points_total = copy_head(points, &entry.points);
@@ -1341,7 +1409,10 @@ void hook_add_polyline(void *self, RID item, const Vector<Point2> *points,
 void hook_add_circle(void *self, RID item, const Point2 *position, float radius,
                      const Color *color, bool antialiased) {
   bump(kAddCircle);
-  tap_unsupported(item, "canvas_item_add_circle");
+  if (streaming() && position != nullptr && color != nullptr) {
+    mirror().add_circle(item.id, to_point(*position), radius, to_color(*color), antialiased,
+                        current_frame());
+  }
   if (position != nullptr && color != nullptr) {
     CircleKey key;
     zero(&key);
@@ -1365,7 +1436,9 @@ PodEntry<ItemTransformKey> item_transform(RID item, const Transform2D &transform
 
 void hook_add_set_transform(void *self, RID item, const Transform2D *transform) {
   bump(kAddSetTransform);
-  tap_unsupported(item, "canvas_item_add_set_transform");
+  if (streaming() && transform != nullptr) {
+    mirror().add_set_transform(item.id, to_xform(*transform), current_frame());
+  }
   if (transform != nullptr) {
     log_entry(&g_add_set_transforms, item_transform(item, *transform));
   }
@@ -1698,12 +1771,15 @@ void hook_mesh_surface_remove(void *self, RID mesh, int surface) {
 
 // canvas_item_add_multiline: draw_multiline and draw_dashed_line's dashes (ci.cpp:697-731,
 // :771-784) reach this hook, which was unhooked before calibrator 7 and silently dropped both
-// (rs-gate5-geometry-engine-facts). Typed unsupported until /4 (G5d); the capture (counters.json)
-// is truncated like every other optional geometry op.
+// (rs-gate5-geometry-engine-facts). Typed unsupported until /4; since G5d the /4 add_multiline
+// command (whole arrays); counters.json is truncated like every other optional geometry op.
 void hook_add_multiline(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, float width, bool antialiased) {
   bump(kAddMultiline);
-  tap_unsupported(item, "canvas_item_add_multiline");
+  if (streaming()) {
+    mirror().add_polyline(item.id, whole_points(points), whole_colors(colors), width, antialiased,
+                          /*multiline=*/true, current_frame());
+  }
   GeometryEntry entry;
   entry.item = item.id;
   entry.points_total = copy_head(points, &entry.points);
@@ -2062,15 +2138,17 @@ void hook_add_lcd_texture_rect_region(void *self, RID item, const Rect2 *rect, R
 
 // --- calibrator 6 hook (gate3-design.md Q2, D4) ------------------------------
 //
-// canvas_item_add_clip_ignore becomes an unsupported command (reason unsupported-op), exactly
-// like the calibrator-2 draw ops above: the mirror tap ignores the bool. The hook itself still
-// logs it (item, ignore) into counters.json's captured, deduplicated like every other optional
-// setter, so a calibration run can tell the two toggle directions apart.
+// canvas_item_add_clip_ignore was an unsupported command (reason unsupported-op) until G5d; it is
+// now the /4 add_clip_ignore command, replayed in order (gate5-design.md D10). The hook still logs
+// it (item, ignore) into counters.json's captured, deduplicated like every other optional setter,
+// so a calibration run can tell the two toggle directions apart.
 
 void hook_add_clip_ignore(void *self, RID item, bool ignore) {
   bump(kAddClipIgnore);
   log_entry(&g_clip_ignores, item_value(item, ignore ? 1 : 0));
-  tap_unsupported(item, "canvas_item_add_clip_ignore");
+  if (streaming()) {
+    mirror().add_clip_ignore(item.id, ignore, current_frame());
+  }
   original<FnRidBool>(kAddClipIgnore)(self, item, ignore);
 }
 

@@ -132,9 +132,9 @@ export const LIVE_LOG_NAME = "live-1.jsonl";
 export const tapName = (n: number): string => `stream-${n}.rs2`;
 export const liveLogName = (n: number): string => `live-${n}.jsonl`;
 export const RECEIVED_NAME = "received.rs2";
-/** The WebSocket subprotocol a receiver negotiates (render-stream-3.md "Live transport", since
- * G4e2). */
-export const SUBPROTOCOL = "render-stream.3";
+/** The WebSocket subprotocol a receiver negotiates (render-stream-4.md "Live transport", since
+ * G5d; render-stream.3 from G4e2). */
+export const SUBPROTOCOL = "render-stream.4";
 /** Queued bytes may exceed the largest credit window by this much (gate1-design.md Q7 class 4). */
 export const QUEUED_SLACK_BYTES = 4096;
 
@@ -1049,7 +1049,7 @@ export async function checkLiveHandshake(evals: Evals): Promise<Gate1Check> {
   }
   return check(
     "live-handshake",
-    "live and live-headless: the receiver negotiated subprotocol render-stream.3 (render-stream.2 before G4e2), the host logged its hello (credit stage submitted / applied, inbound buffer as configured), served exactly one connection with no error or refusal, sent the end record, and the receiver closed with 1000 after reading it",
+    "live and live-headless: the receiver negotiated subprotocol render-stream.4 (render-stream.3 from G4e2, render-stream.2 before), the host logged its hello (credit stage submitted / applied, inbound buffer as configured), served exactly one connection with no error or refusal, sent the end record, and the receiver closed with 1000 after reading it",
     problems,
     "one connection each, hello, end record, closed by the receiver with 1000",
     evidence,

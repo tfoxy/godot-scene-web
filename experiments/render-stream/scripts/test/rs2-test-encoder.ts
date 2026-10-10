@@ -30,10 +30,10 @@ import {
   type TextureReason,
 } from "../lib/render-stream-2";
 
-/** The wire magic of every synthetic recording: GRS3 since G4e2 (render-stream-3.md), what the
- * capture publishes and the checkers decode by default. */
+/** The wire magic of every synthetic recording: GRS4 since G5d (render-stream-4.md; GRS3 from
+ * G4e2), what the capture publishes and the checkers decode by default. */
 export const MAGIC2 = Buffer.from([
-  0x47, 0x52, 0x53, 0x33, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x47, 0x52, 0x53, 0x34, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 export const GRT1_MAGIC = Buffer.from([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -68,6 +68,8 @@ export type TCommand =
       transpose?: boolean;
       clip_uv?: boolean;
     }
+  | { op: "add_set_transform"; transform: number[] }
+  | { op: "add_clip_ignore"; ignore: boolean }
   | {
       op: "unsupported";
       name: string;
@@ -269,13 +271,14 @@ export function hueStrip(id = 1): TTexture {
 // Records
 // ---------------------------------------------------------------------------------------------
 
-/** One record: f32 blocks from number arrays, a u8 block from a Uint8Array. */
+/** One record: f32 blocks from number arrays, a u8 block from a Uint8Array, an i32 block from an
+ * Int32Array (render-stream-4.md "Block type i32"). */
 export function encodeRecord(
   meta: Record<string, unknown>,
-  blocks: (number[] | Uint8Array)[],
+  blocks: (number[] | Uint8Array | Int32Array)[],
 ): Buffer {
   const metaBytes = Buffer.from(JSON.stringify(meta), "ascii");
-  const blockLen = (b: number[] | Uint8Array) =>
+  const blockLen = (b: number[] | Uint8Array | Int32Array) =>
     b instanceof Uint8Array ? b.length : 4 * b.length;
   const recordLen =
     8 + metaBytes.length + blocks.reduce((n, b) => n + 4 + blockLen(b), 0);
@@ -287,6 +290,8 @@ export function encodeRecord(
   for (const block of blocks) {
     p = out.writeUInt32LE(blockLen(block), p);
     if (block instanceof Uint8Array) p += Buffer.from(block).copy(out, p);
+    else if (block instanceof Int32Array)
+      for (const v of block) p = out.writeInt32LE(v, p);
     else for (const v of block) p = out.writeFloatLE(v, p);
   }
   return out;
@@ -315,7 +320,7 @@ export function encodeSession(opts: TSessionOptions): Buffer {
   return encodeRecord(
     {
       type: "session",
-      protocol: "render-stream/3",
+      protocol: "render-stream/4",
       session_id: opts.sessionId ?? "0123456789abcdef0123456789abcdef",
       stream: {
         stream_id:
@@ -461,6 +466,13 @@ function commandMeta(c: TCommand, cmdF: number[]): Record<string, unknown> {
     cmdF.push(...c.rect, ...c.color);
     return { op: "add_rect", aa: c.aa ?? false, f };
   }
+  if (c.op === "add_set_transform") {
+    cmdF.push(...c.transform);
+    return { op: "add_set_transform", f };
+  }
+  if (c.op === "add_clip_ignore") {
+    return { op: "add_clip_ignore", ignore: c.ignore };
+  }
   if (c.op === "add_texture_rect") {
     cmdF.push(...c.rect, ...c.modulate);
     return {
@@ -563,7 +575,15 @@ export function encodeTransaction(
       items: c.items,
     };
   });
-  const blocks = [itemF, canvasF, cmdF];
+  // render-stream-4.md "Transaction blocks": five blocks, cmd_i32 (no synthetic command carries
+  // ints) and mesh_f32 (no synthetic mesh) empty.
+  const blocks: (number[] | Int32Array)[] = [
+    itemF,
+    canvasF,
+    cmdF,
+    new Int32Array(0),
+    [],
+  ];
   const failures = state.failures ?? [];
   return encodeRecord(
     {
@@ -580,10 +600,18 @@ export function encodeTransaction(
       removed_canvases: removedCanvases,
       removed_items: removedItems,
       removed_textures: removedTextures,
+      removed_meshes: [],
       canvases: canvasMetas,
       items: itemMetas,
       textures: textures.map(textureMeta),
-      blocks: blockSpecs(["item_f32", "canvas_f32", "cmd_f32"], blocks),
+      meshes: [],
+      blocks: [
+        { name: "item_f32", type: "f32", count: itemF.length },
+        { name: "canvas_f32", type: "f32", count: canvasF.length },
+        { name: "cmd_f32", type: "f32", count: cmdF.length },
+        { name: "cmd_i32", type: "i32", count: 0 },
+        { name: "mesh_f32", type: "f32", count: 0 },
+      ],
     },
     blocks,
   );

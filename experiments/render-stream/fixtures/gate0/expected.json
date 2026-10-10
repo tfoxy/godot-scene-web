@@ -83,6 +83,6 @@
   ],
   "unsupported_variant": {
     "from_step": 2,
-    "op": "canvas_item_add_circle"
+    "op": "canvas_item_add_animation_slice"
   }
 }
