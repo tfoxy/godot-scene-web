@@ -28,7 +28,7 @@
 //   reference-armed/               rendered, extension armed with a full-sink stream, oracle off:
 //                                  shots, steps.jsonl, evidence/, recording.rs2, store/
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -38,12 +38,19 @@ import {
   readTextOrUndefined,
 } from "./gate-minus1-checks";
 import {
+  type AppliedJson,
+  type AppliedResources,
   type CaptureResultJson,
+  type Checkpoint,
   checkCaptureArmed,
   checkHeadlessNoGpuGate0,
+  checkReceiverNeverLoadedFixture,
+  classifyLeg,
   diffRgba,
   firstTransactionWithRectColor,
   type Gate0Check,
+  type LegClass,
+  loadRecording,
   parseStepLog,
   RECORDING_NAME,
   type RecordingSummary,
@@ -69,10 +76,12 @@ import {
   type Gate3Check,
 } from "./gate3-checks";
 import {
+  type AtlasPageImage,
   appendOnlyViolations,
   type Box4,
   boxEqual,
   cacheKeyOf,
+  compareSynthesizedText,
   deriveCensus,
   type Gate4Expected,
   inkPixels,
@@ -83,6 +92,7 @@ import {
   stepFrames4,
   stepOfFrame4,
   synthesizeGate4,
+  synthesizeText,
 } from "./gate4-expected";
 import { decodeTexturePayload, payloadSha256 } from "./render-stream-2";
 
@@ -98,7 +108,13 @@ export type Gate4Check = Gate3Check;
 
 export const ALL_GROUPS = ["g4a", "g4b", "g4c", "g4d", "g4e", "g4f"] as const;
 /** Groups whose increment has landed; run-gate4.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g4a"];
+export const LANDED_GROUPS: readonly string[] = ["g4a", "g4b"];
+
+/** G4b: the unchanged receiver on the main capture's full and patch sinks, a headless openat
+ * trace, and the three sabotage legs (gate4-design.md "G4b"). */
+export const G4B_RECEIVER_LEGS = ["receiver", "receiver-patch"] as const;
+export const G4B_SABOTAGE_KINDS = ["freeze", "perturb", "omit-atlas"] as const;
+export type G4bSabotageKind = (typeof G4B_SABOTAGE_KINDS)[number];
 
 export const G4A_SUPPORT_LEGS = [
   "import",
@@ -1447,6 +1463,16 @@ export interface RegionBudget {
   mismatched_pixels: number;
 }
 
+/** expected.json's named regions (marker, panel) plus every step-0 text region, as [x, y, w, h]
+ * (text regions are the same box at every step, Q6b: a fixed, generous bounding box). Shared by
+ * compareLegs and computeGate4Checkpoints (G4b) so both judge the same regions. */
+export function gate4Regions(expected: Gate4Expected): Record<string, Rect4> {
+  const regions: Record<string, Rect4> = { ...expected.regions };
+  for (const [n, box] of Object.entries(expected.steps[0].text_regions))
+    regions[n] = [box[0], box[1], box[2] - box[0], box[3] - box[1]];
+  return regions;
+}
+
 /** Two legs' shots compared everywhere, per region (text regions, marker, panel) and in full. */
 export function compareLegs(
   expected: Gate4Expected,
@@ -1456,10 +1482,8 @@ export function compareLegs(
   const problems: string[] = [];
   const regions: Record<string, Rect4> = {
     full: [0, 0, expected.viewport[0], expected.viewport[1]],
-    ...expected.regions,
+    ...gate4Regions(expected),
   };
-  for (const [n, box] of Object.entries(expected.steps[0].text_regions))
-    regions[n] = [box[0], box[1], box[2] - box[0], box[3] - box[1]];
   const budgets = new Map<string, RegionBudget>();
   for (const name of Object.keys(regions))
     budgets.set(name, {
@@ -1492,6 +1516,565 @@ export function compareLegs(
     }
   }
   return { problems, budgets: [...budgets.values()] };
+}
+
+// ---------------------------------------------------------------------------------------------
+// G4b: receiver legs, text synthesis, sabotages (gate4-design.md "G4b")
+//
+// No receiver, mirror or fixture file changes: the receiver already uploads LA8 pages lazily and
+// replays add_texture_rect_region unchanged (gate4-design.md Q5). Everything here is new
+// evidence and new checks over the unchanged receiver and the existing g4a capture/oracle.
+// ---------------------------------------------------------------------------------------------
+
+/** Step and "early" (Q6b "Intermediate shots") settle frames joined to the wire seq published at
+ * that frame, from a capture's own recording -- the seq numbering a file-mode receiver (full or
+ * patch sink) replays (both sinks share one seq space, gate1-design.md's receiver-patch leg). */
+export interface ReceiverStepSeqs {
+  settle: Map<number, number>;
+  early: Map<number, number>;
+  problems: string[];
+}
+
+export function receiverStepSeqs(
+  expected: Gate4Expected,
+  recording: Pick<RecordingSummary, "transactions">,
+): ReceiverStepSeqs {
+  const problems: string[] = [];
+  const byFrame = new Map(
+    recording.transactions.map((t) => [t.meta.frame, t.meta.seq]),
+  );
+  const settle = new Map<number, number>();
+  for (const s of expected.steps) {
+    const seq = byFrame.get(s.settle_frame);
+    if (seq === undefined)
+      problems.push(
+        `no transaction at settle frame ${s.settle_frame} (step ${s.step})`,
+      );
+    else settle.set(s.step, seq);
+  }
+  const early = new Map<number, number>();
+  for (const k of expected.early_shot_steps) {
+    const frame = stepFrames4(expected, k).early;
+    const seq = byFrame.get(frame);
+    if (seq === undefined)
+      problems.push(`no transaction at early frame ${frame} (step ${k})`);
+    else early.set(k, seq);
+  }
+  return { settle, early, problems };
+}
+
+/** A receiver leg's shots re-keyed to the reference's filenames ("step-<k>.png",
+ * "early-<k>.png") so every reference-shot evaluator (evaluateExpectedImage, evaluateInkPresence,
+ * compareLegs, evaluateExpectedText) runs unchanged over a receiver leg: a receiver only knows
+ * wire seqs ("shots/seq-<n>.png"), not fixture step numbers. `legRelDir` is relative to `outDir`
+ * (e.g. "receiver", "receiver-patch", "sabotage-freeze/receiver"). */
+export async function loadReceiverShots(
+  outDir: string,
+  legRelDir: string,
+  expected: Gate4Expected,
+  seqs: ReceiverStepSeqs,
+): Promise<Map<string, Frame | null>> {
+  const out = new Map<string, Frame | null>();
+  const load = async (seq: number | undefined) => {
+    if (seq === undefined) return null;
+    const png = await decodePngRgba(
+      join(outDir, legRelDir, "shots", `seq-${seq}.png`),
+    );
+    return png
+      ? { width: png.width, height: png.height, rgba: png.data }
+      : null;
+  };
+  for (const s of expected.steps)
+    out.set(`step-${s.step}.png`, await load(seqs.settle.get(s.step)));
+  for (const k of expected.early_shot_steps)
+    out.set(`early-${k}.png`, await load(seqs.early.get(k)));
+  return out;
+}
+
+async function shotSeqsPresentG4(dir: string): Promise<number[]> {
+  try {
+    const names = await readdir(join(dir, "shots"));
+    return names
+      .map((n) => /^seq-(\d+)\.png$/.exec(n)?.[1])
+      .filter((s): s is string => s !== undefined)
+      .map(Number);
+  } catch {
+    return [];
+  }
+}
+
+/** Checkpoints over gate4Regions, for classifyLeg: a receiver leg's re-keyed shots against the
+ * (unsabotaged) reference's. `seqOf` (step -> seq) fills Checkpoint.seq/.receiver_png. */
+export function computeGate4Checkpoints(
+  expected: Gate4Expected,
+  referenceDir: string,
+  referenceShots: ReadonlyMap<string, Frame | null>,
+  receiverDir: string,
+  receiverShots: ReadonlyMap<string, Frame | null>,
+  seqOf: ReadonlyMap<number, number>,
+): Checkpoint[] {
+  const regionList = Object.entries(gate4Regions(expected));
+  const out: Checkpoint[] = [];
+  for (const s of expected.steps) {
+    const ref = referenceShots.get(`step-${s.step}.png`);
+    const got = receiverShots.get(`step-${s.step}.png`);
+    const seq = seqOf.get(s.step) ?? null;
+    const base = {
+      step: s.step,
+      settle_frame: s.settle_frame,
+      seq,
+      reference_png: join(referenceDir, "shots", `step-${s.step}.png`),
+      receiver_png:
+        seq === null ? null : join(receiverDir, "shots", `seq-${seq}.png`),
+      diff_png: null,
+    };
+    if (!ref || !got || ref.width !== got.width || ref.height !== got.height) {
+      out.push({
+        ...base,
+        mismatched_pixels: null,
+        max_channel_delta: null,
+        regions: regionList.map(([name, rect]) => ({
+          name,
+          rect_px: [...rect],
+          mismatched_pixels: null,
+          max_channel_delta: null,
+        })),
+      });
+      continue;
+    }
+    const full = diffRgba(ref.rgba, got.rgba, ref.width, ref.height);
+    out.push({
+      ...base,
+      ...full,
+      regions: regionList.map(([name, rect]) => ({
+        name,
+        rect_px: [...rect],
+        ...diffRgba(ref.rgba, got.rgba, ref.width, ref.height, rect),
+      })),
+    });
+  }
+  return out;
+}
+
+function checkpointMismatch4(c: Checkpoint): boolean {
+  const bad = (n: number | null): boolean => n === null || n > 0;
+  return (
+    bad(c.mismatched_pixels) ||
+    bad(c.max_channel_delta) ||
+    c.regions.some((r) => bad(r.mismatched_pixels) || bad(r.max_channel_delta))
+  );
+}
+
+export interface Gate4LegExpectation {
+  class: LegClass;
+  /** required when class is "pixel-mismatch": the exact steps classifyLeg must report, from
+   * expected.json "predictions" (make_expected.py; never hand-edited). */
+  mismatchSteps?: number[];
+}
+
+/** classifyLeg's verdict against one leg's prediction: the class, and -- for a sabotage leg --
+ * exactly the predicted mismatching steps, with every other step matching. */
+export function checkLegClass(
+  leg: string,
+  classification: Pick<
+    ReturnType<typeof classifyLeg>,
+    "result_class" | "reasons" | "mismatching_steps"
+  >,
+  checkpoints: readonly Checkpoint[],
+  exp: Gate4LegExpectation,
+  artifacts: string[],
+): Gate4Check {
+  const problems: string[] = [];
+  if (classification.result_class !== exp.class)
+    problems.push(
+      `class ${classification.result_class}, expected ${exp.class}`,
+    );
+  if (exp.mismatchSteps) {
+    const got = [...classification.mismatching_steps].sort((a, b) => a - b);
+    const want = [...exp.mismatchSteps].sort((a, b) => a - b);
+    if (got.join(",") !== want.join(","))
+      problems.push(
+        `mismatching steps {${got.join(",")}}, expected {${want.join(",")}}`,
+      );
+    for (const cp of checkpoints)
+      if (!want.includes(cp.step) && checkpointMismatch4(cp))
+        problems.push(
+          `step ${cp.step} does not match, expected it to (outside the sabotage)`,
+        );
+  } else {
+    for (const cp of checkpoints)
+      if (checkpointMismatch4(cp))
+        problems.push(`step ${cp.step} does not match, expected class success`);
+  }
+  return check(
+    `leg-class-${leg}`,
+    `the ${leg} leg classifies as ${exp.class}${exp.mismatchSteps ? ` with mismatching steps {${exp.mismatchSteps.join(",")}} and every other step matching` : ""}`,
+    problems,
+    `${classification.result_class}${classification.reasons.length > 0 ? ` (${classification.reasons.slice(0, 2).join(" | ")})` : ""}`,
+    artifacts,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// expected-text-reference / expected-text-receiver (D8)
+// ---------------------------------------------------------------------------------------------
+
+/** The oracle's dumped page bytes (`<oracleDir>/pages/<sha256>.grt`) for one step's `pages`,
+ * decoded and hash-verified, keyed by pageKeyOf. Only LA8 (grayscale/mono) pages decode; any
+ * other format is reported as a problem rather than silently skipped. */
+export async function loadAtlasPageImages(
+  oracleDir: string,
+  pages: readonly OraclePage[],
+): Promise<{ images: Map<string, AtlasPageImage>; problems: string[] }> {
+  const images = new Map<string, AtlasPageImage>();
+  const problems: string[] = [];
+  for (const p of pages) {
+    const key = pageKeyOf(p);
+    if (images.has(key)) continue;
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(
+        await readFile(join(oracleDir, "pages", `${p.sha256}.grt`)),
+      );
+    } catch {
+      problems.push(
+        `${key}: page bytes ${p.sha256} not found under ${join(oracleDir, "pages")}`,
+      );
+      continue;
+    }
+    if (payloadSha256(bytes) !== p.sha256) {
+      problems.push(`${key}: page bytes do not hash to ${p.sha256}`);
+      continue;
+    }
+    try {
+      const decoded = decodeTexturePayload(bytes);
+      if (decoded.format !== "LA8") {
+        problems.push(`${key}: page format ${decoded.format}, expected LA8`);
+        continue;
+      }
+      images.set(key, {
+        width: decoded.width,
+        height: decoded.height,
+        data: decoded.data,
+      });
+    } catch (e) {
+      problems.push(`${key}: ${(e as Error).message}`);
+    }
+  }
+  return { images, problems };
+}
+
+/** Every oracle step's page images, loaded once (shared by expected-text-reference and
+ * -receiver: the receiver has no oracle of its own, D7/Q6c, so both compare against the
+ * reference's). */
+export async function loadPagesByStep(
+  oracleDir: string,
+  oracle: OracleLog,
+): Promise<{
+  byStep: Map<number, Map<string, AtlasPageImage>>;
+  problems: string[];
+}> {
+  const byStep = new Map<number, Map<string, AtlasPageImage>>();
+  const problems: string[] = [];
+  for (const line of oracle.lines) {
+    const r = await loadAtlasPageImages(oracleDir, line.pages);
+    problems.push(...r.problems.map((p) => `step ${line.step}: ${p}`));
+    byStep.set(line.step, r.images);
+  }
+  return { byStep, problems };
+}
+
+/** D8: synthesizeText against `shots` inside each visible text node's region, at every settle
+ * step. `maxDelta` and the count of pixels at delta >= 1 are reported; a delta above 1 (not just
+ * the UNORM8 blend-rounding budget) is a problem, as is a glyph naming a page `pagesByStep`
+ * never loaded. */
+export function evaluateExpectedText(
+  expected: Gate4Expected,
+  oracle: OracleLog,
+  pagesByStep: ReadonlyMap<number, Map<string, AtlasPageImage>>,
+  shots: ReadonlyMap<string, Frame | null>,
+): { problems: string[]; maxDelta: number; deltaAtLeastOne: number } {
+  const problems: string[] = [];
+  let maxDelta = 0;
+  let deltaAtLeastOne = 0;
+  for (const s of expected.steps) {
+    const line = oracleAt(oracle, s.step);
+    const frame = shots.get(`step-${s.step}.png`);
+    if (!line || !frame) {
+      problems.push(`step ${s.step}: no ${line ? "shot" : "oracle line"}`);
+      continue;
+    }
+    const pages = pagesByStep.get(s.step);
+    if (!pages) {
+      problems.push(`step ${s.step}: no page images loaded`);
+      continue;
+    }
+    for (const node of line.nodes) {
+      const box = s.text_regions[node.name];
+      const background = s.background[node.name];
+      if (!box || !background) continue;
+      const synth = synthesizeText(node, pages, box, background);
+      if (synth.missingPages.length > 0) {
+        problems.push(
+          `step ${s.step}: ${node.name}'s glyphs name unmapped page(s) ${synth.missingPages.join(",")}`,
+        );
+        continue;
+      }
+      const cmp = compareSynthesizedText(frame, box, synth.frame);
+      maxDelta = Math.max(maxDelta, cmp.maxDelta);
+      if (cmp.maxDelta >= 1) deltaAtLeastOne += cmp.mismatched;
+      if (cmp.maxDelta > 1)
+        problems.push(
+          `step ${s.step}: ${node.name} max channel delta ${cmp.maxDelta} (budget 1), ${cmp.mismatched} px differ`,
+        );
+    }
+  }
+  return { problems, maxDelta, deltaAtLeastOne };
+}
+
+export function checkExpectedText(
+  id: "expected-text-reference" | "expected-text-receiver",
+  leg: string,
+  expected: Gate4Expected,
+  oracle: OracleLog,
+  pagesByStep: ReadonlyMap<number, Map<string, AtlasPageImage>>,
+  shots: ReadonlyMap<string, Frame | null>,
+  extraProblems: readonly string[],
+  evidence: string[],
+): Gate4Check {
+  const r = evaluateExpectedText(expected, oracle, pagesByStep, shots);
+  const problems = [...extraProblems, ...r.problems];
+  return check(
+    id,
+    `D8: synthesizeText (the oracle's glyph quads x each page's LA8 alpha x the node's font colour, straight-alpha blended over the region's background) against ${leg}'s shots inside every visible text node's region at every settle step, budget maxChannelDelta 1 (UNORM8 blend rounding is implementation-defined; 2 or more is a bug)`,
+    problems,
+    `max channel delta ${r.maxDelta} (budget 1), ${r.deltaAtLeastOne} px at delta >=1 across ${expected.steps.length} steps`,
+    evidence,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// resource-quiet
+// ---------------------------------------------------------------------------------------------
+
+/** Gate 2's resource-quiet, over a receiver's applied.json: the quiet steps (expected.json
+ * quiet_steps -- no texture traffic at all, Q6b) fetch and upload nothing. */
+export function evaluateResourceQuiet(
+  expected: Gate4Expected,
+  applied: AppliedJson | undefined,
+  quit: number,
+): string[] {
+  if (!applied?.transactions?.length)
+    return ["applied.json has no transactions"];
+  const problems: string[] = [];
+  for (const t of applied.transactions) {
+    if (t.frame === undefined) continue;
+    const step = stepOfFrame4(expected, t.frame, quit);
+    if (step < 0 || !expected.quiet_steps.includes(step)) continue;
+    const r: AppliedResources | null | undefined = t.resources;
+    const total =
+      (r?.fetched ?? 0) +
+      (r?.created ?? 0) +
+      (r?.updated ?? 0) +
+      (r?.replaced ?? 0) +
+      (r?.freed ?? 0);
+    if (total > 0)
+      problems.push(
+        `frame ${t.frame} (step ${step}, quiet): resources ${JSON.stringify(r)}`,
+      );
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------------------------------------
+// receiver-never-shapes (Q5)
+// ---------------------------------------------------------------------------------------------
+
+const FONT_FILE_RE = /\.(ttf|otf|woff2?|fnt|fontdata)\b/i;
+const FORBIDDEN_SHAPING_SYMBOLS = [
+  "TextServer",
+  "TextServerManager",
+  "FontFile",
+  "RichTextLabel",
+  "Label",
+  "Font",
+  "draw_string",
+  "draw_char",
+] as const;
+
+async function listGdFiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === ".godot") continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile() && entry.name.endsWith(".gd")) out.push(path);
+    }
+  };
+  await walk(root);
+  return out;
+}
+
+/** Q5 "receiver-never-shapes": (1) every traced receiver leg's openat trace opens no
+ * *.ttf/*.otf/*.woff/*.woff2/*.fnt/*.fontdata; (2) a static scan of receiver/**\/*.gd finds none
+ * of TextServer, TextServerManager, Font, FontFile, Label, RichTextLabel, draw_string or
+ * draw_char. The receiver project contains no font. */
+export async function checkReceiverNeverShapes(
+  outDir: string,
+  receiverProjectDir: string,
+  traceLegs: readonly string[],
+): Promise<Gate4Check> {
+  const problems: string[] = [];
+  for (const leg of traceLegs) {
+    const stracePath = join(outDir, leg, "strace.txt");
+    const text = await readTextOrUndefined(stracePath);
+    if (text === undefined) {
+      problems.push(`${leg}: strace.txt missing`);
+      continue;
+    }
+    const opens = text
+      .split("\n")
+      .filter((l) => /openat\(/.test(l) && !/= -1/.test(l));
+    const fontOpens = opens.filter((l) => FONT_FILE_RE.test(l));
+    if (fontOpens.length > 0)
+      problems.push(`${leg}: opened a font file: ${fontOpens[0].trim()}`);
+    if (opens.length === 0)
+      problems.push(`${leg}: no successful openat traced`);
+  }
+  const files = await listGdFiles(receiverProjectDir);
+  if (files.length === 0)
+    problems.push(`no .gd files found under ${receiverProjectDir}`);
+  for (const path of files) {
+    const text = (await readTextOrUndefined(path)) ?? "";
+    for (const sym of FORBIDDEN_SHAPING_SYMBOLS)
+      if (new RegExp(`\\b${sym}\\b`).test(text))
+        problems.push(`${path}: references ${sym}`);
+  }
+  return check(
+    "receiver-never-shapes",
+    `every traced receiver leg (${traceLegs.join(", ")}) opens no *.ttf/*.otf/*.woff/*.woff2/*.fnt/*.fontdata, and no file under ${receiverProjectDir} (*.gd) references ${FORBIDDEN_SHAPING_SYMBOLS.join(", ")}`,
+    problems,
+    `${traceLegs.length} trace(s) clean, ${files.length} receiver scripts clean`,
+    [
+      ...traceLegs.map((l) => join(outDir, l, "strace.txt")),
+      receiverProjectDir,
+    ],
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// receiver-consumed-stream, receiver-typed-clean
+// ---------------------------------------------------------------------------------------------
+
+async function fileSha256(path: string): Promise<string | undefined> {
+  try {
+    return payloadSha256(new Uint8Array(await readFile(path)));
+  } catch {
+    return undefined;
+  }
+}
+
+export interface ReceiverLegInfo {
+  leg: string;
+  dir: string;
+  applied: AppliedJson | undefined;
+}
+
+export async function checkReceiverConsumedStream(
+  receivers: readonly ReceiverLegInfo[],
+): Promise<Gate4Check> {
+  const problems: string[] = [];
+  for (const r of receivers) {
+    const copy = await fileSha256(join(r.dir, RECORDING_NAME));
+    const src = r.applied?.recording?.sha256;
+    if (!copy || src !== copy)
+      problems.push(
+        `${r.leg}: applied.json recording.sha256 ${src ?? "<none>"} != its own copy ${copy ?? "<unreadable>"}`,
+      );
+    if (r.applied?.status !== "ok" || r.applied?.end_seen !== true)
+      problems.push(
+        `${r.leg}: status=${JSON.stringify(r.applied?.status)} end_seen=${JSON.stringify(r.applied?.end_seen)}`,
+      );
+  }
+  return check(
+    "receiver-consumed-stream",
+    "every g4b file-mode receiver's applied.json reports status ok, end_seen true, and recording.sha256 equal to its own local copy of the capture recording it replayed",
+    problems,
+    `${receivers.length} receivers consumed their own recording`,
+    receivers.map((r) => join(r.dir, "applied.json")),
+  );
+}
+
+export async function checkReceiverTypedClean(
+  logs: readonly { leg: string; path: string }[],
+): Promise<Gate4Check> {
+  const problems: string[] = [];
+  for (const { leg, path } of logs) {
+    const text = await readTextOrUndefined(path);
+    if (text === undefined) {
+      problems.push(`${leg}: ${path} missing`);
+      continue;
+    }
+    for (const marker of [
+      "SCRIPT ERROR",
+      "SCRIPT WARNING",
+      "Parse Error",
+      "Failed to load script",
+    ])
+      if (text.includes(marker)) problems.push(`${leg}: ${marker}`);
+  }
+  return check(
+    "receiver-typed-clean",
+    "no g4b receiver log has a SCRIPT ERROR, SCRIPT WARNING, Parse Error or Failed to load script line",
+    problems,
+    `${logs.length} receiver logs clean`,
+    logs.map((l) => l.path),
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// atlas-hash-parity under sabotage-omit-atlas
+// ---------------------------------------------------------------------------------------------
+
+/** atlas-hash-parity re-run against a sabotage capture's own recording: its `failing` cells
+ * (evaluateAtlasParity) must equal the predicted ones exactly, no more and no fewer -- the proof
+ * that the sabotage was captured and propagated, not a capture-side regression. */
+export function checkAtlasHashParitySabotage(
+  leg: string,
+  expected: Gate4Expected,
+  oracle: OracleLog,
+  recording: RecordingSummary,
+  want: Record<string, number[]>,
+): Gate4Check {
+  const r = evaluateAtlasParity(expected, oracle, recording);
+  const problems: string[] = [];
+  const keys = new Set([...Object.keys(r.failing), ...Object.keys(want)]);
+  for (const key of keys) {
+    const got = [...(r.failing[key] ?? [])].sort((a, b) => a - b);
+    const w = [...(want[key] ?? [])].sort((a, b) => a - b);
+    if (got.join(",") !== w.join(","))
+      problems.push(
+        `${key}: fails at steps {${got.join(",")}}, predicted {${w.join(",")}}`,
+      );
+  }
+  return check(
+    "atlas-hash-parity-sabotage-omit-atlas",
+    `on ${leg}'s own recording, atlas-hash-parity (evaluateAtlasParity) fails exactly at the predicted cells: ${
+      Object.entries(want)
+        .map(([k, v]) => `${k} {${v.join(",")}}`)
+        .join(", ") || "none"
+    }`,
+    problems,
+    `failing cells ${JSON.stringify(r.failing)}`,
+    [recording.path],
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1607,6 +2190,12 @@ export interface Gate4Context {
   expected: Gate4Expected;
   lock: FontLockEntry[];
   now?: Date;
+  /** absolute path to experiments/render-stream/receiver (G4b's receiver-never-shapes static
+   * scan: no receiver/**\/*.gd may reference a TextServer/Font/Label symbol). */
+  receiverDir: string;
+  /** absolute path to experiments/render-stream/fixtures/gate4 (G4b's
+   * receiver-never-loaded-fixture). */
+  fixtureDir: string;
 }
 
 function notRunCheck(group: string, detail: string): Gate4Check {
@@ -1695,9 +2284,14 @@ export async function runGate4(
   let budgets: Gate4Report["budgets"] = null;
   let census: Gate4Report["census"] = null;
   let ink: Gate4Report["ink"] = null;
+  // Shared with the g4b block below (both groups always run together, run-gate4.sh enforces it).
+  let g4aCapture: Gate3CaptureEvaluation | undefined;
+  let g4aOracle: OracleLog | undefined;
+  let g4aReference: Map<string, Frame | null> = new Map();
 
   if (groups.run.includes("g4a")) {
     const capture: Gate3CaptureEvaluation = await evaluateCapture(outDir);
+    g4aCapture = capture;
     const evidence = await loadCapture(
       outDir,
       "capture",
@@ -1707,7 +2301,9 @@ export async function runGate4(
     const oracles = [];
     for (const leg of ORACLE_LEGS) oracles.push(await loadOracle(outDir, leg));
     const oracle = oracles[0];
+    g4aOracle = oracle;
     const reference = await loadShots(outDir, "reference", expected);
+    g4aReference = reference;
     const repeat = await loadShots(outDir, "reference-repeat", expected);
     const armed = await loadShots(outDir, "reference-armed", expected);
 
@@ -1837,8 +2433,349 @@ export async function runGate4(
       notRunCheck("g4a", "g4a was not in --legs; its checks are not-run"),
     );
   }
+
+  if (groups.run.includes("g4b")) {
+    if (!g4aCapture || !g4aOracle) {
+      checks.push(
+        check(
+          "group-g4b",
+          "g4b requires g4a's capture and oracle (run-gate4.sh ties them to the same --legs)",
+          ["g4a did not produce a usable capture or oracle in this run"],
+          "",
+          [],
+        ),
+      );
+    } else {
+      const capture = g4aCapture;
+      const oracle = g4aOracle;
+      const referenceShots = g4aReference;
+      const referenceDir = join(outDir, "reference");
+      const oracleDir = join(outDir, ORACLE_LEGS[0], "oracle");
+      const seqs = receiverStepSeqs(expected, capture.full);
+
+      const receiverApplied = await readJson<AppliedJson>(
+        join(outDir, "receiver", "applied.json"),
+      );
+      const patchApplied = await readJson<AppliedJson>(
+        join(outDir, "receiver-patch", "applied.json"),
+      );
+      const traceApplied = await readJson<AppliedJson>(
+        join(outDir, "receiver-headless-trace", "applied.json"),
+      );
+      const receiverShots = await loadReceiverShots(
+        outDir,
+        "receiver",
+        expected,
+        seqs,
+      );
+      const patchShots = await loadReceiverShots(
+        outDir,
+        "receiver-patch",
+        expected,
+        seqs,
+      );
+
+      const receiverCheckpoints = computeGate4Checkpoints(
+        expected,
+        referenceDir,
+        referenceShots,
+        join(outDir, "receiver"),
+        receiverShots,
+        seqs.settle,
+      );
+      const patchCheckpoints = computeGate4Checkpoints(
+        expected,
+        referenceDir,
+        referenceShots,
+        join(outDir, "receiver-patch"),
+        patchShots,
+        seqs.settle,
+      );
+      const requestedShotSeqs = [
+        ...seqs.settle.values(),
+        ...seqs.early.values(),
+      ];
+      const receiverClass = classifyLeg({
+        captureResult: capture.captureResult,
+        recording: capture.full,
+        receiver: {
+          applied: receiverApplied,
+          requestedShotSeqs,
+          shotFiles: await shotSeqsPresentG4(join(outDir, "receiver")),
+        },
+        checkpoints: receiverCheckpoints,
+      });
+      const patchClass = classifyLeg({
+        captureResult: capture.captureResult,
+        recording: capture.patch,
+        receiver: {
+          applied: patchApplied,
+          requestedShotSeqs,
+          shotFiles: await shotSeqsPresentG4(join(outDir, "receiver-patch")),
+        },
+        checkpoints: patchCheckpoints,
+      });
+
+      const refVsReceiver = compareLegs(
+        expected,
+        referenceShots,
+        receiverShots,
+      );
+      const refVsPatch = compareLegs(expected, referenceShots, patchShots);
+      const imageReceiver = evaluateExpectedImage(
+        expected,
+        "receiver",
+        receiverShots,
+      );
+      const inkReceiver = evaluateInkPresence(expected, receiverShots);
+      const quietReceiver = evaluateResourceQuiet(
+        expected,
+        receiverApplied,
+        G4A_CAPTURE_QUIT_FRAME,
+      );
+      const quietPatch = evaluateResourceQuiet(
+        expected,
+        patchApplied,
+        G4A_CAPTURE_QUIT_FRAME,
+      );
+      const pages = await loadPagesByStep(oracleDir, oracle);
+      const textReference = checkExpectedText(
+        "expected-text-reference",
+        "reference",
+        expected,
+        oracle,
+        pages.byStep,
+        referenceShots,
+        pages.problems,
+        [oracleDir],
+      );
+      const textReceiver = checkExpectedText(
+        "expected-text-receiver",
+        "receiver",
+        expected,
+        oracle,
+        pages.byStep,
+        receiverShots,
+        pages.problems,
+        [oracleDir, join(outDir, "receiver", "shots")],
+      );
+
+      const receiverLegInfos: ReceiverLegInfo[] = [
+        {
+          leg: "receiver",
+          dir: join(outDir, "receiver"),
+          applied: receiverApplied,
+        },
+        {
+          leg: "receiver-patch",
+          dir: join(outDir, "receiver-patch"),
+          applied: patchApplied,
+        },
+        {
+          leg: "receiver-headless-trace",
+          dir: join(outDir, "receiver-headless-trace"),
+          applied: traceApplied,
+        },
+      ];
+      const sabotageChecks: Gate4Check[] = [];
+      for (const kind of G4B_SABOTAGE_KINDS) {
+        const leg = `sabotage-${kind}`;
+        const captureDir = join(outDir, leg, "capture");
+        const receiverDir2 = join(outDir, leg, "receiver");
+        const sabCaptureResult = await readJson<CaptureResultJson>(
+          join(captureDir, "evidence", "result.json"),
+        );
+        const sabFull = await loadRecording(join(captureDir, RECORDING_NAME));
+        const sabSeqs = receiverStepSeqs(expected, sabFull);
+        const sabShots = await loadReceiverShots(
+          outDir,
+          `${leg}/receiver`,
+          expected,
+          sabSeqs,
+        );
+        const sabApplied = await readJson<AppliedJson>(
+          join(receiverDir2, "applied.json"),
+        );
+        const sabCheckpoints = computeGate4Checkpoints(
+          expected,
+          referenceDir,
+          referenceShots,
+          receiverDir2,
+          sabShots,
+          sabSeqs.settle,
+        );
+        const sabClass = classifyLeg({
+          captureResult: sabCaptureResult,
+          recording: sabFull,
+          receiver: {
+            applied: sabApplied,
+            // run_g4b() does not set RECEIVER_EXTRA_SHOTS for a sabotage receiver: only the
+            // settle seqs were actually requested (unlike the plain receiver/receiver-patch,
+            // which also shoot the early frames).
+            requestedShotSeqs: [...sabSeqs.settle.values()],
+            shotFiles: await shotSeqsPresentG4(receiverDir2),
+          },
+          checkpoints: sabCheckpoints,
+        });
+        const prediction = expected.predictions[leg];
+        sabotageChecks.push(
+          checkLegClass(
+            leg,
+            sabClass,
+            sabCheckpoints,
+            { class: "pixel-mismatch", mismatchSteps: prediction?.steps ?? [] },
+            [
+              join(captureDir, RECORDING_NAME),
+              join(receiverDir2, "applied.json"),
+            ],
+          ),
+        );
+        if (kind === "omit-atlas") {
+          sabotageChecks.push(
+            checkAtlasHashParitySabotage(
+              leg,
+              expected,
+              oracle,
+              sabFull,
+              prediction?.atlas_hash_parity_fails ?? {},
+            ),
+          );
+        }
+        receiverLegInfos.push({
+          leg: `${leg}-receiver`,
+          dir: receiverDir2,
+          applied: sabApplied,
+        });
+        legs[leg] = {
+          group: "g4b",
+          expected_class: "pixel-mismatch",
+          result_class: sabClass.result_class,
+          reasons: sabClass.reasons,
+          harmless_ties: sabClass.harmless_ties,
+          exit_code: await readExitCode(receiverDir2),
+          artifacts: [
+            join(captureDir, RECORDING_NAME),
+            join(receiverDir2, "applied.json"),
+          ],
+        };
+      }
+
+      checks.push(
+        checkLegClass(
+          "receiver",
+          receiverClass,
+          receiverCheckpoints,
+          { class: "success" },
+          [join(outDir, "receiver", "applied.json")],
+        ),
+        checkLegClass(
+          "receiver-patch",
+          patchClass,
+          patchCheckpoints,
+          { class: "success" },
+          [join(outDir, "receiver-patch", "applied.json")],
+        ),
+        check(
+          "receiver-vs-reference",
+          "the receiver and receiver-patch legs' shots (re-keyed from wire seq to fixture step) equal the reference's exactly, full frame and every region (gate4Regions)",
+          [
+            ...refVsReceiver.problems.map((p) => `receiver: ${p}`),
+            ...refVsPatch.problems.map((p) => `receiver-patch: ${p}`),
+          ],
+          `receiver budgets: ${refVsReceiver.budgets.map((b) => `${b.region} ${b.max_channel_delta}`).join(", ")}; receiver-patch budgets: ${refVsPatch.budgets.map((b) => `${b.region} ${b.max_channel_delta}`).join(", ")}`,
+          [
+            join(outDir, "receiver", "shots"),
+            join(outDir, "receiver-patch", "shots"),
+          ],
+        ),
+        check(
+          "expected-image-receiver",
+          "every receiver shot equals synthesizeGate4 exactly outside the text regions, as for the reference",
+          imageReceiver.problems,
+          `${shotsOf(expected).length} receiver shots match the synthesis exactly`,
+          [join(outDir, "receiver", "shots")],
+        ),
+        textReference,
+        textReceiver,
+        check(
+          "ink-presence-receiver",
+          "the receiver's settle shots carry the same ink presence and freshness as the reference's, as for the reference",
+          inkReceiver.problems,
+          `ink in ${expected.text_nodes.length} regions x ${expected.steps.length} steps as expected`,
+          [join(outDir, "receiver", "shots")],
+        ),
+        check(
+          "resource-quiet",
+          `the quiet steps (${expected.quiet_steps.join(",")}: no texture traffic, Q6b) fetch and upload nothing on either sink's receiver (applied.json per-transaction resources)`,
+          [
+            ...quietReceiver.map((p) => `receiver: ${p}`),
+            ...quietPatch.map((p) => `receiver-patch: ${p}`),
+          ],
+          `${expected.quiet_steps.length} quiet steps clean on both sinks`,
+          [
+            join(outDir, "receiver", "applied.json"),
+            join(outDir, "receiver-patch", "applied.json"),
+          ],
+        ),
+        await checkReceiverNeverShapes(outDir, ctx.receiverDir, [
+          "receiver-headless-trace",
+        ]),
+        await checkReceiverConsumedStream(receiverLegInfos),
+        fromGate0(
+          await checkReceiverNeverLoadedFixture(outDir, {
+            receiverProjectDir: ctx.receiverDir,
+            fixtureProjectDir: ctx.fixtureDir,
+            receiverLogs: [
+              join(outDir, "receiver", "stdout.log"),
+              join(outDir, "receiver-patch", "stdout.log"),
+              join(outDir, "receiver-headless-trace", "stdout.log"),
+              ...G4B_SABOTAGE_KINDS.map((k) =>
+                join(outDir, `sabotage-${k}`, "receiver", "stdout.log"),
+              ),
+            ],
+          }),
+        ),
+        await checkReceiverTypedClean(
+          receiverLegInfos.map((r) => ({
+            leg: r.leg,
+            path: join(r.dir, "stdout.log"),
+          })),
+        ),
+        ...sabotageChecks,
+      );
+      legs.receiver = {
+        group: "g4b",
+        expected_class: "success",
+        result_class: receiverClass.result_class,
+        reasons: receiverClass.reasons,
+        harmless_ties: receiverClass.harmless_ties,
+        exit_code: await readExitCode(join(outDir, "receiver")),
+        artifacts: [join(outDir, "receiver", "applied.json")],
+      };
+      legs["receiver-patch"] = {
+        group: "g4b",
+        expected_class: "success",
+        result_class: patchClass.result_class,
+        reasons: patchClass.reasons,
+        harmless_ties: patchClass.harmless_ties,
+        exit_code: await readExitCode(join(outDir, "receiver-patch")),
+        artifacts: [join(outDir, "receiver-patch", "applied.json")],
+      };
+      legs["receiver-headless-trace"] = {
+        group: "g4b",
+        expected_class: null,
+        result_class: null,
+        reasons: [],
+        exit_code: await readExitCode(join(outDir, "receiver-headless-trace")),
+        artifacts: [join(outDir, "receiver-headless-trace", "applied.json")],
+      };
+    }
+  } else if (groups.landed.includes("g4b")) {
+    checks.push(notRunCheck("g4b", "g4b was not in --legs"));
+  }
+
   for (const group of notRun)
-    if (group !== "g4a")
+    if (group !== "g4a" && group !== "g4b")
       checks.push(notRunCheck(group, `${group} was not in --legs`));
 
   const binary = await readJson<{ path?: string; sha256?: string }>(

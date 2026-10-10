@@ -4,7 +4,7 @@
 #
 #   bash run-gate4.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g4a]
+#     [--legs g4a,g4b]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -12,9 +12,12 @@
 # (comma-separated); the default is every group whose increment has landed: g4a (G4a: font
 # provisioning and the Latin grayscale fixture's import, a 400-frame headless capture with both
 # sinks and the store, its rendered reference and a same-build repeat with the glyph oracle on,
-# and an extension-armed reference with the oracle off). g4b (receiver legs, text synthesis,
-# sabotages), g4c (layout), g4d (RichTextLabel), g4e (MSDF on render-stream/3) and g4f
-# (multilingual shaping) are known but have not landed.
+# and an extension-armed reference with the oracle off), g4b (G4b: the unchanged receiver on the
+# main capture's full and patch sinks plus a headless openat trace, and three sabotage captures
+# -- freeze-frame, perturb-transform and omit-op texture_2d_update -- each with its own rendered
+# receiver). g4b needs g4a's capture and reference in the same run (pass --legs g4a,g4b). g4c
+# (layout), g4d (RichTextLabel), g4e (MSDF on render-stream/3) and g4f (multilingual shaping) are
+# known but have not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -38,8 +41,15 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g4a)
+LANDED_GROUPS=(g4a g4b)
 KNOWN_GROUPS=(g4a g4b g4c g4d g4e g4f)
+
+# The fixture's default timeline (fixtures/gate4/expected.json): S=1, N=10, so step k's applied
+# frame is S+N*k and its "early" shot (one frame after an upload, Q6b "Intermediate shots") is
+# S+N*k+1.
+START_FRAME4=1
+STEP_FRAMES4=10
+step_frame4() { echo $((START_FRAME4 + STEP_FRAMES4 * $1)); }
 
 EXTENSION=""
 CALIBRATION=""
@@ -138,6 +148,17 @@ else
 		GROUPS_RUN+=("$group")
 	done
 fi
+case " ${GROUPS_RUN[*]} " in
+*" g4b "*)
+	case " ${GROUPS_RUN[*]} " in
+	*" g4a "*) ;;
+	*)
+		echo "run-gate4: g4b needs g4a's capture and reference; pass --legs g4a,g4b" >&2
+		exit 2
+		;;
+	esac
+	;;
+esac
 
 ACTUAL_BINARY_SHA256="$(sha256sum "$BINARY" | awk '{print $1}')"
 if [ "$ACTUAL_BINARY_SHA256" != "$EXPECTED_BINARY_SHA256" ]; then
@@ -268,9 +289,78 @@ run_g4a() {
 	GS_RUN_DIR=""
 }
 
+# early_shots_csv <recording>: CSV of the seqs published at the gate 4 fixture's early frames
+# (12, 42, 72 -- S+N*k+1 for k in {1,4,7}, gate4-design.md Q6b "Intermediate shots"; G4a's As-built
+# note: receivers must also shoot these, or a page published one frame late would be missed).
+early_shots_csv() {
+	local rec="$1" out="" sep="" seq
+	for k in 1 4 7; do
+		seq="$(seq_at_frame "$rec" "$(($(step_frame4 "$k") + 1))" || true)"
+		if [ -n "$seq" ]; then
+			out="$out$sep$seq"
+			sep=","
+		fi
+	done
+	echo "$out"
+}
+
+# g4_capture <dir> [extra env words...]: a headless capture host on fixtures/gate4 at the
+# fixture's own default quit frame (102, unlike g4a's 400-frame main capture), both sinks and its
+# store, for a sabotage leg.
+g4_capture() {
+	local dir="$1"
+	shift
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size "$@")
+	run_capture "$dir" "" none
+}
+
+run_g4b() {
+	# The unchanged receiver on the main capture: full sink, patch sink, and a headless trace
+	# (openat, for receiver-never-loaded-fixture / receiver-never-shapes).
+	echo "run-gate4: receiver-headless-trace"
+	if prepare_recording "$OUT/capture/$RECORDING_NAME" "$OUT/receiver-headless-trace"; then
+		RECEIVER_STORE_DIR="$OUT/capture/store"
+		run_receiver_headless "$OUT/receiver-headless-trace" openat
+	fi
+
+	# Sabotage captures (headless, the fixture's default 102-frame run): freeze-frame at step 1's
+	# applied frame (11), perturb-transform at step 2's (21), omit-op texture_2d_update at step
+	# 4's (41) -- gate4-design.md "G4b" leg table; predictions are fixtures/gate4/expected.json
+	# "predictions" (make_expected.py, never hand-edited).
+	echo "run-gate4: sabotage-freeze (capture, freeze-frame @$(step_frame4 1))"
+	g4_capture "$OUT/sabotage-freeze/capture" GRC_SABOTAGE=freeze-frame GRC_SABOTAGE_FRAME="$(step_frame4 1)"
+	echo "run-gate4: sabotage-perturb (capture, perturb-transform @$(step_frame4 2))"
+	g4_capture "$OUT/sabotage-perturb/capture" GRC_SABOTAGE=perturb-transform GRC_SABOTAGE_FRAME="$(step_frame4 2)"
+	echo "run-gate4: sabotage-omit-atlas (capture, omit-op texture_2d_update @$(step_frame4 4))"
+	g4_capture "$OUT/sabotage-omit-atlas/capture" GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=texture_2d_update GRC_SABOTAGE_FRAME="$(step_frame4 4)"
+
+	# Rendered receiver legs: one private gamescope for all of them (the main receiver, its patch
+	# twin, and the three sabotage receivers).
+	echo "run-gate4: bringing up private gamescope for g4b receiver legs"
+	gs_start 640 360 "$OUT/gamescope-g4b"
+
+	echo "run-gate4: receiver (full sink)"
+	RECEIVER_EXTRA_SHOTS="$(early_shots_csv "$OUT/capture/$RECORDING_NAME")"
+	run_rendered_receiver "$OUT/capture" "$OUT/receiver"
+
+	echo "run-gate4: receiver-patch"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_EXTRA_SHOTS="$(early_shots_csv "$OUT/capture/$RECORDING_NAME")"
+	run_rendered_receiver "$OUT/capture" "$OUT/receiver-patch"
+
+	for kind in freeze perturb omit-atlas; do
+		echo "run-gate4: sabotage-$kind (receiver)"
+		run_rendered_receiver "$OUT/sabotage-$kind/capture" "$OUT/sabotage-$kind/receiver"
+	done
+
+	gs_teardown "$OUT/gamescope-g4b"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g4a) run_g4a ;;
+	g4b) run_g4b ;;
 	esac
 done
 

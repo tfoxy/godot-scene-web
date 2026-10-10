@@ -55,15 +55,20 @@ import {
   TEXT_SERVER_NAME,
 } from "../lib/gate4-checks";
 import {
+  type AtlasPageImage,
   appendOnlyViolations,
+  type Box4,
   cacheKeyOf,
+  compareSynthesizedText,
   type Gate4Expected,
   inkCodepoints,
   type OracleLine,
   type OracleNode,
   type OraclePage,
+  type Rgba8,
   stepOfFrame4,
   synthesizeGate4,
+  synthesizeText,
 } from "../lib/gate4-expected";
 import {
   decodeTexturePayload,
@@ -1098,6 +1103,114 @@ function pixelCases(w: World): void {
   );
 }
 
+// ---------------------------------------------------------------------------------------------
+// synthesizeText / compareSynthesizedText (G4b, D8)
+// ---------------------------------------------------------------------------------------------
+
+function synthesizeTextCases(): void {
+  // An 8x8 LA8 page: L=255 everywhere (gray/mono glyphs, D4), one glyph's 2x2 uv rect at (1,1)
+  // with coverage 170 (= 2/3 of 255 exactly, so the blend below has no rounding ambiguity).
+  const page: AtlasPageImage = {
+    width: 8,
+    height: 8,
+    data: new Uint8Array(8 * 8 * 2),
+  };
+  for (let i = 0; i < 8 * 8; i++) page.data[i * 2] = 255;
+  for (let y = 0; y < 2; y++)
+    for (let x = 0; x < 2; x++)
+      page.data[((1 + y) * 8 + (1 + x)) * 2 + 1] = 170;
+  const pages = new Map<string, AtlasPageImage>([["F@16/0#0", page]]);
+  const node: OracleNode = {
+    name: "L1",
+    text: "A",
+    font_key: "F",
+    size: 16,
+    colour: [1, 0, 0, 1],
+    global_xform: [1, 0, 0, 1, 10, 20],
+    font_height: 20,
+    ascent: 16,
+    lines: 1,
+    shaped_glyphs: 1,
+    glyphs: [
+      {
+        index: 1,
+        font_key: "F",
+        size: 16,
+        x: 0,
+        y: 0,
+        quad: [2, 3, 2, 2],
+        uv: [1, 1, 2, 2],
+        page: 0,
+      },
+    ],
+  };
+  const box: Box4 = [10, 20, 20, 30];
+  const background: Rgba8 = [51, 51, 102, 255];
+  const { frame, missingPages } = synthesizeText(node, pages, box, background);
+  assert(
+    "synthesizeText: no missing pages",
+    missingPages.length === 0,
+    JSON.stringify(missingPages),
+  );
+  // world quad = local (2,3) + origin (10,20) = (12,23); box-local offset (2,3). Hand-computed
+  // straight-alpha blend at coverage 2/3, red ink (1,0,0,1) over (51,51,102,255): R round(255*2/3
+  // + 51*1/3)=187, G round(0 + 51/3)=17, B round(0 + 102/3)=34, A stays 255.
+  const w = box[2] - box[0];
+  const idx = (3 * w + 2) * 4;
+  assert(
+    "synthesizeText: glyph pixel blends red ink over the background at 2/3 coverage",
+    frame.rgba[idx] === 187 &&
+      frame.rgba[idx + 1] === 17 &&
+      frame.rgba[idx + 2] === 34 &&
+      frame.rgba[idx + 3] === 255,
+    frame.rgba.slice(idx, idx + 4).join(","),
+  );
+  assert(
+    "synthesizeText: a pixel outside the glyph stays the background",
+    frame.rgba[0] === 51 &&
+      frame.rgba[1] === 51 &&
+      frame.rgba[2] === 102 &&
+      frame.rgba[3] === 255,
+  );
+  const got: Frame = {
+    width: 40,
+    height: 60,
+    rgba: new Uint8Array(40 * 60 * 4),
+  };
+  for (let i = 0; i < 40 * 60; i++) got.rgba.set(background, i * 4);
+  for (let y = box[1]; y < box[3]; y++)
+    for (let x = box[0]; x < box[2]; x++) {
+      const gi = (y * got.width + x) * 4;
+      const si = ((y - box[1]) * w + (x - box[0])) * 4;
+      for (let c = 0; c < 4; c++) got.rgba[gi + c] = frame.rgba[si + c];
+    }
+  const cmp = compareSynthesizedText(got, box, frame);
+  assert(
+    "compareSynthesizedText: an exact copy has zero mismatch",
+    cmp.mismatched === 0 && cmp.maxDelta === 0,
+    JSON.stringify(cmp),
+  );
+  got.rgba[((box[1] + 3) * got.width + (box[0] + 2)) * 4] = 200;
+  const cmp2 = compareSynthesizedText(got, box, frame);
+  assert(
+    "compareSynthesizedText: a perturbed pixel is reported with the right delta",
+    cmp2.mismatched === 1 && cmp2.maxDelta === Math.abs(200 - 187),
+    JSON.stringify(cmp2),
+  );
+  const node2: OracleNode = {
+    ...node,
+    glyphs: [{ ...node.glyphs[0], font_key: "DF" }],
+  };
+  const r2 = synthesizeText(node2, pages, box, background);
+  assert(
+    "synthesizeText: a glyph on an unmapped page is recorded as missing, not synthesized wrong",
+    r2.missingPages.length === 1 &&
+      r2.missingPages[0] === "DF@16/0#0" &&
+      r2.frame.rgba.every((v, i) => v === background[i % 4]),
+    JSON.stringify(r2.missingPages),
+  );
+}
+
 async function fileCases(w: World): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "gate4-selftest-"));
   try {
@@ -1143,6 +1256,7 @@ async function main(): Promise<void> {
   appendOnlyWorldCases(w);
   await censusCases(w);
   pixelCases(w);
+  synthesizeTextCases();
   await fileCases(w);
   console.log(
     `\nself-test-gate4: ${assertions - failures}/${assertions} assertions passed`,
