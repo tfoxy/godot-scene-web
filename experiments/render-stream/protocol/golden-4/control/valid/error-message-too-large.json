@@ -1,0 +1,5 @@
+{
+  "type": "error",
+  "reason": "message-too-large",
+  "detail": "transaction 42 is 20000000 bytes"
+}

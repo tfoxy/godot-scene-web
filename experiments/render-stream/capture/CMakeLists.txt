@@ -170,6 +170,17 @@ target_compile_definitions(rs3_codec_test PRIVATE
   GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3")
 add_test(NAME rs3_codec COMMAND rs3_codec_test)
 
+# Gate 5 (G5w): render-stream/4 is a protocol-version switch on the SAME /2 codec/diff modules
+# (Session::version/Transaction::version/Snapshot::version), proven byte-identical to
+# protocol/golden-4/{full,patch,inline}.rs4 -- the eleven new commands, the mesh table, cmd_i32
+# and mesh_f32.
+add_executable(rs4_codec_test test/rs4_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs4_codec_test PRIVATE src test)
+target_link_libraries(rs4_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs4_codec_test PRIVATE
+  GRC_GOLDEN4_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-4")
+add_test(NAME rs4_codec COMMAND rs4_codec_test)
+
 # Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
 # golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).
 add_executable(rs_sha256_test test/rs_sha256_test.cpp src/rs_sha256.cpp)

@@ -59,7 +59,16 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV3 = {0x47, 0x52, 0x53, 0x33,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV3 = "render-stream/3";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3 };
+// render-stream/4 (G5w, render-stream-4.md): /3 plus eleven new draw/state commands, a mesh
+// table, a new `i32` block (`cmd_i32`), a new `mesh_f32` transaction block and a new mesh payload
+// format (`render-stream-mesh/1`). As with /3 (gate4-design.md G4e1), /4 is a protocol-version
+// switch on Session, not a fork.
+inline constexpr std::array<std::uint8_t, 8> kMagicV4 = {0x47, 0x52, 0x53, 0x34,
+                                                          0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV4 = "render-stream/4";
+inline constexpr const char *kMeshPayloadSchema = "render-stream-mesh/1";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4 };
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
@@ -70,6 +79,17 @@ inline constexpr std::size_t kAddTextureRectFloats = 8;       // rect 4, modulat
 inline constexpr std::size_t kAddTextureRectRegionFloats = 12;  // rect 4, src 4, modulate 4
 // new at /3: rect 4, src 4, modulate 4, px_range 1, scale 1 (render-stream-3.md "Command").
 inline constexpr std::size_t kAddMsdfTextureRectRegionFloats = 14;
+// new at /4 (render-stream-4.md "Command"): fixed float counts; the variable-length ops
+// (AddPolyline/AddMultiline/AddPrimitive/AddPolygon/AddTriangleArray) are computed from their
+// points/colors/uvs vectors instead.
+inline constexpr std::size_t kAddLineFloats = 9;        // from 2, to 2, colour 4, width 1
+inline constexpr std::size_t kAddCircleFloats = 7;       // position 2, radius 1, colour 4
+inline constexpr std::size_t kAddNinePatchFloats = 16;   // rect 4, source 4, margins 2+2, modulate 4
+inline constexpr std::size_t kAddMeshFloats = 10;        // transform 6, modulate 4
+inline constexpr std::size_t kAddSetTransformFloats = 6;  // transform 6
+// render-stream-4.md "Mesh payload": the custom AABB occupies six floats in mesh_f32 per present
+// (non-freed) mesh entry.
+inline constexpr std::size_t kMeshAabbFloats = 6;
 
 inline constexpr std::size_t kMaxLiveItems = 4096;
 inline constexpr std::size_t kMaxCommandsPerItem = 1024;
@@ -100,21 +120,36 @@ enum class CanvasRole : std::uint8_t { None, Root };  // None -> JSON null
 
 enum class ParentKind : std::uint8_t { None, Canvas, Item };  // None -> JSON null
 
-// AddMsdfTextureRectRegion: new at /3 (render-stream-3.md "Command").
+// AddMsdfTextureRectRegion: new at /3 (render-stream-3.md "Command"). AddLine..AddClipIgnore: new
+// at /4 (render-stream-4.md "Command").
 enum class CommandKind : std::uint8_t {
   AddRect,
   AddTextureRect,
   AddTextureRectRegion,
   AddMsdfTextureRectRegion,
+  AddLine,
+  AddPolyline,
+  AddMultiline,
+  AddCircle,
+  AddPrimitive,
+  AddPolygon,
+  AddTriangleArray,
+  AddNinePatch,
+  AddMesh,
+  AddSetTransform,
+  AddClipIgnore,
   Unsupported,
 };
 
 // CanvasTextureHeadless (G2d): a texture draw naming RID() on a headless host, whose dummy
 // storage's canvas_texture_allocate() returns RID() (render-stream-2.md "Commands").
+// UnknownMesh/SkinnedGeometry: new at /4 (render-stream-4.md "Command"; D16).
 enum class UnsupportedCmdReason : std::uint8_t {
   UnsupportedOp,
   UnknownTexture,
   CanvasTextureHeadless,
+  UnknownMesh,
+  SkinnedGeometry,
 };
 
 enum class TransactionStatus : std::uint8_t { Ok, CaptureFailure };
@@ -136,6 +171,9 @@ enum class UnsupportedReason : std::uint8_t {
   UnknownTexture,       // new at /2: derived from an unsupported "unknown-texture" command
   UnsupportedTexture,   // new at /2: a texture-rect command naming an unsupported texture entry
   CanvasTextureHeadless,  // G2d: derived from an unsupported "canvas-texture-headless" command
+  UnknownMesh,          // new at /4: derived from an unsupported "unknown-mesh" command
+  SkinnedGeometry,      // new at /4: derived from an unsupported "skinned-geometry" command
+  UnsupportedMesh,      // new at /4: an add_mesh command naming an unsupported mesh entry
 };
 
 enum class SabotageKind : std::uint8_t {
@@ -154,6 +192,7 @@ enum class SabotageKind : std::uint8_t {
   DropResource,            // new at /2 (G2c2)
   Unpin,                   // new at /2 (G2c2)
   PerturbGlyph,            // new at /3 (G4e1/G4e2, render-stream-3.md)
+  PerturbVertex,           // new at /4 (G5w, render-stream-4.md)
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -194,6 +233,17 @@ enum class Delivery : std::uint8_t { OutOfBand, Inline, Mixed };
 enum class Fetch : std::uint8_t { Http, Directory, None };
 enum class Auth : std::uint8_t { None, Bearer };
 
+// --- new at /4: mesh table, add_nine_patch axis modes (render-stream-4.md) --------------------
+
+enum class AxisStretchMode : std::uint8_t { Stretch, Tile, TileFit };
+
+// render-stream-4.md "Mesh payload": the five RenderingServer 2D primitive types a surface may
+// declare.
+enum class Primitive : std::uint8_t { Points, Lines, LineStrip, Triangles, TriangleStrip };
+
+enum class MeshStatus : std::uint8_t { Ok, Unsupported, Freed };
+enum class MeshReason : std::uint8_t { MeshFormat, MeshBlendShapes, PayloadTooLarge };
+
 // Wire spellings (render-stream-2.md). Each returns a string literal.
 inline const char *to_wire(Origin v) {
   switch (v) {
@@ -229,6 +279,9 @@ inline const char *to_wire(UnsupportedReason v) {
   case UnsupportedReason::UnknownTexture: return "unknown-texture";
   case UnsupportedReason::UnsupportedTexture: return "unsupported-texture";
   case UnsupportedReason::CanvasTextureHeadless: return "canvas-texture-headless";
+  case UnsupportedReason::UnknownMesh: return "unknown-mesh";
+  case UnsupportedReason::SkinnedGeometry: return "skinned-geometry";
+  case UnsupportedReason::UnsupportedMesh: return "unsupported-mesh";
   }
   return "unsupported-op";
 }
@@ -237,6 +290,8 @@ inline const char *to_wire(UnsupportedCmdReason v) {
   case UnsupportedCmdReason::UnsupportedOp: return "unsupported-op";
   case UnsupportedCmdReason::UnknownTexture: return "unknown-texture";
   case UnsupportedCmdReason::CanvasTextureHeadless: return "canvas-texture-headless";
+  case UnsupportedCmdReason::UnknownMesh: return "unknown-mesh";
+  case UnsupportedCmdReason::SkinnedGeometry: return "skinned-geometry";
   }
   return "unsupported-op";
 }
@@ -257,6 +312,7 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::DropResource: return "drop-resource";
   case SabotageKind::Unpin: return "unpin";
   case SabotageKind::PerturbGlyph: return "perturb-glyph";
+  case SabotageKind::PerturbVertex: return "perturb-vertex";
   }
   return "";
 }
@@ -359,6 +415,40 @@ inline const char *to_wire(Fetch v) {
   return "none";
 }
 inline const char *to_wire(Auth v) { return v == Auth::Bearer ? "bearer" : "none"; }
+inline const char *to_wire(AxisStretchMode v) {
+  switch (v) {
+  case AxisStretchMode::Stretch: return "stretch";
+  case AxisStretchMode::Tile: return "tile";
+  case AxisStretchMode::TileFit: return "tile_fit";
+  }
+  return "stretch";
+}
+inline const char *to_wire(Primitive v) {
+  switch (v) {
+  case Primitive::Points: return "points";
+  case Primitive::Lines: return "lines";
+  case Primitive::LineStrip: return "line_strip";
+  case Primitive::Triangles: return "triangles";
+  case Primitive::TriangleStrip: return "triangle_strip";
+  }
+  return "triangles";
+}
+inline const char *to_wire(MeshStatus v) {
+  switch (v) {
+  case MeshStatus::Ok: return "ok";
+  case MeshStatus::Unsupported: return "unsupported";
+  case MeshStatus::Freed: return "freed";
+  }
+  return "ok";
+}
+inline const char *to_wire(MeshReason v) {
+  switch (v) {
+  case MeshReason::MeshFormat: return "mesh-format";
+  case MeshReason::MeshBlendShapes: return "mesh-blend-shapes";
+  case MeshReason::PayloadTooLarge: return "payload-too-large";
+  }
+  return "mesh-format";
+}
 
 // ----------------------------------------------------------------------------------- session
 
@@ -463,12 +553,28 @@ struct ParentRef {
   std::uint32_t id = 0;
 };
 
+using Point2 = std::array<float, 2>;
+inline constexpr Point2 kZeroPoint2 = {0.0f, 0.0f};
+
 // One command. Which fields are meaningful is determined by `kind` (render-stream-2.md
-// "Commands"; render-stream-3.md "Command" for AddMsdfTextureRectRegion):
+// "Commands"; render-stream-3.md "Command" for AddMsdfTextureRectRegion; render-stream-4.md
+// "Command" for AddLine..AddClipIgnore):
 //   AddRect                   antialiased, rect, color
 //   AddTextureRect            tex, tile, transpose, rect, modulate
 //   AddTextureRectRegion      tex, transpose, clip_uv, rect, src, modulate
 //   AddMsdfTextureRectRegion  tex, msdf_outline, rect, src, modulate, msdf_px_range, msdf_scale
+//   AddLine                   antialiased, line_from, line_to, color, width
+//   AddPolyline               antialiased, width, points, colors (hold-last)
+//   AddMultiline              antialiased, width, points, colors (hold-last)
+//   AddCircle                 antialiased, circle_position, circle_radius, color
+//   AddPrimitive              has_tex/tex, points, colors, uvs
+//   AddPolygon                has_tex/tex, points, colors, uvs
+//   AddTriangleArray          has_tex/tex, points, colors, uvs, indices, triangle_count
+//   AddNinePatch              has_tex/tex, rect, src (source), np_margin_tl, np_margin_br,
+//                             x_axis, y_axis, draw_center, modulate
+//   AddMesh                   mesh, has_tex/tex, transform, modulate
+//   AddSetTransform           transform
+//   AddClipIgnore             clip_ignore
 //   Unsupported               name, reason
 struct Command {
   CommandKind kind = CommandKind::AddRect;
@@ -480,8 +586,8 @@ struct Command {
   bool clip_uv = false;
   Rect4 rect = kZeroRect;
   Rect4 src = kZeroRect;
-  Color4 color = kWhite;     // AddRect
-  Color4 modulate = kWhite;  // AddTextureRect / AddTextureRectRegion / AddMsdfTextureRectRegion
+  Color4 color = kWhite;     // AddRect, AddLine, AddCircle
+  Color4 modulate = kWhite;  // AddTextureRect* / AddMsdf / AddNinePatch / AddMesh
   std::string name;          // Unsupported: the hooked RenderingServer method name
   UnsupportedCmdReason unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
   // new at /3 (AddMsdfTextureRectRegion only): the engine's int outline_size, px_range and
@@ -489,6 +595,26 @@ struct Command {
   std::int32_t msdf_outline = 0;
   float msdf_px_range = 0.0f;
   float msdf_scale = 0.0f;
+
+  // --- new at /4 (render-stream-4.md "Command") ------------------------------------------------
+  Point2 line_from = kZeroPoint2;   // AddLine
+  Point2 line_to = kZeroPoint2;     // AddLine
+  float width = 0.0f;               // AddLine, AddPolyline, AddMultiline
+  std::vector<Point2> points;       // AddPolyline/AddMultiline/AddPrimitive/AddPolygon/AddTriangleArray
+  std::vector<Color4> colors;       // same ops: 0, 1 or n entries (hold-last for poly/multiline)
+  std::vector<Point2> uvs;          // AddPrimitive/AddPolygon/AddTriangleArray: 0 or n entries
+  std::vector<std::int32_t> indices;  // AddTriangleArray
+  std::int32_t triangle_count = -1;   // AddTriangleArray "count" (-1 = all indices)
+  Point2 circle_position = kZeroPoint2;  // AddCircle
+  float circle_radius = 0.0f;            // AddCircle
+  Point2 np_margin_tl = kZeroPoint2;      // AddNinePatch: margin top-left
+  Point2 np_margin_br = kZeroPoint2;      // AddNinePatch: margin bottom-right
+  AxisStretchMode x_axis = AxisStretchMode::Stretch;  // AddNinePatch
+  AxisStretchMode y_axis = AxisStretchMode::Stretch;  // AddNinePatch
+  bool draw_center = true;                // AddNinePatch
+  std::uint32_t mesh = 0;                 // AddMesh: the wire mesh id (always present for this kind)
+  Xform transform = kIdentityXform;       // AddMesh, AddSetTransform
+  bool clip_ignore = false;               // AddClipIgnore
 };
 
 // The mirror's full state for one item at one frame: always carries its complete `commands`.
@@ -556,6 +682,35 @@ struct TextureEntry {
   CanvasTextureInfo canvas;
 };
 
+// --- new at /4: the mesh table (render-stream-4.md "Mesh table") ------------------------------
+
+// One surface of an "ok" mesh entry: the render-stream-mesh/1 payload's hash and whole-payload
+// byte length, plus the shape fields a receiver needs before fetching that payload.
+struct MeshSurface {
+  std::string hash;  // 64 lowercase hex, the sha256 of the whole GRM1 payload
+  std::uint64_t payload_bytes = 0;
+  Primitive primitive = Primitive::Triangles;
+  // The engine's raw ARRAY_FORMAT_* bitmask (gate5-design.md Q1e); format version bit 35 means
+  // this can exceed 32 bits, so it is a signed 64-bit value, never interpreted by this codec.
+  std::int64_t format = 0;
+  std::int32_t vertex_count = 0;
+  std::int32_t index_count = 0;
+};
+
+// One mesh-table entry (render-stream-4.md "Mesh table"). `has_aabb` is false exactly for
+// `status == Freed` ("f": null); `custom_aabb` is six floats (position xyz, size xyz), all zero
+// meaning "no custom AABB set".
+struct MeshEntry {
+  std::uint32_t id = 0;
+  MeshStatus status = MeshStatus::Ok;
+  bool has_reason = false;
+  MeshReason reason = MeshReason::MeshFormat;
+  std::uint64_t version = 1;
+  bool has_aabb = true;
+  std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  std::vector<MeshSurface> surfaces;
+};
+
 struct Failure {
   FailureReason reason = FailureReason::RootQueryFailed;
   std::string detail;
@@ -570,6 +725,10 @@ struct UnsupportedRef {
 
 // The mirror's complete captured state for one frame.
 struct Snapshot {
+  // Which wire format make_full()/make_patch() (rs2_diff.cpp) produce from this Snapshot, exactly
+  // mirroring Transaction::version's reasoning: V2 and V3 are byte-identical here, so this only
+  // ever needs to distinguish V4 (meshes) from everything before it. Defaults to V2.
+  ProtocolVersion version = ProtocolVersion::V2;
   std::uint64_t seq = 0;
   std::uint64_t frame = 0;
   std::vector<Failure> failures;
@@ -579,6 +738,7 @@ struct Snapshot {
   std::vector<CanvasState> canvases;  // sorted by id ascending
   std::vector<ItemState> items;       // sorted by id ascending
   std::vector<TextureEntry> textures; // sorted by id ascending; new at /2
+  std::vector<MeshEntry> meshes;      // sorted by id ascending; new at /4
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;
@@ -597,6 +757,12 @@ struct ItemEntry {
 // complete, never patched (render-stream-2.md "Transaction record": "Both are present in full and
 // in patch transactions").
 struct Transaction {
+  // Which wire format encode_transaction() produces (render-stream-4.md): V2 and V3 transactions
+  // are byte-identical in shape (/3 added only a command kind and a sabotage kind, never touching
+  // the transaction's own keys or blocks), so this only ever needs to distinguish V4 (the mesh
+  // table, removed_meshes, cmd_i32, mesh_f32) from everything before it. Defaults to V2, so every
+  // existing /2 and /3 caller that never sets this field is unaffected.
+  ProtocolVersion version = ProtocolVersion::V2;
   std::uint64_t seq = 0;
   std::uint64_t frame = 0;
   Encoding encoding = Encoding::Full;
@@ -608,9 +774,11 @@ struct Transaction {
   std::vector<std::uint32_t> removed_canvases;  // ascending
   std::vector<std::uint32_t> removed_items;     // ascending
   std::vector<std::uint32_t> removed_textures;  // ascending; new at /2
+  std::vector<std::uint32_t> removed_meshes;    // ascending; new at /4
   std::vector<CanvasState> canvases;             // ascending by id; full entries
   std::vector<ItemEntry> items;                  // ascending by id
   std::vector<TextureEntry> textures;            // ascending by id; new at /2; full entries
+  std::vector<MeshEntry> meshes;                 // ascending by id; new at /4; full entries
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;

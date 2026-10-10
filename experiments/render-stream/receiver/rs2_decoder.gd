@@ -24,8 +24,13 @@ const MAGIC_HEX: String = "475253320d0a1a0a"
 ## forked Rs3Decoder, because it is only one new command and one new sabotage kind on top of /2
 ## (gate4-design.md G4e1: "Renaming files is not part of this contract").
 const MAGIC_V3_HEX: String = "475253330d0a1a0a"
+## render-stream-4.md (G5w): the GRS4 magic, selected by `version == 4`. /4 is implemented IN
+## THIS SAME FILE behind that parameter too (render-stream-4.md, following gate4-design.md
+## G4e1's precedent): eleven new commands, a mesh table and the cmd_i32 block.
+const MAGIC_V4_HEX: String = "475253340d0a1a0a"
 const PROTOCOL: String = "render-stream/2"
 const PROTOCOL_V3: String = "render-stream/3"
+const PROTOCOL_V4: String = "render-stream/4"
 const MAX_SAFE_INT: float = 9007199254740991.0
 const U32_MAX: float = 4294967295.0
 const ITEM_FLOATS: int = 18
@@ -56,6 +61,12 @@ const RESOURCES_KEYS: Array = [
 	"hash", "payload", "delivery", "inline_max_bytes", "max_payload_bytes", "permitted_formats",
 	"fetch", "http_path", "auth",
 ]
+## render-stream-4.md "Resources": "payload" (a string) becomes "payloads" (a sorted array) at /4.
+const RESOURCES_KEYS_V4: Array = [
+	"hash", "payloads", "delivery", "inline_max_bytes", "max_payload_bytes", "permitted_formats",
+	"fetch", "http_path", "auth",
+]
+const MESH_PAYLOAD_SCHEMA: String = "render-stream-mesh/1"
 const DELIVERIES: Array = ["out-of-band", "inline", "mixed"]
 const FETCHES: Array = ["http", "directory", "none"]
 const AUTHS: Array = ["none", "bearer"]
@@ -71,12 +82,18 @@ const SABOTAGE_KEYS: Array = ["kind", "frame", "op"]
 const SABOTAGE_KINDS: Array = [
 	"freeze-frame", "omit-update", "perturb-transform", "omit-op", "patch-drop-item",
 	"drop-message", "ignore-credit", "stale-coalesce", "stale-texture", "wrong-hash",
-	"spurious-texture-update", "drop-resource", "unpin", "perturb-glyph",
+	"spurious-texture-update", "drop-resource", "unpin", "perturb-glyph", "perturb-vertex",
 ]
 const TRANSACTION_KEYS: Array = [
 	"type", "seq", "frame", "encoding", "base_seq", "status", "failures", "unsupported",
 	"default_texture_filter", "default_texture_repeat", "removed_canvases", "removed_items",
 	"removed_textures", "canvases", "items", "textures", "blocks",
+]
+## render-stream-4.md "Mesh table": removed_meshes after removed_textures, meshes after textures.
+const TRANSACTION_KEYS_V4: Array = [
+	"type", "seq", "frame", "encoding", "base_seq", "status", "failures", "unsupported",
+	"default_texture_filter", "default_texture_repeat", "removed_canvases", "removed_items",
+	"removed_textures", "removed_meshes", "canvases", "items", "textures", "meshes", "blocks",
 ]
 const STATUSES: Array = ["ok", "capture-failure"]
 const FAILURE_KEYS: Array = ["reason", "detail"]
@@ -87,7 +104,7 @@ const UNSUPPORTED_KEYS: Array = ["op", "item", "reason"]
 const SESSION_UNSUPPORTED_REASONS: Array = ["non-root-viewport", "extra-canvas", "degenerate-host-size"]
 const ITEM_UNSUPPORTED_REASONS: Array = [
 	"unsupported-op", "unsupported-state", "draw-index-tie", "unknown-texture", "unsupported-texture",
-	"canvas-texture-headless",
+	"canvas-texture-headless", "unknown-mesh", "skinned-geometry", "unsupported-mesh",
 ]
 const CANVAS_KEYS: Array = ["id", "origin", "role", "attached", "items"]
 const ORIGINS: Array = ["created", "root-query", "adopted"]
@@ -104,7 +121,21 @@ const ADD_TEXTURE_RECT_REGION_KEYS: Array = ["op", "tex", "transpose", "clip_uv"
 ## render-stream-3.md "Command" (new at /3).
 const ADD_MSDF_TEXTURE_RECT_REGION_KEYS: Array = ["op", "tex", "outline", "f"]
 const UNSUPPORTED_CMD_KEYS: Array = ["op", "name", "reason"]
-const UNSUPPORTED_CMD_REASONS: Array = ["unsupported-op", "unknown-texture", "canvas-texture-headless"]
+const UNSUPPORTED_CMD_REASONS: Array = [
+	"unsupported-op", "unknown-texture", "canvas-texture-headless", "unknown-mesh", "skinned-geometry",
+]
+## render-stream-4.md "Command" (new at /4): key order is "op", the extra meta keys in the order
+## the spec lists them, then "f" last (or, for add_clip_ignore, "ignore" last with no "f").
+const ADD_LINE_KEYS: Array = ["op", "aa", "f"]
+const ADD_POLYLINE_KEYS: Array = ["op", "aa", "n", "colors", "f"]
+const ADD_CIRCLE_KEYS: Array = ["op", "aa", "f"]
+const ADD_PRIMITIVE_KEYS: Array = ["op", "tex", "n", "colors", "uvs", "f"]
+const ADD_TRIANGLE_ARRAY_KEYS: Array = ["op", "tex", "n", "colors", "uvs", "indices", "count", "i", "f"]
+const ADD_NINE_PATCH_KEYS: Array = ["op", "tex", "x_axis", "y_axis", "draw_center", "f"]
+const ADD_MESH_KEYS: Array = ["op", "mesh", "tex", "f"]
+const ADD_SET_TRANSFORM_KEYS: Array = ["op", "f"]
+const ADD_CLIP_IGNORE_KEYS: Array = ["op", "ignore"]
+const AXIS_STRETCH_MODES: Array = ["stretch", "tile", "tile_fit"]
 const FILTERS: Array = [
 	"default", "nearest", "linear", "nearest_mipmaps", "linear_mipmaps",
 	"nearest_mipmaps_anisotropic", "linear_mipmaps_anisotropic",
@@ -121,6 +152,12 @@ const TEXTURE_REASONS: Array = [
 	"layered-update", "unknown-texture", "canvas-texture-channel",
 ]
 const CANVAS_TEXTURE_KEYS: Array = ["diffuse", "filter", "repeat"]
+## render-stream-4.md "Mesh table" (new at /4).
+const MESH_KEYS: Array = ["id", "origin", "status", "reason", "version", "f", "surfaces"]
+const MESH_SURFACE_KEYS: Array = ["hash", "payload_bytes", "primitive", "format", "vertex_count", "index_count"]
+const MESH_STATUSES: Array = ["ok", "unsupported", "freed"]
+const MESH_REASONS: Array = ["mesh-format", "mesh-blend-shapes", "payload-too-large"]
+const PRIMITIVES: Array = ["points", "lines", "line_strip", "triangles", "triangle_strip"]
 const RESOURCE_KEYS: Array = ["type", "hash", "bytes", "blocks"]
 const END_KEYS: Array = ["type", "transactions", "reason", "stats", "blocks"]
 const END_REASONS: Array = ["shutdown", "disarm"]
@@ -135,6 +172,9 @@ const SESSION_BLOCK_NAMES: Array = [
 ]
 const SESSION_BLOCK_COUNTS: Array = [4, 6, 4, 6, 1]
 const TRANSACTION_BLOCK_NAMES: Array = ["item_f32", "canvas_f32", "cmd_f32"]
+## render-stream-4.md "Transaction blocks": five blocks; cmd_i32 is type "i32", the rest "f32".
+const TRANSACTION_BLOCK_NAMES_V4: Array = ["item_f32", "canvas_f32", "cmd_f32", "cmd_i32", "mesh_f32"]
+const TRANSACTION_BLOCK_TYPES_V4: Array = ["f32", "f32", "f32", "i32", "f32"]
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -262,14 +302,14 @@ static func _frame(data: PackedByteArray, offset: int) -> Dictionary:
 	return out
 
 
-## `version` (2 or 3, render-stream-3.md) selects the expected magic -- GRS3 (the default since
-## G4e2: the capture and receiver speak /3) or GRS2 (golden-2/ only, codec2_selftest.gd).
-## A /2 call refuses GRS3 the same way it already refuses GRS0/GRS1/anything else that is not
-## exactly GRS2; a /3 call refuses GRS2 the same way.
+## `version` (2, 3 or 4) selects the expected magic -- GRS3 (the default since G4e2: the capture
+## and receiver speak /3), GRS2 (golden-2/ only) or GRS4 (golden-4/ only, render-stream-4.md).
+## A decoder configured for one version refuses every other magic the same way it already
+## refuses GRS0/GRS1/anything else that is not its own.
 static func split_records(data: PackedByteArray, version: int = 3) -> Dictionary:
 	var records: Array[Dictionary] = []
 	var errors := PackedStringArray()
-	var expected_magic: String = MAGIC_V3_HEX if version == 3 else MAGIC_HEX
+	var expected_magic: String = MAGIC_V4_HEX if version == 4 else (MAGIC_V3_HEX if version == 3 else MAGIC_HEX)
 	if data.size() < 8 or data.slice(0, 8).hex_encode() != expected_magic:
 		errors.append(err("bad-magic", "first 8 bytes are %s, expected %s" % [data.slice(0, 8).hex_encode(), expected_magic]))
 		return {"records": records, "errors": errors, "framed_to": 0}
@@ -420,7 +460,9 @@ class Schema:
 		for i: int in list.size():
 			integer(list[i], "%s[%d]" % [path, i], 1, Rs2Decoder.MAX_SAFE_INT)
 
-	func blocks(value: Variant, names: Array) -> void:
+	## render-stream-4.md "Block type i32": `types` (one "f32"/"i32" per block) lets the mesh_f32/
+	## cmd_i32 transaction blocks share this same check; omitted, every block must be "f32".
+	func blocks(value: Variant, names: Array, types: Array = []) -> void:
 		var list: Array = array(value, "meta.blocks")
 		if ok and list.size() != names.size():
 			fail("meta.blocks has %d entries, expected %s" % [list.size(), JSON.stringify(names)])
@@ -428,14 +470,20 @@ class Schema:
 			var path: String = "meta.blocks[%d]" % i
 			var entry: Dictionary = object(list[i], Rs2Decoder.BLOCK_KEYS, path)
 			var expected_name: String = names[i]
+			var expected_type: String = types[i] if types.size() > i else "f32"
 			exact(entry.get("name"), expected_name, path + ".name")
-			exact(entry.get("type"), "f32", path + ".type")
+			exact(entry.get("type"), expected_type, path + ".type")
 			integer(entry.get("count"), path + ".count", 0, Rs2Decoder.U32_MAX)
 
-	func resources(meta: Dictionary) -> void:
-		var resources_dict: Dictionary = object(meta.get("resources"), Rs2Decoder.RESOURCES_KEYS, "meta.resources")
+	func resources(meta: Dictionary, version: int) -> void:
+		var keys: Array = Rs2Decoder.RESOURCES_KEYS_V4 if version == 4 else Rs2Decoder.RESOURCES_KEYS
+		var resources_dict: Dictionary = object(meta.get("resources"), keys, "meta.resources")
 		exact(resources_dict.get("hash"), "sha256", "meta.resources.hash")
-		string(resources_dict.get("payload"), "meta.resources.payload")
+		if version == 4:
+			# render-stream-4.md "Resources": "payloads" is a sorted array of schema strings.
+			sorted_strings(resources_dict.get("payloads"), "meta.resources.payloads")
+		else:
+			string(resources_dict.get("payload"), "meta.resources.payload")
 		var delivery: String = one_of(resources_dict.get("delivery"), Rs2Decoder.DELIVERIES, "meta.resources.delivery")
 		var inline_max: int = integer(resources_dict.get("inline_max_bytes"), "meta.resources.inline_max_bytes", 0, Rs2Decoder.MAX_SAFE_INT)
 		var max_payload: int = integer(resources_dict.get("max_payload_bytes"), "meta.resources.max_payload_bytes", 1, Rs2Decoder.MAX_SAFE_INT)
@@ -455,9 +503,10 @@ class Schema:
 			if (delivery == "inline") != (fetch == "none"):
 				fail("meta.resources.fetch must be \"none\" exactly when delivery is \"inline\"")
 
-	func session(meta: Dictionary) -> void:
+	func session(meta: Dictionary, version: int) -> void:
 		object(meta, Rs2Decoder.SESSION_KEYS, "meta")
-		one_of(meta.get("protocol"), [Rs2Decoder.PROTOCOL, Rs2Decoder.PROTOCOL_V3], "meta.protocol")
+		var expected_protocol: String = Rs2Decoder.PROTOCOL_V4 if version == 4 else (Rs2Decoder.PROTOCOL_V3 if version == 3 else Rs2Decoder.PROTOCOL)
+		exact(meta.get("protocol"), expected_protocol, "meta.protocol")
 		hex(meta.get("session_id"), 32, "meta.session_id")
 		var stream: Dictionary = object(meta.get("stream"), Rs2Decoder.STREAM_KEYS, "meta.stream")
 		hex(stream.get("stream_id"), 32, "meta.stream.stream_id")
@@ -488,7 +537,7 @@ class Schema:
 		one_of(viewport.get("root_size_policy"), Rs2Decoder.ROOT_SIZE_POLICIES, "meta.viewport.root_size_policy")
 		one_of(viewport.get("host_size_status"), Rs2Decoder.HOST_SIZE_STATUSES, "meta.viewport.host_size_status")
 		int_pair(viewport.get("host_window_size"), "meta.viewport.host_window_size")
-		resources(meta)
+		resources(meta, version)
 		var features: Dictionary = object(meta.get("features"), Rs2Decoder.FEATURES_KEYS, "meta.features")
 		sorted_strings(features.get("ops"), "meta.features.ops")
 		sorted_strings(features.get("item_state"), "meta.features.item_state")
@@ -542,8 +591,35 @@ class Schema:
 			one_of(canvas_dict.get("filter"), Rs2Decoder.FILTERS, path + ".canvas.filter")
 			one_of(canvas_dict.get("repeat"), Rs2Decoder.REPEATS, path + ".canvas.repeat")
 
-	func transaction(meta: Dictionary) -> void:
-		object(meta, Rs2Decoder.TRANSACTION_KEYS, "meta")
+	## render-stream-4.md "Mesh table" (new at /4): the wire shape of one mesh entry. The
+	## status/reason/f/surfaces coupling ("mesh-entry") is checked later, once the running
+	## mesh_f32 offset is known (_check_resolved_invariants).
+	func mesh_surface(s: Variant, path: String) -> void:
+		var entry: Dictionary = object(s, Rs2Decoder.MESH_SURFACE_KEYS, path)
+		hex(entry.get("hash"), 64, path + ".hash")
+		integer(entry.get("payload_bytes"), path + ".payload_bytes", 1, Rs2Decoder.MAX_SAFE_INT)
+		one_of(entry.get("primitive"), Rs2Decoder.PRIMITIVES, path + ".primitive")
+		integer(entry.get("format"), path + ".format", -Rs2Decoder.MAX_SAFE_INT, Rs2Decoder.MAX_SAFE_INT)
+		integer(entry.get("vertex_count"), path + ".vertex_count", 0, Rs2Decoder.MAX_SAFE_INT)
+		integer(entry.get("index_count"), path + ".index_count", 0, Rs2Decoder.MAX_SAFE_INT)
+
+	func mesh_entry(m: Variant, path: String) -> void:
+		var entry: Dictionary = object(m, Rs2Decoder.MESH_KEYS, path)
+		integer(entry.get("id"), path + ".id", 1, Rs2Decoder.MAX_SAFE_INT)
+		exact(entry.get("origin"), "created", path + ".origin")
+		one_of(entry.get("status"), Rs2Decoder.MESH_STATUSES, path + ".status")
+		var reason: Variant = entry.get("reason")
+		if ok and reason != null:
+			one_of(reason, Rs2Decoder.MESH_REASONS, path + ".reason")
+		integer(entry.get("version"), path + ".version", 1, Rs2Decoder.MAX_SAFE_INT)
+		nullable_integer(entry.get("f"), path + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+		var surfaces: Array = array(entry.get("surfaces"), path + ".surfaces")
+		for i: int in surfaces.size():
+			mesh_surface(surfaces[i], "%s.surfaces[%d]" % [path, i])
+
+	func transaction(meta: Dictionary, version: int) -> void:
+		var is_v4: bool = version == 4
+		object(meta, Rs2Decoder.TRANSACTION_KEYS_V4 if is_v4 else Rs2Decoder.TRANSACTION_KEYS, "meta")
 		integer(meta.get("seq"), "meta.seq", 1, Rs2Decoder.MAX_SAFE_INT)
 		integer(meta.get("frame"), "meta.frame", 1, Rs2Decoder.MAX_SAFE_INT)
 		one_of(meta.get("encoding"), Rs2Decoder.ENCODINGS, "meta.encoding")
@@ -576,6 +652,8 @@ class Schema:
 		int_list(meta.get("removed_canvases"), "meta.removed_canvases")
 		int_list(meta.get("removed_items"), "meta.removed_items")
 		int_list(meta.get("removed_textures"), "meta.removed_textures")
+		if is_v4:
+			int_list(meta.get("removed_meshes"), "meta.removed_meshes")
 		var canvases: Array = array(meta.get("canvases"), "meta.canvases")
 		for i: int in canvases.size():
 			var path: String = "meta.canvases[%d]" % i
@@ -649,16 +727,80 @@ class Schema:
 							integer(tex3, cpath + ".tex", 1, Rs2Decoder.MAX_SAFE_INT)
 						integer(command.get("outline"), cpath + ".outline", 0, Rs2Decoder.MAX_SAFE_INT)
 						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_line":
+						object(command, Rs2Decoder.ADD_LINE_KEYS, cpath)
+						boolean(command.get("aa"), cpath + ".aa")
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and (op == "add_polyline" or op == "add_multiline"):
+						object(command, Rs2Decoder.ADD_POLYLINE_KEYS, cpath)
+						boolean(command.get("aa"), cpath + ".aa")
+						integer(command.get("n"), cpath + ".n", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("colors"), cpath + ".colors", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_circle":
+						object(command, Rs2Decoder.ADD_CIRCLE_KEYS, cpath)
+						boolean(command.get("aa"), cpath + ".aa")
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and (op == "add_primitive" or op == "add_polygon"):
+						object(command, Rs2Decoder.ADD_PRIMITIVE_KEYS, cpath)
+						var tex4: Variant = command.get("tex")
+						if ok and tex4 != null:
+							integer(tex4, cpath + ".tex", 1, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("n"), cpath + ".n", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("colors"), cpath + ".colors", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("uvs"), cpath + ".uvs", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_triangle_array":
+						object(command, Rs2Decoder.ADD_TRIANGLE_ARRAY_KEYS, cpath)
+						var tex5: Variant = command.get("tex")
+						if ok and tex5 != null:
+							integer(tex5, cpath + ".tex", 1, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("n"), cpath + ".n", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("colors"), cpath + ".colors", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("uvs"), cpath + ".uvs", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("indices"), cpath + ".indices", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("count"), cpath + ".count", -Rs2Decoder.MAX_SAFE_INT, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("i"), cpath + ".i", 0, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_nine_patch":
+						object(command, Rs2Decoder.ADD_NINE_PATCH_KEYS, cpath)
+						var tex6: Variant = command.get("tex")
+						if ok and tex6 != null:
+							integer(tex6, cpath + ".tex", 1, Rs2Decoder.MAX_SAFE_INT)
+						one_of(command.get("x_axis"), Rs2Decoder.AXIS_STRETCH_MODES, cpath + ".x_axis")
+						one_of(command.get("y_axis"), Rs2Decoder.AXIS_STRETCH_MODES, cpath + ".y_axis")
+						boolean(command.get("draw_center"), cpath + ".draw_center")
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_mesh":
+						object(command, Rs2Decoder.ADD_MESH_KEYS, cpath)
+						integer(command.get("mesh"), cpath + ".mesh", 1, Rs2Decoder.MAX_SAFE_INT)
+						var tex7: Variant = command.get("tex")
+						if ok and tex7 != null:
+							integer(tex7, cpath + ".tex", 1, Rs2Decoder.MAX_SAFE_INT)
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_set_transform":
+						object(command, Rs2Decoder.ADD_SET_TRANSFORM_KEYS, cpath)
+						integer(command.get("f"), cpath + ".f", 0, Rs2Decoder.MAX_SAFE_INT)
+					elif op is String and op == "add_clip_ignore":
+						object(command, Rs2Decoder.ADD_CLIP_IGNORE_KEYS, cpath)
+						boolean(command.get("ignore"), cpath + ".ignore")
 					elif op is String and op == "unsupported":
 						object(command, Rs2Decoder.UNSUPPORTED_CMD_KEYS, cpath)
 						string(command.get("name"), cpath + ".name")
 						one_of(command.get("reason"), Rs2Decoder.UNSUPPORTED_CMD_REASONS, cpath + ".reason")
 					else:
-						fail("%s.op is %s, expected add_rect, add_texture_rect, add_texture_rect_region, add_msdf_texture_rect_region or unsupported" % [cpath, JSON.stringify(op)])
+						fail("%s.op is %s, an unknown command op" % [cpath, JSON.stringify(op)])
 		var textures: Array = array(meta.get("textures"), "meta.textures")
 		for i: int in textures.size():
 			texture_entry(textures[i], "meta.textures[%d]" % i)
-		blocks(meta.get("blocks"), Rs2Decoder.TRANSACTION_BLOCK_NAMES)
+		if is_v4:
+			var meshes: Array = array(meta.get("meshes"), "meta.meshes")
+			for i: int in meshes.size():
+				mesh_entry(meshes[i], "meta.meshes[%d]" % i)
+		if is_v4:
+			blocks(meta.get("blocks"), Rs2Decoder.TRANSACTION_BLOCK_NAMES_V4, Rs2Decoder.TRANSACTION_BLOCK_TYPES_V4)
+		else:
+			blocks(meta.get("blocks"), Rs2Decoder.TRANSACTION_BLOCK_NAMES)
 
 	func resource(meta: Dictionary) -> void:
 		object(meta, Rs2Decoder.RESOURCE_KEYS, "meta")
@@ -694,7 +836,7 @@ class Schema:
 ## entry is a PackedFloat32Array (f32 block) or {"u8_bytes", "sha256"} (u8 block, render-stream-
 ## 2.md "Decoded and resolved forms" -- the raw bytes are NOT kept here; use raw_resource_payload()
 ## for that). `meta` is the parsed JSON whenever it parsed, even if later checks failed.
-static func decode_record(data: PackedByteArray, offset: int) -> Dictionary:
+static func decode_record(data: PackedByteArray, offset: int, version: int = 3) -> Dictionary:
 	var blocks: Array = []
 	var errors := PackedStringArray()
 	var out: Dictionary = {
@@ -736,9 +878,9 @@ static func decode_record(data: PackedByteArray, offset: int) -> Dictionary:
 	var check := Schema.new("record at offset %d" % offset)
 	var kind: Variant = meta.get("type")
 	if kind is String and kind == "session":
-		check.session(meta)
+		check.session(meta, version)
 	elif kind is String and kind == "transaction":
-		check.transaction(meta)
+		check.transaction(meta, version)
 	elif kind is String and kind == "resource":
 		check.resource(meta)
 	elif kind is String and kind == "end":
@@ -763,13 +905,16 @@ static func decode_record(data: PackedByteArray, offset: int) -> Dictionary:
 		var start: int = span[0]
 		var length: int = span[1]
 		var block_type: String = entry["type"]
-		var expected_len: int = (4 * count) if block_type == "f32" else count
+		# render-stream-4.md "Block type i32": same four-byte-per-element width as f32.
+		var expected_len: int = count if block_type == "u8" else 4 * count
 		if length != expected_len:
 			errors.append(err("block-length", "record at offset %d: block %d (%s) carries %d bytes, count %d needs %d" % [offset, i, entry["name"], length, count, expected_len]))
 			out["errors"] = errors
 			return out
 		if block_type == "f32":
 			blocks.append(data.slice(start, start + length).to_float32_array())
+		elif block_type == "i32":
+			blocks.append(data.slice(start, start + length).to_int32_array())
 		else:
 			var payload: PackedByteArray = data.slice(start, start + length)
 			blocks.append({"u8_bytes": length, "sha256": sha256_hex(payload)})
@@ -793,7 +938,7 @@ static func raw_resource_payload(data: PackedByteArray, record: Dictionary) -> P
 # --------------------------------------------------------------------------- resolution helpers
 
 
-static func _lift_item(item: Dictionary, item_f32: PackedFloat32Array, cmd_f32: PackedFloat32Array) -> Dictionary:
+static func _lift_item(item: Dictionary, item_f32: PackedFloat32Array, cmd_f32: PackedFloat32Array, cmd_i32: PackedInt32Array) -> Dictionary:
 	var commands: Array[Dictionary] = []
 	if item["commands"] != null:
 		var raw: Array = item["commands"]
@@ -835,6 +980,107 @@ static func _lift_item(item: Dictionary, item_f32: PackedFloat32Array, cmd_f32: 
 					"modulate": [cmd_f32[f4 + 8], cmd_f32[f4 + 9], cmd_f32[f4 + 10], cmd_f32[f4 + 11]],
 					"px_range": cmd_f32[f4 + 12], "scale": cmd_f32[f4 + 13],
 				})
+			elif op == "add_line":
+				var fl: int = as_int(command["f"])
+				commands.append({
+					"op": "add_line", "aa": command["aa"],
+					"from": [cmd_f32[fl], cmd_f32[fl + 1]], "to": [cmd_f32[fl + 2], cmd_f32[fl + 3]],
+					"colour": [cmd_f32[fl + 4], cmd_f32[fl + 5], cmd_f32[fl + 6], cmd_f32[fl + 7]],
+					"width": cmd_f32[fl + 8],
+				})
+			elif op == "add_polyline" or op == "add_multiline":
+				var fp: int = as_int(command["f"])
+				var n: int = as_int(command["n"])
+				var ncolors: int = as_int(command["colors"])
+				var width: float = cmd_f32[fp]
+				var points: Array = []
+				var p: int = fp + 1
+				for i: int in n:
+					points.append([cmd_f32[p], cmd_f32[p + 1]])
+					p += 2
+				var colors: Array = []
+				for i: int in ncolors:
+					colors.append([cmd_f32[p], cmd_f32[p + 1], cmd_f32[p + 2], cmd_f32[p + 3]])
+					p += 4
+				commands.append({"op": op, "aa": command["aa"], "width": width, "points": points, "colors": colors})
+			elif op == "add_circle":
+				var fc: int = as_int(command["f"])
+				commands.append({
+					"op": "add_circle", "aa": command["aa"],
+					"position": [cmd_f32[fc], cmd_f32[fc + 1]], "radius": cmd_f32[fc + 2],
+					"colour": [cmd_f32[fc + 3], cmd_f32[fc + 4], cmd_f32[fc + 5], cmd_f32[fc + 6]],
+				})
+			elif op == "add_primitive" or op == "add_polygon":
+				var fpr: int = as_int(command["f"])
+				var npr: int = as_int(command["n"])
+				var ncolorspr: int = as_int(command["colors"])
+				var nuvs: int = as_int(command["uvs"])
+				var pointspr: Array = []
+				var pp: int = fpr
+				for i: int in npr:
+					pointspr.append([cmd_f32[pp], cmd_f32[pp + 1]])
+					pp += 2
+				var colorspr: Array = []
+				for i: int in ncolorspr:
+					colorspr.append([cmd_f32[pp], cmd_f32[pp + 1], cmd_f32[pp + 2], cmd_f32[pp + 3]])
+					pp += 4
+				var uvspr: Array = []
+				for i: int in nuvs:
+					uvspr.append([cmd_f32[pp], cmd_f32[pp + 1]])
+					pp += 2
+				commands.append({"op": op, "tex": command["tex"], "points": pointspr, "colors": colorspr, "uvs": uvspr})
+			elif op == "add_triangle_array":
+				var fta: int = as_int(command["f"])
+				var ita: int = as_int(command["i"])
+				var nta: int = as_int(command["n"])
+				var ncolorsta: int = as_int(command["colors"])
+				var nuvsta: int = as_int(command["uvs"])
+				var nindices: int = as_int(command["indices"])
+				var pointsta: Array = []
+				var pta: int = fta
+				for i: int in nta:
+					pointsta.append([cmd_f32[pta], cmd_f32[pta + 1]])
+					pta += 2
+				var colorsta: Array = []
+				for i: int in ncolorsta:
+					colorsta.append([cmd_f32[pta], cmd_f32[pta + 1], cmd_f32[pta + 2], cmd_f32[pta + 3]])
+					pta += 4
+				var uvsta: Array = []
+				for i: int in nuvsta:
+					uvsta.append([cmd_f32[pta], cmd_f32[pta + 1]])
+					pta += 2
+				var indices: Array[int] = []
+				for i: int in nindices:
+					indices.append(cmd_i32[ita + i])
+				commands.append({
+					"op": "add_triangle_array", "tex": command["tex"], "count": as_int(command["count"]),
+					"points": pointsta, "colors": colorsta, "uvs": uvsta, "indices": indices,
+				})
+			elif op == "add_nine_patch":
+				var fnp: int = as_int(command["f"])
+				commands.append({
+					"op": "add_nine_patch", "tex": command["tex"],
+					"rect": [cmd_f32[fnp], cmd_f32[fnp + 1], cmd_f32[fnp + 2], cmd_f32[fnp + 3]],
+					"source": [cmd_f32[fnp + 4], cmd_f32[fnp + 5], cmd_f32[fnp + 6], cmd_f32[fnp + 7]],
+					"margins": [cmd_f32[fnp + 8], cmd_f32[fnp + 9], cmd_f32[fnp + 10], cmd_f32[fnp + 11]],
+					"x_axis": command["x_axis"], "y_axis": command["y_axis"], "draw_center": command["draw_center"],
+					"modulate": [cmd_f32[fnp + 12], cmd_f32[fnp + 13], cmd_f32[fnp + 14], cmd_f32[fnp + 15]],
+				})
+			elif op == "add_mesh":
+				var fm: int = as_int(command["f"])
+				commands.append({
+					"op": "add_mesh", "mesh": as_int(command["mesh"]), "tex": command["tex"],
+					"transform": [cmd_f32[fm], cmd_f32[fm + 1], cmd_f32[fm + 2], cmd_f32[fm + 3], cmd_f32[fm + 4], cmd_f32[fm + 5]],
+					"modulate": [cmd_f32[fm + 6], cmd_f32[fm + 7], cmd_f32[fm + 8], cmd_f32[fm + 9]],
+				})
+			elif op == "add_set_transform":
+				var fst: int = as_int(command["f"])
+				commands.append({
+					"op": "add_set_transform",
+					"transform": [cmd_f32[fst], cmd_f32[fst + 1], cmd_f32[fst + 2], cmd_f32[fst + 3], cmd_f32[fst + 4], cmd_f32[fst + 5]],
+				})
+			elif op == "add_clip_ignore":
+				commands.append({"op": "add_clip_ignore", "ignore": command["ignore"]})
 			else:
 				commands.append({"op": "unsupported", "name": command["name"], "reason": command["reason"]})
 	var parent: Variant = item["parent"]
@@ -863,6 +1109,22 @@ static func _lift_canvas(canvas: Dictionary, canvas_f32: PackedFloat32Array) -> 
 	}
 
 
+## render-stream-4.md "Mesh table": lifts one wire mesh entry, resolving "f" to the actual
+## custom_aabb values (6 floats from mesh_f32; all zero, with "f" null, exactly for "freed").
+static func _lift_mesh(m: Dictionary, mesh_f32: PackedFloat32Array) -> Dictionary:
+	var f: Variant = m["f"]
+	var custom_aabb: Array
+	if f == null:
+		custom_aabb = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+	else:
+		var fi: int = as_int(f)
+		custom_aabb = [mesh_f32[fi], mesh_f32[fi + 1], mesh_f32[fi + 2], mesh_f32[fi + 3], mesh_f32[fi + 4], mesh_f32[fi + 5]]
+	return {
+		"id": as_int(m["id"]), "origin": m["origin"], "status": m["status"], "reason": m["reason"],
+		"version": as_int(m["version"]), "custom_aabb": custom_aabb, "surfaces": m["surfaces"],
+	}
+
+
 static func _command_float_count(command: Dictionary) -> int:
 	var op: String = command["op"]
 	if op == "add_rect" or op == "add_texture_rect":
@@ -871,13 +1133,82 @@ static func _command_float_count(command: Dictionary) -> int:
 		return 12
 	if op == "add_msdf_texture_rect_region":
 		return 14
+	if op == "add_line":
+		return 9
+	if op == "add_polyline" or op == "add_multiline":
+		return 1 + 2 * as_int(command["n"]) + 4 * as_int(command["colors"])
+	if op == "add_circle":
+		return 7
+	if op == "add_primitive" or op == "add_polygon":
+		return 2 * as_int(command["n"]) + 4 * as_int(command["colors"]) + 2 * as_int(command["uvs"])
+	if op == "add_triangle_array":
+		return 2 * as_int(command["n"]) + 4 * as_int(command["colors"]) + 2 * as_int(command["uvs"])
+	if op == "add_nine_patch":
+		return 16
+	if op == "add_mesh":
+		return 10
+	if op == "add_set_transform":
+		return 6
 	return 0
+
+
+## add_triangle_array is the only /4 op with an "i" (cmd_i32 offset) key.
+static func _command_int_count(command: Dictionary) -> int:
+	if command["op"] == "add_triangle_array":
+		return as_int(command["indices"])
+	return 0
+
+
+## The RenderingServer method name a derived unsupported-texture entry names for a tex-bearing
+## wire op (render-stream-2.md "Item-level unsupported entries", extended at /4 for the new ops).
+static func _rs_method_for_op(op: String) -> String:
+	match op:
+		"add_texture_rect":
+			return "canvas_item_add_texture_rect"
+		"add_texture_rect_region":
+			return "canvas_item_add_texture_rect_region"
+		"add_msdf_texture_rect_region":
+			return "canvas_item_add_msdf_texture_rect_region"
+		"add_primitive":
+			return "canvas_item_add_primitive"
+		"add_polygon":
+			return "canvas_item_add_polygon"
+		"add_triangle_array":
+			return "canvas_item_add_triangle_array"
+		"add_nine_patch":
+			return "canvas_item_add_nine_patch"
+		"add_mesh":
+			return "canvas_item_add_mesh"
+	return op
 
 
 ## True when `cur`'s version/content is an invalid continuation of `previous` (texture-version:
 ## "within one stream, an id's version never decreases; at an equal version the entry is
 ## identical except for a change to status: 'freed' and the nulls that implies").
 static func _texture_version_regressed(previous: Variant, cur: Dictionary) -> bool:
+	if previous == null:
+		return false
+	var prev: Dictionary = previous
+	var prev_version: int = as_int(prev["version"])
+	var cur_version: int = as_int(cur["version"])
+	if cur_version < prev_version:
+		return true
+	if cur_version > prev_version:
+		return false
+	if _dicts_equal(prev, cur):
+		return false
+	if prev["status"] == "freed" or cur["status"] != "freed":
+		return true
+	return false
+
+
+## render-stream-4.md "Mesh table" ("mesh-version"): the texture-version rule, mirrored for
+## meshes. Takes the LIFTED (resolved) mesh, not the raw wire entry: "f" is a running offset into
+## that transaction's own mesh_f32 block, so it legitimately differs between two transactions
+## whose mesh content is byte-identical whenever some other mesh earlier in the table gains or
+## loses its own "f" span (e.g. a sibling mesh is freed) -- _lift_mesh() already resolves that
+## away into an actual custom_aabb, so comparing the lifted forms avoids a false "regressed".
+static func _mesh_version_regressed(previous: Variant, cur: Dictionary) -> bool:
 	if previous == null:
 		return false
 	var prev: Dictionary = previous
@@ -920,10 +1251,10 @@ static func validate_recording(data: PackedByteArray, version: int = 3) -> Packe
 	var split_errors: PackedStringArray = split["errors"]
 	if split_errors.size() > 0 and code_of(split_errors[0]) == "bad-magic":
 		return split_errors
-	var stream := Stream.new()
+	var stream := Stream.new(version)
 	for index: int in records.size():
 		var raw: Dictionary = records[index]
-		var record: Dictionary = decode_record(data, as_int(raw["offset"]))
+		var record: Dictionary = decode_record(data, as_int(raw["offset"]), version)
 		var record_errors: PackedStringArray = record["errors"]
 		if record_errors.size() > 0:
 			for e: String in record_errors:
@@ -948,8 +1279,16 @@ class Stream:
 	var canvases: Dictionary = {}   # int -> resolved canvas Dictionary
 	var items: Dictionary = {}      # int -> resolved item Dictionary
 	var textures: Dictionary = {}   # int -> wire texture entry Dictionary
+	var meshes: Dictionary = {}     # int -> resolved mesh Dictionary (custom_aabb lifted); /4 only
 	var default_texture_filter: String = "nearest"
 	var default_texture_repeat: String = "disabled"
+
+	## render-stream-4.md (G5w): 2, 3 or 4. Every existing call site (`Stream.new()`, no args)
+	## keeps defaulting to 3, matching this file's module-wide default.
+	var version: int = 3
+
+	func _init(v: int = 3) -> void:
+		version = v
 
 	var records_accepted: int = 0
 	var session_seen: bool = false
@@ -968,9 +1307,12 @@ class Stream:
 	var _max_item_id: int = 0
 	var _max_canvas_id: int = 0
 	var _max_texture_id: int = 0
+	var _max_mesh_id: int = 0
 	var _carried_hashes: Dictionary[String, bool] = {}
-	var _resource_shapes: Dictionary = {}   # hash -> decoded payload shape Dictionary
+	var _resource_shapes: Dictionary = {}   # hash -> decoded GRT1 payload shape Dictionary
+	var _mesh_resource_shapes: Dictionary = {}  # hash -> decoded GRM1 payload shape Dictionary; /4 only
 	var _last_seen_texture: Dictionary = {}  # id -> wire texture entry Dictionary
+	var _last_seen_mesh: Dictionary = {}     # id -> resolved mesh Dictionary; /4 only
 
 	func accept(data: PackedByteArray, record: Dictionary) -> PackedStringArray:
 		var errors := PackedStringArray()
@@ -1011,15 +1353,28 @@ class Stream:
 				if actual_hash != hash:
 					errors.append(Rs2Decoder.err("resource-hash", "record %d at offset %d: payload sha256 %s disagrees with declared hash %s" % [index, offset, actual_hash, hash]))
 					return errors
-				var decoded: Dictionary = RsTexturePayload.decode(payload)
-				if not decoded["ok"]:
-					var payload_code: String = decoded["code"]
-					var payload_detail: String = decoded["detail"]
-					errors.append(Rs2Decoder.err(payload_code, "record %d at offset %d: %s" % [index, offset, payload_detail]))
-					return errors
+				# render-stream-4.md "Resources": mesh (GRM1) and texture (GRT1) payloads share
+				# one hash namespace and one resource record shape; tell them apart by magic.
+				var is_mesh_payload: bool = version == 4 and payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsMeshPayload.GRM1_MAGIC_HEX
+				if is_mesh_payload:
+					var mesh_decoded: Dictionary = RsMeshPayload.decode(payload)
+					if not mesh_decoded["ok"]:
+						var mesh_payload_code: String = mesh_decoded["code"]
+						var mesh_payload_detail: String = mesh_decoded["detail"]
+						errors.append(Rs2Decoder.err(mesh_payload_code, "record %d at offset %d: %s" % [index, offset, mesh_payload_detail]))
+						return errors
+					mesh_decoded["payload_length"] = payload.size()
+					_mesh_resource_shapes[hash] = mesh_decoded
+				else:
+					var decoded: Dictionary = RsTexturePayload.decode(payload)
+					if not decoded["ok"]:
+						var payload_code: String = decoded["code"]
+						var payload_detail: String = decoded["detail"]
+						errors.append(Rs2Decoder.err(payload_code, "record %d at offset %d: %s" % [index, offset, payload_detail]))
+						return errors
+					decoded["payload_length"] = payload.size()
+					_resource_shapes[hash] = decoded
 				_carried_hashes[hash] = true
-				decoded["payload_length"] = payload.size()
-				_resource_shapes[hash] = decoded
 				resource_records += 1
 				resource_bytes += Rs2Decoder.as_int(meta["bytes"])
 				bytes_total += byte_length
@@ -1067,15 +1422,22 @@ class Stream:
 
 	func _accept_transaction(meta: Dictionary, offset: int, blocks: Array) -> PackedStringArray:
 		var errors := PackedStringArray()
+		var is_v4: bool = version == 4
 		var seq: int = Rs2Decoder.as_int(meta["seq"])
 		var frame: int = Rs2Decoder.as_int(meta["frame"])
 		var encoding: String = meta["encoding"]
 		var canvases_meta: Array = meta["canvases"]
 		var items_meta: Array = meta["items"]
 		var textures_meta: Array = meta["textures"]
+		var meshes_meta: Array = []
+		if is_v4:
+			meshes_meta = meta["meshes"]
 		var removed_canvases: Array[int] = Rs2Decoder.int_list(meta["removed_canvases"])
 		var removed_items: Array[int] = Rs2Decoder.int_list(meta["removed_items"])
 		var removed_textures: Array[int] = Rs2Decoder.int_list(meta["removed_textures"])
+		var removed_meshes: Array[int] = []
+		if is_v4:
+			removed_meshes = Rs2Decoder.int_list(meta["removed_meshes"])
 
 		var canvas_order_error: String = Rs2Decoder._check_id_ordering("canvases", canvases_meta, seq)
 		if canvas_order_error != "":
@@ -1101,12 +1463,21 @@ class Stream:
 		if rt_order != "":
 			errors.append(rt_order)
 			return errors
+		if is_v4:
+			var mesh_order_error: String = Rs2Decoder._check_id_ordering("meshes", meshes_meta, seq)
+			if mesh_order_error != "":
+				errors.append(mesh_order_error)
+				return errors
+			var rm_order: String = Rs2Decoder._check_id_list_ascending("removed_meshes", removed_meshes, seq)
+			if rm_order != "":
+				errors.append(rm_order)
+				return errors
 
 		if seq != last_seq + 1:
 			errors.append(Rs2Decoder.err("seq-gap", "transaction at offset %d has seq %d, expected %d" % [offset, seq, last_seq + 1]))
 			return errors
 
-		var patch_error: String = _check_patch_rules(encoding, seq, meta, removed_canvases, removed_items, removed_textures, canvases_meta, items_meta, textures_meta)
+		var patch_error: String = _check_patch_rules(encoding, seq, meta, removed_canvases, removed_items, removed_textures, removed_meshes, canvases_meta, items_meta, textures_meta, meshes_meta, is_v4)
 		if patch_error != "":
 			errors.append(patch_error)
 			return errors
@@ -1117,7 +1488,13 @@ class Stream:
 		var item_f32: PackedFloat32Array = blocks[0]
 		var canvas_f32: PackedFloat32Array = blocks[1]
 		var cmd_f32: PackedFloat32Array = blocks[2]
+		var cmd_i32: PackedInt32Array = PackedInt32Array()
+		var mesh_f32: PackedFloat32Array = PackedFloat32Array()
+		if is_v4:
+			cmd_i32 = blocks[3]
+			mesh_f32 = blocks[4]
 		var running: int = 0
+		var running_int: int = 0
 		for value: Variant in items_meta:
 			var item: Dictionary = value
 			if item["commands"] == null:
@@ -1125,16 +1502,36 @@ class Stream:
 			var commands: Array = item["commands"]
 			for cvalue: Variant in commands:
 				var command: Dictionary = cvalue
-				var fcount: int = Rs2Decoder._command_float_count(command)
-				if fcount == 0:
+				var cmd_op: String = command["op"]
+				# "unsupported" and "add_clip_ignore" carry no floats and no "f" key at all.
+				if cmd_op == "unsupported" or cmd_op == "add_clip_ignore":
 					continue
+				var fcount: int = Rs2Decoder._command_float_count(command)
 				var f: int = Rs2Decoder.as_int(command["f"])
 				if f != running:
 					errors.append(Rs2Decoder.err("cmd-offset", "seq %d: %s f=%d, expected %d" % [seq, command["op"], f, running]))
 					return errors
 				running += fcount
-		if item_f32.size() != Rs2Decoder.ITEM_FLOATS * items_meta.size() or canvas_f32.size() != Rs2Decoder.CANVAS_FLOATS * canvases_meta.size() or cmd_f32.size() != running:
-			errors.append(Rs2Decoder.err("block-count", "seq %d: decoded block lengths disagree with items/canvases/commands counts" % seq))
+				if cmd_op == "add_triangle_array":
+					var i_off: int = Rs2Decoder.as_int(command["i"])
+					if i_off != running_int:
+						errors.append(Rs2Decoder.err("cmd-int-offset", "seq %d: %s i=%d, expected %d" % [seq, cmd_op, i_off, running_int]))
+						return errors
+					running_int += Rs2Decoder._command_int_count(command)
+		var running_mesh: int = 0
+		if is_v4:
+			for value: Variant in meshes_meta:
+				var m: Dictionary = value
+				var mf: Variant = m["f"]
+				if mf == null:
+					continue
+				var mfi: int = Rs2Decoder.as_int(mf)
+				if mfi != running_mesh:
+					errors.append(Rs2Decoder.err("mesh-offset", "seq %d: mesh %d f=%d, expected %d" % [seq, Rs2Decoder.as_int(m["id"]), mfi, running_mesh]))
+					return errors
+				running_mesh += 6
+		if item_f32.size() != Rs2Decoder.ITEM_FLOATS * items_meta.size() or canvas_f32.size() != Rs2Decoder.CANVAS_FLOATS * canvases_meta.size() or cmd_f32.size() != running or (is_v4 and (cmd_i32.size() != running_int or mesh_f32.size() != running_mesh)):
+			errors.append(Rs2Decoder.err("block-count", "seq %d: decoded block lengths disagree with items/canvases/commands/meshes counts" % seq))
 			return errors
 
 		var failures: Array = meta["failures"]
@@ -1147,12 +1544,17 @@ class Stream:
 			canvases = {}
 			items = {}
 			textures = {}
+			if is_v4:
+				meshes = {}
 		for id: int in removed_canvases:
 			canvases.erase(id)
 		for id: int in removed_items:
 			items.erase(id)
 		for id: int in removed_textures:
 			textures.erase(id)
+		if is_v4:
+			for id: int in removed_meshes:
+				meshes.erase(id)
 		for i: int in canvases_meta.size():
 			var canvas: Dictionary = canvases_meta[i]
 			var lifted: Dictionary = Rs2Decoder._lift_canvas(canvas, canvas_f32.slice(i * Rs2Decoder.CANVAS_FLOATS, (i + 1) * Rs2Decoder.CANVAS_FLOATS))
@@ -1160,7 +1562,7 @@ class Stream:
 		for i: int in items_meta.size():
 			var item: Dictionary = items_meta[i]
 			var id: int = Rs2Decoder.as_int(item["id"])
-			var lifted_item: Dictionary = Rs2Decoder._lift_item(item, item_f32.slice(i * Rs2Decoder.ITEM_FLOATS, (i + 1) * Rs2Decoder.ITEM_FLOATS), cmd_f32)
+			var lifted_item: Dictionary = Rs2Decoder._lift_item(item, item_f32.slice(i * Rs2Decoder.ITEM_FLOATS, (i + 1) * Rs2Decoder.ITEM_FLOATS), cmd_f32, cmd_i32)
 			if item["commands"] == null:
 				var base_commands: Array = []
 				if items.has(id):
@@ -1171,10 +1573,14 @@ class Stream:
 		for value: Variant in textures_meta:
 			var t: Dictionary = value
 			textures[Rs2Decoder.as_int(t["id"])] = t
+		if is_v4:
+			for value: Variant in meshes_meta:
+				var m2: Dictionary = value
+				meshes[Rs2Decoder.as_int(m2["id"])] = Rs2Decoder._lift_mesh(m2, mesh_f32)
 		default_texture_filter = meta["default_texture_filter"]
 		default_texture_repeat = meta["default_texture_repeat"]
 
-		# texture-version, across the whole stream so far.
+		# texture-version / mesh-version, across the whole stream so far.
 		for value: Variant in textures_meta:
 			var t: Dictionary = value
 			var id: int = Rs2Decoder.as_int(t["id"])
@@ -1183,14 +1589,25 @@ class Stream:
 				errors.append(Rs2Decoder.err("texture-version", "seq %d: texture %d's version/content is inconsistent with its earlier entry" % [seq, id]))
 				return errors
 			_last_seen_texture[id] = t
+		if is_v4:
+			for value: Variant in meshes_meta:
+				var m3: Dictionary = value
+				var mid: int = Rs2Decoder.as_int(m3["id"])
+				var lifted_mesh: Dictionary = meshes[mid]
+				var mesh_previous: Variant = _last_seen_mesh.get(mid)
+				if Rs2Decoder._mesh_version_regressed(mesh_previous, lifted_mesh):
+					errors.append(Rs2Decoder.err("mesh-version", "seq %d: mesh %d's version/content is inconsistent with its earlier entry" % [seq, mid]))
+					return errors
+				_last_seen_mesh[mid] = lifted_mesh
 
 		var unsupported_meta: Array = meta["unsupported"]
-		var resolved_error: String = _check_resolved_invariants(seq, unsupported_meta)
+		var resolved_error: String = _check_resolved_invariants(seq, unsupported_meta, is_v4)
 		if resolved_error != "":
 			errors.append(resolved_error)
 			return errors
 
-		# resource-missing / resource-payload, over the RESOLVED table.
+		# resource-missing / resource-payload, over the RESOLVED table (every ok image entry, and,
+		# at /4, every ok mesh surface).
 		for id: int in textures:
 			var t: Dictionary = textures[id]
 			if t["kind"] != "image" or t["status"] != "ok" or t["hash"] == null:
@@ -1209,6 +1626,27 @@ class Stream:
 				if shape["format"] != t["format"] or Rs2Decoder.as_int(shape["width"]) != Rs2Decoder.as_int(t["width"]) or Rs2Decoder.as_int(shape["height"]) != Rs2Decoder.as_int(t["height"]) or shape["mipmaps"] != t["mipmaps"] or payload_length != payload_bytes:
 					errors.append(Rs2Decoder.err("resource-payload", "seq %d: the resource for hash %s decodes as %s %dx%d, texture %d declares %s %dx%d" % [seq, hash, shape["format"], Rs2Decoder.as_int(shape["width"]), Rs2Decoder.as_int(shape["height"]), id, t["format"], Rs2Decoder.as_int(t["width"]), Rs2Decoder.as_int(t["height"])]))
 					return errors
+		if is_v4:
+			for mid2: int in meshes:
+				var m4: Dictionary = meshes[mid2]
+				if m4["status"] != "ok":
+					continue
+				var surfaces: Array = m4["surfaces"]
+				for value: Variant in surfaces:
+					var s: Dictionary = value
+					var shash: String = s["hash"]
+					var spayload_bytes: int = Rs2Decoder.as_int(s["payload_bytes"])
+					if spayload_bytes > inline_max_bytes:
+						continue
+					if not _carried_hashes.has(shash):
+						errors.append(Rs2Decoder.err("resource-missing", "seq %d: mesh %d's surface hash %s (payload_bytes %d <= inline_max_bytes %d) never arrived as a resource record" % [seq, mid2, shash, spayload_bytes, inline_max_bytes]))
+						return errors
+					if _mesh_resource_shapes.has(shash):
+						var mshape: Dictionary = _mesh_resource_shapes[shash]
+						var mpayload_length: int = Rs2Decoder.as_int(mshape["payload_length"])
+						if mshape["primitive"] != s["primitive"] or Rs2Decoder.as_int(mshape["format"]) != Rs2Decoder.as_int(s["format"]) or Rs2Decoder.as_int(mshape["vertex_count"]) != Rs2Decoder.as_int(s["vertex_count"]) or Rs2Decoder.as_int(mshape["index_count"]) != Rs2Decoder.as_int(s["index_count"]) or mpayload_length != spayload_bytes:
+							errors.append(Rs2Decoder.err("resource-payload", "seq %d: the resource for hash %s decodes as %s vertex_count %d, mesh %d declares %s vertex_count %d" % [seq, shash, mshape["primitive"], Rs2Decoder.as_int(mshape["vertex_count"]), mid2, s["primitive"], Rs2Decoder.as_int(s["vertex_count"])]))
+							return errors
 
 		# id-reused.
 		var new_canvas_ids: Array[int] = []
@@ -1235,6 +1673,15 @@ class Stream:
 			if id <= _max_texture_id and not _known_texture_ids.has(id):
 				errors.append(Rs2Decoder.err("id-reused", "transaction seq %d: texture id %d is absent from the previous transaction and not above %d" % [seq, id, _max_texture_id]))
 				return errors
+		if is_v4:
+			var new_mesh_ids: Array[int] = []
+			for value: Variant in meshes_meta:
+				var m5: Dictionary = value
+				new_mesh_ids.append(Rs2Decoder.as_int(m5["id"]))
+			for id: int in new_mesh_ids:
+				if id <= _max_mesh_id and not _known_mesh_ids.has(id):
+					errors.append(Rs2Decoder.err("id-reused", "transaction seq %d: mesh id %d is absent from the previous transaction and not above %d" % [seq, id, _max_mesh_id]))
+					return errors
 		_known_canvas_ids = {}
 		for id: int in canvases:
 			_known_canvas_ids[id] = true
@@ -1247,6 +1694,11 @@ class Stream:
 		for id: int in textures:
 			_known_texture_ids[id] = true
 			_max_texture_id = maxi(_max_texture_id, id)
+		if is_v4:
+			_known_mesh_ids = {}
+			for id: int in meshes:
+				_known_mesh_ids[id] = true
+				_max_mesh_id = maxi(_max_mesh_id, id)
 
 		last_seq = seq
 		last_frame = frame
@@ -1260,11 +1712,12 @@ class Stream:
 	var _known_canvas_ids: Dictionary[int, bool] = {}
 	var _known_item_ids: Dictionary[int, bool] = {}
 	var _known_texture_ids: Dictionary[int, bool] = {}
+	var _known_mesh_ids: Dictionary[int, bool] = {}
 
-	func _check_patch_rules(encoding: String, seq: int, meta: Dictionary, removed_canvases: Array[int], removed_items: Array[int], removed_textures: Array[int], canvases_meta: Array, items_meta: Array, textures_meta: Array) -> String:
+	func _check_patch_rules(encoding: String, seq: int, meta: Dictionary, removed_canvases: Array[int], removed_items: Array[int], removed_textures: Array[int], removed_meshes: Array[int], canvases_meta: Array, items_meta: Array, textures_meta: Array, meshes_meta: Array, is_v4: bool) -> String:
 		if encoding == "full":
 			var base_seq: Variant = meta["base_seq"]
-			if base_seq != null or removed_canvases.size() > 0 or removed_items.size() > 0 or removed_textures.size() > 0:
+			if base_seq != null or removed_canvases.size() > 0 or removed_items.size() > 0 or removed_textures.size() > 0 or (is_v4 and removed_meshes.size() > 0):
 				return Rs2Decoder.err("patch-encoding", "seq %d: a full transaction carries a non-null base_seq or a non-empty removed list" % seq)
 			return ""
 		if session_encoding == "full":
@@ -1311,6 +1764,19 @@ class Stream:
 			var id: int = Rs2Decoder.as_int(t["id"])
 			if removed_texture_set.has(id):
 				return Rs2Decoder.err("patch-removed", "seq %d: texture %d is both removed and present" % [seq, id])
+		if is_v4:
+			var removed_mesh_set: Dictionary[int, bool] = {}
+			for id: int in removed_meshes:
+				if removed_mesh_set.has(id):
+					return Rs2Decoder.err("patch-removed", "seq %d: mesh %d is removed twice" % [seq, id])
+				removed_mesh_set[id] = true
+				if not meshes.has(id):
+					return Rs2Decoder.err("patch-removed", "seq %d: removed mesh %d is absent from the base" % [seq, id])
+			for value: Variant in meshes_meta:
+				var m: Dictionary = value
+				var mid: int = Rs2Decoder.as_int(m["id"])
+				if removed_mesh_set.has(mid):
+					return Rs2Decoder.err("patch-removed", "seq %d: mesh %d is both removed and present" % [seq, mid])
 
 		for value: Variant in items_meta:
 			var it: Dictionary = value
@@ -1362,7 +1828,28 @@ class Stream:
 			return tag + "kind \"canvas\" status \"unsupported\" must have a non-null reason"
 		return ""
 
-	func _check_resolved_invariants(seq: int, unsupported_meta: Array) -> String:
+	## render-stream-4.md "Mesh table" ("mesh-entry"): the same shape rule
+	## _texture_entry_field_error() checks, mirrored for a mesh entry's status/reason/surfaces
+	## coupling (the lifted mesh dict has no "f"/custom_aabb coupling to check here).
+	func _mesh_entry_field_error(m: Dictionary) -> String:
+		var id: int = Rs2Decoder.as_int(m["id"])
+		var status: String = m["status"]
+		var tag: String = "mesh %d: " % id
+		var surfaces: Array = m["surfaces"]
+		if status == "freed":
+			if m["reason"] != null or surfaces.size() > 0:
+				return tag + "a \"freed\" entry must have reason null and surfaces []"
+			return ""
+		if status == "unsupported":
+			if m["reason"] == null or surfaces.size() > 0:
+				return tag + "an \"unsupported\" entry needs a non-null reason and surfaces []"
+			return ""
+		# "ok"
+		if m["reason"] != null:
+			return tag + "an \"ok\" entry must have reason null"
+		return ""
+
+	func _check_resolved_invariants(seq: int, unsupported_meta: Array, is_v4: bool) -> String:
 		var where: String = "transaction seq %d" % seq
 		var canvas_ids: Dictionary[int, bool] = {}
 		for id: int in canvases:
@@ -1373,12 +1860,22 @@ class Stream:
 		var texture_ids: Dictionary[int, bool] = {}
 		for id: int in textures:
 			texture_ids[id] = true
+		var mesh_ids: Dictionary[int, bool] = {}
+		if is_v4:
+			for id: int in meshes:
+				mesh_ids[id] = true
 
 		for id: int in textures:
 			var t: Dictionary = textures[id]
 			var field_error: String = _texture_entry_field_error(t)
 			if field_error != "":
 				return Rs2Decoder.err("texture-entry", "%s: %s" % [where, field_error])
+		if is_v4:
+			for id: int in meshes:
+				var m0: Dictionary = meshes[id]
+				var mesh_field_error: String = _mesh_entry_field_error(m0)
+				if mesh_field_error != "":
+					return Rs2Decoder.err("mesh-entry", "%s: %s" % [where, mesh_field_error])
 
 		var roots: Array[int] = []
 		for id: int in canvases:
@@ -1435,13 +1932,20 @@ class Stream:
 
 		# texture-ref: every command's non-null tex, and every canvas texture's non-null diffuse,
 		# must name an existing table entry; a diffuse must name an image or placeholder.
+		# render-stream-4.md "Command": every new /4 op that carries a "tex" field follows the
+		# same rule as the existing texture-rect ops.
+		var tex_bearing_ops: Dictionary[String, bool] = {
+			"add_texture_rect": true, "add_texture_rect_region": true,
+			"add_msdf_texture_rect_region": true, "add_primitive": true, "add_polygon": true,
+			"add_triangle_array": true, "add_nine_patch": true, "add_mesh": true,
+		}
 		for id: int in items:
 			var item: Dictionary = items[id]
 			var commands: Array = item["commands"]
 			for value: Variant in commands:
 				var command: Dictionary = value
 				var op: String = command["op"]
-				if op != "add_texture_rect" and op != "add_texture_rect_region" and op != "add_msdf_texture_rect_region":
+				if not tex_bearing_ops.has(op):
 					continue
 				var tex: Variant = command["tex"]
 				if tex == null:
@@ -1463,6 +1967,20 @@ class Stream:
 			var diffuse_entry: Dictionary = textures[diffuse_id]
 			if diffuse_entry["kind"] != "image" and diffuse_entry["kind"] != "placeholder":
 				return Rs2Decoder.err("texture-ref", "%s: canvas texture %d's diffuse names texture %d, whose kind is %s (must be image or placeholder)" % [where, id, diffuse_id, diffuse_entry["kind"]])
+
+		# mesh-ref (render-stream-4.md "Mesh table"): every add_mesh command's "mesh" id must name
+		# an entry present in the resolved mesh table (any status -- a "freed" tombstone counts).
+		if is_v4:
+			for id: int in items:
+				var item2: Dictionary = items[id]
+				var commands2: Array = item2["commands"]
+				for value: Variant in commands2:
+					var command2: Dictionary = value
+					if command2["op"] != "add_mesh":
+						continue
+					var mesh_id: int = Rs2Decoder.as_int(command2["mesh"])
+					if not mesh_ids.has(mesh_id):
+						return Rs2Decoder.err("mesh-ref", "%s: item %d's add_mesh names mesh %d, which has no entry" % [where, id, mesh_id])
 
 		# Invariant 9: draw-index ties.
 		var expected_tie_items: Dictionary[int, bool] = {}
@@ -1505,6 +2023,7 @@ class Stream:
 		# Expected derived unsupported[] entries.
 		var actual_unsupported_ops: Dictionary[String, String] = {}  # "item:op" -> reason
 		var actual_unsupported_texture: Dictionary[String, bool] = {}  # "item:rs_method" -> true
+		var actual_unsupported_mesh: Dictionary[String, bool] = {}  # "item:canvas_item_add_mesh" -> true
 		for id: int in items:
 			var item: Dictionary = items[id]
 			var commands: Array = item["commands"]
@@ -1517,34 +2036,36 @@ class Stream:
 					if not seen_ops.has(name):
 						seen_ops[name] = true
 						var cmd_reason: String = command["reason"]
-						var reason: String = cmd_reason if cmd_reason == "unknown-texture" or cmd_reason == "canvas-texture-headless" else "unsupported-op"
+						var reason: String = cmd_reason if (cmd_reason == "unknown-texture" or cmd_reason == "canvas-texture-headless" or cmd_reason == "unknown-mesh" or cmd_reason == "skinned-geometry") else "unsupported-op"
 						actual_unsupported_ops["%d:%s" % [id, name]] = reason
-				elif op == "add_texture_rect" or op == "add_texture_rect_region" or op == "add_msdf_texture_rect_region":
+				elif tex_bearing_ops.has(op) and command["tex"] != null:
+					# NOTE: an early "continue" here would also skip the add_mesh check below
+					# (same loop iteration) -- this branch only ever falls through, never
+					# continues, so it stays a plain "if" inside the "elif".
 					var tex: Variant = command["tex"]
-					if tex == null:
-						continue
 					var target_id: int = Rs2Decoder.as_int(tex)
-					if not textures.has(target_id):
-						continue
-					var target: Dictionary = textures[target_id]
-					var unsupported_via_diffuse: bool = false
-					if target["kind"] == "canvas" and target["canvas"] != null:
-						var canvas_dict2: Dictionary = target["canvas"]
-						var diffuse: Variant = canvas_dict2["diffuse"]
-						if diffuse != null and textures.has(Rs2Decoder.as_int(diffuse)):
-							var diffuse_entry2: Dictionary = textures[Rs2Decoder.as_int(diffuse)]
-							unsupported_via_diffuse = diffuse_entry2["status"] == "unsupported"
-					if target["status"] == "unsupported" or unsupported_via_diffuse:
-						# The derived entry's `op` is the RenderingServer method name
-						# (canvas_item_add_texture_rect[_region] / _msdf_texture_rect_region).
-						var rs_method: String
-						if op == "add_texture_rect":
-							rs_method = "canvas_item_add_texture_rect"
-						elif op == "add_texture_rect_region":
-							rs_method = "canvas_item_add_texture_rect_region"
-						else:
-							rs_method = "canvas_item_add_msdf_texture_rect_region"
-						actual_unsupported_texture["%d:%s" % [id, rs_method]] = true
+					if textures.has(target_id):
+						var target: Dictionary = textures[target_id]
+						var unsupported_via_diffuse: bool = false
+						if target["kind"] == "canvas" and target["canvas"] != null:
+							var canvas_dict2: Dictionary = target["canvas"]
+							var diffuse: Variant = canvas_dict2["diffuse"]
+							if diffuse != null and textures.has(Rs2Decoder.as_int(diffuse)):
+								var diffuse_entry2: Dictionary = textures[Rs2Decoder.as_int(diffuse)]
+								unsupported_via_diffuse = diffuse_entry2["status"] == "unsupported"
+						if target["status"] == "unsupported" or unsupported_via_diffuse:
+							# The derived entry's `op` is the RenderingServer method name, not
+							# the wire command's own op (render-stream-2.md "Item-level
+							# unsupported entries").
+							var rs_method: String = Rs2Decoder._rs_method_for_op(op)
+							actual_unsupported_texture["%d:%s" % [id, rs_method]] = true
+				if is_v4 and op == "add_mesh":
+					var mesh_id2: Variant = command["mesh"]
+					var mtarget_id: int = Rs2Decoder.as_int(mesh_id2)
+					if meshes.has(mtarget_id):
+						var mtarget: Dictionary = meshes[mtarget_id]
+						if mtarget["status"] == "unsupported":
+							actual_unsupported_mesh["%d:canvas_item_add_mesh" % id] = true
 
 		var last_item: int = -1
 		var last_op: String = ""
@@ -1552,6 +2073,7 @@ class Stream:
 		var declared_unsupported_ops: Dictionary[String, bool] = {}
 		var declared_tie_items: Dictionary[int, bool] = {}
 		var declared_unsupported_texture: Dictionary[String, bool] = {}
+		var declared_unsupported_mesh: Dictionary[String, bool] = {}
 		for value: Variant in unsupported_meta:
 			var entry: Dictionary = value
 			var op: String = entry["op"]
@@ -1568,7 +2090,7 @@ class Stream:
 				return Rs2Decoder.err("unsupported-mismatch", "%s: unsupported entry (%d, %s) is out of order or repeated" % [where, item_id, op])
 			last_item = item_id
 			last_op = op
-			if reason == "unsupported-op" or reason == "unknown-texture" or reason == "canvas-texture-headless":
+			if reason == "unsupported-op" or reason == "unknown-texture" or reason == "canvas-texture-headless" or reason == "unknown-mesh" or reason == "skinned-geometry":
 				var pair: String = "%d:%s" % [item_id, op]
 				if not actual_unsupported_ops.has(pair) or actual_unsupported_ops[pair] != reason:
 					return Rs2Decoder.err("unsupported-mismatch", "%s: %s entry (%d, %s) has no matching command" % [where, reason, item_id, op])
@@ -1580,13 +2102,20 @@ class Stream:
 					return Rs2Decoder.err("unsupported-mismatch", "%s: draw-index-tie entry for item %d does not correspond to an actual tie" % [where, item_id])
 				declared_tie_items[item_id] = true
 			elif reason == "unsupported-state":
-				if op != "canvas_item_set_material":
-					return Rs2Decoder.err("unsupported-mismatch", "%s: unsupported-state entry for item %d names %s, expected canvas_item_set_material" % [where, item_id, op])
+				# unsupported-state covers canvas_item_set_material (/2) and, new at /4,
+				# calibrator-7's canvas_item_attach_skeleton.
+				if op != "canvas_item_set_material" and op != "canvas_item_attach_skeleton":
+					return Rs2Decoder.err("unsupported-mismatch", "%s: unsupported-state entry for item %d names %s, expected canvas_item_set_material or canvas_item_attach_skeleton" % [where, item_id, op])
 			elif reason == "unsupported-texture":
 				var pair2: String = "%d:%s" % [item_id, op]
 				if not actual_unsupported_texture.has(pair2):
 					return Rs2Decoder.err("unsupported-mismatch", "%s: unsupported-texture entry (%d, %s) does not correspond to a command naming an unsupported texture" % [where, item_id, op])
 				declared_unsupported_texture[pair2] = true
+			elif reason == "unsupported-mesh":
+				var pair3: String = "%d:%s" % [item_id, op]
+				if not actual_unsupported_mesh.has(pair3):
+					return Rs2Decoder.err("unsupported-mismatch", "%s: unsupported-mesh entry (%d, %s) does not correspond to an add_mesh naming an unsupported mesh" % [where, item_id, op])
+				declared_unsupported_mesh[pair3] = true
 		for pair: String in actual_unsupported_ops:
 			if not declared_unsupported_ops.has(pair):
 				return Rs2Decoder.err("unsupported-mismatch", "%s: %s command (%s) has no matching unsupported[] entry" % [where, actual_unsupported_ops[pair], pair.replace(":", ", ")])
@@ -1595,7 +2124,11 @@ class Stream:
 				return Rs2Decoder.err("unsupported-mismatch", "%s: items tie on draw_index under item/canvas with smallest id %d, but no draw-index-tie entry is declared" % [where, id])
 		for pair: String in actual_unsupported_texture:
 			if not declared_unsupported_texture.has(pair):
-				return Rs2Decoder.err("unsupported-mismatch", "%s: texture-rect command (%s) names an unsupported texture, with no unsupported-texture entry" % [where, pair.replace(":", ", ")])
+				return Rs2Decoder.err("unsupported-mismatch", "%s: tex-bearing command (%s) names an unsupported texture, with no unsupported-texture entry" % [where, pair.replace(":", ", ")])
+		if is_v4:
+			for pair: String in actual_unsupported_mesh:
+				if not declared_unsupported_mesh.has(pair):
+					return Rs2Decoder.err("unsupported-mismatch", "%s: add_mesh command (%s) names an unsupported mesh, with no unsupported-mesh entry" % [where, pair.replace(":", ", ")])
 		return ""
 
 	static func _same_id_set(declared: Array, claimed: Array) -> bool:

@@ -30,28 +30,45 @@ void append_f32le(std::string &out, float value) {
   append_u32le(out, bits);
 }
 
+// render-stream-4.md "Block type i32": little-endian two's-complement, same four-byte width as
+// f32/u32; the sign is just how the bytes are later interpreted.
+void append_i32le(std::string &out, std::int32_t value) {
+  append_u32le(out, static_cast<std::uint32_t>(value));
+}
+
 std::vector<std::uint8_t> to_bytes(const std::string &s) {
   return std::vector<std::uint8_t>(s.begin(), s.end());
 }
 
-// One block's payload, tagged by type (render-stream-2.md "Record framing: the u8 block type").
+// One block's payload, tagged by type (render-stream-2.md "Record framing: the u8 block type";
+// render-stream-4.md "Block type i32").
+enum class BlockKind { F32, U8, I32 };
+
 struct BlockPayload {
-  bool is_u8 = false;
-  std::vector<float> floats;        // f32
-  std::vector<std::uint8_t> bytes;  // u8
+  BlockKind kind = BlockKind::F32;
+  std::vector<float> floats;          // F32
+  std::vector<std::uint8_t> bytes;    // U8
+  std::vector<std::int32_t> ints;     // I32
 };
 
 BlockPayload f32_payload(std::vector<float> values) {
   BlockPayload p;
-  p.is_u8 = false;
+  p.kind = BlockKind::F32;
   p.floats = std::move(values);
   return p;
 }
 
 BlockPayload u8_payload(std::vector<std::uint8_t> values) {
   BlockPayload p;
-  p.is_u8 = true;
+  p.kind = BlockKind::U8;
   p.bytes = std::move(values);
+  return p;
+}
+
+BlockPayload i32_payload(std::vector<std::int32_t> values) {
+  BlockPayload p;
+  p.kind = BlockKind::I32;
+  p.ints = std::move(values);
   return p;
 }
 
@@ -62,9 +79,17 @@ std::vector<std::uint8_t> assemble_record(const std::string &meta,
   body += meta;
   append_u32le(body, static_cast<std::uint32_t>(blocks.size()));
   for (const BlockPayload &block : blocks) {
-    if (block.is_u8) {
+    if (block.kind == BlockKind::U8) {
       append_u32le(body, static_cast<std::uint32_t>(block.bytes.size()));
       body.append(reinterpret_cast<const char *>(block.bytes.data()), block.bytes.size());
+    } else if (block.kind == BlockKind::I32) {
+      std::string payload;
+      payload.reserve(block.ints.size() * 4);
+      for (std::int32_t value : block.ints) {
+        append_i32le(payload, value);
+      }
+      append_u32le(body, static_cast<std::uint32_t>(payload.size()));
+      body += payload;
     } else {
       std::string payload;
       payload.reserve(block.floats.size() * 4);
@@ -180,6 +205,54 @@ void append_canvas_texture(std::string &out, const TextureEntry &t) {
   out += "}";
 }
 
+// render-stream-4.md "Mesh table": appends one mesh entry's JSON, pushing its custom AABB (when
+// present) onto `mesh_f32` and recording the resulting offset as "f" -- the same running-offset
+// pattern cmd_f32/"f" uses for commands, except here the stride is fixed (0 or 6 floats) rather
+// than kind-dependent.
+void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<float> &mesh_f32) {
+  out += "{\"id\":";
+  append_json_int(out, mesh.id);
+  out += ",\"origin\":\"created\"";
+  out += ",\"status\":";
+  append_json_string(out, to_wire(mesh.status));
+  out += ",\"reason\":";
+  if (mesh.has_reason) {
+    append_json_string(out, to_wire(mesh.reason));
+  } else {
+    out += "null";
+  }
+  out += ",\"version\":";
+  append_json_int(out, mesh.version);
+  out += ",\"f\":";
+  if (mesh.has_aabb) {
+    append_json_int(out, mesh_f32.size());
+    mesh_f32.insert(mesh_f32.end(), mesh.custom_aabb.begin(), mesh.custom_aabb.end());
+  } else {
+    out += "null";
+  }
+  out += ",\"surfaces\":[";
+  for (std::size_t i = 0; i < mesh.surfaces.size(); ++i) {
+    if (i != 0) {
+      out += ",";
+    }
+    const MeshSurface &s = mesh.surfaces[i];
+    out += "{\"hash\":";
+    append_json_string(out, s.hash);
+    out += ",\"payload_bytes\":";
+    append_json_int(out, s.payload_bytes);
+    out += ",\"primitive\":";
+    append_json_string(out, to_wire(s.primitive));
+    out += ",\"format\":";
+    append_json_int(out, s.format);
+    out += ",\"vertex_count\":";
+    append_json_int(out, s.vertex_count);
+    out += ",\"index_count\":";
+    append_json_int(out, s.index_count);
+    out += "}";
+  }
+  out += "]}";
+}
+
 void append_texture_entry(std::string &out, const TextureEntry &t) {
   out += "{\"id\":";
   append_json_int(out, t.id);
@@ -219,6 +292,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V4) {
+    return std::vector<std::uint8_t>(kMagicV4.begin(), kMagicV4.end());
+  }
   return version == ProtocolVersion::V3
              ? std::vector<std::uint8_t>(kMagicV3.begin(), kMagicV3.end())
              : std::vector<std::uint8_t>(kMagic.begin(), kMagic.end());
@@ -227,7 +303,10 @@ std::vector<std::uint8_t> magic(ProtocolVersion version) {
 std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
-  append_json_string(m, session.version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol);
+  const char *protocol = session.version == ProtocolVersion::V4
+                              ? kProtocolV4
+                              : (session.version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol);
+  append_json_string(m, protocol);
   m += ",\"session_id\":";
   append_json_string(m, session.session_id);
 
@@ -291,8 +370,16 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_int(m, session.viewport.host_window_size[1]);
   m += "]}";
 
-  m += ",\"resources\":{\"hash\":\"sha256\",\"payload\":";
-  append_json_string(m, kPayloadSchema);
+  m += ",\"resources\":{\"hash\":\"sha256\",";
+  if (session.version == ProtocolVersion::V4) {
+    // render-stream-4.md "Resources": "payload" (one schema string) becomes "payloads" (a sorted
+    // array): the mesh and texture payload formats share one resource policy.
+    m += "\"payloads\":";
+    append_json_string_array(m, {kMeshPayloadSchema, kPayloadSchema});
+  } else {
+    m += "\"payload\":";
+    append_json_string(m, kPayloadSchema);
+  }
   m += ",\"delivery\":";
   append_json_string(m, to_wire(session.resources.delivery));
   m += ",\"inline_max_bytes\":";
@@ -423,12 +510,18 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   m += ",\"default_texture_repeat\":";
   append_json_string(m, to_wire(transaction.default_texture_repeat));
 
+  const bool is_v4 = transaction.version == ProtocolVersion::V4;
+
   m += ",\"removed_canvases\":";
   append_json_id_array(m, transaction.removed_canvases);
   m += ",\"removed_items\":";
   append_json_id_array(m, transaction.removed_items);
   m += ",\"removed_textures\":";
   append_json_id_array(m, transaction.removed_textures);
+  if (is_v4) {
+    m += ",\"removed_meshes\":";
+    append_json_id_array(m, transaction.removed_meshes);
+  }
 
   std::vector<float> canvas_f32;
   m += ",\"canvases\":[";
@@ -458,6 +551,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
 
   std::vector<float> item_f32;
   std::vector<float> cmd_f32;
+  std::vector<std::int32_t> cmd_i32;  // new at /4: add_triangle_array's indices
   m += ",\"items\":[";
   for (std::size_t i = 0; i < transaction.items.size(); ++i) {
     if (i != 0) {
@@ -578,6 +672,165 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
           cmd_f32.push_back(command.msdf_px_range);
           cmd_f32.push_back(command.msdf_scale);
           break;
+        case CommandKind::AddLine:
+          // render-stream-4.md "Command": 9 floats (from 2, to 2, colour 4, width 1).
+          m += "{\"op\":\"add_line\",\"aa\":";
+          append_json_bool(m, command.antialiased);
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          cmd_f32.insert(cmd_f32.end(), command.line_from.begin(), command.line_from.end());
+          cmd_f32.insert(cmd_f32.end(), command.line_to.begin(), command.line_to.end());
+          cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
+          cmd_f32.push_back(command.width);
+          break;
+        case CommandKind::AddPolyline:
+        case CommandKind::AddMultiline:
+          // render-stream-4.md "Command": width 1, points 2n, colours 4 x colors.size().
+          m += command.kind == CommandKind::AddPolyline ? "{\"op\":\"add_polyline\",\"aa\":"
+                                                          : "{\"op\":\"add_multiline\",\"aa\":";
+          append_json_bool(m, command.antialiased);
+          m += ",\"n\":";
+          append_json_int(m, command.points.size());
+          m += ",\"colors\":";
+          append_json_int(m, command.colors.size());
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          cmd_f32.push_back(command.width);
+          for (const Point2 &p : command.points) {
+            cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
+          }
+          for (const Color4 &c : command.colors) {
+            cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
+          }
+          break;
+        case CommandKind::AddCircle:
+          // render-stream-4.md "Command": 7 floats (position 2, radius 1, colour 4).
+          m += "{\"op\":\"add_circle\",\"aa\":";
+          append_json_bool(m, command.antialiased);
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          cmd_f32.insert(cmd_f32.end(), command.circle_position.begin(), command.circle_position.end());
+          cmd_f32.push_back(command.circle_radius);
+          cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
+          break;
+        case CommandKind::AddPrimitive:
+        case CommandKind::AddPolygon:
+          // render-stream-4.md "Command": points 2n, colours 4 x colors.size(), uvs 2 x uvs.size().
+          m += command.kind == CommandKind::AddPrimitive ? "{\"op\":\"add_primitive\",\"tex\":"
+                                                            : "{\"op\":\"add_polygon\",\"tex\":";
+          if (command.has_tex) {
+            append_json_int(m, command.tex);
+          } else {
+            m += "null";
+          }
+          m += ",\"n\":";
+          append_json_int(m, command.points.size());
+          m += ",\"colors\":";
+          append_json_int(m, command.colors.size());
+          m += ",\"uvs\":";
+          append_json_int(m, command.uvs.size());
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          for (const Point2 &p : command.points) {
+            cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
+          }
+          for (const Color4 &c : command.colors) {
+            cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
+          }
+          for (const Point2 &uv : command.uvs) {
+            cmd_f32.insert(cmd_f32.end(), uv.begin(), uv.end());
+          }
+          break;
+        case CommandKind::AddTriangleArray:
+          // render-stream-4.md "Command": cmd_f32 as add_primitive; indices (int32) in cmd_i32.
+          m += "{\"op\":\"add_triangle_array\",\"tex\":";
+          if (command.has_tex) {
+            append_json_int(m, command.tex);
+          } else {
+            m += "null";
+          }
+          m += ",\"n\":";
+          append_json_int(m, command.points.size());
+          m += ",\"colors\":";
+          append_json_int(m, command.colors.size());
+          m += ",\"uvs\":";
+          append_json_int(m, command.uvs.size());
+          m += ",\"indices\":";
+          append_json_int(m, command.indices.size());
+          m += ",\"count\":";
+          append_json_int(m, command.triangle_count);
+          m += ",\"i\":";
+          append_json_int(m, cmd_i32.size());
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          for (const Point2 &p : command.points) {
+            cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
+          }
+          for (const Color4 &c : command.colors) {
+            cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
+          }
+          for (const Point2 &uv : command.uvs) {
+            cmd_f32.insert(cmd_f32.end(), uv.begin(), uv.end());
+          }
+          cmd_i32.insert(cmd_i32.end(), command.indices.begin(), command.indices.end());
+          break;
+        case CommandKind::AddNinePatch:
+          // render-stream-4.md "Command": rect 4, source 4, margin tl 2, margin br 2, modulate 4.
+          m += "{\"op\":\"add_nine_patch\",\"tex\":";
+          if (command.has_tex) {
+            append_json_int(m, command.tex);
+          } else {
+            m += "null";
+          }
+          m += ",\"x_axis\":";
+          append_json_string(m, to_wire(command.x_axis));
+          m += ",\"y_axis\":";
+          append_json_string(m, to_wire(command.y_axis));
+          m += ",\"draw_center\":";
+          append_json_bool(m, command.draw_center);
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
+          cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
+          cmd_f32.insert(cmd_f32.end(), command.np_margin_tl.begin(), command.np_margin_tl.end());
+          cmd_f32.insert(cmd_f32.end(), command.np_margin_br.begin(), command.np_margin_br.end());
+          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+          break;
+        case CommandKind::AddMesh:
+          // render-stream-4.md "Command": transform 6, modulate 4.
+          m += "{\"op\":\"add_mesh\",\"mesh\":";
+          append_json_int(m, command.mesh);
+          m += ",\"tex\":";
+          if (command.has_tex) {
+            append_json_int(m, command.tex);
+          } else {
+            m += "null";
+          }
+          m += ",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
+          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+          break;
+        case CommandKind::AddSetTransform:
+          // render-stream-4.md "Command": transform 6 (x.x, x.y, y.x, y.y, origin.x, origin.y).
+          m += "{\"op\":\"add_set_transform\",\"f\":";
+          append_json_int(m, cmd_f32.size());
+          m += "}";
+          cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
+          break;
+        case CommandKind::AddClipIgnore:
+          // render-stream-4.md "Command": no floats, no "f" key.
+          m += "{\"op\":\"add_clip_ignore\",\"ignore\":";
+          append_json_bool(m, command.clip_ignore);
+          m += "}";
+          break;
         case CommandKind::Unsupported:
           m += "{\"op\":\"unsupported\",\"name\":";
           append_json_string(m, command.name);
@@ -607,14 +860,38 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
   m += "]";
 
+  std::vector<float> mesh_f32;
+  if (is_v4) {
+    m += ",\"meshes\":[";
+    for (std::size_t i = 0; i < transaction.meshes.size(); ++i) {
+      if (i != 0) {
+        m += ",";
+      }
+      append_mesh_entry(m, transaction.meshes[i], mesh_f32);
+    }
+    m += "]";
+  }
+
   m += ",";
-  append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
-                                {"canvas_f32", "f32", canvas_f32.size()},
-                                {"cmd_f32", "f32", cmd_f32.size()}});
+  if (is_v4) {
+    append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
+                                  {"canvas_f32", "f32", canvas_f32.size()},
+                                  {"cmd_f32", "f32", cmd_f32.size()},
+                                  {"cmd_i32", "i32", cmd_i32.size()},
+                                  {"mesh_f32", "f32", mesh_f32.size()}});
+  } else {
+    append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
+                                  {"canvas_f32", "f32", canvas_f32.size()},
+                                  {"cmd_f32", "f32", cmd_f32.size()}});
+  }
   m += "}";
 
-  const std::vector<BlockPayload> blocks = {f32_payload(item_f32), f32_payload(canvas_f32),
-                                             f32_payload(cmd_f32)};
+  std::vector<BlockPayload> blocks = {f32_payload(item_f32), f32_payload(canvas_f32),
+                                       f32_payload(cmd_f32)};
+  if (is_v4) {
+    blocks.push_back(i32_payload(cmd_i32));
+    blocks.push_back(f32_payload(mesh_f32));
+  }
   return assemble_record(m, blocks);
 }
 
