@@ -895,6 +895,39 @@ reference's GPU buffers, before any wire exists); `expected-image-reference` on 
 
 **Pass criteria**: `--legs g5b,g5c` green; "Gate 5c result" with the census as measured.
 
+**As built (G5c, 2026-10-10).** Every prediction held on the first engine run: the hook log's mesh
+lines equal Q6d's census frame by frame (step 0: 6 `mesh_create`, 1 `mesh_create_from_surfaces`, 7
+`mesh_add_surface`, 1 `mesh_clear`; then exactly the rows of the step table, `DF` three lines a
+frame, every version), on the headless capture and on the armed rendered reference, and at every
+settle step every live surface's GRM1 hash is one value three ways: the hook's copy, the oracle's
+GPU readback and `make_expected.py`'s byte model. The model goes past Q6e's counts: it packs each
+surface as `mesh_create_surface_data_from_arrays` does (float32 AABB from `Rect2(v0, CMP_EPSILON)`,
+truncated RGBA8, `Polygon2D`'s indices from a port of `core/math/triangulate.cpp`), so every hash
+is predicted, `P2` included. Amendments: (1) **`mesh_create_from_surfaces` with exactly one surface
+now logs it** (surface 0, hash, format, counts, copy/hash cost) as a `mesh_add_surface` line does
+(`rs_resource_log.cpp`; G5a's line carried no hash, so a loaded mesh's bytes were named nowhere in
+the log); with several surfaces the line still names none, and G5e's mesh table carries them. (2)
+`DF`'s rebuild frame (step 5's) follows spine-godot: `free`, `mesh_create`, `mesh_add_surface`
+**instead of** that frame's three updates, and its build frame 1 has none, so `DF` logs exactly three
+lines on every frame from 2 (Q6d's "besides DF's per-frame three" read literally would double the
+rebuild frame). (3) `LD` is a loaded `ArrayMesh` resource, `ld_mesh.tres` (written by
+`make_expected.py`), which reaches the same hooked slot through `ArrayMesh::_set_surfaces` as Q1a's
+loading row says, rather than a script's raw `mesh_create_from_surfaces([dict])`. (4) `Polygon2D`'s
+mesh RID is private: the oracle derives it from the RID allocator (`rid_owner.h:160-175`: the
+constructor's `mesh_create` follows `canvas_item_create`, so validator + 1, and the previous fixture
+mesh's slot + 1) and verifies it on every line against the polygon's own vertex bytes. (5)
+`counters.json` counts the whole armed session, so `canvas_item_attach_skeleton` is 3: two
+`Polygon2D` draws and its destructor at teardown (`polygon_2d.cpp:729-734`, frame quit + 1, as the
+six teardown frees). (6) A command naming a freed mesh draws nothing, as Q1d predicted, and the
+rendered reference prints `ERROR: Parameter "mesh" is null.` once per frame while it is recorded
+(frames 71 to 80, ten lines; the item rect is cached, so the error is the draw's surface count). So
+`FR` is not fresh at 8 (its clear removes nothing visible) nor at 9 (nothing to move). (7) `MI`'s
+step-1 region update moves its quad 8 px past its creation AABB, against Q1f's fixture rule as Q6d
+itself specifies it; on screen it is harmless (the AABB only feeds culling), but the item rect a
+receiver derives stays the creation AABB. (8) `DF` is band as D13 says; each of its 9x5 cells maps
+onto one 4x4-texel checker cell, so its pixels are in fact flat per cell, but synthesis leaves the
+region to the leg comparison, whose budget measured 0.
+
 ---
 
 ### G5w — render-stream/4 codecs, mesh payload, goldens (sonnet, after G4e2)

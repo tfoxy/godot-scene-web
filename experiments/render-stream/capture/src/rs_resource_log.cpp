@@ -888,6 +888,15 @@ void ResourceLog::mesh_create_from_surfaces(const TapContext &ctx, std::uint64_t
   line.status = entry.status;
   line.reason = entry.reason;
   line.outcome = "applied";
+  // G5c (gate5-design.md "As built (G5c)"): a creation with exactly one surface -- every loaded
+  // single-surface ArrayMesh -- carries that surface on its line, exactly as a mesh_add_surface
+  // line would (surface 0, hash, format, counts, copy/hash cost), so the log alone names every
+  // surface hash. With several surfaces the line keeps them all null, as before.
+  if (surfaces.size() == 1) {
+    line.mesh_payload = &surfaces[0];
+    line.has_surface = true;
+    line.surface = 0;
+  }
   emit(line);
 }
 

@@ -182,6 +182,8 @@ GS_STRIP_VARS=(
 	RS_RECEIVER_FETCH_DELAY_MS RS_RECEIVER_SABOTAGE RS_RECEIVER_TOKEN_FILE
 	# gate 4 (protocol/gate4-design.md Q7): the glyph oracle and the fixture environment log
 	RS_FIXTURE_GLYPH_LOG RS_FIXTURE_ENV_LOG
+	# gate 5 (protocol/gate5-design.md Q7): the mesh oracle
+	RS_FIXTURE_MESH_LOG
 )
 
 # Sets GS_STRIP_ARGS to `-u NAME` words for `env`: GS_STRIP_VARS plus every inherited GRC_* and

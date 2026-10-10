@@ -3109,6 +3109,73 @@ What landed:
 - That a receiver, or anything downstream, can reproduce a mesh or the new immediate ops: nothing
   here is on any wire yet.
 
+## Gate 5c result (2026-10-10)
+
+G5c ([protocol/gate5-design.md](protocol/gate5-design.md) "G5c", "As built (G5c)") passes:
+`pnpm render-stream:gate5 -- --legs g5b,g5c` is **33/33** in
+`artifacts/render-stream/gate5/g5c-verify1/` (g5c under `mesh/`), on render-stream/3. The same
+build passed `build-capture.sh` (13/13 ctests), gate −1 28/28 with 64 hooks
+(`gate-minus1/g5c-verify1/`), gate 0 19/19 (`gate0/g5c-verify1/`), gate 1 65/65
+(`gate1/g5c-verify1/`), gate 2 85/85 (see below), gate 3 56/56 (`gate3/g5c-verify1/`), gate 4 185/185
+(`gate4/g5c-verify1/`), every pure self-test (gate 5c's included) and every
+`make_golden.py`/`make_expected.py --check`. Gate 2 scored 83/85 on the first pass
+(`gate2/g5c-verify1/`: `pins-bounded` and `obsolete-retired` on `live-animate` at frame 971, the
+known load-timing flake) and 85/85 on its one rerun (`gate2/g5c-verify2/`). Nothing on the wire or
+the receiver changed.
+
+What landed: the mesh fixture (`fixtures/gate5-mesh/`: an `ArrayMesh` in a `MeshInstance2D`, a
+raw mesh drawn once and then changed only by vertex, attribute and index region updates, a
+two-surface mesh losing a surface, a geoclip-like 9×5 grid deformed every frame in spine-godot's
+order and rebuilt 5×3, a `Polygon2D`, a loaded `ArrayMesh` resource and a freed mesh its item still
+names), `make_expected.py` (every surface's bytes and so every GRM1 hash, the per-frame hook
+census, commands, coverage, freshness, counters), the reference-side mesh oracle
+(`mesh_oracle.gd`), group g5c in `run-gate5.sh` and `lib/gate5c-checks.ts`, and one capture
+change: a single-surface `mesh_create_from_surfaces` log line now carries its surface's hash.
+
+Images (under the run directory): `mesh/reference/shots/step-{0..9}.png`, and the same under
+`mesh/reference-repeat/` and `mesh/reference-armed/`. Every shot equals the coverage model on all
+2 143 780 decided pixels of the exact regions; `DF` is band and the repeat and the armed
+reference are byte-identical to the reference everywhere (budget 0; `DF` 160 000 band
+pixel-shots at delta 0). Fresh regions per step, as predicted: `RM` at 2, 3 and 4 with its
+`content_version` constant over all 400 capture frames (pixels change through region updates
+alone), `M2` at 6, `P2` and `FR` at 7, `MI` at 1 and 8, `DF` at every step.
+
+Census as measured, equal to `make_expected.py`'s in every frame, on the headless capture (1 222
+mesh lines over frames 1 to 400, plus 6 teardown frees at 401) and on the armed rendered reference
+(328 lines to its quit frame 102). Hook-log ids are creation order: `AM1` 1, `RMS` 2, `M2` 3,
+`DF` 4, `P2` 5, `LD` 6, `FM` 7, `DF2` 8. Frame 1: 6 `mesh_create`, 1 `mesh_create_from_surfaces`,
+7 `mesh_add_surface`, `P2`'s `mesh_clear`. Then 11 `AM1` vertex region (v3), 21/31/41 `RMS`
+vertex, attribute, index region (v3 to v5), 51 `free(DF)` at v149 + `DF2` create and add, 61
+`M2` surface remove (v4), 71 `free(FM)` + `P2` clear and add (v5), 81 `AM1` clear and add (v5),
+and `DF`/`DF2` three lines on every frame from 2 (`DF2` v1049 at 400). `counters.json`:
+`add_mesh` 409, `mesh_surface_update_vertex_region` 400, `_attribute_region` 399,
+`mesh_set_custom_aabb` 398, `attach_skeleton` 3. Hash parity: 73 surface-steps where the hook's
+hash (headless capture and armed reference), the oracle's GPU readback and the model's predicted
+GRM1 hash are one value; both oracle logs are byte-identical and verify the derived `Polygon2D`
+RID. Median hook cost per change (tiny surfaces): copy 0.8–5.9 µs, hash 1.4–7.3 µs.
+
+### Findings
+
+- **Every prediction held on the first engine run**, hashes included: `make_expected.py`'s port of
+  `mesh_create_surface_data_from_arrays` (float32 AABB from `Rect2(v0, CMP_EPSILON)`, truncated
+  RGBA8) and of Godot's ear clipper reproduced every byte the engine stored, so the oracle, the hook
+  and the model agree without either copying the other.
+- **A freed mesh still named by a command draws nothing and says so**: the rendered legs print
+  `ERROR: Parameter "mesh" is null.` once per frame while `FR` names freed `FM` (frames 71–80, ten
+  lines); the headless capture prints nothing (the dummy renderer draws nothing).
+- **`Polygon2D`'s mesh RID is not reachable from script.** The oracle derives it from the RID
+  allocator's layout and verifies the result against the polygon's own bytes every time.
+- **`counters.json` counts teardown**: `Polygon2D`'s destructor calls `attach_skeleton(RID())` once
+  more after the quit frame.
+
+### What G5c does not prove
+
+- That any mesh reaches a receiver: on render-stream/3 `canvas_item_add_mesh` is a typed
+  `unsupported` command and no mesh table exists. The mesh table, GRM1 on the wire, receiver
+  residency and `receiver-vs-reference` on `DF` are G5e's; dropped presentations are G5f's.
+- Multi-surface `mesh_create_from_surfaces` hashes in the log (still unnamed; one-surface only).
+- Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

@@ -77,7 +77,7 @@ export type Gate5Check = Gate3Check;
 
 export const ALL_GROUPS = ["g5b", "g5c", "g5d", "g5e", "g5f", "g5g"] as const;
 /** Groups whose increment has landed; run-gate5.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g5b"];
+export const LANDED_GROUPS: readonly string[] = ["g5b", "g5c"];
 
 export const G5B_SUPPORT_LEGS = [
   "import",

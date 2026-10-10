@@ -1329,17 +1329,19 @@ when the marker also differs or when `RTL` itself has no mismatch.
 mise exec -- pnpm render-stream:gate5 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g5b]
+  [--legs g5b,g5c]
 ```
 
-- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_reference` with `REFERENCE_ARMED` and
-  `REFERENCE_VARIANT`). Groups g5c, g5d, g5e, g5f and g5g are known but have not landed, so asking
-  for them exits 2. The capture writes both sinks under gate 2's `.rs2` names whatever wire version
+- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_g5c`, `run_reference` with `REFERENCE_ARMED`,
+  `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MESH_ORACLE`). Groups g5d, g5e, g5f
+  and g5g are known but have not landed, so asking for them exits 2. The capture writes both sinks under gate 2's `.rs2` names whatever wire version
   `main` speaks.
 - `check-gate5.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate5-report/1`:
   gate 4's shape with `geometry` (the hook census as measured, the capture's commands per op per
-  step, the raster's pixel classes per step), `meshes` (null until G5c/G5e), `budgets` (reference
-  against repeat per region and pixel class) and `freshness`).
+  step, the raster's pixel classes per step), `meshes` (G5c: per fixture mesh its hook-log lines,
+  last version and median copy/hash cost, and `_parity`, the agreed hash per mesh and step),
+  `budgets` (reference against repeat per region and pixel class) and `freshness`). With g5c it
+  merges `runGate5c`'s checks and legs into the same report.
 - `lib/gate5-expected.ts`: `expected.json`'s types, `stepFrames5`, transforms and texel decoding.
 - `lib/geometry-raster.ts`: the reference rasterizer (`rasterizeGate5`, `rasterizeItems`). Pixel
   centre coverage, undecided within 1/16 px of a boundary edge (welded vertices; shared edges are
@@ -1347,7 +1349,9 @@ mise exec -- pnpm render-stream:gate5 -- \
   only where the texels within 1/16 texel agree, `map_ninepatch_axis` per axis, draw transforms
   replaced (D9), clip-ignore spans (D10), band pixels for antialiased shapes and thin lines.
 - `lib/gate5-checks.ts`: the g5b checks, pure over evidence already read.
-- `test/self-test-gate5.ts`: below.
+- `lib/gate5c-checks.ts`: the g5c checks (fixtures/gate5-mesh): `expected.json`'s types, the census
+  expansion, the hook-log hash replay, the oracle and parity checks, `runGate5c`.
+- `test/self-test-gate5.ts`, `test/self-test-gate5c.ts`: below.
 
 ## Gate 5 legs and evidence under `--out`
 
@@ -1358,6 +1362,11 @@ mise exec -- pnpm render-stream:gate5 -- \
 | `reference`        | g5b   | `reference/`        | rendered in gamescope, extension absent: `shots/step-0..9.png`, `steps.jsonl`                                         |
 | `reference-repeat` | g5b   | `reference-repeat/` | the same again                                                                                                        |
 | `reference-armed`  | g5b   | `reference-armed/`  | rendered, extension armed with `GRC_STREAM_OUT` and a store, shots                                                    |
+| `import-mesh`      | g5c   | `mesh/import/fixture/` | the mise editor's `--import` of `fixtures/gate5-mesh`                                                              |
+| `capture-mesh`     | g5c   | `mesh/capture/`     | as `capture`, on `fixtures/gate5-mesh`; `evidence/resources.jsonl`'s mesh lines are the census                        |
+| `reference-mesh`   | g5c   | `mesh/reference/`   | rendered, extension absent, mesh oracle on (`RS_FIXTURE_MESH_LOG`): shots, `steps.jsonl`, `meshes.jsonl`             |
+| `reference-mesh-repeat` | g5c | `mesh/reference-repeat/` | the same again                                                                                               |
+| `reference-mesh-armed` | g5c | `mesh/reference-armed/` | rendered, extension armed with a stream and a store, oracle off: shots and its own hook log                    |
 
 ## Gate 5 criteria (g5b)
 
@@ -1381,11 +1390,38 @@ unsupported ops to be exactly `typed_ops` (plus `calibrator7_ops` once planned),
 call order (`add_rect` float32-exact). `support-legs-exit` requires the import and rendered legs to
 exit 0.
 
+## Gate 5 criteria (g5c)
+
+The capture checks run on `mesh/` under `mesh-` names (`mesh-capture-armed`, `mesh-headless-no-gpu`,
+`mesh-recording-decodes`, `mesh-patch-resolves-to-full`, `mesh-step-alignment`,
+`mesh-no-draw-index-ties`). `mesh-expected-self-consistent` re-derives the colour, texel, region,
+raster and `fresh` rules, each live mesh's surface count and the census versions (+1 per accepted
+call, a free carrying the last). `mesh-draw-census` requires `counters.json` to equal `draw_census`
+(one `add_mesh` per item draw, `DF` on every frame, every mesh call, `attach_skeleton` per
+`Polygon2D` draw plus its destructor's at teardown) and every other draw op 0. `mesh-census` requires
+the hook log's mesh lines, frame by frame up to the quit frame, to equal the census expanded with
+`DF`'s per-frame rule, on the capture (quit 400) and on the armed reference (quit 102): ids 1.. in
+`mesh_order`, all on the main thread and `applied`. `oracle-agrees` requires both oracle logs to
+report every mesh's status, surface count, custom AABB, primitives, formats and counts as
+`expected.json`, the derived `Polygon2D` RID verified, and the two logs byte-identical.
+`mesh-hook-hash-parity` requires, at every settle step and for every live surface, the hook log's
+last hash (capture and armed reference), the oracle's readback hash and `make_expected.py`'s GRM1
+model to be one hash. `mesh-expected-image-reference` compares every shot with the raster on the
+exact regions (`DF` is band), `mesh-presence-reference` every surface's presence,
+`mesh-freshness-reference` `fresh` with `RM` changing at 2, 3 and 4 without a redraw,
+`mesh-reference-repeat-budget` and `mesh-armed-transparent` the legs pixel for pixel.
+`leg-class-capture-mesh` requires class `unsupported` with `canvas_item_add_mesh` the only
+unsupported op, each item's commands per settle frame (`FR`'s empty from 8) and `RM`'s
+`content_version` constant over the run. `mesh-support-legs-exit` requires the import and rendered
+legs to exit 0.
+
 ## Gate 5 self-test
 
 ```bash
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate5.ts
 python3 experiments/render-stream/fixtures/gate5/make_expected.py --check
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate5c.ts
+python3 experiments/render-stream/fixtures/gate5-mesh/make_expected.py --check
 ```
 
 The rasterizer is checked on hand cases whose answers are typed in, not computed by it: a tie-free
@@ -1400,3 +1436,12 @@ delta-1 pixel off by 2, a missing polygon or thin line, a stale or a spuriously 
 a differing band pixel. `geometry-hook-census` and `leg-class-capture` run on synthetic counters
 and recordings, before and after calibrator 7 hooks `add_multiline`, and fail on a count, an
 unexpected op, a class, an `add_rect` argument and a command order.
+
+`self-test-gate5c.ts` runs `checkMeshExpectedSelfConsistent` on the committed mesh expected.json
+and fails it on a wrong `fresh`, a surface count and a census version; checks `expandCensus`'s
+shape (three `DF` lines a frame, `DF2` at 2 + 3 × 349 by frame 400, bounded at the quit frame);
+runs `evaluateMeshCensus` on the census written out as a log (with a teardown free after quit) and
+fails it on a missing line, a version, an extra mesh, a line off the main thread and a rejected
+update; replays a hand hook log (adds, an update, a remove, a clear, a free, a single-surface
+`create_from_surfaces`); and runs the oracle, parity, draw-census and capture checks on synthetic
+values, failing each on one field, hash, flag or command.
