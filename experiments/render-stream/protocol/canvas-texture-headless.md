@@ -40,6 +40,125 @@ Measured: a `--headless --script` probe creating one `CanvasTexture` and one `Im
 the 4.7.2 editor (`mise` installs). The 4.6.2 source has the same line
 (`../godot-4.6.2/servers/rendering/dummy/storage/texture_storage.h:54`).
 
+## Why CanvasTexture is special
+
+Added 2026-10-10 from a source read of 4.5.1 and the upstream history. Claims are cited. The
+**Inference** paragraphs are marked as such.
+
+### What `--headless` swaps in
+
+`--headless` is commented "no audio, no rendering" (`main/main.cpp:1399`). The headless display
+server's only driver, `RasterizerDummy` (`servers/display_server_headless.h:43-52`), builds a
+`RendererCompositor` from stub storage classes. The classes are `RendererDummy::TextureStorage`,
+`MeshStorage`, `MaterialStorage`, `LightStorage`, `ParticlesStorage`, `Utilities`,
+`RasterizerCanvasDummy` and `RasterizerSceneDummy`. The texture storage is wired in at
+`servers/rendering/dummy/rasterizer_dummy.h:62,73`. Everything above that layer is the normal
+engine: `RenderingServerDefault`, `RendererCanvasCull`, `RendererSceneCull` and
+`RendererViewport`.
+
+`RenderingServerDefault` reaches the stubs in two ways:
+
+- **Textures go straight to storage.** Every `texture_*_create` is a `FUNCRIDTEX*` macro that calls
+  `RSG::texture_storage->texture_allocate()` and then the per-kind `_initialize`
+  (`servers/rendering/rendering_server_default.h:133-193`). That covers 2D, layered, 3D, proxy and
+  placeholder textures.
+- **Everything else is `FUNCRIDSPLIT`.** The server calls `<server>->X_allocate()`, then
+  `X_initialize(ret)`, and returns whatever `allocate` returned (`servers/server_wrap_mt_common.h:56-65`).
+  For 2D the `<server>` is `RendererCanvasCull` (`rendering_server_default.h:940-958`). The canvas
+  cull layer keeps its own `RID_Owner`s for canvases, items, lights, occluders and occluder
+  polygons (`servers/rendering/renderer_canvas_cull.h:140-188`, for example
+  `renderer_canvas_cull.cpp:2036-2037`). So those resources get real RIDs on any backend. Even the
+  canvas light gets one, although its backend handle is the dummy `light_create()`, which returns
+  `RID()` (`dummy/rasterizer_canvas_dummy.h:42`). The one 2D resource the cull layer does **not**
+  own is the canvas texture: `canvas_texture_allocate()` just forwards to texture storage
+  (`renderer_canvas_cull.cpp:2419-2420`). That matches the real backends, where canvas textures
+  live in texture storage (`drivers/gles3/storage/texture_storage.h:412`).
+
+### Ordinary textures and CanvasTexture in the same file
+
+In `servers/rendering/dummy/storage/texture_storage.h`:
+
+- An ordinary texture gets a real identity. `texture_allocate()` makes an RID from a
+  `RID_PtrOwner<DummyTexture>` (`:41-44`, `:68-72`). `texture_2d_initialize` keeps a duplicate of
+  the initial image (`:82-86`) so `texture_2d_get` can return it (`:104-108`). Everything else is a
+  no-op: `texture_2d_update` (`:94`), the layered, 3D and proxy initializers (`:87-90`) and the
+  placeholders (`:100-102`). So the dummy keeps only the _first_ image, but every texture kind gets
+  a distinct, valid RID.
+- A canvas texture gets nothing. `canvas_texture_allocate() override { return RID(); }`
+  (`:54`), and `initialize`, `free` and all four setters have empty bodies (`:55-62`).
+
+For capture, identity matters and contents do not. The tap reads contents from the call arguments
+(the `texture_2d_update` image is in the hooked call even though the dummy drops it). It cannot
+invent identity: every `CanvasTexture` comes back as the same `RID()`, its setters name `RID()`,
+and its draws name `RID()`. That is the same value a deliberate `draw_texture(null)` names (see
+"The problem").
+
+### One of a class, not a unique outlier
+
+| Resource (2D users)                                                                                              | Dummy behaviour                                                                                                                                                                                  | Distinct id headless? |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
+| Texture, all kinds (`ImageTexture`, atlases, fonts)                                                              | `RID_PtrOwner`, keeps the initial 2D image (`texture_storage.h:44,68-86`)                                                                                                                        | yes                   |
+| Mesh (`Polygon2D`, `MeshInstance2D`, spine)                                                                      | `RID_Owner`, keeps surfaces; region updates are no-ops (`mesh_storage.h:50,75-96,103-106`; `mesh_storage.cpp:46`)                                                                                | yes                   |
+| MultiMesh (`CPUParticles2D`, `MultiMeshInstance2D`)                                                              | `RID_Owner`, keeps the buffer (`mesh_storage.h:52-56`; `mesh_storage.cpp:75`)                                                                                                                    | yes                   |
+| Shader, material                                                                                                 | `RID_Owner`, parses uniforms; material keeps shader and next pass (`material_storage.h:46-60`; `material_storage.cpp:147,235`)                                                                   | yes                   |
+| Lightmap and lightmap instance (3D)                                                                              | `RID_Owner` (`light_storage.h:41-52`; `light_storage.cpp:64,81`)                                                                                                                                 | yes                   |
+| Canvas, canvas item, `Light2D`, `LightOccluder2D` and its occluder polygon                                       | owned by `RendererCanvasCull`, not by the backend (`renderer_canvas_cull.h:140-188`)                                                                                                             | yes                   |
+| **`CanvasTexture`**                                                                                              | `return RID()`, setters empty (`texture_storage.h:54-62`)                                                                                                                                        | **no**                |
+| Skeleton (`Skeleton2D`, `scene/2d/skeleton_2d.cpp:834`)                                                          | `return RID()` (`mesh_storage.h:188`)                                                                                                                                                            | no                    |
+| Particles (`GPUParticles2D`, `scene/2d/gpu_particles_2d.cpp:983`)                                                | `return RID()`; particle collision too (`particles_storage.h:41,100`)                                                                                                                            | no                    |
+| 3D lights, reflection probe, decal, voxel GI, fog volume, visibility notifier, sky, render target, mesh instance | `return RID()` (`light_storage.h:63-67,120`; `texture_storage.h:135,164`; `environment/gi.h:41`; `environment/fog.h:41`; `utilities.h:58`; `rasterizer_scene_dummy.h:112`; `mesh_storage.h:140`) | no                    |
+
+`CanvasTexture` is the _only canvas-texture-like_ stub, but it belongs to a larger class of
+`RID()` stubs. Two other 2D features fall in it: `Skeleton2D` skinning and `GPUParticles2D`. Under
+`--headless` they will meet the same identity collapse when a gate reaches them.
+
+### Bug, oversight, or deliberate?
+
+**Verified history.**
+
+- In October 2020 the dummy returned `RID()` for nearly _everything_: `texture_2d_create`,
+  `shader_create`, `material_create`, `multimesh_create` and `canvas_texture_create`. The canvas
+  texture stub was added in that state (commit
+  [25d56e9](https://github.com/godotengine/godot/commit/25d56e9666a6ca6374c07e80347ae4514f7e21d0),
+  PR [#43443](https://github.com/godotengine/godot/pull/43443)).
+- Each resource that now has state was upgraded one at a time, and each upgrade cites a headless
+  workflow that had to _read data back_:
+  - Textures, February 2021
+    ([0ae762a](https://github.com/godotengine/godot/commit/0ae762a7013f7191296d79dbe9e38f5f1afe095f),
+    PR [#46119](https://github.com/godotengine/godot/pull/46119)). Its message says: "Avoid crash on
+    start-up, we will need to slowly re-implement the various methods with dummy objects so
+    exporting works again like in 3.2".
+  - Meshes: headless collision-shape generation
+    ([#63767](https://github.com/godotengine/godot/pull/63767)) and leaks
+    ([#65068](https://github.com/godotengine/godot/pull/65068), fixes #64720).
+  - Multimesh: "the bare minimum amount of data to store and retrieve the multimesh buffer for
+    export" ([#87390](https://github.com/godotengine/godot/pull/87390), fixes #86396).
+  - Shaders: "the minimal set of logic needed by `get_shader_parameter_list()`" for headless export
+    ([#87392](https://github.com/godotengine/godot/pull/87392), fixes #66842).
+  - Lightmaps: a crash ([#95103](https://github.com/godotengine/godot/pull/95103), fixes #89119).
+- The RenderingServer canvas-texture API is write-only. It has `create`, `set_channel`,
+  `set_shading_parameters`, `set_texture_filter` and `set_texture_repeat`, and no getter
+  (`servers/rendering_server.h:1533-1546`). `CanvasTexture` answers `get_width`, `get_height`,
+  `has_alpha`, `is_pixel_opaque` and `get_image` from its Object-side diffuse texture
+  (`scene/main/canvas_item.cpp:1835-1872`). So no headless export, import or tool path ever reads
+  server-side canvas-texture state, and none ever needed it.
+- Still `return RID()` upstream: tag `4.6.2-stable` `:54`, tag `4.7.2-stable` `:55`, and `master`
+  at `232e6b14ab` (2026-10-09) `:55`. All three were read via the GitHub API on 2026-10-10. In the
+  same period `master` made the dummy texture owner thread-safe
+  ([#121958](https://github.com/godotengine/godot/pull/121958)) and left the canvas texture stub as
+  it was.
+- A GitHub search (2026-10-10) for issues or PRs about `CanvasTexture` or `canvas_texture` under
+  headless or the dummy renderer found none.
+
+**Assessment (inference).** It is not a bug by Godot's own standard: nothing crashes, nothing is
+lost on export, and headless means "no rendering". It is also not a decision aimed at
+`CanvasTexture`. It is the dummy renderer's default policy: stub to `RID()`, then add the bare
+minimum of state only when a headless workflow needs to read it back. `CanvasTexture` never met
+that bar because nothing reads it back. It is an omission only for a use case Godot does not
+support, which is observing the RenderingServer call stream. Upstream would plausibly accept a
+minimal `RID_Owner` for canvas textures if someone made the case. The target game is pinned to a
+4.5.1 fork, so that would not change the options below.
+
 ## The current refusal (G2d)
 
 - **Session manifest.** A host whose `DisplayServer.get_name()` is `headless` declares
@@ -136,8 +255,11 @@ headless capture on a server.
 
 Checked locally: 4.6.2's dummy storage source still returns `RID()`
 (`../godot-4.6.2/servers/rendering/dummy/storage/texture_storage.h:54`), and the 4.6.2 runtime and
-4.7.2 editor probes print `canvas_texture_rid=0`. Not checkable locally: 4.7's source (only
-binaries are installed) and unreleased branches. The target game is pinned to a 4.5.1 fork
+4.7.2 editor probes print `canvas_texture_rid=0`. _Correction (2026-10-10):_ this said 4.7's
+source and unreleased branches could not be checked. They have now been checked upstream through the
+GitHub API. `4.7.2-stable` and `master` (`232e6b14ab`, 2026-10-09) both have
+`canvas_texture_allocate() override { return RID(); }` at `texture_storage.h:55` (see "Why
+CanvasTexture is special"). The target game is pinned to a 4.5.1 fork
 (MegaDot), so an upstream change would not reach it anyway. Upstream will not fix this for us.
 
 ### A further option: a dummy-storage shim in the extension
