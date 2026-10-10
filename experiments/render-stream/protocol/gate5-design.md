@@ -849,6 +849,31 @@ sub-shape, band included, covers at least half its expected area with non-backgr
 **Pass criteria**: `--legs g5b` green; "Gate 5b result" with the run directory, image paths and the
 measured band budgets.
 
+**As built (G5b, 2026-10-10).** Every prediction G5b can observe held on the first run: the hook
+census per op (Q6b's redraw schedule: `add_rect` 24, `add_line` 15, `add_polyline` 8,
+`add_circle` 4, `add_polygon` 7, `add_primitive` 4, `add_triangle_array` 4, `add_nine_patch` 2,
+`add_set_transform` 6, `add_clip_ignore` 2, three texture creates; `add_multiline` 3 predicted,
+unhooked before G5a), the capture's class (`unsupported`, exactly those nine ops typed, every
+item's typed commands in call order at every settle frame), every reference pixel the model
+decides (the server lowering of Q1b/Q1c re-derived in float32 by `make_expected.py`, rasterized by
+pixel centre; flat colours exact, gradients and the `.6` blend within 1), Q6b's freshness rows
+(`Line2D.antialiased` changes no pixel) and a band budget of 0 (reference-repeat identical in every
+region and class, feathers and the thin line included). Amendments: (1) `expected.json` keeps each
+recorded command list once in `op_lists` (items name a key), regions are `[x0, y0, x1, y1)`, and
+the step marker is its own region. (2) The 1/16 px rule leaves a pixel undecided on **either**
+side of a boundary edge, and boundary edges are found after welding vertices within 1e-3 px (a
+closed polyline and a circle fan repeat their first vertex through another float path). Even
+tie-free edges have centres 0.5/|edge| px away, so a few dozen pixels per step are left out. (3)
+Sampling is decided only where every texel within 1/16 texel agrees, so the stretched nine-patch's
+centre pixels next to its margins (110 per step) are compared leg to leg only. (4)
+`presence-reference` counts pixels that differ from the raster's own underlay over a shape's
+covered and band pixels, against half its covered centre count (a thin line counts its length);
+a `draw_center = false` centre is not covered. (5) `leg-class-capture` also checks the typed
+command sequences, and `geometry-hook-census` reports an op the record does not hook yet and
+requires it once `hooks_planned` names it, so G5a landing changes no check. (6) No oracle runs on
+G5b's reference legs (G5c's mesh oracle is the first). The `canvas` variant exists and runs; its
+capture leg is G5d's.
+
 ---
 
 ### G5c — mesh fixture, mesh oracle, census, reference legs (opus)

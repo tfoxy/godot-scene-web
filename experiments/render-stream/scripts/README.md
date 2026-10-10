@@ -1322,3 +1322,81 @@ byte-differing second leg, a wrong `glyph_count`, a missing outline-pass entry f
 span (an outlined span needs exactly two oracle entries sharing its key, not one), and a wrong
 `page_glyphs` prediction; `checkMismatchConfinedToRegion` passes when only `RTL` differs and fails
 when the marker also differs or when `RTL` itself has no mismatch.
+
+## Gate 5 files
+
+```bash
+mise exec -- pnpm render-stream:gate5 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g5b]
+```
+
+- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_reference` with `REFERENCE_ARMED` and
+  `REFERENCE_VARIANT`). Groups g5c, g5d, g5e, g5f and g5g are known but have not landed, so asking
+  for them exits 2. The capture writes both sinks under gate 2's `.rs2` names whatever wire version
+  `main` speaks.
+- `check-gate5.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate5-report/1`:
+  gate 4's shape with `geometry` (the hook census as measured, the capture's commands per op per
+  step, the raster's pixel classes per step), `meshes` (null until G5c/G5e), `budgets` (reference
+  against repeat per region and pixel class) and `freshness`).
+- `lib/gate5-expected.ts`: `expected.json`'s types, `stepFrames5`, transforms and texel decoding.
+- `lib/geometry-raster.ts`: the reference rasterizer (`rasterizeGate5`, `rasterizeItems`). Pixel
+  centre coverage, undecided within 1/16 px of a boundary edge (welded vertices; shared edges are
+  not boundaries), flat colours exact, gradients and `.6` blends delta 1, nearest sampling decided
+  only where the texels within 1/16 texel agree, `map_ninepatch_axis` per axis, draw transforms
+  replaced (D9), clip-ignore spans (D10), band pixels for antialiased shapes and thin lines.
+- `lib/gate5-checks.ts`: the g5b checks, pure over evidence already read.
+- `test/self-test-gate5.ts`: below.
+
+## Gate 5 legs and evidence under `--out`
+
+| Leg                | Group | Directory           | Runs                                                                                                                  |
+| ------------------ | ----- | ------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `import`           | g5b   | `import/fixture/`   | the mise editor's `--import` of `fixtures/gate5`                                                                      |
+| `capture`          | g5b   | `capture/`          | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps/fd |
+| `reference`        | g5b   | `reference/`        | rendered in gamescope, extension absent: `shots/step-0..9.png`, `steps.jsonl`                                         |
+| `reference-repeat` | g5b   | `reference-repeat/` | the same again                                                                                                        |
+| `reference-armed`  | g5b   | `reference-armed/`  | rendered, extension armed with `GRC_STREAM_OUT` and a store, shots                                                    |
+
+## Gate 5 criteria (g5b)
+
+`capture-armed`, `headless-no-gpu`, `recording-decodes` (both sinks), `patch-resolves-to-full` and
+`no-draw-index-ties` are gate 3's; `step-alignment` reads the four step logs and the capture's
+marker colours. `expected-self-consistent` re-derives in TypeScript what `make_expected.py`
+asserts: grid colours (alpha 1, the blend polygon .6), disjoint regions with nothing synthesized
+outside them, tie-freeness of every integer non-axis boundary edge of an exact mesh, the census
+columns, and `fresh` against the raster. `geometry-hook-census` requires `counters.json`'s counts
+per draw op to equal `hook_census` (an op the record does not hook yet, `add_multiline` before
+calibrator 7, must be absent and is reported), every other draw op 0, and three texture creates.
+`expected-image-reference` compares every shot with `rasterizeGate5` on every decided pixel (exact,
+or within 1 where colours interpolate or blend). `presence-reference` requires every sub-shape,
+band included, to change at least half its covered pixel count from what the raster has beneath
+it. `freshness-reference` requires a region to change between consecutive shots exactly when
+`fresh` says. `reference-repeat-budget` requires identical shots and reports the maxima per region
+and pixel class (exact, delta1, band, undecided). `armed-transparent` requires the armed
+reference's shots to equal the reference's. `leg-class-capture` requires class `unsupported`, the
+unsupported ops to be exactly `typed_ops` (plus `calibrator7_ops` once planned), every entry
+`unsupported-op`, and at every settle frame each item's commands to be its expected typed list in
+call order (`add_rect` float32-exact). `support-legs-exit` requires the import and rendered legs to
+exit 0.
+
+## Gate 5 self-test
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate5.ts
+python3 experiments/render-stream/fixtures/gate5/make_expected.py --check
+```
+
+The rasterizer is checked on hand cases whose answers are typed in, not computed by it: a tie-free
+triangle against its edge equation (coverage, the 1/16 px decision inside and outside, a near-edge
+pixel), a set-transform that replaces rather than composes, a clip-ignore span, a gradient and a
+`.6` blend with hand-computed bytes, `map_ninepatch_axis` in `stretch`, `tile`, `tile_fit` and the
+end margin, a hollow nine-patch, a thin line and an antialiased rect's band, and a welded closed
+strip. `checkExpectedSelfConsistent` passes on the committed file and fails on an off-grid colour,
+overlapping regions, an even-parity edge, a census cell and a wrong `fresh`. The image checks run
+on frames built from the raster (band areas painted) and fail on an exact pixel off by 1, a
+delta-1 pixel off by 2, a missing polygon or thin line, a stale or a spuriously changed region and
+a differing band pixel. `geometry-hook-census` and `leg-class-capture` run on synthetic counters
+and recordings, before and after calibrator 7 hooks `add_multiline`, and fail on a count, an
+unexpected op, a class, an `add_rect` argument and a command order.

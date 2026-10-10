@@ -2884,6 +2884,71 @@ effects, tables, images and scrolling (gate 6's combined scene, if it uses them)
 hash-at-publish for versions superseded within a frame (gate 6, D9); and `clip_ignore`, underline
 and strikethrough as supported commands (gate 5's own wire bump).
 
+## Gate 5b result (2026-10-10)
+
+G5b ([protocol/gate5-design.md](protocol/gate5-design.md) "G5b", "As built (G5b)") passes:
+`pnpm render-stream:gate5 -- --legs g5b` is 15/15 in `artifacts/render-stream/gate5/20261010T074641Z/`,
+on render-stream/3 after G4e2. The same build passed `build-capture.sh` (11/11 ctests), gate −1
+28/28 with 56 hooks (`gate-minus1/20261010T080906Z/`), gate 0 19/19 (`gate0/20261010T081012Z/`),
+gate 1 65/65 (`gate1/20261010T081219Z/`), gate 2 85/85 (`gate2/20261010T082045Z/`), gate 3 56/56
+with g3a–g3d (`gate3/20261010T083111Z/`) and gate 4 185/185 with g4a–g4f (`gate4/20261010T083813Z/`), every pure self-test (gate 5's 63
+assertions included) and every `make_golden.py`/`make_expected.py --check`. Nothing on the
+capture, the wire or the receiver changed.
+
+What landed: the immediate-geometry fixture (`fixtures/gate5/`, eleven regions and the marker over
+ten steps), `make_expected.py` (every RenderingServer call the fixture makes and the server's
+lowering of it, re-derived in float32 from the source), `scripts/lib/geometry-raster.ts` (a
+pixel-centre reference rasterizer over that model: D9's replaced draw transforms, D10's
+clip-ignore spans, binary16 primitive colours, nearest texture and nine-patch sampling, band
+classes), and the runner, checker and self-test (`run-gate5.sh`, `check-gate5.ts`,
+`lib/gate5-*.ts`, `test/self-test-gate5.ts`).
+
+Images (under the run directory): `reference/shots/step-{0..9}.png`, and the same under
+`reference-repeat/` and `reference-armed/`. Every reference shot equals `rasterizeGate5` on every
+pixel the model decides: 228 246 of 230 400 per shot, 228 760 from step 8 (2 283 488 over the
+run), exact where colours are flat (224 487, then 225 001), and within 1 at the gradient triangle,
+the gradient polyline segment and the `.6` blend (3 759), where 23 160 pixels over the run do
+differ by exactly 1. Left out per shot: 1 992 band pixels (the
+antialiased diagonal, circle and rect, the thin GL line; 1 462 once L6 loses `antialiased` at
+step 8) and 162 undecided ones (within 1/16 px of a boundary edge, and the stretched nine-patch's
+centre pixels next to a margin; 178 from step 8). Every sub-shape is present in every shot, and
+every region changes exactly at Q6b's steps: `L2` does not change at step 3, where
+`Line2D.antialiased` re-records the same triangle array.
+
+**Measured budget: 0.** The repeat and the armed reference are byte-identical to the reference
+at every pixel of every shot, band pixels included (LN 8 100, CI 4 360 and RA 6 400 band
+pixel-shots, all at delta 0).
+
+Hook census as measured (`counters.json`, one call per item redraw; it equals the hand count in
+every cell): `add_rect` 24, `add_line` 15, `add_polyline` 8, `add_circle` 4, `add_polygon` 7,
+`add_primitive` 4, `add_triangle_array` 4, `add_nine_patch` 2, `add_set_transform` 6,
+`add_clip_ignore` 2, `texture_2d_create` 3 (the hue strip, TEX16, TEX9). The three predicted
+`add_multiline` calls (the dashed line) are invisible: slot 464 is unhooked until calibrator 7
+(G5a). The capture classifies `unsupported` with exactly those nine ops typed, and at every settle
+frame each item's commands are its calls in order (`add_rect` float32-exact, every other op an
+`unsupported` command); no draw-index tie.
+
+### Findings
+
+- **Every engine prediction G5b can see held on the first run**: the census, the class, the
+  lowering of lines (quads at half-integer edges), polylines (miter offsets of the clamped
+  bisector, a closed loop, hold-last colours), circles, concave and textured polygons,
+  primitives (binary16 colours on the 0.2 grid), a triangle array's `count`, draw transforms that
+  replace, a clip-ignore span, nine-patch mapping, and `Line2D.antialiased` as a no-op.
+- **The rasterizer needed two rules the contract did not spell out** (gate5-design.md "As built
+  (G5b)"): a pixel within 1/16 px of a boundary edge is undecided on either side of it, and a
+  closed strip or a fan must be welded before finding boundary edges. `make_expected.py`'s
+  tie-free assertion and the self-test's hand cases caught them, not the engine.
+
+### What G5b does not prove
+
+- That a receiver draws any of this: on render-stream/3 the capture types every geometry op
+  `unsupported`. Commands on the wire, `geometry-commands` within 2 ulp and receiver legs are G5d.
+- Meshes (G5c, G5e), styleboxes and the other nine-patch modes at scale (G5g), the `canvas`
+  variant's D11 refusal (G5d), and `add_multiline` capture (G5a).
+- Pixel exactness on another GPU or driver: budgets and the delta-1 class are measured on one
+  RTX 2060 under GLES3.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —
