@@ -1082,6 +1082,44 @@ on the capture for every `StyleBoxFlat`), `nine-patch-args` (rect, source, margi
 
 **Pass criteria**: `--legs …,g5g` green; "Gate 5g result" with the stylebox band budgets.
 
+**As built (G5g, 2026-10-10).** `fixtures/gate5-style/` owns Q6f's tables (its
+README): four `NinePatchRect`s of a 16×16 `TEXN` (4-texel border, 8×8 centre of 2×2 cells) in
+`stretch`, `tile`, `tile_fit` and hollow `stretch`, resized at step 2; a `StyleBoxTexture`
+(modulate (.6,.6,1), then (1,.6,.6), expand 4); `StyleBoxFlat` sharp, bordered (2,4,6,8), rounded
+8→12, shadowed (4, (2,2)→(−2,2)) and skewed (0.2,0); the default theme's `Panel`; TabBar's flip;
+and an empty, focused `RichTextLabel` released at step 4. `make_expected.py` ports
+`StyleBoxFlat::draw` to float32 and makes each `draw_rounded_rectangle` pass a coverage shape.
+Built in two halves: the fixture, expectations and reference legs before G5d (the capture then
+`unsupported`, exactly the four ops typed), the receiver legs and the sabotage after it. Every
+prediction held: the hook census (`add_triangle_array` 12, `add_nine_patch` 10,
+`add_set_transform` 2, `add_clip_ignore` 2, `add_rect` 10, two texture creates: the hue strip and
+`TEXN`); on /4 the capture is `success` and all 324 settle commands equal `expected.json`'s calls
+float32-exact on both sinks -- the float32 `StyleBoxFlat` port (cos/sin rounded from double) needed
+none of its 2-ulp allowance; Q1h's vertex and index counts on the wire (8/18, 24/66, 108/318; the
+shadowed box 32/84, the theme Panel 72/210, the focus box 144/432); the `clip_ignore` pair around
+the focus box exactly at steps 0–3; every reference pixel the model decides; Q6f's freshness; a
+band budget of 0 (reference-repeat identical in every stylebox band); both receivers pixel-identical
+to the reference; and `ignore-nine-patch-axis` mismatching exactly `NT` and `NF` at every step.
+`nine-patch-args` and the focus pair are their own checks; `RT`'s derived scissor and clip-ignored
+command (the focus box, index 1) come from G5d's `clip-rects-derived`. Amendments: (1) a texel
+times a modulate that falls between two UNORM8 levels is not rounded to nearest on the RTX 2060
+(0.2 × 0.6 = 30.6/255 reads 30, 0.6 × 0.6 = 91.8/255 reads 92), so `geometry-raster.ts`
+synthesizes such texels at delta 1; products on a level stay exact. (2) The default theme is off
+the 0.2 grid (Panel (0.1,0.1,0.1,0.6)), so `expected.json` names `theme_shapes` exempt from the
+colour rule, and `translucent_shapes` replaces the hard-coded blend polygon; the focus box's border
+is the default border colour (0.8,0.8,0.8,1), not `style_focus_color`, because
+`make_flat_stylebox` sets only `bg_color` and the focus box draws no centre. (3) The hollow
+nine-patch is its own `stretch` region: with uniform margins a hollow nine-patch draws the same in
+every axis mode, so `ignore-nine-patch-axis` mismatches exactly `NT` and `NF` at every step. (4)
+An item that redraws with no call (the unfocused `RichTextLabel`) records an empty command list,
+and an item that draws nothing is never fresh (step 9's shift leaves `RT` unchanged). (5) An empty
+`RichTextLabel` emits no `add_set_transform` (only glyphs do). Antialiasing rings are band within
+half their width plus 1 px, the shadow ring likewise; the 2 px focus border has every pixel
+centre on a ring edge, so it is compared leg to leg only. (6) `expected.json` lists
+`hidden_items` (the `RichTextLabel`'s internal `VScrollBar`, hidden from its constructor): it has a
+wire id but no derived scissor. The receiver sabotage is `RS_RECEIVER_SABOTAGE=ignore-nine-patch-axis`
+(every `add_nine_patch` drawn stretch/stretch).
+
 ---
 
 ### G5f — live meshes through dropped presentations (sonnet, after G5e)

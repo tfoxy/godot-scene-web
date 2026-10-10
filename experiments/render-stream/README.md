@@ -3391,6 +3391,58 @@ classify `unsupported`: `canvas_item_set_material` / `unsupported-state` on exac
 - That any shader or material reaches a receiver: that is G55d/G55e.
 - Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
 
+## Gate 5g result (2026-10-10)
+
+G5g ([protocol/gate5-design.md](protocol/gate5-design.md) "G5g", "As built (G5g)") passes on
+render-stream/4: `pnpm render-stream:gate5` (g5b, g5c, g5d, g5g) is 78/78 in
+`artifacts/render-stream/gate5/20261010T184828Z/` (g5g's 29 checks carry a `-style` suffix). The
+same build passed `build-capture.sh` (13/13 ctests), gate −1 28/28 (`gate-minus1/20261010T174402Z/`),
+gate 0 19/19 (`gate0/20261010T174526Z/`), gate 1 65/65 (`gate1/20261010T174807Z/`), gate 2 85/85
+(`gate2/20261010T190359Z/`; the first run's `live-animate` pin replay failed 83/85 once and did not
+reproduce), gate 3 56/56 (`gate3/20261010T181635Z/`), gate 4 185/185 (`gate4/20261010T182816Z/`),
+gate 5.5 24/24 (`gate55/20261010T185832Z/`), every pure self-test and every
+`make_golden.py`/`make_expected.py --check`.
+
+What landed: `fixtures/gate5-style/` (nine-patch modes, `StyleBoxTexture`, five `StyleBoxFlat`
+variants, the default theme's `Panel`, TabBar's flip and a focused `RichTextLabel`; its README
+has the tables), `make_expected.py` (a float32 port of `StyleBoxFlat::draw`), group `g5g` in
+`run-gate5.sh` (evidence under `style/`), `lib/gate5g-checks.ts`, `test/gate5g-cases.ts`, and the
+receiver sabotage `RS_RECEIVER_SABOTAGE=ignore-nine-patch-axis`.
+
+Images: `style/reference/shots/step-{0..9}.png` (and `reference-repeat/`, `reference-armed/`), and
+`style/receiver/shots/seq-<n>.png` (and `receiver-patch/`, `sabotage-receiver-ignore-axis/`). Every
+reference shot equals the raster on every decided pixel (225 252 per shot at step 0, 226 388 from
+step 6; 37 480 of 2 259 144 used their delta of 1: the modulated texture box and the theme Panel's
+`.6` fill). Both receivers are pixel-identical to the reference in every shot; the axis sabotage
+mismatches exactly `NT` and `NF` at every step.
+
+**Measured stylebox band budget: 0.** The repeat, the armed reference and both receivers equal the
+reference at every pixel: `SR` 8 312, `SS` 14 800, `SK` 7 800, `DP` 7 480 and `RT` 4 672 band
+pixel-shots and `NF` 1 792 undecided ones, all at delta 0.
+
+On the wire: the capture is `success`; all 324 settle commands equal the expected calls on both
+sinks float32-exact (the 2-ulp allowance for the StyleBoxFlat port's cos/sin went unused); Q1h's
+counts hold on every array (8/18, 24/66, 108/318, the shadowed box 32/84, the theme Panel 72/210,
+the focus box 144/432); 100 nine-patches match argument for argument; the focus box sits between
+`clip_ignore(true)` and `(false)` exactly at steps 0–3, and `RT`'s derived scissor reports it
+(command 1) as clip-ignored.
+
+### Findings
+
+- **A modulated texel between two UNORM8 levels is not rounded to nearest**: 0.2 × 0.6 (30.6/255)
+  reads 30 while 0.6 × 0.6 (91.8/255) reads 92. Such texels are synthesized at delta 1.
+- **The default theme is off the 0.2 grid, and its focus border is (0.8, 0.8, 0.8)**: the focus
+  box draws no centre, so `style_focus_color` never shows; the box is three rings.
+- **An empty `RichTextLabel` emits no `add_set_transform`**, and its hidden scrollbar has a wire id
+  but no scissor.
+
+### What G5g does not prove
+
+- Text inside a `RichTextLabel` (its glyph transforms are G5d's measurement on `gate4-rich`).
+- `StyleBoxFlat` with `blend_border`, a non-default `aa_size` or a stretch scale, and
+  `StyleBoxTexture` with a region: not in the fixture.
+- Pixel exactness on another GPU or driver.
+
 ## Gate 5.5w result (2026-10-10)
 
 G55w ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55w") passes, rebased onto G5d

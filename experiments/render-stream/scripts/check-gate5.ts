@@ -40,10 +40,18 @@ async function main(): Promise<void> {
     await readFile(join(fixture, "expected.json"), "utf8"),
   ) as Gate5Expected;
 
+  // G5g: fixtures/gate5-style/ has its own expected.json; runGate5 reads it only when g5g ran.
+  const styleFixture = join(EXPERIMENT_DIR, "fixtures", "gate5-style");
+  const styleExpected = JSON.parse(
+    await readFile(join(styleFixture, "expected.json"), "utf8"),
+  ) as Gate5Expected;
+
   const report = await runGate5(out, {
     expected,
     receiverProjectDir: join(EXPERIMENT_DIR, "receiver"),
     fixtureProjectDir: fixture,
+    styleExpected,
+    styleProjectDir: styleFixture,
   });
 
   // G5c: fixtures/gate5-mesh/ is its own fixture with its own expected.json and legs (mesh/ under

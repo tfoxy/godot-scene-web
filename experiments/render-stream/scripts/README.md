@@ -1336,13 +1336,14 @@ one and on one still typed `unsupported`.
 mise exec -- pnpm render-stream:gate5 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g5b,g5c,g5d]
+  [--legs g5b,g5c,g5d,g5g]
 ```
 
-- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_g5c`, `run_g5d`, `run_reference` with
+- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_g5c`, `run_g5d`, `run_g5g`, `run_reference` with
   `REFERENCE_ARMED`, `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MESH_ORACLE`,
   `g5_capture` for g5d's variant and sabotage captures). g5d needs g5b's capture and reference in
-  the same run. Groups g5e, g5f and g5g are known but have not landed, so asking for them exits 2.
+  the same run; g5g imports the receiver itself. Groups g5e and g5f are known but have not landed,
+  so asking for them exits 2.
   Every capture speaks render-stream/4 since G5d (/3 before) and writes both sinks under gate 2's
   `.rs2` names.
 - `check-gate5.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate5-report/1`:
@@ -1353,7 +1354,7 @@ mise exec -- pnpm render-stream:gate5 -- \
   derived scissor and clip-ignored commands per step, the receivers' mismatches against the
   reference, each sabotage leg's mismatching regions per step and the `canvas` variant's refused
   entries), `budgets` (reference against repeat per region and pixel class) and `freshness`). With
-  g5c it merges `runGate5c`'s checks and legs into the same report.
+  g5c it merges `runGate5c`'s checks and legs into the same report; `runGate5` merges g5g's.
 - `lib/gate5-expected.ts`: `expected.json`'s types, `stepFrames5`, transforms and texel decoding.
 - `lib/geometry-raster.ts`: the reference rasterizer (`rasterizeGate5`, `rasterizeItems`). Pixel
   centre coverage, undecided within 1/16 px of a boundary edge (welded vertices; shared edges are
@@ -1371,7 +1372,10 @@ mise exec -- pnpm render-stream:gate5 -- \
   through it), and `clipIgnoredCommands`/`DerivedClip.ignored` report D10's clip-ignore spans.
 - `lib/gate5c-checks.ts`: the g5c checks (fixtures/gate5-mesh): `expected.json`'s types, the census
   expansion, the hook-log hash replay, the oracle and parity checks, `runGate5c`.
-- `test/self-test-gate5.ts`, `test/self-test-gate5c.ts`: below.
+- `lib/gate5g-checks.ts`: the g5g checks on `fixtures/gate5-style` (evidence under `style/`),
+  reusing every g5b and g5d helper on that root, plus `stylebox-lowering`, `nine-patch-args`, the
+  focus box's clip-ignore pair and the ignore-axis prediction (`runG5g`).
+- `test/self-test-gate5.ts` (with `test/gate5g-cases.ts`), `test/self-test-gate5c.ts`: below.
 
 ## Gate 5 legs and evidence under `--out`
 
@@ -1395,6 +1399,12 @@ mise exec -- pnpm render-stream:gate5 -- \
 | `receiver-patch`   | g5d   | `receiver-patch/`   | the same on `recording-patch.rs2`, plus `state/seq-<n>.json` at the settle seqs                                       |
 | sabotage receivers | g5d   | `sabotage-<kind>/receiver/` | rendered receivers on the three sabotage captures                                                         |
 | `sabotage-receiver-ignore-set-transform`, `-ignore-clip-ignore` | g5d | `sabotage-receiver-<kind>/` | rendered receivers on `capture/` with `RS_RECEIVER_SABOTAGE=<kind>` |
+| `import-style`     | g5g   | `style/import/{fixture,receiver}/` | the mise editor's `--import` of `fixtures/gate5-style` and of `receiver/`                       |
+| `capture-style`    | g5g   | `style/capture/`    | as `capture`, on `fixtures/gate5-style`                                                                               |
+| `reference-style`, `reference-style-repeat`, `reference-style-armed` | g5g | `style/reference{,-repeat,-armed}/` | as g5b's three, on `fixtures/gate5-style` (own gamescope)               |
+| `receiver-headless-trace` (style) | g5g | `style/receiver-headless-trace/` | the template, `--headless`, on `style/capture/`'s full sink under strace (openat)                 |
+| `receiver-style`, `receiver-style-patch` | g5g | `style/receiver/`, `style/receiver-patch/` | as g5d's receivers, on `style/capture/` (the patch one with state dumps)                 |
+| `sabotage-style-receiver-ignore-axis` | g5g | `style/sabotage-receiver-ignore-axis/` | rendered receiver on `style/capture/` with `RS_RECEIVER_SABOTAGE=ignore-nine-patch-axis` |
 
 ## Gate 5 criteria (g5b)
 
@@ -1466,11 +1476,33 @@ predicted steps (freeze) or, per step, exactly the predicted regions (the others
 `receiver-never-loaded-fixture` is gate 0's, over every g5d receiver log; `receiver-typed-clean`
 scans them for script errors.
 
+## Gate 5 criteria (g5g)
+
+Every g5b and g5d check that applies runs again on `style/` with a `-style` suffix
+(`capture-armed-style` ... `leg-class-capture-style`, `geometry-commands-style`,
+`leg-class-receiver-style{,-patch}`, `receiver-vs-reference-style`, `expected-image-receiver-style`,
+`presence-receiver-style`, `clip-rects-derived-style`, `receiver-never-loaded-fixture-style`,
+`receiver-typed-clean-style`), against `fixtures/gate5-style/expected.json`: its colour rule exempts
+`theme_shapes` (the default theme's Panel box, off the 0.2 grid) and lets `translucent_shapes` (the
+shadow fill) and band rings carry alpha .6 or 0, and `hidden_items` (the RichTextLabel's hidden
+scrollbar) have no derived scissor. `stylebox-lowering-style` requires each StyleBoxFlat triangle
+array, in the expected calls and at every settle frame of the capture, to have Q1h's hand-typed
+vertex and index counts (`lowering_predictions`), one colour and uv per vertex and whole in-range
+triangles, every box drawn. `nine-patch-args-style` requires every `add_nine_patch` on both sinks to
+equal its call float32-exact. `focus-clip-ignore-style` requires RT's commands to be
+`clip_ignore(true)`, the focus box, `clip_ignore(false)` exactly at
+`predictions["focus-clip-ignore"]`'s steps and empty otherwise, and no other item to carry one.
+`ignore-axis-prediction-style` rasterizes the model with every nine-patch axis forced to `stretch`
+and requires it to differ exactly in `sabotage-style-receiver-ignore-axis`'s predicted regions and
+steps (`NT`, `NF`, every step); `leg-class-sabotage-style-receiver-ignore-axis` requires the real
+sabotaged receiver to mismatch exactly there.
+
 ## Gate 5 self-test
 
 ```bash
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate5.ts
 python3 experiments/render-stream/fixtures/gate5/make_expected.py --check
+python3 experiments/render-stream/fixtures/gate5-style/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate5c.ts
 python3 experiments/render-stream/fixtures/gate5-mesh/make_expected.py --check
 ```
@@ -1499,6 +1531,15 @@ first, two in a row do not compose, a wide line's rect is its quad, a circle's i
 clip-ignore span is the commands between the pair and is reported only under a clip owner; and
 `clip-rects-derived` passes on synthetic states built from `expected.json` and fails without CG's
 `add_clip_ignore` pair.
+
+`test/gate5g-cases.ts` adds g5g's: `tile_fit` at `NF`'s width and TabBar's flip against typed-in
+values, a modulated texel off the UNORM8 levels at delta 1, the style file's colour rule (failing
+without the theme exemption or the translucent shadow fill, or with a ring alpha .75),
+`stylebox-lowering` on the calls and on a synthetic /4 recording (failing on a dropped vertex and a
+missing focus box), the ignore-axis prediction (failing with `NS` added), `nine-patch-args`
+(failing with `NT` drawn stretch), `focus-clip-ignore` and `leg-class-capture` (failing when the
+pair outlives the focus), the census, and the image checks on the style raster (the theme Panel's
+blend off by 2, the focus box missing, no resize at step 2).
 
 `self-test-gate5c.ts` runs `checkMeshExpectedSelfConsistent` on the committed mesh expected.json
 and fails it on a wrong `fresh`, a surface count and a census version; checks `expandCensus`'s

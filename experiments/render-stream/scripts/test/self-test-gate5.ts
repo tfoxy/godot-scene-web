@@ -20,6 +20,10 @@
 //    lowering-predictions, the per-region sabotage classification, capture-canvas (D11), and
 //    clip-derive's D9 (a set_transform replaces, never composes, the draw transform of later
 //    commands' rects) and D10 (clip-ignore spans) with clip-rects-derived.
+// 6. Group g5g (test/gate5g-cases.ts): the nine-patch and stylebox fixture's hand cases (tile_fit,
+//    TabBar's flip, an off-level modulated texel), its expected.json rules, stylebox-lowering,
+//    nine-patch-args, the focus clip-ignore pair, the ignore-axis prediction, a RichTextLabel
+//    losing focus on /4, and the image checks on its raster.
 //
 // Exits non-zero if any assertion fails.
 
@@ -70,6 +74,7 @@ import {
   meshTopology,
   rasterizeItems,
 } from "../lib/geometry-raster";
+import { gate5gCases } from "./gate5g-cases";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -1355,6 +1360,13 @@ async function main(): Promise<void> {
   legClassCases(expected);
   canvasCases(expected);
   clipDeriveCases(expected);
+  const style = JSON.parse(
+    await readFile(
+      join(EXPERIMENT_DIR, "fixtures", "gate5-style", "expected.json"),
+      "utf8",
+    ),
+  ) as Gate5Expected;
+  gate5gCases(assert, style, rastersOf(style));
   console.log(
     `\nself-test-gate5: ${assertions - failures}/${assertions} assertions passed`,
   );

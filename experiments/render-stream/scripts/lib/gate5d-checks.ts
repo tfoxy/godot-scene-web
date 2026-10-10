@@ -153,7 +153,8 @@ export interface ExpectedCommand {
 }
 
 /** Per step, each item's expected command list as of that step (carried from its last redraw),
- * in call order. */
+ * in call order. An item that redraws with no call (G5g's unfocused RichTextLabel) records an
+ * empty list. */
 export function expectedCommandsByStep(
   expected: Pick<Gate5Expected, "steps">,
   tex: TextureIds,
@@ -162,6 +163,7 @@ export function expectedCommandsByStep(
   const current = new Map<string, ExpectedCommand[]>();
   for (const s of expected.steps) {
     const fresh = new Map<string, ExpectedCommand[]>();
+    for (const item of s.redraws ?? []) fresh.set(item, []);
     for (const calls of Object.values(s.calls))
       for (const call of calls) {
         const list = fresh.get(call.item) ?? [];
@@ -457,6 +459,7 @@ export function evaluateClipRectsDerived(
   const lastCalls = new Map<string, Gate5Call[]>();
   for (const s of expected.steps) {
     const fresh = new Map<string, Gate5Call[]>();
+    for (const item of s.redraws ?? []) fresh.set(item, []);
     for (const calls of Object.values(s.calls))
       for (const c of calls)
         fresh.set(c.item, [...(fresh.get(c.item) ?? []), c]);

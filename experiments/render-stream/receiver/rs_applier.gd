@@ -83,6 +83,9 @@ var sabotage_ignore_set_transform: bool = false
 ## RS_RECEIVER_SABOTAGE=ignore-clip-ignore (gate5-design.md Q5, G5d): every add_clip_ignore is
 ## skipped without a record, so the span stays clipped. Exists only to fail checks.
 var sabotage_ignore_clip_ignore: bool = false
+## RS_RECEIVER_SABOTAGE=ignore-nine-patch-axis (gate5-design.md "G5g"): every add_nine_patch is
+## drawn with both axes `stretch`, whatever the command says. Exists only to fail checks.
+var sabotage_ignore_nine_patch_axis: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
@@ -755,6 +758,9 @@ func _replay_geometry(item: RID, command: Dictionary, texture: RID) -> void:
 			var np_modulate: PackedFloat32Array = _floats(command["modulate"])
 			var x_axis: String = command["x_axis"]
 			var y_axis: String = command["y_axis"]
+			if sabotage_ignore_nine_patch_axis:
+				x_axis = "stretch"
+				y_axis = "stretch"
 			var draw_center: bool = command["draw_center"]
 			RenderingServer.canvas_item_add_nine_patch(item, _rect(np_rect, 0), _rect(np_source, 0), texture, Vector2(margins[0], margins[1]), Vector2(margins[2], margins[3]), NINE_PATCH_AXES.find(x_axis) as RenderingServer.NinePatchAxisMode, NINE_PATCH_AXES.find(y_axis) as RenderingServer.NinePatchAxisMode, draw_center, _color(np_modulate, 0))
 		"add_set_transform":

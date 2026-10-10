@@ -21,8 +21,10 @@
 # strace, the `canvas` variant's headless capture, and the sabotages -- freeze-frame @11,
 # perturb-vertex @21 and omit-op canvas_item_add_polygon @21 captures each with a rendered
 # receiver, and the receiver sabotages ignore-set-transform and ignore-clip-ignore on the main
-# capture; g5d needs g5b's capture and reference in the same run). g5e, g5f and g5g are known but
-# have not landed.
+# capture; g5d needs g5b's capture and reference in the same run) and g5g (G5g: fixtures/gate5-style
+# under <out>/style/ -- import, capture (`success` on /4), reference, repeat and armed reference,
+# rendered receivers on both sinks, a headless receiver under strace and the receiver sabotage
+# ignore-nine-patch-axis; it imports receiver/ itself). g5e and g5f are known but have not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -37,6 +39,7 @@ EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate5"
 MESH_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate5-mesh"
+STYLE_DIR="$EXPERIMENT_DIR/fixtures/gate5-style"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # shellcheck source=lib/gamescope.sh
@@ -46,7 +49,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g5b g5c g5d)
+LANDED_GROUPS=(g5b g5c g5d g5g)
 KNOWN_GROUPS=(g5b g5c g5d g5e g5f g5g)
 
 EXTENSION=""
@@ -385,11 +388,70 @@ run_g5d() {
 	GS_RUN_DIR=""
 }
 
+# G5g: fixtures/gate5-style through G5b's and G5d's legs, evidence under <out>/style/ in their
+# shape. Predictions are fixtures/gate5-style/expected.json's (make_expected.py).
+run_g5g() {
+	local L="$OUT/style"
+	echo "run-gate5: g5g: import (fixture, receiver)"
+	mkdir -p "$L/import"
+	LEG_ENV=()
+	run_headless "$L/import/fixture" none -- mise exec -- godot --headless --path "$STYLE_DIR" --import
+	if [ "$(cat "$L/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate5: import of $STYLE_DIR failed, see $L/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	LEG_ENV=()
+	run_headless "$L/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$L/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate5: import of $RECEIVER_DIR failed, see $L/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate5: capture-style"
+	CAPTURE_FIXTURE_DIR="$STYLE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
+	run_capture "$L/capture" "$CAPTURE_QUIT_FRAME" capture
+
+	echo "run-gate5: g5g: receiver-headless-trace"
+	if prepare_recording "$L/capture/$RECORDING_NAME" "$L/receiver-headless-trace"; then
+		RECEIVER_STORE_DIR="$L/capture/store"
+		run_receiver_headless "$L/receiver-headless-trace" openat
+	fi
+
+	echo "run-gate5: bringing up private gamescope for g5g rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g5g"
+
+	echo "run-gate5: reference-style"
+	REFERENCE_FIXTURE_DIR="$STYLE_DIR"
+	run_reference "$L/reference"
+	echo "run-gate5: reference-style-repeat"
+	REFERENCE_FIXTURE_DIR="$STYLE_DIR"
+	run_reference "$L/reference-repeat"
+	echo "run-gate5: reference-style-armed (extension armed, stream on)"
+	REFERENCE_FIXTURE_DIR="$STYLE_DIR"
+	REFERENCE_ARMED=1
+	run_reference "$L/reference-armed"
+
+	echo "run-gate5: receiver-style (full sink)"
+	run_rendered_receiver "$L/capture" "$L/receiver"
+	echo "run-gate5: receiver-style-patch (patch sink, state dumps at the settle seqs)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_STATE=1
+	run_rendered_receiver "$L/capture" "$L/receiver-patch"
+	echo "run-gate5: sabotage-style-receiver-ignore-axis (RS_RECEIVER_SABOTAGE=ignore-nine-patch-axis)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=ignore-nine-patch-axis)
+	run_rendered_receiver "$L/capture" "$L/sabotage-receiver-ignore-axis"
+
+	gs_teardown "$OUT/gamescope-g5g"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g5b) run_g5b ;;
 	g5c) run_g5c ;;
 	g5d) run_g5d ;;
+	g5g) run_g5g ;;
 	esac
 done
 

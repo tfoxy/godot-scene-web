@@ -39,8 +39,9 @@ extends Node
 ##                                Q5, G4e2: every add_msdf_texture_rect_region is skipped with no
 ##                                typed record, the pre-/3 picture), ignore-set-transform or
 ##                                ignore-clip-ignore (gate5-design.md Q5, G5d: every
-##                                add_set_transform / add_clip_ignore is skipped with no record);
-##                                all eight exist only to fail checks
+##                                add_set_transform / add_clip_ignore is skipped with no record)
+##                                or ignore-nine-patch-axis (G5g: every add_nine_patch is drawn
+##                                stretch/stretch); all nine exist only to fail checks
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash) is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
@@ -99,8 +100,8 @@ const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
-## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore"]
+## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g).
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -510,6 +511,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_drop_msdf = _sabotage == "drop-msdf"
 	_applier.sabotage_ignore_set_transform = _sabotage == "ignore-set-transform"
 	_applier.sabotage_ignore_clip_ignore = _sabotage == "ignore-clip-ignore"
+	_applier.sabotage_ignore_nine_patch_axis = _sabotage == "ignore-nine-patch-axis"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
