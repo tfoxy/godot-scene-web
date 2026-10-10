@@ -169,6 +169,11 @@ using FnCanvasTextureSetChannel = void (*)(void *, RID, int32_t, RID);
 //             RID p_texture, const Rect2 &p_src_rect, const Color &p_modulate = Color(1, 1, 1)) = 0;
 using FnAddLcdTextureRectRegion = void (*)(void *, RID, const Rect2 *, RID, const Rect2 *,
                                            const Color *);
+//
+// --- calibrator 6 (optional): gate3-design.md Q2, clip_ignore refused, typed ------------------
+//
+//   1595: virtual void canvas_item_add_clip_ignore(RID p_item, bool p_ignore) = 0;
+//         (FnRidBool: the same ABI as canvas_item_set_clip)
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -232,6 +237,8 @@ enum HookId : size_t {
   kSetDefaultTextureFilter,
   kSetDefaultTextureRepeat,
   kAddLcdTextureRectRegion,
+  // calibrator 6
+  kAddClipIgnore,
   kHookCount,
 };
 
@@ -596,6 +603,8 @@ Log<PodEntry<ItemValueKey>> g_canvas_texture_repeats;
 Log<PodEntry<ItemValueKey>> g_item_texture_filters;
 Log<PodEntry<ItemValueKey>> g_item_texture_repeats;
 Log<PodEntry<LcdRectKey>> g_lcd_rects;
+// calibrator 6
+Log<PodEntry<ItemValueKey>> g_clip_ignores;
 
 template <typename Key>
 PodEntry<Key> pod(const Key &key) {
@@ -1590,6 +1599,20 @@ void hook_add_lcd_texture_rect_region(void *self, RID item, const Rect2 *rect, R
                                                                 modulate);
 }
 
+// --- calibrator 6 hook (gate3-design.md Q2, D4) ------------------------------
+//
+// canvas_item_add_clip_ignore becomes an unsupported command (reason unsupported-op), exactly
+// like the calibrator-2 draw ops above: the mirror tap ignores the bool. The hook itself still
+// logs it (item, ignore) into counters.json's captured, deduplicated like every other optional
+// setter, so a calibration run can tell the two toggle directions apart.
+
+void hook_add_clip_ignore(void *self, RID item, bool ignore) {
+  bump(kAddClipIgnore);
+  log_entry(&g_clip_ignores, item_value(item, ignore ? 1 : 0));
+  tap_unsupported(item, "canvas_item_add_clip_ignore");
+  original<FnRidBool>(kAddClipIgnore)(self, item, ignore);
+}
+
 // --- hook table --------------------------------------------------------------
 
 struct HookSpec {
@@ -1675,6 +1698,7 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_set_default_texture_repeat)},
     {kAddLcdTextureRectRegion, "canvas_item_add_lcd_texture_rect_region",
      as_ptr(&hook_add_lcd_texture_rect_region)},
+    {kAddClipIgnore, "canvas_item_add_clip_ignore", as_ptr(&hook_add_clip_ignore)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -1873,6 +1897,8 @@ struct Snapshot {
   Log<PodEntry<LcdRectKey>> lcd_rects;
   Log<PodEntry<ItemCustomRectKey>> set_custom_rects;
   Log<PodEntry<ItemColorKey>> set_self_modulates;
+  // calibrator 6
+  Log<PodEntry<ItemValueKey>> clip_ignores;
 };
 
 Snapshot take_snapshot() {
@@ -1932,6 +1958,7 @@ Snapshot take_snapshot() {
   s.item_texture_repeats = g_item_texture_repeats;
   s.canvas_texture_channels = g_canvas_texture_channels;
   s.lcd_rects = g_lcd_rects;
+  s.clip_ignores = g_clip_ignores;
   return s;
 }
 
@@ -2356,6 +2383,9 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
               write_floats(j, "source", e.key.source);
               write_floats(j, "modulate", e.key.modulate);
             });
+  // Calibrator 6 (gate3-design.md Q2): the bool crosses only into counters.json's captured; the
+  // mirror tap (add_unsupported) ignores it.
+  write_log(&json, "canvas_item_add_clip_ignore", s.clip_ignores, item_bool_writer("ignore"));
   json.object_end();
 
   // Distinct calls that arrived after an optional hook's log was full.
@@ -2426,6 +2456,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
              static_cast<int64_t>(s.item_texture_repeats.dropped));
   json.field("canvas_item_add_lcd_texture_rect_region",
              static_cast<int64_t>(s.lcd_rects.dropped));
+  json.field("canvas_item_add_clip_ignore", static_cast<int64_t>(s.clip_ignores.dropped));
   json.object_end();
 
   // G2a: the payload-copy capability and the texture hook log's counters.

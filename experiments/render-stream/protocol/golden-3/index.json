@@ -6,19 +6,19 @@
       "file": "full.rs3",
       "hex": "full.hex",
       "decoded": "full.decoded.json",
-      "sha256": "899c8c3a211a590d8433b3d29aeeee63af5e2bc35cfd69c62279e3ede334ad06"
+      "sha256": "35d47ad2b8eab0940ee15935dceba26530964cd97883378ee843ea410c4e3e43"
     },
     {
       "file": "patch.rs3",
       "hex": "patch.hex",
       "decoded": "patch.decoded.json",
-      "sha256": "2ca84dc66f7fd03c241e73d552716fdc77bb2de5201fef14ab7af78615ef91ce"
+      "sha256": "1eeab676fa46f9eb991fc7a1ee5d3d91f32312176e1dc3b75219fe6950606ee5"
     },
     {
       "file": "inline.rs3",
       "hex": "inline.hex",
       "decoded": "inline.decoded.json",
-      "sha256": "ce815250140ca02da62ba58add6db5625f3a3b375ae1ddc973f214cf5cb4f04c"
+      "sha256": "4c316ee5c69569e22d33ecda7beb97931c892d68b0820b89533e45ca83cc4117"
     }
   ],
   "resolved": "resolved.json",

@@ -177,6 +177,7 @@ func _ready() -> void:
 	late.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	late.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	_exercise_texture_hooks()
+	_exercise_clip_ignore_hook()
 
 	# An empty CanvasLayer created after arming: canvas_create in its constructor, then
 	# viewport_attach_canvas and viewport_set_canvas_transform when it enters the tree. It has no
@@ -228,6 +229,17 @@ func _exercise_texture_hooks() -> void:
 
 	var orphan_item: RID = RenderingServer.canvas_item_create()
 	RenderingServer.canvas_item_add_lcd_texture_rect_region(orphan_item, Rect2(0, 0, 4, 4), _nine_texture.get_rid(), Rect2(0, 0, 4, 4), Color(1, 1, 1, 1))
+	RenderingServer.free_rid(orphan_item)
+
+
+## The calibrator-6 hook (gate3-design.md Q2, D4): another orphan item with no parent canvas, so
+## it never draws either -- armed and unarmed pixels stay identical, as the texture hooks above.
+## The bool crosses the toggle both ways (true then false) so the census sees both values.
+func _exercise_clip_ignore_hook() -> void:
+	var orphan_item: RID = RenderingServer.canvas_item_create()
+	RenderingServer.canvas_item_add_clip_ignore(orphan_item, true)
+	RenderingServer.canvas_item_add_rect(orphan_item, Rect2(0, 0, 4, 4), Color(1, 1, 1, 1))
+	RenderingServer.canvas_item_add_clip_ignore(orphan_item, false)
 	RenderingServer.free_rid(orphan_item)
 
 

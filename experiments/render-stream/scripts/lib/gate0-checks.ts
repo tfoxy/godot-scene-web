@@ -76,11 +76,13 @@ export const STORE_DIR_NAME = "store";
 /** Every hook the committed calibration record installs, sorted by byte value
  * (render-stream-0.md, golden session): calibrator 3's 42, plus calibrator 4's
  * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent` (gate1-design.md
- * G1e) and calibrator 5's eleven texture hooks (gate2-design.md Q2) -- the record is shared by
- * gate -1, gate 0, gate 1 and gate 2, so every one of them plans all 55. */
+ * G1e), calibrator 5's eleven texture hooks (gate2-design.md Q2) and calibrator 6's
+ * `canvas_item_add_clip_ignore` (gate3-design.md Q2) -- the record is shared by gate -1, gate 0,
+ * gate 1, gate 2 and gate 3, so every one of them plans all 56. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
   "canvas_item_add_circle",
+  "canvas_item_add_clip_ignore",
   "canvas_item_add_lcd_texture_rect_region",
   "canvas_item_add_line",
   "canvas_item_add_mesh",
@@ -145,7 +147,8 @@ export const GATE0_HOOKS: readonly string[] = [
  * canvas textures (protocol/canvas-texture-headless.md): `resources` omits `canvas_texture` and
  * `unsupported_resources` lists it with reason `canvas-texture-headless`; a rendered host
  * (RS2_FEATURES_RENDERED) lists it in `resources` and refuses nothing. Every stream, not only
- * gate 2's. */
+ * gate 2's. Since G3d (calibrator 6, gate3-design.md D4/D6): `observed_unsupported_ops` gains
+ * `canvas_item_add_clip_ignore` and `unobserved` gains `canvas_item_set_visibility_notifier`. */
 export const RS2_FEATURES = {
   ops: ["add_rect", "add_texture_rect", "add_texture_rect_region"],
   item_state: [
@@ -171,6 +174,7 @@ export const RS2_FEATURES = {
   ],
   observed_unsupported_ops: [
     "canvas_item_add_circle",
+    "canvas_item_add_clip_ignore",
     "canvas_item_add_lcd_texture_rect_region",
     "canvas_item_add_line",
     "canvas_item_add_mesh",
@@ -189,6 +193,7 @@ export const RS2_FEATURES = {
     "canvas_item_set_instance_shader_parameter",
     "canvas_item_set_light_mask",
     "canvas_item_set_sort_children_by_y",
+    "canvas_item_set_visibility_notifier",
     "canvas_set_modulate",
     "canvas_texture_set_shading_parameters",
     "texture_set_size_override",

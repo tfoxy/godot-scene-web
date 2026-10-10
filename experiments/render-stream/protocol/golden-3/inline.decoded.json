@@ -4,8 +4,8 @@
   "records": [
     {
       "offset": 8,
-      "byte_length": 3669,
-      "sha256": "9b5887c42935b42f8cdd614890cdd28afab7c54f22825d19e31f874c034cd6dd",
+      "byte_length": 3737,
+      "sha256": "90244e507a2075ad0b16bd5aafeeadebbee2ac4a8292ab824231046fb390298e",
       "meta": {
         "type": "session",
         "protocol": "render-stream/3",
@@ -140,6 +140,7 @@
           "unsupported_resources": [],
           "observed_unsupported_ops": [
             "canvas_item_add_circle",
+            "canvas_item_add_clip_ignore",
             "canvas_item_add_lcd_texture_rect_region",
             "canvas_item_add_line",
             "canvas_item_add_mesh",
@@ -157,6 +158,7 @@
             "canvas_item_set_instance_shader_parameter",
             "canvas_item_set_light_mask",
             "canvas_item_set_sort_children_by_y",
+            "canvas_item_set_visibility_notifier",
             "canvas_set_modulate",
             "canvas_texture_set_shading_parameters",
             "texture_set_size_override",
@@ -230,7 +232,7 @@
       ]
     },
     {
-      "offset": 3677,
+      "offset": 3745,
       "byte_length": 1312,
       "sha256": "653bb134eee5325d1802dd5fa89f42570def1732ecbde227c387ac2e92e142dd",
       "meta": {
@@ -253,7 +255,7 @@
       ]
     },
     {
-      "offset": 4989,
+      "offset": 5057,
       "byte_length": 312,
       "sha256": "c5f423448253f2ddfe43be74b3527c42e7e5c31be3d9fdf5f5406646a74e9fa7",
       "meta": {
@@ -276,7 +278,7 @@
       ]
     },
     {
-      "offset": 5301,
+      "offset": 5369,
       "byte_length": 4227,
       "sha256": "8ba8bc58fbaf285f37fa2ffab5f12b89d9247c8363388277e5aa2cf216e0216e",
       "meta": {
@@ -701,7 +703,7 @@
       ]
     },
     {
-      "offset": 9528,
+      "offset": 9596,
       "byte_length": 4227,
       "sha256": "be0a2a79f10a81fe2fb6f2890599f65c019c73315fc36e23ca6fa7ebd67a2ae3",
       "meta": {
@@ -1126,7 +1128,7 @@
       ]
     },
     {
-      "offset": 13755,
+      "offset": 13823,
       "byte_length": 1312,
       "sha256": "cb6635b0895f9dfa98247b3600b3df534c1c0bc46af21a4c0352741afad0a1b3",
       "meta": {
@@ -1149,7 +1151,7 @@
       ]
     },
     {
-      "offset": 15067,
+      "offset": 15135,
       "byte_length": 4227,
       "sha256": "41ab48920ec879f271dfd1a6af5d67abb76ac50a3edaa5e5dc23d65d54984aa5",
       "meta": {
@@ -1574,7 +1576,7 @@
       ]
     },
     {
-      "offset": 19294,
+      "offset": 19362,
       "byte_length": 622,
       "sha256": "ba1466a306379dddadfc466067b01b3d888b23ed45f10a6001f5f8fdd45b4e4b",
       "meta": {
@@ -1597,7 +1599,7 @@
       ]
     },
     {
-      "offset": 19916,
+      "offset": 19984,
       "byte_length": 4472,
       "sha256": "18453ea9738d6285fb5409de4aed29da283447dfb3281b38719c2a95cbe565af",
       "meta": {
@@ -2037,7 +2039,7 @@
       ]
     },
     {
-      "offset": 24388,
+      "offset": 24456,
       "byte_length": 4294,
       "sha256": "68280eb15706b28504c08f2ba813cfa165e11b90fc13b17d8dd49550b40d1741",
       "meta": {
@@ -2462,7 +2464,7 @@
       ]
     },
     {
-      "offset": 28682,
+      "offset": 28750,
       "byte_length": 4294,
       "sha256": "08eb5f1d891ee14a7f4cf42656b33283b25fb049eea3a3f98a16d656bd16dcd9",
       "meta": {
@@ -2887,7 +2889,7 @@
       ]
     },
     {
-      "offset": 32976,
+      "offset": 33044,
       "byte_length": 1312,
       "sha256": "3cba9fb4148addb1f2900ba8ac052aea7459255aa49bf711cb781643bb9e7a3b",
       "meta": {
@@ -2910,7 +2912,7 @@
       ]
     },
     {
-      "offset": 34288,
+      "offset": 34356,
       "byte_length": 5344,
       "sha256": "74a866dd1665e4afe8a94f3c5f15bd4d91570913acdb35979b0eb9e71de2060c",
       "meta": {
@@ -3441,15 +3443,15 @@
       ]
     },
     {
-      "offset": 39632,
+      "offset": 39700,
       "byte_length": 286,
-      "sha256": "9ddc646d52583644e71553580460a4af63199a9935d443440c48a571192511bb",
+      "sha256": "a1bec056453c58dbc7d61ab9b5ed22c72331cc81fcf6b771a23f7f8454fd708c",
       "meta": {
         "type": "end",
         "transactions": 7,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 39632,
+          "bytes_total": 39700,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 0,

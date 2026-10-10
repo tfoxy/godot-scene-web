@@ -124,9 +124,10 @@ std::string generate_id();
 // The constant gate-2 session `features` (render-stream-2.md "Session record"): ops add_rect and
 // the two texture-rect draws; item_state gate 1's plus texture_filter and texture_repeat;
 // resources texture_2d and texture_2d_placeholder; observed_unsupported_ops gate 1's without the
-// two texture-rect draws, plus canvas_item_add_lcd_texture_rect_region; unobserved gate 1's
-// without the item default filter/repeat setters, plus canvas_texture_set_shading_parameters and
-// texture_set_size_override. Each array sorted ascending by byte value; publication
+// two texture-rect draws, plus canvas_item_add_lcd_texture_rect_region and (G3d, calibrator 6)
+// canvas_item_add_clip_ignore; unobserved gate 1's without the item default filter/repeat
+// setters, plus canvas_texture_set_shading_parameters, texture_set_size_override and (G3d)
+// canvas_item_set_visibility_notifier. Each array sorted ascending by byte value; publication
 // "snapshot-or-patch". G2d: resources adds canvas_texture, except on a headless host
 // (`headless_host`), where unsupported_resources lists it with reason canvas-texture-headless
 // instead (protocol/canvas-texture-headless.md).

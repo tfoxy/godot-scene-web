@@ -134,7 +134,8 @@ FEATURE_RESOURCES = sorted(["texture_2d", "texture_2d_placeholder"])
 # session refuses nothing.
 FEATURE_UNSUPPORTED_RESOURCES = []
 # /1's observed_unsupported_ops without the two texture-rect hooks (now fully captured), plus
-# canvas_item_add_lcd_texture_rect_region (hooked from calibrator 5 on).
+# canvas_item_add_lcd_texture_rect_region (hooked from calibrator 5 on) and
+# canvas_item_add_clip_ignore (hooked from calibrator 6 on, gate3-design.md D4).
 FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
     [
         "canvas_item_add_circle", "canvas_item_add_line", "canvas_item_add_mesh",
@@ -142,7 +143,7 @@ FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
         "canvas_item_add_nine_patch", "canvas_item_add_polygon", "canvas_item_add_polyline",
         "canvas_item_add_primitive", "canvas_item_add_set_transform",
         "canvas_item_add_lcd_texture_rect_region", "canvas_item_add_triangle_array",
-        "canvas_item_set_material",
+        "canvas_item_set_material", "canvas_item_add_clip_ignore",
     ]
 )
 # /1's current unobserved list (render-stream-1.md "Session": gate 0's list plus
@@ -150,7 +151,7 @@ FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
 # canvas_item_set_z_as_relative_to_parent -- G1e hooks both), without
 # canvas_item_set_default_texture_filter and canvas_item_set_default_texture_repeat (now hooked,
 # calibrator-5 slots 448/449), plus canvas_texture_set_shading_parameters and
-# texture_set_size_override.
+# texture_set_size_override, plus canvas_item_set_visibility_notifier (gate3-design.md D6).
 FEATURE_UNOBSERVED = sorted(
     [
         "canvas_item_set_canvas_group_mode",
@@ -158,7 +159,7 @@ FEATURE_UNOBSERVED = sorted(
         "canvas_item_set_sort_children_by_y",
         "canvas_set_modulate", "canvas_texture_set_shading_parameters",
         "texture_set_size_override", "viewport_remove_canvas", "viewport_set_canvas_cull_mask",
-        "viewport_set_global_canvas_transform",
+        "viewport_set_global_canvas_transform", "canvas_item_set_visibility_notifier",
     ]
 )
 PUBLICATION = "snapshot-or-patch"

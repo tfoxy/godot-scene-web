@@ -123,8 +123,13 @@ template, for both the headless legs and the rendered gamescope legs.
   (`viewport_set_default_canvas_item_texture_filter`/`_repeat`); a `CanvasTexture` no item uses
   gets the nine-patch texture as diffuse, NEAREST and ENABLED (`canvas_texture_create`,
   `_set_channel`, `_set_texture_filter`, `_set_texture_repeat`); and an LCD text rect lands on a
-  raw canvas item that has no parent canvas (`canvas_item_add_lcd_texture_rect_region`). Gate −1
-  then plans 55 hooks with every optional counter positive, and `armed.png == unarmed.png`.
+  raw canvas item that has no parent canvas (`canvas_item_add_lcd_texture_rect_region`).
+
+- Calibrator-6 hook, added for gate 3 G3d (`gate3-design.md` Q2): another raw canvas item with no
+  parent canvas gets `add_clip_ignore(true)`, a rect, then `add_clip_ignore(false)`
+  (`canvas_item_add_clip_ignore`). As with the LCD rect above, the item never draws, so the pixels
+  do not change. Gate −1 then plans 56 hooks with every optional counter positive, and
+  `armed.png == unarmed.png`.
 
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See

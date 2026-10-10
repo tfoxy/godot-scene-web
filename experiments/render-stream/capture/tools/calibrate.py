@@ -33,7 +33,7 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "5"
+CALIBRATOR_VERSION = "6"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
@@ -119,6 +119,8 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("canvas_item_set_default_texture_filter", ("canvas_item_set_default_texture_filter",)),
     ("canvas_item_set_default_texture_repeat", ("canvas_item_set_default_texture_repeat",)),
     ("canvas_item_add_lcd_texture_rect_region", ("canvas_item_add_lcd_texture_rect_region",)),
+    # calibrator 6: clip_ignore refused, typed (gate3-design.md D4, Q2)
+    ("canvas_item_add_clip_ignore", ("canvas_item_add_clip_ignore",)),
 )
 
 ET_EXEC = 2

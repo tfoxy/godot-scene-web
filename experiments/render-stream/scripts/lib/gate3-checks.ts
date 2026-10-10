@@ -46,6 +46,7 @@ import {
   type Checkpoint,
   checkCaptureArmed,
   checkHeadlessNoGpuGate0,
+  checkManifestPresent,
   checkReceiverConsumedStream,
   checkReceiverNeverLoadedFixture,
   checkRecordingDecodes,
@@ -53,6 +54,7 @@ import {
   type DrawIndexTie,
   diffRgba,
   firstTransactionWithRectColor,
+  GATE0_HOOKS,
   type Gate0Check,
   joinSettleSeqs,
   type LegEvaluation,
@@ -89,6 +91,7 @@ import {
   stepFrames3,
   synthesizeGate3,
   visibleRect,
+  withExtraDraws,
 } from "./gate3-expected";
 import { type G3cResult, runG3c } from "./gate3x-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
@@ -104,7 +107,7 @@ export type Gate3Class = Gate2Class;
 
 export const ALL_GROUPS = ["g3a", "g3b", "g3c", "g3d"] as const;
 /** Groups whose increment has landed; run-gate3.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g3a", "g3b", "g3c"];
+export const LANDED_GROUPS: readonly string[] = ["g3a", "g3b", "g3c", "g3d"];
 
 export const G3A_SUPPORT_LEGS = [
   "import",
@@ -340,6 +343,66 @@ export function checkExpectedSelfConsistent(
       n + s.probes.filter((p) => p.decisive && p.side === "outside").length,
     0,
   );
+  // Variant clip-ignore (gate3-design.md Q6b, G3d): RI's second draw is the only difference
+  // between the reference and the receiver, and it is exactly the clip_px toggle, at every step
+  // (gate 3b's receiver apply-order fix lets receiver-clip-ignore be compared at every step, not
+  // just step 0). RI is static, so every step's draws are the same shape, shifted only by that
+  // step's canvas transform (Q6b).
+  const vci = expected.variant_clip_ignore;
+  if (vci) {
+    if (vci.reference_draws.length !== steps.length) {
+      problems.push(
+        `variant_clip_ignore: reference_draws has ${vci.reference_draws.length} entries, expected one per step (${steps.length})`,
+      );
+    }
+    if (vci.receiver_draws.length !== steps.length) {
+      problems.push(
+        `variant_clip_ignore: receiver_draws has ${vci.receiver_draws.length} entries, expected one per step (${steps.length})`,
+      );
+    }
+    for (const step of steps) {
+      const refDraws = vci.reference_draws[step.step];
+      const recvDraws = vci.receiver_draws[step.step];
+      if (refDraws?.length !== 2 || recvDraws?.length !== 2) {
+        problems.push(
+          `variant_clip_ignore: step ${step.step}'s reference_draws/receiver_draws must have 2 draws each`,
+        );
+        continue;
+      }
+      const [r1, r2] = refDraws;
+      const [c1, c2] = recvDraws;
+      if (JSON.stringify(r1) !== JSON.stringify(c1))
+        problems.push(
+          `variant_clip_ignore: step ${step.step}'s first draw must be identical in reference_draws and receiver_draws`,
+        );
+      if (r2.clip_px !== null)
+        problems.push(
+          `variant_clip_ignore: step ${step.step}'s reference second draw must be unclipped (clip_px null)`,
+        );
+      if (JSON.stringify(c2.clip_px) === JSON.stringify(r2.clip_px))
+        problems.push(
+          `variant_clip_ignore: step ${step.step}'s receiver second draw must clip (reference and receiver clip_px must differ)`,
+        );
+      if (
+        JSON.stringify(c2.rect_px) !== JSON.stringify(r2.rect_px) ||
+        JSON.stringify(c2.rgba8) !== JSON.stringify(r2.rgba8)
+      )
+        problems.push(
+          `variant_clip_ignore: step ${step.step}'s receiver second draw must share the reference's rect and colour`,
+        );
+      for (const d of [r1, r2, c2])
+        if (
+          !inside(visibleRect(d, expected.viewport) ?? [0, 0, 0, 0], vci.region)
+        )
+          problems.push(
+            `variant_clip_ignore: step ${step.step}'s ${d.name} visible rect is not inside region ${vci.region_name}`,
+          );
+    }
+    if (!inside(vci.clip_px, vci.region))
+      problems.push(
+        "variant_clip_ignore: clip_px is not inside its own region",
+      );
+  }
   return check(
     "expected-self-consistent",
     `expected.json obeys its rules: 640x360, steps 0..${last}, every colour component in {0,51,..,255} with alpha 255, every painted rect inside a region and none in ${JSON.stringify(empty)}, one distinct marker colour per step; every probe pair 1 px apart across its owner's edge with colours equal to the synthesized and unclipped frames; every owner edge decisive at two or more steps or listed; the derived clip_rects equal the hand table of gate3-design.md Q6b`,
@@ -1071,8 +1134,9 @@ export interface Gate3CaptureEvaluation {
 
 export async function evaluateCapture(
   outDir: string,
+  opts: { legDir?: string; expectedClass?: Gate3Class } = {},
 ): Promise<Gate3CaptureEvaluation> {
-  const dir = join(outDir, "capture");
+  const dir = join(outDir, opts.legDir ?? "capture");
   const captureResult = await readJson<CaptureResultJson>(
     join(dir, "evidence", "result.json"),
   );
@@ -1096,7 +1160,7 @@ export async function evaluateCapture(
   ])
     if (await fileExists(join(dir, p))) artifacts.push(join(dir, p));
   return {
-    expected_class: "success",
+    expected_class: opts.expectedClass ?? "success",
     result_class: c.result_class as Gate3Class,
     reasons: c.reasons,
     harmless_ties: c.harmless_ties,
@@ -1740,6 +1804,327 @@ async function supportLegG3b(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Group g3d: calibrator 6, canvas_item_add_clip_ignore refused and typed (gate3-design.md "G3d")
+// ---------------------------------------------------------------------------------------------
+
+/** `checkCaptureArmed` (gate0-checks.ts) hardcodes `<outDir>/capture/evidence/...`, which the g3a
+ * leg is; `capture-clip-ignore` is a second, differently-named capture leg of the same run, so
+ * this is its own copy against `<outDir>/capture-clip-ignore/evidence/...` instead. */
+export async function checkCaptureClipIgnoreArmed(
+  outDir: string,
+  capture: Pick<Gate3CaptureEvaluation, "captureResult" | "full">,
+): Promise<Gate3Check> {
+  const dir = join(outDir, "capture-clip-ignore");
+  const resultPath = join(dir, "evidence", "result.json");
+  const countersPath = join(dir, "evidence", "counters.json");
+  const counters = await readJson<{
+    hooks_planned?: string[];
+    hooks_omitted?: string[];
+  }>(countersPath);
+  const result = capture.captureResult;
+  const session = capture.full.session;
+  const problems: string[] = [];
+  const sorted = (a: readonly string[]) => [...a].sort().join(",");
+  if (result?.status !== "armed")
+    problems.push(`result.json status=${JSON.stringify(result?.status)}`);
+  if (result?.stream?.status !== "closed")
+    problems.push(`stream.status=${JSON.stringify(result?.stream?.status)}`);
+  if (!counters) {
+    problems.push("counters.json missing or unparseable");
+  } else {
+    if (
+      !Array.isArray(counters.hooks_omitted) ||
+      counters.hooks_omitted.length > 0
+    )
+      problems.push(
+        `counters.json hooks_omitted=${JSON.stringify(counters.hooks_omitted)}`,
+      );
+    if (sorted(arr<string>(counters.hooks_planned)) !== sorted(GATE0_HOOKS))
+      problems.push(
+        `counters.json hooks_planned is not the ${GATE0_HOOKS.length} gate 0 hooks`,
+      );
+  }
+  if (!session) {
+    problems.push("recording has no session record");
+  } else {
+    const omitted = session.capture?.hooks_omitted;
+    if (!Array.isArray(omitted) || omitted.length > 0)
+      problems.push(`session capture.hooks_omitted=${JSON.stringify(omitted)}`);
+    const planned = arr<string>(session.capture?.hooks_planned);
+    if (sorted(planned) !== sorted(GATE0_HOOKS)) {
+      const missing = GATE0_HOOKS.filter((h) => !planned.includes(h));
+      const extra = planned.filter((h) => !GATE0_HOOKS.includes(h));
+      problems.push(
+        `session capture.hooks_planned is not exactly the ${GATE0_HOOKS.length} names (missing ${JSON.stringify(missing)}, extra ${JSON.stringify(extra)})`,
+      );
+    }
+  }
+  return check(
+    "capture-armed-clip-ignore",
+    `capture-clip-ignore armed with stream.status closed, no hook omitted (counters.json and session), and hooks_planned is exactly the ${GATE0_HOOKS.length} hooks named by the committed record`,
+    problems,
+    `armed, stream closed, ${GATE0_HOOKS.length} hooks planned, none omitted`,
+    [resultPath, countersPath, capture.full.path],
+  );
+}
+
+/** `expected-image-reference` for the `reference-clip-ignore` leg (gate3-design.md "G3d"
+ * Checks): every shot equals the main fixture's synthesis with RI's reference draws appended --
+ * the second rect drawn unclipped (Q1d). A separate check id from g3a's, over a separate leg. */
+export async function checkExpectedImageReferenceClipIgnore(
+  outDir: string,
+  expected: Gate3Expected,
+): Promise<{ check: Gate3Check; checkpoints: Gate3Checkpoint[] }> {
+  const vci = expected.variant_clip_ignore;
+  const withRi = withExtraDraws(
+    expected,
+    (step) => vci?.reference_draws[step] ?? [],
+  );
+  const r = await compareShotsWithSynth(
+    outDir,
+    "reference-clip-ignore",
+    withRi,
+  );
+  return {
+    check: check(
+      "expected-image-reference-clip-ignore",
+      `each reference-clip-ignore/shots/step-<k>.png (k = 0..${expected.last_step}) equals synthesizeGate3(k) with that step's RI reference draws appended, exactly (maxChannelDelta 0): RI's second rect drawn unclipped (Q1d), moving with the step-9 canvas shift like every other top-level item`,
+      vci ? r.problems : ["expected.json has no variant_clip_ignore"],
+      `${r.paths.length} reference-clip-ignore shots match exactly, full frame and every region`,
+      r.paths,
+    ),
+    checkpoints: r.checkpoints,
+  };
+}
+
+export function checkCaptureClipIgnoreLegClass(
+  e: Gate3CaptureEvaluation,
+): Gate3Check {
+  const problems: string[] = [];
+  if (e.result_class !== e.expected_class)
+    problems.push(
+      `class ${e.result_class}, expected ${e.expected_class}: ${e.reasons.slice(0, 2).join(" | ")}`,
+    );
+  const ops = unsupportedOps(e.full);
+  if (!ops.includes("canvas_item_add_clip_ignore"))
+    problems.push(
+      `the recording does not carry canvas_item_add_clip_ignore as unsupported (got ${ops.join(",") || "none"})`,
+    );
+  return check(
+    "leg-class-capture-clip-ignore",
+    "the capture-clip-ignore leg classifies as unsupported: armed, stream closed, both sinks valid and equivalent, and the recording carries canvas_item_add_clip_ignore as an unsupported command",
+    problems,
+    `${e.result_class}`,
+    e.artifacts,
+  );
+}
+
+/** The recording has RI's exact command shape (gate3-design.md Q3 "Clip-ignore tap"): add_rect,
+ * unsupported canvas_item_add_clip_ignore, add_rect, unsupported canvas_item_add_clip_ignore, in
+ * place between the two add_rects, plus the one de-duplicated item-level unsupported-op entry. */
+export function checkClipIgnoreTyped(full: RecordingSummary): Gate3Check {
+  const problems: string[] = [];
+  const last = full.transactions[full.transactions.length - 1];
+  const candidates = (last?.meta.items ?? []).filter(
+    (it) => it.commands.length === 4,
+  );
+  if (candidates.length !== 1) {
+    problems.push(
+      `expected exactly one item with 4 commands (RI), found ${candidates.length}`,
+    );
+  } else {
+    const [c0, c1, c2, c3] = candidates[0].commands;
+    if (c0?.op !== "add_rect")
+      problems.push(`command 0 is ${c0?.op}, expected add_rect`);
+    if (c1?.op !== "unsupported" || c1?.name !== "canvas_item_add_clip_ignore")
+      problems.push(
+        `command 1 is ${JSON.stringify(c1)}, expected unsupported canvas_item_add_clip_ignore`,
+      );
+    if (c2?.op !== "add_rect")
+      problems.push(`command 2 is ${c2?.op}, expected add_rect`);
+    if (c3?.op !== "unsupported" || c3?.name !== "canvas_item_add_clip_ignore")
+      problems.push(
+        `command 3 is ${JSON.stringify(c3)}, expected unsupported canvas_item_add_clip_ignore`,
+      );
+  }
+  const entries = (last?.meta.unsupported ?? []).filter(
+    (u) => u.op === "canvas_item_add_clip_ignore",
+  );
+  if (
+    entries.length !== 1 ||
+    entries[0]?.reason !== "unsupported-op" ||
+    entries[0]?.item === null
+  )
+    problems.push(
+      `expected exactly one item-level entry {op: canvas_item_add_clip_ignore, reason: unsupported-op}, got ${JSON.stringify(entries)}`,
+    );
+  return check(
+    "clip-ignore-typed",
+    "capture-clip-ignore's recording carries RI's commands in order (add_rect, unsupported canvas_item_add_clip_ignore, add_rect, unsupported canvas_item_add_clip_ignore) and one item-level unsupported-op entry",
+    problems,
+    "RI's commands and item-level entry match exactly",
+    [],
+  );
+}
+
+export interface Gate3ClipIgnoreReceiverEvaluation {
+  classification: ReturnType<typeof classifyLeg>;
+  applied: AppliedJson | undefined;
+  stepJoin: StepJoin;
+  stepOk: boolean;
+  stepProblems: string[];
+  artifacts: string[];
+}
+
+export async function evaluateReceiverClipIgnore(
+  outDir: string,
+  captureFull: RecordingSummary,
+): Promise<Gate3ClipIgnoreReceiverEvaluation> {
+  const captureDir = join(outDir, "capture-clip-ignore");
+  const receiverDir = join(outDir, "receiver-clip-ignore");
+  const captureResult = await readJson<CaptureResultJson>(
+    join(captureDir, "evidence", "result.json"),
+  );
+  const steps = parseStepLog(
+    await readTextOrUndefined(join(captureDir, "steps.jsonl")),
+  );
+  const stepJoin = joinSettleSeqs(steps, captureFull.transactions);
+  const applied = await readJson<AppliedJson>(
+    join(receiverDir, "applied.json"),
+  );
+  const shotSeqs = new Set(
+    arr<{ seq?: number }>(applied?.shots).map((s) => s.seq),
+  );
+  const classification = classifyLeg({
+    captureResult,
+    recording: captureFull,
+    stepJoin,
+    receiver: {
+      applied,
+      requestedShotSeqs: stepJoin.entries
+        .map((e) => e.seq)
+        .filter((s): s is number => s !== null),
+      shotFiles: [...shotSeqs].filter((s): s is number => s !== undefined),
+    },
+    checkpoints: [],
+  });
+  const artifacts: string[] = [];
+  for (const p of [
+    join(captureDir, "steps.jsonl"),
+    join(receiverDir, "applied.json"),
+    join(receiverDir, "exit-code.txt"),
+  ])
+    if (await fileExists(p)) artifacts.push(p);
+  return {
+    classification,
+    applied,
+    stepJoin,
+    stepOk: stepJoin.ok,
+    stepProblems: stepJoin.problems,
+    artifacts,
+  };
+}
+
+function arr<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+/** `leg-class-receiver-clip-ignore` (gate3-design.md "G3d" Checks): the receiver classifies as
+ * unsupported, its step join is clean, and every one of receiver-clip-ignore's shots matches
+ * reference-clip-ignore's matching shot in every region except "ri" (the one region the variant
+ * predicts a mismatch in), at every step. Gate 3b's receiver apply-order fix is what makes every
+ * step comparable here: RI is static, so only the base scene's own clipping Controls could have
+ * contaminated regions other than "ri", and gate 3b's own legs already prove those replay
+ * correctly. */
+export async function checkClipIgnoreRegionSet(
+  outDir: string,
+  expected: Gate3Expected,
+  receiver: Gate3ClipIgnoreReceiverEvaluation,
+): Promise<Gate3Check> {
+  const problems: string[] = [];
+  const paths: string[] = [...receiver.artifacts];
+  if (receiver.classification.result_class !== "unsupported")
+    problems.push(
+      `class ${receiver.classification.result_class}, expected unsupported: ${receiver.classification.reasons.slice(0, 2).join(" | ")}`,
+    );
+  if (!receiver.stepOk) {
+    problems.push(...receiver.stepProblems);
+    return check(
+      "leg-class-receiver-clip-ignore",
+      "the receiver-clip-ignore leg classifies as unsupported, its step join is clean, and its shots mismatch reference-clip-ignore's in region ri alone, at every step",
+      problems,
+      "",
+      paths,
+    );
+  }
+  const vci = expected.variant_clip_ignore;
+  if (!vci) {
+    return check(
+      "leg-class-receiver-clip-ignore",
+      "receiver-clip-ignore vs reference-clip-ignore differs in region ri alone, at every step",
+      ["expected.json has no variant_clip_ignore"],
+      "",
+      [],
+    );
+  }
+  const regions: Record<string, readonly number[]> = {
+    ...expected.regions,
+    [vci.region_name]: vci.region,
+  };
+  const mismatching = new Set<string>();
+  for (const e of receiver.stepJoin.entries) {
+    if (e.seq === null) {
+      problems.push(`step ${e.step}: no transaction at its settle frame`);
+      continue;
+    }
+    const refPath = join(
+      outDir,
+      "reference-clip-ignore",
+      "shots",
+      `step-${e.step}.png`,
+    );
+    const recvPath = join(
+      outDir,
+      "receiver-clip-ignore",
+      "shots",
+      `seq-${e.seq}.png`,
+    );
+    paths.push(refPath, recvPath);
+    const ref = await decodePngRgba(refPath);
+    const recv = await decodePngRgba(recvPath);
+    if (
+      !ref ||
+      !recv ||
+      ref.width !== recv.width ||
+      ref.height !== recv.height
+    ) {
+      problems.push(
+        `step ${e.step}: a shot is missing, unreadable or of another size`,
+      );
+      continue;
+    }
+    for (const [name, rect] of Object.entries(regions)) {
+      const d = diffRgba(ref.data, recv.data, ref.width, ref.height, rect);
+      if (d.mismatched_pixels > 0) mismatching.add(name);
+    }
+  }
+  const expectedMismatching = new Set([vci.region_name]);
+  if (
+    mismatching.size !== expectedMismatching.size ||
+    ![...mismatching].every((r) => expectedMismatching.has(r))
+  )
+    problems.push(
+      `mismatching regions are {${[...mismatching].sort().join(",")}}, expected {${[...expectedMismatching].join(",")}}`,
+    );
+  return check(
+    "leg-class-receiver-clip-ignore",
+    `receiver-clip-ignore's shots mismatch reference-clip-ignore's in region ${vci.region_name} alone, at every step, and match every other region exactly`,
+    problems,
+    `mismatching regions: {${[...mismatching].sort().join(",")}}`,
+    paths,
+  );
+}
+// ---------------------------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------------------------
 
@@ -2007,9 +2392,75 @@ export async function runGate3(
     clipRects = { ...(clipRects ?? {}), [ctx.xform.fixture]: g3c.clip_rects };
     band = g3c.band;
     semantic = g3c.semantic_probes;
+  } else {
+    checks.push(
+      notRunCheck("g3c", "g3c was not in --legs; its checks are not-run"),
+    );
   }
+
+  if (groups.run.includes("g3d")) {
+    const g3dCapture = await evaluateCapture(outDir, {
+      legDir: "capture-clip-ignore",
+      expectedClass: "unsupported",
+    });
+    const image = await checkExpectedImageReferenceClipIgnore(
+      outDir,
+      ctx.expected,
+    );
+    checkpoints.push(...image.checkpoints);
+    const receiver = await evaluateReceiverClipIgnore(outDir, g3dCapture.full);
+    const captureArmed = await checkCaptureClipIgnoreArmed(outDir, g3dCapture);
+    const recordingsDecode = checkRecordingsDecode(
+      g3dCapture.full,
+      g3dCapture.patch,
+    );
+    checks.push(
+      captureArmed,
+      fromGate0(checkManifestPresent(g3dCapture.full)),
+      { ...recordingsDecode, id: "recording-decodes-clip-ignore" },
+      image.check,
+      checkClipIgnoreTyped(g3dCapture.full),
+      checkCaptureClipIgnoreLegClass(g3dCapture),
+      await checkClipIgnoreRegionSet(outDir, ctx.expected, receiver),
+    );
+    legs["capture-clip-ignore"] = {
+      group: "g3d",
+      expected_class: g3dCapture.expected_class,
+      result_class: g3dCapture.result_class,
+      reasons: g3dCapture.reasons,
+      harmless_ties: g3dCapture.harmless_ties,
+      exit_code: g3dCapture.exit_code,
+      artifacts: g3dCapture.artifacts,
+    };
+    legs["reference-clip-ignore"] = {
+      group: "g3d",
+      expected_class: null,
+      result_class: null,
+      reasons: [],
+      exit_code: await readExitCode(join(outDir, "reference-clip-ignore")),
+      artifacts: [],
+    };
+    legs["receiver-clip-ignore"] = {
+      group: "g3d",
+      expected_class: "unsupported",
+      result_class: receiver.classification.result_class as Gate3Class,
+      reasons: receiver.classification.reasons,
+      exit_code: await readExitCode(join(outDir, "receiver-clip-ignore")),
+      artifacts: receiver.artifacts,
+    };
+  } else {
+    checks.push(
+      notRunCheck("g3d", "g3d was not in --legs; its checks are not-run"),
+    );
+  }
+
   for (const group of notRun)
-    if (group !== "g3a" && group !== "g3b")
+    if (
+      group !== "g3a" &&
+      group !== "g3b" &&
+      group !== "g3c" &&
+      group !== "g3d"
+    )
       checks.push(notRunCheck(group, `${group} was not in --legs`));
 
   const binary = await readJson<{ path?: string; sha256?: string }>(

@@ -19,6 +19,7 @@ import {
   type Gate3Expected,
   stepFrames3,
   synthesizeGate3,
+  withExtraDraws,
 } from "../lib/gate3-expected";
 import {
   encodeRs2Recording,
@@ -964,6 +965,234 @@ export async function buildFullTree(
   await writeJson(join(out, "legs.json"), {
     groups_run: ["g3a", "g3b"],
     groups_landed: ["g3a", "g3b"],
+  });
+  return projects;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d")
+// ---------------------------------------------------------------------------------------------
+
+/** RI's wire id: the 19th item created (after RCF, id 18), as the real fixture's variant. */
+export const ID_RI = ID.RCF + 1;
+
+function riItem(): TItem {
+  return {
+    id: ID_RI,
+    parent: { kind: "canvas", id: 1 },
+    children: [],
+    visible: true,
+    draw_index: 1002,
+    z_index: 0,
+    visibility_layer: 1,
+    content_version: 4,
+    xform: [1, 0, 0, 1, 472, 184],
+    modulate: [1, 1, 1, 1],
+    self_modulate: [1, 1, 1, 1],
+    clip: true,
+    custom_rect: true,
+    custom_rect_rect: [0, 0, 48, 32],
+    commands: [
+      { op: "add_rect", rect: [0, 0, 48, 32], color: [0.4, 0.8, 0.4, 1] },
+      {
+        op: "unsupported",
+        name: "canvas_item_add_clip_ignore",
+        reason: "unsupported-op",
+      },
+      { op: "add_rect", rect: [32, 16, 32, 32], color: [1, 0.4, 0, 1] },
+      {
+        op: "unsupported",
+        name: "canvas_item_add_clip_ignore",
+        reason: "unsupported-op",
+      },
+    ],
+  };
+}
+
+/** `buildStates` plus the variant's static raw item RI (gate3-design.md Q6b "Variant
+ * clip-ignore"), present in every frame unmodified -- the session-level unsupported entry it
+ * gives RI's item is likewise unmodified. */
+export function buildStatesWithRI(
+  e: Gate3Expected,
+  quit = CAPTURE_QUIT,
+  o: ModelOptions = {},
+): TState[] {
+  const ri = riItem();
+  const entry = {
+    op: "canvas_item_add_clip_ignore",
+    item: ID_RI,
+    reason: "unsupported-op",
+  };
+  return buildStates(e, quit, o).map((s) => ({
+    ...s,
+    canvases: s.canvases.map((c) =>
+      c.id === 1 ? { ...c, items: [...c.items, ID_RI] } : c,
+    ),
+    items: [...s.items, ri],
+    unsupported: [...(s.unsupported ?? []), entry],
+  }));
+}
+
+export async function writeClipIgnoreCaptureDir(
+  dir: string,
+  e: Gate3Expected,
+  o: CaptureOptions = {},
+): Promise<void> {
+  const quit = o.quit ?? CAPTURE_QUIT;
+  let states = buildStatesWithRI(e, quit, o);
+  if (o.states) states = o.states(states);
+  const hooksPlanned = [...GATE0_HOOKS];
+  const full = encodeRs2Recording(states, {
+    encoding: "full",
+    hooksPlanned,
+    ...o.full,
+  });
+  const patch = encodeRs2Recording(states, {
+    encoding: "patch",
+    hooksPlanned,
+    ...o.patch,
+  });
+  await writeProcess(dir);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "recording.rs2"), full);
+  await writeFile(join(dir, "recording-patch.rs2"), patch);
+  await writeJson(join(dir, "evidence", "result.json"), {
+    schema: "render-stream-capture-result/1",
+    status: "armed",
+    reason: null,
+    vptr_written: true,
+    disarmed: true,
+    display_server: "headless",
+    stream: {
+      path: join(dir, "recording.rs2"),
+      patch_path: join(dir, "recording-patch.rs2"),
+      status: "closed",
+      reason: null,
+      transactions: quit,
+    },
+  });
+  await writeJson(join(dir, "evidence", "counters.json"), counters({ quit }));
+  await writeJson(join(dir, "evidence", "root.json"), {
+    schema: "render-stream-root-geometry/1",
+  });
+  await writeText(join(dir, "evidence", "armed.marker"), "");
+  await writeText(join(dir, "steps.jsonl"), stepLog(e));
+}
+
+export async function writeClipIgnoreReference(
+  dir: string,
+  e: Gate3Expected,
+): Promise<void> {
+  await writeProcess(dir);
+  const vci = e.variant_clip_ignore;
+  const withRi = withExtraDraws(e, (step) => vci?.reference_draws[step] ?? []);
+  for (const s of e.steps) {
+    const path = join(dir, "shots", `step-${s.step}.png`);
+    await mkdir(dirname(path), { recursive: true });
+    const { width, height, rgba } = synthesizeGate3(withRi, s.step);
+    const png = await sharp(Buffer.from(rgba), {
+      raw: { width, height, channels: 4 },
+    })
+      .png()
+      .toBuffer();
+    await writeFile(path, png);
+  }
+  await writeText(join(dir, "steps.jsonl"), stepLog(e));
+}
+
+/** A receiver on capture-clip-ignore's recording: a shot per settle step, named by seq (`==
+ * frame`, since `buildStates` publishes one transaction per frame), synthesized with that step's
+ * RI receiver draws -- the two `add_clip_ignore` calls skipped, so its second rect clips like any
+ * other command. Gate 3b's receiver apply-order fix is what makes every step comparable: RI
+ * never redraws, so it was never the blocker; the base scene's own clipping Controls were. */
+export async function writeClipIgnoreReceiver(
+  dir: string,
+  e: Gate3Expected,
+  quit = CAPTURE_QUIT,
+): Promise<void> {
+  await writeProcess(dir);
+  const vci = e.variant_clip_ignore;
+  const withRi = withExtraDraws(e, (step) => vci?.receiver_draws[step] ?? []);
+  const shots: {
+    seq: number;
+    path: string;
+    applied_through: number;
+    state_path: string | null;
+  }[] = [];
+  for (const s of e.steps) {
+    const seq = stepFrames3(e, s.step).settle;
+    const path = join(dir, "shots", `seq-${seq}.png`);
+    await mkdir(dirname(path), { recursive: true });
+    const { width, height, rgba } = synthesizeGate3(withRi, s.step);
+    const png = await sharp(Buffer.from(rgba), {
+      raw: { width, height, channels: 4 },
+    })
+      .png()
+      .toBuffer();
+    await writeFile(path, png);
+    shots.push({ seq, path, applied_through: seq, state_path: null });
+  }
+  await writeJson(join(dir, "applied.json"), {
+    schema: "render-stream-receiver-applied/3",
+    recording: { path: "recording.rs2", sha256: "x", bytes: 0 },
+    session_id: null,
+    status: "ok",
+    failure: null,
+    end_seen: true,
+    mode: "file",
+    viewport: {
+      display_server: "x11",
+      size: [640, 360],
+      size_check: "match",
+      logical_size: [640, 360],
+    },
+    transactions: Array.from({ length: quit }, (_, i) => ({
+      seq: i + 1,
+      frame: i + 1,
+      encoding: "full",
+      record_sha256: "x",
+      rs_calls: 0,
+      resources: null,
+    })),
+    shots,
+    unsupported: [
+      {
+        seq: 1,
+        item: ID_RI,
+        name: "canvas_item_add_clip_ignore",
+        reason: "unsupported-op",
+      },
+    ],
+  });
+}
+
+/** A passing g3d evidence tree alongside g3a's: capture-clip-ignore, reference-clip-ignore and a
+ * rendered receiver-clip-ignore on the capture's recording (gate3-design.md "G3d"). */
+export async function buildG3dTree(
+  out: string,
+  e: Gate3Expected,
+  o: CaptureOptions = {},
+): Promise<void> {
+  await writeClipIgnoreCaptureDir(join(out, "capture-clip-ignore"), e, o);
+  await writeClipIgnoreReference(join(out, "reference-clip-ignore"), e);
+  await writeClipIgnoreReceiver(
+    join(out, "receiver-clip-ignore"),
+    e,
+    o.quit ?? CAPTURE_QUIT,
+  );
+}
+
+/** A passing g3a + g3b + g3d evidence tree: every group this experiment's branch has landed. */
+export async function buildFullTreeWithG3d(
+  out: string,
+  e: Gate3Expected,
+  o: CaptureOptions = {},
+): Promise<G3bProjects> {
+  const projects = await buildFullTree(out, e, o);
+  await buildG3dTree(out, e, o);
+  await writeJson(join(out, "legs.json"), {
+    groups_run: ["g3a", "g3b", "g3d"],
+    groups_landed: ["g3a", "g3b", "g3d"],
   });
   return projects;
 }

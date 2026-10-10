@@ -236,6 +236,7 @@ Features gate2_features(bool headless_host) {
     features.resources = {"canvas_texture", "texture_2d", "texture_2d_placeholder"};
   }
   features.observed_unsupported_ops = {"canvas_item_add_circle",
+                                       "canvas_item_add_clip_ignore",
                                        "canvas_item_add_lcd_texture_rect_region",
                                        "canvas_item_add_line",
                                        "canvas_item_add_mesh",
@@ -252,6 +253,7 @@ Features gate2_features(bool headless_host) {
                          "canvas_item_set_instance_shader_parameter",
                          "canvas_item_set_light_mask",
                          "canvas_item_set_sort_children_by_y",
+                         "canvas_item_set_visibility_notifier",
                          "canvas_set_modulate",
                          "canvas_texture_set_shading_parameters",
                          "texture_set_size_override",
