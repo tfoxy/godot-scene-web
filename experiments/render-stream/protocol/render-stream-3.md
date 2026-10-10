@@ -69,7 +69,12 @@ Key order, record framing and every field but `protocol` are exactly /2's. `prot
 - `ops`: /2's three plus `"add_msdf_texture_rect_region"`, all four sorted ascending by byte
   value: `["add_msdf_texture_rect_region","add_rect","add_texture_rect","add_texture_rect_region"]`.
 - `observed_unsupported_ops`: /2's list without `"canvas_item_add_msdf_texture_rect_region"` (it
-  is a supported op now, not a refused one).
+  is a supported op now, not a refused one). Since G5a (calibrator 7, gate5-design.md D2):
+  `observed_unsupported_ops` also gains `"canvas_item_add_animation_slice"`,
+  `"canvas_item_add_multiline"`, `"canvas_item_add_particles"` and `"canvas_item_attach_skeleton"`
+  -- four new typed refusals, hooked but not yet given a command on any wire version. `golden-2/`
+  and `golden-3/` keep their own frozen, pre-G5a feature lists (`make_golden.py`'s own copy),
+  unaffected.
 - Every other `features` key, and `resources`, are unchanged from /2.
 
 ### Sabotage

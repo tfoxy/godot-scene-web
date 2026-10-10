@@ -688,7 +688,9 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
           reason: l.reason as TTexture["reason"],
           version: l.version as number,
           hash: l.hash,
-          format: l.format,
+          // A texture line's format is always a name string (gate5-design.md Q3d: a mesh line's
+          // raw ArrayFormat number never shares this column with a texture's name).
+          format: l.format as string | null,
           width: l.width ?? 0,
           height: l.height ?? 0,
           mipmaps: l.mipmaps ?? false,

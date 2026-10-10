@@ -120,7 +120,8 @@ export const TEXTURE_DRAW_OPS: readonly string[] = [
   "canvas_item_add_texture_rect_region",
 ];
 
-/** RenderingServer texture calls the hook log records (Q3 "Hook log"). */
+/** RenderingServer texture calls the hook log records (Q3 "Hook log"), plus (G5a,
+ * gate5-design.md Q3d) the mesh calls it gains kind:"mesh" lines for. */
 export const RESOURCE_LOG_OPS: readonly string[] = [
   "canvas_item_set_default_texture_filter",
   "canvas_item_set_default_texture_repeat",
@@ -129,6 +130,16 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
   "canvas_texture_set_texture_filter",
   "canvas_texture_set_texture_repeat",
   "free",
+  "mesh_add_surface",
+  "mesh_clear",
+  "mesh_create",
+  "mesh_create_from_surfaces",
+  "mesh_set_custom_aabb",
+  "mesh_surface_remove",
+  "mesh_surface_update_attribute_region",
+  "mesh_surface_update_index_region",
+  "mesh_surface_update_skin_region",
+  "mesh_surface_update_vertex_region",
   "texture_2d_create",
   "texture_2d_placeholder_create",
   "texture_2d_update",
@@ -137,9 +148,10 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
   "viewport_set_default_canvas_item_texture_repeat",
 ];
 
-/** Exact key order of a render-stream-resource-log/1 line (the contract's keys, then G2a's). Since
- * G2b2 a sabotage's own line appends `sabotage` (and `omitted` for an op the omit-op sabotage
- * dropped from the capture), and the publisher writes `store` / `inline` lines. */
+/** Exact key order of a render-stream-resource-log/1 line (the contract's keys, then G2a's, then
+ * G5a's mesh trailing columns, gate5-design.md Q3d). Since G2b2 a sabotage's own line appends
+ * `sabotage` (and `omitted` for an op the omit-op sabotage dropped from the capture), and the
+ * publisher writes `store` / `inline` lines. */
 export const RESOURCE_LINE_KEYS: readonly string[] = [
   "frame",
   "t_us",
@@ -168,6 +180,14 @@ export const RESOURCE_LINE_KEYS: readonly string[] = [
   "value",
   "layer",
   "root_viewport",
+  "surface",
+  "buffer",
+  "offset",
+  "bytes",
+  "primitive",
+  "vertex_count",
+  "index_count",
+  "outcome",
 ];
 
 // Viewport.DefaultCanvasItemTextureFilter / _Repeat scene enums (root.json texture_defaults), and
@@ -201,7 +221,9 @@ export interface ResourceLine {
   kind: string | null;
   status: string | null;
   reason: string | null;
-  format: string | null;
+  /** A texture format name (string) on an image line; the raw ArrayFormat bitfield (number) on a
+   * mesh line (gate5-design.md Q3d: the two never share a line). */
+  format: string | number | null;
   width: number | null;
   height: number | null;
   mipmaps: boolean | null;
@@ -217,6 +239,21 @@ export interface ResourceLine {
   value: number | null;
   layer: number | null;
   root_viewport: boolean | null;
+  /** G5a (gate5-design.md Q3d): mesh-only trailing columns, null on every other line. */
+  surface: number | null;
+  buffer: "vertex" | "attribute" | "skin" | "index" | null;
+  offset: number | null;
+  bytes: number | null;
+  primitive:
+    | "points"
+    | "lines"
+    | "line_strip"
+    | "triangles"
+    | "triangle_strip"
+    | null;
+  vertex_count: number | null;
+  index_count: number | null;
+  outcome: "applied" | "rejected" | "unknown" | null;
   /** G2b2: a sabotage's own line; `omitted` for an op the omit-op sabotage dropped */
   sabotage?: boolean;
   omitted?: boolean;

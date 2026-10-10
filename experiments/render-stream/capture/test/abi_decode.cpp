@@ -118,10 +118,22 @@ void test_surface_data() {
   check(offsetof(grc::SurfaceDataPrefix, index_count) == 88, "SurfaceData::index_count at 88");
   check(offsetof(grc::SurfaceDataPrefix, aabb) == 92, "SurfaceData::aabb at 92");
   check(sizeof(grc::AABB) == 24, "AABB size");
+  check(offsetof(grc::SurfaceDataPrefix, lods) == 120, "SurfaceData::lods at 120");
+  check(offsetof(grc::SurfaceDataPrefix, bone_aabbs) == 136, "SurfaceData::bone_aabbs at 136");
+  check(offsetof(grc::SurfaceDataPrefix, mesh_to_skeleton_xform) == 152,
+        "SurfaceData::mesh_to_skeleton_xform at 152");
+  check(offsetof(grc::SurfaceDataPrefix, blend_shape_data) == 200,
+        "SurfaceData::blend_shape_data at 200");
+  check(offsetof(grc::SurfaceDataPrefix, uv_scale) == 216, "SurfaceData::uv_scale at 216");
+  check(offsetof(grc::SurfaceDataPrefix, material) == 232, "SurfaceData::material at 232");
+  check(sizeof(grc::SurfaceDataPrefix) == 240, "SurfaceData is 240 bytes");
+  check(sizeof(grc::Transform3D) == 48, "Transform3D size");
+  check(sizeof(grc::Vector4) == 16, "Vector4 size");
 
   FakeCowData<uint8_t> vertices(1, std::vector<uint8_t>(24, 0xab));
   FakeCowData<uint8_t> attributes(1, std::vector<uint8_t>(12, 0xcd));
   FakeCowData<uint8_t> indices(1, std::vector<uint8_t>(6, 0x01));
+  FakeCowData<uint8_t> blend_shapes(1, std::vector<uint8_t>(4, 0xef));
 
   alignas(16) uint8_t block[240] = {};
   const int32_t primitive = 3;  // PRIMITIVE_TRIANGLES
@@ -142,6 +154,14 @@ void test_surface_data() {
   std::memcpy(block + 72 + 8, &index_ptr, sizeof(void *));
   std::memcpy(block + 88, &index_count, sizeof(index_count));
   std::memcpy(block + 92, aabb, sizeof(aabb));
+  // lods (120) and bone_aabbs (136) stay empty: both null CowData pointers.
+  // mesh_to_skeleton_xform (152, 48 bytes) is left zeroed; not decoded by anything.
+  const void *blend_shape_ptr = blend_shapes.elements;
+  std::memcpy(block + 200 + 8, &blend_shape_ptr, sizeof(void *));
+  const float uv_scale[4] = {1.0f, 2.5f, -3.0f, 0.5f};
+  std::memcpy(block + 216, uv_scale, sizeof(uv_scale));
+  const uint64_t material_id = 0x1234;
+  std::memcpy(block + 232, &material_id, sizeof(material_id));
 
   const auto *surface = reinterpret_cast<const grc::SurfaceDataPrefix *>(block);
   check(surface->primitive == 3, "decoded primitive");
@@ -153,6 +173,11 @@ void test_surface_data() {
   check(surface->index_data.size() == 6, "decoded index_data size");
   check(surface->index_count == 3, "decoded index_count");
   check(surface->aabb.position.y == -2.25f && surface->aabb.size.x == 10.125f, "decoded aabb");
+  check(surface->lods.size() == 0, "decoded empty lods");
+  check(surface->bone_aabbs.size() == 0, "decoded empty bone_aabbs");
+  check(surface->blend_shape_data.size() == 4, "decoded blend_shape_data size");
+  check(surface->uv_scale.x == 1.0f && surface->uv_scale.z == -3.0f, "decoded uv_scale");
+  check(surface->material.id == 0x1234, "decoded material RID");
 }
 
 }  // namespace

@@ -36,6 +36,7 @@ add_library(render_stream_capture SHARED
   src/rs_live.cpp
   src/rs_mirror.cpp
   src/rs_publish.cpp
+  src/rs_mesh_payload.cpp
   src/rs_resource_log.cpp
   src/rs_resource_store.cpp
   src/rs_root_query.cpp
@@ -198,7 +199,15 @@ target_link_libraries(rs_texture_payload_test PRIVATE grc_warnings)
 add_test(NAME rs_texture_payload COMMAND rs_texture_payload_test)
 
 add_executable(rs_resource_log_test
-  test/rs_resource_log_test.cpp src/rs_resource_log.cpp src/rs_texture_payload.cpp)
+  test/rs_resource_log_test.cpp src/rs_resource_log.cpp src/rs_texture_payload.cpp
+  src/rs_mesh_payload.cpp)
 target_include_directories(rs_resource_log_test PRIVATE src)
 target_link_libraries(rs_resource_log_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_resource_log COMMAND rs_resource_log_test)
+
+# Gate 5 (G5a): the GRM1 mesh payload encoder (gate5-design.md Q4) and D7's format classification.
+add_executable(rs_mesh_payload_test
+  test/rs_mesh_payload_test.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp)
+target_include_directories(rs_mesh_payload_test PRIVATE src)
+target_link_libraries(rs_mesh_payload_test PRIVATE grc_warnings)
+add_test(NAME rs_mesh_payload COMMAND rs_mesh_payload_test)

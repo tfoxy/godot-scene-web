@@ -87,7 +87,9 @@ int main() {
          "\"reason\":null,\"format\":\"RGBA8\",\"width\":16,\"height\":16,\"mipmaps\":false,"
          "\"data_bytes\":1024,\"payload_bytes\":1135,\"hash\":\"aa\",\"copy_ns\":1200,"
          "\"hash_ns\":3400,\"conn\":null,\"http_status\":null,\"target\":null,\"ref_id\":null,"
-         "\"value\":null,\"layer\":null,\"root_viewport\":null}");
+         "\"value\":null,\"layer\":null,\"root_viewport\":null,\"surface\":null,\"buffer\":null,"
+         "\"offset\":null,\"bytes\":null,\"primitive\":null,\"vertex_count\":null,"
+         "\"index_count\":null,\"outcome\":null}");
   EXPECT(has(lines[1], "\"op\":\"texture_2d_placeholder_create\",\"id\":2,"));
   EXPECT(has(lines[1], "\"kind\":\"placeholder\",\"status\":\"ok\",\"reason\":null,\"format\":null"));
   EXPECT(has(lines[2], "\"thread\":\"other\""));
@@ -182,11 +184,11 @@ int main() {
   lines = split_lines(log.take_lines());
   EXPECT(lines.size() == 4);
   EXPECT(has(lines[0], "\"op\":\"canvas_item_set_default_texture_filter\",\"id\":null,"));
-  EXPECT(has(lines[0], "\"target\":\"300\",\"ref_id\":null,\"value\":2,\"layer\":null,\"root_viewport\":null}"));
+  EXPECT(has(lines[0], "\"target\":\"300\",\"ref_id\":null,\"value\":2,\"layer\":null,\"root_viewport\":null,"));
   EXPECT(has(lines[1], "\"value\":3,"));
   EXPECT(has(lines[2], "\"op\":\"viewport_set_default_canvas_item_texture_filter\""));
-  EXPECT(has(lines[2], "\"value\":2,\"layer\":null,\"root_viewport\":true}"));
-  EXPECT(has(lines[3], "\"root_viewport\":false}"));
+  EXPECT(has(lines[2], "\"value\":2,\"layer\":null,\"root_viewport\":true,"));
+  EXPECT(has(lines[3], "\"root_viewport\":false,"));
 
   // A fresh session restarts ids and forgets every texture.
   log.stop();
@@ -199,7 +201,7 @@ int main() {
   EXPECT(lines.size() == 1 && has(lines[0], "\"id\":1,"));
   log.viewport_set_default_texture_filter(main_ctx, 0, 1);
   lines = split_lines(log.take_lines());
-  EXPECT(lines.size() == 1 && has(lines[0], "\"root_viewport\":false}"));
+  EXPECT(lines.size() == 1 && has(lines[0], "\"root_viewport\":false,"));
 
   // G2b2: an op the omit-op sabotage dropped is logged, marked, and leaves the registry alone.
   log.texture_2d_create(main_ctx, 500, rgba8(4, 4, "f0"));          // id 2
@@ -237,6 +239,108 @@ int main() {
          has(lines[0], "\"format\":null,") && has(lines[0], "\"payload_bytes\":1135,\"hash\":\"abcd\"") &&
          has(lines[0], "\"conn\":null,"));
   EXPECT(has(lines[1], "\"op\":\"inline\"") && has(lines[1], "\"conn\":3,"));
+
+  // G5a (gate5-design.md Q3d): meshes have their own id counter, independent of textures'.
+  using grc::rs::MeshSurfaceCopy;
+  const auto ok_surface = [](const char *hash) {
+    MeshSurfaceCopy s;
+    s.status = "ok";
+    s.primitive = 3;  // triangles
+    s.format = (1ull << 25) | 1;  // USE_2D_VERTICES | VERTEX
+    s.vertex_count = 3;
+    s.index_count = 0;
+    s.hash = hash;
+    s.copy_ns = 10;
+    s.hash_ns = 20;
+    return s;
+  };
+  log.mesh_create(main_ctx, 600);  // id 1
+  log.mesh_add_surface(main_ctx, 600, ok_surface("m0"));
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 2);
+  EXPECT(has(lines[0], "\"op\":\"mesh_create\",") && has(lines[0], "\"id\":1,") &&
+         has(lines[0], "\"rid\":\"600\",") && has(lines[0], "\"version\":1,") &&
+         has(lines[0], "\"kind\":\"mesh\",\"status\":\"ok\"") &&
+         has(lines[0], "\"outcome\":\"applied\""));
+  EXPECT(has(lines[1], "\"op\":\"mesh_add_surface\",") && has(lines[1], "\"id\":1,") &&
+         has(lines[1], "\"version\":2,\"kind\":\"mesh\",\"status\":\"ok\"") &&
+         has(lines[1], "\"format\":33554433,\"width\":null,\"height\":null,\"mipmaps\":null,"
+                       "\"data_bytes\":null,\"payload_bytes\":null,\"hash\":\"m0\","
+                       "\"copy_ns\":10,\"hash_ns\":20,") &&
+         has(lines[1], "\"surface\":0,\"buffer\":null,\"offset\":null,\"bytes\":null,"
+                       "\"primitive\":\"triangles\",\"vertex_count\":3,\"index_count\":0,"
+                       "\"outcome\":\"applied\""));
+  EXPECT(log.mesh_id(600) == 1);
+
+  // A refused surface makes the entry unsupported; a region update re-hashes it and bumps the
+  // version; an update on an unknown mesh or out of range is "unknown" and changes nothing; a
+  // rejected (out-of-bounds) update changes nothing either.
+  MeshSurfaceCopy refused_surface;
+  refused_surface.status = "unsupported";
+  refused_surface.reason = "mesh-format";
+  refused_surface.primitive = 3;
+  log.mesh_add_surface(main_ctx, 600, refused_surface);  // surface 1, now unsupported
+  log.take_lines();
+  const MeshSurfaceCopy updated = ok_surface("m1");
+  log.mesh_surface_update_region(main_ctx, 600, "vertex", 0, 0, 24, "applied", &updated);
+  log.mesh_surface_update_region(main_ctx, 600, "vertex", 0, 0, 24, "rejected", nullptr);
+  log.mesh_surface_update_region(main_ctx, 999, "vertex", 0, 0, 24, "unknown", nullptr);
+  log.mesh_surface_update_region(main_ctx, 600, "attribute", 5, 0, 8, "unknown", nullptr);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 4);
+  EXPECT(has(lines[0], "\"op\":\"mesh_surface_update_vertex_region\",") &&
+         has(lines[0], "\"id\":1,") && has(lines[0], "\"version\":4,") &&
+         has(lines[0], "\"status\":\"unsupported\",\"reason\":\"mesh-format\"") &&
+         has(lines[0], "\"hash\":\"m1\",\"copy_ns\":10,\"hash_ns\":20,") &&
+         has(lines[0], "\"surface\":0,\"buffer\":\"vertex\",\"offset\":0,\"bytes\":24,") &&
+         has(lines[0], "\"outcome\":\"applied\""));
+  EXPECT(has(lines[1], "\"version\":4,") && has(lines[1], "\"outcome\":\"rejected\""));
+  EXPECT(has(lines[2], "\"id\":null,") && has(lines[2], "\"outcome\":\"unknown\""));
+  EXPECT(has(lines[3], "\"id\":1,") && has(lines[3], "\"version\":4,") &&
+         has(lines[3], "\"outcome\":\"unknown\""));
+
+  // mesh_surface_remove renumbers; the remaining ok surface makes the entry ok again.
+  log.mesh_surface_remove(main_ctx, 600, 1);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 1);
+  EXPECT(has(lines[0], "\"op\":\"mesh_surface_remove\",") && has(lines[0], "\"id\":1,") &&
+         has(lines[0], "\"version\":5,\"kind\":\"mesh\",\"status\":\"ok\",\"reason\":null") &&
+         has(lines[0], "\"surface\":1,") && has(lines[0], "\"outcome\":\"applied\""));
+
+  // mesh_set_custom_aabb and mesh_clear bump the version; clear drops every surface.
+  log.mesh_set_custom_aabb(main_ctx, 600);
+  log.mesh_clear(main_ctx, 600);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 2);
+  EXPECT(has(lines[0], "\"op\":\"mesh_set_custom_aabb\",") && has(lines[0], "\"id\":1,") &&
+         has(lines[0], "\"version\":6,"));
+  EXPECT(has(lines[1], "\"op\":\"mesh_clear\",") && has(lines[1], "\"id\":1,") &&
+         has(lines[1], "\"version\":7,\"kind\":\"mesh\",\"status\":\"ok\","));
+
+  // free logs a known mesh and it leaves the registry; an unknown free (an item, say) is silent.
+  log.free_rid(main_ctx, 600);
+  log.free_rid(main_ctx, 4343);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 1);
+  EXPECT(has(lines[0], "\"op\":\"free\",") && has(lines[0], "\"id\":1,") &&
+         has(lines[0], "\"rid\":\"600\",") && has(lines[0], "\"version\":7,") &&
+         has(lines[0], "\"kind\":\"mesh\",\"status\":\"freed\""));
+  EXPECT(log.mesh_id(600) == 0);
+
+  // mesh_create_from_surfaces classifies every surface at once and spends one id.
+  log.mesh_create_from_surfaces(main_ctx, 601, {ok_surface("a"), ok_surface("b")});  // id 2
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 1);
+  EXPECT(has(lines[0], "\"op\":\"mesh_create_from_surfaces\",") && has(lines[0], "\"id\":2,") &&
+         has(lines[0], "\"rid\":\"601\",") && has(lines[0], "\"version\":1,") &&
+         has(lines[0], "\"kind\":\"mesh\",\"status\":\"ok\""));
+  EXPECT(log.mesh_id(601) == 2);
+
+  // omit-op: the line is marked and the registry is left untouched.
+  log.mesh_add_surface(main_ctx, 601, ok_surface("c"), true);
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 1 && has(lines[0], "\"id\":2,") && has(lines[0], "\"version\":1,") &&
+         has(lines[0], ",\"sabotage\":true,\"omitted\":true}"));
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_resource_log_test: %d failure(s)\n", g_failures);

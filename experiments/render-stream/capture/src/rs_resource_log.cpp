@@ -1,5 +1,6 @@
 #include "rs_resource_log.h"
 
+#include "rs_mesh_payload.h"
 #include "rs_texture_payload.h"
 
 namespace grc {
@@ -54,6 +55,18 @@ struct ResourceLog::Line {
   bool omitted = false;
   std::uint64_t conn = 0;  // 0 = null
   std::int64_t http_status = -1;  // -1 = null (G2c2: http-get lines)
+  // G5a (gate5-design.md Q3d): mesh fields, present only on a kind:"mesh" line. `format` and
+  // `hash`/`copy_ns`/`hash_ns` share the texture columns above (never both present on one line);
+  // everything below is new, trailing columns.
+  const MeshSurfaceCopy *mesh_payload = nullptr;
+  bool has_surface = false;
+  std::int32_t surface = 0;
+  std::string buffer;    // "vertex" | "attribute" | "skin" | "index"
+  bool has_offset = false;
+  std::int32_t offset = 0;
+  bool has_bytes = false;
+  std::int64_t bytes = 0;
+  std::string outcome;   // "applied" | "rejected" | "unknown"
 };
 
 void ResourceLog::emit(const Line &l) {
@@ -111,10 +124,13 @@ void ResourceLog::emit(const Line &l) {
   key("reason");
   str_or_null(l.reason);
   const PayloadCopy *p = l.payload;
+  const MeshSurfaceCopy *mp = l.mesh_payload;
   key("format");
   const char *format = p != nullptr ? image_format_name(p->format) : nullptr;
   if (format != nullptr) {
     append_string(&o, format);
+  } else if (mp != nullptr) {
+    o += std::to_string(mp->format);
   } else {
     o += "null";
   }
@@ -133,11 +149,19 @@ void ResourceLog::emit(const Line &l) {
   key("payload_bytes");
   i64_or_null(p != nullptr, p != nullptr ? p->payload_bytes : 0);
   key("hash");
-  str_or_null(p != nullptr ? p->hash : std::string());
+  str_or_null(p != nullptr ? p->hash : (mp != nullptr ? mp->hash : std::string()));
   key("copy_ns");
-  i64_or_null(p != nullptr && p->copy_ns >= 0, p != nullptr ? p->copy_ns : 0);
+  if (p != nullptr) {
+    i64_or_null(p->copy_ns >= 0, p->copy_ns);
+  } else {
+    i64_or_null(mp != nullptr && mp->copy_ns >= 0, mp != nullptr ? mp->copy_ns : 0);
+  }
   key("hash_ns");
-  i64_or_null(p != nullptr && p->hash_ns >= 0, p != nullptr ? p->hash_ns : 0);
+  if (p != nullptr) {
+    i64_or_null(p->hash_ns >= 0, p->hash_ns);
+  } else {
+    i64_or_null(mp != nullptr && mp->hash_ns >= 0, mp != nullptr ? mp->hash_ns : 0);
+  }
   key("conn");
   u64_or_null(l.conn);
   key("http_status");
@@ -160,6 +184,24 @@ void ResourceLog::emit(const Line &l) {
   } else {
     o += "null";
   }
+  // G5a (gate5-design.md Q3d): mesh-only trailing columns, null on every other line.
+  key("surface");
+  i64_or_null(l.has_surface, l.surface);
+  key("buffer");
+  str_or_null(l.buffer);
+  key("offset");
+  i64_or_null(l.has_offset, l.offset);
+  key("bytes");
+  i64_or_null(l.has_bytes, l.bytes);
+  key("primitive");
+  const char *primitive = mp != nullptr ? mesh_primitive_name(mp->primitive) : nullptr;
+  str_or_null(primitive != nullptr ? std::string(primitive) : std::string());
+  key("vertex_count");
+  i64_or_null(mp != nullptr && mp->vertex_count >= 0, mp != nullptr ? mp->vertex_count : 0);
+  key("index_count");
+  i64_or_null(mp != nullptr && mp->index_count >= 0, mp != nullptr ? mp->index_count : 0);
+  key("outcome");
+  str_or_null(l.outcome);
   // G2b2: present only on a sabotage's own lines (spurious-texture-update's version bump; an
   // op the omit-op sabotage left out of the registry, `omitted`).
   if (l.sabotage) {
@@ -183,6 +225,8 @@ void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid) {
   root_viewport_ = root_viewport_rid;
   next_id_ = 1;
   by_rid_.clear();
+  next_mesh_id_ = 1;
+  mesh_by_rid_.clear();
   pending_.clear();
   update_unknown_ = 0;
 }
@@ -406,17 +450,39 @@ void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitte
     return;
   }
   Entry *entry = find(rid);
-  if (entry == nullptr) {
+  if (entry != nullptr) {
+    Line line = base_line(ctx, "free");
+    line.id = entry->id;
+    line.rid = rid;
+    line.version = entry->version;
+    line.kind = entry->kind;
+    if (omitted) {
+      line.status = entry->status;
+      line.reason = entry->reason;
+      line.sabotage = true;
+      line.omitted = true;
+      emit(line);
+      return;
+    }
+    line.status = "freed";
+    emit(line);
+    by_rid_.erase(rid);
+    return;
+  }
+  // G5a: a mesh RID the log knows (every other free -- items, canvases, ... -- changes nothing
+  // here, as before).
+  MeshEntry *mesh = find_mesh(rid);
+  if (mesh == nullptr) {
     return;
   }
   Line line = base_line(ctx, "free");
-  line.id = entry->id;
   line.rid = rid;
-  line.version = entry->version;
-  line.kind = entry->kind;
+  line.kind = "mesh";
+  line.id = mesh->id;
+  line.version = mesh->version;
   if (omitted) {
-    line.status = entry->status;
-    line.reason = entry->reason;
+    line.status = mesh->status;
+    line.reason = mesh->reason;
     line.sabotage = true;
     line.omitted = true;
     emit(line);
@@ -424,7 +490,7 @@ void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitte
   }
   line.status = "freed";
   emit(line);
-  by_rid_.erase(rid);
+  mesh_by_rid_.erase(rid);
 }
 
 void ResourceLog::spurious_update(const TapContext &ctx, std::uint64_t rid) {
@@ -741,10 +807,307 @@ void ResourceLog::viewport_set_default_texture_repeat(const TapContext &ctx,
   emit(line);
 }
 
+// --- meshes (gate5-design.md Q3d, G5a) --------------------------------------
+
+ResourceLog::MeshEntry *ResourceLog::find_mesh(std::uint64_t rid) {
+  auto it = mesh_by_rid_.find(rid);
+  return it == mesh_by_rid_.end() ? nullptr : &it->second;
+}
+
+void ResourceLog::recompute_mesh_status(MeshEntry *entry) {
+  for (const MeshSurfaceCopy &s : entry->surfaces) {
+    if (s.status != "ok") {
+      entry->status = "unsupported";
+      entry->reason = s.reason;
+      return;
+    }
+  }
+  entry->status = "ok";
+  entry->reason.clear();
+}
+
+namespace {
+
+ResourceLog::Line mesh_line(const TapContext &ctx, const char *op, std::uint64_t rid) {
+  ResourceLog::Line line = base_line(ctx, op);
+  line.rid = rid;
+  line.kind = "mesh";
+  return line;
+}
+
+}  // namespace
+
+void ResourceLog::mesh_create(const TapContext &ctx, std::uint64_t rid, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = mesh_line(ctx, "mesh_create", rid);
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  MeshEntry entry;
+  entry.id = next_mesh_id_++;
+  entry.version = 1;
+  entry.status = "ok";
+  mesh_by_rid_[rid] = entry;
+  Line line = mesh_line(ctx, "mesh_create", rid);
+  line.id = entry.id;
+  line.version = entry.version;
+  line.status = entry.status;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::mesh_create_from_surfaces(const TapContext &ctx, std::uint64_t rid,
+                                            const std::vector<MeshSurfaceCopy> &surfaces,
+                                            bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  if (omitted) {
+    Line line = mesh_line(ctx, "mesh_create_from_surfaces", rid);
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  MeshEntry entry;
+  entry.id = next_mesh_id_++;
+  entry.version = 1;
+  entry.surfaces = surfaces;
+  recompute_mesh_status(&entry);
+  mesh_by_rid_[rid] = entry;
+  Line line = mesh_line(ctx, "mesh_create_from_surfaces", rid);
+  line.id = entry.id;
+  line.version = entry.version;
+  line.status = entry.status;
+  line.reason = entry.reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::mesh_add_surface(const TapContext &ctx, std::uint64_t rid,
+                                   const MeshSurfaceCopy &surface, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = mesh_line(ctx, "mesh_add_surface", rid);
+  line.mesh_payload = &surface;
+  MeshEntry *entry = find_mesh(rid);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    line.outcome = "unknown";
+    emit(line);
+    return;
+  }
+  line.has_surface = true;
+  line.surface = static_cast<std::int32_t>(entry->surfaces.size());
+  entry->surfaces.push_back(surface);
+  entry->version += 1;
+  recompute_mesh_status(entry);
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::mesh_surface_update_region(const TapContext &ctx, std::uint64_t rid,
+                                             const char *buffer, std::int32_t surface,
+                                             std::int32_t offset, std::int64_t bytes,
+                                             const char *outcome,
+                                             const MeshSurfaceCopy *new_surface, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  const std::string op = std::string("mesh_surface_update_") + buffer + "_region";
+  Line line = mesh_line(ctx, op.c_str(), rid);
+  line.buffer = buffer;
+  line.has_surface = true;
+  line.surface = surface;
+  line.has_offset = true;
+  line.offset = offset;
+  line.has_bytes = true;
+  line.bytes = bytes;
+  line.outcome = outcome;
+  line.mesh_payload = new_surface;
+  MeshEntry *entry = find_mesh(rid);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    emit(line);
+    return;
+  }
+  line.id = entry->id;
+  if (std::string(outcome) == "applied") {
+    // An update on an already-unsupported surface still bumps the version with no hash change
+    // (gate5-design.md Q3b: "on an unsupported entry: version + 1 only"); `new_surface` is then
+    // null (the caller never re-hashes a surface it never decoded).
+    entry->version += 1;
+    if (new_surface != nullptr && surface >= 0 &&
+        static_cast<std::size_t>(surface) < entry->surfaces.size()) {
+      entry->surfaces[static_cast<std::size_t>(surface)] = *new_surface;
+    }
+    recompute_mesh_status(entry);
+  }
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  emit(line);
+}
+
+void ResourceLog::mesh_surface_remove(const TapContext &ctx, std::uint64_t rid,
+                                      std::int32_t surface, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = mesh_line(ctx, "mesh_surface_remove", rid);
+  line.has_surface = true;
+  line.surface = surface;
+  MeshEntry *entry = find_mesh(rid);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr || surface < 0 ||
+      static_cast<std::size_t>(surface) >= entry->surfaces.size()) {
+    line.outcome = "unknown";
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  entry->surfaces.erase(entry->surfaces.begin() + surface);
+  entry->version += 1;
+  recompute_mesh_status(entry);
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::mesh_clear(const TapContext &ctx, std::uint64_t rid, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = mesh_line(ctx, "mesh_clear", rid);
+  MeshEntry *entry = find_mesh(rid);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    line.outcome = "unknown";
+    emit(line);
+    return;
+  }
+  entry->surfaces.clear();
+  entry->status = "ok";
+  entry->reason.clear();
+  entry->version += 1;
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.outcome = "applied";
+  emit(line);
+}
+
+void ResourceLog::mesh_set_custom_aabb(const TapContext &ctx, std::uint64_t rid, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = mesh_line(ctx, "mesh_set_custom_aabb", rid);
+  MeshEntry *entry = find_mesh(rid);
+  if (omitted) {
+    line.sabotage = true;
+    line.omitted = true;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    emit(line);
+    return;
+  }
+  if (entry == nullptr) {
+    line.outcome = "unknown";
+    emit(line);
+    return;
+  }
+  entry->version += 1;
+  line.id = entry->id;
+  line.version = entry->version;
+  line.status = entry->status;
+  line.reason = entry->reason;
+  line.outcome = "applied";
+  emit(line);
+}
+
 std::uint64_t ResourceLog::texture_id(std::uint64_t rid) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = by_rid_.find(rid);
   return it == by_rid_.end() ? 0 : it->second.id;
+}
+
+std::uint64_t ResourceLog::mesh_id(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = mesh_by_rid_.find(rid);
+  return it == mesh_by_rid_.end() ? 0 : it->second.id;
 }
 
 std::string ResourceLog::take_lines() {

@@ -33,7 +33,7 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "6"
+CALIBRATOR_VERSION = "7"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
@@ -121,6 +121,18 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("canvas_item_add_lcd_texture_rect_region", ("canvas_item_add_lcd_texture_rect_region",)),
     # calibrator 6: clip_ignore refused, typed (gate3-design.md D4, Q2)
     ("canvas_item_add_clip_ignore", ("canvas_item_add_clip_ignore",)),
+    # calibrator 7: gate5-design.md Q2, D2 -- the two silent holes (draw_multiline /
+    # draw_dashed_line's canvas_item_add_multiline, and a loaded ArrayMesh's
+    # mesh_create_from_surfaces), typed refusals (particles, animation slice, skeleton
+    # attach), and the remaining mesh region/removal hooks.
+    ("canvas_item_add_multiline", ("canvas_item_add_multiline",)),
+    ("canvas_item_add_particles", ("canvas_item_add_particles",)),
+    ("canvas_item_add_animation_slice", ("canvas_item_add_animation_slice",)),
+    ("canvas_item_attach_skeleton", ("canvas_item_attach_skeleton",)),
+    ("mesh_create_from_surfaces", ("mesh_create_from_surfaces",)),
+    ("mesh_surface_update_skin_region", ("mesh_surface_update_skin_region",)),
+    ("mesh_surface_update_index_region", ("mesh_surface_update_index_region",)),
+    ("mesh_surface_remove", ("mesh_surface_remove",)),
 )
 
 ET_EXEC = 2

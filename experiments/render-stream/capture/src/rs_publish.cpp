@@ -240,19 +240,23 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
   } else {
     features.resources = {"canvas_texture", "texture_2d", "texture_2d_placeholder"};
   }
-  features.observed_unsupported_ops = {"canvas_item_add_circle",
+  features.observed_unsupported_ops = {"canvas_item_add_animation_slice",
+                                       "canvas_item_add_circle",
                                        "canvas_item_add_clip_ignore",
                                        "canvas_item_add_lcd_texture_rect_region",
                                        "canvas_item_add_line",
                                        "canvas_item_add_mesh",
                                        "canvas_item_add_msdf_texture_rect_region",
+                                       "canvas_item_add_multiline",
                                        "canvas_item_add_multimesh",
                                        "canvas_item_add_nine_patch",
+                                       "canvas_item_add_particles",
                                        "canvas_item_add_polygon",
                                        "canvas_item_add_polyline",
                                        "canvas_item_add_primitive",
                                        "canvas_item_add_set_transform",
                                        "canvas_item_add_triangle_array",
+                                       "canvas_item_attach_skeleton",
                                        "canvas_item_set_material"};
   if (version == ProtocolVersion::V3) {
     // render-stream-3.md "Features": a supported op now, no longer a refused one.

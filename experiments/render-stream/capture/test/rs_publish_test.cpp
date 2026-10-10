@@ -629,7 +629,29 @@ void test_gate2_features() {
   const std::vector<std::string> expected_resources = {"canvas_texture", "texture_2d",
                                                         "texture_2d_placeholder"};
   check(f.resources == expected_resources, "gate2_features().resources");
-  check(f.observed_unsupported_ops == golden::kFeatureObservedUnsupported,
+  // golden::kFeatureObservedUnsupported stays golden-2's frozen pre-G5a list (its bytes are
+  // committed); gate5-design.md D2's calibrator 7 adds four more typed refusals to the live
+  // production list, checked against its own up-to-date literal, as `resources` above.
+  const std::vector<std::string> expected_observed_unsupported = {
+      "canvas_item_add_animation_slice",
+      "canvas_item_add_circle",
+      "canvas_item_add_clip_ignore",
+      "canvas_item_add_lcd_texture_rect_region",
+      "canvas_item_add_line",
+      "canvas_item_add_mesh",
+      "canvas_item_add_msdf_texture_rect_region",
+      "canvas_item_add_multiline",
+      "canvas_item_add_multimesh",
+      "canvas_item_add_nine_patch",
+      "canvas_item_add_particles",
+      "canvas_item_add_polygon",
+      "canvas_item_add_polyline",
+      "canvas_item_add_primitive",
+      "canvas_item_add_set_transform",
+      "canvas_item_add_triangle_array",
+      "canvas_item_attach_skeleton",
+      "canvas_item_set_material"};
+  check(f.observed_unsupported_ops == expected_observed_unsupported,
         "gate2_features().observed_unsupported_ops");
   check(f.unobserved == golden::kFeatureUnobserved, "gate2_features().unobserved");
   check(f.publication == "snapshot-or-patch", "gate2_features().publication");

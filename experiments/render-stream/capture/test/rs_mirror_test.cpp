@@ -117,6 +117,17 @@ bool has_material_entry(const Snapshot &s, uint32_t id) {
   return false;
 }
 
+// gate5-design.md D2, calibrator 7: canvas_item_attach_skeleton with a non-null skeleton, the
+// same unsupported-state idea as a non-null material, under its own op name.
+bool has_skeleton_entry(const Snapshot &s, uint32_t id) {
+  for (const auto &u : s.unsupported) {
+    if (u.has_item && u.item == id && u.reason == UnsupportedReason::UnsupportedState &&
+        u.op == "canvas_item_attach_skeleton")
+      return true;
+  }
+  return false;
+}
+
 void test_fresh_session() {
   Mirror m;
   bind_root(&m);
@@ -1657,6 +1668,38 @@ void test_perturb_glyph() {
   check(item(m.snapshot(1, 9).state, 1)->commands[0].rect == rect, "reset() turns it off");
 }
 
+// gate5-design.md D2, D16, calibrator 7: canvas_item_attach_skeleton with a non-null skeleton is
+// reported in Snapshot::unsupported only, exactly like a non-null material (set_material), under
+// its own op name, and never bumps content_version. attach_skeleton(RID()) (the spike's and
+// Polygon2D's per-draw call) is free: it clears the flag again when already clear.
+void test_attach_skeleton_tap() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_rect(100, kRect, kGreen, false, 1);
+  m.attach_skeleton(100, 0, 1);  // RID(): free, no state change
+  Snapshot s = m.snapshot(1, 1).state;
+  check(!has_skeleton_entry(s, 1), "a null skeleton gives no unsupported-state entry");
+  check(item(s, 1)->content_version == 1, "attach_skeleton never bumps content_version");
+
+  m.attach_skeleton(100, 0x55, 2);
+  s = m.snapshot(2, 2).state;
+  check(has_skeleton_entry(s, 1), "a non-null skeleton gives an unsupported-state entry");
+  check(item(s, 1)->content_version == 1, "still no content_version bump");
+  check(s.unsupported.size() == 1 && s.unsupported[0].op == "canvas_item_attach_skeleton" &&
+            s.unsupported[0].reason == UnsupportedReason::UnsupportedState,
+        "one item-level entry, reason unsupported-state");
+
+  m.attach_skeleton(100, 0, 3);
+  s = m.snapshot(3, 3).state;
+  check(!has_skeleton_entry(s, 1), "a null skeleton clears the unsupported-state entry");
+
+  // An unknown item is the same pre-existing-object failure every other tap gives.
+  m.attach_skeleton(999, 0x55, 3);
+  check(m.snapshot(3, 3).state.failures.size() == 1, "an unknown item fails like any other tap");
+}
+
 int main() {
   test_fresh_session();
   test_ids_and_recycled_rid();
@@ -1704,6 +1747,7 @@ int main() {
   test_msdf_unknown_texture();
   test_msdf_omit_op();
   test_perturb_glyph();
+  test_attach_skeleton_tap();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

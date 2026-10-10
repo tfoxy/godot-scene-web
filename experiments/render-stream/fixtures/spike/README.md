@@ -128,8 +128,21 @@ template, for both the headless legs and the rendered gamescope legs.
 - Calibrator-6 hook, added for gate 3 G3d (`gate3-design.md` Q2): another raw canvas item with no
   parent canvas gets `add_clip_ignore(true)`, a rect, then `add_clip_ignore(false)`
   (`canvas_item_add_clip_ignore`). As with the LCD rect above, the item never draws, so the pixels
-  do not change. Gate −1 then plans 56 hooks with every optional counter positive, and
-  `armed.png == unarmed.png`.
+  do not change.
+
+- Calibrator-7 hooks, added for gate 5 G5a (`gate5-design.md` Q2), closing two previously-silent
+  holes and exercising the new typed refusals and mesh hooks: `_draw()` gains a `draw_dashed_line`
+  (dash shorter than its length, so it goes through `canvas_item_add_multiline`, never
+  `canvas_item_add_line`; alpha 0) and, after every other command, a `draw_animation_slice`
+  (`canvas_item_add_animation_slice`'s time-dependent "skipping" state must never reach another
+  command, `drivers/gles3/rasterizer_canvas_gles3.cpp:1276-1282`). A raw canvas item with no
+  parent canvas gets `particles_create()` particles (`canvas_item_add_particles`) and a null
+  skeleton attach (`canvas_item_attach_skeleton`); a loaded-mesh path is exercised directly
+  (`mesh_create_from_surfaces`, the only place a loaded `ArrayMesh`'s surfaces are seen,
+  `rsd.h:332-356`); a mesh with bones, weights and an index buffer gets a skin-region and an
+  index-region update (`mesh_surface_update_skin_region`, `_index_region`) and its only surface
+  removed (`mesh_surface_remove`). None of this draws, so the pixels do not change. Gate −1 then
+  plans 64 hooks with every optional counter positive, and `armed.png == unarmed.png`.
 
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See

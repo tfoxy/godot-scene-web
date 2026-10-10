@@ -38,6 +38,23 @@
 // requested, `http_status`, `payload_bytes` the body size, `conn` the live
 // connection streaming at that time or null, `t_us` the I/O thread's time). A
 // drop-resource pin line carries "sabotage":true.
+//
+// G5a (gate5-design.md Q3d) adds mesh lines, `kind: "mesh"`: one per mesh-related
+// RenderingServer call (mesh_create, mesh_create_from_surfaces, mesh_add_surface, the four region
+// updates, mesh_surface_remove, mesh_clear, mesh_set_custom_aabb, free). There is no mesh mirror
+// table yet (that is G5e), so this module keeps its own minimal mesh registry too -- RID -> wire
+// id, version, status, reason and, per surface, the current whole-buffer bytes needed to re-hash
+// after a region update -- with its own per-session id counter (from 1, never reused, independent
+// of the texture counter: D5). `hash` is the GRM1 payload's SHA-256 (rs_mesh_payload.h) and
+// `format` is the raw ArrayFormat bitfield on a mesh line (never the texture format name, which
+// stays a quoted string); both share the same column with the texture fields since a line is
+// never both kinds. Trailing keys, present (null unless relevant) on every line: `surface` (index),
+// `buffer` ("vertex" | "attribute" | "skin" | "index", a region update only), `offset`, `bytes`
+// (the region update's own offset/length), `primitive`, `vertex_count`, `index_count` and
+// `outcome` ("applied" | "rejected" | "unknown": a region update out of bounds is "rejected", one
+// naming an unknown mesh or surface is "unknown", everything else that reaches the registry is
+// "applied"). omit-op on a mesh call writes its line with "sabotage":true,"omitted":true and
+// leaves the registry untouched, as the texture taps do.
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
@@ -74,6 +91,22 @@ struct TapContext {
   bool main_thread = true;
 };
 
+// What the hook read and copied from one surface of a mesh_add_surface /
+// mesh_create_from_surfaces call, or produced by re-hashing a surface after a region update
+// (gate5-design.md D6, D7, Q4). `format` is the raw ArrayFormat bitfield (rs_mesh_payload.h).
+struct MeshSurfaceCopy {
+  std::string status = "unsupported";  // "ok" | "unsupported"
+  std::string reason;                  // "" when ok; mesh-format, mesh-blend-shapes,
+                                       // payload-too-large
+  std::int32_t primitive = -1;
+  std::uint64_t format = 0;
+  std::int64_t vertex_count = -1;
+  std::int64_t index_count = -1;
+  std::string hash;      // lowercase hex SHA-256 of the GRM1 payload, empty unless ok
+  std::int64_t copy_ns = -1;  // -1 when nothing was copied
+  std::int64_t hash_ns = -1;
+};
+
 class ResourceLog {
  public:
   // Starts a fresh session: ids restart at 1, the registry empties, buffered
@@ -94,7 +127,7 @@ class ResourceLog {
                                      bool omitted = false);
   void texture_replace(const TapContext &ctx, std::uint64_t texture, std::uint64_t by_texture,
                        bool omitted = false);
-  // Logs only RIDs it knows as textures (every other free is not a texture op).
+  // Logs only RIDs it knows as a texture or a mesh (every other free changes nothing here).
   void free_rid(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
   // spurious-texture-update sabotage (G2b2): `rid`'s version + 1 with the same
   // payload, logged as a texture_2d_update marked "sabotage":true.
@@ -132,8 +165,44 @@ class ResourceLog {
   void viewport_set_default_texture_repeat(const TapContext &ctx, std::uint64_t viewport,
                                            std::int32_t repeat);
 
+  // --- meshes (gate5-design.md Q3d, G5a) -------------------------------------
+  //
+  // mesh_create: a new id, status ok, version 1, no surfaces.
+  void mesh_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
+  // mesh_create_from_surfaces: a new id, version 1, every surface classified (D7) and copied when
+  // ok; one refused surface makes the whole entry unsupported with its reason (the first one
+  // found), but every surface's bytes are still kept so later region updates still line up.
+  void mesh_create_from_surfaces(const TapContext &ctx, std::uint64_t rid,
+                                 const std::vector<MeshSurfaceCopy> &surfaces,
+                                 bool omitted = false);
+  // mesh_add_surface: appended at the next index, version + 1; a refused surface makes the entry
+  // unsupported (the surface is still kept, so later indices still line up).
+  void mesh_add_surface(const TapContext &ctx, std::uint64_t rid, const MeshSurfaceCopy &surface,
+                        bool omitted = false);
+  // mesh_surface_update_vertex_region / _attribute_region / _skin_region / _index_region:
+  // `buffer` is "vertex" | "attribute" | "skin" | "index". `outcome` is "unknown" for an unknown
+  // mesh or an out-of-range surface index, "rejected" for an out-of-bounds or empty update
+  // (gles3m:536-594), else "applied" with the surface's new whole-payload `MeshSurfaceCopy`
+  // (version + 1). A rejected or unknown update changes nothing.
+  void mesh_surface_update_region(const TapContext &ctx, std::uint64_t rid, const char *buffer,
+                                  std::int32_t surface, std::int32_t offset, std::int64_t bytes,
+                                  const char *outcome, const MeshSurfaceCopy *new_surface,
+                                  bool omitted = false);
+  // mesh_surface_remove: in range, the surface is removed and later ones renumbered, version + 1;
+  // out of range or an unknown mesh is "unknown" and changes nothing.
+  void mesh_surface_remove(const TapContext &ctx, std::uint64_t rid, std::int32_t surface,
+                           bool omitted = false);
+  // mesh_clear: no surfaces, version + 1; an unsupported entry becomes ok again (its refused
+  // surfaces are gone too).
+  void mesh_clear(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
+  // mesh_set_custom_aabb: version + 1 (the AABB itself is not logged here: it is a mirror field,
+  // gate5-design.md Q3b).
+  void mesh_set_custom_aabb(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
+
   // The wire id of a texture RID the log knows, or 0.
   std::uint64_t texture_id(std::uint64_t rid) const;
+  // The wire id of a mesh RID the log knows, or 0.
+  std::uint64_t mesh_id(std::uint64_t rid) const;
 
   // Takes every line buffered since the last call ("" when none), each ending
   // in '\n'.
@@ -164,12 +233,29 @@ class ResourceLog {
   void null_canvas_texture(Line *line);
   Entry *find(std::uint64_t rid);
 
+  // G5a: one mesh's registry entry. `surfaces` holds every surface's current classification and
+  // descriptive fields (the caller -- hooks.cpp -- owns the retained whole-buffer bytes needed to
+  // re-hash after a region update, exactly as it owns an image's bytes for a texture update).
+  struct MeshEntry {
+    std::uint64_t id = 0;
+    std::uint64_t version = 1;
+    std::string status = "ok";
+    std::string reason;
+    std::vector<MeshSurfaceCopy> surfaces;
+  };
+  MeshEntry *find_mesh(std::uint64_t rid);
+  // Recomputes `status`/`reason` from the surfaces' own classification: unsupported (the first
+  // refused surface's reason) if any, else ok.
+  void recompute_mesh_status(MeshEntry *entry);
+
   mutable std::mutex mutex_;
   bool active_ = false;
   std::uint64_t t0_ns_ = 0;
   std::uint64_t root_viewport_ = 0;
   std::uint64_t next_id_ = 1;
   std::map<std::uint64_t, Entry> by_rid_;
+  std::uint64_t next_mesh_id_ = 1;
+  std::map<std::uint64_t, MeshEntry> mesh_by_rid_;
   std::string pending_;
   std::uint64_t update_unknown_ = 0;
 };
