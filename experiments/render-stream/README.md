@@ -1,4 +1,4 @@
-# render-stream experiment — gates −1, 0, 1 and 2: capture seam, first stream, retained state, live delivery, textures
+# render-stream experiment — gates −1, 0, 1, 2, 3 and 4: capture seam, first stream, retained state, live delivery, textures, clipping, text
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
@@ -46,6 +46,19 @@ superseded.
 G2c2, G2d and G2e completed gate 2 (see "Gate 2 summary" below): payloads served live over HTTP
 by hash with pins and retirement, `CanvasTexture` filter and repeat (typed as unsupported on a
 headless host), and bearer-token authorization.
+
+G3a through G3d completed gate 3 (see "Gate 3 summary" below): nested axis-aligned and
+rotated/scaled Control clips both resolve to the engine's own scissor — the rounded bounding box
+of the item's transformed rect intersected with the nearest clipping ancestor's — with a mirror
+fix for `canvas_item_clear` and a receiver apply-order fix behind it, and
+`canvas_item_add_clip_ignore` hooked and typed `unsupported` until gate 5's own wire bump
+(render-stream/4).
+
+G4a through G4f completed gate 4 (see "Gate 4 summary" below): grayscale, layout, RichTextLabel,
+multilingual and MSDF text all reach the wire host-evaluated and host-rasterized, with atlas bytes
+byte-identical to the rendered reference and every glyph command float32-exact against an
+independent oracle; LCD text and `RichTextLabel`'s `canvas_item_add_set_transform` stay typed
+`unsupported`; MSDF text landed on the new `render-stream/3`, which every gate now runs on.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -396,6 +409,70 @@ rendered receivers (host-renderer evidence). Group g2e runs three live hosts wit
 (`render-stream-gate2-report/1`). Legs and criteria: [scripts/README.md](scripts/README.md) "Gate
 2". Self-tests: `scripts/test/self-test-gate2.ts`; `fixtures/gate2/make_expected.py --check`; the
 receiver's `tests/applier2_selftest.gd`.
+
+### Run gate 3
+
+```bash
+experiments/render-stream/scripts/build-capture.sh
+mise exec -- pnpm render-stream:gate3 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g3a,g3b,g3c,g3d]
+```
+
+About seven minutes for all four groups. It imports `fixtures/gate3/` and `receiver/` with the
+mise editor, runs the 400-frame headless capture (`enforce-min-size`, both sinks and the store),
+then the reference, its same-build repeat and the armed reference in one private gamescope (group
+g3a). Group g3b replays the capture through the unchanged receiver on both sinks, a headless
+traced receiver, four fresh sabotage captures (`freeze-frame`, `perturb-transform`, and two
+`omit-op` legs dropping `canvas_item_set_clip`/`canvas_item_set_custom_rect`) with their rendered
+receivers, the receiver-side `ignore-clip` and `clip-before-clear` sabotages, and the
+`root-size-observe` leg, in a second private gamescope. Group g3c imports `fixtures/gate3-xform/`
+and its own receiver, then runs a 52-frame capture, three references (reference, repeat, armed)
+and two receivers (full, patch), plus the `perturb-transform` and receiver `ignore-clip`
+sabotages, in a third private gamescope (`gamescope-xform/`). Group g3d captures the fixture's
+`clip-ignore` variant, renders its own reference, and replays it through the unchanged receiver,
+in a fourth private gamescope (`gamescope-g3d/`). The checker writes
+`artifacts/render-stream/gate3/<UTC>/result.json` (`render-stream-gate3-report/1`). Legs and
+criteria: [scripts/README.md](scripts/README.md) "Gate 3". Self-tests:
+`scripts/test/self-test-gate3.ts`; `fixtures/gate3/make_expected.py --check`;
+`fixtures/gate3-xform/make_expected.py --check`.
+
+### Run gate 4
+
+```bash
+experiments/render-stream/scripts/build-capture.sh
+mise exec -- pnpm render-stream:gate4 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g4a,g4b,g4c,g4d,g4e,g4f]
+```
+
+About fourteen minutes for all six groups. It provisions each fixture's fonts from
+`fonts.lock.json` before import and refuses on any mismatch. It imports `fixtures/gate4/` and
+`receiver/`, runs the headless capture and the reference oracle (plus the early shots after each
+upload step), in one private gamescope (group g4a). Group g4b needs g4a in the same `--legs`: it
+replays the shared capture through the unchanged receiver on both sinks, a headless `openat`
+trace, and three fresh sabotage captures (`freeze-frame`, `perturb-transform`, `omit-op` on
+`texture_2d_update`) with their rendered receivers, in a second private gamescope
+(`gamescope-g4b/`). Group g4c imports `fixtures/gate4-layout/` under `layout/` and runs its own
+14-Label capture, reference and early shots, two receivers, the `omit-atlas` sabotage and the
+`lcd` variant's reference and receiver, in a third private gamescope (`gamescope-g4c/`). Group
+g4d imports `fixtures/gate4-rich/` under `rich-*/` and runs its own `RichTextLabel` capture,
+reference, two receivers and the underline variant, in a fourth private gamescope
+(`gamescope-g4d/`). Group g4e (G4e2) needs g4a in the same `--legs` for its own
+`sabotage-gray-perturb-glyph` leg on `fixtures/gate4`; it imports `fixtures/gate4-msdf/` under
+`msdf/` and runs its own capture, reference and early shots, two receivers and three sabotage
+receivers (`perturb-glyph`, a receiver `drop-msdf`, and the grayscale sabotage), in a fifth
+private gamescope (`gamescope-g4e/`). Group g4f imports `fixtures/gate4-i18n/` under `i18n/`
+(four fallback fonts provisioned) and runs its own capture, reference and early shots, two
+receivers and the `omit-atlas` sabotage, in a sixth private gamescope (`gamescope-g4f/`). The
+checker writes `artifacts/render-stream/gate4/<UTC>/result.json`
+(`render-stream-gate4-report/1`); g4c, g4d, g4e and g4f each merge their own checks and legs into
+the same report. Legs and criteria: [scripts/README.md](scripts/README.md) "Gate 4". Self-tests:
+`scripts/test/self-test-gate4.ts`; `scripts/test/self-test-gate4d.ts`; `make_expected.py --check`
+for `fixtures/gate4`, `fixtures/gate4-layout`, `fixtures/gate4-rich`, `fixtures/gate4-i18n` and
+`fixtures/gate4-msdf`.
 
 ## Runtime contract
 
@@ -2203,6 +2280,71 @@ escaped second rect is the only disagreement, and the base scene's own clipping 
 - `clip_ignore` as a *supported* command: it stays a typed, in-place refusal (D4); the first wire
   bump after gate 3 (gate 5) is where that lands.
 
+## Gate 3 summary
+
+Gate 3 passes: `pnpm render-stream:gate3` with all groups g3a-g3d is **56/56** in
+`artifacts/render-stream/gate3/20261010T074659Z/`, on the same build as gate −1
+(`artifacts/render-stream/gate-minus1/20261010T072444Z/`), gate 0 19/19
+(`gate0/20261010T072550Z/`), gate 1 65/65 (`gate1/20261010T072751Z/`) and gate 2 85/85
+(`gate2/20261010T073607Z/`). Every leg is at its expected class. Images are under each leg's
+`shots/` in the run directory: `reference/shots/step-{0..9}.png`, `reference-repeat/shots/` and
+`reference-armed/shots/` (g3a); `receiver/shots/` and `receiver-patch/shots/` (g3b);
+`reference-xform/shots/step-{0..4}.png`, `receiver-xform/shots/` and `receiver-xform-patch/shots/`
+(g3c); `reference-clip-ignore/shots/step-{0..9}.png` and `receiver-clip-ignore/shots/` (g3d).
+
+What it proves, by increment:
+
+- **3a.** The engine's clip is a scissor: the rounded axis-aligned bounding box of the item's
+  transformed rect, intersected with the nearest clipping ancestor's own already-rounded clip, as
+  an integer scissor. The mirror's `canvas_item_clear` fix (D3) resets `clip` to `false` the way
+  the engine's `Item::clear()` does. The axis-aligned fixture's 1 314 probes (591 decisive pairs)
+  match exactly, `clip-derive.ts` reproduces every owner's scissor table by hand, and the budget
+  (reference against a same-build repeat) is 0.
+- **3b.** The receiver's apply order (D3): `clip` now applies after the content block, so a
+  redraw's post-clear shadow state only re-sends `canvas_item_set_clip` when the wire value
+  actually differs from it. Every sabotage — host-side (`freeze-frame`, `perturb-transform`,
+  `omit-op` on `clip`/`custom_rect`) and receiver-side (`ignore-clip`,
+  `clip-before-clear`) — mismatches at exactly its predicted steps, regions and probes, read
+  straight from `expected.json` rather than a hand-typed table.
+- **3c.** Rotated and scaled clip owners follow the same bounding-box model, not a rotated-rectangle
+  clip, edge-independent rounding, or a pixel-centre scissor: the reference refutes each of those
+  three alternatives at five of six semantic probes. The budget outside the non-axis-aligned band
+  is 0, and the band itself (191–240 px across the five steps) matches pixel-centre synthesis.
+- **3d.** Calibrator 6 hooks `canvas_item_add_clip_ignore` and types it `unsupported-op`, through
+  the same generic unsupported-command path every other optional draw op already uses — no new
+  mirror code. The receiver's only disagreement with the reference is the region `clip_ignore`
+  escapes; the base scene's own clipping Controls replay clean alongside it.
+
+Unsupported, each typed and never substituted: `canvas_item_add_clip_ignore`
+(`unsupported-op`, calibrator 6, G3d) — supporting it as a command waits for gate 5's own wire
+bump (`render-stream/4`, D4), since gate 5 must already bump for lines, polygons, meshes and
+nine-patch. `unobserved`, not even typed: `clip_children` / `canvas_group_mode` (the handoff's
+CanvasGroup/masks capability, D5, which needs item state /2 cannot validate) and
+`canvas_item_set_visibility_notifier` (D6, added at G3d: the scene API never combines a notifier
+with a clip, and notifier callbacks never fire on a headless host at all).
+
+Costs and budgets measured in this run:
+
+- **Budgets.** Axis-aligned: 0 px, reference byte-identical to its repeat across all 1 314 probes.
+  Rotated/scaled: 0 px outside the band; the band covering non-axis-aligned edges is 191–240 px
+  across the five steps, all on the rotated owner's edges, and the reference equals pixel-centre
+  synthesis there too.
+- **Probe coverage.** Every named boundary probe is exact in the reference and in both receivers
+  (g3b, g3c); `sabotage-receiver-ignore-clip` fails exactly its predicted 625 probes (every
+  decisive outside probe plus the 34 inside probes the unclipped scene exposes near `A`'s and
+  `B`'s edges).
+- **Census.** The hook log's `canvas_item_set_clip`, `canvas_item_set_custom_rect` and
+  `canvas_item_clear` counts equal an independent derivation with nothing dropped, at every step.
+
+What gate 3 does not prove: text clipping, including `Label.clip_text` (gate 4); clipping under
+`canvas_items` stretch or a receiver-side stretch (gates 6 and 7); scroll containers with themed
+scrollbars (gate 5's styleboxes, then gate 6); a browser receiver's clip, for which
+`clip-derive.ts` is the reference implementation and both gate 3 fixtures the conformance set
+(gate 7); a live leg exercising clip, and late-join adoption of clip state for Controls that exist
+before arming (both gate 8, D10); `top_level` escape, uncovered unless gate 6's combined scene
+uses it; and `VisibleOnScreenNotifier2D` never firing on a headless host, a host-behaviour finding
+left to gate 8 (D6).
+
 ## Gate 4a result (2026-10-09)
 
 G4a ([protocol/gate4-design.md](protocol/gate4-design.md) "G4a") passes:
@@ -2658,6 +2800,89 @@ path (701 px at step 1, max delta 51).
   or `msdf_size` 128, and the target game's own fonts (gate 8).
 - Live MSDF delivery beyond the shared /3 live path (gate 1's and gate 2's live legs pass on /3,
   but no live leg draws MSDF text).
+
+## Gate 4 summary
+
+Gate 4 passes: `pnpm render-stream:gate4` with all groups g4a-g4f is **185/185** in
+`artifacts/render-stream/gate4/20261010T075427Z/`, on the same build as gate −1
+(`artifacts/render-stream/gate-minus1/20261010T072444Z/`), gate 0 19/19
+(`gate0/20261010T072550Z/`), gate 1 65/65 (`gate1/20261010T072751Z/`), gate 2 85/85
+(`gate2/20261010T073607Z/`) and gate 3 56/56 with g3a–g3d (`gate3/20261010T074659Z/`). Every leg
+is at its expected class. Images are under each leg's `shots/` in the run directory:
+`reference/shots/step-{0..9}.png`, `reference-repeat/shots/` and `reference-armed/shots/` (g4a);
+`receiver/shots/` and `receiver-patch/shots/` (g4b); `layout/reference/shots/`,
+`layout/receiver{,-patch}/shots/` and `layout/lcd/{reference,receiver}/shots/` (g4c);
+`rich-reference/shots/step-{0..5}.png`, `rich-receiver{,-patch}/shots/` and
+`rich-underline/{reference,receiver}/shots/` (g4d); `msdf/reference/shots/step-{0..9}.png` and
+`msdf/receiver{,-patch}/shots/` (g4e); `i18n/reference/shots/` and `i18n/receiver{,-patch}/shots/`
+(g4f).
+
+What it proves, by increment:
+
+- **4a.** Grayscale text needs no new capture machinery: a glyph is `add_texture_rect_region`
+  naming an `ImageTexture` atlas page, already on render-stream/2. The headless host rasterizes
+  atlases byte-identical to the rendered reference's, hash for hash, at every step, and every
+  glyph command on the wire equals the reference's own TextServer oracle, float32-exact. The
+  budget (reference against a same-build repeat) is 0.
+- **4b.** The unchanged receiver — no fonts, no TextServer, never shapes — replays grayscale text:
+  synthesized ink (oracle quads × atlas alpha × colour, straight-alpha blended) against both the
+  reference and the receiver holds at max channel delta 1, the documented ceiling for UNORM8
+  blend rounding, and never above it.
+- **4c.** Layout: sizes, word and arbitrary wrap, alignment, `clip_text`, an outline and a shadow
+  pass, a draw-time subpixel-`auto` font and a cache whose hinting changes mid-run, all at max
+  channel delta 1 (21 386 px at delta 1, none higher). `canvas_item_add_lcd_texture_rect_region`
+  (the `lcd` variant) is `unsupported`, typed, on both the capture and the receiver.
+- **4d.** `RichTextLabel` spans (`[color]`, `[b]`, `[i]`, `[bgcolor]`, an outlined span) each
+  upload to their own wire id and sum to the oracle's per-span glyph counts exactly, and every
+  `[bgcolor]` span has its matching `add_rect`. `RichTextLabel` itself is never `leg-class`
+  `success`: its per-line box-drawing pass unconditionally emits `canvas_item_add_set_transform`,
+  typed `unsupported` since render-stream-0.md, independent of which spans it draws.
+- **4e.** `render-stream/3` carries MSDF text (`add_msdf_texture_rect_region`) as a supported
+  command; every gate now runs on it. Every msdf command matches the oracle's float32 quad and
+  source rect bit for bit, with `outline`, `px_range` and `scale` as the oracle computes them; the
+  one atlas page hashes to the oracle's dump at every step, and every new version writes only
+  empty texels. The MSDF budget, measured from a same-build reference repeat, is 0 in every
+  region, and both receivers equal the reference exactly.
+- **4f.** Multilingual shaping with fallback fonts (Vazirmatn, Noto Sans Devanagari UI, Noto Sans
+  Hebrew behind the pinned Open Sans): NFD composition, lam-alef ligation, an invisible ZWNJ
+  glyph, Hebrew marks over their base, Devanagari conjuncts and a missing-glyph hex box all hold
+  on the oracle and on both sinks, float32-exact, and each fallback's own atlas page is created
+  once, in its own step.
+
+Unsupported, each typed and never substituted: LCD subpixel text
+(`canvas_item_add_lcd_texture_rect_region`, `unsupported-op`) on both capture and receiver —
+its pixels depend on the host's `lcd_subpixel_layout` matching the viewer's physical panel, and
+gate 7's receiver manifests decide whether it is ever supported (Deferred); `RichTextLabel` as a
+whole, which classifies `unsupported` because of `canvas_item_add_set_transform` regardless of
+which spans it draws; and underline/strikethrough (`add_line`) and `clip_ignore` for
+`RichTextLabel`/`Tree`/`ItemList` focus outlines, both deferred to gate 5's own wire bump
+(`render-stream/4`).
+
+Costs measured in this run:
+
+- **Atlas uploads.** A whole 256² LA8 grayscale page is 131 072 data bytes / 131 185 payload
+  bytes. G4c's 320 px Label publishes two 1024² LA8 pages (4 MiB) in one frame. G4e's 512² RGBA8
+  MSDF page is 1 048 692 payload bytes at create, and every later version writes only empty
+  texels.
+- **Copy and hash at the hook.** Grayscale and layout pages: 10–100 µs to copy, about 0.4 ms to
+  hash. MSDF, per 1 MiB page: copy 0.55–0.62 ms, hash 3.0–3.4 ms (a double upload in one frame, 6.0
+  ms of hashing).
+- **Synthesized-ink budgets.** Grayscale, layout and multilingual text all hold at max channel
+  delta 1 against D8's straight-alpha oracle synthesis (21 386 px at delta 1 in G4c, 6 312 in
+  G4f), none at delta 2 or higher. MSDF's budget, measured the same way, is 0 in every region.
+
+What gate 4 does not prove: MSDF pixels against an independent synthesis — the shader's `fwidth`
+coverage is not modelled, so the claim is atlas parity, bit-exact commands, a zero repeat budget
+and receiver equality on one GPU and driver, not a from-scratch render (G4e2); browser receivers'
+text, including LA8 upload on WebGL and the MSDF shader (gate 7); text under `canvas_items`
+stretch, where viewport oversampling follows the stretch scale (gate 6); several MSDF pages,
+`msdf_size` 128, and the target game's own fonts (gate 8); live MSDF delivery beyond the shared /3
+live path gates 1 and 2 already exercise; colour/emoji fonts, bitmap (`.fnt`) and `fixed_size`
+fonts, left to gate 8's census of the target game; `TextEdit`/`LineEdit` carets, selection and IME
+(gate 6); late-join adoption of atlases that exist before arming (gate 8); `RichTextLabel`
+effects, tables, images and scrolling (gate 6's combined scene, if it uses them); atlas deltas and
+hash-at-publish for versions superseded within a frame (gate 6, D9); and `clip_ignore`, underline
+and strikethrough as supported commands (gate 5's own wire bump).
 
 ## Scratch verification (2026-10-08)
 
