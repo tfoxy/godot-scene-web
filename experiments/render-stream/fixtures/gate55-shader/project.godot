@@ -1,0 +1,50 @@
+; Gate 5.5 ShaderMaterial fixture for the render-stream capture experiment (G55c). Ten steps (0..9)
+; over synthetic canvas_item ShaderMaterials: live parameters, an instance parameter on a shared
+; material, a code change through an include, a parameter erased, a material recreated, a texture
+; parameter over a shader default texture, bool/int/array parameters, a parameter written every
+; frame and a shader replaced and freed. Variant `refused` adds TIME, screen-texture, SDF,
+; global-uniform and spatial shaders. See fixtures/gate55-shader/README.md and
+; ../../protocol/gate5_5-design.md ("Q6c", "Q6e") for the contract.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-gate55-shader-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://gate55_shader.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as gates 0-5: each warning leveled individually, 2 == ERROR.
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)
+
+[shader_globals]
+
+g_tint={
+"type": "vec4",
+"value": Vector4(0.6, 0.2, 0.4, 1)
+}

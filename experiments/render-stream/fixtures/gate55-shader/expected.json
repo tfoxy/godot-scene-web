@@ -1,0 +1,1355 @@
+{
+  "schema": "render-stream-gate55-expected/1",
+  "fixture": "gate55-shader",
+  "viewport": [640,360],
+  "clear_rgba8": [51,51,102,255],
+  "start_frame_default": 1,
+  "step_frames_default": 10,
+  "settle_offset": 7,
+  "quit_frame_default": 102,
+  "capture_quit_frame": 400,
+  "last_step": 9,
+  "creation_order": ["TI","PA","I1","I2","TY","PH","RM","SH","Marker"],
+  "regions": {
+    "TI": [16,16,104,96],
+    "PA": [104,16,192,96],
+    "IN": [192,16,328,96],
+    "TY": [328,16,416,96],
+    "PH": [416,16,504,96],
+    "RM": [16,112,104,192],
+    "SH": [104,112,192,192],
+    "Marker": [584,8,632,56]
+  },
+  "marker_rect": [592,16,32,32],
+  "exact_edge_px": 0.0625,
+  "textures": {
+    "TEX16": {
+      "width": 16,
+      "height": 16,
+      "rgba8_hex": "ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff33cc66ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffff6633ffffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ffffff33ff"
+    },
+    "TEX16B": {
+      "width": 16,
+      "height": 16,
+      "rgba8_hex": "3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccff3399ccffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ffcc3333ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff99ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff006666ff"
+    }
+  },
+  "engine_textures": [
+    {
+      "frame": 1,
+      "op": "texture_2d_create",
+      "format": "RGBA8",
+      "width": 800,
+      "height": 6
+    }
+  ],
+  "shader_order": ["pal","tint","inst","types","phase","sh_a","sh_b"],
+  "material_order": ["MT","MP","MI","MY","MPh","MR","MS","MR2"],
+  "declared_params": {
+    "MT": ["gain","tint"],
+    "MP": ["mul","pal"],
+    "MI": [],
+    "MY": ["f","iv","k","lv","on","v2","v3"],
+    "MPh": ["phase"],
+    "MR": ["gain","tint"],
+    "MS": [],
+    "MR2": ["gain","tint"],
+    "M_time": [],
+    "M_screen": [],
+    "M_sdf": [],
+    "M_global": [],
+    "M_spatial": []
+  },
+  "instance_params": {
+    "I1": ["inst_color"],
+    "I2": ["inst_color"]
+  },
+  "shader_files": {
+    "tint": "shaders/tint.gdshader",
+    "pal": "shaders/pal.gdshader",
+    "inst": "shaders/inst.gdshader",
+    "types": "shaders/types.gdshader",
+    "phase": "shaders/phase.gdshader",
+    "sh_a": "shaders/sh_a.gdshader",
+    "sh_b": "shaders/sh_b.gdshader",
+    "time": "shaders/refused/time.gdshader",
+    "screen": "shaders/refused/screen.gdshader",
+    "sdf": "shaders/refused/sdf.gdshader",
+    "global": "shaders/refused/global.gdshader",
+    "spatial": "shaders/refused/spatial.gdshader"
+  },
+  "shader_codes": {
+    "tint": {
+      "code_bytes": 247,
+      "payload_bytes": 298,
+      "include_markers": true,
+      "sha256": "aeeaa26c02314a906526951ceb5608dc0a12920255c73f4dfb059020b9c495cf"
+    },
+    "pal": {
+      "code_bytes": 150,
+      "payload_bytes": 201,
+      "include_markers": false,
+      "sha256": "dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"
+    },
+    "inst": {
+      "code_bytes": 129,
+      "payload_bytes": 180,
+      "include_markers": false,
+      "sha256": "12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"
+    },
+    "types": {
+      "code_bytes": 252,
+      "payload_bytes": 303,
+      "include_markers": false,
+      "sha256": "455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"
+    },
+    "phase": {
+      "code_bytes": 147,
+      "payload_bytes": 198,
+      "include_markers": false,
+      "sha256": "f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"
+    },
+    "sh_a": {
+      "code_bytes": 81,
+      "payload_bytes": 131,
+      "include_markers": false,
+      "sha256": "3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"
+    },
+    "sh_b": {
+      "code_bytes": 81,
+      "payload_bytes": 131,
+      "include_markers": false,
+      "sha256": "05060ce27e0b035a670f4d3531581deecfa21240235819f8d460aa9a2906b490"
+    },
+    "time": {
+      "code_bytes": 105,
+      "payload_bytes": 156,
+      "include_markers": false,
+      "sha256": "0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"
+    },
+    "screen": {
+      "code_bytes": 183,
+      "payload_bytes": 234,
+      "include_markers": false,
+      "sha256": "da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"
+    },
+    "sdf": {
+      "code_bytes": 123,
+      "payload_bytes": 174,
+      "include_markers": false,
+      "sha256": "72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"
+    },
+    "global": {
+      "code_bytes": 107,
+      "payload_bytes": 158,
+      "include_markers": false,
+      "sha256": "c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"
+    },
+    "spatial": {
+      "code_bytes": 73,
+      "payload_bytes": 123,
+      "include_markers": false,
+      "sha256": "a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"
+    },
+    "tint_b": {
+      "code_bytes": 262,
+      "payload_bytes": 313,
+      "include_markers": true,
+      "sha256": "cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"
+    }
+  },
+  "shader_scan": {
+    "tint": {
+      "mode": "canvas_item",
+      "uses": [],
+      "reason": null
+    },
+    "pal": {
+      "mode": "canvas_item",
+      "uses": [],
+      "reason": null
+    },
+    "inst": {
+      "mode": "canvas_item",
+      "uses": ["instance_uniform"],
+      "reason": null
+    },
+    "types": {
+      "mode": "canvas_item",
+      "uses": [],
+      "reason": null
+    },
+    "phase": {
+      "mode": "canvas_item",
+      "uses": [],
+      "reason": null
+    },
+    "sh_a": {
+      "mode": "canvas_item",
+      "uses": [],
+      "reason": null
+    },
+    "sh_b": {
+      "mode": "canvas_item",
+      "uses": [],
+      "reason": null
+    },
+    "time": {
+      "mode": "canvas_item",
+      "uses": ["time"],
+      "reason": "shader-time"
+    },
+    "screen": {
+      "mode": "canvas_item",
+      "uses": ["screen_texture"],
+      "reason": "shader-screen-texture"
+    },
+    "sdf": {
+      "mode": "canvas_item",
+      "uses": ["sdf"],
+      "reason": "shader-sdf"
+    },
+    "global": {
+      "mode": "canvas_item",
+      "uses": ["global_uniform"],
+      "reason": "shader-global-uniform"
+    },
+    "spatial": {
+      "mode": "spatial",
+      "uses": [],
+      "reason": "shader-mode"
+    }
+  },
+  "typed": {
+    "ops": ["canvas_item_set_material"],
+    "reason": "unsupported-state",
+    "items": ["TI","PA","I1","I2","TY","PH","RM","SH"]
+  },
+  "counters": {
+    "quit_frame": 400,
+    "counts": {
+      "shader_create_from_code": 7,
+      "shader_set_code": 1,
+      "material_set_param": 417,
+      "canvas_item_set_material": 9,
+      "texture_2d_create": 3,
+      "canvas_item_add_rect": 17,
+      "canvas_item_add_texture_rect": 1
+    }
+  },
+  "census": {
+    "frames": {
+      "1": [["shader_create_from_code","pal",1,null],["shader_set_default_texture_parameter","pal",2,"pal"],["shader_create_from_code","tint",1,null],["material_create_from_shader","MT",1,"tint"],["material_set_param","MT",2,"tint"],["material_set_param","MT",3,"gain"],["canvas_item_set_material","TI",null,"MT"],["material_create_from_shader","MP",1,"pal"],["material_set_param","MP",2,"mul"],["canvas_item_set_material","PA",null,"MP"],["shader_create_from_code","inst",1,null],["material_create_from_shader","MI",1,"inst"],["canvas_item_set_material","I1",null,"MI"],["canvas_item_set_material","I2",null,"MI"],["canvas_item_set_instance_shader_parameter","I1",null,"inst_color"],["shader_create_from_code","types",1,null],["material_create_from_shader","MY",1,"types"],["material_set_param","MY",2,"on"],["material_set_param","MY",3,"k"],["material_set_param","MY",4,"f"],["material_set_param","MY",5,"v2"],["material_set_param","MY",6,"v3"],["material_set_param","MY",7,"iv"],["material_set_param","MY",8,"lv"],["canvas_item_set_material","TY",null,"MY"],["shader_create_from_code","phase",1,null],["material_create_from_shader","MPh",1,"phase"],["canvas_item_set_material","PH",null,"MPh"],["material_create_from_shader","MR",1,"tint"],["material_set_param","MR",2,"tint"],["canvas_item_set_material","RM",null,"MR"],["shader_create_from_code","sh_a",1,null],["material_create_from_shader","MS",1,"sh_a"],["canvas_item_set_material","SH",null,"MS"]],
+      "11": [["material_set_param","MT",4,"tint"]],
+      "21": [["canvas_item_set_instance_shader_parameter","I2",null,"inst_color"]],
+      "31": [["shader_set_code","tint",2,null]],
+      "41": [["material_set_param","MT",5,"gain"]],
+      "51": [["free","MR",2,"material"],["material_create_from_shader","MR2",1,"tint"],["material_set_param","MR2",2,"tint"],["canvas_item_set_material","RM",null,"MR2"]],
+      "61": [["material_set_param","MP",3,"pal"]],
+      "71": [["material_set_param","MY",9,"on"],["material_set_param","MY",10,"k"]],
+      "81": [["shader_create_from_code","sh_b",1,null],["material_set_shader","MS",2,"sh_b"],["free","sh_a",1,"shader"]]
+    },
+    "phase_rule": {
+      "material": "MPh",
+      "param": "phase",
+      "from_frame": 1,
+      "to_frame": null,
+      "value": "frame"
+    }
+  },
+  "op_lists": {
+    "TI@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.4000000059604645,0.20000000298023224,1.0]]
+      }
+    ],
+    "PA@0": [
+      {
+        "name": "texture_rect",
+        "kind": "mesh",
+        "vertices": [[8,8],[40,8],[40,40],[8,40]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,1.0,1.0]],
+        "uvs": [[0,0],[1,0],[1,1],[0,1]],
+        "texture": "TEX16"
+      }
+    ],
+    "I1@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[48,0],[48,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0]]
+      }
+    ],
+    "I2@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[48,0],[48,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,1.0,1.0]]
+      }
+    ],
+    "TY@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.6000000238418579,0.6000000238418579,0.0,1.0]]
+      }
+    ],
+    "PH@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4000000059604645,0.6000000238418579,0.4000000059604645,1.0]]
+      }
+    ],
+    "RM@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.800000011920929,0.20000000298023224,1.0]]
+      }
+    ],
+    "SH@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0]]
+      }
+    ],
+    "Marker@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.0,0.0,1]]
+      }
+    ],
+    "TI@1": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4000000059604645,0.20000000298023224,0.0,1.0]]
+      }
+    ],
+    "PH@1": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,1.0,0.4000000059604645,1.0]]
+      }
+    ],
+    "Marker@1": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,0.0,1]]
+      }
+    ],
+    "I2@2": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[48,0],[48,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0]]
+      }
+    ],
+    "PH@2": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.20000000298023224,0.4000000059604645,1.0]]
+      }
+    ],
+    "Marker@2": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,1.0,1.0,1]]
+      }
+    ],
+    "TI@3": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.20000000298023224,0.4000000059604645,1.0]]
+      }
+    ],
+    "RM@3": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.800000011920929,0.800000011920929,1.0]]
+      }
+    ],
+    "Marker@3": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4,0.0,0.4,1]]
+      }
+    ],
+    "TI@4": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.4000000059604645,0.800000011920929,1.0]]
+      }
+    ],
+    "Marker@4": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.4,0.0,1]]
+      }
+    ],
+    "Marker@5": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4,0.0,0.0,1]]
+      }
+    ],
+    "PA@6": [
+      {
+        "name": "texture_rect",
+        "kind": "mesh",
+        "vertices": [[8,8],[40,8],[40,40],[8,40]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,1.0,1.0]],
+        "uvs": [[0,0],[1,0],[1,1],[0,1]],
+        "texture": "TEX16B"
+      }
+    ],
+    "Marker@6": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.0,0.4,1]]
+      }
+    ],
+    "TY@7": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4000000059604645,0.800000011920929,0.800000011920929,1.0]]
+      }
+    ],
+    "Marker@7": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.8,0.4,0.8,1]]
+      }
+    ],
+    "SH@8": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0]]
+      }
+    ],
+    "Marker@8": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4,0.6,0.8,1]]
+      }
+    ],
+    "Marker@9": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.8,0.6,0.4,1]]
+      }
+    ],
+    "refused/TI@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.4000000059604645,0.20000000298023224,1.0]]
+      }
+    ],
+    "refused/PA@0": [
+      {
+        "name": "texture_rect",
+        "kind": "mesh",
+        "vertices": [[8,8],[40,8],[40,40],[8,40]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,1.0,1.0]],
+        "uvs": [[0,0],[1,0],[1,1],[0,1]],
+        "texture": "TEX16"
+      }
+    ],
+    "refused/I1@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[48,0],[48,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0]]
+      }
+    ],
+    "refused/I2@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[48,0],[48,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,1.0,1.0]]
+      }
+    ],
+    "refused/TY@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.6000000238418579,0.6000000238418579,0.0,1.0]]
+      }
+    ],
+    "refused/PH@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4000000059604645,0.6000000238418579,0.4000000059604645,1.0]]
+      }
+    ],
+    "refused/RM@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.800000011920929,0.20000000298023224,1.0]]
+      }
+    ],
+    "refused/SH@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0]]
+      }
+    ],
+    "refused/TM@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.4000000059604645,0.6000000238418579,1.0]]
+      }
+    ],
+    "refused/SC@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.800000011920929,0.6000000238418579,1.0]]
+      }
+    ],
+    "refused/SD@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4000000059604645,0.20000000298023224,0.800000011920929,1.0]]
+      }
+    ],
+    "refused/GU@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.6000000238418579,0.20000000298023224,0.4000000059604645,1.0]]
+      }
+    ],
+    "refused/SP@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4,0.6,0.2,1]]
+      }
+    ],
+    "refused/Marker@0": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.0,0.0,1]]
+      }
+    ],
+    "refused/TI@1": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4000000059604645,0.20000000298023224,0.0,1.0]]
+      }
+    ],
+    "refused/PH@1": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,1.0,0.4000000059604645,1.0]]
+      }
+    ],
+    "refused/Marker@1": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,0.0,1]]
+      }
+    ],
+    "refused/I2@2": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[48,0],[48,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0]]
+      }
+    ],
+    "refused/PH@2": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.20000000298023224,0.4000000059604645,1.0]]
+      }
+    ],
+    "refused/Marker@2": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,1.0,1.0,1]]
+      }
+    ],
+    "refused/TI@3": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.20000000298023224,0.4000000059604645,1.0]]
+      }
+    ],
+    "refused/RM@3": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.20000000298023224,0.800000011920929,0.800000011920929,1.0]]
+      }
+    ],
+    "refused/Marker@3": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4,0.0,0.4,1]]
+      }
+    ],
+    "refused/TI@4": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.4000000059604645,0.800000011920929,1.0]]
+      }
+    ],
+    "refused/Marker@4": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.4,0.0,1]]
+      }
+    ],
+    "refused/Marker@5": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4,0.0,0.0,1]]
+      }
+    ],
+    "refused/PA@6": [
+      {
+        "name": "texture_rect",
+        "kind": "mesh",
+        "vertices": [[8,8],[40,8],[40,40],[8,40]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[1.0,1.0,1.0,1.0]],
+        "uvs": [[0,0],[1,0],[1,1],[0,1]],
+        "texture": "TEX16B"
+      }
+    ],
+    "refused/Marker@6": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.0,0.0,0.4,1]]
+      }
+    ],
+    "refused/TY@7": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4000000059604645,0.800000011920929,0.800000011920929,1.0]]
+      }
+    ],
+    "refused/Marker@7": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.8,0.4,0.8,1]]
+      }
+    ],
+    "refused/SH@8": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[56,0],[56,48],[0,48]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0]]
+      }
+    ],
+    "refused/Marker@8": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.4,0.6,0.8,1]]
+      }
+    ],
+    "refused/Marker@9": [
+      {
+        "name": "rect",
+        "kind": "mesh",
+        "vertices": [[0,0],[32,0],[32,32],[0,32]],
+        "triangles": [[0,1,2],[0,2,3]],
+        "colors": [[0.8,0.6,0.4,1]]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "applied_frame": 1,
+      "settle_frame": 8,
+      "change": "initial",
+      "marker_rgba8": [0,0,0,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["TI","PA","I1","I2","TY","PH","RM","SH","Marker"],
+      "phase": 8,
+      "material_calls": [
+        {"op":"shader_create_from_code","shader":"pal","code_file":"shaders/pal.gdshader"},
+        {"op":"shader_set_default_texture_parameter","shader":"pal","name":"pal","tex":"TEX16"},
+        {"op":"shader_create_from_code","shader":"tint","code_file":"shaders/tint.gdshader"},
+        {"op":"material_create_from_shader","material":"MT","shader":"tint"},
+        {"op":"material_set_param","material":"MT","param":"tint","value":{"type":"color","value":[0.4000000059604645,0.800000011920929,0.4000000059604645,1.0]}},
+        {"op":"material_set_param","material":"MT","param":"gain","value":{"type":"float","value":0.5}},
+        {"op":"canvas_item_set_material","item":"TI","material":"MT"},
+        {"op":"material_create_from_shader","material":"MP","shader":"pal"},
+        {"op":"material_set_param","material":"MP","param":"mul","value":{"type":"color","value":[1.0,1.0,1.0,1.0]}},
+        {"op":"canvas_item_set_material","item":"PA","material":"MP"},
+        {"op":"shader_create_from_code","shader":"inst","code_file":"shaders/inst.gdshader"},
+        {"op":"material_create_from_shader","material":"MI","shader":"inst"},
+        {"op":"canvas_item_set_material","item":"I1","material":"MI"},
+        {"op":"canvas_item_set_material","item":"I2","material":"MI"},
+        {"op":"canvas_item_set_instance_shader_parameter","item":"I1","param":"inst_color","value":{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0]}},
+        {"op":"shader_create_from_code","shader":"types","code_file":"shaders/types.gdshader"},
+        {"op":"material_create_from_shader","material":"MY","shader":"types"},
+        {"op":"material_set_param","material":"MY","param":"on","value":{"type":"bool","value":false}},
+        {"op":"material_set_param","material":"MY","param":"k","value":{"type":"int","value":1}},
+        {"op":"material_set_param","material":"MY","param":"f","value":{"type":"float","value":0.6}},
+        {"op":"material_set_param","material":"MY","param":"v2","value":{"type":"vector2","value":[0.4000000059604645,0.0]}},
+        {"op":"material_set_param","material":"MY","param":"v3","value":{"type":"vector3","value":[0.0,0.800000011920929,0.0]}},
+        {"op":"material_set_param","material":"MY","param":"iv","value":{"type":"vector2i","value":[0,3]}},
+        {"op":"material_set_param","material":"MY","param":"lv","value":{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929]}},
+        {"op":"canvas_item_set_material","item":"TY","material":"MY"},
+        {"op":"shader_create_from_code","shader":"phase","code_file":"shaders/phase.gdshader"},
+        {"op":"material_create_from_shader","material":"MPh","shader":"phase"},
+        {"op":"canvas_item_set_material","item":"PH","material":"MPh"},
+        {"op":"material_create_from_shader","material":"MR","shader":"tint"},
+        {"op":"material_set_param","material":"MR","param":"tint","value":{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0]}},
+        {"op":"canvas_item_set_material","item":"RM","material":"MR"},
+        {"op":"shader_create_from_code","shader":"sh_a","code_file":"shaders/sh_a.gdshader"},
+        {"op":"material_create_from_shader","material":"MS","shader":"sh_a"},
+        {"op":"canvas_item_set_material","item":"SH","material":"MS"}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@0"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@0"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@0"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@0"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@0"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@0"}
+      ],
+      "fresh": {
+        "TI": true,
+        "PA": true,
+        "IN": true,
+        "TY": true,
+        "PH": true,
+        "RM": true,
+        "SH": true,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":247,"payload_bytes":298,"include_markers":true,"sha256":"aeeaa26c02314a906526951ceb5608dc0a12920255c73f4dfb059020b9c495cf"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.4000000059604645,0.800000011920929,0.4000000059604645,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":8,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"absent"}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"vector4","value":[1.0,1.0,1.0,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 1,
+      "applied_frame": 11,
+      "settle_frame": 18,
+      "change": "MT.tint -> (.8,.4,0,1) (one material_set_param; no redraw)",
+      "marker_rgba8": [255,255,0,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 18,
+      "material_calls": [
+        {"op":"material_set_param","material":"MT","param":"tint","value":{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0]}}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@1"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@0"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@0"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@0"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@1"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@1"}
+      ],
+      "fresh": {
+        "TI": true,
+        "PA": false,
+        "IN": false,
+        "TY": false,
+        "PH": true,
+        "RM": false,
+        "SH": false,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":247,"payload_bytes":298,"include_markers":true,"sha256":"aeeaa26c02314a906526951ceb5608dc0a12920255c73f4dfb059020b9c495cf"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":18,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"absent"}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"vector4","value":[1.0,1.0,1.0,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 2,
+      "applied_frame": 21,
+      "settle_frame": 28,
+      "change": "I2.inst_color -> (.8,.2,.6,1) (one instance parameter on the shared MI)",
+      "marker_rgba8": [0,255,255,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 28,
+      "material_calls": [
+        {"op":"canvas_item_set_instance_shader_parameter","item":"I2","param":"inst_color","value":{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0]}}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@1"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@0"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@0"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@2"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@2"}
+      ],
+      "fresh": {
+        "TI": false,
+        "PA": false,
+        "IN": true,
+        "TY": false,
+        "PH": true,
+        "RM": false,
+        "SH": false,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":247,"payload_bytes":298,"include_markers":true,"sha256":"aeeaa26c02314a906526951ceb5608dc0a12920255c73f4dfb059020b9c495cf"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":28,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"absent"}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 3,
+      "applied_frame": 31,
+      "settle_frame": 38,
+      "change": "the tint Shader's code -> tint_b (one shader_set_code; TI and RM change)",
+      "marker_rgba8": [102,0,102,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 38,
+      "material_calls": [
+        {"op":"shader_set_code","shader":"tint","code_file":"shaders/tint_b.gdshader"}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@3"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@0"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@0"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@0"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@3"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@3"}
+      ],
+      "fresh": {
+        "TI": true,
+        "PA": false,
+        "IN": false,
+        "TY": false,
+        "PH": true,
+        "RM": true,
+        "SH": false,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":38,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"absent"}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 4,
+      "applied_frame": 41,
+      "settle_frame": 48,
+      "change": "MT.gain -> null (material_set_param NIL: the code's default 1.0)",
+      "marker_rgba8": [0,102,0,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 48,
+      "material_calls": [
+        {"op":"material_set_param","material":"MT","param":"gain","value":{"type":"nil","value":null}}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@4"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@0"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@0"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@1"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@3"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@4"}
+      ],
+      "fresh": {
+        "TI": true,
+        "PA": false,
+        "IN": false,
+        "TY": false,
+        "PH": true,
+        "RM": false,
+        "SH": false,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":48,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"absent"}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 5,
+      "applied_frame": 51,
+      "settle_frame": 58,
+      "change": "RM.material = MR2, a new ShaderMaterial on tint, tint (.2,.8,.8,1) (MR freed first)",
+      "marker_rgba8": [102,0,0,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 58,
+      "material_calls": [
+        {"op":"free","material":"MR"},
+        {"op":"material_create_from_shader","material":"MR2","shader":"tint"},
+        {"op":"material_set_param","material":"MR2","param":"tint","value":{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0]}},
+        {"op":"canvas_item_set_material","item":"RM","material":"MR2"}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@4"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@0"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@0"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@2"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@5"}
+      ],
+      "fresh": {
+        "TI": false,
+        "PA": false,
+        "IN": false,
+        "TY": false,
+        "PH": true,
+        "RM": true,
+        "SH": false,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":58,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 6,
+      "applied_frame": 61,
+      "settle_frame": 68,
+      "change": "MP.pal = TEX16B (a texture parameter over the shader's default texture)",
+      "marker_rgba8": [0,0,102,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 68,
+      "material_calls": [
+        {"op":"material_set_param","material":"MP","param":"pal","value":{"type":"rid","value":{"tex":"TEX16B"}}}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@4"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@6"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@0"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@0"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@6"}
+      ],
+      "fresh": {
+        "TI": false,
+        "PA": true,
+        "IN": false,
+        "TY": false,
+        "PH": true,
+        "RM": false,
+        "SH": false,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":68,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 7,
+      "applied_frame": 71,
+      "settle_frame": 78,
+      "change": "MY.on -> true, MY.k -> 3 (bool and int; array indexing)",
+      "marker_rgba8": [204,102,204,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 78,
+      "material_calls": [
+        {"op":"material_set_param","material":"MY","param":"on","value":{"type":"bool","value":true}},
+        {"op":"material_set_param","material":"MY","param":"k","value":{"type":"int","value":3}}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@4"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@6"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@7"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@1"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@0"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@7"}
+      ],
+      "fresh": {
+        "TI": false,
+        "PA": false,
+        "IN": false,
+        "TY": true,
+        "PH": true,
+        "RM": false,
+        "SH": false,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"sh_b","status":"absent"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":3,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":true,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":78,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 8,
+      "applied_frame": 81,
+      "settle_frame": 88,
+      "change": "MS.shader = sh_b (shader_create_from_code, material_set_shader, free(sh_a))",
+      "marker_rgba8": [102,153,204,255],
+      "canvas_transform": [1,0,0,1,0,0],
+      "redraws": ["Marker"],
+      "phase": 88,
+      "material_calls": [
+        {"op":"shader_create_from_code","shader":"sh_b","code_file":"shaders/sh_b.gdshader"},
+        {"op":"material_set_shader","material":"MS","shader":"sh_b"},
+        {"op":"free","shader":"sh_a"}
+      ],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"TI@4"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"PA@6"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"TY@7"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"PH@2"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"SH@8"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"Marker@8"}
+      ],
+      "fresh": {
+        "TI": false,
+        "PA": false,
+        "IN": false,
+        "TY": false,
+        "PH": true,
+        "RM": false,
+        "SH": true,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"freed"},{"name":"sh_b","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"05060ce27e0b035a670f4d3531581deecfa21240235819f8d460aa9a2906b490"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":3,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":true,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":88,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    },
+    {
+      "step": 9,
+      "applied_frame": 91,
+      "settle_frame": 98,
+      "change": "canvas_transform = Transform2D(0, (8, 4))",
+      "marker_rgba8": [204,153,102,255],
+      "canvas_transform": [1,0,0,1,8,4],
+      "redraws": ["Marker"],
+      "phase": 98,
+      "material_calls": [],
+      "items": [
+        {"name":"TI","region":"TI","xform":[1,0,0,1,40,36],"clip_px":null,"ops":"TI@4"},
+        {"name":"PA","region":"PA","xform":[1,0,0,1,128,28],"clip_px":null,"ops":"PA@6"},
+        {"name":"I1","region":"IN","xform":[1,0,0,1,216,36],"clip_px":null,"ops":"I1@0"},
+        {"name":"I2","region":"IN","xform":[1,0,0,1,272,36],"clip_px":null,"ops":"I2@2"},
+        {"name":"TY","region":"TY","xform":[1,0,0,1,352,36],"clip_px":null,"ops":"TY@7"},
+        {"name":"PH","region":"PH","xform":[1,0,0,1,440,36],"clip_px":null,"ops":"PH@0"},
+        {"name":"RM","region":"RM","xform":[1,0,0,1,40,132],"clip_px":null,"ops":"RM@0"},
+        {"name":"SH","region":"SH","xform":[1,0,0,1,128,132],"clip_px":null,"ops":"SH@8"},
+        {"name":"Marker","region":"Marker","xform":[1,0,0,1,600,20],"clip_px":null,"ops":"Marker@9"}
+      ],
+      "fresh": {
+        "TI": true,
+        "PA": true,
+        "IN": true,
+        "TY": true,
+        "PH": true,
+        "RM": true,
+        "SH": true,
+        "Marker": true
+      },
+      "oracle": {
+        "shaders": [{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"freed"},{"name":"sh_b","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"05060ce27e0b035a670f4d3531581deecfa21240235819f8d460aa9a2906b490"}],
+        "materials": [{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":3,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":true,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":98,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],
+        "items": [{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]
+      }
+    }
+  ],
+  "variants": {
+    "refused": {
+      "creation_order": ["TI","PA","I1","I2","TY","PH","RM","SH","TM","SC","SD","GU","SP","Marker"],
+      "regions": {
+        "TI": [16,16,104,96],
+        "PA": [104,16,192,96],
+        "IN": [192,16,328,96],
+        "TY": [328,16,416,96],
+        "PH": [416,16,504,96],
+        "RM": [16,112,104,192],
+        "SH": [104,112,192,192],
+        "TM": [192,112,280,192],
+        "SC": [280,112,368,192],
+        "SD": [368,112,456,192],
+        "GU": [456,112,544,192],
+        "SP": [16,208,104,288],
+        "Marker": [584,8,632,56]
+      },
+      "shader_order": ["pal","tint","inst","types","phase","sh_a","time","screen","sdf","global","spatial","sh_b"],
+      "material_order": ["MT","MP","MI","MY","MPh","MR","MS","M_time","M_screen","M_sdf","M_global","M_spatial","MR2"],
+      "refused_items": {
+        "TM": "time",
+        "SC": "screen",
+        "SD": "sdf",
+        "GU": "global",
+        "SP": "spatial"
+      },
+      "typed": {
+        "ops": ["canvas_item_set_material"],
+        "reason": "unsupported-state",
+        "items": ["TI","PA","I1","I2","TY","PH","RM","SH","TM","SC","SD","GU","SP"]
+      },
+      "counters": {
+        "quit_frame": 400,
+        "counts": {"shader_create_from_code":12,"shader_set_code":1,"material_set_param":417,"canvas_item_set_material":14,"texture_2d_create":3,"canvas_item_add_rect":22,"canvas_item_add_texture_rect":1}
+      },
+      "census": {
+        "frames": {"1":[["shader_create_from_code","pal",1,null],["shader_set_default_texture_parameter","pal",2,"pal"],["shader_create_from_code","tint",1,null],["material_create_from_shader","MT",1,"tint"],["material_set_param","MT",2,"tint"],["material_set_param","MT",3,"gain"],["canvas_item_set_material","TI",null,"MT"],["material_create_from_shader","MP",1,"pal"],["material_set_param","MP",2,"mul"],["canvas_item_set_material","PA",null,"MP"],["shader_create_from_code","inst",1,null],["material_create_from_shader","MI",1,"inst"],["canvas_item_set_material","I1",null,"MI"],["canvas_item_set_material","I2",null,"MI"],["canvas_item_set_instance_shader_parameter","I1",null,"inst_color"],["shader_create_from_code","types",1,null],["material_create_from_shader","MY",1,"types"],["material_set_param","MY",2,"on"],["material_set_param","MY",3,"k"],["material_set_param","MY",4,"f"],["material_set_param","MY",5,"v2"],["material_set_param","MY",6,"v3"],["material_set_param","MY",7,"iv"],["material_set_param","MY",8,"lv"],["canvas_item_set_material","TY",null,"MY"],["shader_create_from_code","phase",1,null],["material_create_from_shader","MPh",1,"phase"],["canvas_item_set_material","PH",null,"MPh"],["material_create_from_shader","MR",1,"tint"],["material_set_param","MR",2,"tint"],["canvas_item_set_material","RM",null,"MR"],["shader_create_from_code","sh_a",1,null],["material_create_from_shader","MS",1,"sh_a"],["canvas_item_set_material","SH",null,"MS"],["shader_create_from_code","time",1,null],["material_create_from_shader","M_time",1,"time"],["canvas_item_set_material","TM",null,"M_time"],["shader_create_from_code","screen",1,null],["material_create_from_shader","M_screen",1,"screen"],["canvas_item_set_material","SC",null,"M_screen"],["shader_create_from_code","sdf",1,null],["material_create_from_shader","M_sdf",1,"sdf"],["canvas_item_set_material","SD",null,"M_sdf"],["shader_create_from_code","global",1,null],["material_create_from_shader","M_global",1,"global"],["canvas_item_set_material","GU",null,"M_global"],["shader_create_from_code","spatial",1,null],["material_create_from_shader","M_spatial",1,"spatial"],["canvas_item_set_material","SP",null,"M_spatial"]],"11":[["material_set_param","MT",4,"tint"]],"21":[["canvas_item_set_instance_shader_parameter","I2",null,"inst_color"]],"31":[["shader_set_code","tint",2,null]],"41":[["material_set_param","MT",5,"gain"]],"51":[["free","MR",2,"material"],["material_create_from_shader","MR2",1,"tint"],["material_set_param","MR2",2,"tint"],["canvas_item_set_material","RM",null,"MR2"]],"61":[["material_set_param","MP",3,"pal"]],"71":[["material_set_param","MY",9,"on"],["material_set_param","MY",10,"k"]],"81":[["shader_create_from_code","sh_b",1,null],["material_set_shader","MS",2,"sh_b"],["free","sh_a",1,"shader"]]},
+        "phase_rule": {"material":"MPh","param":"phase","from_frame":1,"to_frame":null,"value":"frame"}
+      },
+      "steps": [
+        {"step":0,"applied_frame":1,"settle_frame":8,"change":"initial","marker_rgba8":[0,0,0,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["TI","PA","I1","I2","TY","PH","RM","SH","TM","SC","SD","GU","SP","Marker"],"phase":8,"material_calls":[{"op":"shader_create_from_code","shader":"pal","code_file":"shaders/pal.gdshader"},{"op":"shader_set_default_texture_parameter","shader":"pal","name":"pal","tex":"TEX16"},{"op":"shader_create_from_code","shader":"tint","code_file":"shaders/tint.gdshader"},{"op":"material_create_from_shader","material":"MT","shader":"tint"},{"op":"material_set_param","material":"MT","param":"tint","value":{"type":"color","value":[0.4000000059604645,0.800000011920929,0.4000000059604645,1.0]}},{"op":"material_set_param","material":"MT","param":"gain","value":{"type":"float","value":0.5}},{"op":"canvas_item_set_material","item":"TI","material":"MT"},{"op":"material_create_from_shader","material":"MP","shader":"pal"},{"op":"material_set_param","material":"MP","param":"mul","value":{"type":"color","value":[1.0,1.0,1.0,1.0]}},{"op":"canvas_item_set_material","item":"PA","material":"MP"},{"op":"shader_create_from_code","shader":"inst","code_file":"shaders/inst.gdshader"},{"op":"material_create_from_shader","material":"MI","shader":"inst"},{"op":"canvas_item_set_material","item":"I1","material":"MI"},{"op":"canvas_item_set_material","item":"I2","material":"MI"},{"op":"canvas_item_set_instance_shader_parameter","item":"I1","param":"inst_color","value":{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0]}},{"op":"shader_create_from_code","shader":"types","code_file":"shaders/types.gdshader"},{"op":"material_create_from_shader","material":"MY","shader":"types"},{"op":"material_set_param","material":"MY","param":"on","value":{"type":"bool","value":false}},{"op":"material_set_param","material":"MY","param":"k","value":{"type":"int","value":1}},{"op":"material_set_param","material":"MY","param":"f","value":{"type":"float","value":0.6}},{"op":"material_set_param","material":"MY","param":"v2","value":{"type":"vector2","value":[0.4000000059604645,0.0]}},{"op":"material_set_param","material":"MY","param":"v3","value":{"type":"vector3","value":[0.0,0.800000011920929,0.0]}},{"op":"material_set_param","material":"MY","param":"iv","value":{"type":"vector2i","value":[0,3]}},{"op":"material_set_param","material":"MY","param":"lv","value":{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929]}},{"op":"canvas_item_set_material","item":"TY","material":"MY"},{"op":"shader_create_from_code","shader":"phase","code_file":"shaders/phase.gdshader"},{"op":"material_create_from_shader","material":"MPh","shader":"phase"},{"op":"canvas_item_set_material","item":"PH","material":"MPh"},{"op":"material_create_from_shader","material":"MR","shader":"tint"},{"op":"material_set_param","material":"MR","param":"tint","value":{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0]}},{"op":"canvas_item_set_material","item":"RM","material":"MR"},{"op":"shader_create_from_code","shader":"sh_a","code_file":"shaders/sh_a.gdshader"},{"op":"material_create_from_shader","material":"MS","shader":"sh_a"},{"op":"canvas_item_set_material","item":"SH","material":"MS"},{"op":"shader_create_from_code","shader":"time","code_file":"shaders/refused/time.gdshader"},{"op":"material_create_from_shader","material":"M_time","shader":"time"},{"op":"canvas_item_set_material","item":"TM","material":"M_time"},{"op":"shader_create_from_code","shader":"screen","code_file":"shaders/refused/screen.gdshader"},{"op":"material_create_from_shader","material":"M_screen","shader":"screen"},{"op":"canvas_item_set_material","item":"SC","material":"M_screen"},{"op":"shader_create_from_code","shader":"sdf","code_file":"shaders/refused/sdf.gdshader"},{"op":"material_create_from_shader","material":"M_sdf","shader":"sdf"},{"op":"canvas_item_set_material","item":"SD","material":"M_sdf"},{"op":"shader_create_from_code","shader":"global","code_file":"shaders/refused/global.gdshader"},{"op":"material_create_from_shader","material":"M_global","shader":"global"},{"op":"canvas_item_set_material","item":"GU","material":"M_global"},{"op":"shader_create_from_code","shader":"spatial","code_file":"shaders/refused/spatial.gdshader"},{"op":"material_create_from_shader","material":"M_spatial","shader":"spatial"},{"op":"canvas_item_set_material","item":"SP","material":"M_spatial"}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@0"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@0"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@0"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@0"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@0"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@0"}],"fresh":{"TI":true,"PA":true,"IN":true,"TY":true,"PH":true,"RM":true,"SH":true,"TM":true,"SC":true,"SD":true,"GU":true,"SP":true,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":247,"payload_bytes":298,"include_markers":true,"sha256":"aeeaa26c02314a906526951ceb5608dc0a12920255c73f4dfb059020b9c495cf"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.4000000059604645,0.800000011920929,0.4000000059604645,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":8,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"absent"}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"vector4","value":[1.0,1.0,1.0,1.0],"name":"inst_color"}]}]}},
+        {"step":1,"applied_frame":11,"settle_frame":18,"change":"MT.tint -> (.8,.4,0,1) (one material_set_param; no redraw)","marker_rgba8":[255,255,0,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":18,"material_calls":[{"op":"material_set_param","material":"MT","param":"tint","value":{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0]}}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@1"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@0"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@0"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@0"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@1"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@1"}],"fresh":{"TI":true,"PA":false,"IN":false,"TY":false,"PH":true,"RM":false,"SH":false,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":247,"payload_bytes":298,"include_markers":true,"sha256":"aeeaa26c02314a906526951ceb5608dc0a12920255c73f4dfb059020b9c495cf"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":18,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"absent"}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"vector4","value":[1.0,1.0,1.0,1.0],"name":"inst_color"}]}]}},
+        {"step":2,"applied_frame":21,"settle_frame":28,"change":"I2.inst_color -> (.8,.2,.6,1) (one instance parameter on the shared MI)","marker_rgba8":[0,255,255,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":28,"material_calls":[{"op":"canvas_item_set_instance_shader_parameter","item":"I2","param":"inst_color","value":{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0]}}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@1"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@0"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@0"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@2"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@2"}],"fresh":{"TI":false,"PA":false,"IN":true,"TY":false,"PH":true,"RM":false,"SH":false,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":247,"payload_bytes":298,"include_markers":true,"sha256":"aeeaa26c02314a906526951ceb5608dc0a12920255c73f4dfb059020b9c495cf"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":28,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"absent"}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}},
+        {"step":3,"applied_frame":31,"settle_frame":38,"change":"the tint Shader's code -> tint_b (one shader_set_code; TI and RM change)","marker_rgba8":[102,0,102,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":38,"material_calls":[{"op":"shader_set_code","shader":"tint","code_file":"shaders/tint_b.gdshader"}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@3"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@0"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@0"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@0"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@3"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@3"}],"fresh":{"TI":true,"PA":false,"IN":false,"TY":false,"PH":true,"RM":true,"SH":false,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"float","value":0.5,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":38,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"absent"}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}},
+        {"step":4,"applied_frame":41,"settle_frame":48,"change":"MT.gain -> null (material_set_param NIL: the code's default 1.0)","marker_rgba8":[0,102,0,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":48,"material_calls":[{"op":"material_set_param","material":"MT","param":"gain","value":{"type":"nil","value":null}}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@4"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@0"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@0"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@1"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@3"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@4"}],"fresh":{"TI":true,"PA":false,"IN":false,"TY":false,"PH":true,"RM":false,"SH":false,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":48,"name":"phase"}]},{"name":"MR","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.800000011920929,0.20000000298023224,1.0],"name":"tint"}]},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"absent"}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}},
+        {"step":5,"applied_frame":51,"settle_frame":58,"change":"RM.material = MR2, a new ShaderMaterial on tint, tint (.2,.8,.8,1) (MR freed first)","marker_rgba8":[102,0,0,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":58,"material_calls":[{"op":"free","material":"MR"},{"op":"material_create_from_shader","material":"MR2","shader":"tint"},{"op":"material_set_param","material":"MR2","param":"tint","value":{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0]}},{"op":"canvas_item_set_material","item":"RM","material":"MR2"}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@4"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@0"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@0"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@2"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@5"}],"fresh":{"TI":false,"PA":false,"IN":false,"TY":false,"PH":true,"RM":true,"SH":false,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"nil","value":null,"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":58,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}},
+        {"step":6,"applied_frame":61,"settle_frame":68,"change":"MP.pal = TEX16B (a texture parameter over the shader's default texture)","marker_rgba8":[0,0,102,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":68,"material_calls":[{"op":"material_set_param","material":"MP","param":"pal","value":{"type":"rid","value":{"tex":"TEX16B"}}}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@4"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@6"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@0"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@0"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@6"}],"fresh":{"TI":false,"PA":true,"IN":false,"TY":false,"PH":true,"RM":false,"SH":false,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":1,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":false,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":68,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}},
+        {"step":7,"applied_frame":71,"settle_frame":78,"change":"MY.on -> true, MY.k -> 3 (bool and int; array indexing)","marker_rgba8":[204,102,204,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":78,"material_calls":[{"op":"material_set_param","material":"MY","param":"on","value":{"type":"bool","value":true}},{"op":"material_set_param","material":"MY","param":"k","value":{"type":"int","value":3}}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@4"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@6"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@7"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@1"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@0"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@7"}],"fresh":{"TI":false,"PA":false,"IN":false,"TY":true,"PH":true,"RM":false,"SH":false,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"3ef1ae4fdb342a5dd625b631b286d4a1fc7499b2c0518548748afc2d2751e452"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"absent"}],"materials":[{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":3,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":true,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":78,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}},
+        {"step":8,"applied_frame":81,"settle_frame":88,"change":"MS.shader = sh_b (shader_create_from_code, material_set_shader, free(sh_a))","marker_rgba8":[102,153,204,255],"canvas_transform":[1,0,0,1,0,0],"redraws":["Marker"],"phase":88,"material_calls":[{"op":"shader_create_from_code","shader":"sh_b","code_file":"shaders/sh_b.gdshader"},{"op":"material_set_shader","material":"MS","shader":"sh_b"},{"op":"free","shader":"sh_a"}],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,32,32],"clip_px":null,"ops":"refused/TI@4"},{"name":"PA","region":"PA","xform":[1,0,0,1,120,24],"clip_px":null,"ops":"refused/PA@6"},{"name":"I1","region":"IN","xform":[1,0,0,1,208,32],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,264,32],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,344,32],"clip_px":null,"ops":"refused/TY@7"},{"name":"PH","region":"PH","xform":[1,0,0,1,432,32],"clip_px":null,"ops":"refused/PH@2"},{"name":"RM","region":"RM","xform":[1,0,0,1,32,128],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,120,128],"clip_px":null,"ops":"refused/SH@8"},{"name":"TM","region":"TM","xform":[1,0,0,1,208,128],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,296,128],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,384,128],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,472,128],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,32,224],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,592,16],"clip_px":null,"ops":"refused/Marker@8"}],"fresh":{"TI":false,"PA":false,"IN":false,"TY":false,"PH":true,"RM":false,"SH":true,"TM":false,"SC":false,"SD":false,"GU":false,"SP":false,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"freed"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"05060ce27e0b035a670f4d3531581deecfa21240235819f8d460aa9a2906b490"}],"materials":[{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":3,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":true,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":88,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}},
+        {"step":9,"applied_frame":91,"settle_frame":98,"change":"canvas_transform = Transform2D(0, (8, 4))","marker_rgba8":[204,153,102,255],"canvas_transform":[1,0,0,1,8,4],"redraws":["Marker"],"phase":98,"material_calls":[],"items":[{"name":"TI","region":"TI","xform":[1,0,0,1,40,36],"clip_px":null,"ops":"refused/TI@4"},{"name":"PA","region":"PA","xform":[1,0,0,1,128,28],"clip_px":null,"ops":"refused/PA@6"},{"name":"I1","region":"IN","xform":[1,0,0,1,216,36],"clip_px":null,"ops":"refused/I1@0"},{"name":"I2","region":"IN","xform":[1,0,0,1,272,36],"clip_px":null,"ops":"refused/I2@2"},{"name":"TY","region":"TY","xform":[1,0,0,1,352,36],"clip_px":null,"ops":"refused/TY@7"},{"name":"PH","region":"PH","xform":[1,0,0,1,440,36],"clip_px":null,"ops":"refused/PH@0"},{"name":"RM","region":"RM","xform":[1,0,0,1,40,132],"clip_px":null,"ops":"refused/RM@0"},{"name":"SH","region":"SH","xform":[1,0,0,1,128,132],"clip_px":null,"ops":"refused/SH@8"},{"name":"TM","region":"TM","xform":[1,0,0,1,216,132],"clip_px":null,"ops":"refused/TM@0"},{"name":"SC","region":"SC","xform":[1,0,0,1,304,132],"clip_px":null,"ops":"refused/SC@0"},{"name":"SD","region":"SD","xform":[1,0,0,1,392,132],"clip_px":null,"ops":"refused/SD@0"},{"name":"GU","region":"GU","xform":[1,0,0,1,480,132],"clip_px":null,"ops":"refused/GU@0"},{"name":"SP","region":"SP","xform":[1,0,0,1,40,228],"clip_px":null,"ops":"refused/SP@0"},{"name":"Marker","region":"Marker","xform":[1,0,0,1,600,20],"clip_px":null,"ops":"refused/Marker@9"}],"fresh":{"TI":true,"PA":true,"IN":true,"TY":true,"PH":true,"RM":true,"SH":true,"TM":true,"SC":true,"SD":true,"GU":true,"SP":true,"Marker":true},"oracle":{"shaders":[{"name":"pal","status":"live","code_bytes":150,"payload_bytes":201,"include_markers":false,"sha256":"dc40f5fb110b9fa43a857c14c036dce9dea71abbe379fc55124c32006c2b7074"},{"name":"tint","status":"live","code_bytes":262,"payload_bytes":313,"include_markers":true,"sha256":"cbd3e40f3240336c2430905e9b2f37b14d0979b70a22bdabb11383dcf7d0e32c"},{"name":"inst","status":"live","code_bytes":129,"payload_bytes":180,"include_markers":false,"sha256":"12b65f7d5199b3aa2cbc8c9a0e5287f78a5083f4c8513d60d5a6d16899c667f6"},{"name":"types","status":"live","code_bytes":252,"payload_bytes":303,"include_markers":false,"sha256":"455f21533af259642b4f06e8f30a8b7697958fae24c410f3c9a32d4929b2945a"},{"name":"phase","status":"live","code_bytes":147,"payload_bytes":198,"include_markers":false,"sha256":"f8a15f6eb8e666b9e533e221ca945553ea711a300937774c3341d41ddef56837"},{"name":"sh_a","status":"freed"},{"name":"time","status":"live","code_bytes":105,"payload_bytes":156,"include_markers":false,"sha256":"0bcdee10dbac874c89b570f8831ed0b5613ff364d7fe7cb0861397cdd024618c"},{"name":"screen","status":"live","code_bytes":183,"payload_bytes":234,"include_markers":false,"sha256":"da9099e6a9f96c72c16520adfdf00a409fe56ea9d91c7402777536b115031d12"},{"name":"sdf","status":"live","code_bytes":123,"payload_bytes":174,"include_markers":false,"sha256":"72e02facbd0c450dc9ab4b2646594ab5302f2ad3606cd47eef2357da5ba02f55"},{"name":"global","status":"live","code_bytes":107,"payload_bytes":158,"include_markers":false,"sha256":"c0bc52b9103606d19b2df37f97e50cf7f20bb642d4b075738fa0f633c3a8c37e"},{"name":"spatial","status":"live","code_bytes":73,"payload_bytes":123,"include_markers":false,"sha256":"a87434e441135c4b661ea26cf8766a05a2ef75bfa3cc705cba591e2ad6e86349"},{"name":"sh_b","status":"live","code_bytes":81,"payload_bytes":131,"include_markers":false,"sha256":"05060ce27e0b035a670f4d3531581deecfa21240235819f8d460aa9a2906b490"}],"materials":[{"name":"MT","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.800000011920929,0.4000000059604645,0.0,1.0],"name":"tint"}]},{"name":"MP","status":"live","params":[{"type":"color","value":[1.0,1.0,1.0,1.0],"name":"mul"},{"type":"rid","value":{"tex":"TEX16B"},"name":"pal"}]},{"name":"MI","status":"live","params":[]},{"name":"MY","status":"live","params":[{"type":"float","value":0.6,"name":"f"},{"type":"vector2i","value":[0,3],"name":"iv"},{"type":"int","value":3,"name":"k"},{"type":"packed_float32_array","value":[0.20000000298023224,0.4000000059604645,0.6000000238418579,0.800000011920929],"name":"lv"},{"type":"bool","value":true,"name":"on"},{"type":"vector2","value":[0.4000000059604645,0.0],"name":"v2"},{"type":"vector3","value":[0.0,0.800000011920929,0.0],"name":"v3"}]},{"name":"MPh","status":"live","params":[{"type":"int","value":98,"name":"phase"}]},{"name":"MR","status":"freed"},{"name":"MS","status":"live","params":[]},{"name":"M_time","status":"live","params":[]},{"name":"M_screen","status":"live","params":[]},{"name":"M_sdf","status":"live","params":[]},{"name":"M_global","status":"live","params":[]},{"name":"M_spatial","status":"live","params":[]},{"name":"MR2","status":"live","params":[{"type":"nil","value":null,"name":"gain"},{"type":"color","value":[0.20000000298023224,0.800000011920929,0.800000011920929,1.0],"name":"tint"}]}],"items":[{"name":"I1","instance_params":[{"type":"color","value":[0.20000000298023224,0.800000011920929,0.4000000059604645,1.0],"name":"inst_color"}]},{"name":"I2","instance_params":[{"type":"color","value":[0.800000011920929,0.20000000298023224,0.6000000238418579,1.0],"name":"inst_color"}]}]}}
+      ]
+    }
+  },
+  "predictions": {
+    "sabotage-shader-freeze": {
+      "frame": 11,
+      "steps": [1,2,3,4,5,6,7,8,9],
+      "regions": {
+        "TI": [1,2,3,4,5,6,7,8,9],
+        "PH": [1,3,4,6,7,9],
+        "IN": [2,3,4,5,6,7,8,9],
+        "RM": [3,4,9],
+        "PA": [6,7,8,9],
+        "TY": [7,8,9],
+        "SH": [8,9]
+      }
+    },
+    "sabotage-shader-omit-param": {
+      "frame": 21,
+      "op": "material_set_param",
+      "regions": {
+        "PH": [2,4,5,7,8],
+        "TI": [4,5,6,7,8,9],
+        "RM": [5,6,7,8,9],
+        "PA": [6,7,8,9],
+        "TY": [7,8,9]
+      }
+    },
+    "sabotage-shader-perturb-shader": {
+      "frame": 21,
+      "regions": {
+        "TI": [3,4,5,6,7,8,9],
+        "RM": [3,4,5,6,7,8,9],
+        "SH": [8,9]
+      }
+    },
+    "sabotage-shader-receiver-ignore-material": {
+      "regions": {
+        "TI": [0,1,2,3,4,5,6,7,8,9],
+        "IN": [0,1,2,3,4,5,6,7,8,9],
+        "TY": [0,1,2,3,4,5,6,7,8,9],
+        "PH": [0,1,2,3,4,5,6,7,8,9],
+        "RM": [0,1,2,3,4,5,6,7,8,9],
+        "SH": [0,1,2,3,4,5,6,7,8,9],
+        "PA": [6,7,8,9]
+      }
+    },
+    "sabotage-shader-receiver-stale-param": {
+      "regions": {
+        "PH": [0,1,2,3,4,5,6,7,8,9],
+        "TI": [1,2,3,4,5,6,7,8,9],
+        "PA": [6,7,8,9],
+        "TY": [7,8,9]
+      }
+    }
+  }
+}

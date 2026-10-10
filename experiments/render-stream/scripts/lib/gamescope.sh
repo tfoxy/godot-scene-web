@@ -184,6 +184,8 @@ GS_STRIP_VARS=(
 	RS_FIXTURE_GLYPH_LOG RS_FIXTURE_ENV_LOG
 	# gate 5 (protocol/gate5-design.md Q7): the mesh oracle
 	RS_FIXTURE_MESH_LOG
+	# gate 5.5 (protocol/gate5_5-design.md Q7): the material oracle, the shader policy and library
+	RS_FIXTURE_MATERIAL_LOG GRC_SHADER_POLICY RS_RECEIVER_SHADER_LIBRARY
 )
 
 # Sets GS_STRIP_ARGS to `-u NAME` words for `env`: GS_STRIP_VARS plus every inherited GRC_* and
