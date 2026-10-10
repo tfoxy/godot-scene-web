@@ -9,6 +9,15 @@
 // protocol/golden-3/make_golden.py's state7() -- state(6) plus one new item (6) drawing three
 // add_msdf_texture_rect_region commands against one new texture (7, "the page"). Shared by
 // rs3_codec_test.cpp the same way the six base states are shared by rs2_codec_test.cpp.
+//
+// state(8)..state(11) and their helpers are new at G5w: the ground truth for protocol/golden-4/
+// {full,patch,inline}.rs4's eighth through eleventh transactions, hand-transcribed from
+// protocol/golden-4/make_golden.py's state8()..state11(). As built (G5w): gate5-design.md's Q4
+// describes three new states (8, 9, 10); this splits the "mesh version change with no item
+// change" proof point into its own state (10) so it is never conflated with another mesh
+// becoming "freed" or "unsupported" in the same transaction, and moves that content to a fourth
+// new state (11). Shared by rs4_codec_test.cpp the same way state(7) is shared by
+// rs3_codec_test.cpp.
 #ifndef GRC_RS2_GOLDEN_STATES_H
 #define GRC_RS2_GOLDEN_STATES_H
 
@@ -202,6 +211,42 @@ inline Session golden_session_v3(Encoding stream_encoding, const std::string &st
   return session;
 }
 
+// new at /4 (G5w, render-stream-4.md "Features"): the fifteen ops, the six still-refused
+// calibrator-7 slots, "mesh" added to resources, and the two viewport snap settings added to
+// unobserved.
+inline const std::vector<std::string> kFeatureOpsV4 = {
+    "add_circle", "add_clip_ignore", "add_line", "add_mesh", "add_msdf_texture_rect_region",
+    "add_multiline", "add_nine_patch", "add_polygon", "add_polyline", "add_primitive", "add_rect",
+    "add_set_transform", "add_texture_rect", "add_texture_rect_region", "add_triangle_array"};
+
+inline const std::vector<std::string> kFeatureObservedUnsupportedV4 = {
+    "canvas_item_add_animation_slice", "canvas_item_add_lcd_texture_rect_region",
+    "canvas_item_add_multimesh", "canvas_item_add_particles", "canvas_item_attach_skeleton",
+    "canvas_item_set_material"};
+
+inline const std::vector<std::string> kFeatureResourcesV4 = {"mesh", "texture_2d",
+                                                               "texture_2d_placeholder"};
+
+inline const std::vector<std::string> kFeatureUnobservedV4 = {
+    "canvas_item_set_canvas_group_mode", "canvas_item_set_instance_shader_parameter",
+    "canvas_item_set_light_mask", "canvas_item_set_sort_children_by_y",
+    "canvas_item_set_visibility_notifier", "canvas_set_modulate",
+    "canvas_texture_set_shading_parameters", "texture_set_size_override",
+    "viewport_remove_canvas", "viewport_set_canvas_cull_mask",
+    "viewport_set_global_canvas_transform", "viewport_set_snap_2d_transforms_to_pixel",
+    "viewport_set_snap_2d_vertices_to_pixel"};
+
+inline Session golden_session_v4(Encoding stream_encoding, const std::string &stream_id,
+                                  const std::string &session_id, Delivery delivery) {
+  Session session = golden_session(stream_encoding, stream_id, session_id, delivery);
+  session.version = ProtocolVersion::V4;
+  session.features.ops = kFeatureOpsV4;
+  session.features.resources = kFeatureResourcesV4;
+  session.features.observed_unsupported_ops = kFeatureObservedUnsupportedV4;
+  session.features.unobserved = kFeatureUnobservedV4;
+  return session;
+}
+
 inline CanvasState root_canvas(std::vector<std::uint32_t> items) {
   CanvasState c;
   c.id = 1;
@@ -273,6 +318,140 @@ inline Command add_msdf_texture_rect_region(bool has_tex, std::uint32_t tex, std
   c.msdf_px_range = px_range;
   c.msdf_scale = scale;
   return c;
+}
+
+// --- new at /4 (G5w, render-stream-4.md "Command"): the eleven new command builders ----------
+
+inline Command add_line(Point2 from, Point2 to, Color4 color, float width, bool aa = false) {
+  Command c;
+  c.kind = CommandKind::AddLine;
+  c.antialiased = aa;
+  c.line_from = from;
+  c.line_to = to;
+  c.color = color;
+  c.width = width;
+  return c;
+}
+
+inline Command add_polyline(std::vector<Point2> points, std::vector<Color4> colors, float width,
+                             bool aa = false, bool multiline = false) {
+  Command c;
+  c.kind = multiline ? CommandKind::AddMultiline : CommandKind::AddPolyline;
+  c.antialiased = aa;
+  c.points = std::move(points);
+  c.colors = std::move(colors);
+  c.width = width;
+  return c;
+}
+
+inline Command add_circle(Point2 position, float radius, Color4 color, bool aa = false) {
+  Command c;
+  c.kind = CommandKind::AddCircle;
+  c.antialiased = aa;
+  c.circle_position = position;
+  c.circle_radius = radius;
+  c.color = color;
+  return c;
+}
+
+inline Command add_primitive(std::vector<Point2> points, std::vector<Color4> colors,
+                              std::vector<Point2> uvs, bool has_tex = false,
+                              std::uint32_t tex = 0, bool polygon = false) {
+  Command c;
+  c.kind = polygon ? CommandKind::AddPolygon : CommandKind::AddPrimitive;
+  c.has_tex = has_tex;
+  c.tex = tex;
+  c.points = std::move(points);
+  c.colors = std::move(colors);
+  c.uvs = std::move(uvs);
+  return c;
+}
+
+inline Command add_triangle_array(std::vector<Point2> points, std::vector<Color4> colors,
+                                   std::vector<Point2> uvs, std::vector<std::int32_t> indices,
+                                   std::int32_t count, bool has_tex = false,
+                                   std::uint32_t tex = 0) {
+  Command c;
+  c.kind = CommandKind::AddTriangleArray;
+  c.has_tex = has_tex;
+  c.tex = tex;
+  c.points = std::move(points);
+  c.colors = std::move(colors);
+  c.uvs = std::move(uvs);
+  c.indices = std::move(indices);
+  c.triangle_count = count;
+  return c;
+}
+
+inline Command add_nine_patch(Rect4 rect, Rect4 source, Point2 margin_tl, Point2 margin_br,
+                                AxisStretchMode x_axis, AxisStretchMode y_axis, bool draw_center,
+                                bool has_tex, std::uint32_t tex, Color4 modulate = kWhite) {
+  Command c;
+  c.kind = CommandKind::AddNinePatch;
+  c.has_tex = has_tex;
+  c.tex = tex;
+  c.rect = rect;
+  c.src = source;
+  c.np_margin_tl = margin_tl;
+  c.np_margin_br = margin_br;
+  c.x_axis = x_axis;
+  c.y_axis = y_axis;
+  c.draw_center = draw_center;
+  c.modulate = modulate;
+  return c;
+}
+
+inline Command add_mesh(std::uint32_t mesh_id, Xform transform, bool has_tex = false,
+                         std::uint32_t tex = 0, Color4 modulate = kWhite) {
+  Command c;
+  c.kind = CommandKind::AddMesh;
+  c.mesh = mesh_id;
+  c.has_tex = has_tex;
+  c.tex = tex;
+  c.transform = transform;
+  c.modulate = modulate;
+  return c;
+}
+
+inline Command add_set_transform(Xform transform) {
+  Command c;
+  c.kind = CommandKind::AddSetTransform;
+  c.transform = transform;
+  return c;
+}
+
+inline Command add_clip_ignore(bool ignore) {
+  Command c;
+  c.kind = CommandKind::AddClipIgnore;
+  c.clip_ignore = ignore;
+  return c;
+}
+
+inline MeshSurface mesh_surface(std::string hash, std::uint64_t payload_bytes,
+                                 Primitive primitive, std::int64_t format,
+                                 std::int32_t vertex_count, std::int32_t index_count) {
+  MeshSurface s;
+  s.hash = std::move(hash);
+  s.payload_bytes = payload_bytes;
+  s.primitive = primitive;
+  s.format = format;
+  s.vertex_count = vertex_count;
+  s.index_count = index_count;
+  return s;
+}
+
+inline MeshEntry mesh_entry(MeshStatus status, std::uint64_t version,
+                             std::vector<MeshSurface> surfaces = {}, bool has_reason = false,
+                             MeshReason reason = MeshReason::MeshFormat) {
+  MeshEntry m;
+  m.status = status;
+  m.has_reason = has_reason;
+  m.reason = reason;
+  m.version = version;
+  m.has_aabb = status != MeshStatus::Freed;
+  m.custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  m.surfaces = std::move(surfaces);
+  return m;
 }
 
 inline const UnsupportedRef kUnsupportedItem3 = []() {
@@ -533,7 +712,123 @@ inline TextureEntry texture_page() {
   return t;
 }
 
-// --- the six states -------------------------------------------------------------------------
+// --- item 7 and state 8, new at /4 (G5w): one of every new immediate op --------------------
+
+// ARRAY_FORMAT_*/ARRAY_FLAG_* bits this test needs (gate5-design.md Q1e; render-stream-4.md
+// "Mesh payload"), carried as plain ints, never as a Mesh.ArrayFormat enum.
+inline constexpr std::int64_t kArrayFormatColor = 1 << 3;
+inline constexpr std::int64_t kArrayFormatTexUv = 1 << 4;
+inline constexpr std::int64_t kArrayFormatIndex = 1 << 12;
+inline constexpr std::int64_t kArrayFlagUse2dVertices = static_cast<std::int64_t>(1) << 25;
+inline constexpr std::int64_t kArrayFlagCompressAttributes = static_cast<std::int64_t>(1) << 29;
+
+inline ItemState item7_immediate_ops() {
+  ItemState it;
+  it.id = 7;
+  it.parent = ParentRef{ParentKind::Canvas, 1};
+  it.xform = {1.0f, 0.0f, 0.0f, 1.0f, 120.0f, 0.0f};
+  it.draw_index = 6;
+  it.content_version = 1;
+  it.commands = {
+      add_line({0.0f, 0.0f}, {10.0f, 0.0f}, kWhite, 1.0f),
+      add_polyline({{0.0f, 10.0f}, {10.0f, 10.0f}, {10.0f, 20.0f}, {0.0f, 20.0f}},
+                   {{1.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f, 1.0f}}, 2.0f),
+      add_polyline({{0.0f, 30.0f}, {10.0f, 30.0f}, {0.0f, 40.0f}, {10.0f, 40.0f}},
+                   {{0.25f, 0.25f, 1.0f, 1.0f}}, 1.0f, false, true),
+      add_circle({5.0f, 50.0f}, 4.0f, {0.25f, 0.75f, 1.0f, 1.0f}, true),
+      add_primitive({{0.0f, 60.0f}, {10.0f, 60.0f}, {0.0f, 70.0f}}, {{1.0f, 1.0f, 0.25f, 1.0f}},
+                    {}),
+      add_primitive({{0.0f, 80.0f}, {10.0f, 80.0f}, {10.0f, 90.0f}, {0.0f, 90.0f}},
+                    {{1.0f, 1.0f, 1.0f, 1.0f}},
+                    {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}}, true, 7, true),
+      add_triangle_array({{0.0f, 100.0f}, {10.0f, 100.0f}, {10.0f, 110.0f}, {0.0f, 110.0f}},
+                         {{0.75f, 1.0f, 0.75f, 1.0f}}, {}, {0, 1, 2, 0, 2, 3}, 3),
+      add_set_transform({1.0f, 0.0f, 0.0f, 1.0f, 2.0f, 2.0f}),
+      add_nine_patch({0.0f, 120.0f, 16.0f, 16.0f}, {0.0f, 0.0f, 16.0f, 16.0f}, {4.0f, 4.0f},
+                     {4.0f, 4.0f}, AxisStretchMode::TileFit, AxisStretchMode::TileFit, true, true,
+                     7),
+      add_clip_ignore(true),
+      add_clip_ignore(false),
+  };
+  return it;
+}
+
+// --- item 8/9/10, meshes 1/2/3 and states 9-11, new at /4 (G5w) -----------------------------
+
+// payload_sha256() of protocol/golden-4/payloads/mesh1-{a,b}.grm and mesh2-v{1,2}.grm
+// (make_golden.py HASH_MESH1_A/B, HASH_MESH2_V1/V2).
+inline const std::string kHashMesh1A =
+    "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a";
+inline const std::string kHashMesh1B =
+    "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474";
+inline const std::string kHashMesh2V1 =
+    "62c07418eb102e442122992cdacefc057a530ee24bb47e3ea3034bd7c75f387a";
+inline const std::string kHashMesh2V2 =
+    "1c68b94d68817069d53580212d0fcceac80eec854e5d1bd6399b9b7160e98bbc";
+
+inline constexpr std::int64_t kMesh1SurfaceAFormat = kArrayFormatColor | kArrayFlagUse2dVertices;
+inline constexpr std::int64_t kMesh1SurfaceBFormat =
+    kArrayFormatTexUv | kArrayFormatIndex | kArrayFlagUse2dVertices;
+inline constexpr std::int64_t kMesh2SurfaceFormat =
+    kArrayFormatColor | kArrayFormatIndex | kArrayFlagUse2dVertices;
+
+inline ItemState item8_mesh() {
+  ItemState it;
+  it.id = 8;
+  it.parent = ParentRef{ParentKind::Canvas, 1};
+  it.xform = {1.0f, 0.0f, 0.0f, 1.0f, 140.0f, 0.0f};
+  it.draw_index = 7;
+  it.content_version = 1;
+  it.commands = {add_mesh(1, kIdentityXform, true, 7)};
+  return it;
+}
+
+inline ItemState item9_unsupported_mesh() {
+  ItemState it;
+  it.id = 9;
+  it.parent = ParentRef{ParentKind::Canvas, 1};
+  it.xform = {1.0f, 0.0f, 0.0f, 1.0f, 160.0f, 0.0f};
+  it.draw_index = 8;
+  it.content_version = 1;
+  it.commands = {add_mesh(3, kIdentityXform)};
+  return it;
+}
+
+inline ItemState item10_unknown_mesh() {
+  ItemState it;
+  it.id = 10;
+  it.parent = ParentRef{ParentKind::Canvas, 1};
+  it.xform = {1.0f, 0.0f, 0.0f, 1.0f, 180.0f, 0.0f};
+  it.draw_index = 9;
+  it.content_version = 1;
+  it.commands = {unsupported_cmd("canvas_item_add_mesh", UnsupportedCmdReason::UnknownMesh)};
+  return it;
+}
+
+inline const UnsupportedRef kUnsupportedMeshItem9 = []() {
+  UnsupportedRef u;
+  u.op = "canvas_item_add_mesh";
+  u.has_item = true;
+  u.item = 9;
+  u.reason = UnsupportedReason::UnsupportedMesh;
+  return u;
+}();
+
+inline const UnsupportedRef kUnsupportedUnknownMeshItem10 = []() {
+  UnsupportedRef u;
+  u.op = "canvas_item_add_mesh";
+  u.has_item = true;
+  u.item = 10;
+  u.reason = UnsupportedReason::UnknownMesh;
+  return u;
+}();
+
+// Sorted ascending by (item, op), matching validateRecording()'s unsupported[] ordering rule.
+inline const std::vector<UnsupportedRef> kState11Unsupported = {
+    kUnsupportedItem3, kUnsupportedTextureItem5, kUnsupportedMsdfItem6, kUnsupportedMeshItem9,
+    kUnsupportedUnknownMeshItem10};
+
+// --- the eleven states -----------------------------------------------------------------------
 
 inline Snapshot state(int n) {
   Snapshot s;
@@ -593,6 +888,68 @@ inline Snapshot state(int n) {
     s.textures = {texture_a(2, kHashA2), texture_atwin(), texture_u(), texture_p_replaced(),
                   texture_n(), texture_page()};
     s.default_texture_filter = Filter::Linear;
+    break;
+  case 8:
+    // new at /4 (render-stream-4.md, G5w): state 7 plus item 7, one of every new immediate op.
+    s.version = ProtocolVersion::V4;
+    s.unsupported = kState7Unsupported;
+    s.canvases = {root_canvas({1, 2, 3, 4, 5, 6, 7})};
+    s.items = {item1_v2(), item2(), item3(), item4_v2(), item5(), item6_msdf(),
+               item7_immediate_ops()};
+    s.textures = {texture_a(2, kHashA2), texture_atwin(), texture_u(), texture_p_replaced(),
+                  texture_n(), texture_page()};
+    s.default_texture_filter = Filter::Linear;
+    break;
+  case 9:
+    // new at /4: mesh 1 (two surfaces) and mesh 2 (one surface) created; item 8 draws mesh 1,
+    // textured.
+    s.version = ProtocolVersion::V4;
+    s.unsupported = kState7Unsupported;
+    s.canvases = {root_canvas({1, 2, 3, 4, 5, 6, 7, 8})};
+    s.items = {item1_v2(), item2(), item3(), item4_v2(), item5(), item6_msdf(),
+               item7_immediate_ops(), item8_mesh()};
+    s.textures = {texture_a(2, kHashA2), texture_atwin(), texture_u(), texture_p_replaced(),
+                  texture_n(), texture_page()};
+    s.meshes = {
+        mesh_entry(MeshStatus::Ok, 1,
+                   {mesh_surface(kHashMesh1A, 256, Primitive::Triangles, kMesh1SurfaceAFormat, 3, 0),
+                    mesh_surface(kHashMesh1B, 297, Primitive::Triangles, kMesh1SurfaceBFormat, 4, 6)}),
+        mesh_entry(MeshStatus::Ok, 1,
+                   {mesh_surface(kHashMesh2V1, 281, Primitive::Triangles, kMesh2SurfaceFormat, 4, 6)}),
+    };
+    s.meshes[0].id = 1;
+    s.meshes[1].id = 2;
+    s.default_texture_filter = Filter::Linear;
+    break;
+  case 10:
+    // new at /4: ONLY mesh 2's surface changes (new payload, version 2). No item, canvas or
+    // texture changes at all -- "a mesh version change with no item change".
+    s = state(9);
+    s.seq = 10;
+    s.frame = 10;
+    s.meshes[1] = mesh_entry(
+        MeshStatus::Ok, 2,
+        {mesh_surface(kHashMesh2V2, 281, Primitive::Triangles, kMesh2SurfaceFormat, 4, 6)});
+    s.meshes[1].id = 2;
+    break;
+  case 11:
+    // new at /4: mesh 1 freed (item 8 still names it: a tombstone); mesh 3 created
+    // "unsupported" (mesh-format) and named by item 9 (-> unsupported-mesh); item 10 names mesh
+    // id 999, which the capture never saw (-> unknown-mesh).
+    s = state(10);
+    s.seq = 11;
+    s.frame = 11;
+    s.unsupported = kState11Unsupported;
+    s.canvases = {root_canvas({1, 2, 3, 4, 5, 6, 7, 8, 9, 10})};
+    s.items.push_back(item9_unsupported_mesh());
+    s.items.push_back(item10_unknown_mesh());
+    s.meshes[0] = mesh_entry(MeshStatus::Freed, 1);
+    s.meshes[0].id = 1;
+    {
+      MeshEntry mesh3 = mesh_entry(MeshStatus::Unsupported, 1, {}, true, MeshReason::MeshFormat);
+      mesh3.id = 3;
+      s.meshes.push_back(mesh3);
+    }
     break;
   default:
     break;

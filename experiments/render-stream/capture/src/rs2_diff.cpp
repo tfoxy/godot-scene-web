@@ -71,6 +71,37 @@ bool canvas_texture_info_equal(const CanvasTextureInfo &a, const CanvasTextureIn
 // render-stream-2.md "Full and patch transactions": "Its `textures` lists exactly the entries
 // that are new or differ in any JSON value." Textures carry no floats and no content_version
 // exemption, so every field participates.
+bool mesh_surface_equal(const MeshSurface &a, const MeshSurface &b) {
+  return a.hash == b.hash && a.payload_bytes == b.payload_bytes && a.primitive == b.primitive &&
+         a.format == b.format && a.vertex_count == b.vertex_count && a.index_count == b.index_count;
+}
+
+// render-stream-4.md "Mesh table": "exactly the texture table's full/patch/resolve semantics",
+// so every JSON field participates (no content_version-style exemption, same as textures).
+bool mesh_entry_equal(const MeshEntry &a, const MeshEntry &b) {
+  if (a.status != b.status || a.has_reason != b.has_reason) {
+    return false;
+  }
+  if (a.has_reason && a.reason != b.reason) {
+    return false;
+  }
+  if (a.version != b.version || a.has_aabb != b.has_aabb) {
+    return false;
+  }
+  if (a.has_aabb && !arrays_equal_bits(a.custom_aabb, b.custom_aabb)) {
+    return false;
+  }
+  if (a.surfaces.size() != b.surfaces.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.surfaces.size(); ++i) {
+    if (!mesh_surface_equal(a.surfaces[i], b.surfaces[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool texture_entry_equal(const TextureEntry &a, const TextureEntry &b) {
   if (a.kind != b.kind || a.status != b.status || a.has_reason != b.has_reason) {
     return false;
@@ -111,6 +142,7 @@ ItemEntry full_entry(const ItemState &item) {
 
 Transaction make_full(const Snapshot &cur) {
   Transaction t;
+  t.version = cur.version;
   t.seq = cur.seq;
   t.frame = cur.frame;
   t.encoding = Encoding::Full;
@@ -121,6 +153,9 @@ Transaction make_full(const Snapshot &cur) {
   t.default_texture_repeat = cur.default_texture_repeat;
   t.canvases = cur.canvases;
   t.textures = cur.textures;
+  if (cur.version == ProtocolVersion::V4) {
+    t.meshes = cur.meshes;
+  }
   t.items.reserve(cur.items.size());
   for (const ItemState &item : cur.items) {
     t.items.push_back(full_entry(item));
@@ -130,6 +165,7 @@ Transaction make_full(const Snapshot &cur) {
 
 Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   Transaction t;
+  t.version = cur.version;
   t.seq = cur.seq;
   t.frame = cur.frame;
   t.encoding = Encoding::Patch;
@@ -151,6 +187,10 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   for (const TextureEntry &tex : base.textures) {
     base_textures[tex.id] = &tex;
   }
+  std::map<std::uint32_t, const MeshEntry *> base_meshes;
+  for (const MeshEntry &mesh : base.meshes) {
+    base_meshes[mesh.id] = &mesh;
+  }
   std::set<std::uint32_t> cur_canvas_ids;
   for (const CanvasState &c : cur.canvases) {
     cur_canvas_ids.insert(c.id);
@@ -162,6 +202,10 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   std::set<std::uint32_t> cur_texture_ids;
   for (const TextureEntry &tex : cur.textures) {
     cur_texture_ids.insert(tex.id);
+  }
+  std::set<std::uint32_t> cur_mesh_ids;
+  for (const MeshEntry &mesh : cur.meshes) {
+    cur_mesh_ids.insert(mesh.id);
   }
 
   for (const auto &[id, ptr] : base_canvases) {
@@ -180,6 +224,14 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
     (void)ptr;
     if (cur_texture_ids.find(id) == cur_texture_ids.end()) {
       t.removed_textures.push_back(id);
+    }
+  }
+  if (cur.version == ProtocolVersion::V4) {
+    for (const auto &[id, ptr] : base_meshes) {
+      (void)ptr;
+      if (cur_mesh_ids.find(id) == cur_mesh_ids.end()) {
+        t.removed_meshes.push_back(id);
+      }
     }
   }
   // std::map iterates ascending by key, so removed_* are already ascending.
@@ -215,11 +267,22 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
     t.textures.push_back(tex);
   }
 
+  if (cur.version == ProtocolVersion::V4) {
+    for (const MeshEntry &mesh : cur.meshes) {
+      auto it = base_meshes.find(mesh.id);
+      if (it != base_meshes.end() && mesh_entry_equal(*it->second, mesh)) {
+        continue;
+      }
+      t.meshes.push_back(mesh);
+    }
+  }
+
   return t;
 }
 
 Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   Snapshot out;
+  out.version = txn.version;
   out.seq = txn.seq;
   out.frame = txn.frame;
   out.failures = txn.failures;
@@ -230,6 +293,9 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   if (txn.encoding == Encoding::Full) {
     out.canvases = txn.canvases;
     out.textures = txn.textures;
+    if (txn.version == ProtocolVersion::V4) {
+      out.meshes = txn.meshes;
+    }
     out.items.reserve(txn.items.size());
     for (const ItemEntry &entry : txn.items) {
       out.items.push_back(entry.state);
@@ -277,6 +343,19 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
     textures[tex.id] = tex;
   }
 
+  std::map<std::uint32_t, MeshEntry> meshes;
+  if (txn.version == ProtocolVersion::V4) {
+    for (const MeshEntry &mesh : base.meshes) {
+      meshes[mesh.id] = mesh;
+    }
+    for (std::uint32_t id : txn.removed_meshes) {
+      meshes.erase(id);
+    }
+    for (const MeshEntry &mesh : txn.meshes) {
+      meshes[mesh.id] = mesh;
+    }
+  }
+
   out.canvases.reserve(canvases.size());
   for (auto &[id, c] : canvases) {
     (void)id;
@@ -291,6 +370,11 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   for (auto &[id, tex] : textures) {
     (void)id;
     out.textures.push_back(tex);
+  }
+  out.meshes.reserve(meshes.size());
+  for (auto &[id, mesh] : meshes) {
+    (void)id;
+    out.meshes.push_back(mesh);
   }
   return out;
 }

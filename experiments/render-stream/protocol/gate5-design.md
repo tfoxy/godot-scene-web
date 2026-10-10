@@ -909,6 +909,38 @@ g4e1-rs3-version-switch-pattern). The capture and the receiver keep speaking /3.
 **Pass criteria**: `golden-2/`, `golden-3/` and `golden-4/` pass `--check` and both decoders'
 self-tests; all gates unchanged.
 
+**As built (G5w, 2026-10-10).** Implemented as a version-parameterized extension of
+`rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd`, exactly as D1 says, plus one new
+file per side for the mesh payload format (`scripts/lib/render-stream-mesh.ts`,
+`receiver/rs_mesh_payload.gd`) and a new `rs4_codec_test.cpp` (paralleling `rs3_codec_test.cpp`,
+registered in CMakeLists.txt with `GRC_GOLDEN4_DIR`) that is itself the "C++ golden check" this
+section's file list names -- it checks the hand-built encoder path against `golden-4/`, standing
+in for G5a's mirror-driven encoder until G5d wires it up. `Transaction`/`Snapshot` gained their
+own `version` field (mirroring `Session::version`) so `encode_transaction()`/`make_full()`/
+`make_patch()` know whether to emit the mesh table and `cmd_i32`/`mesh_f32` blocks; V2 and V3
+stay byte-identical in transaction shape, as before.
+
+Q4's golden-4 states were predicted as three new states (8, 9, 10). Building state 9 to cover
+both "two meshes created" and "a mesh version change with no item change" turned out to conflate
+two independent proof points in one transaction once a third mesh needed to go `"unsupported"`
+and a fourth command needed to name an unknown mesh in the same breath. Implemented as four new
+states instead: 8 (item 7, one of every immediate op), 9 (meshes 1 and 2 created, item 8 draws
+mesh 1), 10 (ONLY mesh 2's surface changes -- version 2, no item/canvas/texture entries at all),
+11 (mesh 1 freed with item 8's `add_mesh` unchanged, mesh 3 created `"unsupported"` and named by a
+new item 9, item 10 names mesh id 999). `full.rs4`/`patch.rs4`/`inline.rs4` therefore carry eleven
+transactions, not ten; `golden-4/` is 1.4 MB, the same order of magnitude as `golden-3/`'s 0.8 MB.
+
+Two GDScript-only pitfalls cost a run each (memory rs-gate5-g5w-gdscript-facts): a ternary
+expression's untyped `[]` branch assigned into an `Array[int]`-declared `var` compiles clean but
+throws "Trying to assign an array of type Array to a variable of type Array[int]" at runtime, not
+parse time, and is silently swallowed by the calling `accept()`/`_accept_transaction()` chain
+(every transaction "succeeds" with empty errors while leaving `canvases`/`items`/`textures`
+untouched) -- every such ternary needed an explicit `if/else` instead. Separately, a `continue`
+inside an `elif` branch shared with a later independent check in the same loop iteration skipped
+that later check whenever the `elif`'s own early-exit fired (here: an untextured `add_mesh`'s
+`tex == null` skipped the unrelated mesh-unsupported-entry detection for that same command) --
+fixed by folding the early-exit into the `elif`'s own condition instead of a `continue`.
+
 ---
 
 ### G5d — render-stream/4: immediate ops, `set_transform`, `clip_ignore`, receiver (opus)

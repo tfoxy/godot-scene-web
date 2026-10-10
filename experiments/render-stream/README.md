@@ -2949,6 +2949,51 @@ frame each item's commands are its calls in order (`add_rect` float32-exact, eve
 - Pixel exactness on another GPU or driver: budgets and the delta-1 class are measured on one
   RTX 2060 under GLES3.
 
+## Gate 5w result (2026-10-10)
+
+G5w ([protocol/gate5-design.md](protocol/gate5-design.md) "G5w", "As built (G5w)") passes:
+`build-capture.sh`'s ctest suite is 12/12 including the new `rs4_codec` test, all four golden
+generators pass `--check` (`golden-1` 35, `golden-2` 47, `golden-3` 37, `golden-4` 51 outputs
+match), the TS self-tests (`self-test-rs0.ts`, `-rs1.ts`, `-rs2.ts` — the last covering
+golden-2/3/4) and both GDScript self-tests (`codec2_selftest.gd` over golden-2/3/4,
+`applier2_selftest.gd` confirming no golden-3 regression). Gate 0 is 19/19
+(`artifacts/render-stream/gate0/20261010T084405Z/`). Gate 2's full run (g2a,g2b,g2c,g2e) is 75/78
+in `gate2/20261010T084625Z/`; its two failures are the same live-animate pin/retire check at
+frame 971 ("811b615292e5 is servable, named by nothing") and did not reproduce on a same-build
+rerun of just g2a,g2c (40/40 real checks, `gate2/20261010T131627Z/`) — a timing flake, not a /4
+regression, since /4 never runs in gate 2. Gate 4's g4a,g4e legs are 64/64 real checks in
+`gate4/20261010T131622Z/` (g4b,g4c,g4d,g4f correctly not run). Nothing on the capture, the wire or
+the receiver's /2 or /3 behavior changed.
+
+What landed: render-stream/4 ([protocol/render-stream-4.md](protocol/render-stream-4.md)), a
+version-parameterized extension of `rs2_codec.*`/`rs2_diff.*` (11 new immediate/mesh draw ops, an
+`i32` block kind, a mesh table parallel to the texture table) exactly as D1/Q4 describe, plus
+`render-stream-2.ts`/`rs2_decoder.gd` threading a `2|3|4` version parameter throughout, a new
+`rs4_codec_test.cpp` (the "C++ golden check" D1 names, standing in for G5a's mirror-driven encoder
+until G5d wires it up), and one new file per side for the mesh payload format
+(`scripts/lib/render-stream-mesh.ts`, `receiver/rs_mesh_payload.gd`, mirroring the GRT1 texture
+payload as GRM1). `Transaction`/`Snapshot` gained their own `version` field mirroring
+`Session::version`; V2 and V3 stay byte-identical in transaction shape.
+
+`golden-4/` holds 11 states, not Q4's predicted 3 new ones (8/9/10/11 instead of 8/9/10), 1.6 MB
+across 51 files — splitting "two meshes created" from "a version-only mesh change" once a third
+mesh needed to go `"unsupported"` and a fourth command needed to name an unknown mesh in the same
+transaction. See gate5-design.md's "As built (G5w)" note for the full rationale and two
+GDScript-only pitfalls, one a ternary-into-typed-array runtime trap that silently broke every
+golden-2/3 resolved-state check, not just golden-4's (recorded in
+`.agents/memory/rs-gate5-g5w-gdscript-facts.md`).
+
+### What G5w does not prove
+
+- That a receiver draws any of this, or that capture/the live runners speak /4 at all: gate 2 and
+  gate 4 run entirely on /2 and /3, unchanged by construction. Switching capture, the receiver or
+  any runner to /4 is G5d's job.
+- That the mesh table or GRM1 payload matches what the engine actually emits for a real
+  `ArrayMesh`: G5w's encoder is hand-built from `rs2_golden_states.h`, not driven by a captured
+  mirror. G5c's mesh oracle and G5a's calibrator 7 are the first contact with a live mesh.
+- Pixel exactness, budgets, or any rendering at all: /4 carries commands and resources; nothing
+  paints yet.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

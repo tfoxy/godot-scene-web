@@ -22,19 +22,34 @@
 // expectedDataBytes() below are the read side, needed to validate `resource` records and
 // `payloads/*.grt` golden vectors.
 //
-// render-stream/3 (../../protocol/render-stream-3.md, G4e1) is implemented IN THIS SAME FILE
-// behind an explicit `version: 2 | 3` parameter on every exported entry point
-// (splitRecords/decodeRecording/validateRecording/resolveRecording), rather than a forked
-// render-stream-3.ts module -- /3 is /2 plus one draw command (add_msdf_texture_rect_region) and
-// one sabotage kind (perturb-glyph), too small a delta to justify duplicating this module
-// (gate4-design.md G4e1: "Renaming files is not part of this contract"). `version` selects the
-// expected magic (GRS2 vs GRS3) and the decoded/resolved schema strings. Since G4e2 the capture,
-// the receiver and every gate checker speak /3, so the parameter defaults to 3; /2 decoding
-// remains only for golden-2/ (self-test-rs2.ts passes 2 explicitly), as /1's did. The new command and
-// sabotage kind are always representable regardless of `version` -- a /2 stream simply never
-// contains them in practice, since the capture never emits them under /2.
+// render-stream/3 (../../protocol/render-stream-3.md, G4e1) and render-stream/4
+// (../../protocol/render-stream-4.md, G5w) are implemented IN THIS SAME FILE behind an explicit
+// `version: 2 | 3 | 4` parameter on every exported entry point
+// (splitRecords/decodeRecording/validateRecording/resolveRecording), rather than forked
+// render-stream-3.ts/render-stream-4.ts modules -- /3 is /2 plus one draw command
+// (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), and /4 is /3 plus eleven
+// new commands, a mesh table and the cmd_i32 block, too small a delta (gate4-design.md G4e1:
+// "Renaming files is not part of this contract") to justify duplicating this module. `version`
+// selects the expected magic (GRS2/GRS3/GRS4) and the decoded/resolved schema strings. Since
+// G4e2 the capture, the receiver and every gate checker speak /3 (G5d switches them to /4), so
+// the parameter defaults to 3; /2 decoding remains only for golden-2/ and /4 decoding is
+// exercised only against golden-4/ until G5d lands (self-test-rs2.ts passes 2/3/4 explicitly per
+// golden directory). Every new command, sabotage kind and the mesh table are always
+// representable regardless of `version` -- a /2 or /3 stream simply never contains them in
+// practice, since the capture never emits them below its own version.
+//
+// The mesh payload format (render-stream-mesh/1, GRM1) has its own module,
+// render-stream-mesh.ts, parallel to how render-stream-texture/1 (GRT1) decode lives in THIS
+// file (decodeTexturePayload() below) rather than a separate one -- G5w's contract explicitly
+// calls for a new file here, to keep the payload-format growth (two now, not one) out of this
+// already-large module.
 
 import { createHash } from "node:crypto";
+import {
+  type DecodedMeshPayload,
+  decodeMeshPayload,
+  GRM1_MAGIC,
+} from "./render-stream-mesh";
 
 // --------------------------------------------------------------------------------------- wire types
 
@@ -56,13 +71,19 @@ export type UnsupportedReason =
   | "degenerate-host-size"
   | "unknown-texture"
   | "unsupported-texture"
-  | "canvas-texture-headless";
+  | "canvas-texture-headless"
+  | "unknown-mesh"
+  | "skinned-geometry"
+  | "unsupported-mesh";
 /** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
- * storage never allocates a canvas texture (protocol/canvas-texture-headless.md). */
+ * storage never allocates a canvas texture (protocol/canvas-texture-headless.md).
+ * unknown-mesh/skinned-geometry: new at /4 (render-stream-4.md "Command"). */
 export type UnsupportedCmdReason =
   | "unsupported-op"
   | "unknown-texture"
-  | "canvas-texture-headless";
+  | "canvas-texture-headless"
+  | "unknown-mesh"
+  | "skinned-geometry";
 export type SabotageKind =
   | "freeze-frame"
   | "omit-update"
@@ -77,7 +98,8 @@ export type SabotageKind =
   | "spurious-texture-update"
   | "drop-resource"
   | "unpin"
-  | "perturb-glyph";
+  | "perturb-glyph"
+  | "perturb-vertex";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -118,15 +140,35 @@ export type TextureReason =
   | "unknown-texture"
   | "canvas-texture-channel";
 
+/** render-stream-4.md "Command": add_nine_patch's per-axis stretch mode. */
+export type AxisStretchMode = "stretch" | "tile" | "tile_fit";
+/** render-stream-4.md "Mesh payload": the five RenderingServer 2D primitive types. */
+export type Primitive =
+  | "points"
+  | "lines"
+  | "line_strip"
+  | "triangles"
+  | "triangle_strip";
+export type MeshStatus = "ok" | "unsupported" | "freed";
+export type MeshReason =
+  | "mesh-format"
+  | "mesh-blend-shapes"
+  | "payload-too-large";
+
 export interface BlockDescriptor {
   name: string;
-  type: "f32" | "u8";
+  /** "i32" is new at /4 (render-stream-4.md "Block type i32"): legal only as a transaction's
+   * fourth block, "cmd_i32". */
+  type: "f32" | "u8" | "i32";
   count: number;
 }
 
 export interface ResourcesMeta {
   hash: "sha256";
-  payload: string;
+  /** V2/V3: a single payload-schema string. V4 (render-stream-4.md "Resources"): "payload"
+   * becomes "payloads", a sorted array of schema strings (mesh and texture share one policy). */
+  payload?: string;
+  payloads?: string[];
   delivery: Delivery;
   inline_max_bytes: number;
   max_payload_bytes: number;
@@ -220,11 +262,96 @@ export interface CommandUnsupported {
   name: string;
   reason: UnsupportedCmdReason;
 }
+// --- new at /4 (render-stream-4.md "Command") ------------------------------------------------
+export interface CommandAddLine {
+  op: "add_line";
+  aa: boolean;
+  f: number;
+}
+export interface CommandAddPolyline {
+  op: "add_polyline";
+  aa: boolean;
+  n: number;
+  colors: number;
+  f: number;
+}
+export interface CommandAddMultiline {
+  op: "add_multiline";
+  aa: boolean;
+  n: number;
+  colors: number;
+  f: number;
+}
+export interface CommandAddCircle {
+  op: "add_circle";
+  aa: boolean;
+  f: number;
+}
+export interface CommandAddPrimitive {
+  op: "add_primitive";
+  tex: number | null;
+  n: number;
+  colors: number;
+  uvs: number;
+  f: number;
+}
+export interface CommandAddPolygon {
+  op: "add_polygon";
+  tex: number | null;
+  n: number;
+  colors: number;
+  uvs: number;
+  f: number;
+}
+export interface CommandAddTriangleArray {
+  op: "add_triangle_array";
+  tex: number | null;
+  n: number;
+  colors: number;
+  uvs: number;
+  indices: number;
+  count: number;
+  i: number;
+  f: number;
+}
+export interface CommandAddNinePatch {
+  op: "add_nine_patch";
+  tex: number | null;
+  x_axis: AxisStretchMode;
+  y_axis: AxisStretchMode;
+  draw_center: boolean;
+  f: number;
+}
+export interface CommandAddMesh {
+  op: "add_mesh";
+  mesh: number;
+  tex: number | null;
+  f: number;
+}
+export interface CommandAddSetTransform {
+  op: "add_set_transform";
+  f: number;
+}
+export interface CommandAddClipIgnore {
+  op: "add_clip_ignore";
+  ignore: boolean;
+}
 export type Command =
   | CommandAddRect
   | CommandAddTextureRect
   | CommandAddTextureRectRegion
   | CommandAddMsdfTextureRectRegion
+  | CommandAddLine
+  | CommandAddPolyline
+  | CommandAddMultiline
+  | CommandAddCircle
+  | CommandAddPrimitive
+  | CommandAddPolygon
+  | CommandAddTriangleArray
+  | CommandAddNinePatch
+  | CommandAddMesh
+  | CommandAddSetTransform
+  | CommandAddClipIgnore
   | CommandUnsupported;
 
 export interface TransactionItem {
@@ -276,6 +403,25 @@ export interface TransactionTexture {
   canvas: CanvasTextureMeta | null;
 }
 
+/** render-stream-4.md "Mesh table": one mesh-table entry. `f` is null exactly for "freed". */
+export interface TransactionMeshSurface {
+  hash: string;
+  payload_bytes: number;
+  primitive: Primitive;
+  format: number;
+  vertex_count: number;
+  index_count: number;
+}
+export interface TransactionMesh {
+  id: number;
+  origin: "created";
+  status: MeshStatus;
+  reason: MeshReason | null;
+  version: number;
+  f: number | null;
+  surfaces: TransactionMeshSurface[];
+}
+
 export interface TransactionMeta {
   type: "transaction";
   seq: number;
@@ -294,9 +440,13 @@ export interface TransactionMeta {
   removed_canvases: number[];
   removed_items: number[];
   removed_textures: number[];
+  /** new at /4 (render-stream-4.md "Mesh table"): present only when decoded at version 4. */
+  removed_meshes?: number[];
   canvases: TransactionCanvas[];
   items: TransactionItem[];
   textures: TransactionTexture[];
+  /** new at /4: present only when decoded at version 4. */
+  meshes?: TransactionMesh[];
   blocks: BlockDescriptor[];
 }
 
@@ -337,6 +487,12 @@ export const MAGIC: Uint8Array = new Uint8Array([
 // is selected by `version: 2` (golden-2/ only).
 export const MAGIC_V3: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x33, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+// render-stream-4.md: the GRS4 magic, selected by `version: 4`. The capture and receiver still
+// speak /3 (G5d switches them), so `version` keeps defaulting to 3 everywhere below; /4 decoding
+// is exercised only against golden-4/ until then.
+export const MAGIC_V4: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x34, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -386,6 +542,18 @@ const RESOURCES_KEYS = [
   "http_path",
   "auth",
 ];
+// render-stream-4.md "Resources": "payload" (a string) becomes "payloads" (a sorted array) at /4.
+const RESOURCES_KEYS_V4 = [
+  "hash",
+  "payloads",
+  "delivery",
+  "inline_max_bytes",
+  "max_payload_bytes",
+  "permitted_formats",
+  "fetch",
+  "http_path",
+  "auth",
+];
 const FEATURES_KEYS = [
   "ops",
   "item_state",
@@ -411,6 +579,7 @@ const SABOTAGE_KINDS = [
   "drop-resource",
   "unpin",
   "perturb-glyph",
+  "perturb-vertex",
 ] as const;
 
 const TRANSACTION_KEYS = [
@@ -430,6 +599,28 @@ const TRANSACTION_KEYS = [
   "canvases",
   "items",
   "textures",
+  "blocks",
+];
+// render-stream-4.md "Mesh table": removed_meshes after removed_textures, meshes after textures.
+const TRANSACTION_KEYS_V4 = [
+  "type",
+  "seq",
+  "frame",
+  "encoding",
+  "base_seq",
+  "status",
+  "failures",
+  "unsupported",
+  "default_texture_filter",
+  "default_texture_repeat",
+  "removed_canvases",
+  "removed_items",
+  "removed_textures",
+  "removed_meshes",
+  "canvases",
+  "items",
+  "textures",
+  "meshes",
   "blocks",
 ];
 const FAILURE_KEYS = ["reason", "detail"];
@@ -460,6 +651,34 @@ const ADD_TEXTURE_RECT_REGION_KEYS = ["op", "tex", "transpose", "clip_uv", "f"];
 // render-stream-3.md "Command" (new at /3).
 const ADD_MSDF_TEXTURE_RECT_REGION_KEYS = ["op", "tex", "outline", "f"];
 const UNSUPPORTED_CMD_KEYS = ["op", "name", "reason"];
+// render-stream-4.md "Command" (new at /4): key order is "op", the extra meta keys in the order
+// the spec lists them, then "f" last (or, for add_clip_ignore, "ignore" last with no "f").
+const ADD_LINE_KEYS = ["op", "aa", "f"];
+const ADD_POLYLINE_KEYS = ["op", "aa", "n", "colors", "f"];
+const ADD_CIRCLE_KEYS = ["op", "aa", "f"];
+const ADD_PRIMITIVE_KEYS = ["op", "tex", "n", "colors", "uvs", "f"];
+const ADD_TRIANGLE_ARRAY_KEYS = [
+  "op",
+  "tex",
+  "n",
+  "colors",
+  "uvs",
+  "indices",
+  "count",
+  "i",
+  "f",
+];
+const ADD_NINE_PATCH_KEYS = [
+  "op",
+  "tex",
+  "x_axis",
+  "y_axis",
+  "draw_center",
+  "f",
+];
+const ADD_MESH_KEYS = ["op", "mesh", "tex", "f"];
+const ADD_SET_TRANSFORM_KEYS = ["op", "f"];
+const ADD_CLIP_IGNORE_KEYS = ["op", "ignore"];
 const TEXTURE_KEYS = [
   "id",
   "origin",
@@ -476,6 +695,24 @@ const TEXTURE_KEYS = [
   "canvas",
 ];
 const CANVAS_TEXTURE_KEYS = ["diffuse", "filter", "repeat"];
+// render-stream-4.md "Mesh table" (new at /4).
+const MESH_KEYS = [
+  "id",
+  "origin",
+  "status",
+  "reason",
+  "version",
+  "f",
+  "surfaces",
+];
+const MESH_SURFACE_KEYS = [
+  "hash",
+  "payload_bytes",
+  "primitive",
+  "format",
+  "vertex_count",
+  "index_count",
+];
 
 const RESOURCE_KEYS = ["type", "hash", "bytes", "blocks"];
 
@@ -503,6 +740,21 @@ const SESSION_BLOCK_NAMES = [
 ];
 const SESSION_BLOCK_COUNTS = [4, 6, 4, 6, 1];
 const TRANSACTION_BLOCK_NAMES = ["item_f32", "canvas_f32", "cmd_f32"];
+// render-stream-4.md "Transaction blocks": five blocks; cmd_i32 is type "i32", the rest "f32".
+const TRANSACTION_BLOCK_NAMES_V4 = [
+  "item_f32",
+  "canvas_f32",
+  "cmd_f32",
+  "cmd_i32",
+  "mesh_f32",
+];
+const TRANSACTION_BLOCK_TYPES_V4: Array<"f32" | "i32"> = [
+  "f32",
+  "f32",
+  "f32",
+  "i32",
+  "f32",
+];
 
 const FILTERS = [
   "default",
@@ -532,6 +784,8 @@ const UNSUPPORTED_CMD_REASONS = [
   "unsupported-op",
   "unknown-texture",
   "canvas-texture-headless",
+  "unknown-mesh",
+  "skinned-geometry",
 ] as const;
 const UNSUPPORTED_RESOURCE_KEYS = ["resource", "reason"];
 const UNSUPPORTED_RESOURCE_REASONS = ["canvas-texture-headless"] as const;
@@ -547,6 +801,23 @@ const ITEM_UNSUPPORTED_REASONS = [
   "unknown-texture",
   "unsupported-texture",
   "canvas-texture-headless",
+  "unknown-mesh",
+  "skinned-geometry",
+  "unsupported-mesh",
+] as const;
+const AXIS_STRETCH_MODES = ["stretch", "tile", "tile_fit"] as const;
+const PRIMITIVES = [
+  "points",
+  "lines",
+  "line_strip",
+  "triangles",
+  "triangle_strip",
+] as const;
+const MESH_STATUSES = ["ok", "unsupported", "freed"] as const;
+const MESH_REASONS = [
+  "mesh-format",
+  "mesh-blend-shapes",
+  "payload-too-large",
 ] as const;
 
 // render-stream-2.md "Texture payload": pixel size (bytes/texel) of the permitted uncompressed
@@ -657,7 +928,7 @@ function checkBlocksField(value: unknown, offset: number): string | null {
     }
     if (
       typeof entry.name !== "string" ||
-      (entry.type !== "f32" && entry.type !== "u8") ||
+      (entry.type !== "f32" && entry.type !== "u8" && entry.type !== "i32") ||
       !isInt(entry.count) ||
       entry.count < 0
     ) {
@@ -674,6 +945,7 @@ function checkFixedBlockNames(
   blocks: BlockDescriptor[],
   names: readonly string[],
   offset: number,
+  types?: ReadonlyArray<"f32" | "i32">,
 ): string | null {
   if (blocks.length !== names.length) {
     return `meta-schema: record at offset ${offset}: expected ${names.length} blocks (${names.join(", ")}), got ${blocks.length}`;
@@ -682,8 +954,11 @@ function checkFixedBlockNames(
     if (blocks[i].name !== names[i]) {
       return `meta-schema: record at offset ${offset}: block ${i} is named "${blocks[i].name}", expected "${names[i]}"`;
     }
-    if (blocks[i].type !== "f32") {
-      return `meta-schema: record at offset ${offset}: block "${blocks[i].name}" has type "${blocks[i].type}", expected "f32"`;
+    // render-stream-4.md "Block type i32": a transaction's "cmd_i32" block is the one legal place
+    // for type "i32"; every other fixed block (here, every one when `types` is omitted) is "f32".
+    const expectedType = types ? types[i] : "f32";
+    if (blocks[i].type !== expectedType) {
+      return `meta-schema: record at offset ${offset}: block "${blocks[i].name}" has type "${blocks[i].type}", expected "${expectedType}"`;
     }
   }
   return null;
@@ -700,16 +975,32 @@ function intPair(value: unknown): value is [number, number] {
 
 // --------------------------------------------------------------------------------------- schema checks
 
-function checkResourcesSchema(resources: unknown, offset: number): string[] {
+function checkResourcesSchema(
+  resources: unknown,
+  offset: number,
+  version: 2 | 3 | 4,
+): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
   ];
-  if (!isPlainObject(resources) || !hasExactKeys(resources, RESOURCES_KEYS)) {
+  const keys = version === 4 ? RESOURCES_KEYS_V4 : RESOURCES_KEYS;
+  if (!isPlainObject(resources) || !hasExactKeys(resources, keys)) {
     return err("has the wrong keys");
   }
   if (resources.hash !== "sha256") return err('"hash" must be "sha256"');
-  if (typeof resources.payload !== "string")
+  if (version === 4) {
+    // render-stream-4.md "Resources": "payloads" is a sorted array of schema strings (mesh and
+    // texture share one resource policy).
+    if (!isStringArray(resources.payloads)) {
+      return err('"payloads" is not an array of strings');
+    }
+    const sortedPayloads = [...resources.payloads].sort();
+    if (JSON.stringify(resources.payloads) !== JSON.stringify(sortedPayloads)) {
+      return err('"payloads" is not sorted ascending');
+    }
+  } else if (typeof resources.payload !== "string") {
     return err('"payload" is not a string');
+  }
   if (!isOneOf(resources.delivery, DELIVERIES))
     return err("has an invalid delivery");
   if (!isInt(resources.inline_max_bytes) || resources.inline_max_bytes < 0) {
@@ -751,16 +1042,20 @@ function checkResourcesSchema(resources: unknown, offset: number): string[] {
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
+  version: 2 | 3 | 4,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
   if (!hasExactKeys(meta, SESSION_KEYS))
     return err("session has the wrong top-level keys or order");
-  if (
-    meta.protocol !== "render-stream/2" &&
-    meta.protocol !== "render-stream/3"
-  )
+  const expectedProtocol =
+    version === 4
+      ? "render-stream/4"
+      : version === 3
+        ? "render-stream/3"
+        : "render-stream/2";
+  if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
     return err('"session_id" is not a string');
@@ -843,7 +1138,7 @@ function checkSessionSchema(
     return err('"viewport.stretch" has the wrong keys or an invalid field');
   }
 
-  const resourcesErr = checkResourcesSchema(meta.resources, offset);
+  const resourcesErr = checkResourcesSchema(meta.resources, offset, version);
   if (resourcesErr.length > 0) return resourcesErr;
 
   const features = meta.features;
@@ -948,14 +1243,68 @@ function checkTextureEntrySchema(t: unknown, offset: number): string[] {
   return [];
 }
 
+// render-stream-4.md "Mesh table" (new at /4): the wire shape of one mesh entry, mirroring
+// checkTextureEntrySchema's structural checks. `mesh-entry`'s status/reason/f/surfaces coupling
+// is checked later, once the running mesh_f32 offset is known (checkResolvedInvariants).
+function checkMeshSurfaceSchema(s: unknown, offset: number): string[] {
+  const err = (detail: string) => [
+    `meta-schema: record at offset ${offset}: a meshes[].surfaces[] entry ${detail}`,
+  ];
+  if (!isPlainObject(s) || !hasExactKeys(s, MESH_SURFACE_KEYS)) {
+    return err("has the wrong keys");
+  }
+  if (!isLowerHex(s.hash, 64))
+    return err('"hash" is not 64 lowercase hex digits');
+  if (!isInt(s.payload_bytes) || s.payload_bytes < 1) {
+    return err('"payload_bytes" is not an integer >= 1');
+  }
+  if (!isOneOf(s.primitive, PRIMITIVES)) return err("has an invalid primitive");
+  if (!isInt(s.format)) return err('"format" is not an integer');
+  if (!isInt(s.vertex_count) || s.vertex_count < 0) {
+    return err('"vertex_count" is not a non-negative integer');
+  }
+  if (!isInt(s.index_count) || s.index_count < 0) {
+    return err('"index_count" is not a non-negative integer');
+  }
+  return [];
+}
+
+function checkMeshEntrySchema(m: unknown, offset: number): string[] {
+  const err = (detail: string) => [
+    `meta-schema: record at offset ${offset}: a meshes[] entry ${detail}`,
+  ];
+  if (!isPlainObject(m) || !hasExactKeys(m, MESH_KEYS)) {
+    return err("has the wrong keys");
+  }
+  if (!isInt(m.id) || m.id < 1) return err('"id" is not an integer >= 1');
+  if (m.origin !== "created") return err('"origin" must be "created"');
+  if (!isOneOf(m.status, MESH_STATUSES)) return err("has an invalid status");
+  if (!(m.reason === null || isOneOf(m.reason, MESH_REASONS))) {
+    return err('"reason" is neither null nor a valid mesh reason');
+  }
+  if (!isInt(m.version) || m.version < 1)
+    return err('"version" is not an integer >= 1');
+  if (!(m.f === null || (isInt(m.f) && m.f >= 0))) {
+    return err('"f" is neither null nor a non-negative integer');
+  }
+  if (!Array.isArray(m.surfaces)) return err('"surfaces" is not an array');
+  for (const s of m.surfaces) {
+    const surfaceErr = checkMeshSurfaceSchema(s, offset);
+    if (surfaceErr.length > 0) return surfaceErr;
+  }
+  return [];
+}
+
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
+  version: 2 | 3 | 4,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  if (!hasExactKeys(meta, TRANSACTION_KEYS))
+  const isV4 = version === 4;
+  if (!hasExactKeys(meta, isV4 ? TRANSACTION_KEYS_V4 : TRANSACTION_KEYS))
     return err("transaction has the wrong top-level keys or order");
   if (!isInt(meta.seq) || meta.seq < 1)
     return err('"seq" is not an integer >= 1');
@@ -1025,6 +1374,8 @@ function checkTransactionSchema(
     return err('"removed_items" is not an array of integers');
   if (!isIntArray(meta.removed_textures))
     return err('"removed_textures" is not an array of integers');
+  if (isV4 && !isIntArray(meta.removed_meshes))
+    return err('"removed_meshes" is not an array of integers');
 
   if (!Array.isArray(meta.canvases)) return err('"canvases" is not an array');
   for (const c of meta.canvases) {
@@ -1124,6 +1475,110 @@ function checkTransactionSchema(
               'a commands[] "add_msdf_texture_rect_region" entry is malformed',
             );
           }
+        } else if (cmd.op === "add_line") {
+          if (
+            !hasExactKeys(cmd, ADD_LINE_KEYS) ||
+            typeof cmd.aa !== "boolean" ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err('a commands[] "add_line" entry is malformed');
+          }
+        } else if (cmd.op === "add_polyline" || cmd.op === "add_multiline") {
+          if (
+            !hasExactKeys(cmd, ADD_POLYLINE_KEYS) ||
+            typeof cmd.aa !== "boolean" ||
+            !isInt(cmd.n) ||
+            cmd.n < 0 ||
+            !isInt(cmd.colors) ||
+            cmd.colors < 0 ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err(`a commands[] "${cmd.op}" entry is malformed`);
+          }
+        } else if (cmd.op === "add_circle") {
+          if (
+            !hasExactKeys(cmd, ADD_CIRCLE_KEYS) ||
+            typeof cmd.aa !== "boolean" ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err('a commands[] "add_circle" entry is malformed');
+          }
+        } else if (cmd.op === "add_primitive" || cmd.op === "add_polygon") {
+          if (
+            !hasExactKeys(cmd, ADD_PRIMITIVE_KEYS) ||
+            !(cmd.tex === null || (isInt(cmd.tex) && cmd.tex >= 1)) ||
+            !isInt(cmd.n) ||
+            cmd.n < 0 ||
+            !isInt(cmd.colors) ||
+            cmd.colors < 0 ||
+            !isInt(cmd.uvs) ||
+            cmd.uvs < 0 ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err(`a commands[] "${cmd.op}" entry is malformed`);
+          }
+        } else if (cmd.op === "add_triangle_array") {
+          if (
+            !hasExactKeys(cmd, ADD_TRIANGLE_ARRAY_KEYS) ||
+            !(cmd.tex === null || (isInt(cmd.tex) && cmd.tex >= 1)) ||
+            !isInt(cmd.n) ||
+            cmd.n < 0 ||
+            !isInt(cmd.colors) ||
+            cmd.colors < 0 ||
+            !isInt(cmd.uvs) ||
+            cmd.uvs < 0 ||
+            !isInt(cmd.indices) ||
+            cmd.indices < 0 ||
+            !isInt(cmd.count) ||
+            !isInt(cmd.i) ||
+            cmd.i < 0 ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err('a commands[] "add_triangle_array" entry is malformed');
+          }
+        } else if (cmd.op === "add_nine_patch") {
+          if (
+            !hasExactKeys(cmd, ADD_NINE_PATCH_KEYS) ||
+            !(cmd.tex === null || (isInt(cmd.tex) && cmd.tex >= 1)) ||
+            !isOneOf(cmd.x_axis, AXIS_STRETCH_MODES) ||
+            !isOneOf(cmd.y_axis, AXIS_STRETCH_MODES) ||
+            typeof cmd.draw_center !== "boolean" ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err('a commands[] "add_nine_patch" entry is malformed');
+          }
+        } else if (cmd.op === "add_mesh") {
+          if (
+            !hasExactKeys(cmd, ADD_MESH_KEYS) ||
+            !isInt(cmd.mesh) ||
+            cmd.mesh < 1 ||
+            !(cmd.tex === null || (isInt(cmd.tex) && cmd.tex >= 1)) ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err('a commands[] "add_mesh" entry is malformed');
+          }
+        } else if (cmd.op === "add_set_transform") {
+          if (
+            !hasExactKeys(cmd, ADD_SET_TRANSFORM_KEYS) ||
+            !isInt(cmd.f) ||
+            cmd.f < 0
+          ) {
+            return err('a commands[] "add_set_transform" entry is malformed');
+          }
+        } else if (cmd.op === "add_clip_ignore") {
+          if (
+            !hasExactKeys(cmd, ADD_CLIP_IGNORE_KEYS) ||
+            typeof cmd.ignore !== "boolean"
+          ) {
+            return err('a commands[] "add_clip_ignore" entry is malformed');
+          }
         } else if (cmd.op === "unsupported") {
           if (
             !hasExactKeys(cmd, UNSUPPORTED_CMD_KEYS) ||
@@ -1147,13 +1602,28 @@ function checkTransactionSchema(
     if (texErr.length > 0) return texErr;
   }
 
+  if (isV4) {
+    if (!Array.isArray(meta.meshes)) return err('"meshes" is not an array');
+    for (const m of meta.meshes) {
+      const meshErr = checkMeshEntrySchema(m, offset);
+      if (meshErr.length > 0) return meshErr;
+    }
+  }
+
   const blocksError = checkBlocksField(meta.blocks, offset);
   if (blocksError !== null) return [blocksError];
-  const nameError = checkFixedBlockNames(
-    meta.blocks as BlockDescriptor[],
-    TRANSACTION_BLOCK_NAMES,
-    offset,
-  );
+  const nameError = isV4
+    ? checkFixedBlockNames(
+        meta.blocks as BlockDescriptor[],
+        TRANSACTION_BLOCK_NAMES_V4,
+        offset,
+        TRANSACTION_BLOCK_TYPES_V4,
+      )
+    : checkFixedBlockNames(
+        meta.blocks as BlockDescriptor[],
+        TRANSACTION_BLOCK_NAMES,
+        offset,
+      );
   if (nameError !== null) return [nameError];
   return [];
 }
@@ -1223,13 +1693,18 @@ function checkEndSchema(
   return [];
 }
 
-function checkMetaSchema(meta: unknown, offset: number): string[] {
+function checkMetaSchema(
+  meta: unknown,
+  offset: number,
+  version: 2 | 3 | 4,
+): string[] {
   if (!isPlainObject(meta))
     return [
       `meta-schema: record at offset ${offset}: meta is not a JSON object`,
     ];
-  if (meta.type === "session") return checkSessionSchema(meta, offset);
-  if (meta.type === "transaction") return checkTransactionSchema(meta, offset);
+  if (meta.type === "session") return checkSessionSchema(meta, offset, version);
+  if (meta.type === "transaction")
+    return checkTransactionSchema(meta, offset, version);
   if (meta.type === "resource") return checkResourceSchema(meta, offset);
   if (meta.type === "end") return checkEndSchema(meta, offset);
   return [
@@ -1247,12 +1722,13 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 = 3,
+  version: 2 | 3 | 4 = 3,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
-  const expectedMagic = version === 3 ? MAGIC_V3 : MAGIC;
+  const expectedMagic =
+    version === 4 ? MAGIC_V4 : version === 3 ? MAGIC_V3 : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -1309,7 +1785,10 @@ export interface DecodedRecord {
   blocks: DecodedBlock[];
 }
 
-export function decodeRecord(raw: RawRecord): {
+export function decodeRecord(
+  raw: RawRecord,
+  version: 2 | 3 | 4 = 3,
+): {
   record?: DecodedRecord;
   errors: string[];
 } {
@@ -1357,7 +1836,7 @@ export function decodeRecord(raw: RawRecord): {
     };
   }
 
-  const schemaErrors = checkMetaSchema(meta, raw.offset);
+  const schemaErrors = checkMetaSchema(meta, raw.offset, version);
   if (schemaErrors.length > 0) return { errors: schemaErrors };
   if (JSON.stringify(meta) !== metaText) {
     return {
@@ -1398,7 +1877,9 @@ export function decodeRecord(raw: RawRecord): {
     pos += 4;
     const descriptor = metaBlocks[i];
     const expectedLen =
-      descriptor.type === "f32" ? 4 * descriptor.count : descriptor.count;
+      descriptor.type === "f32" || descriptor.type === "i32"
+        ? 4 * descriptor.count
+        : descriptor.count;
     if (blockLen !== expectedLen) {
       return {
         errors: [
@@ -1418,6 +1899,12 @@ export function decodeRecord(raw: RawRecord): {
       for (let f = 0; f < descriptor.count; f++)
         floats.push(view.getFloat32(pos + f * 4, true));
       blocks.push(floats);
+    } else if (descriptor.type === "i32") {
+      // render-stream-4.md "Block type i32": little-endian two's-complement 32-bit integers.
+      const ints: number[] = [];
+      for (let f = 0; f < descriptor.count; f++)
+        ints.push(view.getInt32(pos + f * 4, true));
+      blocks.push(ints);
     } else {
       const payload = raw.bytes.subarray(pos, pos + blockLen);
       blocks.push({ u8_bytes: blockLen, sha256: hashBytes(payload) });
@@ -1449,9 +1936,12 @@ export function decodeRecord(raw: RawRecord): {
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 = 3,
+  version: 2 | 3 | 4 = 3,
 ): {
-  schema: "render-stream-2-decoded/1" | "render-stream-3-decoded/1";
+  schema:
+    | "render-stream-2-decoded/1"
+    | "render-stream-3-decoded/1"
+    | "render-stream-4-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -1459,7 +1949,7 @@ export function decodeRecording(
   if (split.errors.length > 0) throw new Error(split.errors[0]);
   const records: DecodedRecord[] = [];
   for (const raw of split.records) {
-    const decoded = decodeRecord(raw);
+    const decoded = decodeRecord(raw, version);
     if (decoded.errors.length > 0 || decoded.record === undefined) {
       throw new Error(
         decoded.errors[0] ??
@@ -1468,10 +1958,14 @@ export function decodeRecording(
     }
     records.push(decoded.record);
   }
-  const magic = version === 3 ? MAGIC_V3 : MAGIC;
+  const magic = version === 4 ? MAGIC_V4 : version === 3 ? MAGIC_V3 : MAGIC;
   return {
     schema:
-      version === 3 ? "render-stream-3-decoded/1" : "render-stream-2-decoded/1",
+      version === 4
+        ? "render-stream-4-decoded/1"
+        : version === 3
+          ? "render-stream-3-decoded/1"
+          : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -1642,6 +2136,17 @@ export interface ResolvedCommand {
     | "add_texture_rect"
     | "add_texture_rect_region"
     | "add_msdf_texture_rect_region"
+    | "add_line"
+    | "add_polyline"
+    | "add_multiline"
+    | "add_circle"
+    | "add_primitive"
+    | "add_polygon"
+    | "add_triangle_array"
+    | "add_nine_patch"
+    | "add_mesh"
+    | "add_set_transform"
+    | "add_clip_ignore"
     | "unsupported";
   aa?: boolean;
   tex?: number | null;
@@ -1657,6 +2162,26 @@ export interface ResolvedCommand {
   scale?: number;
   name?: string;
   reason?: UnsupportedCmdReason;
+  // --- new at /4 (render-stream-4.md "Decoded and resolved forms") ----------------------------
+  from?: [number, number];
+  to?: [number, number];
+  colour?: [number, number, number, number];
+  width?: number;
+  points?: Array<[number, number]>;
+  colors?: Array<[number, number, number, number]>;
+  uvs?: Array<[number, number]>;
+  position?: [number, number];
+  radius?: number;
+  count?: number;
+  indices?: number[];
+  source?: [number, number, number, number];
+  margins?: [number, number, number, number];
+  x_axis?: AxisStretchMode;
+  y_axis?: AxisStretchMode;
+  draw_center?: boolean;
+  mesh?: number;
+  transform?: [number, number, number, number, number, number];
+  ignore?: boolean;
 }
 
 export interface ResolvedCanvas {
@@ -1693,10 +2218,23 @@ export interface ResolvedItem {
 
 export type ResolvedTexture = TransactionTexture;
 
+/** render-stream-4.md "Decoded and resolved forms": a mesh table entry with "f" replaced by its
+ * lifted custom AABB. */
+export interface ResolvedMesh {
+  id: number;
+  origin: "created";
+  status: MeshStatus;
+  reason: MeshReason | null;
+  version: number;
+  custom_aabb: [number, number, number, number, number, number];
+  surfaces: TransactionMeshSurface[];
+}
+
 export interface ResolvedState {
   canvases: Map<number, ResolvedCanvas>;
   items: Map<number, ResolvedItem>;
   textures: Map<number, ResolvedTexture>;
+  meshes: Map<number, ResolvedMesh>;
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
 }
@@ -1706,6 +2244,7 @@ export function emptyResolvedState(): ResolvedState {
     canvases: new Map(),
     items: new Map(),
     textures: new Map(),
+    meshes: new Map(),
     default_texture_filter: "nearest",
     default_texture_repeat: "disabled",
   };
@@ -1722,7 +2261,11 @@ function liftCanvas(c: TransactionCanvas, xform: number[]): ResolvedCanvas {
   };
 }
 
-function liftCommand(cmd: Command, cmdF32: number[]): ResolvedCommand {
+function liftCommand(
+  cmd: Command,
+  cmdF32: number[],
+  cmdI32: number[],
+): ResolvedCommand {
   if (cmd.op === "add_rect") {
     const rect = cmdF32.slice(cmd.f, cmd.f + 4) as [
       number,
@@ -1822,6 +2365,157 @@ function liftCommand(cmd: Command, cmdF32: number[]): ResolvedCommand {
       scale,
     };
   }
+  if (cmd.op === "add_line") {
+    const from = cmdF32.slice(cmd.f, cmd.f + 2) as [number, number];
+    const to = cmdF32.slice(cmd.f + 2, cmd.f + 4) as [number, number];
+    const colour = cmdF32.slice(cmd.f + 4, cmd.f + 8) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const width = cmdF32[cmd.f + 8];
+    return { op: "add_line", aa: cmd.aa, from, to, colour, width };
+  }
+  if (cmd.op === "add_polyline" || cmd.op === "add_multiline") {
+    const width = cmdF32[cmd.f];
+    const points: Array<[number, number]> = [];
+    let p = cmd.f + 1;
+    for (let i = 0; i < cmd.n; i++, p += 2) {
+      points.push(cmdF32.slice(p, p + 2) as [number, number]);
+    }
+    const colors: Array<[number, number, number, number]> = [];
+    for (let i = 0; i < cmd.colors; i++, p += 4) {
+      colors.push(cmdF32.slice(p, p + 4) as [number, number, number, number]);
+    }
+    return { op: cmd.op, aa: cmd.aa, width, points, colors };
+  }
+  if (cmd.op === "add_circle") {
+    const position = cmdF32.slice(cmd.f, cmd.f + 2) as [number, number];
+    const radius = cmdF32[cmd.f + 2];
+    const colour = cmdF32.slice(cmd.f + 3, cmd.f + 7) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    return { op: "add_circle", aa: cmd.aa, position, radius, colour };
+  }
+  if (cmd.op === "add_primitive" || cmd.op === "add_polygon") {
+    const points: Array<[number, number]> = [];
+    let p = cmd.f;
+    for (let i = 0; i < cmd.n; i++, p += 2) {
+      points.push(cmdF32.slice(p, p + 2) as [number, number]);
+    }
+    const colors: Array<[number, number, number, number]> = [];
+    for (let i = 0; i < cmd.colors; i++, p += 4) {
+      colors.push(cmdF32.slice(p, p + 4) as [number, number, number, number]);
+    }
+    const uvs: Array<[number, number]> = [];
+    for (let i = 0; i < cmd.uvs; i++, p += 2) {
+      uvs.push(cmdF32.slice(p, p + 2) as [number, number]);
+    }
+    return { op: cmd.op, tex: cmd.tex, points, colors, uvs };
+  }
+  if (cmd.op === "add_triangle_array") {
+    const points: Array<[number, number]> = [];
+    let p = cmd.f;
+    for (let i = 0; i < cmd.n; i++, p += 2) {
+      points.push(cmdF32.slice(p, p + 2) as [number, number]);
+    }
+    const colors: Array<[number, number, number, number]> = [];
+    for (let i = 0; i < cmd.colors; i++, p += 4) {
+      colors.push(cmdF32.slice(p, p + 4) as [number, number, number, number]);
+    }
+    const uvs: Array<[number, number]> = [];
+    for (let i = 0; i < cmd.uvs; i++, p += 2) {
+      uvs.push(cmdF32.slice(p, p + 2) as [number, number]);
+    }
+    const indices = cmdI32.slice(cmd.i, cmd.i + cmd.indices);
+    return {
+      op: "add_triangle_array",
+      tex: cmd.tex,
+      count: cmd.count,
+      points,
+      colors,
+      uvs,
+      indices,
+    };
+  }
+  if (cmd.op === "add_nine_patch") {
+    const rect = cmdF32.slice(cmd.f, cmd.f + 4) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const source = cmdF32.slice(cmd.f + 4, cmd.f + 8) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const margins = cmdF32.slice(cmd.f + 8, cmd.f + 12) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const modulate = cmdF32.slice(cmd.f + 12, cmd.f + 16) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    return {
+      op: "add_nine_patch",
+      tex: cmd.tex,
+      rect,
+      source,
+      margins,
+      x_axis: cmd.x_axis,
+      y_axis: cmd.y_axis,
+      draw_center: cmd.draw_center,
+      modulate,
+    };
+  }
+  if (cmd.op === "add_mesh") {
+    const transform = cmdF32.slice(cmd.f, cmd.f + 6) as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    const modulate = cmdF32.slice(cmd.f + 6, cmd.f + 10) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    return {
+      op: "add_mesh",
+      mesh: cmd.mesh,
+      tex: cmd.tex,
+      transform,
+      modulate,
+    };
+  }
+  if (cmd.op === "add_set_transform") {
+    const transform = cmdF32.slice(cmd.f, cmd.f + 6) as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    return { op: "add_set_transform", transform };
+  }
+  if (cmd.op === "add_clip_ignore") {
+    return { op: "add_clip_ignore", ignore: cmd.ignore };
+  }
   return { op: "unsupported", name: cmd.name, reason: cmd.reason };
 }
 
@@ -1829,6 +2523,19 @@ function commandFloatCount(cmd: Command): number {
   if (cmd.op === "add_rect" || cmd.op === "add_texture_rect") return 8;
   if (cmd.op === "add_texture_rect_region") return 12;
   if (cmd.op === "add_msdf_texture_rect_region") return 14;
+  if (cmd.op === "add_line") return 9;
+  if (cmd.op === "add_polyline" || cmd.op === "add_multiline") {
+    return 1 + 2 * cmd.n + 4 * cmd.colors;
+  }
+  if (cmd.op === "add_circle") return 7;
+  if (cmd.op === "add_primitive" || cmd.op === "add_polygon") {
+    return 2 * cmd.n + 4 * cmd.colors + 2 * cmd.uvs;
+  }
+  if (cmd.op === "add_triangle_array")
+    return 2 * cmd.n + 4 * cmd.colors + 2 * cmd.uvs;
+  if (cmd.op === "add_nine_patch") return 16;
+  if (cmd.op === "add_mesh") return 10;
+  if (cmd.op === "add_set_transform") return 6;
   return 0;
 }
 
@@ -1836,6 +2543,7 @@ function liftItem(
   it: TransactionItem,
   itemF32: number[],
   cmdF32: number[],
+  cmdI32: number[],
 ): ResolvedItem {
   return {
     id: it.id,
@@ -1867,13 +2575,36 @@ function liftItem(
     commands:
       it.commands === null
         ? []
-        : it.commands.map((c) => liftCommand(c, cmdF32)),
+        : it.commands.map((c) => liftCommand(c, cmdF32, cmdI32)),
   };
 }
 
 // Applies one decoded transaction to `base`, per render-stream-2.md "Full and patch transactions":
 // textures are treated like items (full table on a full transaction, upsert+remove on a patch),
 // but every texture entry is complete on the wire (no null-commands-style partial form).
+function liftMesh(m: TransactionMesh, meshF32: number[]): ResolvedMesh {
+  const custom_aabb: [number, number, number, number, number, number] =
+    m.f === null
+      ? [0, 0, 0, 0, 0, 0]
+      : (meshF32.slice(m.f, m.f + 6) as [
+          number,
+          number,
+          number,
+          number,
+          number,
+          number,
+        ]);
+  return {
+    id: m.id,
+    origin: m.origin,
+    status: m.status,
+    reason: m.reason,
+    version: m.version,
+    custom_aabb,
+    surfaces: m.surfaces,
+  };
+}
+
 export function applyTransaction(
   base: ResolvedState,
   meta: TransactionMeta,
@@ -1891,19 +2622,30 @@ export function applyTransaction(
     meta.encoding === "full"
       ? new Map<number, ResolvedTexture>()
       : new Map(base.textures);
+  const isV4 = meta.meshes !== undefined;
+  const meshes =
+    meta.encoding === "full"
+      ? new Map<number, ResolvedMesh>()
+      : new Map(base.meshes);
   if (meta.encoding === "patch") {
     for (const id of meta.removed_canvases) canvases.delete(id);
     for (const id of meta.removed_items) items.delete(id);
     for (const id of meta.removed_textures) textures.delete(id);
+    if (isV4) for (const id of meta.removed_meshes ?? []) meshes.delete(id);
   }
-  const [itemF32, canvasF32, cmdF32] = blocks;
+  const [itemF32, canvasF32, cmdF32, cmdI32, meshF32] = blocks;
   for (let i = 0; i < meta.canvases.length; i++) {
     const c = meta.canvases[i];
     canvases.set(c.id, liftCanvas(c, canvasF32.slice(i * 6, i * 6 + 6)));
   }
   for (let i = 0; i < meta.items.length; i++) {
     const raw = meta.items[i];
-    const lifted = liftItem(raw, itemF32.slice(i * 18, i * 18 + 18), cmdF32);
+    const lifted = liftItem(
+      raw,
+      itemF32.slice(i * 18, i * 18 + 18),
+      cmdF32,
+      isV4 ? (cmdI32 ?? []) : [],
+    );
     if (raw.commands === null) {
       const prev = base.items.get(raw.id);
       lifted.commands = prev ? prev.commands : [];
@@ -1913,10 +2655,16 @@ export function applyTransaction(
   for (const t of meta.textures) {
     textures.set(t.id, t);
   }
+  if (isV4) {
+    for (const m of meta.meshes ?? []) {
+      meshes.set(m.id, liftMesh(m, meshF32 ?? []));
+    }
+  }
   return {
     canvases,
     items,
     textures,
+    meshes,
     default_texture_filter: meta.default_texture_filter,
     default_texture_repeat: meta.default_texture_repeat,
   };
@@ -1928,6 +2676,10 @@ export function sortedResolvedCanvases(state: ResolvedState): ResolvedCanvas[] {
 
 export function sortedResolvedItems(state: ResolvedState): ResolvedItem[] {
   return [...state.items.values()].sort((a, b) => a.id - b.id);
+}
+
+export function sortedResolvedMeshes(state: ResolvedState): ResolvedMesh[] {
+  return [...state.meshes.values()].sort((a, b) => a.id - b.id);
 }
 
 export function sortedResolvedTextures(
@@ -2086,6 +2838,55 @@ function textureVersionRegressed(
   return false;
 }
 
+// render-stream-4.md "Mesh table" ("mesh-entry"): the same shape rule textureEntryFieldErrors()
+// checks, mirrored for a mesh entry's status/reason/surfaces coupling. "f"/custom_aabb are
+// checked separately (mesh-offset, over the running mesh_f32 offset) since they need the whole
+// transaction's mesh list, not just one entry.
+function meshEntryFieldErrors(m: ResolvedMesh, offset: number): string[] {
+  const err = (detail: string) => [
+    `mesh-entry: record at offset ${offset}: mesh ${m.id}: ${detail}`,
+  ];
+  if (m.status === "freed") {
+    if (m.reason !== null || m.surfaces.length > 0) {
+      return err('a "freed" entry must have reason null and surfaces []');
+    }
+    return [];
+  }
+  if (m.status === "unsupported") {
+    if (m.reason === null || m.surfaces.length > 0) {
+      return err(
+        'an "unsupported" entry needs a non-null reason and surfaces []',
+      );
+    }
+    return [];
+  }
+  // "ok"
+  if (m.reason !== null) {
+    return err('an "ok" entry must have reason null');
+  }
+  return [];
+}
+
+// render-stream-4.md "Mesh table" ("mesh-version"): the texture-version rule, mirrored for
+// meshes -- within one stream, an id's version never decreases; at an equal version the entry is
+// identical except for a transition into "freed".
+// Compares the RESOLVED (lifted) mesh, not the raw wire TransactionMesh: "f" is a running offset
+// into that transaction's own mesh_f32 block, so it legitimately differs between two
+// transactions whose mesh2 content is byte-identical whenever some other mesh earlier in the
+// table gains or loses its own "f" span (e.g. a sibling mesh is freed). Comparing custom_aabb's
+// actual lifted values instead avoids flagging that as a content change.
+function meshVersionRegressed(
+  previous: ResolvedMesh | undefined,
+  current: ResolvedMesh,
+): boolean {
+  if (previous === undefined) return false;
+  if (current.version < previous.version) return true;
+  if (current.version > previous.version) return false;
+  if (statesEqual(previous, current)) return false;
+  if (previous.status === "freed" || current.status !== "freed") return true;
+  return false;
+}
+
 function checkResolvedInvariants(
   meta: TransactionMeta,
   state: ResolvedState,
@@ -2095,13 +2896,19 @@ function checkResolvedInvariants(
   const canvases = sortedResolvedCanvases(state);
   const items = sortedResolvedItems(state);
   const textures = sortedResolvedTextures(state);
+  const meshes = sortedResolvedMeshes(state);
   const canvasIds = new Set(canvases.map((c) => c.id));
   const itemIds = new Set(items.map((i) => i.id));
   const textureIds = new Set(textures.map((t) => t.id));
   const textureById = new Map(textures.map((t) => [t.id, t] as const));
+  const meshIds = new Set(meshes.map((m) => m.id));
 
   for (const t of textures) {
     const fieldErrors = textureEntryFieldErrors(t, offset);
+    if (fieldErrors.length > 0) return fieldErrors;
+  }
+  for (const m of meshes) {
+    const fieldErrors = meshEntryFieldErrors(m, offset);
     if (fieldErrors.length > 0) return fieldErrors;
   }
 
@@ -2171,12 +2978,22 @@ function checkResolvedInvariants(
 
   // texture-ref: every command's non-null tex, and every canvas texture's non-null diffuse, must
   // name an entry that exists in the resolved table; a diffuse must name an image or placeholder.
+  // render-stream-4.md "Command": every new /4 op that carries a "tex" field follows the same
+  // rule as the existing texture-rect ops.
+  const TEX_BEARING_OPS = new Set([
+    "add_texture_rect",
+    "add_texture_rect_region",
+    "add_msdf_texture_rect_region",
+    "add_primitive",
+    "add_polygon",
+    "add_triangle_array",
+    "add_nine_patch",
+    "add_mesh",
+  ]);
   for (const item of items) {
     for (const command of item.commands) {
       if (
-        (command.op === "add_texture_rect" ||
-          command.op === "add_texture_rect_region" ||
-          command.op === "add_msdf_texture_rect_region") &&
+        TEX_BEARING_OPS.has(command.op) &&
         command.tex !== null &&
         command.tex !== undefined
       ) {
@@ -2200,6 +3017,21 @@ function checkResolvedInvariants(
         return [
           `texture-ref: ${where}: canvas texture ${t.id}'s diffuse names texture ${diffuse.id}, whose kind is "${diffuse.kind}" (must be image or placeholder)`,
         ];
+      }
+    }
+  }
+
+  // mesh-ref (render-stream-4.md "Mesh table"): every add_mesh command's "mesh" id must name an
+  // entry present in the resolved mesh table (any status -- a "freed" tombstone counts, since
+  // something still names it).
+  for (const item of items) {
+    for (const command of item.commands) {
+      if (command.op === "add_mesh" && command.mesh !== undefined) {
+        if (!meshIds.has(command.mesh)) {
+          return [
+            `mesh-ref: ${where}: item ${item.id}'s add_mesh names mesh ${command.mesh}, which has no entry`,
+          ];
+        }
       }
     }
   }
@@ -2230,11 +3062,24 @@ function checkResolvedInvariants(
   for (const canvas of canvases) groupTies(canvas.items);
   for (const item of items) groupTies(item.children);
 
-  // Expected derived unsupported[] entries: unsupported-op / unknown-texture (one per distinct
-  // (item, op) pair with a matching command-level `unsupported` entry) and unsupported-texture
-  // (one per distinct (item, op) pair whose texture-rect command names an unsupported entry).
+  // Expected derived unsupported[] entries: unsupported-op / unknown-texture / unknown-mesh /
+  // skinned-geometry (one per distinct (item, op) pair with a matching command-level
+  // `unsupported` entry), unsupported-texture (one per distinct (item, op) pair whose
+  // tex-bearing command names an unsupported texture entry) and unsupported-mesh (one per
+  // distinct (item, "canvas_item_add_mesh") pair whose add_mesh names an unsupported mesh).
+  const RS_METHOD_FOR_OP: Record<string, string> = {
+    add_texture_rect: "canvas_item_add_texture_rect",
+    add_texture_rect_region: "canvas_item_add_texture_rect_region",
+    add_msdf_texture_rect_region: "canvas_item_add_msdf_texture_rect_region",
+    add_primitive: "canvas_item_add_primitive",
+    add_polygon: "canvas_item_add_polygon",
+    add_triangle_array: "canvas_item_add_triangle_array",
+    add_nine_patch: "canvas_item_add_nine_patch",
+    add_mesh: "canvas_item_add_mesh",
+  };
   const actualUnsupportedOps = new Map<string, UnsupportedReason>();
   const actualUnsupportedTexture = new Set<string>();
+  const actualUnsupportedMesh = new Set<string>();
   for (const item of items) {
     const seenOps = new Set<string>();
     for (const command of item.commands) {
@@ -2243,16 +3088,16 @@ function checkResolvedInvariants(
           seenOps.add(command.name);
           const reason: UnsupportedReason =
             command.reason === "unknown-texture" ||
-            command.reason === "canvas-texture-headless"
+            command.reason === "canvas-texture-headless" ||
+            command.reason === "unknown-mesh" ||
+            command.reason === "skinned-geometry"
               ? command.reason
               : "unsupported-op";
           actualUnsupportedOps.set(`${item.id}:${command.name}`, reason);
         }
       }
       if (
-        (command.op === "add_texture_rect" ||
-          command.op === "add_texture_rect_region" ||
-          command.op === "add_msdf_texture_rect_region") &&
+        TEX_BEARING_OPS.has(command.op) &&
         command.tex !== null &&
         command.tex !== undefined
       ) {
@@ -2267,16 +3112,16 @@ function checkResolvedInvariants(
           (target !== undefined && target.status === "unsupported") ||
           unsupportedViaDiffuse
         ) {
-          // The derived entry's `op` is the RenderingServer method name
-          // (canvas_item_add_texture_rect[_region] / _msdf_texture_rect_region), not the wire
-          // command's own op.
-          const rsMethod =
-            command.op === "add_texture_rect"
-              ? "canvas_item_add_texture_rect"
-              : command.op === "add_texture_rect_region"
-                ? "canvas_item_add_texture_rect_region"
-                : "canvas_item_add_msdf_texture_rect_region";
+          // The derived entry's `op` is the RenderingServer method name, not the wire command's
+          // own op (render-stream-2.md "Item-level unsupported entries").
+          const rsMethod = RS_METHOD_FOR_OP[command.op];
           actualUnsupportedTexture.add(`${item.id}:${rsMethod}`);
+        }
+      }
+      if (command.op === "add_mesh" && command.mesh !== undefined) {
+        const target = state.meshes.get(command.mesh);
+        if (target !== undefined && target.status === "unsupported") {
+          actualUnsupportedMesh.add(`${item.id}:canvas_item_add_mesh`);
         }
       }
     }
@@ -2288,6 +3133,7 @@ function checkResolvedInvariants(
   const declaredUnsupportedOps = new Set<string>();
   const declaredTieItems = new Set<number>();
   const declaredUnsupportedTexture = new Set<string>();
+  const declaredUnsupportedMesh = new Set<string>();
   for (const entry of meta.unsupported) {
     if (entry.item === null) {
       if (itemLevelStarted) {
@@ -2316,7 +3162,9 @@ function checkResolvedInvariants(
     if (
       entry.reason === "unsupported-op" ||
       entry.reason === "unknown-texture" ||
-      entry.reason === "canvas-texture-headless"
+      entry.reason === "canvas-texture-headless" ||
+      entry.reason === "unknown-mesh" ||
+      entry.reason === "skinned-geometry"
     ) {
       const pair = `${entry.item}:${entry.op}`;
       const expected = actualUnsupportedOps.get(pair);
@@ -2339,9 +3187,15 @@ function checkResolvedInvariants(
       }
       declaredTieItems.add(entry.item);
     } else if (entry.reason === "unsupported-state") {
-      if (entry.op !== "canvas_item_set_material") {
+      // unsupported-state covers canvas_item_set_material (/2) and, new at /4, calibrator-7's
+      // canvas_item_attach_skeleton (render-stream-4.md "Decoders accept 'unsupported-state'
+      // for canvas_item_attach_skeleton as well as canvas_item_set_material").
+      if (
+        entry.op !== "canvas_item_set_material" &&
+        entry.op !== "canvas_item_attach_skeleton"
+      ) {
         return [
-          `unsupported-mismatch: ${where}: unsupported-state entry for item ${entry.item} names ${entry.op}, expected canvas_item_set_material`,
+          `unsupported-mismatch: ${where}: unsupported-state entry for item ${entry.item} names ${entry.op}, expected canvas_item_set_material or canvas_item_attach_skeleton`,
         ];
       }
     } else if (entry.reason === "unsupported-texture") {
@@ -2352,6 +3206,14 @@ function checkResolvedInvariants(
         ];
       }
       declaredUnsupportedTexture.add(pair);
+    } else if (entry.reason === "unsupported-mesh") {
+      const pair = `${entry.item}:${entry.op}`;
+      if (!actualUnsupportedMesh.has(pair)) {
+        return [
+          `unsupported-mismatch: ${where}: unsupported-mesh entry (${entry.item}, ${entry.op}) does not correspond to an add_mesh naming an unsupported mesh`,
+        ];
+      }
+      declaredUnsupportedMesh.add(pair);
     }
   }
   for (const [pair, reason] of actualUnsupportedOps) {
@@ -2371,7 +3233,14 @@ function checkResolvedInvariants(
   for (const pair of actualUnsupportedTexture) {
     if (!declaredUnsupportedTexture.has(pair)) {
       return [
-        `unsupported-mismatch: ${where}: texture-rect command (${pair.replace(":", ", ")}) names an unsupported texture, with no unsupported-texture entry`,
+        `unsupported-mismatch: ${where}: tex-bearing command (${pair.replace(":", ", ")}) names an unsupported texture, with no unsupported-texture entry`,
+      ];
+    }
+  }
+  for (const pair of actualUnsupportedMesh) {
+    if (!declaredUnsupportedMesh.has(pair)) {
+      return [
+        `unsupported-mismatch: ${where}: add_mesh command (${pair.replace(":", ", ")}) names an unsupported mesh, with no unsupported-mesh entry`,
       ];
     }
   }
@@ -2383,14 +3252,15 @@ function checkResolvedInvariants(
 
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 = 3,
+  version: 2 | 3 | 4 = 3,
 ): string[] {
+  const isV4 = version === 4;
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
   if (split.records.length === 0)
     return ["missing-session: the recording has no records"];
 
-  const first = decodeRecord(split.records[0]);
+  const first = decodeRecord(split.records[0], version);
   if (first.errors.length > 0 || first.record === undefined)
     return [first.errors[0]];
   const sessionMeta = first.record.meta;
@@ -2413,18 +3283,21 @@ export function validateRecording(
   let prevSeq = 0;
   let prevFrame = -Infinity;
   let state = emptyResolvedState();
-  const maxIdSeen = { canvas: 0, item: 0, texture: 0 };
+  const maxIdSeen = { canvas: 0, item: 0, texture: 0, mesh: 0 };
   const carriedHashes = new Set<string>();
   const lastSeenTexture = new Map<number, TransactionTexture>();
+  const lastSeenMesh = new Map<number, ResolvedMesh>();
   // Resource payload shapes seen so far in THIS call, used to check resource-payload once a
-  // texture entry naming the hash is known. Local to this call: validateRecording() may run
+  // texture/mesh entry naming the hash is known. Local to this call: validateRecording() may run
   // repeatedly (e.g. once per golden vector) and must not leak state between calls.
   const resourcePayloadShapes = new Map<string, DecodedTexturePayload>();
   const resourcePayloadLengths = new Map<string, number>();
+  const meshPayloadShapes = new Map<string, DecodedMeshPayload>();
+  const meshPayloadLengths = new Map<string, number>();
   let endSeen = false;
 
   for (let i = 1; i < split.records.length; i++) {
-    const decoded = decodeRecord(split.records[i]);
+    const decoded = decodeRecord(split.records[i], version);
     if (decoded.errors.length > 0 || decoded.record === undefined)
       return [decoded.errors[0]];
     const meta = decoded.record.meta;
@@ -2445,30 +3318,51 @@ export function validateRecording(
           `meta-schema: record at offset ${offset}: resource payload block did not decode as u8`,
         ];
       }
-      let decodedPayload: DecodedTexturePayload;
-      try {
-        decodedPayload = decodeTexturePayload(
-          rawResourcePayload(split.records[i]),
-        );
-      } catch (e) {
-        return [(e as Error).message];
-      }
-      const actualHash = block.sha256;
-      if (actualHash !== meta.hash) {
-        return [
-          `resource-hash: record at offset ${offset}: payload sha256 ${actualHash} disagrees with declared hash ${meta.hash}`,
-        ];
+      const rawPayload = rawResourcePayload(split.records[i]);
+      // render-stream-4.md "Resources": mesh (GRM1) and texture (GRT1) payloads share one hash
+      // namespace and one resource record shape; tell them apart by their own 8-byte magic.
+      const isMeshPayload =
+        isV4 && bytesEqual(rawPayload.subarray(0, 8), GRM1_MAGIC);
+      if (isMeshPayload) {
+        let decodedMesh: DecodedMeshPayload;
+        try {
+          decodedMesh = decodeMeshPayload(rawPayload);
+        } catch (e) {
+          return [(e as Error).message];
+        }
+        const actualHash = block.sha256;
+        if (actualHash !== meta.hash) {
+          return [
+            `resource-hash: record at offset ${offset}: payload sha256 ${actualHash} disagrees with declared hash ${meta.hash}`,
+          ];
+        }
+        meshPayloadShapes.set(meta.hash, decodedMesh);
+        meshPayloadLengths.set(meta.hash, block.u8_bytes);
+      } else {
+        let decodedPayload: DecodedTexturePayload;
+        try {
+          decodedPayload = decodeTexturePayload(rawPayload);
+        } catch (e) {
+          return [(e as Error).message];
+        }
+        const actualHash = block.sha256;
+        if (actualHash !== meta.hash) {
+          return [
+            `resource-hash: record at offset ${offset}: payload sha256 ${actualHash} disagrees with declared hash ${meta.hash}`,
+          ];
+        }
+        // resource-payload is checked once every texture entry naming this hash is known:
+        // deferred to the per-transaction texture pass below, via a stored decoded shape.
+        resourcePayloadShapes.set(meta.hash, decodedPayload);
+        // payload_bytes is the whole payload's length (render-stream-2.md "Texture"), not its
+        // data.
+        resourcePayloadLengths.set(meta.hash, block.u8_bytes);
       }
       carriedHashes.add(meta.hash);
       resourceRecordCount += 1;
       resourceByteTotal += meta.bytes;
       bytesTotal += decoded.record.byte_length;
       maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
-      // resource-payload is checked once every texture entry naming this hash is known: deferred
-      // to the per-transaction texture pass below, via a stored decoded shape.
-      resourcePayloadShapes.set(meta.hash, decodedPayload);
-      // payload_bytes is the whole payload's length (render-stream-2.md "Texture"), not its data.
-      resourcePayloadLengths.set(meta.hash, block.u8_bytes);
       continue;
     }
 
@@ -2492,6 +3386,16 @@ export function validateRecording(
           meta.removed_textures,
           offset,
         ),
+        ...(isV4
+          ? [
+              ...checkIdOrdering("meshes", meta.meshes ?? [], offset),
+              ...checkIdListAscendingNoDup(
+                "removed_meshes",
+                meta.removed_meshes ?? [],
+                offset,
+              ),
+            ]
+          : []),
       ];
       if (idOrderErrors.length > 0) return idOrderErrors;
 
@@ -2508,6 +3412,7 @@ export function validateRecording(
         prevSeq,
         sessionMeta.stream.encoding,
         state,
+        isV4,
       );
       if (patchErrors.length > 0) return patchErrors;
       if (meta.frame <= prevFrame) {
@@ -2516,13 +3421,17 @@ export function validateRecording(
         ];
       }
 
-      // cmd-offset / block-count: against this record's OWN lists.
+      // cmd-offset / cmd-int-offset / mesh-offset / block-count: against this record's OWN lists.
       let runningOffset = 0;
+      let runningIntOffset = 0;
       let totalCmdFloats = 0;
+      let totalCmdInts = 0;
       for (const item of meta.items) {
         if (item.commands === null) continue;
         for (const command of item.commands) {
-          if (command.op === "unsupported") continue;
+          // "unsupported" and "add_clip_ignore" carry no floats and no "f" key at all.
+          if (command.op === "unsupported" || command.op === "add_clip_ignore")
+            continue;
           const floatCount = commandFloatCount(command);
           if (command.f !== runningOffset) {
             return [
@@ -2531,6 +3440,29 @@ export function validateRecording(
           }
           runningOffset += floatCount;
           totalCmdFloats += floatCount;
+          if (command.op === "add_triangle_array") {
+            if (command.i !== runningIntOffset) {
+              return [
+                `cmd-int-offset: record at offset ${offset}: ${command.op} i=${command.i}, expected ${runningIntOffset}`,
+              ];
+            }
+            runningIntOffset += command.indices;
+            totalCmdInts += command.indices;
+          }
+        }
+      }
+      let totalMeshFloats = 0;
+      if (isV4) {
+        let runningMeshOffset = 0;
+        for (const m of meta.meshes ?? []) {
+          if (m.f === null) continue;
+          if (m.f !== runningMeshOffset) {
+            return [
+              `mesh-offset: record at offset ${offset}: mesh ${m.id} f=${m.f}, expected ${runningMeshOffset}`,
+            ];
+          }
+          runningMeshOffset += 6;
+          totalMeshFloats += 6;
         }
       }
       const blockByName = new Map(
@@ -2540,6 +3472,12 @@ export function validateRecording(
         ["item_f32", 18 * meta.items.length],
         ["canvas_f32", 6 * meta.canvases.length],
         ["cmd_f32", totalCmdFloats],
+        ...(isV4
+          ? ([
+              ["cmd_i32", totalCmdInts],
+              ["mesh_f32", totalMeshFloats],
+            ] as Array<[string, number]>)
+          : []),
       ];
       for (const [name, count] of expectedBlocks) {
         if (blockByName.get(name) !== count) {
@@ -2557,13 +3495,17 @@ export function validateRecording(
         ];
       }
 
-      const [itemF32, canvasF32] = decoded.record.blocks as number[][];
+      const [itemF32, canvasF32, , cmdI32, meshF32] = decoded.record
+        .blocks as number[][];
       if (
         itemF32.length !== 18 * meta.items.length ||
-        canvasF32.length !== 6 * meta.canvases.length
+        canvasF32.length !== 6 * meta.canvases.length ||
+        (isV4 &&
+          ((cmdI32?.length ?? 0) !== totalCmdInts ||
+            (meshF32?.length ?? 0) !== totalMeshFloats))
       ) {
         return [
-          `block-count: record at offset ${offset}: decoded block lengths disagree with items/canvases counts`,
+          `block-count: record at offset ${offset}: decoded block lengths disagree with items/canvases/commands/meshes counts`,
         ];
       }
       const nextState = applyTransaction(
@@ -2574,7 +3516,7 @@ export function validateRecording(
       const resolvedErrors = checkResolvedInvariants(meta, nextState, offset);
       if (resolvedErrors.length > 0) return resolvedErrors;
 
-      // texture-version, across the whole stream so far.
+      // texture-version / mesh-version, across the whole stream so far.
       for (const t of meta.textures) {
         const previous = lastSeenTexture.get(t.id);
         if (textureVersionRegressed(previous, t)) {
@@ -2584,8 +3526,24 @@ export function validateRecording(
         }
         lastSeenTexture.set(t.id, t);
       }
+      if (isV4) {
+        for (const m of meta.meshes ?? []) {
+          // Compare the RESOLVED mesh (lifted custom_aabb), not the raw wire entry: "f" is a
+          // position-dependent offset into mesh_f32, not content (see meshVersionRegressed()).
+          const resolvedMesh = nextState.meshes.get(m.id);
+          if (resolvedMesh === undefined) continue;
+          const previous = lastSeenMesh.get(m.id);
+          if (meshVersionRegressed(previous, resolvedMesh)) {
+            return [
+              `mesh-version: record at offset ${offset}: mesh ${m.id}'s version/content is inconsistent with its earlier entry`,
+            ];
+          }
+          lastSeenMesh.set(m.id, resolvedMesh);
+        }
+      }
 
-      // resource-missing / resource-payload, over the RESOLVED table (every ok image entry).
+      // resource-missing / resource-payload, over the RESOLVED table (every ok image entry, and,
+      // at /4, every ok mesh surface).
       for (const t of sortedResolvedTextures(nextState)) {
         if (t.kind !== "image" || t.status !== "ok" || t.hash === null)
           continue;
@@ -2609,19 +3567,49 @@ export function validateRecording(
           ];
         }
       }
+      if (isV4) {
+        for (const m of sortedResolvedMeshes(nextState)) {
+          if (m.status !== "ok") continue;
+          for (const s of m.surfaces) {
+            if (s.payload_bytes > inlineMaxBytes) continue;
+            if (!carriedHashes.has(s.hash)) {
+              return [
+                `resource-missing: record at offset ${offset}: mesh ${m.id}'s surface hash ${s.hash} (payload_bytes ${s.payload_bytes} <= inline_max_bytes ${inlineMaxBytes}) never arrived as a resource record`,
+              ];
+            }
+            const shape = meshPayloadShapes.get(s.hash);
+            if (
+              shape !== undefined &&
+              (shape.primitive !== s.primitive ||
+                shape.format !== s.format ||
+                shape.vertex_count !== s.vertex_count ||
+                shape.index_count !== s.index_count ||
+                (meshPayloadLengths.get(s.hash) ?? -1) !== s.payload_bytes)
+            ) {
+              return [
+                `resource-payload: record at offset ${offset}: the resource for hash ${s.hash} decodes as ${shape.primitive} vertex_count ${shape.vertex_count}, mesh ${m.id} declares ${s.primitive} vertex_count ${s.vertex_count}`,
+              ];
+            }
+          }
+        }
+      }
 
       // id-reused: resolved ids this transaction vs. the previous one.
       const currentCanvasIds = new Set(nextState.canvases.keys());
       const currentItemIds = new Set(nextState.items.keys());
       const currentTextureIds = new Set(nextState.textures.keys());
+      const currentMeshIds = new Set(nextState.meshes.keys());
       const previousCanvasIds = new Set(state.canvases.keys());
       const previousItemIds = new Set(state.items.keys());
       const previousTextureIds = new Set(state.textures.keys());
+      const previousMeshIds = new Set(state.meshes.keys());
       for (const [kind, currentIds, previousIds] of [
         ["canvas", currentCanvasIds, previousCanvasIds] as const,
         ["item", currentItemIds, previousItemIds] as const,
         ["texture", currentTextureIds, previousTextureIds] as const,
+        ["mesh", currentMeshIds, previousMeshIds] as const,
       ]) {
+        if (kind === "mesh" && !isV4) continue;
         for (const id of currentIds) {
           if (!previousIds.has(id) && id <= maxIdSeen[kind]) {
             return [
@@ -2684,13 +3672,15 @@ function checkPatchRules(
   prevSeq: number,
   sessionEncoding: Encoding,
   baseState: ResolvedState,
+  isV4: boolean,
 ): string[] {
   if (meta.encoding === "full") {
     if (
       meta.base_seq !== null ||
       meta.removed_canvases.length > 0 ||
       meta.removed_items.length > 0 ||
-      meta.removed_textures.length > 0
+      meta.removed_textures.length > 0 ||
+      (isV4 && (meta.removed_meshes?.length ?? 0) > 0)
     ) {
       return [
         `patch-encoding: record at offset ${offset}: a full transaction carries a non-null base_seq or a non-empty removed list`,
@@ -2777,6 +3767,29 @@ function checkPatchRules(
       ];
     }
   }
+  if (isV4) {
+    const removedMeshSet = new Set<number>();
+    for (const id of meta.removed_meshes ?? []) {
+      if (removedMeshSet.has(id)) {
+        return [
+          `patch-removed: record at offset ${offset}: mesh ${id} is removed twice`,
+        ];
+      }
+      removedMeshSet.add(id);
+      if (!baseState.meshes.has(id)) {
+        return [
+          `patch-removed: record at offset ${offset}: removed mesh ${id} is absent from the base`,
+        ];
+      }
+    }
+    for (const m of meta.meshes ?? []) {
+      if (removedMeshSet.has(m.id)) {
+        return [
+          `patch-removed: record at offset ${offset}: mesh ${m.id} is both removed and present`,
+        ];
+      }
+    }
+  }
 
   for (const it of meta.items) {
     const base = baseState.items.get(it.id);
@@ -2811,6 +3824,8 @@ export interface ResolvedTransaction {
     canvases: ResolvedCanvas[];
     items: ResolvedItem[];
     textures: ResolvedTexture[];
+    /** new at /4: present only when resolved at version 4. */
+    meshes?: ResolvedMesh[];
   };
 }
 
@@ -2821,7 +3836,10 @@ export interface ResolvedResource {
 }
 
 export interface ResolvedRecording {
-  schema: "render-stream-2-resolved/1" | "render-stream-3-resolved/1";
+  schema:
+    | "render-stream-2-resolved/1"
+    | "render-stream-3-resolved/1"
+    | "render-stream-4-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -2830,7 +3848,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 = 3,
+  version: 2 | 3 | 4 = 3,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -2863,14 +3881,17 @@ export function resolveRecording(
         canvases: sortedResolvedCanvases(state),
         items: sortedResolvedItems(state),
         textures: sortedResolvedTextures(state),
+        ...(version === 4 ? { meshes: sortedResolvedMeshes(state) } : {}),
       },
     });
   }
   return {
     schema:
-      version === 3
-        ? "render-stream-3-resolved/1"
-        : "render-stream-2-resolved/1",
+      version === 4
+        ? "render-stream-4-resolved/1"
+        : version === 3
+          ? "render-stream-3-resolved/1"
+          : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

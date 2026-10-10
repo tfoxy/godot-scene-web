@@ -1,20 +1,21 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the render-stream/2 AND /3 TypeScript decoder/validator/resolver
+// Self-test for the render-stream/2, /3 AND /4 TypeScript decoder/validator/resolver
 // (lib/render-stream-2.ts) against the golden vectors they share with the C++ codec/diff and the
 // GDScript decoder (protocol/golden-2/, render-stream-2.md; protocol/golden-3/,
-// render-stream-3.md).
+// render-stream-3.md; protocol/golden-4/, render-stream-4.md).
 //
 //   mise exec -- pnpm exec tsx --conditions=development scripts/test/self-test-rs2.ts
 //
-// render-stream/3 (G4e1) is implemented in render-stream-2.ts itself, behind an explicit
-// `version` parameter -- not a forked render-stream-3.ts/self-test-rs3.ts (gate4-design.md G4e1:
-// "Renaming files is not part of this contract"). runSuite() below runs the same checks against
-// golden-2 (version 2, unchanged) and golden-3 (version 3); "renamed tests are not required"
-// means the per-check messages below still say "rs2"-flavoured things like ".rs2"/".rs3" from
-// `entry.file` itself, not from a hardcoded suffix.
+// render-stream/3 (G4e1) and render-stream/4 (G5w) are implemented in render-stream-2.ts itself,
+// behind an explicit `version` parameter -- not forked render-stream-3.ts/-4.ts modules
+// (gate4-design.md G4e1: "Renaming files is not part of this contract"). runSuite() below runs
+// the same checks against golden-2 (version 2, unchanged), golden-3 (version 3) and golden-4
+// (version 4); "renamed tests are not required" means the per-check messages below still say
+// "rs2"-flavoured things like ".rs2"/".rs3"/".rs4" from `entry.file` itself, not from a
+// hardcoded suffix.
 //
-// Checks, each required by gate2-design.md's G2b1 "Pass criteria" (and, for golden-3, by
-// gate4-design.md's G4e1 "Pass criteria"):
+// Checks, each required by gate2-design.md's G2b1 "Pass criteria" (and, for golden-3/-4, by
+// gate4-design.md's G4e1 and render-stream-4.md's G5w "Pass criteria"):
 //   - decodeRecording() deep-equals each of full/patch/inline.decoded.json;
 //   - recordSha256() reproduces every record's sha256 in all three decoded forms;
 //   - validateRecording() of all three valid vectors is [];
@@ -22,12 +23,14 @@
 //     transaction "encoding" excepted, as /1), and its "resources" is [] for full/patch and
 //     index.json's "inline_resources" for inline (checked separately: unlike the other fields,
 //     this one is never shared ground truth -- it is genuinely stream-specific);
-//   - every invalid/*.rs2 or .rs3 is rejected with exactly one error of the right code;
-//   - corrupt-meta.rs2/.rs3 is rejected with "meta-json";
+//   - every invalid/*.rs2, .rs3 or .rs4 is rejected with exactly one error of the right code;
+//   - corrupt-meta.rs2/.rs3/.rs4 is rejected with "meta-json";
 //   - every payload-invalid/*.grt (golden-2 only: /3 does not change the payload format) throws
-//     the named code from decodeTexturePayload();
+//     the named code from decodeTexturePayload(); every payload-invalid/*.grm (golden-4 only)
+//     throws the named code from decodeMeshPayload();
 //   - every payloads/*.grt hashes to its listed name and decodes to its listed shape, and
-//     expectedDataBytes() agrees with the payload's own data length.
+//     expectedDataBytes() agrees with the payload's own data length; every golden-4
+//     mesh_payloads/*.grm likewise against decodeMeshPayload()/meshPayloadSha256().
 //
 // Exits non-zero if any assertion fails.
 
@@ -46,10 +49,15 @@ import {
   statesEqual,
   validateRecording,
 } from "../lib/render-stream-2";
+import {
+  decodeMeshPayload,
+  meshPayloadSha256,
+} from "../lib/render-stream-mesh";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const GOLDEN2_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-2");
 const GOLDEN3_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-3");
+const GOLDEN4_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-4");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -77,6 +85,16 @@ interface GoldenIndex {
     width: number;
     height: number;
     mipmaps: boolean;
+    bytes: number;
+  }>;
+  // golden-4 only (render-stream-4.md "Mesh payload").
+  mesh_payloads?: Array<{
+    file: string;
+    hash: string;
+    primitive: string;
+    format: number;
+    vertex_count: number;
+    index_count: number;
     bytes: number;
   }>;
 }
@@ -116,11 +134,15 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 }
 
 // Runs every check against one golden directory, decoding with the given protocol `version`
-// (2 for golden-2/, 3 for golden-3/ -- gate4-design.md G4e1). The checks themselves are the same
-// for both: only the directory and the `version` argument threaded into decodeRecording()/
-// validateRecording()/resolveRecording() differ.
-async function runSuite(goldenDir: string, version: 2 | 3): Promise<void> {
-  const label = goldenDir.endsWith("golden-3") ? "golden-3" : "golden-2";
+// (2 for golden-2/, 3 for golden-3/ -- gate4-design.md G4e1; 4 for golden-4/ -- render-stream-4.md
+// G5w). The checks themselves are the same for all three: only the directory and the `version`
+// argument threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
+async function runSuite(goldenDir: string, version: 2 | 3 | 4): Promise<void> {
+  const label = goldenDir.endsWith("golden-4")
+    ? "golden-4"
+    : goldenDir.endsWith("golden-3")
+      ? "golden-3"
+      : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -212,18 +234,24 @@ async function runSuite(goldenDir: string, version: 2 | 3): Promise<void> {
     );
   }
 
-  // --- every payload-invalid/*.grt throws its named code from decodeTexturePayload() ---------
+  // --- every payload-invalid/*.grt (or, at /4, *.grm) throws its named code -------------------
   for (const entry of index.payload_invalid ?? []) {
     const bytes = await readBytes(goldenDir, entry.file);
     let threw: string | null = null;
     try {
-      decodeTexturePayload(bytes);
+      // golden-4's payload_invalid vectors are GRM1 (render-stream-mesh/1), not GRT1; every
+      // other golden directory's are GRT1.
+      if (version === 4) {
+        decodeMeshPayload(bytes);
+      } else {
+        decodeTexturePayload(bytes);
+      }
     } catch (error) {
       threw = String((error as Error).message ?? error);
     }
     ok(
       threw?.startsWith(`${entry.code}: `) ?? false,
-      `${label}: decodeTexturePayload(${entry.file}) throws "${entry.code}: ..." (got ${JSON.stringify(threw)})`,
+      `${label}: decode${version === 4 ? "Mesh" : "Texture"}Payload(${entry.file}) throws "${entry.code}: ..." (got ${JSON.stringify(threw)})`,
     );
   }
 
@@ -256,16 +284,40 @@ async function runSuite(goldenDir: string, version: 2 | 3): Promise<void> {
       `${label}: expectedDataBytes() agrees with ${entry.file}'s actual data length`,
     );
   }
+
+  // --- every golden-4 mesh_payloads/*.grm hashes to its name and decodes to its listed shape ---
+  for (const entry of index.mesh_payloads ?? []) {
+    const bytes = await readBytes(goldenDir, entry.file);
+    ok(
+      meshPayloadSha256(bytes) === entry.hash,
+      `${label}: meshPayloadSha256(${entry.file}) equals its listed hash`,
+    );
+    const decoded = decodeMeshPayload(bytes);
+    ok(
+      decoded.primitive === entry.primitive &&
+        decoded.format === entry.format &&
+        decoded.vertex_count === entry.vertex_count &&
+        decoded.index_count === entry.index_count,
+      `${label}: decodeMeshPayload(${entry.file}) decodes to its listed shape`,
+    );
+    ok(
+      bytes.length === entry.bytes,
+      `${label}: ${entry.file}'s total byte length equals index.json's listed "bytes"`,
+    );
+  }
 }
 
 async function main(): Promise<void> {
   await runSuite(GOLDEN2_DIR, 2);
   await runSuite(GOLDEN3_DIR, 3);
+  await runSuite(GOLDEN4_DIR, 4);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
-  // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder") -------------
+  // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
+  // /4 decode refuses /3 and a /3 decode refuses /4 (render-stream-4.md, same rule) -------------
   const full2 = await readBytes(GOLDEN2_DIR, "full.rs2");
   const full3 = await readBytes(GOLDEN3_DIR, "full.rs3");
+  const full4 = await readBytes(GOLDEN4_DIR, "full.rs4");
   ok(
     validateRecording(full3, 2)[0]?.startsWith("bad-magic: ") ?? false,
     "golden-3/full.rs3 decoded as version 2 is rejected with bad-magic",
@@ -273,6 +325,14 @@ async function main(): Promise<void> {
   ok(
     validateRecording(full2, 3)[0]?.startsWith("bad-magic: ") ?? false,
     "golden-2/full.rs2 decoded as version 3 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full4, 3)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-4/full.rs4 decoded as version 3 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full3, 4)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-3/full.rs3 decoded as version 4 is rejected with bad-magic",
   );
 
   console.log(
