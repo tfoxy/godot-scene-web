@@ -1,17 +1,19 @@
 extends SceneTree
 ## RsApplier / RsResourceCache / RsLiveClient self-test against the shared golden vectors
-## (protocol/golden-2/; gate2-design.md "G2b2").
+## (protocol/golden-3/ since G4e2, when the receiver switched to render-stream/3; gate2-design.md
+## "G2b2", gate4-design.md "G4e2"). golden-3 is golden-2's six states re-encoded as /3 plus seq 7,
+## item 6's three msdf commands against texture 7.
 ##
 ##   godot --headless --path receiver --script res://tests/applier2_selftest.gd
 ##
-## RS_SELFTEST_GOLDEN_DIR overrides the golden directory (default <receiver>/../protocol/golden-2).
+## RS_SELFTEST_GOLDEN_DIR overrides the golden directory (default <receiver>/../protocol/golden-3).
 ## RS_SELFTEST_TMP_DIR is an absolute scratch directory for the cache tests (default
 ## user://applier2-selftest). Prints "[applier2-selftest] ok" and quits 0, or prints each
 ## failure and quits 1.
 ##
 ## The applier, through the receiver's exact path (accept_record, then every payload the resolved
 ## state needs made available, then apply_state):
-##   1. full.rs2, patch.rs2 and inline.rs2, each through a fresh applier, produce identical
+##   1. full.rs3, patch.rs3 and inline.rs3, each through a fresh applier, produce identical
 ##      per-seq stats (rs_calls, created, freed, reparented, commands_replayed, unsupported
 ##      commands, texture created/updated/replaced/freed/upload_bytes/skipped_commands): the
 ##      receiver's work does not depend on encoding or delivery. seq 6 equals seq 5 and costs 0
@@ -22,8 +24,11 @@ extends SceneTree
 ##      texture_2d_update; seq 4 frees F's RID when it becomes a tombstone; nothing is uploaded
 ##      twice for the same hash.
 ##   3. The reupload sabotage uploads every resident image at every applied transaction.
-##   4. A reconnect: one applier replays full.rs2, is disposed, and replays patch.rs2 exactly like
+##   4. A reconnect: one applier replays full.rs3, is disposed, and replays patch.rs3 exactly like
 ##      a fresh one.
+##   4b. (G4e2) seq 7's msdf commands replay as two canvas_item_add_msdf_texture_rect_region calls
+##      (texture 7 made resident once), the unknown-texture one is skipped and recorded; the
+##      drop-msdf sabotage skips both with no record.
 ## The cache (RsResourceCache):
 ##   5. fresh refuses a non-empty directory (cache-not-fresh), warm refuses a missing one; a miss
 ##      fetches from the store, verifies, writes the cache (temp + rename) and keeps it in memory;
@@ -31,7 +36,7 @@ extends SceneTree
 ##      resource-hash-mismatch, a missing one resource-unavailable, an undecodable one
 ##      resource-invalid.
 ## The live control messages (RsLiveClient):
-##   6. hello (render-stream/2), ack and resync encode to exactly the golden control/valid/*.json
+##   6. hello (render-stream/3), ack and resync encode to exactly the golden control/valid/*.json
 ##      messages, and parse_host_text accepts the golden error message and nothing else.
 
 var _failures: Array[String] = []
@@ -43,7 +48,7 @@ var _payloads: Dictionary[String, PackedByteArray] = {}
 func _initialize() -> void:
 	_golden = OS.get_environment("RS_SELFTEST_GOLDEN_DIR")
 	if _golden == "":
-		_golden = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
+		_golden = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-3").simplify_path()
 	_tmp = OS.get_environment("RS_SELFTEST_TMP_DIR")
 	if _tmp == "":
 		_tmp = ProjectSettings.globalize_path("user://applier2-selftest")
@@ -74,6 +79,7 @@ func _run_applier_tests() -> void:
 	_test_applier_clip_order()
 	_test_applier_sabotage_ignore_clip()
 	_test_applier_sabotage_clip_before_clear()
+	_test_applier_msdf()
 	_finish()
 
 
@@ -177,9 +183,9 @@ static func _row(result: Dictionary) -> String:
 
 func _test_applier_encodings() -> void:
 	var rows_by_file: Dictionary[String, Array] = {}
-	for file: String in ["full.rs2", "patch.rs2", "inline.rs2"]:
+	for file: String in ["full.rs3", "patch.rs3", "inline.rs3"]:
 		var applier: RsApplier = _new_applier()
-		var cache: RsResourceCache = _memory_cache() if file != "inline.rs2" else RsResourceCache.new()
+		var cache: RsResourceCache = _memory_cache() if file != "inline.rs3" else RsResourceCache.new()
 		var results: Array[Dictionary] = _apply(applier, file, cache)
 		var rows: Array[String] = []
 		var calls: Array[int] = []
@@ -194,23 +200,23 @@ func _test_applier_encodings() -> void:
 			else:
 				_check(result["rs_calls"] == 0, "%s: a %s record made RS calls" % [file, result["kind"]])
 		rows_by_file[file] = rows
-		_check(calls.size() == 6 and calls[0] > 0 and calls[5] == 0, "%s: rs_calls per seq %s (seq 1 > 0, seq 6 == seq 5's state: 0)" % [file, str(calls)])
+		_check(calls.size() == 7 and calls[0] > 0 and calls[5] == 0 and calls[6] > 0, "%s: rs_calls per seq %s (seq 1 > 0, seq 6 == seq 5's state: 0, seq 7's new item > 0)" % [file, str(calls)])
 		print("[applier2-selftest] %s rs_calls per seq %s" % [file, str(calls)])
 		_dispose_checked(applier, file)
-	_check(rows_by_file["full.rs2"] == rows_by_file["patch.rs2"], "full and patch per-seq applier stats differ")
-	_check(rows_by_file["full.rs2"] == rows_by_file["inline.rs2"], "full and inline per-seq applier stats differ")
+	_check(rows_by_file["full.rs3"] == rows_by_file["patch.rs3"], "full and patch per-seq applier stats differ")
+	_check(rows_by_file["full.rs3"] == rows_by_file["inline.rs3"], "full and inline per-seq applier stats differ")
 
 
 func _test_applier_textures() -> void:
 	var applier: RsApplier = _new_applier()
-	var results: Array[Dictionary] = _apply(applier, "full.rs2", _memory_cache())
+	var results: Array[Dictionary] = _apply(applier, "full.rs3", _memory_cache())
 	var tx: Array[Dictionary] = []
 	for result: Dictionary in results:
 		if result["kind"] == "transaction":
 			var stats: Dictionary = result["stats"]
 			tx.append(stats)
-	if tx.size() != 6:
-		_failures.append("full.rs2 applied %d transactions" % tx.size())
+	if tx.size() != 7:
+		_failures.append("full.rs3 applied %d transactions" % tx.size())
 		return
 	var r1: Dictionary = tx[0]["resources"]
 	# Commands name texture 1 (A1, items 1 and 2), 5 (F, item 4) and 3 (unsupported, item 5); item 3
@@ -226,33 +232,35 @@ func _test_applier_textures() -> void:
 	_check(r4["freed"] == 1 and r4["created"] == 0, "seq 4: F becomes a tombstone and its RID is freed: %s" % str(r4))
 	var r5: Dictionary = tx[4]["resources"]
 	_check(r5["freed"] == 0 and r5["created"] == 0, "seq 5: the tombstone leaving the table frees nothing more: %s" % str(r5))
-	_check(applier.resident_textures() == 1, "after seq 6 one texture (A) is resident, got %d" % applier.resident_textures())
+	var r7: Dictionary = tx[6]["resources"]
+	_check(r7["created"] == 1 and r7["skipped_commands"] == 1 and tx[6]["msdf_commands"] == 2, "seq 7: the page (texture 7) made resident once, two msdf calls, the unknown-texture msdf command skipped: %s, msdf %s" % [str(r7), str(tx[6]["msdf_commands"])])
+	_check(applier.resident_textures() == 2, "after seq 7 two textures (A, the page) are resident, got %d" % applier.resident_textures())
 	_dispose_checked(applier, "textures")
 
 
 func _test_applier_reupload() -> void:
 	var applier: RsApplier = _new_applier()
 	applier.sabotage_reupload = true
-	var results: Array[Dictionary] = _apply(applier, "full.rs2", _memory_cache())
+	var results: Array[Dictionary] = _apply(applier, "full.rs3", _memory_cache())
 	var uploads: int = 0
 	for result: Dictionary in results:
 		if result["kind"] == "transaction":
 			var stats: Dictionary = result["stats"]
 			var list: Array = stats["uploads"]
 			uploads += list.size()
-	# seq 1: A, F; seq 2-3: A, F again; seq 4-6: A only (F is a tombstone).
-	_check(uploads == 2 + 2 + 2 + 1 + 1 + 1, "the reupload sabotage uploaded %d times" % uploads)
+	# seq 1: A, F; seq 2-3: A, F again; seq 4-6: A only (F is a tombstone); seq 7: A and the page.
+	_check(uploads == 2 + 2 + 2 + 1 + 1 + 1 + 2, "the reupload sabotage uploaded %d times" % uploads)
 	_dispose_checked(applier, "reupload")
 
 
 func _test_applier_reconnect() -> void:
 	var fresh_applier: RsApplier = _new_applier()
-	var fresh: Array[Dictionary] = _apply(fresh_applier, "patch.rs2", _memory_cache())
+	var fresh: Array[Dictionary] = _apply(fresh_applier, "patch.rs3", _memory_cache())
 	_dispose_checked(fresh_applier, "reconnect fresh")
 	var applier: RsApplier = _new_applier()
-	_apply(applier, "full.rs2", _memory_cache())
+	_apply(applier, "full.rs3", _memory_cache())
 	_dispose_checked(applier, "reconnect first session")
-	var second: Array[Dictionary] = _apply(applier, "patch.rs2", _memory_cache())
+	var second: Array[Dictionary] = _apply(applier, "patch.rs3", _memory_cache())
 	var a: Array[int] = []
 	var b: Array[int] = []
 	for row: Dictionary in fresh:
@@ -261,6 +269,37 @@ func _test_applier_reconnect() -> void:
 		b.append(row["rs_calls"])
 	_check(a == b, "reconnect: the second session cost %s RS calls per record, a fresh applier %s" % [str(b), str(a)])
 	_dispose_checked(applier, "reconnect second session", true)
+
+
+## (G4e2) seq 7 of golden-3: the msdf commands replay in place, item 6's call log is the two msdf
+## calls (the unknown-texture one is skipped and recorded); RS_RECEIVER_SABOTAGE=drop-msdf skips
+## both msdf calls with no record of its own (the typed unknown-texture command stays recorded).
+func _test_applier_msdf() -> void:
+	for drop: bool in [false, true]:
+		var applier: RsApplier = _new_applier()
+		applier.sabotage_drop_msdf = drop
+		var results: Array[Dictionary] = _apply(applier, "full.rs3", _memory_cache())
+		var last: Dictionary = {}
+		for result: Dictionary in results:
+			if result["kind"] == "transaction":
+				last = result["stats"]
+		if last.is_empty():
+			_failures.append("msdf (drop %s): no transaction applied" % str(drop))
+			continue
+		var ops: Array = _item_ops(last["item_calls"], 6)
+		var unsupported_commands: Array = last["unsupported_commands"]
+		var named: Array = []
+		for value: Variant in unsupported_commands:
+			var command: Dictionary = value
+			named.append([command["item"], command["name"], command["reason"]])
+		# The capture's typed unknown-texture command is an `unsupported` command on the wire, not
+		# an msdf one: it is skipped and recorded either way. A new item always sets its clip.
+		_check(named == [[6, "canvas_item_add_msdf_texture_rect_region", "unknown-texture"]], "msdf (drop %s): the unknown-texture command is skipped and recorded: %s" % [str(drop), str(named)])
+		if drop:
+			_check(ops == ["set_clip"] and last["msdf_commands"] == 0, "drop-msdf: item 6 makes no msdf call: %s, %s" % [str(ops), str(last["msdf_commands"])])
+		else:
+			_check(ops == ["add_msdf_texture_rect_region", "add_msdf_texture_rect_region", "set_clip"] and last["msdf_commands"] == 2, "seq 7 replays item 6's two msdf commands: %s" % str(ops))
+		_dispose_checked(applier, "msdf (drop %s)" % str(drop))
 
 
 ## G2d: canvas_texture_create, canvas_texture_set_channel(DIFFUSE), filter, repeat. No golden-2
@@ -538,10 +577,20 @@ func _test_cache(index: Dictionary) -> void:
 	_check(_code(mismatch) == "resource-hash-mismatch" and not mismatch["verified"], "a store file that does not hash to its name: %s" % str(mismatch))
 	_check(not FileAccess.file_exists(_tmp.path_join("cache-wrong").path_join("sha256").path_join(other + ".grt")), "a mismatched payload is never written to the cache")
 	_check(_code(wrong.obtain(good)) == "resource-unavailable", "a hash the store lacks is resource-unavailable")
-	var invalid_entries: Array = index["payload_invalid"]
+	# The payload format is unchanged at /3 (render-stream-texture/1), so golden-3 carries no
+	# payload_invalid vectors: the undecodable payload comes from golden-2's (G4e2).
+	var payload_golden: Dictionary = index
+	var payload_dir: String = _golden
+	if not index.has("payload_invalid"):
+		payload_dir = _golden.path_join("../golden-2").simplify_path()
+		var json := JSON.new()
+		_check(json.parse(FileAccess.get_file_as_string(payload_dir.path_join("index.json"))) == OK, "golden-2/index.json parses")
+		payload_golden = json.data
+	var invalid_entries: Array = payload_golden["payload_invalid"]
 	var invalid_entry: Dictionary = invalid_entries[0]
 	var invalid_file: String = invalid_entry["file"]
-	var invalid_bytes: PackedByteArray = _read_bytes(invalid_file)
+	var invalid_bytes: PackedByteArray = FileAccess.get_file_as_bytes(payload_dir.path_join(invalid_file))
+	_check(not invalid_bytes.is_empty(), "cannot read %s" % payload_dir.path_join(invalid_file))
 	var invalid_hash: String = RsTexturePayload.sha256_hex(invalid_bytes)
 	_write(wrong_store.path_join("sha256").path_join(invalid_hash + ".grt"), invalid_bytes)
 	_check(_code(wrong.obtain(invalid_hash)) == "resource-invalid", "a payload that hashes right but does not decode is resource-invalid")
@@ -558,12 +607,12 @@ func _test_cache(index: Dictionary) -> void:
 func _test_control_messages() -> void:
 	var stream_id: String = "0123456789abcdef0123456789abcdef"
 	var encoded: Dictionary[String, Dictionary] = {
-		"hello-submitted": RsLiveClient.hello("gate2-selftest", "submitted", 16777216),
-		"hello-applied": RsLiveClient.hello("gate2-selftest-headless", "applied", 65535),
+		"hello-submitted": RsLiveClient.hello("gate4-selftest", "submitted", 16777216),
+		"hello-applied": RsLiveClient.hello("gate4-selftest-headless", "applied", 65535),
 		"ack-received": RsLiveClient.ack(stream_id, 1, "received", 1000),
 		"ack-applied": RsLiveClient.ack(stream_id, 1, "applied", 2500),
 		"ack-submitted": RsLiveClient.ack(stream_id, 1, "submitted", 4200),
-		"resync": RsLiveClient.resync(stream_id, 6, "unapplied-stale"),
+		"resync": RsLiveClient.resync(stream_id, 7, "unapplied-stale"),
 	}
 	for name: String in encoded:
 		var golden: Dictionary = _read_json("control/valid/%s.json" % name)
@@ -577,7 +626,7 @@ func _test_control_messages() -> void:
 		_check(JSON.stringify(got) == JSON.stringify(golden), "control %s differs from the golden: %s vs %s" % [name, JSON.stringify(got), JSON.stringify(golden)])
 		_check(not text.contains(" "), "control %s is compact: %s" % [name, text])
 		_check(not RsLiveClient.parse_host_text(text)["ok"], "parse_host_text refuses a %s message" % name)
-	_check(RsLiveClient.SUBPROTOCOL == "render-stream.2" and RsLiveClient.PROTOCOL == "render-stream/2", "the live client speaks render-stream/2")
+	_check(RsLiveClient.SUBPROTOCOL == "render-stream.3" and RsLiveClient.PROTOCOL == "render-stream/3", "the live client speaks render-stream/3")
 	var error_text: String = FileAccess.get_file_as_string(_golden.path_join("control/valid/error-message-too-large.json"))
 	var parsed: Dictionary = RsLiveClient.parse_host_text(error_text)
 	_check(parsed["ok"] and parsed["reason"] == "message-too-large", "parse_host_text reads the golden error message")

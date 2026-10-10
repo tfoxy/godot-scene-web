@@ -556,6 +556,9 @@ void test_parse_sabotage() {
       {"omit-update", "1", nullptr, true, SabotageKind::OmitUpdate, 1, "omit-update"},
       {"perturb-transform", "100", nullptr, true, SabotageKind::PerturbTransform, 100,
        "perturb-transform"},
+      {"perturb-glyph", "41", nullptr, true, SabotageKind::PerturbGlyph, 41, "perturb-glyph"},
+      {"perturb-glyph", "41", "canvas_item_add_rect", false, SabotageKind::None, 0,
+       "perturb-glyph with an op"},
       {"patch-drop-item", "51", nullptr, true, SabotageKind::PatchDropItem, 51, "patch-drop-item"},
       {"patch-drop-item", "51", "", true, SabotageKind::PatchDropItem, 51,
        "an empty op is no op"},
@@ -642,6 +645,51 @@ void test_gate2_features() {
   for (const auto *list :
        {&f.ops, &f.item_state, &f.resources, &f.observed_unsupported_ops, &f.unobserved}) {
     check(std::is_sorted(list->begin(), list->end()), "gate2_features() arrays sorted");
+  }
+}
+
+// G4e2 (render-stream-3.md "File layout", "Features"): a V3 template starts every sink with the
+// GRS3 magic and a "render-stream/3" session; the V3 feature lists move the msdf op from
+// observed_unsupported_ops into ops.
+void test_start_v3() {
+  MemoryRecordSink full;
+  MemoryRecordSink patch;
+  full.open("memory://full");
+  patch.open("memory://patch");
+  Publisher publisher(&full, &patch, SabotageConfig(), golden_policy());
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V3;
+  tmpl.features = gate2_features(true, ProtocolVersion::V3);
+  check(publisher.start(tmpl), "start() with a V3 template");
+  const std::vector<std::uint8_t> magic3 = magic(ProtocolVersion::V3);
+  check(magic3.size() == 8 && magic3[3] == 0x33, "the /3 magic GRS3");
+  check(nth_write(full, 0) == magic3 && nth_write(patch, 0) == magic3,
+        "both sinks start with the /3 magic");
+  check(contains(nth_write(full, 1), "\"protocol\":\"render-stream/3\"") &&
+            contains(nth_write(patch, 1), "\"protocol\":\"render-stream/3\""),
+        "both session records say render-stream/3");
+  check(contains(nth_write(full, 1), "\"add_msdf_texture_rect_region\""),
+        "the session's ops name the msdf command");
+}
+
+void test_gate2_features_v3() {
+  const Features v2 = gate2_features(true);
+  const Features v3 = gate2_features(true, ProtocolVersion::V3);
+  const std::vector<std::string> ops = {"add_msdf_texture_rect_region", "add_rect",
+                                        "add_texture_rect", "add_texture_rect_region"};
+  check(v3.ops == ops, "V3 ops: /2's three plus add_msdf_texture_rect_region, sorted");
+  std::vector<std::string> observed = v2.observed_unsupported_ops;
+  observed.erase(std::find(observed.begin(), observed.end(),
+                           "canvas_item_add_msdf_texture_rect_region"));
+  check(v3.observed_unsupported_ops == observed &&
+            v3.observed_unsupported_ops.size() + 1 == v2.observed_unsupported_ops.size(),
+        "V3 observed_unsupported_ops: /2's without the msdf method");
+  check(v3.item_state == v2.item_state && v3.resources == v2.resources &&
+            v3.unobserved == v2.unobserved &&
+            v3.unsupported_resources.size() == v2.unsupported_resources.size(),
+        "every other V3 list is /2's");
+  for (const auto *list : {&v3.ops, &v3.observed_unsupported_ops}) {
+    check(std::is_sorted(list->begin(), list->end()), "V3 arrays sorted");
   }
 }
 
@@ -952,6 +1000,8 @@ int main() {
   test_parse_sabotage();
   test_generate_id();
   test_gate2_features();
+  test_gate2_features_v3();
+  test_start_v3();
   test_resources_info();
   test_store_directory();
   test_inline_records();

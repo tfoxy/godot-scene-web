@@ -26,8 +26,12 @@
 # independent of g4a/g4b and can run alone. g4f (G4f: fixtures/gate4-i18n -- multilingual shaping
 # with Open Sans and the three pinned engine fallbacks: Greek, Cyrillic, NFD Vietnamese, Arabic,
 # Persian, Hebrew with niqqud, mixed bidi, Devanagari and a hex box -- through G4a's and G4b's legs
-# under <out>/i18n/, plus sabotage-i18n-omit-atlas) is independent of the others too. g4e (MSDF on
-# render-stream/3) is known but has not landed.
+# under <out>/i18n/, plus sabotage-i18n-omit-atlas) is independent of the others too. g4e (G4e2:
+# fixtures/gate4-msdf -- MSDF text on render-stream/3 -- under <out>/msdf/: a capture, three
+# references, two receivers and a headless trace, sabotage-msdf-perturb-glyph,
+# sabotage-msdf-receiver-drop, and sabotage-gray-perturb-glyph on fixtures/gate4, which is judged
+# against g4a's reference, so g4e needs g4a in the same run). Every capture speaks render-stream/3
+# since G4e2 (recording files keep their .rs2 names).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -51,7 +55,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g4a g4b g4c g4d g4f)
+LANDED_GROUPS=(g4a g4b g4c g4d g4e g4f)
 KNOWN_GROUPS=(g4a g4b g4c g4d g4e g4f)
 
 # The fixture's default timeline (fixtures/gate4/expected.json): S=1, N=10, so step k's applied
@@ -175,6 +179,17 @@ case " ${GROUPS_RUN[*]} " in
 	esac
 	;;
 esac
+case " ${GROUPS_RUN[*]} " in
+*" g4e "*)
+	case " ${GROUPS_RUN[*]} " in
+	*" g4a "*) ;;
+	*)
+		echo "run-gate4: g4e needs g4a's reference (sabotage-gray-perturb-glyph); pass --legs g4a,g4e" >&2
+		exit 2
+		;;
+	esac
+	;;
+esac
 
 ACTUAL_BINARY_SHA256="$(sha256sum "$BINARY" | awk '{print $1}')"
 if [ "$ACTUAL_BINARY_SHA256" != "$EXPECTED_BINARY_SHA256" ]; then
@@ -225,7 +240,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# render-stream/2: every capture writes both sinks (recording.rs2 full, recording-patch.rs2 patch)
+# render-stream/3 since G4e2 (the file names keep their .rs2 spelling, as the rs2 modules do): every
+# capture writes both sinks (recording.rs2 full, recording-patch.rs2 patch)
 # and its payload store <capture>/store (the glyph atlas pages and the engine's hue strip).
 RECORDING_NAME=recording.rs2
 PATCH_RECORDING_NAME=recording-patch.rs2
@@ -672,12 +688,114 @@ run_g4f() {
 	GS_RUN_DIR=""
 }
 
+# --- g4e: fixtures/gate4-msdf (gate4-design.md "G4e2"), every leg under $OUT/msdf/ ---
+
+MSDF_DIR="$EXPERIMENT_DIR/fixtures/gate4-msdf"
+# The MSDF fixture's upload steps (early shots at S+N*k+1, its expected.json early_shot_steps) and
+# the new-glyph step perturb-glyph starts at (gate4-design.md "G4e2" leg table). The gray twin
+# perturbs fixtures/gate4 from its step 1.
+MSDF_EARLY_STEPS=(1 7)
+MSDF_PERTURB_STEP=1
+GRAY_PERTURB_STEP=1
+
+msdf_early_csv() {
+	local rec="$1" out="" sep="" seq k
+	for k in "${MSDF_EARLY_STEPS[@]}"; do
+		seq="$(seq_at_frame "$rec" "$(($(step_frame4 "$k") + 1))" || true)"
+		if [ -n "$seq" ]; then
+			out="$out$sep$seq"
+			sep=","
+		fi
+	done
+	echo "$out"
+}
+
+run_g4e() {
+	local M="$OUT/msdf"
+	mkdir -p "$M/import"
+	echo "run-gate4: g4e: provisioning fonts for fixtures/gate4-msdf"
+	if ! bash "$SCRIPT_DIR/lib/provision-fonts.sh" "$MSDF_DIR" >"$M/import/fonts.log" 2>&1; then
+		cat "$M/import/fonts.log" >&2
+		echo "run-gate4: font provisioning failed, see $M/import/fonts.log" >&2
+		exit 1
+	fi
+	echo "run-gate4: g4e: import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$M/import/fixture" none -- mise exec -- godot --headless --path "$MSDF_DIR" --import
+	if [ "$(cat "$M/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate4: import of $MSDF_DIR failed, see $M/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	LEG_ENV=()
+	run_headless "$M/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$M/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate4: import of $RECEIVER_DIR failed, see $M/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	# capture-msdf: as g4a's capture (400 frames, both sinks, store, strace + maps, env.json).
+	echo "run-gate4: capture-msdf"
+	CAPTURE_FIXTURE_DIR="$MSDF_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_ENV_LOG="$M/capture/env.json")
+	run_capture "$M/capture" "$CAPTURE_QUIT_FRAME" capture
+
+	echo "run-gate4: sabotage-msdf-perturb-glyph (capture, perturb-glyph @$(step_frame4 "$MSDF_PERTURB_STEP"))"
+	CAPTURE_FIXTURE_DIR="$MSDF_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE=perturb-glyph
+		GRC_SABOTAGE_FRAME="$(step_frame4 "$MSDF_PERTURB_STEP")")
+	run_capture "$M/sabotage-perturb-glyph/capture" "" none
+
+	echo "run-gate4: sabotage-gray-perturb-glyph (capture of fixtures/gate4, perturb-glyph @$(step_frame4 "$GRAY_PERTURB_STEP"))"
+	g4_capture "$M/sabotage-gray-perturb-glyph/capture" GRC_SABOTAGE=perturb-glyph GRC_SABOTAGE_FRAME="$(step_frame4 "$GRAY_PERTURB_STEP")"
+
+	echo "run-gate4: g4e: receiver-msdf-headless-trace"
+	if prepare_recording "$M/capture/$RECORDING_NAME" "$M/receiver-headless-trace"; then
+		RECEIVER_STORE_DIR="$M/capture/store"
+		run_receiver_headless "$M/receiver-headless-trace" openat
+	fi
+
+	echo "run-gate4: bringing up private gamescope for g4e rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g4e"
+
+	echo "run-gate4: reference-msdf (oracle on)"
+	REFERENCE_FIXTURE_DIR="$MSDF_DIR"
+	REFERENCE_ORACLE=1
+	run_reference "$M/reference"
+	echo "run-gate4: reference-msdf-repeat (oracle on)"
+	REFERENCE_FIXTURE_DIR="$MSDF_DIR"
+	REFERENCE_ORACLE=1
+	run_reference "$M/reference-repeat"
+	echo "run-gate4: reference-msdf-armed (extension armed, stream on, oracle off)"
+	REFERENCE_FIXTURE_DIR="$MSDF_DIR"
+	REFERENCE_ARMED=1
+	run_reference "$M/reference-armed"
+
+	echo "run-gate4: receiver-msdf (full sink)"
+	RECEIVER_EXTRA_SHOTS="$(msdf_early_csv "$M/capture/$RECORDING_NAME")"
+	run_rendered_receiver "$M/capture" "$M/receiver"
+	echo "run-gate4: receiver-msdf-patch"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_EXTRA_SHOTS="$(msdf_early_csv "$M/capture/$RECORDING_NAME")"
+	run_rendered_receiver "$M/capture" "$M/receiver-patch"
+	echo "run-gate4: sabotage-msdf-perturb-glyph (receiver)"
+	run_rendered_receiver "$M/sabotage-perturb-glyph/capture" "$M/sabotage-perturb-glyph/receiver"
+	echo "run-gate4: sabotage-msdf-receiver-drop (receiver, RS_RECEIVER_SABOTAGE=drop-msdf)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=drop-msdf)
+	run_rendered_receiver "$M/capture" "$M/sabotage-receiver-drop/receiver"
+	echo "run-gate4: sabotage-gray-perturb-glyph (receiver)"
+	run_rendered_receiver "$M/sabotage-gray-perturb-glyph/capture" "$M/sabotage-gray-perturb-glyph/receiver"
+
+	gs_teardown "$OUT/gamescope-g4e"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g4a) run_g4a ;;
 	g4b) run_g4b ;;
 	g4c) run_g4c ;;
 	g4d) run_g4d ;;
+	g4e) run_g4e ;;
 	g4f) run_g4f ;;
 	esac
 done

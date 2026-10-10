@@ -1,7 +1,8 @@
 extends Node
-## render-stream/2 receiver (gate0-design.md "Q5. Receiver", extended by gate1-design.md "Q5.
-## Receiver", "G1b2" and "G1c2", and by gate2-design.md "Q5. Receiver" and "G2b2"). Its only
-## input is a render-stream/2 byte stream: a recording file (file mode) or the binary messages of
+## render-stream/3 receiver (gate0-design.md "Q5. Receiver", extended by gate1-design.md "Q5.
+## Receiver", "G1b2" and "G1c2", by gate2-design.md "Q5. Receiver" and "G2b2", and since G4e2 by
+## gate4-design.md "Q5. Receiver": /3 is /2 plus the msdf command). Its only
+## input is a render-stream/3 byte stream: a recording file (file mode) or the binary messages of
 ## one WebSocket connection (live mode), plus the texture payloads that stream names.
 ##
 ## File mode (RS_RECEIVER_MODE unset or "file"):
@@ -32,7 +33,10 @@ extends Node
 ##                                resource GET), ignore-clip (gate3-design.md Q5, G3b: every
 ##                                canvas_item_set_clip call passes false) or clip-before-clear
 ##                                (G3b: the pre-gate-3 apply order, the clip setter before content
-##                                with no shadow reset on clear); all five exist only to fail checks
+##                                with no shadow reset on clear) or drop-msdf (gate4-design.md
+##                                Q5, G4e2: every add_msdf_texture_rect_region is skipped with no
+##                                typed record, the pre-/3 picture); all six exist only to fail
+##                                checks
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash) is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
@@ -90,8 +94,9 @@ const SCHEMA: String = "render-stream-receiver-applied/3"
 const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
-## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear"]
+## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
+## gate4-design.md Q5, G4e2).
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -498,6 +503,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_reupload = _sabotage == "reupload"
 	_applier.sabotage_ignore_clip = _sabotage == "ignore-clip"
 	_applier.sabotage_clip_before_clear = _sabotage == "clip-before-clear"
+	_applier.sabotage_drop_msdf = _sabotage == "drop-msdf"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
@@ -569,6 +575,7 @@ func _transaction_entry(stream: int, meta: Dictionary, record: Dictionary) -> Di
 		"freed": null,
 		"reparented": null,
 		"commands_replayed": null,
+		"msdf_commands": null,
 		"rs_calls": null,
 		"received_us": null,
 		"applied_us": null,
@@ -588,6 +595,7 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 	entry["freed"] = stats["freed"]
 	entry["reparented"] = stats["reparented"]
 	entry["commands_replayed"] = stats["commands_replayed"]
+	entry["msdf_commands"] = stats["msdf_commands"]
 	entry["rs_calls"] = stats["rs_calls"]
 	entry["resources"] = stats["resources"]
 	var unsupported_commands: Array[Dictionary] = stats["unsupported_commands"]

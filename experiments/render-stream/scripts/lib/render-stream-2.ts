@@ -23,13 +23,14 @@
 // `payloads/*.grt` golden vectors.
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1) is implemented IN THIS SAME FILE
-// behind an explicit `version: 2 | 3 = 2` parameter on every exported entry point
+// behind an explicit `version: 2 | 3` parameter on every exported entry point
 // (splitRecords/decodeRecording/validateRecording/resolveRecording), rather than a forked
 // render-stream-3.ts module -- /3 is /2 plus one draw command (add_msdf_texture_rect_region) and
 // one sabotage kind (perturb-glyph), too small a delta to justify duplicating this module
 // (gate4-design.md G4e1: "Renaming files is not part of this contract"). `version` selects the
-// expected magic (GRS2 vs GRS3) and the decoded/resolved schema strings; every version-2 call
-// site in this repo omits the parameter and is therefore unaffected. The new command and
+// expected magic (GRS2 vs GRS3) and the decoded/resolved schema strings. Since G4e2 the capture,
+// the receiver and every gate checker speak /3, so the parameter defaults to 3; /2 decoding
+// remains only for golden-2/ (self-test-rs2.ts passes 2 explicitly), as /1's did. The new command and
 // sabotage kind are always representable regardless of `version` -- a /2 stream simply never
 // contains them in practice, since the capture never emits them under /2.
 
@@ -332,7 +333,8 @@ export const MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x32, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 // render-stream-3.md: the GRS3 magic, selected by `version: 3` on splitRecords()/
-// decodeRecording()/validateRecording()/resolveRecording(). MAGIC (GRS2) stays the default.
+// decodeRecording()/validateRecording()/resolveRecording(); the default since G4e2. MAGIC (GRS2)
+// is selected by `version: 2` (golden-2/ only).
 export const MAGIC_V3: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x33, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -1245,7 +1247,7 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 = 2,
+  version: 2 | 3 = 3,
 ): {
   records: RawRecord[];
   errors: string[];
@@ -1447,7 +1449,7 @@ export function decodeRecord(raw: RawRecord): {
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 = 2,
+  version: 2 | 3 = 3,
 ): {
   schema: "render-stream-2-decoded/1" | "render-stream-3-decoded/1";
   magic: string;
@@ -2381,7 +2383,7 @@ function checkResolvedInvariants(
 
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 = 2,
+  version: 2 | 3 = 3,
 ): string[] {
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
@@ -2828,7 +2830,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 = 2,
+  version: 2 | 3 = 3,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];

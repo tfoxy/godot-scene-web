@@ -113,6 +113,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g4b",
   "g4c",
   "g4d",
+  "g4e",
   "g4f",
 ];
 
@@ -466,10 +467,12 @@ export interface EnvJson {
   tool_locale?: string;
 }
 
-/** env.json identical across the legs given, and equal to the lock and the pins. */
+/** env.json identical across the legs given, and equal to the lock and the pins (`pins` per font
+ * key, FONT_PINS by default; G4e2's MSDF fixture pins FM and DF). */
 export function evaluateFixtureEnv(
   envs: Record<string, EnvJson | undefined>,
   lock: readonly FontLockEntry[],
+  pins: Record<string, Record<string, unknown>> = FONT_PINS,
 ): string[] {
   const problems: string[] = [];
   const legs = Object.keys(envs);
@@ -502,9 +505,9 @@ export function evaluateFixtureEnv(
   for (const name of Object.keys(files))
     if (!lock.some((e) => e.file === name))
       problems.push(`font ${name} is not in fonts.lock.json`);
-  for (const [key, pins] of Object.entries(FONT_PINS)) {
+  for (const [key, fontPins] of Object.entries(pins)) {
     const font = first.fonts?.[key];
-    for (const [prop, want] of Object.entries(pins))
+    for (const [prop, want] of Object.entries(fontPins))
       if (font?.[prop] !== want)
         problems.push(
           `font ${key}.${prop} = ${JSON.stringify(font?.[prop])}, pinned ${JSON.stringify(want)}`,
@@ -1003,12 +1006,14 @@ export function publishedVersions(
 }
 
 /** Consecutive versions of each page write only texels that were empty. `payload` returns a
- * version's GRT1 bytes (from the store). */
+ * version's GRT1 bytes (from the store). `format` is the pages' format: LA8 for grayscale, RGBA8
+ * for MSDF (G4e2), whose empty texel is (0,0,0,0). */
 export function evaluateAppendOnly(
   versions: Map<number, PublishedVersion[]>,
   pageIds: ReadonlyMap<string, number>,
   payload: (hash: string) => Uint8Array | undefined,
   empty: readonly number[],
+  format = "LA8",
 ): { problems: string[]; pairs: number; texels: number } {
   const problems: string[] = [];
   let pairs = 0;
@@ -1035,8 +1040,8 @@ export function evaluateAppendOnly(
         const pa = decodeTexturePayload(a);
         const pb = decodeTexturePayload(b);
         if (
-          pa.format !== "LA8" ||
-          pb.format !== "LA8" ||
+          pa.format !== format ||
+          pb.format !== format ||
           pa.width !== pb.width ||
           pa.height !== pb.height
         )
@@ -1096,12 +1101,13 @@ export async function checkAtlasAppendOnly(
     mapping,
     (h) => cache.get(h),
     expected.page.empty_texel,
+    expected.page.format,
   );
   if (mapping.size === 0)
     r.problems.push("no page mapping (atlas-hash-parity found none)");
   return check(
     "atlas-append-only",
-    "consecutive published versions of every page (store payloads, hash-verified) differ only at texels that were empty -- LA8 (255,0) -- in the earlier one, and each new version changes at least one texel",
+    `consecutive published versions of every page (store payloads, hash-verified) differ only at texels that were empty -- ${expected.page.format} (${expected.page.empty_texel.join(",")}) -- in the earlier one, and each new version changes at least one texel`,
     r.problems,
     `${r.pairs} version pairs, ${r.texels} texels written, all onto empty texels`,
     [join(captureDir, "store"), full.path],
@@ -2204,6 +2210,13 @@ export interface Gate4Report {
     scripts: unknown[];
     fallback: Record<string, unknown>;
   } | null;
+  /** G4e2 (lib/gate4e-checks.ts): the MSDF fixture's hook-log census per page, its measured
+   * reference-repeat budget per region (D8) and the receiver's measured maxima against it */
+  msdf: {
+    census: Record<string, unknown>;
+    budget: RegionBudget[];
+    receiver: RegionBudget[];
+  } | null;
 }
 
 export interface Gate4Context {
@@ -2222,6 +2235,9 @@ export interface Gate4Context {
   /** absolute path to experiments/render-stream/fixtures/gate4-i18n (G4f); default: the sibling
    * of fixtureDir */
   i18nFixtureDir?: string;
+  /** absolute path to experiments/render-stream/fixtures/gate4-msdf (G4e2); default: the sibling
+   * of fixtureDir */
+  msdfFixtureDir?: string;
 }
 
 function notRunCheck(group: string, detail: string): Gate4Check {
@@ -2829,6 +2845,41 @@ export async function runGate4(
     layout = { census: r.census, subpixel: r.subpixel, clips: r.clips };
   }
 
+  let msdf: Gate4Report["msdf"] = null;
+  if (groups.run.includes("g4e")) {
+    // Loaded on demand: gate4e-checks builds on this module and gate4c-checks.
+    const { runG4e } = await import("./gate4e-checks");
+    const msdfDir =
+      ctx.msdfFixtureDir ?? join(ctx.fixtureDir, "..", "gate4-msdf");
+    const msdfExpected = JSON.parse(
+      await readFile(join(msdfDir, "expected.json"), "utf8"),
+    );
+    const msdfLock = JSON.parse(
+      await readFile(join(msdfDir, "fonts.lock.json"), "utf8"),
+    ) as FontLockEntry[];
+    const r = await runG4e(outDir, {
+      expected: msdfExpected,
+      lock: msdfLock,
+      receiverDir: ctx.receiverDir,
+      fixtureDir: msdfDir,
+      grayExpected: expected,
+      grayFixtureDir: ctx.fixtureDir,
+    });
+    checks.push(...r.checks);
+    Object.assign(legs, r.legs);
+    checkpoints = [...checkpoints, ...r.checkpoints];
+    const fixture = msdfExpected.fixture as string;
+    text = { ...(text ?? {}), [fixture]: r.text };
+    parity = { ...(parity ?? {}), [fixture]: r.parity };
+    budgets = { ...(budgets ?? {}), [fixture]: r.budgets };
+    ink = { ...(ink ?? {}), [fixture]: r.ink };
+    msdf = {
+      census: r.census,
+      budget: r.budgets,
+      receiver: r.receiver_measured,
+    };
+  }
+
   let i18n: Gate4Report["i18n"] = null;
   if (groups.run.includes("g4f")) {
     // Loaded on demand: gate4f-checks builds on this module and gate4c-checks.
@@ -2884,5 +2935,6 @@ export async function runGate4(
     ink,
     layout,
     i18n,
+    msdf,
   };
 }

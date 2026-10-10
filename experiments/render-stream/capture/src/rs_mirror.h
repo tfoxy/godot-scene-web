@@ -1,5 +1,6 @@
 // Retained canvas mirror (gate 0 WP1; render-stream/1 since gate 1 G1b2;
-// render-stream/2 with textures since gate 2 G2b2).
+// render-stream/2 with textures since gate 2 G2b2; render-stream/3's msdf command
+// since gate 4 G4e2).
 //
 // A tap on the RenderingServer hooks that keeps the canvas state a receiver
 // needs to rebuild the frame: canvases, canvas items, their parenting and
@@ -85,7 +86,7 @@ class Mirror {
   // Forgets everything and starts a new session: canvas 1 (the root, origin
   // root-query, attached) exists with no RIDs bound, ids restart, failures and
   // session-level unsupported entries are cleared (the degenerate-host-size
-  // flag included), and both sabotages (drop frame, omit-op) are reset. The
+  // flag included), and the sabotages (drop frame, omit-op, perturb-glyph) are reset. The
   // epoch is not reset: it advances by one, so it never repeats a value.
   void reset();
 
@@ -125,6 +126,11 @@ class Mirror {
   // identity ops included (`free`, `canvas_item_create`, `canvas_create`).
   // An empty `op` disables it. The names are those listed on each tap below.
   void set_omit_op(const std::string &op, std::uint64_t from_frame);
+
+  // perturb-glyph sabotage (gate4-design.md Q3, render-stream-3.md "Sabotage"): from
+  // `from_frame` on, every add_texture_rect_region and add_msdf_texture_rect_region the mirror
+  // records gets +0.25 on rect.x; the engine still gets the true arguments. 0 disables it.
+  void set_perturb_glyph(std::uint64_t from_frame);
 
   // Mutation epoch (gate1-design.md Q4 "Per-connection state"): advanced by
   // every tap call that passes the sabotage checks (not by dropped ones;
@@ -191,6 +197,14 @@ class Mirror {
   void add_texture_rect_region(std::uint64_t item, const rs2::Rect4 &rect, std::uint64_t texture,
                                const rs2::Rect4 &src, const rs2::Color4 &modulate,
                                bool transpose, bool clip_uv, std::uint64_t frame);
+  // canvas_item_add_msdf_texture_rect_region (G4e2; gate4-design.md Q3 "MSDF tap",
+  // render-stream-3.md "Command"): the /3 command with the engine's int outline_size, px_range
+  // and scale; the same texture, unknown-texture, canvas-texture-headless, omit-op and
+  // pre-existing-object rules as add_texture_rect_region.
+  void add_msdf_texture_rect_region(std::uint64_t item, const rs2::Rect4 &rect,
+                                    std::uint64_t texture, const rs2::Rect4 &src,
+                                    const rs2::Color4 &modulate, std::int32_t outline_size,
+                                    float px_range, float scale, std::uint64_t frame);
 
   // canvas_item_set_default_texture_filter / _repeat: the item's own fields
   // (RenderingServer enums; an out-of-range value is ignored, as the server's
@@ -341,6 +355,8 @@ class Mirror {
   void detach(Item *item);
   // Appends one command (cap checked) and bumps content_version.
   void push_command(Item *item, rs2::Command command, std::uint64_t frame);
+  // `rect` with perturb-glyph applied when it is active at `frame`.
+  rs2::Rect4 perturbed_glyph(const rs2::Rect4 &rect, std::uint64_t frame) const;
   // A texture argument as a command: tex id / null, or false for an unknown RID.
   bool texture_ref(std::uint64_t rid, bool *has_tex, std::uint32_t *tex) const;
   Texture *find_texture(std::uint64_t rid);
@@ -358,6 +374,7 @@ class Mirror {
   std::uint64_t drop_frame_ = 0;
   std::string omit_op_;
   std::uint64_t omit_from_frame_ = 0;
+  std::uint64_t perturb_glyph_frame_ = 0;
   bool degenerate_host_size_ = false;
   bool canvas_texture_headless_ = false;
   std::uint32_t next_canvas_id_ = rs2::kRootCanvasId + 1;
@@ -392,6 +409,7 @@ void mirror_set_degenerate_host_size(bool on);
 void mirror_set_canvas_texture_headless(bool on);
 void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
+void mirror_set_perturb_glyph(std::uint64_t from_frame);
 std::uint64_t mirror_epoch();
 Captured mirror_snapshot(std::uint64_t seq, std::uint64_t frame);
 MirrorStats mirror_stats();

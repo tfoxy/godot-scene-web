@@ -1,8 +1,10 @@
 class_name RsApplier
 extends RefCounted
-## Applies RESOLVED render-stream/2 state onto the RenderingServer (gate0-design.md "Q5.
+## Applies RESOLVED render-stream/3 state onto the RenderingServer (gate0-design.md "Q5.
 ## Receiver", gate1-design.md "Q5. Receiver" and "G1b2", gate2-design.md "Q5. Receiver" and
-## "G2b2").
+## "G2b2", gate4-design.md "Q5. Receiver" and "G4e2": /3's add_msdf_texture_rect_region replays
+## as RenderingServer.canvas_item_add_msdf_texture_rect_region with the wire's floats, under the
+## same residency rules as the other texture commands).
 ##
 ## The applier never reads a patch. It takes the state Rs2Decoder.Stream resolved for a
 ## transaction (render-stream-2.md "Decoded and resolved forms": `canvases`/`items`/`textures`
@@ -58,6 +60,10 @@ var sabotage_ignore_clip: bool = false
 ## and `custom_rect`, and a content rebuild's canvas_item_clear does not reset the shadow clip to
 ## false. Exists only to fail checks.
 var sabotage_clip_before_clear: bool = false
+## RS_RECEIVER_SABOTAGE=drop-msdf (gate4-design.md Q5, G4e2): every add_msdf_texture_rect_region
+## is skipped without a typed record -- the pre-/3 receiver's picture, silently. Exists only to
+## fail checks.
+var sabotage_drop_msdf: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
@@ -190,7 +196,7 @@ static func _named_texture_ids(items: Dictionary) -> Array[int]:
 		for value: Variant in item["commands"]:
 			var command: Dictionary = value
 			var op: String = command["op"]
-			if (op == "add_texture_rect" or op == "add_texture_rect_region") and command["tex"] != null:
+			if (op == "add_texture_rect" or op == "add_texture_rect_region" or op == "add_msdf_texture_rect_region") and command["tex"] != null:
 				seen[Rs2Decoder.as_int(command["tex"])] = true
 	var out: Array[int] = []
 	out.assign(seen.keys())
@@ -213,13 +219,15 @@ static func _named_texture_ids(items: Dictionary) -> Array[int]:
 ## hash, op, data_bytes}, item_calls: Array[Dictionary] of {item, op}, the per-item
 ## canvas_item_clear / canvas_item_add_rect / canvas_item_add_texture_rect /
 ## canvas_item_add_texture_rect_region / canvas_item_set_clip calls this apply actually made, in
-## call order (test instrumentation for Q5's apply-order cases)}.
+## call order (test instrumentation for Q5's apply-order cases), msdf_commands: the
+## canvas_item_add_msdf_texture_rect_region calls it made (G4e2)}.
 func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionary:
 	var calls_before: int = rs_calls
 	var created: int = 0
 	var freed: int = 0
 	var reparented: int = 0
 	var replayed: int = 0
+	var msdf_replayed: int = 0
 	var unsupported_commands: Array[Dictionary] = []
 	var canvases: Dictionary = stream.canvases
 	var items: Dictionary = stream.items
@@ -596,6 +604,27 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 						rs_calls += 1
 						replayed += 1
 						item_calls.append({"item": id, "op": op_name})
+					"add_msdf_texture_rect_region":
+						# gate4-design.md Q5 (G4e2): the engine's own call with the wire's floats.
+						if sabotage_drop_msdf:
+							continue
+						var msdf_texture: Dictionary = _texture_for(command, textures)
+						if not msdf_texture["drawable"]:
+							skipped += 1
+							unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": "unsupported-texture"})
+							continue
+						var msdf_rid: RID = msdf_texture["rid"]
+						var msdf_dest: PackedFloat32Array = _floats(command["rect"])
+						var msdf_src: PackedFloat32Array = _floats(command["src"])
+						var msdf_tint: PackedFloat32Array = _floats(command["modulate"])
+						var outline: int = Rs2Decoder.as_int(command["outline"])
+						var px_range: float = command["px_range"]
+						var scale: float = command["scale"]
+						RenderingServer.canvas_item_add_msdf_texture_rect_region(state.rid, _rect(msdf_dest, 0), msdf_rid, _rect(msdf_src, 0), _color(msdf_tint, 0), outline, px_range, scale)
+						rs_calls += 1
+						replayed += 1
+						msdf_replayed += 1
+						item_calls.append({"item": id, "op": op_name})
 					_:
 						skipped += 1
 						var name: String = command["name"]
@@ -631,6 +660,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		},
 		"uploads": uploads,
 		"item_calls": item_calls,
+		"msdf_commands": msdf_replayed,
 	}
 
 

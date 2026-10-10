@@ -94,11 +94,11 @@ async function main(): Promise<void> {
   }
   for (const [fixtureName, steps] of Object.entries(report.text ?? {})) {
     console.log(
-      `  text (${fixtureName}): step: glyph commands; pages wire id@version [hook versions]; bytes published; copy/hash us`,
+      `  text (${fixtureName}): step: glyph commands (+msdf); pages wire id@version [hook versions]; bytes published; copy/hash us`,
     );
     for (const [step, t] of Object.entries(steps))
       console.log(
-        `    ${step}: ${t.glyph_commands}; ${t.pages.map((p) => `${p.font_key}@${p.size}=${p.wire_id}@v${p.wire_version}[${p.hook_versions.join(",")}]`).join(" ")}; ${t.atlas_bytes_published} B; ${(t.copy_ns / 1000).toFixed(0)}/${(t.hash_ns / 1000).toFixed(0)}`,
+        `    ${step}: ${t.glyph_commands}${t.msdf_commands ? `+${t.msdf_commands} msdf` : ""}; ${t.pages.map((p) => `${p.font_key}@${p.size}=${p.wire_id}@v${p.wire_version}[${p.hook_versions.join(",")}]`).join(" ")}; ${t.atlas_bytes_published} B; ${(t.copy_ns / 1000).toFixed(0)}/${(t.hash_ns / 1000).toFixed(0)}`,
       );
   }
   for (const [fixtureName, steps] of Object.entries(report.parity ?? {})) {
@@ -157,6 +157,14 @@ async function main(): Promise<void> {
             `${k} page from step ${r.first_step} (wire id ${r.wire_id}; empty cache at steps ${r.empty_cache_steps.join(",") || "-"})`,
         )
         .join("; ")}`,
+    );
+  }
+  if (report.msdf) {
+    console.log(
+      `  MSDF budget (gate4-msdf, reference vs repeat, D8): ${report.msdf.budget.map((b) => `${b.region} ${b.max_channel_delta}/${b.mismatched_pixels}px`).join(", ")}`,
+    );
+    console.log(
+      `  MSDF receiver vs reference (within that budget): ${report.msdf.receiver.map((b) => `${b.region} ${b.max_channel_delta}/${b.mismatched_pixels}px`).join(", ")}`,
     );
   }
   const passed = report.checks.filter((c) => c.passed).length;

@@ -369,6 +369,55 @@ void test_hello_and_first_transaction() {
   rig.epoch = 2;
 }
 
+// G4e2 (render-stream-3.md "Live transport"): a V3 hub wants a render-stream/3 hello, refuses a
+// /2 one, and opens every stream with the GRS3 magic; parse_control(V3) takes golden-3/control/.
+void test_v3_hub_and_control() {
+  const std::string root = std::string(GRC_GOLDEN3_DIR) + "/control";
+  for (const std::string &path : list_dir(root + "/valid")) {
+    ControlMessage m;
+    std::string error;
+    check(parse_control(read_file(path), &m, &error, ProtocolVersion::V3),
+          "valid golden-3 control parses as V3: " + path + " " + error);
+  }
+  for (const std::string &path : list_dir(root + "/invalid")) {
+    ControlMessage m;
+    std::string error;
+    check(!parse_control(read_file(path), &m, &error, ProtocolVersion::V3),
+          "invalid golden-3 control refused as V3: " + path);
+  }
+  const std::string hello3 =
+      R"({"type":"hello","protocol":"render-stream/3","receiver":"t","credit_stage":"submitted","inbound_buffer_bytes":16777216})";
+  {
+    ControlMessage m;
+    check(!parse_control(hello3, &m, nullptr), "a /3 hello is refused by the V2 parser");
+  }
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V3;
+  {
+    FakeTransport transport;
+    Hub hub(&transport, LiveConfig(), tmpl);
+    hub.on_event(opened(1), 0);
+    hub.on_event(text(1, kHelloSubmitted), 0);
+    const std::vector<Sent> closes = transport.of(Sent::Close);
+    check(closes.size() == 1 && closes[0].code == 1002, "a V3 hub closes a /2 hello with 1002");
+  }
+  {
+    FakeTransport transport;
+    Hub hub(&transport, LiveConfig(), tmpl);
+    hub.on_event(opened(7), 0);
+    hub.on_event(text(7, hello3), 0);
+    const Captured snapshot = captured_state(1);
+    hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1) ? &snapshot : nullptr, 1, 1000);
+    const std::vector<Sent> bin = transport.of(Sent::Binary);
+    const std::vector<std::uint8_t> m = magic(ProtocolVersion::V3);
+    check(bin.size() == 2 && bin[0].bytes.size() > 8 &&
+              std::equal(m.begin(), m.end(), bin[0].bytes.begin()),
+          "a V3 hub's session message starts with GRS3");
+    check(bin.size() == 2 && has(meta_at(bin[0].bytes, 8), "\"protocol\":\"render-stream/3\""),
+          "and its session says render-stream/3");
+  }
+}
+
 void test_credit_stages() {
   Rig rig;
   rig.hub.on_event(opened(1), 0);
@@ -1085,6 +1134,7 @@ void test_served_resources() {
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_control_parser();
+  test_v3_hub_and_control();
   test_hello_and_first_transaction();
   test_credit_stages();
   test_resync();

@@ -138,7 +138,7 @@ export const GATE0_HOOKS: readonly string[] = [
   "viewport_set_default_canvas_item_texture_repeat",
 ];
 
-/** Session `features` of a HEADLESS host at render-stream/2, exactly (render-stream-2.md "Session
+/** Session `features` of a HEADLESS host at render-stream/3, exactly (render-stream-2.md "Session
  * record"; protocol/golden-2/make_golden.py FEATURE_*): /1's lists with the two texture-rect draws
  * captured (they leave observed_unsupported_ops for `ops`), calibrator 5's
  * `canvas_item_add_lcd_texture_rect_region` hooked (observed, unsupported), the default texture
@@ -148,9 +148,18 @@ export const GATE0_HOOKS: readonly string[] = [
  * `unsupported_resources` lists it with reason `canvas-texture-headless`; a rendered host
  * (RS2_FEATURES_RENDERED) lists it in `resources` and refuses nothing. Every stream, not only
  * gate 2's. Since G3d (calibrator 6, gate3-design.md D4/D6): `observed_unsupported_ops` gains
- * `canvas_item_add_clip_ignore` and `unobserved` gains `canvas_item_set_visibility_notifier`. */
+ * `canvas_item_add_clip_ignore` and `unobserved` gains `canvas_item_set_visibility_notifier`.
+ * Since G4e2 every capture speaks render-stream/3 (render-stream-3.md "Features"): `ops` gains
+ * `add_msdf_texture_rect_region` and `observed_unsupported_ops` loses
+ * `canvas_item_add_msdf_texture_rect_region`. The name keeps its /2 spelling, as the rs2 modules
+ * do (gate4-design.md G4e1). */
 export const RS2_FEATURES = {
-  ops: ["add_rect", "add_texture_rect", "add_texture_rect_region"],
+  ops: [
+    "add_msdf_texture_rect_region",
+    "add_rect",
+    "add_texture_rect",
+    "add_texture_rect_region",
+  ],
   item_state: [
     "behind",
     "children",
@@ -178,7 +187,6 @@ export const RS2_FEATURES = {
     "canvas_item_add_lcd_texture_rect_region",
     "canvas_item_add_line",
     "canvas_item_add_mesh",
-    "canvas_item_add_msdf_texture_rect_region",
     "canvas_item_add_multimesh",
     "canvas_item_add_nine_patch",
     "canvas_item_add_polygon",
@@ -203,6 +211,9 @@ export const RS2_FEATURES = {
   ],
   publication: "snapshot-or-patch",
 } as const;
+
+/** The session protocol every capture publishes since G4e2 (render-stream-3.md). */
+export const WIRE_PROTOCOL = "render-stream/3";
 
 /** The session `features` of a rendered (GPU-backed) host: RS2_FEATURES with `canvas_texture`
  * supported and nothing refused. */
@@ -1516,7 +1527,7 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
   if (!s) {
     problems.push("no session record");
   } else {
-    if (s.protocol !== "render-stream/2")
+    if (s.protocol !== WIRE_PROTOCOL)
       problems.push(`protocol=${JSON.stringify(s.protocol)}`);
     const features = (s.features ?? {}) as Record<string, unknown>;
     for (const [key, want] of Object.entries(RS2_FEATURES)) {
@@ -1575,7 +1586,7 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
   }
   return check(
     "manifest-present",
-    "the capture session carries protocol render-stream/2, a full file stream, the exact /2 features, the file sinks' resources (out-of-band, directory fetch, the six permitted formats), engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
+    "the capture session carries protocol render-stream/3, a full file stream, the exact /3 features, the file sinks' resources (out-of-band, directory fetch, the six permitted formats), engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
     problems,
     "session manifest as specified",
     [recording.path],
@@ -2029,7 +2040,7 @@ export async function checkReceiverTypedClean(
     );
   return check(
     "receiver-typed-clean",
-    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-2/inline.rs2 is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
+    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-3/inline.rs3 (render-stream/3 since G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
     problems,
     `selftest ok, golden replay ok with ${want.length} unsupported entries, no script diagnostics`,
     [selftestLog, minimalLog, minimalApplied],

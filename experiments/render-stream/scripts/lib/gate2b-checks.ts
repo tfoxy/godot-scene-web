@@ -592,7 +592,7 @@ export function checkRecordingsDecode(
   }
   return check(
     "recordings-decode-2",
-    "every g2b capture's full and patch recordings decode as render-stream/2 (framing, meta schema, texture entries and references, versions, resource records, end stats: validateRecording() is [])",
+    "every g2b capture's full and patch recordings decode as render-stream/3 (render-stream/2 before G4e2; framing, meta schema, texture entries and references, versions, resource records, end stats: validateRecording() is [])",
     problems,
     `transactions per sink ${notes.join(", ")}`,
     captures.flatMap((c) => [c.full.path, c.patch.path]),

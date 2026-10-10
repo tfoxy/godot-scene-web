@@ -143,6 +143,7 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"spurious-texture-update", SabotageKind::SpuriousTextureUpdate},
       {"drop-resource", SabotageKind::DropResource},
       {"unpin", SabotageKind::Unpin},
+      {"perturb-glyph", SabotageKind::PerturbGlyph},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -222,9 +223,13 @@ std::string generate_id() {
   return out;
 }
 
-Features gate2_features(bool headless_host) {
+Features gate2_features(bool headless_host, ProtocolVersion version) {
   Features features;
   features.ops = {"add_rect", "add_texture_rect", "add_texture_rect_region"};
+  if (version == ProtocolVersion::V3) {
+    // render-stream-3.md "Features": sorted ascending by byte value.
+    features.ops.insert(features.ops.begin(), "add_msdf_texture_rect_region");
+  }
   features.item_state = {"behind",         "children",         "clip",           "custom_rect",
                          "draw_index",     "modulate",         "parent",         "self_modulate",
                          "texture_filter", "texture_repeat",   "transform",      "visibility_layer",
@@ -249,6 +254,13 @@ Features gate2_features(bool headless_host) {
                                        "canvas_item_add_set_transform",
                                        "canvas_item_add_triangle_array",
                                        "canvas_item_set_material"};
+  if (version == ProtocolVersion::V3) {
+    // render-stream-3.md "Features": a supported op now, no longer a refused one.
+    features.observed_unsupported_ops.erase(
+        std::find(features.observed_unsupported_ops.begin(),
+                  features.observed_unsupported_ops.end(),
+                  "canvas_item_add_msdf_texture_rect_region"));
+  }
   features.unobserved = {"canvas_item_set_canvas_group_mode",
                          "canvas_item_set_instance_shader_parameter",
                          "canvas_item_set_light_mask",
@@ -302,7 +314,7 @@ bool Publisher::start(const Session &tmpl) {
     return false;
   }
   bool ok = true;
-  const std::vector<std::uint8_t> magic_bytes = magic();
+  const std::vector<std::uint8_t> magic_bytes = magic(tmpl.version);
   for (Lane &lane : lanes_) {
     if (lane.sink == nullptr) {
       continue;

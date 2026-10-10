@@ -122,7 +122,8 @@ target_link_libraries(rs_ws_echo PRIVATE grc_warnings Threads::Threads)
 # Gate 1 (G1c2) / gate 2 (G2b2): the live hub -- credit, resync, message-too-large, hello
 # timeout, drop-message, finish, the live log and tap, inline resource records per connection,
 # (G2c2) the served set: pins, retirement, unpin, drop-resource, wrong-hash, GET attribution,
-# and the control-message parser against golden-2/control/ -- driven through a fake transport.
+# and the control-message parser against golden-2/control/ and (G4e2) golden-3/control/ -- driven
+# through a fake transport.
 add_executable(rs_live_test
   test/rs_live_test.cpp
   src/rs2_codec.cpp
@@ -138,6 +139,7 @@ target_include_directories(rs_live_test PRIVATE src test)
 target_link_libraries(rs_live_test PRIVATE grc_warnings Threads::Threads)
 target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2"
+  GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 

@@ -1,7 +1,8 @@
 # render-stream/3 wire format
 
-Status: specified and golden-tested at G4e1 (2026-10-09); not yet spoken by the capture library or
-the receiver (that is G4e2, gate4-design.md "Increments"). Written with
+Status: specified and golden-tested at G4e1 (2026-10-09); spoken by the capture library, the
+receiver and every gate runner and checker since G4e2 (2026-10-10, gate4-design.md "As built
+(G4e2)"). Written with
 [gate4-design.md](gate4-design.md) D1 and Q4, which this document implements. Codecs (G4e1): C++
 encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`), TypeScript
 decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit `version`
@@ -9,8 +10,8 @@ parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all checked byte-fo
 state-for-state against `protocol/golden-3/`, per this text. [render-stream-2.md](render-stream-2.md)
 is **not** superseded the way render-stream-1.md was at /2: grayscale text and every other /2
 capability stays on `render-stream/2` (gate4-design.md D1), and `golden-2/` keeps passing
-unchanged. G4e2 will switch the capture, the receiver and every gate runner to /3; from then on
-/2 decoding remains only for `golden-2/`, as /1's did after G2b2.
+unchanged. G4e2 switched the capture, the receiver and every gate runner to /3; /2 decoding now
+remains only for `golden-2/`, as /1's did after G2b2.
 
 Unlike every version before it, /3 is **not** implemented as a new, forked module the way /1
 forked from /0 and /2 forked from /1 ("rs1 and rs2 are frozen-independent, as rs0 and rs1 were" --
@@ -21,7 +22,12 @@ TypeScript module for one op was not worth the duplication. Instead, the existin
 a protocol-version switch: C++'s `Session::version` (`ProtocolVersion::V2` default, so every
 existing /2 caller is unaffected), and an explicit `version: 2 | 3 = 2` parameter on the
 TypeScript and GDScript decode/validate/resolve entry points. Renaming `rs2_codec.*`/`rs2_diff.*`/
-`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document.
+`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document. **As built (G4e2):** the
+TypeScript and GDScript `version` parameters now default to 3, since everything but `golden-2/`
+speaks /3; `golden-2/`'s self-tests pass 2 explicitly. C++'s `Session::version` keeps its `V2`
+default (the golden-2 byte tests build sessions without it), and the capture's arm path sets
+`V3`. Recording files keep their `.rs2` names, like the modules: the magic and `protocol` carry
+the version.
 
 render-stream/3 is render-stream/2 plus:
 
@@ -71,8 +77,9 @@ Key order, record framing and every field but `protocol` are exactly /2's. `prot
 Sabotage kinds: /2's, plus `perturb-glyph`. Like every other kind but `omit-op`, its `op` is
 `null`. `perturb-glyph` is a host sabotage (`GRC_SABOTAGE_FRAME` on, the mirror adds +0.25 to
 `rect.x` of every `add_texture_rect_region` and `add_msdf_texture_rect_region` it records; the
-engine still gets the true arguments) -- wired in at G4e2, not G4e1. This document only adds the
-wire spelling.
+engine still gets the true arguments), wired in at G4e2 (`rs_mirror` `set_perturb_glyph`). It
+moves only commands recorded from that frame on: an item that does not redraw keeps its
+unperturbed commands.
 
 ## Command
 
@@ -154,7 +161,8 @@ unchanged is already covered by `golden-2/invalid/`, and is not re-derived here)
 ## Live transport
 
 As /2, except the subprotocol is `render-stream.3` and the hello's `protocol` is
-`"render-stream/3"`. Not yet wired to a live listener (G4e2).
+`"render-stream/3"`. Wired at G4e2: the capture's listener negotiates `render-stream.3` and refuses
+a `render-stream/2` hello as a protocol error, and the receiver's live client speaks /3.
 
 ## Versioning
 

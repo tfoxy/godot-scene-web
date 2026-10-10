@@ -8,7 +8,8 @@
 // (gate 2, G2b2) gate2-design.md Q3 "Texture mirror" with render-stream-2.md
 // "Texture" and "Item-level unsupported entries", and (gate 3, G3a)
 // gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip, and (gate 3, G3d) Q3
-// "Clip-ignore tap": canvas_item_add_clip_ignore is an unsupported command like any other.
+// "Clip-ignore tap": canvas_item_add_clip_ignore is an unsupported command like any other, and
+// (gate 4, G4e2) gate4-design.md Q3 "MSDF tap" and "perturb-glyph".
 
 #include <cstdint>
 #include <cstdio>
@@ -1508,13 +1509,152 @@ void test_clip_ignore_tap() {
   m.add_unsupported(100, "canvas_item_add_clip_ignore", 2);
   m.add_rect(100, kRect, kGreen, false, 2);
   const Snapshot s2 = m.snapshot(2, 2).state;
-  check(item(s2, 1)->commands.size() == 1 && item(s2, 1)->content_version == 5,
+  // (Fixed at G4e2, when this test was first actually run from main(): the add_rect after the
+  // dropped call is the fifth command and the only bump.)
+  check(item(s2, 1)->commands.size() == 5 &&
+            item(s2, 1)->commands[4].kind == CommandKind::AddRect &&
+            item(s2, 1)->content_version == 5,
         "omit-op canvas_item_add_clip_ignore drops the call: no command and no content_version bump");
   check(m.stats().dropped_omit_op == 1, "the drop is counted");
 
-  // An unknown item is the same pre-existing-object failure every other tap gives.
+  // An unknown item is the same pre-existing-object failure every other tap gives (with the
+  // omit-op off again, or the call would be dropped before the item lookup).
+  m.set_omit_op("", 0);
   m.add_unsupported(999, "canvas_item_add_clip_ignore", 2);
   check(m.snapshot(2, 2).state.failures.size() == 1, "an unknown item fails like any other tap");
+}
+
+// gate4-design.md Q3 "MSDF tap" (G4e2), render-stream-3.md "Command": the msdf draw is a /3
+// command with its outline, px_range and scale, follows add_texture_rect_region's texture rules,
+// honours omit-op and treats an unknown item as pre-existing-object.
+void test_msdf_command_with_outline() {
+  Mirror m;
+  bind_root(&m);
+  grc::rs::PayloadPtr page_bytes;
+  const auto page = rgba8_copy(8, 8, fill(8, 8, 0), &page_bytes);
+  m.texture_2d_create(500, page, page_bytes, 1);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  const Rect4 rect = {3.5f, -12.25f, 10.75f, 14.0f};
+  const Rect4 flipped = {20.0f, 0.0f, -6.0f, 9.0f};
+  const Rect4 src = {1, 1, 15, 20};
+  const Color4 colour = {1, 0.8f, 0.2f, 1};
+  m.add_msdf_texture_rect_region(100, rect, 500, src, colour, 0, 24.0f, 0.5f, 1);
+  m.add_msdf_texture_rect_region(100, flipped, 500, src, kGreen, 4, 24.0f, 0.5f, 1);
+  const grc::rs::Captured c = m.snapshot(1, 1);
+  const auto *it = item(c.state, 1);
+  check(it != nullptr && it->commands.size() == 2 && it->content_version == 2,
+        "two msdf commands, each bumps content_version");
+  if (it == nullptr || it->commands.size() != 2) return;
+  const auto &a = it->commands[0];
+  const auto &b = it->commands[1];
+  check(a.kind == CommandKind::AddMsdfTextureRectRegion && a.has_tex && a.tex == 1 &&
+            a.rect == rect && a.src == src && a.modulate == colour && a.msdf_outline == 0 &&
+            a.msdf_px_range == 24.0f && a.msdf_scale == 0.5f,
+        "the fill pass carries the engine's arguments exactly (outline 0)");
+  check(b.kind == CommandKind::AddMsdfTextureRectRegion && b.rect == flipped &&
+            b.msdf_outline == 4 && b.modulate == kGreen,
+        "the outline pass keeps outline 4 and a negative width as given");
+  check(c.state.unsupported.empty(), "a supported msdf command derives no unsupported entry");
+  check(c.payloads.count(page.hash) == 1, "the page's payload is published");
+  // The page stays referenced by the msdf command alone: freeing it leaves a tombstone.
+  m.free_rid(500, 2);
+  const Snapshot s2 = m.snapshot(2, 2).state;
+  check(texture(s2, 1) != nullptr && texture(s2, 1)->status == grc::rs2::TextureStatus::Freed,
+        "a freed page an msdf command names stays as a freed tombstone");
+}
+
+void test_msdf_unknown_texture() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_msdf_texture_rect_region(100, kRect, 0xdead, kRect, kRed, 0, 24.0f, 1.0f, 1);
+  const Snapshot s = m.snapshot(1, 1).state;
+  const auto *it = item(s, 1);
+  check(it != nullptr && it->commands.size() == 1 &&
+            it->commands[0].kind == CommandKind::Unsupported &&
+            it->commands[0].name == "canvas_item_add_msdf_texture_rect_region" &&
+            it->commands[0].unsupported_reason == grc::rs2::UnsupportedCmdReason::UnknownTexture,
+        "an msdf command naming a RID never created is unsupported/unknown-texture in place");
+  check(item_entries(s) == std::vector<Entry>{{1, "canvas_item_add_msdf_texture_rect_region",
+                                               UnsupportedReason::UnknownTexture}},
+        "with its derived item-level unknown-texture entry");
+  // An unsupported page (refused format) gives the derived unsupported-texture entry.
+  grc::rs::PayloadCopy refused;
+  refused.status = "unsupported";
+  refused.reason = "unsupported-format";
+  refused.format = 11;
+  refused.width = 4;
+  refused.height = 4;
+  refused.mipmaps_known = true;
+  m.texture_2d_create(600, refused, nullptr, 2);
+  m.clear(100, 2);
+  m.add_msdf_texture_rect_region(100, kRect, 600, kRect, kRed, 0, 24.0f, 1.0f, 2);
+  check(item_entries(m.snapshot(2, 2).state) ==
+            std::vector<Entry>{{1, "canvas_item_add_msdf_texture_rect_region",
+                                UnsupportedReason::UnsupportedTexture}},
+        "an msdf command naming an unsupported entry derives unsupported-texture");
+  // An unknown item is pre-existing-object, as for every other tap.
+  m.add_msdf_texture_rect_region(999, kRect, 600, kRect, kRed, 0, 24.0f, 1.0f, 2);
+  check(has_failure(m.snapshot(3, 2).state, FailureReason::PreExistingObject),
+        "an msdf draw on an unknown item is pre-existing-object");
+}
+
+void test_msdf_omit_op() {
+  Mirror m;
+  bind_root(&m);
+  grc::rs::PayloadPtr page_bytes;
+  const auto page = rgba8_copy(8, 8, fill(8, 8, 0), &page_bytes);
+  m.texture_2d_create(500, page, page_bytes, 1);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_omit_op("canvas_item_add_msdf_texture_rect_region", 2);
+  m.add_msdf_texture_rect_region(100, kRect, 500, kRect, kRed, 0, 24.0f, 1.0f, 1);
+  const uint64_t e = m.epoch();
+  m.add_msdf_texture_rect_region(100, kRect, 500, kRect, kRed, 0, 24.0f, 1.0f, 2);
+  const Snapshot s = m.snapshot(1, 2).state;
+  check(item(s, 1)->commands.size() == 1 && item(s, 1)->content_version == 1 && m.epoch() == e,
+        "omit-op drops the msdf draw from its frame on: no command, no bump, no epoch");
+  check(m.stats().dropped_omit_op == 1, "the dropped msdf draw is counted");
+}
+
+// gate4-design.md Q3 "perturb-glyph": from the sabotage frame on, the mirror records rect.x +
+// 0.25 for both glyph commands, nothing else.
+void test_perturb_glyph() {
+  Mirror m;
+  bind_root(&m);
+  grc::rs::PayloadPtr page_bytes;
+  const auto page = rgba8_copy(8, 8, fill(8, 8, 0), &page_bytes);
+  m.texture_2d_create(500, page, page_bytes, 1);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_perturb_glyph(3);
+  const Rect4 rect = {10, 20, 8, 9};
+  const Rect4 src = {1, 2, 8, 9};
+  m.add_texture_rect_region(100, rect, 500, src, kRed, false, false, 2);
+  m.add_msdf_texture_rect_region(100, rect, 500, src, kRed, 0, 24.0f, 1.0f, 2);
+  m.add_texture_rect_region(100, rect, 500, src, kRed, false, false, 3);
+  m.add_msdf_texture_rect_region(100, rect, 500, src, kRed, 4, 24.0f, 1.0f, 3);
+  m.add_texture_rect(100, rect, 500, false, kRed, false, 3);
+  m.add_rect(100, rect, kRed, false, 3);
+  const Snapshot s = m.snapshot(1, 3).state;
+  const auto &c = item(s, 1)->commands;
+  const Rect4 moved = {10.25f, 20, 8, 9};
+  check(c.size() == 6 && c[0].rect == rect && c[1].rect == rect,
+        "before the sabotage frame both glyph commands are recorded as given");
+  check(c.size() == 6 && c[2].rect == moved && c[3].rect == moved && c[2].src == src &&
+            c[3].src == src && c[3].msdf_outline == 4,
+        "from the sabotage frame rect.x gains 0.25 on region and msdf commands, src untouched");
+  check(c.size() == 6 && c[4].rect == rect && c[5].rect == rect,
+        "add_texture_rect and add_rect are not glyph commands and stay as given");
+  m.reset();
+  m.set_root(kRootViewport, kRootCanvas, kRootXform);
+  m.texture_2d_create(500, page, page_bytes, 1);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_texture_rect_region(100, rect, 500, src, kRed, false, false, 9);
+  check(item(m.snapshot(1, 9).state, 1)->commands[0].rect == rect, "reset() turns it off");
 }
 
 int main() {
@@ -1559,6 +1699,11 @@ int main() {
   test_clear_resets_clip();
   test_clear_then_reassert_clip();
   test_omit_clip_then_clear();
+  test_clip_ignore_tap();
+  test_msdf_command_with_outline();
+  test_msdf_unknown_texture();
+  test_msdf_omit_op();
+  test_perturb_glyph();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

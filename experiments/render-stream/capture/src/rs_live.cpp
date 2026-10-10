@@ -341,7 +341,9 @@ const char *to_wire(AckStage stage) {
   return "received";
 }
 
-bool parse_control(const std::string &text, ControlMessage *out, std::string *error) {
+bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
+                   ProtocolVersion version) {
+  const char *const protocol = version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol;
   std::vector<std::pair<std::string, Value>> fields;
   Parser parser(text);
   if (!parser.parse(&fields, error)) {
@@ -424,8 +426,8 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
         return fail("credit_stage \"" + stage + "\" is not submitted or applied");
       }
       // render-stream-2.md "Golden vectors": a hello for another version is invalid.
-      if (message.protocol != kProtocol) {
-        return fail("hello.protocol \"" + message.protocol + "\" is not " + kProtocol);
+      if (message.protocol != protocol) {
+        return fail("hello.protocol \"" + message.protocol + "\" is not " + protocol);
       }
       break;
     }
@@ -707,7 +709,7 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
 void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
   ControlMessage message;
   std::string error;
-  if (!parse_control(event.text, &message, &error)) {
+  if (!parse_control(event.text, &message, &error, template_.version)) {
     protocol_error(c, "bad control message: " + error, frame, event.t_ns);
     return;
   }
@@ -720,8 +722,10 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         protocol_error(c, "second hello", frame, event.t_ns);
         return;
       }
-      if (message.protocol != kProtocol) {
-        protocol_error(c, "hello.protocol \"" + message.protocol + "\" is not " + kProtocol,
+      const char *const protocol =
+          template_.version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol;
+      if (message.protocol != protocol) {
+        protocol_error(c, "hello.protocol \"" + message.protocol + "\" is not " + protocol,
                        frame, event.t_ns);
         return;
       }
@@ -1064,7 +1068,7 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
         const std::uint64_t t0 = monotonic_ns();
         const std::vector<std::uint8_t> session_bytes = encode_session(c.session);
         const std::uint64_t t1 = monotonic_ns();
-        std::vector<std::uint8_t> message = magic();
+        std::vector<std::uint8_t> message = magic(c.session.version);
         message.insert(message.end(), session_bytes.begin(), session_bytes.end());
         if (message.size() > c.s.max_message_bytes) {
           const std::string detail = "the session message is " + std::to_string(message.size()) +
