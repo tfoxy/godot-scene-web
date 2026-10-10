@@ -11,9 +11,11 @@
 # artifacts/render-stream/gate3/<UTC>/ and must not already hold files. --legs selects leg groups
 # (comma-separated); the default is every group whose increment has landed: g3a (G3a: the
 # axis-aligned fixture's import, a 400-frame headless capture with both sinks, its rendered
-# reference, a same-build repeat and an extension-armed reference). g3b (receiver apply order,
-# receiver legs, sabotages), g3c (the rotated/scaled fixture) and g3d (clip_ignore refused) are
-# known but have not landed.
+# reference, a same-build repeat and an extension-armed reference) and g3b (G3b: the receiver on
+# g3a's capture, full and patch, a headless trace, the host sabotages freeze/perturb/omit-clip/
+# omit-custom-rect on their own fresh captures, the receiver sabotages ignore-clip and
+# clip-before-clear on g3a's capture, and root-size-observe). g3c (the rotated/scaled fixture) and
+# g3d (clip_ignore refused) are known but have not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -36,7 +38,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g3a)
+LANDED_GROUPS=(g3a g3b)
 KNOWN_GROUPS=(g3a g3b g3c g3d)
 
 EXTENSION=""
@@ -44,6 +46,11 @@ CALIBRATION=""
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
 OUT=""
 LEGS_ARG=""
+
+# The fixture's default timeline (fixtures/gate3/expected.json start_frame_default,
+# step_frames_default): step k is applied at S + N*k.
+START_FRAME=1
+STEP_FRAMES=10
 
 # The main capture runs 400 frames so the /proc maps/fd sample has time to run; the rendered legs
 # run the fixture's default quit frame (S + N*9 + 11 = 102).
@@ -246,9 +253,95 @@ run_g3a() {
 	GS_RUN_DIR=""
 }
 
+# G3b: the receiver on g3a's capture (full and patch, a headless trace), the host sabotages
+# (freeze-frame, perturb-transform, omit-op canvas_item_set_clip / canvas_item_set_custom_rect) on
+# their own fresh captures, the two receiver sabotages on g3a's capture, and root-size-observe.
+run_g3b() {
+	local f1=$((START_FRAME + STEP_FRAMES * 1))
+	local f2=$((START_FRAME + STEP_FRAMES * 2))
+	local f3=$((START_FRAME + STEP_FRAMES * 3))
+	local f7=$((START_FRAME + STEP_FRAMES * 7))
+
+	# import: the release template cannot load a loose project until the editor generated .godot/.
+	echo "run-gate3: import (receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$OUT/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate3: import of $RECEIVER_DIR failed, see $OUT/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	# Fresh captures for the host sabotages (freeze-frame, perturb-transform, the two omit-op
+	# legs), and for root-size-observe (GRC_ROOT_SIZE left unset).
+	echo "run-gate3: sabotage-freeze (capture, freeze-frame @$f2)"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE=freeze-frame GRC_SABOTAGE_FRAME="$f2")
+	run_capture "$OUT/sabotage-freeze/capture" "" none
+
+	echo "run-gate3: sabotage-perturb (capture, perturb-transform @$f1)"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE=perturb-transform GRC_SABOTAGE_FRAME="$f1")
+	run_capture "$OUT/sabotage-perturb/capture" "" none
+
+	echo "run-gate3: sabotage-omit-clip (capture, omit-op canvas_item_set_clip @$f3)"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=canvas_item_set_clip GRC_SABOTAGE_FRAME="$f3")
+	run_capture "$OUT/sabotage-omit-clip/capture" "" none
+
+	echo "run-gate3: sabotage-omit-custom-rect (capture, omit-op canvas_item_set_custom_rect @$f7)"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=canvas_item_set_custom_rect GRC_SABOTAGE_FRAME="$f7")
+	run_capture "$OUT/sabotage-omit-custom-rect/capture" "" none
+
+	echo "run-gate3: root-size-observe (capture, GRC_ROOT_SIZE unset)"
+	CAPTURE_EXTRA_ENV=()
+	run_capture "$OUT/root-size-observe/capture" "" none
+
+	echo "run-gate3: receiver-headless-trace"
+	if prepare_recording "$OUT/capture/$RECORDING_NAME" "$OUT/receiver-headless-trace"; then
+		RECEIVER_STORE_DIR="$OUT/capture/store"
+		run_receiver_headless "$OUT/receiver-headless-trace" openat
+	fi
+
+	# Rendered legs: one private gamescope for all of them.
+	echo "run-gate3: bringing up private gamescope for g3b rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g3b"
+
+	echo "run-gate3: receiver"
+	run_rendered_receiver "$OUT/capture" "$OUT/receiver"
+
+	echo "run-gate3: receiver-patch (also dumps resolved state at every settle seq, for clip-rects-derived)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_STATE=1
+	run_rendered_receiver "$OUT/capture" "$OUT/receiver-patch"
+
+	echo "run-gate3: sabotage-receiver-ignore-clip (receiver on g3a's capture, RS_RECEIVER_SABOTAGE=ignore-clip)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=ignore-clip)
+	run_rendered_receiver "$OUT/capture" "$OUT/sabotage-receiver-ignore-clip"
+
+	echo "run-gate3: sabotage-receiver-clip-before-clear (receiver on g3a's capture, RS_RECEIVER_SABOTAGE=clip-before-clear)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=clip-before-clear)
+	run_rendered_receiver "$OUT/capture" "$OUT/sabotage-receiver-clip-before-clear"
+
+	echo "run-gate3: sabotage-freeze (receiver)"
+	run_rendered_receiver "$OUT/sabotage-freeze/capture" "$OUT/sabotage-freeze/receiver"
+
+	echo "run-gate3: sabotage-perturb (receiver)"
+	run_rendered_receiver "$OUT/sabotage-perturb/capture" "$OUT/sabotage-perturb/receiver"
+
+	echo "run-gate3: sabotage-omit-clip (receiver)"
+	run_rendered_receiver "$OUT/sabotage-omit-clip/capture" "$OUT/sabotage-omit-clip/receiver"
+
+	echo "run-gate3: sabotage-omit-custom-rect (receiver)"
+	run_rendered_receiver "$OUT/sabotage-omit-custom-rect/capture" "$OUT/sabotage-omit-custom-rect/receiver"
+
+	echo "run-gate3: root-size-observe (receiver)"
+	run_rendered_receiver "$OUT/root-size-observe/capture" "$OUT/root-size-observe/receiver"
+
+	gs_teardown "$OUT/gamescope-g3b"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g3a) run_g3a ;;
+	g3b) run_g3b ;;
 	esac
 done
 

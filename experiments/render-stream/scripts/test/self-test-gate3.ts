@@ -39,12 +39,14 @@ import {
   type Gate3Expected,
   pixelAt,
   probesOf,
+  stepFrames3,
   synthesizeGate3,
 } from "../lib/gate3-expected";
 import {
-  buildTree,
+  buildFullTree,
   type CaptureOptions,
   counters,
+  type G3bProjects,
   ID,
   itemStates,
   shotPng,
@@ -479,19 +481,70 @@ const G3A_CHECKS = [
   "reference-repeat-budget",
   "armed-transparent",
   "clip-state-invariants",
-  "clip-rects-derived",
   "clip-call-census",
   "support-legs-exit",
   "leg-class-capture",
 ];
 
+/** G3b (gate3-design.md "G3b"): the receiver leg's own checks, then one leg-class-* per
+ * G3B_CLASSIFIED_LEGS (runGate3's exact push order), then the shared clip-rects-derived (moved
+ * to the end, after both groups, since G3b also runs it over receiver-patch's resolved state). */
+const G3B_CHECKS = [
+  "expected-image-receiver",
+  "receiver-vs-reference",
+  "probes-receiver",
+  "receiver-consumed-stream",
+  "receiver-never-loaded-fixture",
+  "receiver-typed-clean",
+  "leg-class-receiver",
+  "leg-class-receiver-patch",
+  "leg-class-sabotage-freeze",
+  "leg-class-sabotage-perturb",
+  "leg-class-sabotage-omit-clip",
+  "leg-class-sabotage-omit-custom-rect",
+  "leg-class-sabotage-receiver-ignore-clip",
+  "leg-class-sabotage-receiver-clip-before-clear",
+  "leg-class-root-size-observe",
+];
+
+/** The full report's check order with both groups run: g3a's own list minus clip-rects-derived
+ * (it moved to the shared end, since G3b also runs it over receiver-patch's resolved state),
+ * then g3b's list, then clip-rects-derived. */
+const G3_CHECKS = [
+  ...G3A_CHECKS.filter((id) => id !== "clip-rects-derived"),
+  ...G3B_CHECKS,
+  "clip-rects-derived",
+];
+
+let G3B_PROJECTS: G3bProjects | undefined;
+
 async function run(out: string, expected = EXPECTED): Promise<Gate3Report> {
-  return runGate3(out, { expected, now: new Date(0) });
+  return runGate3(out, {
+    expected,
+    now: new Date(0),
+    receiverProjectDir: G3B_PROJECTS?.receiverProjectDir,
+    fixtureProjectDir: G3B_PROJECTS?.fixtureProjectDir,
+  });
 }
 
 const verdicts = (r: Gate3Report) =>
   new Map(r.checks.map((c) => [c.id, c.status]));
 const targeted = new Set<string>();
+
+/** receiver-headless-trace/strace.txt bakes in an absolute recording.rs2 path at write time
+ * (good's own); after cp()ing good to a fresh scenario `out`, receiver-never-loaded-fixture
+ * recomputes that same path from the CURRENT outDir, so the copy's stale text never matches
+ * unless rewritten. The receiver and fixture project paths are deliberately left alone: they
+ * stay at `good`'s fixed `_projects/` (G3B_PROJECTS), the same real files every scenario checks
+ * against. */
+async function rebaseReceiverTrace(good: string, out: string): Promise<void> {
+  const path = join(out, "receiver-headless-trace", "strace.txt");
+  const text = await readFile(path, "utf8").catch(() => undefined);
+  if (text === undefined) return;
+  const from = join(good, "receiver-headless-trace", "recording.rs2");
+  const to = join(out, "receiver-headless-trace", "recording.rs2");
+  await writeText(path, text.split(from).join(to));
+}
 
 async function scenario(
   root: string,
@@ -503,17 +556,21 @@ async function scenario(
 ): Promise<void> {
   const out = join(root, name);
   await cp(good, out, { recursive: true });
+  await rebaseReceiverTrace(good, out);
   await perturb(out);
   const report = await run(out, expected);
   const v = verdicts(report);
   for (const id of failing) {
     const c = report.checks.find((x) => x.id === id);
+    // "not-run" (a deliberately excluded group, e.g. g3aOnly's group-g3b) is as much a
+    // deliberate non-pass as "fail" from this scenario's point of view.
+    const bad = v.get(id) === "fail" || v.get(id) === "not-run";
     assert(
-      `${name}: ${id} fails (${c?.detail.slice(0, 140)})`,
-      v.get(id) === "fail",
+      `${name}: ${id} ${v.get(id) ?? "is missing"} (${c?.detail.slice(0, 140)})`,
+      bad,
       c?.detail,
     );
-    if (v.get(id) === "fail") targeted.add(id);
+    if (bad) targeted.add(id);
   }
   const unexpected = report.checks.filter(
     (c) => !failing.includes(c.id) && c.status !== "pass",
@@ -532,6 +589,25 @@ function recapture(o: CaptureOptions) {
   return async (out: string) => {
     await rm(join(out, "capture"), { recursive: true, force: true });
     await writeCaptureDir(join(out, "capture"), EXPECTED, o);
+  };
+}
+
+/** `recapture` rewrites $out/capture, which four of g3b's legs (receiver, receiver-patch and
+ * the two receiver sabotages) replay by reference: their applied.json and shots were baked
+ * against the ORIGINAL capture bytes at "good" build time, so they go stale the instant the
+ * capture is rewritten, whatever the g3a-focused scenario actually meant to test. These
+ * scenarios are about g3a's own capture leg, not g3b's receivers, so they run g3b out of scope
+ * (`groups_run: ["g3a"]`) rather than regenerate four legs' worth of evidence just to keep them
+ * consistent with a capture nobody is testing them against here. */
+function g3aOnly(
+  perturb: (out: string) => Promise<void>,
+): (out: string) => Promise<void> {
+  return async (out: string) => {
+    await perturb(out);
+    await writeJson(join(out, "legs.json"), {
+      groups_run: ["g3a"],
+      groups_landed: ["g3a", "g3b"],
+    });
   };
 }
 
@@ -565,7 +641,7 @@ function editItem(
 
 async function scenarios(root: string): Promise<void> {
   const good = join(root, "good");
-  await buildTree(good, EXPECTED);
+  G3B_PROJECTS = await buildFullTree(good, EXPECTED);
   const report = await run(good);
   const notPass = report.checks.filter((c) => c.status !== "pass");
   assert(
@@ -574,8 +650,8 @@ async function scenarios(root: string): Promise<void> {
     notPass.map((c) => `${c.id}: ${c.detail.slice(0, 300)}`).join(" | "),
   );
   assert(
-    "passing tree: the checks are exactly G3a's",
-    report.checks.map((c) => c.id).join(",") === G3A_CHECKS.join(","),
+    "passing tree: the checks are exactly G3a's and G3b's",
+    report.checks.map((c) => c.id).join(",") === G3_CHECKS.join(","),
     report.checks.map((c) => c.id).join(","),
   );
   assert(
@@ -645,25 +721,31 @@ async function scenarios(root: string): Promise<void> {
     },
     ["headless-no-gpu"],
   );
-  await scenario(root, good, "401-transactions", recapture({ quit: 401 }), [
-    "recording-decodes",
-  ]);
+  await scenario(
+    root,
+    good,
+    "401-transactions",
+    g3aOnly(recapture({ quit: 401 })),
+    ["recording-decodes", "group-g3b"],
+  );
   await scenario(
     root,
     good,
     "patch-diverges",
-    recapture({
-      patch: {
-        mutatePatch: (seq, s) => {
-          if (seq !== 300) return s;
-          const c = clone(s);
-          const it = c.items.find((i) => i.id === ID.B);
-          if (it) it.clip = false;
-          return c;
+    g3aOnly(
+      recapture({
+        patch: {
+          mutatePatch: (seq, s) => {
+            if (seq !== 300) return s;
+            const c = clone(s);
+            const it = c.items.find((i) => i.id === ID.B);
+            if (it) it.clip = false;
+            return c;
+          },
         },
-      },
-    }),
-    ["patch-resolves-to-full", "leg-class-capture"],
+      }),
+    ),
+    ["patch-resolves-to-full", "leg-class-capture", "group-g3b"],
   );
   await scenario(
     root,
@@ -683,27 +765,29 @@ async function scenarios(root: string): Promise<void> {
     root,
     good,
     "overlapping-tie",
-    recapture({
-      states: (states) =>
-        states.map((s) => {
-          if (s.frame !== 200) return s;
-          const c = clone(s);
-          const d = c.items.find((i) => i.id === ID.D);
-          if (d) {
-            d.draw_index = 0;
-            d.xform = [1, 0, 0, 1, 100, 100];
-          }
-          c.unsupported = [
-            {
-              op: "canvas_item_set_draw_index",
-              item: ID.A,
-              reason: "draw-index-tie",
-            },
-          ];
-          return c;
-        }),
-    }),
-    ["no-draw-index-ties", "leg-class-capture"],
+    g3aOnly(
+      recapture({
+        states: (states) =>
+          states.map((s) => {
+            if (s.frame !== 200) return s;
+            const c = clone(s);
+            const d = c.items.find((i) => i.id === ID.D);
+            if (d) {
+              d.draw_index = 0;
+              d.xform = [1, 0, 0, 1, 100, 100];
+            }
+            c.unsupported = [
+              {
+                op: "canvas_item_set_draw_index",
+                item: ID.A,
+                reason: "draw-index-tie",
+              },
+            ];
+            return c;
+          }),
+      }),
+    ),
+    ["no-draw-index-ties", "leg-class-capture", "group-g3b"],
   );
   await scenario(
     root,
@@ -754,30 +838,34 @@ async function scenarios(root: string): Promise<void> {
     root,
     good,
     "clear-keeps-clip",
-    recapture({ clearKeepsClip: true }),
-    ["clip-state-invariants", "clip-rects-derived"],
+    g3aOnly(recapture({ clearKeepsClip: true })),
+    ["clip-state-invariants", "clip-rects-derived", "group-g3b"],
   );
   await scenario(
     root,
     good,
     "content-bump-on-move",
-    recapture({
-      states: editItem(ID.S1, 11, (it) => {
-        it.content_version += 1;
+    g3aOnly(
+      recapture({
+        states: editItem(ID.S1, 11, (it) => {
+          it.content_version += 1;
+        }),
       }),
-    }),
-    ["clip-state-invariants"],
+    ),
+    ["clip-state-invariants", "group-g3b"],
   );
   await scenario(
     root,
     good,
     "b-off-by-one",
-    recapture({
-      states: editItem(ID.B, 21, (it) => {
-        it.xform = [1, 0, 0, 1, it.xform[4] + 1, it.xform[5]];
+    g3aOnly(
+      recapture({
+        states: editItem(ID.B, 21, (it) => {
+          it.xform = [1, 0, 0, 1, it.xform[4] + 1, it.xform[5]];
+        }),
       }),
-    }),
-    ["clip-rects-derived"],
+    ),
+    ["clip-rects-derived", "group-g3b"],
   );
   await scenario(
     root,
@@ -814,14 +902,193 @@ async function scenarios(root: string): Promise<void> {
     root,
     good,
     "degenerate-host",
-    recapture({
-      full: { hostSizeStatus: "degenerate-window", hostWindowSize: [64, 64] },
-      patch: { hostSizeStatus: "degenerate-window", hostWindowSize: [64, 64] },
-    }),
-    ["leg-class-capture"],
+    g3aOnly(
+      recapture({
+        full: { hostSizeStatus: "degenerate-window", hostWindowSize: [64, 64] },
+        patch: {
+          hostSizeStatus: "degenerate-window",
+          hostWindowSize: [64, 64],
+        },
+      }),
+    ),
+    ["leg-class-capture", "group-g3b"],
   );
 
-  for (const id of G3A_CHECKS)
+  // ---------------------------------------------------------------------------------------------
+  // G3b scenarios (gate3-design.md "G3b"): the receiver's own checks, then one leg-class-*
+  // perturbation per prediction shape (steps only, steps + regions, steps + probes).
+  // ---------------------------------------------------------------------------------------------
+
+  // A probe pixel wrong in the receiver's own shots: fails every check that reads its
+  // checkpoints (expected-image-receiver, receiver-vs-reference, probes-receiver and its own
+  // leg-class, since "receiver" predicts no mismatch at all).
+  await scenario(
+    root,
+    good,
+    "receiver-probe-off",
+    async (out) => {
+      const probe = EXPECTED.steps[5].probes[0];
+      const seq = stepFrames3(EXPECTED, 5).settle;
+      await writeFile(
+        join(out, "receiver", "shots", `seq-${seq}.png`),
+        await shotPng(EXPECTED, 5, { x: probe.xy[0], y: probe.xy[1] }),
+      );
+    },
+    [
+      "expected-image-receiver",
+      "receiver-vs-reference",
+      "probes-receiver",
+      "leg-class-receiver",
+    ],
+  );
+
+  // applied.json's recording.sha256 corrupted: classifyLeg never reads that field (only status,
+  // end_seen, the transaction list and the shots), so this is isolated to the one check that
+  // does.
+  await scenario(
+    root,
+    good,
+    "receiver-applied-sha-wrong",
+    async (out) => {
+      const path = join(out, "receiver", "applied.json");
+      const a = JSON.parse(await readFile(path, "utf8"));
+      a.recording.sha256 = "0".repeat(64);
+      await writeJson(path, a);
+    },
+    ["receiver-consumed-stream"],
+  );
+
+  // A fixture-path openat in the headless trace: isolated to receiver-never-loaded-fixture (the
+  // one check that scans strace.txt).
+  await scenario(
+    root,
+    good,
+    "trace-opens-fixture",
+    async (out) => {
+      const path = join(out, "receiver-headless-trace", "strace.txt");
+      const text = await readFile(path, "utf8");
+      await writeText(
+        path,
+        `${text}42 10:00:00.300000 openat(AT_FDCWD, "${G3B_PROJECTS?.fixtureProjectDir}/gate3.gd", O_RDONLY|O_CLOEXEC) = 5\n`,
+      );
+    },
+    ["receiver-never-loaded-fixture"],
+  );
+
+  // A SCRIPT ERROR line in a receiver leg's own stdout.log: isolated to receiver-typed-clean
+  // ("[fixture]" is the only pattern receiver-never-loaded-fixture scans logs for).
+  await scenario(
+    root,
+    good,
+    "receiver-script-error",
+    async (out) => {
+      const path = join(out, "receiver", "stdout.log");
+      await writeText(
+        path,
+        `${await readFile(path, "utf8")}SCRIPT ERROR: boom\n`,
+      );
+    },
+    ["receiver-typed-clean"],
+  );
+
+  // receiver-patch's own shots wrong (not receiver's): isolated to its own leg-class, since
+  // expected-image-receiver/receiver-vs-reference/probes-receiver only read the "receiver" leg.
+  await scenario(
+    root,
+    good,
+    "receiver-patch-pixel-off",
+    async (out) => {
+      const seq = stepFrames3(EXPECTED, 3).settle;
+      await writeFile(
+        join(out, "receiver-patch", "shots", `seq-${seq}.png`),
+        await shotPng(EXPECTED, 3, { x: 10, y: 10 }),
+      );
+    },
+    ["leg-class-receiver-patch"],
+  );
+
+  // Each steps-only sabotage leg: restoring the correct image at one of its predicted-mismatch
+  // steps makes that step match when expected.json says it must not, failing only that leg's own
+  // leg-class (the mismatching-steps set no longer equals the prediction).
+  for (const leg of [
+    "sabotage-freeze",
+    "sabotage-perturb",
+    "sabotage-omit-clip",
+    "sabotage-omit-custom-rect",
+  ] as const) {
+    const fixedStep = EXPECTED.predictions[leg].steps?.[0];
+    await scenario(
+      root,
+      good,
+      `${leg}-step-fixed`,
+      async (out) => {
+        const seq = stepFrames3(EXPECTED, fixedStep as number).settle;
+        await writeFile(
+          join(out, leg, "receiver", "shots", `seq-${seq}.png`),
+          await shotPng(EXPECTED, fixedStep as number),
+        );
+      },
+      [`leg-class-${leg}`],
+    );
+  }
+
+  // root-size-observe: the bad pixel moved outside the "anchored" region at step 0 -- the
+  // mismatching-region set and the outside-every-region count both diverge from the prediction,
+  // failing only its own leg-class.
+  await scenario(
+    root,
+    good,
+    "root-size-observe-wrong-region",
+    async (out) => {
+      const seq = stepFrames3(EXPECTED, 0).settle;
+      await writeFile(
+        join(out, "root-size-observe", "receiver", "shots", `seq-${seq}.png`),
+        await shotPng(EXPECTED, 0, { x: 10, y: 10 }),
+      );
+    },
+    ["leg-class-root-size-observe"],
+  );
+
+  // sabotage-receiver-ignore-clip: step 0's shot reverted to the correctly clipped image (not
+  // the unclipped one every other step keeps) drops that step's probes from the observed failing
+  // set, which no longer equals expected.json predictions -- isolated to its own leg-class.
+  await scenario(
+    root,
+    good,
+    "ignore-clip-step-restored",
+    async (out) => {
+      const seq = stepFrames3(EXPECTED, 0).settle;
+      await writeFile(
+        join(out, "sabotage-receiver-ignore-clip", "shots", `seq-${seq}.png`),
+        await shotPng(EXPECTED, 0),
+      );
+    },
+    ["leg-class-sabotage-receiver-ignore-clip"],
+  );
+
+  // sabotage-receiver-clip-before-clear: the same steps-only pattern as the host sabotages.
+  await scenario(
+    root,
+    good,
+    "clip-before-clear-step-fixed",
+    async (out) => {
+      const step = EXPECTED.predictions["sabotage-receiver-clip-before-clear"]
+        .steps?.[0] as number;
+      const seq = stepFrames3(EXPECTED, step).settle;
+      await writeFile(
+        join(
+          out,
+          "sabotage-receiver-clip-before-clear",
+          "shots",
+          `seq-${seq}.png`,
+        ),
+        await shotPng(EXPECTED, step),
+      );
+    },
+    ["leg-class-sabotage-receiver-clip-before-clear"],
+  );
+
+  for (const id of G3_CHECKS)
     assert(`coverage: some scenario fails ${id}`, targeted.has(id));
 }
 

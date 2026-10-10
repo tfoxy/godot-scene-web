@@ -169,6 +169,11 @@ They map one to one onto `RenderingServer.CanvasItemTextureFilter` and `CanvasIt
 `canvas_item_set_default_texture_filter` / `_repeat` values. The RenderingServer default for both
 is `default`.
 
+`clip` is the engine's clip flag at the end of the frame. `canvas_item_clear` resets it to false
+in the engine (`renderer_canvas_render.h:455`), and the capture models that. A receiver applies
+`clip` after rebuilding an item's commands, and treats its own `canvas_item_clear` as having reset
+it (gate3-design.md D3, G3b).
+
 ### Commands
 
 ```

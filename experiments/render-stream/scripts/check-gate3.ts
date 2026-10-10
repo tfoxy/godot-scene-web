@@ -40,7 +40,11 @@ async function main(): Promise<void> {
     ),
   ) as Gate3Expected;
 
-  const report = await runGate3(out, { expected });
+  const report = await runGate3(out, {
+    expected,
+    receiverProjectDir: join(EXPERIMENT_DIR, "receiver"),
+    fixtureProjectDir: join(EXPERIMENT_DIR, "fixtures", "gate3"),
+  });
   await writeFile(
     join(out, "result.json"),
     `${JSON.stringify(report, null, 2)}\n`,

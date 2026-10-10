@@ -22,11 +22,13 @@
 //   reference-armed/               rendered fixture, extension armed with a full-sink stream: the
 //                                  same plus evidence/, recording.rs2 and store/
 
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
   type ClipRect,
   type DerivedEntry,
+  type DeriveInput,
   deriveClipRects,
   ownerClip,
 } from "./clip-derive";
@@ -37,25 +39,33 @@ import {
   readTextOrUndefined,
 } from "./gate-minus1-checks";
 import {
+  type AppliedJson,
   type CaptureResultJson,
+  type Checkpoint,
   checkCaptureArmed,
   checkHeadlessNoGpuGate0,
+  checkReceiverConsumedStream,
+  checkReceiverNeverLoadedFixture,
   checkRecordingDecodes,
   classifyLeg,
   type DrawIndexTie,
   diffRgba,
   firstTransactionWithRectColor,
   type Gate0Check,
+  joinSettleSeqs,
+  type LegEvaluation,
   loadRecording,
   PATCH_RECORDING_NAME,
   parseStepLog,
   RECORDING_NAME,
   type RecordingSummary,
   readExitCode,
+  type StepJoin,
   type StepLine,
 } from "./gate0-checks";
 import {
   classifyGate1,
+  type Gate1Classification,
   mapNames,
   type NameMap,
   patchDivergence,
@@ -72,6 +82,7 @@ import {
   formatClip,
   type Gate3Expected,
   type Gate3Invariant,
+  type Gate3Prediction,
   pixelAt,
   stepFrames3,
   synthesizeGate3,
@@ -89,7 +100,7 @@ export type Gate3Class = Gate2Class;
 
 export const ALL_GROUPS = ["g3a", "g3b", "g3c", "g3d"] as const;
 /** Groups whose increment has landed; run-gate3.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g3a"];
+export const LANDED_GROUPS: readonly string[] = ["g3a", "g3b"];
 
 export const G3A_SUPPORT_LEGS = [
   "import",
@@ -453,6 +464,8 @@ export interface Gate3Checkpoint {
     mismatched_pixels: number;
     max_channel_delta: number;
   }[];
+  /** G3b receiver checkpoints only: mismatching pixels outside every expected.json region. */
+  outside_regions_mismatched_pixels?: number | null;
 }
 
 /** One leg's shots against synthesizeGate3, full frame and every region, exact. */
@@ -815,7 +828,9 @@ export function checkClipStateInvariants(
 /** clip-derive.ts over one transaction, as an owner -> value table. */
 export function derivedOwnerTable(
   expected: Gate3Expected,
-  tx: RecordingSummary["transactions"][number]["meta"],
+  /** a transaction's resolved meta, or (G3b) a receiver-patch state dump: both carry
+   * render-stream-2.md's resolved `canvases`/`items` shape directly. */
+  tx: DeriveInput,
   names: NameMap,
   cullMask?: number,
 ): Record<string, ClipRectValue | "unknown"> {
@@ -833,16 +848,29 @@ export function derivedOwnerTable(
   return out;
 }
 
-export function checkClipRectsDerived(
+/** G3b: `receiver-patch`'s resolved state dumps (RS_RECEIVER_STATE_SEQS, `state/seq-<n>.json`),
+ * which carry render-stream-2.md's resolved `canvases`/`items` shape directly -- the same shape
+ * `deriveClipRects` takes from a recording's transaction meta. `names` and `cullMask` are the
+ * capture's own (G3b: wire ids are never renamed end to end). */
+export interface ReceiverPatchClipInput {
+  dir: string;
+  stepJoin: StepJoin;
+}
+
+export async function checkClipRectsDerived(
   expected: Gate3Expected,
   full: RecordingSummary,
   patch: RecordingSummary,
-): {
+  receiverPatch?: ReceiverPatchClipInput,
+): Promise<{
   check: Gate3Check;
   table: Record<string, Record<string, ClipRectValue | "unknown">>;
-} {
+}> {
   const problems: string[] = [];
   const table: Record<string, Record<string, ClipRectValue | "unknown">> = {};
+  const paths: string[] = [full.path, patch.path];
+  let namesFull: NameMap | undefined;
+  let maskFull = 0xffffffff;
   for (const [sink, rec] of [
     ["full", full],
     ["patch", patch],
@@ -851,6 +879,10 @@ export function checkClipRectsDerived(
     const names = mapNames3(expected, states);
     problems.push(...names.problems.map((p) => `${sink}: ${p}`));
     const mask = Number(rec.session?.viewport?.canvas_cull_mask ?? 0xffffffff);
+    if (sink === "full") {
+      namesFull = names;
+      maskFull = mask;
+    }
     for (const step of expected.steps) {
       const frame = stepFrames3(expected, step.step).settle;
       const tx = rec.transactions.find((t) => t.meta.frame === frame);
@@ -869,13 +901,40 @@ export function checkClipRectsDerived(
           );
     }
   }
+  if (receiverPatch && namesFull) {
+    for (const entry of receiverPatch.stepJoin.entries) {
+      const sink = "receiver-patch";
+      if (entry.seq === null) {
+        problems.push(`${sink} step ${entry.step}: no settled seq`);
+        continue;
+      }
+      const path = join(receiverPatch.dir, "state", `seq-${entry.seq}.json`);
+      paths.push(path);
+      const state = await readJson<DeriveInput>(path);
+      if (!state) {
+        problems.push(
+          `${sink} step ${entry.step}: ${path} missing or unparseable`,
+        );
+        continue;
+      }
+      const got = derivedOwnerTable(expected, state, namesFull, maskFull);
+      const want = expected.steps.find(
+        (s) => s.step === entry.step,
+      )?.clip_rects;
+      for (const owner of expected.owners)
+        if (!want || JSON.stringify(got[owner]) !== JSON.stringify(want[owner]))
+          problems.push(
+            `${sink} step ${entry.step}: ${owner} derives ${formatClip(got[owner] as ClipRectValue)}, expected ${formatClip(want?.[owner])}`,
+          );
+    }
+  }
   return {
     check: check(
       "clip-rects-derived",
-      "deriveClipRects (lib/clip-derive.ts: transforms from the canvas down, custom rect or command bounds, bounding box, intersection with the rounded ancestor scissor, the 0.5 px skip, position and size rounded half away from zero) over each settle transaction of both sinks equals expected.json clip_rects for every owner and step",
+      "deriveClipRects (lib/clip-derive.ts: transforms from the canvas down, custom rect or command bounds, bounding box, intersection with the rounded ancestor scissor, the 0.5 px skip, position and size rounded half away from zero) over each settle transaction of both sinks equals expected.json clip_rects for every owner and step; G3b also runs it over receiver-patch's own resolved state dumps",
       problems,
-      `${expected.steps.length} steps x ${expected.owners.length} owners x 2 sinks derive exactly`,
-      [full.path, patch.path],
+      `${expected.steps.length} steps x ${expected.owners.length} owners x 2 sinks derive exactly${receiverPatch ? `, plus receiver-patch's ${receiverPatch.stepJoin.entries.length} resolved states` : ""}`,
+      paths,
     ),
     table,
   };
@@ -1077,6 +1136,606 @@ export function checkCaptureLegClass(e: Gate3CaptureEvaluation): Gate3Check {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Group g3b: receiver apply order, receiver legs and sabotages (gate3-design.md "G3b")
+//
+// `receiver` and `receiver-patch` replay g3a's capture (full and patch); `receiver-headless-trace`
+// does too, under strace. `sabotage-freeze`, `sabotage-perturb`, `sabotage-omit-clip`,
+// `sabotage-omit-custom-rect` and `root-size-observe` each capture their own fresh recording
+// (reusing /1's host sabotages and gate 1's root-size policy) and then replay it.
+// `sabotage-receiver-ignore-clip` and `sabotage-receiver-clip-before-clear` replay g3a's capture
+// through a receiver started with RS_RECEIVER_SABOTAGE. Every leg but the two plain receivers is
+// judged against expected.json `predictions[leg]` (steps, regions and/or probes), never a
+// hand-copied step set, so a disagreement with gate3-design.md Q7's tables is a finding (G3a's "As
+// built"), not silently passed.
+// ---------------------------------------------------------------------------------------------
+
+export interface Gate3LegLayout {
+  legDir: string;
+  /** the capture host whose recording and steps.jsonl the receiver (or headless trace) replays */
+  captureDir: string;
+  receiverDir?: string;
+  /** whether the receiver takes the settle-step shots compared with synthesizeGate3 */
+  shots: boolean;
+  recordingName: string;
+}
+
+export const G3B_CLASSIFIED_LEGS = [
+  "receiver",
+  "receiver-patch",
+  "sabotage-freeze",
+  "sabotage-perturb",
+  "sabotage-omit-clip",
+  "sabotage-omit-custom-rect",
+  "sabotage-receiver-ignore-clip",
+  "sabotage-receiver-clip-before-clear",
+  "root-size-observe",
+] as const;
+export type G3bLeg = (typeof G3B_CLASSIFIED_LEGS)[number];
+
+export const G3B_SUPPORT_LEGS = ["receiver-headless-trace"] as const;
+
+export function gate3LegLayout(outDir: string, leg: G3bLeg): Gate3LegLayout {
+  const legDir = join(outDir, leg);
+  switch (leg) {
+    case "receiver":
+      return {
+        legDir,
+        captureDir: join(outDir, "capture"),
+        receiverDir: legDir,
+        shots: true,
+        recordingName: RECORDING_NAME,
+      };
+    case "receiver-patch":
+      return {
+        legDir,
+        captureDir: join(outDir, "capture"),
+        receiverDir: legDir,
+        shots: true,
+        recordingName: PATCH_RECORDING_NAME,
+      };
+    case "sabotage-receiver-ignore-clip":
+    case "sabotage-receiver-clip-before-clear":
+      // These sabotage the receiver, not the capture: they replay g3a's own capture unmodified.
+      return {
+        legDir,
+        captureDir: join(outDir, "capture"),
+        receiverDir: legDir,
+        shots: true,
+        recordingName: RECORDING_NAME,
+      };
+    default:
+      // sabotage-freeze, sabotage-perturb, sabotage-omit-clip, sabotage-omit-custom-rect,
+      // root-size-observe: each captures its own fresh recording.
+      return {
+        legDir,
+        captureDir: join(legDir, "capture"),
+        receiverDir: join(legDir, "receiver"),
+        shots: true,
+        recordingName: RECORDING_NAME,
+      };
+  }
+}
+
+export interface G3bLegExpectation {
+  class: Gate3Class;
+  /** a substring one of the classification reasons must contain */
+  reasonIncludes?: string;
+}
+
+/** Only the class (and, for root-size-observe, the reason) is hand-typed here; the mismatching
+ * steps, regions and probes of every other leg come from expected.json `predictions[leg]`
+ * (gate3-design.md Q7), so a contradiction between this contract and the model is a finding. */
+export const G3B_LEG_EXPECTATIONS: Record<G3bLeg, G3bLegExpectation> = {
+  receiver: { class: "success" },
+  "receiver-patch": { class: "success" },
+  "sabotage-freeze": { class: "pixel-mismatch" },
+  "sabotage-perturb": { class: "pixel-mismatch" },
+  "sabotage-omit-clip": { class: "pixel-mismatch" },
+  "sabotage-omit-custom-rect": { class: "pixel-mismatch" },
+  "sabotage-receiver-ignore-clip": { class: "pixel-mismatch" },
+  "sabotage-receiver-clip-before-clear": { class: "pixel-mismatch" },
+  "root-size-observe": {
+    class: "unsupported",
+    reasonIncludes: "degenerate-host-size",
+  },
+};
+
+async function existingPaths(paths: string[]): Promise<string[]> {
+  const flags = await Promise.all(paths.map(fileExists));
+  return paths.filter((_, i) => flags[i]);
+}
+
+async function shotSeqsPresent(receiverDir: string): Promise<number[]> {
+  try {
+    const names = await readdir(join(receiverDir, "shots"));
+    return names
+      .map((n) => /^seq-(\d+)\.png$/.exec(n)?.[1])
+      .filter((s): s is string => s !== undefined)
+      .map(Number);
+  } catch {
+    return [];
+  }
+}
+
+function cpMismatch(cp: Gate3Checkpoint): boolean {
+  const bad = (n: number | null): boolean => n === null || n > 0;
+  return (
+    bad(cp.mismatched_pixels) ||
+    bad(cp.max_channel_delta) ||
+    cp.regions.some((r) => bad(r.mismatched_pixels) || bad(r.max_channel_delta))
+  );
+}
+
+/** A receiver leg's settle-step shots (named `seq-<n>.png`, joined through `stepJoin`) against
+ * `synthesizeGate3`, full frame and every region -- the receiver analogue of
+ * `compareShotsWithSynth`, which reads the reference's `step-<k>.png` shots instead. */
+export async function computeGate3ReceiverCheckpoints(
+  leg: string,
+  stepJoin: StepJoin,
+  receiverShotsDir: string,
+  expected: Gate3Expected,
+): Promise<{ checkpoints: Gate3Checkpoint[]; compareOk: boolean }> {
+  const checkpoints: Gate3Checkpoint[] = [];
+  let compareOk = true;
+  const regionList = Object.entries(expected.regions);
+  const rects = regionList.map(([, r]) => r);
+  for (const entry of stepJoin.entries) {
+    const shot =
+      entry.seq === null
+        ? null
+        : join(receiverShotsDir, `seq-${entry.seq}.png`);
+    const cp: Gate3Checkpoint = {
+      leg,
+      step: entry.step,
+      shot: shot ?? "<no settled seq>",
+      mismatched_pixels: null,
+      max_channel_delta: null,
+      regions: [],
+      outside_regions_mismatched_pixels: null,
+    };
+    checkpoints.push(cp);
+    const got = shot ? await decodePngRgba(shot) : undefined;
+    if (!got) {
+      compareOk = false;
+      continue;
+    }
+    const want = synthesizeGate3(expected, entry.step);
+    if (got.width !== want.width || got.height !== want.height) {
+      compareOk = false;
+      continue;
+    }
+    const full = diffRgba(want.rgba, got.data, want.width, want.height);
+    cp.mismatched_pixels = full.mismatched_pixels;
+    cp.max_channel_delta = full.max_channel_delta;
+    if (full.mismatched_pixels > 0) compareOk = false;
+    let outside = 0;
+    for (let y = 0; y < want.height; y++) {
+      for (let x = 0; x < want.width; x++) {
+        const i = (y * want.width + x) * 4;
+        const differs =
+          want.rgba[i] !== got.data[i] ||
+          want.rgba[i + 1] !== got.data[i + 1] ||
+          want.rgba[i + 2] !== got.data[i + 2] ||
+          want.rgba[i + 3] !== got.data[i + 3];
+        if (
+          differs &&
+          !rects.some(
+            ([rx, ry, rw, rh]) =>
+              x >= rx && x < rx + rw && y >= ry && y < ry + rh,
+          )
+        ) {
+          outside++;
+        }
+      }
+    }
+    cp.outside_regions_mismatched_pixels = outside;
+    for (const [name, rect] of regionList) {
+      const r = diffRgba(want.rgba, got.data, want.width, want.height, rect);
+      cp.regions.push({ name, ...r });
+    }
+  }
+  return { checkpoints, compareOk };
+}
+
+export interface Gate3LegEvaluation {
+  leg: G3bLeg;
+  layout: Gate3LegLayout;
+  expected_class: Gate3Class;
+  classification: Gate1Classification;
+  exit_code: number | null;
+  artifacts: string[];
+  /** the recording the leg's receiver consumed (full for every leg but receiver-patch) */
+  recording: RecordingSummary;
+  full: RecordingSummary;
+  patch: RecordingSummary;
+  captureResult: CaptureResultJson | undefined;
+  stepJoin?: StepJoin;
+  applied?: AppliedJson;
+  checkpoints: Gate3Checkpoint[];
+  compareOk: boolean;
+}
+
+export async function evaluateG3bLeg(
+  outDir: string,
+  leg: G3bLeg,
+  expected: Gate3Expected,
+): Promise<Gate3LegEvaluation> {
+  const layout = gate3LegLayout(outDir, leg);
+  const captureResult = await readJson<CaptureResultJson>(
+    join(layout.captureDir, "evidence", "result.json"),
+  );
+  const full = await loadRecording(join(layout.captureDir, RECORDING_NAME));
+  const patch = await loadRecording(
+    join(layout.captureDir, PATCH_RECORDING_NAME),
+  );
+  const recording = layout.recordingName === RECORDING_NAME ? full : patch;
+  const stepJoin = layout.shots
+    ? joinSettleSeqs(
+        parseStepLog(
+          await readTextOrUndefined(join(layout.captureDir, "steps.jsonl")),
+        ),
+        recording.transactions,
+      )
+    : undefined;
+  let applied: AppliedJson | undefined;
+  let checkpoints: Gate3Checkpoint[] = [];
+  let compareOk = true;
+  let receiverInput: Parameters<typeof classifyLeg>[0]["receiver"];
+  if (layout.receiverDir) {
+    applied = await readJson<AppliedJson>(
+      join(layout.receiverDir, "applied.json"),
+    );
+    if (
+      applied !== undefined &&
+      (applied === null || typeof applied !== "object")
+    ) {
+      applied = undefined;
+    }
+    receiverInput = {
+      applied,
+      requestedShotSeqs:
+        stepJoin?.entries
+          .map((e) => e.seq)
+          .filter((s): s is number => s !== null) ?? [],
+      shotFiles: await shotSeqsPresent(layout.receiverDir),
+    };
+    if (stepJoin?.ok) {
+      ({ checkpoints, compareOk } = await computeGate3ReceiverCheckpoints(
+        leg,
+        stepJoin,
+        join(layout.receiverDir, "shots"),
+        expected,
+      ));
+    }
+  }
+  const base = classifyLeg({
+    captureResult,
+    recording,
+    stepJoin,
+    receiver: receiverInput,
+    checkpoints: checkpoints as unknown as Checkpoint[],
+  });
+  const classification = classifyGate1(
+    base,
+    recording.session,
+    patchDivergence(full, patch),
+  );
+  const processDirs = [
+    layout.captureDir,
+    ...(layout.receiverDir ? [layout.receiverDir] : []),
+  ];
+  const artifacts = await existingPaths(
+    processDirs.flatMap((dir) => [
+      join(dir, "argv.txt"),
+      join(dir, "env.txt"),
+      join(dir, "stdout.log"),
+      join(dir, "exit-code.txt"),
+      join(dir, "evidence", "result.json"),
+      join(dir, RECORDING_NAME),
+      join(dir, PATCH_RECORDING_NAME),
+      join(dir, "steps.jsonl"),
+      join(dir, "applied.json"),
+      join(dir, "strace.txt"),
+    ]),
+  );
+  return {
+    leg,
+    layout,
+    expected_class: G3B_LEG_EXPECTATIONS[leg].class,
+    classification,
+    exit_code: await readExitCode(layout.receiverDir ?? layout.captureDir),
+    artifacts: [...new Set(artifacts)],
+    recording,
+    full,
+    patch,
+    captureResult,
+    stepJoin,
+    applied,
+    checkpoints,
+    compareOk,
+  };
+}
+
+export function checkExpectedImageReceiver3(
+  e: Gate3LegEvaluation,
+  expected: Gate3Expected,
+): Gate3Check {
+  const problems: string[] = [];
+  if (!e.stepJoin?.ok)
+    problems.push(
+      `step join failed: ${e.stepJoin?.problems.join("; ") ?? "no join"}`,
+    );
+  if (e.checkpoints.length !== expected.steps.length)
+    problems.push(
+      `${e.checkpoints.length} checkpoints, expected ${expected.steps.length}`,
+    );
+  for (const cp of e.checkpoints)
+    if (cpMismatch(cp))
+      problems.push(
+        `step ${cp.step}: ${cp.mismatched_pixels ?? "unreadable"} mismatched pixels (max channel delta ${cp.max_channel_delta ?? "?"})`,
+      );
+  return check(
+    "expected-image-receiver",
+    `each ${e.leg} shot for step k (the transaction at its settle frame) equals synthesizeGate3(k) exactly, full frame and every region`,
+    problems,
+    `${e.checkpoints.length} receiver shots match exactly`,
+    e.checkpoints.map((cp) => cp.shot),
+  );
+}
+
+export function checkReceiverVsReference3(
+  e: Gate3LegEvaluation,
+  expected: Gate3Expected,
+): Gate3Check {
+  const problems: string[] = [];
+  if (!e.stepJoin?.ok) problems.push("step join failed: no checkpoints");
+  if (e.checkpoints.length !== expected.steps.length)
+    problems.push(
+      `${e.checkpoints.length} checkpoints, expected ${expected.steps.length}`,
+    );
+  for (const cp of e.checkpoints)
+    if (cpMismatch(cp))
+      problems.push(
+        `step ${cp.step}: full ${cp.mismatched_pixels ?? "unreadable"} px (max delta ${cp.max_channel_delta ?? "?"}), ${cp.regions.map((r) => `${r.name} ${r.mismatched_pixels ?? "?"} px`).join(", ")}`,
+      );
+  if (!e.compareOk && problems.length === 0)
+    problems.push("a shot was missing, unreadable or of another size");
+  return check(
+    "receiver-vs-reference",
+    `${e.leg} shots equal synthesizeGate3 at every step: full frame and every region, 0 mismatched pixels and max channel delta 0`,
+    problems,
+    `${e.checkpoints.length} checkpoints identical`,
+    e.checkpoints.map((cp) => cp.shot),
+  );
+}
+
+/** Every probe of every step against one receiver leg's shots, by name (the receiver analogue of
+ * `probeTally`, which reads the reference leg's `step-<k>.png` shots). */
+export async function probeTallyReceiver(
+  e: Gate3LegEvaluation,
+  expected: Gate3Expected,
+): Promise<{
+  tally: Record<string, ProbeTally>;
+  problems: string[];
+  paths: string[];
+}> {
+  const tally: Record<string, ProbeTally> = {};
+  const problems: string[] = [];
+  const paths: string[] = [];
+  const shotsDir = join(e.layout.receiverDir ?? e.layout.legDir, "shots");
+  for (const s of expected.steps) {
+    const seq = e.stepJoin?.entries.find((x) => x.step === s.step)?.seq ?? null;
+    const path = seq === null ? null : join(shotsDir, `seq-${seq}.png`);
+    if (path) paths.push(path);
+    const got = path ? await decodePngRgba(path) : undefined;
+    const t: ProbeTally = {
+      total: s.probes.length,
+      decisive: s.probes.filter((p) => p.decisive && p.side === "outside")
+        .length,
+      failed: [],
+    };
+    tally[s.step] = t;
+    if (!got) {
+      problems.push(
+        `step ${s.step}: ${path ?? "<no settled seq>"} missing or unreadable`,
+      );
+      t.failed = s.probes.map((p) => p.name);
+      continue;
+    }
+    const frame = { width: got.width, rgba: got.data };
+    for (const p of s.probes) {
+      const px = pixelAt(frame, p.xy[0], p.xy[1]);
+      if (px.join(",") !== p.rgba8.join(",")) t.failed.push(p.name);
+    }
+  }
+  return { tally, problems, paths };
+}
+
+export async function checkProbesReceiver(
+  e: Gate3LegEvaluation,
+  expected: Gate3Expected,
+): Promise<{ check: Gate3Check; tally: Record<string, ProbeTally> }> {
+  const r = await probeTallyReceiver(e, expected);
+  const problems = [...r.problems];
+  for (const [step, t] of Object.entries(r.tally))
+    if (t.failed.length > 0)
+      problems.push(
+        `step ${step}: ${t.failed.length} probe(s) differ: ${t.failed.slice(0, 6).join(", ")}${t.failed.length > 6 ? ", ..." : ""}`,
+      );
+  const total = Object.values(r.tally).reduce((n, t) => n + t.total, 0);
+  const decisive = Object.values(r.tally).reduce((n, t) => n + t.decisive, 0);
+  return {
+    check: check(
+      "probes-receiver",
+      `every named probe (1 px inside and outside each scissor edge, at every step) has exactly its expected colour in ${e.leg}'s shots`,
+      problems,
+      `${total} probes exact over ${expected.steps.length} steps (${decisive} decisive pairs)`,
+      r.paths,
+    ),
+    tally: r.tally,
+  };
+}
+
+/** `expected.json` `predictions[leg]` against one leg's classification and checkpoints: the
+ * mismatching step set, the mismatching region set per step (when predicted, else every
+ * non-predicted step and region must match exactly), and the failing-probe set, exactly
+ * (gate3-design.md Q7; G3a's "As built" amendment to the ignore-clip row). */
+export async function checkLegClass3(
+  e: Gate3LegEvaluation,
+  expected: Gate3Expected,
+): Promise<{ check: Gate3Check; probeTally?: Record<string, ProbeTally> }> {
+  const exp = G3B_LEG_EXPECTATIONS[e.leg];
+  const c = e.classification;
+  const problems: string[] = [];
+  if (c.result_class !== exp.class)
+    problems.push(`class ${c.result_class}, expected ${exp.class}`);
+  if (
+    exp.reasonIncludes &&
+    !c.reasons.some((r) => r.includes(exp.reasonIncludes as string))
+  ) {
+    problems.push(`no reason mentions ${exp.reasonIncludes}`);
+  }
+  const prediction: Gate3Prediction | undefined = expected.predictions[e.leg];
+  let probeTallyOut: Record<string, ProbeTally> | undefined;
+  if (prediction) {
+    if (e.checkpoints.length !== expected.steps.length)
+      problems.push(
+        `${e.checkpoints.length} checkpoints, expected ${expected.steps.length}`,
+      );
+    if (prediction.steps) {
+      const got = [...c.mismatching_steps].sort((a, b) => a - b);
+      const want = [...prediction.steps].sort((a, b) => a - b);
+      if (got.join(",") !== want.join(",")) {
+        problems.push(
+          `mismatching steps {${got.join(",")}}, expected {${want.join(",")}}`,
+        );
+      }
+    }
+    if (prediction.regions) {
+      const wantJoined = [...prediction.regions].sort().join(",");
+      for (const cp of e.checkpoints) {
+        const expectMismatch = prediction.steps
+          ? prediction.steps.includes(cp.step)
+          : true;
+        const want = expectMismatch ? wantJoined : "";
+        const got = cp.regions
+          .filter(
+            (r) => r.mismatched_pixels === null || r.mismatched_pixels > 0,
+          )
+          .map((r) => r.name)
+          .sort()
+          .join(",");
+        if (got !== want)
+          problems.push(
+            `step ${cp.step}: mismatching regions {${got}}, expected {${want}}`,
+          );
+        if ((cp.outside_regions_mismatched_pixels ?? 0) !== 0)
+          problems.push(
+            `step ${cp.step}: ${cp.outside_regions_mismatched_pixels} mismatching pixels outside every region`,
+          );
+      }
+    }
+    if (prediction.probes) {
+      const r = await probeTallyReceiver(e, expected);
+      probeTallyOut = r.tally;
+      problems.push(...r.problems);
+      const got = Object.entries(r.tally)
+        .flatMap(([step, t]) => t.failed.map((name) => `${step}:${name}`))
+        .sort();
+      const want = [...prediction.probes].sort();
+      if (got.join("|") !== want.join("|")) {
+        const missing = want.filter((p) => !got.includes(p));
+        const extra = got.filter((p) => !want.includes(p));
+        problems.push(
+          `failing probes: ${got.length}, expected ${want.length} (missing ${missing.length}${missing.length > 0 ? `: ${missing.slice(0, 5).join(", ")}` : ""}; extra ${extra.length}${extra.length > 0 ? `: ${extra.slice(0, 5).join(", ")}` : ""})`,
+        );
+      }
+    }
+  }
+  const regionsNote = prediction?.regions
+    ? ` mismatching only in {${prediction.regions.join(",")}}`
+    : "";
+  const probesNote = prediction?.probes
+    ? `; failing probes exactly predictions (${prediction.probes.length})`
+    : "";
+  return {
+    check: check(
+      `leg-class-${e.leg}`,
+      `the ${e.leg} leg classifies as ${exp.class}${prediction?.steps ? ` with mismatching steps exactly {${prediction.steps.join(",")}}` : ""}${exp.reasonIncludes ? ` with a ${exp.reasonIncludes} reason` : ""}${regionsNote}${probesNote}`,
+      problems,
+      `${c.result_class}${c.mismatching_steps.length > 0 ? ` steps {${c.mismatching_steps.join(",")}}` : ""}${c.reasons.length > 0 ? ` (${c.reasons.slice(0, 2).join(" | ")})` : ""}`,
+      e.artifacts,
+    ),
+    probeTally: probeTallyOut,
+  };
+}
+
+/** Every receiver-bearing g3b leg's stdout.log. checkReceiverNeverLoadedFixture's own default
+ * list names gate 0/1's leg directories, which g3b does not share, so its call passes this list
+ * explicitly (checkReceiverTypedCleanG3b scans it too). */
+export function g3bReceiverLogPaths(outDir: string): string[] {
+  const paths: string[] = [
+    join(outDir, "receiver-headless-trace", "stdout.log"),
+  ];
+  for (const leg of G3B_CLASSIFIED_LEGS) {
+    const layout = gate3LegLayout(outDir, leg);
+    if (layout.receiverDir) paths.push(join(layout.receiverDir, "stdout.log"));
+  }
+  return paths;
+}
+
+/** gate 1's receiver-typed-clean, adapted: g3b has no receiver-typecheck leg of its own (the
+ * codec and the minimal golden replay are already proven there), so this scans every g3b
+ * receiver-bearing leg's own stdout.log instead (gate2b-checks.ts's lighter pattern). */
+export async function checkReceiverTypedCleanG3b(
+  outDir: string,
+): Promise<Gate3Check> {
+  const bad = /SCRIPT ERROR|SCRIPT WARNING|Parse Error|Failed to load script/;
+  const problems: string[] = [];
+  const paths = g3bReceiverLogPaths(outDir);
+  for (const log of paths) {
+    const text = await readTextOrUndefined(log);
+    if (text === undefined) {
+      problems.push(`${log} missing`);
+      continue;
+    }
+    const line = text.split("\n").find((l) => bad.test(l));
+    if (line) problems.push(`${log}: ${line.trim()}`);
+  }
+  return check(
+    "receiver-typed-clean",
+    "no g3b receiver leg's stdout.log has a SCRIPT ERROR, SCRIPT WARNING, Parse Error or Failed to load script line",
+    problems,
+    `${paths.length} receiver logs clean`,
+    paths,
+  );
+}
+
+async function supportLegG3b(
+  outDir: string,
+  leg: (typeof G3B_SUPPORT_LEGS)[number],
+): Promise<Gate3Report["legs"][string]> {
+  const dir = join(outDir, leg);
+  const artifacts = await existingPaths([
+    join(dir, "argv.txt"),
+    join(dir, "env.txt"),
+    join(dir, "stdout.log"),
+    join(dir, "exit-code.txt"),
+    join(dir, "strace.txt"),
+    join(dir, "applied.json"),
+    join(dir, RECORDING_NAME),
+  ]);
+  return {
+    group: "g3b",
+    expected_class: null,
+    result_class: null,
+    reasons: [] as string[],
+    exit_code: await readExitCode(dir),
+    artifacts,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------------------------
 
@@ -1113,6 +1772,9 @@ export interface Gate3Report {
 
 export interface Gate3Context {
   expected: Gate3Expected;
+  /** g3b's receiver-never-loaded-fixture (gate 1's shape) */
+  receiverProjectDir?: string;
+  fixtureProjectDir?: string;
   now?: Date;
 }
 
@@ -1198,18 +1860,19 @@ export async function runGate3(
   let census: ClipCensus | null = null;
   let ties: DrawIndexTie[] | null = null;
 
-  if (groups.run.includes("g3a")) {
-    const capture = await evaluateCapture(outDir);
+  // The capture is loaded once, shared by g3a's own checks and by g3b's clip-rects-derived
+  // (which also validates receiver-patch's resolved state when g3b ran).
+  let capture: Gate3CaptureEvaluation | undefined;
+  if (groups.run.includes("g3a") || groups.run.includes("g3b")) {
+    capture = await evaluateCapture(outDir);
+  }
+  let receiverPatchInput: ReceiverPatchClipInput | undefined;
+
+  if (groups.run.includes("g3a") && capture) {
     const image = await checkExpectedImageReference(outDir, ctx.expected);
     checkpoints = image.checkpoints;
     const probeCheck = await checkProbesReference(outDir, ctx.expected);
     probes = { reference: probeCheck.tally };
-    const derived = checkClipRectsDerived(
-      ctx.expected,
-      capture.full,
-      capture.patch,
-    );
-    clipRects = { [ctx.expected.fixture]: derived.table };
     const censusCheck = await checkClipCallCensus(outDir, ctx.expected);
     census = censusCheck.census;
     const tieCheck = checkNoDrawIndexTies(capture.full);
@@ -1231,7 +1894,6 @@ export async function runGate3(
       await checkReferenceRepeatBudget(outDir, ctx.expected),
       await checkArmedTransparent(outDir, ctx.expected),
       checkClipStateInvariants(ctx.expected, capture.full, capture.patch),
-      derived.check,
       censusCheck.check,
       await checkSupportLegsExit(outDir),
       checkCaptureLegClass(capture),
@@ -1252,8 +1914,76 @@ export async function runGate3(
       notRunCheck("g3a", "g3a was not in --legs; its checks are not-run"),
     );
   }
+
+  if (groups.run.includes("g3b")) {
+    const evaluations = new Map<G3bLeg, Gate3LegEvaluation>();
+    for (const leg of G3B_CLASSIFIED_LEGS)
+      evaluations.set(leg, await evaluateG3bLeg(outDir, leg, ctx.expected));
+    const receiver = evaluations.get("receiver") as Gate3LegEvaluation;
+    const receiverPatch = evaluations.get(
+      "receiver-patch",
+    ) as Gate3LegEvaluation;
+    receiverPatchInput = {
+      dir: receiverPatch.layout.receiverDir ?? receiverPatch.layout.legDir,
+      stepJoin: receiverPatch.stepJoin ?? {
+        ok: false,
+        entries: [],
+        problems: ["receiver-patch did not run"],
+      },
+    };
+    const asGate0 = (e: Gate3LegEvaluation) => e as unknown as LegEvaluation;
+    const g3bProbes = await checkProbesReceiver(receiver, ctx.expected);
+    probes = { ...(probes ?? {}), receiver: g3bProbes.tally };
+    checks.push(
+      checkExpectedImageReceiver3(receiver, ctx.expected),
+      checkReceiverVsReference3(receiver, ctx.expected),
+      g3bProbes.check,
+      fromGate0(checkReceiverConsumedStream(asGate0(receiver))),
+      fromGate0(
+        await checkReceiverNeverLoadedFixture(outDir, {
+          receiverProjectDir: ctx.receiverProjectDir ?? "",
+          fixtureProjectDir: ctx.fixtureProjectDir ?? "",
+          receiverLogs: g3bReceiverLogPaths(outDir),
+        }),
+      ),
+      await checkReceiverTypedCleanG3b(outDir),
+    );
+    for (const leg of G3B_CLASSIFIED_LEGS) {
+      const e = evaluations.get(leg) as Gate3LegEvaluation;
+      const r = await checkLegClass3(e, ctx.expected);
+      checks.push(r.check);
+      if (r.probeTally) probes = { ...(probes ?? {}), [leg]: r.probeTally };
+      legs[e.leg] = {
+        group: "g3b",
+        expected_class: e.expected_class,
+        result_class: e.classification.result_class as Gate3Class,
+        reasons: e.classification.reasons,
+        harmless_ties: e.classification.harmless_ties,
+        exit_code: e.exit_code,
+        artifacts: e.artifacts,
+      };
+    }
+    for (const leg of G3B_SUPPORT_LEGS)
+      legs[leg] = await supportLegG3b(outDir, leg);
+  } else {
+    checks.push(
+      notRunCheck("g3b", "g3b was not in --legs; its checks are not-run"),
+    );
+  }
+
+  if (capture) {
+    const derived = await checkClipRectsDerived(
+      ctx.expected,
+      capture.full,
+      capture.patch,
+      receiverPatchInput,
+    );
+    clipRects = { [ctx.expected.fixture]: derived.table };
+    checks.push(derived.check);
+  }
+
   for (const group of notRun)
-    if (group !== "g3a")
+    if (group !== "g3a" && group !== "g3b")
       checks.push(notRunCheck(group, `${group} was not in --legs`));
 
   const binary = await readJson<{ path?: string; sha256?: string }>(

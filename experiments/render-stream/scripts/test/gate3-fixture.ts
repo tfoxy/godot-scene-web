@@ -5,11 +5,16 @@
 // but the scene's numbers, so the passing tree's clip-state-invariants, clip-rects-derived and
 // clip-call-census are a cross-check of the two models as well as of the checker.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
-import { GATE0_HOOKS } from "../lib/gate0-checks";
+import {
+  expectedReceiverUnsupported,
+  GATE0_HOOKS,
+  summarizeRecording,
+} from "../lib/gate0-checks";
+import { resolvedStateOf } from "../lib/gate1-checks";
 import {
   type Gate3Expected,
   stepFrames3,
@@ -406,6 +411,18 @@ async function writeProcess(dir: string, exit = 0): Promise<void> {
   await writeText(join(dir, "exit-code.txt"), `${exit}\n`);
 }
 
+/** G3b: a receiver's own process files -- distinct from writeProcess's fixture-side "[fixture]"
+ * stdout line, which receiver-never-loaded-fixture would otherwise flag on a receiver leg. */
+async function writeReceiverProcess(dir: string, exit = 0): Promise<void> {
+  await writeText(join(dir, "argv.txt"), "/tpl/linux_release.x86_64\n");
+  await writeText(
+    join(dir, "env.txt"),
+    `RS_RECEIVER_RECORDING=${join(dir, "recording.rs2")}\n`,
+  );
+  await writeText(join(dir, "stdout.log"), "[receiver] ok\n");
+  await writeText(join(dir, "exit-code.txt"), `${exit}\n`);
+}
+
 export function stepLog(e: Gate3Expected): string {
   return jsonl(
     e.steps.map((s) => {
@@ -616,4 +633,337 @@ export async function buildTree(
   await writeReference(join(out, "reference"), e);
   await writeReference(join(out, "reference-repeat"), e);
   await writeReference(join(out, "reference-armed"), e, true);
+}
+
+// ---------------------------------------------------------------------------------------------
+// g3b: a fabricated receiver on each leg's capture (gate3-design.md "G3b"). Shots are synthesized
+// from the SAME expected.json the checker reads, so a passing leg is pixel-identical to
+// synthesizeGate3 by construction; a sabotage leg's "wrong" pixel (or, for ignore-clip, the whole
+// unclipped frame) is placed at exactly the steps/colours expected.json `predictions[leg]` says,
+// so these fixtures cross-check the *checking* code, not the engine.
+// ---------------------------------------------------------------------------------------------
+
+/** applied.json /3's per-transaction resource counters for a receiver that fetches and uploads
+ * nothing (nothing in the gate 3 fixture draws a texture). */
+const G3B_NO_RESOURCES = {
+  fetched: 0,
+  fetched_bytes: 0,
+  cache_hits: 0,
+  inline_received: 0,
+  created: 0,
+  updated: 0,
+  replaced: 0,
+  freed: 0,
+  upload_bytes: 0,
+  fetch_us: 0,
+  skipped_commands: 0,
+};
+
+/** A receiver's applied.json (render-stream-receiver-applied/3), derived from the recording
+ * bytes it actually replayed (self-test-gate1.ts's appliedFor): every transaction 1..N, and a
+ * shot (plus, when `stateSeqs` names it, a resolved-state dump) at each of `shotSeqs`. */
+function g3bAppliedFor(
+  recordingPath: string,
+  bytes: Buffer,
+  shotSeqs: number[],
+  stateSeqs: number[],
+  dir: string,
+): Record<string, unknown> {
+  const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
+  return {
+    schema: "render-stream-receiver-applied/3",
+    mode: "file",
+    recording: {
+      path: recordingPath,
+      sha256: summary.sha256,
+      bytes: bytes.length,
+    },
+    session_id: "0123456789abcdef0123456789abcdef",
+    status: "ok",
+    failure: null,
+    end_seen: true,
+    viewport: {
+      display_server: "x11",
+      size: [640, 360],
+      size_check: "ok",
+      logical_size: [640, 360],
+    },
+    transactions: summary.transactions.map((t, i) => ({
+      stream: 1,
+      seq: t.meta.seq,
+      frame: t.meta.frame,
+      encoding: t.meta.encoding,
+      record_sha256: t.sha256,
+      process_frame: i + 2,
+      created: 0,
+      freed: 0,
+      reparented: 0,
+      commands_replayed: 0,
+      rs_calls: 1,
+      resources: G3B_NO_RESOURCES,
+    })),
+    shots: shotSeqs.map((seq) => ({
+      stream: 1,
+      seq,
+      step: null,
+      path: join(dir, "shots", `seq-${seq}.png`),
+      state_path: stateSeqs.includes(seq)
+        ? join(dir, "state", `seq-${seq}.json`)
+        : null,
+      process_frame: seq + 2,
+      applied_through: seq,
+    })),
+    shots_missed: [],
+    unsupported: expectedReceiverUnsupported(summary),
+    live: null,
+    cache: {
+      dir: join(dir, "cache"),
+      mode: "fresh",
+      entries_before: 0,
+      entries_after: 0,
+      bytes_after: 0,
+    },
+    fetches: [],
+    uploads: [],
+    resources_summary: {
+      distinct_fetched: 0,
+      fetched_bytes: 0,
+      cache_hits: 0,
+      uploads: 0,
+      upload_bytes: 0,
+    },
+  };
+}
+
+/** How a g3b receiver leg's shots diverge from the correct `shotPng`: `normal` (every step
+ * correct), `bad-pixel` (one recoloured pixel at exactly `steps`, a sabotage's predicted
+ * mismatch), or `unclipped` (every step rendered with every clip off -- `sabotage-receiver-
+ * ignore-clip`'s actual, faithful effect, not a stand-in). */
+export type G3bShotMode =
+  | { kind: "normal" }
+  | { kind: "bad-pixel"; steps: readonly number[]; xy?: [number, number] }
+  | { kind: "unclipped" };
+
+async function g3bShotPng(
+  e: Gate3Expected,
+  step: number,
+  mode: G3bShotMode,
+): Promise<Buffer> {
+  if (mode.kind === "unclipped") {
+    const { width, height, rgba } = synthesizeGate3(e, step, {
+      clips: false,
+    });
+    return sharp(Buffer.from(rgba), { raw: { width, height, channels: 4 } })
+      .png()
+      .toBuffer();
+  }
+  if (mode.kind === "bad-pixel" && mode.steps.includes(step)) {
+    const [x, y] = mode.xy ?? [10, 10];
+    return shotPng(e, step, { x, y, rgba: [0, 0, 0, 255] });
+  }
+  return shotPng(e, step);
+}
+
+export interface WriteReceiverLegOptions {
+  mode?: G3bShotMode;
+  /** also write state/seq-<n>.json resolved-state dumps (receiver-patch's clip-rects-derived
+   * input). */
+  withState?: boolean;
+}
+
+/** A g3b receiver leg replaying `captureDir/recordingName`: applied.json plus shots/seq-<n>.png
+ * at every settled step (joined through the capture's own recording, as the real receiver's
+ * shots are named). */
+export async function writeReceiverLeg(
+  dir: string,
+  e: Gate3Expected,
+  captureDir: string,
+  recordingName: string,
+  o: WriteReceiverLegOptions = {},
+): Promise<void> {
+  const mode = o.mode ?? { kind: "normal" };
+  const recordingPath = join(captureDir, recordingName);
+  const bytes = await readFile(recordingPath);
+  const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
+  const shotSeqs: number[] = [];
+  for (const s of e.steps) {
+    const frame = stepFrames3(e, s.step).settle;
+    const tx = summary.transactions.find((t) => t.meta.frame === frame);
+    const seq = tx?.meta.seq ?? frame;
+    shotSeqs.push(seq);
+    const path = join(dir, "shots", `seq-${seq}.png`);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, await g3bShotPng(e, s.step, mode));
+    if (o.withState && tx) {
+      await writeJson(
+        join(dir, "state", `seq-${seq}.json`),
+        resolvedStateOf(tx.meta),
+      );
+    }
+  }
+  await writeJson(
+    join(dir, "applied.json"),
+    g3bAppliedFor(
+      recordingPath,
+      bytes,
+      shotSeqs,
+      o.withState ? shotSeqs : [],
+      dir,
+    ),
+  );
+  await writeReceiverProcess(dir);
+}
+
+/** receiver-headless-trace: a successful openat of its own recording and (the positive control a
+ * real strace carries) of the receiver project's own project.godot, and nothing under
+ * fixtureProjectDir -- self-test-gate1.ts's writeTraceStrace. */
+async function writeReceiverTrace(
+  dir: string,
+  receiverProjectDir: string,
+): Promise<void> {
+  const recordingPath = join(dir, "recording.rs2");
+  await writeText(
+    join(dir, "strace.txt"),
+    [
+      `42 10:00:00.000000 openat(AT_FDCWD, "${receiverProjectDir}/project.godot", O_RDONLY|O_CLOEXEC) = 3`,
+      `42 10:00:00.200000 openat(AT_FDCWD, "${recordingPath}", O_RDONLY|O_CLOEXEC) = 4`,
+      "",
+    ].join("\n"),
+  );
+  await writeText(
+    join(dir, "argv.txt"),
+    `${["/tpl/linux_release.x86_64", "--headless", "--path", receiverProjectDir].join("\n")}\n`,
+  );
+}
+
+export interface G3bProjects {
+  receiverProjectDir: string;
+  fixtureProjectDir: string;
+}
+
+/** Tiny, distinct stand-ins for the real receiver/ and fixtures/gate3/ projects
+ * (receiver-never-loaded-fixture hashes every file under both and fails if any pair matches). */
+export async function writeG3bProjects(root: string): Promise<G3bProjects> {
+  const fixtureProjectDir = join(root, "_projects", "fixtures", "gate3");
+  const receiverProjectDir = join(root, "_projects", "receiver");
+  await writeText(
+    join(fixtureProjectDir, "project.godot"),
+    'config/name="gate3 fixture"\n',
+  );
+  await writeText(
+    join(fixtureProjectDir, "gate3.gd"),
+    "extends Node\n# fixture\n",
+  );
+  await writeText(
+    join(receiverProjectDir, "project.godot"),
+    'config/name="receiver"\n',
+  );
+  await writeText(
+    join(receiverProjectDir, "receiver.gd"),
+    "extends Node\n# receiver\n",
+  );
+  return { fixtureProjectDir, receiverProjectDir };
+}
+
+/** The five legs that capture their own fresh recording (gate3-design.md "G3b" leg table):
+ * freeze-frame, perturb-transform and the two omit-op host sabotages reuse /1's sabotages
+ * unmodified (their effect is stood in for here by a bad pixel at the predicted steps, since
+ * only the *checking* code is under test); root-size-observe declares a non-"match" host size. */
+const G3B_OWN_CAPTURE_LEGS = [
+  "sabotage-freeze",
+  "sabotage-perturb",
+  "sabotage-omit-clip",
+  "sabotage-omit-custom-rect",
+  "root-size-observe",
+] as const;
+
+/** A full, passing g3b evidence tree on top of a g3a tree already written at `out` (buildTree):
+ * receiver and receiver-patch on the g3a capture, a headless trace, the four host-sabotage legs
+ * and root-size-observe each on their own fresh capture, and the two receiver sabotages on the
+ * g3a capture -- every leg's predicted mismatch (expected.json `predictions[leg]`) reproduced
+ * exactly, so the whole tree classifies and checks exactly as gate3-design.md Q7 says. */
+export async function writeG3bTree(
+  out: string,
+  e: Gate3Expected,
+  projects: G3bProjects,
+): Promise<void> {
+  const g3aCapture = join(out, "capture");
+
+  await writeReceiverLeg(join(out, "receiver"), e, g3aCapture, "recording.rs2");
+  await writeReceiverLeg(
+    join(out, "receiver-patch"),
+    e,
+    g3aCapture,
+    "recording-patch.rs2",
+    { withState: true },
+  );
+
+  const traceDir = join(out, "receiver-headless-trace");
+  await writeReceiverLeg(traceDir, e, g3aCapture, "recording.rs2");
+  await writeReceiverTrace(traceDir, projects.receiverProjectDir);
+
+  for (const leg of G3B_OWN_CAPTURE_LEGS) {
+    const legDir = join(out, leg);
+    const prediction = e.predictions[leg];
+    const rootSize = leg === "root-size-observe";
+    await writeCaptureDir(join(legDir, "capture"), e, {
+      quit: e.quit_frame_default,
+      ...(rootSize
+        ? {
+            full: { hostSizeStatus: "degenerate-visible" },
+            patch: { hostSizeStatus: "degenerate-visible" },
+          }
+        : {}),
+    });
+    await writeReceiverLeg(
+      join(legDir, "receiver"),
+      e,
+      join(legDir, "capture"),
+      "recording.rs2",
+      {
+        mode: {
+          kind: "bad-pixel",
+          steps: prediction.steps ?? [],
+          xy: rootSize ? [100, 320] : undefined,
+        },
+      },
+    );
+  }
+
+  await writeReceiverLeg(
+    join(out, "sabotage-receiver-ignore-clip"),
+    e,
+    g3aCapture,
+    "recording.rs2",
+    { mode: { kind: "unclipped" } },
+  );
+  await writeReceiverLeg(
+    join(out, "sabotage-receiver-clip-before-clear"),
+    e,
+    g3aCapture,
+    "recording.rs2",
+    {
+      mode: {
+        kind: "bad-pixel",
+        steps: e.predictions["sabotage-receiver-clip-before-clear"].steps ?? [],
+      },
+    },
+  );
+}
+
+/** A passing g3a + g3b evidence tree: buildTree, then writeG3bTree, with legs.json updated to
+ * both groups. */
+export async function buildFullTree(
+  out: string,
+  e: Gate3Expected,
+  o: CaptureOptions = {},
+): Promise<G3bProjects> {
+  await buildTree(out, e, o);
+  const projects = await writeG3bProjects(out);
+  await writeG3bTree(out, e, projects);
+  await writeJson(join(out, "legs.json"), {
+    groups_run: ["g3a", "g3b"],
+    groups_landed: ["g3a", "g3b"],
+  });
+  return projects;
 }

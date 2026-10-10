@@ -26,10 +26,13 @@ extends Node
 ##                                blocked main loop; live mode: a timed wait, the loop keeps
 ##                                presenting)
 ##   RS_RECEIVER_SABOTAGE         reupload (upload every resident texture at every applied
-##                                transaction), ignore-cache (fetch even on a cache hit), or
+##                                transaction), ignore-cache (fetch even on a cache hit),
 ##                                wrong-http-token (live only, G2e: send the correct bearer token
 ##                                on the WebSocket upgrade but a deliberately wrong one on every
-##                                resource GET); all three exist only to fail checks
+##                                resource GET), ignore-clip (gate3-design.md Q5, G3b: every
+##                                canvas_item_set_clip call passes false) or clip-before-clear
+##                                (G3b: the pre-gate-3 apply order, the clip setter before content
+##                                with no shadow reset on clear); all five exist only to fail checks
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash) is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
@@ -87,6 +90,8 @@ const SCHEMA: String = "render-stream-receiver-applied/3"
 const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
+## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b).
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -307,8 +312,8 @@ func _parse_resource_env(live: bool) -> bool:
 			return false
 		_fetch_delay_ms = delay_text.to_int()
 	var sabotage: String = OS.get_environment("RS_RECEIVER_SABOTAGE").strip_edges()
-	if sabotage != "" and sabotage != "reupload" and sabotage != "ignore-cache" and sabotage != "wrong-http-token":
-		_log("error: RS_RECEIVER_SABOTAGE must be reupload, ignore-cache or wrong-http-token (got %s)" % JSON.stringify(sabotage))
+	if sabotage != "" and not SABOTAGES.has(sabotage):
+		_log("error: RS_RECEIVER_SABOTAGE must be one of %s (got %s)" % [str(SABOTAGES), JSON.stringify(sabotage)])
 		return false
 	_cache.dir = cache_dir
 	_cache.mode = cache_mode
@@ -491,6 +496,8 @@ func _begin_session(accepted: Dictionary) -> bool:
 		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms, fetch_token)
 	var blocks: Array = record["blocks"]
 	_applier.sabotage_reupload = _sabotage == "reupload"
+	_applier.sabotage_ignore_clip = _sabotage == "ignore-clip"
+	_applier.sabotage_clip_before_clear = _sabotage == "clip-before-clear"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
