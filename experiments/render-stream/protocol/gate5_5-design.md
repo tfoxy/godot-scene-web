@@ -717,6 +717,59 @@ shot); `presence-reference`; `freshness-reference` (`UC` at 6 with no redraw); t
 **Pass criteria**: `--legs g55b` green; "Gate 5.5b result" with the measured budgets and the `BD`
 alpha prediction confirmed or explained.
 
+**As built (G55b, 2026-10-10; before G55a's log).** Every prediction `make_expected.py` makes
+held on the first engine run: every pixel of every shot in both scenes, alpha included, and the
+four material counts the record already hooks. Amendments:
+
+1. **`BD`'s strip alpha is 170, not 153.** The root viewport is not transparent, so its render
+   target is `GL_RGB10_A2` (`drivers/gles3/storage/texture_storage.cpp:2144-2149`). `disabled`
+   writes alpha .6 into 2 bits (2/3), and `glGetTexImage` reads it back as 170. Colours on the 0.2
+   grid survive the 10-bit store exactly. `geometry-raster.ts` models this as `targetAlphaBits`
+   (2 here), which only `disabled` writes, since every other mode keeps the target's alpha.
+2. **Geometry.** The overlay rects are 48 px wide, not 56, because 56 plus `BA`'s 4 px move and
+   step 9's 8 px shift leaves the 88 px region. Every material rect overhangs its underlay onto
+   the background (`O`, `UP`/`UC`, `RI`). On (.4,.4,.4), a (.2,.2,.2) `sub` gives the same pixels as
+   that rect with no material (102 − 51 = 51). Without the overhang, `RC` would not change at 4 and
+   `UP` would not change at 8, and `ignore-material` would miss both.
+3. **Marker colours are G55b's own** (`gate55_cim.gd` `MARKER_COLORS`), with gate 3's rect and
+   region. Under the `modulate` variant, gate 3's step 5 shows black like step 0, and step 6 shows
+   like step 3. Steps 0 to 2 would not change at all. G55b's ten are distinct as drawn and as shown,
+   and the modulate changes each of steps 0 to 7. Step alignment reads the drawn colours, which the
+   wire carries unmodulated.
+4. **`LU` is invisible from step 3 on**, so it is not fresh at 9 (the canvas shift) in either
+   scene. In `modulate`, steps 2 and 8 repaint every region but `LU`.
+5. **Census.** Q6b's per-step rows are right (typed in as `HAND_STEP_CENSUS` and matched by a
+   replay of `cim.cpp`, `CimSim`). The record hooks four of the calls today, and their run totals
+   are measured exactly: `canvas_item_set_material` 13, `material_set_param` 36,
+   `shader_set_code` 9 and `shader_create_from_code` 0, in both scenes. Calibrator 8's totals are
+   predictions until G55a lands. Teardown is excluded: `shader_create` 9, `material_create` 12,
+   `material_set_shader` 17, `free` 3 shaders and 1 material, `canvas_item_set_use_parent_material` 1
+   and `canvas_set_modulate` 3 (variant). The dirty list is LIFO (`core/templates/self_list.h:45`),
+   so the first flush makes shader 1 for `RI`'s `sub`, 2 for `UP`'s `add` and so on, and step 3's
+   new `light_only` shader is 9. Material ids are 1–11 in construction order, and 12 at step 5.
+   `material-census` reads the hook log once all six calibrator 8 ops are planned. Each line must
+   name its RenderingServer method in `op` (or `call`), and a `free` must carry `kind` `shader` or
+   `material`. Teardown after the quit frame is not counted.
+6. **Sabotage sets** (`expected.json` `predictions`, recomputed from a wire replay of
+   `CimSim`'s calls):
+   - `omit-op material_set_shader` from 21: `LO` does **not** mismatch. Step 2's flush frees the
+     `light_only` shader (its last user leaves). Freeing a shader nulls every material that names
+     it (D5), so on the wire `LO` draws as `normal`, which is what the engine draws. The set is
+     `LU` {3..9}, `RC` {5..9}, `UP` {8,9}.
+   - `freeze-frame`: as Q6b, plus every other region at {9}.
+   - `ignore-material`: `BA`, `BS`, `BU`, `BP` and `UP` {0..9}, `BD` {0}, `LO` {0,1}, `LU` {3..9},
+     `RC` all but 4. `BM` and `LM` never mismatch.
+   - `ignore-canvas-modulate`: every region and the marker {0..7}, `LO` {2..7}, `LU` never.
+7. **The pre-/5 capture** classifies `unsupported` in both scenes. The only entries are item-level
+   `canvas_item_set_material` / `unsupported-state`, on exactly the items that name a material (11,
+   or 10 at step 4). `canvas_set_modulate` and `use_parent_material` leave no trace on the wire,
+   so the `modulate` capture types the same items. Every item but the marker keeps one
+   `content_version` for all 400 frames.
+8. **Runner.** g55b is a group of the shared `run-gate55.sh` / `check-gate55.ts` (G55c landed
+   first). Evidence is under `<out>/cim/` and `<out>/cim-modulate/`. The legs are `capture-cim`,
+   `reference-cim{,-repeat,-armed}` and the same with `-cim-modulate`, and check ids are prefixed
+   `cim-` and `cim-modulate-`. G55d's receiver legs go under the same directories.
+
 ---
 
 ### G55c — `ShaderMaterial` fixture, material oracle, census, reference legs (opus)

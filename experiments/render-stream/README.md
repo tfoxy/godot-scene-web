@@ -3264,6 +3264,72 @@ receivers' shots under `sabotage-*/receiver/shots/` and `sabotage-receiver-*/sho
   (antialiased lines, wide polylines, circles, meshes) unknown.
 - Pixel exactness on another GPU or driver: one RTX 2060 under GLES3.
 
+## Gate 5.5b result (2026-10-10)
+
+G55b ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55b", "As built (G55b)")
+passes. `pnpm render-stream:gate55 -- --legs g55b,g55c` is **52/52** in
+`artifacts/render-stream/gate55/g55b-verify2/`, on render-stream/4 after G5d. It was also 52/52 on
+/3 before G5d (`gate55/g55b-verify1/`), and g55b's 28 checks were 28/28 alone before the rebase
+onto G55c (`gate55/g55b-run1/`). The same build passed `build-capture.sh` (13/13 ctests), gate −1
+28/28 (`gate-minus1/g55b-verify2/`), every pure self-test (`self-test-gate55b.ts` 53/53) and every
+`make_golden.py`/`make_expected.py --check`. No capture, wire or receiver file changed.
+
+What landed:
+
+- the `CanvasItemMaterial` fixture (`fixtures/gate55-cim/`) with variant `modulate`;
+- `make_expected.py`, with a replay of `cim.cpp`'s shader cache, the light-mode and
+  canvas-modulate rule, a Python twin of GL's blend equations, per-cell probes, the census and
+  G55d's sabotage sets;
+- blend modes and a target alpha depth in `scripts/lib/geometry-raster.ts`;
+- `lib/gate55b-checks.ts` and `lib/gate55b-expected.ts`, and group g55b in `run-gate55.sh` and
+  `check-gate55.ts`.
+
+Images (under the run directory): `cim/reference/shots/step-{0..9}.png` and
+`cim-modulate/reference/shots/step-{0..9}.png`, with the same under `reference-repeat/` and
+`reference-armed/`. Every shot equals the raster on every pixel (2 304 000 per leg), alpha
+included:
+
+- Exact: 225 408 pixels per shot at step 0 and 224 640 after it, once `BD`'s strip is `mix`.
+- Within 1: the `mul` region and the .6 strips. 24 672 base and 20 256 `modulate` pixel-shots
+  actually differ by 1.
+
+**Measured budget: 0.** Repeat and armed are byte-identical to the reference in both scenes.
+
+Light modes are pixel-proven:
+
+- `LO` (`light_only`) shows only the background until step 2.
+- `LU` (`unshaded`) ignores the (1,1,0) and (0,1,1) modulates until it turns `light_only` at 3.
+- `UC` changes at 6 through `use_parent_material` alone.
+
+The `BD` alpha prediction (153) is **refuted and explained**. The strip reads (102,51,153,**170**)
+because the root viewport's render target is `GL_RGB10_A2`, so alpha has 2 bits. The model
+predicted 170 from the source before the run.
+
+`counters.json`, both scenes: `canvas_item_set_material` 13, `material_set_param` 36,
+`shader_set_code` 9, `shader_create_from_code` 0, `canvas_item_add_rect` 37 and
+`texture_2d_create` 1, all as predicted. Calibrator 8's ops are still unhooked. Both captures
+classify `unsupported`, with `canvas_item_set_material` / `unsupported-state` on exactly the items
+that name a material at every settle frame, and no item's `content_version` moves but the marker's.
+
+### Findings
+
+- **The root render target is RGB10_A2.** Only `disabled` exposes it, by writing alpha. Every
+  other blend keeps the target's alpha, and 0.2-grid colours survive the 10-bit store.
+- **A `sub` of (.2,.2,.2) over (.4,.4,.4) equals the same rect without a material.** Q6b's `RC`
+  and `UP` therefore needed rects that overhang onto the background to be distinguishable. Q6b's
+  56 px overlays also left their region after the `BA` move and the canvas shift.
+- **Q6b's `omit-op material_set_shader` set was wrong about `LO`.** The flush that rebinds it also
+  frees its old shader, and the wire's free rule then gives exactly the engine's picture. Gate 3's
+  marker colours collide under the modulate variant, so G55b has its own ten.
+
+### What G55b does not prove
+
+- The census of calibrator 8's calls (`material_create`, `shader_create`, `material_set_shader`,
+  frees, `use_parent_material`, `canvas_set_modulate`). They are predicted per step in
+  `expected.json` and checked once G55a's log exists.
+- That any material reaches a receiver: that is G55d.
+- Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
+
 ## Gate 5.5c result (2026-10-10)
 
 G55c phase 1 ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55c", "As built (G55c

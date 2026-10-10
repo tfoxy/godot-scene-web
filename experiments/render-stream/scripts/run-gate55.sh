@@ -4,18 +4,22 @@
 #
 #   bash run-gate55.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g55c]
+#     [--legs g55b,g55c]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
 # artifacts/render-stream/gate55/<UTC>/ and must not already hold files. --legs selects leg groups
-# (comma-separated); the default is every group whose increment has landed: g55c (G55c:
+# (comma-separated); the default is every group whose increment has landed: g55b (G55b: the
+# CanvasItemMaterial fixture fixtures/gate55-cim's import; for the base scene under <out>/cim/ and
+# for variant `modulate` under <out>/cim-modulate/, a 400-frame headless capture with both sinks and
+# the store that classifies `unsupported` on the current wire with every item naming a material
+# typed, its rendered reference, a same-build repeat and an extension-armed reference) and g55c (G55c:
 # fixtures/gate55-shader's import, a 400-frame headless capture with both sinks and the store that
 # classifies `unsupported` on the current wire with canvas_item_set_material typed, its rendered
 # reference and a same-build repeat with the material oracle on, an extension-armed reference with
 # the oracle off, all under <out>/shader/; and the `refused` variant's capture and rendered
-# reference with the oracle on, under <out>/shader-refused/). g55b, g55d, g55e and g55f are known
-# but have not landed.
+# reference with the oracle on, under <out>/shader-refused/). g55d, g55e and g55f are known but
+# have not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -29,6 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 SHADER_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-shader"
+CIM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-cim"
 FIXTURE_DIR="$SHADER_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
@@ -39,7 +44,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g55c)
+LANDED_GROUPS=(g55b g55c)
 KNOWN_GROUPS=(g55b g55c g55d g55e g55f)
 
 EXTENSION=""
@@ -110,10 +115,12 @@ if [ ! -x "$BINARY" ]; then
 	exit 1
 fi
 BINARY="$(realpath "$BINARY")"
-if [ ! -f "$SHADER_FIXTURE_DIR/project.godot" ]; then
-	echo "run-gate55: $SHADER_FIXTURE_DIR/project.godot is missing" >&2
-	exit 1
-fi
+for project in "$CIM_FIXTURE_DIR" "$SHADER_FIXTURE_DIR"; do
+	if [ ! -f "$project/project.godot" ]; then
+		echo "run-gate55: $project/project.godot is missing" >&2
+		exit 1
+	fi
+done
 
 GROUPS_RUN=()
 if [ -z "$LEGS_ARG" ]; then
@@ -233,6 +240,61 @@ run_reference() {
 	run_rendered "$dir" "$project"
 }
 
+# One scene of fixtures/gate55-cim (variant "" = base) under <scene dir>: the capture host
+# (headless, release template, extension armed, both sinks and the store, strace + /proc maps/fd
+# sample). Before G55d every item naming a material is typed unsupported-state; counters.json counts
+# the material calls.
+run_cim_capture() {
+	local scene="$1" variant="$2"
+	echo "run-gate55: capture-${scene##*/}"
+	CAPTURE_FIXTURE_DIR="$CIM_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
+	if [ -n "$variant" ]; then
+		CAPTURE_EXTRA_ENV+=(RS_FIXTURE_VARIANT="$variant")
+	fi
+	run_capture "$scene/capture" "$CAPTURE_QUIT_FRAME" capture
+}
+
+# Its three rendered legs, inside the group's gamescope (already up).
+run_cim_rendered() {
+	local scene="$1" variant="$2" label="reference-${1##*/}"
+	echo "run-gate55: $label"
+	REFERENCE_FIXTURE_DIR="$CIM_FIXTURE_DIR"
+	REFERENCE_VARIANT="$variant"
+	run_reference "$scene/reference"
+	echo "run-gate55: $label-repeat"
+	REFERENCE_FIXTURE_DIR="$CIM_FIXTURE_DIR"
+	REFERENCE_VARIANT="$variant"
+	run_reference "$scene/reference-repeat"
+	echo "run-gate55: $label-armed (extension armed, stream on)"
+	REFERENCE_FIXTURE_DIR="$CIM_FIXTURE_DIR"
+	REFERENCE_VARIANT="$variant"
+	REFERENCE_ARMED=1
+	run_reference "$scene/reference-armed"
+}
+
+run_g55b() {
+	local B="$OUT/cim" M="$OUT/cim-modulate"
+	mkdir -p "$B/import"
+	echo "run-gate55: g55b: import"
+	LEG_ENV=()
+	run_headless "$B/import/fixture" none -- mise exec -- godot --headless --path "$CIM_FIXTURE_DIR" --import
+	if [ "$(cat "$B/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $CIM_FIXTURE_DIR failed, see $B/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+
+	run_cim_capture "$B" ""
+	run_cim_capture "$M" modulate
+
+	echo "run-gate55: bringing up private gamescope for g55b rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g55b"
+	run_cim_rendered "$B" ""
+	run_cim_rendered "$M" modulate
+	gs_teardown "$OUT/gamescope-g55b"
+	GS_RUN_DIR=""
+}
+
 run_g55c() {
 	local D="$OUT/shader" R="$OUT/shader-refused"
 	mkdir -p "$D/import"
@@ -283,6 +345,7 @@ run_g55c() {
 
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
+	g55b) run_g55b ;;
 	g55c) run_g55c ;;
 	esac
 done

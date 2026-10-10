@@ -1515,25 +1515,43 @@ values, failing each on one field, hash, flag or command.
 mise exec -- pnpm render-stream:gate55 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g55c]
+  [--legs g55b,g55c]
 ```
 
-- `run-gate55.sh`: the orchestrator (`run_g55c`, `run_reference` with `REFERENCE_ARMED`,
-  `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MATERIAL_ORACLE`). Groups g55b, g55d,
-  g55e and g55f are known but have not landed, so asking for them exits 2. The captures write both
-  sinks under gate 2's `.rs2` names whatever wire version `main` speaks.
+- `run-gate55.sh`: the orchestrator (`run_g55b` with `run_cim_capture` and `run_cim_rendered`,
+  `run_g55c`, `run_reference` with `REFERENCE_ARMED`, `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR`
+  and `REFERENCE_MATERIAL_ORACLE`). Groups g55d, g55e and g55f are known but have not landed, so
+  asking for them exits 2. The captures write both sinks under gate 2's `.rs2` names whatever wire
+  version `main` speaks.
 - `check-gate55.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate55-report/1`:
   gate 5's shape with `materials` (per fixture: the material `counters.json` counts, the oracle's
-  shader hash per step and the capture's `content_version`s per item), `budgets` and `freshness`).
+  shader hash per step and the capture's `content_version`s per item; g55b: per variant the
+  material census as measured and predicted, calibrator 8's state, `content_version`s and the
+  raster's pixel classes), `budgets` and `freshness`).
+- `lib/gate55b-expected.ts`: `fixtures/gate55-cim/expected.json`'s types, `asGate5` (one variant
+  as a gate 5 scene) and `rasterize55` (the raster on the 2-bit-alpha target).
+- `lib/gate55b-checks.ts`: the g55b checks: self-consistency against the Python blend twin's
+  probes, the material census (counters before calibrator 8, the hook log per step window after),
+  the pre-/5 capture typing, `runGate55b`.
+- `lib/geometry-raster.ts` (gate 5's) gained a per-mesh `blend` (`add`, `sub`, `mul`,
+  `premul_alpha`, `disabled`; absent is `mix`) and `targetAlphaBits`; an alpha-0 shape under an
+  alpha-scaled blend covers nothing.
 - `lib/gate55c-checks.ts`: the g55c checks (fixtures/gate55-shader): `expected.json`'s types, the
   refused variant's view, the oracle checks, the capture typing, `runGate55c`. Image, presence,
   freshness and leg comparisons are gate 5's (`lib/gate5-checks.ts`, `lib/geometry-raster.ts`).
-- `test/self-test-gate55c.ts`: below.
+- `test/self-test-gate55b.ts`, `test/self-test-gate55c.ts`: below.
 
 ## Gate 5.5 legs and evidence under `--out`
 
 | Leg                       | Group | Directory                    | Runs                                                                                              |
 | ------------------------- | ----- | ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `import-cim`              | g55b  | `cim/import/fixture/`        | the mise editor's `--import` of `fixtures/gate55-cim`                                             |
+| `capture-cim`             | g55b  | `cim/capture/`               | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps/fd |
+| `capture-cim-modulate`    | g55b  | `cim-modulate/capture/`      | the same with `RS_FIXTURE_VARIANT=modulate`                                                       |
+| `reference-cim`           | g55b  | `cim/reference/`             | rendered in gamescope, extension absent: `shots/step-0..9.png`, `steps.jsonl`                     |
+| `reference-cim-repeat`    | g55b  | `cim/reference-repeat/`      | the same again                                                                                    |
+| `reference-cim-armed`     | g55b  | `cim/reference-armed/`       | rendered, extension armed with `GRC_STREAM_OUT` and a store                                       |
+| `reference-cim-modulate`, `-repeat`, `-armed` | g55b | `cim-modulate/reference*/` | the same three with `RS_FIXTURE_VARIANT=modulate`                                   |
 | `import-shader`           | g55c  | `shader/import/fixture/`     | the mise editor's `--import` of `fixtures/gate55-shader`                                          |
 | `capture-shader`          | g55c  | `shader/capture/`            | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size`, quit 400, strace + maps/fd |
 | `capture-refused`         | g55c  | `shader-refused/capture/`    | the same with `RS_FIXTURE_VARIANT=refused`                                                        |
@@ -1541,6 +1559,33 @@ mise exec -- pnpm render-stream:gate55 -- \
 | `reference-shader-repeat` | g55c  | `shader/reference-repeat/`   | the same again                                                                                    |
 | `reference-shader-armed`  | g55c  | `shader/reference-armed/`    | rendered, extension armed with `GRC_STREAM_OUT` and a store, oracle off                           |
 | `reference-refused`       | g55c  | `shader-refused/reference/`  | rendered, variant `refused`, oracle on                                                            |
+
+## Gate 5.5 criteria (g55b)
+
+`cim-expected-self-consistent` re-derives in TypeScript what `make_expected.py` asserts, for both
+variants: grid colours with alpha 1, .6 (the strips) or 0 (`light_only`), marker colours distinct
+as drawn and as shown under the canvas modulate, disjoint regions with every rect inside its own,
+the blend-aware raster equal to every probe of the Python twin (colour, alpha and allowed delta)
+with every pixel decided and nothing but the clear colour outside the regions, probes exactly in the
+fresh regions, `fresh` against the raster, `typed_entries` the items with a material, and
+`hook_census` the sum of the steps. Per variant (ids prefixed `cim-` and `cim-modulate-`): the
+capture checks are gate 3's (`capture-armed`, `headless-no-gpu`, `recording-decodes`,
+`patch-resolves-to-full`, `step-alignment` on the unmodulated marker colours, `no-draw-index-ties`).
+`material-census` requires `counters.json` to equal `hook_census` for the material ops the record
+hooks before calibrator 8 (`canvas_item_set_material`, `material_set_param`, `shader_set_code`,
+`shader_create_from_code`), `canvas_item_add_rect` and `texture_2d_create`, and reports
+calibrator 8's ops `unhooked`; once the record plans all of them, the hook log's material lines
+(`op` or `call`, `free` split by `kind`, omitted lines skipped) must equal each step's `census`
+between its applied frame and the next one's. `expected-image-reference` compares every shot with
+the raster on every pixel (exact; within 1 for `mul` and the .6 strips but `disabled`'s, whose
+alpha is exact). `presence-reference` requires every visible rect present, `freshness-reference`
+`fresh` with only the marker redrawn after step 0 (`UC` at 6), `reference-repeat-budget` and
+`armed-transparent` the legs pixel for pixel, alpha included. `leg-class-capture-cim` and
+`leg-class-capture-cim-modulate` require class `unsupported`, `canvas_item_set_material` /
+`unsupported-state` as the only entries, on exactly `typed_entries` at every settle frame (`RI`
+not at 4), each item's `add_rect` commands float32-exact and unmodulated, and every item's
+`content_version` constant but the marker's. `cim-support-legs-exit` requires the import and the
+six rendered legs to exit 0.
 
 ## Gate 5.5 criteria (g55c)
 
@@ -1573,9 +1618,26 @@ requires the import and rendered legs to exit 0.
 ## Gate 5.5 self-test
 
 ```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55b.ts
+python3 experiments/render-stream/fixtures/gate55-cim/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55c.ts
 python3 experiments/render-stream/fixtures/gate55-shader/make_expected.py --check
 ```
+
+`self-test-gate55b.ts` checks the rasterizer's blend modes on bytes typed in by hand: `add`, `sub`
+(clamped), `mul` (delta 1), `premul_alpha` and `add` at .6, `disabled` writing alpha 153 on an
+8-bit target and 170 on a 2-bit one, `mix` unchanged, and alpha-0 rects that paint and cover
+nothing (`mix`, `add`) or still multiply (`mul`). `cim-expected-self-consistent` passes on the
+committed file and fails on a probe off by 1, a wrong `fresh`, a census cell, an off-grid colour,
+overlapping regions and `RI` typed at step 4. The image checks pass on frames built from the raster
+and fail on the contract's alpha 153 for `BD`'s strip, a `mul` pixel off by 2 (off by 1 passes),
+an exact `add` pixel off by 1, `UC` not following its parent at 6, `LO` drawn as `normal` and a
+repeat differing in one alpha byte. `material-census` passes before calibrator 8 and, on a hook log
+built from `rs_material_calls`, after it (teardown frees ignored), and fails on a short
+`material_set_param`, a `shader_create` logged a step late, an omitted `material_set_shader` and a
+half-planned calibrator. `leg-class-capture-cim` passes on synthetic recordings of both variants
+and fails on class `success`, `RI` typed at 4, a modulated marker command, a moved `content_version`
+and an `unsupported-op` entry.
 
 `self-test-gate55c.ts` runs both self-consistency checks on the committed `expected.json` and
 fails them on an off-grid colour, a wrong `fresh`, overlapping regions, a freed shader coming back

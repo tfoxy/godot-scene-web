@@ -7,8 +7,9 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/check-gate55.ts --out <evidence dir>
 //
-// Each group's checks live in its own lib (g55c: lib/gate55c-checks.ts), which its self-test
-// drives with synthetic values. A group that was not run is reported `not-run` and fails the gate.
+// Each group's checks live in its own lib (g55b: lib/gate55b-checks.ts, g55c:
+// lib/gate55c-checks.ts), which its self-test drives with synthetic values. A group that was not
+// run is reported `not-run` and fails the gate.
 
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -20,6 +21,8 @@ import type {
   Gate5Checkpoint,
   RegionBudget5,
 } from "./lib/gate5-checks";
+import { runGate55b } from "./lib/gate55b-checks";
+import type { Gate55Expected as Gate55CimExpected } from "./lib/gate55b-expected";
 import {
   type Gate55LegEntry,
   type Gate55ShaderExpected,
@@ -31,7 +34,7 @@ const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
 
 /** Every group of protocol/gate5_5-design.md "Increments", and those whose increment landed. */
 export const ALL_GROUPS = ["g55b", "g55c", "g55d", "g55e", "g55f"] as const;
-export const LANDED_GROUPS: readonly string[] = ["g55c"];
+export const LANDED_GROUPS: readonly string[] = ["g55b", "g55c"];
 
 export interface Gate55Report {
   schema: "render-stream-gate55-report/1";
@@ -89,6 +92,23 @@ async function main(): Promise<void> {
     freshness: {},
   };
 
+  if (run.includes("g55b")) {
+    // fixtures/gate55-cim in two scenes (base, variant modulate), keyed per variant in materials,
+    // budgets and freshness.
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate55-cim", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate55CimExpected;
+    const r = await runGate55b(out, expected);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    report.checkpoints.push(...r.checkpoints);
+    Object.assign(report.materials, r.materials);
+    Object.assign(report.budgets, r.budgets);
+    Object.assign(report.freshness, r.freshness);
+  }
   if (run.includes("g55c")) {
     const expected = JSON.parse(
       await readFile(
@@ -136,7 +156,17 @@ async function main(): Promise<void> {
     const v = m as {
       counters?: Record<string, number>;
       shader_hashes?: Record<string, Record<string, string>>;
+      hook_census?: Record<string, number | string>;
+      calibrator8?: string;
     };
+    if (v.hook_census)
+      console.log(
+        `  material census (${name}, calibrator 8 ${v.calibrator8}): ${Object.entries(
+          v.hook_census,
+        )
+          .map(([op, n]) => `${op}=${n}`)
+          .join(" ")}`,
+      );
     if (v.counters)
       console.log(
         `  material counters (${name}): ${Object.entries(v.counters)

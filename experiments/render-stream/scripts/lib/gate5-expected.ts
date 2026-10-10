@@ -10,9 +10,21 @@ export type Box = [number, number, number, number];
 /** Godot Transform2D columns: x.x, x.y, y.x, y.y, origin.x, origin.y. */
 export type Affine = [number, number, number, number, number, number];
 
+/** A canvas material's blend mode (gate5_5-design.md Q1c, drivers/gles3/rasterizer_canvas_gles3.cpp
+ * :741-799 on a non-transparent target). Absent means `mix`. */
+export type BlendMode =
+  | "mix"
+  | "add"
+  | "sub"
+  | "mul"
+  | "premul_alpha"
+  | "disabled";
+
 /** A triangle mesh in draw space: every lowered line, polyline, circle, polygon, primitive,
  * triangle array and rect. `colors` holds one colour or one per vertex; `uvs` and `texture` map
- * a texture (nearest); `band_px` marks an antialiased shape whose feathers are band (D13). */
+ * a texture (nearest); `band_px` marks an antialiased shape whose feathers are band (D13);
+ * `blend` is its material's blend mode (gate 5.5; absent: mix), its colours already the fragment
+ * colour (canvas modulate and light mode applied by make_expected.py). */
 export interface MeshShape {
   name: string;
   kind: "mesh";
@@ -22,6 +34,7 @@ export interface MeshShape {
   uvs?: Point[];
   texture?: string;
   band_px?: number;
+  blend?: BlendMode;
 }
 
 /** A thin GL line (width < 0): band within `band_px` of the segment. */

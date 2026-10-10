@@ -24,6 +24,13 @@
 //   - Band class (D13): an antialiased shape (`band_px`, FEATHER_SIZE + 1) marks every pixel
 //     within `band_px` of its boundary as band, and a thin GL line every pixel within `band_px`
 //     of its segment; those are never synthesized, only presence-checked and compared leg to leg.
+//   - Blend modes (gate 5.5, protocol/gate5_5-design.md Q1c, D13): a mesh's `blend` applies GL's
+//     equation for a non-transparent target (alpha factors ZERO, ONE: the target keeps its
+//     alpha): add `src*a + dst`, sub `dst - src*a`, mul `src*dst`, premul_alpha
+//     `src + dst*(1-a)`, each clamped; `disabled` writes the fragment, its alpha quantized to
+//     the target's alpha bits (`targetAlphaBits`, 8 unless the scene says otherwise). mul and
+//     any alpha below 1 (except disabled) allow delta 1. A shape whose colours all have alpha 0
+//     under mix, add or sub paints nothing and covers nothing (a light_only material).
 //
 // `exact` (1) marks every pixel whose synthesized value is decided; `delta` holds the channel
 // delta allowed there (0 or 1); `band` the band pixels; `shapes` each shape's coverage for the
@@ -32,6 +39,7 @@
 import {
   type Affine,
   applyAffine,
+  type BlendMode,
   type Box,
   compose,
   type Gate5Expected,
@@ -92,6 +100,9 @@ export interface RasterScene {
   opLists: Record<string, Gate5Op[]>;
   items: readonly Gate5Item[];
   exactEdgePx?: number;
+  /** the render target's alpha bits, which only `disabled` writes (default 8; the root
+   * viewport's GL_RGB10_A2 target has 2) */
+  targetAlphaBits?: number;
 }
 
 interface Tex {
@@ -301,6 +312,7 @@ class Canvas {
     readonly width: number,
     readonly height: number,
     clear: Rgba8,
+    readonly alphaBits = 8,
   ) {
     this.rgba = new Uint8Array(width * height * 4);
     this.exact = new Uint8Array(width * height).fill(1);
@@ -309,8 +321,12 @@ class Canvas {
     for (let i = 0; i < width * height; i++) this.rgba.set(clear, i * 4);
   }
 
-  /** Paints a decided colour (0..1 straight alpha) at pixel index `i`. */
-  paint(i: number, c: Rgba, tol: number): void {
+  /** Paints a decided colour (0..1 straight alpha) at pixel index `i` with `blend`. */
+  paint(i: number, c: Rgba, tol: number, blend: BlendMode = "mix"): void {
+    if (blend !== "mix") {
+      this.blendPaint(i, c, tol, blend);
+      return;
+    }
     const a = c[3];
     if (a <= 0) return;
     const o = i * 4;
@@ -330,6 +346,35 @@ class Canvas {
     this.delta[i] = Math.max(this.delta[i], 1, tol);
   }
 
+  /** The non-mix blend modes (gles3c:733-799, a non-transparent target). */
+  private blendPaint(i: number, c: Rgba, tol: number, blend: BlendMode): void {
+    const a = c[3];
+    const o = i * 4;
+    if (blend === "disabled") {
+      const levels = 2 ** this.alphaBits - 1;
+      for (let k = 0; k < 3; k++) this.rgba[o + k] = to8(c[k]);
+      this.rgba[o + 3] = to8(Math.round(a * levels) / levels);
+      this.exact[i] = 1;
+      this.band[i] = 0;
+      this.delta[i] = tol;
+      return;
+    }
+    for (let k = 0; k < 3; k++) {
+      const d = this.rgba[o + k] / 255;
+      const v =
+        blend === "add"
+          ? c[k] * a + d
+          : blend === "sub"
+            ? d - c[k] * a
+            : blend === "mul"
+              ? c[k] * d
+              : c[k] + d * (1 - a);
+      this.rgba[o + k] = to8(v);
+    }
+    const own = blend === "mul" || a < 1 ? 1 : 0;
+    this.delta[i] = Math.max(this.delta[i], own, tol);
+  }
+
   undecided(i: number): void {
     this.exact[i] = 0;
   }
@@ -341,7 +386,7 @@ class Canvas {
 }
 
 type Action =
-  | { i: number; kind: "paint"; c: Rgba; tol: number }
+  | { i: number; kind: "paint"; c: Rgba; tol: number; blend?: BlendMode }
   | { i: number; kind: "undecided" }
   | { i: number; kind: "band" };
 
@@ -464,8 +509,16 @@ function meshActions(
           c[3] * texel[3],
         ];
       }
-      actions.push({ i, kind: "paint", c, tol });
+      actions.push({ i, kind: "paint", c, tol, blend: shape.blend });
     }
+  // A shape that cannot change a pixel (alpha 0 everywhere under an alpha-scaled blend: a
+  // light_only material without lights) covers nothing for the presence check.
+  const blend = shape.blend ?? "mix";
+  if (
+    (blend === "mix" || blend === "add" || blend === "sub") &&
+    shape.colors.every((c) => c[3] <= 0)
+  )
+    return { actions, covered: 0, area: [] };
   return { actions, covered, area };
 }
 
@@ -601,7 +654,12 @@ function ninePatchActions(
 /** Rasterizes a list of items in paint order (the lower-level entry the self-test drives). */
 export function rasterizeItems(scene: RasterScene): Gate5Raster {
   const [width, height] = scene.viewport;
-  const canvas = new Canvas(width, height, scene.clear);
+  const canvas = new Canvas(
+    width,
+    height,
+    scene.clear,
+    scene.targetAlphaBits ?? 8,
+  );
   const edge = scene.exactEdgePx ?? EXACT_EDGE_PX;
   const textures = new Map<string, Tex>();
   for (const [name, t] of Object.entries(scene.textures))
@@ -636,7 +694,7 @@ export function rasterizeItems(scene: RasterScene): Gate5Raster {
           k * 4,
         );
       for (const a of r.actions) {
-        if (a.kind === "paint") canvas.paint(a.i, a.c, a.tol);
+        if (a.kind === "paint") canvas.paint(a.i, a.c, a.tol, a.blend);
         else if (a.kind === "band") canvas.markBand(a.i);
         else canvas.undecided(a.i);
       }
