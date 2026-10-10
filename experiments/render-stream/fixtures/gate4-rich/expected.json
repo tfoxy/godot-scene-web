@@ -1,0 +1,204 @@
+{
+  "schema": "render-stream-gate4-expected/1",
+  "fixture": "gate4-rich",
+  "viewport": [640, 360],
+  "clear_rgba8": [51, 51, 102, 255],
+  "start_frame_default": 1,
+  "step_frames_default": 10,
+  "settle_offset": 7,
+  "quit_frame_default": 62,
+  "last_step": 5,
+  "early_shot_steps": [],
+  "creation_order": ["RTL", "RTL_VScrollBar", "Marker"],
+  "created_later": [],
+  "text_nodes": ["RTL"],
+  "fonts": {
+    "F": {
+      "file": "OpenSans_SemiBold.woff2",
+      "kind": "FontFile",
+      "sizes": [16, 24]
+    },
+    "FB": {
+      "file": "OpenSans_SemiBold.woff2",
+      "kind": "FontVariation embolden 1.2",
+      "sizes": [16]
+    },
+    "FI": {
+      "file": "OpenSans_SemiBold.woff2",
+      "kind": "FontVariation transform skew 0.2",
+      "sizes": [16]
+    }
+  },
+  "cache_keys": ["F@16", "F@24", "FB@16", "FI@16", "FO@16"],
+  "page": {
+    "format": "LA8",
+    "width": 256,
+    "height": 256,
+    "mipmaps": false,
+    "data_bytes": 131072,
+    "empty_texel": [255, 0]
+  },
+  "panel": {
+    "rect": [0, 0, 0, 0],
+    "rgba8": [0, 0, 0, 0]
+  },
+  "marker_rect": [592, 16, 32, 32],
+  "regions": {
+    "marker": [584, 8, 632, 56]
+  },
+  "backgrounds": {
+    "dark": [51, 51, 102, 255]
+  },
+  "engine_textures": [
+    {
+      "frame": 1,
+      "op": "texture_2d_create",
+      "format": "RGBA8",
+      "width": 800,
+      "height": 6
+    }
+  ],
+  "quiet_steps": [],
+  "hook_versions_total": {
+    "F@16": 4,
+    "F@24": 1,
+    "FB@16": 1,
+    "FI@16": 1,
+    "FO@16": 8
+  },
+  "hand_table": {},
+  "steps": [
+    {
+      "step": 0,
+      "applied_frame": 1,
+      "settle_frame": 8,
+      "marker_rgba8": [0, 0, 0, 255],
+      "texts": {"RTL": {"text": "color+plain+font_size", "font_key": "F", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [24, 32]}},
+      "draws": ["RTL"],
+      "spans": [{"key": "color", "font_key": "F", "size": 16, "text": "Amber", "colour": [1, 1, 0, 1], "bgcolor": null, "outline": 0}, {"key": "plain", "font_key": "F", "size": 16, "text": "plain", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "font_size", "font_key": "F", "size": 24, "text": "Big", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}],
+      "ink_glyphs": {"RTL": 13},
+      "new_glyphs": {"F@16": "Amberplain", "F@24": "Big"},
+      "page_uploads": {},
+      "page_creates": {"F@16": 1, "F@24": 1},
+      "hook_versions": {"F@16": 1, "F@24": 1},
+      "wire_versions": {"F@16": 1, "F@24": 1},
+      "page_glyphs": {"F@16": 10, "F@24": 3},
+      "page_counts": {"F@16": 1, "F@24": 1},
+      "text_regions": {"RTL": [24, 32, 424, 222]},
+      "background": {"RTL": [51, 51, 102, 255]},
+      "fresh": {"RTL": false},
+      "clip_rects": {"RTL": [24, 32, 424, 222]}
+    },
+    {
+      "step": 1,
+      "applied_frame": 11,
+      "settle_frame": 18,
+      "marker_rgba8": [255, 255, 0, 255],
+      "texts": {"RTL": {"text": "color+plain+font_size+bold", "font_key": "F", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [24, 32]}},
+      "draws": ["RTL"],
+      "spans": [{"key": "color", "font_key": "F", "size": 16, "text": "Amber", "colour": [1, 1, 0, 1], "bgcolor": null, "outline": 0}, {"key": "plain", "font_key": "F", "size": 16, "text": "plain", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "font_size", "font_key": "F", "size": 24, "text": "Big", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bold", "font_key": "FB", "size": 16, "text": "Bold", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}],
+      "ink_glyphs": {"RTL": 17},
+      "new_glyphs": {"FB@16": "Bold"},
+      "page_uploads": {},
+      "page_creates": {"FB@16": 1},
+      "hook_versions": {"F@16": 1, "F@24": 1, "FB@16": 1},
+      "wire_versions": {"F@16": 1, "F@24": 1, "FB@16": 1},
+      "page_glyphs": {"F@16": 10, "F@24": 3, "FB@16": 4},
+      "page_counts": {"F@16": 1, "F@24": 1, "FB@16": 1},
+      "text_regions": {"RTL": [24, 32, 424, 222]},
+      "background": {"RTL": [51, 51, 102, 255]},
+      "fresh": {"RTL": true},
+      "clip_rects": {"RTL": [24, 32, 424, 222]}
+    },
+    {
+      "step": 2,
+      "applied_frame": 21,
+      "settle_frame": 28,
+      "marker_rgba8": [0, 255, 255, 255],
+      "texts": {"RTL": {"text": "color+plain+font_size+bold+italic", "font_key": "F", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [24, 32]}},
+      "draws": ["RTL"],
+      "spans": [{"key": "color", "font_key": "F", "size": 16, "text": "Amber", "colour": [1, 1, 0, 1], "bgcolor": null, "outline": 0}, {"key": "plain", "font_key": "F", "size": 16, "text": "plain", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "font_size", "font_key": "F", "size": 24, "text": "Big", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bold", "font_key": "FB", "size": 16, "text": "Bold", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "italic", "font_key": "FI", "size": 16, "text": "Italic", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}],
+      "ink_glyphs": {"RTL": 23},
+      "new_glyphs": {"FI@16": "Italic"},
+      "page_uploads": {},
+      "page_creates": {"FI@16": 1},
+      "hook_versions": {"F@16": 1, "F@24": 1, "FB@16": 1, "FI@16": 1},
+      "wire_versions": {"F@16": 1, "F@24": 1, "FB@16": 1, "FI@16": 1},
+      "page_glyphs": {"F@16": 10, "F@24": 3, "FB@16": 4, "FI@16": 6},
+      "page_counts": {"F@16": 1, "F@24": 1, "FB@16": 1, "FI@16": 1},
+      "text_regions": {"RTL": [24, 32, 424, 222]},
+      "background": {"RTL": [51, 51, 102, 255]},
+      "fresh": {"RTL": true},
+      "clip_rects": {"RTL": [24, 32, 424, 222]}
+    },
+    {
+      "step": 3,
+      "applied_frame": 31,
+      "settle_frame": 38,
+      "marker_rgba8": [102, 0, 102, 255],
+      "texts": {"RTL": {"text": "color+plain+font_size+bold+italic+bgcolor", "font_key": "F", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [24, 32]}},
+      "draws": ["RTL"],
+      "spans": [{"key": "color", "font_key": "F", "size": 16, "text": "Amber", "colour": [1, 1, 0, 1], "bgcolor": null, "outline": 0}, {"key": "plain", "font_key": "F", "size": 16, "text": "plain", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "font_size", "font_key": "F", "size": 24, "text": "Big", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bold", "font_key": "FB", "size": 16, "text": "Bold", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "italic", "font_key": "FI", "size": 16, "text": "Italic", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bgcolor", "font_key": "F", "size": 16, "text": "Marked", "colour": [1, 1, 1, 1], "bgcolor": [0, 1, 1, 1], "outline": 0}],
+      "ink_glyphs": {"RTL": 29},
+      "new_glyphs": {"F@16": "Mkd"},
+      "page_uploads": {"F@16": 1},
+      "page_creates": {},
+      "hook_versions": {"F@16": 2, "F@24": 1, "FB@16": 1, "FI@16": 1},
+      "wire_versions": {"F@16": 2, "F@24": 1, "FB@16": 1, "FI@16": 1},
+      "page_glyphs": {"F@16": 13, "F@24": 3, "FB@16": 4, "FI@16": 6},
+      "page_counts": {"F@16": 1, "F@24": 1, "FB@16": 1, "FI@16": 1},
+      "text_regions": {"RTL": [24, 32, 424, 222]},
+      "background": {"RTL": [51, 51, 102, 255]},
+      "fresh": {"RTL": true},
+      "clip_rects": {"RTL": [24, 32, 424, 222]}
+    },
+    {
+      "step": 4,
+      "applied_frame": 41,
+      "settle_frame": 48,
+      "marker_rgba8": [0, 102, 0, 255],
+      "texts": {"RTL": {"text": "color+plain+font_size+bold+italic+bgcolor+outline", "font_key": "F", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [24, 32]}},
+      "draws": ["RTL"],
+      "spans": [{"key": "color", "font_key": "F", "size": 16, "text": "Amber", "colour": [1, 1, 0, 1], "bgcolor": null, "outline": 0}, {"key": "plain", "font_key": "F", "size": 16, "text": "plain", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "font_size", "font_key": "F", "size": 24, "text": "Big", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bold", "font_key": "FB", "size": 16, "text": "Bold", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "italic", "font_key": "FI", "size": 16, "text": "Italic", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bgcolor", "font_key": "F", "size": 16, "text": "Marked", "colour": [1, 1, 1, 1], "bgcolor": [0, 1, 1, 1], "outline": 0}, {"key": "outline", "font_key": "F", "size": 16, "text": "Outlined", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 2}],
+      "ink_glyphs": {"RTL": 37},
+      "new_glyphs": {"F@16": "Out", "FO@16": "Outlined"},
+      "page_uploads": {"F@16": 1, "FO@16": 7},
+      "page_creates": {"FO@16": 1},
+      "hook_versions": {"F@16": 3, "F@24": 1, "FB@16": 1, "FI@16": 1, "FO@16": 8},
+      "wire_versions": {"F@16": 3, "F@24": 1, "FB@16": 1, "FI@16": 1, "FO@16": 8},
+      "page_glyphs": {"F@16": 16, "F@24": 3, "FB@16": 4, "FI@16": 6, "FO@16": 8},
+      "page_counts": {"F@16": 1, "F@24": 1, "FB@16": 1, "FI@16": 1, "FO@16": 1},
+      "text_regions": {"RTL": [24, 32, 424, 222]},
+      "background": {"RTL": [51, 51, 102, 255]},
+      "fresh": {"RTL": true},
+      "clip_rects": {"RTL": [24, 32, 424, 222]}
+    },
+    {
+      "step": 5,
+      "applied_frame": 51,
+      "settle_frame": 58,
+      "marker_rgba8": [102, 0, 0, 255],
+      "texts": {"RTL": {"text": "color+plain+font_size+bold+italic+bgcolor+outline+append", "font_key": "F", "size": 16, "colour": [1, 1, 1, 1], "visible": true, "position": [24, 32]}},
+      "draws": ["RTL"],
+      "spans": [{"key": "color", "font_key": "F", "size": 16, "text": "Amber", "colour": [1, 1, 0, 1], "bgcolor": null, "outline": 0}, {"key": "plain", "font_key": "F", "size": 16, "text": "plain", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "font_size", "font_key": "F", "size": 24, "text": "Big", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bold", "font_key": "FB", "size": 16, "text": "Bold", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "italic", "font_key": "FI", "size": 16, "text": "Italic", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 0}, {"key": "bgcolor", "font_key": "F", "size": 16, "text": "Marked", "colour": [1, 1, 1, 1], "bgcolor": [0, 1, 1, 1], "outline": 0}, {"key": "outline", "font_key": "F", "size": 16, "text": "Outlined", "colour": [1, 1, 1, 1], "bgcolor": null, "outline": 2}, {"key": "append", "font_key": "F", "size": 16, "text": "More", "colour": [1, 0, 1, 1], "bgcolor": null, "outline": 0}],
+      "ink_glyphs": {"RTL": 41},
+      "new_glyphs": {"F@16": "o"},
+      "page_uploads": {"F@16": 1},
+      "page_creates": {},
+      "hook_versions": {"F@16": 4, "F@24": 1, "FB@16": 1, "FI@16": 1, "FO@16": 8},
+      "wire_versions": {"F@16": 4, "F@24": 1, "FB@16": 1, "FI@16": 1, "FO@16": 8},
+      "page_glyphs": {"F@16": 17, "F@24": 3, "FB@16": 4, "FI@16": 6, "FO@16": 8},
+      "page_counts": {"F@16": 1, "F@24": 1, "FB@16": 1, "FI@16": 1, "FO@16": 1},
+      "text_regions": {"RTL": [24, 32, 424, 222]},
+      "background": {"RTL": [51, 51, 102, 255]},
+      "fresh": {"RTL": true},
+      "clip_rects": {"RTL": [24, 32, 424, 222]}
+    }
+  ],
+  "predictions": {
+    "underline": {
+      "frame": 1,
+      "steps": [0, 1, 2, 3, 4, 5]
+    }
+  }
+}

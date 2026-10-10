@@ -108,7 +108,7 @@ export type Gate4Check = Gate3Check;
 
 export const ALL_GROUPS = ["g4a", "g4b", "g4c", "g4d", "g4e", "g4f"] as const;
 /** Groups whose increment has landed; run-gate4.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g4a", "g4b", "g4c"];
+export const LANDED_GROUPS: readonly string[] = ["g4a", "g4b", "g4c", "g4d"];
 
 /** G4b: the unchanged receiver on the main capture's full and patch sinks, a headless openat
  * trace, and the three sabotage legs (gate4-design.md "G4b"). */
