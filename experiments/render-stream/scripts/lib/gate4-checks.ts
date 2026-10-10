@@ -108,7 +108,7 @@ export type Gate4Check = Gate3Check;
 
 export const ALL_GROUPS = ["g4a", "g4b", "g4c", "g4d", "g4e", "g4f"] as const;
 /** Groups whose increment has landed; run-gate4.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g4a", "g4b"];
+export const LANDED_GROUPS: readonly string[] = ["g4a", "g4b", "g4c"];
 
 /** G4b: the unchanged receiver on the main capture's full and patch sinks, a headless openat
  * trace, and the three sabotage legs (gate4-design.md "G4b"). */
@@ -2184,6 +2184,13 @@ export interface Gate4Report {
   census: Record<string, Record<string, CensusStep>> | null;
   /** per fixture, per step: ink pixels per text region in the reference */
   ink: Record<string, Record<string, Record<string, number>>> | null;
+  /** G4c (lib/gate4c-checks.ts): the layout fixture's hook-log census per page, its subpixel
+   * census and its derived clip rects */
+  layout: {
+    census: Record<string, unknown>;
+    subpixel: Record<string, unknown>;
+    clips: Record<string, unknown>;
+  } | null;
 }
 
 export interface Gate4Context {
@@ -2196,6 +2203,9 @@ export interface Gate4Context {
   /** absolute path to experiments/render-stream/fixtures/gate4 (G4b's
    * receiver-never-loaded-fixture). */
   fixtureDir: string;
+  /** absolute path to experiments/render-stream/fixtures/gate4-layout (G4c); default: the
+   * sibling of fixtureDir */
+  layoutFixtureDir?: string;
 }
 
 function notRunCheck(group: string, detail: string): Gate4Check {
@@ -2774,6 +2784,35 @@ export async function runGate4(
     checks.push(notRunCheck("g4b", "g4b was not in --legs"));
   }
 
+  let layout: Gate4Report["layout"] = null;
+  if (groups.run.includes("g4c")) {
+    // Loaded on demand: gate4c-checks builds on this module.
+    const { runG4c } = await import("./gate4c-checks");
+    const layoutDir =
+      ctx.layoutFixtureDir ?? join(ctx.fixtureDir, "..", "gate4-layout");
+    const layoutExpected = JSON.parse(
+      await readFile(join(layoutDir, "expected.json"), "utf8"),
+    );
+    const layoutLock = JSON.parse(
+      await readFile(join(layoutDir, "fonts.lock.json"), "utf8"),
+    ) as FontLockEntry[];
+    const r = await runG4c(outDir, {
+      expected: layoutExpected,
+      lock: layoutLock,
+      receiverDir: ctx.receiverDir,
+      fixtureDir: layoutDir,
+    });
+    checks.push(...r.checks);
+    Object.assign(legs, r.legs);
+    checkpoints = [...checkpoints, ...r.checkpoints];
+    const fixture = layoutExpected.fixture as string;
+    text = { ...(text ?? {}), [fixture]: r.text };
+    parity = { ...(parity ?? {}), [fixture]: r.parity };
+    budgets = { ...(budgets ?? {}), [fixture]: r.budgets };
+    ink = { ...(ink ?? {}), [fixture]: r.ink };
+    layout = { census: r.census, subpixel: r.subpixel, clips: r.clips };
+  }
+
   for (const group of notRun)
     if (group !== "g4a" && group !== "g4b")
       checks.push(notRunCheck(group, `${group} was not in --legs`));
@@ -2798,5 +2837,6 @@ export async function runGate4(
     budgets,
     census,
     ink,
+    layout,
   };
 }
