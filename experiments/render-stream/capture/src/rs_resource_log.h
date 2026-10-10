@@ -39,6 +39,33 @@
 // connection streaming at that time or null, `t_us` the I/O thread's time). A
 // drop-resource pin line carries "sabotage":true.
 //
+// G55a (gate5_5-design.md Q3d) adds `kind: "shader"` lines (shader_create, shader_create_from_
+// code, shader_set_code, shader_set_default_texture_parameter, free) and `kind: "material"`
+// lines (material_create, material_create_from_shader, material_set_shader, material_set_param,
+// free), each with its own per-session id counter (D5), and `kind: "item-material"` lines for
+// the four item/canvas taps with no mirror field yet (canvas_item_set_use_parent_material,
+// canvas_item_set_instance_shader_parameter, canvas_set_modulate, canvas_light_attach_to_canvas).
+// As G5a did for meshes, there is no shader or material mirror table yet (that is G55d), so this
+// module keeps its own minimal registries -- RID -> wire id, version, status/reason and, for a
+// shader, its D7/D11 classification -- reusing the generic `target`/`ref_id` columns for a
+// material's current shader (the raw RID and, when known, its wire id) exactly as `texture_
+// replace` already reuses them for a texture's "by" argument, and the generic `value` column for
+// a plain bool/int state value (`canvas_item_set_use_parent_material`'s enable,
+// `shader_set_default_texture_parameter`'s sampler index). New trailing columns: `mode`,
+// `source` ("payload" | null: G55a never withholds or excludes, so `source` is "payload" exactly
+// when a shader has code and null otherwise), `builtin`, `uses`, `scan_ns` (shader only), and
+// `param`, `type`, `n`, `decode_ns` (a decoded StringName/Variant: material_set_param,
+// canvas_item_set_instance_shader_parameter and, for the parameter's own name only, shader_set_
+// default_texture_parameter). `outcome` on a material/item-material param line is "applied" (a
+// supported type, including NIL erasing a parameter), "rejected" (an OBJECT value, D6) or
+// "unknown" (any other unsupported type, including an out-of-range int). Names, values and code
+// never reach counters.json (Q2) -- only this log and, for canvas_set_modulate's colour and
+// canvas_item_set_use_parent_material's bool, the hook's own counters.json capture entry (not a
+// material parameter, so Q2's rule does not cover it). A material's `status` here reflects only
+// whether its shader RID is one this registry knows (D16 `unknown-shader`); it is never
+// recomputed from historical parameter values the way the future mirror will (D6) -- this log is
+// evidence for the census, never the stream.
+//
 // G5a (gate5-design.md Q3d) adds mesh lines, `kind: "mesh"`: one per mesh-related
 // RenderingServer call (mesh_create, mesh_create_from_surfaces, mesh_add_surface, the four region
 // updates, mesh_surface_remove, mesh_clear, mesh_set_custom_aabb, free). There is no mesh mirror
@@ -105,6 +132,38 @@ struct MeshSurfaceCopy {
   std::string hash;      // lowercase hex SHA-256 of the GRM1 payload, empty unless ok
   std::int64_t copy_ns = -1;  // -1 when nothing was copied
   std::int64_t hash_ns = -1;
+};
+
+// What the hook read, copied and classified from a shader_create_from_code / shader_set_code
+// call (gate5_5-design.md D7, D11, Q3a). A D11 reason never refuses the copy itself (the shader
+// stays `status`:"ok" with that `reason`'s semantics carried in `mode`/`uses` only) -- only
+// `payload-too-large`/`payload-unavailable` leave `hash` empty. `code_bytes` is the decoded
+// UTF-8 length.
+struct ShaderCopy {
+  std::string status = "unsupported";  // "ok" | "unsupported"
+  std::string reason;                  // "" when ok; a D11 reason, payload-too-large,
+                                       // payload-unavailable
+  std::string mode;                    // the first `shader_type <id>;`'s id, "" when none found
+  std::vector<std::string> uses;       // D11's informational categories
+  bool builtin = false;                // D7: CanvasItemMaterial-recognized
+  std::string builtin_blend_mode;      // valid iff builtin
+  std::string builtin_light_mode;      // valid iff builtin
+  bool builtin_particles_animation = false;
+  std::int64_t code_bytes = 0;
+  std::string hash;  // the GRP1 payload's SHA-256, empty unless a payload was built
+  std::int64_t payload_bytes = 0;
+  std::int64_t copy_ns = -1;
+  std::int64_t hash_ns = -1;
+  std::int64_t scan_ns = -1;
+};
+
+// What the hook decoded from a material_set_param / canvas_item_set_instance_shader_parameter
+// call's Variant value (gate5_5-design.md D8, Q3a).
+struct MaterialParamCopy {
+  std::string type;                  // rs::DecodedParam::type
+  std::int64_t n = 0;
+  std::string outcome = "applied";  // "applied" | "rejected" | "unknown"
+  std::int64_t decode_ns = -1;
 };
 
 class ResourceLog {
@@ -200,10 +259,62 @@ class ResourceLog {
   // gate5-design.md Q3b).
   void mesh_set_custom_aabb(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
 
+  // --- shaders and materials (gate5_5-design.md Q3d, G55a) -------------------
+  //
+  // shader_create: a new id, ok, version 1, no code yet.
+  void shader_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
+  // shader_create_from_code: a new id, version 1, code classified (`copy`).
+  void shader_create_from_code(const TapContext &ctx, std::uint64_t rid, const ShaderCopy &copy,
+                               bool omitted = false);
+  // shader_set_code: the existing id, version + 1, new classification. An unknown shader RID is
+  // logged with a null id and changes nothing (as an unknown texture's update, Q3).
+  void shader_set_code(const TapContext &ctx, std::uint64_t rid, const ShaderCopy &copy,
+                       bool omitted = false);
+  // shader_set_default_texture_parameter: the existing shader's version + 1; unknown as above.
+  // `name` is the decoded parameter name (`param`); `texture` is resolved against this log's own
+  // texture registry for `ref_id` when known.
+  void shader_set_default_texture_parameter(const TapContext &ctx, std::uint64_t shader,
+                                            const std::string &name, std::uint64_t texture,
+                                            std::int32_t index, bool omitted = false);
+  // material_create: a new id, ok, version 1, no shader.
+  void material_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
+  // material_create_from_shader: a new id, version 1, shader set (an unknown shader RID makes
+  // the entry `unsupported`/`unknown-shader`, D16).
+  void material_create_from_shader(const TapContext &ctx, std::uint64_t rid, std::uint64_t shader,
+                                   bool omitted = false);
+  // material_set_shader: the existing material's version + 1, shader set or cleared (RID()).
+  void material_set_shader(const TapContext &ctx, std::uint64_t material, std::uint64_t shader,
+                           bool omitted = false);
+  // material_set_param: the existing material's version + 1 unless `copy.outcome` is "rejected"
+  // (an OBJECT value, D6 "no change"); `name` is the decoded parameter name, never carried
+  // anywhere but this line (Q2).
+  void material_set_param(const TapContext &ctx, std::uint64_t material, const std::string &name,
+                          const MaterialParamCopy &copy, bool omitted = false);
+
+  // --- item and canvas material state: no mirror field yet (G55d), so these are presence-only
+  // lines; the StringName/Variant content of an instance parameter is on this line alone. -------
+  //
+  // canvas_item_set_material (slot 488, hooked since calibrator 2): logged for the material
+  // census (Q3d) alongside calibrator 8's own taps; the item field on the wire/mirror stays
+  // G55d's (D2, D9). Touches neither registry: a material naming no entry here is not an error,
+  // since this log keeps no notion of "known" for an item field.
+  void canvas_item_set_material(const TapContext &ctx, std::uint64_t item, std::uint64_t material);
+  void canvas_item_set_use_parent_material(const TapContext &ctx, std::uint64_t item, bool enable);
+  void canvas_item_set_instance_shader_parameter(const TapContext &ctx, std::uint64_t item,
+                                                 const std::string &name,
+                                                 const MaterialParamCopy &copy);
+  void canvas_set_modulate(const TapContext &ctx, std::uint64_t canvas);
+  void canvas_light_attach_to_canvas(const TapContext &ctx, std::uint64_t light,
+                                     std::uint64_t canvas);
+
   // The wire id of a texture RID the log knows, or 0.
   std::uint64_t texture_id(std::uint64_t rid) const;
   // The wire id of a mesh RID the log knows, or 0.
   std::uint64_t mesh_id(std::uint64_t rid) const;
+  // The wire id of a shader RID the log knows, or 0.
+  std::uint64_t shader_id(std::uint64_t rid) const;
+  // The wire id of a material RID the log knows, or 0.
+  std::uint64_t material_id(std::uint64_t rid) const;
 
   // Takes every line buffered since the last call ("" when none), each ending
   // in '\n'.
@@ -249,6 +360,42 @@ class ResourceLog {
   // refused surface's reason) if any, else ok.
   void recompute_mesh_status(MeshEntry *entry);
 
+  // G55a: one shader's registry entry (gate5_5-design.md Q3d). No code is retained (only the
+  // classification derived from it): a payload is never read back from this log.
+  struct ShaderEntry {
+    std::uint64_t id = 0;
+    std::uint64_t version = 1;
+    std::string status = "ok";
+    std::string reason;
+    std::string mode;
+    std::vector<std::string> uses;
+    bool builtin = false;
+    std::string builtin_blend_mode;
+    std::string builtin_light_mode;
+    bool builtin_particles_animation = false;
+    std::string hash;
+    std::int64_t payload_bytes = 0;
+  };
+  ShaderEntry *find_shader(std::uint64_t rid);
+  // Copies every ShaderCopy field into the registry entry (shader_create_from_code's initial
+  // write and shader_set_code's update share this).
+  void copy_shader_fields(ShaderEntry *entry, const ShaderCopy &copy);
+
+  // G55a: one material's registry entry. `shader_rid` is the raw RID named by the last
+  // material_create_from_shader/material_set_shader (0 = none); `status` reflects only whether
+  // that RID is a shader this registry knows (D16 `unknown-shader`), never a parameter's own
+  // type (Q3d's header comment).
+  struct MaterialEntry {
+    std::uint64_t id = 0;
+    std::uint64_t version = 1;
+    std::string status = "ok";
+    std::string reason;
+    std::uint64_t shader_rid = 0;
+  };
+  MaterialEntry *find_material(std::uint64_t rid);
+  // Recomputes `status`/`reason` from `shader_rid` alone.
+  void recompute_material_status(MaterialEntry *entry);
+
   mutable std::mutex mutex_;
   bool active_ = false;
   std::uint64_t t0_ns_ = 0;
@@ -257,6 +404,10 @@ class ResourceLog {
   std::map<std::uint64_t, Entry> by_rid_;
   std::uint64_t next_mesh_id_ = 1;
   std::map<std::uint64_t, MeshEntry> mesh_by_rid_;
+  std::uint64_t next_shader_id_ = 1;
+  std::map<std::uint64_t, ShaderEntry> shader_by_rid_;
+  std::uint64_t next_material_id_ = 1;
+  std::map<std::uint64_t, MaterialEntry> material_by_rid_;
   std::string pending_;
   std::uint64_t update_unknown_ = 0;
 };

@@ -42,6 +42,11 @@ bool iface_load(GDExtensionInterfaceGetProcAddress get_proc_address,
                  &g_iface.variant_get_ptr_destructor);
   ok &= bind_one(get_proc_address, "register_main_loop_callbacks",
                  &g_iface.register_main_loop_callbacks);
+  ok &= bind_one(get_proc_address, "variant_get_type", &g_iface.variant_get_type);
+  ok &= bind_one(get_proc_address, "get_variant_to_type_constructor",
+                 &g_iface.get_variant_to_type_constructor);
+  ok &= bind_one(get_proc_address, "variant_get_ptr_constructor",
+                 &g_iface.variant_get_ptr_constructor);
   g_iface.complete = ok;
   // Optional (see iface.h): a miss is not recorded in `missing`.
   g_iface.ref_get_object =

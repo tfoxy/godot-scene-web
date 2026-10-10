@@ -89,7 +89,9 @@ int main() {
          "\"hash_ns\":3400,\"conn\":null,\"http_status\":null,\"target\":null,\"ref_id\":null,"
          "\"value\":null,\"layer\":null,\"root_viewport\":null,\"surface\":null,\"buffer\":null,"
          "\"offset\":null,\"bytes\":null,\"primitive\":null,\"vertex_count\":null,"
-         "\"index_count\":null,\"outcome\":null}");
+         "\"index_count\":null,\"outcome\":null,\"mode\":null,\"source\":null,\"builtin\":null,"
+         "\"uses\":null,\"scan_ns\":null,\"param\":null,\"type\":null,\"n\":null,"
+         "\"decode_ns\":null}");
   EXPECT(has(lines[1], "\"op\":\"texture_2d_placeholder_create\",\"id\":2,"));
   EXPECT(has(lines[1], "\"kind\":\"placeholder\",\"status\":\"ok\",\"reason\":null,\"format\":null"));
   EXPECT(has(lines[2], "\"thread\":\"other\""));
@@ -351,6 +353,135 @@ int main() {
   lines = split_lines(log.take_lines());
   EXPECT(lines.size() == 1 && has(lines[0], "\"id\":2,") && has(lines[0], "\"version\":1,") &&
          has(lines[0], ",\"sabotage\":true,\"omitted\":true}"));
+
+  // G55a (gate5_5-design.md Q3d): shaders and materials have their own id counters,
+  // independent of textures' and meshes'.
+  using grc::rs::MaterialParamCopy;
+  using grc::rs::ShaderCopy;
+  const auto ok_shader = [](const char *hash, const char *mode) {
+    ShaderCopy copy;
+    copy.status = "ok";
+    copy.mode = mode;
+    copy.hash = hash;
+    copy.payload_bytes = 64;
+    copy.copy_ns = 11;
+    copy.hash_ns = 22;
+    copy.scan_ns = 33;
+    return copy;
+  };
+  log.shader_create(main_ctx, 700);  // id 1, no code yet
+  log.shader_create_from_code(main_ctx, 701, ok_shader("s0", "canvas_item"));  // id 2
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 2);
+  EXPECT(has(lines[0], "\"op\":\"shader_create\",\"id\":1,") &&
+         has(lines[0], "\"rid\":\"700\",\"version\":1,\"kind\":\"shader\",\"status\":\"ok\"") &&
+         has(lines[0], "\"mode\":null,\"source\":null,\"builtin\":null,\"uses\":null,"));
+  EXPECT(has(lines[1], "\"op\":\"shader_create_from_code\",\"id\":2,") &&
+         has(lines[1], "\"rid\":\"701\",\"version\":1,\"kind\":\"shader\",\"status\":\"ok\"") &&
+         has(lines[1], "\"hash\":\"s0\",\"copy_ns\":11,\"hash_ns\":22,") &&
+         has(lines[1], "\"mode\":\"canvas_item\",\"source\":\"payload\",\"builtin\":null,"
+                       "\"uses\":[],\"scan_ns\":33,"));
+  EXPECT(log.shader_id(700) == 1 && log.shader_id(701) == 2 && log.shader_id(9999) == 0);
+
+  log.shader_set_code(main_ctx, 701, ok_shader("s1", "canvas_item"));
+  log.shader_set_default_texture_parameter(main_ctx, 701, "pal", 950, 0);
+  log.shader_set_code(main_ctx, 9999, ok_shader("s2", "canvas_item"));  // unknown shader
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 3);
+  EXPECT(has(lines[0], "\"id\":2,") && has(lines[0], "\"version\":2,\"kind\":\"shader\"") &&
+         has(lines[0], "\"hash\":\"s1\","));
+  EXPECT(has(lines[1], "\"op\":\"shader_set_default_texture_parameter\",\"id\":2,") &&
+         has(lines[1], "\"version\":3,\"kind\":\"shader\"") &&
+         has(lines[1], "\"target\":\"950\",\"ref_id\":null,\"value\":0,") &&
+         has(lines[1], "\"param\":\"pal\","));
+  EXPECT(has(lines[2], "\"id\":null,") && has(lines[2], "\"outcome\":\"unknown\""));
+
+  log.material_create(main_ctx, 800);  // id 1
+  log.material_create_from_shader(main_ctx, 801, 701);  // id 2, shader known
+  log.material_create_from_shader(main_ctx, 802, 12345);  // id 3, shader unknown
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 3);
+  EXPECT(has(lines[0], "\"op\":\"material_create\",\"id\":1,") &&
+         has(lines[0], "\"rid\":\"800\",\"version\":1,\"kind\":\"material\",\"status\":\"ok\""));
+  EXPECT(has(lines[1], "\"op\":\"material_create_from_shader\",\"id\":2,") &&
+         has(lines[1], "\"rid\":\"801\",\"version\":1,\"kind\":\"material\",\"status\":\"ok\"") &&
+         has(lines[1], "\"target\":\"701\",\"ref_id\":2,"));
+  EXPECT(has(lines[2], "\"id\":3,") &&
+         has(lines[2], "\"rid\":\"802\",\"version\":1,\"kind\":\"material\","
+                       "\"status\":\"unsupported\",\"reason\":\"unknown-shader\"") &&
+         has(lines[2], "\"target\":\"12345\",\"ref_id\":null,"));
+  EXPECT(log.material_id(800) == 1 && log.material_id(801) == 2 && log.material_id(802) == 3);
+
+  log.material_set_shader(main_ctx, 800, 700);  // a known shader: ok
+  log.material_set_shader(main_ctx, 999, 700);  // unknown material
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 2);
+  EXPECT(has(lines[0], "\"op\":\"material_set_shader\",\"id\":1,") &&
+         has(lines[0], "\"version\":2,\"kind\":\"material\",\"status\":\"ok\"") &&
+         has(lines[0], "\"target\":\"700\",\"ref_id\":1,"));
+  EXPECT(has(lines[1], "\"id\":null,") && has(lines[1], "\"outcome\":\"unknown\""));
+
+  MaterialParamCopy applied;
+  applied.type = "color";
+  applied.n = 1;
+  applied.outcome = "applied";
+  applied.decode_ns = 15;
+  MaterialParamCopy rejected;
+  rejected.type = "object";
+  rejected.outcome = "rejected";
+  rejected.decode_ns = 5;
+  log.material_set_param(main_ctx, 800, "tint", applied);
+  log.material_set_param(main_ctx, 800, "bad", rejected);  // D6: no change
+  log.material_set_param(main_ctx, 999, "tint", applied);  // unknown material
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 3);
+  EXPECT(has(lines[0], "\"op\":\"material_set_param\",\"id\":1,") &&
+         has(lines[0], "\"version\":3,\"kind\":\"material\"") &&
+         has(lines[0], "\"param\":\"tint\",\"type\":\"color\",\"n\":1,\"decode_ns\":15}") &&
+         has(lines[0], "\"outcome\":\"applied\""));
+  EXPECT(has(lines[1], "\"id\":1,") &&
+         has(lines[1], "\"version\":3,\"kind\":\"material\"") &&  // unchanged: OBJECT is rejected
+         has(lines[1], "\"param\":\"bad\",\"type\":\"object\",") &&
+         has(lines[1], "\"outcome\":\"rejected\""));
+  EXPECT(has(lines[2], "\"id\":null,\"by_id\":null,\"rid\":\"999\",\"version\":null,") &&
+         has(lines[2], "\"outcome\":\"applied\""));
+
+  log.canvas_item_set_use_parent_material(main_ctx, 900, true);
+  log.canvas_item_set_instance_shader_parameter(main_ctx, 900, "inst_color", applied);
+  log.canvas_set_modulate(main_ctx, 1);
+  log.canvas_light_attach_to_canvas(main_ctx, 10, 1);
+  log.canvas_light_attach_to_canvas(main_ctx, 11, 0);  // detached: not a refusal
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 5);
+  EXPECT(has(lines[0], "\"op\":\"canvas_item_set_use_parent_material\",") &&
+         has(lines[0], "\"rid\":\"900\",") &&
+         has(lines[0], "\"kind\":\"item-material\",") && has(lines[0], "\"value\":1,") &&
+         has(lines[0], "\"outcome\":\"applied\""));
+  EXPECT(has(lines[1], "\"op\":\"canvas_item_set_instance_shader_parameter\",") &&
+         has(lines[1], "\"rid\":\"900\",") &&
+         has(lines[1], "\"param\":\"inst_color\",\"type\":\"color\","));
+  EXPECT(has(lines[2], "\"op\":\"canvas_set_modulate\",") && has(lines[2], "\"rid\":\"1\",") &&
+         has(lines[2], "\"kind\":\"item-material\","));
+  EXPECT(has(lines[3], "\"op\":\"canvas_light_attach_to_canvas\",") &&
+         has(lines[3], "\"rid\":\"10\",") &&
+         has(lines[3], "\"kind\":\"item-material\",\"status\":\"unsupported\","
+                       "\"reason\":\"canvas-light\",") &&
+         has(lines[3], "\"target\":\"1\","));
+  EXPECT(has(lines[4], "\"rid\":\"11\",\"version\":null,\"kind\":\"item-material\","
+                       "\"status\":null,\"reason\":null,") &&
+         has(lines[4], "\"target\":null,"));
+
+  // free: a known shader or material is logged and leaves the registry.
+  log.free_rid(main_ctx, 700);
+  log.free_rid(main_ctx, 800);
+  log.free_rid(main_ctx, 54321);  // unknown: silent
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 2);
+  EXPECT(has(lines[0], "\"op\":\"free\",\"id\":1,") &&
+         has(lines[0], "\"rid\":\"700\",\"version\":1,\"kind\":\"shader\",\"status\":\"freed\""));
+  EXPECT(has(lines[1], "\"op\":\"free\",\"id\":1,") &&
+         has(lines[1], "\"rid\":\"800\",\"version\":3,\"kind\":\"material\",\"status\":\"freed\""));
+  EXPECT(log.shader_id(700) == 0 && log.material_id(800) == 0);
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_resource_log_test: %d failure(s)\n", g_failures);

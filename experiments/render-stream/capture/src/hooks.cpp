@@ -15,7 +15,9 @@
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
 #include "rs_sha256.h"
+#include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
+#include "rs_variant.h"
 
 namespace grc {
 
@@ -198,6 +200,29 @@ using FnMeshCreateFromSurfaces = RID (*)(void *, const Vector<SurfaceDataPrefix>
 using FnAddAnimationSlice = void (*)(void *, RID, double, double, double, double);
 //   1603: virtual void canvas_item_attach_skeleton(RID, RID) = 0;
 //         (FnSetMaterial: the same ABI as canvas_item_set_material)
+//
+// --- calibrator 8 (optional): gate5_5-design.md Q2, D2 -- materials and canvas shaders: three
+// silent holes closed (every material's shader, every CanvasItemMaterial shader, inherited
+// materials), a canvas field and two typed refusals -----------------------------------------
+//
+//    230: virtual RID shader_create() = 0;
+//    262: virtual RID material_create() = 0;
+//         (FnCreate: the same ABI as mesh_create / canvas_item_create / canvas_create)
+//    239: virtual void shader_set_default_texture_parameter(RID, const StringName &, RID,
+//                                                           int = 0) = 0;
+using FnShaderSetDefaultTextureParameter = void (*)(void *, RID, const void *, RID, int32_t);
+//    263: virtual RID material_create_from_shader(RID, int, RID) = 0;
+using FnMaterialCreateFromShader = RID (*)(void *, RID, int32_t, RID);
+//    265: virtual void material_set_shader(RID, RID) = 0;
+//   1645: virtual void canvas_light_attach_to_canvas(RID, RID) = 0;
+//         (FnSetMaterial: the same ABI as canvas_item_set_material)
+//   1528: virtual void canvas_set_modulate(RID, const Color &) = 0;
+//         (FnSetModulate: the same ABI as canvas_item_set_modulate)
+//   1610: virtual void canvas_item_set_use_parent_material(RID, bool) = 0;
+//         (FnRidBool: the same ABI as canvas_item_set_clip)
+//   1612: virtual void canvas_item_set_instance_shader_parameter(RID, const StringName &,
+//                                                                const Variant &) = 0;
+//         (FnMaterialSetParam: the same ABI as material_set_param)
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -272,6 +297,16 @@ enum HookId : size_t {
   kAddParticles,
   kAddAnimationSlice,
   kAttachSkeleton,
+  // calibrator 8
+  kShaderCreate,
+  kShaderSetDefaultTextureParameter,
+  kMaterialCreate,
+  kMaterialCreateFromShader,
+  kMaterialSetShader,
+  kSetCanvasModulate,
+  kSetUseParentMaterial,
+  kSetInstanceShaderParameter,
+  kCanvasLightAttachToCanvas,
   kHookCount,
 };
 
@@ -604,6 +639,20 @@ struct AnimationSliceKey {
   float offset;
 };
 
+// Calibrator 8 (gate5_5-design.md Q2): the two new multi-field identities. Neither carries the
+// decoded name/value counters.json must never show (Q2) -- only the RIDs and plain scalars every
+// other optional hook's capture log already carries.
+struct ShaderDefaultTextureKey {
+  uint64_t shader;
+  uint64_t texture;
+  int32_t index;
+};
+
+struct MaterialShaderKey {
+  uint64_t material;
+  uint64_t shader;
+};
+
 std::vector<RectCapture> g_rects;
 std::vector<PolygonCapture> g_polygons;
 std::vector<ImageCapture> g_creates;
@@ -671,6 +720,16 @@ Log<GeometryEntry> g_multilines;
 Log<PodEntry<RidTripleKey>> g_add_particles;
 Log<PodEntry<AnimationSliceKey>> g_animation_slices;
 Log<PodEntry<RidTripleKey>> g_attach_skeletons;
+// calibrator 8
+Log<PodEntry<RidTripleKey>> g_shader_create_calls;
+Log<PodEntry<ShaderDefaultTextureKey>> g_shader_default_textures;
+Log<PodEntry<RidTripleKey>> g_material_create_calls;
+Log<PodEntry<MaterialShaderKey>> g_material_create_from_shader_calls;
+Log<PodEntry<RidTripleKey>> g_material_set_shaders;
+Log<PodEntry<ItemColorKey>> g_canvas_set_modulates;
+Log<PodEntry<ItemValueKey>> g_set_use_parent_materials;
+Log<PodEntry<RidTripleKey>> g_set_instance_shader_parameters;
+Log<PodEntry<RidTripleKey>> g_canvas_light_attaches;
 
 template <typename Key>
 PodEntry<Key> pod(const Key &key) {
@@ -1046,6 +1105,76 @@ rs::MeshSurfaceCopy rehash_mesh_surface(const MeshSurfaceBuffer &buffer) {
   copy.status = "ok";
   copy.copy_ns = static_cast<int64_t>(t1 - t0);
   copy.hash_ns = static_cast<int64_t>(t2 - t1);
+  return copy;
+}
+
+// --- gate 5.5 (G55a): shader code and material parameter decode at the hook (gate5_5-design.md
+// D7, D8, D11, Q2 "Decoding", Q3a "Copy and classify at the hook") -----------------------------
+//
+// shader_create_from_code and shader_set_code copy the code as UTF-8, build the render-stream-
+// shader/1 (GRP1) payload and hash it, exactly as copy_payload does for a texture's Image bytes
+// and copy_mesh_surface does for a mesh surface. A D11 reason (TIME, screen texture, SDF, global
+// uniform, a shader_type other than canvas_item) makes the shader `unsupported`; the D7
+// CanvasItemMaterial recognizer runs regardless (a recognized engine-generated shader is never
+// refused by D11, Q1e). `copy_ns` covers the UTF-8 decode and the payload encode, `scan_ns` the
+// token scan and the template comparison, `hash_ns` the SHA-256 alone.
+rs::ShaderCopy copy_shader_code(const void *code_ptr) {
+  rs::ShaderCopy copy;
+  const uint64_t t0 = now_ns();
+  const std::string code = rs::decode_string(code_ptr);
+  copy.code_bytes = static_cast<int64_t>(code.size());
+  const uint64_t t_decode = now_ns();
+  const rs::ShaderScan scan = rs::scan_shader_code(code);
+  const rs::CanvasItemMaterialBuiltin builtin = rs::recognize_canvas_item_material(code);
+  const uint64_t t_scan = now_ns();
+  copy.mode = scan.mode;
+  copy.uses = scan.uses;
+  copy.builtin = builtin.recognized;
+  copy.builtin_blend_mode = builtin.blend_mode;
+  copy.builtin_light_mode = builtin.light_mode;
+  copy.builtin_particles_animation = builtin.particles_animation;
+  copy.scan_ns = static_cast<int64_t>(t_scan - t_decode);
+  if (!scan.reason.empty()) {
+    copy.status = "unsupported";
+    copy.reason = scan.reason;
+  } else {
+    copy.status = "ok";
+  }
+  const std::string meta = rs::payload_meta(static_cast<uint64_t>(code.size()));
+  if (rs::shader_payload_size(meta, static_cast<uint64_t>(code.size())) >
+      g_resource_policy.max_payload_bytes) {
+    copy.status = "unsupported";
+    copy.reason = "payload-too-large";
+    copy.copy_ns = static_cast<int64_t>(t_decode - t0);
+    return copy;
+  }
+  const std::vector<uint8_t> payload = rs::encode_payload(code);
+  const uint64_t t_encode = now_ns();
+  copy.hash = sha256_hex(payload.data(), payload.size());
+  const uint64_t t_hash = now_ns();
+  copy.payload_bytes = static_cast<int64_t>(payload.size());
+  copy.copy_ns = static_cast<int64_t>((t_decode - t0) + (t_encode - t_scan));
+  copy.hash_ns = static_cast<int64_t>(t_hash - t_encode);
+  return copy;
+}
+
+// A material or instance parameter's Variant value (D8), classified applied/rejected/unknown
+// (D6) for the hook log; the decoded name and value never reach counters.json (Q2).
+rs::MaterialParamCopy decode_material_param(const void *value_ptr) {
+  const uint64_t t0 = now_ns();
+  const rs::DecodedParam decoded = rs::decode_variant(value_ptr);
+  const uint64_t t1 = now_ns();
+  rs::MaterialParamCopy copy;
+  copy.type = decoded.type;
+  copy.n = decoded.n;
+  copy.decode_ns = static_cast<int64_t>(t1 - t0);
+  if (decoded.status == "ok") {
+    copy.outcome = "applied";
+  } else if (decoded.type == "object") {
+    copy.outcome = "rejected";
+  } else {
+    copy.outcome = "unknown";
+  }
   return copy;
 }
 
@@ -1496,6 +1625,11 @@ void hook_set_material(void *self, RID item, RID material) {
   if (streaming()) {
     mirror().set_material(item.id, material.id, current_frame());
   }
+  // Logged for the material census (gate5_5-design.md Q3d) alongside calibrator 8's own taps;
+  // the item field on the wire/mirror stays G55d's.
+  if (resources().active()) {
+    resources().canvas_item_set_material(tap_context(), item.id, material.id);
+  }
   original<FnSetMaterial>(kSetMaterial)(self, item, material);
 }
 
@@ -1830,19 +1964,156 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
   const RID result =
       original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
   log_entry(&g_shader_creates, rids(result.id));
+  if (resources().active()) {
+    const bool omit = omitted("shader_create_from_code");
+    const rs::ShaderCopy copy = copy_shader_code(code);
+    resources().shader_create_from_code(tap_context(), result.id, copy, omit);
+  }
   return result;
 }
 
 void hook_shader_set_code(void *self, RID shader, const void *code) {
   bump(kShaderSetCode);
   log_entry(&g_shader_codes, rids(shader.id));
+  if (resources().active()) {
+    const bool omit = omitted("shader_set_code");
+    const rs::ShaderCopy copy = copy_shader_code(code);
+    resources().shader_set_code(tap_context(), shader.id, copy, omit);
+  }
   original<FnShaderSetCode>(kShaderSetCode)(self, shader, code);
 }
 
 void hook_material_set_param(void *self, RID material, const void *name, const void *value) {
   bump(kMaterialSetParam);
   log_entry(&g_material_params, rids(material.id));
+  if (resources().active()) {
+    const bool omit = omitted("material_set_param");
+    const std::string param_name = rs::decode_string_name(name);
+    const rs::MaterialParamCopy copy = decode_material_param(value);
+    resources().material_set_param(tap_context(), material.id, param_name, copy, omit);
+  }
   original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
+}
+
+// --- calibrator 8 hooks (gate5_5-design.md Q2) --------------------------------
+
+RID hook_shader_create(void *self) {
+  bump(kShaderCreate);
+  const RID result = original<FnCreate>(kShaderCreate)(self);
+  log_entry(&g_shader_create_calls, rids(result.id));
+  if (resources().active()) {
+    const bool omit = omitted("shader_create");
+    resources().shader_create(tap_context(), result.id, omit);
+  }
+  return result;
+}
+
+void hook_shader_set_default_texture_parameter(void *self, RID shader, const void *name,
+                                               RID texture, int32_t index) {
+  bump(kShaderSetDefaultTextureParameter);
+  ShaderDefaultTextureKey key;
+  zero(&key);
+  key.shader = shader.id;
+  key.texture = texture.id;
+  key.index = index;
+  log_entry(&g_shader_default_textures, pod(key));
+  if (resources().active()) {
+    const bool omit = omitted("shader_set_default_texture_parameter");
+    const std::string param_name = rs::decode_string_name(name);
+    resources().shader_set_default_texture_parameter(tap_context(), shader.id, param_name,
+                                                      texture.id, index, omit);
+  }
+  original<FnShaderSetDefaultTextureParameter>(kShaderSetDefaultTextureParameter)(
+      self, shader, name, texture, index);
+}
+
+RID hook_material_create(void *self) {
+  bump(kMaterialCreate);
+  const RID result = original<FnCreate>(kMaterialCreate)(self);
+  log_entry(&g_material_create_calls, rids(result.id));
+  if (resources().active()) {
+    const bool omit = omitted("material_create");
+    resources().material_create(tap_context(), result.id, omit);
+  }
+  return result;
+}
+
+RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority, RID shader) {
+  bump(kMaterialCreateFromShader);
+  const RID result = original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(
+      self, next_pass, priority, shader);
+  MaterialShaderKey key;
+  zero(&key);
+  key.material = result.id;
+  key.shader = shader.id;
+  log_entry(&g_material_create_from_shader_calls, pod(key));
+  if (resources().active()) {
+    const bool omit = omitted("material_create_from_shader");
+    resources().material_create_from_shader(tap_context(), result.id, shader.id, omit);
+  }
+  return result;
+}
+
+void hook_material_set_shader(void *self, RID material, RID shader) {
+  bump(kMaterialSetShader);
+  log_entry(&g_material_set_shaders, rids(material.id, shader.id));
+  if (resources().active()) {
+    const bool omit = omitted("material_set_shader");
+    resources().material_set_shader(tap_context(), material.id, shader.id, omit);
+  }
+  original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
+}
+
+// canvas_set_modulate: the colour itself is not a material parameter (Q2's "never to
+// counters.json" rule does not cover it), so it is captured fully here, as canvas_item_set_
+// modulate/_self_modulate already are; the hook log's own line (kind:"item-material") is
+// presence-only (no mirror canvas field yet, G55d).
+void hook_set_canvas_modulate(void *self, RID canvas, const Color *color) {
+  bump(kSetCanvasModulate);
+  if (color != nullptr) {
+    ItemColorKey key;
+    zero(&key);
+    key.item = canvas.id;
+    key.color = *color;
+    log_entry(&g_canvas_set_modulates, pod(key));
+  }
+  if (resources().active()) {
+    resources().canvas_set_modulate(tap_context(), canvas.id);
+  }
+  original<FnSetModulate>(kSetCanvasModulate)(self, canvas, color);
+}
+
+void hook_set_use_parent_material(void *self, RID item, bool enable) {
+  bump(kSetUseParentMaterial);
+  log_entry(&g_set_use_parent_materials, item_value(item, enable ? 1 : 0));
+  if (resources().active()) {
+    resources().canvas_item_set_use_parent_material(tap_context(), item.id, enable);
+  }
+  original<FnRidBool>(kSetUseParentMaterial)(self, item, enable);
+}
+
+// canvas_item_set_instance_shader_parameter: counters.json keeps only the item RID (Q2); the
+// decoded name and value go to the hook log alone.
+void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
+                                        const void *value) {
+  bump(kSetInstanceShaderParameter);
+  log_entry(&g_set_instance_shader_parameters, rids(item.id));
+  if (resources().active()) {
+    const std::string param_name = rs::decode_string_name(name);
+    const rs::MaterialParamCopy copy = decode_material_param(value);
+    resources().canvas_item_set_instance_shader_parameter(tap_context(), item.id, param_name,
+                                                           copy);
+  }
+  original<FnMaterialSetParam>(kSetInstanceShaderParameter)(self, item, name, value);
+}
+
+void hook_canvas_light_attach_to_canvas(void *self, RID light, RID canvas) {
+  bump(kCanvasLightAttachToCanvas);
+  log_entry(&g_canvas_light_attaches, rids(light.id, canvas.id));
+  if (resources().active()) {
+    resources().canvas_light_attach_to_canvas(tap_context(), light.id, canvas.id);
+  }
+  original<FnSetMaterial>(kCanvasLightAttachToCanvas)(self, light, canvas);
 }
 
 // --- calibrator 3 hooks --------------------------------------------------------
@@ -2247,6 +2518,20 @@ const HookSpec kSpecs[] = {
     {kAddParticles, "canvas_item_add_particles", as_ptr(&hook_add_particles)},
     {kAddAnimationSlice, "canvas_item_add_animation_slice", as_ptr(&hook_add_animation_slice)},
     {kAttachSkeleton, "canvas_item_attach_skeleton", as_ptr(&hook_attach_skeleton)},
+    {kShaderCreate, "shader_create", as_ptr(&hook_shader_create)},
+    {kShaderSetDefaultTextureParameter, "shader_set_default_texture_parameter",
+     as_ptr(&hook_shader_set_default_texture_parameter)},
+    {kMaterialCreate, "material_create", as_ptr(&hook_material_create)},
+    {kMaterialCreateFromShader, "material_create_from_shader",
+     as_ptr(&hook_material_create_from_shader)},
+    {kMaterialSetShader, "material_set_shader", as_ptr(&hook_material_set_shader)},
+    {kSetCanvasModulate, "canvas_set_modulate", as_ptr(&hook_set_canvas_modulate)},
+    {kSetUseParentMaterial, "canvas_item_set_use_parent_material",
+     as_ptr(&hook_set_use_parent_material)},
+    {kSetInstanceShaderParameter, "canvas_item_set_instance_shader_parameter",
+     as_ptr(&hook_set_instance_shader_parameter)},
+    {kCanvasLightAttachToCanvas, "canvas_light_attach_to_canvas",
+     as_ptr(&hook_canvas_light_attach_to_canvas)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -2456,6 +2741,13 @@ struct Snapshot {
   Log<PodEntry<RidTripleKey>> add_particles;
   Log<PodEntry<AnimationSliceKey>> animation_slices;
   Log<PodEntry<RidTripleKey>> attach_skeletons;
+  // calibrator 8
+  Log<PodEntry<RidTripleKey>> shader_create_calls, material_create_calls, material_set_shaders,
+      set_instance_shader_parameters, canvas_light_attaches;
+  Log<PodEntry<ShaderDefaultTextureKey>> shader_default_textures;
+  Log<PodEntry<MaterialShaderKey>> material_create_from_shader_calls;
+  Log<PodEntry<ItemColorKey>> canvas_set_modulates;
+  Log<PodEntry<ItemValueKey>> set_use_parent_materials;
 };
 
 Snapshot take_snapshot() {
@@ -2525,6 +2817,15 @@ Snapshot take_snapshot() {
   s.add_particles = g_add_particles;
   s.animation_slices = g_animation_slices;
   s.attach_skeletons = g_attach_skeletons;
+  s.shader_create_calls = g_shader_create_calls;
+  s.shader_default_textures = g_shader_default_textures;
+  s.material_create_calls = g_material_create_calls;
+  s.material_create_from_shader_calls = g_material_create_from_shader_calls;
+  s.material_set_shaders = g_material_set_shaders;
+  s.canvas_set_modulates = g_canvas_set_modulates;
+  s.set_use_parent_materials = g_set_use_parent_materials;
+  s.set_instance_shader_parameters = g_set_instance_shader_parameters;
+  s.canvas_light_attaches = g_canvas_light_attaches;
   return s;
 }
 
@@ -2999,6 +3300,42 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
               write_rid(j, "item", e.key.a);
               write_rid(j, "skeleton", e.key.b);
             });
+  // Calibrator 8 (gate5_5-design.md Q2). The decoded name/value never appear here (Q2); only
+  // RIDs and plain scalars, as material_set_param/shader_set_code already keep to RID only.
+  write_log(&json, "shader_create", s.shader_create_calls,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
+  write_log(&json, "shader_set_default_texture_parameter", s.shader_default_textures,
+            [](JsonWriter *j, const PodEntry<ShaderDefaultTextureKey> &e) {
+              write_rid(j, "shader", e.key.shader);
+              write_rid(j, "texture", e.key.texture);
+              j->field("index", static_cast<int64_t>(e.key.index));
+            });
+  write_log(&json, "material_create", s.material_create_calls,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
+  write_log(&json, "material_create_from_shader", s.material_create_from_shader_calls,
+            [](JsonWriter *j, const PodEntry<MaterialShaderKey> &e) {
+              write_rid(j, "material", e.key.material);
+              write_rid(j, "shader", e.key.shader);
+            });
+  write_log(&json, "material_set_shader", s.material_set_shaders,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "material", e.key.a);
+              write_rid(j, "shader", e.key.b);
+            });
+  write_log(&json, "canvas_set_modulate", s.canvas_set_modulates,
+            [](JsonWriter *j, const PodEntry<ItemColorKey> &e) {
+              write_rid(j, "canvas", e.key.item);
+              write_floats(j, "color", e.key.color);
+            });
+  write_log(&json, "canvas_item_set_use_parent_material", s.set_use_parent_materials,
+            item_bool_writer("enable"));
+  write_log(&json, "canvas_item_set_instance_shader_parameter", s.set_instance_shader_parameters,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "item", e.key.a); });
+  write_log(&json, "canvas_light_attach_to_canvas", s.canvas_light_attaches,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "light", e.key.a);
+              write_rid(j, "canvas", e.key.b);
+            });
   json.object_end();
 
   // Distinct calls that arrived after an optional hook's log was full.
@@ -3081,6 +3418,20 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   json.field("canvas_item_add_particles", static_cast<int64_t>(s.add_particles.dropped));
   json.field("canvas_item_add_animation_slice", static_cast<int64_t>(s.animation_slices.dropped));
   json.field("canvas_item_attach_skeleton", static_cast<int64_t>(s.attach_skeletons.dropped));
+  json.field("shader_create", static_cast<int64_t>(s.shader_create_calls.dropped));
+  json.field("shader_set_default_texture_parameter",
+             static_cast<int64_t>(s.shader_default_textures.dropped));
+  json.field("material_create", static_cast<int64_t>(s.material_create_calls.dropped));
+  json.field("material_create_from_shader",
+             static_cast<int64_t>(s.material_create_from_shader_calls.dropped));
+  json.field("material_set_shader", static_cast<int64_t>(s.material_set_shaders.dropped));
+  json.field("canvas_set_modulate", static_cast<int64_t>(s.canvas_set_modulates.dropped));
+  json.field("canvas_item_set_use_parent_material",
+             static_cast<int64_t>(s.set_use_parent_materials.dropped));
+  json.field("canvas_item_set_instance_shader_parameter",
+             static_cast<int64_t>(s.set_instance_shader_parameters.dropped));
+  json.field("canvas_light_attach_to_canvas",
+             static_cast<int64_t>(s.canvas_light_attaches.dropped));
   json.object_end();
 
   // G2a: the payload-copy capability and the texture hook log's counters.

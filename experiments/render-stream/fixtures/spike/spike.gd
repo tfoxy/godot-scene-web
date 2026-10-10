@@ -142,6 +142,12 @@ var _vertex_update: PackedByteArray
 var _attribute_update: PackedByteArray = PackedByteArray(MESH_NEW_COLOR_BYTES)
 var _multimesh: MultiMesh = MultiMesh.new()
 var _canvas_texture: CanvasTexture
+# Calibrator-8 (gate5_5-design.md Q2): kept alive as a field, not a local in
+# _exercise_calibrator8_hooks(). CanvasItemMaterial::_update_shader() runs on a LATER idle
+# callback (scene/register_scene_types.cpp:855), not the frame that queues it; a local variable
+# is refcounted to zero (and its SelfList dirty-list entry dropped with it) the moment that
+# function returns, so the deferred shader_create/material_set_shader would never fire.
+var _cim: CanvasItemMaterial
 
 
 func _ready() -> void:
@@ -213,11 +219,20 @@ func _ready() -> void:
 	shader.code = TINT_SHADER_A
 	var _created: RID = shader.get_rid()
 	shader.code = TINT_SHADER_B
+	# Calibrator-8 (gate5_5-design.md Q2): shader_set_default_texture_parameter, on the same
+	# Shader. "pal" names no uniform TINT_SHADER_B declares, so this changes no pixel; it only
+	# needs to reach the RenderingServer.
+	shader.set_default_texture_parameter("pal", _nine_texture)
 	var material: ShaderMaterial = ShaderMaterial.new()
 	material.shader = shader
 	material.set_shader_parameter("tint", Color(1, 1, 1, 1))
 	panel.material = material
 	panel.modulate = PANEL_MODULATE
+	# Calibrator-8: canvas_item_set_instance_shader_parameter, on the same Panel. TINT_SHADER_B
+	# declares no `instance uniform`, so this changes no pixel either.
+	panel.set_instance_shader_parameter("spike_instance_test", Color(1, 1, 1, 1))
+
+	_exercise_calibrator8_hooks()
 
 	queue_redraw()
 
@@ -311,6 +326,35 @@ func _exercise_calibrator7_hooks() -> void:
 	RenderingServer.mesh_surface_update_index_region(skin_mesh, 0, 0, updated_index)
 	RenderingServer.mesh_surface_remove(skin_mesh, 0)
 	RenderingServer.free_rid(skin_mesh)
+
+
+## Calibrator-8 hooks that are not scene draws (gate5_5-design.md Q2), on orphan items (never
+## drawn, so armed/unarmed pixels stay identical): a CanvasItemMaterial, recognized by D7
+## (shader_create, material_create -- its own constructor's -- and material_set_shader;
+## material_create_from_shader is already exercised by the Panel's ShaderMaterial above),
+## use_parent_material on a child item, a white CanvasModulate (canvas_set_modulate: white
+## changes no pixel, D10) and a raw light attach.
+func _exercise_calibrator8_hooks() -> void:
+	_cim = CanvasItemMaterial.new()
+	_cim.light_mode = CanvasItemMaterial.LIGHT_MODE_UNSHADED
+	var cim_item: RID = RenderingServer.canvas_item_create()
+	RenderingServer.canvas_item_set_material(cim_item, _cim.get_rid())
+	RenderingServer.free_rid(cim_item)
+
+	var parent_item: RID = RenderingServer.canvas_item_create()
+	var child_item: RID = RenderingServer.canvas_item_create()
+	RenderingServer.canvas_item_set_parent(child_item, parent_item)
+	RenderingServer.canvas_item_set_use_parent_material(child_item, true)
+	RenderingServer.free_rid(child_item)
+	RenderingServer.free_rid(parent_item)
+
+	add_child(CanvasModulate.new())
+
+	var scratch_canvas: RID = RenderingServer.canvas_create()
+	var light: RID = RenderingServer.canvas_light_create()
+	RenderingServer.canvas_light_attach_to_canvas(light, scratch_canvas)
+	RenderingServer.free_rid(light)
+	RenderingServer.free_rid(scratch_canvas)
 
 
 func _process(_delta: float) -> void:
