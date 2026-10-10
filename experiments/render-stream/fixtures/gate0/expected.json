@@ -81,6 +81,24 @@
       }
     }
   ],
+  "preexisting": {
+    "scene": "res://preexisting.tscn",
+    "description": "preexisting.tscn's two extra rects (fixtures/gate0/preexisting.gd; ../../protocol/unknown-item-skip.md 'Evidence'). Preexisting is constructed before arming (an unknown item RID); PreChild is created after arming as its child (a known item withheld under GRC_UNKNOWN_ITEM=skip). The rendered reference of preexisting.tscn paints both, before Subject and Marker; a skip receiver paints neither, so its frame is synthesizeExpected(step) and differs from that reference in exactly these rects. colors/rgba8 hold one entry per step 0..4.",
+    "items": [
+      {
+        "name": "Preexisting",
+        "rect_px": [32, 240, 64, 64],
+        "colors": [[0.6, 0.2, 1, 1], [0.6, 0.2, 1, 1], [1, 0.8, 0.2, 1], [1, 0.8, 0.2, 1], [1, 0.8, 0.2, 1]],
+        "rgba8": [[153, 51, 255, 255], [153, 51, 255, 255], [255, 204, 51, 255], [255, 204, 51, 255], [255, 204, 51, 255]]
+      },
+      {
+        "name": "PreChild",
+        "rect_px": [128, 240, 48, 48],
+        "colors": [[0.2, 0.8, 0.4, 1], [0.2, 0.8, 0.4, 1], [0.2, 0.8, 0.4, 1], [0.4, 0.4, 0.8, 1], [0.4, 0.4, 0.8, 1]],
+        "rgba8": [[51, 204, 102, 255], [51, 204, 102, 255], [51, 204, 102, 255], [102, 102, 204, 255], [102, 102, 204, 255]]
+      }
+    ]
+  },
   "unsupported_variant": {
     "from_step": 2,
     "op": "canvas_item_add_animation_slice"

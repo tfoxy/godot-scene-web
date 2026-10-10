@@ -125,6 +125,12 @@ const TRANSACTION_KEYS_V5: Array = [
 	"items", "textures", "meshes", "shaders", "materials", "blocks",
 ]
 const STATUSES: Array = ["ok", "capture-failure"]
+## protocol/unknown-item-skip.md: a session that opted into skipping unknown canvas/item RIDs adds
+## "unknown_item_policy": "skip" right after "sabotage", and then every transaction carries
+## "unknown_items" right after "unsupported" -- at /4 and /5 only. Absent = strict.
+const UNKNOWN_ITEM_POLICY_KEY: String = "unknown_item_policy"
+const UNKNOWN_ITEMS_KEY: String = "unknown_items"
+const UNKNOWN_ITEMS_KEYS: Array = ["unknown_rids", "withheld_items", "withheld_commands", "unknown_calls"]
 const FAILURE_KEYS: Array = ["reason", "detail"]
 const FAILURE_REASONS: Array = [
 	"root-query-failed", "pre-existing-object", "mirror-capacity", "root-size-enforce-failed",
@@ -280,6 +286,22 @@ const TRANSACTION_BLOCK_TYPES_V5: Array = ["f32", "f32", "f32", "i32", "f32", "f
 
 static func err(code: String, detail: String) -> String:
 	return code + ": " + detail
+
+
+## `keys` with `key` inserted right after `after`.
+static func keys_with(keys: Array, after: String, key: String) -> Array:
+	var out: Array = keys.duplicate()
+	out.insert(out.find(after) + 1, key)
+	return out
+
+
+## protocol/unknown-item-skip.md "Classification": true when a transaction's state is missing
+## something (an unknown RID still live, or a withheld item) -- partial-unknown-items.
+static func is_partial_unknown_items(meta: Dictionary) -> bool:
+	if not meta.has(UNKNOWN_ITEMS_KEY):
+		return false
+	var account: Dictionary = meta[UNKNOWN_ITEMS_KEY]
+	return as_int(account["unknown_rids"]) + as_int(account["withheld_items"]) > 0
 
 
 static func code_of(error: String) -> String:
@@ -621,7 +643,14 @@ class Schema:
 
 	func session(meta: Dictionary, version: int) -> void:
 		var is_v5: bool = version == 5
-		object(meta, Rs2Decoder.SESSION_KEYS_V5 if is_v5 else Rs2Decoder.SESSION_KEYS, "meta")
+		var session_keys: Array = Rs2Decoder.SESSION_KEYS_V5 if is_v5 else Rs2Decoder.SESSION_KEYS
+		# protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and /5.
+		var skip_declared: bool = version >= 4 and meta.has(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
+		if skip_declared:
+			session_keys = Rs2Decoder.keys_with(session_keys, "sabotage", Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
+		object(meta, session_keys, "meta")
+		if skip_declared:
+			exact(meta.get(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY), "skip", "meta.unknown_item_policy")
 		var expected_protocol: String = Rs2Decoder.PROTOCOL
 		if is_v5:
 			expected_protocol = Rs2Decoder.PROTOCOL_V5
@@ -855,7 +884,17 @@ class Schema:
 			transaction_keys = Rs2Decoder.TRANSACTION_KEYS_V5
 		elif is_v4:
 			transaction_keys = Rs2Decoder.TRANSACTION_KEYS_V4
+		# protocol/unknown-item-skip.md "Transaction": legal only at /4 and /5; whether it must be
+		# present is the session's call (Stream checks the coupling).
+		var has_unknown_items: bool = is_v4 and meta.has(Rs2Decoder.UNKNOWN_ITEMS_KEY)
+		if has_unknown_items:
+			transaction_keys = Rs2Decoder.keys_with(transaction_keys, "unsupported", Rs2Decoder.UNKNOWN_ITEMS_KEY)
 		object(meta, transaction_keys, "meta")
+		if has_unknown_items:
+			var account: Dictionary = object(meta.get(Rs2Decoder.UNKNOWN_ITEMS_KEY), Rs2Decoder.UNKNOWN_ITEMS_KEYS, "meta.unknown_items")
+			for i: int in Rs2Decoder.UNKNOWN_ITEMS_KEYS.size():
+				var key: String = Rs2Decoder.UNKNOWN_ITEMS_KEYS[i]
+				integer(account.get(key), "meta.unknown_items." + key, 0, Rs2Decoder.MAX_SAFE_INT)
 		integer(meta.get("seq"), "meta.seq", 1, Rs2Decoder.MAX_SAFE_INT)
 		integer(meta.get("frame"), "meta.frame", 1, Rs2Decoder.MAX_SAFE_INT)
 		one_of(meta.get("encoding"), Rs2Decoder.ENCODINGS, "meta.encoding")
@@ -1673,6 +1712,8 @@ class Stream:
 	var max_record_bytes: int = 0
 	var bytes_total: int = 8
 	var session_encoding: String = ""
+	## protocol/unknown-item-skip.md: the session declared unknown_item_policy "skip".
+	var unknown_item_skip: bool = false
 	var inline_max_bytes: int = 0
 	var resource_records: int = 0
 	var resource_bytes: int = 0
@@ -1715,6 +1756,7 @@ class Stream:
 				session_encoding = stream_meta["encoding"]
 				var resources_meta: Dictionary = meta["resources"]
 				inline_max_bytes = Rs2Decoder.as_int(resources_meta["inline_max_bytes"])
+				unknown_item_skip = meta.has(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
 				if Rs2Decoder.as_int(meta["viewport"]["root_canvas"]) != 1:
 					errors.append(Rs2Decoder.err("root-canvas", "session.viewport.root_canvas is %d, not 1" % Rs2Decoder.as_int(meta["viewport"]["root_canvas"])))
 					return errors
@@ -1769,6 +1811,11 @@ class Stream:
 				bytes_total += byte_length
 				max_record_bytes = maxi(max_record_bytes, byte_length)
 			"transaction":
+				# protocol/unknown-item-skip.md: the account is in every transaction of a skip
+				# session and in no other.
+				if meta.has(Rs2Decoder.UNKNOWN_ITEMS_KEY) != unknown_item_skip:
+					errors.append(Rs2Decoder.err("meta-schema", "record %d at offset %d: \"unknown_items\" must be present exactly when the session declares unknown_item_policy \"skip\"" % [index, offset]))
+					return errors
 				var record_blocks: Array = record["blocks"]
 				errors.append_array(_accept_transaction(meta, offset, record_blocks))
 				if errors.is_empty():

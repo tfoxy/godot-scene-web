@@ -50,7 +50,10 @@ import {
   summarizeRecording,
   type Transaction,
 } from "../lib/gate0-checks";
-import { synthesizeExpected } from "../lib/gate0-expected";
+import {
+  synthesizeExpected,
+  synthesizePreexistingReference,
+} from "../lib/gate0-expected";
 import { validateRecording } from "../lib/render-stream-2";
 import {
   encodeRs2Recording,
@@ -132,6 +135,32 @@ const EXPECTED = {
     marker: shape([16, 16], MARKER_SIZE, t.marker),
   })),
   unsupported_variant: { from_step: 2, op: "canvas_item_add_animation_slice" },
+  // fixtures/gate0/expected.json "preexisting" (protocol/unknown-item-skip.md "Evidence").
+  preexisting: {
+    scene: "res://preexisting.tscn",
+    items: [
+      {
+        name: "Preexisting",
+        rect_px: [32, 240, 64, 64],
+        colors: [0, 1, 2, 3, 4].map((k) =>
+          k < 2 ? [0.6, 0.2, 1, 1] : [1, 0.8, 0.2, 1],
+        ),
+        rgba8: [0, 1, 2, 3, 4].map((k) =>
+          k < 2 ? [153, 51, 255, 255] : [255, 204, 51, 255],
+        ),
+      },
+      {
+        name: "PreChild",
+        rect_px: [128, 240, 48, 48],
+        colors: [0, 1, 2, 3, 4].map((k) =>
+          k < 3 ? [0.2, 0.8, 0.4, 1] : [0.4, 0.4, 0.8, 1],
+        ),
+        rgba8: [0, 1, 2, 3, 4].map((k) =>
+          k < 3 ? [51, 204, 102, 255] : [102, 102, 204, 255],
+        ),
+      },
+    ],
+  },
 } as unknown as Gate0Expected;
 
 // ---------------------------------------------------------------------------------------------
@@ -144,6 +173,10 @@ interface RecordingOptions {
   quit: number;
   variant?: "unsupported";
   preexisting?: boolean;
+  /** a GRC_UNKNOWN_ITEM=skip capture of preexisting.tscn: the session declares skip and every
+   * transaction accounts for one unknown RID and one withheld item (unknown_calls 7, 9 from
+   * step 2's recolour) */
+  skip?: boolean;
   sabotage?: { kind: string; frame: number; op?: string | null } | null;
   hooksPlanned?: string[];
   /** publish step `step`'s change `frames` frames late */
@@ -208,6 +241,16 @@ function gate0States(opts: RecordingOptions): TState[] {
       unsupported: circle
         ? [{ op: "canvas_item_add_circle", item: 2, reason: "unsupported-op" }]
         : [],
+      ...(opts.skip
+        ? {
+            unknown_items: {
+              unknown_rids: 1,
+              withheld_items: 1,
+              withheld_commands: 1,
+              unknown_calls: k >= 2 ? 9 : 7,
+            },
+          }
+        : {}),
       canvases: [{ id: 1, items: [1, 2], xform: [1, 0, 0, 1, 0, 0] }],
       textures: [hueStrip()],
       items: [
@@ -241,6 +284,7 @@ function encodeRecording(opts: RecordingOptions): Buffer {
     sabotage: opts.sabotage ?? null,
     noEnd: opts.noEnd,
     resources: opts.resources,
+    ...(opts.skip ? { unknownItemPolicy: "skip" as const } : {}),
     ...(opts.live ? { transport: "websocket" as const, connection: 1 } : {}),
   });
 }
@@ -264,8 +308,12 @@ async function writePng(
   path: string,
   step: number,
   perturb?: [number, number],
+  /** paint preexisting.tscn's rects too (its rendered reference) */
+  preexisting = false,
 ): Promise<void> {
-  const { width, height, rgba } = synthesizeExpected(EXPECTED, step);
+  const { width, height, rgba } = preexisting
+    ? synthesizePreexistingReference(EXPECTED, step)
+    : synthesizeExpected(EXPECTED, step);
   const buf = Buffer.from(rgba);
   if (perturb) buf[(perturb[1] * width + perturb[0]) * 4] ^= 0x10;
   await mkdir(dirname(path), { recursive: true });
@@ -442,6 +490,16 @@ async function writeCaptureLeg(
       status: "closed",
       reason: null,
       transactions: opts.quit,
+      unknown_item_policy: opts.skip ? "skip" : "strict",
+      unknown_items: opts.skip
+        ? {
+            unknown_calls: 9,
+            unknown_rids_named: 1,
+            unknown_rids: 1,
+            withheld_items: 1,
+            rekeyed_items: 0,
+          }
+        : null,
     },
   });
   await writeJson(join(dir, "evidence", "counters.json"), {
@@ -700,6 +758,54 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     false,
   );
 
+  // preexisting-skip: the same scene under GRC_UNKNOWN_ITEM=skip, then a rendered receiver that
+  // paints only Subject and Marker; preexisting-reference paints the pre-existing rects too.
+  const skipBytes = await writeCaptureLeg(
+    join(out, "preexisting-skip", "capture"),
+    { quit: 52, skip: true },
+    false,
+  );
+  const skipSeqs = settleSeqs(
+    summarizeRecording("skip", new Uint8Array(skipBytes)).transactions,
+  );
+  await writeReceiverProcess(
+    join(out, "preexisting-skip", "receiver"),
+    projects,
+    skipBytes,
+    skipSeqs,
+    true,
+  );
+  for (const [k, seq] of skipSeqs.entries()) {
+    await writePng(
+      join(out, "preexisting-skip", "receiver", "shots", `seq-${seq}.png`),
+      k,
+    );
+  }
+  const preRef = join(out, "preexisting-reference");
+  for (const s of EXPECTED.steps)
+    await writePng(
+      join(preRef, "shots", `step-${s.step}.png`),
+      s.step,
+      undefined,
+      true,
+    );
+  await writeText(
+    join(preRef, "steps.jsonl"),
+    `${EXPECTED.steps.map((s) => JSON.stringify({ step: s.step, applied_frame: s.applied_frame, settle_frame: s.settle_frame })).join("\n")}\n`,
+  );
+  await writeProcess(
+    preRef,
+    [
+      "/tpl/linux_release.x86_64",
+      "--path",
+      projects.fixtureProjectDir,
+      "res://preexisting.tscn",
+    ],
+    ["RS_FIXTURE_SHOT_DIR=shots"],
+    "[fixture] shot step=0\n",
+    0,
+  );
+
   // corrupt: seq 3's meta broken; the receiver stops there
   const corruptDir = join(out, "corrupt");
   await writeReceiverProcess(
@@ -769,6 +875,10 @@ const ALL_CHECK_IDS = [
   "receiver-consumed-stream",
   "receiver-never-loaded-fixture",
   "receiver-typed-clean",
+  "preexisting-skip-account",
+  "preexisting-skip-reference",
+  "preexisting-skip-receiver",
+  "preexisting-skip-excluded-region",
   ...CLASSIFIED_LEGS.map((leg) => `leg-class-${leg}`),
 ];
 
@@ -1279,6 +1389,105 @@ const scenarios: Scenario[] = [
     checks: { "leg-class-preexisting": false },
     classes: { preexisting: "success" },
   },
+  // protocol/unknown-item-skip.md "Evidence": the skip leg.
+  {
+    name: "a skip capture that never declared skip (a strict, complete recording) is success, failing its class and account",
+    mutate: async (out, projects) => {
+      const bytes = encodeRecording({ quit: 52 });
+      await writeFile(
+        join(out, "preexisting-skip", "capture", "recording.rs2"),
+        bytes,
+      );
+      await writeReceiverProcess(
+        join(out, "preexisting-skip", "receiver"),
+        projects,
+        bytes,
+        settleSeqs(summarizeRecording("s", new Uint8Array(bytes)).transactions),
+        true,
+      );
+    },
+    checks: {
+      "leg-class-preexisting-skip": false,
+      "preexisting-skip-account": false,
+    },
+    classes: { "preexisting-skip": "success" },
+  },
+  {
+    name: "a skip capture that withholds two items fails its account but stays partial",
+    mutate: async (out, projects) => {
+      const states = gate0States({ quit: 52, skip: true });
+      for (const st of states)
+        if (st.unknown_items) st.unknown_items.withheld_items = 2;
+      const bytes = encodeRs2Recording(states, {
+        encoding: "full",
+        hooksPlanned: [...GATE0_HOOKS],
+        unknownItemPolicy: "skip",
+      });
+      await writeFile(
+        join(out, "preexisting-skip", "capture", "recording.rs2"),
+        bytes,
+      );
+      await writeReceiverProcess(
+        join(out, "preexisting-skip", "receiver"),
+        projects,
+        bytes,
+        settleSeqs(summarizeRecording("s", new Uint8Array(bytes)).transactions),
+        true,
+      );
+    },
+    checks: {
+      "preexisting-skip-account": false,
+      "leg-class-preexisting-skip": true,
+    },
+    classes: { "preexisting-skip": "partial-unknown-items" },
+  },
+  {
+    name: "a skip receiver that paints a pre-existing rect is a pixel mismatch only in the masked compare's eyes, and fails the receiver and region checks",
+    mutate: async (out) => {
+      const shots = join(out, "preexisting-skip", "receiver", "shots");
+      const skipBytes = await readFile(
+        join(out, "preexisting-skip", "capture", "recording.rs2"),
+      );
+      const seq = settleSeqs(
+        summarizeRecording("s", new Uint8Array(skipBytes)).transactions,
+      )[2];
+      await writePng(join(shots, `seq-${seq}.png`), 2, undefined, true);
+    },
+    checks: {
+      "preexisting-skip-receiver": false,
+      "preexisting-skip-excluded-region": false,
+      "leg-class-preexisting-skip": true,
+    },
+    classes: { "preexisting-skip": "partial-unknown-items" },
+  },
+  {
+    name: "a skip receiver wrong outside the pre-existing rects is pixel-mismatch",
+    mutate: async (out) => {
+      const shots = join(out, "preexisting-skip", "receiver", "shots");
+      const skipBytes = await readFile(
+        join(out, "preexisting-skip", "capture", "recording.rs2"),
+      );
+      const seq = settleSeqs(
+        summarizeRecording("s", new Uint8Array(skipBytes)).transactions,
+      )[3];
+      await writePng(join(shots, `seq-${seq}.png`), 3, [600, 10]);
+    },
+    checks: {
+      "preexisting-skip-receiver": false,
+      "preexisting-skip-excluded-region": false,
+      "leg-class-preexisting-skip": false,
+    },
+    classes: { "preexisting-skip": "pixel-mismatch" },
+  },
+  {
+    name: "a preexisting-reference without the pre-existing rects fails the reference and region checks",
+    mutate: (out) =>
+      writePng(join(out, "preexisting-reference", "shots", "step-1.png"), 1),
+    checks: {
+      "preexisting-skip-reference": false,
+      "preexisting-skip-excluded-region": false,
+    },
+  },
   {
     name: "a corrupt leg failing at seq 2 fails its leg class while still replay-failure",
     mutate: (out) =>
@@ -1332,6 +1541,7 @@ async function runScenarios(): Promise<void> {
         "sabotage-freeze/receiver",
         "sabotage-omit/receiver",
         "sabotage-perturb/receiver",
+        "preexisting-skip/receiver",
       ]) {
         const argvPath = join(out, dir, "argv.txt");
         const argv = await readFile(argvPath, "utf8");
@@ -1528,6 +1738,18 @@ const TOGGLES: Record<Exclude<LegClass, "success">, Toggle> = {
     i.checkpoints[0].mismatched_pixels = 12;
     i.checkpoints[0].max_channel_delta = 255;
   },
+  // protocol/unknown-item-skip.md "Classification": a skip session's transaction that withholds.
+  "partial-unknown-items": (i) => {
+    i.recording.transactions[0] = tx(1, {
+      unknown_items: {
+        unknown_rids: 1,
+        withheld_items: 0,
+        withheld_commands: 0,
+        unknown_calls: 3,
+      },
+    });
+    i.recording.transactions[0].sha256 = "sha-1";
+  },
 };
 
 function classifyUnitCases(): void {
@@ -1566,7 +1788,7 @@ function classifyUnitCases(): void {
   assert(
     "classifyLeg: CLASS_PRECEDENCE is the documented order",
     CLASS_PRECEDENCE.join(",") ===
-      "capture-failure,unsupported,replay-failure,pixel-mismatch,success",
+      "capture-failure,unsupported,replay-failure,pixel-mismatch,partial-unknown-items,success",
   );
 
   const single = (name: string, edit: Toggle, want: LegClass): void => {

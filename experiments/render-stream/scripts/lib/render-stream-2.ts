@@ -374,7 +374,32 @@ export interface SessionMeta {
     publication: string;
   };
   sabotage: { kind: SabotageKind; frame: number; op: string | null } | null;
+  /** protocol/unknown-item-skip.md: present (always "skip") only in a session that opted into
+   * skipping unknown canvas/item RIDs, right after `sabotage`, at /4 and /5. Absent = strict. */
+  unknown_item_policy?: "skip";
   blocks: BlockDescriptor[];
+}
+
+/** protocol/unknown-item-skip.md "Transaction": what a skip session's transaction left out. */
+export interface UnknownItemsMeta {
+  /** unknown canvas/item RIDs named since arming and not yet freed */
+  unknown_rids: number;
+  /** known items withheld because their parent chain reaches an unknown RID */
+  withheld_items: number;
+  /** the commands those withheld items hold */
+  withheld_commands: number;
+  /** hook calls that named an unknown RID since arming (cumulative) */
+  unknown_calls: number;
+}
+
+/** protocol/unknown-item-skip.md "Classification": a transaction whose state is missing
+ * something (an unknown RID still live, or a withheld item) is `partial-unknown-items`, never
+ * plain success. A strict transaction (no account) never is. */
+export function isPartialUnknownItems(meta: {
+  unknown_items?: UnknownItemsMeta;
+}): boolean {
+  const u = meta.unknown_items;
+  return u !== undefined && u.unknown_rids + u.withheld_items > 0;
 }
 
 export interface CommandAddRect {
@@ -587,6 +612,9 @@ export interface TransactionMeta {
     item: number | null;
     reason: UnsupportedReason;
   }>;
+  /** protocol/unknown-item-skip.md: present exactly when the session declares
+   * `unknown_item_policy: "skip"` (/4 and /5), right after `unsupported`. */
+  unknown_items?: UnknownItemsMeta;
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
   removed_canvases: number[];
@@ -844,6 +872,27 @@ const TRANSACTION_KEYS_V5 = [
   "blocks",
 ];
 const FAILURE_KEYS = ["reason", "detail"];
+// protocol/unknown-item-skip.md: the session key (after "sabotage") and the transaction key
+// (after "unsupported") a skip session adds, at /4 and /5 only.
+const UNKNOWN_ITEM_POLICY_KEY = "unknown_item_policy";
+const UNKNOWN_ITEMS_KEY = "unknown_items";
+const UNKNOWN_ITEMS_KEYS = [
+  "unknown_rids",
+  "withheld_items",
+  "withheld_commands",
+  "unknown_calls",
+];
+
+/** `keys` with `key` inserted right after `after`. */
+function keysWith(
+  keys: readonly string[],
+  after: string,
+  key: string,
+): string[] {
+  const out = [...keys];
+  out.splice(out.indexOf(after) + 1, 0, key);
+  return out;
+}
 const UNSUPPORTED_KEYS = ["op", "item", "reason"];
 const CANVAS_KEYS = ["id", "origin", "role", "attached", "items"];
 const ITEM_KEYS = [
@@ -1479,8 +1528,20 @@ function checkSessionSchema(
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
   const isV5 = version === 5;
-  if (!hasExactKeys(meta, isV5 ? SESSION_KEYS_V5 : SESSION_KEYS))
+  // protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and /5.
+  const skipDeclared = version >= 4 && UNKNOWN_ITEM_POLICY_KEY in meta;
+  const sessionKeys = isV5 ? SESSION_KEYS_V5 : SESSION_KEYS;
+  if (
+    !hasExactKeys(
+      meta,
+      skipDeclared
+        ? keysWith(sessionKeys, "sabotage", UNKNOWN_ITEM_POLICY_KEY)
+        : sessionKeys,
+    )
+  )
     return err("session has the wrong top-level keys or order");
+  if (skipDeclared && meta.unknown_item_policy !== "skip")
+    return err('"unknown_item_policy" must be "skip" when present');
   const expectedProtocol = isV5
     ? "render-stream/5"
     : version === 4
@@ -1905,17 +1966,35 @@ function checkTransactionSchema(
   ];
   const isV5 = version === 5;
   const isV4 = isV5 || version === 4;
+  const transactionKeys = isV5
+    ? TRANSACTION_KEYS_V5
+    : isV4
+      ? TRANSACTION_KEYS_V4
+      : TRANSACTION_KEYS;
+  // protocol/unknown-item-skip.md "Transaction": legal only at /4 and /5; whether it must be
+  // present is the session's call (validateRecording checks the coupling).
+  const hasUnknownItems = isV4 && UNKNOWN_ITEMS_KEY in meta;
   if (
     !hasExactKeys(
       meta,
-      isV5
-        ? TRANSACTION_KEYS_V5
-        : isV4
-          ? TRANSACTION_KEYS_V4
-          : TRANSACTION_KEYS,
+      hasUnknownItems
+        ? keysWith(transactionKeys, "unsupported", UNKNOWN_ITEMS_KEY)
+        : transactionKeys,
     )
   )
     return err("transaction has the wrong top-level keys or order");
+  if (hasUnknownItems) {
+    const u = meta.unknown_items;
+    if (
+      !isPlainObject(u) ||
+      !hasExactKeys(u, UNKNOWN_ITEMS_KEYS) ||
+      !UNKNOWN_ITEMS_KEYS.every((k) => isInt(u[k]) && (u[k] as number) >= 0)
+    ) {
+      return err(
+        '"unknown_items" must be {unknown_rids, withheld_items, withheld_commands, unknown_calls}, each an integer >= 0',
+      );
+    }
+  }
   if (!isInt(meta.seq) || meta.seq < 1)
     return err('"seq" is not an integer >= 1');
   if (!isInt(meta.frame) || meta.frame < 1)
@@ -4453,6 +4532,14 @@ export function validateRecording(
     }
 
     if (meta.type === "transaction") {
+      // protocol/unknown-item-skip.md: the account is in every transaction of a skip session and
+      // in no other.
+      const skipSession = sessionMeta.unknown_item_policy === "skip";
+      if ((meta.unknown_items !== undefined) !== skipSession) {
+        return [
+          `meta-schema: record at offset ${offset}: "unknown_items" must be present exactly when the session declares unknown_item_policy "skip"`,
+        ];
+      }
       const idOrderErrors = [
         ...checkIdOrdering("canvases", meta.canvases, offset),
         ...checkIdOrdering("items", meta.items, offset),
@@ -5076,6 +5163,8 @@ export interface ResolvedTransaction {
     status: TransactionStatus;
     failures: TransactionMeta["failures"];
     unsupported: TransactionMeta["unsupported"];
+    /** protocol/unknown-item-skip.md: present only in a skip session. */
+    unknown_items?: UnknownItemsMeta;
     default_texture_filter: Filter;
     default_texture_repeat: Repeat;
     canvases: ResolvedCanvas[];
@@ -5137,6 +5226,9 @@ export function resolveRecording(
         status: meta.status,
         failures: meta.failures,
         unsupported: meta.unsupported,
+        ...(meta.unknown_items !== undefined
+          ? { unknown_items: meta.unknown_items }
+          : {}),
         default_texture_filter: meta.default_texture_filter,
         default_texture_repeat: meta.default_texture_repeat,
         canvases: sortedResolvedCanvases(state),

@@ -48,6 +48,14 @@
 // `z_relative` and `behind` (gate1-design.md G1e) are mutated by
 // canvas_item_set_z_as_relative_to_parent and canvas_item_set_draw_behind_parent;
 // a new item still starts at the RenderingServer defaults (true, false).
+//
+// Unknown RIDs (protocol/unknown-item-skip.md): under the default policy (Strict) a canvas or
+// item RID the mirror never saw created is gate 0's sticky `pre-existing-object` failure. Under
+// Skip (GRC_UNKNOWN_ITEM=skip) the call is counted and not applied, the RID is remembered as
+// unknown until it is freed, and every known item whose parent chain reaches an unknown RID is
+// kept (its state and commands are still recorded) but withheld from every snapshot. An item
+// that enters a withheld subtree after it was published gets a fresh wire id first, so a later
+// return to publication is a new id, never a reappearing one (render-stream-0.md `id-reused`).
 #ifndef GRC_RS_MIRROR_H
 #define GRC_RS_MIRROR_H
 
@@ -55,6 +63,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -84,6 +93,12 @@ struct MirrorStats {
   std::uint64_t live_meshes = 0;          // mesh-table entries, tombstones included
   std::uint64_t mesh_unknown = 0;         // a mesh tap naming a RID the table does not know
   std::uint64_t mesh_payload_bytes = 0;   // distinct GRM1 payload bytes the table holds now
+  // protocol/unknown-item-skip.md (Skip only; all zero under Strict).
+  std::uint64_t unknown_calls = 0;       // hook calls that named an unknown canvas/item RID
+  std::uint64_t unknown_rids_named = 0;  // distinct unknown RIDs ever named (freed ones included)
+  std::uint64_t unknown_rids = 0;        // unknown RIDs named and not freed, now
+  std::uint64_t withheld_items = 0;      // known items withheld from publication, now
+  std::uint64_t rekeyed_items = 0;       // published items given a fresh id on entering a withheld subtree
 };
 
 // What a mesh hook hands the mirror for one surface (G5e; gate5-design.md Q3a, Q3b): the hook
@@ -125,6 +140,11 @@ class Mirror {
   // host_size_status != match, and the first session-level entry). Survives
   // until reset().
   void set_degenerate_host_size(bool on);
+
+  // protocol/unknown-item-skip.md: Strict (the reset() default) or Skip. Set once at arm, before
+  // the first hook call is expected; survives until reset(). Under Skip every snapshot carries
+  // Snapshot::unknown_items (present, zeros included).
+  void set_unknown_item_policy(rs2::UnknownItemPolicy policy);
 
   // A headless host (G2d; protocol/canvas-texture-headless.md): the dummy storage's
   // canvas_texture_allocate() returns RID() (servers/rendering/dummy/storage/texture_storage.h:54),
@@ -416,6 +436,11 @@ class Mirror {
     bool unsupported_state = false;
     // Non-null skeleton (gate5-design.md D2, calibrator 7): same idea, its own op name.
     bool unsupported_skeleton = false;
+    // Skip policy only: the unknown RID this item was parented to (state.parent is then None and
+    // the item is in no child list); 0 otherwise.
+    std::uint64_t unknown_parent = 0;
+    // Emitted by at least one snapshot (decides whether entering a withheld subtree re-keys it).
+    bool published = false;
   };
   struct Canvas {
     rs2::CanvasState state;
@@ -479,10 +504,20 @@ class Mirror {
   bool omit_op_matches(const char *op, std::uint64_t frame) const;
   Item *find_item(std::uint64_t rid);
   bool find_target(std::uint64_t rid, Target *out) const;
-  // Looks the item up for a mutating op: unknown -> pre-existing-object,
-  // an item untracked because of the cap -> silently ignored.
+  // Looks the item up for a mutating op: unknown -> unknown() (pre-existing-object, or counted
+  // under Skip), an item untracked because of the cap -> silently ignored.
   Item *item_for(std::uint64_t rid, const char *op, std::uint64_t frame);
+  // Strict: the sticky pre-existing-object failure. Skip: counts the call and remembers `rid`.
   void unknown(std::uint64_t rid, const char *op, std::uint64_t frame);
+  bool skip_unknown() const { return unknown_policy_ == rs2::UnknownItemPolicy::Skip; }
+  // Skip: the ids of every known item whose parent chain reaches an unknown RID.
+  std::set<std::uint32_t> withheld_ids() const;
+  bool is_withheld(const Item &item) const;
+  // Skip: gives every published item of the subtree rooted at `id` a fresh wire id.
+  void rekey_subtree(std::uint32_t id);
+  // Skip: `rid` stops being unknown (freed, or a recycled RID value created anew); the items
+  // parented to it are orphaned, as the engine orphans the children of a freed item.
+  bool forget_unknown(std::uint64_t rid);
   void fail(rs2::FailureReason reason, const std::string &detail);
   void session_unsupported(const char *op, rs2::UnsupportedReason reason);
   std::vector<std::uint32_t> *children_of(rs2::ParentKind kind, std::uint32_t id);
@@ -535,6 +570,8 @@ class Mirror {
   // headless host it makes RID() on the /4 geometry ops ambiguous. A create with a non-null RID
   // (a rendered host, or the opt-in headless shim's private RID) does not set it.
   bool canvas_texture_created_ = false;
+  rs2::UnknownItemPolicy unknown_policy_ = rs2::UnknownItemPolicy::Strict;
+  std::unordered_set<std::uint64_t> unknown_rids_;  // Skip: named, not yet freed
   std::uint32_t next_canvas_id_ = rs2::kRootCanvasId + 1;
   std::uint32_t next_item_id_ = 1;
   std::uint64_t root_viewport_rid_ = 0;
@@ -568,6 +605,7 @@ void mirror_fail_root_query(const std::string &detail);
 void mirror_fail_root_size_enforce(const std::string &detail);
 void mirror_set_degenerate_host_size(bool on);
 void mirror_set_canvas_texture_headless(bool on);
+void mirror_set_unknown_item_policy(rs2::UnknownItemPolicy policy);
 void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
 void mirror_set_perturb_glyph(std::uint64_t from_frame);

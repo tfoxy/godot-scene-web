@@ -363,6 +363,15 @@ already covered by `golden-2/invalid/` and `golden-3/invalid/`):
 As /3, except the subprotocol is `render-stream.4` and the hello's `protocol` is
 `"render-stream/4"`. The capture's listener and the receiver's live client speak it since G5d.
 
+## Optional keys: unknown-item skip
+
+A capture armed with the opt-in `GRC_UNKNOWN_ITEM=skip` adds two keys that no other session or
+transaction carries: `"unknown_item_policy":"skip"` in the session, right after `sabotage`, and,
+in every one of that session's transactions, `"unknown_items":{…}` right after `unsupported`.
+[unknown-item-skip.md](unknown-item-skip.md) specifies both, with their validation (`meta-schema`
+otherwise) and the reason the version does not change. A strict recording, every golden vector
+included, never contains either key.
+
 ## Versioning
 
 As /3: any change to framing, a key, a key order, a block layout, an enum spelling or a payload

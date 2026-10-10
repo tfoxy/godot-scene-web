@@ -279,6 +279,7 @@ Transaction make_full(const Snapshot &cur) {
   t.base_seq.reset();
   t.failures = cur.failures;
   t.unsupported = cur.unsupported;
+  t.unknown_items = cur.unknown_items;
   t.default_texture_filter = cur.default_texture_filter;
   t.default_texture_repeat = cur.default_texture_repeat;
   t.canvases = cur.canvases;
@@ -306,6 +307,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   t.base_seq = base.seq;
   t.failures = cur.failures;
   t.unsupported = cur.unsupported;
+  t.unknown_items = cur.unknown_items;
   t.default_texture_filter = cur.default_texture_filter;
   t.default_texture_repeat = cur.default_texture_repeat;
 
@@ -470,6 +472,7 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   out.frame = txn.frame;
   out.failures = txn.failures;
   out.unsupported = txn.unsupported;
+  out.unknown_items = txn.unknown_items;
   out.default_texture_filter = txn.default_texture_filter;
   out.default_texture_repeat = txn.default_texture_repeat;
 

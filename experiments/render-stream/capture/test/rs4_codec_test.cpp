@@ -385,6 +385,53 @@ void test_diff_patch_round_trip() {
   }
 }
 
+bool contains(const std::vector<std::uint8_t> &bytes, const std::string &needle) {
+  return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
+}
+
+// protocol/unknown-item-skip.md: the opt-in Skip policy's two keys. A strict session/transaction
+// is byte-identical to one encoded before the policy existed (the golden matches above prove
+// that); a skip one gains `unknown_item_policy` right after `sabotage` and `unknown_items` right
+// after `unsupported`, at /4 and /5 only, in full and patch transactions alike.
+void test_unknown_item_policy_keys() {
+  Session session = golden::golden_session_v4(Encoding::Full, golden::kFullStreamId,
+                                              golden::kFullSessionId, Delivery::OutOfBand);
+  const std::vector<std::uint8_t> strict = encode_session(session);
+  check(!contains(strict, "unknown_item_policy"), "a strict session has no unknown_item_policy");
+  session.unknown_item_policy = UnknownItemPolicy::Skip;
+  const std::vector<std::uint8_t> skip = encode_session(session);
+  check(contains(skip, "\"sabotage\":null,\"unknown_item_policy\":\"skip\",\"blocks\":"),
+        "a skip session declares unknown_item_policy right after sabotage");
+  session.version = ProtocolVersion::V2;
+  check(!contains(encode_session(session), "unknown_item_policy"),
+        "the key exists at /4 and /5 only");
+
+  Snapshot one = golden::state(1);
+  Snapshot two = golden::state(2);
+  check(!contains(encode_transaction(full_txn4(one)), "unknown_items"),
+        "a strict transaction has no unknown_items");
+  for (Snapshot *snap : {&one, &two}) {
+    snap->unknown_items.present = true;
+    snap->unknown_items.unknown_rids = 1;
+    snap->unknown_items.withheld_items = 2;
+    snap->unknown_items.withheld_commands = 3;
+    snap->unknown_items.unknown_calls = 4;
+  }
+  const std::string key =
+      "],\"unknown_items\":{\"unknown_rids\":1,\"withheld_items\":2,\"withheld_commands\":3,"
+      "\"unknown_calls\":4},\"default_texture_filter\":";
+  Transaction full = make_full(one);
+  full.version = ProtocolVersion::V4;
+  check(contains(encode_transaction(full), key), "a full skip transaction carries unknown_items");
+  Transaction patch = make_patch(one, two);
+  patch.version = ProtocolVersion::V4;
+  check(contains(encode_transaction(patch), key),
+        "a patch skip transaction carries unknown_items complete");
+  check(resolve(one, patch).unknown_items.withheld_commands == 3, "resolve() keeps the account");
+  patch.version = ProtocolVersion::V2;
+  check(!contains(encode_transaction(patch), "unknown_items"), "never at /2 or /3");
+}
+
 }  // namespace
 
 int main() {
@@ -393,6 +440,7 @@ int main() {
   test_matches_golden_inline_rs4();
   test_diff_make_full_matches_hand_built();
   test_diff_patch_round_trip();
+  test_unknown_item_policy_keys();
   if (g_failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", g_failures);
     return 1;

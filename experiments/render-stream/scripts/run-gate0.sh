@@ -20,6 +20,11 @@
 # G4e2 render-stream/3, gate4-design.md; since G5d render-stream/4, gate5-design.md)
 # (recording.rs2) with its out-of-band resource store at <capture>/store (GRC_RESOURCE_STORE_DIR),
 # and every file-mode receiver gets a fresh cache (<receiver>/cache) and that store.
+#
+# protocol/unknown-item-skip.md "Evidence": preexisting.tscn is captured twice -- `preexisting`
+# under the default strict policy (capture-failure / pre-existing-object) and `preexisting-skip`
+# under GRC_UNKNOWN_ITEM=skip (partial-unknown-items, replayed by a rendered receiver) -- and
+# rendered once with the extension absent (`preexisting-reference`).
 
 set -euo pipefail
 
@@ -196,6 +201,10 @@ echo "run-gate0: preexisting"
 CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
 run_capture "$OUT/preexisting" "$SHORT_QUIT_FRAME" none "res://preexisting.tscn"
 
+echo "run-gate0: preexisting-skip (capture)"
+CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_UNKNOWN_ITEM=skip)
+run_capture "$OUT/preexisting-skip/capture" "$SHORT_QUIT_FRAME" none "res://preexisting.tscn"
+
 echo "run-gate0: unsupported"
 CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=unsupported)
 run_capture "$OUT/unsupported/capture" "$SHORT_QUIT_FRAME" none
@@ -249,6 +258,18 @@ run_rendered "$OUT/reference" "$FIXTURE_DIR"
 
 echo "run-gate0: receiver"
 run_rendered_receiver "$OUT/capture" "$OUT/receiver"
+
+echo "run-gate0: preexisting-reference"
+mkdir -p "$OUT/preexisting-reference/shots"
+LEG_ENV=(
+	RS_FIXTURE_SHOT_DIR="$OUT/preexisting-reference/shots"
+	RS_FIXTURE_STEP_LOG="$OUT/preexisting-reference/steps.jsonl"
+)
+RENDERED_EXTRA_ARGS=("res://preexisting.tscn")
+run_rendered "$OUT/preexisting-reference" "$FIXTURE_DIR"
+
+echo "run-gate0: preexisting-skip (receiver)"
+run_rendered_receiver "$OUT/preexisting-skip/capture" "$OUT/preexisting-skip/receiver"
 
 for kind in freeze omit perturb; do
 	echo "run-gate0: sabotage-$kind (receiver)"

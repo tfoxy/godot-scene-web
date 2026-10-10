@@ -91,6 +91,14 @@
 // budget. Sabotages unpin and drop-resource (both need GRC_LIVE_LISTEN) act
 // there, and wrong-hash serves the store's corrupted copy.
 //
+// Unknown items (protocol/unknown-item-skip.md): GRC_UNKNOWN_ITEM is `strict` (default, also
+// when unset or empty) or `skip`, read at arm with the other stream policies; any other value
+// refuses to publish, as an invalid GRC_ROOT_SIZE does. `skip` is a diagnostic opt-in for hosts
+// that arm late: the mirror withholds unknown canvas/item RIDs and the subtrees under them instead
+// of failing every transaction with `pre-existing-object`, the session declares
+// `unknown_item_policy: "skip"`, every transaction carries `unknown_items`, and result.json
+// `stream.unknown_items` holds the final counters.
+//
 // Authorization (G2e, gate2-design.md D13): GRC_LIVE_AUTH is `none` (default) or `token`, read
 // only with GRC_LIVE_LISTEN. `token` generates 32 random bytes as 64 lowercase hex, writes them
 // to evidence/live-token (mode 0600, refused as resource-store-missing-equivalent
@@ -184,6 +192,8 @@ struct Stream {
   std::string patch_path;  // GRC_STREAM_PATCH_OUT (patch sink); empty when unset
   std::string status = "off";
   std::string reason;  // empty -> null
+  // protocol/unknown-item-skip.md: GRC_UNKNOWN_ITEM, read at arm.
+  rs2::UnknownItemPolicy unknown_item_policy = rs2::UnknownItemPolicy::Strict;
   std::unique_ptr<rs2::FileRecordSink> full_sink;
   std::unique_ptr<rs2::FileRecordSink> patch_sink;
   std::unique_ptr<rs2::Publisher> publisher;
@@ -247,6 +257,19 @@ Live g_live;
 
 // GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
 using rs2::RootSizePolicy;
+
+// GRC_UNKNOWN_ITEM, read at arm (protocol/unknown-item-skip.md).
+bool parse_unknown_item_policy(const char *value, rs2::UnknownItemPolicy *out) {
+  if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "strict") == 0) {
+    *out = rs2::UnknownItemPolicy::Strict;
+    return true;
+  }
+  if (std::strcmp(value, "skip") == 0) {
+    *out = rs2::UnknownItemPolicy::Skip;
+    return true;
+  }
+  return false;
+}
 
 bool parse_root_size_policy(const char *value, RootSizePolicy *out) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "observe") == 0) {
@@ -338,6 +361,21 @@ std::string result_json() {
   json.field("status", g_stream.status);
   json.field_or_null("reason", g_stream.reason);
   json.field("transactions", stream_transactions());
+  // Additive (protocol/unknown-item-skip.md): the policy, and under skip the mirror's counters.
+  const bool skip = g_stream.unknown_item_policy == rs2::UnknownItemPolicy::Skip;
+  json.field("unknown_item_policy", std::string(skip ? "skip" : "strict"));
+  if (skip) {
+    const rs::MirrorStats stats = rs::mirror_stats();
+    json.key("unknown_items").object_begin();
+    json.field("unknown_calls", static_cast<int64_t>(stats.unknown_calls));
+    json.field("unknown_rids_named", static_cast<int64_t>(stats.unknown_rids_named));
+    json.field("unknown_rids", static_cast<int64_t>(stats.unknown_rids));
+    json.field("withheld_items", static_cast<int64_t>(stats.withheld_items));
+    json.field("rekeyed_items", static_cast<int64_t>(stats.rekeyed_items));
+    json.object_end();
+  } else {
+    json.field_null("unknown_items");
+  }
   json.object_end();
   // Additive (G1c2).
   json.key("live").object_begin();
@@ -728,6 +766,19 @@ void stream_start() {
     }
     return;
   }
+  const char *unknown_item = std::getenv("GRC_UNKNOWN_ITEM");
+  if (!parse_unknown_item_policy(unknown_item, &g_stream.unknown_item_policy)) {
+    const std::string error = std::string("invalid GRC_UNKNOWN_ITEM=") + unknown_item +
+                              " (expected strict or skip)";
+    log_line("stream: refused unknown item policy (" + error + ")");
+    g_stream.unknown_item_policy = rs2::UnknownItemPolicy::Strict;
+    g_stream.status = "refused";
+    g_stream.reason = error;
+    if (!g_live.listen.empty()) {
+      live_decided("refused", "stream refused: " + error);
+    }
+    return;
+  }
   // Gate 2 (G2a): the resource policy and the payload copy capability
   // (gate2-design.md D3, Q3). A stream never runs with texture copies it cannot
   // make, so either failure refuses to publish, as an invalid GRC_ROOT_SIZE does.
@@ -917,6 +968,7 @@ void stream_start() {
     session.sabotage.has_op = sabotage.config.kind == rs2::SabotageKind::OmitOp;
     session.sabotage.op = session.sabotage.has_op ? sabotage.config.op : std::string();
   }
+  session.unknown_item_policy = g_stream.unknown_item_policy;
 
   if (!stream_open_sink(g_stream.path, &g_stream.full_sink) ||
       !stream_open_sink(g_stream.patch_path, &g_stream.patch_sink)) {
@@ -939,6 +991,11 @@ void stream_start() {
   }
 
   rs::mirror_enable(true);  // off -> on: a fresh mirror session
+  // Before the root query, so every hook call the session sees is under the declared policy.
+  rs::mirror_set_unknown_item_policy(g_stream.unknown_item_policy);
+  if (g_stream.unknown_item_policy == rs2::UnknownItemPolicy::Skip) {
+    log_line("stream: unknown_item_policy=skip (unknown canvas/item RIDs are withheld, not failed)");
+  }
   const rs::RootInfo before = rs::root_query_run();
   // Binds the root RIDs before the policy runs, so any viewport call the
   // min-size write causes is attributed to the root. A failure becomes the

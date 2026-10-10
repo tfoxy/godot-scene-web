@@ -49,6 +49,8 @@ void Mirror::reset() {
   degenerate_host_size_ = false;
   canvas_texture_headless_ = false;
   canvas_texture_created_ = false;
+  unknown_policy_ = UnknownItemPolicy::Strict;
+  unknown_rids_.clear();
   next_canvas_id_ = kRootCanvasId + 1;
   next_item_id_ = 1;
   root_viewport_rid_ = 0;
@@ -118,6 +120,12 @@ void Mirror::set_canvas_texture_headless(bool on) {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
   canvas_texture_headless_ = on;
+}
+
+void Mirror::set_unknown_item_policy(UnknownItemPolicy policy) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  unknown_policy_ = policy;
 }
 
 void Mirror::set_drop_frame(std::uint64_t frame) {
@@ -215,6 +223,19 @@ Mirror::Item *Mirror::item_for(std::uint64_t rid, const char *op, std::uint64_t 
 }
 
 void Mirror::unknown(std::uint64_t rid, const char *op, std::uint64_t frame) {
+  if (skip_unknown()) {
+    // protocol/unknown-item-skip.md: not a failure. The call is counted and not applied; the RID
+    // stays unknown until it is freed. Only the first one is logged (a late-joined game names
+    // thousands).
+    ++stats_.unknown_calls;
+    if (rid != 0 && unknown_rids_.insert(rid).second) {
+      ++stats_.unknown_rids_named;
+      if (stats_.unknown_rids_named == 1) {
+        log_line("unknown (skipped) rid=" + u64(rid) + " op=" + op + " frame=" + u64(frame));
+      }
+    }
+    return;
+  }
   for (const Failure &failure : failures_) {
     if (failure.reason == FailureReason::PreExistingObject) {
       return;  // first event only; the failure is sticky
@@ -265,6 +286,117 @@ void Mirror::detach(Item *item) {
     erase_id(list, item->state.id);
   }
   item->state.parent = ParentRef();
+  item->unknown_parent = 0;
+}
+
+// --- unknown RIDs under Skip (protocol/unknown-item-skip.md) ------------------------------------
+
+bool Mirror::is_withheld(const Item &item) const {
+  const Item *cur = &item;
+  // Bounded: a parent cycle (which the server does not refuse) never reaches an unknown RID.
+  for (std::size_t steps = 0; steps <= items_.size(); ++steps) {
+    if (cur->unknown_parent != 0) {
+      return true;
+    }
+    if (cur->state.parent.kind != ParentKind::Item) {
+      return false;
+    }
+    const auto it = items_.find(cur->state.parent.id);
+    if (it == items_.end()) {
+      return false;
+    }
+    cur = &it->second;
+  }
+  return false;
+}
+
+std::set<std::uint32_t> Mirror::withheld_ids() const {
+  std::set<std::uint32_t> out;
+  if (!skip_unknown()) {
+    return out;
+  }
+  for (const auto &entry : items_) {
+    if (is_withheld(entry.second)) {
+      out.insert(entry.first);
+    }
+  }
+  return out;
+}
+
+void Mirror::rekey_subtree(std::uint32_t root_id) {
+  // Pre-order walk of the subtree (a visited set guards against parent cycles).
+  std::vector<std::uint32_t> order;
+  std::set<std::uint32_t> seen;
+  std::vector<std::uint32_t> stack = {root_id};
+  while (!stack.empty()) {
+    const std::uint32_t id = stack.back();
+    stack.pop_back();
+    const auto it = items_.find(id);
+    if (it == items_.end() || !seen.insert(id).second) {
+      continue;
+    }
+    order.push_back(id);
+    const std::vector<std::uint32_t> &children = it->second.state.children;
+    for (auto child = children.rbegin(); child != children.rend(); ++child) {
+      stack.push_back(*child);
+    }
+  }
+  // Only an id a receiver has seen needs replacing; the others keep theirs.
+  std::map<std::uint32_t, std::uint32_t> renamed;
+  for (std::uint32_t id : order) {
+    if (items_.at(id).published) {
+      renamed[id] = next_item_id_++;
+    }
+  }
+  if (renamed.empty()) {
+    return;
+  }
+  const auto rename = [&renamed](std::uint32_t id) {
+    const auto it = renamed.find(id);
+    return it == renamed.end() ? id : it->second;
+  };
+  // The subtree root's own container lies outside the subtree.
+  const Item &root = items_.at(root_id);
+  if (renamed.count(root_id) != 0 &&
+      !(root.state.parent.kind == ParentKind::Item && seen.count(root.state.parent.id) != 0)) {
+    if (std::vector<std::uint32_t> *list = children_of(root.state.parent.kind, root.state.parent.id)) {
+      std::replace(list->begin(), list->end(), root_id, renamed.at(root_id));
+    }
+  }
+  std::vector<Item> staged;
+  staged.reserve(order.size());
+  for (std::uint32_t id : order) {
+    const auto it = items_.find(id);
+    Item item = std::move(it->second);
+    items_.erase(it);
+    item.state.id = rename(id);
+    item.published = false;
+    for (std::uint32_t &child : item.state.children) {
+      child = rename(child);
+    }
+    if (item.state.parent.kind == ParentKind::Item) {
+      item.state.parent.id = rename(item.state.parent.id);
+    }
+    item_by_rid_[item.rid] = item.state.id;
+    staged.push_back(std::move(item));
+  }
+  for (Item &item : staged) {
+    const std::uint32_t id = item.state.id;
+    items_.emplace(id, std::move(item));
+  }
+  stats_.rekeyed_items += renamed.size();
+}
+
+bool Mirror::forget_unknown(std::uint64_t rid) {
+  if (!skip_unknown() || unknown_rids_.erase(rid) == 0) {
+    return false;
+  }
+  for (auto &entry : items_) {
+    if (entry.second.unknown_parent == rid) {
+      entry.second.unknown_parent = 0;  // orphaned: no parent, as renderer_canvas_cull.cpp does
+    }
+  }
+  return true;
 }
 
 // --- identity -------------------------------------------------------------------
@@ -280,6 +412,7 @@ void Mirror::canvas_create(std::uint64_t rid, std::uint64_t frame) {
          "live canvases > " + u64(kMaxLiveItems) + " rid=" + u64(rid) + " frame=" + u64(frame));
     return;
   }
+  forget_unknown(rid);  // Skip: a recycled RID value is a new object
   Canvas canvas;
   canvas.rid = rid;
   canvas.state.id = next_canvas_id_++;
@@ -302,6 +435,7 @@ void Mirror::canvas_item_create(std::uint64_t rid, std::uint64_t frame) {
          "live items > " + u64(kMaxLiveItems) + " rid=" + u64(rid) + " frame=" + u64(frame));
     return;
   }
+  forget_unknown(rid);  // Skip: a recycled RID value is a new object
   Item item;
   item.rid = rid;
   item.state.id = next_item_id_++;
@@ -354,6 +488,12 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     } else {
       canvases_.erase(id);
     }
+    return;
+  }
+  if (forget_unknown(rid)) {
+    // protocol/unknown-item-skip.md: a freed unknown RID is dropped silently; the known items
+    // parented to it become orphans and are published again (under ids never shown before).
+    ++epoch_;
     return;
   }
   if (untracked_items_.erase(rid) != 0) {
@@ -438,29 +578,42 @@ void Mirror::set_parent(std::uint64_t item_rid, std::uint64_t parent_rid, std::u
   if (item == nullptr) {
     return;
   }
+  const bool was_withheld = skip_unknown() && is_withheld(*item);
   ParentRef parent;
+  std::uint64_t unknown_parent = 0;
   if (parent_rid != 0) {
     Target target;
     if (!find_target(parent_rid, &target)) {
       if (untracked_items_.count(parent_rid) != 0) {
         ++stats_.ignored_untracked;
-      } else {
-        unknown(parent_rid, kOp, frame);
+        return;
       }
-      return;
+      unknown(parent_rid, kOp, frame);
+      if (!skip_unknown()) {
+        return;
+      }
+      // protocol/unknown-item-skip.md: the link is kept, so the item (and its subtree) is
+      // withheld until it is reparented to something known or the unknown RID is freed.
+      unknown_parent = parent_rid;
+    } else {
+      parent.kind = target.kind == Kind::Canvas ? ParentKind::Canvas : ParentKind::Item;
+      parent.id = target.id;
     }
-    parent.kind = target.kind == Kind::Canvas ? ParentKind::Canvas : ParentKind::Item;
-    parent.id = target.id;
   }
   // renderer_canvas_cull.cpp:569-598: remove from the old parent's list, then
   // append to the new one -- even when the parent is unchanged.
   detach(item);
-  if (parent.kind != ParentKind::None) {
+  if (unknown_parent != 0) {
+    item->unknown_parent = unknown_parent;
+  } else if (parent.kind != ParentKind::None) {
     std::vector<std::uint32_t> *list = children_of(parent.kind, parent.id);
     if (list != nullptr) {
       list->push_back(item->state.id);
       item->state.parent = parent;
     }
+  }
+  if (skip_unknown() && !was_withheld && is_withheld(*item)) {
+    rekey_subtree(item->state.id);  // invalidates `item`
   }
 }
 
@@ -1822,6 +1975,23 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.default_texture_filter = default_filter_;
   out.default_texture_repeat = default_repeat_;
 
+  // protocol/unknown-item-skip.md: under Skip, every known item whose parent chain reaches an
+  // unknown RID is left out of the published state -- its item entry, its item-level unsupported
+  // entries and its draw-index groups. No published container lists one (a withheld item's parent
+  // is unknown or withheld itself), so canvases and the remaining items need no filtering. The
+  // texture table is not filtered: a tombstone a withheld command names stays, as under Strict.
+  const std::set<std::uint32_t> withheld = withheld_ids();
+  if (skip_unknown()) {
+    UnknownItems &unknown = out.unknown_items;
+    unknown.present = true;
+    unknown.unknown_rids = unknown_rids_.size();
+    unknown.withheld_items = withheld.size();
+    for (std::uint32_t id : withheld) {
+      unknown.withheld_commands += items_.at(id).state.commands.size();
+    }
+    unknown.unknown_calls = stats_.unknown_calls;
+  }
+
   // Session-level entries first: degenerate-host-size (observed at session
   // start, so always the first one -- render-stream-1.md "Unsupported
   // reasons"), then the others in first-observed order (render-stream-0.md
@@ -1897,6 +2067,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     item_level.push_back(std::move(ref));
   };
   for (const auto &entry : items_) {
+    if (withheld.count(entry.first) != 0) {
+      continue;
+    }
     const Item &item = entry.second;
     const ItemState &state = item.state;
     for (const Command &command : state.commands) {
@@ -1965,8 +2138,12 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   for (const auto &entry : canvases_) {
     out.canvases.push_back(entry.second.state);
   }
-  out.items.reserve(items_.size());
-  for (const auto &entry : items_) {
+  out.items.reserve(items_.size() - withheld.size());
+  for (auto &entry : items_) {
+    if (withheld.count(entry.first) != 0) {
+      continue;
+    }
+    entry.second.published = true;
     out.items.push_back(entry.second.state);
   }
   out.textures.reserve(textures_.size());
@@ -2000,6 +2177,8 @@ MirrorStats Mirror::stats() const {
   out.live_canvases = canvases_.size();
   out.live_items = items_.size();
   out.live_textures = textures_.size();
+  out.unknown_rids = unknown_rids_.size();
+  out.withheld_items = withheld_ids().size();
   std::set<std::string> hashes;
   for (const auto &entry : textures_) {
     const Texture &texture = entry.second;
@@ -2056,6 +2235,10 @@ void mirror_fail_root_size_enforce(const std::string &detail) {
 void mirror_set_degenerate_host_size(bool on) { mirror_instance().set_degenerate_host_size(on); }
 void mirror_set_canvas_texture_headless(bool on) {
   mirror_instance().set_canvas_texture_headless(on);
+}
+
+void mirror_set_unknown_item_policy(UnknownItemPolicy policy) {
+  mirror_instance().set_unknown_item_policy(policy);
 }
 
 void mirror_set_drop_frame(std::uint64_t frame) { mirror_instance().set_drop_frame(frame); }

@@ -17,7 +17,10 @@
 //   receiver-headless-trace/   headless receiver under strace: recording.rs2, applied.json, strace.txt
 //   sabotage-{freeze,omit,perturb}/{capture,receiver}/
 //   unsupported/{capture,receiver}/
-//   preexisting/               a capture-shaped leg (no receiver)
+//   preexisting/               a capture-shaped leg (no receiver), strict: pre-existing-object
+//   preexisting-skip/{capture,receiver}/  preexisting.tscn captured with GRC_UNKNOWN_ITEM=skip
+//                              (protocol/unknown-item-skip.md), then a rendered receiver
+//   preexisting-reference/     rendered preexisting.tscn, extension absent: shots/step-<k>.png
 //   corrupt/                   headless receiver on capture/recording.rs2 with seq 3's meta broken
 //   import/{fixture,receiver}/, receiver-typecheck/{selftest,minimal}/
 // Every process directory holds argv.txt (one argument per line), env.txt, stdout.log (stdout and
@@ -36,11 +39,16 @@ import {
   readTextOrUndefined,
   successfulOpenats,
 } from "./gate-minus1-checks";
-import { synthesizeExpected } from "./gate0-expected";
+import {
+  preexistingRects,
+  synthesizeExpected,
+  synthesizePreexistingReference,
+} from "./gate0-expected";
 import {
   applyTransaction,
   decodeRecord,
   emptyResolvedState,
+  isPartialUnknownItems,
   type ResolvedCanvas,
   type ResolvedCommand,
   type ResolvedItem,
@@ -55,6 +63,7 @@ import {
   sortedResolvedMeshes,
   sortedResolvedTextures,
   splitRecords,
+  type UnknownItemsMeta,
   validateRecording,
 } from "./render-stream-2";
 
@@ -286,14 +295,18 @@ export type LegClass =
   | "unsupported"
   | "replay-failure"
   | "pixel-mismatch"
+  | "partial-unknown-items"
   | "success";
 
-/** First match wins. */
+/** First match wins. `partial-unknown-items` (protocol/unknown-item-skip.md "Classification")
+ * ranks just above success: a partial capture is never plain success, and every real failure
+ * still outranks it. */
 export const CLASS_PRECEDENCE: readonly LegClass[] = [
   "capture-failure",
   "unsupported",
   "replay-failure",
   "pixel-mismatch",
+  "partial-unknown-items",
   "success",
 ];
 
@@ -305,6 +318,7 @@ export const CLASSIFIED_LEGS = [
   "sabotage-perturb",
   "unsupported",
   "preexisting",
+  "preexisting-skip",
   "corrupt",
 ] as const;
 export type ClassifiedLeg = (typeof CLASSIFIED_LEGS)[number];
@@ -314,6 +328,7 @@ export const SUPPORT_LEGS = [
   "receiver-typecheck",
   "reference",
   "receiver-headless-trace",
+  "preexisting-reference",
 ] as const;
 
 export interface LegExpectation {
@@ -337,6 +352,10 @@ export const LEG_EXPECTATIONS: Record<ClassifiedLeg, LegExpectation> = {
     class: "capture-failure",
     reasonIncludes: "pre-existing-object",
   },
+  "preexisting-skip": {
+    class: "partial-unknown-items",
+    reasonIncludes: "unknown_items",
+  },
   corrupt: {
     class: "replay-failure",
     failure: { seq: 3, reason: "meta-json" },
@@ -350,6 +369,8 @@ export interface LegLayout {
   legDir: string;
   /** the capture host whose recording and result.json feed the classifier */
   captureDir: string;
+  /** the rendered reference the receiver's shots are compared with (default <out>/reference) */
+  referenceDir?: string;
   /** the receiver process directory, when the leg has one */
   receiverDir?: string;
   /** whether the receiver takes the settle-step shots */
@@ -383,6 +404,14 @@ export function legLayout(outDir: string, leg: ClassifiedLeg): LegLayout {
         captureDir: join(legDir, "capture"),
         receiverDir: join(legDir, "receiver"),
         shots: false,
+      };
+    case "preexisting-skip":
+      return {
+        legDir,
+        captureDir: join(legDir, "capture"),
+        receiverDir: join(legDir, "receiver"),
+        referenceDir: join(outDir, "preexisting-reference"),
+        shots: true,
       };
     default:
       return {
@@ -452,6 +481,8 @@ export interface TransactionMeta {
   textures: ResolvedTexture[];
   /** render-stream/4 (G5e): the resolved mesh table, ascending id; absent before /4 */
   meshes?: ResolvedMesh[];
+  /** protocol/unknown-item-skip.md: a skip session's per-transaction account */
+  unknown_items?: UnknownItemsMeta;
 }
 export type SessionMeta = Partial<Omit<Rs2SessionMeta, "type">> & {
   type: "session";
@@ -679,6 +710,9 @@ export function summarizeRecording(
           status: meta.status,
           failures: arr<WireFailure>(meta.failures),
           unsupported: arr<WireUnsupported>(meta.unsupported),
+          ...(meta.unknown_items !== undefined
+            ? { unknown_items: meta.unknown_items }
+            : {}),
           items: sortedResolvedItems(state),
           canvases: sortedResolvedCanvases(state),
           default_texture_filter: meta.default_texture_filter,
@@ -1107,6 +1141,18 @@ export function classifyLeg(input: ClassifyInput): Classification {
       `recording carries unsupported ${[...unsupportedOps].sort().join(", ")}`,
     );
   }
+  // 5. partial-unknown-items (protocol/unknown-item-skip.md "Classification"): a skip session's
+  // transaction that withholds something. Fired here, ranked by CLASS_PRECEDENCE just above
+  // success, so it only ever replaces success.
+  const partial = rec.transactions.filter((t) => isPartialUnknownItems(t.meta));
+  if (partial.length > 0) {
+    const u = partial[0].meta.unknown_items as UnknownItemsMeta;
+    fire(
+      "partial-unknown-items",
+      `unknown_items in ${partial.length} of ${rec.transactions.length} transactions (first seq ${partial[0].meta.seq}: ${u.unknown_rids} unknown RIDs, ${u.withheld_items} withheld items holding ${u.withheld_commands} commands, ${u.unknown_calls} calls skipped)`,
+    );
+  }
+
   const receiver = input.receiver;
   const applied = receiver?.applied;
   const appliedUnsupported = arr<{
@@ -1252,6 +1298,9 @@ export async function computeCheckpoints(
   receiverShotsDir: string,
   diffDir: string,
   expected: Gate0Expected,
+  /** pixel rects left out of every comparison (the skip leg's withheld items): both images are
+   * blanked there first, so only what the stream claims to carry is compared */
+  exclude: readonly (readonly number[])[] = [],
 ): Promise<{ checkpoints: Checkpoint[]; compareOk: boolean }> {
   const checkpoints: Checkpoint[] = [];
   let compareOk = true;
@@ -1268,8 +1317,11 @@ export async function computeCheckpoints(
           { name: "marker", rect_px: [...exp.marker.rect_px] },
         ]
       : [];
-    const ref = await decodePngRgba(referencePng);
-    const got = receiverPng ? await decodePngRgba(receiverPng) : undefined;
+    const ref = maskRects(await decodePngRgba(referencePng), exclude);
+    const got = maskRects(
+      receiverPng ? await decodePngRgba(receiverPng) : undefined,
+      exclude,
+    );
     const comparable =
       ref !== undefined &&
       got !== undefined &&
@@ -1321,6 +1373,24 @@ export async function computeCheckpoints(
     });
   }
   return { checkpoints, compareOk };
+}
+
+/** A copy of `image` with every pixel inside `rects` set to transparent black. */
+function maskRects<
+  T extends { width: number; height: number; data: Uint8Array },
+>(image: T | undefined, rects: readonly (readonly number[])[]): T | undefined {
+  if (!image || rects.length === 0) return image;
+  const data = new Uint8Array(image.data);
+  for (const [x, y, w, h] of rects) {
+    for (let py = Math.max(0, y); py < Math.min(image.height, y + h); py++) {
+      data.fill(
+        0,
+        (py * image.width + Math.max(0, x)) * 4,
+        (py * image.width + Math.min(image.width, x + w)) * 4,
+      );
+    }
+  }
+  return { ...image, data };
 }
 
 export interface LegEvaluation {
@@ -1385,10 +1455,11 @@ export async function evaluateLeg(
     if (stepJoin?.ok) {
       ({ checkpoints, compareOk } = await computeCheckpoints(
         stepJoin,
-        join(outDir, "reference", "shots"),
+        join(layout.referenceDir ?? join(outDir, "reference"), "shots"),
         join(layout.receiverDir, "shots"),
         join(layout.receiverDir, "diff"),
         expected,
+        leg === "preexisting-skip" ? preexistingRects(expected) : [],
       ));
     }
   }
@@ -2088,6 +2159,237 @@ export async function checkReceiverTypedClean(
   );
 }
 
+// ---------------------------------------------------------------------------------------------
+// The skip leg (protocol/unknown-item-skip.md "Evidence")
+// ---------------------------------------------------------------------------------------------
+
+/** Every add_rect colour the published state of a transaction draws, as JSON (float32-rounded). */
+function rectColors(t: Transaction): Set<string> {
+  const out = new Set<string>();
+  for (const item of t.meta.items) {
+    for (const c of item.commands) {
+      if (c.op === "add_rect" && Array.isArray(c.color))
+        out.add(JSON.stringify(c.color.map((v) => Math.fround(v))));
+    }
+  }
+  return out;
+}
+
+/** The skip capture declares itself, accounts for exactly what preexisting.tscn hides (one unknown
+ * RID, one withheld item holding one command, calls on the unknown RID growing at its step-2
+ * recolour) in every transaction, never fails, and publishes Subject and Marker only. */
+export function checkPreexistingSkipAccount(
+  skip: LegEvaluation,
+  expected: Gate0Expected,
+): Gate0Check {
+  const rec = skip.recording;
+  const problems: string[] = [];
+  if (rec.session?.unknown_item_policy !== "skip")
+    problems.push(
+      `session unknown_item_policy=${JSON.stringify(rec.session?.unknown_item_policy)}, expected "skip"`,
+    );
+  const stream = skip.captureResult?.stream as
+    | {
+        unknown_item_policy?: unknown;
+        unknown_items?: { unknown_rids_named?: unknown } | null;
+      }
+    | undefined;
+  if (stream?.unknown_item_policy !== "skip")
+    problems.push(
+      `result.json stream.unknown_item_policy=${JSON.stringify(stream?.unknown_item_policy)}`,
+    );
+  if (stream?.unknown_items?.unknown_rids_named !== 1)
+    problems.push(
+      `result.json stream.unknown_items.unknown_rids_named=${JSON.stringify(stream?.unknown_items?.unknown_rids_named)}, expected 1 (Preexisting)`,
+    );
+  if (rec.errors.length > 0)
+    problems.push(`validateRecording: ${rec.errors[0]}`);
+  if (rec.transactions.length === 0) problems.push("no transactions");
+  const hidden = new Set(
+    (expected.preexisting?.items ?? []).flatMap((item) =>
+      item.colors.map((c) => JSON.stringify(c.map((v) => Math.fround(v)))),
+    ),
+  );
+  let lastCalls = -1;
+  const callsAtSettle = new Map<number, number>();
+  for (const t of rec.transactions) {
+    const u = t.meta.unknown_items;
+    const at = `seq ${t.meta.seq}`;
+    if (!u) {
+      problems.push(`${at}: no unknown_items`);
+      break;
+    }
+    if (t.meta.failures.length > 0 || t.meta.status !== "ok") {
+      problems.push(
+        `${at}: status ${t.meta.status}, failures ${JSON.stringify(t.meta.failures)}`,
+      );
+      break;
+    }
+    if (
+      u.unknown_rids !== 1 ||
+      u.withheld_items !== 1 ||
+      u.withheld_commands !== 1
+    ) {
+      problems.push(
+        `${at}: unknown_rids ${u.unknown_rids}, withheld_items ${u.withheld_items}, withheld_commands ${u.withheld_commands}; expected 1, 1, 1`,
+      );
+      break;
+    }
+    if (u.unknown_calls < lastCalls || u.unknown_calls < 1) {
+      problems.push(
+        `${at}: unknown_calls ${u.unknown_calls} after ${lastCalls}`,
+      );
+      break;
+    }
+    lastCalls = u.unknown_calls;
+    if (t.meta.items.length !== 2) {
+      problems.push(
+        `${at}: ${t.meta.items.length} published items, expected 2 (Subject, Marker)`,
+      );
+      break;
+    }
+    const leaked = [...rectColors(t)].filter((c) => hidden.has(c));
+    if (leaked.length > 0) {
+      problems.push(
+        `${at}: a published add_rect draws a pre-existing colour ${leaked[0]}`,
+      );
+      break;
+    }
+    for (const s of expected.steps)
+      if (t.meta.frame === s.settle_frame)
+        callsAtSettle.set(s.step, u.unknown_calls);
+  }
+  const step1 = callsAtSettle.get(1);
+  const step2 = callsAtSettle.get(2);
+  if (step1 === undefined || step2 === undefined || !(step2 > step1))
+    problems.push(
+      `unknown_calls at step 1/2 settle ${step1}/${step2}: Preexisting's step-2 recolour must add calls`,
+    );
+  return check(
+    "preexisting-skip-account",
+    "the GRC_UNKNOWN_ITEM=skip capture of preexisting.tscn declares unknown_item_policy skip (session and result.json, one unknown RID named), and every transaction is ok with unknown_items {unknown_rids 1, withheld_items 1, withheld_commands 1}, unknown_calls non-decreasing and growing at step 2, exactly 2 published items and no published add_rect in a pre-existing colour",
+    problems,
+    `${rec.transactions.length} transactions account for 1 unknown RID and 1 withheld item; unknown_calls ${step1} -> ${step2} across step 2`,
+    [rec.path, join(skip.layout.captureDir, "evidence", "result.json")],
+  );
+}
+
+/** preexisting-reference/shots/step-<k>.png equal synthesizePreexistingReference(k); its
+ * steps.jsonl lists the gate 0 timeline. */
+export async function checkPreexistingReference(
+  outDir: string,
+  expected: Gate0Expected,
+): Promise<Gate0Check> {
+  const dir = join(outDir, "preexisting-reference");
+  const problems: string[] = [];
+  const paths: string[] = [];
+  if (!expected.preexisting)
+    problems.push("expected.json has no preexisting block");
+  for (const s of expected.steps) {
+    const path = join(dir, "shots", `step-${s.step}.png`);
+    paths.push(path);
+    const got = await decodePngRgba(path);
+    if (!got || !expected.preexisting) {
+      problems.push(`step ${s.step}: ${path} missing or unreadable`);
+      continue;
+    }
+    const want = synthesizePreexistingReference(expected, s.step);
+    const d =
+      got.width === want.width && got.height === want.height
+        ? diffRgba(want.rgba, got.data, want.width, want.height)
+        : undefined;
+    if (!d || d.mismatched_pixels > 0)
+      problems.push(
+        `step ${s.step}: ${d ? `${d.mismatched_pixels} px differ (max delta ${d.max_channel_delta})` : `${got.width}x${got.height}`} from synthesizePreexistingReference`,
+      );
+  }
+  const steps = parseStepLog(
+    await readTextOrUndefined(join(dir, "steps.jsonl")),
+  );
+  const want = expected.steps.map((s) =>
+    [s.step, s.applied_frame, s.settle_frame].join("/"),
+  );
+  const got = steps?.map((s) =>
+    [s.step, s.applied_frame, s.settle_frame].join("/"),
+  );
+  if (JSON.stringify(got) !== JSON.stringify(want))
+    problems.push(
+      `steps.jsonl ${JSON.stringify(got)} != ${JSON.stringify(want)}`,
+    );
+  return check(
+    "preexisting-skip-reference",
+    "each preexisting-reference/shots/step-<k>.png (preexisting.tscn rendered, extension absent) equals synthesizePreexistingReference(k) exactly, and its steps.jsonl is the gate 0 timeline",
+    problems,
+    `${paths.length} reference shots of preexisting.tscn match exactly, pre-existing rects included`,
+    paths,
+  );
+}
+
+/** The skip receiver's shots equal synthesizeExpected(k) -- the pre-existing rects show the clear
+ * colour -- and differ from the reference in exactly those rects, every pixel of them. */
+export async function checkPreexistingSkipReceiver(
+  skip: LegEvaluation,
+  expected: Gate0Expected,
+): Promise<Gate0Check[]> {
+  const shotsDir = join(skip.layout.receiverDir ?? skip.layout.legDir, "shots");
+  const referenceDir = join(skip.layout.referenceDir ?? "", "shots");
+  const join_ = skip.stepJoin;
+  const exact: string[] = [];
+  const region: string[] = [];
+  const paths: string[] = [];
+  const rects = preexistingRects(expected);
+  const area = rects.reduce((n, r) => n + r[2] * r[3], 0);
+  if (!join_?.ok)
+    exact.push(`step join failed: ${join_?.problems.join("; ") ?? "no join"}`);
+  if (rects.length === 0) region.push("expected.json has no preexisting rects");
+  for (const s of expected.steps) {
+    const seq = join_?.entries.find((e) => e.step === s.step)?.seq ?? null;
+    const path = seq === null ? null : join(shotsDir, `seq-${seq}.png`);
+    if (path) paths.push(path);
+    const problem = await compareWithExpected(path, expected, s.step);
+    if (problem) exact.push(problem);
+    const got = path ? await decodePngRgba(path) : undefined;
+    const ref = await decodePngRgba(join(referenceDir, `step-${s.step}.png`));
+    if (!got || !ref || got.width !== ref.width || got.height !== ref.height) {
+      region.push(
+        `step ${s.step}: receiver or reference shot missing or a different size`,
+      );
+      continue;
+    }
+    const full = diffRgba(ref.data, got.data, ref.width, ref.height);
+    const inside = rects.map((r) =>
+      diffRgba(ref.data, got.data, ref.width, ref.height, r),
+    );
+    const insideTotal = inside.reduce((n, d) => n + d.mismatched_pixels, 0);
+    if (full.mismatched_pixels !== insideTotal)
+      region.push(
+        `step ${s.step}: ${full.mismatched_pixels - insideTotal} px differ outside the pre-existing rects`,
+      );
+    inside.forEach((d, i) => {
+      if (d.mismatched_pixels !== rects[i][2] * rects[i][3])
+        region.push(
+          `step ${s.step}: ${d.mismatched_pixels} of ${rects[i][2] * rects[i][3]} px of ${expected.preexisting?.items[i].name} differ from the reference`,
+        );
+    });
+  }
+  return [
+    check(
+      "preexisting-skip-receiver",
+      "each skip receiver shot for step k equals synthesizeExpected(k) exactly: nothing of Preexisting or PreChild is drawn",
+      exact,
+      `${paths.length} receiver shots match synthesizeExpected exactly`,
+      paths,
+    ),
+    check(
+      "preexisting-skip-excluded-region",
+      "at every step the skip receiver differs from the preexisting.tscn reference in exactly the pre-existing rects (every pixel of them) and nowhere else",
+      region,
+      `${expected.steps.length} steps differ in exactly ${area} px, the pre-existing rects`,
+      paths,
+    ),
+  ];
+}
+
 export function checkLegClass(evaluation: LegEvaluation): Gate0Check {
   const exp = LEG_EXPECTATIONS[evaluation.leg];
   const c = evaluation.classification;
@@ -2219,6 +2521,16 @@ export async function runGate0(
     checkReceiverConsumedStream(receiver),
     await checkReceiverNeverLoadedFixture(outDir, ctx),
     await checkReceiverTypedClean(outDir),
+    // protocol/unknown-item-skip.md "Evidence".
+    checkPreexistingSkipAccount(
+      evaluations.get("preexisting-skip") as LegEvaluation,
+      ctx.expected,
+    ),
+    await checkPreexistingReference(outDir, ctx.expected),
+    ...(await checkPreexistingSkipReceiver(
+      evaluations.get("preexisting-skip") as LegEvaluation,
+      ctx.expected,
+    )),
     ...CLASSIFIED_LEGS.map((leg) =>
       checkLegClass(evaluations.get(leg) as LegEvaluation),
     ),

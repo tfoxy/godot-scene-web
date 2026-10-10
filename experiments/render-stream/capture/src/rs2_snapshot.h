@@ -219,6 +219,10 @@ enum class StretchMode : std::uint8_t { Disabled, CanvasItems, Viewport };
 enum class StretchAspect : std::uint8_t { Ignore, Keep, KeepWidth, KeepHeight, Expand };
 enum class ScaleMode : std::uint8_t { Fractional, Integer };
 enum class RootSizePolicy : std::uint8_t { Observe, EnforceMinSize };
+// protocol/unknown-item-skip.md: what the mirror does with a canvas or item RID it never saw
+// created. Strict (the default) is gate 0's sticky `pre-existing-object` capture failure; Skip is
+// the opt-in diagnostic mode (GRC_UNKNOWN_ITEM=skip) that withholds the affected subtrees instead.
+enum class UnknownItemPolicy : std::uint8_t { Strict, Skip };
 enum class HostSizeStatus : std::uint8_t { Match, DegenerateVisible, DegenerateWindow };
 
 // --- new at /2: textures, filter/repeat, resource delivery -----------------------------------
@@ -763,6 +767,10 @@ struct Session {
   MaterialsInfo materials;  // new at /5, between resources and features
   Features features;
   Sabotage sabotage;
+  // protocol/unknown-item-skip.md: Skip adds `"unknown_item_policy":"skip"` after `sabotage` (at
+  // /4 and /5 only); Strict adds nothing, so a strict session is byte-identical to one encoded
+  // before the policy existed.
+  UnknownItemPolicy unknown_item_policy = UnknownItemPolicy::Strict;
   Color4 clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
   Xform root_canvas_xform = kIdentityXform;
   Rect4 host_visible_rect = kZeroRect;
@@ -1023,6 +1031,18 @@ struct UnsupportedRef {
   UnsupportedReason reason = UnsupportedReason::UnsupportedOp;
 };
 
+// protocol/unknown-item-skip.md "Transaction": the per-transaction account of what an
+// `unknown_item_policy: "skip"` session left out. `present` is true exactly in such a session
+// (the key is then in every transaction, zeros included) and false otherwise (no key at all).
+// Complete, never patched, like `failures` and `unsupported`.
+struct UnknownItems {
+  bool present = false;
+  std::uint64_t unknown_rids = 0;       // unknown canvas/item RIDs named since arming, not freed
+  std::uint64_t withheld_items = 0;     // known items whose parent chain reaches one of them
+  std::uint64_t withheld_commands = 0;  // the commands those withheld items hold now
+  std::uint64_t unknown_calls = 0;      // hook calls that named an unknown RID, since arming
+};
+
 // The mirror's complete captured state for one frame.
 struct Snapshot {
   // Which wire format make_full()/make_patch() (rs2_diff.cpp) produce from this Snapshot, exactly
@@ -1034,6 +1054,7 @@ struct Snapshot {
   std::uint64_t frame = 0;
   std::vector<Failure> failures;
   std::vector<UnsupportedRef> unsupported;
+  UnknownItems unknown_items;  // protocol/unknown-item-skip.md
   Filter default_texture_filter = Filter::Nearest;    // new at /2: never Default on the wire
   Repeat default_texture_repeat = Repeat::Disabled;   // new at /2: never Default on the wire
   std::vector<CanvasState> canvases;  // sorted by id ascending
@@ -1074,6 +1095,7 @@ struct Transaction {
   std::optional<std::uint64_t> base_seq;
   std::vector<Failure> failures;
   std::vector<UnsupportedRef> unsupported;
+  UnknownItems unknown_items;  // protocol/unknown-item-skip.md; complete, never patched
   Filter default_texture_filter = Filter::Nearest;
   Repeat default_texture_repeat = Repeat::Disabled;
   std::vector<std::uint32_t> removed_canvases;  // ascending
