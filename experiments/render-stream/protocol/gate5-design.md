@@ -1065,6 +1065,48 @@ checks with Q6d's sets.
 **Pass criteria**: `--legs …,g5e` green; "Gate 5e result" with mesh bytes and copy/hash cost per
 step.
 
+**As built (G5e, 2026-10-10).** Every check but one held on the first engine run, against the hook
+log, the oracle and `make_expected.py`, never against the capture: the wire's mesh versions and
+hashes equal the hook log's at every transaction of both sinks and of an all-inline capture (one
+wire version per frame, `DF`'s three calls a frame included), every settle surface hash equals the
+oracle's GPU readback, the mesh tables per frame follow the predicted lifetimes (`DF`'s id leaves
+and `DF2`'s arrives at 51, `FM` a named `freed` tombstone from 71 to 80), and the three honest
+receivers equal the reference at every pixel, `DF` included, with exactly the predicted uploads
+frame by frame (in-place updates of only the changed buffers at 11, 21, 31, 41 and every `DF`
+frame, rebuilds at 61, 71, 81). The one miss was a prediction: omit-op
+`mesh_surface_update_vertex_region` @21 leaves `DF` correct at step 2, because `DF`'s displacement
+repeats every 8 frames and its frozen frame-20 vertices equal frame 28's; `make_expected.py` now
+derives that set from its byte model (`DF` {3..9}, not Q6d's {2..9}). Amendments: (1) **The hook
+encodes each surface version once**, for the log and the mirror alike: G5a's retained per-surface
+buffers in `hooks.cpp` are the copy-on-write source, a region update is applied there and the
+re-encoded GRM1 payload is handed to the mirror as a shared pointer (Q3a's "applied to a copy of
+the surface's current payload" happens at the hook, not twice). `perturb-vertex` re-hashes a
+mirror-only copy, so the log keeps the true hashes. (2) **Only omit-op applies to the mesh taps**
+(never omit-update, which the hook log does not model), with the RenderingServer method names as
+op names, and the mesh taps hold the texture identity lock so a loader thread's
+`mesh_create_from_surfaces` orders against the main thread's mesh calls in the mirror and the log
+alike (Q1j). (3) **D15's `mesh-log-divergence`** (ids, versions, statuses against the log at the
+transaction's frame) is part of the honest receiver legs' class; hashes are
+`mesh-versions-current`'s. The host sabotages keep classifyLeg's class because their wire diverges
+from the log by design -- freeze-frame republishes the frame-10 table, perturb-vertex re-hashes --
+and a named `sabotage-mesh-log-signature` check proves each signature instead. (4) **Receiver
+layout** is everything but the buffer bytes, read from the decoded payload: primitive, format,
+counts, buffer lengths and the 40-byte geometry block (AABB and uv_scale), so the receiver fetches
+every changed surface even under `stale-mesh`, and `P2`'s polygon change (same counts, new AABB)
+is a rebuild as Q6d said. GLES3's `mesh_clear` keeps the custom AABB (`gles3m:845-873`), so a
+rebuild sets it only when it changed. (5) `applied.json` is `render-stream-receiver-applied/4`:
+per transaction `meshes_created`, `meshes_rebuilt`, `surface_updates`, `mesh_upload_bytes`,
+`skipped_mesh_commands` and `mesh_commands`, fetches gain `kind`, a top-level `mesh_uploads` list
+(`create|rebuild|update|free|custom_aabb`, the surfaces, the buffers, the bytes) and mesh totals;
+state dumps gain `meshes`. An `add_mesh` naming a tombstone is recorded `mesh-freed`. (6) Store
+index lines carry `"type"` for textures too (`hash, bytes, type, …`). (7) `make_expected.py`
+gained `predictions["mesh-lifetimes"]` and `["receiver-mesh-uploads"]` (per frame over the
+400-frame capture, from the byte model), and items' settle commands name their mesh, transform,
+modulate and texture. (8) `clip-derive.ts` gives an `add_mesh` its rect (custom AABB, else the
+merged surface AABBs supplied by hash, a tombstone's zero rect); the rect-cache quirk of Q1f is
+still not modelled. (9) Group g5e adds a headless receiver under strace on the mesh capture
+(`receiver-never-loaded-fixture-mesh`) and the all-inline capture as its own leg.
+
 ---
 
 ### G5g — nine-patch and stylebox coverage (sonnet, after G5d)

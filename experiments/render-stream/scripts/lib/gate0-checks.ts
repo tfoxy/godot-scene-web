@@ -44,6 +44,7 @@ import {
   type ResolvedCanvas,
   type ResolvedCommand,
   type ResolvedItem,
+  type ResolvedMesh,
   type ResolvedState,
   type ResolvedTexture,
   type EndMeta as Rs2EndMeta,
@@ -51,6 +52,7 @@ import {
   type TransactionMeta as Rs2TransactionMeta,
   sortedResolvedCanvases,
   sortedResolvedItems,
+  sortedResolvedMeshes,
   sortedResolvedTextures,
   splitRecords,
   validateRecording,
@@ -448,6 +450,8 @@ export interface TransactionMeta {
   default_texture_repeat: string;
   /** resolved texture table, ascending id */
   textures: ResolvedTexture[];
+  /** render-stream/4 (G5e): the resolved mesh table, ascending id; absent before /4 */
+  meshes?: ResolvedMesh[];
 }
 export type SessionMeta = Partial<Omit<Rs2SessionMeta, "type">> & {
   type: "session";
@@ -490,7 +494,8 @@ export interface AppliedJson {
   failure?: { seq: number | null; reason: string; detail?: string } | null;
   end_seen?: boolean;
   /** render-stream-receiver-applied/3 since G2b2 (gate2-design.md Q5: gate1-design.md Q5's /2
-   * plus the resource cache, fetches and uploads) */
+   * plus the resource cache, fetches and uploads); /4 since G5e (gate5-design.md Q5: mesh
+   * counters per transaction, mesh_uploads, mesh totals in resources_summary) */
   mode?: string;
   viewport?: {
     display_server?: string;
@@ -564,7 +569,7 @@ export interface AppliedResources {
 }
 
 /** The applied.json schema the receiver writes since G2b2. */
-export const APPLIED_SCHEMA = "render-stream-receiver-applied/3";
+export const APPLIED_SCHEMA = "render-stream-receiver-applied/4";
 
 export interface StepLine {
   step: number;
@@ -679,6 +684,9 @@ export function summarizeRecording(
           default_texture_filter: meta.default_texture_filter,
           default_texture_repeat: meta.default_texture_repeat,
           textures: sortedResolvedTextures(state),
+          ...(meta.meshes !== undefined
+            ? { meshes: sortedResolvedMeshes(state) }
+            : {}),
         },
         wire: meta,
         bytes: record.byte_length,
@@ -1849,7 +1857,7 @@ export function checkReceiverConsumedStream(
   }
   return check(
     "receiver-consumed-stream",
-    "applied.json is render-stream-receiver-applied/3; the receiver applied seqs 1..N with each record_sha256 equal to the host-computed hash, every shot has applied_through == seq, recording.sha256 is the capture file's, and it fetched and uploaded no texture (nothing draws one)",
+    "applied.json is render-stream-receiver-applied/4; the receiver applied seqs 1..N with each record_sha256 equal to the host-computed hash, every shot has applied_through == seq, recording.sha256 is the capture file's, and it fetched and uploaded no texture (nothing draws one)",
     problems,
     `${host.transactions.length} transactions consumed in order, hashes match`,
     [appliedPath, host.path],

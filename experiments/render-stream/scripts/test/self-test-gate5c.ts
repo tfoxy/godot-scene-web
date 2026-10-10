@@ -13,7 +13,7 @@
 // 3. replayHookHashes on a hand sequence (add, update, remove, clear, free, create_from_surfaces).
 // 4. evaluateOracleAgrees and evaluateHashParity on oracle lines made from expected.json and hook
 //    lines carrying its model hashes, then with one field, one hash, the RID check or one leg off.
-// 5. evaluateDrawCensus and evaluateMeshCaptureTyped on synthetic counters and recordings.
+// 5. evaluateDrawCensus and (G5e) evaluateMeshCaptureCommands on synthetic counters and recordings.
 //
 // Exits non-zero if any assertion fails.
 
@@ -29,7 +29,7 @@ import {
   checkMeshExpectedSelfConsistent,
   evaluateDrawCensus,
   evaluateHashParity,
-  evaluateMeshCaptureTyped,
+  evaluateMeshCaptureCommands,
   evaluateMeshCensus,
   evaluateOracleAgrees,
   expandCensus,
@@ -401,6 +401,18 @@ function oracleCases(expected: Gate5MeshExpected): void {
 // 5. Counters and the capture
 // ---------------------------------------------------------------------------------------------
 
+const MESH_IDS = new Map([
+  ["AM1", 1],
+  ["RMS", 2],
+  ["M2", 3],
+  ["DF", 4],
+  ["P2", 5],
+  ["LD", 6],
+  ["FM", 7],
+  ["DF2", 8],
+]);
+const TEXTURE_IDS = new Map([["TEXG", 2]]);
+
 function syntheticCapture(
   expected: Gate5MeshExpected,
 ): Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full"> {
@@ -408,31 +420,31 @@ function syntheticCapture(
     const items = expected.creation_order.map((name, j) => ({
       id: j + 2,
       content_version: name === "DF" ? s.settle_frame : 2,
-      commands: s.commands[name].map((c) =>
-        c.op === "canvas_item_add_rect"
+      commands: s.commands[name].map((c) => {
+        const call = c as Record<string, unknown>;
+        return c.op === "canvas_item_add_rect"
           ? {
               op: "add_rect",
-              rect: (c.rect as number[]).map(Math.fround),
-              color: (c.color as number[]).map(Math.fround),
-              aa: c.antialiased,
+              rect: (call.rect as number[]).map(Math.fround),
+              color: (call.color as number[]).map(Math.fround),
+              aa: call.antialiased,
             }
-          : { op: "unsupported", name: c.op },
-      ),
+          : {
+              op: "add_mesh",
+              mesh: MESH_IDS.get(String(call.mesh)),
+              tex: call.texture ? TEXTURE_IDS.get(String(call.texture)) : null,
+              transform: call.transform,
+              modulate: call.modulate,
+            };
+      }),
     }));
     return {
-      meta: {
-        seq: k + 1,
-        frame: s.settle_frame,
-        items,
-        unsupported: [
-          { op: "canvas_item_add_mesh", item: 2, reason: "unsupported-op" },
-        ],
-      },
+      meta: { seq: k + 1, frame: s.settle_frame, items, unsupported: [] },
       sha256: "",
     };
   });
   return {
-    result_class: "unsupported",
+    result_class: "success",
     reasons: [],
     full: {
       path: "synthetic",
@@ -470,34 +482,51 @@ function captureCases(expected: Gate5MeshExpected): void {
     "canvas_item_add_polygon",
   );
   const good = syntheticCapture(expected);
-  passes(
-    "leg-class-capture-mesh",
-    evaluateMeshCaptureTyped(expected, good).problems,
-  );
+  const run = (c: typeof good) =>
+    evaluateMeshCaptureCommands(expected, c, MESH_IDS, TEXTURE_IDS).problems;
+  passes("leg-class-capture-mesh", run(good));
   fails(
-    "leg-class-capture-mesh (class success)",
-    evaluateMeshCaptureTyped(expected, { ...good, result_class: "success" })
-      .problems,
-    "class success",
+    "leg-class-capture-mesh (class unsupported)",
+    run({ ...good, result_class: "unsupported" }),
+    "class unsupported",
+  );
+  const typed = clone(good);
+  typed.full.transactions[2].meta.unsupported.push({
+    op: "canvas_item_add_mesh",
+    item: 2,
+    reason: "unknown-mesh",
+  } as never);
+  fails(
+    "leg-class-capture-mesh (an unknown-mesh entry)",
+    run(typed),
+    "unknown-mesh",
   );
   const fr = clone(good);
   fr.full.transactions[8].meta.items[
     expected.creation_order.indexOf("FR")
-  ].commands.push({ op: "unsupported", name: "canvas_item_add_mesh" } as never);
+  ].commands.push({ op: "add_mesh", mesh: 7 } as never);
+  fails("leg-class-capture-mesh (FR not cleared at 8)", run(fr), "step 8 FR");
+  const df = clone(good);
+  (
+    df.full.transactions[5].meta.items[expected.creation_order.indexOf("DF")]
+      .commands[0] as unknown as { mesh: number }
+  ).mesh = 4;
   fails(
-    "leg-class-capture-mesh (FR not cleared at 8)",
-    evaluateMeshCaptureTyped(expected, fr).problems,
-    "step 8 FR",
+    "leg-class-capture-mesh (DF still names its freed mesh at 5)",
+    run(df),
+    "step 5 DF",
   );
+  const tex = clone(good);
+  (
+    tex.full.transactions[0].meta.items[expected.creation_order.indexOf("DF")]
+      .commands[0] as unknown as { tex: number | null }
+  ).tex = null;
+  fails("leg-class-capture-mesh (DF untextured)", run(tex), "step 0 DF");
   const rm = clone(good);
   rm.full.transactions[3].meta.items[
     expected.creation_order.indexOf("RM")
   ].content_version = 3;
-  fails(
-    "leg-class-capture-mesh (RM redrawn)",
-    evaluateMeshCaptureTyped(expected, rm).problems,
-    "RM's content_version",
-  );
+  fails("leg-class-capture-mesh (RM redrawn)", run(rm), "RM's content_version");
 }
 
 async function main(): Promise<void> {

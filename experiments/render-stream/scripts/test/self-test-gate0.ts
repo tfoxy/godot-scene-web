@@ -12,7 +12,7 @@
 // 2. Evidence-tree scenarios: a fabricated passing tree for the whole runner layout (recordings
 //    encoded in render-stream/2 by rs2-test-encoder.ts, each texture table holding the engine's
 //    own unreferenced hue strip as every real gate 0 capture's does; applied.json
-//    render-stream-receiver-applied/3; PNGs synthesized from the timeline), then one perturbation
+//    render-stream-receiver-applied/4; PNGs synthesized from the timeline), then one perturbation
 //    per failure mode. Each scenario runs the real runGate0 and asserts the verdict of the checks
 //    and leg classes it targets.
 // 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-4/corrupt-meta.rs4 from
@@ -302,7 +302,7 @@ function appliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/3",
+    schema: "render-stream-receiver-applied/4",
     mode: "file",
     recording: {
       path: recordingPath,

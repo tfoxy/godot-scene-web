@@ -1012,8 +1012,11 @@ std::map<uint64_t, std::vector<MeshSurfaceBuffer>> g_mesh_buffers;  // guarded b
 
 // Classifies and, when ok, copies and hashes one SurfaceData-shaped pointer. `copy_ns`/`hash_ns`
 // time the GRM1 encode and the SHA-256 separately, as copy_payload does for textures. Nothing is
-// copied or hashed for a refused surface (D7) or one over GRC_RESOURCE_MAX_PAYLOAD_BYTES.
-rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBuffer *buffer) {
+// copied or hashed for a refused surface (D7) or one over GRC_RESOURCE_MAX_PAYLOAD_BYTES. Since
+// G5e the encoded payload is handed back in `payload` (null unless ok): the mirror's mesh table
+// keeps it, shared, never copied again (gate5-design.md D5, D6).
+rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBuffer *buffer,
+                                      rs::PayloadPtr *payload_out) {
   rs::MeshSurfaceCopy copy;
   copy.primitive = sd.primitive;
   copy.format = sd.format;
@@ -1043,6 +1046,7 @@ rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBu
   buffer->attribute_data.clear();
   buffer->skin_data.clear();
   buffer->index_data.clear();
+  payload_out->reset();
   if (!classification.ok) {
     copy.status = "unsupported";
     copy.reason = classification.reason;
@@ -1069,42 +1073,46 @@ rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBu
                                 sd.attribute_data.ptr() + sd.attribute_data.size());
   buffer->skin_data.assign(sd.skin_data.ptr(), sd.skin_data.ptr() + sd.skin_data.size());
   buffer->index_data.assign(sd.index_data.ptr(), sd.index_data.ptr() + sd.index_data.size());
-  const std::vector<uint8_t> payload = rs::encode_payload(
+  auto payload = std::make_shared<rs::PayloadBytes>(rs::encode_payload(
       sd.primitive, sd.format, sd.vertex_count, sd.index_count, sd.aabb, sd.uv_scale,
       buffer->vertex_data.data(), buffer->vertex_data.size(), buffer->attribute_data.data(),
       buffer->attribute_data.size(), buffer->skin_data.data(), buffer->skin_data.size(),
-      buffer->index_data.data(), buffer->index_data.size());
+      buffer->index_data.data(), buffer->index_data.size()));
   const uint64_t t1 = now_ns();
-  copy.hash = sha256_hex(payload.data(), payload.size());
+  copy.hash = sha256_hex(payload->data(), payload->size());
   const uint64_t t2 = now_ns();
   copy.status = "ok";
   copy.copy_ns = static_cast<int64_t>(t1 - t0);
   copy.hash_ns = static_cast<int64_t>(t2 - t1);
   buffer->ok = true;
+  *payload_out = std::move(payload);
   return copy;
 }
 
 // Re-encodes and re-hashes a surface already in `buffer` (whole payload, D6): used after a region
 // update is applied in place. `buffer.ok` must already be true (a refused surface is never
-// re-hashed; its region updates are "version + 1 only").
-rs::MeshSurfaceCopy rehash_mesh_surface(const MeshSurfaceBuffer &buffer) {
+// re-hashed; its region updates are "version + 1 only"). The new payload goes to `payload_out`
+// (G5e: the mirror's new surface version).
+rs::MeshSurfaceCopy rehash_mesh_surface(const MeshSurfaceBuffer &buffer,
+                                        rs::PayloadPtr *payload_out) {
   rs::MeshSurfaceCopy copy;
   copy.primitive = buffer.primitive;
   copy.format = buffer.format;
   copy.vertex_count = buffer.vertex_count;
   copy.index_count = buffer.index_count;
   const uint64_t t0 = now_ns();
-  const std::vector<uint8_t> payload = rs::encode_payload(
+  auto payload = std::make_shared<rs::PayloadBytes>(rs::encode_payload(
       buffer.primitive, buffer.format, buffer.vertex_count, buffer.index_count, buffer.aabb,
       buffer.uv_scale, buffer.vertex_data.data(), buffer.vertex_data.size(),
       buffer.attribute_data.data(), buffer.attribute_data.size(), buffer.skin_data.data(),
-      buffer.skin_data.size(), buffer.index_data.data(), buffer.index_data.size());
+      buffer.skin_data.size(), buffer.index_data.data(), buffer.index_data.size()));
   const uint64_t t1 = now_ns();
-  copy.hash = sha256_hex(payload.data(), payload.size());
+  copy.hash = sha256_hex(payload->data(), payload->size());
   const uint64_t t2 = now_ns();
   copy.status = "ok";
   copy.copy_ns = static_cast<int64_t>(t1 - t0);
   copy.hash_ns = static_cast<int64_t>(t2 - t1);
+  *payload_out = std::move(payload);
   return copy;
 }
 
@@ -1426,9 +1434,16 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
 void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *transform,
                    const Color *modulate, RID texture) {
   bump(kAddMesh);
-  // /4 carries add_mesh (render-stream-4.md), but the mirror's mesh table is G5e's
-  // (gate5-design.md Q3b); until then the capture keeps refusing it as a typed unsupported-op.
-  tap_unsupported(item, "canvas_item_add_mesh");
+  // G5e (gate5-design.md Q3b, render-stream-4.md "Command"): the /4 add_mesh command, naming the
+  // mirror's mesh table entry (an unknown mesh RID becomes `unsupported`/`unknown-mesh`).
+  if (streaming()) {
+    if (mesh != nullptr && transform != nullptr && modulate != nullptr) {
+      mirror().add_mesh(item.id, mesh->id, to_xform(*transform), to_color(*modulate), texture.id,
+                        current_frame());
+    } else {
+      tap_unsupported(item, "canvas_item_add_mesh");
+    }
+  }
   if (mesh != nullptr && transform != nullptr && modulate != nullptr) {
     AddMeshKey key;
     zero(&key);
@@ -1639,10 +1654,14 @@ RID hook_mesh_create(void *self) {
   log_entry(&g_mesh_creates, rids(result.id));
   const bool logging = resources().active();
   if (logging) {
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_create");
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!omit) {
       g_mesh_buffers[result.id];  // an empty surface list, value-initialized
+    }
+    if (streaming()) {
+      mirror().mesh_create(result.id, current_frame());  // G5e: the mesh table (omit-op inside)
     }
     resources().mesh_create(tap_context(), result.id, omit);
   }
@@ -1670,14 +1689,19 @@ void hook_mesh_add_surface(void *self, RID mesh, const SurfaceDataPrefix *surfac
   // payload, and appended to the hook's own retained-buffer cache (so a later region update can
   // re-hash the whole surface) and to evidence/resources.jsonl.
   if (surface != nullptr && resources().active()) {
-    const bool omit = omitted("mesh_add_surface");
     MeshSurfaceBuffer buffer;
-    const rs::MeshSurfaceCopy copy = copy_mesh_surface(*surface, &buffer);
+    rs::MeshSurfaceInput input;
+    input.copy = copy_mesh_surface(*surface, &buffer, &input.bytes);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const bool omit = omitted("mesh_add_surface");
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!omit) {
       g_mesh_buffers[mesh.id].push_back(std::move(buffer));
     }
-    resources().mesh_add_surface(tap_context(), mesh.id, copy, omit);
+    if (streaming()) {
+      mirror().mesh_add_surface(mesh.id, input, current_frame());
+    }
+    resources().mesh_add_surface(tap_context(), mesh.id, input.copy, omit);
   }
   original<FnMeshAddSurface>(kMeshAddSurface)(self, mesh, surface);
 }
@@ -1757,11 +1781,12 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
     return;
   }
   const int64_t bytes = data != nullptr ? data->size() : 0;
+  std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted(mesh_region_op_name(which));
   std::lock_guard<std::mutex> lock(g_mutex);
   const char *outcome = "unknown";
-  rs::MeshSurfaceCopy updated;
-  const rs::MeshSurfaceCopy *new_surface = nullptr;
+  rs::MeshSurfaceInput updated;
+  const rs::MeshSurfaceInput *new_surface = nullptr;
   auto it = g_mesh_buffers.find(mesh.id);
   if (it != g_mesh_buffers.end() && surface >= 0 &&
       static_cast<size_t>(surface) < it->second.size()) {
@@ -1779,14 +1804,22 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
         outcome = "applied";
         if (!omit) {
           std::memcpy(field->data() + offset, data->ptr(), static_cast<size_t>(bytes));
-          updated = rehash_mesh_surface(buffer);
+          updated.copy = rehash_mesh_surface(buffer, &updated.bytes);
           new_surface = &updated;
         }
       }
     }
   }
+  if (streaming()) {
+    // G5e: the mirror takes the hook's verdict (D8) and the re-encoded whole surface.
+    mirror().mesh_surface_update_region(mesh.id, mesh_region_op_name(which), surface,
+                                        std::string(outcome) == "applied", new_surface,
+                                        current_frame());
+  }
   resources().mesh_surface_update_region(tap_context(), mesh.id, mesh_buffer_name(which), surface,
-                                         offset, bytes, outcome, new_surface, omit);
+                                         offset, bytes, outcome,
+                                         new_surface != nullptr ? &new_surface->copy : nullptr,
+                                         omit);
 }
 
 void hook_mesh_update_vertex_region(void *self, RID mesh, int surface, int offset,
@@ -1809,6 +1842,7 @@ void hook_mesh_clear(void *self, RID mesh) {
   bump(kMeshClear);
   log_entry(&g_mesh_clears, rids(mesh.id));
   if (resources().active()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_clear");
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!omit) {
@@ -1816,6 +1850,9 @@ void hook_mesh_clear(void *self, RID mesh) {
       if (it != g_mesh_buffers.end()) {
         it->second.clear();
       }
+    }
+    if (streaming()) {
+      mirror().mesh_clear(mesh.id, current_frame());
     }
     resources().mesh_clear(tap_context(), mesh.id, omit);
   }
@@ -1832,6 +1869,14 @@ void hook_mesh_set_custom_aabb(void *self, RID mesh, const AABB *aabb) {
     log_entry(&g_mesh_aabbs, pod(key));
   }
   if (resources().active()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    if (streaming() && aabb != nullptr) {
+      // G5e: the mesh entry's custom AABB (position xyz, size xyz).
+      mirror().mesh_set_custom_aabb(mesh.id,
+                                    {aabb->position.x, aabb->position.y, aabb->position.z,
+                                     aabb->size.x, aabb->size.y, aabb->size.z},
+                                    current_frame());
+    }
     resources().mesh_set_custom_aabb(tap_context(), mesh.id, omitted("mesh_set_custom_aabb"));
   }
   original<FnMeshSetCustomAabb>(kMeshSetCustomAabb)(self, mesh, aabb);
@@ -1851,18 +1896,28 @@ RID hook_mesh_create_from_surfaces(void *self, const Vector<SurfaceDataPrefix> *
   log_entry(&g_mesh_create_from_surfaces_calls,
            rids(result.id, surfaces != nullptr ? static_cast<uint64_t>(surfaces->size()) : 0));
   if (resources().active()) {
-    const bool omit = omitted("mesh_create_from_surfaces");
     std::vector<MeshSurfaceBuffer> buffers;
+    std::vector<rs::MeshSurfaceInput> inputs;
     std::vector<rs::MeshSurfaceCopy> copies;
     const int64_t count = surfaces != nullptr ? surfaces->size() : 0;
     for (int64_t i = 0; i < count; ++i) {
       MeshSurfaceBuffer buffer;
-      copies.push_back(copy_mesh_surface(surfaces->ptr()[i], &buffer));
+      rs::MeshSurfaceInput input;
+      input.copy = copy_mesh_surface(surfaces->ptr()[i], &buffer, &input.bytes);
+      copies.push_back(input.copy);
+      inputs.push_back(std::move(input));
       buffers.push_back(std::move(buffer));
     }
+    // A loader thread may get here (gate5-design.md Q1j): the identity lock orders it against
+    // the main thread's mesh taps for the mirror and the log alike.
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const bool omit = omitted("mesh_create_from_surfaces");
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!omit) {
       g_mesh_buffers[result.id] = std::move(buffers);
+    }
+    if (streaming()) {
+      mirror().mesh_create_from_surfaces(result.id, inputs, current_frame());
     }
     resources().mesh_create_from_surfaces(tap_context(), result.id, copies, omit);
   }
@@ -1889,6 +1944,7 @@ void hook_mesh_surface_remove(void *self, RID mesh, int surface) {
   bump(kMeshSurfaceRemove);
   log_entry(&g_mesh_surface_removes, item_value(mesh, surface));
   if (resources().active()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_surface_remove");
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!omit) {
@@ -1897,6 +1953,9 @@ void hook_mesh_surface_remove(void *self, RID mesh, int surface) {
           static_cast<size_t>(surface) < it->second.size()) {
         it->second.erase(it->second.begin() + surface);
       }
+    }
+    if (streaming()) {
+      mirror().mesh_surface_remove(mesh.id, surface, current_frame());
     }
     resources().mesh_surface_remove(tap_context(), mesh.id, surface, omit);
   }

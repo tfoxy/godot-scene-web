@@ -13,9 +13,10 @@
 //     truth for what happened to meshes and when, with a whole-surface GRM1 hash per change;
 //   - the reference's mesh oracle (mesh_oracle.gd), which reads the rendered reference's own GPU
 //     buffers back through RenderingServer.mesh_get_surface and hashes them as GRM1.
-// No mesh reaches the wire yet: on render-stream/3, and on /4 since G5d until G5e brings the mirror's
-// mesh table, canvas_item_add_mesh is a typed `unsupported` command, so the capture leg classifies
-// `unsupported`.
+// Since G5e the capture's mirror carries the mesh table and every canvas_item_add_mesh is a /4
+// add_mesh command, so the capture leg classifies `success` (it was `unsupported`, add_mesh typed,
+// on /3 and on /4 from G5d to G5e); lib/gate5e-checks.ts takes the wire and the receivers from
+// there.
 //
 // Evidence layout under <out>/mesh/ (see scripts/README.md "Gate 5"):
 //   import/fixture/                editor --import of fixtures/gate5-mesh
@@ -77,6 +78,7 @@ import type {
   Gate5Texture,
   Rgba8,
 } from "./gate5-expected";
+import { textureIdsByName } from "./gate5d-checks";
 import type { Gate5Raster } from "./geometry-raster";
 
 // ---------------------------------------------------------------------------------------------
@@ -726,18 +728,28 @@ export function evaluateDrawCensus(
   return { problems, measured };
 }
 
-/** Pure: the capture classifies `unsupported`; its unsupported ops are exactly typed_ops, all
- * `unsupported-op`; at every settle frame each item's commands are its expected list (add_rect
- * float32-exact, add_mesh an `unsupported` command, FR empty once cleared); RM's content_version
- * never changes over the run (its pixels change through region updates alone). */
-export function evaluateMeshCaptureTyped(
+/** Pure: the capture classifies `success` (G5e: add_mesh is a /4 command); its only unsupported
+ * entries, if any, are typed_ops (none since G5e) and harmless draw-index ties; at every settle frame
+ * each item's commands are its expected list -- add_rect float32-exact, add_mesh naming the hook
+ * log's id of the expected mesh with the identity transform, white modulate and tex (TEXG's wire
+ * id for DF, null otherwise), FR empty once cleared; RM's content_version never changes over the
+ * run (its pixels change through region updates alone). `meshIds`/`textureIds` map fixture names
+ * to wire ids (the hook log's mesh creation order; the TEXG-shaped image). */
+export function evaluateMeshCaptureCommands(
   expected: Gate5MeshExpected,
   capture: Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full">,
-): { problems: string[]; ops: string[]; rm_versions: number[] } {
+  meshIds: ReadonlyMap<string, number>,
+  textureIds: ReadonlyMap<string, number>,
+): {
+  problems: string[];
+  ops: string[];
+  rm_versions: number[];
+  compared: number;
+} {
   const problems: string[] = [];
-  if (capture.result_class !== "unsupported")
+  if (capture.result_class !== "success")
     problems.push(
-      `class ${capture.result_class}, expected unsupported: ${capture.reasons.slice(0, 2).join(" | ")}`,
+      `class ${capture.result_class}, expected success: ${capture.reasons.slice(0, 2).join(" | ")}`,
     );
   const ops = unsupportedOps(capture.full);
   if (JSON.stringify(ops) !== JSON.stringify([...expected.typed_ops].sort()))
@@ -746,7 +758,7 @@ export function evaluateMeshCaptureTyped(
     );
   for (const t of capture.full.transactions)
     for (const u of t.meta.unsupported)
-      if (u.reason !== "unsupported-op" && u.reason !== "draw-index-tie")
+      if (u.reason !== "draw-index-tie")
         problems.push(`frame ${t.meta.frame}: unsupported ${u.op} ${u.reason}`);
   const ids = new Set<number>();
   for (const t of capture.full.transactions)
@@ -757,6 +769,7 @@ export function evaluateMeshCaptureTyped(
       `${sorted.length} item ids, expected ${expected.creation_order.length}`,
     );
   const idOf = new Map(expected.creation_order.map((n, k) => [n, sorted[k]]));
+  let compared = 0;
   for (const s of expected.steps) {
     const t = capture.full.transactions.find(
       (x) => x.meta.frame === s.settle_frame,
@@ -772,22 +785,43 @@ export function evaluateMeshCaptureTyped(
       const got = (item?.commands ?? []).map((c) =>
         c.op === "add_rect"
           ? { op: c.op, rect: c.rect, color: c.color, aa: c.aa }
-          : { op: c.op, name: c.name },
+          : c.op === "add_mesh"
+            ? {
+                op: c.op,
+                mesh: c.mesh,
+                tex: c.tex ?? null,
+                transform: c.transform,
+                modulate: c.modulate,
+              }
+            : { op: c.op, name: c.name },
       );
-      const want = calls.map((c) =>
-        c.op === "canvas_item_add_rect"
-          ? {
-              op: "add_rect",
-              rect: (c.rect as number[]).map(f32),
-              color: (c.color as number[]).map(f32),
-              aa: c.antialiased as boolean,
-            }
-          : { op: "unsupported", name: c.op },
-      );
+      const want = calls.map((c) => {
+        const call = c as Record<string, unknown>;
+        if (c.op === "canvas_item_add_rect")
+          return {
+            op: "add_rect",
+            rect: (call.rect as number[]).map(f32),
+            color: (call.color as number[]).map(f32),
+            aa: call.antialiased as boolean,
+          };
+        if (c.op === "canvas_item_add_mesh")
+          return {
+            op: "add_mesh",
+            mesh: meshIds.get(String(call.mesh)) ?? -1,
+            tex:
+              call.texture === null || call.texture === undefined
+                ? null
+                : (textureIds.get(String(call.texture)) ?? -1),
+            transform: (call.transform as number[]).map(f32),
+            modulate: (call.modulate as number[]).map(f32),
+          };
+        return { op: "unsupported", name: c.op };
+      });
       if (JSON.stringify(got) !== JSON.stringify(want))
         problems.push(
           `step ${s.step} ${name}: commands ${JSON.stringify(got)} != ${JSON.stringify(want)}`,
         );
+      else compared += want.length;
     }
   }
   const rmVersions = new Set<number>();
@@ -798,7 +832,7 @@ export function evaluateMeshCaptureTyped(
     problems.push(
       `RM's content_version takes ${rmVersions.size} values over the run (${[...rmVersions].join(",")}), expected one`,
     );
-  return { problems, ops, rm_versions: [...rmVersions] };
+  return { problems, ops, rm_versions: [...rmVersions], compared };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -837,7 +871,7 @@ export async function runGate5c(
   ];
 
   const capture = await evaluateCapture(meshDir, {
-    expectedClass: "unsupported",
+    expectedClass: "success",
   });
   const counters = await readJson<{ counts?: Record<string, number> }>(
     join(meshDir, "capture", "evidence", "counters.json"),
@@ -917,7 +951,20 @@ export async function runGate5c(
     { leg: "reference-mesh-armed", lines: armedLog.lines },
   ]);
   const draw = evaluateDrawCensus(expected, counters?.counts);
-  const typed = evaluateMeshCaptureTyped(expected, capture);
+  const meshIds = new Map(
+    [
+      ...meshNamesById(
+        captureLog.lines.filter((l) => l.kind === "mesh"),
+        expected.mesh_order,
+      ),
+    ].map(([id, name]) => [name, id] as const),
+  );
+  const typed = evaluateMeshCaptureCommands(
+    expected,
+    capture,
+    meshIds,
+    textureIdsByName(e5, capture.full).ids,
+  );
 
   const supportProblems: string[] = [];
   for (const leg of G5C_SUPPORT_LEGS) {
@@ -1045,9 +1092,9 @@ export async function runGate5c(
     ),
     check(
       "leg-class-capture-mesh",
-      "the capture-mesh leg classifies as unsupported (render-stream/4 since G5d, which keeps canvas_item_add_mesh typed until G5e): armed, stream closed, both sinks valid, the only unsupported op canvas_item_add_mesh (unsupported-op), each item's commands at every settle frame as expected (FR's cleared at 8), and RM's content_version constant over the whole run",
+      "the capture-mesh leg classifies as success (G5e: the mirror's mesh table; unsupported with canvas_item_add_mesh typed before): armed, stream closed, both sinks valid, nothing unsupported, each item's commands at every settle frame as expected -- add_mesh naming the hook log's id of its mesh (DF2 from step 5, FM's tombstone at 7), identity, white, TEXG for DF; FR's cleared at 8 -- and RM's content_version constant over the whole run",
       typed.problems,
-      `${capture.result_class}: ${typed.ops.join(", ")} typed; RM content_version ${typed.rm_versions.join(",")}`,
+      `${capture.result_class}: ${typed.compared} settle commands equal; RM content_version ${typed.rm_versions.join(",")}`,
       capture.artifacts,
     ),
   );

@@ -893,6 +893,9 @@ export interface Gate5Report {
   budgets: Record<string, RegionBudget5[]> | null;
   /** per fixture: per step, the regions whose reference pixels changed */
   freshness: Record<string, Record<string, string[]>> | null;
+  /** G5e: the mesh fixture's wire census, parity, store, receiver uploads and fetches, sabotage
+   * regions and per-step mesh costs (lib/gate5e-checks.ts) */
+  g5e?: import("./gate5e-checks").Gate5eResult["report"];
 }
 
 export interface Gate5Context {

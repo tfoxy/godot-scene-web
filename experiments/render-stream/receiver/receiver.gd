@@ -3,9 +3,10 @@ extends Node
 ## Receiver", "G1b2" and "G1c2", by gate2-design.md "Q5. Receiver" and "G2b2", since G4e2 by
 ## gate4-design.md "Q5. Receiver" -- /3 is /2 plus the msdf command -- and since G5d by
 ## gate5-design.md "Q5. Receiver": /4 adds the immediate geometry ops, add_set_transform and
-## add_clip_ignore, replayed in order; add_mesh replay is G5e's). Its only
+## add_clip_ignore, replayed in order; since G5e the mesh table: every `ok` mesh a command names
+## is made resident from its GRM1 surface payloads and add_mesh replays). Its only
 ## input is a render-stream/4 byte stream: a recording file (file mode) or the binary messages of
-## one WebSocket connection (live mode), plus the texture payloads that stream names.
+## one WebSocket connection (live mode), plus the texture and mesh payloads that stream names.
 ##
 ## File mode (RS_RECEIVER_MODE unset or "file"):
 ##   RS_RECEIVER_RECORDING   absolute .rs2 path (required)
@@ -17,7 +18,8 @@ extends Node
 ## frame.
 ##
 ## Resources (G2b2; both modes unless noted):
-##   RS_RECEIVER_CACHE_DIR        absolute content-addressed cache (sha256/<hash>.grt); required
+##   RS_RECEIVER_CACHE_DIR        absolute content-addressed cache (sha256/<hash>.grt, and
+##                                <hash>.grm for mesh surfaces since G5e); required
 ##                                when the session's delivery is not inline
 ##   RS_RECEIVER_CACHE_MODE       fresh (default: the directory must be absent or empty, else
 ##                                replay-failure cache-not-fresh) or warm (it must exist)
@@ -39,11 +41,14 @@ extends Node
 ##                                Q5, G4e2: every add_msdf_texture_rect_region is skipped with no
 ##                                typed record, the pre-/3 picture), ignore-set-transform or
 ##                                ignore-clip-ignore (gate5-design.md Q5, G5d: every
-##                                add_set_transform / add_clip_ignore is skipped with no record)
-##                                or ignore-nine-patch-axis (G5g: every add_nine_patch is drawn
-##                                stretch/stretch); all nine exist only to fail checks
+##                                add_set_transform / add_clip_ignore is skipped with no record),
+##                                ignore-nine-patch-axis (G5g: every add_nine_patch is drawn
+##                                stretch/stretch), drop-mesh-surface (G5e: a mesh build never adds
+##                                its surface 1) or stale-mesh (G5e: in-place payload changes of a
+##                                resident surface are ignored); all eleven exist only to fail checks
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
-## not resident (or resident with another hash) is made available: from memory (inline resource
+## not resident (or resident with another hash), and (G5e) every surface payload of an `ok` mesh
+## an add_mesh names that is not resident with that hash, is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
 ## written to the cache. Each is verified against its SHA-256 name and decoded first
 ## (resource-hash-mismatch, resource-unavailable, resource-invalid otherwise). In live mode with
@@ -94,14 +99,20 @@ extends Node
 ## writes applied.json with status replay-failure and quits with 3. A clean end record writes
 ## status ok and quits with 0. A usage error (missing or malformed environment, or an unsupported
 ## mode) quits with 2 and writes nothing.
+##
+## applied.json is render-stream-receiver-applied/4 since G5e (gate5-design.md Q5): /3's shape,
+## each transaction's `resources` gaining meshes_created, meshes_rebuilt, surface_updates,
+## mesh_upload_bytes and skipped_mesh_commands (and the entry mesh_commands), a top-level
+## `mesh_uploads` list ({stream, seq, id, op: create|rebuild|update|free|custom_aabb, surfaces,
+## buffers, bytes}) and mesh totals in resources_summary; state dumps gain `meshes`.
 
-const SCHEMA: String = "render-stream-receiver-applied/3"
+const SCHEMA: String = "render-stream-receiver-applied/4"
 const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
-## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis"]
+## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e).
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -138,8 +149,12 @@ var _cache := RsResourceCache.new()
 var _cache_report: Variant = null
 var _fetches: Array[Dictionary] = []
 var _uploads: Array[Dictionary] = []
+var _mesh_uploads: Array[Dictionary] = []
 var _fetched_hashes: Dictionary[String, bool] = {}
-var _summary: Dictionary = {"distinct_fetched": 0, "fetched_bytes": 0, "cache_hits": 0, "uploads": 0, "upload_bytes": 0}
+var _summary: Dictionary = {
+	"distinct_fetched": 0, "fetched_bytes": 0, "cache_hits": 0, "uploads": 0, "upload_bytes": 0,
+	"meshes_created": 0, "meshes_rebuilt": 0, "surface_updates": 0, "mesh_upload_bytes": 0,
+}
 var _fetch_delay_ms: int = 0
 var _fetch_timeout_ms: int = 10000
 var _inline_since_applied: int = 0
@@ -289,6 +304,8 @@ func _init_report(mode: String) -> String:
 		"cache": null,
 		"fetches": _fetches,
 		"uploads": _uploads,
+		# G5e (render-stream-receiver-applied/4).
+		"mesh_uploads": _mesh_uploads,
 		"resources_summary": _summary,
 	}
 	return display_server
@@ -370,8 +387,9 @@ func _receive_resource(record: Dictionary, data: PackedByteArray) -> bool:
 ## any RenderingServer call for it. Fills `resources` (fetched, fetched_bytes, cache_hits,
 ## fetch_us) and the report's fetch list. Returns "" or the replay-failure error.
 func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> String:
-	var need: Dictionary = _applier.needed(_stream.items, _stream.textures)
+	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes)
 	var hashes: Array = need["hashes"]
+	var mesh_hashes: Array = need["mesh_hashes"]
 	var fetch_us: int = Rs2Decoder.as_int(resources["fetch_us"])
 	for value: Variant in hashes:
 		var hash: String = value
@@ -379,10 +397,11 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 			continue
 		if _cache.dir == "" and _delivery != "inline":
 			return Rs2Decoder.err("resource-unavailable", "payload %s is needed, and RS_RECEIVER_CACHE_DIR is unset (delivery %s)" % [hash, _delivery])
-		var will_fetch: bool = _cache.ignore_cache or not FileAccess.file_exists(_cache.dir.path_join(RsResourceCache.CACHE_SUBDIR).path_join(hash + ".grt"))
+		var mesh: bool = mesh_hashes.has(hash)
+		var will_fetch: bool = _cache.ignore_cache or not _cache.cache_has(hash, mesh)
 		if will_fetch and _fetch_delay_ms > 0:
 			OS.delay_msec(_fetch_delay_ms)
-		var got: Dictionary = _cache.obtain(hash)
+		var got: Dictionary = _cache.obtain(hash, mesh)
 		var source: String = got["source"]
 		var got_bytes: int = got["bytes"]
 		if source == "cache":
@@ -395,7 +414,7 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 			_fetches.append({
 				"stream": stream_index, "seq": seq, "hash": hash, "source": "directory",
 				"status": null, "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
-				"verified": got["verified"],
+				"verified": got["verified"], "kind": "mesh" if mesh else "texture",
 			})
 			resources["fetched"] = Rs2Decoder.as_int(resources["fetched"]) + 1
 			resources["fetched_bytes"] = Rs2Decoder.as_int(resources["fetched_bytes"]) + got_bytes
@@ -415,7 +434,8 @@ static func _empty_resources() -> Dictionary:
 	return {
 		"fetched": 0, "fetched_bytes": 0, "cache_hits": 0, "inline_received": 0, "created": 0,
 		"updated": 0, "replaced": 0, "freed": 0, "upload_bytes": 0, "fetch_us": 0,
-		"skipped_commands": 0,
+		"skipped_commands": 0, "meshes_created": 0, "meshes_rebuilt": 0, "surface_updates": 0,
+		"mesh_upload_bytes": 0, "skipped_mesh_commands": 0,
 	}
 
 
@@ -436,7 +456,18 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	var applied: Dictionary = stats["resources"]
 	for key: String in ["created", "updated", "replaced", "freed", "upload_bytes", "skipped_commands"]:
 		resources[key] = applied[key]
+	var mesh_resources: Dictionary = stats["mesh_resources"]
+	for key: String in ["meshes_created", "meshes_rebuilt", "surface_updates", "mesh_upload_bytes", "skipped_mesh_commands"]:
+		resources[key] = mesh_resources[key]
+		if _summary.has(key):
+			_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(mesh_resources[key])
 	stats["resources"] = resources
+	var mesh_uploads: Array = stats["mesh_uploads"]
+	for value: Variant in mesh_uploads:
+		var mesh_upload: Dictionary = value
+		mesh_upload["stream"] = stream_index
+		mesh_upload["seq"] = seq
+		_mesh_uploads.append(mesh_upload)
 	var uploads: Array = stats["uploads"]
 	for value: Variant in uploads:
 		var upload: Dictionary = value
@@ -512,6 +543,8 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_ignore_set_transform = _sabotage == "ignore-set-transform"
 	_applier.sabotage_ignore_clip_ignore = _sabotage == "ignore-clip-ignore"
 	_applier.sabotage_ignore_nine_patch_axis = _sabotage == "ignore-nine-patch-axis"
+	_applier.sabotage_drop_mesh_surface = _sabotage == "drop-mesh-surface"
+	_applier.sabotage_stale_mesh = _sabotage == "stale-mesh"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
@@ -584,6 +617,7 @@ func _transaction_entry(stream: int, meta: Dictionary, record: Dictionary) -> Di
 		"reparented": null,
 		"commands_replayed": null,
 		"msdf_commands": null,
+		"mesh_commands": null,
 		"rs_calls": null,
 		"received_us": null,
 		"applied_us": null,
@@ -604,6 +638,7 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 	entry["reparented"] = stats["reparented"]
 	entry["commands_replayed"] = stats["commands_replayed"]
 	entry["msdf_commands"] = stats["msdf_commands"]
+	entry["mesh_commands"] = stats["mesh_commands"]
 	entry["rs_calls"] = stats["rs_calls"]
 	entry["resources"] = stats["resources"]
 	var unsupported_commands: Array[Dictionary] = stats["unsupported_commands"]
@@ -862,7 +897,7 @@ func _state_json(meta: Dictionary) -> Dictionary:
 			"payload_bytes": Rs2Decoder.as_int(t["payload_bytes"]),
 			"canvas": canvas_out,
 		})
-	return {
+	var state: Dictionary = {
 		"status": meta["status"],
 		"failures": failures,
 		"unsupported": unsupported,
@@ -872,6 +907,37 @@ func _state_json(meta: Dictionary) -> Dictionary:
 		"items": items,
 		"textures": textures,
 	}
+	if _stream.version >= 4:
+		# render-stream-4.md "Decoded and resolved forms" (G5e): the mesh table, custom_aabb lifted.
+		var mesh_ids: Array[int] = []
+		for id: int in _stream.meshes:
+			mesh_ids.append(id)
+		mesh_ids.sort()
+		var meshes: Array = []
+		for id: int in mesh_ids:
+			var m: Dictionary = _stream.meshes[id]
+			var surfaces: Array = []
+			for value: Variant in m["surfaces"]:
+				var surface: Dictionary = value
+				surfaces.append({
+					"hash": surface["hash"],
+					"payload_bytes": Rs2Decoder.as_int(surface["payload_bytes"]),
+					"primitive": surface["primitive"],
+					"format": Rs2Decoder.as_int(surface["format"]),
+					"vertex_count": Rs2Decoder.as_int(surface["vertex_count"]),
+					"index_count": Rs2Decoder.as_int(surface["index_count"]),
+				})
+			meshes.append({
+				"id": id,
+				"origin": m["origin"],
+				"status": m["status"],
+				"reason": m["reason"],
+				"version": Rs2Decoder.as_int(m["version"]),
+				"custom_aabb": _float_list(m["custom_aabb"]),
+				"surfaces": surfaces,
+			})
+		state["meshes"] = meshes
+	return state
 
 
 static func _int_or_null(value: Variant) -> Variant:
@@ -1388,12 +1454,13 @@ func _http_misses() -> Array[String]:
 	var out: Array[String] = []
 	if _fetcher == null:
 		return out
-	var need: Dictionary = _applier.needed(_stream.items, _stream.textures)
+	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes)
+	var mesh_hashes: Array = need["mesh_hashes"]
 	for value: Variant in need["hashes"]:
 		var hash: String = value
 		if _cache.has_in_memory(hash):
 			continue
-		if not _cache.ignore_cache and _cache.cache_has(hash):
+		if not _cache.ignore_cache and _cache.cache_has(hash, mesh_hashes.has(hash)):
 			continue
 		out.append(hash)
 	return out
@@ -1441,6 +1508,7 @@ func _poll_fetches() -> void:
 		if error == "":
 			# A 200 body: verified against its name first (a mismatch leaves verified false).
 			var body: PackedByteArray = result["data"]
+			fetch_entry["kind"] = "mesh" if RsResourceCache.is_mesh_payload(body) else "texture"
 			error = _cache.add_fetched(hash, body, "GET %s" % hash)
 			fetch_entry["verified"] = not error.begins_with("resource-hash-mismatch")
 		if error != "":

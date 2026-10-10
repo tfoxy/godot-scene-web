@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -26,6 +27,7 @@
 #include "rs2_diff.h"
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
+#include "rs_mesh_payload.h"
 #include "rs_mirror.h"
 #include "rs_publish.h"
 #include "rs_resource_store.h"
@@ -943,9 +945,9 @@ void test_store_directory() {
   const std::string index = read_text(dir + "/index.jsonl");
   check(index.find("{\"hash\":\"" + scene.hash_a0 + "\",\"bytes\":" +
                    std::to_string(scene.bytes_a0) +
-                   ",\"format\":\"RGBA8\",\"width\":4,\"height\":4,\"mipmaps\":false,"
-                   "\"first_frame\":1}") != std::string::npos,
-        "index.jsonl names hash, bytes, shape and first frame");
+                   ",\"type\":\"texture-2d\",\"format\":\"RGBA8\",\"width\":4,\"height\":4,"
+                   "\"mipmaps\":false,\"first_frame\":1}") != std::string::npos,
+        "index.jsonl names hash, bytes, type (G5e), shape and first frame");
   check(index.find("\"first_frame\":3}") != std::string::npos &&
             index.find("\"first_frame\":4}") != std::string::npos,
         "later hashes are stored at their first publication");
@@ -1017,6 +1019,115 @@ void test_inline_records() {
   check(!missing.publish(scene3.frame(1), 1, 0) &&
             missing.error().rfind("resource-store-missing", 0) == 0,
         "an out-of-band payload with no store is resource-store-missing");
+}
+
+// G5e (gate5-design.md D5, Q3a; render-stream-4.md "Mesh payload"): GRM1 surface payloads share
+// the texture payloads' store, inline threshold and order. Frame 1 creates mesh 1 (one surface)
+// and draws it; frame 2 updates its vertices (a new payload, no redraw); frame 3 changes nothing.
+struct MeshScene {
+  Mirror m;
+  std::string hash_s0, hash_s1;
+  std::uint64_t bytes_s0 = 0;
+
+  MeshScene() {
+    m.reset();
+    m.set_root(kRootViewport, kRootCanvas, kIdentityXform);
+  }
+  static grc::rs::MeshSurfaceInput surface(float x0) {
+    std::vector<std::uint8_t> vertices(24, 0);
+    const float xy[6] = {x0, 0, x0 + 8, 0, x0, 8};
+    std::memcpy(vertices.data(), xy, sizeof(xy));
+    const std::uint64_t format = grc::rs::kArrayFormatVertex | grc::rs::kArrayFlagUse2dVertices;
+    grc::rs::MeshSurfaceInput input;
+    auto payload = std::make_shared<grc::rs::PayloadBytes>(grc::rs::encode_payload(
+        3, format, 3, 0, grc::AABB{{x0, 0, 0}, {8, 8, 0}}, grc::Vector4{0, 0, 0, 0},
+        vertices.data(), vertices.size(), nullptr, 0, nullptr, 0, nullptr, 0));
+    input.copy.status = "ok";
+    input.copy.primitive = 3;
+    input.copy.format = format;
+    input.copy.vertex_count = 3;
+    input.copy.index_count = 0;
+    input.copy.hash = grc::sha256_hex(payload->data(), payload->size());
+    input.bytes = std::move(payload);
+    return input;
+  }
+  Captured frame(int f) {
+    const std::uint64_t u = static_cast<std::uint64_t>(f);
+    if (f == 1) {
+      const auto s0 = surface(0);
+      hash_s0 = s0.copy.hash;
+      bytes_s0 = s0.bytes->size();
+      m.mesh_create(600, u);
+      m.mesh_add_surface(600, s0, u);
+      m.canvas_item_create(100, u);
+      m.set_parent(100, kRootCanvas, u);
+      m.add_mesh(100, 600, kIdentityXform, kRed, 0, u);
+    } else if (f == 2) {
+      const auto s1 = surface(4);
+      hash_s1 = s1.copy.hash;
+      m.mesh_surface_update_region(600, "mesh_surface_update_vertex_region", 0, true, &s1, u);
+    }
+    return m.snapshot(0, u);
+  }
+};
+
+void test_mesh_payloads() {
+  // Out of band: each surface version is a .grm file named by its hash, indexed as mesh-surface.
+  const std::string dir = tmp_dir("mesh-store");
+  grc::rs::ResourceStore store;
+  std::string error;
+  check(store.open(dir, &error), "open the mesh store");
+  MemoryRecordSink full;
+  MemoryRecordSink patch;
+  full.open("memory://full");
+  patch.open("memory://patch");
+  Publisher publisher(&full, &patch, SabotageConfig(), golden_policy(0), &store);
+  publisher.start(make_template());
+  MeshScene scene;
+  for (int f = 1; f <= 3; ++f) {
+    check(publisher.publish(scene.frame(f), static_cast<std::uint64_t>(f), 0),
+          "publish a mesh frame " + std::to_string(f));
+  }
+  publisher.finish(EndReason::Shutdown);
+  check(store.hashes() == 2, "the store holds both surface versions");
+  for (const std::string &hash : {scene.hash_s0, scene.hash_s1}) {
+    const std::vector<std::uint8_t> file = read_bytes(dir + "/sha256/" + hash + ".grm");
+    check(!file.empty() && sha_of(file) == hash, "store file " + hash.substr(0, 8) +
+                                                     ".grm hashes to its name");
+  }
+  const std::string index = read_text(dir + "/index.jsonl");
+  check(index.find("{\"hash\":\"" + scene.hash_s0 + "\",\"bytes\":" +
+                   std::to_string(scene.bytes_s0) +
+                   ",\"type\":\"mesh-surface\",\"primitive\":\"triangles\",\"format\":" +
+                   std::to_string(grc::rs::kArrayFormatVertex |
+                                  grc::rs::kArrayFlagUse2dVertices) +
+                   ",\"vertex_count\":3,\"index_count\":0,\"first_frame\":1}") !=
+            std::string::npos,
+        "index.jsonl: a mesh-surface line with its shape and first frame");
+  check(index.find("\"first_frame\":2}") != std::string::npos,
+        "the updated surface is stored at frame 2");
+
+  // Every payload inline: each surface version travels once, before its first transaction; the
+  // frame-2 patch carries only the mesh entry (no item changed).
+  MemoryRecordSink inline_full;
+  MemoryRecordSink inline_patch;
+  inline_full.open("memory://inline-full");
+  inline_patch.open("memory://inline-patch");
+  Publisher all_inline(&inline_full, &inline_patch, SabotageConfig(), golden_policy(16777216),
+                       nullptr);
+  all_inline.start(make_template());
+  MeshScene scene2;
+  for (int f = 1; f <= 3; ++f) {
+    check(all_inline.publish(scene2.frame(f), static_cast<std::uint64_t>(f), 0),
+          "inline mesh publish " + std::to_string(f));
+  }
+  all_inline.finish(EndReason::Shutdown);
+  check(record_kinds(inline_full) == "rtrtte" && record_kinds(inline_patch) == "rtrtte",
+        "s0; seq 1; s1; seq 2; seq 3; end -- in each sink");
+  const std::vector<std::uint8_t> patch2 = nth_write(inline_patch, 5);
+  check(contains(patch2, "\"meshes\":[{\"id\":1,") && contains(patch2, "\"items\":[]") &&
+            contains(patch2, "\"version\":3"),
+        "the frame-2 patch carries the mesh entry (version 3) and no item");
 }
 
 void test_wrong_hash() {
@@ -1095,6 +1206,7 @@ int main() {
   test_resources_info();
   test_store_directory();
   test_inline_records();
+  test_mesh_payloads();
   test_wrong_hash();
   test_stale_texture();
   if (g_failures != 0) {

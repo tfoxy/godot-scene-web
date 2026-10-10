@@ -1,7 +1,8 @@
 // Retained canvas mirror (gate 0 WP1; render-stream/1 since gate 1 G1b2;
 // render-stream/2 with textures since gate 2 G2b2; render-stream/3's msdf command
 // since gate 4 G4e2; render-stream/4's immediate geometry, add_set_transform and
-// add_clip_ignore since gate 5 G5d -- every snapshot is stamped ProtocolVersion::V4).
+// add_clip_ignore since gate 5 G5d -- every snapshot is stamped ProtocolVersion::V4 --
+// and render-stream/4's mesh table and add_mesh since G5e).
 //
 // A tap on the RenderingServer hooks that keeps the canvas state a receiver
 // needs to rebuild the frame: canvases, canvas items, their parenting and
@@ -50,6 +51,7 @@
 #ifndef GRC_RS_MIRROR_H
 #define GRC_RS_MIRROR_H
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -78,6 +80,19 @@ struct MirrorStats {
   std::uint64_t live_textures = 0;           // table entries, tombstones included
   std::uint64_t texture_update_unknown = 0;  // texture_2d_update of a RID never seen created
   std::uint64_t texture_payload_bytes = 0;   // distinct payload bytes the table holds now
+  // Gate 5 (G5e).
+  std::uint64_t live_meshes = 0;          // mesh-table entries, tombstones included
+  std::uint64_t mesh_unknown = 0;         // a mesh tap naming a RID the table does not know
+  std::uint64_t mesh_payload_bytes = 0;   // distinct GRM1 payload bytes the table holds now
+};
+
+// What a mesh hook hands the mirror for one surface (G5e; gate5-design.md Q3a, Q3b): the hook
+// log's description of it (rs_resource_log.h: status, reason, primitive, format, counts, hash)
+// and, when its status is "ok", the render-stream-mesh/1 payload the hook encoded from the whole
+// SurfaceData (or, after a region update, from its own retained buffers with the update applied).
+struct MeshSurfaceInput {
+  MeshSurfaceCopy copy;
+  PayloadPtr bytes;
 };
 
 class Mirror {
@@ -257,7 +272,47 @@ class Mirror {
   void add_clip_ignore(std::uint64_t item, bool ignore, std::uint64_t frame);
 
   // perturb-vertex sabotage (gate5-design.md Q3c, render-stream-4.md "Sabotage"); 0 disables it.
+  // From G5e it also moves the first vertex's x of every mesh surface payload the mirror takes
+  // from its frame on (a new copy, re-hashed); the hook log keeps the true hash.
   void set_perturb_vertex(std::uint64_t from_frame);
+
+  // --- meshes (G5e; gate5-design.md D5-D8, Q3b, render-stream-4.md "Mesh table") ------------
+  //
+  // The mesh table: its own per-session id counter (from 1, never reused), `version` 1 at
+  // creation and + 1 per accepted mutating call -- exactly the hook log's counting
+  // (rs_resource_log.h), which the checker compares (`mesh-versions-current`). Surfaces are whole
+  // GRM1 payloads (shared, never copied again), so a snapshot pins the versions it names. Only
+  // omit-op applies to the mesh taps (never omit-update: the hook log has no notion of it); the
+  // omit-op names are the RenderingServer method names. A mesh tap naming a RID the table does
+  // not know is counted (`mesh_unknown`) and changes nothing.
+  //
+  // mesh_create: a new id, ok, version 1, no surfaces, custom AABB zero.
+  void mesh_create(std::uint64_t rid, std::uint64_t frame);
+  // mesh_create_from_surfaces: a new id, version 1, every surface added; a refused one makes the
+  // entry `unsupported` with its reason (its slot is kept so later indices line up).
+  void mesh_create_from_surfaces(std::uint64_t rid, const std::vector<MeshSurfaceInput> &surfaces,
+                                 std::uint64_t frame);
+  // mesh_add_surface: appended, version + 1.
+  void mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface, std::uint64_t frame);
+  // One of the four mesh_surface_update_*_region taps (`op` its method name). `applied` is the
+  // hook's verdict (D8: GLES3's bounds; a rejected or unknown update changes nothing). Applied:
+  // version + 1 and, when `updated` is non-null (an `ok` surface re-encoded by the hook), the
+  // surface takes that payload; a null `updated` (an already-refused surface) is version + 1 only.
+  void mesh_surface_update_region(std::uint64_t rid, const char *op, std::int32_t surface,
+                                  bool applied, const MeshSurfaceInput *updated,
+                                  std::uint64_t frame);
+  // mesh_surface_remove: in range, the surface leaves and later ones renumber, version + 1.
+  void mesh_surface_remove(std::uint64_t rid, std::int32_t surface, std::uint64_t frame);
+  // mesh_clear: no surfaces, ok again, version + 1.
+  void mesh_clear(std::uint64_t rid, std::uint64_t frame);
+  // mesh_set_custom_aabb: position xyz, size xyz; version + 1.
+  void mesh_set_custom_aabb(std::uint64_t rid, const std::array<float, 6> &aabb,
+                            std::uint64_t frame);
+  // canvas_item_add_mesh: the /4 add_mesh command (mesh id, transform, modulate, texture per
+  // D11); a mesh RID the table does not know becomes an `unsupported` command with
+  // `unknown-mesh`. Bumps content_version like every command.
+  void add_mesh(std::uint64_t item, std::uint64_t mesh, const rs2::Xform &transform,
+                const rs2::Color4 &modulate, std::uint64_t texture, std::uint64_t frame);
 
   // canvas_item_set_default_texture_filter / _repeat: the item's own fields
   // (RenderingServer enums; an out-of-range value is ignored, as the server's
@@ -344,7 +399,10 @@ class Mirror {
   // first snapshot in which nothing names it), the derived item-level
   // `unknown-texture` / `unsupported-texture` entries (render-stream-2.md
   // "Item-level unsupported entries"), the root's default filter and repeat,
-  // and the payload of every `ok` image entry.
+  // and the payload of every `ok` image entry. Since G5e it also holds the mesh
+  // table (sorted by id; a `freed` tombstone leaves at the first snapshot in
+  // which no add_mesh names it), the derived `unsupported-mesh` entries, and
+  // every `ok` mesh's surface payloads (Captured::payloads holds both kinds).
   Captured snapshot(std::uint64_t seq, std::uint64_t frame);
 
   MirrorStats stats() const;
@@ -385,6 +443,27 @@ class Mirror {
     bool specular_set = false;  // a non-null specular channel is set
     rs2::Filter filter = rs2::Filter::Default;
     rs2::Repeat repeat = rs2::Repeat::Default;
+  };
+  // One mesh surface (G5e): `ok` with its payload, or refused (D7) with its reason only.
+  struct MeshSurf {
+    bool ok = false;
+    rs2::MeshReason reason = rs2::MeshReason::MeshFormat;
+    PayloadPtr bytes;
+    std::string hash;
+    std::int32_t primitive = 0;
+    std::int64_t format = 0;
+    std::int32_t vertex_count = 0;
+    std::int32_t index_count = 0;
+  };
+  struct Mesh {
+    std::uint32_t id = 0;
+    std::uint64_t rid = 0;  // 0 once freed (a tombstone)
+    rs2::MeshStatus status = rs2::MeshStatus::Ok;
+    bool has_reason = false;
+    rs2::MeshReason reason = rs2::MeshReason::MeshFormat;
+    std::uint64_t version = 1;
+    std::vector<MeshSurf> surfaces;
+    std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
   };
   enum class Kind : std::uint8_t { Canvas, Item };
   struct Target {
@@ -428,6 +507,17 @@ class Mirror {
   // gone otherwise.
   void retire_texture(std::uint32_t id);
   static rs2::TextureEntry wire_entry(const Texture &texture);
+  // Meshes (G5e).
+  Mesh *find_mesh(std::uint64_t rid);
+  // A mesh tap's prologue: omit-op (and the epoch), then the entry, or nullptr (counted unknown).
+  Mesh *mesh_for(std::uint64_t rid, const char *op, std::uint64_t frame);
+  // One surface as the table keeps it, perturb-vertex applied when active at `frame`.
+  MeshSurf mesh_surface(const MeshSurfaceInput &input, std::uint64_t frame) const;
+  static void recompute_mesh_status(Mesh *mesh);
+  bool mesh_referenced(std::uint32_t id) const;
+  // Takes `id` out of the table: a `freed` tombstone while a command names it, gone otherwise.
+  void retire_mesh(std::uint32_t id);
+  static rs2::MeshEntry wire_mesh(const Mesh &mesh);
   // render-stream-1.md "Invariant 9" over one container's child list.
   void find_ties(const std::vector<std::uint32_t> &children,
                  std::vector<rs2::UnsupportedRef> *out) const;
@@ -452,6 +542,9 @@ class Mirror {
   std::map<std::uint32_t, Texture> textures_;  // ordered by id, tombstones included
   std::unordered_map<std::uint64_t, std::uint32_t> texture_by_rid_;
   std::uint32_t next_texture_id_ = 1;
+  std::map<std::uint32_t, Mesh> meshes_;  // ordered by id, tombstones included (G5e)
+  std::unordered_map<std::uint64_t, std::uint32_t> mesh_by_rid_;
+  std::uint32_t next_mesh_id_ = 1;
   rs2::Filter default_filter_ = rs2::Filter::Linear;   // the server's initial values
   rs2::Repeat default_repeat_ = rs2::Repeat::Disabled;  // (renderer_viewport.h:114-115)
   std::unordered_map<std::uint64_t, std::uint32_t> canvas_by_rid_;

@@ -6,8 +6,11 @@
 #include <iterator>
 #include <map>
 #include <set>
+#include <cstring>
+#include <memory>
 #include <utility>
 
+#include "rs_sha256.h"
 #include "rs_texture_payload.h"
 
 namespace grc {
@@ -57,6 +60,9 @@ void Mirror::reset() {
   textures_.clear();
   texture_by_rid_.clear();
   next_texture_id_ = 1;
+  meshes_.clear();
+  mesh_by_rid_.clear();
+  next_mesh_id_ = 1;
   default_filter_ = Filter::Linear;
   default_repeat_ = Repeat::Disabled;
   failures_.clear();
@@ -364,7 +370,16 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     retire_texture(id);
     return;
   }
-  ++stats_.free_unknown;  // meshes, materials, ... share this slot
+  const auto mesh_it = mesh_by_rid_.find(rid);
+  if (mesh_it != mesh_by_rid_.end()) {
+    // G5e (gate5-design.md Q3b): a mesh an add_mesh still names becomes a `freed` tombstone
+    // (version unchanged, payloads released); otherwise its id leaves the table.
+    ++epoch_;
+    const std::uint32_t id = mesh_it->second;
+    retire_mesh(id);
+    return;
+  }
+  ++stats_.free_unknown;  // materials, shaders, ... share this slot
 }
 
 // --- viewport -------------------------------------------------------------------
@@ -648,7 +663,7 @@ namespace {
 
 // A command that names a texture-table entry through `tex` (render-stream-2.md "Commands";
 // render-stream-3.md "Command" adds the msdf region; render-stream-4.md "Command" the /4 ops
-// that carry `tex`). AddMesh is never recorded before G5e (its tap stays a typed refusal).
+// that carry `tex`, add_mesh included since G5e).
 bool names_texture(const Command &command) {
   switch (command.kind) {
     case CommandKind::AddTextureRect:
@@ -1144,6 +1159,294 @@ void Mirror::add_clip_ignore(std::uint64_t rid, bool ignore, std::uint64_t frame
   push_command(item, std::move(command), frame);
 }
 
+// --- meshes (G5e; gate5-design.md D5-D8, Q3b) ------------------------------------------------
+
+namespace {
+
+MeshReason mesh_reason_from_text(const std::string &text) {
+  if (text == "mesh-blend-shapes") {
+    return MeshReason::MeshBlendShapes;
+  }
+  if (text == "payload-too-large") {
+    return MeshReason::PayloadTooLarge;
+  }
+  return MeshReason::MeshFormat;
+}
+
+std::int32_t clamp_count(std::int64_t value) {
+  return static_cast<std::int32_t>(std::max<std::int64_t>(value, 0));
+}
+
+// The offset of a GRM1 payload's first vertex float (magic, meta length, meta, the 40-byte
+// geometry block), or 0 when the payload has no whole first vertex x (render-stream-4.md
+// "Mesh payload").
+std::size_t first_vertex_offset(const PayloadBytes &payload) {
+  if (payload.size() < 12) {
+    return 0;
+  }
+  const std::uint32_t meta_len = static_cast<std::uint32_t>(payload[8]) |
+                                 (static_cast<std::uint32_t>(payload[9]) << 8) |
+                                 (static_cast<std::uint32_t>(payload[10]) << 16) |
+                                 (static_cast<std::uint32_t>(payload[11]) << 24);
+  const std::size_t offset = 12 + static_cast<std::size_t>(meta_len) + 40;
+  return offset + 4 <= payload.size() ? offset : 0;
+}
+
+}  // namespace
+
+Mirror::Mesh *Mirror::find_mesh(std::uint64_t rid) {
+  const auto it = mesh_by_rid_.find(rid);
+  return it == mesh_by_rid_.end() ? nullptr : &meshes_.at(it->second);
+}
+
+Mirror::Mesh *Mirror::mesh_for(std::uint64_t rid, const char *op, std::uint64_t frame) {
+  if (omit_op_matches(op, frame)) {
+    ++stats_.dropped_omit_op;
+    return nullptr;
+  }
+  Mesh *mesh = find_mesh(rid);
+  if (mesh == nullptr) {
+    ++stats_.mesh_unknown;
+    return nullptr;
+  }
+  return mesh;
+}
+
+Mirror::MeshSurf Mirror::mesh_surface(const MeshSurfaceInput &input, std::uint64_t frame) const {
+  MeshSurf out;
+  out.primitive = input.copy.primitive;
+  out.format = static_cast<std::int64_t>(input.copy.format);
+  out.vertex_count = clamp_count(input.copy.vertex_count);
+  out.index_count = clamp_count(input.copy.index_count);
+  out.ok = input.copy.status == "ok" && input.bytes != nullptr && out.primitive >= 0 &&
+           out.primitive < 5;
+  if (!out.ok) {
+    out.reason = mesh_reason_from_text(input.copy.reason);
+    return out;
+  }
+  out.bytes = input.bytes;
+  out.hash = input.copy.hash;
+  if (perturb_vertex_frame_ != 0 && frame >= perturb_vertex_frame_ && out.vertex_count > 0) {
+    // Q3c (G5e): the recorded payload's first vertex x + 1.0, as a new copy re-hashed; the
+    // engine, the hook's retained buffers and the hook log keep the true bytes.
+    const std::size_t offset = first_vertex_offset(*input.bytes);
+    if (offset != 0) {
+      auto copy = std::make_shared<PayloadBytes>(*input.bytes);
+      float x = 0.0f;
+      std::memcpy(&x, copy->data() + offset, sizeof(x));
+      x += 1.0f;
+      std::memcpy(copy->data() + offset, &x, sizeof(x));
+      out.hash = sha256_hex(copy->data(), copy->size());
+      out.bytes = std::move(copy);
+    }
+  }
+  return out;
+}
+
+void Mirror::recompute_mesh_status(Mesh *mesh) {
+  if (mesh->status == MeshStatus::Freed) {
+    return;
+  }
+  for (const MeshSurf &surface : mesh->surfaces) {
+    if (!surface.ok) {
+      mesh->status = MeshStatus::Unsupported;
+      mesh->has_reason = true;
+      mesh->reason = surface.reason;
+      return;
+    }
+  }
+  mesh->status = MeshStatus::Ok;
+  mesh->has_reason = false;
+}
+
+bool Mirror::mesh_referenced(std::uint32_t id) const {
+  for (const auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if (command.kind == CommandKind::AddMesh && command.mesh == id) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void Mirror::retire_mesh(std::uint32_t id) {
+  const auto it = meshes_.find(id);
+  if (it == meshes_.end()) {
+    return;
+  }
+  Mesh &mesh = it->second;
+  if (mesh.rid != 0) {
+    mesh_by_rid_.erase(mesh.rid);
+    mesh.rid = 0;
+  }
+  if (!mesh_referenced(id)) {
+    meshes_.erase(it);
+    return;
+  }
+  // render-stream-4.md "Mesh table": a tombstone keeps its id and version, drops its surfaces;
+  // a command naming it draws nothing (gate5-design.md Q1d).
+  mesh.status = MeshStatus::Freed;
+  mesh.has_reason = false;
+  mesh.surfaces.clear();
+}
+
+MeshEntry Mirror::wire_mesh(const Mesh &mesh) {
+  MeshEntry out;
+  out.id = mesh.id;
+  out.status = mesh.status;
+  out.version = mesh.version;
+  out.has_reason = mesh.status == MeshStatus::Unsupported && mesh.has_reason;
+  out.reason = mesh.reason;
+  out.has_aabb = mesh.status != MeshStatus::Freed;
+  if (out.has_aabb) {
+    out.custom_aabb = mesh.custom_aabb;
+  }
+  if (mesh.status == MeshStatus::Ok) {
+    out.surfaces.reserve(mesh.surfaces.size());
+    for (const MeshSurf &surface : mesh.surfaces) {
+      MeshSurface wire;
+      wire.hash = surface.hash;
+      wire.payload_bytes = surface.bytes != nullptr ? surface.bytes->size() : 0;
+      wire.primitive = static_cast<Primitive>(surface.primitive);
+      wire.format = surface.format;
+      wire.vertex_count = surface.vertex_count;
+      wire.index_count = surface.index_count;
+      out.surfaces.push_back(std::move(wire));
+    }
+  }
+  return out;
+}
+
+void Mirror::mesh_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("mesh_create", frame)) {
+    return;
+  }
+  const auto stale = mesh_by_rid_.find(rid);
+  if (stale != mesh_by_rid_.end()) {
+    retire_mesh(stale->second);  // a recycled RID value: the old id is gone
+  }
+  Mesh mesh;
+  mesh.id = next_mesh_id_++;
+  mesh.rid = rid;
+  mesh_by_rid_[rid] = mesh.id;
+  meshes_.emplace(mesh.id, std::move(mesh));
+}
+
+void Mirror::mesh_create_from_surfaces(std::uint64_t rid,
+                                       const std::vector<MeshSurfaceInput> &surfaces,
+                                       std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("mesh_create_from_surfaces", frame)) {
+    return;
+  }
+  const auto stale = mesh_by_rid_.find(rid);
+  if (stale != mesh_by_rid_.end()) {
+    retire_mesh(stale->second);
+  }
+  Mesh mesh;
+  mesh.id = next_mesh_id_++;
+  mesh.rid = rid;
+  for (const MeshSurfaceInput &input : surfaces) {
+    mesh.surfaces.push_back(mesh_surface(input, frame));
+  }
+  recompute_mesh_status(&mesh);
+  mesh_by_rid_[rid] = mesh.id;
+  meshes_.emplace(mesh.id, std::move(mesh));
+}
+
+void Mirror::mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface,
+                              std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Mesh *mesh = mesh_for(rid, "mesh_add_surface", frame);
+  if (mesh == nullptr) {
+    return;
+  }
+  ++epoch_;
+  mesh->surfaces.push_back(mesh_surface(surface, frame));
+  mesh->version += 1;
+  recompute_mesh_status(mesh);
+}
+
+void Mirror::mesh_surface_update_region(std::uint64_t rid, const char *op, std::int32_t surface,
+                                        bool applied, const MeshSurfaceInput *updated,
+                                        std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Mesh *mesh = mesh_for(rid, op, frame);
+  if (mesh == nullptr || !applied) {
+    return;  // D8: a rejected (out of bounds, empty) update changes nothing, as in GLES3
+  }
+  ++epoch_;
+  mesh->version += 1;
+  if (updated != nullptr && surface >= 0 &&
+      static_cast<std::size_t>(surface) < mesh->surfaces.size()) {
+    mesh->surfaces[static_cast<std::size_t>(surface)] = mesh_surface(*updated, frame);
+  }
+  recompute_mesh_status(mesh);
+}
+
+void Mirror::mesh_surface_remove(std::uint64_t rid, std::int32_t surface, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Mesh *mesh = mesh_for(rid, "mesh_surface_remove", frame);
+  if (mesh == nullptr || surface < 0 ||
+      static_cast<std::size_t>(surface) >= mesh->surfaces.size()) {
+    return;
+  }
+  ++epoch_;
+  mesh->surfaces.erase(mesh->surfaces.begin() + surface);
+  mesh->version += 1;
+  recompute_mesh_status(mesh);
+}
+
+void Mirror::mesh_clear(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Mesh *mesh = mesh_for(rid, "mesh_clear", frame);
+  if (mesh == nullptr) {
+    return;
+  }
+  ++epoch_;
+  mesh->surfaces.clear();
+  mesh->version += 1;
+  recompute_mesh_status(mesh);
+}
+
+void Mirror::mesh_set_custom_aabb(std::uint64_t rid, const std::array<float, 6> &aabb,
+                                  std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Mesh *mesh = mesh_for(rid, "mesh_set_custom_aabb", frame);
+  if (mesh == nullptr) {
+    return;
+  }
+  ++epoch_;
+  mesh->custom_aabb = aabb;
+  mesh->version += 1;
+}
+
+void Mirror::add_mesh(std::uint64_t rid, std::uint64_t mesh_rid, const Xform &transform,
+                      const Color4 &modulate, std::uint64_t texture, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_mesh";
+  Item *item = geometry_item(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  const Mesh *mesh = find_mesh(mesh_rid);
+  if (mesh == nullptr) {
+    // render-stream-4.md "Command": a mesh the capture never saw created (or RID()).
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::UnknownMesh;
+  } else if (geometry_texture(texture, kOp, &command)) {
+    command.kind = CommandKind::AddMesh;
+    command.mesh = mesh->id;
+    command.transform = transform;
+    command.modulate = modulate;
+  }
+  push_command(item, std::move(command), frame);
+}
+
 void Mirror::set_texture_filter(std::uint64_t rid, std::int32_t filter, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   static const char kOp[] = "canvas_item_set_default_texture_filter";
@@ -1508,7 +1811,7 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   Captured captured;
   Snapshot &out = captured.state;
   // G5d (gate5-design.md D1): the capture speaks render-stream/4; the stamp makes make_full /
-  // make_patch carry the (empty until G5e) mesh table and the cmd_i32 / mesh_f32 blocks.
+  // make_patch carry the mesh table (G5e) and the cmd_i32 / mesh_f32 blocks.
   out.version = ProtocolVersion::V4;
   out.seq = seq;
   out.frame = frame;
@@ -1550,6 +1853,22 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   for (auto it = textures_.begin(); it != textures_.end();) {
     if (it->second.status == TextureStatus::Freed && referenced.count(it->first) == 0) {
       it = textures_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  // G5e: likewise a mesh tombstone leaves at the first snapshot no add_mesh names it.
+  std::set<std::uint32_t> meshes_named;
+  for (const auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if (command.kind == CommandKind::AddMesh) {
+        meshes_named.insert(command.mesh);
+      }
+    }
+  }
+  for (auto it = meshes_.begin(); it != meshes_.end();) {
+    if (it->second.status == MeshStatus::Freed && meshes_named.count(it->first) == 0) {
+      it = meshes_.erase(it);
     } else {
       ++it;
     }
@@ -1607,6 +1926,13 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
                          UnsupportedReason::UnsupportedTexture);
         }
       }
+      if (command.kind == CommandKind::AddMesh) {
+        // render-stream-4.md "Command": an add_mesh naming an `unsupported` mesh entry.
+        const auto mesh = meshes_.find(command.mesh);
+        if (mesh != meshes_.end() && mesh->second.status == MeshStatus::Unsupported) {
+          add_item_entry(state.id, "canvas_item_add_mesh", UnsupportedReason::UnsupportedMesh);
+        }
+      }
     }
     if (item.unsupported_state) {
       add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnsupportedState);
@@ -1649,6 +1975,19 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       captured.payloads.emplace(texture.copy.hash, texture.bytes);
     }
   }
+  out.meshes.reserve(meshes_.size());
+  for (const auto &entry : meshes_) {
+    const Mesh &mesh = entry.second;
+    out.meshes.push_back(wire_mesh(mesh));
+    if (mesh.status != MeshStatus::Ok) {
+      continue;
+    }
+    for (const MeshSurf &surface : mesh.surfaces) {
+      if (surface.bytes != nullptr) {
+        captured.payloads.emplace(surface.hash, surface.bytes);
+      }
+    }
+  }
   return captured;
 }
 
@@ -1663,6 +2002,15 @@ MirrorStats Mirror::stats() const {
     const Texture &texture = entry.second;
     if (texture.bytes != nullptr && hashes.insert(texture.copy.hash).second) {
       out.texture_payload_bytes += texture.bytes->size();
+    }
+  }
+  out.live_meshes = meshes_.size();
+  std::set<std::string> mesh_hashes;
+  for (const auto &entry : meshes_) {
+    for (const MeshSurf &surface : entry.second.surfaces) {
+      if (surface.bytes != nullptr && mesh_hashes.insert(surface.hash).second) {
+        out.mesh_payload_bytes += surface.bytes->size();
+      }
     }
   }
   return out;

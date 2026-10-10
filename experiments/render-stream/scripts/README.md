@@ -172,7 +172,7 @@ sha256, and `gamescope/` holds the compositor's log and identity.
 Capture directories add `evidence/` (`GRC_EVIDENCE_DIR`, with `resources.jsonl` since G2b2),
 `recording.rs2`, `store/` and `steps.jsonl`, and the `capture` leg adds `strace.txt`, `maps.txt`
 and `fd.txt`. Receiver directories add their own `recording.rs2` copy, `cache/` and `applied.json`
-(`render-stream-receiver-applied/3`). Rendered ones also add `shots/seq-<n>.png`,
+(`render-stream-receiver-applied/4` since G5e). Rendered ones also add `shots/seq-<n>.png`,
 `display-ownership.json` and the checker's `diff/step-<k>.png`. A rendered receiver whose step join
 fails is not launched: `step-join.log` says why, and the leg classifies as `capture-failure`.
 
@@ -211,7 +211,7 @@ Legs without a receiver (`capture`, `preexisting`) stop after rule 2.
 | `expected-image-reference`      | every `reference/shots/step-<k>.png` equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                                                                                                                                          |
 | `expected-image-receiver`       | every receiver settle shot equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                                                                                                                                                    |
 | `receiver-vs-reference`         | receiver vs reference at every step, full frame and both regions: 0 mismatched pixels and max channel delta 0 (`compareRgbaBuffers` with exact budgets)                                                                                                                                                                                                                                              |
-| `receiver-consumed-stream`      | `receiver` `applied.json` is `render-stream-receiver-applied/3`, seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, `recording.sha256` equal to the capture file's, and `resources_summary` shows nothing fetched and nothing uploaded                                                                                                                        |
+| `receiver-consumed-stream`      | `receiver` `applied.json` is `render-stream-receiver-applied/4` (/3 before G5e), seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, `recording.sha256` equal to the capture file's, and `resources_summary` shows nothing fetched and nothing uploaded                                                                                                                        |
 | `receiver-never-loaded-fixture` | the traced receiver opens its recording and nothing under `fixtures/`; no file in `receiver/` (outside `.godot/`) is byte-identical to one in `fixtures/gate0/`; no receiver log has a `[fixture]` line; argv has `--path <abs receiver>`                                                                                                                                                            |
 | `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs2-selftest] ok` and exited 0; the `golden-4/inline.rs4` replay (since G5d) is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
 | `leg-class-<leg>`               | each classified leg has its expected class; sabotage legs mismatch at exactly the expected steps with steps 0–1 matching; `preexisting` names `pre-existing-object`; `corrupt` fails at `{seq:3, reason:"meta-json"}`                                                                                                                                                                                |
@@ -1336,14 +1336,14 @@ one and on one still typed `unsupported`.
 mise exec -- pnpm render-stream:gate5 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g5b,g5c,g5d,g5g]
+  [--legs g5b,g5c,g5d,g5e,g5g]
 ```
 
-- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_g5c`, `run_g5d`, `run_g5g`, `run_reference` with
-  `REFERENCE_ARMED`, `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MESH_ORACLE`,
-  `g5_capture` for g5d's variant and sabotage captures). g5d needs g5b's capture and reference in
-  the same run; g5g imports the receiver itself. Groups g5e and g5f are known but have not landed,
-  so asking for them exits 2.
+- `run-gate5.sh`: the orchestrator (`run_g5b`, `run_g5c`, `run_g5d`, `run_g5e`, `run_g5g`,
+  `run_reference` with `REFERENCE_ARMED`, `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and
+  `REFERENCE_MESH_ORACLE`, `g5_capture` for g5d's and g5e's variant and sabotage captures). g5d
+  needs g5b's capture and reference in the same run, g5e g5c's; g5g imports the receiver itself.
+  Group g5f is known but has not landed, so asking for it exits 2.
   Every capture speaks render-stream/4 since G5d (/3 before) and writes both sinks under gate 2's
   `.rs2` names.
 - `check-gate5.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate5-report/1`:
@@ -1354,7 +1354,11 @@ mise exec -- pnpm render-stream:gate5 -- \
   derived scissor and clip-ignored commands per step, the receivers' mismatches against the
   reference, each sabotage leg's mismatching regions per step and the `canvas` variant's refused
   entries), `budgets` (reference against repeat per region and pixel class) and `freshness`). With
-  g5c it merges `runGate5c`'s checks and legs into the same report; `runGate5` merges g5g's.
+  g5c it merges `runGate5c`'s checks and legs into the same report; `runGate5` merges g5g's; and
+  with g5e `runGate5e`'s, whose `g5e` key holds the wire's mesh tables per frame, the surface-steps
+  equal to the oracle, the store's GRM1 payloads, each receiver's mesh uploads and fetches, each
+  sabotage leg's mismatching regions per step and the hook's mesh cost per step (lines, payloads
+  made, median copy and hash ns, live surface bytes).
 - `lib/gate5-expected.ts`: `expected.json`'s types, `stepFrames5`, transforms and texel decoding.
 - `lib/geometry-raster.ts`: the reference rasterizer (`rasterizeGate5`, `rasterizeItems`). Pixel
   centre coverage, undecided within 1/16 px of a boundary edge (welded vertices; shared edges are
@@ -1367,15 +1371,24 @@ mise exec -- pnpm render-stream:gate5 -- \
   (`wireCommandOf`, `expectedCommandsByStep`), `ulpDistance`/`sameValue`, geometry-commands,
   lowering-predictions, clip-rects-derived over sink states and receiver state dumps, receiver
   shots by settle seq, per-region checkpoints and `evaluateLegClass5`, and capture-canvas.
-- `lib/clip-derive.ts` (gate 3's, extended by G5d): `itemRect` follows `Item::get_rect` for the /4
-  commands with D9's draw transform (replaced, never composed; every later command's rect goes
-  through it), and `clipIgnoredCommands`/`DerivedClip.ignored` report D10's clip-ignore spans.
+- `lib/clip-derive.ts` (gate 3's, extended by G5d and G5e): `itemRect` follows `Item::get_rect` for
+  the /4 commands with D9's draw transform (replaced, never composed; every later command's rect
+  goes through it), and `clipIgnoredCommands`/`DerivedClip.ignored` report D10's clip-ignore spans.
+  An `add_mesh` rect is `meshRects`' (G5e, Q1f): the entry's non-zero custom AABB, else the merge of
+  its surfaces' AABBs supplied by hash (`DeriveOptions.surfaceAabbs`; unknown without them), a
+  tombstone's zero rect, never the command's own transform.
 - `lib/gate5c-checks.ts`: the g5c checks (fixtures/gate5-mesh): `expected.json`'s types, the census
   expansion, the hook-log hash replay, the oracle and parity checks, `runGate5c`.
 - `lib/gate5g-checks.ts`: the g5g checks on `fixtures/gate5-style` (evidence under `style/`),
   reusing every g5b and g5d helper on that root, plus `stylebox-lowering`, `nine-patch-args`, the
   focus box's clip-ignore pair and the ignore-axis prediction (`runG5g`).
-- `test/self-test-gate5.ts` (with `test/gate5g-cases.ts`), `test/self-test-gate5c.ts`: below.
+- `lib/gate5e-checks.ts`: the g5e checks (meshes on the wire and the receivers): the hook log
+  replayed by wire id (`replayMeshLog`, `meshLogDivergence`, D15's `classifyMeshLeg`), the wire
+  against `expected.json` (hash parity, the mesh lifetimes, fresh-without-redraw), the GRM1 store,
+  the receivers' predicted uploads and quiet fetches, each host sabotage's signature against the
+  log, `runGate5e`.
+- `test/self-test-gate5.ts` (with `test/gate5g-cases.ts`), `test/self-test-gate5c.ts`,
+  `test/self-test-gate5e.ts`: below.
 
 ## Gate 5 legs and evidence under `--out`
 
@@ -1399,6 +1412,13 @@ mise exec -- pnpm render-stream:gate5 -- \
 | `receiver-patch`   | g5d   | `receiver-patch/`   | the same on `recording-patch.rs2`, plus `state/seq-<n>.json` at the settle seqs                                       |
 | sabotage receivers | g5d   | `sabotage-<kind>/receiver/` | rendered receivers on the three sabotage captures                                                         |
 | `sabotage-receiver-ignore-set-transform`, `-ignore-clip-ignore` | g5d | `sabotage-receiver-<kind>/` | rendered receivers on `capture/` with `RS_RECEIVER_SABOTAGE=<kind>` |
+| `import` (receiver) | g5e  | `mesh/import/receiver/` | the mise editor's `--import` of `receiver/`                                                                       |
+| `receiver-headless-trace` (mesh) | g5e | `mesh/receiver-headless-trace/` | the template, `--headless`, on `mesh/capture/`'s full sink under strace (openat)                  |
+| `capture-mesh-inline` | g5e | `mesh/capture-inline/` | as `capture-mesh` (quit 400), every payload inline: `GRC_RESOURCE_INLINE_MAX_BYTES` and `GRC_RESOURCE_MAX_PAYLOAD_BYTES` 16 MiB, no store |
+| `receiver-mesh`, `receiver-mesh-patch` | g5e | `mesh/receiver/`, `mesh/receiver-patch/` | rendered receivers on `mesh/capture/`'s full and patch sinks (`applied.json` /4 with `mesh_uploads`; the patch one also `state/seq-<n>.json`) |
+| `receiver-mesh-inline` | g5e | `mesh/receiver-inline/` | rendered receiver on `capture-inline`'s full sink, no store                                       |
+| `sabotage-mesh-freeze`, `-omit-vertex-region`, `-perturb-vertex` | g5e | `mesh/sabotage-mesh-<kind>/{capture,receiver}/` | headless captures of the mesh fixture's own 102 frames with `freeze-frame` @11, `omit-op mesh_surface_update_vertex_region` @21, `perturb-vertex` @21, each with a rendered receiver |
+| `sabotage-mesh-receiver-drop-surface`, `-stale` | g5e | `mesh/sabotage-mesh-receiver-<kind>/` | rendered receivers on `mesh/capture/` with `RS_RECEIVER_SABOTAGE=drop-mesh-surface` / `stale-mesh` |
 | `import-style`     | g5g   | `style/import/{fixture,receiver}/` | the mise editor's `--import` of `fixtures/gate5-style` and of `receiver/`                       |
 | `capture-style`    | g5g   | `style/capture/`    | as `capture`, on `fixtures/gate5-style`                                                                               |
 | `reference-style`, `reference-style-repeat`, `reference-style-armed` | g5g | `style/reference{,-repeat,-armed}/` | as g5b's three, on `fixtures/gate5-style` (own gamescope)               |
@@ -1448,10 +1468,11 @@ model to be one hash. `mesh-expected-image-reference` compares every shot with t
 exact regions (`DF` is band), `mesh-presence-reference` every surface's presence,
 `mesh-freshness-reference` `fresh` with `RM` changing at 2, 3 and 4 without a redraw,
 `mesh-reference-repeat-budget` and `mesh-armed-transparent` the legs pixel for pixel.
-`leg-class-capture-mesh` requires class `unsupported` with `canvas_item_add_mesh` the only
-unsupported op (on render-stream/4 too: the capture keeps typing `add_mesh` until G5e's mesh
-table), each item's commands per settle frame (`FR`'s empty from 8) and `RM`'s `content_version`
-constant over the run. `mesh-support-legs-exit` requires the import and rendered
+`leg-class-capture-mesh` requires class `success` since G5e (`unsupported` with
+`canvas_item_add_mesh` the only unsupported op before): nothing unsupported, each item's commands
+per settle frame -- `add_mesh` naming the hook log's id of its mesh (`DF2` from step 5, `FM`'s
+tombstone at 7) with identity, white and `TEXG` for `DF`, `FR`'s empty from 8 -- and `RM`'s
+`content_version` constant over the run. `mesh-support-legs-exit` requires the import and rendered
 legs to exit 0.
 
 ## Gate 5 criteria (g5d)
@@ -1475,6 +1496,38 @@ capture. The five sabotage legs (`leg-class-sabotage-*`) require `pixel-mismatch
 predicted steps (freeze) or, per step, exactly the predicted regions (the others).
 `receiver-never-loaded-fixture` is gate 0's, over every g5d receiver log; `receiver-typed-clean`
 scans them for script errors.
+
+## Gate 5 criteria (g5e)
+
+`mesh-versions-current` requires every transaction of both sinks of `capture-mesh` and of
+`capture-mesh-inline` to carry, per mesh entry, the hook log's id, version, status and surface
+hashes at the end of its frame (the log replayed by wire id, omitted lines excluded), and every
+mesh the log holds live. `mesh-hash-parity` requires, at every settle step and on all three
+recordings, each mesh the oracle reads back live to be the wire entry of its hook-log id with the
+oracle's GRM1 hashes in order. `mesh-census-wire` requires the wire's mesh table per frame to be
+`predictions["mesh-lifetimes"]` (`DF`'s id leaves and `DF2`'s arrives at 51, `FM` a named `freed`
+tombstone 71-80, gone at 81) and the patch sink to remove each id the frame it leaves.
+`fresh-without-redraw-wire` requires `RM`'s `content_version` constant over the run while `RMS`'s
+version and hash change exactly on the census's `RMS` frames (21, 31, 41). `store-complete-mesh`
+requires every ok mesh surface of either sink to be `sha256/<hash>.grm` in the store, hashing to
+its name, with a `mesh-surface` index line (textures `.grt`, `texture-2d`), nothing else, and the
+inline capture to have no store. `leg-class-capture-mesh-inline` requires `success`.
+`leg-class-receiver-mesh`, `-patch` and `-inline` require `success` (D15: classifyLeg plus
+`mesh-log-divergence` -- ids, versions and statuses against the log -- as a capture-failure);
+`receiver-vs-reference-mesh` requires all three receivers' settle shots to equal the reference's at
+every pixel, `DF`'s band region included. `receiver-mesh-uploads` requires each receiver's
+`mesh_uploads` to equal `predictions["receiver-mesh-uploads"]` frame by frame over the 400 frames
+(creates, in-place updates naming exactly the changed buffers, rebuilds on a layout change, custom
+AABBs, frees, bytes). `resource-quiet-mesh` requires no mesh payload fetched twice or outside its
+mesh's census frames (`DF`/`DF2` excepted), each fetched at the frame its hash first appears on the
+wire, and the inline receiver to fetch none. `fresh-without-redraw-receiver` is the freshness check
+on `receiver-mesh`'s shots (`RM` at 2, 3, 4). `receiver-state-dumps-mesh` requires
+`receiver-mesh-patch`'s dumps, meshes included, to equal the recording's resolved state. The five
+sabotage legs require `pixel-mismatch` with `predictions`' steps (freeze) or regions per step;
+`sabotage-mesh-log-signature` requires omit-op's wire to equal the log, perturb-vertex to keep ids
+and versions and re-hash exactly the payloads taken from its frame on, and freeze to republish the
+log's frame-10 mesh table. `receiver-typed-clean-mesh`, `receiver-never-loaded-fixture-mesh` and
+`mesh-receiver-support-legs-exit` are g5d's over the g5e receivers.
 
 ## Gate 5 criteria (g5g)
 
@@ -1505,6 +1558,7 @@ python3 experiments/render-stream/fixtures/gate5/make_expected.py --check
 python3 experiments/render-stream/fixtures/gate5-style/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate5c.ts
 python3 experiments/render-stream/fixtures/gate5-mesh/make_expected.py --check
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate5e.ts
 ```
 
 The rasterizer is checked on hand cases whose answers are typed in, not computed by it: a tie-free
@@ -1548,7 +1602,21 @@ runs `evaluateMeshCensus` on the census written out as a log (with a teardown fr
 fails it on a missing line, a version, an extra mesh, a line off the main thread and a rejected
 update; replays a hand hook log (adds, an update, a remove, a clear, a free, a single-surface
 `create_from_surfaces`); and runs the oracle, parity, draw-census and capture checks on synthetic
-values, failing each on one field, hash, flag or command.
+values, failing each on one field, hash, flag or command (G5e: the capture's `add_mesh` commands,
+failing on a class, an `unknown-mesh` entry, `FR` not cleared, `DF` naming its freed mesh, `DF`
+untextured and `RM` redrawn).
+
+`self-test-gate5e.ts` runs `meshLogDivergence` on a hand log and wire (one wire version per frame,
+an omitted line ignored) and fails it on a version, a missing live mesh and (with hashes) a hash;
+`classifyMeshLeg` turns a divergence into `capture-failure`; perturb-vertex's log signature passes
+and fails on an unperturbed late payload and a perturbed early one. A wire synthesized from
+`expected.json` passes `mesh-hash-parity`, `mesh-census-wire` and `fresh-without-redraw-wire`, which
+fail on a hash, a tombstone gone early, a patch not removing `DF` and `RM` redrawn. An applied.json
+synthesized from `predictions["receiver-mesh-uploads"]` passes and fails on a missing index update,
+a re-uploaded unchanged buffer and an in-place `P2` change; `resource-quiet-mesh` fails on a hash
+fetched twice and on `LD` fetched off its census. `meshRects`/`itemRect` are checked on hand
+cases: a custom AABB wins, surface AABBs merge, a tombstone is a zero rect, a missing surface AABB
+or id is unknown, and the draw transform applies but not the command's own.
 
 ## Gate 5.5 files
 

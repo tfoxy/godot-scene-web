@@ -3639,6 +3639,62 @@ What landed:
 - That a receiver, or anything downstream, can compile a shader or apply a parameter: nothing here
   is on any wire yet.
 
+## Gate 5e result (2026-10-10)
+
+G5e ([protocol/gate5-design.md](protocol/gate5-design.md) "G5e", "As built (G5e)") passes: meshes
+travel on render-stream/4 end to end. `pnpm render-stream:gate5` (g5b, g5c, g5d, g5e, g5g) is
+**101/101** in `artifacts/render-stream/gate5/g5e-v4/` (g5e under `mesh/`; ignored, not
+committed). On the same build, rebased onto G5g, G55w and G55a: `build-capture.sh` 16/16 ctests,
+gate −1 28/28 (`gate-minus1/g5e-v4/`), gate 0 19/19, gate 1 65/65, gate 2 85/85, gate 3 56/56,
+gate 4 185/185 (each `<gate>/g5e-v4/`), and after the last rebase onto G55c's census gate 5.5 55/55
+(`gate55/g5e-v5/`); every pure self-test, the receiver self-tests (`applier2`, `codec2`, the ws/http
+interop) and every `make_golden.py`/`make_expected.py --check`. One earlier pass scored gate 2 83/85
+(`gate2/g5e-v1/`: the known `live-animate` frame-971 pin flake); every later pass was 85/85.
+
+What landed: the mirror's mesh table (own id counter, versions counted as the hook log counts
+them, tombstones, `unsupported`/`unknown-mesh`/`unsupported-mesh`, `perturb-vertex` on payloads);
+the hook hands each GRM1 surface version it encodes to the mirror; GRM1 payloads in the store
+(`.grm`, index lines typed), inline and on the live hub; the receiver's mesh residency (create,
+in-place region updates of changed buffers, rebuild on a layout change, custom AABB, free) and
+`add_mesh` replay, `drop-mesh-surface` and `stale-mesh`, `applied.json` /4 and state dumps with
+`meshes`; `clip-derive.ts` mesh rects; group g5e (`lib/gate5e-checks.ts`).
+
+Images (under the run directory): `mesh/reference/shots/step-{0..9}.png` against
+`mesh/receiver/shots/seq-<n>.png`, `mesh/receiver-patch/shots/` and `mesh/receiver-inline/shots/`
+(thirty shots, every pixel equal, `DF`'s band included), and the sabotage receivers' shots under
+`mesh/sabotage-mesh-*/receiver/shots/` and `mesh/sabotage-mesh-receiver-*/shots/`.
+
+- **Wire.** 1 200 transactions (both sinks and the inline capture) agree with the hook log at
+  every frame; 219 settle surface-steps equal the oracle's GPU readback. Mesh tables: ids 1–7 at
+  frame 1, `DF` (4) out and `DF2` (8) in at 51, `FM` (7) a named tombstone 71–80, gone at 81.
+  `RM`'s `content_version` never changes while `RMS` changes at 21, 31, 41.
+- **Bytes and cost.** The store holds 37 GRM1 payloads, 33 004 B over 400 frames (`DF`'s
+  displacement repeats every 8 frames, so its hashes do too). Sinks: full 2 603 881 B, patch
+  546 737 B, all-inline 2 665 222 B. Live surface bytes per step 3 532 (steps 0–4), 2 642, 2 358,
+  2 074, 2 085, 2 085; per step about 31 mesh hook lines and 21 payloads made, median copy
+  1.2–3.0 µs and hash 2.6–7.6 µs per payload (`g5e-v3` of the same work: 1.3–5.4 and 2.9–7.4). Each receiver: 765 upload rows, 62 504 B (8 creates,
+  402 in-place updates, 3 rebuilds, 350 custom AABBs, 2 frees), 37 fetches (33 004 B) out of band,
+  none inline.
+- **Sabotages.** freeze-frame @11 at steps 1..9; omit-op vertex region @21 in `RM` {2..9} and `DF`
+  {3..9}; perturb-vertex @21 in `RM`/`DF` {2..9}, `P2` {7..9}, `MI` {8,9}; drop-mesh-surface in
+  `M2` {0..5}; stale-mesh in `MI` {1..7}, `RM` {2..9}, `DF` {0..9}.
+
+### Findings
+
+- **`DF`'s displacement repeats every 8 frames**, so stale vertices can look right: omitting
+  vertex updates from frame 21 leaves `DF` correct at step 2 (frame 28 ≡ 20 mod 8). Q6d's {2..9}
+  was wrong; `make_expected.py` now derives the set from its byte model.
+- **Host sabotages diverge from the hook log by design** (freeze republishes the frame-10 table,
+  perturb-vertex re-hashes), so D15's `mesh-log-divergence` classifies the honest legs and a
+  `sabotage-mesh-log-signature` check proves each sabotage's own divergence.
+
+### What G5e does not prove
+
+- Meshes through dropped presentations and live HTTP fetches of GRM1 (G5f).
+- Multi-surface `mesh_create_from_surfaces` hashes in the hook log (the mirror carries them).
+- Item-rect caching across a custom-AABB change without a redraw (Q1f), browser receivers (gate
+  7), and exactness on another GPU or driver.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

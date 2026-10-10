@@ -1225,7 +1225,7 @@ export async function writeReceiver(
   for (const [seq, json] of spec.states ?? [])
     await writeText(join(dir, "state", `seq-${seq}.json`), json);
   await writeJson(join(dir, "applied.json"), {
-    schema: "render-stream-receiver-applied/3",
+    schema: "render-stream-receiver-applied/4",
     mode: live ? "live" : "file",
     recording: {
       path: recPath,

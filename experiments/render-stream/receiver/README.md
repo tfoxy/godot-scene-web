@@ -71,7 +71,7 @@ Resources (G2b2, gate2-design.md Q5 "Environment"; both modes unless noted):
 | `RS_RECEIVER_STORE_DIR`        | file mode: the capture's store, the origin for `fetch: "directory"`; reading from it is a fetch                                                                                                                                                        |
 | `RS_RECEIVER_FETCH_TIMEOUT_MS` | live: a GET not complete this long after it was issued is `resource-unavailable` (default 10000)                                                                                                                                                       |
 | `RS_RECEIVER_FETCH_DELAY_MS`   | an injected delay before each fetch, default 0                                                                                                                                                                                                         |
-| `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction), `ignore-cache` (fetch even on a cache hit), `wrong-http-token` (live only, G2e: correct token on the upgrade, wrong one on every GET), `ignore-clip` (gate3-design.md Q5, G3b: every `canvas_item_set_clip` call passes `false`) or `clip-before-clear` (G3b: the pre-gate-3 apply order -- the clip setter before content, with no shadow reset on clear); all five exist only to fail checks |
+| `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction), `ignore-cache` (fetch even on a cache hit), `wrong-http-token` (live only, G2e: correct token on the upgrade, wrong one on every GET), `ignore-clip` (gate3-design.md Q5, G3b: every `canvas_item_set_clip` call passes `false`), `clip-before-clear` (G3b: the pre-gate-3 apply order -- the clip setter before content, with no shadow reset on clear), `drop-msdf` (G4e2), `ignore-set-transform` and `ignore-clip-ignore` (G5d), `drop-mesh-surface` (G5e: a mesh build never adds its surface 1) or `stale-mesh` (G5e: in-place payload changes of a resident surface are ignored); all ten exist only to fail checks |
 
 Exit codes: `0` status `ok`; `3` replay-failure (`applied.json` written); `2` usage error
 (`RS_RECEIVER_OUT` missing or not absolute, a malformed `RS_RECEIVER_SHOT_SEQS` or
@@ -134,9 +134,15 @@ entry, transactions and shots with `stream: 2`, and `shots/stream-2-seq-<n>.png`
 `skipped: "resync"` and no `applied_us`; it is acked `received` only; `live.resync` records the
 step, seq and frame.
 
-## `applied.json` (`render-stream-receiver-applied/3`)
+## `applied.json` (`render-stream-receiver-applied/4`)
 
-The schema is gate2-design.md Q5: gate1-design.md Q5's `/2` plus `cache`
+Since G5e (gate5-design.md Q5) `/4`: `/3`'s shape below, each applied transaction's `resources`
+gaining `meshes_created`, `meshes_rebuilt`, `surface_updates`, `mesh_upload_bytes` and
+`skipped_mesh_commands` (and the entry `mesh_commands`), `fetches[]` entries a `kind`
+(`texture | mesh`), a top-level `mesh_uploads[]`
+(`{id, op: create|rebuild|update|free|custom_aabb, surfaces, buffers, bytes, stream, seq}`) and
+`resources_summary` the mesh totals. State dumps gain `meshes` (render-stream-4.md's resolved
+form). `/3` was gate2-design.md Q5: gate1-design.md Q5's `/2` plus `cache`
 (`{dir, mode, entries_before, entries_after, bytes_after}` or `null` without a cache dir), a
 `resources` object on every applied transaction (`fetched`, `fetched_bytes`, `cache_hits`,
 `inline_received`, `created`, `updated`, `replaced`, `freed`, `upload_bytes`, `fetch_us`,
@@ -170,6 +176,15 @@ also requested, else `null`); `shots_missed` is `[]`; `live` is `null`. `viewpor
   same format, size and mipmaps, else `texture_replace(rid, texture_2d_create(image))`, so its RID
   never changes. Placeholders are the receiver's own `texture_2d_placeholder_create()`. Commands
   naming an `unsupported` texture and `unsupported` commands are skipped and recorded.
+- **Meshes (G5e).** Every surface payload (GRM1, `sha256/<hash>.grm`) of an `ok` mesh an
+  `add_mesh` names that is not resident with that hash is made available like a texture. A mesh
+  becomes resident when first named (`mesh_create`, one `mesh_add_surface` Dictionary per surface,
+  `mesh_set_custom_aabb`) and is freed when its entry leaves or becomes a tombstone; its RID never
+  changes. A same-layout payload change is one `mesh_surface_update_*_region(mesh, s, 0, buffer)`
+  per changed buffer (what the host's engine did, so the surface AABB stays the one fixed at
+  `add_surface`), a layout change (counts, buffer lengths, AABB, uv_scale) `mesh_clear` and every
+  surface again; a custom AABB change one call. An `add_mesh` naming a freed, unsupported or
+  absent mesh is skipped and recorded.
 - **Resolved state, identity reconciliation.** Each transaction is decoded and accepted by
   `Rs2Decoder.Stream`, which resolves a patch against the previous state. `RsApplier.apply_state`
   then follows gate 0's Q5 steps 2–8 against the resolved state: free vanished, create new, parent

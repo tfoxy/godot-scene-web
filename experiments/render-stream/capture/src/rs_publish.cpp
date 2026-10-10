@@ -403,29 +403,30 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
     return true;
   }
   // render-stream-2.md "Resource record": one record per hash the stream has not carried yet,
-  // before the first transaction whose resolved table holds it, in table (id) order.
-  for (const TextureEntry &entry : published.state.textures) {
-    if (!is_ok_image(entry) || entry.payload_bytes > policy_.inline_max_bytes ||
-        lane->carried.count(entry.hash) != 0) {
+  // before the first transaction whose resolved table holds it, in table (id) order -- textures,
+  // then (G5e, render-stream-4.md) every `ok` mesh's surfaces.
+  for (const rs::PayloadRef &ref : rs::payload_refs(published.state)) {
+    const std::string &hash = *ref.hash;
+    if (ref.payload_bytes > policy_.inline_max_bytes || lane->carried.count(hash) != 0) {
       continue;
     }
-    const auto payload = published.payloads.find(entry.hash);
+    const auto payload = published.payloads.find(hash);
     if (payload == published.payloads.end() || payload->second == nullptr) {
-      error_ = "resource-store-failed: no payload for hash " + entry.hash;
+      error_ = "resource-store-failed: no payload for hash " + hash;
       return false;
     }
     ResourceRecord record;
-    record.hash = entry.hash;
+    record.hash = hash;
     record.payload = *payload->second;
     const std::vector<std::uint8_t> bytes = encode_resource(record);
     const bool ok = lane->sink->write(bytes) && lane->sink->flush();
     if (events_) {
-      events_("inline", entry.hash, record.payload.size(), ok, frame);
+      events_("inline", hash, record.payload.size(), ok, frame);
     }
     if (!ok) {
       return false;
     }
-    lane->carried.insert(entry.hash);
+    lane->carried.insert(hash);
     ++lane->stats.resource_records;
     lane->stats.resource_bytes += record.payload.size();
     note_record_bytes(&lane->stats, bytes);
@@ -434,31 +435,31 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
 }
 
 bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
-  for (const TextureEntry &entry : published.state.textures) {
-    if (!is_ok_image(entry)) {
-      continue;
-    }
+  for (const rs::PayloadRef &ref : rs::payload_refs(published.state)) {
+    const std::string &hash = *ref.hash;
     if (store_ == nullptr) {
-      if (entry.payload_bytes > policy_.inline_max_bytes) {
-        error_ = "resource-store-missing: hash " + entry.hash + " (" +
-                 std::to_string(entry.payload_bytes) + " B) is above the inline threshold and " +
+      if (ref.payload_bytes > policy_.inline_max_bytes) {
+        error_ = "resource-store-missing: hash " + hash + " (" +
+                 std::to_string(ref.payload_bytes) + " B) is above the inline threshold and " +
                  "no store directory is open";
         return false;
       }
       continue;
     }
-    if (store_->has(entry.hash)) {
+    if (store_->has(hash)) {
       continue;
     }
-    const auto payload = published.payloads.find(entry.hash);
+    const auto payload = published.payloads.find(hash);
     if (payload == published.payloads.end() || payload->second == nullptr) {
-      error_ = "resource-store-failed: no payload for hash " + entry.hash;
+      error_ = "resource-store-failed: no payload for hash " + hash;
       return false;
     }
     std::string why;
-    const rs::ResourceStore::Put put = store_->put(entry, *payload->second, frame, &why);
+    const rs::ResourceStore::Put put =
+        ref.texture != nullptr ? store_->put(*ref.texture, *payload->second, frame, &why)
+                               : store_->put_mesh(*ref.surface, *payload->second, frame, &why);
     if (events_ && put != rs::ResourceStore::Put::Present) {
-      events_("store", entry.hash, payload->second->size(), put == rs::ResourceStore::Put::Stored,
+      events_("store", hash, payload->second->size(), put == rs::ResourceStore::Put::Stored,
               frame);
     }
     if (put == rs::ResourceStore::Put::Failed) {
@@ -505,7 +506,8 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
     entry = stale_entry_;
     break;
   }
-  // The payload map holds exactly the ok image hashes of the (sabotaged) table.
+  // The payload map holds exactly the ok image hashes of the (sabotaged) table, and (G5e) the
+  // mesh surfaces' hashes, which this sabotage never touches.
   rs::PayloadMap payloads;
   for (const TextureEntry &entry : captured->state.textures) {
     if (!is_ok_image(entry)) {
@@ -516,6 +518,14 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
       payloads.emplace(entry.hash, it->second);
     } else if (entry.id == stale_id_ && stale_payload_ != nullptr) {
       payloads.emplace(entry.hash, stale_payload_);
+    }
+  }
+  for (const MeshEntry &mesh : captured->state.meshes) {
+    for (const MeshSurface &surface : mesh.surfaces) {
+      const auto it = captured->payloads.find(surface.hash);
+      if (it != captured->payloads.end()) {
+        payloads.emplace(surface.hash, it->second);
+      }
     }
   }
   captured->payloads = std::move(payloads);

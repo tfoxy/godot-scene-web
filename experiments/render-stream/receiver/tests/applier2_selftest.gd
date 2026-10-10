@@ -35,9 +35,13 @@ extends SceneTree
 ##      drop-msdf sabotage skips both with no record.
 ##   4c. (G5d) seq 8's item 7 replays every /4 immediate op, its add_set_transform and both
 ##      add_clip_ignore calls in wire order, one RS call each; ignore-set-transform and
-##      ignore-clip-ignore skip exactly those with no record; add_mesh (seq 9, item 8; seq 11,
-##      item 9) is skipped and recorded mesh-not-replayed until G5e, and item 10's typed
-##      unknown-mesh command is skipped and recorded like any unsupported command.
+##      ignore-clip-ignore skip exactly those with no record; (G5e) seq 9's add_mesh (item 8)
+##      replays against mesh 1, made resident with both surfaces; seq 10 (mesh 2, named by no
+##      command) costs nothing; seq 11 frees mesh 1's RID (a tombstone), skips item 9's add_mesh
+##      of an unsupported mesh (unsupported-mesh) and item 10's typed unknown-mesh command.
+##   4d. (G5e) mesh residency on hand-built states: create, a same-layout change as region updates
+##      per changed buffer, a custom AABB, a layout rebuild, a tombstone, a command naming it;
+##      drop-mesh-surface and stale-mesh.
 ## The cache (RsResourceCache):
 ##   5. fresh refuses a non-empty directory (cache-not-fresh), warm refuses a missing one; a miss
 ##      fetches from the store, verifies, writes the cache (temp + rename) and keeps it in memory;
@@ -72,6 +76,13 @@ func _initialize() -> void:
 		var file: String = entry["file"]
 		var hash: String = entry["hash"]
 		_payloads[hash] = _read_bytes(file)
+	# G5e: golden-4's GRM1 surface payloads, so out-of-band recordings can make meshes resident.
+	var mesh_payloads: Array = index.get("mesh_payloads", [])
+	for value: Variant in mesh_payloads:
+		var mesh_entry: Dictionary = value
+		var mesh_file: String = mesh_entry["file"]
+		var mesh_hash: String = mesh_entry["hash"]
+		_payloads[mesh_hash] = _read_bytes(mesh_file)
 	_test_control_messages()
 	_test_cache(index)
 	# The root canvas is attached to the root viewport only from the first frame on (SceneTree
@@ -90,6 +101,7 @@ func _run_applier_tests() -> void:
 	_test_applier_sabotage_clip_before_clear()
 	_test_applier_msdf()
 	_test_applier_geometry()
+	_test_applier_meshes()
 	_finish()
 
 
@@ -165,7 +177,7 @@ func _apply(applier: RsApplier, file: String, cache: RsResourceCache) -> Array[D
 					var resource_hash: String = meta["hash"]
 					_check(cache.add_inline(resource_hash, payload) == "", "%s: inline payload decodes" % file)
 				"transaction":
-					var need: Dictionary = applier.needed(stream.items, stream.textures)
+					var need: Dictionary = applier.needed(stream.items, stream.textures, stream.meshes)
 					var hashes: Array = need["hashes"]
 					for value: Variant in hashes:
 						var hash: String = value
@@ -321,8 +333,8 @@ static func _transaction_stats(results: Array[Dictionary]) -> Array[Dictionary]:
 
 
 ## (G5d) golden-4 seq 8: item 7 replays one of every /4 immediate op in wire order, each as the
-## engine's own call; the two receiver sabotages skip only their own command; add_mesh is skipped
-## and recorded until G5e.
+## engine's own call; the two receiver sabotages skip only their own command; (G5e) add_mesh
+## replays against the resident mesh, and only the unsupported and unknown meshes are skipped.
 func _test_applier_geometry() -> void:
 	var all_ops: Array = [
 		"add_line", "add_polyline", "add_multiline", "add_circle", "add_primitive", "add_polygon",
@@ -350,9 +362,14 @@ func _test_applier_geometry() -> void:
 		var seq8_unsupported: Array = seq8["unsupported_commands"]
 		_check(ops == want and seq8["geometry_commands"] == want.size() - 1 and seq8_unsupported.is_empty(), "geometry (%s): seq 8 item 7 calls %s, geometry_commands %s, skipped %s" % [sabotage, str(ops), str(seq8["geometry_commands"]), str(seq8_unsupported)])
 		var seq9_named: Array = _named_unsupported(tx[8])
-		_check(seq9_named == [[8, "canvas_item_add_mesh", "mesh-not-replayed"]], "geometry (%s): seq 9's add_mesh is skipped and recorded: %s" % [sabotage, str(seq9_named)])
+		var seq9_meshes: Dictionary = tx[8]["mesh_resources"]
+		var seq9_uploads: Array = tx[8]["mesh_uploads"]
+		_check(seq9_named.is_empty() and tx[8]["mesh_commands"] == 1 and seq9_meshes["meshes_created"] == 1 and seq9_uploads.size() == 1, "geometry (%s): seq 9's add_mesh replays against mesh 1, created once: %s %s %s" % [sabotage, str(seq9_named), str(seq9_meshes), str(seq9_uploads)])
+		var seq10_uploads: Array = tx[9]["mesh_uploads"]
+		_check(seq10_uploads.is_empty(), "geometry (%s): seq 10's mesh 2 change (named by no command) uploads nothing: %s" % [sabotage, str(seq10_uploads)])
 		var seq11_named: Array = _named_unsupported(tx[10])
-		_check(seq11_named == [[9, "canvas_item_add_mesh", "mesh-not-replayed"], [10, "canvas_item_add_mesh", "unknown-mesh"]], "geometry (%s): seq 11's two mesh commands are skipped and recorded: %s" % [sabotage, str(seq11_named)])
+		var seq11_meshes: Dictionary = tx[10]["mesh_resources"]
+		_check(seq11_named == [[9, "canvas_item_add_mesh", "unsupported-mesh"], [10, "canvas_item_add_mesh", "unknown-mesh"]] and seq11_meshes["meshes_freed"] == 1, "geometry (%s): seq 11 frees mesh 1 and skips the two mesh commands: %s %s" % [sabotage, str(seq11_named), str(seq11_meshes)])
 		_dispose_checked(applier, "geometry (%s)" % sabotage)
 
 
@@ -364,6 +381,137 @@ static func _named_unsupported(stats: Dictionary) -> Array:
 		named.append([command["item"], command["name"], command["reason"]])
 	return named
 
+
+## (G5e) A GRM1 payload (render-stream-4.md "Mesh payload") built here byte for byte: triangles,
+## 2D vertices `xy`, one RGBA8 colour per vertex (`colour`), `indices` (u16), and a fixed geometry
+## block -- so two payloads differing only in vertex or colour bytes share a layout.
+static func _grm1(xy: Array[float], colour: int, indices: Array[int]) -> PackedByteArray:
+	var n: int = xy.size() / 2
+	var format: int = 1 | (1 << 3) | (1 << 25) | ((1 << 12) if not indices.is_empty() else 0)
+	var meta: String = '{"type":"mesh-surface","primitive":"triangles","format":%d,"vertex_count":%d,"index_count":%d,"vertex_bytes":%d,"attribute_bytes":%d,"skin_bytes":0,"index_bytes":%d}' % [format, n, indices.size(), 8 * n, 4 * n, 2 * indices.size()]
+	var out: PackedByteArray = "47524d310d0a1a0a".hex_decode()
+	var meta_len := PackedByteArray()
+	meta_len.resize(4)
+	meta_len.encode_u32(0, meta.length())
+	out.append_array(meta_len)
+	out.append_array(meta.to_ascii_buffer())
+	out.append_array(PackedFloat32Array([0.0, 0.0, 0.0, 16.0, 16.0, 0.0, 1.0, 1.0, 0.0, 0.0]).to_byte_array())
+	out.append_array(PackedFloat32Array(xy).to_byte_array())
+	for _i: int in n:
+		var rgba := PackedByteArray()
+		rgba.resize(4)
+		rgba.encode_u32(0, colour)
+		out.append_array(rgba)
+	for index: int in indices:
+		var pair := PackedByteArray()
+		pair.resize(2)
+		pair.encode_u16(0, index)
+		out.append_array(pair)
+	return out
+
+
+static func _mesh_entry(id: int, version: int, surfaces: Array, aabb: Array, status: String = "ok") -> Dictionary:
+	var listed: Array = []
+	for value: Variant in surfaces:
+		var payload: PackedByteArray = value
+		var decoded: Dictionary = RsMeshPayload.decode(payload)
+		listed.append({
+			"hash": RsMeshPayload.sha256_hex(payload), "payload_bytes": payload.size(),
+			"primitive": decoded["primitive"], "format": decoded["format"],
+			"vertex_count": decoded["vertex_count"], "index_count": decoded["index_count"],
+		})
+	return {
+		"id": id, "origin": "created", "status": status, "reason": null, "version": version,
+		"custom_aabb": aabb, "surfaces": listed if status == "ok" else [],
+	}
+
+
+static func _mesh_item(id: int, mesh: int, version: int) -> Dictionary:
+	var item: Dictionary = _clip_test_item(id)
+	item["clip"] = false
+	item["content_version"] = version
+	item["commands"] = [{"op": "add_mesh", "mesh": mesh, "tex": null, "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "modulate": [1.0, 1.0, 1.0, 1.0]}]
+	return item
+
+
+## (G5e, gate5-design.md Q5) Mesh residency through hand-built resolved states: a named mesh is
+## created with every surface and its custom AABB; a same-layout payload change is one region
+## update per changed buffer (no rebuild, no item re-record); a custom AABB change is one call; a
+## layout change is mesh_clear and every surface again; a freed tombstone frees the RID and the
+## still-recorded add_mesh is left alone; drop-mesh-surface never adds surface 1; stale-mesh makes
+## no in-place update.
+func _test_applier_meshes() -> void:
+	var tri: Array[float] = [0.0, 0.0, 8.0, 0.0, 0.0, 8.0]
+	var tri_moved: Array[float] = [1.0, 0.0, 8.0, 0.0, 0.0, 8.0]
+	var quad: Array[float] = [0.0, 0.0, 8.0, 0.0, 8.0, 8.0, 0.0, 8.0]
+	var s_a: PackedByteArray = _grm1(tri, 0xff0000ff, [])
+	var s_b: PackedByteArray = _grm1(tri_moved, 0xff0000ff, [])
+	var s_c: PackedByteArray = _grm1(tri_moved, 0xff00ff00, [])
+	var s_q: PackedByteArray = _grm1(quad, 0xffffffff, [0, 1, 2, 0, 2, 3])
+	var zero: Array = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+	for sabotage: String in ["", "drop-mesh-surface", "stale-mesh"]:
+		var cache := RsResourceCache.new()
+		for payload: PackedByteArray in [s_a, s_b, s_c, s_q]:
+			_check(cache.add_inline(RsMeshPayload.sha256_hex(payload), payload) == "", "mesh payload decodes")
+		var applier: RsApplier = _new_applier()
+		applier.sabotage_drop_mesh_surface = sabotage == "drop-mesh-surface"
+		applier.sabotage_stale_mesh = sabotage == "stale-mesh"
+		var stream := Rs2Decoder.Stream.new()
+		stream.canvases = {1: {"items": [40], "xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]}}
+		stream.textures = {}
+		stream.items = {40: _mesh_item(40, 1, 1)}
+		stream.meshes = {1: _mesh_entry(1, 3, [s_a, s_q], zero), 2: _mesh_entry(2, 1, [s_q], zero)}
+		var need: Dictionary = applier.needed(stream.items, stream.textures, stream.meshes)
+		var need_meshes: Array = need["mesh_hashes"]
+		_check(need_meshes.size() == 2 and need_meshes.has(RsMeshPayload.sha256_hex(s_a)), "meshes (%s): only the named mesh's two surfaces are needed: %s" % [sabotage, str(need_meshes)])
+		var r1: Dictionary = applier.apply_state(stream, cache)
+		var m1: Dictionary = r1["mesh_resources"]
+		var up1: Array = r1["mesh_uploads"]
+		var first: Dictionary = up1[0] if not up1.is_empty() else {}
+		var want_surfaces: Array = [0] if sabotage == "drop-mesh-surface" else [0, 1]
+		_check(m1["meshes_created"] == 1 and up1.size() == 1 and first.get("op") == "create" and first.get("surfaces") == want_surfaces and r1["mesh_commands"] == 1 and applier.resident_meshes() == 1, "meshes (%s): one create (surfaces %s) and one add_mesh, mesh 2 (never named) not resident: %s %s" % [sabotage, str(want_surfaces), str(m1), str(up1)])
+		# A vertex change in the same layout: one vertex region update, nothing re-recorded.
+		stream.meshes = {1: _mesh_entry(1, 4, [s_b, s_q], zero)}
+		var need2: Dictionary = applier.needed(stream.items, stream.textures, stream.meshes)
+		var need2_meshes: Array = need2["mesh_hashes"]
+		_check(need2_meshes == [RsMeshPayload.sha256_hex(s_b)], "meshes (%s): only the changed surface is needed: %s" % [sabotage, str(need2_meshes)])
+		var r2: Dictionary = applier.apply_state(stream, cache)
+		var m2: Dictionary = r2["mesh_resources"]
+		var up2: Array = r2["mesh_uploads"]
+		var item_ops2: Array = _item_ops(r2["item_calls"], 40)
+		if sabotage == "stale-mesh":
+			_check(m2["surface_updates"] == 0 and up2.is_empty(), "stale-mesh: no in-place update: %s" % str(up2))
+		else:
+			var update: Dictionary = up2[0] if not up2.is_empty() else {}
+			_check(m2["surface_updates"] == 1 and m2["meshes_rebuilt"] == 0 and update.get("op") == "update" and update.get("buffers") == ["vertex"] and update.get("surfaces") == [0] and item_ops2.is_empty(), "meshes (%s): a same-layout vertex change is one vertex region update, no item call: %s %s" % [sabotage, str(up2), str(item_ops2)])
+		# A colour change and a custom AABB: one attribute update and one custom AABB call.
+		stream.meshes = {1: _mesh_entry(1, 6, [s_c, s_q], [0.0, -2.0, 0.0, 16.0, 20.0, 0.0])}
+		var r3: Dictionary = applier.apply_state(stream, cache)
+		var up3: Array = r3["mesh_uploads"]
+		var ops3: Array = []
+		for value: Variant in up3:
+			var row: Dictionary = value
+			ops3.append([row["op"], row["buffers"]])
+		var want3: Array = [["custom_aabb", []]] if sabotage == "stale-mesh" else [["update", ["attribute"]], ["custom_aabb", []]]
+		_check(ops3 == want3, "meshes (%s): colour + custom AABB: %s, expected %s" % [sabotage, str(ops3), str(want3)])
+		# A layout change (surface 0 becomes the quad): clear and every surface again.
+		stream.meshes = {1: _mesh_entry(1, 8, [s_q, s_a], [0.0, -2.0, 0.0, 16.0, 20.0, 0.0])}
+		var r4: Dictionary = applier.apply_state(stream, cache)
+		var m4: Dictionary = r4["mesh_resources"]
+		var up4: Array = r4["mesh_uploads"]
+		var rebuild: Dictionary = up4[0] if not up4.is_empty() else {}
+		_check(m4["meshes_rebuilt"] == 1 and up4.size() == 1 and rebuild.get("op") == "rebuild" and rebuild.get("surfaces") == want_surfaces, "meshes (%s): a layout change rebuilds: %s" % [sabotage, str(up4)])
+		# A tombstone: the RID is freed, the item's recorded add_mesh is not re-recorded.
+		stream.meshes = {1: _mesh_entry(1, 8, [], zero, "freed")}
+		var r5: Dictionary = applier.apply_state(stream, cache)
+		var m5: Dictionary = r5["mesh_resources"]
+		_check(m5["meshes_freed"] == 1 and applier.resident_meshes() == 0 and _item_ops(r5["item_calls"], 40).is_empty(), "meshes (%s): a freed tombstone frees the mesh RID: %s" % [sabotage, str(m5)])
+		# The item redraws naming the tombstone: skipped and recorded mesh-freed.
+		stream.items = {40: _mesh_item(40, 1, 2)}
+		var r6: Dictionary = applier.apply_state(stream, cache)
+		var m6: Dictionary = r6["mesh_resources"]
+		_check(_named_unsupported(r6) == [[40, "canvas_item_add_mesh", "mesh-freed"]] and m6["skipped_mesh_commands"] == 1 and r6["mesh_commands"] == 0, "meshes (%s): an add_mesh naming a tombstone is skipped and recorded: %s" % [sabotage, str(_named_unsupported(r6))])
+		_dispose_checked(applier, "meshes (%s)" % sabotage)
 
 ## G2d: canvas_texture_create, canvas_texture_set_channel(DIFFUSE), filter, repeat. No golden-2
 ## vector carries a canvas texture (golden-2 predates G2d, gate2-design.md G2d "As built"), so

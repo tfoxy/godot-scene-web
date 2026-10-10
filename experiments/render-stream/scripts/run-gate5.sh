@@ -4,7 +4,7 @@
 #
 #   bash run-gate5.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g5b,g5c]
+#     [--legs g5b,g5c,g5d,g5e]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -14,17 +14,23 @@
 # -- `success` on render-stream/4 since G5d, `unsupported` with every geometry op typed on /3 --,
 # its rendered reference, a same-build repeat, and an extension-armed reference), g5c (G5c:
 # fixtures/gate5-mesh's import, a 400-frame headless capture with both sinks and the store,
-# `unsupported` with canvas_item_add_mesh typed -- on /4 too until G5e brings the mesh table --,
-# whose mesh hook log is the census, its rendered reference and a same-build repeat with the
-# mesh oracle on, and an extension-armed reference with the oracle off; under <out>/mesh/) and g5d
+# `success` since G5e (the mirror's mesh table; `unsupported` with canvas_item_add_mesh typed
+# before), whose mesh hook log is the census, its rendered reference and a same-build repeat with
+# the mesh oracle on, and an extension-armed reference with the oracle off; under <out>/mesh/), g5d
 # (G5d: the rendered receiver on g5b's capture's full and patch sinks, a headless receiver under
 # strace, the `canvas` variant's headless capture, and the sabotages -- freeze-frame @11,
 # perturb-vertex @21 and omit-op canvas_item_add_polygon @21 captures each with a rendered
 # receiver, and the receiver sabotages ignore-set-transform and ignore-clip-ignore on the main
-# capture; g5d needs g5b's capture and reference in the same run) and g5g (G5g: fixtures/gate5-style
-# under <out>/style/ -- import, capture (`success` on /4), reference, repeat and armed reference,
-# rendered receivers on both sinks, a headless receiver under strace and the receiver sabotage
-# ignore-nine-patch-axis; it imports receiver/ itself). g5e and g5f are known but have not landed.
+# capture; g5d needs g5b's capture and reference in the same run), g5e (G5e: meshes end to end on
+# fixtures/gate5-mesh, under <out>/mesh/ -- rendered receivers on g5c's capture's full and patch
+# sinks, a headless receiver under strace, an all-inline 400-frame capture and its receiver, the
+# host sabotages freeze-frame @11, omit-op mesh_surface_update_vertex_region @21 and perturb-vertex
+# @21 each with a rendered receiver, and the receiver sabotages drop-mesh-surface and stale-mesh on
+# g5c's capture; g5e needs g5c's capture and reference in the same run) and g5g (G5g:
+# fixtures/gate5-style under <out>/style/ -- import, capture (`success` on /4), reference, repeat
+# and armed reference, rendered receivers on both sinks, a headless receiver under strace and the
+# receiver sabotage ignore-nine-patch-axis; it imports receiver/ itself). g5f is known but has not
+# landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -49,7 +55,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g5b g5c g5d g5g)
+LANDED_GROUPS=(g5b g5c g5d g5e g5g)
 KNOWN_GROUPS=(g5b g5c g5d g5e g5f g5g)
 
 EXTENSION=""
@@ -289,9 +295,8 @@ run_g5c() {
 		exit 1
 	fi
 
-	# capture-mesh: as g5b's capture. canvas_item_add_mesh stays typed unsupported on /4 until G5e
-	# (no mirror mesh table yet); evidence/resources.jsonl's mesh lines are the census and the hook
-	# hashes.
+	# capture-mesh: as g5b's capture; since G5e every add_mesh is a /4 command naming the mirror's
+	# mesh table (success); evidence/resources.jsonl's mesh lines are the census and the hook hashes.
 	echo "run-gate5: capture-mesh"
 	CAPTURE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
 	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
@@ -388,6 +393,75 @@ run_g5d() {
 	GS_RUN_DIR=""
 }
 
+run_g5e() {
+	local M="$OUT/mesh"
+	if [ ! -f "$M/capture/$RECORDING_NAME" ] || [ ! -d "$M/reference/shots" ]; then
+		echo "run-gate5: g5e needs g5c's capture and reference in the same run (pass --legs g5c,g5e)" >&2
+		exit 2
+	fi
+	echo "run-gate5: g5e: import (receiver)"
+	LEG_ENV=()
+	run_headless "$M/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$M/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate5: import of $RECEIVER_DIR failed, see $M/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	# A headless receiver under strace on the mesh capture (receiver-never-loaded-fixture-mesh).
+	echo "run-gate5: g5e: receiver-headless-trace (mesh)"
+	if prepare_recording "$M/capture/$RECORDING_NAME" "$M/receiver-headless-trace"; then
+		RECEIVER_STORE_DIR="$M/capture/store"
+		run_receiver_headless "$M/receiver-headless-trace" openat
+	fi
+
+	# Every payload in band (no store): the 400-frame capture again with both thresholds raised
+	# (memory rs-g2b2-texture-wire-facts: the inline capture also raises the max payload size).
+	echo "run-gate5: g5e: capture-inline (every payload inline, no store)"
+	CAPTURE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	CAPTURE_STORE_DIR=none
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_RESOURCE_INLINE_MAX_BYTES=16777216
+		GRC_RESOURCE_MAX_PAYLOAD_BYTES=16777216)
+	run_capture "$M/capture-inline" "$CAPTURE_QUIT_FRAME" none
+
+	# Host sabotages on the mesh fixture's own default run; predictions are fixtures/gate5-mesh/
+	# expected.json "predictions" (make_expected.py, never hand-edited).
+	echo "run-gate5: g5e: sabotage-mesh-freeze (capture, freeze-frame @$(step_frame5 1))"
+	CAPTURE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	g5_capture "$M/sabotage-mesh-freeze/capture" GRC_SABOTAGE=freeze-frame GRC_SABOTAGE_FRAME="$(step_frame5 1)"
+	echo "run-gate5: g5e: sabotage-mesh-omit-vertex-region (capture, omit-op mesh_surface_update_vertex_region @$(step_frame5 2))"
+	CAPTURE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	g5_capture "$M/sabotage-mesh-omit-vertex-region/capture" GRC_SABOTAGE=omit-op \
+		GRC_SABOTAGE_OP=mesh_surface_update_vertex_region GRC_SABOTAGE_FRAME="$(step_frame5 2)"
+	echo "run-gate5: g5e: sabotage-mesh-perturb-vertex (capture, perturb-vertex @$(step_frame5 2))"
+	CAPTURE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	g5_capture "$M/sabotage-mesh-perturb-vertex/capture" GRC_SABOTAGE=perturb-vertex GRC_SABOTAGE_FRAME="$(step_frame5 2)"
+
+	echo "run-gate5: bringing up private gamescope for g5e receiver legs"
+	gs_start 640 360 "$OUT/gamescope-g5e"
+
+	echo "run-gate5: g5e: receiver-mesh (full sink)"
+	run_rendered_receiver "$M/capture" "$M/receiver"
+	echo "run-gate5: g5e: receiver-mesh-patch (patch sink, state dumps at the settle seqs)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_STATE=1
+	run_rendered_receiver "$M/capture" "$M/receiver-patch"
+	echo "run-gate5: g5e: receiver-mesh-inline (capture-inline, no store)"
+	run_rendered_receiver "$M/capture-inline" "$M/receiver-inline"
+	for kind in freeze omit-vertex-region perturb-vertex; do
+		echo "run-gate5: g5e: sabotage-mesh-$kind (receiver)"
+		run_rendered_receiver "$M/sabotage-mesh-$kind/capture" "$M/sabotage-mesh-$kind/receiver"
+	done
+	echo "run-gate5: g5e: sabotage-mesh-receiver-drop-surface (RS_RECEIVER_SABOTAGE=drop-mesh-surface)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=drop-mesh-surface)
+	run_rendered_receiver "$M/capture" "$M/sabotage-mesh-receiver-drop-surface"
+	echo "run-gate5: g5e: sabotage-mesh-receiver-stale (RS_RECEIVER_SABOTAGE=stale-mesh)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=stale-mesh)
+	run_rendered_receiver "$M/capture" "$M/sabotage-mesh-receiver-stale"
+
+	gs_teardown "$OUT/gamescope-g5e"
+	GS_RUN_DIR=""
+}
+
 # G5g: fixtures/gate5-style through G5b's and G5d's legs, evidence under <out>/style/ in their
 # shape. Predictions are fixtures/gate5-style/expected.json's (make_expected.py).
 run_g5g() {
@@ -451,6 +525,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g5b) run_g5b ;;
 	g5c) run_g5c ;;
 	g5d) run_g5d ;;
+	g5e) run_g5e ;;
 	g5g) run_g5g ;;
 	esac
 done

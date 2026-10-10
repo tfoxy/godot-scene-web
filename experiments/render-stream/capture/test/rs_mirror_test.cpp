@@ -10,14 +10,19 @@
 // gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip, and (gate 4, G4e2)
 // gate4-design.md Q3 "MSDF tap" and "perturb-glyph", and (gate 5, G5d) gate5-design.md Q3b/Q3c:
 // the render-stream/4 immediate geometry taps, add_set_transform, add_clip_ignore (a typed
-// refusal from G3d until G5d), D11's RID() ambiguity and perturb-vertex.
+// refusal from G3d until G5d), D11's RID() ambiguity and perturb-vertex, and (G5e) the mesh
+// table: ids, versions, whole-surface payloads, tombstones, add_mesh, unsupported/unknown meshes,
+// omit-op and perturb-vertex on payloads.
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "rs2_diff.h"
+#include "rs_mesh_payload.h"
 #include "rs_mirror.h"
 #include "rs_sha256.h"
 #include "rs_texture_payload.h"
@@ -1883,6 +1888,260 @@ void test_attach_skeleton_tap() {
   check(m.snapshot(3, 3).state.failures.size() == 1, "an unknown item fails like any other tap");
 }
 
+// --- meshes (G5e; gate5-design.md D5-D8, Q3b, Q3c; render-stream-4.md "Mesh table") ---------
+
+// A GRM1 surface the way a mesh hook hands it to the mirror: `n` 2D vertices whose first x is
+// `x0`, triangles, no colour/UV/index, an AABB at (x0, 0).
+grc::rs::MeshSurfaceInput mesh_input(float x0, uint32_t n = 3) {
+  std::vector<uint8_t> vertices(8 * n, 0);
+  for (uint32_t i = 0; i < n; ++i) {
+    const float xy[2] = {x0 + static_cast<float>(i), static_cast<float>(i % 2)};
+    std::memcpy(vertices.data() + 8 * i, xy, sizeof(xy));
+  }
+  const uint64_t format = grc::rs::kArrayFormatVertex | grc::rs::kArrayFlagUse2dVertices;
+  const grc::AABB aabb = {{x0, 0, 0}, {static_cast<float>(n), 1, 0}};
+  const grc::Vector4 uv = {0, 0, 0, 0};
+  grc::rs::MeshSurfaceInput input;
+  auto payload = std::make_shared<grc::rs::PayloadBytes>(grc::rs::encode_payload(
+      3, format, n, 0, aabb, uv, vertices.data(), vertices.size(), nullptr, 0, nullptr, 0,
+      nullptr, 0));
+  input.copy.status = "ok";
+  input.copy.primitive = 3;
+  input.copy.format = format;
+  input.copy.vertex_count = n;
+  input.copy.index_count = 0;
+  input.copy.hash = grc::sha256_hex(payload->data(), payload->size());
+  input.bytes = std::move(payload);
+  return input;
+}
+
+grc::rs::MeshSurfaceInput refused_input(const char *reason) {
+  grc::rs::MeshSurfaceInput input;
+  input.copy.status = "unsupported";
+  input.copy.reason = reason;
+  input.copy.primitive = 3;
+  input.copy.format = grc::rs::kArrayFormatVertex | grc::rs::kArrayFlagCompressAttributes;
+  input.copy.vertex_count = 3;
+  input.copy.index_count = 0;
+  return input;
+}
+
+const grc::rs2::MeshEntry *mesh(const Snapshot &s, uint32_t id) {
+  for (const auto &m : s.meshes) {
+    if (m.id == id) return &m;
+  }
+  return nullptr;
+}
+
+bool has_entry(const Snapshot &s, uint32_t item_id, const std::string &op,
+               UnsupportedReason reason) {
+  for (const auto &u : s.unsupported) {
+    if (u.has_item && u.item == item_id && u.op == op && u.reason == reason) return true;
+  }
+  return false;
+}
+
+// Ids, versions (+1 per accepted call, the hook log's counting), whole-surface payloads, the
+// custom AABB, removal renumbering and clear; the snapshot pins every ok surface's payload.
+void test_mesh_table_lifecycle() {
+  using grc::rs2::MeshStatus;
+  Mirror m;
+  bind_root(&m);
+  const auto a = mesh_input(0);
+  const auto b = mesh_input(10, 4);
+  m.mesh_create(0x500, 1);
+  m.mesh_add_surface(0x500, a, 1);
+  m.mesh_add_surface(0x500, b, 1);
+  m.mesh_create_from_surfaces(0x600, {mesh_input(20)}, 1);
+  grc::rs::Captured cap = m.snapshot(1, 1);
+  const auto *m1 = mesh(cap.state, 1);
+  const auto *m2 = mesh(cap.state, 2);
+  check(cap.state.meshes.size() == 2 && m1 != nullptr && m2 != nullptr,
+        "two meshes, ids 1 and 2 in creation order (their own counter)");
+  check(m1 != nullptr && m1->version == 3 && m1->status == MeshStatus::Ok &&
+            m1->surfaces.size() == 2 && m1->surfaces[0].hash == a.copy.hash &&
+            m1->surfaces[1].hash == b.copy.hash &&
+            m1->surfaces[0].payload_bytes == a.bytes->size() && m1->has_aabb &&
+            m1->surfaces[1].vertex_count == 4 &&
+            m1->surfaces[0].primitive == grc::rs2::Primitive::Triangles,
+        "create + two adds: version 3, both surfaces with hash, whole-payload bytes, counts");
+  check(m2 != nullptr && m2->version == 1 && m2->surfaces.size() == 1,
+        "create_from_surfaces: version 1 with its surface");
+  check(cap.payloads.size() == 3 && cap.payloads.count(a.copy.hash) == 1 &&
+            cap.payloads.at(a.copy.hash).get() == a.bytes.get(),
+        "the snapshot pins every ok surface's payload, shared, never copied");
+
+  // DF's spine pattern: three accepted calls in one frame give one snapshot, version + 3.
+  const auto a2 = mesh_input(1);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, &a2, 2);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_attribute_region", 0, true, &a2, 2);
+  m.mesh_set_custom_aabb(0x500, {0, -2, 0, 128, 68, 0}, 2);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 5, false, nullptr, 2);
+  m.mesh_surface_update_region(0x999, "mesh_surface_update_vertex_region", 0, true, &a2, 2);
+  cap = m.snapshot(2, 2);
+  m1 = mesh(cap.state, 1);
+  check(m1 != nullptr && m1->version == 6 && m1->surfaces[0].hash == a2.copy.hash &&
+            m1->custom_aabb[1] == -2.0f && m1->custom_aabb[4] == 68.0f,
+        "two applied region updates and a custom AABB: version 6, the new surface payload, the AABB");
+  check(cap.payloads.count(a.copy.hash) == 0 && cap.payloads.count(a2.copy.hash) == 1,
+        "the superseded surface payload is no longer pinned");
+  check(m.stats().mesh_unknown == 1, "an update of an unknown mesh RID is counted, changes nothing");
+
+  m.mesh_surface_remove(0x500, 0, 3);
+  m.mesh_surface_remove(0x500, 7, 3);
+  cap = m.snapshot(3, 3);
+  m1 = mesh(cap.state, 1);
+  check(m1 != nullptr && m1->version == 7 && m1->surfaces.size() == 1 &&
+            m1->surfaces[0].hash == b.copy.hash,
+        "remove(0): surface 1 renumbers to 0, version + 1; an out-of-range remove changes nothing");
+  m.mesh_clear(0x500, 4);
+  cap = m.snapshot(4, 4);
+  m1 = mesh(cap.state, 1);
+  check(m1 != nullptr && m1->version == 8 && m1->surfaces.empty() &&
+            m1->status == MeshStatus::Ok && m1->custom_aabb[4] == 68.0f,
+        "clear: no surfaces, ok, version + 1, the custom AABB kept");
+  check(m.stats().live_meshes == 2, "stats: two live meshes");
+}
+
+// A mesh an add_mesh names becomes a `freed` tombstone (f null, surfaces []), which leaves the
+// table at the first snapshot nothing names it; an unnamed one leaves at once; the add_mesh
+// command carries the mesh id, transform, modulate and texture (D11).
+void test_mesh_add_mesh_and_tombstones() {
+  using grc::rs2::MeshStatus;
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.mesh_create(0x500, 1);
+  m.mesh_add_surface(0x500, mesh_input(0), 1);
+  m.mesh_create(0x600, 1);
+  m.add_mesh(100, 0x500, {1, 0, 0, 1, 4, 5}, kRed, 0, 1);
+  grc::rs::Captured cap = m.snapshot(1, 1);
+  const auto &cmds = item(cap.state, 1)->commands;
+  check(cmds.size() == 1 && cmds[0].kind == CommandKind::AddMesh && cmds[0].mesh == 1 &&
+            !cmds[0].has_tex && cmds[0].transform[4] == 4.0f && cmds[0].modulate == kRed,
+        "add_mesh: mesh id 1, tex null for RID(), transform and modulate as given");
+  m.free_rid(0x600, 2);
+  m.free_rid(0x500, 2);
+  cap = m.snapshot(2, 2);
+  const auto *m1 = mesh(cap.state, 1);
+  check(m1 != nullptr && m1->status == MeshStatus::Freed && !m1->has_aabb &&
+            m1->surfaces.empty() && m1->version == 2 && mesh(cap.state, 2) == nullptr,
+        "free of a named mesh: a freed tombstone, version unchanged; an unnamed one leaves");
+  check(cap.payloads.empty(), "a tombstone pins no payload");
+  // Recreation in one frame (DF's step 5): free, create, clear, add_mesh of the new id.
+  m.mesh_create(0x500, 3);  // the recycled RID value is a new id
+  m.mesh_add_surface(0x500, mesh_input(3), 3);
+  m.clear(100, 3);
+  m.add_mesh(100, 0x500, {1, 0, 0, 1, 0, 0}, kGreen, 0, 3);
+  cap = m.snapshot(3, 3);
+  check(mesh(cap.state, 1) == nullptr && mesh(cap.state, 3) != nullptr &&
+            item(cap.state, 1)->commands[0].mesh == 3,
+        "recreation: the new id arrives and the old tombstone leaves in the same snapshot");
+  // The patch between them carries the mesh change: removed 1, entry 3.
+  const grc::rs2::Transaction patch = grc::rs2::make_patch(m.snapshot(2, 2).state, cap.state);
+  check(patch.version == grc::rs2::ProtocolVersion::V4, "snapshots are V4");
+  m.free_rid(0x500, 4);
+  m.mesh_set_custom_aabb(0x500, {1, 1, 0, 1, 1, 0}, 4);
+  cap = m.snapshot(4, 4);
+  check(mesh(cap.state, 3) != nullptr && mesh(cap.state, 3)->status == MeshStatus::Freed &&
+            mesh(cap.state, 3)->version == 2,
+        "a tap on a freed mesh RID changes nothing");
+  m.clear(100, 5);
+  cap = m.snapshot(5, 5);
+  check(cap.state.meshes.empty(), "once no command names it the tombstone leaves the table");
+}
+
+// D7/D15: a refused surface makes the entry `unsupported` (surfaces []); an add_mesh naming it
+// derives `unsupported-mesh`; an unknown mesh RID is an `unknown-mesh` command; clear makes the
+// entry ok again.
+void test_mesh_unsupported_and_unknown() {
+  using grc::rs2::MeshStatus;
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.mesh_create(0x500, 1);
+  m.mesh_add_surface(0x500, mesh_input(0), 1);
+  m.mesh_add_surface(0x500, refused_input("mesh-format"), 1);
+  m.add_mesh(100, 0x500, {1, 0, 0, 1, 0, 0}, kRed, 0, 1);
+  m.add_mesh(100, 0x777, {1, 0, 0, 1, 0, 0}, kRed, 0, 1);
+  grc::rs::Captured cap = m.snapshot(1, 1);
+  const auto *m1 = mesh(cap.state, 1);
+  check(m1 != nullptr && m1->status == MeshStatus::Unsupported && m1->has_reason &&
+            m1->reason == grc::rs2::MeshReason::MeshFormat && m1->surfaces.empty() &&
+            m1->has_aabb,
+        "a refused surface: unsupported, mesh-format, surfaces [], f present");
+  check(cap.payloads.empty(), "an unsupported mesh pins nothing");
+  const auto &cmds = item(cap.state, 1)->commands;
+  check(cmds.size() == 2 && cmds[0].kind == CommandKind::AddMesh &&
+            cmds[1].kind == CommandKind::Unsupported &&
+            cmds[1].unsupported_reason == grc::rs2::UnsupportedCmdReason::UnknownMesh &&
+            cmds[1].name == "canvas_item_add_mesh",
+        "an unknown mesh RID: an unsupported unknown-mesh command in place");
+  check(has_entry(cap.state, 1, "canvas_item_add_mesh", UnsupportedReason::UnsupportedMesh) &&
+            has_entry(cap.state, 1, "canvas_item_add_mesh", UnsupportedReason::UnknownMesh),
+        "item-level unsupported-mesh and unknown-mesh entries");
+  // A region update on the refused surface: version + 1 only.
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 1, true, nullptr, 2);
+  check(mesh(m.snapshot(2, 2).state, 1)->version == 4, "an update of a refused surface: v + 1");
+  m.mesh_surface_remove(0x500, 1, 3);
+  cap = m.snapshot(3, 3);
+  check(mesh(cap.state, 1)->status == MeshStatus::Ok && mesh(cap.state, 1)->surfaces.size() == 1 &&
+            !has_entry(cap.state, 1, "canvas_item_add_mesh", UnsupportedReason::UnsupportedMesh),
+        "once its refused surface is removed the entry is ok again");
+}
+
+// omit-op on a mesh tap drops it (no version), as the hook log does; perturb-vertex moves the
+// first vertex x of every payload taken from its frame on (Q3c), re-hashed, never the engine's.
+void test_mesh_omit_op_and_perturb_vertex() {
+  Mirror m;
+  bind_root(&m);
+  m.set_omit_op("mesh_surface_update_vertex_region", 21);
+  m.mesh_create(0x500, 1);
+  m.mesh_add_surface(0x500, mesh_input(0), 1);
+  const auto b = mesh_input(5);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, &b, 21);
+  grc::rs::Captured cap = m.snapshot(1, 21);
+  check(mesh(cap.state, 1)->version == 2 && mesh(cap.state, 1)->surfaces[0].hash != b.copy.hash,
+        "omit-op: the omitted region update changes nothing");
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_attribute_region", 0, true, &b, 21);
+  check(mesh(m.snapshot(2, 21).state, 1)->surfaces[0].hash == b.copy.hash,
+        "another op still applies");
+
+  Mirror p;
+  bind_root(&p);
+  p.set_perturb_vertex(21);
+  const auto early = mesh_input(0);
+  const auto late = mesh_input(7);
+  p.mesh_create(0x500, 1);
+  p.mesh_add_surface(0x500, early, 20);
+  p.mesh_create(0x600, 1);
+  p.mesh_add_surface(0x600, late, 21);
+  cap = p.snapshot(1, 21);
+  const auto &s1 = mesh(cap.state, 1)->surfaces[0];
+  const auto &s2 = mesh(cap.state, 2)->surfaces[0];
+  check(s1.hash == early.copy.hash, "a payload taken before the sabotage frame is untouched");
+  bool moved = false;
+  if (s2.hash != late.copy.hash && cap.payloads.count(s2.hash) == 1) {
+    const grc::rs::PayloadBytes &bytes = *cap.payloads.at(s2.hash);
+    const grc::rs::PayloadBytes &truth = *late.bytes;
+    const uint32_t meta_len = static_cast<uint32_t>(truth[8]) | (truth[9] << 8);
+    const size_t off = 12 + meta_len + 40;
+    float x = 0;
+    float y = 0;
+    std::memcpy(&x, bytes.data() + off, 4);
+    std::memcpy(&y, bytes.data() + off + 4, 4);
+    moved = x == 8.0f && y == 0.0f && bytes.size() == truth.size() &&
+            grc::sha256_hex(bytes.data(), bytes.size()) == s2.hash;
+    for (size_t i = 0; i < truth.size(); ++i) {
+      if ((i < off || i >= off + 4) && bytes[i] != truth[i]) moved = false;
+    }
+  }
+  check(moved, "perturb-vertex: only the first vertex x moves, +1.0, and the hash is the copy's");
+  check(*late.bytes == *mesh_input(7).bytes, "the hook's own payload is not modified");
+}
+
 int main() {
   test_fresh_session();
   test_ids_and_recycled_rid();
@@ -1934,6 +2193,10 @@ int main() {
   test_msdf_omit_op();
   test_perturb_glyph();
   test_attach_skeleton_tap();
+  test_mesh_table_lifecycle();
+  test_mesh_add_mesh_and_tombstones();
+  test_mesh_unsupported_and_unknown();
+  test_mesh_omit_op_and_perturb_vertex();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;
