@@ -137,6 +137,14 @@ export interface TState {
   default_texture_repeat?: TRepeat;
   /** the full texture table, ascending id (default [hueStrip()]) */
   textures?: TTexture[];
+  /** protocol/unknown-item-skip.md: a skip session's account, written right after
+   * `unsupported` (omit it in a strict session) */
+  unknown_items?: {
+    unknown_rids: number;
+    withheld_items: number;
+    withheld_commands: number;
+    unknown_calls: number;
+  };
 }
 
 export interface TSessionOptions {
@@ -162,6 +170,8 @@ export interface TSessionOptions {
   /** a rendered (GPU-backed) host: engine.display_server X11 and RS2_FEATURES_RENDERED, which
    * lists canvas_texture as supported (default: a headless host, RS2_FEATURES) */
   rendered?: boolean;
+  /** protocol/unknown-item-skip.md: declare `unknown_item_policy: "skip"` after `sabotage` */
+  unknownItemPolicy?: "skip";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -367,6 +377,9 @@ export function encodeSession(opts: TSessionOptions): Buffer {
               frame: opts.sabotage.frame,
               op: opts.sabotage.op ?? null,
             },
+      ...(opts.unknownItemPolicy
+        ? { unknown_item_policy: opts.unknownItemPolicy }
+        : {}),
       blocks: blockSpecs(
         [
           "clear_color",
@@ -595,6 +608,7 @@ export function encodeTransaction(
       status: failures.length > 0 ? "capture-failure" : "ok",
       failures,
       unsupported: state.unsupported ?? [],
+      ...(state.unknown_items ? { unknown_items: state.unknown_items } : {}),
       default_texture_filter: state.default_texture_filter ?? "linear",
       default_texture_repeat: state.default_texture_repeat ?? "disabled",
       removed_canvases: removedCanvases,

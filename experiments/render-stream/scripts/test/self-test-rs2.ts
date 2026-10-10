@@ -40,6 +40,10 @@
 //     mesh_payloads/*.grm likewise against decodeMeshPayload()/meshPayloadSha256(); every
 //     golden-5 shader_payloads/*.grp likewise against decodeShaderPayload()/
 //     shaderPayloadSha256().
+//   - protocol/unknown-item-skip.md: a /4 skip session (unknown_item_policy after sabotage,
+//     unknown_items after unsupported in every transaction) validates and resolves with its
+//     account; the key in a strict session, a skip transaction without it and any policy value
+//     but "skip" are all meta-schema.
 //
 // Exits non-zero if any assertion fails.
 
@@ -52,6 +56,7 @@ import {
   decodeRecording,
   decodeTexturePayload,
   expectedDataBytes,
+  isPartialUnknownItems,
   payloadSha256,
   recordSha256,
   resolveRecording,
@@ -66,6 +71,7 @@ import {
   decodeShaderPayload,
   shaderPayloadSha256,
 } from "../lib/render-stream-shader";
+import { encodeRs2Recording, type TState } from "./rs2-test-encoder";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const GOLDEN2_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-2");
@@ -424,12 +430,90 @@ async function main(): Promise<void> {
     "golden-4/full.rs4 decoded as version 5 is rejected with bad-magic",
   );
 
+  unknownItemCases();
+
   console.log(
     `\nself-test-rs2: ${failures === 0 ? "all checks passed" : `${failures} check(s) FAILED`}`,
   );
   if (failures > 0) {
     process.exitCode = 1;
   }
+}
+
+// protocol/unknown-item-skip.md "Session"/"Transaction": the two optional keys, at /4.
+function unknownItemCases(): void {
+  const account = (calls: number) => ({
+    unknown_rids: 1,
+    withheld_items: 2,
+    withheld_commands: 3,
+    unknown_calls: calls,
+  });
+  const states = (withAccount: boolean[]): TState[] =>
+    withAccount.map((has, i) => ({
+      frame: i + 1,
+      canvases: [{ id: 1, items: [], xform: [1, 0, 0, 1, 0, 0] }],
+      items: [],
+      ...(has ? { unknown_items: account(i + 4) } : {}),
+    }));
+  const opts = { encoding: "patch" as const, hooksPlanned: [] };
+  const skip = encodeRs2Recording(states([true, true]), {
+    ...opts,
+    unknownItemPolicy: "skip",
+  });
+  ok(
+    validateRecording(skip, 4).length === 0,
+    `unknown items: a /4 skip session validates (${validateRecording(skip, 4)[0] ?? ""})`,
+  );
+  const decoded = decodeRecording(skip, 4);
+  const session = decoded.records[0].meta;
+  ok(
+    session.type === "session" && session.unknown_item_policy === "skip",
+    "unknown items: the session decodes unknown_item_policy",
+  );
+  const resolved = resolveRecording(skip, 4);
+  ok(
+    isDeepStrictEqual(resolved.transactions[1].state.unknown_items, account(5)),
+    "unknown items: the patch transaction resolves with its complete account",
+  );
+  const tx = decoded.records[1].meta;
+  ok(
+    tx.type === "transaction" && isPartialUnknownItems(tx),
+    "unknown items: a transaction with an unknown RID is partial-unknown-items",
+  );
+  ok(
+    !isPartialUnknownItems({
+      unknown_items: { ...account(1), unknown_rids: 0, withheld_items: 0 },
+    }) && !isPartialUnknownItems({}),
+    "unknown items: nothing withheld (or a strict transaction) is not partial",
+  );
+  const metaSchema = (bytes: Uint8Array, version: 4, what: string) => {
+    const errors = validateRecording(bytes, version);
+    ok(
+      errors.length === 1 && errors[0].startsWith("meta-schema: "),
+      `unknown items: ${what} is meta-schema (${errors[0] ?? "accepted"})`,
+    );
+  };
+  metaSchema(
+    encodeRs2Recording(states([true, true]), opts),
+    4,
+    "unknown_items in a strict session",
+  );
+  metaSchema(
+    encodeRs2Recording(states([true, false]), {
+      ...opts,
+      unknownItemPolicy: "skip",
+    }),
+    4,
+    "a skip transaction without unknown_items",
+  );
+  metaSchema(
+    encodeRs2Recording(states([true]), {
+      ...opts,
+      unknownItemPolicy: "strict" as "skip",
+    }),
+    4,
+    'unknown_item_policy "strict" (absent is the only spelling of strict)',
+  );
 }
 
 main().catch((error: unknown) => {

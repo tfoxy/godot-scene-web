@@ -407,6 +407,15 @@ As /4, except the subprotocol is `render-stream.5` and the hello's `protocol` is
 `"render-stream/5"`. Not wired anywhere yet -- G55d switches the capture's listener and the
 receiver's live client to /5.
 
+## Optional keys: unknown-item skip
+
+A capture armed with the opt-in `GRC_UNKNOWN_ITEM=skip` adds two keys that no other session or
+transaction carries: `"unknown_item_policy":"skip"` in the session, right after `sabotage`, and,
+in every one of that session's transactions, `"unknown_items":{…}` right after `unsupported`.
+[unknown-item-skip.md](unknown-item-skip.md) specifies both, with their validation (`meta-schema`
+otherwise) and the reason the version does not change. A strict recording, every golden vector
+included, never contains either key.
+
 ## Versioning
 
 As /4: any change to framing, a key, a key order, a block layout, an enum spelling or a payload

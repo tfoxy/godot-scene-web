@@ -39,13 +39,17 @@ This is cheap and idempotent; re-run it whenever the fixture changes.
   armed (see "Startup order on 4.5.1" in the design doc), so the mirror sees each one's
   `canvas_item_create`. `_process()` advances the timeline below. All output lines start with
   `[fixture]`.
-- `preexisting.tscn`: the same `gate0.gd` script, on a scene that also declares a static
-  `Preexisting` `Node2D` child directly in the `.tscn` (no script). That node is constructed while
-  the packed scene is instantiated, which happens before the extension arms, so its later
+- `preexisting.tscn`: the same `gate0.gd` script, on a scene that also declares a
+  `Preexisting` `Node2D` child directly in the `.tscn`, at `(32, 240)`. That node is constructed
+  while the packed scene is instantiated, which happens before the extension arms, so its later
   `canvas_item_set_parent` names an item RID the mirror never saw created -- the fixture half of
   the `preexisting` leg's `pre-existing-object` capture failure (gate0-design.md "Unknown-RID
-  policy"). This file exercises that structure; the capture-side classification is gate 0
-  integration (WP6), not this fixture.
+  policy"). Since the unknown-item skip mode (2026-10-10, ../../protocol/unknown-item-skip.md) it
+  carries `preexisting.gd`: it draws a 64x64 rect (recoloured at step 2, so the unknown RID keeps
+  receiving calls) and, in `_ready()`, adds `PreChild` -- created after arming, parented to the
+  unknown item -- drawing a 48x48 rect at `(128, 240)` (recoloured at step 3). Neither overlaps a
+  Subject or Marker rect. The `preexisting-skip` leg captures this scene with
+  `GRC_UNKNOWN_ITEM=skip`, and `preexisting-reference` renders it with the extension absent.
 - `expected.json` (`render-stream-gate0-expected/1`): the only source of the numbers below. See
   "expected.json schema" further down.
 
@@ -112,6 +116,19 @@ All optional:
     // ... one entry per step, 0..4
   ],
   "unsupported_variant": { "from_step": 2, "op": "canvas_item_add_animation_slice" }, // canvas_item_add_circle before G5d
+  "preexisting": {
+    // preexisting.tscn's extra rects (2026-10-10), painted before Subject and Marker
+    "scene": "res://preexisting.tscn",
+    "items": [
+      {
+        "name": "Preexisting",
+        "rect_px": [32, 240, 64, 64],
+        "colors": [[0.6, 0.2, 1, 1] /* ... one per step 0..4 */],
+        "rgba8": [[153, 51, 255, 255] /* ... one per step 0..4 */],
+      },
+      // PreChild: [128, 240, 48, 48]
+    ],
+  },
 }
 ```
 
@@ -120,7 +137,10 @@ number): {width, height, rgba: Uint8Array}` (640x360 RGBA, alpha 255 everywhere)
 whole buffer with `clear_rgba8`, then paints the Subject's `rect_px` with its `rgba8`, then the
 Marker's `rect_px` with its `rgba8` -- the same bottom-to-top paint order the fixture itself uses
 (Subject added before Marker in `_ready()`). This is pure: no file I/O, no Godot. The checker
-(WP5) reads `expected.json` itself and passes the parsed object in.
+(WP5) reads `expected.json` itself and passes the parsed object in. `synthesizePreexistingReference`
+is the same with the `preexisting` rects painted between the clear colour and the Subject: the
+rendered reference of `preexisting.tscn`. A skip receiver of that scene must equal
+`synthesizeExpected` instead, and `preexistingRects` lists the rects the two differ in.
 
 ## Verification run (this work package)
 

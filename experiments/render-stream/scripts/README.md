@@ -162,12 +162,14 @@ sha256, and `gamescope/` holds the compositor's log and identity.
 | `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec2_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR=protocol/golden-2`, then a headless replay of `golden-4/inline.rs4` (inline, no store; a fresh cache; `golden-3/inline.rs3` from G4e2 to G5d, `golden-2/inline.rs2` before)      | —                                        |
 | `capture`                 | `capture/`                               | template `--headless`, `GRC_MODE=arm`, `GRC_STREAM_OUT`, `GRC_ROOT_SIZE=enforce-min-size`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_QUIT_FRAME=400`, under strace; maps/fd sampled at `armed.marker` | `success`                                |
 | `preexisting`             | `preexisting/`                           | the capture host on `res://preexisting.tscn`, quit 52                                                                                                                                          | `capture-failure`                        |
+| `preexisting-skip`        | `preexisting-skip/{capture,receiver}/`   | the same capture with `GRC_UNKNOWN_ITEM=skip` (../protocol/unknown-item-skip.md), then a gamescope receiver with the settle shots                                                              | `partial-unknown-items`                  |
 | `unsupported`             | `unsupported/{capture,receiver}/`        | capture with `RS_FIXTURE_VARIANT=unsupported`, quit 52, then a headless receiver                                                                                                               | `unsupported`                            |
 | `sabotage-<kind>`         | `sabotage-<kind>/{capture,receiver}/`    | capture, quit 52, `GRC_SABOTAGE` `freeze-frame` / `omit-update` / `perturb-transform`, `GRC_SABOTAGE_FRAME=21`, then a gamescope receiver with the settle shots                                | `pixel-mismatch` {2,3,4} / {2} / {2,3,4} |
 | `corrupt`                 | `corrupt/`                               | headless receiver on a copy of `capture/recording.rs2` whose transaction seq 3 has its first meta byte set to `0x00`                                                                           | `replay-failure` (seq 3, `meta-json`)    |
 | `receiver-headless-trace` | `receiver-headless-trace/`               | headless receiver on a copy of the capture recording, under `strace -f -e trace=openat`                                                                                                        | — (applied ok)                           |
 | `reference`               | `reference/`                             | template in gamescope, extension absent, `RS_FIXTURE_SHOT_DIR` → `shots/step-<k>.png`, `RS_FIXTURE_STEP_LOG`                                                                                   | — (5 shots)                              |
 | `receiver`                | `receiver/`                              | template in gamescope on a copy of the capture recording, `RS_RECEIVER_SHOT_SEQS` set to the settle seqs (`shot-seqs.txt`)                                                                     | `success`                                |
+| `preexisting-reference`   | `preexisting-reference/`                 | as `reference`, on `res://preexisting.tscn` (its two pre-existing rects included)                                                                                                              | — (5 shots)                              |
 
 Capture directories add `evidence/` (`GRC_EVIDENCE_DIR`, with `resources.jsonl` since G2b2),
 `recording.rs2`, `store/` and `steps.jsonl`, and the `capture` leg adds `strace.txt`, `maps.txt`
@@ -194,8 +196,12 @@ first class that fires wins, and `reasons` lists every rule that fired:
 3. `replay-failure`: `applied.json` missing or unparseable, status not `ok`, `end_seen` false,
    applied seqs not exactly 1..N with the host's `record_sha256`s, or a requested shot missing.
 4. `pixel-mismatch`: any checkpoint (full frame, subject or marker region) with mismatched pixels
-   or a non-zero channel delta against the reference.
-5. `success`.
+   or a non-zero channel delta against the reference. The `preexisting-skip` leg compares against
+   `preexisting-reference` with the two pre-existing rects blanked in both images.
+5. `partial-unknown-items` (../protocol/unknown-item-skip.md "Classification"): any transaction
+   whose `unknown_items` has `unknown_rids + withheld_items > 0`. Only a `GRC_UNKNOWN_ITEM=skip`
+   session carries the account, so no other leg, and no other gate, can fire it.
+6. `success`.
 
 Legs without a receiver (`capture`, `preexisting`) stop after rule 2.
 
@@ -214,7 +220,11 @@ Legs without a receiver (`capture`, `preexisting`) stop after rule 2.
 | `receiver-consumed-stream`      | `receiver` `applied.json` is `render-stream-receiver-applied/4` (/3 before G5e), seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, `recording.sha256` equal to the capture file's, and `resources_summary` shows nothing fetched and nothing uploaded                                                                                                                        |
 | `receiver-never-loaded-fixture` | the traced receiver opens its recording and nothing under `fixtures/`; no file in `receiver/` (outside `.godot/`) is byte-identical to one in `fixtures/gate0/`; no receiver log has a `[fixture]` line; argv has `--path <abs receiver>`                                                                                                                                                            |
 | `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs2-selftest] ok` and exited 0; the `golden-4/inline.rs4` replay (since G5d) is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
-| `leg-class-<leg>`               | each classified leg has its expected class; sabotage legs mismatch at exactly the expected steps with steps 0–1 matching; `preexisting` names `pre-existing-object`; `corrupt` fails at `{seq:3, reason:"meta-json"}`                                                                                                                                                                                |
+| `preexisting-skip-account`      | the skip capture's session and `result.json` declare `unknown_item_policy` `skip` (one unknown RID named); every transaction is `ok` with `unknown_items` `{unknown_rids 1, withheld_items 1, withheld_commands 1}`, `unknown_calls` non-decreasing and growing across step 2, exactly 2 published items and no published `add_rect` in a pre-existing colour                                     |
+| `preexisting-skip-reference`    | every `preexisting-reference/shots/step-<k>.png` equals `synthesizePreexistingReference(k)` exactly, and its `steps.jsonl` is the gate 0 timeline                                                                                                                                                                                                                                                  |
+| `preexisting-skip-receiver`     | every skip receiver settle shot equals `synthesizeExpected(k)` exactly (nothing of `Preexisting` or `PreChild` drawn)                                                                                                                                                                                                                                                                                |
+| `preexisting-skip-excluded-region` | at every step the skip receiver differs from `preexisting-reference` in exactly the two pre-existing rects, every pixel of them, and nowhere else                                                                                                                                                                                                                                                |
+| `leg-class-<leg>`               | each classified leg has its expected class; sabotage legs mismatch at exactly the expected steps with steps 0–1 matching; `preexisting` names `pre-existing-object`; `preexisting-skip` names `unknown_items`; `corrupt` fails at `{seq:3, reason:"meta-json"}`                                                                                                                                  |
 
 `gate_passed` is true only when every check passed.
 
@@ -238,7 +248,10 @@ It then builds a passing evidence tree for the whole layout, with recordings enc
 render-stream/4 (since G5d; /3 from G4e2) by `test/rs2-test-encoder.ts` (every texture table holding the engine's hue
 strip), `applied.json` on `/3`, and PNGs synthesized from the timeline, plus one perturbation per
 failure mode (since G2b2 also: an applied `/2` schema, a receiver that fetched the hue strip, an
-inline capture session). It runs the real `runGate0` on each: 40 scenarios, 205 assertions. It
+inline capture session; since the unknown-item skip mode (2026-10-10) also: a skip capture that
+never declared skip, one that withholds two items, a skip receiver painting a pre-existing rect or
+wrong outside them, and a reference missing the rects). It runs the real `runGate0` on each: 45
+scenarios, 237 assertions. It
 also checks that `corruptTransactionMeta(golden-2/patch.rs2, 3)` reproduces
 `golden-2/corrupt-meta.rs2` byte for byte, and that on an inline stream (a resource record before
 seq 1) it still breaks transaction seq 3, not record 3. `test/rs1-test-encoder.ts` (render-stream/1)

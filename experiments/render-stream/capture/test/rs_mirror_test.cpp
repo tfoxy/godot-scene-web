@@ -10,10 +10,13 @@
 // gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip, and (gate 4, G4e2)
 // gate4-design.md Q3 "MSDF tap" and "perturb-glyph", and (gate 5, G5d) gate5-design.md Q3b/Q3c:
 // the render-stream/4 immediate geometry taps, add_set_transform, add_clip_ignore (a typed
-// refusal from G3d until G5d), D11's RID() ambiguity and perturb-vertex, and (G5e) the mesh
+// refusal from G3d until G5d), D11's RID() ambiguity and perturb-vertex, (G5e) the mesh
 // table: ids, versions, whole-surface payloads, tombstones, add_mesh, unsupported/unknown meshes,
-// omit-op and perturb-vertex on payloads.
+// omit-op and perturb-vertex on payloads, and protocol/unknown-item-skip.md: the opt-in Skip
+// policy's exclusion rules (unknown target, unknown parent, reparent into/out of a withheld
+// subtree with re-keying, free of an unknown RID) and patch/full equivalence over them.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -2162,6 +2165,290 @@ void test_mesh_omit_op_and_perturb_vertex() {
   check(*late.bytes == *mesh_input(7).bytes, "the hook's own payload is not modified");
 }
 
+// --- unknown items under Skip (protocol/unknown-item-skip.md) ------------------------------------
+
+constexpr uint64_t kUnknownItem = 0xABC;    // an item created before arming
+constexpr uint64_t kUnknownParent = 0x777;  // an unknown parent (an item or a canvas)
+
+void skip_root(Mirror *mirror) {
+  bind_root(mirror);
+  mirror->set_unknown_item_policy(grc::rs2::UnknownItemPolicy::Skip);
+}
+
+std::vector<uint32_t> item_ids(const Snapshot &s) {
+  std::vector<uint32_t> out;
+  for (const auto &it : s.items) out.push_back(it.id);
+  return out;
+}
+
+bool unknown_counts(const Snapshot &s, uint64_t rids, uint64_t withheld, uint64_t commands,
+                    uint64_t calls) {
+  const grc::rs2::UnknownItems &u = s.unknown_items;
+  return u.present && u.unknown_rids == rids && u.withheld_items == withheld &&
+         u.withheld_commands == commands && u.unknown_calls == calls;
+}
+
+// The state the wire carries, compared field by field (what resolve() must reproduce).
+bool same_state(const Snapshot &a, const Snapshot &b) {
+  if (a.canvases.size() != b.canvases.size() || a.items.size() != b.items.size()) return false;
+  for (std::size_t i = 0; i < a.canvases.size(); ++i) {
+    if (a.canvases[i].id != b.canvases[i].id || a.canvases[i].items != b.canvases[i].items)
+      return false;
+  }
+  for (std::size_t i = 0; i < a.items.size(); ++i) {
+    const auto &x = a.items[i];
+    const auto &y = b.items[i];
+    if (x.id != y.id || x.parent.kind != y.parent.kind || x.parent.id != y.parent.id ||
+        x.children != y.children || x.content_version != y.content_version ||
+        x.commands.size() != y.commands.size() || x.xform != y.xform || x.visible != y.visible ||
+        x.draw_index != y.draw_index)
+      return false;
+  }
+  const grc::rs2::UnknownItems &u = a.unknown_items;
+  const grc::rs2::UnknownItems &v = b.unknown_items;
+  return a.unsupported.size() == b.unsupported.size() && a.failures.size() == b.failures.size() &&
+         u.present == v.present && u.unknown_rids == v.unknown_rids &&
+         u.withheld_items == v.withheld_items && u.withheld_commands == v.withheld_commands &&
+         u.unknown_calls == v.unknown_calls;
+}
+
+void test_skip_strict_default_unchanged() {
+  Mirror m;
+  bind_root(&m);
+  m.set_parent(kUnknownItem, kRootCanvas, 1);
+  Snapshot s = m.snapshot(1, 1).state;
+  check(!s.unknown_items.present, "strict: no unknown_items account");
+  check(has_failure(s, FailureReason::PreExistingObject), "strict: still pre-existing-object");
+  // reset() restores Strict.
+  Mirror n;
+  skip_root(&n);
+  bind_root(&n);
+  n.set_parent(kUnknownItem, kRootCanvas, 1);
+  s = n.snapshot(1, 1).state;
+  check(!s.unknown_items.present && has_failure(s, FailureReason::PreExistingObject),
+        "reset() returns to strict");
+}
+
+void test_skip_unknown_target() {
+  Mirror m;
+  skip_root(&m);
+  m.canvas_item_create(100, 1);  // item 1
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  Snapshot s = m.snapshot(1, 1).state;
+  check(unknown_counts(s, 0, 0, 0, 0), "skip: a clean session carries zeros");
+  check(s.status() == grc::rs2::TransactionStatus::Ok, "skip: clean status ok");
+
+  // A pre-existing item enters the tree and draws: every call is counted, none applied.
+  m.set_parent(kUnknownItem, kRootCanvas, 2);
+  m.set_visibility_layer(kUnknownItem, 1, 2);
+  m.clear(kUnknownItem, 2);
+  m.add_rect(kUnknownItem, kRect, kGreen, false, 2);
+  m.set_transform(kUnknownItem, kRootXform, 3);
+  s = m.snapshot(2, 3).state;
+  check(s.failures.empty() && s.status() == grc::rs2::TransactionStatus::Ok,
+        "skip: an unknown item is not a capture failure");
+  check(unknown_counts(s, 1, 0, 0, 5), "skip: one unknown RID, five calls");
+  check(item_ids(s) == std::vector<uint32_t>{1} && canvas(s, 1)->items == ids({1}),
+        "skip: the known item is untouched");
+  check(m.stats().unknown_rids_named == 1 && m.stats().unknown_calls == 5, "skip: stats");
+
+  // An unknown canvas on the root viewport is counted too.
+  m.viewport_set_canvas_transform(kRootViewport, 0x5555, kRootXform, 4);
+  m.viewport_attach_canvas(kRootViewport, 0x5555, 4);
+  s = m.snapshot(3, 4).state;
+  check(s.failures.empty() && unknown_counts(s, 2, 0, 0, 7),
+        "skip: an unknown canvas on the root viewport is an unknown RID, not a failure");
+  check(canvas(s, 1)->xform == kRootXform, "skip: the root canvas is untouched");
+}
+
+void test_skip_unknown_parent() {
+  Mirror m;
+  skip_root(&m);
+  // Created after arming, parented to an unknown RID: withheld with its whole subtree.
+  m.canvas_item_create(100, 1);  // item 1
+  m.canvas_item_create(101, 1);  // item 2
+  m.canvas_item_create(102, 1);  // item 3, a drawing sibling on the root
+  m.set_parent(100, kUnknownParent, 1);
+  m.set_parent(101, 100, 1);
+  m.set_parent(102, kRootCanvas, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  m.add_rect(101, kRect, kRed, false, 1);
+  m.add_unsupported(101, "canvas_item_add_particles", 1);
+  m.add_rect(102, kRect, kGreen, false, 1);
+  // Withheld siblings would tie; a withheld item's entries are not published.
+  m.canvas_item_create(103, 1);  // item 4, a second drawing child of item 1
+  m.set_parent(103, 100, 1);
+  m.add_rect(103, kRect, kRed, false, 1);
+  Snapshot s = m.snapshot(1, 1).state;
+  check(item_ids(s) == std::vector<uint32_t>{3}, "skip: items 1, 2 and 4 are withheld");
+  check(canvas(s, 1)->items == ids({3}), "skip: only the clean item is on the root canvas");
+  check(unknown_counts(s, 1, 3, 4, 1), "skip: 1 unknown RID, 3 withheld items holding 4 commands");
+  check(s.unsupported.empty(), "skip: no entry (unsupported op, tie) for a withheld item");
+  check(s.failures.empty(), "skip: no failure");
+
+  // A tie between two *published* siblings is still declared.
+  m.set_parent(100, kRootCanvas, 2);  // item 1 (never published: keeps its id) joins item 3 at 0
+  s = m.snapshot(2, 2).state;
+  check(item_ids(s) == (std::vector<uint32_t>{1, 2, 3, 4}), "skip: reparented out, published");
+  check(canvas(s, 1)->items == ids({3, 1}) && item(s, 1)->children == ids({2, 4}),
+        "skip: the subtree keeps its child order");
+  check(unknown_counts(s, 1, 0, 0, 1), "skip: the unknown RID stays unknown until freed");
+  check(ties(s) == (std::vector<Entry>{tie(1), tie(2)}) && item_entries(s).size() == 3,
+        "skip: published items get their entries back (two ties + the particles op)");
+  check(m.stats().rekeyed_items == 0, "skip: nothing published was withheld, nothing re-keyed");
+}
+
+void test_skip_reparent_into_and_out_of_withheld() {
+  Mirror m;
+  skip_root(&m);
+  m.canvas_item_create(100, 1);  // item 1
+  m.canvas_item_create(101, 1);  // item 2
+  m.canvas_item_create(102, 1);  // item 3: withheld from the start
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, 100, 1);
+  m.set_parent(102, kUnknownParent, 1);
+  m.add_rect(101, kRect, kRed, false, 1);
+  Snapshot s1 = m.snapshot(1, 1).state;
+  check(item_ids(s1) == (std::vector<uint32_t>{1, 2}), "published subtree 1, 2");
+
+  // Into a withheld *known* item: the published subtree leaves and is re-keyed.
+  m.set_parent(100, 102, 2);
+  Snapshot s2 = m.snapshot(2, 2).state;
+  check(item_ids(s2).empty() && canvas(s2, 1)->items.empty(), "skip: subtree withheld");
+  check(unknown_counts(s2, 1, 3, 1, 1), "skip: 3 withheld items, 1 command");
+  check(m.stats().rekeyed_items == 2, "skip: both published items re-keyed (item 3 was not)");
+
+  // Out again: published under fresh ids, never the old ones (id-reused).
+  m.set_parent(100, kRootCanvas, 3);
+  Snapshot s3 = m.snapshot(3, 3).state;
+  check(item_ids(s3) == (std::vector<uint32_t>{4, 5}), "skip: ids 4 and 5 replace 1 and 2");
+  check(canvas(s3, 1)->items == ids({4}) && item(s3, 4)->children == ids({5}) &&
+            item(s3, 5)->parent.kind == ParentKind::Item && item(s3, 5)->parent.id == 4,
+        "skip: the re-keyed subtree is internally consistent");
+  check(item(s3, 5)->commands.size() == 1, "skip: its commands survived the stay");
+  check(unknown_counts(s3, 1, 1, 0, 1), "skip: item 3 alone still withheld");
+  // A RID keeps addressing its item after the re-key.
+  m.set_visible(101, false, 4);
+  Snapshot s4 = m.snapshot(4, 4).state;
+  check(!item(s4, 5)->visible, "skip: the RID follows the new id");
+
+  // Directly into an unknown parent, after being published: re-keyed again.
+  m.set_parent(100, kUnknownParent, 5);
+  m.set_parent(100, kRootCanvas, 5);  // and back within the same frame
+  Snapshot s5 = m.snapshot(5, 5).state;
+  check(item_ids(s5) == (std::vector<uint32_t>{6, 7}), "skip: a round trip still re-keys");
+}
+
+void test_skip_free_unknown() {
+  Mirror m;
+  skip_root(&m);
+  m.canvas_item_create(100, 1);  // item 1
+  m.set_parent(100, kUnknownParent, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  Snapshot s = m.snapshot(1, 1).state;
+  check(item_ids(s).empty() && unknown_counts(s, 1, 1, 1, 1), "withheld under the unknown RID");
+
+  // The engine frees the unknown parent: dropped silently, the child is an orphan, published.
+  m.free_rid(kUnknownParent, 2);
+  s = m.snapshot(2, 2).state;
+  check(m.stats().free_unknown == 0, "skip: a freed unknown RID is not free_unknown");
+  check(unknown_counts(s, 0, 0, 0, 1), "skip: nothing withheld any more");
+  check(item_ids(s) == std::vector<uint32_t>{1} && item(s, 1)->parent.kind == ParentKind::None,
+        "skip: the orphan is published with no parent");
+  check(s.failures.empty(), "skip: no failure");
+  // Now an unknown RID again only if named again; a second free is an ordinary unknown free.
+  m.free_rid(kUnknownParent, 3);
+  check(m.stats().free_unknown == 1, "skip: a RID no longer remembered is free_unknown");
+
+  // Freeing an unknown *item* the mirror only saw named.
+  m.set_transform(kUnknownItem, kRootXform, 4);
+  s = m.snapshot(3, 4).state;
+  check(unknown_counts(s, 1, 0, 0, 2), "named once");
+  m.free_rid(kUnknownItem, 5);
+  s = m.snapshot(4, 5).state;
+  check(unknown_counts(s, 0, 0, 0, 2) && m.stats().unknown_rids_named == 2,
+        "skip: freed silently, still counted as named");
+
+  // A recycled RID value created anew is a known item, not an unknown one.
+  m.set_parent(kUnknownItem, kRootCanvas, 6);  // named again: unknown
+  m.free_rid(kUnknownItem, 6);
+  m.canvas_item_create(kUnknownItem, 6);
+  m.set_parent(kUnknownItem, kRootCanvas, 6);
+  s = m.snapshot(5, 6).state;
+  check(unknown_counts(s, 0, 0, 0, 3) && item_ids(s) == (std::vector<uint32_t>{1, 2}),
+        "skip: a created RID is known");
+}
+
+void test_skip_patch_full_equivalence() {
+  Mirror m;
+  skip_root(&m);
+  std::vector<Snapshot> states;
+  // 1: a clean subtree, a withheld one, a pre-existing item drawing.
+  m.canvas_item_create(100, 1);
+  m.canvas_item_create(101, 1);
+  m.canvas_item_create(102, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, 100, 1);
+  m.set_parent(102, kUnknownParent, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  m.add_rect(101, kRect, kRed, false, 1);
+  m.add_rect(102, kRect, kGreen, false, 1);
+  m.add_rect(kUnknownItem, kRect, kGreen, false, 1);
+  states.push_back(m.snapshot(1, 1).state);
+  // 2: a published subtree moves under the withheld item.
+  m.set_parent(100, 102, 2);
+  states.push_back(m.snapshot(2, 2).state);
+  // 3: the withheld item moves out (to the root) with its new child.
+  m.set_parent(102, kRootCanvas, 3);
+  m.set_draw_index(102, 4, 3);
+  states.push_back(m.snapshot(3, 3).state);
+  // 4: a redraw of a withheld-then-published item, and the unknown parent freed.
+  m.clear(101, 4);
+  m.add_rect(101, kRect, kGreen, false, 4);
+  m.free_rid(kUnknownParent, 4);
+  states.push_back(m.snapshot(4, 4).state);
+  // 5: back under an unknown RID, then that RID freed in the same frame (orphaned, re-published).
+  m.set_parent(100, kUnknownParent, 5);
+  m.free_rid(kUnknownParent, 5);
+  states.push_back(m.snapshot(5, 5).state);
+  // 6: nothing changes.
+  states.push_back(m.snapshot(6, 6).state);
+
+  Snapshot resolved = grc::rs2::resolve(Snapshot(), grc::rs2::make_full(states[0]));
+  check(same_state(resolved, states[0]), "skip: full of state 1 resolves to it");
+  std::vector<uint32_t> ever;  // every id ever published
+  for (uint32_t id : item_ids(states[0])) ever.push_back(id);
+  for (std::size_t i = 1; i < states.size(); ++i) {
+    const grc::rs2::Transaction patch = grc::rs2::make_patch(states[i - 1], states[i]);
+    const grc::rs2::Transaction full = grc::rs2::make_full(states[i]);
+    check(patch.unknown_items.present && full.unknown_items.present &&
+              patch.unknown_items.withheld_items == full.unknown_items.withheld_items &&
+              patch.unknown_items.unknown_calls == full.unknown_items.unknown_calls,
+          "skip: unknown_items complete in patch and full (state " + std::to_string(i + 1) + ")");
+    resolved = grc::rs2::resolve(resolved, patch);
+    check(same_state(resolved, states[i]),
+          "skip: patch chain resolves to the full state " + std::to_string(i + 1));
+    check(same_state(grc::rs2::resolve(Snapshot(), full), states[i]),
+          "skip: full resolves to state " + std::to_string(i + 1));
+    // render-stream-0.md id-reused: an id absent from the previous state never comes back.
+    const std::vector<uint32_t> prev = item_ids(states[i - 1]);
+    for (uint32_t id : item_ids(states[i])) {
+      const bool in_prev = std::find(prev.begin(), prev.end(), id) != prev.end();
+      const bool seen = std::find(ever.begin(), ever.end(), id) != ever.end();
+      check(in_prev || !seen, "skip: id " + std::to_string(id) + " never reappears (state " +
+                                  std::to_string(i + 1) + ")");
+      if (!seen) ever.push_back(id);
+    }
+  }
+  check(unknown_counts(states[0], 2, 1, 1, 2), "state 1 account");
+  check(unknown_counts(states[1], 2, 3, 3, 2), "state 2 account");
+  check(unknown_counts(states[2], 2, 0, 0, 2), "state 3 account");
+  check(unknown_counts(states[3], 1, 0, 0, 2), "state 4 account");
+  check(unknown_counts(states[4], 1, 0, 0, 3), "state 5 account (unknown parent named again)");
+  check(states[4].items.size() == 3, "state 5: the orphaned subtree is published again");
+}
+
 int main() {
   test_fresh_session();
   test_ids_and_recycled_rid();
@@ -2217,6 +2504,12 @@ int main() {
   test_mesh_add_mesh_and_tombstones();
   test_mesh_unsupported_and_unknown();
   test_mesh_omit_op_and_perturb_vertex();
+  test_skip_strict_default_unchanged();
+  test_skip_unknown_target();
+  test_skip_unknown_parent();
+  test_skip_reparent_into_and_out_of_withheld();
+  test_skip_free_unknown();
+  test_skip_patch_full_equivalence();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

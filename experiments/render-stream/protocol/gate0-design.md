@@ -167,6 +167,14 @@ Viewport hooks:
 Late join (adopting pre-existing items) is later work, at gate 8. The wire `origin` field is
 there so that adoption can be added later without changing the format.
 
+Addendum (2026-10-10): the policy above stays the default. An opt-in diagnostic,
+`GRC_UNKNOWN_ITEM=skip`, instead withholds every unknown canvas/item RID and every known item whose
+parent chain reaches one, declares itself in the session and accounts for what it left out in
+every transaction, classifying `partial-unknown-items`, never `success`
+([unknown-item-skip.md](unknown-item-skip.md)). `preexisting.tscn` now draws (its `Preexisting`
+node and a `PreChild` created after arming), and the runner adds the `preexisting-skip` and
+`preexisting-reference` legs; the strict `preexisting` leg is unchanged.
+
 ## Q2. Fixture
 
 Nothing in the root viewport creates canvas items in this configuration. The viewport's own

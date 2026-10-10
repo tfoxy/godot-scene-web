@@ -21,6 +21,24 @@ export interface GateZeroExpectedStep {
   marker: GateZeroExpectedRegion;
 }
 
+/** One of preexisting.tscn's extra rects (protocol/unknown-item-skip.md "Evidence"). */
+export interface GateZeroPreexistingItem {
+  name: string;
+  /** [x, y, w, h] in viewport pixels, fixed for the whole timeline. */
+  rect_px: [number, number, number, number];
+  /** Godot float colour per step 0..4. */
+  colors: [number, number, number, number][];
+  /** The exact byte form of `colors`, per step 0..4. */
+  rgba8: [number, number, number, number][];
+}
+
+export interface GateZeroPreexisting {
+  scene: string;
+  description?: string;
+  /** Painted before Subject and Marker, in this order (Preexisting, then its child PreChild). */
+  items: GateZeroPreexistingItem[];
+}
+
 export interface GateZeroExpected {
   schema: "render-stream-gate0-expected/1";
   viewport: [number, number];
@@ -28,6 +46,8 @@ export interface GateZeroExpected {
   quit_frame_default: number;
   steps: GateZeroExpectedStep[];
   unsupported_variant: { from_step: number; op: string };
+  /** preexisting.tscn's extra rects; absent in fixtures that do not reuse gate 0's. */
+  preexisting?: GateZeroPreexisting;
 }
 
 export interface SynthesizedFrame {
@@ -56,6 +76,46 @@ export function synthesizeExpected(
   paintRect(rgba, width, height, found.subject.rect_px, found.subject.rgba8);
   paintRect(rgba, width, height, found.marker.rect_px, found.marker.rgba8);
   return { width, height, rgba };
+}
+
+/**
+ * The rendered reference of preexisting.tscn for one step: synthesizeExpected's frame with the
+ * pre-existing rects painted between the clear colour and Subject/Marker (they enter the tree
+ * first). A receiver of a GRC_UNKNOWN_ITEM=skip capture of that scene paints none of them, so its
+ * expected frame is synthesizeExpected(step) itself.
+ */
+export function synthesizePreexistingReference(
+  expected: GateZeroExpected,
+  step: number,
+): SynthesizedFrame {
+  const [width, height] = expected.viewport;
+  const found = expected.steps.find((entry) => entry.step === step);
+  if (!found || !expected.preexisting) {
+    throw new Error(
+      `gate0-expected: no step ${step} or no preexisting block in expected.json`,
+    );
+  }
+  const rgba = new Uint8Array(width * height * 4);
+  paintRect(rgba, width, height, [0, 0, width, height], expected.clear_rgba8);
+  for (const item of expected.preexisting.items) {
+    const color = item.rgba8[step];
+    if (!color) {
+      throw new Error(
+        `gate0-expected: ${item.name} has no colour for step ${step}`,
+      );
+    }
+    paintRect(rgba, width, height, item.rect_px, color);
+  }
+  paintRect(rgba, width, height, found.subject.rect_px, found.subject.rgba8);
+  paintRect(rgba, width, height, found.marker.rect_px, found.marker.rgba8);
+  return { width, height, rgba };
+}
+
+/** The pixel rects a skip receiver of preexisting.tscn leaves out (empty without the block). */
+export function preexistingRects(
+  expected: GateZeroExpected,
+): [number, number, number, number][] {
+  return (expected.preexisting?.items ?? []).map((item) => item.rect_px);
 }
 
 function paintRect(

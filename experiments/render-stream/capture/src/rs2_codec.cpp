@@ -614,6 +614,11 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
     }
     m += "}";
   }
+  // protocol/unknown-item-skip.md "Session": present only in a skip session, only at /4 and /5;
+  // a strict session encodes exactly as before the policy existed.
+  if (session.unknown_item_policy == UnknownItemPolicy::Skip && is_v4_or_later) {
+    m += ",\"unknown_item_policy\":\"skip\"";
+  }
   m += ",";
   append_blocks_descriptor(m, {{"clear_color", "f32", 4},
                                 {"root_canvas_xform", "f32", 6},
@@ -682,6 +687,23 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     m += "}";
   }
   m += "]";
+
+  // protocol/unknown-item-skip.md "Transaction": in a session that declares
+  // `unknown_item_policy: "skip"` (and only then, at /4 and /5), every transaction carries what it
+  // left out, right after `unsupported`. Complete in full and patch transactions alike.
+  if (transaction.unknown_items.present && (transaction.version == ProtocolVersion::V4 ||
+                                            transaction.version == ProtocolVersion::V5)) {
+    const UnknownItems &unknown = transaction.unknown_items;
+    m += ",\"unknown_items\":{\"unknown_rids\":";
+    append_json_int(m, unknown.unknown_rids);
+    m += ",\"withheld_items\":";
+    append_json_int(m, unknown.withheld_items);
+    m += ",\"withheld_commands\":";
+    append_json_int(m, unknown.withheld_commands);
+    m += ",\"unknown_calls\":";
+    append_json_int(m, unknown.unknown_calls);
+    m += "}";
+  }
 
   m += ",\"default_texture_filter\":";
   append_json_string(m, to_wire(transaction.default_texture_filter));
