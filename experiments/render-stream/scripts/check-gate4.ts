@@ -87,6 +87,23 @@ async function main(): Promise<void> {
     console.log(
       `  reference-repeat budget (${fixtureName}): ${b.map((x) => `${x.region} ${x.max_channel_delta}/${x.mismatched_pixels}px`).join(", ")}`,
     );
+  if (report.layout) {
+    const subpixel = report.layout.subpixel as Record<
+      string,
+      Record<string, { uploads: number; new_pairs: number; shifts: number[] }>
+    >;
+    for (const [cache, rows] of Object.entries(subpixel))
+      console.log(
+        `  subpixel census (gate4-layout, ${cache}): step uploads/new (glyph, shift) pairs [shifts]: ${Object.entries(
+          rows,
+        )
+          .map(
+            ([k, r]) =>
+              `${k}:${r.uploads}/${r.new_pairs}[${r.shifts.join("")}]`,
+          )
+          .join(" ")}`,
+      );
+  }
   const passed = report.checks.filter((c) => c.passed).length;
   console.log(
     `\ngate 4 (groups ${report.groups.run.join(",") || "none"}${report.groups.not_run.length > 0 ? `; not run: ${report.groups.not_run.join(",")}` : ""}): ${report.gate_passed ? "PASS" : "FAIL"} ${passed}/${report.checks.length} (${join(out, "result.json")})`,

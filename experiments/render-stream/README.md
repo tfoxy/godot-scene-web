@@ -2274,6 +2274,79 @@ clean across all six receiver legs. `resource-quiet` confirms the five no-textur
 - That the receiver's apply order for clipped text is correct: G4c and G4d wait for G3b for that
   reason (D13); G4b's Labels never clip.
 
+## Gate 4c result (2026-10-10)
+
+G4c ([protocol/gate4-design.md](protocol/gate4-design.md) "G4c", "As built (G4c)") passes:
+`pnpm render-stream:gate4 -- --legs g4a,g4b,g4c` is 79/79 in
+`artifacts/render-stream/gate4/20261010T023733Z/` (g4c alone 43/43 at `gate4/dev-g4c-2/`). The
+same build passed `build-capture.sh` (11/11 ctests), gate −1 28/28 (`gate-minus1/20261010T015223Z/`),
+gate 0 19/19 (`gate0/20261010T015342Z/`), gate 1 65/65 (`gate1/20261010T015624Z/`), gate 2
+85/85 (`gate2/20261010T020714Z/`) and gate 3 49/49 with g3a–g3c (`gate3/20261010T022208Z/`).
+No capture, receiver or protocol file changed.
+
+What landed: `fixtures/gate4-layout/` (14 Labels on runtime `FontFile`s of the pinned bytes:
+sizes 12/14/16/24/40/320, word and arbitrary wrap, left/centre/right/fill and top/centre/bottom
+alignment, two `clip_text` Labels, an outline-4 Label, a shadow, a subpixel-`auto` font, a cache
+whose hinting changes, and variant `lcd`), its oracle (Label's whole layout and draw, every pass),
+`make_expected.py`, group g4c in `run-gate4.sh` (legs under `<out>/layout/`) and
+`lib/gate4c-checks.ts`. Images: `layout/reference/shots/step-<k>.png` and `early-<k>.png`,
+`layout/receiver{,-patch}/shots/`, `layout/sabotage-omit-atlas/receiver/shots/`,
+`layout/lcd/{reference,receiver}/shots/`.
+
+Every glyph command (1 269 per sink over the ten settle steps, shadow, outline and text passes)
+equals the oracle float32-exact, every oracle page hashes to exactly one wire texture, and the
+receivers equal the reference exactly. D8's synthesized ink, now per pass colour, outline page and
+clip, holds at **max channel delta 1** (21 386 px at delta 1). Census as measured (c = create,
+u = updates, f = free; `F@24/4` is the outline cache):
+
+| step | change                     | uploads                                                                 |
+| ---- | -------------------------- | ----------------------------------------------------------------------- |
+| 0    | everything                 | F@16, F@12, F@24, F@320, FL@16: c; F@24/4: c + u6; FX@14: c + u7        |
+| 1    | LZ 16 → 40 px              | F@40: c (512²)                                                          |
+| 2    | LW, LR rewrap              | F@16: u1                                                                |
+| 3    | LO "Overt"                 | F@24: u1; F@24/4: u2                                                    |
+| 4    | LX "Subpixel wave"         | FX@14: u5                                                               |
+| 5, 9 | alignment; outline colour  | none                                                                    |
+| 6    | LK new clipped text        | F@16: u1                                                                |
+| 7    | LP's 26 capitals at 320 px | F@320 page 0: u1, page 1: c (two 1024² LA8 pages, 4 MiB published)      |
+| 8    | FL.hinting = NONE          | FL@16 page (wire id 7): f; FL2@16 page (wire id 11): c, both in frame 81 |
+
+Subpixel census (`FX@14`, quarter pixel, x shifts {0,1,2,3}): 8 uploads against 17 new
+(glyph, shift) pairs at step 0, and 5 against 6 at step 4. Clips derived from the wire: LK
+`[16,132,96,160)`, LP `[16,147,616,360)`. `sabotage-layout-omit-atlas` (omit
+`texture_2d_update` from frame 71) is `pixel-mismatch` at exactly {7,8,9}, with all 23 393
+differing pixels inside LP, and its parity fails exactly at F@320 {7,8,9}. `capture-lcd` and
+`receiver-lcd` are `unsupported` (`canvas_item_add_lcd_texture_rect_region`/`unsupported-op`,
+7 commands, beside an `ok` RGBA8 256² page). The receiver differs from `reference-lcd` only inside
+LC's region (437 px per step).
+
+### Findings
+
+- **Labels added in `_ready` shape before anything draws.** A Control's post-enter-tree minimum
+  size update is synchronous (`control.cpp:3803-3807`), and it shapes the Label. So every plain
+  page is created once at step 0, whatever feeds it. Q1c's per-draw rule starts at step 1.
+- **Outline and subpixel glyphs upload one at a time.** Both rasterize at draw time, so each new
+  outline glyph or (glyph, shift) variant is its own whole-page upload. This is gate 6's
+  hash-at-publish input (D9).
+- **Draw-time caches hide from `font_get_size_cache_list`.** They carry the viewport's
+  oversampling level. The oracle uses `font_get_size_cache_info`.
+- **The default theme's `shadow_outline_size` is 1.** A shadowed Label would draw a second pass
+  from its own `(size, 1)` cache. The fixture pins it to 0, as Q6e's "reuses the text page"
+  assumes.
+- **A free Label never shrinks below its minimum.** LP's 600×120 box is 600×437, so its clip ends
+  at the viewport. An autowrap Label's first minimum is computed at width 0, so the fixture sets
+  each box, re-shapes and sets it again.
+- `run_g4c` imports `receiver/`. A fresh worktree had never imported it, and `run_g4b` relies on
+  an earlier gate having done so.
+
+### What G4c does not prove
+
+- Fractional glyph quads: subpixel quads are still floored at scale 1, so MSDF's unfloored quads
+  are G4e2's. `RichTextLabel` (G4d), multilingual shaping and fallback pages (G4f).
+- LCD rendering on a receiver: it stays typed `unsupported` (Deferred).
+- Overrun trimming, ellipses, `max_lines_visible`, paragraph separators and stacked outlines or
+  shadows. The oracle refuses ellipses and models one paragraph.
+
 ## Scratch verification (2026-10-08)
 
 A throwaway project under the ignored `artifacts/render-stream/scratch/` —

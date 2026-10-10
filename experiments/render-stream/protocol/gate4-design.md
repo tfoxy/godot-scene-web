@@ -760,6 +760,35 @@ group `g4c`.
 **Pass criteria**: `--legs g4a,g4b,g4c` is green. The README gains "Gate 4c result" with the
 measured subpixel census and page tables.
 
+**As built (G4c, 2026-10-10).** The fixture is `fixtures/gate4-layout/` (its README has the
+layout and timeline); its legs live under `<out>/layout/`, with G4a's and G4b's checks suffixed
+`-layout`. Every census prediction held, and every glyph command equals the oracle's float32-exact
+on both sinks. The engine refined Q1c and Q6e in five places: (1) **Step 0 shapes before it
+draws.** A Control computes its combined minimum size synchronously when it enters the tree
+(`scene/gui/control.cpp:3803-3807`), and a Label's minimum size shapes it. Labels added in `_ready`
+therefore rasterize all their glyphs before the first draw, so each plain page is created once at
+step 0 however many Labels feed it. Q1c's per-draw rule applies from step 1, where a text change
+queues the redraw before the minimum-size update. (2) **Outline glyphs upload one by one.**
+`_font_draw_glyph_outline` rasterizes at draw time (`ts_adv:4133`), so an outline cache gets one
+upload per new outline glyph: `F@24/4` was created plus 6 updates for `"Outline"`, and 2 updates
+for `"Overt"`. (3) **Draw-time caches are invisible to `font_get_size_cache_list`.** They are
+created with the viewport's oversampling level (`ts_adv:4106`), and the list skips those
+(`ts_adv:2766`). The oracle lists pages with `font_get_size_cache_info` instead. (4) **Q6e's
+shadow needs `shadow_outline_size = 0`.** The default theme's value is 1 (`default_theme.cpp:391`),
+which would add a shadow-outline pass from its own `(24, 1)` cache. With 0 the shadow reuses the
+text page, as Q6e says. (5) **LP's box is 600×437, not 600×120.** A free Label keeps at least its
+minimum height, here one 320 px line, so the clip is the box cut by the viewport, `[16,147,616,360)`.
+Two pages of 1024² LA8 hold the 26 capitals. The sabotage therefore omits `texture_2d_update` from
+the multi-page step (7): page 0's update is lost, and A, B and C with it, while page 1's create
+still travels. The mismatch is LP-only at {7,8,9}. Measured subpixel census for `FX@14` (quarter
+pixel at 14 px, shifts {0,1,2,3}): 8 uploads against 17 new (glyph, shift) pairs at step 0, and 5
+against 6 at step 4. Lifetime: FL's page is freed and FL2's created in frame 81. The freed id
+leaves the table in that same transaction, with no tombstone, because the redraw replaced LL's
+commands within the frame. LCD: `capture-lcd` carries LC's 7 commands typed
+`canvas_item_add_lcd_texture_rect_region`/`unsupported-op` beside an `ok` RGBA8 256² page, and
+`receiver-lcd` differs from `reference-lcd` only inside LC's region (437 px per step). The runner
+also imports `receiver/`, since a fresh worktree has never imported it.
+
 ---
 
 ### G4d — RichTextLabel spans (sonnet, after G3b)

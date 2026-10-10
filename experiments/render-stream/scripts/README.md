@@ -946,15 +946,17 @@ to g3a and g3b.
 mise exec -- pnpm render-stream:gate4 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g4a,g4b]
+  [--legs g4a,g4b,g4c]
 ```
 
 - `run-gate4.sh`: the orchestrator (`run_g4a`, `run_g4b`, `run_reference` with `REFERENCE_ORACLE`
   and `REFERENCE_ARMED`, `g4_capture` for a sabotage capture at the fixture's own default quit
   frame, `early_shots_csv` for Q6b's "Intermediate shots" on a receiver). It provisions fonts
   before the import and stops on any mismatch. `g4b` needs `g4a` in the same `--legs` (one
-  capture and reference, shared). Groups g4c–g4f are known but have not landed, so asking for
-  them exits 2.
+  capture and reference, shared). `run_g4c` runs `fixtures/gate4-layout` under `<out>/layout/`
+  (it also imports `receiver/`, which a fresh worktree has never imported); `run_reference` takes
+  `REFERENCE_FIXTURE_DIR` and `REFERENCE_VARIANT` for it, and `layout_early_csv` its early
+  steps. Groups g4d–g4f are known but have not landed, so asking for them exits 2.
 - `lib/provision-fonts.sh <fixture>`: copies each `fonts.lock.json` entry into `<fixture>/fonts/`
   after checking the source's and the copy's size and SHA-256 and that its licence file exists.
   A source starting with `../` (the engine checkout) also resolves against the main checkout's
@@ -977,6 +979,15 @@ mise exec -- pnpm render-stream:gate4 -- \
   `loadPagesByStep`, `evaluateExpectedText`/`checkExpectedText`, `evaluateResourceQuiet`,
   `checkReceiverNeverShapes`, `checkReceiverConsumedStream`, `checkReceiverTypedClean` and
   `checkAtlasHashParitySabotage`.
+- `lib/gate4c-checks.ts`: group g4c (`runG4c`, loaded on demand by `runGate4`). It points G4a's
+  and G4b's evidence-root helpers at `<out>/layout/` and adds what layout needs:
+  `deriveLayoutCensus` (a TypeScript re-derivation of `make_expected.py`'s upload model),
+  `evaluateLayoutOracle`, `evaluateLayoutGlyphCommands` (shadow, outline and text passes, each
+  with its own colour and page), `layoutCensusFromLog`/`evaluateLayoutCensus` (per page key,
+  frees included), `newSubpixelPairs`/`evaluateSubpixelCensus`, `evaluatePageLifetime`,
+  `evaluateLayoutClips` (gate 3's `deriveClipRects`), `synthesizeLayoutText`/`evaluateLayoutText`
+  (D8 with per-glyph colours, outline pages and the Labels' clips), `evaluateLcdCommands` and
+  `evaluateLcdRegions`. Its check ids end in `-layout` or name the leg.
 - `check-gate4.ts`: writes `<out>/result.json` (`render-stream-gate4-report/1`: gate 3's shape
   with `text` per fixture and step (glyph commands, pages with wire id, hook and wire versions and
   payload bytes, bytes published, copy and hash ns), `parity` (each oracle page against the
@@ -1000,6 +1011,14 @@ mise exec -- pnpm render-stream:gate4 -- \
 | `sabotage-freeze/{capture,receiver}`     | g4b   | `sabotage-freeze/`        | a fresh headless capture (`GRC_SABOTAGE=freeze-frame` at frame 11, step 1) at the fixture's own default quit (102), then its rendered receiver |
 | `sabotage-perturb/{capture,receiver}`    | g4b   | `sabotage-perturb/`       | `GRC_SABOTAGE=perturb-transform` at frame 21 (step 2), then its receiver |
 | `sabotage-omit-atlas/{capture,receiver}` | g4b   | `sabotage-omit-atlas/`    | `GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=texture_2d_update` at frame 41 (step 4), then its receiver |
+| `import` (layout)                        | g4c   | `layout/import/`          | `provision-fonts.sh fixtures/gate4-layout` (`fonts.log`), then `--import` of the fixture (`fixture/`) and of `receiver/` (`receiver/`) |
+| `capture-layout`                         | g4c   | `layout/capture/`         | as `capture`, on `fixtures/gate4-layout` (quit 400, both sinks, store, strace + maps/fd, `env.json`) |
+| `reference-layout`, `-repeat`            | g4c   | `layout/reference/`, `layout/reference-repeat/` | rendered, extension absent, the layout oracle on: `shots/step-0..9.png`, `shots/early-{1,2,3,4,6,7,8}.png`, `oracle/` |
+| `reference-layout-armed`                 | g4c   | `layout/reference-armed/` | rendered, extension armed with a stream and a store, oracle off |
+| `receiver-layout`, `-patch`              | g4c   | `layout/receiver/`, `layout/receiver-patch/` | the receiver on `capture-layout`'s full and patch sinks, settle and early shots |
+| `receiver-layout-headless-trace`         | g4c   | `layout/receiver-headless-trace/` | the receiver, headless, `strace -f -e openat`, on `capture-layout`'s full sink |
+| `sabotage-layout-omit-atlas`             | g4c   | `layout/sabotage-omit-atlas/{capture,receiver}` | `omit-op texture_2d_update` at frame 71 (step 7, the multi-page step), default quit 102, then its receiver |
+| `capture-lcd`, `reference-lcd`, `receiver-lcd` | g4c | `layout/lcd/{capture,reference,receiver}` | `RS_FIXTURE_VARIANT=lcd` (one LCD Label `LC`): headless capture (quit 102), rendered reference (oracle off), receiver |
 
 ## Gate 4 criteria (g4a)
 
@@ -1050,12 +1069,41 @@ cover the same six receiver legs. `atlas-hash-parity-sabotage-omit-atlas` re-run
 `evaluateAtlasParity` against `sabotage-omit-atlas`'s own recording and requires its failing
 cells to equal `predictions["sabotage-omit-atlas"].atlas_hash_parity_fails` exactly.
 
+## Gate 4 criteria (g4c)
+
+G4a's and G4b's checks run on the layout fixture with a `-layout` suffix (`capture-armed-layout`
+… `receiver-typed-clean-layout`), with these differences: `oracle-agrees-layout` also compares
+the word-wrapped line texts, the arbitrary-wrapped line counts, every pass's command count, the
+clip flags and the pages per cache (outline caches included) against `expected.json`;
+`glyph-commands-layout` compares every pass's commands with the pass colour and the glyph's own
+page; `atlas-census-layout` counts creates, updates and frees per cache (plain caches once per
+dirty page, outline caches once per new outline glyph, the subpixel cache only "some exactly when
+it gains glyphs"); `ink-presence-*-layout` uses `ink_min_glyphs` (a clipped Label must show at
+least `clip width // size` glyphs); `expected-text-*-layout` synthesizes every pass with its own
+colour and page and the Label's clip. New: `atlas-pages` (each cache's oracle pages equal the
+mapped wire textures in count, format and side; F@320 has ≥ 2 1024² LA8 pages), `subpixel-census`
+(FX@14's uploads per step ≤ the oracle's new (glyph, x shift) pairs and ≥ 1 when any),
+`page-lifetime` (step 8: FL's page freed and out of the table, FL2's page created with a new id,
+in one frame, both sinks), `clip-rects-derived-layout` (gate 3's `deriveClipRects` gives LK and LP
+exactly `clip_rects` and no other Label a clip), `leg-class-sabotage-layout-omit-atlas` (steps
+{7,8,9}), `sabotage-layout-omit-atlas-regions` (every differing pixel inside LP),
+`atlas-hash-parity-sabotage-layout-omit-atlas` (F@320 {7,8,9}), `leg-class-capture-lcd`
+(`unsupported` for `canvas_item_add_lcd_texture_rect_region` only, LC's 7 commands typed
+`unsupported-op`, its RGBA8 page `ok`) and `leg-class-receiver-lcd` (`unsupported`, differing
+from `reference-lcd` only inside LC's region).
+
 ## Gate 4 self-test
 
 ```bash
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate4.ts
 python3 experiments/render-stream/fixtures/gate4/make_expected.py --check
+python3 experiments/render-stream/fixtures/gate4-layout/make_expected.py --check
 ```
+
+Group g4c's cases are in `test/gate4c-cases.ts`: `expected.json`'s rules and hand-typed census
+facts of `deriveLayoutCensus`; a synthetic layout oracle and recording (oracle, glyph commands,
+census, lifetime); the subpixel bound on hand-built pairs; `synthesizeLayoutText` on a 4×4 page
+(per-glyph colour, outline page keys, clip); and the LCD region rule — each passing and failing.
 
 GRT1 hashing is checked against SHA-256 values computed independently with Python (an empty
 256×256 LA8 page, the size of every gate 4 page, and an 8×8 one), and append-only on a hand-built
