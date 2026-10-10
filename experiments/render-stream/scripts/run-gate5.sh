@@ -4,7 +4,7 @@
 #
 #   bash run-gate5.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g5b]
+#     [--legs g5b,g5c]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -13,8 +13,11 @@
 # immediate-geometry fixture's import, a 400-frame headless capture with both sinks and the store
 # that classifies `unsupported` on the current wire with every geometry op typed, its rendered
 # reference, a same-build repeat, and an extension-armed reference; the capture speaks
-# render-stream/3 since G4e2). g5c, g5d, g5e, g5f and g5g
-# are known but have not landed.
+# render-stream/3 since G4e2) and g5c (G5c: fixtures/gate5-mesh's import, a 400-frame headless
+# capture with both sinks and the store, `unsupported` on the current wire with canvas_item_add_mesh
+# typed, whose mesh hook log is the census, its rendered reference and a same-build repeat with the
+# mesh oracle on, and an extension-armed reference with the oracle off; under <out>/mesh/). g5d,
+# g5e, g5f and g5g are known but have not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -28,6 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate5"
+MESH_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate5-mesh"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # shellcheck source=lib/gamescope.sh
@@ -37,7 +41,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g5b)
+LANDED_GROUPS=(g5b g5c)
 KNOWN_GROUPS=(g5b g5c g5d g5e g5f g5g)
 
 EXTENSION=""
@@ -108,10 +112,12 @@ if [ ! -x "$BINARY" ]; then
 	exit 1
 fi
 BINARY="$(realpath "$BINARY")"
-if [ ! -f "$FIXTURE_DIR/project.godot" ]; then
-	echo "run-gate5: $FIXTURE_DIR/project.godot is missing" >&2
-	exit 1
-fi
+for project in "$FIXTURE_DIR" "$MESH_FIXTURE_DIR"; do
+	if [ ! -f "$project/project.godot" ]; then
+		echo "run-gate5: $project/project.godot is missing" >&2
+		exit 1
+	fi
+done
 
 GROUPS_RUN=()
 if [ -z "$LEGS_ARG" ]; then
@@ -198,18 +204,27 @@ source "$SCRIPT_DIR/lib/legs.sh"
 
 # A rendered fixture run (reference, reference-repeat, reference-armed): shots step-0..9 at the
 # settle frames and the step log. REFERENCE_ARMED=1 loads the capture extension armed with a
-# full-sink stream and its store. REFERENCE_VARIANT sets RS_FIXTURE_VARIANT. Both are reset after
-# the call.
+# full-sink stream and its store. REFERENCE_VARIANT sets RS_FIXTURE_VARIANT. REFERENCE_FIXTURE_DIR
+# picks the project (default FIXTURE_DIR) and REFERENCE_MESH_ORACLE=1 turns the mesh oracle on
+# (RS_FIXTURE_MESH_LOG=<dir>/meshes.jsonl, fixtures/gate5-mesh only). All are reset after the call.
 REFERENCE_ARMED=0
 REFERENCE_VARIANT=""
+REFERENCE_FIXTURE_DIR=""
+REFERENCE_MESH_ORACLE=0
 run_reference() {
 	local dir="$1" armed="$REFERENCE_ARMED" variant="$REFERENCE_VARIANT"
+	local project="${REFERENCE_FIXTURE_DIR:-$FIXTURE_DIR}" oracle="$REFERENCE_MESH_ORACLE"
 	REFERENCE_ARMED=0
 	REFERENCE_VARIANT=""
+	REFERENCE_FIXTURE_DIR=""
+	REFERENCE_MESH_ORACLE=0
 	mkdir -p "$dir/shots"
 	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl")
 	if [ -n "$variant" ]; then
 		LEG_ENV+=(RS_FIXTURE_VARIANT="$variant")
+	fi
+	if [ "$oracle" = "1" ]; then
+		LEG_ENV+=(RS_FIXTURE_MESH_LOG="$dir/meshes.jsonl")
 	fi
 	if [ "$armed" = "1" ]; then
 		mkdir -p "$dir/evidence"
@@ -219,7 +234,7 @@ run_reference() {
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)
 	fi
-	run_rendered "$dir" "$FIXTURE_DIR"
+	run_rendered "$dir" "$project"
 }
 
 run_g5b() {
@@ -255,9 +270,48 @@ run_g5b() {
 	GS_RUN_DIR=""
 }
 
+run_g5c() {
+	local M="$OUT/mesh"
+	mkdir -p "$M/import"
+	echo "run-gate5: g5c: import"
+	LEG_ENV=()
+	run_headless "$M/import/fixture" none -- mise exec -- godot --headless --path "$MESH_FIXTURE_DIR" --import
+	if [ "$(cat "$M/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate5: import of $MESH_FIXTURE_DIR failed, see $M/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+
+	# capture-mesh: as g5b's capture. On the current wire canvas_item_add_mesh is typed
+	# unsupported; evidence/resources.jsonl's mesh lines are the census and the hook hashes.
+	echo "run-gate5: capture-mesh"
+	CAPTURE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
+	run_capture "$M/capture" "$CAPTURE_QUIT_FRAME" capture
+
+	echo "run-gate5: bringing up private gamescope for g5c rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g5c"
+
+	echo "run-gate5: reference-mesh (oracle on)"
+	REFERENCE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	REFERENCE_MESH_ORACLE=1
+	run_reference "$M/reference"
+	echo "run-gate5: reference-mesh-repeat (oracle on)"
+	REFERENCE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	REFERENCE_MESH_ORACLE=1
+	run_reference "$M/reference-repeat"
+	echo "run-gate5: reference-mesh-armed (extension armed, stream on, oracle off)"
+	REFERENCE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	REFERENCE_ARMED=1
+	run_reference "$M/reference-armed"
+
+	gs_teardown "$OUT/gamescope-g5c"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g5b) run_g5b ;;
+	g5c) run_g5c ;;
 	esac
 done
 

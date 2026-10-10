@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://gate5_mesh.gd" id="1"]
+
+[node name="Gate5Mesh" type="Node"]
+script = ExtResource("1")

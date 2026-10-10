@@ -14,8 +14,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runGate5 } from "./lib/gate5-checks";
+import { readGroups, runGate5 } from "./lib/gate5-checks";
 import type { Gate5Expected } from "./lib/gate5-expected";
+import { type Gate5MeshExpected, runGate5c } from "./lib/gate5c-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -40,6 +41,38 @@ async function main(): Promise<void> {
   ) as Gate5Expected;
 
   const report = await runGate5(out, { expected });
+
+  // G5c: fixtures/gate5-mesh/ is its own fixture with its own expected.json and legs (mesh/ under
+  // the same --out), evaluated by runGate5c and merged into the same report so
+  // `--legs g5b,g5c` gives one gate_passed verdict.
+  const groups = await readGroups(out);
+  if (groups.run.includes("g5c")) {
+    const meshExpected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate5-mesh", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate5MeshExpected;
+    const mesh = await runGate5c(out, meshExpected);
+    report.checks.push(...mesh.checks);
+    Object.assign(report.legs, mesh.legs);
+    report.checkpoints.push(...mesh.checkpoints);
+    report.meshes = {
+      ...(report.meshes ?? {}),
+      [meshExpected.fixture]: mesh.meshes,
+    };
+    report.budgets = {
+      ...(report.budgets ?? {}),
+      [meshExpected.fixture]: mesh.budgets,
+    };
+    report.freshness = {
+      ...(report.freshness ?? {}),
+      [meshExpected.fixture]: mesh.freshness,
+    };
+    // runGate5 counts a run without g5b as failed; with g5b run, g5c's checks join the verdict.
+    report.gate_passed =
+      report.gate_passed && mesh.checks.every((c) => c.status === "pass");
+  }
   await writeFile(
     join(out, "result.json"),
     `${JSON.stringify(report, null, 2)}\n`,
@@ -71,6 +104,18 @@ async function main(): Promise<void> {
         .join(" ")}`,
     );
   }
+  for (const [name, meshes] of Object.entries(report.meshes ?? {}))
+    console.log(
+      `  mesh hook log (${name}), mesh: id, lines, last version, median copy/hash ns: ${Object.entries(
+        meshes as Record<string, Record<string, unknown>>,
+      )
+        .filter(([mesh]) => !mesh.startsWith("_"))
+        .map(
+          ([mesh, m]) =>
+            `${mesh} ${m.id}/${m.lines}/v${m.last_version}/${m.copy_ns_median}/${m.hash_ns_median}`,
+        )
+        .join(" ")}`,
+    );
   for (const [name, table] of Object.entries(report.freshness ?? {}))
     console.log(
       `  fresh regions (${name}), step: ${Object.entries(table)

@@ -171,7 +171,8 @@ class ResourceLog {
   void mesh_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
   // mesh_create_from_surfaces: a new id, version 1, every surface classified (D7) and copied when
   // ok; one refused surface makes the whole entry unsupported with its reason (the first one
-  // found), but every surface's bytes are still kept so later region updates still line up.
+  // found), but every surface's bytes are still kept so later region updates still line up. With
+  // exactly one surface the line carries it as a mesh_add_surface line does (G5c).
   void mesh_create_from_surfaces(const TapContext &ctx, std::uint64_t rid,
                                  const std::vector<MeshSurfaceCopy> &surfaces,
                                  bool omitted = false);

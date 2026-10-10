@@ -335,6 +335,16 @@ int main() {
          has(lines[0], "\"rid\":\"601\",") && has(lines[0], "\"version\":1,") &&
          has(lines[0], "\"kind\":\"mesh\",\"status\":\"ok\""));
   EXPECT(log.mesh_id(601) == 2);
+  // ... and with several surfaces the line names none of them.
+  EXPECT(has(lines[0], "\"hash\":null,") && has(lines[0], "\"surface\":null,"));
+
+  // G5c: a creation with exactly one surface carries it, as a mesh_add_surface line does.
+  log.mesh_create_from_surfaces(main_ctx, 602, {ok_surface("d")});  // id 3
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 1);
+  EXPECT(has(lines[0], "\"op\":\"mesh_create_from_surfaces\",") && has(lines[0], "\"id\":3,") &&
+         has(lines[0], "\"version\":1,") && has(lines[0], "\"hash\":\"d\",") &&
+         has(lines[0], "\"surface\":0,") && has(lines[0], "\"outcome\":\"applied\""));
 
   // omit-op: the line is marked and the registry is left untouched.
   log.mesh_add_surface(main_ctx, 601, ok_surface("c"), true);
