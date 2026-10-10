@@ -357,11 +357,12 @@ the immediate geometry ops, `add_set_transform`, `add_clip_ignore`, `add_mesh` a
 the capture, the receiver and every checker speak it, the recordings keep their `.rs2` names, and
 the receiver's typecheck replays `golden-4/`.
 Self-tests: `scripts/test/self-test-rs2.ts` (TS decoder against the /2 golden vectors and, since
-G4e1 and G5w, against `golden-3/` and `golden-4/`, implemented in `render-stream-2.ts` itself
-behind a `version` parameter rather than forked modules; since G5d the parameter defaults to 4),
-`scripts/test/self-test-gate0.ts` (checker and classifier on synthetic evidence) and
-`python3 experiments/render-stream/protocol/golden-2/make_golden.py --check` (plus `golden-3/`'s
-and `golden-4/`'s);
+G4e1, G5w and G55w, against `golden-3/`, `golden-4/` and `golden-5/`, implemented in
+`render-stream-2.ts` itself behind a `version` parameter rather than forked modules; since G5d the
+parameter defaults to 4 -- /5 decoding is exercised only against `golden-5/`, since the capture and
+receiver do not speak it until G55d), `scripts/test/self-test-gate0.ts` (checker and classifier on
+synthetic evidence) and `python3 experiments/render-stream/protocol/golden-2/make_golden.py
+--check` (plus `golden-3/`'s, `golden-4/`'s and `golden-5/`'s);
 the frozen /0 and /1 history stays checked by `scripts/test/self-test-rs0.ts`, `self-test-rs1.ts`
 and both older `make_golden.py --check`.
 
@@ -3389,6 +3390,53 @@ classify `unsupported`: `canvas_item_set_material` / `unsupported-state` on exac
   predictions already sit in `expected.json`.
 - That any shader or material reaches a receiver: that is G55d/G55e.
 - Exactness on another GPU or driver: measured on one RTX 2060 under GLES3.
+
+## Gate 5.5w result (2026-10-10)
+
+G55w ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55w") passes, rebased onto G5d
+(render-stream/4 end to end): `build-capture.sh` **14/14** ctests (the new `rs5_codec` included),
+all four golden generators pass `--check` (`golden-2` 47, `golden-3` 37, `golden-4` 51, `golden-5`
+62 outputs match), the TS self-tests (`self-test-rs0.ts`, `-rs1.ts`, `-rs2.ts` — the last covering
+golden-2/3/4/5) and both GDScript self-tests (`codec2_selftest.gd` over golden-2/3/4/5,
+`applier2_selftest.gd` confirming no golden-4 regression — it still reproduces golden-4 state 8's
+known engine-invalid `add_triangle_array` as a logged engine error, pre-existing since G5d, not a
+regression). Gate 0 is 19/19 (`gate0/20261010T181332Z/`). Gate 4's g4a,g4e legs are 64/64 real
+checks in `gate4/20261010T181941Z/` (g4b,g4c,g4d,g4f correctly not run). Gate 5's landed groups
+(g5b,g5c,g5d) are 49/49 in `gate5/20261010T182749Z/`. Nothing on the capture, the wire or the
+receiver's /2, /3 or /4 behavior changed.
+
+What landed: render-stream/5 ([protocol/render-stream-5.md](protocol/render-stream-5.md)), a
+version-parameterized extension of `rs2_codec.*`/`rs2_diff.*` (a shader table and a material table
+each with their own id counter, the `f64` block for parameter values, a 10-float canvas, three new
+item fields) exactly as D1/Q4 describe, plus `render-stream-2.ts`/`rs2_decoder.gd` threading a
+`2|3|4|5` version parameter throughout (the module-wide default moved from 3 to 4 under this same
+increment, since G5d landed mid-way through it and both changes touch the same default — D17), a
+new `rs5_codec_test.cpp`, and one new file per side for the shader payload format
+(`scripts/lib/render-stream-shader.ts`, `receiver/rs_shader_payload.gd`, mirroring GRT1/GRM1 as
+GRP1). `Transaction`/`Snapshot` gained their own V5 fields mirroring `Session::version`; V2
+through V4 stay byte-identical in transaction shape.
+
+`golden-5/` holds Q4's predicted four new states (12-15), 62 files. Its states derived from
+golden-4's state 8 (12 onward) patch that state's `add_triangle_array` `count` from 3 to 1 — a
+local fix, in the Python generator and in a `rs5_codec_test.cpp`-local wrapper only, never in
+`rs2_golden_states.h` or `rs4_codec_test.cpp` — since G5d's own landing found that exact count
+engine-invalid (`count × 3` must not exceed the index count, `renderer_canvas_render.h:144`): see
+render-stream-5.md's "Golden vectors" and "As built" for the rationale. The GDScript `Schema`
+class's shader/material/param-entry checks needed a `code` field threaded through `fail()` and its
+helpers to match render-stream-2.ts's self-coded (not generic `meta-schema`) error codes for those
+three entries (memory: rs-schema-self-coded-errors).
+
+### What G55w does not prove
+
+- That a receiver draws any of this, or that capture/the live runners speak /5 at all: gate 0, gate
+  4 and gate 5 run entirely on /2 through /4, unchanged by construction. Switching capture, the
+  receiver or any runner to /5 is G55d's job.
+- That the shader/material tables or GRP1 match what the engine actually emits for a real
+  `ShaderMaterial`/`CanvasItemMaterial`: G55w's encoder is hand-built from golden-5's own
+  generator, not driven by a captured mirror. G55a's calibrator 8 and G55b/G55c's fixtures are the
+  first contact with a live shader/material.
+- Pixel exactness, budgets, or any rendering at all: /5 carries tables and resources; nothing
+  paints yet.
 
 ## Scratch verification (2026-10-08)
 

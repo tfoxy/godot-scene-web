@@ -1,0 +1,589 @@
+{
+  "schema": "render-stream-5-decoded/1",
+  "magic": "475253350d0a1a0a",
+  "records": [
+    {
+      "offset": 8,
+      "byte_length": 4332,
+      "sha256": "1dbd9ae78f6ed0552647f88fe36c78c855c7d326d49a8812d2471a310e63b470",
+      "meta": {
+        "type": "session",
+        "protocol": "render-stream/5",
+        "session_id": "44444444444444444444444444444444",
+        "stream": {
+          "stream_id": "44444444444444444444444444444444",
+          "connection": null,
+          "transport": "file",
+          "encoding": "full"
+        },
+        "engine": {
+          "version_string": "Godot Engine v4.5.1.stable.official",
+          "sha256": "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
+          "display_server": "headless",
+          "rendering_driver": "opengl3",
+          "rendering_method": "gl_compatibility"
+        },
+        "capture": {
+          "calibrator_version": 8,
+          "hooks_planned": [
+            "canvas_create",
+            "canvas_item_add_circle",
+            "canvas_item_add_line",
+            "canvas_item_add_mesh",
+            "canvas_item_add_msdf_texture_rect_region",
+            "canvas_item_add_multimesh",
+            "canvas_item_add_nine_patch",
+            "canvas_item_add_polygon",
+            "canvas_item_add_polyline",
+            "canvas_item_add_primitive",
+            "canvas_item_add_rect",
+            "canvas_item_add_set_transform",
+            "canvas_item_add_texture_rect",
+            "canvas_item_add_texture_rect_region",
+            "canvas_item_add_triangle_array",
+            "canvas_item_clear",
+            "canvas_item_create",
+            "canvas_item_set_clip",
+            "canvas_item_set_custom_rect",
+            "canvas_item_set_draw_index",
+            "canvas_item_set_material",
+            "canvas_item_set_modulate",
+            "canvas_item_set_parent",
+            "canvas_item_set_self_modulate",
+            "canvas_item_set_transform",
+            "canvas_item_set_visibility_layer",
+            "canvas_item_set_visible",
+            "canvas_item_set_z_index",
+            "free",
+            "material_create",
+            "material_create_from_shader",
+            "material_set_param",
+            "material_set_shader",
+            "mesh_add_surface",
+            "mesh_clear",
+            "mesh_create",
+            "mesh_set_custom_aabb",
+            "mesh_surface_update_attribute_region",
+            "mesh_surface_update_vertex_region",
+            "shader_create",
+            "shader_create_from_code",
+            "shader_set_code",
+            "shader_set_default_texture_parameter",
+            "texture_2d_create",
+            "texture_2d_update",
+            "viewport_attach_canvas",
+            "viewport_set_canvas_transform"
+          ],
+          "hooks_omitted": []
+        },
+        "viewport": {
+          "canvas_cull_mask": 4294967295,
+          "root_canvas": 1,
+          "logical_size": [
+            640,
+            360
+          ],
+          "stretch": {
+            "mode": "disabled",
+            "aspect": "ignore",
+            "scale_mode": "fractional"
+          },
+          "stretch_applied_by": "receiver",
+          "root_size_policy": "observe",
+          "host_size_status": "match",
+          "host_window_size": [
+            640,
+            360
+          ]
+        },
+        "resources": {
+          "hash": "sha256",
+          "payloads": [
+            "render-stream-mesh/1",
+            "render-stream-shader/1",
+            "render-stream-texture/1"
+          ],
+          "delivery": "out-of-band",
+          "inline_max_bytes": 0,
+          "max_payload_bytes": 16777216,
+          "permitted_formats": [
+            "L8",
+            "LA8",
+            "R8",
+            "RG8",
+            "RGB8",
+            "RGBA8"
+          ],
+          "fetch": "directory",
+          "http_path": null,
+          "auth": "none"
+        },
+        "materials": {
+          "shader_policy": "params"
+        },
+        "features": {
+          "ops": [
+            "add_circle",
+            "add_clip_ignore",
+            "add_line",
+            "add_mesh",
+            "add_msdf_texture_rect_region",
+            "add_multiline",
+            "add_nine_patch",
+            "add_polygon",
+            "add_polyline",
+            "add_primitive",
+            "add_rect",
+            "add_set_transform",
+            "add_texture_rect",
+            "add_texture_rect_region",
+            "add_triangle_array"
+          ],
+          "item_state": [
+            "behind",
+            "children",
+            "clip",
+            "custom_rect",
+            "draw_index",
+            "instance_params",
+            "material",
+            "modulate",
+            "parent",
+            "self_modulate",
+            "texture_filter",
+            "texture_repeat",
+            "transform",
+            "use_parent_material",
+            "visibility_layer",
+            "visible",
+            "z_index",
+            "z_relative"
+          ],
+          "canvas_state": [
+            "modulate",
+            "transform"
+          ],
+          "resources": [
+            "material",
+            "mesh",
+            "shader",
+            "texture_2d",
+            "texture_2d_placeholder"
+          ],
+          "unsupported_resources": [],
+          "observed_unsupported_ops": [
+            "canvas_item_add_animation_slice",
+            "canvas_item_add_lcd_texture_rect_region",
+            "canvas_item_add_multimesh",
+            "canvas_item_add_particles",
+            "canvas_item_attach_skeleton",
+            "canvas_light_attach_to_canvas"
+          ],
+          "unobserved": [
+            "canvas_item_set_canvas_group_mode",
+            "canvas_item_set_copy_to_backbuffer",
+            "canvas_item_set_light_mask",
+            "canvas_item_set_sort_children_by_y",
+            "canvas_item_set_visibility_notifier",
+            "canvas_texture_set_shading_parameters",
+            "global_shader_parameter_add",
+            "global_shader_parameter_remove",
+            "global_shader_parameter_set",
+            "global_shader_parameter_set_override",
+            "material_set_next_pass",
+            "material_set_render_priority",
+            "shader_set_path_hint",
+            "texture_set_size_override",
+            "viewport_remove_canvas",
+            "viewport_set_canvas_cull_mask",
+            "viewport_set_global_canvas_transform",
+            "viewport_set_snap_2d_transforms_to_pixel",
+            "viewport_set_snap_2d_vertices_to_pixel"
+          ],
+          "publication": "snapshot-or-patch"
+        },
+        "sabotage": null,
+        "blocks": [
+          {
+            "name": "clear_color",
+            "type": "f32",
+            "count": 4
+          },
+          {
+            "name": "root_canvas_xform",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "host_visible_rect",
+            "type": "f32",
+            "count": 4
+          },
+          {
+            "name": "host_final_xform",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "content_scale_factor",
+            "type": "f32",
+            "count": 1
+          }
+        ]
+      },
+      "blocks": [
+        [
+          0.25,
+          0.25,
+          0.5,
+          1.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          640.0,
+          360.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0
+        ]
+      ]
+    },
+    {
+      "offset": 4340,
+      "byte_length": 2916,
+      "sha256": "f24e0552cfdb3bc15a19507eabec8d7b0906a8b0031db03113a05ab246cff6ea",
+      "meta": {
+        "type": "transaction",
+        "seq": 1,
+        "frame": 1,
+        "encoding": "full",
+        "base_seq": null,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "items": [
+              1,
+              2
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 10,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": 1,
+            "use_parent_material": false,
+            "instance_params": [],
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": 2,
+            "use_parent_material": false,
+            "instance_params": [],
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 8
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mode": "canvas_item",
+            "source": "payload",
+            "hash": "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17",
+            "payload_bytes": 203,
+            "builtin": {
+              "kind": "canvas_item_material",
+              "blend_mode": "add",
+              "light_mode": "normal",
+              "particles_animation": false
+            },
+            "uses": [],
+            "default_textures": []
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mode": "canvas_item",
+            "source": "withheld",
+            "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+            "payload_bytes": 157,
+            "builtin": null,
+            "uses": [],
+            "default_textures": []
+          }
+        ],
+        "materials": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "shader": 1,
+            "params": [
+              {
+                "name": "particles_anim_h_frames",
+                "type": "int",
+                "n": 1,
+                "tex": null,
+                "f": 0
+              },
+              {
+                "name": "particles_anim_loop",
+                "type": "bool",
+                "n": 1,
+                "tex": null,
+                "f": 1
+              },
+              {
+                "name": "particles_anim_v_frames",
+                "type": "int",
+                "n": 1,
+                "tex": null,
+                "f": 2
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "shader": 2,
+            "params": [
+              {
+                "name": "tint",
+                "type": "color",
+                "n": 1,
+                "tex": null,
+                "f": 3
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 36
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 16
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 7
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          200.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          20.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          0.25,
+          0.75,
+          0.25,
+          1.0,
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          0.25,
+          0.75,
+          0.5,
+          1.0
+        ],
+        [],
+        [],
+        [
+          1.0,
+          0.0,
+          1.0,
+          0.2,
+          0.4,
+          0.6,
+          1.0
+        ]
+      ]
+    },
+    {
+      "offset": 7256,
+      "byte_length": 282,
+      "sha256": "e0085099d88aa55a87b303245e4368302d7b9144c52a9649f2d5cc1cc44f9833",
+      "meta": {
+        "type": "end",
+        "transactions": 1,
+        "reason": "shutdown",
+        "stats": {
+          "bytes_total": 7256,
+          "encode_ns_total": 250000,
+          "snapshot_ns_total": 40000,
+          "diff_ns_total": 0,
+          "max_record_bytes": 4332,
+          "full_transactions": 1,
+          "patch_transactions": 0,
+          "resource_records": 0,
+          "resource_bytes": 0
+        },
+        "blocks": []
+      },
+      "blocks": []
+    }
+  ]
+}

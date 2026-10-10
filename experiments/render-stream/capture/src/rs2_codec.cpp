@@ -36,19 +36,33 @@ void append_i32le(std::string &out, std::int32_t value) {
   append_u32le(out, static_cast<std::uint32_t>(value));
 }
 
+void append_u64le(std::string &out, std::uint64_t value) {
+  for (int i = 0; i < 8; ++i) {
+    out.push_back(static_cast<char>((value >> (8 * i)) & 0xFF));
+  }
+}
+
+// render-stream-5.md "Block type f64": little-endian IEEE 754 binary64, 8 bytes per value.
+void append_f64le(std::string &out, double value) {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  append_u64le(out, bits);
+}
+
 std::vector<std::uint8_t> to_bytes(const std::string &s) {
   return std::vector<std::uint8_t>(s.begin(), s.end());
 }
 
 // One block's payload, tagged by type (render-stream-2.md "Record framing: the u8 block type";
-// render-stream-4.md "Block type i32").
-enum class BlockKind { F32, U8, I32 };
+// render-stream-4.md "Block type i32"; render-stream-5.md "Block type f64").
+enum class BlockKind { F32, U8, I32, F64 };
 
 struct BlockPayload {
   BlockKind kind = BlockKind::F32;
   std::vector<float> floats;          // F32
   std::vector<std::uint8_t> bytes;    // U8
   std::vector<std::int32_t> ints;     // I32
+  std::vector<double> doubles;        // F64
 };
 
 BlockPayload f32_payload(std::vector<float> values) {
@@ -72,6 +86,13 @@ BlockPayload i32_payload(std::vector<std::int32_t> values) {
   return p;
 }
 
+BlockPayload f64_payload(std::vector<double> values) {
+  BlockPayload p;
+  p.kind = BlockKind::F64;
+  p.doubles = std::move(values);
+  return p;
+}
+
 std::vector<std::uint8_t> assemble_record(const std::string &meta,
                                            const std::vector<BlockPayload> &blocks) {
   std::string body;
@@ -87,6 +108,14 @@ std::vector<std::uint8_t> assemble_record(const std::string &meta,
       payload.reserve(block.ints.size() * 4);
       for (std::int32_t value : block.ints) {
         append_i32le(payload, value);
+      }
+      append_u32le(body, static_cast<std::uint32_t>(payload.size()));
+      body += payload;
+    } else if (block.kind == BlockKind::F64) {
+      std::string payload;
+      payload.reserve(block.doubles.size() * 8);
+      for (double value : block.doubles) {
+        append_f64le(payload, value);
       }
       append_u32le(body, static_cast<std::uint32_t>(payload.size()));
       body += payload;
@@ -285,6 +314,129 @@ void append_texture_entry(std::string &out, const TextureEntry &t) {
   out += "}";
 }
 
+// render-stream-5.md "Material table": appends one <param> object, pushing its floats onto
+// `param_f64` and recording the resulting offset as "f" -- the same running-offset pattern
+// cmd_f32/mesh_f32 use, but over param_f64 and across BOTH materials (table order) and items
+// (item order), since "f" is one running offset shared by the whole transaction
+// (gate5_5-design.md D8 "param-offset").
+void append_param_entry(std::string &out, const Param &p, std::vector<double> &param_f64) {
+  out += "{\"name\":";
+  append_json_string(out, p.name);
+  out += ",\"type\":";
+  append_json_string(out, to_wire(p.type));
+  out += ",\"n\":";
+  append_json_int(out, p.n);
+  out += ",\"tex\":";
+  if (p.has_tex) {
+    append_json_int(out, p.tex);
+  } else {
+    out += "null";
+  }
+  out += ",\"f\":";
+  append_json_int(out, param_f64.size());
+  out += "}";
+  param_f64.insert(param_f64.end(), p.floats.begin(), p.floats.end());
+}
+
+// render-stream-5.md "Shader table".
+void append_shader_entry(std::string &out, const ShaderEntry &s) {
+  out += "{\"id\":";
+  append_json_int(out, s.id);
+  out += ",\"origin\":\"created\"";
+  out += ",\"status\":";
+  append_json_string(out, to_wire(s.status));
+  out += ",\"reason\":";
+  if (s.has_reason) {
+    append_json_string(out, to_wire(s.reason));
+  } else {
+    out += "null";
+  }
+  out += ",\"version\":";
+  append_json_int(out, s.version);
+  out += ",\"mode\":";
+  if (s.has_mode) {
+    append_json_string(out, to_wire(s.mode));
+  } else {
+    out += "null";
+  }
+  out += ",\"source\":";
+  if (s.has_source) {
+    append_json_string(out, to_wire(s.source));
+  } else {
+    out += "null";
+  }
+  out += ",\"hash\":";
+  append_json_optional_string(out, s.has_hash, s.hash);
+  out += ",\"payload_bytes\":";
+  append_json_int(out, s.payload_bytes);
+  out += ",\"builtin\":";
+  if (s.has_builtin) {
+    out += "{\"kind\":\"canvas_item_material\",\"blend_mode\":";
+    append_json_string(out, to_wire(s.builtin.blend_mode));
+    out += ",\"light_mode\":";
+    append_json_string(out, to_wire(s.builtin.light_mode));
+    out += ",\"particles_animation\":";
+    append_json_bool(out, s.builtin.particles_animation);
+    out += "}";
+  } else {
+    out += "null";
+  }
+  out += ",\"uses\":[";
+  for (std::size_t i = 0; i < s.uses.size(); ++i) {
+    if (i != 0) {
+      out += ",";
+    }
+    append_json_string(out, to_wire(s.uses[i]));
+  }
+  out += "]";
+  out += ",\"default_textures\":[";
+  for (std::size_t i = 0; i < s.default_textures.size(); ++i) {
+    if (i != 0) {
+      out += ",";
+    }
+    const DefaultTextureRef &d = s.default_textures[i];
+    out += "{\"name\":";
+    append_json_string(out, d.name);
+    out += ",\"index\":";
+    append_json_int(out, d.index);
+    out += ",\"tex\":";
+    append_json_int(out, d.tex);
+    out += "}";
+  }
+  out += "]}";
+}
+
+// render-stream-5.md "Material table".
+void append_material_entry(std::string &out, const MaterialEntry &m, std::vector<double> &param_f64) {
+  out += "{\"id\":";
+  append_json_int(out, m.id);
+  out += ",\"origin\":\"created\"";
+  out += ",\"status\":";
+  append_json_string(out, to_wire(m.status));
+  out += ",\"reason\":";
+  if (m.has_reason) {
+    append_json_string(out, to_wire(m.reason));
+  } else {
+    out += "null";
+  }
+  out += ",\"version\":";
+  append_json_int(out, m.version);
+  out += ",\"shader\":";
+  if (m.has_shader) {
+    append_json_int(out, m.shader);
+  } else {
+    out += "null";
+  }
+  out += ",\"params\":[";
+  for (std::size_t i = 0; i < m.params.size(); ++i) {
+    if (i != 0) {
+      out += ",";
+    }
+    append_param_entry(out, m.params[i], param_f64);
+  }
+  out += "]}";
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> magic() {
@@ -292,6 +444,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V5) {
+    return std::vector<std::uint8_t>(kMagicV5.begin(), kMagicV5.end());
+  }
   if (version == ProtocolVersion::V4) {
     return std::vector<std::uint8_t>(kMagicV4.begin(), kMagicV4.end());
   }
@@ -303,9 +458,12 @@ std::vector<std::uint8_t> magic(ProtocolVersion version) {
 std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
-  const char *protocol = session.version == ProtocolVersion::V4
-                              ? kProtocolV4
-                              : (session.version == ProtocolVersion::V3 ? kProtocolV3 : kProtocol);
+  const char *protocol = session.version == ProtocolVersion::V5
+                              ? kProtocolV5
+                              : (session.version == ProtocolVersion::V4
+                                     ? kProtocolV4
+                                     : (session.version == ProtocolVersion::V3 ? kProtocolV3
+                                                                                : kProtocol));
   append_json_string(m, protocol);
   m += ",\"session_id\":";
   append_json_string(m, session.session_id);
@@ -370,8 +528,16 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_int(m, session.viewport.host_window_size[1]);
   m += "]}";
 
+  const bool is_v5 = session.version == ProtocolVersion::V5;
+  const bool is_v4_or_later = is_v5 || session.version == ProtocolVersion::V4;
+
   m += ",\"resources\":{\"hash\":\"sha256\",";
-  if (session.version == ProtocolVersion::V4) {
+  if (is_v5) {
+    // render-stream-5.md "Session": "payloads" gains "render-stream-shader/1", sorted ascending:
+    // render-stream-mesh/1, render-stream-shader/1, render-stream-texture/1.
+    m += "\"payloads\":";
+    append_json_string_array(m, {kMeshPayloadSchema, kShaderPayloadSchema, kPayloadSchema});
+  } else if (is_v4_or_later) {
     // render-stream-4.md "Resources": "payload" (one schema string) becomes "payloads" (a sorted
     // array): the mesh and texture payload formats share one resource policy.
     m += "\"payloads\":";
@@ -396,10 +562,22 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string(m, to_wire(session.resources.auth));
   m += "}";
 
+  if (is_v5) {
+    // render-stream-5.md "Session": a new "materials" key, right after "resources".
+    m += ",\"materials\":{\"shader_policy\":";
+    append_json_string(m, to_wire(session.materials.shader_policy));
+    m += "}";
+  }
+
   m += ",\"features\":{\"ops\":";
   append_json_string_array(m, session.features.ops);
   m += ",\"item_state\":";
   append_json_string_array(m, session.features.item_state);
+  if (is_v5) {
+    // render-stream-5.md "Session": a new "canvas_state" key, right after "item_state".
+    m += ",\"canvas_state\":";
+    append_json_string_array(m, session.features.canvas_state);
+  }
   m += ",\"resources\":";
   append_json_string_array(m, session.features.resources);
   m += ",\"unsupported_resources\":[";
@@ -510,7 +688,8 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   m += ",\"default_texture_repeat\":";
   append_json_string(m, to_wire(transaction.default_texture_repeat));
 
-  const bool is_v4 = transaction.version == ProtocolVersion::V4;
+  const bool is_v5 = transaction.version == ProtocolVersion::V5;
+  const bool is_v4 = is_v5 || transaction.version == ProtocolVersion::V4;
 
   m += ",\"removed_canvases\":";
   append_json_id_array(m, transaction.removed_canvases);
@@ -521,6 +700,14 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   if (is_v4) {
     m += ",\"removed_meshes\":";
     append_json_id_array(m, transaction.removed_meshes);
+  }
+  if (is_v5) {
+    // render-stream-5.md "Shader table"/"Material table": removed_shaders/removed_materials
+    // follow removed_meshes, mirroring the mesh table's own position after removed_textures.
+    m += ",\"removed_shaders\":";
+    append_json_id_array(m, transaction.removed_shaders);
+    m += ",\"removed_materials\":";
+    append_json_id_array(m, transaction.removed_materials);
   }
 
   std::vector<float> canvas_f32;
@@ -546,126 +733,172 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     append_json_id_array(m, canvas.items);
     m += "}";
     canvas_f32.insert(canvas_f32.end(), canvas.xform.begin(), canvas.xform.end());
+    if (is_v5) {
+      // render-stream-5.md "Canvas": canvas_f32 grows from 6 to 10 floats per canvas (xform 6,
+      // modulate 4).
+      canvas_f32.insert(canvas_f32.end(), canvas.modulate.begin(), canvas.modulate.end());
+    }
   }
   m += "]";
 
   std::vector<float> item_f32;
   std::vector<float> cmd_f32;
   std::vector<std::int32_t> cmd_i32;  // new at /4: add_triangle_array's indices
-  m += ",\"items\":[";
+  // render-stream-5.md "Material table" (D8 "param-offset"): "f" is a running offset into
+  // param_f64 over MATERIALS IN TABLE ORDER FIRST, then items in item order -- so `materials_json`
+  // is built (and claims its floats) before the items loop below, even though "materials" is the
+  // LAST key in the transaction's JSON (after "shaders"). `m` only gains the pieces built so far
+  // (through "canvases"); every later piece is assembled into its own buffer and spliced into `m`
+  // in true JSON key order once all of them (and their floats) are known.
+  std::vector<double> param_f64;
+  std::string materials_json;
+  if (is_v5) {
+    materials_json += ",\"materials\":[";
+    for (std::size_t i = 0; i < transaction.materials.size(); ++i) {
+      if (i != 0) {
+        materials_json += ",";
+      }
+      append_material_entry(materials_json, transaction.materials[i], param_f64);
+    }
+    materials_json += "]";
+  }
+  std::string items_json;
+  items_json += ",\"items\":[";
   for (std::size_t i = 0; i < transaction.items.size(); ++i) {
     if (i != 0) {
-      m += ",";
+      items_json += ",";
     }
     const ItemEntry &entry = transaction.items[i];
     const ItemState &item = entry.state;
-    m += "{\"id\":";
-    append_json_int(m, item.id);
-    m += ",\"origin\":";
-    append_json_string(m, to_wire(item.origin));
-    m += ",\"parent\":";
+    items_json += "{\"id\":";
+    append_json_int(items_json, item.id);
+    items_json += ",\"origin\":";
+    append_json_string(items_json, to_wire(item.origin));
+    items_json += ",\"parent\":";
     if (item.parent.kind == ParentKind::None) {
-      m += "null";
+      items_json += "null";
     } else {
-      m += "{\"kind\":";
-      append_json_string(m, to_wire(item.parent.kind));
-      m += ",\"id\":";
-      append_json_int(m, item.parent.id);
-      m += "}";
+      items_json += "{\"kind\":";
+      append_json_string(items_json, to_wire(item.parent.kind));
+      items_json += ",\"id\":";
+      append_json_int(items_json, item.parent.id);
+      items_json += "}";
     }
-    m += ",\"children\":";
-    append_json_id_array(m, item.children);
-    m += ",\"visible\":";
-    append_json_bool(m, item.visible);
-    m += ",\"draw_index\":";
-    append_json_int(m, item.draw_index);
-    m += ",\"z_index\":";
-    append_json_int(m, item.z_index);
-    m += ",\"z_relative\":";
-    append_json_bool(m, item.z_relative);
-    m += ",\"behind\":";
-    append_json_bool(m, item.behind);
-    m += ",\"clip\":";
-    append_json_bool(m, item.clip);
-    m += ",\"custom_rect\":";
-    append_json_bool(m, item.custom_rect);
-    m += ",\"visibility_layer\":";
-    append_json_int(m, item.visibility_layer);
-    m += ",\"texture_filter\":";
-    append_json_string(m, to_wire(item.texture_filter));
-    m += ",\"texture_repeat\":";
-    append_json_string(m, to_wire(item.texture_repeat));
-    m += ",\"content_version\":";
-    append_json_int(m, item.content_version);
+    items_json += ",\"children\":";
+    append_json_id_array(items_json, item.children);
+    items_json += ",\"visible\":";
+    append_json_bool(items_json, item.visible);
+    items_json += ",\"draw_index\":";
+    append_json_int(items_json, item.draw_index);
+    items_json += ",\"z_index\":";
+    append_json_int(items_json, item.z_index);
+    items_json += ",\"z_relative\":";
+    append_json_bool(items_json, item.z_relative);
+    items_json += ",\"behind\":";
+    append_json_bool(items_json, item.behind);
+    items_json += ",\"clip\":";
+    append_json_bool(items_json, item.clip);
+    items_json += ",\"custom_rect\":";
+    append_json_bool(items_json, item.custom_rect);
+    items_json += ",\"visibility_layer\":";
+    append_json_int(items_json, item.visibility_layer);
+    items_json += ",\"texture_filter\":";
+    append_json_string(items_json, to_wire(item.texture_filter));
+    items_json += ",\"texture_repeat\":";
+    append_json_string(items_json, to_wire(item.texture_repeat));
+    if (is_v5) {
+      // render-stream-5.md "Item": material, use_parent_material, instance_params -- in that
+      // order, before content_version. instance_params' floats continue the SAME param_f64 the
+      // material table above already claimed (gate5_5-design.md D8 "param-offset": materials in
+      // table order, then items in item order).
+      items_json += ",\"material\":";
+      if (item.has_material) {
+        append_json_int(items_json, item.material);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"use_parent_material\":";
+      append_json_bool(items_json, item.use_parent_material);
+      items_json += ",\"instance_params\":[";
+      for (std::size_t p = 0; p < item.instance_params.size(); ++p) {
+        if (p != 0) {
+          items_json += ",";
+        }
+        append_param_entry(items_json, item.instance_params[p], param_f64);
+      }
+      items_json += "]";
+    }
+    items_json += ",\"content_version\":";
+    append_json_int(items_json, item.content_version);
 
-    m += ",\"commands\":";
+    items_json += ",\"commands\":";
     if (entry.commands_null) {
-      m += "null";
+      items_json += "null";
     } else {
-      m += "[";
+      items_json += "[";
       for (std::size_t c = 0; c < item.commands.size(); ++c) {
         if (c != 0) {
-          m += ",";
+          items_json += ",";
         }
         const Command &command = item.commands[c];
         switch (command.kind) {
         case CommandKind::AddRect:
-          m += "{\"op\":\"add_rect\",\"aa\":";
-          append_json_bool(m, command.antialiased);
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += "{\"op\":\"add_rect\",\"aa\":";
+          append_json_bool(items_json, command.antialiased);
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
           cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
           break;
         case CommandKind::AddTextureRect:
-          m += "{\"op\":\"add_texture_rect\",\"tex\":";
+          items_json += "{\"op\":\"add_texture_rect\",\"tex\":";
           if (command.has_tex) {
-            append_json_int(m, command.tex);
+            append_json_int(items_json, command.tex);
           } else {
-            m += "null";
+            items_json += "null";
           }
-          m += ",\"tile\":";
-          append_json_bool(m, command.tile);
-          m += ",\"transpose\":";
-          append_json_bool(m, command.transpose);
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += ",\"tile\":";
+          append_json_bool(items_json, command.tile);
+          items_json += ",\"transpose\":";
+          append_json_bool(items_json, command.transpose);
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
           cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
           break;
         case CommandKind::AddTextureRectRegion:
-          m += "{\"op\":\"add_texture_rect_region\",\"tex\":";
+          items_json += "{\"op\":\"add_texture_rect_region\",\"tex\":";
           if (command.has_tex) {
-            append_json_int(m, command.tex);
+            append_json_int(items_json, command.tex);
           } else {
-            m += "null";
+            items_json += "null";
           }
-          m += ",\"transpose\":";
-          append_json_bool(m, command.transpose);
-          m += ",\"clip_uv\":";
-          append_json_bool(m, command.clip_uv);
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += ",\"transpose\":";
+          append_json_bool(items_json, command.transpose);
+          items_json += ",\"clip_uv\":";
+          append_json_bool(items_json, command.clip_uv);
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
           cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
           cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
           break;
         case CommandKind::AddMsdfTextureRectRegion:
           // render-stream-3.md "Command": 14 floats (rect 4, src 4, modulate 4, px_range, scale).
-          m += "{\"op\":\"add_msdf_texture_rect_region\",\"tex\":";
+          items_json += "{\"op\":\"add_msdf_texture_rect_region\",\"tex\":";
           if (command.has_tex) {
-            append_json_int(m, command.tex);
+            append_json_int(items_json, command.tex);
           } else {
-            m += "null";
+            items_json += "null";
           }
-          m += ",\"outline\":";
-          append_json_int(m, command.msdf_outline);
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += ",\"outline\":";
+          append_json_int(items_json, command.msdf_outline);
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
           cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
           cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
@@ -674,11 +907,11 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
           break;
         case CommandKind::AddLine:
           // render-stream-4.md "Command": 9 floats (from 2, to 2, colour 4, width 1).
-          m += "{\"op\":\"add_line\",\"aa\":";
-          append_json_bool(m, command.antialiased);
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += "{\"op\":\"add_line\",\"aa\":";
+          append_json_bool(items_json, command.antialiased);
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.line_from.begin(), command.line_from.end());
           cmd_f32.insert(cmd_f32.end(), command.line_to.begin(), command.line_to.end());
           cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
@@ -687,16 +920,16 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
         case CommandKind::AddPolyline:
         case CommandKind::AddMultiline:
           // render-stream-4.md "Command": width 1, points 2n, colours 4 x colors.size().
-          m += command.kind == CommandKind::AddPolyline ? "{\"op\":\"add_polyline\",\"aa\":"
+          items_json += command.kind == CommandKind::AddPolyline ? "{\"op\":\"add_polyline\",\"aa\":"
                                                           : "{\"op\":\"add_multiline\",\"aa\":";
-          append_json_bool(m, command.antialiased);
-          m += ",\"n\":";
-          append_json_int(m, command.points.size());
-          m += ",\"colors\":";
-          append_json_int(m, command.colors.size());
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          append_json_bool(items_json, command.antialiased);
+          items_json += ",\"n\":";
+          append_json_int(items_json, command.points.size());
+          items_json += ",\"colors\":";
+          append_json_int(items_json, command.colors.size());
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.push_back(command.width);
           for (const Point2 &p : command.points) {
             cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
@@ -707,11 +940,11 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
           break;
         case CommandKind::AddCircle:
           // render-stream-4.md "Command": 7 floats (position 2, radius 1, colour 4).
-          m += "{\"op\":\"add_circle\",\"aa\":";
-          append_json_bool(m, command.antialiased);
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += "{\"op\":\"add_circle\",\"aa\":";
+          append_json_bool(items_json, command.antialiased);
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.circle_position.begin(), command.circle_position.end());
           cmd_f32.push_back(command.circle_radius);
           cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
@@ -719,22 +952,22 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
         case CommandKind::AddPrimitive:
         case CommandKind::AddPolygon:
           // render-stream-4.md "Command": points 2n, colours 4 x colors.size(), uvs 2 x uvs.size().
-          m += command.kind == CommandKind::AddPrimitive ? "{\"op\":\"add_primitive\",\"tex\":"
+          items_json += command.kind == CommandKind::AddPrimitive ? "{\"op\":\"add_primitive\",\"tex\":"
                                                             : "{\"op\":\"add_polygon\",\"tex\":";
           if (command.has_tex) {
-            append_json_int(m, command.tex);
+            append_json_int(items_json, command.tex);
           } else {
-            m += "null";
+            items_json += "null";
           }
-          m += ",\"n\":";
-          append_json_int(m, command.points.size());
-          m += ",\"colors\":";
-          append_json_int(m, command.colors.size());
-          m += ",\"uvs\":";
-          append_json_int(m, command.uvs.size());
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += ",\"n\":";
+          append_json_int(items_json, command.points.size());
+          items_json += ",\"colors\":";
+          append_json_int(items_json, command.colors.size());
+          items_json += ",\"uvs\":";
+          append_json_int(items_json, command.uvs.size());
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           for (const Point2 &p : command.points) {
             cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
           }
@@ -747,27 +980,27 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
           break;
         case CommandKind::AddTriangleArray:
           // render-stream-4.md "Command": cmd_f32 as add_primitive; indices (int32) in cmd_i32.
-          m += "{\"op\":\"add_triangle_array\",\"tex\":";
+          items_json += "{\"op\":\"add_triangle_array\",\"tex\":";
           if (command.has_tex) {
-            append_json_int(m, command.tex);
+            append_json_int(items_json, command.tex);
           } else {
-            m += "null";
+            items_json += "null";
           }
-          m += ",\"n\":";
-          append_json_int(m, command.points.size());
-          m += ",\"colors\":";
-          append_json_int(m, command.colors.size());
-          m += ",\"uvs\":";
-          append_json_int(m, command.uvs.size());
-          m += ",\"indices\":";
-          append_json_int(m, command.indices.size());
-          m += ",\"count\":";
-          append_json_int(m, command.triangle_count);
-          m += ",\"i\":";
-          append_json_int(m, cmd_i32.size());
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += ",\"n\":";
+          append_json_int(items_json, command.points.size());
+          items_json += ",\"colors\":";
+          append_json_int(items_json, command.colors.size());
+          items_json += ",\"uvs\":";
+          append_json_int(items_json, command.uvs.size());
+          items_json += ",\"indices\":";
+          append_json_int(items_json, command.indices.size());
+          items_json += ",\"count\":";
+          append_json_int(items_json, command.triangle_count);
+          items_json += ",\"i\":";
+          append_json_int(items_json, cmd_i32.size());
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           for (const Point2 &p : command.points) {
             cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
           }
@@ -781,21 +1014,21 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
           break;
         case CommandKind::AddNinePatch:
           // render-stream-4.md "Command": rect 4, source 4, margin tl 2, margin br 2, modulate 4.
-          m += "{\"op\":\"add_nine_patch\",\"tex\":";
+          items_json += "{\"op\":\"add_nine_patch\",\"tex\":";
           if (command.has_tex) {
-            append_json_int(m, command.tex);
+            append_json_int(items_json, command.tex);
           } else {
-            m += "null";
+            items_json += "null";
           }
-          m += ",\"x_axis\":";
-          append_json_string(m, to_wire(command.x_axis));
-          m += ",\"y_axis\":";
-          append_json_string(m, to_wire(command.y_axis));
-          m += ",\"draw_center\":";
-          append_json_bool(m, command.draw_center);
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += ",\"x_axis\":";
+          append_json_string(items_json, to_wire(command.x_axis));
+          items_json += ",\"y_axis\":";
+          append_json_string(items_json, to_wire(command.y_axis));
+          items_json += ",\"draw_center\":";
+          append_json_bool(items_json, command.draw_center);
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
           cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
           cmd_f32.insert(cmd_f32.end(), command.np_margin_tl.begin(), command.np_margin_tl.end());
@@ -804,52 +1037,53 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
           break;
         case CommandKind::AddMesh:
           // render-stream-4.md "Command": transform 6, modulate 4.
-          m += "{\"op\":\"add_mesh\",\"mesh\":";
-          append_json_int(m, command.mesh);
-          m += ",\"tex\":";
+          items_json += "{\"op\":\"add_mesh\",\"mesh\":";
+          append_json_int(items_json, command.mesh);
+          items_json += ",\"tex\":";
           if (command.has_tex) {
-            append_json_int(m, command.tex);
+            append_json_int(items_json, command.tex);
           } else {
-            m += "null";
+            items_json += "null";
           }
-          m += ",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += ",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
           cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
           break;
         case CommandKind::AddSetTransform:
           // render-stream-4.md "Command": transform 6 (x.x, x.y, y.x, y.y, origin.x, origin.y).
-          m += "{\"op\":\"add_set_transform\",\"f\":";
-          append_json_int(m, cmd_f32.size());
-          m += "}";
+          items_json += "{\"op\":\"add_set_transform\",\"f\":";
+          append_json_int(items_json, cmd_f32.size());
+          items_json += "}";
           cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
           break;
         case CommandKind::AddClipIgnore:
           // render-stream-4.md "Command": no floats, no "f" key.
-          m += "{\"op\":\"add_clip_ignore\",\"ignore\":";
-          append_json_bool(m, command.clip_ignore);
-          m += "}";
+          items_json += "{\"op\":\"add_clip_ignore\",\"ignore\":";
+          append_json_bool(items_json, command.clip_ignore);
+          items_json += "}";
           break;
         case CommandKind::Unsupported:
-          m += "{\"op\":\"unsupported\",\"name\":";
-          append_json_string(m, command.name);
-          m += ",\"reason\":";
-          append_json_string(m, to_wire(command.unsupported_reason));
-          m += "}";
+          items_json += "{\"op\":\"unsupported\",\"name\":";
+          append_json_string(items_json, command.name);
+          items_json += ",\"reason\":";
+          append_json_string(items_json, to_wire(command.unsupported_reason));
+          items_json += "}";
           break;
         }
       }
-      m += "]";
+      items_json += "]";
     }
-    m += "}";
+    items_json += "}";
 
     item_f32.insert(item_f32.end(), item.xform.begin(), item.xform.end());
     item_f32.insert(item_f32.end(), item.modulate.begin(), item.modulate.end());
     item_f32.insert(item_f32.end(), item.self_modulate.begin(), item.self_modulate.end());
     item_f32.insert(item_f32.end(), item.custom_rect_rect.begin(), item.custom_rect_rect.end());
   }
-  m += "]";
+  items_json += "]";
+  m += items_json;
 
   m += ",\"textures\":[";
   for (std::size_t i = 0; i < transaction.textures.size(); ++i) {
@@ -872,8 +1106,28 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     m += "]";
   }
 
+  if (is_v5) {
+    // render-stream-5.md "Shader table"/"Material table": shaders then materials, after meshes.
+    m += ",\"shaders\":[";
+    for (std::size_t i = 0; i < transaction.shaders.size(); ++i) {
+      if (i != 0) {
+        m += ",";
+      }
+      append_shader_entry(m, transaction.shaders[i]);
+    }
+    m += "]";
+    m += materials_json;
+  }
+
   m += ",";
-  if (is_v4) {
+  if (is_v5) {
+    append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
+                                  {"canvas_f32", "f32", canvas_f32.size()},
+                                  {"cmd_f32", "f32", cmd_f32.size()},
+                                  {"cmd_i32", "i32", cmd_i32.size()},
+                                  {"mesh_f32", "f32", mesh_f32.size()},
+                                  {"param_f64", "f64", param_f64.size()}});
+  } else if (is_v4) {
     append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
                                   {"canvas_f32", "f32", canvas_f32.size()},
                                   {"cmd_f32", "f32", cmd_f32.size()},
@@ -891,6 +1145,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   if (is_v4) {
     blocks.push_back(i32_payload(cmd_i32));
     blocks.push_back(f32_payload(mesh_f32));
+  }
+  if (is_v5) {
+    blocks.push_back(f64_payload(param_f64));
   }
   return assemble_record(m, blocks);
 }
