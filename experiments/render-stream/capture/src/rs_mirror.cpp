@@ -41,6 +41,7 @@ void Mirror::reset() {
   drop_frame_ = 0;
   omit_op_.clear();
   omit_from_frame_ = 0;
+  perturb_glyph_frame_ = 0;
   degenerate_host_size_ = false;
   canvas_texture_headless_ = false;
   next_canvas_id_ = kRootCanvasId + 1;
@@ -120,6 +121,11 @@ void Mirror::set_omit_op(const std::string &op, std::uint64_t from_frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   omit_op_ = op;
   omit_from_frame_ = from_frame;
+}
+
+void Mirror::set_perturb_glyph(std::uint64_t from_frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  perturb_glyph_frame_ = from_frame;
 }
 
 std::uint64_t Mirror::epoch() const {
@@ -623,6 +629,14 @@ void Mirror::push_command(Item *item, Command command, std::uint64_t frame) {
 
 namespace {
 
+// A command that names a texture-table entry through `tex` (render-stream-2.md "Commands";
+// render-stream-3.md "Command" adds the msdf region).
+bool names_texture(const Command &command) {
+  return command.kind == CommandKind::AddTextureRect ||
+         command.kind == CommandKind::AddTextureRectRegion ||
+         command.kind == CommandKind::AddMsdfTextureRectRegion;
+}
+
 bool reason_from_text(const std::string &text, TextureReason *out) {
   static const std::pair<const char *, TextureReason> kReasons[] = {
       {"unsupported-format", TextureReason::UnsupportedFormat},
@@ -697,9 +711,7 @@ bool Mirror::texture_ref(std::uint64_t rid, bool *has_tex, std::uint32_t *tex) c
 bool Mirror::texture_referenced(std::uint32_t id) const {
   for (const auto &entry : items_) {
     for (const Command &command : entry.second.state.commands) {
-      if ((command.kind == CommandKind::AddTextureRect ||
-           command.kind == CommandKind::AddTextureRectRegion) &&
-          command.has_tex && command.tex == id) {
+      if (names_texture(command) && command.has_tex && command.tex == id) {
         return true;
       }
     }
@@ -836,11 +848,53 @@ void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::
     command.kind = CommandKind::AddTextureRectRegion;
     command.transpose = transpose;
     command.clip_uv = clip_uv;
-    command.rect = rect;
+    command.rect = perturbed_glyph(rect, frame);
     command.src = src;
     command.modulate = modulate;
   }
   push_command(item, std::move(command), frame);
+}
+
+void Mirror::add_msdf_texture_rect_region(std::uint64_t rid, const Rect4 &rect,
+                                          std::uint64_t texture, const Rect4 &src,
+                                          const Color4 &modulate, std::int32_t outline_size,
+                                          float px_range, float scale, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_msdf_texture_rect_region";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  Item *item = item_for(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  if (texture == 0 && canvas_texture_headless_) {
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::CanvasTextureHeadless;
+  } else if (!texture_ref(texture, &command.has_tex, &command.tex)) {
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+  } else {
+    command.kind = CommandKind::AddMsdfTextureRectRegion;
+    command.rect = perturbed_glyph(rect, frame);
+    command.src = src;
+    command.modulate = modulate;
+    command.msdf_outline = outline_size;
+    command.msdf_px_range = px_range;
+    command.msdf_scale = scale;
+  }
+  push_command(item, std::move(command), frame);
+}
+
+Rect4 Mirror::perturbed_glyph(const Rect4 &rect, std::uint64_t frame) const {
+  Rect4 out = rect;
+  if (perturb_glyph_frame_ != 0 && frame >= perturb_glyph_frame_) {
+    out[0] += 0.25f;  // gate4-design.md Q3 "perturb-glyph": rect.x + 0.25, recorded only
+  }
+  return out;
 }
 
 void Mirror::set_texture_filter(std::uint64_t rid, std::int32_t filter, std::uint64_t frame) {
@@ -1225,9 +1279,7 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   std::set<std::uint32_t> referenced;
   for (const auto &entry : items_) {
     for (const Command &command : entry.second.state.commands) {
-      if ((command.kind == CommandKind::AddTextureRect ||
-           command.kind == CommandKind::AddTextureRectRegion) &&
-          command.has_tex) {
+      if (names_texture(command) && command.has_tex) {
         referenced.insert(command.tex);
       }
     }
@@ -1278,9 +1330,7 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
           reason = UnsupportedReason::CanvasTextureHeadless;
         }
         add_item_entry(state.id, command.name, reason);
-      } else if ((command.kind == CommandKind::AddTextureRect ||
-                  command.kind == CommandKind::AddTextureRectRegion) &&
-                 command.has_tex) {
+      } else if (names_texture(command) && command.has_tex) {
         // render-stream-2.md "Item-level unsupported entries": the command's own tex is
         // unsupported, or (G2d) it names a canvas entry whose diffuse names one.
         const auto texture = textures_.find(command.tex);
@@ -1296,6 +1346,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
           add_item_entry(state.id,
                          command.kind == CommandKind::AddTextureRect
                              ? "canvas_item_add_texture_rect"
+                         : command.kind == CommandKind::AddMsdfTextureRectRegion
+                             ? "canvas_item_add_msdf_texture_rect_region"
                              : "canvas_item_add_texture_rect_region",
                          UnsupportedReason::UnsupportedTexture);
         }
@@ -1401,6 +1453,10 @@ void mirror_set_drop_frame(std::uint64_t frame) { mirror_instance().set_drop_fra
 
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame) {
   mirror_instance().set_omit_op(op, from_frame);
+}
+
+void mirror_set_perturb_glyph(std::uint64_t from_frame) {
+  mirror_instance().set_perturb_glyph(from_frame);
 }
 
 std::uint64_t mirror_epoch() { return mirror_instance().epoch(); }

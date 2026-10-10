@@ -101,8 +101,8 @@ failure mode, and asserts each check's verdict: 30 scenarios, 73 assertions.
 
 Drives `../fixtures/gate0/` (capture host and rendered reference) and `../receiver/` through every
 leg of [`../protocol/gate0-design.md`](../protocol/gate0-design.md) "Q6", then checks the gate.
-Since G2b2 it runs on render-stream/2 (`recording.rs2`, full encoding; render-stream/1 from G1b2
-to G2b2), and every capture leg sets `GRC_ROOT_SIZE=enforce-min-size`: without it the 64×64
+Since G4e2 it runs on render-stream/3 (`recording.rs2`, full encoding; the file keeps its `.rs2`
+name; render-stream/2 from G2b2 to G4e2, render-stream/1 from G1b2 to G2b2), and every capture leg sets `GRC_ROOT_SIZE=enforce-min-size`: without it the 64×64
 headless host would declare `degenerate-host-size` and every leg would classify `unsupported`.
 Every capture also writes its out-of-band resource store to `<capture>/store`
 (`GRC_RESOURCE_STORE_DIR`; without it the capture refuses to publish with
@@ -158,7 +158,7 @@ sha256, and `gamescope/` holds the compositor's log and identity.
 | Leg                       | Directory                                | Runs                                                                                                                                                                                           | Expected class                           |
 | ------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `import`                  | `import/{fixture,receiver}/`             | `mise exec -- godot --headless --path <project> --import`. The runner stops if either fails                                                                                                    | — (exit 0)                               |
-| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec2_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR=protocol/golden-2`, then a headless replay of `golden-2/inline.rs2` (inline, no store; a fresh cache)      | —                                        |
+| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec2_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR=protocol/golden-2`, then a headless replay of `golden-3/inline.rs3` (inline, no store; a fresh cache; `golden-2/inline.rs2` before G4e2)      | —                                        |
 | `capture`                 | `capture/`                               | template `--headless`, `GRC_MODE=arm`, `GRC_STREAM_OUT`, `GRC_ROOT_SIZE=enforce-min-size`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_QUIT_FRAME=400`, under strace; maps/fd sampled at `armed.marker` | `success`                                |
 | `preexisting`             | `preexisting/`                           | the capture host on `res://preexisting.tscn`, quit 52                                                                                                                                          | `capture-failure`                        |
 | `unsupported`             | `unsupported/{capture,receiver}/`        | capture with `RS_FIXTURE_VARIANT=unsupported`, quit 52, then a headless receiver                                                                                                               | `unsupported`                            |
@@ -205,14 +205,14 @@ Legs without a receiver (`capture`, `preexisting`) stop after rule 2.
 | `capture-armed`                 | `capture` `result.json` is `armed` with `stream.status` `closed`; `counters.json` and session `hooks_omitted` are empty; `hooks_planned` is exactly the 44 hooks named by the committed calibration record (calibrators 3 and 4)                                                                                                                                                                     |
 | `headless-no-gpu`               | gate −1's check over `capture/`: display server `headless`, and no GPU device or library in the successful `openat`s, `maps.txt` or `fd.txt`                                                                                                                                                                                                                                                         |
 | `recording-decodes`             | `validateRecording` is `[]`, the first transaction has frame 1, and there are 400 transactions                                                                                                                                                                                                                                                                                                       |
-| `manifest-present`              | session `protocol` `render-stream/2`, a full file stream, the exact /2 `features` (`resources` key included), the file sinks' `resources` (out-of-band, `directory` fetch, the six permitted formats), `engine.display_server` `headless`, `viewport.root_canvas` 1, `root_size_policy` `enforce-min-size` with `host_size_status` `match` and 640×360 logical and window sizes, and `sabotage` null |
+| `manifest-present`              | session `protocol` `render-stream/3` (since G4e2), a full file stream, the exact /3 `features` (`resources` key included; `ops` with `add_msdf_texture_rect_region`, which `observed_unsupported_ops` no longer lists), the file sinks' `resources` (out-of-band, `directory` fetch, the six permitted formats), `engine.display_server` `headless`, `viewport.root_canvas` 1, `root_size_policy` `enforce-min-size` with `host_size_status` `match` and 640×360 logical and window sizes, and `sabotage` null |
 | `step-alignment`                | `capture` and `reference` `steps.jsonl` equal `expected.json`'s frames, and each step's marker colour (as float32) first appears at its applied frame                                                                                                                                                                                                                                                |
 | `expected-image-reference`      | every `reference/shots/step-<k>.png` equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                                                                                                                                          |
 | `expected-image-receiver`       | every receiver settle shot equals `synthesizeExpected(k)` exactly                                                                                                                                                                                                                                                                                                                                    |
 | `receiver-vs-reference`         | receiver vs reference at every step, full frame and both regions: 0 mismatched pixels and max channel delta 0 (`compareRgbaBuffers` with exact budgets)                                                                                                                                                                                                                                              |
 | `receiver-consumed-stream`      | `receiver` `applied.json` is `render-stream-receiver-applied/3`, seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, `recording.sha256` equal to the capture file's, and `resources_summary` shows nothing fetched and nothing uploaded                                                                                                                        |
 | `receiver-never-loaded-fixture` | the traced receiver opens its recording and nothing under `fixtures/`; no file in `receiver/` (outside `.godot/`) is byte-identical to one in `fixtures/gate0/`; no receiver log has a `[fixture]` line; argv has `--path <abs receiver>`                                                                                                                                                            |
-| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs2-selftest] ok` and exited 0; the `golden-2/inline.rs2` replay is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
+| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs2-selftest] ok` and exited 0; the `golden-3/inline.rs3` replay is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
 | `leg-class-<leg>`               | each classified leg has its expected class; sabotage legs mismatch at exactly the expected steps with steps 0–1 matching; `preexisting` names `pre-existing-object`; `corrupt` fails at `{seq:3, reason:"meta-json"}`                                                                                                                                                                                |
 
 `gate_passed` is true only when every check passed.
@@ -234,7 +234,7 @@ It runs `classifyLeg` over:
   culled members, an unbounded footprint, adjacent rects, a child's rect through its parent.
 
 It then builds a passing evidence tree for the whole layout, with recordings encoded in
-render-stream/2 by `test/rs2-test-encoder.ts` (every texture table holding the engine's hue
+render-stream/3 (since G4e2) by `test/rs2-test-encoder.ts` (every texture table holding the engine's hue
 strip), `applied.json` on `/3`, and PNGs synthesized from the timeline, plus one perturbation per
 failure mode (since G2b2 also: an applied `/2` schema, a receiver that fetched the hue strip, an
 inline capture session). It runs the real `runGate0` on each: 40 scenarios, 205 assertions. It
@@ -253,7 +253,7 @@ draw-index tie), `g1c` (G1c2: live delivery over the capture library's WebSocket
 recording/live equivalence, the drop-message sabotage) and `g1d` (G1d: a two-second receiver stall
 with coalescing and newest-state recovery, resync, reconnect, a killed receiver, and the
 ignore-credit and stale-coalesce sabotages) have landed. Since G2b2 every group runs on
-render-stream/2 (render-stream/1 from G1b2 to G2b2). Run it from the repo root:
+render-stream/3 since G4e2 (render-stream/2 from G2b2, render-stream/1 from G1b2 to G2b2). Run it from the repo root:
 
 ```bash
 mise exec -- pnpm render-stream:gate1 -- \
@@ -362,7 +362,7 @@ log); live receiver directories hold `applied.json` (`mode: live`), `received.rs
 `shots/stream-2-seq-<n>.png` and `state/stream-2-seq-<n>.json`. Frame lines of the live log carry
 `pending_since` (the frame the pending target became pending, or null) and the summary
 `max_pending`, `pending_episodes`, `max_pending_frames`, `max_pending_age_us`,
-`sent_without_credit` and `stale_sent`. Since G2b2 the subprotocol is `render-stream.2`. A live
+`sent_without_credit` and `stale_sent`. Since G4e2 the subprotocol is `render-stream.3` (`render-stream.2` from G2b2). A live
 connection carries payloads of at most `inline_max_bytes` as resource records, one binary message
 each, right before the transaction that first needs them (a `resource` event line; the summary's
 `resource_records`/`resource_bytes`), and since G2c2 serves larger ones over HTTP: gate 1's hosts
@@ -424,7 +424,7 @@ the recovery send, as the host log places them; any other missing shot is `repla
 | `draw-index-ties` (g1b)                                                                                                         | the capture recording's invariant-9 ties are exactly `expected.json`'s `draw_index_ties` (frame 11 `{P, T}`, frame 111 `{P, ZP}`, frame 121 `{P, ZB, BP}`, all harmless), each declared on the wire                                                                                                                                                                                                                                                                                                              |
 | `tie-frame-pixels` (g1b)                                                                                                        | `reference/shots/frame-<f>.png` equals both receivers' shot of that transaction exactly, for each of frames 11, 111 and 121                                                                                                                                                                                                                                                                                                                                                                                      |
 | `live-listening` (g1c)                                                                                                          | every live host's `evidence/live.json` says `listening` on 127.0.0.1 or ::1 with an ephemeral port, `result.json` `live.port` agrees, and the receiver's URL used that port                                                                                                                                                                                                                                                                                                                                      |
-| `live-handshake` (g1c)                                                                                                          | `live`, `live-headless`: subprotocol `render-stream.2` negotiated, the host logged the hello (credit stage `submitted` / `applied`, the receiver's inbound buffer), one connection, no host error, the end record sent, and the receiver closed with 1000 after reading it                                                                                                                                                                                                                                       |
+| `live-handshake` (g1c)                                                                                                          | `live`, `live-headless`: subprotocol `render-stream.3` (since G4e2) negotiated, the host logged the hello (credit stage `submitted` / `applied`, the receiver's inbound buffer), one connection, no host error, the end record sent, and the receiver closed with 1000 after reading it                                                                                                                                                                                                                                       |
 | `live-tap-equals-received` (g1c)                                                                                                | `live`, `live-headless`: `received.rs2` is byte-identical to the host's `tap/stream-1.rs2`, as `applied.json` `streams[0]` reports                                                                                                                                                                                                                                                                                                                                                                               |
 | `live-decodes` (g1c)                                                                                                            | `validateRecording(received.rs2)` is `[]` for `live` and `live-headless`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `live-first-full-then-patch` (g1c)                                                                                              | the live session is `websocket`, connection 1, `patch`, the capture's `session_id`, a fresh `stream_id`; seq 1 full, every later seq a patch on `seq-1`                                                                                                                                                                                                                                                                                                                                                          |
@@ -982,7 +982,7 @@ to g3a and g3b.
 mise exec -- pnpm render-stream:gate4 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g4a,g4b,g4c,g4f]
+  [--legs g4a,g4b,g4c,g4d,g4e,g4f]
 ```
 
 - `run-gate4.sh`: the orchestrator (`run_g4a`, `run_g4b`, `run_reference` with `REFERENCE_ORACLE`
@@ -994,7 +994,10 @@ mise exec -- pnpm render-stream:gate4 -- \
   `REFERENCE_FIXTURE_DIR` and `REFERENCE_VARIANT` for it, and `layout_early_csv` its early
   steps. `run_g4f` runs `fixtures/gate4-i18n` under `<out>/i18n/` the same way (four fonts
   provisioned, the fixture and `receiver/` imported, `i18n_early_csv` for its early steps).
-  Groups g4d and g4e are known but have not landed, so asking for them exits 2.
+  `run_g4e` (G4e2) runs `fixtures/gate4-msdf` under `<out>/msdf/` (it imports the fixture and
+  `receiver/`; `msdf_early_csv` gives its early steps 1 and 7) plus `sabotage-gray-perturb-glyph`
+  on `fixtures/gate4`, so `g4e` needs `g4a` in the same `--legs`. Every capture speaks
+  render-stream/3 since G4e2; the recordings keep their `.rs2` names.
 - `lib/provision-fonts.sh <fixture>`: copies each `fonts.lock.json` entry into `<fixture>/fonts/`
   after checking the source's and the copy's size and SHA-256 and that its licence file exists.
   A source starting with `../` (the engine checkout) also resolves against the main checkout's
@@ -1039,8 +1042,9 @@ mise exec -- pnpm render-stream:gate4 -- \
   with `text` per fixture and step (glyph commands, pages with wire id, hook and wire versions and
   payload bytes, bytes published, copy and hash ns), `parity` (each oracle page against the
   capture's table per step), `budgets` (reference against repeat per region), `census` and `ink`)
-  and exits non-zero unless `gate_passed`; g4c adds `layout` and g4f `i18n` (census, script
-  predictions, fallback pages). It passes `receiverDir`/`fixtureDir` (G4b) in `Gate4Context`. When group `g4d` ran, it separately loads `fixtures/gate4-rich/expected.json`,
+  and exits non-zero unless `gate_passed`; g4c adds `layout`, g4f `i18n` (census, script
+  predictions, fallback pages) and g4e `msdf` (its census, the measured budget and the receiver's
+  maxima). It passes `receiverDir`/`fixtureDir` (G4b) in `Gate4Context`. When group `g4d` ran, it separately loads `fixtures/gate4-rich/expected.json`,
   calls `runGate4d` (lib/gate4d-checks.ts) and merges its checks/legs/text/parity/budgets/census/
   ink into the same report under the fixture key `"gate4-rich"`, ANDing `gate_passed` -- `runGate4`
   itself stays unaware of G4d (no circular import: gate4d-checks.ts already imports gate4-checks.ts
@@ -1063,6 +1067,17 @@ mise exec -- pnpm render-stream:gate4 -- \
   gate2b/gate3/gate4's own helpers, which hardcode the leg name `"capture"`; this fixture's legs
   live under `rich-*/`), and `checkRichUnsupportedCaptureClass`/`checkMismatchConfinedToRegion`
   for the underline variant.
+- `fixtures/gate4-msdf/`: G4e2's fixture (five Labels on one MSDF `FontFile`, msdf_size 48, range
+  24), see its own `README.md`.
+- `lib/gate4e-checks.ts`: group g4e (`runG4e`, loaded on demand by `runGate4`). It points G4a's and
+  G4b's evidence-root helpers at `<out>/msdf/` and adds what MSDF needs: `deriveMsdfCensus` (a
+  TypeScript re-derivation of `make_expected.py`'s one-cache upload model),
+  `evaluateMsdfOracle`, `evaluateMsdfGlyphCommands` (msdf commands against the oracle's float32
+  quads, outline, px_range and scale), `evaluateMsdfArgs`, `evaluateWithinBudget` (D8: a receiver
+  within the reference repeat's measured per-region maxima), `evaluatePredictedRegions` and
+  `evaluatePerturbRecorded` (a perturb-glyph capture against the clean one, +0.25 on exactly the
+  predicted Labels' rects). It reuses G4c's `layoutCensusFromLog`/`evaluateLayoutCensus` over
+  the MSDF expected. Its check ids end in `-msdf` or name the leg.
 - `test/self-test-gate4.ts`, `test/self-test-gate4d.ts`: see below.
 
 ## Gate 4 legs and evidence under `--out`
@@ -1102,6 +1117,15 @@ mise exec -- pnpm render-stream:gate4 -- \
 | `receiver-i18n`, `-patch`                | g4f   | `i18n/receiver/`, `i18n/receiver-patch/` | the receiver on `capture-i18n`'s full and patch sinks, settle and early shots |
 | `receiver-i18n-headless-trace`           | g4f   | `i18n/receiver-headless-trace/` | the receiver, headless, `strace -f -e openat`, on `capture-i18n`'s full sink |
 | `sabotage-i18n-omit-atlas`               | g4f   | `i18n/sabotage-omit-atlas/{capture,receiver}` | `omit-op texture_2d_update` at frame 51 (step 5, the first Devanagari), default quit 102, then its receiver |
+| `import` (msdf)                          | g4e   | `msdf/import/`            | `provision-fonts.sh fixtures/gate4-msdf` (`fonts.log`), then `--import` of the fixture (`fixture/`) and of `receiver/` (`receiver/`) |
+| `capture-msdf`                           | g4e   | `msdf/capture/`           | as `capture`, on `fixtures/gate4-msdf` (quit 400, both sinks, store, strace + maps/fd, `env.json`) |
+| `reference-msdf`, `-repeat`              | g4e   | `msdf/reference/`, `msdf/reference-repeat/` | rendered, extension absent, the MSDF oracle on: `shots/step-0..9.png`, `shots/early-{1,7}.png`, `oracle/` |
+| `reference-msdf-armed`                   | g4e   | `msdf/reference-armed/`   | rendered, extension armed with a stream and a store, oracle off |
+| `receiver-msdf`, `-patch`                | g4e   | `msdf/receiver/`, `msdf/receiver-patch/` | the receiver on `capture-msdf`'s full and patch sinks, settle and early shots |
+| `receiver-msdf-headless-trace`           | g4e   | `msdf/receiver-headless-trace/` | the receiver, headless, `strace -f -e openat`, on `capture-msdf`'s full sink |
+| `sabotage-msdf-perturb-glyph`            | g4e   | `msdf/sabotage-perturb-glyph/{capture,receiver}` | `GRC_SABOTAGE=perturb-glyph` at frame 11 (step 1, the new-glyph step), default quit 102, then its receiver |
+| `sabotage-msdf-receiver-drop`            | g4e   | `msdf/sabotage-receiver-drop/receiver/` | the receiver on `capture-msdf`'s full sink with `RS_RECEIVER_SABOTAGE=drop-msdf` |
+| `sabotage-gray-perturb-glyph`            | g4e   | `msdf/sabotage-gray-perturb-glyph/{capture,receiver}` | `perturb-glyph` at frame 11 on `fixtures/gate4` (default quit 102), then its receiver, judged against g4a's `reference/` |
 
 ## Gate 4 criteria (g4a)
 
@@ -1222,6 +1246,31 @@ script, created once at that step's applied frame and first in either sink's tab
 `leg-class-sabotage-i18n-omit-atlas` (steps {5..9}), `sabotage-i18n-omit-atlas-regions` (every
 differing pixel inside LD2) and `atlas-hash-parity-sabotage-i18n-omit-atlas` (DV@16 {5..9}).
 
+## Gate 4 criteria (g4e)
+
+G4a's and G4b's checks run on the MSDF fixture with a `-msdf` suffix (`capture-armed-msdf` …
+`receiver-typed-clean-msdf`), with these differences: `fixture-env-msdf` pins `FM` as `F` with
+MSDF on at msdf_size 48 and msdf_pixel_range 24; `oracle-agrees-msdf` requires every glyph to be an
+MSDF glyph of the one `FM@48` cache with `outline` its pass's, px_range 24 and scale size/48, and
+one 512×512 RGBA8 page; `glyph-commands-msdf` compares every command as
+`add_msdf_texture_rect_region` bit for bit with the oracle's float32 quad and source rect, the pass
+colour, outline, px_range, scale and page; `atlas-append-only-msdf` decodes RGBA8 pages with the
+empty texel `(0,0,0,0)`; `atlas-census-msdf` (G4c's evaluator) requires one create at step 0, one
+update per Label draw that adds glyphs (two at step 7), and nothing at the size change, the outline
+toggle or any other quiet step; there is no synthesized MSDF ink (`expected-text-*`), because MSDF
+coverage comes from the GPU's `fwidth`; `reference-repeat-budget-msdf` measures the budget per
+region (expected 0) and `receiver-vs-reference-msdf` holds both receivers within it. New:
+`msdf-args` (every msdf command on every transaction of both sinks: px_range 24, a known scale,
+outline 0 or 4, no typed msdf refusal, no plain region glyph; per settle step each Label's own
+scale and outline commands), `atlas-pages-msdf`, `receiver-msdf-commands` (`applied.json`
+`msdf_commands` on every transaction; seq 1 replays all 25 step-0 commands),
+`leg-class-sabotage-msdf-perturb-glyph` ({1..9}), `sabotage-msdf-perturb-glyph-regions`
+(per-step regions from `predictions`: a Label mismatches from its first redraw after frame 11; MR
+never redraws), `sabotage-msdf-perturb-glyph-recorded` (+0.25 on exactly those Labels' rects, as
+recorded), `leg-class-sabotage-msdf-receiver-drop` ({0..9}), `-regions` (every Label at every
+step), `-silent` (zero msdf calls, no msdf unsupported record), `leg-class-sabotage-gray-perturb-
+glyph` ({1..9}, `fixtures/gate4/expected.json` `predictions`), `-regions` and `-recorded`.
+
 ## Gate 4 self-test
 
 ```bash
@@ -1231,7 +1280,15 @@ python3 experiments/render-stream/fixtures/gate4-layout/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate4d.ts
 python3 experiments/render-stream/fixtures/gate4-rich/make_expected.py --check
 python3 experiments/render-stream/fixtures/gate4-i18n/make_expected.py --check
+python3 experiments/render-stream/fixtures/gate4-msdf/make_expected.py --check
 ```
+
+Group g4e's cases are in `test/gate4e-cases.ts`: `expected.json`'s rules (an upload at the size
+change and msdf_size 128 both fail); a synthetic MSDF oracle and recording (oracle, glyph commands
+and arguments: a wrong outline, an old scale, a dropped glyph, a quarter-pixel quad, a plain region
+command, px_range 14 and a typed msdf refusal each fail); the census (an upload at the size change
+fails); `evaluateWithinBudget`, `evaluatePredictedRegions` and `evaluatePerturbRecorded` on
+hand-built frames, checkpoints and recordings — each passing and failing.
 
 Group g4c's cases are in `test/gate4c-cases.ts`: `expected.json`'s rules and hand-typed census
 facts of `deriveLayoutCensus`; a synthetic layout oracle and recording (oracle, glyph commands,

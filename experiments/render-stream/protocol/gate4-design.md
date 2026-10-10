@@ -906,6 +906,42 @@ All existing gates are unchanged.
 **Pass criteria**: gates −1 to 3 green on /3, and `--legs g4a,…,g4e` green. The README gains
 "Gate 4e result" with the MSDF budget as measured.
 
+**As built (G4e2, 2026-10-10).** The fixture is `fixtures/gate4-msdf/` (its README has the
+layout and timeline): five Labels on one MSDF `FontFile` `FM` (48 / 24) at 16, 24, 40 and, after a
+size change, 56 px, `M40`'s outline toggled on at step 3, and `MR` under `R` (20° → 35°, scale
+1.5). Its legs live under `<out>/msdf/` with G4a's and G4b's checks suffixed `-msdf`, plus a
+`receiver-msdf-headless-trace` leg for `receiver-never-shapes`. Every census and sabotage
+prediction held on the first full run, and every msdf command equals the oracle's float32 result
+bit for bit on both sinks (Q1g holds as written: the getters and the draw both compute
+`rect × size / msdf_size` as Vector2 × real_t then / real_t, and the quad is pen + offset, a
+float32 add). Measured: one 512² RGBA8 page `FM@48` for every draw size and the outline pass,
+created at step 0 with 19 glyphs (cells of about 78×87 texels at range 24), updated once at step 1
+and twice in frame 71 (wire v4), never at the size change or the outline toggle; 24 glyphs at the
+end. The reference-against-repeat budget is 0 in every region, and both receivers equal the
+reference exactly. Each upload copies the 1 MiB page in about 0.6 ms and hashes it in about 3 ms at
+the hook. Amendments: (1) **The switch.** The TypeScript and GDScript decoders' `version` now defaults
+to 3 (golden-2's self-tests pass 2); C++ keeps `Session::version`'s V2 default for the golden-2
+byte tests and the arm path sets V3, the /3 feature lists (`gate2_features(headless, V3)`) and
+subprotocol `render-stream.3`; a /3 hub refuses a `render-stream/2` hello. Recording files keep
+their `.rs2` names, as the modules do. The receiver's typecheck replays `golden-3/inline.rs3`, and
+`applier2_selftest.gd` runs on golden-3 (its undecodable-payload vector still comes from
+golden-2: /3 does not change the payload format). (2) **perturb-glyph moves only re-recorded
+commands.** A Label that never redraws after the sabotage frame keeps its true rects, so `MR`
+(rotated by its parent, never redrawn) never mismatches. The prediction is per Label from its
+first redraw at or after step 1 (`predictions[...].regions`); the steps are still {1..9}, and a
+`-recorded` check proves +0.25 on exactly those Labels' rects against the clean capture. (3)
+`sabotage-gray-perturb-glyph` is judged against g4a's reference, so `g4e` needs `g4a` in the same
+run; its prediction lives in `fixtures/gate4/expected.json`. (4) There is no D8 synthesized ink
+for MSDF: coverage comes from the GPU's `fwidth` (Q1d), which the checker does not model. The
+pixel claim is the measured zero budget and receiver equality. (5) `drop-msdf` skips real msdf
+commands only; a capture-typed `unsupported`/`unknown-texture` msdf command stays recorded, as
+before. (6) `applied.json` gains `msdf_commands` per transaction, and `counters.json` `captured`
+gains the msdf arguments (`outline_size`, `px_range`, `scale` with their bits). (7) G3d's mirror
+test `test_clip_ignore_tap` had never been called from `main()`; G4e2 calls it and fixed its two
+wrong expectations (the `add_rect` after the dropped call is a fifth command, and the omit-op left
+on hid the unknown-item failure). (8) An MSDF outline of 4 at 40 px is thin (the shader's outline
+is `outline_size / scale / 4` in distance units), but it is visible and part of every comparison.
+
 ---
 
 ### G4f — multilingual shaping (opus, after G4b)

@@ -262,10 +262,11 @@ static func _frame(data: PackedByteArray, offset: int) -> Dictionary:
 	return out
 
 
-## `version` (2 or 3, render-stream-3.md) selects the expected magic -- GRS2 (default) or GRS3.
+## `version` (2 or 3, render-stream-3.md) selects the expected magic -- GRS3 (the default since
+## G4e2: the capture and receiver speak /3) or GRS2 (golden-2/ only, codec2_selftest.gd).
 ## A /2 call refuses GRS3 the same way it already refuses GRS0/GRS1/anything else that is not
 ## exactly GRS2; a /3 call refuses GRS2 the same way.
-static func split_records(data: PackedByteArray, version: int = 2) -> Dictionary:
+static func split_records(data: PackedByteArray, version: int = 3) -> Dictionary:
 	var records: Array[Dictionary] = []
 	var errors := PackedStringArray()
 	var expected_magic: String = MAGIC_V3_HEX if version == 3 else MAGIC_HEX
@@ -912,7 +913,7 @@ static func _dicts_equal(a: Dictionary, b: Dictionary) -> bool:
 # --------------------------------------------------------------------------- whole recording
 
 
-static func validate_recording(data: PackedByteArray, version: int = 2) -> PackedStringArray:
+static func validate_recording(data: PackedByteArray, version: int = 3) -> PackedStringArray:
 	var errors := PackedStringArray()
 	var split: Dictionary = split_records(data, version)
 	var records: Array[Dictionary] = split["records"]

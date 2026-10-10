@@ -125,7 +125,11 @@ struct ControlMessage {
 // `stage` is received, applied or submitted. Accepts the host's own `error` too (so the golden
 // error message parses), although the host treats one arriving from a receiver as a protocol
 // error. Returns false with *error set on anything else.
-bool parse_control(const std::string &text, ControlMessage *out, std::string *error);
+// `version` (G4e2) selects the hello protocol a receiver must announce: "render-stream/2" (the
+// default, golden-2's control vectors) or "render-stream/3" (render-stream-3.md "Live
+// transport"; what the capture speaks since G4e2).
+bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
+                   ProtocolVersion version = ProtocolVersion::V2);
 
 // {"type":"error","reason":<reason>,"detail":<detail>}, compact, keys in that order.
 std::string encode_error(const std::string &reason, const std::string &detail);

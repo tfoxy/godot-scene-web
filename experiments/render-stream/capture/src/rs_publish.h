@@ -107,7 +107,8 @@ struct ParseResult {
 // or nullptr when the variable is unset. An unset `kind` is ok with SabotageKind::None (the
 // other two are then ignored, as the caller reads them only when GRC_SABOTAGE is set).
 //
-// Accepted: freeze-frame, omit-update, perturb-transform, patch-drop-item, the live kinds
+// Accepted: freeze-frame, omit-update, perturb-transform, perturb-glyph (G4e2, render-stream/3;
+// entry.cpp hands it to the mirror), patch-drop-item, the live kinds
 // drop-message, ignore-credit and stale-coalesce (entry.cpp refuses them without
 // GRC_LIVE_LISTEN; rs_live.h acts on them), the G2b2 resource kinds stale-texture, wrong-hash
 // and spurious-texture-update, the G2c2 serving kinds drop-resource and unpin (entry.cpp refuses
@@ -130,8 +131,11 @@ std::string generate_id();
 // canvas_item_set_visibility_notifier. Each array sorted ascending by byte value; publication
 // "snapshot-or-patch". G2d: resources adds canvas_texture, except on a headless host
 // (`headless_host`), where unsupported_resources lists it with reason canvas-texture-headless
-// instead (protocol/canvas-texture-headless.md).
-Features gate2_features(bool headless_host = false);
+// instead (protocol/canvas-texture-headless.md). `version` V3 (G4e2, render-stream-3.md
+// "Features") adds add_msdf_texture_rect_region to ops and drops
+// canvas_item_add_msdf_texture_rect_region from observed_unsupported_ops; the capture publishes
+// V3 since G4e2, and V2 remains for golden-2-shaped tests.
+Features gate2_features(bool headless_host = false, ProtocolVersion version = ProtocolVersion::V2);
 
 // The resource policy a capture publishes under (GRC_RESOURCE_*).
 struct ResourcePolicy {

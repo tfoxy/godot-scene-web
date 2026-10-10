@@ -15,8 +15,8 @@
 //    render-stream-receiver-applied/3; PNGs synthesized from the timeline), then one perturbation
 //    per failure mode. Each scenario runs the real runGate0 and asserts the verdict of the checks
 //    and leg classes it targets.
-// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-2/corrupt-meta.rs2 from
-//    golden-2/patch.rs2 byte for byte and finds its target by seq when resource records precede
+// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-3/corrupt-meta.rs3 from
+//    golden-3/patch.rs3 byte for byte (render-stream/3 since G4e2) and finds its target by seq when resource records precede
 //    it; summarizeRecording skips resource records; joinSettleSeqs fails on a missing frame.
 //
 // Exits non-zero if any assertion fails.
@@ -65,7 +65,8 @@ import {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-2");
+// render-stream/3 since G4e2: the receiver replays golden-3, and the checkers decode /3.
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-3");
 
 let assertions = 0;
 let failures = 0;
@@ -581,7 +582,7 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs2"));
+  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs3"));
   await writeReceiverProcess(minimalDir, projects, minimal, [], false);
   const minimalApplied = await readJsonFile<Record<string, unknown>>(
     join(minimalDir, "applied.json"),
@@ -1902,13 +1903,13 @@ function classifyUnitCases(): void {
 }
 
 async function helperCases(): Promise<void> {
-  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs2")));
+  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs3")));
   const corrupt = new Uint8Array(
-    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs2")),
+    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs3")),
   );
   const made = corruptTransactionMeta(minimal, 3);
   assert(
-    "corruptTransactionMeta(golden-2 patch.rs2, 3) is golden-2/corrupt-meta.rs2 byte for byte",
+    "corruptTransactionMeta(golden-3 patch.rs3, 3) is golden-3/corrupt-meta.rs3 byte for byte",
     made.length === corrupt.length && made.every((b, i) => b === corrupt[i]),
   );
   const rec = new Uint8Array(encodeRecording({ quit: 52 }));

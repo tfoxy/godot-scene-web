@@ -276,6 +276,20 @@ def predictions(states, cen):
         if bad:
             parity[key] = bad
     pred["sabotage-omit-atlas"] = {"frame": frame_of(omit_from), "op": "texture_2d_update", "steps": mismatch(omit_views), "atlas_hash_parity_fails": parity}
+    # perturb-glyph from step 1's frame (G4e2, render-stream/3; gate4-design.md Q3): the mirror
+    # records rect.x + 0.25 on every glyph command from then on, so a node's region mismatches
+    # once it redrew at or after step 1 and while it shows ink. A move (L3 at step 2) redraws
+    # nothing.
+    redrawn = set()
+    steps, regions = [], {}
+    for k in range(LAST_STEP + 1):
+        if k >= 1:
+            redrawn.update(states[k]["draws"])
+        bad = [n for n in TREE_ORDER if n in redrawn and appearance(states[k]["nodes"][n]) is not None]
+        if bad:
+            steps.append(k)
+            regions[str(k)] = bad
+    pred["sabotage-gray-perturb-glyph"] = {"frame": frame_of(1), "steps": steps, "regions": regions}
     return pred
 
 

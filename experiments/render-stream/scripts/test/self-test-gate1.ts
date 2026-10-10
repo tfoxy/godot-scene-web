@@ -81,7 +81,8 @@ import {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-2");
+// render-stream/3 since G4e2: the receiver replays golden-3.
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-3");
 
 let assertions = 0;
 let failures = 0;
@@ -1144,7 +1145,7 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs2"));
+  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs3"));
   await mkdir(minimalDir, { recursive: true });
   await writeFile(join(minimalDir, "recording.rs2"), minimal);
   await writeJson(join(minimalDir, "applied.json"), {
@@ -1832,7 +1833,7 @@ async function writeLiveReceiver(
       "RS_RECEIVER_MODE=live",
       `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
     ],
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.2); hello sent\n[receiver] ok\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.3); hello sent\n[receiver] ok\n`,
     files.failSeq !== undefined ? 3 : 0,
   );
   if (!opts.rendered) await writeLiveTrace(dirname(dir), projects);
@@ -2635,7 +2636,7 @@ async function writeG1dLeg(
       "60",
     ],
     env,
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.2); hello sent\n[receiver] ok\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.3); hello sent\n[receiver] ok\n`,
     0,
   );
 }
@@ -2721,7 +2722,7 @@ async function writeKilledLeg(
       "RS_RECEIVER_MODE=live",
       `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
     ],
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.2); hello sent\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.3); hello sent\n`,
     137,
   );
 }

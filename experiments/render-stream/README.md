@@ -325,13 +325,15 @@ receiver's typed self-test, the headless capture hosts (the 400-frame capture, `
 `receiver-headless-trace`, `unsupported`), then the reference, the receiver and the three sabotage
 receivers in one private `gamescope --backend headless`, then the checker, which writes
 `artifacts/render-stream/gate0/<UTC timestamp>/result.json` and exits non-zero unless every check
-passed. Since G1b2 every capture runs under `GRC_ROOT_SIZE=enforce-min-size`; since G2b2 it runs
-on render-stream/2, every capture writing its payload store (`<capture>/store`, which holds only
-the engine's hue strip here) and every file-mode receiver getting a fresh cache and that store.
-Self-tests: `scripts/test/self-test-rs2.ts` (TS decoder against the /2 golden vectors; since G4e1
-it also runs the same checks against /3's `golden-3/`, implemented in `render-stream-2.ts` itself
-behind a `version` parameter rather than a forked `render-stream-3.ts` -- `render-stream/3`
-[protocol/render-stream-3.md] is not yet spoken by the capture or the receiver, G4e2's job),
+passed. Since G1b2 every capture runs under `GRC_ROOT_SIZE=enforce-min-size`; since G2b2 every
+capture writes its payload store (`<capture>/store`, which holds only the engine's hue strip here)
+and every file-mode receiver gets a fresh cache and that store. Every gate runs on
+[protocol/render-stream-3.md](protocol/render-stream-3.md) since G4e2 (render-stream/2 from G2b2
+to G4e2; /3 is /2 plus the MSDF glyph command): the capture, the receiver and every checker speak
+it, the recordings keep their `.rs2` names, and the receiver's typecheck replays `golden-3/`.
+Self-tests: `scripts/test/self-test-rs2.ts` (TS decoder against the /2 golden vectors and, since
+G4e1, against /3's `golden-3/`, implemented in `render-stream-2.ts` itself behind a `version`
+parameter rather than a forked `render-stream-3.ts`; since G4e2 the parameter defaults to 3),
 `scripts/test/self-test-gate0.ts` (checker and classifier on synthetic evidence) and
 `python3 experiments/render-stream/protocol/golden-2/make_golden.py --check` (plus `golden-3/`'s);
 the frozen /0 and /1 history stays checked by `scripts/test/self-test-rs0.ts`, `self-test-rs1.ts`
@@ -349,8 +351,8 @@ mise exec -- pnpm render-stream:gate1 -- \
 
 This takes about nine minutes and runs the landed groups, `g1a`, `g1b`, `g1c` and `g1d`. It imports
 `fixtures/gate1/` and `receiver/`, then runs the receiver's typed self-test and the headless
-captures, each writing both sinks (`recording.rs2` full, `recording-patch.rs2` patch, render-stream/2
-since G2b2) and its payload store: the
+captures, each writing both sinks (`recording.rs2` full, `recording-patch.rs2` patch,
+render-stream/2 since G2b2, render-stream/3 since G4e2) and its payload store: the
 400-frame capture under `enforce-min-size`, the four `omit-update` sabotage captures and the
 `root-size-observe` capture. Next it runs the headless traced receiver. The reference and the six
 g1a rendered receivers share one private gamescope. Group g1b then captures the two `omit-op`
@@ -405,13 +407,13 @@ Environment, read once at SCENE initialisation:
 | `GRC_MODE`                       | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                                                                                                                                                            |
 | `GRC_EVIDENCE_DIR`               | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                                                                                                                                                         |
 | `GRC_DISARM_AFTER_FRAMES`        | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                                                                                                                                                     |
-| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
+| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2, render-stream/3 since G4e2). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
 | `GRC_STREAM_PATCH_OUT`           | G1b2: absolute `.rs2` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                                                                                                                                                        |
-| `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), and G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`. `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected)                   |
+| `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`, and G4e2's `perturb-glyph` (the mirror records rect.x + 0.25 on every glyph command from the frame on). `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected)                   |
 | `GRC_SABOTAGE_OP`                | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                                                                                                                                                                 |
 | `GRC_SABOTAGE_FRAME`             | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                                                                                                                                                                   |
 | `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                                                                                                                                                     |
-| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/2 since G2b2, subprotocol `render-stream.2`; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
+| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/3 since G4e2, subprotocol `render-stream.3`; /2 from G2b2; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
 | `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                                               |
 | `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                                     |
 | `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                                       |
@@ -2581,6 +2583,81 @@ exactly {5..9}, all 94 differing pixels per step inside LD2, and its parity fail
   (`root_node_layout_direction` stays LTR), explicit `language` tags (`locl`), system fallback,
   colour or emoji fonts, and `RichTextLabel` spans in other scripts.
 - Subpixel positioning or MSDF on the fallbacks (G4e2 owns MSDF).
+
+## Gate 4e result (2026-10-10)
+
+G4e2 ([protocol/gate4-design.md](protocol/gate4-design.md) "G4e2", "As built (G4e2)") passes:
+`pnpm render-stream:gate4` (every landed group, g4a–g4f) is 185/185 in
+`artifacts/render-stream/gate4/20261010T064607Z/`, g4e's own 43/43. Everything now runs on
+[protocol/render-stream-3.md](protocol/render-stream-3.md): the capture publishes `GRS3` with the
+/3 features and serves `render-stream.3`, the receiver decodes /3 and replays
+`add_msdf_texture_rect_region`, and every checker decodes /3, g4d and g4f included (recordings
+keep their `.rs2` names; /2 decoding remains for `golden-2/` only). The same build passed
+`build-capture.sh` (11/11 ctests), `calibrate.sh --check`, gate −1 28/28 with 56 hooks
+(`gate-minus1/20261010T061257Z/`), gate 0 19/19 (`gate0/20261010T061413Z/`), gate 1 65/65
+(`gate1/20261010T061700Z/`), gate 2 85/85 (`gate2/20261010T062637Z/`) and gate 3 56/56 with
+g3a–g3d (`gate3/20261010T063835Z/`).
+
+What landed: the mirror's msdf tap and the `perturb-glyph` sabotage (`rs_mirror`, `hooks.cpp`,
+which also records the msdf arguments in `counters.json`), the /3 session and live hub
+(`rs_publish`, `rs_live`, `entry.cpp`), the receiver's msdf replay and `drop-msdf` sabotage
+(`rs_applier.gd`, `receiver.gd`, `applied.json` `msdf_commands`), `fixtures/gate4-msdf/` (five
+Labels on one MSDF `FontFile` with the target game's `msdf_size` 48 and `msdf_pixel_range` 24 at
+16, 24, 40 and 56 px, an outline toggled on, one Label under a Node2D rotated 20° → 35° and scaled
+1.5), its oracle and `make_expected.py`, group g4e in `run-gate4.sh` (legs under `<out>/msdf/`) and
+`lib/gate4e-checks.ts`. Images: `msdf/reference/shots/step-{0..9}.png` and `early-{1,7}.png`,
+`msdf/receiver{,-patch}/shots/`, `msdf/sabotage-perturb-glyph/receiver/shots/`,
+`msdf/sabotage-receiver-drop/receiver/shots/`, `msdf/sabotage-gray-perturb-glyph/receiver/shots/`.
+
+Every msdf command (338 over the ten settle steps × 2 sinks) equals the oracle's float32 quad and
+source rect bit for bit, with `outline` 0 or 4 as its pass sets it, `px_range` 24 and
+`scale = size / 48` (15 080 msdf commands on the full sink, 3 460 of them outline-pass). The one
+page hashes to the oracle's dump at every step and every new version writes only empty texels
+(27 049). **The MSDF budget, measured from the same-build reference repeat, is 0 in every region**,
+and both receivers equal the reference exactly. Census as measured:
+
+| step | change                         | `FM@48` (512² RGBA8)                 | msdf commands |
+| ---- | ------------------------------ | ------------------------------------ | ------------- |
+| 0    | everything (19 glyphs)         | create (1 048 692 B payload)         | 25            |
+| 1    | `M16` "Hello Wyvern"           | 1 update                             | 31            |
+| 2    | `M24` 24 → 56 px               | none                                 | 31            |
+| 3    | `M40` outline 4 on             | none                                 | 37            |
+| 4–6  | colour, R rotation, outline colour | none                             | 37            |
+| 7    | `MT` "Jump!", `M16` "Wizard"   | 2 updates in frame 71, wire v4       | 33            |
+| 8, 9 | new placement, new text        | none                                 | 31, 39        |
+
+Cost at the hook per 1 MiB page upload: copy 0.55–0.62 ms, hash 3.0–3.4 ms (step 7's two uploads
+6.0 ms of hashing). Sabotages, each exactly as predicted: `sabotage-msdf-perturb-glyph` is
+`pixel-mismatch` at {1..9}, confined to the Labels that redrew after frame 11 (M16 from step 1, M24
+from 2, M40 from 3, MT from 7; MR never redraws and never mismatches), with +0.25 on exactly those
+Labels' 235 recorded rects; `sabotage-msdf-receiver-drop` is `pixel-mismatch` at {0..9} in every
+text region and replays no msdf command; `sabotage-gray-perturb-glyph` (fixtures/gate4) is
+`pixel-mismatch` at {1..9} in L1, LH, L2, L3 and LD as each redraws, a quarter pixel on the integer
+path (701 px at step 1, max delta 51).
+
+### Findings
+
+- **One MSDF cache for every size.** The cache key is `msdf_size`, so 16, 24, 40 and 56 px and the
+  outline pass share one page: a size change or an outline toggle uploads nothing. At range 24 a
+  glyph cell is about 78×87 texels, so a 512² page holds about 30 glyphs.
+- **perturb-glyph moves only re-recorded commands.** It acts where the mirror records, so a Label
+  whose commands were recorded before the sabotage frame keeps them: the prediction is per Label
+  from its first redraw, and a transform-only parent never reveals it.
+- **The oracle's MSDF quads are bit-exact by construction.** The engine's getters and its draw
+  scale the glyph rect the same way (Vector2 × real_t, then / real_t), so pen + offset in float32
+  reproduces every command with no tolerance.
+- **A dormant gate 3 test.** `rs_mirror_test`'s `test_clip_ignore_tap` (G3d) was never called from
+  `main()` and had two wrong expectations; G4e2 calls it and fixed them.
+
+### What G4e2 does not prove
+
+- MSDF pixels against an independent synthesis: the shader's `fwidth` coverage is not modelled
+  (no `expected-text-*`). The claim is atlas parity, bit-exact commands, a zero repeat budget and
+  receiver equality on one GPU and driver.
+- Browser receivers' MSDF (gate 7), MSDF under `canvas_items` stretch (gate 6), several MSDF pages
+  or `msdf_size` 128, and the target game's own fonts (gate 8).
+- Live MSDF delivery beyond the shared /3 live path (gate 1's and gate 2's live legs pass on /3,
+  but no live leg draws MSDF text).
 
 ## Scratch verification (2026-10-08)
 

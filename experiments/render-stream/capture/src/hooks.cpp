@@ -533,6 +533,19 @@ struct TextureRectRegionKey {
   bool clip_uv;
 };
 
+// G4e2 (gate4-design.md Q2): the msdf draw's full arguments, in _texture_rect_region's shape plus
+// outline_size, px_range and scale.
+struct MsdfRectKey {
+  uint64_t item;
+  Rect2 rect;
+  uint64_t texture;
+  Rect2 source;
+  Color modulate;
+  int32_t outline_size;
+  float px_range;
+  float scale;
+};
+
 struct LcdRectKey {
   uint64_t item;
   Rect2 rect;
@@ -592,6 +605,7 @@ Log<PodEntry<ItemValueKey>> g_set_draw_behinds;
 // calibrator 5
 Log<PodEntry<TextureRectKey>> g_texture_rects{{}, 0, kMaxTextureRectEntries};
 Log<PodEntry<TextureRectRegionKey>> g_texture_rect_regions{{}, 0, kMaxTextureRectEntries};
+Log<PodEntry<MsdfRectKey>> g_msdf_rects{{}, 0, kMaxTextureRectEntries};
 Log<PodEntry<RidTripleKey>> g_placeholder_creates;
 Log<PodEntry<RidTripleKey>> g_texture_replaces;
 Log<PodEntry<ItemValueKey>> g_viewport_texture_filters;
@@ -899,7 +913,25 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
                                        const Rect2 *source, const Color *modulate,
                                        int outline_size, float px_range, float scale) {
   bump(kAddMsdfTextureRectRegion);
-  tap_unsupported(item, "canvas_item_add_msdf_texture_rect_region");
+  // G4e2 (gate4-design.md Q3 "MSDF tap"): the /3 command, no longer a typed refusal.
+  if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
+    mirror().add_msdf_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
+                                          to_color(*modulate), outline_size, px_range, scale,
+                                          current_frame());
+  }
+  if (rect != nullptr && source != nullptr && modulate != nullptr) {
+    MsdfRectKey key;
+    zero(&key);
+    key.item = item.id;
+    key.rect = *rect;
+    key.texture = texture.id;
+    key.source = *source;
+    key.modulate = *modulate;
+    key.outline_size = outline_size;
+    key.px_range = px_range;
+    key.scale = scale;
+    log_entry(&g_msdf_rects, pod(key));
+  }
   original<FnAddMsdfTextureRectRegion>(kAddMsdfTextureRectRegion)(
       self, item, rect, texture, source, modulate, outline_size, px_range, scale);
 }
@@ -1894,6 +1926,7 @@ struct Snapshot {
   Log<PodEntry<ItemValueKey>> viewport_texture_filters, viewport_texture_repeats,
       canvas_texture_filters, canvas_texture_repeats, item_texture_filters, item_texture_repeats;
   Log<PodEntry<ChannelKey>> canvas_texture_channels;
+  Log<PodEntry<MsdfRectKey>> msdf_rects;
   Log<PodEntry<LcdRectKey>> lcd_rects;
   Log<PodEntry<ItemCustomRectKey>> set_custom_rects;
   Log<PodEntry<ItemColorKey>> set_self_modulates;
@@ -1957,6 +1990,7 @@ Snapshot take_snapshot() {
   s.item_texture_filters = g_item_texture_filters;
   s.item_texture_repeats = g_item_texture_repeats;
   s.canvas_texture_channels = g_canvas_texture_channels;
+  s.msdf_rects = g_msdf_rects;
   s.lcd_rects = g_lcd_rects;
   s.clip_ignores = g_clip_ignores;
   return s;
@@ -2322,7 +2356,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
             item_bool_writer("behind"));
   // Calibrator 5 (gate2-design.md Q2). The two texture-rect draws carry their
   // full arguments (negative sizes, that is flips, as the engine received them);
-  // msdf stays count-only.
+  // since G4e2 (gate4-design.md Q2) so does the msdf draw.
   write_log(&json, "canvas_item_add_texture_rect", s.texture_rects,
             [](JsonWriter *j, const PodEntry<TextureRectKey> &e) {
               write_rid(j, "item", e.key.item);
@@ -2341,6 +2375,17 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
               write_floats(j, "modulate", e.key.modulate);
               j->field("transpose", e.key.transpose);
               j->field("clip_uv", e.key.clip_uv);
+            });
+  write_log(&json, "canvas_item_add_msdf_texture_rect_region", s.msdf_rects,
+            [](JsonWriter *j, const PodEntry<MsdfRectKey> &e) {
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "rect", e.key.rect);
+              write_rid(j, "texture", e.key.texture);
+              write_floats(j, "source", e.key.source);
+              write_floats(j, "modulate", e.key.modulate);
+              j->field("outline_size", static_cast<int64_t>(e.key.outline_size));
+              write_floats(j, "px_range", &e.key.px_range, 1);
+              write_floats(j, "scale", &e.key.scale, 1);
             });
   write_log(&json, "texture_2d_placeholder_create", s.placeholder_creates,
             [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
@@ -2436,6 +2481,8 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   json.field("canvas_item_add_texture_rect", static_cast<int64_t>(s.texture_rects.dropped));
   json.field("canvas_item_add_texture_rect_region",
              static_cast<int64_t>(s.texture_rect_regions.dropped));
+  json.field("canvas_item_add_msdf_texture_rect_region",
+             static_cast<int64_t>(s.msdf_rects.dropped));
   json.field("texture_2d_placeholder_create",
              static_cast<int64_t>(s.placeholder_creates.dropped));
   json.field("texture_replace", static_cast<int64_t>(s.texture_replaces.dropped));

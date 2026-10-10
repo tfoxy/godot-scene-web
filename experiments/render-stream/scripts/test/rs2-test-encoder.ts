@@ -30,8 +30,10 @@ import {
   type TextureReason,
 } from "../lib/render-stream-2";
 
+/** The wire magic of every synthetic recording: GRS3 since G4e2 (render-stream-3.md), what the
+ * capture publishes and the checkers decode by default. */
 export const MAGIC2 = Buffer.from([
-  0x47, 0x52, 0x53, 0x32, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x47, 0x52, 0x53, 0x33, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 export const GRT1_MAGIC = Buffer.from([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -313,7 +315,7 @@ export function encodeSession(opts: TSessionOptions): Buffer {
   return encodeRecord(
     {
       type: "session",
-      protocol: "render-stream/2",
+      protocol: "render-stream/3",
       session_id: opts.sessionId ?? "0123456789abcdef0123456789abcdef",
       stream: {
         stream_id:

@@ -1,0 +1,1104 @@
+{
+  "schema": "render-stream-gate4-expected/1",
+  "fixture": "gate4-msdf",
+  "viewport": [640, 360],
+  "clear_rgba8": [51, 51, 102, 255],
+  "start_frame_default": 1,
+  "step_frames_default": 10,
+  "settle_offset": 7,
+  "quit_frame_default": 102,
+  "last_step": 9,
+  "early_shot_steps": [1, 7],
+  "creation_order": ["P", "M16", "M24", "M40", "MT", "R", "MR", "Marker"],
+  "created_later": [],
+  "text_nodes": ["M16", "M24", "M40", "MT", "MR"],
+  "fonts": {
+    "FM": {
+      "file": "OpenSans_SemiBold.woff2",
+      "kind": "FontFile (MSDF)",
+      "sizes": [16, 24, 40, 56]
+    }
+  },
+  "msdf": {
+    "font_key": "FM",
+    "msdf_size": 48,
+    "msdf_pixel_range": 24,
+    "cache": "FM@48"
+  },
+  "rotor": {
+    "position": [400, 120],
+    "rotation_degrees": 20,
+    "scale": 1.5
+  },
+  "cache_keys": ["FM@48"],
+  "caches": {
+    "FM@48": {
+      "format": "RGBA8",
+      "width": 512,
+      "height": 512,
+      "mipmaps": false,
+      "data_bytes": 1048576,
+      "outline": 0,
+      "subpixel": false
+    }
+  },
+  "subpixel_caches": [],
+  "page": {
+    "format": "RGBA8",
+    "width": 512,
+    "height": 512,
+    "mipmaps": false,
+    "data_bytes": 1048576,
+    "empty_texel": [0, 0, 0, 0]
+  },
+  "panel": {
+    "rect": [344, 24, 232, 312],
+    "rgba8": [255, 255, 204, 255]
+  },
+  "marker_rect": [592, 16, 32, 32],
+  "regions": {
+    "marker": [584, 8, 48, 48],
+    "panel": [344, 24, 232, 312]
+  },
+  "backgrounds": {
+    "dark": [51, 51, 102, 255],
+    "panel": [255, 255, 204, 255]
+  },
+  "engine_textures": [
+    {
+      "frame": 1,
+      "op": "texture_2d_create",
+      "format": "RGBA8",
+      "width": 800,
+      "height": 6
+    }
+  ],
+  "quiet_steps": [2, 3, 4, 5, 6, 8, 9],
+  "hook_versions_total": {
+    "FM@48": 4
+  },
+  "hand_table": {
+    "0": {
+      "uploads": "create",
+      "proves": "every step-0 glyph in one 512x512 RGBA8 page, created once"
+    },
+    "1": {
+      "uploads": 1,
+      "proves": "new glyphs: one upload of the page"
+    },
+    "2": {
+      "uploads": 0,
+      "proves": "a size change 24 -> 56: no upload, the cache key is msdf_size"
+    },
+    "3": {
+      "uploads": 0,
+      "proves": "an outline toggle: no upload, the same page"
+    },
+    "4": {
+      "uploads": 0,
+      "proves": "a colour change"
+    },
+    "5": {
+      "uploads": 0,
+      "proves": "a parent rotation: transform only"
+    },
+    "6": {
+      "uploads": 0,
+      "proves": "an outline colour change"
+    },
+    "7": {
+      "uploads": 2,
+      "proves": "two Labels, one page, one frame: two hook versions, one on the wire"
+    },
+    "8": {
+      "uploads": 0,
+      "proves": "new placement, no new glyphs"
+    },
+    "9": {
+      "uploads": 0,
+      "proves": "new text with the outline on, no new glyphs"
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "applied_frame": 1,
+      "settle_frame": 8,
+      "marker_rgba8": [0, 0, 0, 255],
+      "texts": {
+        "M16": {
+          "text": "Hello",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 0
+        },
+        "MT": {
+          "text": "Jump",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 20
+        }
+      },
+      "draws": ["M16", "M24", "M40", "MT", "MR"],
+      "ink_glyphs": { "M16": 5, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "commands": { "M16": 5, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": { "FM@48": "HeloSphinxQuartzJmT" },
+      "page_uploads": {},
+      "page_creates": { "FM@48": 1 },
+      "hook_versions": { "FM@48/0#0": 1 },
+      "wire_versions": { "FM@48/0#0": 1 },
+      "page_glyphs": { "FM@48": 19 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": false,
+        "M24": false,
+        "M40": false,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 1,
+      "applied_frame": 11,
+      "settle_frame": 18,
+      "marker_rgba8": [255, 255, 0, 255],
+      "texts": {
+        "M16": {
+          "text": "Hello Wyvern",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 0
+        },
+        "MT": {
+          "text": "Jump",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 20
+        }
+      },
+      "draws": ["M16"],
+      "ink_glyphs": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "commands": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": { "FM@48": "Wyv" },
+      "page_uploads": { "FM@48": 1 },
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 2 },
+      "wire_versions": { "FM@48/0#0": 2 },
+      "page_glyphs": { "FM@48": 22 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": true,
+        "M24": false,
+        "M40": false,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 2,
+      "applied_frame": 21,
+      "settle_frame": 28,
+      "marker_rgba8": [0, 255, 255, 255],
+      "texts": {
+        "M16": {
+          "text": "Hello Wyvern",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 0
+        },
+        "MT": {
+          "text": "Jump",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 20
+        }
+      },
+      "draws": ["M24"],
+      "ink_glyphs": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "commands": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 2 },
+      "wire_versions": { "FM@48/0#0": 2 },
+      "page_glyphs": { "FM@48": 22 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": false,
+        "M24": true,
+        "M40": false,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 3,
+      "applied_frame": 31,
+      "settle_frame": 38,
+      "marker_rgba8": [102, 0, 102, 255],
+      "texts": {
+        "M16": {
+          "text": "Hello Wyvern",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 1, 1, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 4,
+          "outline_colour": [1, 0.4, 0, 1]
+        },
+        "MT": {
+          "text": "Jump",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 20
+        }
+      },
+      "draws": ["M40"],
+      "ink_glyphs": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "commands": { "M16": 11, "M24": 6, "M40": 12, "MT": 4, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["outline", "text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 2 },
+      "wire_versions": { "FM@48/0#0": 2 },
+      "page_glyphs": { "FM@48": 22 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": false,
+        "M24": false,
+        "M40": true,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 4,
+      "applied_frame": 41,
+      "settle_frame": 48,
+      "marker_rgba8": [0, 102, 0, 255],
+      "texts": {
+        "M16": {
+          "text": "Hello Wyvern",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 0.6, 0.6, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 4,
+          "outline_colour": [1, 0.4, 0, 1]
+        },
+        "MT": {
+          "text": "Jump",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 20
+        }
+      },
+      "draws": ["M16"],
+      "ink_glyphs": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "commands": { "M16": 11, "M24": 6, "M40": 12, "MT": 4, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["outline", "text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 2 },
+      "wire_versions": { "FM@48/0#0": 2 },
+      "page_glyphs": { "FM@48": 22 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": true,
+        "M24": false,
+        "M40": false,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 5,
+      "applied_frame": 51,
+      "settle_frame": 58,
+      "marker_rgba8": [102, 0, 0, 255],
+      "texts": {
+        "M16": {
+          "text": "Hello Wyvern",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 0.6, 0.6, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 4,
+          "outline_colour": [1, 0.4, 0, 1]
+        },
+        "MT": {
+          "text": "Jump",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 35
+        }
+      },
+      "draws": [],
+      "ink_glyphs": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "commands": { "M16": 11, "M24": 6, "M40": 12, "MT": 4, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["outline", "text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 2 },
+      "wire_versions": { "FM@48/0#0": 2 },
+      "page_glyphs": { "FM@48": 22 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": false,
+        "M24": false,
+        "M40": false,
+        "MT": false,
+        "MR": true
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 6,
+      "applied_frame": 61,
+      "settle_frame": 68,
+      "marker_rgba8": [0, 0, 102, 255],
+      "texts": {
+        "M16": {
+          "text": "Hello Wyvern",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 0.6, 0.6, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 4,
+          "outline_colour": [0.4, 1, 1, 1]
+        },
+        "MT": {
+          "text": "Jump",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 35
+        }
+      },
+      "draws": ["M40"],
+      "ink_glyphs": { "M16": 11, "M24": 6, "M40": 6, "MT": 4, "MR": 4 },
+      "commands": { "M16": 11, "M24": 6, "M40": 12, "MT": 4, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["outline", "text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 2 },
+      "wire_versions": { "FM@48/0#0": 2 },
+      "page_glyphs": { "FM@48": 22 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": false,
+        "M24": false,
+        "M40": true,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 7,
+      "applied_frame": 71,
+      "settle_frame": 78,
+      "marker_rgba8": [204, 102, 204, 255],
+      "texts": {
+        "M16": {
+          "text": "Wizard",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 0.6, 0.6, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Sphinx",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 4,
+          "outline_colour": [0.4, 1, 1, 1]
+        },
+        "MT": {
+          "text": "Jump!",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 35
+        }
+      },
+      "draws": ["MT", "M16"],
+      "ink_glyphs": { "M16": 6, "M24": 6, "M40": 6, "MT": 5, "MR": 4 },
+      "commands": { "M16": 6, "M24": 6, "M40": 12, "MT": 5, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["outline", "text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": { "FM@48": "!d" },
+      "page_uploads": { "FM@48": 2 },
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 4 },
+      "wire_versions": { "FM@48/0#0": 4 },
+      "page_glyphs": { "FM@48": 24 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": true,
+        "M24": false,
+        "M40": false,
+        "MT": true,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 8,
+      "applied_frame": 81,
+      "settle_frame": 88,
+      "marker_rgba8": [102, 153, 204, 255],
+      "texts": {
+        "M16": {
+          "text": "Wizard",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 0.6, 0.6, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Ship",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 4,
+          "outline_colour": [0.4, 1, 1, 1]
+        },
+        "MT": {
+          "text": "Jump!",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 35
+        }
+      },
+      "draws": ["M24"],
+      "ink_glyphs": { "M16": 6, "M24": 4, "M40": 6, "MT": 5, "MR": 4 },
+      "commands": { "M16": 6, "M24": 4, "M40": 12, "MT": 5, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["outline", "text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 4 },
+      "wire_versions": { "FM@48/0#0": 4 },
+      "page_glyphs": { "FM@48": 24 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": false,
+        "M24": true,
+        "M40": false,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    },
+    {
+      "step": 9,
+      "applied_frame": 91,
+      "settle_frame": 98,
+      "marker_rgba8": [204, 153, 102, 255],
+      "texts": {
+        "M16": {
+          "text": "Wizard",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [1, 0.6, 0.6, 1],
+          "visible": true,
+          "position": [24, 24],
+          "outline_size": 0
+        },
+        "M24": {
+          "text": "Ship",
+          "font_key": "FM",
+          "size": 56,
+          "colour": [1, 0.8, 0.2, 1],
+          "visible": true,
+          "position": [24, 64],
+          "outline_size": 0
+        },
+        "M40": {
+          "text": "Quartz Quiz",
+          "font_key": "FM",
+          "size": 40,
+          "colour": [0.4, 1, 0.6, 1],
+          "visible": true,
+          "position": [24, 160],
+          "outline_size": 4,
+          "outline_colour": [0.4, 1, 1, 1]
+        },
+        "MT": {
+          "text": "Jump!",
+          "font_key": "FM",
+          "size": 24,
+          "colour": [0, 0, 0, 0.6],
+          "visible": true,
+          "position": [360, 40],
+          "outline_size": 0
+        },
+        "MR": {
+          "text": "Turn",
+          "font_key": "FM",
+          "size": 16,
+          "colour": [0.2, 0, 0.4, 1],
+          "visible": true,
+          "position": [0, 0],
+          "outline_size": 0,
+          "rotation_degrees": 35
+        }
+      },
+      "draws": ["M40"],
+      "ink_glyphs": { "M16": 6, "M24": 4, "M40": 10, "MT": 5, "MR": 4 },
+      "commands": { "M16": 6, "M24": 4, "M40": 20, "MT": 5, "MR": 4 },
+      "passes": {
+        "M16": ["text"],
+        "M24": ["text"],
+        "M40": ["outline", "text"],
+        "MT": ["text"],
+        "MR": ["text"]
+      },
+      "new_glyphs": {},
+      "page_uploads": {},
+      "page_creates": {},
+      "hook_versions": { "FM@48/0#0": 4 },
+      "wire_versions": { "FM@48/0#0": 4 },
+      "page_glyphs": { "FM@48": 24 },
+      "page_counts": { "FM@48": 1 },
+      "text_regions": {
+        "M16": [16, 16, 240, 52],
+        "M24": [16, 56, 336, 148],
+        "M40": [16, 152, 336, 232],
+        "MT": [352, 32, 568, 80],
+        "MR": [352, 96, 568, 200]
+      },
+      "background": {
+        "M16": [51, 51, 102, 255],
+        "M24": [51, 51, 102, 255],
+        "M40": [51, 51, 102, 255],
+        "MT": [255, 255, 204, 255],
+        "MR": [255, 255, 204, 255]
+      },
+      "fresh": {
+        "M16": false,
+        "M24": false,
+        "M40": true,
+        "MT": false,
+        "MR": false
+      },
+      "frees": [],
+      "subpixel_bounded": []
+    }
+  ],
+  "predictions": {
+    "sabotage-msdf-perturb-glyph": {
+      "frame": 11,
+      "steps": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "regions": {
+        "1": ["M16"],
+        "2": ["M16", "M24"],
+        "3": ["M16", "M24", "M40"],
+        "4": ["M16", "M24", "M40"],
+        "5": ["M16", "M24", "M40"],
+        "6": ["M16", "M24", "M40"],
+        "7": ["M16", "M24", "M40", "MT"],
+        "8": ["M16", "M24", "M40", "MT"],
+        "9": ["M16", "M24", "M40", "MT"]
+      }
+    },
+    "sabotage-msdf-receiver-drop": {
+      "frame": 0,
+      "steps": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "regions": {
+        "0": ["M16", "M24", "M40", "MT", "MR"],
+        "1": ["M16", "M24", "M40", "MT", "MR"],
+        "2": ["M16", "M24", "M40", "MT", "MR"],
+        "3": ["M16", "M24", "M40", "MT", "MR"],
+        "4": ["M16", "M24", "M40", "MT", "MR"],
+        "5": ["M16", "M24", "M40", "MT", "MR"],
+        "6": ["M16", "M24", "M40", "MT", "MR"],
+        "7": ["M16", "M24", "M40", "MT", "MR"],
+        "8": ["M16", "M24", "M40", "MT", "MR"],
+        "9": ["M16", "M24", "M40", "MT", "MR"]
+      }
+    }
+  }
+}

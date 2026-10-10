@@ -15,7 +15,8 @@
 // append-only on a hand-built 8x8 LA8 pair.
 //
 // Group g4c's cases (lib/gate4c-checks.ts, fixtures/gate4-layout) live in test/gate4c-cases.ts,
-// group g4f's (lib/gate4f-checks.ts, fixtures/gate4-i18n) in test/gate4f-cases.ts.
+// group g4f's (lib/gate4f-checks.ts, fixtures/gate4-i18n) in test/gate4f-cases.ts, and group
+// g4e's (lib/gate4e-checks.ts, fixtures/gate4-msdf) in test/gate4e-cases.ts.
 //
 // Exits non-zero if any assertion fails.
 
@@ -81,6 +82,7 @@ import {
   type ResolvedTexture,
 } from "../lib/render-stream-2";
 import { gate4cCases } from "./gate4c-cases";
+import { gate4eCases } from "./gate4e-cases";
 import { gate4fCases } from "./gate4f-cases";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -1267,6 +1269,8 @@ async function main(): Promise<void> {
   await gate4cCases(assert, EXPERIMENT_DIR);
   // Group g4f (test/gate4f-cases.ts): the multilingual fixture's evaluators.
   await gate4fCases(assert, EXPERIMENT_DIR);
+  // Group g4e (test/gate4e-cases.ts): the MSDF fixture's evaluators.
+  await gate4eCases(assert, EXPERIMENT_DIR);
   console.log(
     `\nself-test-gate4: ${assertions - failures}/${assertions} assertions passed`,
   );
