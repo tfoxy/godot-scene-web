@@ -119,10 +119,10 @@ Key order (line breaks for reading only):
   Otherwise `[]`. The only reason so far is `canvas-texture-headless`.
 - `observed_unsupported_ops`: /1's list without `canvas_item_add_texture_rect` and
   `canvas_item_add_texture_rect_region`, plus `canvas_item_add_lcd_texture_rect_region` (hooked from
-  calibrator 5 on).
+  calibrator 5 on) and, from calibrator 6 on (gate3-design.md D4), `canvas_item_add_clip_ignore`.
 - `unobserved`: /1's list without `canvas_item_set_default_texture_filter` and
-  `canvas_item_set_default_texture_repeat`, plus `canvas_texture_set_shading_parameters` and
-  `texture_set_size_override`.
+  `canvas_item_set_default_texture_repeat`, plus `canvas_texture_set_shading_parameters`,
+  `texture_set_size_override` and (gate3-design.md D6) `canvas_item_set_visibility_notifier`.
 
 Sabotage kinds: /1's, plus `stale-texture`, `wrong-hash`, `spurious-texture-update`,
 `drop-resource` and `unpin` (gate2-design.md). `op` is non-null only for `omit-op`.

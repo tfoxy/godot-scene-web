@@ -56,10 +56,11 @@ It answers one question before any protocol work starts:
 > damage a shipped game?
 
 **Answer: yes, measured.** A GDExtension copies the `RenderingServer` singleton's
-vtable into the heap, replaces up to 55 slots with pass-through recording hooks
+vtable into the heap, replaces up to 56 slots with pass-through recording hooks
 (the eight gate −1 hooks, 23 draw-path hooks added for gate −0.25, 11 canvas
 and viewport state hooks added for gate 0, 2 more draw-order hooks added for
-gate 1 G1e, and 11 texture hooks added for gate 2 G2a), and publishes the copy with one aligned pointer store into the
+gate 1 G1e, 11 texture hooks added for gate 2 G2a, and one `clip_ignore` hook
+added for gate 3 G3d), and publishes the copy with one aligned pointer store into the
 singleton object's first word. Native `Control` drawing, the `Label` glyph path and direct
 `RenderingServer` calls from GDScript are all intercepted; the engine's own call
 sites are **not** devirtualised away by the official build's LTO. Disarming
@@ -253,7 +254,7 @@ That record may come from a sibling calibrating another binary with whatever
   omission is recorded in three places:
   - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
     omitted hooks, for example:
-    `8 of 55 hooks named by the record; omitted (record predates them): …`.
+    `8 of 56 hooks named by the record; omitted (record predates them): …`.
   - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
     is `null` rather than `0`. A `null` means "not installed", which is
     different from "never called".
@@ -2117,6 +2118,88 @@ failing probes.
 
 - Rotated text clipping, skew, clipping under stretch, or a browser receiver's clip (gates 4, 6
   and 7).
+
+## Gate 3d result (2026-10-10)
+
+G3d ([protocol/gate3-design.md](protocol/gate3-design.md) "G3d") passes:
+`pnpm render-stream:gate3 -- --legs g3a,g3b,g3c,g3d` is **56/56** in
+`artifacts/render-stream/gate3/20261010T025646Z/`, with `groups.not_run` empty. This run lands
+after G3b's and G3c's own increments, and lifts G3d's original step-0-only limitation on
+`receiver-clip-ignore` (see "Findings"). The same build passed gate −1 29/29 with **56 hooks**
+planned and none omitted (`artifacts/render-stream/gate-minus1/20261010T023902Z/`), gate 0 19/19
+(`gate0/20261010T013636Z/`), gate 1 65/65 (`gate1/20261010T013931Z/`) and gate 2 85/85
+(`gate2/20261010T024044Z/`, a rerun: a same-code run earlier that session scored 83/85 on
+`pins-bounded`/`obsolete-retired` under heavy concurrent load from other agents' gate runs on this
+machine -- a timing-sensitive `live-animate` leg, not a regression; see gate 3c's own "Findings").
+
+What landed:
+
+- **Calibrator 6.** `canvas_item_add_clip_ignore` (header line 1595, slot 479, the existing
+  `FnRidBool` signature) joins `hooks.cpp` as an optional hook. The mirror tap is the *existing*
+  generic `add_unsupported` path every other calibrator-2 draw op already uses (msdf, polygon,
+  triangle array, …): no new mirror code, one new `rs_mirror_test` case. The hook itself logs
+  `(item, ignore)` into `counters.json`'s `captured.canvas_item_add_clip_ignore`, deduplicated like
+  every other optional setter; the bool never reaches the wire.
+- **Calibration record and spike.** The committed record now names 57 slots (56 hooks plus the
+  `get_default_clear_color` probe); `scripts/calibrate.sh --check` is clean. `fixtures/spike/`
+  gets a second orphan raw item (`add_clip_ignore(true)`, a rect, `add_clip_ignore(false)`, no
+  parent canvas), so gate −1 plans 56 hooks with every optional counter positive and
+  `armed.png == unarmed.png` still holds.
+- **Feature-list amendment.** `observed_unsupported_ops` gains `canvas_item_add_clip_ignore`;
+  `unobserved` gains `canvas_item_set_visibility_notifier` (D6: it is never hooked, and the scene
+  API never combines a notifier with a clip). Both arrays stay sorted by byte value, in
+  `capture/src/rs_publish.cpp` (`gate2_features`) and its test mirror
+  `scripts/lib/gate0-checks.ts` (`RS2_FEATURES`, `GATE0_HOOKS`), which every gate's
+  `manifest-present`/`capture-armed` reuses. `protocol/golden-2/` and `capture/test/rs2_golden_states.h`
+  were regenerated to match (G1e's precedent).
+- **The `clip-ignore` variant.** `fixtures/gate3/gate3.gd` adds a static raw item `RI` (draw index
+  1002, origin (472,184)) only under `RS_FIXTURE_VARIANT=clip-ignore`: `add_rect`,
+  `add_clip_ignore(true)`, `add_rect`, `add_clip_ignore(false)`, inside its own custom rect/clip.
+  `make_expected.py`'s `variant_clip_ignore` block carries RI's draws per step for both the
+  reference (the real engine's clip-ignore semantics, Q1d) and the receiver (which only sees the
+  two `add_clip_ignore` calls as unsupported commands, so both rects stay clipped to RI's own
+  scissor); both move with the step-9 canvas shift like every other top-level item. New legs
+  `capture-clip-ignore`, `reference-clip-ignore` and `receiver-clip-ignore`
+  (group `g3d`) and new checks `capture-armed-clip-ignore` (a second capture leg under its own
+  directory, since gate 0's `checkCaptureArmed` hardcodes `capture/`), `clip-ignore-typed`,
+  `expected-image-reference-clip-ignore` and `leg-class-capture-clip-ignore`/
+  `-receiver-clip-ignore`.
+
+Evidence: `capture-clip-ignore/recording.rs2`'s last transaction carries RI's item with exactly
+`add_rect`, `unsupported canvas_item_add_clip_ignore`, `add_rect`, `unsupported
+canvas_item_add_clip_ignore`, and one de-duplicated item-level entry
+`{"op":"canvas_item_add_clip_ignore","reason":"unsupported-op"}` — `clip-ignore-typed` reads this
+directly. `reference-clip-ignore/shots/step-{0..9}.png` equal `synthesizeGate3` with RI's
+reference draws appended, exactly, at every step. `receiver-clip-ignore` replays every one of the
+ten settle seqs against `reference-clip-ignore`'s matching `step-<k>.png`: `leg-class-receiver-
+clip-ignore` reports mismatching regions `{ri}` and nothing else, at every step combined -- RI's
+escaped second rect is the only disagreement, and the base scene's own clipping Controls (`B`,
+`A`, `D`, `RC`), now on G3b's fixed receiver, replay clean alongside it.
+
+### Findings
+
+- **The step-0-only limitation lifted cleanly once G3b landed.** The first G3d run (branch history,
+  `--legs g3a,g3d` only) found that comparing `receiver-clip-ignore` past step 0 also exercised the
+  base scene's own clipping Controls (`B`, `A`, `D`, `RC`), which redraw at steps 3, 5 and 7 and lost
+  their clip on the then-current receiver's `clip`-before-clear order (D3) -- spurious mismatches in
+  regions `nested`, `redraw` and `raw`, not `ri`. The fix at the time was to request and check only
+  the step-0 shot. With G3b's receiver apply-order fix now on `main`, this run restores full
+  ten-step comparison (`make_expected.py`'s `variant_clip_ignore.receiver_draws` is per step, same
+  as `reference_draws`; `run-gate3.sh`'s `run_g3d` uses the generic `run_rendered_receiver` helper
+  again instead of a single-seq lookup) and the result is exactly the predicted `{ri}`-only
+  mismatch at every step, with zero contamination from the base scene.
+- **RI moves with the canvas shift.** The first attempt kept `variant_clip_ignore`'s draws static
+  across all ten steps; `expected-image-reference-clip-ignore` caught the miss at step 9 (RI, like
+  every other top-level item, is parented to the root canvas, so `get_viewport().canvas_transform`
+  moves it too). Both `reference_draws` and `receiver_draws` are computed per step.
+
+### What G3d does not prove
+
+- That a receiver reproduces `canvas_item_add_clip_ignore` as anything other than a typed refusal
+  — it is never asked to draw RI's second rect unclipped; that is the engine-only behaviour Q1d
+  describes and D4 deliberately keeps off the wire.
+- `clip_ignore` as a *supported* command: it stays a typed, in-place refusal (D4); the first wire
+  bump after gate 3 (gate 5) is where that lands.
 
 ## Gate 4a result (2026-10-09)
 

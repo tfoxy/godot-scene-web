@@ -89,6 +89,7 @@ inline const std::vector<std::string> kFeatureResources = {"texture_2d", "textur
 
 inline const std::vector<std::string> kFeatureObservedUnsupported = {
     "canvas_item_add_circle",
+    "canvas_item_add_clip_ignore",
     "canvas_item_add_lcd_texture_rect_region",
     "canvas_item_add_line",
     "canvas_item_add_mesh",
@@ -107,6 +108,7 @@ inline const std::vector<std::string> kFeatureUnobserved = {
     "canvas_item_set_instance_shader_parameter",
     "canvas_item_set_light_mask",
     "canvas_item_set_sort_children_by_y",
+    "canvas_item_set_visibility_notifier",
     "canvas_set_modulate",
     "canvas_texture_set_shading_parameters",
     "texture_set_size_override",
@@ -118,11 +120,13 @@ inline const std::vector<std::string> kPermittedFormats = {"L8", "LA8", "R8", "R
 
 // new at /3 (render-stream-3.md "Features"): kFeatureOps plus add_msdf_texture_rect_region, and
 // kFeatureObservedUnsupported without it, both re-sorted ascending by byte value.
+// canvas_item_add_clip_ignore (gate3-design.md D4, calibrator 6) stays refused at /3 too.
 inline const std::vector<std::string> kFeatureOpsV3 = {
     "add_msdf_texture_rect_region", "add_rect", "add_texture_rect", "add_texture_rect_region"};
 
 inline const std::vector<std::string> kFeatureObservedUnsupportedV3 = {
     "canvas_item_add_circle",
+    "canvas_item_add_clip_ignore",
     "canvas_item_add_lcd_texture_rect_region",
     "canvas_item_add_line",
     "canvas_item_add_mesh",

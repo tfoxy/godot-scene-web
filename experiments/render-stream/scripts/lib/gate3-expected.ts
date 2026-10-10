@@ -73,6 +73,29 @@ export interface Gate3Prediction {
   probes?: string[];
 }
 
+/** Variant `clip-ignore` (gate3-design.md Q6b, G3d): a static raw item `RI`, present only under
+ * `RS_FIXTURE_VARIANT=clip-ignore`, whose second rect escapes its own clip in the real engine
+ * (Q1d) but not on a receiver, which only sees the two `canvas_item_add_clip_ignore` calls as
+ * unsupported commands. Each draw list is in paint order (`RI`'s first rect, then its second), to
+ * append to a step's `draws` before synthesis.
+ *
+ * Both `reference_draws[step]` and `receiver_draws[step]` are per step: `RI` is static, but the
+ * step-9 canvas shift (Q6b) still moves it like every other top-level item -- that shift is not
+ * gate 3b's D3 fix, just `RI` inheriting the canvas transform, so it applies on both sides. With
+ * gate 3b's receiver apply-order fix landed, `receiver-clip-ignore` is compared at every step,
+ * same as `reference-clip-ignore`; the only expected difference at any step is `RI`'s second
+ * draw's `clip_px` (unclipped on the reference, clipped to `RI`'s own scissor on the receiver). */
+export interface Gate3VariantClipIgnore {
+  name: "clip-ignore";
+  /** the only region a correct receiver's image differs from the reference in, at every step */
+  region_name: string;
+  region: Rect4;
+  /** RI's own scissor at step 0: custom_rect translated by its origin */
+  clip_px: Clip4;
+  reference_draws: Gate3Draw[][];
+  receiver_draws: Gate3Draw[][];
+}
+
 export interface Gate3Expected {
   schema: "render-stream-gate3-expected/1";
   fixture: "gate3" | "gate3-xform";
@@ -101,6 +124,8 @@ export interface Gate3Expected {
   };
   steps: Gate3ExpectedStep[];
   predictions: Record<string, Gate3Prediction>;
+  /** absent on `gate3-xform` (G3c); present here from G3d on */
+  variant_clip_ignore?: Gate3VariantClipIgnore;
 }
 
 export interface SynthesizedFrame {
@@ -176,6 +201,26 @@ export function synthesizeGate3(
         rgba.set(draw.rgba8, (y * width + x) * 4);
   }
   return { width, height, rgba };
+}
+
+/** `expected` with `extraDraws` appended to every step's `draws` (gate3-design.md Q6b "Variant
+ * clip-ignore", G3d): a flat array broadcasts the same draws to every step (`RI` is static, but
+ * its global position still follows a step's canvas shift, Q6b); a `(step) => draws` callback
+ * gives a different list per step. Lets `synthesizeGate3`/`compareShotsWithSynth` build the
+ * reference or receiver image for a variant leg without a second synthesis path. */
+export function withExtraDraws(
+  expected: Gate3Expected,
+  extraDraws: readonly Gate3Draw[] | ((step: number) => readonly Gate3Draw[]),
+): Gate3Expected {
+  const forStep =
+    typeof extraDraws === "function" ? extraDraws : () => extraDraws;
+  return {
+    ...expected,
+    steps: expected.steps.map((s) => ({
+      ...s,
+      draws: [...s.draws, ...forStep(s.step)],
+    })),
+  };
 }
 
 /** The probes of one step, in expected.json order. */

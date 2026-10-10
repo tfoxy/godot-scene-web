@@ -122,6 +122,19 @@ def rgba8(r, g, b):
     return [round(r * 255), round(g * 255), round(b * 255), 255]
 
 
+# Variant clip-ignore (gate3-design.md Q6b "Variant clip-ignore", G3d): a raw item RI, present
+# only under RS_FIXTURE_VARIANT=clip-ignore, static for the whole run. Its second rect is drawn
+# unclipped by the real engine between the two add_clip_ignore calls (Q1d), but a receiver -- which
+# only sees them as unsupported commands with no numeric effect -- clips both rects to RI's own
+# scissor. The only region the two images differ in is "ri".
+RI_REGION_NAME = "ri"
+RI_REGION = [464, 176, 88, 64]
+RI_ORIGIN = (472, 184)
+RI_CUSTOM_RECT = [0, 0, 48, 32]
+RI_RECT_1 = ([0, 0, 48, 32], rgba8(0.4, 0.8, 0.4))
+RI_RECT_2 = ([32, 16, 32, 32], rgba8(1, 0.4, 0))
+
+
 # --------------------------------------------------------------------------------------------
 # The fixture: scene nodes and raw items, and the RS calls each step makes
 # --------------------------------------------------------------------------------------------
@@ -655,6 +668,59 @@ def predictions(states, frames, probes_by_step):
     return pred
 
 
+def ri_clip_px():
+    """RI's own scissor: its custom rect (== its whole local rect) translated by its origin,
+    already inside the 640x360 viewport (Q1c steps 3-5)."""
+    x, y = RI_ORIGIN
+    cx, cy, cw, ch = RI_CUSTOM_RECT
+    return [x + cx, y + cy, x + cx + cw, y + cy + ch]
+
+
+def ri_draw(rect, color, clip_px, shift):
+    x, y = RI_ORIGIN
+    dx, dy = shift
+    rx, ry, rw, rh = rect
+    return {"name": "RI", "rect_px": [x + rx + dx, y + ry + dy, rw, rh], "rgba8": color, "clip_px": clip_px}
+
+
+def ri_clip_px_at(shift):
+    dx, dy = shift
+    x0, y0, x1, y1 = ri_clip_px()
+    return [x0 + dx, y0 + dy, x1 + dx, y1 + dy]
+
+
+def variant_clip_ignore():
+    """gate3-design.md Q6b "Variant clip-ignore": RI's two draws under the engine's real clip_ignore
+    semantics (reference) and under a receiver that cannot see them (receiver). RI is static, but
+    the step-9 canvas shift (Q6b) still moves it like every other top-level item -- the shift is
+    not gate 3b's D3 fix, it is RI simply inheriting the canvas transform, so both reference_draws
+    and receiver_draws are per step. Now that gate 3b's receiver apply-order fix is in,
+    receiver-clip-ignore is compared at every step, same as reference-clip-ignore; the only
+    expected difference is the clip_px of RI's second rect (unclipped on the reference, clipped to
+    RI's own scissor on the receiver, which only sees the two add_clip_ignore calls as unsupported
+    commands with no numeric effect)."""
+    clip0 = ri_clip_px()
+    reference_draws = []
+    receiver_draws = []
+    for step in range(LAST_STEP + 1):
+        shift = (8, 4) if step >= 9 else (0, 0)
+        clip = ri_clip_px_at(shift)
+        first = ri_draw(RI_RECT_1[0], RI_RECT_1[1], clip, shift)
+        reference_draws.append([first, ri_draw(RI_RECT_2[0], RI_RECT_2[1], None, shift)])
+        receiver_draws.append([first, ri_draw(RI_RECT_2[0], RI_RECT_2[1], clip, shift)])
+    return {
+        "name": "clip-ignore",
+        "region_name": RI_REGION_NAME,
+        "region": RI_REGION,
+        "clip_px": clip0,
+        # Between add_clip_ignore(true) and add_clip_ignore(false) the second rect is unclipped.
+        "reference_draws": reference_draws,
+        # A receiver drops both add_clip_ignore calls (unsupported, no numeric effect) and clips
+        # every command of RI to its own scissor as usual.
+        "receiver_draws": receiver_draws,
+    }
+
+
 def build():
     states = wire_states()
     steps = []
@@ -711,6 +777,7 @@ def build():
         "census_totals": census(),
         "steps": steps,
         "predictions": predictions(states, frames, probes_by_step),
+        "variant_clip_ignore": variant_clip_ignore(),
     }
 
 
@@ -723,7 +790,7 @@ def render(data):
         if isinstance(value, dict) and key not in ("clip_rects", "census_totals") and not (key and key.isdigit()):
             items = [f'{pad}  {json.dumps(k)}: {emit(v, indent + 1, k)}' for k, v in value.items()]
             return "{\n" + ",\n".join(items) + "\n" + pad + "}" if items else "{}"
-        if key == "steps":
+        if key == "steps" or key == "reference_draws":
             items = [f"{pad}  {emit(v, indent + 1)}" for v in value]
             return "[\n" + ",\n".join(items) + "\n" + pad + "]"
         if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):

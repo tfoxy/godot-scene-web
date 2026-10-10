@@ -7,7 +7,8 @@
 // and gate1-design.md "Q1", "Q4" and "G1b2" (omit-op, mutation epoch), and
 // (gate 2, G2b2) gate2-design.md Q3 "Texture mirror" with render-stream-2.md
 // "Texture" and "Item-level unsupported entries", and (gate 3, G3a)
-// gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip.
+// gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip, and (gate 3, G3d) Q3
+// "Clip-ignore tap": canvas_item_add_clip_ignore is an unsupported command like any other.
 
 #include <cstdint>
 #include <cstdio>
@@ -1474,6 +1475,46 @@ void test_omit_clip_then_clear() {
         "nothing of the dropped call applied; the content still changed");
   check(s.failures.empty(), "a dropped set_clip is no failure");
   check(m.stats().dropped_omit_op == 1, "one set_clip counted as dropped_omit_op");
+}
+
+// gate3-design.md Q3 "Clip-ignore tap" (G3d, D4): canvas_item_add_clip_ignore joins the generic
+// add_unsupported path (`canvas_item_add_rect` neighbours like `canvas_item_add_circle` and
+// `canvas_item_add_lcd_texture_rect_region` already exercise it), with reason unsupported-op and
+// the `ignore` argument itself kept out of the wire entirely (it is counters.json's job, at the
+// hook, not the mirror's).
+void test_clip_ignore_tap() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_rect(100, kRect, kGreen, false, 1);
+  m.add_unsupported(100, "canvas_item_add_clip_ignore", 1);  // add_clip_ignore(true)
+  m.add_rect(100, kRect, kRed, false, 1);
+  m.add_unsupported(100, "canvas_item_add_clip_ignore", 1);  // add_clip_ignore(false)
+  const Snapshot s = m.snapshot(1, 1).state;
+  const auto *it = item(s, 1);
+  check(it->commands.size() == 4 && it->commands[1].kind == CommandKind::Unsupported &&
+            it->commands[1].name == "canvas_item_add_clip_ignore" &&
+            it->commands[3].kind == CommandKind::Unsupported &&
+            it->commands[3].name == "canvas_item_add_clip_ignore",
+        "canvas_item_add_clip_ignore keeps its place between the two add_rects, both directions");
+  check(it->content_version == 4, "each call bumps content_version like any add");
+  check(s.unsupported.size() == 1 && s.unsupported[0].has_item && s.unsupported[0].item == 1 &&
+            s.unsupported[0].op == "canvas_item_add_clip_ignore" &&
+            s.unsupported[0].reason == UnsupportedReason::UnsupportedOp,
+        "one de-duplicated item-level entry, reason unsupported-op, true and false folded together");
+
+  m.set_omit_op("canvas_item_add_clip_ignore", 2);
+  m.add_unsupported(100, "canvas_item_add_clip_ignore", 2);
+  m.add_rect(100, kRect, kGreen, false, 2);
+  const Snapshot s2 = m.snapshot(2, 2).state;
+  check(item(s2, 1)->commands.size() == 1 && item(s2, 1)->content_version == 5,
+        "omit-op canvas_item_add_clip_ignore drops the call: no command and no content_version bump");
+  check(m.stats().dropped_omit_op == 1, "the drop is counted");
+
+  // An unknown item is the same pre-existing-object failure every other tap gives.
+  m.add_unsupported(999, "canvas_item_add_clip_ignore", 2);
+  check(m.snapshot(2, 2).state.failures.size() == 1, "an unknown item fails like any other tap");
 }
 
 int main() {

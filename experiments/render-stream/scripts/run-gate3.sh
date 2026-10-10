@@ -14,10 +14,11 @@
 # reference, a same-build repeat and an extension-armed reference), g3b (G3b: the receiver on
 # g3a's capture, full and patch, a headless trace, the host sabotages freeze/perturb/omit-clip/
 # omit-custom-rect on their own fresh captures, the receiver sabotages ignore-clip and
-# clip-before-clear on g3a's capture, and root-size-observe) and g3c (G3c: the rotated/scaled
+# clip-before-clear on g3a's capture, and root-size-observe), g3c (G3c: the rotated/scaled
 # fixture fixtures/gate3-xform's import, capture, three rendered references, two rendered
-# receivers, a perturb sabotage and the receiver's ignore-clip sabotage). g3d (clip_ignore
-# refused) is known but has not landed.
+# receivers, a perturb sabotage and the receiver's ignore-clip sabotage) and g3d (G3d: calibrator
+# 6, `canvas_item_add_clip_ignore` refused and typed -- a headless capture of the `clip-ignore`
+# variant, its rendered reference and a rendered receiver on the capture's recording).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -41,7 +42,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g3a g3b g3c)
+LANDED_GROUPS=(g3a g3b g3c g3d)
 KNOWN_GROUPS=(g3a g3b g3c g3d)
 
 EXTENSION=""
@@ -207,13 +208,20 @@ source "$SCRIPT_DIR/lib/legs.sh"
 # A rendered fixture run (reference, reference-repeat, reference-armed): shots step-<k> at the
 # settle frames and the step log. REFERENCE_ARMED=1 loads the capture extension armed with a
 # full-sink stream and its store. REFERENCE_FIXTURE (reset after the call) picks the project
-# (default fixtures/gate3).
+# (default fixtures/gate3); REFERENCE_EXTRA_ENV (reset after the call) adds fixture words, e.g.
+# RS_FIXTURE_VARIANT=clip-ignore (G3d).
 REFERENCE_ARMED=0
 REFERENCE_FIXTURE=""
+REFERENCE_EXTRA_ENV=()
 run_reference() {
 	local dir="$1" armed="$REFERENCE_ARMED" fixture="${REFERENCE_FIXTURE:-$FIXTURE_DIR}"
+	local -a extra_env=()
+	if [ "${#REFERENCE_EXTRA_ENV[@]}" -gt 0 ]; then
+		extra_env=("${REFERENCE_EXTRA_ENV[@]}")
+	fi
 	REFERENCE_ARMED=0
 	REFERENCE_FIXTURE=""
+	REFERENCE_EXTRA_ENV=()
 	mkdir -p "$dir/shots"
 	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl")
 	if [ "$armed" = "1" ]; then
@@ -223,6 +231,9 @@ run_reference() {
 			GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)
+	fi
+	if [ "${#extra_env[@]}" -gt 0 ]; then
+		LEG_ENV+=("${extra_env[@]}")
 	fi
 	run_rendered "$dir" "$fixture"
 }
@@ -405,11 +416,38 @@ run_g3c() {
 	GS_RUN_DIR=""
 }
 
+# group g3d: calibrator 6, canvas_item_add_clip_ignore refused and typed (gate3-design.md "G3d").
+# RS_FIXTURE_VARIANT=clip-ignore adds the static raw item RI; it is disjoint from every other
+# fixture region, so the main (non-variant) legs of g3a are untouched. Now that g3b's receiver
+# apply-order fix has landed, receiver-clip-ignore replays and compares every one of the ten
+# settle steps, same as g3a's own receiver would -- RI never redraws, so the only question is
+# whether the base scene's own clipping Controls still replay correctly alongside it, which g3b's
+# own legs already answer; this leg only has to show region `ri` disagreeing.
+run_g3d() {
+	echo "run-gate3: capture-clip-ignore"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=clip-ignore)
+	run_capture "$OUT/capture-clip-ignore" "$CAPTURE_QUIT_FRAME" none
+
+	echo "run-gate3: bringing up private gamescope for rendered legs (g3d)"
+	gs_start 640 360 "$OUT/gamescope-g3d"
+
+	echo "run-gate3: reference-clip-ignore"
+	REFERENCE_EXTRA_ENV=(RS_FIXTURE_VARIANT=clip-ignore)
+	run_reference "$OUT/reference-clip-ignore"
+
+	echo "run-gate3: receiver-clip-ignore"
+	run_rendered_receiver "$OUT/capture-clip-ignore" "$OUT/receiver-clip-ignore"
+
+	gs_teardown "$OUT/gamescope-g3d"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g3a) run_g3a ;;
 	g3b) run_g3b ;;
 	g3c) run_g3c ;;
+	g3d) run_g3d ;;
 	esac
 done
 

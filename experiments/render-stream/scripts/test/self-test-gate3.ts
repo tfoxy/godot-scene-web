@@ -48,14 +48,16 @@ import {
 } from "../lib/gate3-expected";
 import type { Gate3xExpected } from "../lib/gate3x-expected";
 import {
-  buildFullTree,
+  buildFullTreeWithG3d,
   type CaptureOptions,
   counters,
   type G3bProjects,
   ID,
+  ID_RI,
   itemStates,
   shotPng,
   writeCaptureDir,
+  writeClipIgnoreCaptureDir,
   writeJson,
   writeText,
 } from "./gate3-fixture";
@@ -513,13 +515,28 @@ const G3B_CHECKS = [
   "leg-class-root-size-observe",
 ];
 
-/** The full report's check order with both groups run: g3a's own list minus clip-rects-derived
- * (it moved to the shared end, since G3b also runs it over receiver-patch's resolved state),
- * then g3b's list, then clip-rects-derived. */
+const G3D_CHECKS = [
+  "capture-armed-clip-ignore",
+  "manifest-present",
+  "recording-decodes-clip-ignore",
+  "expected-image-reference-clip-ignore",
+  "clip-ignore-typed",
+  "leg-class-capture-clip-ignore",
+  "leg-class-receiver-clip-ignore",
+];
+
+/** The full report's check order with g3a, g3b and g3d run but g3c absent (runGate3's exact push
+ * order): g3a's own list minus clip-rects-derived (it moved to the shared spot after g3b, since
+ * g3b also runs it over receiver-patch's resolved state), then g3b's list, then
+ * clip-rects-derived, then g3c's own not-run marker (this file's fabricated trees are g3a's,
+ * g3b's and g3d's only -- g3c's checks are exercised by gate3x-cases.ts, so group-g3c is always
+ * the one deliberate not-run entry here), then g3d's list. */
 const G3_CHECKS = [
   ...G3A_CHECKS.filter((id) => id !== "clip-rects-derived"),
   ...G3B_CHECKS,
   "clip-rects-derived",
+  "group-g3c",
+  ...G3D_CHECKS,
 ];
 
 let G3B_PROJECTS: G3bProjects | undefined;
@@ -580,8 +597,13 @@ async function scenario(
     );
     if (bad) targeted.add(id);
   }
+  // group-g3c is a structural not-run entry in every tree this file fabricates (g3a's, g3b's and
+  // g3d's only -- g3c's own coverage is gate3x-cases.ts's), so it is excluded here the same way a
+  // scenario's own targeted `failing` ids are, unless a scenario (e.g. the g3aOnly ones) lists it
+  // explicitly to prove the not-run detection itself.
   const unexpected = report.checks.filter(
-    (c) => !failing.includes(c.id) && c.status !== "pass",
+    (c) =>
+      !failing.includes(c.id) && c.id !== "group-g3c" && c.status !== "pass",
   );
   assert(
     `${name}: every other check passes`,
@@ -614,7 +636,7 @@ function g3aOnly(
     await perturb(out);
     await writeJson(join(out, "legs.json"), {
       groups_run: ["g3a"],
-      groups_landed: ["g3a", "g3b"],
+      groups_landed: ["g3a", "g3b", "g3d"],
     });
   };
 }
@@ -649,16 +671,27 @@ function editItem(
 
 async function scenarios(root: string): Promise<void> {
   const good = join(root, "good");
-  G3B_PROJECTS = await buildFullTree(good, EXPECTED);
+  G3B_PROJECTS = await buildFullTreeWithG3d(good, EXPECTED);
   const report = await run(good);
-  const notPass = report.checks.filter((c) => c.status !== "pass");
+  // g3c is not built into this tree (its checks are gate3x-cases.ts's job), so its own group
+  // check is the one deliberate not-run entry; every other check -- g3a's, g3b's and g3d's --
+  // passes for real, and the gate correctly fails on g3c's absence, same as a real
+  // `--legs g3a,g3b,g3d` run against a build where g3c is landed.
+  const notPass = report.checks.filter(
+    (c) => c.status !== "pass" && c.id !== "group-g3c",
+  );
   assert(
-    `passing tree: all ${report.checks.length} checks pass`,
-    report.gate_passed && notPass.length === 0,
+    `passing tree: all checks but group-g3c pass`,
+    notPass.length === 0 &&
+      report.checks.find((c) => c.id === "group-g3c")?.status === "not-run",
     notPass.map((c) => `${c.id}: ${c.detail.slice(0, 300)}`).join(" | "),
   );
   assert(
-    "passing tree: the checks are exactly G3a's and G3b's",
+    "passing tree: the gate fails solely on g3c's absence",
+    !report.gate_passed,
+  );
+  assert(
+    "passing tree: the checks are exactly G3a's, G3b's, g3c's not-run marker and G3d's",
     report.checks.map((c) => c.id).join(",") === G3_CHECKS.join(","),
     report.checks.map((c) => c.id).join(","),
   );
@@ -734,7 +767,7 @@ async function scenarios(root: string): Promise<void> {
     good,
     "401-transactions",
     g3aOnly(recapture({ quit: 401 })),
-    ["recording-decodes", "group-g3b"],
+    ["recording-decodes", "group-g3b", "group-g3c", "group-g3d"],
   );
   await scenario(
     root,
@@ -753,7 +786,13 @@ async function scenarios(root: string): Promise<void> {
         },
       }),
     ),
-    ["patch-resolves-to-full", "leg-class-capture", "group-g3b"],
+    [
+      "patch-resolves-to-full",
+      "leg-class-capture",
+      "group-g3b",
+      "group-g3c",
+      "group-g3d",
+    ],
   );
   await scenario(
     root,
@@ -795,7 +834,13 @@ async function scenarios(root: string): Promise<void> {
           }),
       }),
     ),
-    ["no-draw-index-ties", "leg-class-capture", "group-g3b"],
+    [
+      "no-draw-index-ties",
+      "leg-class-capture",
+      "group-g3b",
+      "group-g3c",
+      "group-g3d",
+    ],
   );
   await scenario(
     root,
@@ -847,7 +892,13 @@ async function scenarios(root: string): Promise<void> {
     good,
     "clear-keeps-clip",
     g3aOnly(recapture({ clearKeepsClip: true })),
-    ["clip-state-invariants", "clip-rects-derived", "group-g3b"],
+    [
+      "clip-state-invariants",
+      "clip-rects-derived",
+      "group-g3b",
+      "group-g3c",
+      "group-g3d",
+    ],
   );
   await scenario(
     root,
@@ -860,7 +911,7 @@ async function scenarios(root: string): Promise<void> {
         }),
       }),
     ),
-    ["clip-state-invariants", "group-g3b"],
+    ["clip-state-invariants", "group-g3b", "group-g3c", "group-g3d"],
   );
   await scenario(
     root,
@@ -873,7 +924,7 @@ async function scenarios(root: string): Promise<void> {
         }),
       }),
     ),
-    ["clip-rects-derived", "group-g3b"],
+    ["clip-rects-derived", "group-g3b", "group-g3c", "group-g3d"],
   );
   await scenario(
     root,
@@ -919,7 +970,7 @@ async function scenarios(root: string): Promise<void> {
         },
       }),
     ),
-    ["leg-class-capture", "group-g3b"],
+    ["leg-class-capture", "group-g3b", "group-g3c", "group-g3d"],
   );
 
   // ---------------------------------------------------------------------------------------------
@@ -1096,7 +1147,114 @@ async function scenarios(root: string): Promise<void> {
     ["leg-class-sabotage-receiver-clip-before-clear"],
   );
 
-  for (const id of G3_CHECKS)
+  // -------------------------------------------------------------------------------------------
+  // Group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d")
+  // -------------------------------------------------------------------------------------------
+
+  await scenario(
+    root,
+    good,
+    "clip-ignore-hook-omitted",
+    async (out) => {
+      const path = join(
+        out,
+        "capture-clip-ignore",
+        "evidence",
+        "counters.json",
+      );
+      const c = JSON.parse(await readFile(path, "utf8"));
+      c.hooks_omitted = ["canvas_item_add_clip_ignore"];
+      await writeJson(path, c);
+    },
+    ["capture-armed-clip-ignore"],
+  );
+
+  await scenario(
+    root,
+    good,
+    "clip-ignore-401-transactions",
+    async (out) => {
+      await rm(join(out, "capture-clip-ignore"), {
+        recursive: true,
+        force: true,
+      });
+      await writeClipIgnoreCaptureDir(
+        join(out, "capture-clip-ignore"),
+        EXPECTED,
+        { quit: 401 },
+      );
+    },
+    ["recording-decodes-clip-ignore"],
+  );
+
+  // RI never calls add_clip_ignore: the two unsupported commands and the item-level entry
+  // vanish, so the capture no longer carries canvas_item_add_clip_ignore as unsupported.
+  await scenario(
+    root,
+    good,
+    "clip-ignore-no-unsupported",
+    async (out) => {
+      await rm(join(out, "capture-clip-ignore"), {
+        recursive: true,
+        force: true,
+      });
+      await writeClipIgnoreCaptureDir(
+        join(out, "capture-clip-ignore"),
+        EXPECTED,
+        {
+          states: (states) =>
+            states.map((s) => ({
+              ...s,
+              items: s.items.map((it) =>
+                it.id === ID_RI
+                  ? {
+                      ...it,
+                      commands: it.commands.filter(
+                        (c) => c.op !== "unsupported",
+                      ),
+                    }
+                  : it,
+              ),
+              unsupported: (s.unsupported ?? []).filter(
+                (u) => u.op !== "canvas_item_add_clip_ignore",
+              ),
+            })),
+        },
+      );
+    },
+    ["clip-ignore-typed", "leg-class-capture-clip-ignore"],
+  );
+
+  await scenario(
+    root,
+    good,
+    "clip-ignore-reference-pixel-off",
+    async (out) => shot(out, "reference-clip-ignore", 0, { x: 10, y: 10 }),
+    ["expected-image-reference-clip-ignore"],
+  );
+
+  // The receiver draws RI's second rect exactly as the reference would (clip_ignore honoured):
+  // the two images no longer differ anywhere, so the predicted mismatch region "ri" never fires.
+  await scenario(
+    root,
+    good,
+    "clip-ignore-receiver-matches-reference",
+    async (out) => {
+      for (const s of EXPECTED.steps) {
+        const seq = stepFrames3(EXPECTED, s.step).settle;
+        await cp(
+          join(out, "reference-clip-ignore", "shots", `step-${s.step}.png`),
+          join(out, "receiver-clip-ignore", "shots", `seq-${seq}.png`),
+        );
+      }
+    },
+    ["leg-class-receiver-clip-ignore"],
+  );
+
+  // manifest-present has no lever in this harness: every fabricated session is encoded straight
+  // from the live RS2_FEATURES constant (rs2-test-encoder.ts), so it can only ever pass here.
+  // Its failure path is self-test-gate0.ts's.
+  for (const id of G3_CHECKS.filter((i) => i !== "manifest-present"))
     assert(`coverage: some scenario fails ${id}`, targeted.has(id));
 }
 

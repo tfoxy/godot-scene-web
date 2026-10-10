@@ -4,8 +4,8 @@
   "records": [
     {
       "offset": 8,
-      "byte_length": 3672,
-      "sha256": "06ba045087093c09478f138bacc5a164c1f739c28a9022a433139f079ff064ca",
+      "byte_length": 3740,
+      "sha256": "d5c2a34b88ded61e0527b51bb19f9bd87a710b42ebac4a23523f86d6abda13f3",
       "meta": {
         "type": "session",
         "protocol": "render-stream/3",
@@ -140,6 +140,7 @@
           "unsupported_resources": [],
           "observed_unsupported_ops": [
             "canvas_item_add_circle",
+            "canvas_item_add_clip_ignore",
             "canvas_item_add_lcd_texture_rect_region",
             "canvas_item_add_line",
             "canvas_item_add_mesh",
@@ -157,6 +158,7 @@
             "canvas_item_set_instance_shader_parameter",
             "canvas_item_set_light_mask",
             "canvas_item_set_sort_children_by_y",
+            "canvas_item_set_visibility_notifier",
             "canvas_set_modulate",
             "canvas_texture_set_shading_parameters",
             "texture_set_size_override",
@@ -230,7 +232,7 @@
       ]
     },
     {
-      "offset": 3680,
+      "offset": 3748,
       "byte_length": 4227,
       "sha256": "8ba8bc58fbaf285f37fa2ffab5f12b89d9247c8363388277e5aa2cf216e0216e",
       "meta": {
@@ -655,7 +657,7 @@
       ]
     },
     {
-      "offset": 7907,
+      "offset": 7975,
       "byte_length": 4227,
       "sha256": "be0a2a79f10a81fe2fb6f2890599f65c019c73315fc36e23ca6fa7ebd67a2ae3",
       "meta": {
@@ -1080,7 +1082,7 @@
       ]
     },
     {
-      "offset": 12134,
+      "offset": 12202,
       "byte_length": 4227,
       "sha256": "41ab48920ec879f271dfd1a6af5d67abb76ac50a3edaa5e5dc23d65d54984aa5",
       "meta": {
@@ -1505,7 +1507,7 @@
       ]
     },
     {
-      "offset": 16361,
+      "offset": 16429,
       "byte_length": 4472,
       "sha256": "18453ea9738d6285fb5409de4aed29da283447dfb3281b38719c2a95cbe565af",
       "meta": {
@@ -1945,7 +1947,7 @@
       ]
     },
     {
-      "offset": 20833,
+      "offset": 20901,
       "byte_length": 4294,
       "sha256": "68280eb15706b28504c08f2ba813cfa165e11b90fc13b17d8dd49550b40d1741",
       "meta": {
@@ -2370,7 +2372,7 @@
       ]
     },
     {
-      "offset": 25127,
+      "offset": 25195,
       "byte_length": 4294,
       "sha256": "08eb5f1d891ee14a7f4cf42656b33283b25fb049eea3a3f98a16d656bd16dcd9",
       "meta": {
@@ -2795,7 +2797,7 @@
       ]
     },
     {
-      "offset": 29421,
+      "offset": 29489,
       "byte_length": 5344,
       "sha256": "74a866dd1665e4afe8a94f3c5f15bd4d91570913acdb35979b0eb9e71de2060c",
       "meta": {
@@ -3326,15 +3328,15 @@
       ]
     },
     {
-      "offset": 34765,
+      "offset": 34833,
       "byte_length": 283,
-      "sha256": "c0be6eb2d628d589694cfb52a837b750d4a9d0c9af8d10c75ba54e8591d666f7",
+      "sha256": "54de16a26ca03029157de3d7c68c43aae1f511c2529f251517c207a94a4906d8",
       "meta": {
         "type": "end",
         "transactions": 7,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 34765,
+          "bytes_total": 34833,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 0,

@@ -106,21 +106,24 @@ FEATURE_ITEM_STATE = sorted(
 FEATURE_RESOURCES = sorted(["texture_2d", "texture_2d_placeholder"])
 FEATURE_UNSUPPORTED_RESOURCES = []
 # /2's observed_unsupported_ops, minus canvas_item_add_msdf_texture_rect_region (now a supported
-# op instead -- render-stream-3.md "Features").
+# op instead -- render-stream-3.md "Features"). canvas_item_add_clip_ignore (gate3-design.md D4,
+# calibrator 6) stays refused at /3 too: it is not one of the ops /3 adds support for.
 FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
     [
-        "canvas_item_add_circle", "canvas_item_add_line", "canvas_item_add_mesh",
-        "canvas_item_add_multimesh", "canvas_item_add_nine_patch", "canvas_item_add_polygon",
-        "canvas_item_add_polyline", "canvas_item_add_primitive", "canvas_item_add_set_transform",
-        "canvas_item_add_lcd_texture_rect_region", "canvas_item_add_triangle_array",
-        "canvas_item_set_material",
+        "canvas_item_add_circle", "canvas_item_add_clip_ignore", "canvas_item_add_line",
+        "canvas_item_add_mesh", "canvas_item_add_multimesh", "canvas_item_add_nine_patch",
+        "canvas_item_add_polygon", "canvas_item_add_polyline", "canvas_item_add_primitive",
+        "canvas_item_add_set_transform", "canvas_item_add_lcd_texture_rect_region",
+        "canvas_item_add_triangle_array", "canvas_item_set_material",
     ]
 )
+# Unchanged from /2 (render-stream-3.md "Features": "every other features key... is unchanged
+# from /2"), including canvas_item_set_visibility_notifier (gate3-design.md D6, calibrator 6).
 FEATURE_UNOBSERVED = sorted(
     [
         "canvas_item_set_canvas_group_mode",
         "canvas_item_set_instance_shader_parameter", "canvas_item_set_light_mask",
-        "canvas_item_set_sort_children_by_y",
+        "canvas_item_set_sort_children_by_y", "canvas_item_set_visibility_notifier",
         "canvas_set_modulate", "canvas_texture_set_shading_parameters",
         "texture_set_size_override", "viewport_remove_canvas", "viewport_set_canvas_cull_mask",
         "viewport_set_global_canvas_transform",

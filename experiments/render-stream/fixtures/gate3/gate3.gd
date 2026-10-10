@@ -12,7 +12,7 @@ extends Node
 ##   RS_FIXTURE_START_FRAME S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES N >= 8, default 10 (step k >= 1 at S+N*k, settled at S+N*k+7)
 ##   RS_FIXTURE_QUIT_FRAME  >= S+N*9+11 (the default)
-##   RS_FIXTURE_VARIANT     refused: G3a has no variant (G3d adds clip-ignore)
+##   RS_FIXTURE_VARIANT     unset (default) or "clip-ignore" (G3d); any other value exits 2
 
 const CULL_PROBE: GDScript = preload("res://cull_probe.gd")
 
@@ -52,6 +52,17 @@ const MARKER_COLORS: Array[Color] = [
 const RC_RECT: Rect2 = Rect2(8, 8, 16, 16)
 const RC_COLOR: Color = Color(1, 1, 0.2, 1)
 
+## Variant `clip-ignore` (gate3-design.md Q6b, G3d): a raw item whose second rect's clip is
+## ignored by the real GLES3 rasterizer between the two `add_clip_ignore` calls (Q1d), but not by
+## a receiver, which sees them only as unsupported commands with no numeric effect. Static: never
+## touched after step 0.
+const RI_ORIGIN: Vector2 = Vector2(472, 184)
+const RI_CUSTOM_RECT: Rect2 = Rect2(0, 0, 48, 32)
+const RI_RECT_1: Rect2 = Rect2(0, 0, 48, 32)
+const RI_COLOR_1: Color = Color(0.4, 0.8, 0.4, 1)
+const RI_RECT_2: Rect2 = Rect2(32, 16, 32, 32)
+const RI_COLOR_2: Color = Color(1, 0.4, 0, 1)
+
 var a: Control
 var b: Control
 var bf: ColorRect
@@ -61,7 +72,9 @@ var cu: Control
 var marker: RectNode
 var rc: RID
 var rcf: RID
+var ri: RID  # variant clip-ignore only
 
+var _variant: String = ""
 var _frame: int = 0
 var _start_frame: int = START_FRAME_DEFAULT
 var _step_frames: int = STEP_FRAMES_DEFAULT
@@ -143,6 +156,18 @@ func _ready() -> void:
 	RenderingServer.canvas_item_set_parent(rcf, rc)
 	RenderingServer.canvas_item_add_rect(rcf, Rect2(-16, -8, 96, 64), Color(0.4, 0.2, 0.8, 1))
 
+	if _variant == "clip-ignore":
+		ri = RenderingServer.canvas_item_create()
+		RenderingServer.canvas_item_set_parent(ri, root_canvas)
+		RenderingServer.canvas_item_set_transform(ri, Transform2D(0.0, RI_ORIGIN))
+		RenderingServer.canvas_item_set_draw_index(ri, 1002)
+		RenderingServer.canvas_item_set_custom_rect(ri, true, RI_CUSTOM_RECT)
+		RenderingServer.canvas_item_set_clip(ri, true)
+		RenderingServer.canvas_item_add_rect(ri, RI_RECT_1, RI_COLOR_1)
+		RenderingServer.canvas_item_add_clip_ignore(ri, true)
+		RenderingServer.canvas_item_add_rect(ri, RI_RECT_2, RI_COLOR_2)
+		RenderingServer.canvas_item_add_clip_ignore(ri, false)
+
 	# Step 0 is the `_ready` state, applied at the frame stamp of everything that runs during
 	# `initialize()` (1), settled at S + 7.
 	_log_step(0, 1, _start_frame + SETTLE_OFFSET)
@@ -155,6 +180,8 @@ func _exit_tree() -> void:
 		RenderingServer.free_rid(rcf)
 	if rc.is_valid():
 		RenderingServer.free_rid(rc)
+	if ri.is_valid():
+		RenderingServer.free_rid(ri)
 
 
 func _process(_delta: float) -> void:
@@ -244,8 +271,11 @@ func _color_rect(node_name: String, at: Vector2, size: Vector2, color: Color) ->
 
 func _read_environment() -> bool:
 	if OS.has_environment("RS_FIXTURE_VARIANT"):
-		_error("RS_FIXTURE_VARIANT is not supported by the gate 3 fixture (G3a has no variant; got %s)" % JSON.stringify(OS.get_environment("RS_FIXTURE_VARIANT")))
-		return false
+		var variant: String = OS.get_environment("RS_FIXTURE_VARIANT")
+		if variant != "clip-ignore":
+			_error("RS_FIXTURE_VARIANT must be unset or \"clip-ignore\" (got %s)" % JSON.stringify(variant))
+			return false
+		_variant = variant
 	var start: int = _int_env("RS_FIXTURE_START_FRAME", START_FRAME_DEFAULT, 1)
 	var span: int = _int_env("RS_FIXTURE_STEP_FRAMES", STEP_FRAMES_DEFAULT, SETTLE_OFFSET + 1)
 	if start < 0 or span < 0:

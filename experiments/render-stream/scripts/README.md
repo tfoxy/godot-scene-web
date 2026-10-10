@@ -633,7 +633,7 @@ run directory: each capture's `store/`, each receiver's `cache/`.
 
 ## Gate 2 criteria (g2a)
 
-`capture-armed` (55 hooks), `headless-no-gpu` and `recording-decodes` (400 transactions) are gate
+`capture-armed` (56 hooks), `headless-no-gpu` and `recording-decodes` (400 transactions) are gate
 0's. `step-alignment` reads the four step logs and the capture's marker colours.
 `expected-image-reference` compares every reference shot with `synthesizeGate2` exactly outside the
 step's `synth_exclude` regions. `reference-repeat-budget` diffs `reference` against
@@ -758,11 +758,11 @@ g2b without g2d (G2d's checks absent, only `group-g2d` not-run).
 mise exec -- pnpm render-stream:gate3 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g3a,g3b,g3c]
+  [--legs g3a,g3b,g3c,g3d]
 ```
 
-- `run-gate3.sh`: the orchestrator (`run_g3a`, `run_g3b`, `run_g3c`, `run_reference`). g3d is
-  known but has not landed, so asking for it exits 2.
+- `run-gate3.sh`: the orchestrator (`run_g3a`, `run_g3b`, `run_g3c`, `run_g3d`, `run_reference`).
+  All four groups have landed.
 - `lib/gate3-expected.ts`: the `render-stream-gate3-expected/1` types, `stepFrames3`,
   `synthesizeGate3(expected, step, {clips})` (the clear colour, then every draw in paint order,
   each intersected with its integer scissor; `clips: false` gives the unclipped scene),
@@ -788,7 +788,12 @@ mise exec -- pnpm render-stream:gate3 -- \
   `deriveClipRects` over `receiver-patch`'s own resolved `state/seq-<n>.json` dumps.
   `checkReceiverTypedCleanG3b` is g3b's own lighter version of gate 1's receiver-typed-clean
   (gate2b-checks.ts's pattern): g3b has no `receiver-typecheck` leg of its own, so it scans every
-  g3b receiver leg's `stdout.log` directly instead.
+  g3b receiver leg's `stdout.log` directly instead. G3d adds `checkCaptureClipIgnoreArmed` (a
+  second capture leg under a different directory name, so it cannot reuse gate 0's
+  `checkCaptureArmed`, which hardcodes `capture/`), `checkClipIgnoreTyped`,
+  `checkExpectedImageReferenceClipIgnore`, `checkCaptureClipIgnoreLegClass` and
+  `checkClipIgnoreRegionSet` (the receiver leg's class plus its region-mismatch set over every
+  step, reusing G3b's `computeGate3ReceiverCheckpoints`, folded into one `leg-class-*` check).
 - `lib/gate3x-expected.ts` (G3c): the `gate3-xform` expected types, `synthesizeGate3x(expected,
   step, {clips})` and `paintDraws`: pixel-centre coverage of each draw (an axis-aligned
   `rect_px`, or a `quad` under rotation) inside its integer scissor, plus the `band` mask, the
@@ -823,6 +828,9 @@ mise exec -- pnpm render-stream:gate3 -- \
 | `sabotage-receiver-ignore-clip` | g3b | `sabotage-receiver-ignore-clip/` | rendered receiver on `capture/recording.rs2`, `RS_RECEIVER_SABOTAGE=ignore-clip`                                         |
 | `sabotage-receiver-clip-before-clear` | g3b | `sabotage-receiver-clip-before-clear/` | the same, `RS_RECEIVER_SABOTAGE=clip-before-clear`                                                                 |
 | `root-size-observe` | g3b  | `root-size-observe/{capture,receiver}/` | its own fresh capture with `GRC_ROOT_SIZE` unset, then a rendered receiver                                               |
+| `capture-clip-ignore`   | g3d | `capture-clip-ignore/`   | the release template, `--headless`, armed, `RS_FIXTURE_VARIANT=clip-ignore`, both sinks, `GRC_ROOT_SIZE=enforce-min-size`, quit 400 |
+| `reference-clip-ignore` | g3d | `reference-clip-ignore/` | rendered in the same gamescope, extension absent, `RS_FIXTURE_VARIANT=clip-ignore`: `shots/step-0..9.png`                           |
+| `receiver-clip-ignore`  | g3d | `receiver-clip-ignore/`  | rendered receiver on `capture-clip-ignore`'s recording: `shots/seq-<n>.png` at the 10 settle seqs, `applied.json` |
 
 Group g3c runs `fixtures/gate3-xform` (one private gamescope, `gamescope-xform/`):
 
@@ -840,7 +848,7 @@ Group g3c runs `fixtures/gate3-xform` (one private gamescope, `gamescope-xform/`
 
 ## Gate 3 criteria (g3a)
 
-`capture-armed` (55 hooks) and `headless-no-gpu` are gate 0's. `recording-decodes` runs gate 0's
+`capture-armed` (56 hooks) and `headless-no-gpu` are gate 0's. `recording-decodes` runs gate 0's
 check on both sinks. `patch-resolves-to-full` requires the patch sink to resolve bit-identically to
 the full sink at every frame. `step-alignment` reads the four step logs and the capture's marker
 colours. `no-draw-index-ties` fails on any tie whose members' footprints overlap (G1b2's harmless
@@ -900,6 +908,27 @@ receivers exact outside the band, the former within the budget inside it.
 predicted failing probes (two that the unclipped scene puts in its own band are left out). The
 receiver legs need G3b's apply order (clear before clip) and its `ignore-clip` sabotage.
 
+## Gate 3 criteria (g3d)
+
+`capture-armed-clip-ignore` is `capture-armed`'s own check against `capture-clip-ignore/`'s
+`evidence/`, since `checkCaptureArmed` always reads `capture/`. `manifest-present` is gate 0's,
+confirming `observed_unsupported_ops` carries `canvas_item_add_clip_ignore` and `unobserved`
+carries `canvas_item_set_visibility_notifier`. `recording-decodes-clip-ignore` runs gate 0's check
+on both of `capture-clip-ignore`'s sinks. `expected-image-reference-clip-ignore` compares every
+`reference-clip-ignore` shot with `synthesizeGate3` plus `expected.json`'s
+`variant_clip_ignore.reference_draws` appended (the second rect drawn unclipped, Q1d).
+`clip-ignore-typed` reads the capture's last transaction for the one item with RI's exact four
+commands (`add_rect`, `unsupported canvas_item_add_clip_ignore`, `add_rect`, `unsupported
+canvas_item_add_clip_ignore`) and the one item-level `unsupported-op` entry.
+`leg-class-capture-clip-ignore` requires class `unsupported` and the recording to carry
+`canvas_item_add_clip_ignore` as unsupported. `leg-class-receiver-clip-ignore` requires the
+receiver to classify `unsupported`, its step join to be clean, and every one of its `seq-<n>.png`
+shots (all ten settle steps, now that G3b's apply-order fix is in) to mismatch
+`reference-clip-ignore`'s matching `step-<k>.png` in region `ri` alone, at every step (the
+receiver drops both `add_clip_ignore` calls and clips RI's second rect like any other command;
+`RI` never redraws, so the base scene's own clipping Controls, now fixed, never contaminate the
+comparison).
+
 ## Gate 3 self-test
 
 ```bash
@@ -914,21 +943,28 @@ negative scale, 90° and 30° rotations (gate3-xform's `RQ`), command bounds wit
 transposed texture rect, unknown bounds, an invisible subtree and the canvas transform.
 `synthesizeGate3` and the probes run against `expected.json`, with the predictions' sanity and the
 TS call model's census against `census_totals`. `checkExpectedSelfConsistent` runs on the
-committed file and on six broken copies. A passing g3a + g3b tree is then fabricated:
-`test/gate3-fixture.ts`'s `buildFullTree` calls `buildTree` (g3a: models the fixture's RS calls
-independently of `make_expected.py`, writes both sinks through `test/rs2-test-encoder.ts`, and
-synthesizes the PNGs) then `writeG3bTree`, which builds every g3b leg's `applied.json` from the
-capture bytes it actually replays (`summarizeRecording`, as self-test-gate1.ts's `appliedFor`
-does) and writes its shots as `synthesizeGate3` (a sabotage's predicted-mismatch steps get one
-recoloured pixel instead; `sabotage-receiver-ignore-clip` writes the actual unclipped render,
-`synthesizeGate3(..., {clips: false})`, not a stand-in, since that *is* the sabotage's effect).
+committed file and on six broken copies (plus, since G3d, `variant_clip_ignore`'s own shape). A
+passing g3a+g3b+g3d tree is then fabricated: `test/gate3-fixture.ts`'s `buildFullTree` calls
+`buildTree` (g3a: models the fixture's RS calls independently of `make_expected.py`, writes both
+sinks through `test/rs2-test-encoder.ts`, and synthesizes the PNGs), `writeG3bTree` (every g3b
+leg's `applied.json` from the capture bytes it actually replays, `summarizeRecording`, and its
+shots as `synthesizeGate3`, a sabotage's predicted-mismatch steps getting one recoloured pixel
+instead; `sabotage-receiver-ignore-clip` writes the actual unclipped render,
+`synthesizeGate3(..., {clips: false})`, not a stand-in) and `writeG3dTree` (`buildStatesWithRI`
+adds the variant's static item `RI`, wire id 19, the same the real fixture gives it, to every
+frame alongside the base g3a model, for `writeClipIgnoreCaptureDir`/`-Reference`/`-Receiver`).
 Tiny stand-in `receiver/` and `fixtures/gate3/` project directories back
 `receiver-never-loaded-fixture`'s file-hash scan. Every check gets at least one failing
-perturbation, the pre-gate-3 mirror (clear keeps clip) and the pre-gate-3 receiver order (clip
-before clear) among them, and the real `runGate3` runs on every tree. Scenarios that rewrite the
-shared `capture/` directory (`recapture`) run g3b out of scope (`g3aOnly`): g3b's receiver legs
-replay that capture by reference, so keeping them "honest" against a capture nobody is testing
-them against would mean regenerating four legs' worth of evidence for every g3a-only perturbation.
+perturbation, the pre-gate-3 mirror (clear keeps clip), the pre-gate-3 receiver order (clip before
+clear) and G3d's five levers (an omitted hook, a wrong transaction count, RI never calling
+`add_clip_ignore`, a perturbed reference pixel, and a receiver that matches the reference exactly,
+so the predicted `ri` mismatch never fires) among them, and the real `runGate3` runs on every
+tree. Scenarios that rewrite the shared `capture/` directory (`recapture`) run g3b and g3d out of
+scope (`g3aOnly`): their receiver legs replay that capture by reference, so keeping them "honest"
+against a capture nobody is testing them against would mean regenerating several legs' worth of
+evidence for every g3a-only perturbation. `manifest-present` has no failing lever here, since
+every fabricated session is encoded straight from the live `RS2_FEATURES` constant; its failure
+path is `self-test-gate0.ts`'s.
 
 `test/gate3x-cases.ts` covers g3c, and `make_expected.py --check` for `fixtures/gate3-xform` joins
 the list. It checks `synthesizeGate3x`'s coverage and band on a hand-computed 8×8 diamond (24

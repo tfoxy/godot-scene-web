@@ -358,7 +358,8 @@
     "canvas_texture_set_texture_repeat",
     "canvas_item_set_default_texture_filter",
     "canvas_item_set_default_texture_repeat",
-    "canvas_item_add_lcd_texture_rect_region"
+    "canvas_item_add_lcd_texture_rect_region",
+    "canvas_item_add_clip_ignore"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",
@@ -407,6 +408,7 @@
     "canvas_texture_set_texture_repeat",
     "canvas_item_set_default_texture_filter",
     "canvas_item_set_default_texture_repeat",
-    "canvas_item_add_lcd_texture_rect_region"
+    "canvas_item_add_lcd_texture_rect_region",
+    "canvas_item_add_clip_ignore"
   ]
 }
