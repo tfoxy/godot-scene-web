@@ -27,7 +27,8 @@ extends SceneTree
 ##      F), skips the unknown-texture and unsupported-texture commands; seq 3's new hash is one
 ##      texture_2d_update; seq 4 frees F's RID when it becomes a tombstone; nothing is uploaded
 ##      twice for the same hash.
-##   3. The reupload sabotage uploads every resident image at every applied transaction.
+##   3. The reupload sabotage uploads every resident image at every applied transaction; (G6a) the
+##      stale-texture sabotage never re-uploads a resident RGBA8 image.
 ##   4. A reconnect: one applier replays full.rs4, is disposed, and replays patch.rs4 exactly like
 ##      a fresh one.
 ##   4b. (G4e2) seq 7's msdf commands replay as two canvas_item_add_msdf_texture_rect_region calls
@@ -125,6 +126,7 @@ func _run_applier_tests() -> void:
 	_test_applier_encodings()
 	_test_applier_textures()
 	_test_applier_reupload()
+	_test_applier_stale_texture()
 	_test_applier_reconnect()
 	_test_applier_canvas_texture()
 	_test_applier_clip_order()
@@ -322,6 +324,26 @@ func _test_applier_reupload() -> void:
 	# seq 1: A, F; seq 2-3: A, F again; seq 4-6: A only (F is a tombstone); seq 7-11: A and the page.
 	_check(uploads == 2 + 2 + 2 + 1 + 1 + 1 + 2 * 5, "the reupload sabotage uploaded %d times" % uploads)
 	_dispose_checked(applier, "reupload")
+
+
+## G6a: RS_RECEIVER_SABOTAGE=stale-texture keeps a resident RGBA8 image's first payload: seq 3's
+## new hash for A (16x16 RGBA8) is never uploaded; creates are unaffected.
+func _test_applier_stale_texture() -> void:
+	var applier: RsApplier = _new_applier()
+	applier.sabotage_stale_texture = true
+	var results: Array[Dictionary] = _apply(applier, "full.rs4", _memory_cache())
+	var updated: int = 0
+	var created: int = 0
+	for result: Dictionary in results:
+		if result["kind"] == "transaction":
+			var stats: Dictionary = result["stats"]
+			var resources: Dictionary = stats["resources"]
+			var u: int = resources["updated"]
+			var c: int = resources["created"]
+			updated += u
+			created += c
+	_check(updated == 0 and created == 3, "the stale-texture sabotage: %d updates (expected 0), %d creates (expected 3: A, F, the page)" % [updated, created])
+	_dispose_checked(applier, "stale-texture")
 
 
 func _test_applier_reconnect() -> void:

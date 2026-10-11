@@ -94,11 +94,23 @@ export interface Gate5Raster {
   shapes: ShapeCoverage[];
 }
 
+/** A box the hand model leaves undecided (gate 6, protocol/gate6-design.md D7: text glyphs and
+ * whatever is drawn under them). `rect` is x, y, w, h in draw space; every pixel whose centre the
+ * transformed box's AABB holds (inside the scissor) becomes undecided, and a later opaque paint
+ * decides it again. `content` describes what is drawn there (gate 6's freshness and sabotage
+ * predictions); the rasterizer ignores it. It covers nothing for the presence check. */
+export interface UndecidedShape {
+  name: string;
+  kind: "undecided";
+  rect: [number, number, number, number];
+  content?: unknown;
+}
+
 export interface RasterScene {
   viewport: readonly [number, number] | readonly number[];
   clear: Rgba8;
   textures: Record<string, Gate5Texture>;
-  opLists: Record<string, Gate5Op[]>;
+  opLists: Record<string, (Gate5Op | UndecidedShape)[]>;
   items: readonly Gate5Item[];
   exactEdgePx?: number;
   /** the render target's alpha bits, which only `disabled` writes (default 8; the root
@@ -660,6 +672,41 @@ function ninePatchActions(
   return { actions, covered, area };
 }
 
+/** Marks the pixels of an undecided box (UndecidedShape) undecided. */
+function undecidedBox(
+  shape: UndecidedShape,
+  m: Affine,
+  scissor: Box | null,
+  canvas: Canvas,
+): void {
+  const [rx, ry, rw, rh] = shape.rect;
+  const corners: Point[] = [
+    [rx, ry],
+    [rx + rw, ry],
+    [rx + rw, ry + rh],
+    [rx, ry + rh],
+  ].map((p) => applyAffine(m, p));
+  const xs = corners.map((p) => p[0]);
+  const ys = corners.map((p) => p[1]);
+  const [x0, y0, x1, y1] = windowOf(
+    corners,
+    0,
+    canvas.width,
+    canvas.height,
+    scissor,
+  );
+  const [bx0, by0, bx1, by1] = [
+    Math.min(...xs),
+    Math.min(...ys),
+    Math.max(...xs),
+    Math.max(...ys),
+  ];
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++)
+      if (x + 0.5 >= bx0 && x + 0.5 < bx1 && y + 0.5 >= by0 && y + 0.5 < by1)
+        canvas.undecided(y * canvas.width + x);
+}
+
 /** Rasterizes a list of items in paint order (the lower-level entry the self-test drives). */
 export function rasterizeItems(scene: RasterScene): Gate5Raster {
   const [width, height] = scene.viewport;
@@ -683,6 +730,15 @@ export function rasterizeItems(scene: RasterScene): Gate5Raster {
     let draw: Affine = [1, 0, 0, 1, 0, 0];
     let ignoreClip = false;
     for (const op of ops) {
+      if ("kind" in op && op.kind === "undecided") {
+        undecidedBox(
+          op,
+          compose(item.xform, draw),
+          ignoreClip ? null : item.clip_px,
+          canvas,
+        );
+        continue;
+      }
       if (!isShape(op)) {
         if (op.op === "set_transform") draw = [...op.transform] as Affine;
         else if (op.op === "clip_ignore") ignoreClip = op.ignore;
