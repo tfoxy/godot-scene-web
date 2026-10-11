@@ -433,8 +433,8 @@ def build():
         "op_lists": op_lists,
         "shots": shots,
         "steps": steps,
-        # what /5 types before G6b: the nine HUD layers' canvases, session-level
-        "unsupported": [["viewport_attach_canvas", "extra-canvas"]],
+        # what /6 types (G6b): nothing; the nine HUD layers are supported (distinct keys 1 + c)
+        "unsupported": [],
         "synced": [p.replace(os.sep, "/") for p in SYNCED],
     }
 

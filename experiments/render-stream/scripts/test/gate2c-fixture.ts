@@ -622,7 +622,7 @@ export async function writeLiveLeg(
   await writeText(join(receiverDir, "stdout.log"), "[receiver] ok\n");
   await writeText(join(receiverDir, "exit-code.txt"), failure ? "3\n" : "0\n");
   await writeJson(join(receiverDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/5",
+    schema: "render-stream-receiver-applied/6",
     mode: "live",
     recording: null,
     session_id: sessionId,
@@ -848,7 +848,7 @@ export async function buildG2cTree(
   await writeText(join(replayDir, "exit-code.txt"), "0\n");
   await writeText(join(replayDir, "stdout.log"), "[receiver] ok\n");
   await writeJson(join(replayDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/5",
+    schema: "render-stream-receiver-applied/6",
     mode: "file",
     status: "ok",
     failure: null,

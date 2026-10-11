@@ -1,7 +1,8 @@
 // Gate 6h checks (protocol/gate6-design.md "G6h", "Q6e", "Q7b"): fixtures/gate6-hd, nine copies
 // of the gate 6 scene in a 3x3 grid at logical 1920x1080 under `canvas_items` stretch, its
-// references at both presentations (native 1920x1080, half 960x540) and its native legs on
-// render-stream/5.
+// references at both presentations (native 1920x1080, half 960x540) and its native legs, on
+// render-stream/6 since G6b (render-stream/5 when G6h landed). G6b's half legs are
+// lib/gate6b-checks.ts's.
 //
 // Everything here reads an evidence directory written by run-gate6.sh's g6h group
 // (lib/gate6h-legs.sh), or is pure over values already read from one, so
@@ -23,10 +24,10 @@
 //   - the native capture: its classification, its session (stretch, root size), its sinks and
 //     costs, its atlas pages against the oracle's, and the receivers' frames against the reference.
 //
-// Before G6b the wire is render-stream/5, whose only answer to the nine HUD CanvasLayers is the
-// session-level `extra-canvas`: every leg classifies `unsupported` with exactly that reason and
-// every receiver comparison excludes each cell's HU region (inside it a /5 receiver lacks exactly
-// the HUD panel, 168x28 per cell, while that cell's HUD shows above the root canvas).
+// Since G6b the wire is render-stream/6, which carries the nine HUD CanvasLayers (layers 1 + c,
+// distinct, so no stacking tie): every leg classifies `success` and every receiver comparison
+// covers every pixel, the nine HU regions included. Before G6b (render-stream/5) every leg was
+// `unsupported` with `extra-canvas` and each cell's HU was excluded.
 //
 // Frames are 1920x1080: the orchestrator walks the shots one at a time (raster, reference frames,
 // receiver frames) and keeps only the previous settle shot for the freshness comparisons.
@@ -79,6 +80,7 @@ import {
   type RegionBudget6,
   shotSeqs,
   unsupportedPairs,
+  wantedClass,
 } from "./gate6a-checks";
 import { loadWire5, type Wire5 } from "./gate55-wire";
 import { type Gate5Raster, rasterizeItems } from "./geometry-raster";
@@ -785,15 +787,17 @@ export function accumulateBudgetHd(
   return n;
 }
 
-/** The HU regions, never compared receiver against reference on /5. */
+/** The regions never compared receiver against reference: none since G6b (render-stream/6
+ * carries the HUD layers); on /5 they were the nine HU regions. */
 export function excludedRegionsHd(
-  e: Pick<Gate6HdExpected, "cells">,
+  _e: Pick<Gate6HdExpected, "cells">,
 ): Set<string> {
-  return new Set(e.cells.map((c) => `c${c.cell}.HU`));
+  return new Set<string>();
 }
 
-/** Pure: what the HU exclusion hides is exactly the HUD panels a /5 receiver cannot draw: per
- * cell, the panel's 168x28 pixels while that cell's HUD shows above the root canvas, else 0. */
+/** Pure (render-stream/5 only, kept for its self-test): what a per-cell HU exclusion hid was
+ * exactly the HUD panels a /5 receiver could not draw: per cell, the panel's 168x28 pixels while
+ * that cell's HUD showed above the root canvas, else 0. */
 export function hudExclusionProblems(
   e: Pick<Gate6HdExpected, "steps" | "hud_panel_px" | "presentations">,
   leg: string,
@@ -1343,12 +1347,12 @@ const RECEIVER_LEGS: { leg: string; dir: string; sink: string }[] = [
   },
 ];
 
-async function loadFrame(path: string): Promise<Frame6 | null> {
+export async function loadFrame(path: string): Promise<Frame6 | null> {
   const png = await decodePngRgba(path);
   return png ? { width: png.width, height: png.height, rgba: png.data } : null;
 }
 
-async function requestedSeqs(dir: string): Promise<number[]> {
+export async function requestedSeqs(dir: string): Promise<number[]> {
   const text = (await readTextOrUndefined(join(dir, "env.txt"))) ?? "";
   const line = text
     .split("\n")
@@ -1362,7 +1366,7 @@ async function requestedSeqs(dir: string): Promise<number[]> {
     : [];
 }
 
-async function shotFiles(
+export async function shotFiles(
   dir: string,
   seqs: readonly number[],
 ): Promise<number[]> {
@@ -1389,7 +1393,7 @@ export async function runGate6h(
   // The capture: class, session, sinks, ties, costs.
   const cap = await evaluateCapture(D, {
     legDir: "capture-native",
-    expectedClass: "unsupported",
+    expectedClass: wantedClass(e.unsupported),
   });
   const wireFull = await loadWire5(join(D, "capture-native", RECORDING_NAME));
   const wirePatch = await loadWire5(
@@ -1401,15 +1405,15 @@ export async function runGate6h(
     checks.push(
       check(
         "leg-class-capture-hd-native",
-        `the capture-hd-native leg classifies unsupported with exactly ${e.unsupported.map((w) => w.join("/")).join(", ")} on render-stream/5 (the nine HUD CanvasLayers are extra-canvas before G6b): armed, stream closed, both sinks valid and equivalent, no capture failure`,
+        `the capture-hd-native leg classifies ${wantedClass(e.unsupported)} on render-stream/6 (the nine HUD CanvasLayers at distinct layers 1 + c are carried: no extra-canvas, no stacking tie)${e.unsupported.length > 0 ? ` with exactly ${e.unsupported.map((w) => w.join("/")).join(", ")}` : ""}: armed, stream closed, both sinks valid and equivalent, no capture failure`,
         problems,
-        `${cap.result_class}: ${pairs.join(", ")}`,
+        `${cap.result_class}: ${pairs.join(", ") || "nothing typed"}`,
         cap.artifacts,
       ),
     );
     legs["capture-hd-native"] = {
       group: "g6h",
-      expected_class: "unsupported",
+      expected_class: wantedClass(e.unsupported),
       result_class: cap.result_class,
       reasons: cap.reasons,
       exit_code: cap.exit_code,
@@ -1612,7 +1616,6 @@ export async function runGate6h(
     string,
     { shot: string; diff: FrameDiffHd | null }[]
   > = {};
-  const hudProblems: string[] = [];
   for (const r of RECEIVER_LEGS) recvDiffs[r.leg] = [];
   const exclude = excludedRegionsHd(e);
   const prev: Record<
@@ -1691,10 +1694,6 @@ export async function runGate6h(
               ? diffFramesHd(ref, got, ri, exclude)
               : null;
           recvDiffs[r.leg].push({ shot: shot.id, diff });
-          if (diff)
-            hudProblems.push(
-              ...hudExclusionProblems(e, r.leg, shot, diff, pres),
-            );
         }
       // Freshness between consecutive settle shots: the model's (self-consistency) and the
       // reference's (pixels).
@@ -1863,23 +1862,18 @@ export async function runGate6h(
     const pv = pixelVerdictHd(diffs);
     problems.push(...pv.problems);
     mismatchTables[r.leg] = pv.table;
-    const hu = diffs.reduce(
-      (n, d) =>
-        n + Object.values(d.diff?.excluded ?? {}).reduce((a, b) => a + b, 0),
-      0,
-    );
     checks.push(
       check(
         `leg-class-${r.leg}`,
-        `the ${r.leg} leg (rendered 1920x1080 receiver on capture-native/${r.sink}) classifies unsupported with exactly the capture's /5 reasons (also in applied.json), applied every seq, and every pixel outside the nine HU regions of every shot equals reference-hd-native`,
+        `the ${r.leg} leg (rendered 1920x1080 receiver on capture-native/${r.sink}) classifies ${wantedClass(e.unsupported)} on render-stream/6 (the capture's reasons, if any, also in applied.json, and no receiver-typed entry), applied every seq, and every pixel of every shot, the nine HU regions included, equals reference-hd-native`,
         problems.slice(0, 8),
-        `${cls.result_class}, pixels ${pv.verdict} (HU differs in ${hu} pixel-shots, not compared)`,
+        `${cls.result_class}, pixels ${pv.verdict}`,
         [join(dir, "applied.json"), join(dir, "shots")],
       ),
     );
     legs[r.leg] = {
       group: "g6h",
-      expected_class: "unsupported",
+      expected_class: wantedClass(e.unsupported),
       result_class: cls.result_class,
       pixel_verdict: pv.verdict,
       expected_pixel_verdict: "success",
@@ -1895,8 +1889,8 @@ export async function runGate6h(
   checks.push(
     check(
       "hd-receiver-vs-reference",
-      "receiver-hd-native and -patch: every pixel of every shot (settle and intermediate, 1920x1080) equals reference-hd-native's, raw per channel with alpha, outside the nine HU regions (the HUD CanvasLayers are not carried before G6b); budget 0 (Q6g); inside each cell's HU they differ in exactly its HUD panel's 168x28 pixels while that HUD shows above the root canvas, and nowhere at steps 8 and 9",
-      [...vsRef, ...hudProblems].slice(0, 10),
+      "receiver-hd-native and -patch: every pixel of every shot (settle and intermediate, 1920x1080) equals reference-hd-native's, raw per channel with alpha, the nine HU regions included (the HUD CanvasLayers are carried and replayed since G6b, render-stream/6); budget 0 (Q6g)",
+      vsRef.slice(0, 10),
       `pixels compared: ${vsDetail.join(", ")}`,
       RECEIVER_LEGS.map((r) => join(D, r.dir, "shots")),
     ),

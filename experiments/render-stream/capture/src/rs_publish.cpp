@@ -231,9 +231,10 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
   if (version == ProtocolVersion::V3) {
     // render-stream-3.md "Features": sorted ascending by byte value.
     features.ops.insert(features.ops.begin(), "add_msdf_texture_rect_region");
-  } else if (version == ProtocolVersion::V4 || version == ProtocolVersion::V5) {
+  } else if (version == ProtocolVersion::V4 || version == ProtocolVersion::V5 ||
+             version == ProtocolVersion::V6) {
     // render-stream-4.md "Features": /3's four plus the eleven /4 ops, sorted by byte value
-    // (render-stream-5.md "Features": unchanged at /5).
+    // (render-stream-5.md and render-stream-6.md "Features": unchanged at /5 and /6).
     features.ops = {"add_circle",         "add_clip_ignore",
                     "add_line",           "add_mesh",
                     "add_msdf_texture_rect_region",
@@ -248,7 +249,8 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                          "draw_index",     "modulate",         "parent",         "self_modulate",
                          "texture_filter", "texture_repeat",   "transform",      "visibility_layer",
                          "visible",        "z_index",          "z_relative"};
-  if (version == ProtocolVersion::V5) {
+  const bool v5_or_later = version == ProtocolVersion::V5 || version == ProtocolVersion::V6;
+  if (v5_or_later) {
     // render-stream-5.md "Features": /4's list plus instance_params, material and
     // use_parent_material, re-sorted; canvas_state is new.
     features.item_state.push_back("instance_params");
@@ -256,6 +258,10 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
     features.item_state.push_back("use_parent_material");
     std::sort(features.item_state.begin(), features.item_state.end());
     features.canvas_state = {"modulate", "transform"};
+    if (version == ProtocolVersion::V6) {
+      // render-stream-6.md "Features": canvas_state gains "layer", re-sorted.
+      features.canvas_state = {"layer", "modulate", "transform"};
+    }
   }
   if (headless_host) {
     features.resources = {"texture_2d", "texture_2d_placeholder"};
@@ -263,10 +269,10 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
   } else {
     features.resources = {"canvas_texture", "texture_2d", "texture_2d_placeholder"};
   }
-  if (version == ProtocolVersion::V4 || version == ProtocolVersion::V5) {
+  if (version == ProtocolVersion::V4 || v5_or_later) {
     // render-stream-4.md "Features": `resources` gains "mesh", kept sorted by byte value.
     features.resources.push_back("mesh");
-    if (version == ProtocolVersion::V5) {
+    if (v5_or_later) {
       // render-stream-5.md "Features": and "material" and "shader".
       features.resources.push_back("material");
       features.resources.push_back("shader");
@@ -305,7 +311,7 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                                          "canvas_item_add_particles",
                                          "canvas_item_attach_skeleton",
                                          "canvas_item_set_material"};
-  } else if (version == ProtocolVersion::V5) {
+  } else if (v5_or_later) {
     // render-stream-5.md "Features": /4's six lose canvas_item_set_material (item state now) and
     // gain canvas_light_attach_to_canvas (gate5_5-design.md D10, D16).
     features.observed_unsupported_ops = {"canvas_item_add_animation_slice",
@@ -314,6 +320,13 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                                          "canvas_item_add_particles",
                                          "canvas_item_attach_skeleton",
                                          "canvas_light_attach_to_canvas"};
+    if (version == ProtocolVersion::V6) {
+      // render-stream-6.md "Features": calibrator 9's three typed canvas ops (gate6-design.md
+      // D3), sorted by byte value.
+      features.observed_unsupported_ops.push_back("canvas_set_item_mirroring");
+      features.observed_unsupported_ops.push_back("canvas_set_item_repeat");
+      features.observed_unsupported_ops.push_back("canvas_set_parent");
+    }
   }
   features.unobserved = {"canvas_item_set_canvas_group_mode",
                          "canvas_item_set_instance_shader_parameter",
@@ -326,12 +339,12 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                          "viewport_remove_canvas",
                          "viewport_set_canvas_cull_mask",
                          "viewport_set_global_canvas_transform"};
-  if (version == ProtocolVersion::V4 || version == ProtocolVersion::V5) {
+  if (version == ProtocolVersion::V4 || v5_or_later) {
     // render-stream-4.md "Features" (gate3-design.md "Deferred"): the two snap-to-pixel settings.
     features.unobserved.push_back("viewport_set_snap_2d_transforms_to_pixel");
     features.unobserved.push_back("viewport_set_snap_2d_vertices_to_pixel");
   }
-  if (version == ProtocolVersion::V5) {
+  if (v5_or_later) {
     // render-stream-5.md "Features": canvas_item_set_instance_shader_parameter and
     // canvas_set_modulate are observed state now; D16's declared-unobserved names join, sorted.
     const auto drop = [&features](const char *name) {
@@ -348,6 +361,13 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
           "global_shader_parameter_set_override", "material_set_next_pass",
           "material_set_render_priority", "shader_set_path_hint"}) {
       features.unobserved.push_back(name);
+    }
+    if (version == ProtocolVersion::V6) {
+      // render-stream-6.md "Features": calibrator 9 hooks viewport_remove_canvas and
+      // viewport_set_global_canvas_transform; slot 440 stays unhooked.
+      drop("viewport_remove_canvas");
+      drop("viewport_set_global_canvas_transform");
+      features.unobserved.push_back("canvas_set_disable_scale");
     }
     std::sort(features.unobserved.begin(), features.unobserved.end());
   }

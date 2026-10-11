@@ -73,7 +73,17 @@ extends RefCounted
 ## instance parameter (null for a removed one), each only when it differs from what this applier
 ## last sent (a new item starts at RID(), false and none). Wire canvas 1's `modulate` is
 ## canvas_set_modulate on the receiver's root canvas, only when it differs from the last value
-## applied, starting from the engine's white; other canvases are never attached.
+## applied, starting from the engine's white.
+##
+## Canvases (render-stream/6, G6b; gate6-design.md D3, Q5): every non-root canvas id gets its own
+## canvas_create. While its wire entry is `attached`, it is attached to the receiver's root
+## viewport (viewport_attach_canvas, which resets the engine's stacking to (0,0) and its transform
+## to identity), stacked (viewport_set_canvas_stacking with the wire's layer and sublayer),
+## transformed (viewport_set_canvas_transform) and modulated (canvas_set_modulate), each only when
+## it differs from what was last applied; leaving `attached` is viewport_remove_canvas, leaving the
+## state is free_rid. Items parented to a canvas are parented to the receiver's canvas for that
+## id. Canvases apply after materials and before items (gate2-design.md Q5 order). Wire canvas 1
+## stays the viewport's own canvas: its attachment is never touched, and its stacking is (0,0).
 ##
 ## It owns the wire id -> RID maps and makes every RenderingServer call the receiver makes,
 ## counting each one in `rs_calls`. `accept_record` decodes and validates one record completely
@@ -163,6 +173,10 @@ var sabotage_stale_param: bool = false
 ## first payload; later versions are never uploaded (font atlas pages, LA8, still update, so text
 ## stays honest). Exists only to fail checks.
 var sabotage_stale_texture: bool = false
+## RS_RECEIVER_SABOTAGE=ignore-canvas-stacking (gate6-design.md Q5, G6b): extra canvases are
+## attached but viewport_set_canvas_stacking is never called, so they draw at the attach default
+## (0,0) in canvas RID order.
+var sabotage_ignore_canvas_stacking: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
@@ -180,12 +194,19 @@ var _default_filter: String = ""
 var _default_repeat: String = ""
 
 
-## Receiver-side mirror of one canvas: its RID and the child list in engine append order.
+## Receiver-side mirror of one canvas: its RID and the child list in engine append order; for a
+## canvas the applier created (G6b), the attachment, stacking, transform and modulate last applied.
 class CanvasState:
 	extends RefCounted
 	var rid: RID
 	var owned: bool
 	var children: Array[int] = []
+	var attached: bool = false
+	var layer: int = 0
+	var sublayer: int = 0
+	## The viewport transform last applied while attached (identity right after an attach).
+	var xform := PackedFloat32Array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+	var modulate := PackedFloat32Array(WHITE)
 
 
 ## Receiver-side mirror of one item: the values last sent to the RenderingServer.
@@ -722,7 +743,8 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 				_items[child].parent_key = ""
 		_canvases.erase(id)
 
-	# 3. Create new canvases (never attached) and new items.
+	# 3. Create new canvases and new items.
+	var canvas_stats: Dictionary = {"canvases_created": 0, "canvas_attach": 0, "canvas_stacking_sets": 0}
 	for id: int in canvas_order:
 		if _canvases.has(id):
 			continue
@@ -733,6 +755,13 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		_canvases[id] = canvas_state
 		created += 1
 		created_rids += 1
+		canvas_stats["canvases_created"] = Rs2Decoder.as_int(canvas_stats["canvases_created"]) + 1
+	# 3b. (G6b, render-stream/6) attach, stack, transform and modulate the non-root canvases.
+	for id: int in canvas_order:
+		if id == 1:
+			continue
+		var wire_canvas: Dictionary = canvases[id]
+		_apply_canvas(_canvases[id], wire_canvas, canvas_stats)
 	var fresh: Dictionary[int, bool] = {}
 	for id: int in item_order:
 		if _items.has(id):
@@ -990,7 +1019,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		if not sabotage_clip_before_clear:
 			_apply_clip(state, clip, is_new, id, item_calls)
 
-	# 8. Canvas 1 transform on the root viewport. Other canvases are never attached.
+	# 8. Canvas 1 transform on the root viewport (the other canvases' at step 3b).
 	var root: Dictionary = canvases[1]
 	var root_xform: PackedFloat32Array = _floats(root["xform"])
 	if root_xform != _root_xform:
@@ -1039,7 +1068,48 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		"material_resources": material_stats,
 		"skipped_shaders": skipped_shaders,
 		"param_calls": param_calls,
+		"canvas_resources": canvas_stats,
 	}
+
+
+## One non-root canvas (G6b, see "Canvases" in the class docs). Counts viewport_attach_canvas and
+## viewport_remove_canvas calls in canvas_attach, stacking calls in canvas_stacking_sets.
+func _apply_canvas(state: CanvasState, wire: Dictionary, stats: Dictionary) -> void:
+	var want_attached: bool = wire["attached"]
+	if want_attached and not state.attached:
+		RenderingServer.viewport_attach_canvas(_viewport, state.rid)
+		rs_calls += 1
+		stats["canvas_attach"] = Rs2Decoder.as_int(stats["canvas_attach"]) + 1
+		state.attached = true
+		# rv.cpp:1264-1266: a fresh CanvasData at (0,0) with an identity transform.
+		state.layer = 0
+		state.sublayer = 0
+		state.xform = PackedFloat32Array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+	elif not want_attached and state.attached:
+		RenderingServer.viewport_remove_canvas(_viewport, state.rid)
+		rs_calls += 1
+		stats["canvas_attach"] = Rs2Decoder.as_int(stats["canvas_attach"]) + 1
+		state.attached = false
+	if state.attached:
+		var layer: int = Rs2Decoder.as_int(wire.get("layer", 0))
+		var sublayer: int = Rs2Decoder.as_int(wire.get("sublayer", 0))
+		if (layer != state.layer or sublayer != state.sublayer) and not sabotage_ignore_canvas_stacking:
+			RenderingServer.viewport_set_canvas_stacking(_viewport, state.rid, layer, sublayer)
+			rs_calls += 1
+			stats["canvas_stacking_sets"] = Rs2Decoder.as_int(stats["canvas_stacking_sets"]) + 1
+			state.layer = layer
+			state.sublayer = sublayer
+		var xform: PackedFloat32Array = _floats(wire["xform"])
+		if xform != state.xform:
+			RenderingServer.viewport_set_canvas_transform(_viewport, state.rid, _xform(xform, 0))
+			rs_calls += 1
+			state.xform = xform
+	if wire.has("modulate"):
+		var modulate: PackedFloat32Array = _floats(wire["modulate"])
+		if modulate != state.modulate:
+			RenderingServer.canvas_set_modulate(state.rid, _color(modulate, 0))
+			rs_calls += 1
+			state.modulate = modulate
 
 
 ## gate5-design.md Q5 step 3b (G5e): frees every resident mesh whose entry left the table or became

@@ -21,6 +21,7 @@
 // 7. evaluateUnsupportedClass and evaluateNoTies6.
 // 8. Gate 6h: test/self-test-gate6h.ts on the committed fixtures/gate6-hd/expected.json.
 // 9. Group g6l: self-test-gate6l.ts's cases for lib/gate6l-checks.ts.
+// 10. Gate 6b: test/self-test-gate6b.ts (the pure g6b checks) on synthetic values and the HD file.
 //
 // Exits non-zero if any assertion fails.
 
@@ -54,6 +55,7 @@ import {
 import type { Gate6HdExpected } from "../lib/gate6h-checks";
 import type { Wire5Tx } from "../lib/gate55-wire";
 import { rasterizeItems } from "../lib/geometry-raster";
+import { selfTestGate6b } from "./self-test-gate6b";
 import { selfTestGate6h } from "./self-test-gate6h";
 import { selfTestG6l } from "./self-test-gate6l";
 
@@ -767,6 +769,32 @@ async function main(): Promise<void> {
       ["viewport_attach_canvas", "extra-canvas"],
     ];
     passes(
+      "success class with nothing typed (render-stream/6's default scene)",
+      evaluateUnsupportedClass(
+        { result_class: "success", reasons: [] },
+        [],
+        [],
+      ),
+    );
+    fails(
+      "unsupported class where nothing is wanted",
+      evaluateUnsupportedClass(
+        { result_class: "unsupported", reasons: ["unsupported: x"] },
+        ["viewport_set_canvas_stacking/canvas-stacking-tie"],
+        [],
+      ),
+      "expected success",
+    );
+    passes(
+      "a sabotage receiver: pixel-mismatch with nothing typed",
+      evaluateUnsupportedClass(
+        { result_class: "pixel-mismatch", reasons: ["pixel-mismatch: s"] },
+        [],
+        [],
+        true,
+      ),
+    );
+    passes(
       "unsupported class with exactly extra-canvas",
       evaluateUnsupportedClass(
         { result_class: "unsupported", reasons: ["unsupported: x"] },
@@ -864,17 +892,18 @@ async function main(): Promise<void> {
   }
 
   // 8. Gate 6h.
-  selfTestGate6h(
-    assert,
-    JSON.parse(
-      await readFile(
-        join(EXPERIMENT_DIR, "fixtures", "gate6-hd", "expected.json"),
-        "utf8",
-      ),
-    ) as Gate6HdExpected,
-  );
+  const hdExpected = JSON.parse(
+    await readFile(
+      join(EXPERIMENT_DIR, "fixtures", "gate6-hd", "expected.json"),
+      "utf8",
+    ),
+  ) as Gate6HdExpected;
+  selfTestGate6h(assert, hdExpected);
   // 9. Group g6l (self-test-gate6l.ts).
   selfTestG6l(e, { assert, passes, fails });
+
+  // 10. Gate 6b (test/self-test-gate6b.ts).
+  selfTestGate6b(assert, hdExpected);
 
   console.log(
     `\nself-test-gate6: ${assertions - failures}/${assertions} assertions passed`,

@@ -1,9 +1,8 @@
 # render-stream/6 wire format
 
-Status: specified and golden-tested at G6w (2026-10-11); the codecs exist but nothing speaks /6
-yet -- the capture, the receiver and every gate runner keep speaking render-stream/5 until G6b
-(gate6-design.md D1, D19). Written with [gate6-design.md](gate6-design.md) Q4, which this document
-implements. Codecs (G6w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind
+Status: specified and golden-tested at G6w (2026-10-11); since G6b (2026-10-11) the capture, the
+receiver and every gate runner speak render-stream/6 (gate6-design.md D1, D19, "As built (G6b)").
+Written with [gate6-design.md](gate6-design.md) Q4, which this document implements. Codecs (G6w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind
 `Session::version`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`,
 behind an explicit `version` parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all
 checked byte-for-byte and state-for-state against `protocol/golden-6/`, per this text.
@@ -15,10 +14,9 @@ As with /3 to /5 (memory g4e1-rs3-version-switch-pattern), /6 is **not** a new f
 version-parameterized C++/TypeScript/GDScript modules /5 already extended grow a fifth value:
 C++'s `Session::version` gains `ProtocolVersion::V6` (still defaulting to `V2`, so every existing
 /2/3/4/5 caller is unaffected), and the TypeScript/GDScript `version` parameter widens to
-`2 | 3 | 4 | 5 | 6` (defaulting to `4` until G55d lands /5's switch, as render-stream-5.md already
-documents; G6w carries that default forward unchanged, since the capture and receiver do not speak
-/6 until G6b). Renaming `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd` is not
-part of this document.
+`2 | 3 | 4 | 5 | 6` (G6w carried /5's default forward; G6b made `6` the default in both, when the
+capture and the receiver switched). Renaming `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/
+`rs2_decoder.gd` is not part of this document.
 
 render-stream/6 is render-stream/5 plus exactly:
 
@@ -252,8 +250,9 @@ already covered by `golden-2/invalid/` through `golden-5/invalid/`):
 ## Live transport
 
 As /5, except the subprotocol is `render-stream.6` and the hello's `protocol` is
-`"render-stream/6"`. Not wired anywhere yet -- G6b switches the capture's listener and the
-receiver's live client to /6.
+`"render-stream/6"`. Since G6b the capture's listener and the receiver's live client speak it, and a
+live connection's session declares `publication` from `GRC_PUBLISH_FPS` (`rate`/target, or
+`every-frame`/null when uncapped).
 
 ## Versioning
 

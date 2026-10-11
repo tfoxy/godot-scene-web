@@ -380,28 +380,34 @@ void test_viewport_hooks() {
   check(s.unsupported.empty() && s.failures.empty(), "root attach and transform are supported");
   check(canvas(s, 1)->xform == Xform{2, 0, 0, 2, 5, 6}, "root canvas transform stored");
 
-  // A second canvas on the root viewport: attached, and extra-canvas (sticky).
+  // A second canvas on the root viewport (G6b, render-stream/6): attached and supported, no
+  // extra-canvas; at the attach default (0,0) it ties with the root canvas until its stacking
+  // lands.
   m.viewport_attach_canvas(kRootViewport, 200, 2);
   m.viewport_set_canvas_transform(kRootViewport, 200, {1, 0, 0, 1, 3, 4}, 2);
+  s = m.snapshot(2, 2).state;
+  check(s.unsupported.size() == 1 && !s.unsupported[0].has_item &&
+            s.unsupported[0].op == "viewport_set_canvas_stacking" &&
+            s.unsupported[0].reason == UnsupportedReason::CanvasStackingTie,
+        "an extra canvas at the attach default (0,0) ties with the root: canvas-stacking-tie");
+  m.viewport_set_canvas_stacking(kRootViewport, 200, 1, 0, 2);
   // A non-root viewport: non-root-viewport for both ops, mirror unchanged.
   m.viewport_attach_canvas(0x9999, 200, 2);
   m.viewport_set_canvas_transform(0x9999, kRootCanvas, {9, 9, 9, 9, 9, 9}, 2);
   m.viewport_attach_canvas(0x9999, 200, 2);  // de-duplicated
   s = m.snapshot(2, 2).state;
-  check(canvas(s, 2)->attached && canvas(s, 2)->xform == Xform{1, 0, 0, 1, 3, 4},
-        "the extra canvas is attached and its transform stored");
+  check(canvas(s, 2)->attached && canvas(s, 2)->xform == Xform{1, 0, 0, 1, 3, 4} &&
+            canvas(s, 2)->layer == 1 && canvas(s, 2)->sublayer == 0,
+        "the extra canvas is attached, its transform and stacking stored");
   check(canvas(s, 1)->xform == Xform{2, 0, 0, 2, 5, 6},
         "a non-root viewport's transform does not touch the root canvas");
-  check(s.unsupported.size() == 3, "3 session-level entries");
-  if (s.unsupported.size() == 3) {
-    check(!s.unsupported[0].has_item && s.unsupported[0].op == "viewport_attach_canvas" &&
-              s.unsupported[0].reason == UnsupportedReason::ExtraCanvas,
-          "first observed: extra-canvas");
-    check(s.unsupported[1].op == "viewport_attach_canvas" &&
+  check(s.unsupported.size() == 2, "2 session-level entries (the tie is gone)");
+  if (s.unsupported.size() == 2) {
+    check(s.unsupported[0].op == "viewport_attach_canvas" &&
+              s.unsupported[0].reason == UnsupportedReason::NonRootViewport,
+          "first observed: attach on a non-root viewport");
+    check(s.unsupported[1].op == "viewport_set_canvas_transform" &&
               s.unsupported[1].reason == UnsupportedReason::NonRootViewport,
-          "then attach on a non-root viewport");
-    check(s.unsupported[2].op == "viewport_set_canvas_transform" &&
-              s.unsupported[2].reason == UnsupportedReason::NonRootViewport,
           "then transform on a non-root viewport");
   }
   check(s.failures.empty(), "unsupported viewport use is not a failure");
@@ -412,7 +418,7 @@ void test_viewport_hooks() {
   m.add_unsupported(100, "canvas_item_add_mesh", 3);
   m.free_rid(200, 3);
   s = m.snapshot(3, 3).state;
-  check(s.unsupported.size() == 4 && !s.unsupported[2].has_item && s.unsupported[3].has_item,
+  check(s.unsupported.size() == 3 && !s.unsupported[1].has_item && s.unsupported[2].has_item,
         "session-level entries first, sticky, then item-level");
 
   // An unknown canvas on the root viewport is pre-existing-object.
@@ -1569,7 +1575,7 @@ void test_geometry_taps() {
   m.add_set_transform(100, {1, 0, 0, 1, 0, 0}, 1);
   grc::rs::Captured c = m.snapshot(1, 1);
   const Snapshot &s = c.state;
-  check(s.version == grc::rs2::ProtocolVersion::V5, "snapshots are stamped render-stream/5");
+  check(s.version == grc::rs2::ProtocolVersion::V6, "snapshots are stamped render-stream/6");
   const auto *it = item(s, 1);
   check(it != nullptr && it->commands.size() == 10 && it->content_version == 10,
         "ten taps, ten commands, ten content_version bumps");
@@ -1619,7 +1625,7 @@ void test_geometry_taps() {
             m.snapshot(2, 2).state.textures[0].status == grc::rs2::TextureStatus::Freed,
         "a /4 op naming a freed texture keeps its tombstone");
   const grc::rs2::Transaction full = grc::rs2::make_full(s);
-  check(full.version == grc::rs2::ProtocolVersion::V5, "make_full carries the V5 stamp");
+  check(full.version == grc::rs2::ProtocolVersion::V6, "make_full carries the V6 stamp");
 
   // Skinned triangle arrays and out-of-range axis modes are typed refusals.
   Mirror k;
@@ -2067,7 +2073,7 @@ void test_mesh_add_mesh_and_tombstones() {
         "recreation: the new id arrives and the old tombstone leaves in the same snapshot");
   // The patch between them carries the mesh change: removed 1, entry 3.
   const grc::rs2::Transaction patch = grc::rs2::make_patch(m.snapshot(2, 2).state, cap.state);
-  check(patch.version == grc::rs2::ProtocolVersion::V5, "snapshots are V5");
+  check(patch.version == grc::rs2::ProtocolVersion::V6, "snapshots are V6");
   m.free_rid(0x500, 4);
   m.mesh_set_custom_aabb(0x500, {1, 1, 0, 1, 1, 0}, 4);
   cap = m.snapshot(4, 4);
@@ -2727,6 +2733,119 @@ void test_canvas_modulate_and_light() {
         "an unknown canvas RID follows the unknown-RID rule");
 }
 
+// G6b (gate6-design.md Q3b): attach resets the stacking, removal detaches but keeps the items,
+// a tie between two attached canvases is derived per snapshot, and the patch carries exactly the
+// one changed canvas.
+void test_canvas_layers() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_create(300, 1);  // canvas 2
+  m.canvas_create(301, 1);  // canvas 3
+  m.canvas_item_create(110, 1);
+  m.set_parent(110, 300, 1);
+  m.viewport_attach_canvas(kRootViewport, 300, 1);
+  m.viewport_set_canvas_stacking(kRootViewport, 300, 1, 0, 1);
+  Snapshot s1 = m.snapshot(1, 1).state;
+  check(s1.unsupported.empty(), "a stacked layer attached in the same frame: no tie, no entry");
+  check(canvas(s1, 2)->attached && canvas(s1, 2)->layer == 1 && canvas(s1, 2)->sublayer == 0 &&
+            canvas(s1, 3)->layer == 0 && !canvas(s1, 3)->attached,
+        "layer 1 on the attached canvas; the unattached one keeps (0,0)");
+  // Layer change only: the patch carries exactly that canvas.
+  m.viewport_set_canvas_stacking(kRootViewport, 300, -1, 0, 2);
+  Snapshot s2 = m.snapshot(2, 2).state;
+  const grc::rs2::Transaction patch = grc::rs2::make_patch(s1, s2);
+  check(patch.canvases.size() == 1 && patch.canvases[0].id == 2 && patch.canvases[0].layer == -1,
+        "a layer change patches exactly one canvas entry");
+  // Removal: attached false, items kept.
+  m.viewport_remove_canvas(kRootViewport, 300, 3);
+  Snapshot s3 = m.snapshot(3, 3).state;
+  check(!canvas(s3, 2)->attached && canvas(s3, 2)->items == std::vector<uint32_t>{1} &&
+            canvas(s3, 2)->layer == -1,
+        "removal: attached false, items and stacking kept");
+  // Re-attach resets the stacking to (0,0) -> tie with the root until set; a third canvas at the
+  // same key ties too.
+  m.viewport_attach_canvas(kRootViewport, 300, 4);
+  Snapshot s4 = m.snapshot(4, 4).state;
+  check(canvas(s4, 2)->attached && canvas(s4, 2)->layer == 0 && s4.unsupported.size() == 1 &&
+            s4.unsupported[0].reason == UnsupportedReason::CanvasStackingTie,
+        "re-attach resets to (0,0): a tie with the root canvas");
+  m.viewport_set_canvas_stacking(kRootViewport, 300, 2, 0, 4);
+  m.viewport_attach_canvas(kRootViewport, 301, 4);
+  m.viewport_set_canvas_stacking(kRootViewport, 301, 2, 0, 4);
+  s4 = m.snapshot(4, 4).state;
+  check(s4.unsupported.size() == 1 && s4.unsupported[0].op == "viewport_set_canvas_stacking",
+        "two attached layers at (2,0): one canvas-stacking-tie entry");
+  m.viewport_set_canvas_stacking(kRootViewport, 301, 2, 1, 5);
+  check(m.snapshot(5, 5).state.unsupported.empty(), "a distinct sublayer resolves the tie");
+  // Non-root viewport stacking is non-root-viewport and changes nothing.
+  m.viewport_set_canvas_stacking(0x9999, 301, 7, 7, 6);
+  m.viewport_remove_canvas(0x9999, 301, 6);
+  Snapshot s6 = m.snapshot(6, 6).state;
+  check(canvas(s6, 3)->layer == 2 && canvas(s6, 3)->attached && s6.unsupported.size() == 2 &&
+            s6.unsupported[0].reason == UnsupportedReason::NonRootViewport &&
+            s6.unsupported[1].op == "viewport_remove_canvas",
+        "stacking / removal on a non-root viewport: non-root-viewport, mirror unchanged");
+  // omit-op drops the stacking tap.
+  Mirror o;
+  bind_root(&o);
+  o.set_omit_op("viewport_set_canvas_stacking", 2);
+  o.canvas_create(300, 1);
+  o.viewport_attach_canvas(kRootViewport, 300, 1);
+  o.viewport_set_canvas_stacking(kRootViewport, 300, 1, 0, 1);
+  o.viewport_set_canvas_stacking(kRootViewport, 300, 5, 0, 2);
+  check(canvas(o.snapshot(2, 2).state, 2)->layer == 1, "omit-op viewport_set_canvas_stacking");
+}
+
+// G6b (Q3b, D17): the sticky repeat/follow entries, the non-sticky global canvas transform, and
+// snap-2d, in their documented order.
+void test_canvas_session_entries() {
+  Mirror m;
+  bind_root(&m);
+  m.set_global_canvas_reference({0.5f, 0, 0, 0.5f, 0, 0});
+  m.viewport_set_global_canvas_transform(kRootViewport, {0.5f, 0, 0, 0.5f, 0, 0}, 1);
+  check(m.snapshot(1, 1).state.unsupported.empty(),
+        "a global canvas transform equal to the reference is not typed");
+  m.canvas_set_parent(300, 0, 1);
+  m.canvas_set_item_mirroring(300, 110, 0, 0, 1);
+  m.canvas_set_item_repeat(110, 0, 0, 1, 1);
+  check(m.snapshot(1, 1).state.unsupported.empty(), "RID() parent and zero vectors are not typed");
+  m.canvas_set_item_repeat(110, 64, 0, 2, 2);
+  m.canvas_set_parent(300, 0x7777, 2);
+  m.canvas_set_item_mirroring(300, 110, 32, 0, 2);
+  m.viewport_set_global_canvas_transform(kRootViewport, {0.5f, 0, 0, 0.5f, 8, 4}, 2);
+  m.set_snap_2d(false, true);
+  Snapshot s = m.snapshot(2, 2).state;
+  check(s.unsupported.size() == 5, "five session-level entries");
+  if (s.unsupported.size() == 5) {
+    check(s.unsupported[0].reason == UnsupportedReason::Snap2d &&
+              s.unsupported[0].op == "viewport_set_snap_2d_vertices_to_pixel",
+          "snap-2d first, named after the vertices setter when only that flag is set");
+    check(s.unsupported[1].reason == UnsupportedReason::CanvasRepeat &&
+              s.unsupported[1].op == "canvas_set_item_repeat",
+          "then canvas-repeat (repeat observed first)");
+    check(s.unsupported[2].reason == UnsupportedReason::CanvasFollowViewport &&
+              s.unsupported[2].op == "canvas_set_parent",
+          "then canvas-follow-viewport");
+    check(s.unsupported[3].reason == UnsupportedReason::CanvasRepeat &&
+              s.unsupported[3].op == "canvas_set_item_mirroring",
+          "then canvas-repeat named after the mirroring op");
+    check(s.unsupported[4].reason == UnsupportedReason::GlobalCanvasTransform,
+          "then global-canvas-transform while it differs");
+  }
+  m.viewport_set_global_canvas_transform(kRootViewport, {0.5f, 0, 0, 0.5f, 0, 0}, 3);
+  m.set_snap_2d(true, true);
+  s = m.snapshot(3, 3).state;
+  check(s.unsupported.size() == 4 &&
+            s.unsupported[0].op == "viewport_set_snap_2d_transforms_to_pixel",
+        "global-canvas-transform leaves once equal again; sticky ones stay; snap names transforms");
+  m.viewport_set_global_canvas_transform(0x9999, {1, 0, 0, 1, 0, 0}, 4);
+  s = m.snapshot(4, 4).state;
+  check(s.unsupported.size() == 5 && s.unsupported[4].reason == UnsupportedReason::NonRootViewport,
+        "a non-root viewport's global transform is non-root-viewport");
+  m.reset();
+  check(m.snapshot(5, 5).state.unsupported.empty(), "reset clears snap, the reference and stickies");
+}
+
 void test_shader_policy_and_perturb() {
   using grc::rs2::ShaderSource;
   using grc::rs2::ShaderStatus;
@@ -2859,6 +2978,8 @@ int main() {
   test_material_params();
   test_material_items_and_derived_entries();
   test_canvas_modulate_and_light();
+  test_canvas_layers();
+  test_canvas_session_entries();
   test_shader_policy_and_perturb();
   test_material_omit_op();
   if (g_failures != 0) {

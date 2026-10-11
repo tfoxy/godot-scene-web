@@ -79,6 +79,9 @@ var _payloads: Dictionary[String, PackedByteArray] = {}
 ## G55d: golden-5 (render-stream/5) and its payloads (textures, meshes and GRP1 shader code).
 var _golden5: String = ""
 var _payloads5: Dictionary[String, PackedByteArray] = {}
+## G6b: golden-6 (render-stream/6) and its payloads; the control messages are golden-6's.
+var _golden6: String = ""
+var _payloads6: Dictionary[String, PackedByteArray] = {}
 
 
 func _initialize() -> void:
@@ -89,6 +92,7 @@ func _initialize() -> void:
 	if _tmp == "":
 		_tmp = ProjectSettings.globalize_path("user://applier2-selftest")
 	_golden5 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-5").simplify_path()
+	_golden6 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-6").simplify_path()
 	print("[applier2-selftest] golden %s and %s, scratch %s" % [_golden, _golden5, _tmp])
 	var index: Dictionary = _read_json("index.json")
 	if index.is_empty():
@@ -115,6 +119,14 @@ func _initialize() -> void:
 			var file5: String = entry5["file"]
 			var hash5: String = entry5["hash"]
 			_payloads5[hash5] = _read_bytes_in(_golden5, file5)
+	var index6: Dictionary = _read_json_in(_golden6, "index.json")
+	for key: String in ["payloads", "mesh_payloads", "shader_payloads"]:
+		var list6: Array = index6.get(key, [])
+		for value: Variant in list6:
+			var entry6: Dictionary = value
+			var file6: String = entry6["file"]
+			var hash6: String = entry6["hash"]
+			_payloads6[hash6] = _read_bytes_in(_golden6, file6)
 	_test_control_messages()
 	_test_cache(index)
 	# The root canvas is attached to the root viewport only from the first frame on (SceneTree
@@ -140,6 +152,7 @@ func _run_applier_tests() -> void:
 	_test_applier_golden5_sabotages()
 	_test_applier_withheld()
 	_test_applier_material_lifetimes()
+	_test_applier_golden6_canvases()
 	_finish()
 
 
@@ -205,8 +218,15 @@ func _memory_cache(five: bool = false) -> RsResourceCache:
 ## (golden-4, decoded as version 4 since the receiver's default became 5 at G55d) or `.rs5`
 ## (golden-5).
 func _apply(applier: RsApplier, file: String, cache: RsResourceCache) -> Array[Dictionary]:
-	var version: int = 5 if file.get_extension() == "rs5" else 4
-	var data: PackedByteArray = _read_bytes_in(_golden5 if version == 5 else _golden, file)
+	var version: int = 4
+	var dir: String = _golden
+	if file.get_extension() == "rs5":
+		version = 5
+		dir = _golden5
+	elif file.get_extension() == "rs6":
+		version = 6
+		dir = _golden6
+	var data: PackedByteArray = _read_bytes_in(dir, file)
 	var records: Array[Dictionary] = Rs2Decoder.split_records(data, version)["records"]
 	var stream := Rs2Decoder.Stream.new(version)
 	var out: Array[Dictionary] = []
@@ -893,15 +913,15 @@ func _test_cache(index: Dictionary) -> void:
 func _test_control_messages() -> void:
 	var stream_id: String = "0123456789abcdef0123456789abcdef"
 	var encoded: Dictionary[String, Dictionary] = {
-		"hello-submitted": RsLiveClient.hello("gate5-selftest", "submitted", 16777216),
-		"hello-applied": RsLiveClient.hello("gate5-selftest-headless", "applied", 65535),
+		"hello-submitted": RsLiveClient.hello("gate6-selftest", "submitted", 16777216),
+		"hello-applied": RsLiveClient.hello("gate6-selftest-headless", "applied", 65535),
 		"ack-received": RsLiveClient.ack(stream_id, 1, "received", 1000),
 		"ack-applied": RsLiveClient.ack(stream_id, 1, "applied", 2500),
 		"ack-submitted": RsLiveClient.ack(stream_id, 1, "submitted", 4200),
 		"resync": RsLiveClient.resync(stream_id, 7, "unapplied-stale"),
 	}
 	for name: String in encoded:
-		var golden: Dictionary = _read_json_in(_golden5, "control/valid/%s.json" % name)
+		var golden: Dictionary = _read_json_in(_golden6, "control/valid/%s.json" % name)
 		var text: String = RsLiveClient.encode(encoded[name])
 		var json := JSON.new()
 		if json.parse(text) != OK or typeof(json.data) != TYPE_DICTIONARY:
@@ -912,8 +932,8 @@ func _test_control_messages() -> void:
 		_check(JSON.stringify(got) == JSON.stringify(golden), "control %s differs from the golden: %s vs %s" % [name, JSON.stringify(got), JSON.stringify(golden)])
 		_check(not text.contains(" "), "control %s is compact: %s" % [name, text])
 		_check(not RsLiveClient.parse_host_text(text)["ok"], "parse_host_text refuses a %s message" % name)
-	_check(RsLiveClient.SUBPROTOCOL == "render-stream.5" and RsLiveClient.PROTOCOL == "render-stream/5", "the live client speaks render-stream/5")
-	var error_text: String = FileAccess.get_file_as_string(_golden5.path_join("control/valid/error-message-too-large.json"))
+	_check(RsLiveClient.SUBPROTOCOL == "render-stream.6" and RsLiveClient.PROTOCOL == "render-stream/6", "the live client speaks render-stream/6")
+	var error_text: String = FileAccess.get_file_as_string(_golden6.path_join("control/valid/error-message-too-large.json"))
 	var parsed: Dictionary = RsLiveClient.parse_host_text(error_text)
 	_check(parsed["ok"] and parsed["reason"] == "message-too-large", "parse_host_text reads the golden error message")
 	_check(not RsLiveClient.parse_host_text("not json")["ok"], "parse_host_text refuses non-JSON")
@@ -1284,3 +1304,61 @@ func _test_applier_material_lifetimes() -> void:
 	var m4: Dictionary = _mres(r4)
 	_check(m4["shaders_freed"] == 1 and m4["material_shader_sets"] == 1 and applier.resident_shaders() == 0, "lifetimes: an unsupported shader is freed and unset: %s" % str(m4))
 	_dispose_checked(applier, "material lifetimes")
+
+
+# --------------------------------------------------------------------------- canvases (G6b)
+
+
+## A cache holding golden-6's payloads in memory.
+func _memory_cache6() -> RsResourceCache:
+	var cache := RsResourceCache.new()
+	for hash: String in _payloads6:
+		_check(cache.add_inline(hash, _payloads6[hash]) == "", "golden-6 payload %s decodes" % hash)
+	return cache
+
+
+static func _cres(result: Dictionary) -> Dictionary:
+	var stats: Dictionary = result["stats"]
+	return stats["canvas_resources"]
+
+
+## (10) golden-6 (render-stream/6, gate6-design.md Q5): the three encodings give identical stats;
+## states 16-19's extra canvas is created, attached, stacked, re-stacked, removed and re-attached
+## with a second canvas at the same key, each counted once; ignore-canvas-stacking never stacks.
+func _test_applier_golden6_canvases() -> void:
+	var rows: Dictionary[String, Array] = {}
+	for file: String in ["full.rs6", "patch.rs6", "inline.rs6"]:
+		var applier: RsApplier = _new_applier()
+		var cache: RsResourceCache = _memory_cache6() if file != "inline.rs6" else RsResourceCache.new()
+		var results: Array[Dictionary] = _apply(applier, file, cache)
+		var file_rows: Array = []
+		var counters: Array = []
+		for result: Dictionary in results:
+			var errors: PackedStringArray = result["errors"]
+			_check(errors.is_empty(), "%s: a record is rejected: %s" % [file, str(errors)])
+			if result["kind"] == "transaction":
+				file_rows.append(_row(result) + str(_cres(result)))
+				var c: Dictionary = _cres(result)
+				counters.append([c["canvases_created"], c["canvas_attach"], c["canvas_stacking_sets"]])
+		rows[file] = file_rows
+		# seq 16: canvas 2 created, attached and stacked at layer 1; 17: re-stacked at -1; 18:
+		# removed; 19: canvas 2 re-attached (stacking reset, then 2) and canvas 3 created, attached
+		# and stacked at the same key.
+		var want: Array = [[1, 1, 1], [0, 0, 1], [0, 1, 0], [1, 2, 2]]
+		_check(counters.size() == 19 and counters.slice(15, 19) == want and counters.slice(0, 15).all(func(c: Array) -> bool: return c == [0, 0, 0]),
+			"%s: canvas counters per seq %s, want zeros through seq 15 then %s" % [file, str(counters), str(want)])
+		_dispose_checked(applier, "golden-6 %s" % file)
+	_check(rows["full.rs6"] == rows["patch.rs6"], "golden-6: full and patch per-seq applier stats differ")
+	_check(rows["full.rs6"] == rows["inline.rs6"], "golden-6: full and inline per-seq applier stats differ")
+
+	var sabotaged: RsApplier = _new_applier()
+	sabotaged.sabotage_ignore_canvas_stacking = true
+	var sabotaged_results: Array[Dictionary] = _apply(sabotaged, "full.rs6", _memory_cache6())
+	var stacking: int = 0
+	var attaches: int = 0
+	for result: Dictionary in sabotaged_results:
+		if result["kind"] == "transaction":
+			stacking += Rs2Decoder.as_int(_cres(result)["canvas_stacking_sets"])
+			attaches += Rs2Decoder.as_int(_cres(result)["canvas_attach"])
+	_check(stacking == 0 and attaches == 4, "ignore-canvas-stacking: %d stacking calls (want 0), %d attach/remove calls (want 4)" % [stacking, attaches])
+	_dispose_checked(sabotaged, "golden-6 ignore-canvas-stacking")

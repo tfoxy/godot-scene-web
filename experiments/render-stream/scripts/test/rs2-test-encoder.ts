@@ -30,10 +30,11 @@ import {
   type TextureReason,
 } from "../lib/render-stream-2";
 
-/** The wire magic of every synthetic recording: GRS5 since G55d (render-stream-5.md; GRS4 from
- * G5d, GRS3 from G4e2), what the capture publishes and the checkers decode by default. */
+/** The wire magic of every synthetic recording: GRS6 since G6b (render-stream-6.md; GRS5 from
+ * G55d, GRS4 from G5d, GRS3 from G4e2), what the capture publishes and the checkers decode by
+ * default. */
 export const MAGIC2 = Buffer.from([
-  0x47, 0x52, 0x53, 0x35, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x47, 0x52, 0x53, 0x36, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 export const GRT1_MAGIC = Buffer.from([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -124,6 +125,9 @@ export interface TCanvas {
   origin?: string;
   role?: string | null;
   attached?: boolean;
+  /** render-stream-6.md "Canvas" (default 0, 0) */
+  layer?: number;
+  sublayer?: number;
 }
 
 export interface TState {
@@ -330,7 +334,7 @@ export function encodeSession(opts: TSessionOptions): Buffer {
   return encodeRecord(
     {
       type: "session",
-      protocol: "render-stream/5",
+      protocol: "render-stream/6",
       session_id: opts.sessionId ?? "0123456789abcdef0123456789abcdef",
       stream: {
         stream_id:
@@ -362,8 +366,12 @@ export function encodeSession(opts: TSessionOptions): Buffer {
         stretch: { mode: "disabled", aspect: "keep", scale_mode: "fractional" },
         stretch_applied_by: "receiver",
         root_size_policy: opts.policy ?? "enforce-min-size",
+        // render-stream-6.md "Viewport": the logical size unless the policy is presentation.
+        presentation_size: [640, 360],
         host_size_status: opts.hostSizeStatus ?? "match",
         host_window_size: opts.hostWindowSize ?? [640, 360],
+        font_oversampling: 1,
+        snap_2d: { transforms: false, vertices: false },
       },
       resources: sessionResources(opts),
       // render-stream-5.md "Session": the shader-source policy, right after resources.
@@ -371,6 +379,9 @@ export function encodeSession(opts: TSessionOptions): Buffer {
       features: JSON.parse(
         JSON.stringify(opts.rendered ? RS2_FEATURES_RENDERED : RS2_FEATURES),
       ),
+      // render-stream-6.md "Publication": every-frame / null (a file sink, or a live connection
+      // with GRC_PUBLISH_FPS=uncapped).
+      publication: { mode: "every-frame", target_fps: null },
       sabotage:
         opts.sabotage == null
           ? null
@@ -592,6 +603,9 @@ export function encodeTransaction(
       origin: c.origin ?? (c.id === 1 ? "root-query" : "created"),
       role: c.role === undefined ? (c.id === 1 ? "root" : null) : c.role,
       attached: c.attached ?? c.id === 1,
+      // render-stream-6.md "Canvas": layer and sublayer, after attached.
+      layer: c.layer ?? 0,
+      sublayer: c.sublayer ?? 0,
       items: c.items,
     };
   });

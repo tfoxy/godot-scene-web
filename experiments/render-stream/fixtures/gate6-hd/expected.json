@@ -17318,6 +17318,6 @@
       ]
     }
   ],
-  "unsupported": [["viewport_attach_canvas","extra-canvas"]],
+  "unsupported": [],
   "synced": ["scene_builder.gd","scene_oracle.gd","loader.gd","shaders/phase_tint.gdshader"]
 }

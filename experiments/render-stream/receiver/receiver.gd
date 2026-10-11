@@ -151,17 +151,38 @@ extends Node
 ## shader-withheld entries; state dumps of a /5 stream gain the canvases' `modulate`, the items'
 ## `material`, `use_parent_material` and `instance_params`, and the `shaders` and `materials`
 ## tables, all in render-stream-5.md's resolved shapes and key order.
+## render-stream-receiver-applied/6 since G6b (gate6-design.md Q5): /5's shape; `viewport` gains
+## presentation_size, window_size, oversampling, presentation_check (ok | mismatch |
+## skipped-headless) and stretch_applied; each transaction's `resources` (and resources_summary)
+## gains canvases_created, canvas_attach (viewport_attach_canvas and viewport_remove_canvas calls)
+## and canvas_stacking_sets; `unsupported` gains the receiver's own typed session entries
+## (presentation-mismatch, oversampling-mismatch, stretch-mode: seq null, item null, name
+## "viewport"); state dumps of a /6 stream carry each canvas's `layer` and `sublayer`.
+##
+## Stretch (G6b, Q5): at the session, before any item exists, a `canvas_items` session makes the
+## receiver's root window adopt the session's stretch (content_scale_mode, _aspect, _stretch,
+## _size = logical_size, _factor), so the engine computes the reference's stretch transform and
+## oversampling. `disabled` keeps the project's settings; `viewport` is typed `stretch-mode` and
+## drawn with the receiver's own settings. Then (1) the root window size must equal
+## presentation_size, else `presentation-mismatch`, and (2) the root viewport's oversampling must
+## equal font_oversampling (float32), else `oversampling-mismatch`; both still draw, and a
+## headless receiver skips both. (3) The visible rect must equal logical_size (viewport-mismatch,
+## a replay failure, as before). RS_RECEIVER_SABOTAGE=ignore-presentation keeps stretch disabled
+## whatever the session says and skips (3), so it presents the top-left of the logical frame at
+## scale 1 (it exists only to fail pixel checks).
 
-const SCHEMA: String = "render-stream-receiver-applied/5"
+const SCHEMA: String = "render-stream-receiver-applied/6"
 const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "ignore-presentation"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
+## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
+const CANVAS_COUNTERS: Array[String] = ["canvases_created", "canvas_attach", "canvas_stacking_sets"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -205,6 +226,7 @@ var _summary: Dictionary = {
 	"meshes_created": 0, "meshes_rebuilt": 0, "surface_updates": 0, "mesh_upload_bytes": 0,
 	"shaders_created": 0, "shader_code_sets": 0, "shader_payload_fetches": 0, "materials_created": 0,
 	"param_sets": 0, "instance_param_sets": 0,
+	"canvases_created": 0, "canvas_attach": 0, "canvas_stacking_sets": 0,
 }
 ## G55d: "<stream>:<shader id>:<hash>" of every shader-withheld skip already reported.
 var _withheld_reported: Dictionary[String, bool] = {}
@@ -349,6 +371,12 @@ func _init_report(mode: String) -> String:
 		"size_check": "skipped-headless" if display_server == "headless" else null,
 		"logical_size": null,
 		"canvas_transform": [],
+		# G6b (render-stream-receiver-applied/6): decided at the first session.
+		"presentation_size": null,
+		"window_size": null,
+		"oversampling": null,
+		"presentation_check": null,
+		"stretch_applied": false,
 	}
 	_report = {
 		"schema": SCHEMA,
@@ -531,7 +559,7 @@ static func _empty_resources() -> Dictionary:
 		"skipped_commands": 0, "meshes_created": 0, "meshes_rebuilt": 0, "surface_updates": 0,
 		"mesh_upload_bytes": 0, "skipped_mesh_commands": 0, "shaders_created": 0,
 		"shader_code_sets": 0, "shader_payload_fetches": 0, "materials_created": 0, "param_sets": 0,
-		"instance_param_sets": 0,
+		"instance_param_sets": 0, "canvases_created": 0, "canvas_attach": 0, "canvas_stacking_sets": 0,
 	}
 
 
@@ -569,6 +597,10 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	for key: String in MATERIAL_COUNTERS:
 		if material_resources.has(key):
 			resources[key] = material_resources[key]
+		_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(resources[key])
+	var canvas_resources: Dictionary = stats["canvas_resources"]
+	for key: String in CANVAS_COUNTERS:
+		resources[key] = canvas_resources[key]
 		_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(resources[key])
 	var skipped_shaders: Array = stats["skipped_shaders"]
 	for value: Variant in skipped_shaders:
@@ -621,13 +653,17 @@ func _begin_session(accepted: Dictionary) -> bool:
 	var logical: Array = session_viewport["logical_size"]
 	var logical_size := Vector2(Rs2Decoder.as_int(logical[0]), Rs2Decoder.as_int(logical[1]))
 	_viewport_report["logical_size"] = [int(logical_size.x), int(logical_size.y)]
-	if DisplayServer.get_name() != "headless":
+	var blocks_for_stretch: Array = record["blocks"]
+	_adopt_presentation(session_viewport, blocks_for_stretch)
+	if DisplayServer.get_name() != "headless" and _sabotage != "ignore-presentation":
 		var visible_size: Vector2 = get_viewport().get_visible_rect().size
 		if visible_size != logical_size:
 			_viewport_report["size_check"] = "mismatch"
 			_fail(null, "viewport-mismatch", "visible rect size is %s, the session's logical_size is %s" % [str(visible_size), str(logical_size)])
 			return false
 		_viewport_report["size_check"] = "ok"
+	elif _sabotage == "ignore-presentation" and DisplayServer.get_name() != "headless":
+		_viewport_report["size_check"] = "ignored"
 	var resources_meta: Dictionary = meta["resources"]
 	_delivery = resources_meta["delivery"]
 	var fetch: String = resources_meta["fetch"]
@@ -670,9 +706,78 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_ignore_canvas_modulate = _sabotage == "ignore-canvas-modulate"
 	_applier.sabotage_stale_param = _sabotage == "stale-param"
 	_applier.sabotage_stale_texture = _sabotage == "stale-texture"
+	_applier.sabotage_ignore_canvas_stacking = _sabotage == "ignore-canvas-stacking"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
+
+
+## G6b (gate6-design.md D2, Q5): adopts the session's stretch on the receiver's root window, then
+## checks the presentation size and the oversampling. Runs once per process (a reconnect's second
+## session carries the same declaration). A /5 or older session has no presentation keys: its
+## stretch is still adopted, the checks are skipped.
+var _presentation_done: bool = false
+
+
+func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
+	if _presentation_done:
+		return
+	_presentation_done = true
+	var stretch: Dictionary = session_viewport["stretch"]
+	var mode: String = stretch["mode"]
+	var root: Window = get_tree().root
+	var headless: bool = DisplayServer.get_name() == "headless"
+	var logical: Array = session_viewport["logical_size"]
+	if mode == "canvas_items" and _sabotage != "ignore-presentation":
+		var aspect_name: String = stretch["aspect"]
+		var scale_mode: String = stretch["scale_mode"]
+		match aspect_name:
+			"ignore":
+				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_IGNORE
+			"keep_width":
+				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
+			"keep_height":
+				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_HEIGHT
+			"expand":
+				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+			_:
+				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+		root.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_INTEGER if scale_mode == "integer" else Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+		root.content_scale_size = Vector2i(Rs2Decoder.as_int(logical[0]), Rs2Decoder.as_int(logical[1]))
+		# The session's content_scale_factor block (render-stream-1.md "Session record", blocks[4]).
+		var factor: PackedFloat32Array = blocks[4]
+		root.content_scale_factor = factor[0]
+		root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		_viewport_report["stretch_applied"] = true
+	elif mode == "viewport":
+		_unsupported.append({"seq": null, "item": null, "name": "viewport", "reason": "stretch-mode"})
+		_log("session: stretch mode viewport is typed stretch-mode, drawn at the receiver's own settings")
+	var window_size: Vector2i = root.size
+	var oversampling: float = get_viewport().get_oversampling()
+	_viewport_report["window_size"] = [window_size.x, window_size.y]
+	_viewport_report["oversampling"] = oversampling
+	if not session_viewport.has("presentation_size"):
+		_viewport_report["presentation_check"] = "skipped-headless" if headless else null
+		return
+	var presentation: Array = session_viewport["presentation_size"]
+	var presentation_size := Vector2i(Rs2Decoder.as_int(presentation[0]), Rs2Decoder.as_int(presentation[1]))
+	_viewport_report["presentation_size"] = [presentation_size.x, presentation_size.y]
+	if headless:
+		_viewport_report["presentation_check"] = "skipped-headless"
+		return
+	var mismatch: bool = false
+	if window_size != presentation_size:
+		mismatch = true
+		_unsupported.append({"seq": null, "item": null, "name": "viewport", "reason": "presentation-mismatch"})
+		_log("session: window %s, presentation_size %s: presentation-mismatch (still drawn)" % [str(window_size), str(presentation_size)])
+	# Compared as float32, the wire's own precision.
+	var declared: float = session_viewport["font_oversampling"]
+	var pair := PackedFloat32Array([oversampling, declared])
+	if pair[0] != pair[1]:
+		mismatch = true
+		_unsupported.append({"seq": null, "item": null, "name": "viewport", "reason": "oversampling-mismatch"})
+		_log("session: oversampling %s, font_oversampling %s: oversampling-mismatch (still drawn)" % [str(oversampling), str(declared)])
+	_viewport_report["presentation_check"] = "mismatch" if mismatch else "ok"
 
 
 func _process(_delta: float) -> void:
@@ -856,9 +961,14 @@ func _state_json(meta: Dictionary) -> Dictionary:
 			"origin": canvas["origin"],
 			"role": canvas["role"],
 			"attached": canvas["attached"],
-			"items": Rs2Decoder.int_list(canvas["items"]),
-			"xform": _float_list(canvas["xform"]),
 		}
+		# render-stream-6.md "Decoded and resolved forms" (G6b): layer and sublayer, right after
+		# attached and before items.
+		if canvas.has("layer"):
+			canvas_out["layer"] = Rs2Decoder.as_int(canvas["layer"])
+			canvas_out["sublayer"] = Rs2Decoder.as_int(canvas["sublayer"])
+		canvas_out["items"] = Rs2Decoder.int_list(canvas["items"])
+		canvas_out["xform"] = _float_list(canvas["xform"])
 		if canvas.has("modulate"):
 			# render-stream-5.md "Canvas" (G55d).
 			canvas_out["modulate"] = _float_list(canvas["modulate"])

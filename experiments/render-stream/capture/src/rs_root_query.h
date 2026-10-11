@@ -33,6 +33,15 @@
 // are the session's `viewport` object and its `host_*` / `content_scale_factor`
 // blocks (render-stream-1.md "Session record").
 //
+// Gate 6 (G6b, gate6-design.md Q3a) adds, for render-stream/6's `viewport`:
+//
+//  14. Viewport.get_oversampling()                      -> viewport.font_oversampling
+//  15. Viewport.is_snap_2d_transforms_to_pixel_enabled() / _vertices_ -> viewport.snap_2d
+//  16. Viewport.get_stretch_transform()                 -> evidence (root.json)
+//
+// (a failed read of 14-16 fails the query like any other step), and GRC_ROOT_SIZE=
+// presentation:<W>x<H>, whose one write is Window.set_min_size(W, H) (root_set_min_size).
+//
 // Any failure (a null bind, a null or wrongly typed object, a null RID) still
 // returns every value it could read, with zeros in place of the rest, and names
 // the first failed step in `failed_step`. The caller turns that into the sticky
@@ -73,25 +82,36 @@ struct RootInfo {
   std::int64_t default_texture_filter = -1;
   std::int64_t default_texture_repeat = -1;
 
+  // Gate 6 (G6b): 14-16.
+  float font_oversampling = 0.0f;
+  bool snap_2d_transforms = false;
+  bool snap_2d_vertices = false;
+  rs2::Xform stretch_transform = {0, 0, 0, 0, 0, 0};
+
   // The root Window object (not owned; valid on the main thread at arm). Only
   // root_enforce_min_size uses it.
   void *window = nullptr;
 };
 
-// host_size_status (gate1-design.md Q1 "Policy"):
-// match: window size == logical size and visible rect size == logical size;
+// host_size_status (gate1-design.md Q1 "Policy"; render-stream/6, gate6-design.md Q3a):
+// match: window size == presentation size and visible rect size == logical size;
 // degenerate-visible: visible rect size != logical size (layout input differs);
 // degenerate-window: visible rect right, window size wrong (stretch differs).
-inline rs2::HostSizeStatus host_size_status(const RootInfo &info) {
+// `presentation` is the policy's W x H under presentation:, the logical size otherwise.
+inline rs2::HostSizeStatus host_size_status(const RootInfo &info,
+                                            const std::int32_t presentation[2]) {
   const float lw = static_cast<float>(info.logical_size[0]);
   const float lh = static_cast<float>(info.logical_size[1]);
   if (info.visible_rect[2] != lw || info.visible_rect[3] != lh) {
     return rs2::HostSizeStatus::DegenerateVisible;
   }
-  if (info.window_size[0] != info.logical_size[0] || info.window_size[1] != info.logical_size[1]) {
+  if (info.window_size[0] != presentation[0] || info.window_size[1] != presentation[1]) {
     return rs2::HostSizeStatus::DegenerateWindow;
   }
   return rs2::HostSizeStatus::Match;
+}
+inline rs2::HostSizeStatus host_size_status(const RootInfo &info) {
+  return host_size_status(info, info.logical_size);
 }
 
 // Spellings for evidence/root.json `stretch` (Window enums, scene/main/window.h).
@@ -117,6 +137,12 @@ RootInfo root_query_run();
 // could not be made; whether it worked is read back by a second
 // root_query_run().
 bool root_enforce_min_size(const RootInfo &info, std::string *detail);
+
+// GRC_ROOT_SIZE=presentation:<W>x<H> (G6b, Q3a): Window.set_min_size(W, H) on the root window.
+// Under canvas_items the engine then computes the stretch, oversampling and StyleBoxFlat feather
+// of a W x H window (gate6-design.md Q1a, Q1b). Same contract as root_enforce_min_size.
+bool root_set_min_size(const RootInfo &info, std::int32_t width, std::int32_t height,
+                       std::string *detail);
 
 // Feeds a query result to the process-wide mirror: binds the root RIDs and
 // canvas 1's transform, and records root-query-failed when !info.ok.

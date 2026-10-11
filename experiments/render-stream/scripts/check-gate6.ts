@@ -7,9 +7,10 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/check-gate6.ts --out <evidence dir>
 //
-// Each group's checks live in its own lib (g6a: lib/gate6a-checks.ts, fixtures/gate6-scene on
-// render-stream/5; g6h: lib/gate6h-checks.ts, fixtures/gate6-hd), which its self-test drives with
-// synthetic values. A landed group that was not
+// Each group's checks live in its own lib (g6a: lib/gate6a-checks.ts, fixtures/gate6-scene; g6h:
+// lib/gate6h-checks.ts, fixtures/gate6-hd; g6b: lib/gate6b-checks.ts, the render-stream/6 switch's
+// presentation, canvas-layer, snap and hazard legs over both fixtures), which its self-test drives
+// with synthetic values. Every group speaks render-stream/6 since G6b. A landed group that was not
 // run is reported `not-run` and fails the gate.
 
 import { readFile, writeFile } from "node:fs/promises";
@@ -25,6 +26,7 @@ import {
   type RegionBudget6,
   runGate6a,
 } from "./lib/gate6a-checks";
+import { type G6bLegEntry, runGate6b } from "./lib/gate6b-checks";
 import {
   type G6hLegEntry,
   type Gate6HdExpected,
@@ -49,7 +51,7 @@ export const ALL_GROUPS = [
   "g6c",
   "g6p",
 ] as const;
-export const LANDED_GROUPS: readonly string[] = ["g6a", "g6h", "g6l"];
+export const LANDED_GROUPS: readonly string[] = ["g6a", "g6h", "g6l", "g6b"];
 
 export interface Gate6Report {
   schema: "render-stream-gate6-report/1";
@@ -57,19 +59,21 @@ export interface Gate6Report {
   binary: { path: string | null; sha256: string | null };
   gate_passed: boolean;
   groups: { run: string[]; landed: string[]; not_run: string[] };
-  legs: Record<string, G6aLegEntry | G6hLegEntry | G6lLegEntry>;
+  legs: Record<string, G6aLegEntry | G6hLegEntry | G6lLegEntry | G6bLegEntry>;
   checks: Gate6Check[];
   checkpoints: Gate6Checkpoint[];
   /** per leg pair: per region and pixel class, every shot (reference-repeat: Q6g's budget) */
   budgets: Record<string, RegionBudget6[]>;
   /** per leg: per step, the regions whose pixels changed */
   freshness: Record<string, Record<string, string[]>>;
-  /** per receiver leg: per shot, the regions (outside HU/RF) that differ from the reference */
+  /** per receiver leg: per shot, the regions (outside RF) that differ from the reference */
   mismatch_tables: Record<string, Record<string, string[]>>;
   /** per capture: the hook-log census summary */
   census: Record<string, string>;
   /** g6l (G6l): per live leg, credit RTT, staleness, fetch latency, stall and reconnect timing */
   live: Record<string, G6lTiming>;
+  /** G6b: the presentation hazard's differing pixel-shots per region base name */
+  hazard: Record<string, number>;
   /** filled by later increments (G6c, G6s) */
   rates: Record<string, unknown>;
   stability: Record<string, unknown>;
@@ -114,6 +118,7 @@ async function main(): Promise<void> {
     mismatch_tables: {},
     census: {},
     live: {},
+    hazard: {},
     rates: {},
     stability: {},
   };
@@ -164,6 +169,26 @@ async function main(): Promise<void> {
       report.mismatch_tables[`live/${leg}`] = table;
     Object.assign(report.live, r.timing);
   }
+  if (run.includes("g6b")) {
+    const scene = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate6-scene", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate6Expected;
+    const hd = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate6-hd", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate6HdExpected;
+    const r = await runGate6b(out, scene, hd);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    Object.assign(report.mismatch_tables, r.mismatch_tables);
+    Object.assign(report.census, r.census);
+    Object.assign(report.hazard, r.hazard);
+  }
   for (const group of report.groups.not_run)
     report.checks.push({
       id: `group-${group}`,
@@ -209,6 +234,14 @@ async function main(): Promise<void> {
     );
   for (const [name, c] of Object.entries(report.census))
     console.log(`  census (${name}): ${c}`);
+  if (Object.keys(report.hazard).length > 0)
+    console.log(
+      `  presentation hazard, differing pixel-shots per region: ${Object.entries(
+        report.hazard,
+      )
+        .map(([k, n]) => `${k}:${n}`)
+        .join(" ")}`,
+    );
   for (const [name, b] of Object.entries(report.budgets))
     console.log(
       `  ${name} budget: max delta ${Math.max(0, ...b.map((x) => x.max_channel_delta))} over ${b.reduce((n, x) => n + x.pixels, 0)} pixel-shots`,

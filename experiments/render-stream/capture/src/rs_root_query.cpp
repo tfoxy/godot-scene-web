@@ -42,6 +42,11 @@ constexpr int64_t kViewportGetDefaultTextureFilter = 896601198LL;   // -> Viewpo
 constexpr int64_t kViewportGetDefaultTextureRepeat = 4049774160LL;  // -> Viewport.DefaultCanvasItemTextureRepeat
 // The one write (GRC_ROOT_SIZE=enforce-min-size only).
 constexpr int64_t kWindowSetMinSize = 1130785943LL;              // Window.set_min_size(Vector2i) -> void
+// Gate 6 (G6b, gate6-design.md Q3a), from the same dump (extension_api.json of 4.5.1-stable).
+constexpr int64_t kViewportGetOversampling = 1740695150LL;       // Viewport.get_oversampling() -> float (double on ptrcall)
+constexpr int64_t kViewportIsSnap2dTransforms = 36873697LL;      // Viewport.is_snap_2d_transforms_to_pixel_enabled() -> bool
+constexpr int64_t kViewportIsSnap2dVertices = 36873697LL;        // Viewport.is_snap_2d_vertices_to_pixel_enabled() -> bool
+constexpr int64_t kViewportGetStretchTransform = 3814499831LL;   // Viewport.get_stretch_transform() -> Transform2D
 
 void note(RootInfo *info, const char *step) {
   if (info->failed_step.empty()) {
@@ -249,6 +254,43 @@ RootInfo root_query_run() {
     }
   }
 
+  // 14-16 (G6b): oversampling, snap flags and the stretch transform.
+  {
+    double oversampling = 0.0;
+    if (call_value_getter(method_bind("Viewport", "get_oversampling", kViewportGetOversampling),
+                          root, &oversampling, sizeof(oversampling))) {
+      info.font_oversampling = static_cast<float>(oversampling);
+    } else {
+      note(&info, "Viewport.get_oversampling");
+    }
+    // A bool travels as one byte (GDExtensionBool); read it into a zeroed word.
+    uint64_t flag = 0;
+    if (call_value_getter(method_bind("Viewport", "is_snap_2d_transforms_to_pixel_enabled",
+                                      kViewportIsSnap2dTransforms),
+                          root, &flag, sizeof(flag))) {
+      info.snap_2d_transforms = (flag & 0xFFu) != 0;
+    } else {
+      note(&info, "Viewport.is_snap_2d_transforms_to_pixel_enabled");
+    }
+    flag = 0;
+    if (call_value_getter(method_bind("Viewport", "is_snap_2d_vertices_to_pixel_enabled",
+                                      kViewportIsSnap2dVertices),
+                          root, &flag, sizeof(flag))) {
+      info.snap_2d_vertices = (flag & 0xFFu) != 0;
+    } else {
+      note(&info, "Viewport.is_snap_2d_vertices_to_pixel_enabled");
+    }
+    Transform2D xform = {};
+    if (call_value_getter(
+            method_bind("Viewport", "get_stretch_transform", kViewportGetStretchTransform), root,
+            &xform, sizeof(xform))) {
+      info.stretch_transform = {xform.columns[0].x, xform.columns[0].y, xform.columns[1].x,
+                                xform.columns[1].y, xform.columns[2].x, xform.columns[2].y};
+    } else {
+      note(&info, "Viewport.get_stretch_transform");
+    }
+  }
+
   info.ok = info.failed_step.empty();
   return info;
 }
@@ -265,6 +307,24 @@ bool root_enforce_min_size(const RootInfo &info, std::string *detail) {
   }
   if (!call_void_vector2i(method_bind("Window", "set_min_size", kWindowSetMinSize), info.window,
                           info.logical_size[0], info.logical_size[1])) {
+    *detail = "Window.set_min_size bind unavailable";
+    return false;
+  }
+  return true;
+}
+
+bool root_set_min_size(const RootInfo &info, std::int32_t width, std::int32_t height,
+                       std::string *detail) {
+  if (info.window == nullptr) {
+    *detail = "no root Window";
+    return false;
+  }
+  if (width <= 0 || height <= 0) {
+    *detail = "presentation size is " + std::to_string(width) + "x" + std::to_string(height);
+    return false;
+  }
+  if (!call_void_vector2i(method_bind("Window", "set_min_size", kWindowSetMinSize), info.window,
+                          width, height)) {
     *detail = "Window.set_min_size bind unavailable";
     return false;
   }

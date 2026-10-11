@@ -32,10 +32,10 @@
 // a material table, canvas modulate, item material/use_parent_material/instance_params and the
 // param_f64 (f64) block -- too small a delta each (gate4-design.md G4e1: "Renaming files is not
 // part of this contract") to justify duplicating this module. `version` selects the expected
-// magic (GRS2/GRS3/GRS4/GRS5) and the decoded/resolved schema strings. Since G55d the capture, the
-// receiver and every gate checker speak /5 (/4 from G5d to G55d, /3 from G4e2 to G5d), so the
-// parameter defaults to 5; /2, /3 and /4 decoding remain only for golden-2/ to golden-4/
-// (self-test-rs2.ts passes 2/3/4/5 explicitly per golden directory). Every new command, sabotage kind, the mesh table and the shader/material
+// magic (GRS2..GRS6) and the decoded/resolved schema strings. Since G6b the capture, the receiver
+// and every gate checker speak /6 (/5 from G55d to G6b, /4 from G5d to G55d, /3 from G4e2 to
+// G5d), so the parameter defaults to 6; /2 to /5 decoding remain only for golden-2/ to golden-5/
+// (self-test-rs2.ts passes 2..6 explicitly per golden directory). Every new command, sabotage kind, the mesh table and the shader/material
 // tables are always representable regardless of `version` -- an older stream simply never
 // contains them in practice, since the capture never emits them below its own version.
 //
@@ -700,13 +700,11 @@ export const MAGIC_V3: Uint8Array = new Uint8Array([
 export const MAGIC_V4: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x34, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
-// render-stream-5.md: the GRS5 magic, selected by `version: 5` -- the default since G55d.
+// render-stream-5.md: the GRS5 magic, selected by `version: 5` (golden-5/ only since G6b).
 export const MAGIC_V5: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x35, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
-// render-stream-6.md: the GRS6 magic, selected by `version: 6`. The capture and receiver still
-// speak /5 (G6b switches them), so `version` keeps defaulting to 4 everywhere below; /6 decoding
-// is exercised only against golden-6/ until then.
+// render-stream-6.md: the GRS6 magic, selected by `version: 6` -- the default since G6b.
 export const MAGIC_V6: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x36, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -2669,7 +2667,7 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
@@ -2742,7 +2740,7 @@ export interface DecodedRecord {
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 6,
 ): {
   record?: DecodedRecord;
   errors: string[];
@@ -2899,7 +2897,7 @@ export function decodeRecord(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -4710,7 +4708,7 @@ function checkResolvedInvariants(
 
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 6,
 ): string[] {
   const isV6 = version === 6;
   // isV5 means "V5 or later" (render-stream-6.md: transactions/items/commands are byte-identical
@@ -5571,7 +5569,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];

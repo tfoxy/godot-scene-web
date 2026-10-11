@@ -34,10 +34,10 @@ REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate0"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 GOLDEN_DIR="$EXPERIMENT_DIR/protocol/golden-2"
-# G55d: the receiver speaks render-stream/5, so the typecheck replay is golden-5's inline vector
-# (golden-4's from G5d, golden-3's from G4e2; codec2_selftest.gd checks golden-2 to -5 at their own
+# G6b: the receiver speaks render-stream/6, so the typecheck replay is golden-6's inline vector
+# (golden-5's from G55d, golden-4's from G5d, golden-3's from G4e2; codec2_selftest.gd checks golden-2 to -6 at their own
 # versions).
-GOLDEN5_DIR="$EXPERIMENT_DIR/protocol/golden-5"
+GOLDEN6_DIR="$EXPERIMENT_DIR/protocol/golden-6"
 
 # shellcheck source=lib/gamescope.sh
 source "$SCRIPT_DIR/lib/gamescope.sh"
@@ -176,7 +176,7 @@ done
 
 # ---------------------------------------------------------------------------------------------
 # receiver-typecheck: the mise editor (a debug build, so GDScript warnings are live) runs the
-# render-stream/2 to /5 codec self-test, then one headless replay of golden-5/inline.rs5 (inline
+# render-stream/2 to /6 codec self-test, then one headless replay of golden-6/inline.rs6 (inline
 # resource records, so it needs no store; it still gets a fresh cache).
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: receiver-typecheck"
@@ -184,7 +184,7 @@ LEG_ENV=(RS_SELFTEST_GOLDEN_DIR="$GOLDEN_DIR")
 run_headless "$OUT/receiver-typecheck/selftest" none -- \
 	mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec2_selftest.gd
 MINIMAL_DIR="$OUT/receiver-typecheck/minimal"
-prepare_recording "$GOLDEN5_DIR/inline.rs5" "$MINIMAL_DIR"
+prepare_recording "$GOLDEN6_DIR/inline.rs6" "$MINIMAL_DIR"
 LEG_ENV=(
 	RS_RECEIVER_RECORDING="$MINIMAL_DIR/$RECORDING_NAME" RS_RECEIVER_OUT="$MINIMAL_DIR/applied.json"
 	RS_RECEIVER_CACHE_DIR="$MINIMAL_DIR/cache"

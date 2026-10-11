@@ -209,6 +209,13 @@ const RF_LIGHT_POS: Vector2 = Vector2(420, 320)
 const RF_TIME_POS: Vector2 = Vector2(472, 304)
 const RF_TIME_SIZE: Vector2 = Vector2(32, 32)
 const RF_LCD_POS: Vector2 = Vector2(520, 304)
+## G6b: a `follow_viewport` CanvasLayer (layer 2) holding one ColorRect. The host composes the root
+## canvas transform into it (rv.cpp:60-67), a /6 receiver does not (canvas-follow-viewport): the
+## rect is placed so both positions, before and after step 10's (8, 4) shift, stay inside RF.
+const RF_FOLLOW_LAYER: int = 2
+const RF_FOLLOW_POS: Vector2 = Vector2(592, 308)
+const RF_FOLLOW_SIZE: Vector2 = Vector2(24, 24)
+const RF_FOLLOW_COLOR: Color = Color(1, 0.6, 0.2, 1)
 
 
 ## The step marker: a `Node2D` drawing one axis-aligned rect (gates 1 to 5.5).
@@ -640,6 +647,20 @@ func _build_refused() -> void:
 	_ignore(lcd)
 	scene.add_child(lcd)
 	rf_nodes.append(lcd)
+
+	var follow: CanvasLayer = CanvasLayer.new()
+	follow.name = "RFFollowLayer"
+	follow.layer = RF_FOLLOW_LAYER
+	follow.follow_viewport_enabled = true
+	var follow_rect: ColorRect = ColorRect.new()
+	follow_rect.name = "RFFollow"
+	follow_rect.position = origin + RF_FOLLOW_POS
+	follow_rect.size = RF_FOLLOW_SIZE
+	follow_rect.color = RF_FOLLOW_COLOR
+	_ignore(follow_rect)
+	follow.add_child(follow_rect)
+	scene.add_child(follow)
+	rf_nodes.append(follow)
 
 
 func _build_players() -> void:

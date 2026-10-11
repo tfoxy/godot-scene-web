@@ -660,7 +660,7 @@ const G3B_NO_RESOURCES = {
   skipped_commands: 0,
 };
 
-/** A receiver's applied.json (render-stream-receiver-applied/5 since G5e), derived from the recording
+/** A receiver's applied.json (render-stream-receiver-applied/6 since G6b), derived from the recording
  * bytes it actually replayed (self-test-gate1.ts's appliedFor): every transaction 1..N, and a
  * shot (plus, when `stateSeqs` names it, a resolved-state dump) at each of `shotSeqs`. */
 function g3bAppliedFor(
@@ -672,7 +672,7 @@ function g3bAppliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/5",
+    schema: "render-stream-receiver-applied/6",
     mode: "file",
     recording: {
       path: recordingPath,
@@ -911,8 +911,20 @@ export async function writeG3bTree(
       quit: e.quit_frame_default,
       ...(rootSize
         ? {
-            full: { hostSizeStatus: "degenerate-visible" },
-            patch: { hostSizeStatus: "degenerate-visible" },
+            // render-stream/6's viewport-entry invariant (G6b): the status must agree with the
+            // declared window and visible rect, as the real 64x64 headless root's do.
+            full: {
+              hostSizeStatus: "degenerate-visible",
+              policy: "observe",
+              hostWindowSize: [64, 64],
+              hostVisibleRect: [0, 0, 64, 64],
+            },
+            patch: {
+              hostSizeStatus: "degenerate-visible",
+              policy: "observe",
+              hostWindowSize: [64, 64],
+              hostVisibleRect: [0, 0, 64, 64],
+            },
           }
         : {}),
     });

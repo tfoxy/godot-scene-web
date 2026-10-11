@@ -204,7 +204,11 @@ export const GATE0_HOOKS: readonly string[] = [
  * `use_parent_material`, the new `canvas_state` is `["modulate","transform"]`, `resources` gains
  * `material` and `shader`, `observed_unsupported_ops` swaps `canvas_item_set_material` for
  * `canvas_light_attach_to_canvas`, and `unobserved` loses the instance-parameter and
- * canvas-modulate setters and gains gate5_5-design.md D16's names. */
+ * canvas-modulate setters and gains gate5_5-design.md D16's names. Since G6b every capture speaks
+ * render-stream/6 (render-stream-6.md "Features"): `canvas_state` gains `layer`,
+ * `observed_unsupported_ops` gains `canvas_set_item_mirroring`, `canvas_set_item_repeat` and
+ * `canvas_set_parent`, and `unobserved` loses `viewport_remove_canvas` and
+ * `viewport_set_global_canvas_transform` and gains `canvas_set_disable_scale`. */
 export const RS2_FEATURES = {
   ops: [
     "add_circle",
@@ -243,7 +247,7 @@ export const RS2_FEATURES = {
     "z_index",
     "z_relative",
   ],
-  canvas_state: ["modulate", "transform"],
+  canvas_state: ["layer", "modulate", "transform"],
   resources: [
     "material",
     "mesh",
@@ -261,6 +265,9 @@ export const RS2_FEATURES = {
     "canvas_item_add_particles",
     "canvas_item_attach_skeleton",
     "canvas_light_attach_to_canvas",
+    "canvas_set_item_mirroring",
+    "canvas_set_item_repeat",
+    "canvas_set_parent",
   ],
   unobserved: [
     "canvas_item_set_canvas_group_mode",
@@ -268,6 +275,7 @@ export const RS2_FEATURES = {
     "canvas_item_set_light_mask",
     "canvas_item_set_sort_children_by_y",
     "canvas_item_set_visibility_notifier",
+    "canvas_set_disable_scale",
     "canvas_texture_set_shading_parameters",
     "global_shader_parameter_add",
     "global_shader_parameter_remove",
@@ -277,18 +285,16 @@ export const RS2_FEATURES = {
     "material_set_render_priority",
     "shader_set_path_hint",
     "texture_set_size_override",
-    "viewport_remove_canvas",
     "viewport_set_canvas_cull_mask",
-    "viewport_set_global_canvas_transform",
     "viewport_set_snap_2d_transforms_to_pixel",
     "viewport_set_snap_2d_vertices_to_pixel",
   ],
   publication: "snapshot-or-patch",
 } as const;
 
-/** The session protocol every capture publishes since G55d (render-stream-5.md; render-stream/4
- * from G5d, render-stream/3 from G4e2). */
-export const WIRE_PROTOCOL = "render-stream/5";
+/** The session protocol every capture publishes since G6b (render-stream-6.md; render-stream/5
+ * from G55d, render-stream/4 from G5d, render-stream/3 from G4e2). */
+export const WIRE_PROTOCOL = "render-stream/6";
 
 /** The session `features` of a rendered (GPU-backed) host: RS2_FEATURES with `canvas_texture`
  * supported and nothing refused. */
@@ -647,7 +653,7 @@ export interface AppliedResources {
 }
 
 /** The applied.json schema the receiver writes since G2b2. */
-export const APPLIED_SCHEMA = "render-stream-receiver-applied/5";
+export const APPLIED_SCHEMA = "render-stream-receiver-applied/6";
 
 export interface StepLine {
   step: number;
@@ -2205,7 +2211,7 @@ export async function checkReceiverTypedClean(
     );
   return check(
     "receiver-typed-clean",
-    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-5/inline.rs5 (render-stream/5 since G55d; golden-4/inline.rs4 from G5d, golden-3/inline.rs3 from G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
+    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-6/inline.rs6 (render-stream/6 since G6b; golden-5/inline.rs5 from G55d, golden-4/inline.rs4 from G5d, golden-3/inline.rs3 from G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
     problems,
     `selftest ok, golden replay ok with ${want.length} unsupported entries, no script diagnostics`,
     [selftestLog, minimalLog, minimalApplied],
