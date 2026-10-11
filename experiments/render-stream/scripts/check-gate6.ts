@@ -30,6 +30,11 @@ import {
   type Gate6HdExpected,
   runGate6h,
 } from "./lib/gate6h-checks";
+import {
+  type G6lLegEntry,
+  type G6lTiming,
+  runGate6l,
+} from "./lib/gate6l-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -44,7 +49,7 @@ export const ALL_GROUPS = [
   "g6c",
   "g6p",
 ] as const;
-export const LANDED_GROUPS: readonly string[] = ["g6a", "g6h"];
+export const LANDED_GROUPS: readonly string[] = ["g6a", "g6h", "g6l"];
 
 export interface Gate6Report {
   schema: "render-stream-gate6-report/1";
@@ -52,7 +57,7 @@ export interface Gate6Report {
   binary: { path: string | null; sha256: string | null };
   gate_passed: boolean;
   groups: { run: string[]; landed: string[]; not_run: string[] };
-  legs: Record<string, G6aLegEntry | G6hLegEntry>;
+  legs: Record<string, G6aLegEntry | G6hLegEntry | G6lLegEntry>;
   checks: Gate6Check[];
   checkpoints: Gate6Checkpoint[];
   /** per leg pair: per region and pixel class, every shot (reference-repeat: Q6g's budget) */
@@ -63,6 +68,8 @@ export interface Gate6Report {
   mismatch_tables: Record<string, Record<string, string[]>>;
   /** per capture: the hook-log census summary */
   census: Record<string, string>;
+  /** g6l (G6l): per live leg, credit RTT, staleness, fetch latency, stall and reconnect timing */
+  live: Record<string, G6lTiming>;
   /** filled by later increments (G6c, G6s) */
   rates: Record<string, unknown>;
   stability: Record<string, unknown>;
@@ -106,6 +113,7 @@ async function main(): Promise<void> {
     freshness: {},
     mismatch_tables: {},
     census: {},
+    live: {},
     rates: {},
     stability: {},
   };
@@ -141,6 +149,20 @@ async function main(): Promise<void> {
     Object.assign(report.freshness, r.freshness);
     Object.assign(report.mismatch_tables, r.mismatch_tables);
     Object.assign(report.census, r.census);
+  }
+  if (run.includes("g6l")) {
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate6-scene", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate6Expected;
+    const r = await runGate6l(out, expected);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    for (const [leg, table] of Object.entries(r.mismatch_tables))
+      report.mismatch_tables[`live/${leg}`] = table;
+    Object.assign(report.live, r.timing);
   }
   for (const group of report.groups.not_run)
     report.checks.push({
@@ -180,6 +202,10 @@ async function main(): Promise<void> {
       `  fresh regions (${name}), step: ${Object.entries(table)
         .map(([k, r]) => `${k}:${r.join("+")}`)
         .join(" ")}`,
+    );
+  for (const [leg, t] of Object.entries(report.live))
+    console.log(
+      `  live ${leg}: credit RTT median ${t.credit_rtt_us?.median ?? "?"} us p95 ${t.credit_rtt_us?.p95 ?? "?"} us, staleness p50 applied ${t.staleness_p50_us.applied ?? "?"} us submitted ${t.staleness_p50_us.submitted ?? "?"} us, ${t.fetch_us.count} fetches p50 ${t.fetch_us.p50 ?? "?"} us p95 ${t.fetch_us.p95 ?? "?"} us${t.stall ? `, stall frames ${t.stall.send_frame}->${t.stall.credit_frame} (${t.stall.measured_ms?.toFixed(0)} ms), recovery ${t.stall.recovery_frame}${t.stall.stale_from !== null ? ` stale_from ${t.stall.stale_from}` : ""}` : ""}${t.reconnect ? `, reconnect after ${t.reconnect.after_frame}, connection 2 from ${t.reconnect.first_frame_2} (${t.reconnect.dispose_to_applied_ms?.toFixed(1)} ms)` : ""}`,
     );
   for (const [name, c] of Object.entries(report.census))
     console.log(`  census (${name}): ${c}`);

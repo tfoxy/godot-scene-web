@@ -1234,6 +1234,69 @@ gate 2's live resource checks (pins before send, retirement, HTTP 200/304/404, b
 **Pass criteria**: `--legs g6a,g6l` green (plus `g6h`/`g6b` landed); README "Gate 6l result" with
 credit RTT, staleness and fetch latency per leg.
 
+**As built (G6l, 2026-10-11).** `--legs g6a,g6h,g6l` passes 74/74 on render-stream/5 (README "Gate
+6l result"; g6l's 22 checks also passed in two earlier runs). The g6l legs run the `animate` variant on
+the live timeline with `steps` time, `--max-fps 60` on both ends. Like G6a's, every leg classifies
+`unsupported` with exactly `extra-canvas` until G6b, and its pixels are judged outside `HU`. G6b
+flips the expected class to `success` when it re-runs this group on /6. Amendments and decisions,
+each from a run:
+
+1. **Every pixel verdict is frame-exact against the wire.** A shot names one transaction. The
+   host's live log gives the frame it was sent at and, under `stale-coalesce`, the frame its
+   snapshot came from (`sent.stale_from`). The tap at that seq must equal the full recording at
+   that wire frame W. The shot must equal `reference-live-frames`' shot of host frame W, whole
+   frame outside `HU`, budget 0. `reference-live-frames` runs after the live legs with
+   `RS_FIXTURE_SHOT_FRAMES` set to every shot frame and every `stale_from` frame of every leg
+   (`run-gate6.sh` `g6l_shot_frames`). On an honest leg, W must equal the send frame. No region is
+   tolerated at any shot (memory g5f-stale-coalesce-receiver-vs-reference-flake: the
+   sabotage rewrites every coalesced send, so its off-stall stale shots are judged the same way).
+2. **`motion-monotonic` as stated does not hold, and the cause is the receiver.** Every gap above
+   2 in every run came after a transaction the receiver held for more than one frame between
+   receipt and its `submitted` ack: a shot plus its state dump (most of them), an HTTP fetch
+   (frame-quantized, about 14 ms, memory rs-g2c2-live-resource-facts), or a slow frame (one or
+   two per run under load). The host sent at the first frame callback after every credit (3 800+
+   sends, `creditToSend`). As built, the check requires strictly increasing frames and a host
+   that never sits on a credit. A gap above 2 must follow the stalled seq, the reconnect, or a
+   receiver hold longer than one frame (`G6L_FRAME_US`). A gap above 2 behind a receiver faster
+   than a frame fails. The ≤ 2 bound still holds for every gap the receiver did not cause, and
+   the causes are reported per leg.
+3. **The stall.** `RS_RECEIVER_STALL=2:2000` held 2000.1 ms after the step-2 shot. The host sent
+   frame 427 or 428 and the credit arrived at 550 or 551 (123 frames). The recovery went out at
+   the credit's own callback. Steps 3 and 4 were swallowed. Five TEXA versions landed in the
+   stall: 450, 480 (two writes: step 3's `TEXA(1)`, then the periodic `TEXA(18)` in the same
+   frame), 510 and 540. Only the one current at the recovery frame was fetched. `coalesced` grew
+   by 122, one per stalled frame: the mirror changes every frame here (G1d's 69 came from a
+   step-only fixture).
+4. **A window can be missed without being wholly inside the stall.** The recovery transaction at
+   550 falls in both settle window 4 (from 547) and motion window 112 (542..551). The settle
+   window is listed first and takes it, so 112 has no candidate left. The rule as built: a window
+   may be missed only when no applied transaction in it is unshot or shot for that window
+   (`windowsWithoutCandidate`).
+5. **Memory retention across reconnect is opt-in.** G2c2 made the receiver drop its memory on
+   reconnect, and gate 2's `reconnect-no-refetch` asserts the cache hits that follow. G6l adds
+   `RS_RECEIVER_RECONNECT_MEMORY=keep` (default `drop`, unchanged). `live.reconnect` records the
+   memory and cache hashes at that moment. Connection 2 then hits the cache directory 0 times and
+   fetches only payloads held nowhere (9 TEXA and atlas versions created after the reconnect).
+6. **The warm leg fetches only what the cold wire never carried.** `steps` time makes every TEXA
+   version, atlas page and MS pose identical across runs, so "only TEXA versions newer than the
+   cold run's last" is the empty set. In one run the cold leg carried all 90 MS surfaces (128
+   cached) and the warm leg fetched nothing. In another the cold leg phase-locked to every other
+   frame and cached 124, and the warm leg fetched the 4 MS surfaces it had never carried. As built,
+   `warm-fetch` requires that no fetch is of a cold-cached payload and that the static payloads
+   (TEXN, TEXB, TEXA(0), the atlas pages of steps 0 to 2) are never fetched.
+7. **The stale-coalesce region set** at the recovery shot is AN, CM, LB, MS, Marker, PB, RT, SC,
+   SM and TR: the reference at `stale_from` against the reference at the shot's own frame. It
+   includes Q7c's MS, SM and AN, and every region the fresh table marks at the swallowed steps 3
+   and 4 (memory rs-g55f-stale-coalesce-region-set). The animate variant adds LB, SC and TR's
+   per-period changes on top.
+8. **`live-steps`** compares each honest leg's settle-window shot with the file-timeline `animate`
+   reference (`reference-file`, an extra leg) in the regions continuous animation never touches:
+   NP, Marker, BT, LE, CM, HB and TL. `live-motion` already compares the whole frame with the live
+   reference.
+9. HTTP 304 and 404 do not arise on these legs, and no bearer token is set. Gate 2 keeps those
+   cases. The checker digests each leg and releases its decoded recordings: five 1080-frame
+   recordings of this scene, each decoded several ways, overran the default Node heap.
+
 ---
 
 ### G6s — receiver budgets, eviction, soak (sonnet)

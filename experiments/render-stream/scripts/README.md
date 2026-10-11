@@ -2288,3 +2288,69 @@ difference outside HU is a mismatch; oracle lines made from the model pass the g
 and cell checks, and a moved cell, the half oracle at oversampling 1, an off PB value and differing
 repeat bytes fail; the HD session passes at the logical window and fails at 64×64; Grid and nine
 TLs pass at distinct draw indices and fail tied.
+
+## Gate 6 files (g6l)
+
+G6l ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6l", Q7c) runs live motion, the
+2-s stall, reconnect and the warm cache on `fixtures/gate6-scene`'s `animate` variant with the live
+timeline (S=300, N=60, quit 1080) and `steps` time, on render-stream/5 (`--legs g6l`).
+
+- `run-gate6.sh` `run_g6l`: one private gamescope at 640×360; `start_live_scene_host`,
+  `g6l_receiver`, `g6l_leg` (gate 5.5f's live-leg pattern), `g6l_windows` (12 settle windows, then
+  40 motion windows of 10 frames from frame 320 at a spacing of 18.5, labels 100..139) and
+  `g6l_shot_frames` (a stdlib `python3` heredoc listing every frame a receiver shot and every
+  `stale_from` frame those shots carried, for `reference-live-frames`).
+- `lib/gate6l-checks.ts`: every g6l criterion, pure over values read from the evidence, and
+  `runGate6l`. It reuses gate 1's `stallReport`, `deliveryReport` and `connectionSummary`, gate 2's
+  `loadHost`, `pinsReport`, `unadvertisedGets`, `getsVsFetches` and `fetchesAfterApplied` (hashes
+  unioned over textures, mesh surfaces and shaders) and gate 5f's `connTimelinesAtCallback`. Each
+  leg is digested and its decoded recordings released before the next loads.
+- `check-gate6.ts` adds `live` to the report: per g6l leg, credit RTT, staleness p50, fetch
+  latency, applied transactions and shots, the stall's and the reconnect's timing.
+- `receiver/` gains `RS_RECEIVER_RECONNECT_MEMORY=drop|keep` (default `drop`, G2c2's rule). `keep`
+  keeps the verified memory map across `RS_RECEIVER_RECONNECT`. `live.reconnect` gains `memory`,
+  `memory_hashes` and `cache_hashes`.
+- `test/self-test-gate6l.ts`: the g6l cases, run from `self-test-gate6.ts`.
+
+## Gate 6 legs and evidence under `--out` (g6l)
+
+| Leg | Directory | Runs |
+| --- | --- | --- |
+| `import` | `live/import/{fixture,receiver}/` | the editor's `--import` of both projects |
+| `live-scene` | `live/live-scene/{host,receiver}/` | host: release template, `--headless --max-fps 60`, armed, both sinks, store, tap, `RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=live`; receiver: rendered live, `--max-fps 60`, fresh cache, the 52 windows |
+| `live-scene-warm` | `live/live-scene-warm/` | a new host and receiver on `live-scene/receiver/cache`, `RS_RECEIVER_CACHE_MODE=warm` |
+| `live-stall` | `live/live-stall/` | `RS_RECEIVER_STALL=2:2000` |
+| `live-reconnect` | `live/live-reconnect/` | `RS_RECEIVER_RECONNECT=5 RS_RECEIVER_RECONNECT_MEMORY=keep` (connection 2: `received-2.rs2`, `shots/stream-2-seq-<n>.png`) |
+| `sabotage-live-stale-coalesce` | `live/sabotage-live-stale-coalesce/` | the stall, host `GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME=420` |
+| `reference-live-frames` | `live/reference-live-frames/` | rendered reference, animate, live timeline, `RS_FIXTURE_SHOT_FRAMES` = every shot frame and `stale_from` frame: `shots/frame-<f>.png` (and `step-<k>.png`) |
+| `reference-file` | `live/reference-file/` | rendered reference, animate, file timeline: `shots/step-<k>.png` |
+
+## Gate 6 criteria (g6l)
+
+`live-step-log` (every host and `reference-live-frames` log steps 0..11 on the live timeline);
+`live-tap-equals-received` (connection 1 of the reconnect is a prefix of the tap);
+`live-resolves-to-recording` (every tapped transaction equals the full recording at its frame, the
+sabotage's rewritten sends at their `stale_from`); `live-motion` (every shot equals the reference's
+shot of its wire frame, whole frame outside HU, budget 0; on honest legs the wire frame is the send
+frame); `motion-monotonic` (frames strictly increase; the host sends at the first callback after
+every credit; a gap above 2 must follow the stalled seq, the reconnect, or a receiver hold longer
+than one frame from receipt to `submitted`); `live-steps` (each settle-window shot equals the file
+reference's step shot in NP, Marker, BT, LE, CM, HB and TL); `pending-bounded`; `stall-latest`;
+`fetch-latest-only` (of TEXA's in-stall versions from the hook log, exactly the one current at the
+recovery frame is fetched, for the recovery seq); `stall-recovery`; `reconnect` (new `stream_id`,
+seq 1 full, RIDs disposed with none left, memory kept, no fetch of anything held, zero cache-
+directory hits on connection 2, its shots equal the reference); `warm-fetch` (no cold-cached or
+static payload is fetched); gate 2's `pins-bounded`, `obsolete-retired`, `http-gets-match-fetches`,
+`gets-advertised` and `fetch-before-applied` on the honest legs; and `leg-class-*` per leg:
+`unsupported` with exactly `extra-canvas` on /5. Honest legs must have pixels `success`. The
+sabotage must have pixels `pixel-mismatch` only at stale sends, and its recovery shot must equal
+the reference at `stale_from` and differ from its own frame in MS, SM, AN and every region the
+fresh table marks at the swallowed steps.
+
+## Gate 6 self-test (g6l)
+
+`self-test-gate6.ts` section 9 runs `test/self-test-gate6l.ts`: 34 assertions over the windows,
+the live step and region lookup, motion attribution (each cause passes and a fast-receiver gap
+fails), the host's credit-to-send, missed-window candidates, `fetch-latest-only`, the reconnect and
+warm fetch rules, the stale region set, the wire frame of a stale send, HU exclusion and the close
+frame rule, each with a failing case.

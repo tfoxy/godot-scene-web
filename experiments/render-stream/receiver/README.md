@@ -116,6 +116,7 @@ RS_RECEIVER_OUT=/abs/leg/applied.json RS_RECEIVER_SHOT_WINDOWS=0:307-359,1:367-4
 | `RS_RECEIVER_CONNECT_TIMEOUT` | milliseconds to reach `STATE_OPEN`, default 10000 (replay-failure `live-connect-failed`)                                                                                       |
 | `RS_RECEIVER_STALL`           | G1d, `<step>:<ms>`: after the shot for `<step>`, block the main loop `<ms>` (`OS.delay_msec`, an injected delay, not GPU work) before that seq's `submitted` ack               |
 | `RS_RECEIVER_RECONNECT`       | G1d, `<step>`: after the shot for `<step>` and its `submitted` ack, close with 1000, `dispose()` the applier and connect again (connection 2: a fresh session)                 |
+| `RS_RECEIVER_RECONNECT_MEMORY` | G6l, `drop` (default, G2c2's rule: connection 2 takes payloads from its inline records, the cache directory or a fetch) or `keep` (the verified, content-addressed memory map survives the reconnect); `live.reconnect` records the mode and the hashes in memory and in the cache at that moment |
 | `RS_RECEIVER_RESYNC`          | G1d, `<step>`: refuse the first transaction in that step's window unapplied, send `resync` for it, and refuse patches until a full transaction arrives                         |
 | `RS_RECEIVER_TOKEN_FILE`      | G2e, gate2-design.md D13: absolute path to a file holding the bearer token, sent as `Authorization: Bearer <token>` on the upgrade and on every resource GET; unset sends none |
 

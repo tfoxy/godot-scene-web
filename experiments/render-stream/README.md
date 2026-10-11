@@ -5282,3 +5282,126 @@ All recorded in gate6-design.md "As built (G6h)":
 Images (under the run directory): `hd/reference-native/shots/{step-0..11,frame-13,frame-53,frame-93}.png`
 (1920×1080) against `hd/receiver-native/shots/seq-<frame>.png`, and
 `hd/reference-half/shots/*.png` (960×540).
+
+## Gate 6l result (2026-10-11)
+
+G6l ([protocol/gate6-design.md](protocol/gate6-design.md) "G6l", Q7c) passes. It covers live motion
+compared frame for frame with the reference, a 2-s receiver stall across a texture update, a
+reconnect and a warm cache, on `fixtures/gate6-scene`'s `animate` variant. The legs use the live
+timeline (S=300, N=60, quit 1080), `steps` time and `--max-fps 60` on both ends, on render-stream/5.
+`pnpm render-stream:gate6 -- --legs g6a,g6h,g6l` is **74/74** (g6a 32, g6h 20, g6l 22) in
+`artifacts/render-stream/gate6/g6l-final/`, on `main` at fd247708 (G6h) merged. The evidence
+directories are ignored and not committed. Earlier runs on the same g6l code: `gate6/g6al-run1/`,
+`--legs g6a,g6l`, 54/54 before G6h merged; and the trial `gate6/g6l-try1/`, where every g6l check
+passed (g6a was not run). Regression gates for the receiver change, all under
+`<gate>/g6l-final/`: gate −1 PASS, gate 0 PASS, gate 1 66/66, gate 2 85/85.
+
+**What was added.** `run-gate6.sh` gains group `g6l` and `lib/gate6l-checks.ts` holds its checks.
+`check-gate6.ts` adds a per-leg `live` timing block. `test/self-test-gate6l.ts` adds 34 assertions,
+run from `self-test-gate6.ts` (100 in all with G6h's). One shared file changed: the receiver gains
+`RS_RECEIVER_RECONNECT_MEMORY=drop|keep`, whose default `drop` keeps G2c2's rule.
+
+| Leg | Class (/5) | Pixels outside HU |
+| --- | --- | --- |
+| `live-scene` (fresh cache) | `unsupported` (`extra-canvas` only) | `success`: 52/52 shots (12 settle, 40 motion) equal the reference at their frame |
+| `live-scene-warm` (live-scene's cache) | `unsupported` | `success`, 52/52 |
+| `live-stall` (`RS_RECEIVER_STALL=2:2000`) | `unsupported` | `success`, 44/44 (8 windows fall inside the stall) |
+| `live-reconnect` (`RS_RECEIVER_RECONNECT=5`, memory kept) | `unsupported` | `success`, 52/52 (30 on connection 2) |
+| `sabotage-live-stale-coalesce` (the stall, `stale-coalesce` @420) | `unsupported` | `pixel-mismatch` at stale sends only |
+
+**How shots are judged.** Each shot names one transaction. The host's live log gives the frame it
+was sent at, and under the sabotage the frame its snapshot came from (`stale_from`). The tap's
+state at that seq must equal the full recording at that frame. The shot must equal
+`reference-live-frames`' shot of that exact host frame: whole frame outside HU, budget 0. That
+reference runs after the live legs and shoots every frame any receiver shot, plus every
+`stale_from` frame (94 frames in this run). All 244 receiver shots matched pixel for pixel. On the
+honest legs every shot's wire frame was its send frame. On the sabotage leg 47 transactions were
+stale-coalesce copies, each equal to the full recording at its `stale_from`.
+
+**Measured timing.** Times are on the host clock unless noted. Staleness is the host-clock age of
+what the receiver had applied or submitted at that ack, from `perf.json`'s histograms. Fetch latency
+is per HTTP GET, on the receiver's clock.
+
+| Leg | Credit RTT median / p95 | Staleness p50 applied / submitted | Fetches, p50 / p95 | Applied |
+| --- | --- | --- | --- | --- |
+| `live-scene` | 22.0 / 43.1 ms | 19.5 / 21.5 ms | 124, 13.8 / 16.7 ms | 459 |
+| `live-scene-warm` | 8.5 / 26.8 ms | 6.9 / 8.2 ms | 4, 13.9 / 14.3 ms | 971 |
+| `live-stall` | 9.6 / 29.0 ms | 6.9 / 9.2 ms | 125, 14.1 / 16.7 ms | 737 |
+| `live-reconnect` | 13.7 / 32.9 ms | 11.8 / 14.8 ms | 128, 14.1 / 16.7 ms | 656 |
+| `sabotage-live-stale-coalesce` | 10.9 / 31.7 ms | 8.2 / 10.8 ms | 125, 14.0 / 16.7 ms | 668 |
+
+In this run `live-scene` phase-locked to every other frame: 253 of its gaps were 2 and none were 1,
+hence its higher credit RTT and staleness. In `g6al-run1` the same leg ran mostly at gap 1, with a
+14.6 ms median credit RTT and 732 applied.
+
+- **Stall.** The receiver blocked for 2000.1 ms after its step-2 shot. The host had sent frame 427,
+  and the credit came back at frame 550, 123 frames later. The recovery went out at the credit's
+  own callback, 15.1 ms after the ack. Its `submitted` ack arrived 76.5 ms after the credit, after
+  one TEXA fetch, the apply and the shot. Steps 3 and 4 fell inside the stall, and `coalesced` grew
+  by 122. Five TEXA versions landed in the stall (frames 450, 480 twice, 510, 540). Only the one
+  current at frame 550 was fetched, for the recovery seq. On the sabotage leg the stall also ran
+  from 427 to 550, and the recovery carried frame 428's snapshot.
+- **Reconnect.** After the step-5 shot (frame 607) the receiver closed with 1000 and disposed 66
+  RIDs, leaving none. Connection 2's seq 1 (full, frame 612, new `stream_id`) was applied 37.2 ms
+  after the dispose. Memory held 119 payloads, all of them also in the cache. Connection 2 hit the
+  cache directory 0 times and fetched 9 payloads, all TEXA versions and atlas pages created after
+  the reconnect.
+- **Warm.** live-scene cached 124 payloads. The warm receiver hit all 124 and fetched 4 MS surfaces
+  that the phase-locked cold run never carried, and nothing it had cached. In `g6al-run1` the cold
+  run carried all 90 surfaces, and the warm leg fetched nothing.
+- **Cadence.** The host sent every transaction at the first frame callback after its
+  predecessor's credit: 3 485 sends in this run. From frame 320 on, gaps of 3 or 4 between applied
+  frames occurred 82 times on live-scene, 4 on the warm leg, 9 on live-stall, 47 on live-reconnect
+  and 16 on the sabotage. Every one followed a transaction the receiver held for longer than a
+  frame between receipt and its `submitted` ack: a shot with its state dump, or an HTTP fetch.
+
+### Findings
+
+- **Q7c's "consecutive applied frames differ by at most 2" fails as stated, and the cause is the
+  receiver.** A shot, a state dump or a frame-quantized fetch (about 14 ms) costs the receiver a
+  frame before its `submitted` ack. Under load a frame occasionally overruns on its own: one per run
+  in `g6l-try1` and `g6al-run1`. The check as built requires a host that never sits on a credit. It
+  attributes each gap above 2 to the stall, the reconnect, or a receiver hold longer than one frame,
+  as measured by the receiver. A gap above 2 behind a fast receiver still fails
+  (gate6-design.md "As built (G6l)" 2).
+- **`coalesced` grows once per stalled frame here (122).** MS, SM, AN and PB change the mirror every
+  frame. G1d's step-only fixture grew it by 69.
+- **A window can be missed outside the stall.** The recovery transaction falls in both settle window
+  4 and motion window 112. The settle window is listed first and takes it. Missed windows are
+  judged by candidates: a window is missed legitimately only if it holds no applied transaction
+  left unshot.
+- **`steps` time makes the warm cache depend only on what the cold wire carried.** Every TEXA
+  version, atlas page and MS pose is identical across runs. "Only TEXA versions newer than the cold
+  run's last" is therefore empty. A warm leg fetches exactly the MS poses a phase-locked cold run
+  skipped (0 or 4 so far).
+- **The contract's stall frames** (about 427 to 549) measured 427 or 428 to 550 or 551.
+
+### Deviations
+
+- `RS_RECEIVER_RECONNECT_MEMORY=keep` is opt-in. Retaining memory by default would contradict
+  G2c2's rule and gate 2's `reconnect-no-refetch`, which expects disk-cache hits on connection 2.
+- `motion-monotonic` attributes gaps above 2 rather than failing all of them (see Findings).
+  `live-steps` compares the step-determined regions with an extra file-timeline `reference-file`
+  leg; `live-motion` already compares the whole frame with the live reference.
+- `warm-fetch` requires that no cold-cached or static payload is fetched, not zero fetches overall.
+- On /5 every g6l leg classifies `unsupported` (`extra-canvas`), as in G6a. G6b's re-run flips the
+  expected class to `success`.
+- No 304, 404 or bearer case arises on these legs; gate 2 keeps them.
+- The checker digests each leg and drops its decoded recordings. Five legs' full, patch and tap
+  recordings overflowed the default Node heap.
+
+### What G6l does not prove
+
+- The HUD layer over the live stream (G6b on /6). Rates other than 60/60, two receivers and a
+  constrained transport (G6c). Stability over minutes (G6s).
+- Pixels of frames no receiver shot: each leg shoots 52 windows, not every frame.
+- Presentation: shots are taken at `frame_post_draw`, and presented time is `unavailable` (D9).
+- Exactness on another GPU or driver, or in browser receivers (gate 7).
+
+Images, under `artifacts/render-stream/gate6/g6l-final/live/`:
+
+- `sabotage-live-stale-coalesce/receiver/shots/seq-194.png` is the stale recovery shot: frame 550
+  carrying frame 428's snapshot. It equals `reference-live-frames/shots/frame-428.png`. Against
+  `frame-550.png` it differs in AN, CM, LB, MS, Marker, PB, RT, SC, SM and TR.
+- `live-stall/receiver/shots/seq-258.png`, the stall's recovery shot, equals `frame-550.png`.
+- `live-reconnect/receiver/shots/stream-2-seq-<n>.png` are connection 2's shots.
