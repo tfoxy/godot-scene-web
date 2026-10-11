@@ -46,6 +46,24 @@
 // disarm) every streaming connection gets its end record whether or not it holds credit; the
 // receiver closes after reading it, and close_open() closes whatever is left with 1000.
 //
+// Rate control (gate6-design.md D8, Q3c, G6r): GRC_PUBLISH_FPS configures LiveConfig::
+// publish_period_ns (0 = uncapped, today's behaviour: a transaction at every frame callback that
+// holds credit). With a target, connection c publishes at tick k, due at t0 + k*P (P = the
+// period, t0 the connection's first send). A due tick without credit stays due (never advances
+// the schedule) and is counted in ticks_credit_blocked; a due tick with credit sends and advances
+// the schedule to the next tick after "now" (skipping any missed ticks -- never bursting to catch
+// up); a callback with credit but no tick due counts as frames_rate_idle and sends nothing. File
+// sinks are untouched by this: they are a separate Publisher (entry.cpp), not a Hub connection.
+//
+// Multi-connection admission (D13, G6r): GRC_LIVE_MAX_CONNECTIONS (entry.cpp, ServerConfig::
+// max_clients) is the actual admission limit -- a connection beyond it never reaches the Hub (the
+// transport refuses the WebSocket upgrade with 503). The Hub already keeps every connection's
+// delivery state independently (conns_, a map), so nothing here changes for N > 1 connections
+// except GET attribution (on_http_get): with more than one connection open, a resource GET is
+// not attributable to a specific receiver (D13 "HTTP GETs are counted per host, not attributed"),
+// so it is counted at the host level only (the caller's ServingSummary) and no connection's
+// summary or live log gains a line for it.
+//
 // Sabotages handled here:
 //   drop-message    the first transaction formed at a frame >= the sabotage frame is encoded,
 //                   logged and written to the tap but not sent, and its credit is restored at
@@ -79,6 +97,7 @@
 
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
+#include "rs_histogram.h"
 
 namespace grc {
 
@@ -168,6 +187,11 @@ struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES
   std::uint64_t hello_timeout_ms = 5000;        // GRC_LIVE_HELLO_TIMEOUT_MS
   std::string tap_dir;                          // GRC_LIVE_TAP_DIR; empty: no tap, no log
+  // GRC_PUBLISH_FPS (D8, Q3c, G6r): 0 = uncapped (every frame callback that holds credit, today's
+  // behaviour, byte for byte); otherwise the steady-clock period between ticks, 1e9 / target_fps
+  // ns (target_fps 1..240). Live connections only -- a Publisher file sink never rate-limits.
+  std::uint64_t publish_period_ns = 0;
+  std::uint64_t publish_target_fps = 0;  // 0 when uncapped; reported in the summary only
   // Sabotage frames; 0 disables each.
   std::uint64_t drop_message_frame = 0;
   std::uint64_t ignore_credit_frame = 0;   // G1d
@@ -225,6 +249,11 @@ struct ConnectionSummary {
   std::uint64_t stale_sent = 0;
   std::uint64_t max_in_flight = 0;  // sent seqs whose credit-stage ack had not arrived
   std::uint64_t max_queued_bytes = 0;
+  // Rate-control counters (D8, Q3c, G6r); all 0 under the default GRC_PUBLISH_FPS=uncapped.
+  std::uint64_t ticks_due = 0;             // callbacks where the schedule had a tick due
+  std::uint64_t ticks_sent = 0;             // due ticks that sent (a subset of `sent`)
+  std::uint64_t ticks_credit_blocked = 0;   // due ticks with no credit
+  std::uint64_t frames_rate_idle = 0;       // callbacks with credit but no tick due yet
   std::uint64_t max_message_sent = 0;  // the largest binary message formed (magic + session incl.)
   std::uint64_t resyncs = 0;
   std::uint64_t acks[3] = {0, 0, 0};  // received, applied, submitted
@@ -282,10 +311,11 @@ class Hub {
   // then calls on_frame for the same callback).
   void on_event(const LiveEvent &event, std::uint64_t frame);
 
-  // True when on_frame needs a snapshot at callback `frame`: a connection holds a received
-  // hello, or is streaming with credit (or, under the G1d sabotages, would send without credit
-  // or keep a stale copy).
-  bool wants_snapshot(std::uint64_t frame) const;
+  // True when on_frame needs a snapshot at callback `frame`/`now_ns`: a connection holds a
+  // received hello, or is streaming with credit and (under rate control, G6r) a tick due at
+  // `now_ns` (or, under the G1d sabotages, would send without credit or keep a stale copy).
+  // `now_ns` is unused when every connection is uncapped (GRC_PUBLISH_FPS=uncapped, the default).
+  bool wants_snapshot(std::uint64_t frame, std::uint64_t now_ns) const;
 
   // One frame callback. `snapshot` is the published state for `frame` (required when
   // wants_snapshot() was true; may be null otherwise); `epoch` the mirror's mutation epoch read
@@ -309,9 +339,23 @@ class Hub {
   std::vector<ConnectionSummary> summaries() const;
   // render-stream-live-summary/1: {"schema", "connections":[...]} (pretty-printed).
   // `resources`, when given, is written as the summary's `resources` object (G2c2: the host's
-  // serving totals, entry.cpp).
+  // serving totals, entry.cpp). `publication` (G6r) is always written: {"mode", "target_fps"}
+  // from the hub's own LiveConfig (evidence form; not itself a wire field until G6b).
   std::string summary_json(const ServingSummary *resources = nullptr) const;
   std::size_t connections() const { return conns_.size(); }
+
+  // Cross-connection histograms for perf.json (Q3d, G6r): the diff and encode costs measured in
+  // send_transaction(), and the credit round trip and host-clock staleness (index 1 = applied,
+  // index 2 = submitted; index 0 is never populated -- received is never a credit stage).
+  const Histogram &diff_histogram() const { return diff_hist_; }
+  const Histogram &encode_histogram() const { return encode_hist_; }
+  const Histogram &enqueue_histogram() const { return enqueue_hist_; }
+  const Histogram &credit_rtt_histogram(AckStage stage) const {
+    return credit_rtt_hist_[static_cast<std::size_t>(stage)];
+  }
+  const Histogram &staleness_histogram(AckStage stage) const {
+    return staleness_hist_[static_cast<std::size_t>(stage)];
+  }
 
   // G2c2 pins (gate2-design.md D7): the payloads of the last transaction sent on every connection
   // that is not closed (its base), and of every stale-coalesce copy a connection may still send.
@@ -335,9 +379,11 @@ class Hub {
   // Forms, encodes and sends (or, under drop-message, only taps) the next transaction. Returns
   // the live log's `sent` object, or "null" when the connection was closed instead.
   // `stale_from` (stale-coalesce) is the frame the snapshot was taken at, 0 otherwise.
+  // `capture_ns` (G6r Q3c "Staleness") is the frame callback's time the snapshot was captured at
+  // -- `now_ns` for a fresh send, or the earlier time it was set aside for a stale-coalesce send.
   std::string send_transaction(Conn &c, const rs::Captured &snapshot, std::uint64_t frame,
                                std::uint64_t now_ns, std::uint64_t epoch,
-                               std::uint64_t snapshot_ns, bool first,
+                               std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
                                std::uint64_t stale_from = 0);
   void note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns);
   void log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool credit_before,
@@ -345,9 +391,22 @@ class Hub {
   void log_line(Conn &c, const std::string &line);
   void close_files(Conn &c);
 
+  // Returns true when `now_ns` is at or past a connection's next due tick (G6r); always true
+  // under GRC_PUBLISH_FPS=uncapped (config_.publish_period_ns == 0) or before its schedule has
+  // started (its very first send, right after the hello, is never rate-gated).
+  bool tick_due(const Conn &c, std::uint64_t now_ns) const;
+  // Starts (first send) or advances (every later send) a connection's schedule after it sends at
+  // `now_ns`. No-op under GRC_PUBLISH_FPS=uncapped.
+  void advance_schedule(Conn &c, std::uint64_t now_ns);
+
   LiveTransport *transport_;
   LiveConfig config_;
   Session template_;
+  Histogram diff_hist_;
+  Histogram encode_hist_;
+  Histogram enqueue_hist_;
+  Histogram credit_rtt_hist_[3];
+  Histogram staleness_hist_[3];
   std::map<std::uint32_t, std::unique_ptr<Conn>> conns_;  // by transport connection id
   std::uint32_t next_connection_ = 1;
   bool drop_done_ = false;

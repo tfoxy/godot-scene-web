@@ -34,6 +34,7 @@ add_library(render_stream_capture SHARED
   src/rs2_codec.cpp
   src/rs2_diff.cpp
   src/rs_canvas_texture_shim.cpp
+  src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_mirror.cpp
   src/rs_publish.cpp
@@ -135,6 +136,7 @@ add_executable(rs_live_test
   src/rs2_codec.cpp
   src/rs2_diff.cpp
   src/rs_canvas_texture_shim.cpp
+  src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_publish.cpp
   src/rs_resource_store.cpp
@@ -206,6 +208,13 @@ add_executable(rs_sha256_test test/rs_sha256_test.cpp src/rs_sha256.cpp)
 target_include_directories(rs_sha256_test PRIVATE src)
 target_link_libraries(rs_sha256_test PRIVATE grc_warnings)
 add_test(NAME rs_sha256 COMMAND rs_sha256_test)
+
+# Gate 6 (G6r): the fixed-size log-linear histogram (bucket boundaries, the 6.25% relative-error
+# bound, exact aggregates, percentile, JSON shape).
+add_executable(rs_histogram_test test/rs_histogram_test.cpp src/rs_histogram.cpp src/report.cpp)
+target_include_directories(rs_histogram_test PRIVATE src)
+target_link_libraries(rs_histogram_test PRIVATE grc_warnings)
+add_test(NAME rs_histogram COMMAND rs_histogram_test)
 
 # The opt-in headless CanvasTexture shim (protocol/canvas-texture-headless.md "Experiment (a)
 # result"): mode parsing, the headless-only arm decision, private RIDs at index >= 2^31 only for an

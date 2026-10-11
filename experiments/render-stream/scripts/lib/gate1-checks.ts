@@ -112,6 +112,7 @@ import {
   checkLiveHandshake,
   checkLiveLegClass,
   checkLiveListening,
+  checkLiveRate30,
   checkLiveReceiverLate,
   checkLiveReceiverNeverLoadedFixture,
   checkLiveReplayEqualsLive,
@@ -2286,6 +2287,8 @@ export function gate1ReceiverLogPaths(outDir: string): string[] {
     join(outDir, "live-replay", "stdout.log"),
     join(outDir, "live-headless", "receiver", "stdout.log"),
     join(outDir, "sabotage-drop-message", "receiver", "stdout.log"),
+    // g1c (G6r self-test)
+    join(outDir, "live-rate-30", "receiver", "stdout.log"),
     // g1d (G1d)
     ...[...G1D_CLASSIFIED_LEGS, ...G1D_SUPPORT_LEGS].map((l) =>
       join(outDir, l, "receiver", "stdout.log"),
@@ -2522,7 +2525,21 @@ export async function runGate1(
           receiverProjectDir: ctx.receiverProjectDir,
           fixtureProjectDir: ctx.fixtureProjectDir,
         }),
+        await checkLiveRate30(outDir),
       );
+      legs["live-rate-30"] = {
+        group: "g1c",
+        expected_class: null,
+        result_class: null,
+        reasons: [],
+        exit_code: await readExitCode(join(outDir, "live-rate-30", "receiver")),
+        artifacts: await existing([
+          join(outDir, "live-rate-30", "host", "evidence", "live-summary.json"),
+          join(outDir, "live-rate-30", "host", RECORDING_NAME),
+          join(outDir, "live-rate-30", "host", PATCH_RECORDING_NAME),
+          join(outDir, "live-rate-30", "receiver", "applied.json"),
+        ]),
+      };
       live = {};
       for (const leg of G1C_CLASSIFIED_LEGS) {
         const e = liveEvals.get(leg) as LiveLegEvaluation;
