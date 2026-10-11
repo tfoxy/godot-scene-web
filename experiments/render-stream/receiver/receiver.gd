@@ -61,8 +61,9 @@ extends Node
 ##                                picture) or (G55d) ignore-material (canvas_item_set_material is
 ##                                never called), ignore-canvas-modulate (canvas_set_modulate is
 ##                                never called) or stale-param (G55e: a material's parameters are
-##                                set only when it is created); all fifteen exist only to fail
-##                                checks or compare
+##                                set only when it is created) or (G6a) stale-texture (a resident
+##                                RGBA8 image keeps its first payload; LA8 atlas pages still
+##                                update); all sixteen exist only to fail checks or compare
 ##
 ## Perf (G6r, both modes; rs_perf.gd):
 ##   RS_RECEIVER_PERF_OUT   absolute path; writes render-stream-receiver-perf/1 alongside
@@ -148,8 +149,9 @@ const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
-## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param"]
+## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
+## gate6-design.md Q6h, G6a).
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
@@ -657,6 +659,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_ignore_material = _sabotage == "ignore-material"
 	_applier.sabotage_ignore_canvas_modulate = _sabotage == "ignore-canvas-modulate"
 	_applier.sabotage_stale_param = _sabotage == "stale-param"
+	_applier.sabotage_stale_texture = _sabotage == "stale-texture"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true

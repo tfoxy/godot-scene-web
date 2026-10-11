@@ -2129,3 +2129,95 @@ least one thread, thread CPU time increasing after it does work); `provenance.ts
 (hash-at-publish supersession, mesh region-update deltas, texture whole-equals-delta, parameter
 bytes per frame, and a malformed line skipped during parsing); and a `report-gate6.ts build()` +
 `validate()` round trip through a fabricated run-set directory.
+
+## Gate 6 files (g6a)
+
+G6a ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6a") runs the combined scene
+`fixtures/gate6-scene` through its file legs on render-stream/5:
+
+```bash
+mise exec -- pnpm render-stream:gate6 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--binary /abs/path] [--out /abs/dir] [--legs g6a]
+```
+
+- `run-gate6.sh`: the orchestrator (gate 5.5's shape: `lib/legs.sh`, one private gamescope per
+  group at 640×360, every capture with `GRC_ROOT_SIZE=enforce-min-size`). `--out` defaults to
+  `artifacts/render-stream/gate6/<UTC>/`. Landed groups: `g6a`; the other gate 6 groups are known
+  names and refused until their increment lands.
+- `check-gate6.ts`: writes `<out>/result.json` (`render-stream-gate6-report/1`: gate 5.5's shape
+  plus `mismatch_tables` per receiver leg, `census`, and the `rates` and `stability` blocks later
+  increments fill) and exits non-zero unless every check passed.
+- `lib/gate6-expected.ts`: `expected.json`'s types, the per-shot raster (`rasterOfShot`), the
+  refused variant's view and the per-pixel region map.
+- `lib/gate6a-checks.ts`: every g6a criterion, pure over values read from the evidence, and
+  `runGate6a`.
+- `lib/geometry-raster.ts` gains `UndecidedShape` (`kind: "undecided"`): a box whose pixels the hand
+  model leaves undecided (text, the RichTextLabel, RF); a later opaque paint decides them again.
+- `receiver/` gains `RS_RECEIVER_SABOTAGE=stale-texture` (a resident RGBA8 image keeps its first
+  payload; LA8 atlas pages still update), the receiver half of Q6h's `stale-texture` leg.
+- `test/self-test-gate6.ts`: see below.
+
+## Gate 6 legs and evidence under `--out` (g6a)
+
+| Leg                       | Directory                         | Runs |
+| ------------------------- | --------------------------------- | ---- |
+| `import`                  | `scene/import/{fixture,receiver}/` | the mise editor's `--import` of `fixtures/gate6-scene` and `receiver/` |
+| `capture-scene`           | `scene/capture/`                  | the release template, `--headless`, armed, both sinks, the store, quit 400, strace + maps/fd |
+| `capture-scene-inline`    | `scene/capture-inline/`           | the same with no store and both payload thresholds at 16 MiB |
+| `capture-animate`, `capture-refused` | `animate/capture/`, `refused/capture/` | `RS_FIXTURE_VARIANT=animate` / `refused`, quit 400 |
+| `reference-scene`, `-repeat` | `scene/reference{,-repeat}/`   | rendered in gamescope, extension absent, oracle on: `shots/step-0..11.png`, `shots/frame-{13,53,93}.png`, `steps.jsonl`, `oracle.jsonl` |
+| `reference-scene-armed`   | `scene/reference-armed/`          | rendered, extension armed with a full-sink stream and a store, oracle off |
+| `reference-animate`, `reference-refused` | `animate/reference/`, `refused/reference/` | rendered, the variant, oracle on |
+| `receiver-scene`, `-patch`, `-inline` | `scene/receiver{,-patch,-inline}/` | rendered receivers on the full sink, the patch sink (state dumps at the settle seqs) and `capture-inline`: `shots/seq-<n>.png` at the settle seqs and the seqs of frames 13, 53, 93 |
+| `receiver-animate`, `receiver-refused` | `animate/receiver/`, `refused/receiver/` | rendered receivers on the variant captures |
+| `sabotage-freeze`, `-omit-transform`, `-perturb-vertex`, `-perturb-shader` | `scene/sabotage-*/{capture,receiver}/` | 122-frame captures with `freeze-frame` @11, `omit-op canvas_item_set_transform` @21, `perturb-vertex` @21, `perturb-shader` @21, each with a rendered receiver |
+| `sabotage-receiver-ignore-clip`, `-stale-texture` | `scene/sabotage-receiver-*/` | `RS_RECEIVER_SABOTAGE` on `scene/capture/` |
+
+## Gate 6 criteria (g6a)
+
+`expected-self-consistent` re-derives in TypeScript what `make_expected.py` asserts, for both
+variants (regions disjoint at every shot, the colour and texel grid with the theme boxes exempt,
+only BG's panel, the clear colour or band outside the regions, nothing but `TL` in the bottom
+strip before step 10, `fresh` against the raster and the undecided content, SM's phase and PB's
+value against D6's formulas). The capture checks are gate 3's (`headless-no-gpu`,
+`recordings-decode`, `patch-resolves-to-full`) plus `step-log` on every capture and reference and
+one `leg-class-capture-*` per capture: `unsupported` with exactly the `/5` reasons expected.json
+lists (`viewport_attach_canvas`/`extra-canvas`; the refused variant adds `canvas-light`, two
+`unsupported-op` commands and `unsupported-material`). `draw-index-tie` requires no tie anywhere and
+Scene and TL at distinct draw indices from frame 1 (Q6b's predicted tie does not happen, As built).
+`expected-image-reference` compares every reference shot (settle and intermediate,
+`reference-scene` and `reference-refused`) with the model on every decided pixel;
+`presence-reference` requires every modelled shape present; `freshness-reference` requires the
+reference's region changes to equal `fresh` and checks on the wire that SC's steps 1 and 5 are a
+content transform, that TR changes through TEXA's version with identical commands and that TL never
+changes before step 10. `reference-repeat-budget` and `armed-transparent` compare legs pixel for
+pixel. `scroll-parity` compares the oracle's scroll, content position and RichTextLabel layout with
+the model and the wire's content transform with the floored offset; `atlas-parity` the oracle's
+atlas pages with the capture's settle textures (both ways); `param-parity` SM's and CM's material
+state on both sinks with the model; `line-edit-geometry` the capture's LineEdit selection and caret
+rects with the oracle's; `scene-census` the hook log with the census (textures by predicted hash,
+MS's per-frame region updates, SM's parameter writes, CM's builtin shaders, the canvas counters and
+the HUD's hidden frames; and the `animate` capture's TEXA versions). Each receiver leg's
+`leg-class-*` requires `unsupported` with exactly the capture's reasons (also in `applied.json`) and
+the pixel verdict outside `HU` (and `RF`): honest receivers `success`, sabotages `pixel-mismatch` at
+exactly `predictions[leg]`'s regions per shot (`perturb-shader`: `success`).
+`receiver-vs-reference` collects the honest receivers' comparison (budget 0).
+
+## Gate 6 self-test (g6a)
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate6.ts
+```
+
+39 assertions: both variants of the committed `expected.json` pass `expected-self-consistent`, and
+broken copies (an off-grid colour, a wrong `fresh`, overlapping regions, a phase off D6's formula)
+fail; the undecided box marks its pixels undecided, an opaque rect decides them again and a
+translucent one does not; frame diffs ignore HU, and the pixel verdict passes the predicted
+sabotage regions but fails an extra, a missing or an unpredicted region, an honest leg that differs
+and a missing shot; oracle lines made from `expected.json` pass and fail with a scroll, a tint, an
+RT line offset or the repeat's bytes off; atlas parity and the LineEdit's rects pass and fail on
+synthetic wire states; a hook log synthesized from the census passes and fails with TEXA's update
+missing, TEXB's hash off, an extra mesh call or the HUD hidden one frame too long; and the
+unsupported class and the frame-1 tie each pass and fail.

@@ -976,6 +976,88 @@ variant's exact reason set.
 **Pass criteria**: gates −1 to 5.5 green; `--legs g6a` green; README "Gate 6a result" with the
 measured budgets and every amendment to Q6 recorded "As built".
 
+**As built (G6a, 2026-10-11).** `--legs g6a` passes 32/32 on render-stream/5 (README "Gate 6a
+result"). The model decided 5 083 944 reference pixels over 30 shots (both variants) and matched
+every one; `reference-repeat` is 0 in every pixel of every shot; every honest receiver equals its
+reference on every pixel outside `HU` (and `RF`), and inside `HU` differs in exactly the HUD panel.
+The two things Q6 left to running:
+
+1. **The frame-1 tie does not happen.** `Scene` and `TL` are created in `_ready()`, before the first
+   iteration, so their deferred `_top_level_raise_self` group calls run in the first iteration's
+   flush (`scene_tree.cpp:644`) and the frame-1 transaction already carries `Scene` at draw index 0
+   and `TL` at 1. No sink of any capture ever carries a tie. `expected.json` `draw_index_ties` is
+   `[]`, Q6b's fallback variant `toplevel` is not needed, and `draw-index-tie` asserts both. Gate
+   1's one-frame lag (memory gate1-top-level-draw-index-lag) applies to top-level items added
+   after the first iteration only.
+2. **LineEdit's selection draws regardless of focus.** A scratch probe on the headless capture
+   (three LineEdits with `select(0,4)`: focused; `FOCUS_NONE`; focused then unfocused with
+   `deselect_on_focus_loss_enabled = false`) recorded the identical selection `add_rect` on all
+   three, the focus box and caret only on the focused one (`le.cpp:1441-1458` as read). In the scene
+   the headless host (no window focus) and the rendered reference draw the same LE commands, which
+   `line-edit-geometry` pins to the rects the reference's oracle derives from the TextServer.
+
+Amendments to Q6 (each from a run, explained from source):
+
+3. **Quarter-frame clocks (D6).** Both `AnimationPlayer`s are seeked to (φ + ¼)/60 s before the
+   first frame and the paused `Tween` is custom-stepped by the same amount, so at frame f every
+   animation samples (f + φ + ¼)/60 s: no key, loop end or rounding threshold is within a quarter
+   frame of a sample, and accumulated float error cannot pick a neighbour. AN's edges then sit a
+   quarter pixel off the pixel centres and are decided, not band.
+4. **PB redraws every frame.** `ProgressBar` sets its step to 0.01 (its constructor), so the
+   tween's (f + ¼)/3 changes the value, and PB's commands, on every frame, not every third. Its
+   text is `int(ratio · 100)` of the double ratio, its fill `round(float(ratio) · 164)` px (both
+   modelled). With a 12 px theme font override the bar fits 24 px, but only once its box is set
+   again inside the tree: the first minimum comes from the 16 px theme font (4 + 23 = 27) and a free
+   Control never shrinks to a later, smaller minimum (memory rs-g4c-layout-facts). The first run
+   had a 27 px bar and 166 unexpected pixels per shot below `PB`.
+5. **TR redraws at step 3.** `ImageTexture::update` emits `changed` (`image_texture.cpp:126-127`)
+   and `TextureRect` queues a redraw on it (`texture_rect.cpp:179-181`), so Q6c's "no item redraw"
+   does not hold for `TR`: its `content_version` moves while its commands stay identical, and
+   TEXA's version and hash move. `freshness-reference` checks exactly that.
+6. **HU is not fresh at 9.** The HUD at layer −1 is wholly under BG's opaque 640×344 panel, so step
+   9's pixels in `HU` equal step 8's (Q6f said 8, 9 and 10). The model omits a layer behind the root
+   canvas.
+7. **RT.** Its line heights are 23 px regular and bold (a measured metric of the default font,
+   `MEASURED_RT_LINE_H`, confirmed by the oracle's `get_line_offset` at every step); the image line
+   is 64. `scroll_to_line(4)` scrolls to 133, which hides the image (46..110) from step 5 on;
+   replacing the text at step 9 keeps the scroll value clamped to the new maximum (207 − 112 = 95).
+   Line 3 reads "line 3" so the clip-escape prediction stays inside one region.
+8. **Q6h's sets as recomputed and measured** (each `leg-class-*` matched them exactly, `HU`
+   excluded): `freeze-frame` @11 differs wherever a region's model differs from frame 10's (AN
+   equals it again at frame 98, its period being 88); `omit-op canvas_item_set_transform` @21:
+   `AN` at every shot from step 2 but step 10 (frame 108 equals frame 20), `SC` {5..11}, `HB`
+   {7..11}; `perturb-vertex` @21: `MS` and `PB` {2..11}, `SC` and `RT` {5..11} (RT's own
+   VScrollBar re-records its grabber when scrolled, which Q6h missed), `CD` and `BT` {6..11},
+   `HB` and `LE` {7..11}, plus frames 53 and 93; `perturb-shader` @21: none (CM's shaders are
+   builtin, never perturbed); receiver `ignore-clip`: SC's rows leave the scissor into `PB`, `BT`
+   and BG and RT's last drawn line into `CD` at steps 0..4 (BG, BT, CD, PB at 0; BG, CD, PB at
+   1..4), BG only from step 5 (SC's own region never differs: the rows inside it are unchanged);
+   receiver `stale-texture`: `TR` {3..7} and frame 53, `RT` {3, 4} only (the image is scrolled out
+   from step 5).
+9. **The receiver's `stale-texture` is new.** G2b2's `stale-texture` is a host sabotage that
+   classifies `capture-failure`, so G6a adds `RS_RECEIVER_SABOTAGE=stale-texture`: a resident RGBA8
+   image keeps its first payload, LA8 atlas pages still update so text stays honest
+   (`rs_applier.gd`, with an `applier2_selftest.gd` case).
+10. **Text and the undecided class.** Text runs inside exact regions are undecided boxes
+    (`geometry-raster.ts` `UndecidedShape`, widths bounded by 14.4 px per character at 16 px): row
+    labels, PB's and BT's text, LE's content box (its selection and carets are checked on the wire
+    instead) and the HUD label; `RT`, `LB` and `RF` are undecided whole. The theme boxes are
+    off the 0.2 grid and translucent, hence delta 1 (80 388 pixels use it).
+11. **Census as measured.** Textures: `TEXN`, `TEXA(0)` and `TEXB` at frame 1 with their predicted
+    GRT1 hashes, `TEXA(1)` at 31, `TEXA` freed at 91 (`animate`: `TEXA(3)` at 30, `TEXA(1)` at 31,
+    `TEXA(4)` at 60, `TEXA(5)` at 90, freed at 91); the hue strip and four LA8 atlas pages. `MS`: one
+    vertex-region update on every frame 1..111, and `MeshInstance2D` re-records its `add_mesh` on
+    every frame (the mesh's `changed`). `SM`: shader created at 1 with the predicted GRP1 hash, 34
+    parameter writes (four at frame 1: the builder's phase and tint, then the player's `play` and
+    `seek(update)`), then a phase every 4 frames, the tint at 41 and two at 111. `CM`: builtin `add`
+    at 1, `sub` at 41. The HUD panel is invisible on the wire exactly over 81..90.
+12. **Layout details.** The HUD Label is a child of the HUD Panel, so the HUD canvas holds one
+    top-level item. Sabotage captures run the default 122 frames; the main captures 400. The
+    `refused` variant's LCD label uses a duplicate of the default `FontFile` with LCD antialiasing
+    and its `PointLight2D` has `range_item_cull_mask = 2`, so it is attached (`canvas-light`) but
+    lights nothing; its `/5` reasons are exactly `extra-canvas`, `canvas-light`, the multimesh and
+    LCD commands' `unsupported-op` and the `TIME` shader's item-level `unsupported-material`.
+
 ---
 
 ### G6w — render-stream/6 codecs, golden-6 (sonnet)

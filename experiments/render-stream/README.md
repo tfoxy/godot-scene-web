@@ -4987,3 +4987,97 @@ lists; no new payload format at /6, so there is no `payload-invalid/` (golden-3'
   from any other field -- exactly as `canvas-light` already does at /5. Only `canvas-stacking-tie`
   and `snap-2d` have an independently checkable "actual" signal (the resolved canvas table and the
   session's own `snap_2d` flags, respectively).
+
+## Gate 6a result (2026-10-11)
+
+G6a ([protocol/gate6-design.md](protocol/gate6-design.md) "G6a") passes: the combined 640×360
+scene `fixtures/gate6-scene` (native Controls, a clipped ScrollContainer that scrolls, a Label and a
+scrolling RichTextLabel with an inline image, a custom `_draw`, a texture that changes and is freed,
+a mesh deformed every frame, a CanvasItemMaterial, a ShaderMaterial driven by an AnimationPlayer, a
+Tween, a `top_level` escape and a HUD CanvasLayer) runs its file legs on render-stream/5.
+`pnpm render-stream:gate6 -- --legs g6a` is **32/32** in `artifacts/render-stream/gate6/g6a-final/`
+(ignored, not committed; 8 min wall clock), on `main` with G6r and G6w merged, and again 32/32 in `gate6/g6a-final2/` after G6k (calibrator 9) landed. The regression
+gates on the same build are listed under "Runs" below.
+
+**What was added.** The fixture (`scene_builder.gd`, parameterized by origin, cell and phase for
+G6h; `gate6_scene.gd` with the `file`, `live`, `rate` and `soak` timelines, `steps` and `realtime`
+time, the `animate` and `refused` variants and `RS_FIXTURE_SHOT_FRAMES`; `scene_oracle.gd`;
+`make_expected.py` and `expected.json`), `run-gate6.sh` and `pnpm render-stream:gate6`,
+`check-gate6.ts`, `lib/gate6-expected.ts`, `lib/gate6a-checks.ts` and `test/self-test-gate6.ts`
+(39 assertions). Two shared files changed: `lib/geometry-raster.ts` gains an undecided box (text
+and other hand-undecided content inside exact regions), and the receiver gains
+`RS_RECEIVER_SABOTAGE=stale-texture` (with an `applier2_selftest.gd` case).
+
+| Leg | Class | Pixels outside HU (and RF) |
+| --- | --- | --- |
+| `capture-scene`, `-inline`, `capture-animate` | `unsupported` (`extra-canvas` only) | — |
+| `capture-refused` | `unsupported` (`extra-canvas`, `canvas-light`, multimesh and LCD `unsupported-op`, `unsupported-material`) | — |
+| `receiver-scene`, `-patch`, `-inline`, `receiver-animate`, `receiver-refused` | `unsupported` | `success`: every pixel of every shot equals the reference |
+| `sabotage-freeze` (@11), `-omit-transform` (@21), `-perturb-vertex` (@21) | `unsupported` | `pixel-mismatch` at exactly the predicted (shot, region) sets |
+| `sabotage-perturb-shader` (@21) | `unsupported` | `success` (SM's shader is never re-coded; CM's are builtin) |
+| `sabotage-receiver-ignore-clip`, `-stale-texture` | `unsupported` | `pixel-mismatch` at exactly the predicted sets |
+
+Before G6b, /5 can only call the HUD's CanvasLayer `extra-canvas`, so every leg is `unsupported`
+and the pixel verdict is judged outside `HU` (Q7b). Inside `HU` every honest receiver differs in
+exactly the HUD panel's 168×28 pixels while the HUD shows above the root canvas, and nowhere at
+steps 8 and 9.
+
+**Measured budgets.** Reference against the hand model: 5 083 944 decided pixels over 30 shots
+(twelve settle shots and frames 13, 53 and 93, both variants), 0 beyond their allowance; 80 388 use
+delta 1 (the translucent, off-grid theme boxes and MS's gradients). `reference-repeat` and
+`reference-armed` against `reference`: 0 of 3 456 000 pixel-shots each, in every region and pixel
+class (exact 2 539 436, delta1 88 936, band 115 422, undecided 712 206). Receiver against reference:
+0 in every compared pixel of every shot (3 348 992 per leg; 3 176 192 for `refused`), so the Q6g
+budget is 0 everywhere.
+
+**Checks** (`lib/gate6a-checks.ts`): `expected-self-consistent`, `leg-class-*` for the 4 captures
+and 11 receivers, `headless-no-gpu`, `recordings-decode` (full sink 39.5 MB, patch 1.59 MB over 400
+frames), `patch-resolves-to-full`, `step-log`, `draw-index-tie`, `expected-image-reference`,
+`presence-reference` (692 shape-shots), `freshness-reference`, `reference-repeat-budget`,
+`armed-transparent`, `scroll-parity`, `atlas-parity` (four LA8 pages at every step, both
+directions, both sinks), `param-parity`, `line-edit-geometry` (36 selection and caret rects equal
+the oracle's), `scene-census` (TEXN, TEXA, TEXB with predicted GRT1 hashes, 111 MS region updates,
+34 SM parameter writes, CM builtin add at 1 and sub at 41, the HUD hidden over 81..90; the animate
+capture's five TEXA versions) and `receiver-vs-reference`.
+
+**Runs** (same build, all under `artifacts/render-stream/<gate>/g6a-final/`, ignored): gate 6
+`--legs g6a` 32/32; gate −1 PASS; gate 0 PASS; gate 1 66/66; gate 2 85/85; gate 3 56/56; gate 4
+185/185; gate 5.5 130/130; gate 5 failed 114/116 once on g5f's live `pins-bounded` /
+`obsolete-retired` ("servable, named by nothing" at frame 851, the known live timing flake) and
+passed 116/116 on the one rerun (`gate5/g6a-final-rerun/`). After merging G6k: gate 6 32/32,
+gate −1 PASS (79 hooks) and gate 0 PASS under `<gate>/g6a-final2/`.
+
+### Findings
+
+- **No frame-1 tie.** Items created in `_ready()` get their top-level draw index inside frame 1, so
+  Q6b's predicted `Scene`/`TL` tie never appears; Q6b's fallback is not needed.
+- **LineEdit's selection draws with or without focus** (a scratch probe on the headless capture),
+  and its carets sit on the baseline (`le.cpp:1466`), not at the selection's top.
+- **The contract's sets were amended by the model and confirmed by the run**: TR redraws when its
+  texture updates; HU is not fresh at step 9 (the layer behind the root canvas is under BG); PB
+  redraws on every frame (step 0.01) and needed its box set again inside the tree; RT's image is
+  scrolled out from step 5, so `stale-texture` reaches RT at 3 and 4 only; `perturb-vertex` also
+  reaches RT through its own scrollbar. All in gate6-design.md "As built (G6a)".
+- **Determinism needs quarter-frame clocks.** Sampling AnimationPlayers and the Tween at
+  (f + ¼)/60 s keeps every key, loop end and rounding threshold away from accumulated float error.
+
+### Deviations
+
+- The receiver `stale-texture` sabotage did not exist (G2b2's is a host sabotage); G6a adds one,
+  scoped to RGBA8 images so font atlases keep text honest.
+- `line-edit-geometry` and `step-log` are checks beyond Q7b's list; the HU exactness is added to
+  `receiver-vs-reference`.
+- Sabotage captures run the default 122 frames, not 400.
+- RT's line 3 reads "line 3" so the clip-escape prediction stays inside one region.
+
+### What G6a does not prove
+
+- The HUD layer end to end (G6b on /6), the 1920×1080 `canvas_items` fixture (G6h), live motion,
+  stalls and reconnect on this scene (G6l), rates (G6c), stability (G6s) and costs (G6p).
+- Text glyph pixels against a hand model: text stays undecided, covered by receiver equality and
+  atlas parity only.
+- Exactness on another GPU or driver, and browser receivers (gate 7).
+
+Images (under the run directory): `scene/reference/shots/{step-0..11,frame-13,frame-53,frame-93}.png`
+against `scene/receiver/shots/seq-<frame>.png`; the refused variant under `refused/`; each
+sabotage's shots under `scene/sabotage-*/receiver/shots/` and `scene/sabotage-receiver-*/shots/`.

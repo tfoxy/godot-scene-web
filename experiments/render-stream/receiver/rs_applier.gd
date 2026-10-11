@@ -159,6 +159,10 @@ var sabotage_ignore_canvas_modulate: bool = false
 ## material is created; later parameter changes and removals are ignored. Exists only to fail
 ## checks.
 var sabotage_stale_param: bool = false
+## RS_RECEIVER_SABOTAGE=stale-texture (gate6-design.md Q6h, G6a): a resident RGBA8 image keeps its
+## first payload; later versions are never uploaded (font atlas pages, LA8, still update, so text
+## stays honest). Exists only to fail checks.
+var sabotage_stale_texture: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
@@ -611,6 +615,8 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 		var hash: String = entry["hash"]
 		var resident: bool = _textures.has(id)
 		if resident and _textures[id].kind == "image" and _textures[id].hash == hash and not sabotage_reupload:
+			continue
+		if sabotage_stale_texture and resident and _textures[id].kind == "image" and _textures[id].format == "RGBA8":
 			continue
 		var decoded: Dictionary = cache.decoded(hash)
 		var image: Image = RsTexturePayload.make_image(decoded)
