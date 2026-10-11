@@ -972,6 +972,46 @@ checks with Q6c's sets.
 **Pass criteria**: `--legs g55b,g55c,g55d,g55e` green; "Gate 5.5e result" with code bytes,
 parameter bytes and decode, copy and hash cost per step.
 
+**As built (G55e, 2026-10-11).** Every g55e check passed on the first engine run except one model
+omission (amendment 4). Amendments:
+
+1. **No capture or receiver change was needed.** G55d's mirror and receiver already carried and
+   replayed everything the shader fixture exercises: instance parameters, the default texture, the
+   texture parameter, the packed float32 array, the `params` library, `stale-param` and
+   `perturb-shader`. G55e is the runner group, its checks, and two additions to `make_expected.py`.
+2. **`capture-policy-params` classifies `success`.** Under `params` a shader is `ok` with
+   `source: "withheld"`, and Q4's derived entries fire only for an `unsupported` shader, so the wire
+   types nothing. The typed class belongs to the receiver: `receiver-params-nolib` is `unsupported`
+   through its `applied.json` `shader_set_code` / `shader-withheld` entries, one per (shader id,
+   hash) it would make resident (8: seven shaders plus `tint`'s step-3 code). It draws every item as
+   no material, since a material with no shader draws as none.
+3. **The hook log keeps the hook's view.** Its shader lines say `source: "payload"` under every
+   policy, because D4 is applied at publication. `shader-material-commands` applies D4 to the log's
+   view first (`applyPolicyToLog`: non-builtin code becomes `withheld`, and under `exclude` an `ok`
+   code becomes `unsupported` / `shader-excluded`, with a D11 reason still winning). Q3d's rule
+   holds: no line carries code, only hashes. `shader-policy-respected` scans every file each policy
+   capture wrote for the GRP1 magic, `shader_type` and the library's codes.
+4. **The freeze prediction includes the marker.** G55c's `predictions` skipped the `Marker` region
+   in every set, but Q6c's freeze set names it: {1..9}, the republished step 0. No other view moves
+   the marker, so `diff_sets` now compares every region.
+5. **`expected.json` gains `receiver_views`.** For each step it records what `receiver-refused`
+   draws (the five refused items with no material) and what `receiver-params-nolib` draws (every
+   item with no material). `predictions` gains both typed legs' region sets:
+   - `receiver-refused`: `TM`, `SC`, `SD`, `GU` at every step. `SP` never differs, because the
+     spatial material draws as none in the reference too.
+   - `receiver-params-nolib`: the `ignore-material` set.
+
+   Both legs are judged against their view's raster on every pixel and against the reference
+   region by region.
+6. **The library** is `<out>/shader-policy-params/library/sha256/`, a copy of `reference-shader`'s
+   oracle dump: 8 GRP1 files, the seven fixture shaders plus `tint_b`.
+7. **Runner and checks.** g55e reuses g55c's captures, references and oracle, so `--legs g55e` adds
+   g55c. The policy and inline captures run without strace. The check ids carry `shader-` (g55c's
+   ids are unprefixed and g55d's carry `cim-`): `shader-hash-parity`, `param-parity`,
+   `shader-policy-respected` and `shader-receiver-vs-reference`. Six checks were added beyond the
+   contract: `shader-material-commands`, `shader-store`, `shader-expected-image-receiver`,
+   `shader-receiver-state-dumps`, `shader-receiver-typed` and `g55e-capture-log-clean`.
+
 ---
 
 ### G55f — live parameters and code through a stall (sonnet)

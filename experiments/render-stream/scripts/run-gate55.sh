@@ -4,7 +4,7 @@
 #
 #   bash run-gate55.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g55b,g55c,g55d]
+#     [--legs g55b,g55c,g55d,g55e]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -27,8 +27,18 @@
 # sabotages freeze-frame @11 and omit-op material_set_shader @21 (sabotage-freeze,
 # sabotage-omit-material-set-shader: a capture plus a rendered receiver each) and the receiver
 # sabotage ignore-material on the main capture (sabotage-receiver-ignore-material); on the modulate
-# scene the receiver sabotage ignore-canvas-modulate (sabotage-receiver-ignore-canvas-modulate)).
-# g55e and g55f are known but have not landed.
+# scene the receiver sabotage ignore-canvas-modulate (sabotage-receiver-ignore-canvas-modulate))
+# and g55e (G55e: ShaderMaterial end to end over g55c's directories, reusing g55c's captures and
+# references there, so requesting g55e alone runs g55c first: the receiver/ import; an all-inline
+# capture (shader/capture-inline); the `params` and `exclude` shader-policy captures
+# (shader-policy-params/capture, shader-policy-exclude/capture); the host sabotages freeze-frame
+# @11, omit-op material_set_param @21 and perturb-shader @21 (shader/sabotage-*/capture, each with a
+# rendered receiver); rendered receivers on capture-shader's full and patch sinks and on
+# capture-inline (shader/receiver{,-patch,-inline}), on capture-refused (shader-refused/receiver),
+# on capture-policy-params without a library (receiver-nolib) and with the library the reference
+# oracle dumped (receiver-lib, RS_RECEIVER_SHADER_LIBRARY); and the receiver sabotages
+# ignore-material and stale-param on capture-shader).
+# g55f is known but has not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -53,7 +63,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g55b g55c g55d)
+LANDED_GROUPS=(g55b g55c g55d g55e)
 KNOWN_GROUPS=(g55b g55c g55d g55e g55f)
 
 EXTENSION=""
@@ -164,6 +174,19 @@ case " ${GROUPS_RUN[*]} " in
 	*)
 		echo "run-gate55: g55d needs g55b's captures and references in the same run: adding g55b"
 		GROUPS_RUN+=(g55b)
+		;;
+	esac
+	;;
+esac
+# g55e's receivers replay g55c's captures and compare with g55c's references (and its params
+# library comes from g55c's reference oracle): requesting g55e without g55c runs g55c too.
+case " ${GROUPS_RUN[*]} " in
+*" g55e "*)
+	case " ${GROUPS_RUN[*]} " in
+	*" g55c "*) ;;
+	*)
+		echo "run-gate55: g55e needs g55c's captures, references and oracle library in the same run: adding g55c"
+		GROUPS_RUN+=(g55c)
 		;;
 	esac
 	;;
@@ -467,11 +490,98 @@ run_g55d() {
 	GS_RUN_DIR=""
 }
 
+# A headless sabotage or policy capture of fixtures/gate55-shader: `default` runs the fixture's own
+# default run (102 frames), anything else is a quit frame; both sinks and its store (CAPTURE_STORE_DIR
+# as run_capture reads it).
+shader_capture() {
+	local dir="$1" quit="$2"
+	shift 2
+	[ "$quit" = "default" ] && quit=""
+	CAPTURE_FIXTURE_DIR="$SHADER_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size "$@")
+	run_capture "$dir" "$quit" none
+}
+
+run_g55e() {
+	local D="$OUT/shader" R="$OUT/shader-refused" P="$OUT/shader-policy-params"
+	local X="$OUT/shader-policy-exclude" kind
+	if [ ! -f "$D/capture/$RECORDING_NAME" ] || [ ! -f "$R/capture/$RECORDING_NAME" ] ||
+		[ ! -d "$D/reference/shots" ] || [ ! -d "$D/reference/shader-library/sha256" ]; then
+		echo "run-gate55: g55e needs g55c's captures, reference and oracle library in $D and $R (g55c ran first?)" >&2
+		exit 2
+	fi
+	echo "run-gate55: g55e: import (receiver)"
+	LEG_ENV=()
+	run_headless "$D/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$D/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $RECEIVER_DIR failed, see $D/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate55: g55e: capture-shader-inline (every payload inline, no store)"
+	CAPTURE_STORE_DIR=none
+	shader_capture "$D/capture-inline" "$CAPTURE_QUIT_FRAME" GRC_RESOURCE_INLINE_MAX_BYTES=16777216 \
+		GRC_RESOURCE_MAX_PAYLOAD_BYTES=16777216
+	echo "run-gate55: g55e: capture-policy-params (GRC_SHADER_POLICY=params)"
+	shader_capture "$P/capture" "$CAPTURE_QUIT_FRAME" GRC_SHADER_POLICY=params
+	echo "run-gate55: g55e: capture-policy-exclude (GRC_SHADER_POLICY=exclude)"
+	shader_capture "$X/capture" "$CAPTURE_QUIT_FRAME" GRC_SHADER_POLICY=exclude
+
+	# Host sabotages; predictions are fixtures/gate55-shader/expected.json "predictions"
+	# (make_expected.py, never hand-edited).
+	echo "run-gate55: g55e: sabotage-shader-freeze (capture, freeze-frame @$(step_frame55 1))"
+	shader_capture "$D/sabotage-freeze/capture" default GRC_SABOTAGE=freeze-frame \
+		GRC_SABOTAGE_FRAME="$(step_frame55 1)"
+	echo "run-gate55: g55e: sabotage-shader-omit-param (capture, omit-op material_set_param @$(step_frame55 2))"
+	shader_capture "$D/sabotage-omit-param/capture" default GRC_SABOTAGE=omit-op \
+		GRC_SABOTAGE_OP=material_set_param GRC_SABOTAGE_FRAME="$(step_frame55 2)"
+	echo "run-gate55: g55e: sabotage-shader-perturb-shader (capture, perturb-shader @$(step_frame55 2))"
+	shader_capture "$D/sabotage-perturb-shader/capture" default GRC_SABOTAGE=perturb-shader \
+		GRC_SABOTAGE_FRAME="$(step_frame55 2)"
+
+	# The params receiver's operator-local library (D4): built from the reference oracle's dumps
+	# (shader_get_code on the rendered reference, Q6e), never from the capture.
+	mkdir -p "$P/library"
+	cp -R "$D/reference/shader-library/sha256" "$P/library/"
+
+	echo "run-gate55: bringing up private gamescope for g55e receiver legs"
+	gs_start 640 360 "$OUT/gamescope-g55e"
+
+	echo "run-gate55: g55e: receiver-shader (full sink)"
+	run_rendered_receiver "$D/capture" "$D/receiver"
+	echo "run-gate55: g55e: receiver-shader-patch (patch sink, state dumps at the settle seqs)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_STATE=1
+	run_rendered_receiver "$D/capture" "$D/receiver-patch"
+	echo "run-gate55: g55e: receiver-shader-inline (capture-inline, no store)"
+	run_rendered_receiver "$D/capture-inline" "$D/receiver-inline"
+	echo "run-gate55: g55e: receiver-refused (capture-refused's full sink)"
+	run_rendered_receiver "$R/capture" "$R/receiver"
+	echo "run-gate55: g55e: receiver-params-nolib (capture-policy-params, no library)"
+	run_rendered_receiver "$P/capture" "$P/receiver-nolib"
+	echo "run-gate55: g55e: receiver-params-lib (capture-policy-params, RS_RECEIVER_SHADER_LIBRARY from the oracle)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SHADER_LIBRARY="$P/library")
+	run_rendered_receiver "$P/capture" "$P/receiver-lib"
+	for kind in freeze omit-param perturb-shader; do
+		echo "run-gate55: g55e: sabotage-shader-$kind (receiver)"
+		run_rendered_receiver "$D/sabotage-$kind/capture" "$D/sabotage-$kind/receiver"
+	done
+	for kind in ignore-material stale-param; do
+		echo "run-gate55: g55e: sabotage-shader-receiver-$kind (RS_RECEIVER_SABOTAGE=$kind on shader/capture)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE="$kind")
+		run_rendered_receiver "$D/capture" "$D/sabotage-receiver-$kind"
+	done
+
+	gs_teardown "$OUT/gamescope-g55e"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g55b) run_g55b ;;
 	g55c) run_g55c ;;
 	g55d) run_g55d ;;
+	g55e) run_g55e ;;
 	esac
 done
 

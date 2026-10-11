@@ -477,7 +477,10 @@ def item_shape(name, step, st, marker_step=None, ignore_material=False):
     if name == "Marker":
         return rect_shape("rect", rect, MARKER_COLOURS[marker_step if marker_step is not None else step])
     draw = REFUSED_DRAW if name in REFUSED_REGIONS else [1, 1, 1, 1]
-    material = None if ignore_material else st.item_mat.get(name)
+    # ignore_material: True for every item, or (G55e receiver views) the set of item names drawn
+    # without their material.
+    ignored = ignore_material is True or (isinstance(ignore_material, frozenset) and name in ignore_material)
+    material = None if ignored else st.item_mat.get(name)
     if material is None or not st.mat_live.get(material, False):
         if name == "PA":
             return rect_shape("texture_rect", rect, draw, "TEX16")
@@ -592,6 +595,30 @@ def build_variant(variant, op_lists):
     return regions, order, steps
 
 
+def receiver_view(variant, op_lists, view, without_material):
+    """G55e: per step, what a receiver draws when it draws the items in `without_material` with no
+    material at all (receiver-refused: the five refused items, whose material it never creates;
+    receiver-params-nolib: every item, since no withheld shader compiles without the library and a
+    material with no shader draws as none). Op lists are shared with the variant's own where the
+    content is the same, else named `<view>/<item>@<step>`."""
+    order = REFUSED_CREATION_ORDER if variant == "refused" else CREATION_ORDER
+    canon = {}
+    for key, ops in op_lists.items():
+        canon.setdefault((key.rsplit("/", 1)[-1].split("@")[0], json.dumps(ops, sort_keys=True)), key)
+    steps = []
+    for step in range(LAST_STEP + 1):
+        st = state_at(variant, settle_frame(step))
+        items = []
+        for name in order:
+            ops = [item_shape(name, step, st, ignore_material=frozenset(without_material))]
+            key = canon.setdefault((name, json.dumps(ops, sort_keys=True)), f"{view}/{name}@{step}")
+            op_lists.setdefault(key, ops)
+            px, py = POSITION[name]
+            items.append({"name": name, "region": ITEM_REGION[name], "xform": [1, 0, 0, 1, px + st.offset[0], py + st.offset[1]], "clip_px": None, "ops": key})
+        steps.append({"step": step, "items": items})
+    return {"variant": variant, "without_material": sorted(without_material), "steps": steps}
+
+
 STEP_CHANGES = {
     1: "MT.tint -> (.8,.4,0,1) (one material_set_param; no redraw)",
     2: "I2.inst_color -> (.8,.2,.6,1) (one instance parameter on the shared MI)",
@@ -691,17 +718,22 @@ def counters(variant):
 
 def predictions():
     """G55e's sabotage sets (Q6c), recomputed from the model: per region, the steps whose settle
-    shot differs from the reference under each sabotage view."""
+    shot differs from the reference under each sabotage view, the marker included (G55e: under
+    freeze-frame it shows step 0's colour from step 1 on, Q6c; no other view moves it)."""
 
-    def diff_sets(view_at):
+    def diff_sets(view_at, variant=""):
+        regions = {**REGIONS, **REFUSED_REGIONS} if variant == "refused" else REGIONS
         out = {}
         for step in range(LAST_STEP + 1):
-            ref = content("", state_at("", settle_frame(step)), step)
+            ref = content(variant, state_at(variant, settle_frame(step)), step)
             got = view_at(step)
-            for region in REGIONS:
-                if region != "Marker" and ref[region] != got[region]:
+            for region in regions:
+                if ref[region] != got[region]:
                     out.setdefault(region, []).append(step)
         return out
+
+    def without(variant, names):
+        return lambda k: content(variant, state_at(variant, settle_frame(k)), k, ignore_material=frozenset(names))
 
     freeze_at = S + N
 
@@ -717,6 +749,10 @@ def predictions():
         "sabotage-shader-perturb-shader": {"frame": omit_at, "regions": diff_sets(lambda k: content("", state_at("", settle_frame(k), perturb_from=omit_at), k))},
         "sabotage-shader-receiver-ignore-material": {"regions": diff_sets(lambda k: content("", state_at("", settle_frame(k)), k, ignore_material=True))},
         "sabotage-shader-receiver-stale-param": {"regions": diff_sets(lambda k: content("", state_at("", settle_frame(k), stale_param=True), k))},
+        # G55e's typed legs (class `unsupported`): the regions where the receiver's drawing without
+        # a material differs from the reference's.
+        "receiver-refused": {"regions": diff_sets(without("refused", set(REFUSED_REGIONS)), "refused")},
+        "receiver-params-nolib": {"regions": diff_sets(without("", set(CREATION_ORDER) - {"Marker"}))},
     }
 
 
@@ -820,6 +856,12 @@ def build():
     hand_checks(steps, op_lists)
     r_regions, r_order, r_steps = build_variant("refused", op_lists)
     check(r_steps, op_lists, r_regions)
+    views = {
+        "receiver-refused": receiver_view("refused", op_lists, "receiver-refused", set(REFUSED_REGIONS)),
+        "receiver-params-nolib": receiver_view("", op_lists, "receiver-params-nolib", set(CREATION_ORDER) - {"Marker"}),
+    }
+    check([{**v, "marker_rgba8": MARKER[v["step"]]} for v in views["receiver-refused"]["steps"]], op_lists, r_regions)
+    check([{**v, "marker_rgba8": MARKER[v["step"]]} for v in views["receiver-params-nolib"]["steps"]], op_lists, regions)
     codes = {name: code_view(preprocess(read(path))) for name, path in SHADER_FILE.items()}
     codes["tint_b"] = code_view(preprocess(read(TINT_B_FILE)))
     return {
@@ -865,6 +907,7 @@ def build():
             }
         },
         "predictions": predictions(),
+        "receiver_views": views,
     }
 
 

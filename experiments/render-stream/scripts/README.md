@@ -1673,15 +1673,16 @@ or id is unknown, and the draw transform applies but not the command's own.
 mise exec -- pnpm render-stream:gate55 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g55b,g55c,g55d]
+  [--legs g55b,g55c,g55d,g55e]
 ```
 
 - `run-gate55.sh`: the orchestrator (`run_g55b` with `run_cim_capture` and `run_cim_rendered`,
   `run_g55c`, `run_g55d` with `run_cim_capture_inline`, `cim_sabotage_capture` and
-  `run_cim_receivers`, `run_reference` with `REFERENCE_ARMED`, `REFERENCE_VARIANT`,
-  `REFERENCE_FIXTURE_DIR` and `REFERENCE_MATERIAL_ORACLE`). g55d replays g55b's captures and
-  compares with g55b's references, so `--legs g55d` adds g55b (and says so); groups run in landed
-  order. Groups g55e and g55f are known but have not landed, so asking for them exits 2. The
+  `run_cim_receivers`, `run_g55e` with `shader_capture`, `run_reference` with `REFERENCE_ARMED`,
+  `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR` and `REFERENCE_MATERIAL_ORACLE`). g55d replays
+  g55b's captures and compares with g55b's references, so `--legs g55d` adds g55b (and says so);
+  g55e likewise adds g55c, whose captures, references and oracle library it uses. Groups run in
+  landed order. Group g55f is known but has not landed, so asking for it exits 2. The
   captures write both sinks under gate 2's `.rs2` names; they speak render-stream/5 since G55d.
 - `check-gate55.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate55-report/1`:
   gate 5's shape with `materials` (per fixture: the material `counters.json` counts, the oracle's
@@ -1691,8 +1692,11 @@ mise exec -- pnpm render-stream:gate55 -- \
   budgets, sabotage regions, receiver counter totals, the wire census events and `per_step`:
   shader and material counts at the settle frame, GRP1 payload bytes first published, `param_f64`
   bytes on the patch sink and in one full transaction, the hook log's `copy_ns`/`hash_ns`/
-  `scan_ns`/`decode_ns`, and per receiver its shader fetches, material calls and `rs_calls`),
-  `budgets` and `freshness`).
+  `scan_ns`/`decode_ns`, and per receiver its shader fetches, material calls and `rs_calls`; g55e:
+  under `gate55-shader.g55e` the same `per_step` for `capture-shader` and its receivers and
+  `per_step_params` for `capture-policy-params` and its two receivers, the GRP1 store, the oracle
+  shader -> wire id pairing, receiver budgets, sabotage regions, the receivers' typed refusals and
+  the policy scan summary), `budgets` and `freshness`).
 - `lib/gate55b-expected.ts`: `fixtures/gate55-cim/expected.json`'s types, `asGate5` (one variant
   as a gate 5 scene), `rasterize55` (the raster on the 2-bit-alpha target) and
   `expectedItemMaterials` (each item's CimSim material and `use_parent_material` per step).
@@ -1713,7 +1717,13 @@ mise exec -- pnpm render-stream:gate55 -- \
 - `lib/gate55c-checks.ts`: the g55c checks (fixtures/gate55-shader): `expected.json`'s types, the
   refused variant's view, the oracle checks, the capture typing, `runGate55c`. Image, presence,
   freshness and leg comparisons are gate 5's (`lib/gate5-checks.ts`, `lib/geometry-raster.ts`).
-- `test/self-test-gate55b.ts`, `test/self-test-gate55c.ts`, `test/self-test-gate55d.ts`: below.
+- `lib/gate55e-checks.ts`: the g55e checks (fixtures/gate55-shader end to end): `applyPolicyToLog`
+  (D4 on the hook log's view), `evaluateShaderHashParity`, `evaluateParamParity` (with
+  `textureHashNames`/`wireParamView`), `evaluatePolicyRespected` (with `codeBytesIn`),
+  `evaluateReceiverTyped`, `residentShaderVersions`, `viewExpected` (a receiver view as a scene),
+  `runGate55e`. It reuses g55d's log replay, store, state-dump and per-step evaluators.
+- `test/self-test-gate55b.ts`, `test/self-test-gate55c.ts`, `test/self-test-gate55d.ts`,
+  `test/self-test-gate55e.ts`: below.
 
 ## Gate 5.5 legs and evidence under `--out`
 
@@ -1743,6 +1753,16 @@ mise exec -- pnpm render-stream:gate55 -- \
 | `sabotage-cim-receiver-ignore-material` | g55d | `cim/sabotage-receiver-ignore-material/` | `RS_RECEIVER_SABOTAGE=ignore-material` on `capture/`                          |
 | `capture-cim-modulate-inline`, `receiver-cim-modulate`, `-patch`, `-inline` | g55d | `cim-modulate/…` | the same four with `RS_FIXTURE_VARIANT=modulate`                         |
 | `sabotage-cim-modulate-receiver-ignore-canvas-modulate` | g55d | `cim-modulate/sabotage-receiver-ignore-canvas-modulate/` | `RS_RECEIVER_SABOTAGE=ignore-canvas-modulate` on `cim-modulate/capture/` |
+| `import-receiver-shader`  | g55e  | `shader/import/receiver/`    | the mise editor's `--import` of `receiver/`                                                       |
+| `capture-shader-inline`   | g55e  | `shader/capture-inline/`     | as `capture-shader` with no store and both payload thresholds at 16 MiB: every payload a resource record |
+| `capture-policy-params`   | g55e  | `shader-policy-params/capture/` | as `capture-shader` (no strace) with `GRC_SHADER_POLICY=params`                                |
+| `capture-policy-exclude`  | g55e  | `shader-policy-exclude/capture/` | as `capture-shader` (no strace) with `GRC_SHADER_POLICY=exclude`                              |
+| `receiver-shader`, `-patch`, `-inline` | g55e | `shader/receiver{,-patch,-inline}/` | rendered receivers on `capture/`'s full sink, its patch sink (state dumps at the settle seqs) and `capture-inline/` |
+| `receiver-refused`        | g55e  | `shader-refused/receiver/`   | rendered receiver on `capture-refused`'s full sink                                                |
+| `receiver-params-nolib`   | g55e  | `shader-policy-params/receiver-nolib/` | rendered receiver on `capture-policy-params`, no shader library                        |
+| `receiver-params-lib`     | g55e  | `shader-policy-params/receiver-lib/`   | the same with `RS_RECEIVER_SHADER_LIBRARY=<out>/shader-policy-params/library`, a copy of `reference-shader`'s oracle `shader-library/` |
+| `sabotage-shader-freeze`, `-omit-param`, `-perturb-shader` | g55e | `shader/sabotage-{freeze,omit-param,perturb-shader}/{capture,receiver}/` | 102-frame captures with `freeze-frame` @11, `omit-op material_set_param` @21, `perturb-shader` @21, each with its rendered receiver |
+| `sabotage-shader-receiver-ignore-material`, `-stale-param` | g55e | `shader/sabotage-receiver-{ignore-material,stale-param}/` | `RS_RECEIVER_SABOTAGE` on `shader/capture/` |
 
 ## Gate 5.5 criteria (g55b)
 
@@ -1876,6 +1896,53 @@ applied.json fields read (`render-stream-receiver-applied/5`): `status`, `end_se
 shader_code_sets, shader_payload_fetches, materials_created, param_sets, instance_param_sets,
 skipped*}}`, `shots[].seq`, `unsupported[]`; state dumps: the whole resolved /5 `state`.
 
+## Gate 5.5 criteria (g55e)
+
+Every wire read decodes at version 5 explicitly. The reference oracle (`shader/reference/` and
+`shader-refused/reference/` `materials.jsonl`) is what the wire must equal; the hook logs are the
+tables' ground truth per frame, with D4 applied to their view (`applyPolicyToLog`: the hook writes
+`source: payload` whatever the policy; the policy is applied at publication).
+
+- `shader-material-commands`: g55d's `materialLogDivergence` on both sinks of `capture-shader`,
+  `capture-refused`, `capture-policy-params` and `capture-policy-exclude`, and on
+  `capture-shader-inline`.
+- `shader-hash-parity`: at every settle step each live oracle shader's GRP1 hash is the hash of
+  exactly one wire shader entry (with its payload size), on both sinks of `capture-shader` and
+  `capture-policy-params`, on `capture-shader-inline` and `capture-policy-exclude` (withheld
+  entries keep the hash) and on `capture-refused` against the refused oracle; the oracle shader ->
+  wire id pairing never moves and is the creation-order one; freed shaders are off the wire.
+- `param-parity`: on the same sinks, every live material's declared parameters carry the oracle's
+  type and value exactly (bool as true/false, a `rid` as the fixture texture its id's GRT1 pixels
+  name), nil ones are absent, no undeclared one; instance parameters likewise, except one the
+  script never set (absent on the wire, the oracle's `Vector4` default exempt).
+- `shader-policy-respected`: under `params` and `exclude`, the declared policy, every fixture
+  shader `withheld` with its hash (`ok` / `unsupported` `shader-excluded`), no GRP1 file or
+  `shader-code` index line in the store, no shader resource record, and no file the capture wrote
+  (both recordings, store, `evidence/`, stdout) containing the GRP1 magic, `shader_type` or any
+  library code; the same scan must find code in `capture-shader`.
+- `shader-store`: g55d's evaluator on `capture-shader` and `capture-shader-inline`.
+- `shader-receiver-vs-reference`: `receiver-shader`, `-patch`, `-inline` and `receiver-params-lib`
+  equal `reference-shader` on every pixel of every settle shot (budget 0).
+  `shader-expected-image-receiver`: every receiver against its raster; `receiver-refused` and
+  `receiver-params-nolib` against `expected.json` `receiver_views` (the refused items, or every
+  item, drawn with no material).
+- `shader-receiver-state-dumps`: `receiver-shader-patch`'s dumps equal the patch recording's
+  resolved state.
+- `shader-receiver-typed`: honest receivers type and skip nothing; `receiver-refused` types exactly
+  `canvas_item_set_material` / `unsupported-material` on the five refused items;
+  `receiver-params-nolib` exactly one `shader_set_code` / `shader-withheld` per withheld (id, hash)
+  pair it would make resident (`residentShaderVersions`) and sets no code; `receiver-params-lib`
+  fetches nothing and sets that many codes; no receiver stdout has a shader or script error.
+- `g55e-capture-log-clean`: no g55e capture host printed a shader compile error.
+  `shader-receiver-import-exit`: the receiver import exited 0.
+- `leg-class-capture-shader-inline` and `-capture-policy-params`: `success` (every shader `ok`, no
+  entry, no material-log-divergence); `leg-class-capture-policy-exclude`: `unsupported`, entries
+  exactly `unsupported-material` on the eight items with a ShaderMaterial, every fixture shader
+  `shader-excluded`. `leg-class-receiver-*`: `success` for the honest four; `unsupported` for
+  `receiver-refused` and `receiver-params-nolib` with mismatching regions exactly
+  `predictions[<leg>]`. Each sabotage's `leg-class-<leg>`: `pixel-mismatch` with regions exactly
+  `predictions[<leg>]`.
+
 ## Gate 5.5 self-test
 
 ```bash
@@ -1884,6 +1951,7 @@ python3 experiments/render-stream/fixtures/gate55-cim/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55c.ts
 python3 experiments/render-stream/fixtures/gate55-shader/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55d.ts
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55e.ts
 ```
 
 `self-test-gate55b.ts` checks the rasterizer's blend modes on bytes typed in by hand: `add`, `sub`
@@ -1930,6 +1998,19 @@ and a freed shader still on the full sink. `fresh-without-redraw` fails on `UC` 
 set at step 7, a material entry at step 9, a receiver without the /5 counters and a shader created
 twice. The typed-clean, state-dump, sabotage-prediction (through `evaluateLegClass5`), report and
 store (a temporary GRP1 store) evaluators each pass and fail.
+
+`self-test-gate55e.ts` synthesizes /5 tables from `expected.json`'s oracle views, one transaction
+per settle step. `applyPolicyToLog` withholds non-builtin code under `params`, also refuses it under
+`exclude` (a D11 reason wins) and leaves a builtin alone. `shader-hash-parity` passes and fails on
+tint moving to a new id at its code change, a hash on two entries, the freed `sh_a` still on the
+wire and a payload size off; `param-parity` passes (I2's unset parameter exempt twice) and fails on
+`MT.tint` one ulp off, `MT.gain` surviving its erase, an undeclared parameter, `MP.pal` naming
+TEX16, `MY.on` still false at 7 and I2's set parameter missing. `codeBytesIn` finds code and the
+GRP1 magic and nothing in a hash-only line; `shader-policy-respected` passes under both policies and
+fails on a `payload` entry, a GRP1 file in the store, code in a log, a blind control and the wrong
+declared policy. `shader-receiver-typed` and `residentShaderVersions` pass and fail. Last, each
+receiver view's raster differs from the reference raster in exactly its predicted regions and
+steps, and the freeze prediction holds the marker at {1..9}.
 
 # Gate 6
 

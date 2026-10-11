@@ -77,8 +77,12 @@ G55d (see "Gate 5.5d result"), which moved the capture, the receiver and every g
 [protocol/render-stream-5.md](protocol/render-stream-5.md). **Every gate, −1 through 5.5, now runs
 on render-stream/5**: shaders and materials travel as two tables (GRP1 code payloads by hash), items
 carry `material`/`use_parent_material`/`instance_params`, canvases carry their modulate, and
-`CanvasItemMaterial` blend and light modes replay pixel-exact on a native receiver. `ShaderMaterial`
-end to end (G55e) and live parameters (G55f) remain.
+`CanvasItemMaterial` blend and light modes replay pixel-exact on a native receiver. G55e (see "Gate
+5.5e result") carried `ShaderMaterial` end to end: captured code compiles on a native receiver,
+every parameter equals what the reference reads back, `GRC_SHADER_POLICY=params` keeps every code
+byte off the stream (a receiver compiles from an operator-local library) and `exclude` refuses the
+shaders, with `--legs g55b,g55c,g55d,g55e` at 115/115. Live parameters and code through a stall
+(G55f) remain.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -3926,6 +3930,168 @@ already has `stale-param`); and g55d reuses g55b's legs and adds three checks
 - Materials through a stall or over live HTTP (G55f), late-join materials and the process-global CIM
   shader cache (gate 8), and browser receivers (gate 7).
 - `Light2D`: typed only (`canvas-light`). Exactness on another GPU or driver.
+
+## Gate 5.5e result (2026-10-11)
+
+G55e ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55e", "As built (G55e)") passes:
+`ShaderMaterial` travels end to end on render-stream/5. Native receivers compile the captured
+GRP1 code and rebuild every parameter. The `params` policy keeps all code off the stream, and the
+`exclude` policy refuses the shaders. Every sabotage mismatches in exactly its predicted regions.
+`pnpm render-stream:gate55 -- --legs g55b,g55c,g55d,g55e` is **115/115** in
+`artifacts/render-stream/gate55/run1/` (ignored, not committed). The discovery run
+(`gate55/disc1/`, `--legs g55c,g55e`) failed one check, the freeze leg's marker (Findings), and
+nothing else.
+
+| gate | result | run directory |
+| --- | --- | --- |
+| 5.5 (g55b–g55e) | 115/115 | `gate55/run1/` |
+| −1 | 28/28 | `gate-minus1/run1/` |
+| 0 | 24/24 | `gate0/run1/` |
+| 1 | 65/65 | `gate1/run1/` |
+| 2 | 85/85 | `gate2/run1/` |
+
+Gate 5 was not rerun: G55e changes no capture, receiver, codec or publisher file. The pure
+self-tests `self-test-gate55b` to `-e` pass (54, 53, 64 and 38 assertions), and so do both
+`make_expected.py --check` runs.
+
+What landed:
+
+- **The g55e group.** `run-gate55.sh` `run_g55e` drives the legs. `lib/gate55e-checks.ts` holds
+  the checks and `test/self-test-gate55e.ts` tests them. g55e reuses g55c's captures, references
+  and oracle, so `--legs g55e` adds g55c.
+- **The model.** `make_expected.py` gains `receiver_views`: what `receiver-refused` and
+  `receiver-params-nolib` draw, which is items with no material. It also gains both typed legs'
+  region sets, and the freeze set now includes the marker.
+- **No engine code.** G55d's mirror and receiver already carried and replayed the whole shader
+  fixture: instance parameters, the default and parameter textures, the packed array, the library,
+  `stale-param` and `perturb-shader`.
+
+Legs and classes (`gate55-shader`; g55c's `capture-shader`/`capture-refused` are the same runs):
+
+| leg | class |
+| --- | --- |
+| `capture-shader` (g55c) | `success` |
+| `capture-shader-inline` | `success`: every payload inline, GRP1 included |
+| `capture-refused` (g55c) | `unsupported`: `unsupported-material` on `TM`, `SC`, `SD`, `GU` and `SP`, with their shaders `shader-time`, `shader-screen-texture`, `shader-sdf`, `shader-global-uniform` and `shader-mode` |
+| `capture-policy-params` | `success`: every fixture shader `ok` and `withheld` |
+| `capture-policy-exclude` | `unsupported`: every fixture shader `shader-excluded`, `unsupported-material` on the eight items with a ShaderMaterial |
+| `receiver-shader{,-patch,-inline}` | `success`, every pixel equal to the reference |
+| `receiver-params-lib` | `success`, every pixel equal to the reference, all code from the oracle's library |
+| `receiver-refused` | `unsupported` (five typed items): `TM`, `SC`, `SD`, `GU` drawn with no material at every step, exactly the receiver view's raster |
+| `receiver-params-nolib` | `unsupported` (8 × `shader-withheld`): every item drawn with no material, matching the receiver view's raster; mismatches are the `ignore-material` set |
+| `sabotage-shader-freeze` | `pixel-mismatch`: marker {1..9}, `TI` {1..9}, `IN` {2..9}, `PH` {1,3,4,6,7,9}, `RM` {3,4,9}, `PA` {6..9}, `TY` {7..9}, `SH` {8,9} |
+| `sabotage-shader-omit-param` | `pixel-mismatch`: `PH` {2,4,5,7,8}, `TI` {4..9}, `RM` {5..9}, `PA` {6..9}, `TY` {7..9} |
+| `sabotage-shader-perturb-shader` | `pixel-mismatch`: `TI`, `RM` {3..9}, `SH` {8,9}. Shaders made at frame 1 never move |
+| `sabotage-shader-receiver-ignore-material` | `pixel-mismatch`: `TI`, `IN`, `TY`, `PH`, `RM`, `SH` {0..9}, `PA` {6..9} |
+| `sabotage-shader-receiver-stale-param` | `pixel-mismatch`: `PH` {0..9}, `TI` {1..9}, `PA` {6..9}, `TY` {7..9}, `RM` never |
+
+Images, all under the run directory:
+
+- `shader/reference/shots/step-{0..9}.png` against `shader/receiver/shots/seq-<n>.png`, with
+  `receiver-patch/`, `receiver-inline/` and `shader-policy-params/receiver-lib/` beside it;
+- `shader-refused/reference/shots/` against `shader-refused/receiver/shots/` (the four refused
+  regions in their plain (.4,.6,.2) rect);
+- `shader-policy-params/receiver-nolib/shots/` (every item without its material);
+- the sabotages under `shader/sabotage-*/receiver/shots/` and `shader/sabotage-receiver-*/shots/`.
+
+Checks:
+
+- **Parity with the reference's own state.** The reference oracle reads the reference's state
+  back through the RenderingServer.
+  - `shader-hash-parity`: at every settle step, every live oracle shader hash (`shader_get_code`)
+    is the hash of exactly one wire shader entry. 580 shader-steps hold this over six sinks: both
+    sinks of `capture-shader` and `capture-policy-params`, the inline capture, and
+    `capture-policy-exclude`, whose withheld entries keep their hash. The refused variant holds it
+    against its own oracle. The pairing is the creation order (`pal` 1 … `sh_b` 7) and never
+    moves: `tint` keeps id 2 across step 3's code change.
+  - `param-parity`: 1 264 parameter values have the oracle's Variant type and value exactly (the
+    float64 `gain` and `f`, float32 colours and vectors, `vector2i`, the packed float32 array,
+    bool, int). `MP.pal` names the fixture texture whose GRT1 pixels the wire's texture id carries.
+    Erased and unset parameters are absent. I2's unset instance parameter (16 settle-steps) is
+    exempt: the oracle reads it as the uniform's `Vector4` default.
+- **Tables.** `shader-material-commands` holds over 54 800 table entries on ten sinks, with D4
+  applied to the hook log's view. `shader-store` finds 8 GRP1 payloads in 1 755 B.
+  `shader-receiver-state-dumps` finds 10 dumps equal.
+- **Policy.** `shader-policy-respected` covers the `params` and `exclude` captures. Each has 4 800
+  withheld shader entries. Its store holds no `.grp` and no `shader-code` line, and the inline
+  records carry no shader payload. Fifteen files per capture contain neither the GRP1 magic,
+  `shader_type`, nor any of the library's eight codes: both recordings, the store, `evidence/`
+  with the hook log, and stdout. The same scan finds 24 hits in `capture-shader`.
+- **Receivers.** `shader-receiver-typed`: honest receivers type nothing. `receiver-refused` types
+  exactly the five refused items. `receiver-params-nolib` types one `shader-withheld` per resident
+  (id, hash) pair (8) and sets no code. `receiver-params-lib` sets 8 codes and fetches nothing.
+
+Bytes and cost (`capture-shader`, `materials.gate55-shader.g55e.per_step` in `result.json`):
+
+| step | GRP1 code B first published | `param_f64` B (patch sink, window) | hook copy / hash / scan ns | parameter decode ns | receiver material calls / RS calls |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 1 311 (6 shaders) | 328 | 9 490 / 7 840 / 10 990 | 10 190 | 41 / 187 |
+| 1 | 0 | 120 | 0 | 6 430 | 11 / 13 |
+| 2 | 0 | 112 | 0 | 5 950 | 11 / 13 |
+| 3 | 313 (`tint_b`) | 80 | 2 550 / 10 370 / 3 780 | 3 340 | 11 / 13 |
+| 4 | 0 | 112 | 0 | 3 780 | 11 / 13 |
+| 5 | 0 | 112 | 0 | 4 850 | 12 / 17 |
+| 6 | 0 | 112 | 0 | 4 020 | 11 / 14 |
+| 7 | 0 | 192 | 0 | 4 260 | 12 / 14 |
+| 8 | 131 (`sh_b`) | 80 | 2 660 / 2 150 / 2 250 | 4 030 | 12 / 16 |
+| 9 (frames 91–400) | 0 | 2 480 | 0 | 123 719 | 310 / 313 |
+
+- **`param_f64`.** A full transaction carries 256–288 B (32–36 values). `PH`'s per-frame `phase`
+  costs 8 B per patch and about 0.4 µs of hook decode per frame. A step-3 hash of 10.4 µs against
+  3.1 µs in the discovery run is timing noise on one call.
+- **Sinks over 400 frames.**
+  - `capture-shader`: full 3 719 755 B, patch 363 855 B.
+  - All-inline: full 3 745 028 B, patch 389 128 B.
+  - `params`: full 3 722 155 B (+6 B per full transaction, for `"withheld"` against `"payload"`),
+    patch 363 863 B.
+  - `exclude`: full 4 014 557 B, patch 603 640 B. Every patch repeats the eight
+    `unsupported-material` entries.
+- **Each honest receiver** creates 7 shaders and 8 materials, and sets 8 codes, 417 parameters and
+  2 instance parameters. Fetches: 8 from the store, 0 inline, 0 with the library.
+- **The `params` receivers.** `receiver-params-lib` costs the same RS calls as `receiver-shader`
+  (187 at step 0). `receiver-params-nolib` costs 167: it creates no shader but still makes all 8
+  materials and sets all 417 parameters.
+
+### Findings
+
+- **G55c's sabotage sets left the marker out.** `make_expected.py`'s `diff_sets` skipped the
+  `Marker` region in every prediction. Under `freeze-frame` the marker shows step 0's colour from
+  step 1 on, as Q6c says, so the freeze leg failed on its first run with the marker as the only
+  extra region. No other view moves the marker, so `diff_sets` now compares every region.
+- **The hook log stays policy-blind.** Its shader lines say `source: "payload"` under every policy,
+  because D4 is applied at publication, not at the hook. A reader comparing the log with the wire
+  applies D4 to the log's view first (`applyPolicyToLog`). The log still carries no code, only
+  hashes. The scan proves it for both policies.
+- **`params` is not a typed capture.** A withheld shader is `ok`, so `capture-policy-params`
+  classifies `success`. The refusal is the receiver's: `shader-withheld` in `applied.json`. A
+  material whose shader is skipped draws as none, so `receiver-params-nolib` is exactly the
+  `ignore-material` picture.
+- **No engine change.** The first engine run passed every g55e check but the marker one, so G55d's
+  mirror and receiver needed nothing for `ShaderMaterial`. The receiver's per-transaction path is
+  unchanged, so G5f's live timing (G55d's finding) is not at risk.
+
+### Deviations from the contract
+
+As built (G55e) 2–7 in the design doc:
+
+- `capture-policy-params` is `success`, and the receiver types `shader-withheld`.
+- The checker applies D4 to the hook log's view.
+- The marker is in the freeze set.
+- `expected.json` gains `receiver_views`.
+- The library is a copy of the reference oracle's dump.
+- Check ids carry `shader-`, and six checks were added (`shader-material-commands`,
+  `shader-store`, `shader-expected-image-receiver`, `shader-receiver-state-dumps`,
+  `shader-receiver-typed`, `g55e-capture-log-clean`).
+
+### What G55e does not prove
+
+- Shaders and parameters through a stall or over live HTTP: G55f.
+- `TIME`, the screen texture, SDF and global uniforms on a receiver. They stay typed.
+- Late-join materials, which are gate 8's.
+- Browser and web-export receivers (gate 7).
+- Exactness on another GPU or driver.
+- The library's provenance. It is trusted by hash only: the receiver verifies each GRP1 file
+  against the wire hash, but does not check where the file came from.
 
 ## Unknown-item skip (2026-10-10)
 

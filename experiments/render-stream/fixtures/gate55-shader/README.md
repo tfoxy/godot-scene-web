@@ -39,7 +39,9 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-s
   preprocessor (so every GRP1 hash), a Python twin of every `fragment()`, the coverage model
   `geometry-raster.ts` rasterizes, freshness, the oracle's view per step, a per-frame census of
   every shader and material call, `counters.json`'s counts, the refused variant and G55e's sabotage
-  sets. Nothing in it is measured.
+  sets (the marker included). G55e added `receiver_views`: per step, what `receiver-refused` (the
+  five refused items with no material) and `receiver-params-nolib` (every item with no material)
+  draw, with the two typed legs' region sets in `predictions`. Nothing in it is measured.
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
 
