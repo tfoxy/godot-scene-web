@@ -1,12 +1,15 @@
 extends Node
-## render-stream/4 receiver (gate0-design.md "Q5. Receiver", extended by gate1-design.md "Q5.
+## render-stream/5 receiver (gate0-design.md "Q5. Receiver", extended by gate1-design.md "Q5.
 ## Receiver", "G1b2" and "G1c2", by gate2-design.md "Q5. Receiver" and "G2b2", since G4e2 by
 ## gate4-design.md "Q5. Receiver" -- /3 is /2 plus the msdf command -- and since G5d by
 ## gate5-design.md "Q5. Receiver": /4 adds the immediate geometry ops, add_set_transform and
 ## add_clip_ignore, replayed in order; since G5e the mesh table: every `ok` mesh a command names
-## is made resident from its GRM1 surface payloads and add_mesh replays). Its only
-## input is a render-stream/4 byte stream: a recording file (file mode) or the binary messages of
-## one WebSocket connection (live mode), plus the texture and mesh payloads that stream names.
+## is made resident from its GRM1 surface payloads and add_mesh replays; since G55d by
+## gate5_5-design.md "Q5. Receiver": /5's shader and material tables are compiled and created
+## natively from their GRP1 code, items get their material, use_parent_material and instance
+## parameters, canvas 1 its modulate -- RsApplier's "Shaders and materials"). Its only input is a
+## render-stream/5 byte stream: a recording file (file mode) or the binary messages of one
+## WebSocket connection (live mode), plus the texture, mesh and shader payloads that stream names.
 ##
 ## File mode (RS_RECEIVER_MODE unset or "file"):
 ##   RS_RECEIVER_RECORDING   absolute .rs2 path (required)
@@ -19,7 +22,8 @@ extends Node
 ##
 ## Resources (G2b2; both modes unless noted):
 ##   RS_RECEIVER_CACHE_DIR        absolute content-addressed cache (sha256/<hash>.grt, and
-##                                <hash>.grm for mesh surfaces since G5e); required
+##                                <hash>.grm for mesh surfaces since G5e, <hash>.grp for shader
+##                                code since G55d); required
 ##                                when the session's delivery is not inline
 ##   RS_RECEIVER_CACHE_MODE       fresh (default: the directory must be absent or empty, else
 ##                                replay-failure cache-not-fresh) or warm (it must exist)
@@ -27,6 +31,12 @@ extends Node
 ##                                (reading from it counts as a fetch)
 ##   RS_RECEIVER_FETCH_TIMEOUT_MS live: a GET not complete this many ms after it was issued is
 ##                                resource-unavailable (default 10000)
+##   RS_RECEIVER_SHADER_LIBRARY   G55d (gate5_5-design.md D4, Q5): absolute operator-local GRP1
+##                                library (sha256/<hash>.grp) a `withheld` shader's code comes
+##                                from, verified by hash; without it (or without that hash) the
+##                                shader is skipped and applied.json's `unsupported` gains
+##                                {seq, item: null, name: "shader_set_code", reason:
+##                                "shader-withheld", shader: <id>} once per shader and hash
 ##   RS_RECEIVER_FETCH_DELAY_MS   an injected delay before each fetch, default 0 (file mode: a
 ##                                blocked main loop; live mode: a timed wait, the loop keeps
 ##                                presenting)
@@ -48,10 +58,16 @@ extends Node
 ##                                resident surface are ignored) or refuse-canvas-texture (every
 ##                                draw naming a canvas texture is skipped and recorded as
 ##                                canvas-texture-headless, the default headless capture's
-##                                picture); all twelve exist only to fail checks or compare
+##                                picture) or (G55d) ignore-material (canvas_item_set_material is
+##                                never called), ignore-canvas-modulate (canvas_set_modulate is
+##                                never called) or stale-param (G55e: a material's parameters are
+##                                set only when it is created); all fifteen exist only to fail
+##                                checks or compare
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash), and (G5e) every surface payload of an `ok` mesh
-## an add_mesh names that is not resident with that hash, is made available: from memory (inline resource
+## an add_mesh names that is not resident with that hash, and (G55d) the GRP1 code of every `ok`
+## `payload` shader a named material names that is not on its RID (plus the textures of those
+## materials' parameters and default textures), is made available: from memory (inline resource
 ## records and earlier fetches), from the cache (a cache hit), or fetched from the store and
 ## written to the cache. Each is verified against its SHA-256 name and decoded first
 ## (resource-hash-mismatch, resource-unavailable, resource-invalid otherwise). In live mode with
@@ -108,14 +124,23 @@ extends Node
 ## mesh_upload_bytes and skipped_mesh_commands (and the entry mesh_commands), a top-level
 ## `mesh_uploads` list ({stream, seq, id, op: create|rebuild|update|free|custom_aabb, surfaces,
 ## buffers, bytes}) and mesh totals in resources_summary; state dumps gain `meshes`.
+## render-stream-receiver-applied/5 since G55d (gate5_5-design.md Q5): /4's shape, each
+## transaction's `resources` gaining shaders_created, shader_code_sets, shader_payload_fetches,
+## materials_created, param_sets and instance_param_sets (their totals in resources_summary too),
+## fetches of GRP1 payloads with kind "shader", `unsupported` gaining the receiver's own
+## shader-withheld entries; state dumps of a /5 stream gain the canvases' `modulate`, the items'
+## `material`, `use_parent_material` and `instance_params`, and the `shaders` and `materials`
+## tables, all in render-stream-5.md's resolved shapes and key order.
 
-const SCHEMA: String = "render-stream-receiver-applied/4"
+const SCHEMA: String = "render-stream-receiver-applied/5"
 const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
-## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture"]
+## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d).
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param"]
+## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
+const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -157,7 +182,11 @@ var _fetched_hashes: Dictionary[String, bool] = {}
 var _summary: Dictionary = {
 	"distinct_fetched": 0, "fetched_bytes": 0, "cache_hits": 0, "uploads": 0, "upload_bytes": 0,
 	"meshes_created": 0, "meshes_rebuilt": 0, "surface_updates": 0, "mesh_upload_bytes": 0,
+	"shaders_created": 0, "shader_code_sets": 0, "shader_payload_fetches": 0, "materials_created": 0,
+	"param_sets": 0, "instance_param_sets": 0,
 }
+## G55d: "<stream>:<shader id>:<hash>" of every shader-withheld skip already reported.
+var _withheld_reported: Dictionary[String, bool] = {}
 var _fetch_delay_ms: int = 0
 var _fetch_timeout_ms: int = 10000
 var _inline_since_applied: int = 0
@@ -345,9 +374,14 @@ func _parse_resource_env(live: bool) -> bool:
 	if sabotage != "" and not SABOTAGES.has(sabotage):
 		_log("error: RS_RECEIVER_SABOTAGE must be one of %s (got %s)" % [str(SABOTAGES), JSON.stringify(sabotage)])
 		return false
+	var library_dir: String = OS.get_environment("RS_RECEIVER_SHADER_LIBRARY").strip_edges()
+	if library_dir != "" and not library_dir.is_absolute_path():
+		_log("error: RS_RECEIVER_SHADER_LIBRARY must be an absolute directory (got %s)" % JSON.stringify(library_dir))
+		return false
 	_cache.dir = cache_dir
 	_cache.mode = cache_mode
 	_cache.store_dir = store_dir
+	_cache.library_dir = library_dir
 	_cache.ignore_cache = sabotage == "ignore-cache"
 	_sabotage = sabotage
 	return true
@@ -369,7 +403,7 @@ func _open_cache() -> bool:
 	if error != "":
 		_fail_with_error(null, error)
 		return false
-	_log("cache %s (%s): %d entries; store %s; sabotage %s" % [_cache.dir, _cache.mode, _cache.entries_before, _cache.store_dir if _cache.store_dir != "" else "<none>", _sabotage if _sabotage != "" else "<none>"])
+	_log("cache %s (%s): %d entries; store %s; shader library %s; sabotage %s" % [_cache.dir, _cache.mode, _cache.entries_before, _cache.store_dir if _cache.store_dir != "" else "<none>", _cache.library_dir if _cache.library_dir != "" else "<none>", _sabotage if _sabotage != "" else "<none>"])
 	return true
 
 
@@ -388,11 +422,13 @@ func _receive_resource(record: Dictionary, data: PackedByteArray) -> bool:
 
 ## gate2-design.md Q5 step 2: every payload the resolved state needs is made available before
 ## any RenderingServer call for it. Fills `resources` (fetched, fetched_bytes, cache_hits,
-## fetch_us) and the report's fetch list. Returns "" or the replay-failure error.
+## fetch_us, and since G55d shader_payload_fetches) and the report's fetch list. Returns "" or the
+## replay-failure error.
 func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> String:
-	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes)
+	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes, _stream.shaders, _stream.materials)
 	var hashes: Array = need["hashes"]
 	var mesh_hashes: Array = need["mesh_hashes"]
+	var shader_hashes: Array = need["shader_hashes"]
 	var fetch_us: int = Rs2Decoder.as_int(resources["fetch_us"])
 	for value: Variant in hashes:
 		var hash: String = value
@@ -401,10 +437,11 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 		if _cache.dir == "" and _delivery != "inline":
 			return Rs2Decoder.err("resource-unavailable", "payload %s is needed, and RS_RECEIVER_CACHE_DIR is unset (delivery %s)" % [hash, _delivery])
 		var mesh: bool = mesh_hashes.has(hash)
-		var will_fetch: bool = _cache.ignore_cache or not _cache.cache_has(hash, mesh)
+		var shader: bool = shader_hashes.has(hash)
+		var will_fetch: bool = _cache.ignore_cache or not _cache.cache_has(hash, mesh, shader)
 		if will_fetch and _fetch_delay_ms > 0:
 			OS.delay_msec(_fetch_delay_ms)
-		var got: Dictionary = _cache.obtain(hash, mesh)
+		var got: Dictionary = _cache.obtain(hash, mesh, shader)
 		var source: String = got["source"]
 		var got_bytes: int = got["bytes"]
 		if source == "cache":
@@ -417,9 +454,11 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 			_fetches.append({
 				"stream": stream_index, "seq": seq, "hash": hash, "source": "directory",
 				"status": null, "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
-				"verified": got["verified"], "kind": "mesh" if mesh else "texture",
+				"verified": got["verified"], "kind": "mesh" if mesh else ("shader" if shader else "texture"),
 			})
 			resources["fetched"] = Rs2Decoder.as_int(resources["fetched"]) + 1
+			if shader:
+				resources["shader_payload_fetches"] = Rs2Decoder.as_int(resources["shader_payload_fetches"]) + 1
 			resources["fetched_bytes"] = Rs2Decoder.as_int(resources["fetched_bytes"]) + got_bytes
 			_summary["fetched_bytes"] = Rs2Decoder.as_int(_summary["fetched_bytes"]) + got_bytes
 			_fetched_hashes[hash] = true
@@ -438,7 +477,9 @@ static func _empty_resources() -> Dictionary:
 		"fetched": 0, "fetched_bytes": 0, "cache_hits": 0, "inline_received": 0, "created": 0,
 		"updated": 0, "replaced": 0, "freed": 0, "upload_bytes": 0, "fetch_us": 0,
 		"skipped_commands": 0, "meshes_created": 0, "meshes_rebuilt": 0, "surface_updates": 0,
-		"mesh_upload_bytes": 0, "skipped_mesh_commands": 0,
+		"mesh_upload_bytes": 0, "skipped_mesh_commands": 0, "shaders_created": 0,
+		"shader_code_sets": 0, "shader_payload_fetches": 0, "materials_created": 0, "param_sets": 0,
+		"instance_param_sets": 0,
 	}
 
 
@@ -446,7 +487,7 @@ static func _empty_resources() -> Dictionary:
 ## after failing the replay at `seq`).
 func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) -> Dictionary:
 	var resources: Dictionary = _empty_resources()
-	for key: String in ["fetched", "fetched_bytes", "fetch_us"]:
+	for key: String in ["fetched", "fetched_bytes", "fetch_us", "shader_payload_fetches"]:
 		if prefetched.has(key):
 			resources[key] = prefetched[key]
 	resources["inline_received"] = _inline_since_applied
@@ -464,6 +505,22 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		resources[key] = mesh_resources[key]
 		if _summary.has(key):
 			_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(mesh_resources[key])
+	var material_resources: Dictionary = stats["material_resources"]
+	for key: String in MATERIAL_COUNTERS:
+		if material_resources.has(key):
+			resources[key] = material_resources[key]
+		_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(resources[key])
+	var skipped_shaders: Array = stats["skipped_shaders"]
+	for value: Variant in skipped_shaders:
+		var skip: Dictionary = value
+		var shader_id: int = Rs2Decoder.as_int(skip["id"])
+		var skip_hash: String = skip["hash"]
+		var reported_key: String = "%d:%d:%s" % [stream_index, shader_id, skip_hash]
+		if _withheld_reported.has(reported_key):
+			continue
+		_withheld_reported[reported_key] = true
+		_unsupported.append({"seq": seq, "item": null, "name": "shader_set_code", "reason": skip["reason"], "shader": shader_id})
+		_log("seq %d: shader %d (%s) skipped: %s (%s)" % [seq, shader_id, skip_hash, skip["reason"], skip["detail"]])
 	stats["resources"] = resources
 	var mesh_uploads: Array = stats["mesh_uploads"]
 	for value: Variant in mesh_uploads:
@@ -549,6 +606,9 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_drop_mesh_surface = _sabotage == "drop-mesh-surface"
 	_applier.sabotage_stale_mesh = _sabotage == "stale-mesh"
 	_applier.sabotage_refuse_canvas_texture = _sabotage == "refuse-canvas-texture"
+	_applier.sabotage_ignore_material = _sabotage == "ignore-material"
+	_applier.sabotage_ignore_canvas_modulate = _sabotage == "ignore-canvas-modulate"
+	_applier.sabotage_stale_param = _sabotage == "stale-param"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
@@ -723,14 +783,18 @@ func _state_json(meta: Dictionary) -> Dictionary:
 	var canvases: Array = []
 	for id: int in canvas_ids:
 		var canvas: Dictionary = _stream.canvases[id]
-		canvases.append({
+		var canvas_out: Dictionary = {
 			"id": id,
 			"origin": canvas["origin"],
 			"role": canvas["role"],
 			"attached": canvas["attached"],
 			"items": Rs2Decoder.int_list(canvas["items"]),
 			"xform": _float_list(canvas["xform"]),
-		})
+		}
+		if canvas.has("modulate"):
+			# render-stream-5.md "Canvas" (G55d).
+			canvas_out["modulate"] = _float_list(canvas["modulate"])
+		canvases.append(canvas_out)
 	var item_ids: Array[int] = []
 	for id: int in _stream.items:
 		item_ids.append(id)
@@ -853,7 +917,7 @@ func _state_json(meta: Dictionary) -> Dictionary:
 					commands.append({"op": "add_clip_ignore", "ignore": command["ignore"]})
 				_:
 					commands.append({"op": "unsupported", "name": command["name"], "reason": command["reason"]})
-		items.append({
+		var item_out: Dictionary = {
 			"id": id,
 			"origin": item["origin"],
 			"parent": parent_out,
@@ -868,13 +932,19 @@ func _state_json(meta: Dictionary) -> Dictionary:
 			"visibility_layer": Rs2Decoder.as_int(item["visibility_layer"]),
 			"texture_filter": item["texture_filter"],
 			"texture_repeat": item["texture_repeat"],
-			"content_version": Rs2Decoder.as_int(item["content_version"]),
-			"xform": _float_list(item["xform"]),
-			"modulate": _float_list(item["modulate"]),
-			"self_modulate": _float_list(item["self_modulate"]),
-			"custom_rect_rect": _float_list(item["custom_rect_rect"]),
-			"commands": commands,
-		})
+		}
+		if item.has("material"):
+			# render-stream-5.md "Item" (G55d): before content_version, in this order.
+			item_out["material"] = _int_or_null(item["material"])
+			item_out["use_parent_material"] = item["use_parent_material"]
+			item_out["instance_params"] = _params_json(item["instance_params"])
+		item_out["content_version"] = Rs2Decoder.as_int(item["content_version"])
+		item_out["xform"] = _float_list(item["xform"])
+		item_out["modulate"] = _float_list(item["modulate"])
+		item_out["self_modulate"] = _float_list(item["self_modulate"])
+		item_out["custom_rect_rect"] = _float_list(item["custom_rect_rect"])
+		item_out["commands"] = commands
+		items.append(item_out)
 	var texture_ids: Array[int] = []
 	for id: int in _stream.textures:
 		texture_ids.append(id)
@@ -941,7 +1011,75 @@ func _state_json(meta: Dictionary) -> Dictionary:
 				"surfaces": surfaces,
 			})
 		state["meshes"] = meshes
+	if _stream.version >= 5:
+		# render-stream-5.md "Decoded and resolved forms" (G55d): the shader and material tables,
+		# parameters as {name, type, value}.
+		var shader_ids: Array[int] = []
+		for id: int in _stream.shaders:
+			shader_ids.append(id)
+		shader_ids.sort()
+		var shaders: Array = []
+		for id: int in shader_ids:
+			var sh: Dictionary = _stream.shaders[id]
+			var default_textures: Array = []
+			for value: Variant in sh["default_textures"]:
+				var default_texture: Dictionary = value
+				default_textures.append({
+					"name": default_texture["name"],
+					"index": Rs2Decoder.as_int(default_texture["index"]),
+					"tex": Rs2Decoder.as_int(default_texture["tex"]),
+				})
+			var uses: Array = []
+			for value: Variant in sh["uses"]:
+				uses.append(value)
+			shaders.append({
+				"id": id,
+				"origin": sh["origin"],
+				"status": sh["status"],
+				"reason": sh["reason"],
+				"version": Rs2Decoder.as_int(sh["version"]),
+				"mode": sh["mode"],
+				"source": sh["source"],
+				"hash": sh["hash"],
+				"payload_bytes": Rs2Decoder.as_int(sh["payload_bytes"]),
+				"builtin": sh["builtin"],
+				"uses": uses,
+				"default_textures": default_textures,
+			})
+		state["shaders"] = shaders
+		var material_ids: Array[int] = []
+		for id: int in _stream.materials:
+			material_ids.append(id)
+		material_ids.sort()
+		var materials: Array = []
+		for id: int in material_ids:
+			var mat: Dictionary = _stream.materials[id]
+			materials.append({
+				"id": id,
+				"origin": mat["origin"],
+				"status": mat["status"],
+				"reason": mat["reason"],
+				"version": Rs2Decoder.as_int(mat["version"]),
+				"shader": _int_or_null(mat["shader"]),
+				"params": _params_json(mat["params"]),
+			})
+		state["materials"] = materials
 	return state
+
+
+## Resolved /5 parameters ({name, type, value}, render-stream-5.md) for a state dump: the float64
+## values unchanged, a `rid` value as {"tex": <int>}.
+static func _params_json(params: Variant) -> Array:
+	var list: Array = params
+	var out: Array = []
+	for value: Variant in list:
+		var param: Dictionary = value
+		var param_value: Variant = param["value"]
+		if param["type"] == "rid" and param_value != null:
+			var link: Dictionary = param_value
+			param_value = {"tex": Rs2Decoder.as_int(link["tex"])}
+		out.append({"name": param["name"], "type": param["type"], "value": param_value})
+	return out
 
 
 static func _int_or_null(value: Variant) -> Variant:
@@ -1458,13 +1596,14 @@ func _http_misses() -> Array[String]:
 	var out: Array[String] = []
 	if _fetcher == null:
 		return out
-	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes)
+	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes, _stream.shaders, _stream.materials)
 	var mesh_hashes: Array = need["mesh_hashes"]
+	var shader_hashes: Array = need["shader_hashes"]
 	for value: Variant in need["hashes"]:
 		var hash: String = value
 		if _cache.has_in_memory(hash):
 			continue
-		if not _cache.ignore_cache and _cache.cache_has(hash, mesh_hashes.has(hash)):
+		if not _cache.ignore_cache and _cache.cache_has(hash, mesh_hashes.has(hash), shader_hashes.has(hash)):
 			continue
 		out.append(hash)
 	return out
@@ -1512,7 +1651,9 @@ func _poll_fetches() -> void:
 		if error == "":
 			# A 200 body: verified against its name first (a mismatch leaves verified false).
 			var body: PackedByteArray = result["data"]
-			fetch_entry["kind"] = "mesh" if RsResourceCache.is_mesh_payload(body) else "texture"
+			fetch_entry["kind"] = RsResourceCache.payload_kind(body)
+			if fetch_entry["kind"] == "shader":
+				resources["shader_payload_fetches"] = Rs2Decoder.as_int(resources.get("shader_payload_fetches", 0)) + 1
 			error = _cache.add_fetched(hash, body, "GET %s" % hash)
 			fetch_entry["verified"] = not error.begins_with("resource-hash-mismatch")
 		if error != "":

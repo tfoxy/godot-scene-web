@@ -83,6 +83,26 @@ ResourceStore::Put ResourceStore::put_mesh(const rs2::MeshSurface &surface,
   return put_bytes(surface.hash, ".grm", fields, payload, frame, error);
 }
 
+ResourceStore::Put ResourceStore::put_shader(const rs2::ShaderEntry &shader,
+                                             const std::vector<std::uint8_t> &payload,
+                                             std::uint64_t frame, std::string *error) {
+  // render-stream-5.md "Shader payload": index lines gain type "shader-code". code_bytes is the
+  // payload's own meta value (whole length minus magic, meta length and meta).
+  std::uint64_t code_bytes = 0;
+  if (payload.size() >= 12) {
+    const std::uint32_t meta_len = static_cast<std::uint32_t>(payload[8]) |
+                                   (static_cast<std::uint32_t>(payload[9]) << 8) |
+                                   (static_cast<std::uint32_t>(payload[10]) << 16) |
+                                   (static_cast<std::uint32_t>(payload[11]) << 24);
+    if (12u + meta_len <= payload.size()) {
+      code_bytes = payload.size() - 12u - meta_len;
+    }
+  }
+  const std::string fields =
+      ",\"type\":\"shader-code\",\"code_bytes\":" + std::to_string(code_bytes);
+  return put_bytes(shader.hash, ".grp", fields, payload, frame, error);
+}
+
 ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char *extension,
                                             const std::string &index_fields,
                                             const std::vector<std::uint8_t> &payload,

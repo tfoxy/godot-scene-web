@@ -63,13 +63,22 @@ independent oracle; LCD text stays typed `unsupported`, and `RichTextLabel`'s
 Gate 5 passed on 2026-10-11 (see "Gate 5b result" onward and "Gate 5 summary" below): G5b's
 immediate-geometry fixture and reference rasterizer, G5w's render-stream/4 codecs, G5a's
 calibrator 7, G5c, and G5d (see "Gate 5d result"), which moved the capture, the receiver and every
-gate runner to [protocol/render-stream-4.md](protocol/render-stream-4.md), which every gate now
-runs on: every immediate geometry op, `add_set_transform` and `add_clip_ignore` travel as the
+gate runner to [protocol/render-stream-4.md](protocol/render-stream-4.md) (render-stream/5 since
+G55d, below): every immediate geometry op, `add_set_transform` and `add_clip_ignore` travel as the
 engine's own call arguments and replay pixel-exact, so G3d's clip-ignore variant and every G4d
 `RichTextLabel` leg now classify `success`. G5c's mesh fixture, oracle and census, G5e's meshes on
 the wire, G5g's styleboxes and, last, G5f's live meshes through dropped presentations (stall,
 coalescing and newest-state recovery on `fixtures/gate5-mesh`'s GRM1 surfaces) all landed; gate 5's
 own runner and checker (`pnpm render-stream:gate5 -- --legs g5b,g5c,g5d,g5e,g5f,g5g`) are 116/116.
+
+Gate 5.5 is in progress (see "Gate 5.5b result" onward below): G55a's calibrator 8 (73 hooks),
+G55b's `CanvasItemMaterial` and G55c's `ShaderMaterial` fixtures, G55w's render-stream/5 codecs, and
+G55d (see "Gate 5.5d result"), which moved the capture, the receiver and every gate runner to
+[protocol/render-stream-5.md](protocol/render-stream-5.md). **Every gate, −1 through 5.5, now runs
+on render-stream/5**: shaders and materials travel as two tables (GRP1 code payloads by hash), items
+carry `material`/`use_parent_material`/`instance_params`, canvases carry their modulate, and
+`CanvasItemMaterial` blend and light modes replay pixel-exact on a native receiver. `ShaderMaterial`
+end to end (G55e) and live parameters (G55f) remain.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -525,20 +534,21 @@ Environment, read once at SCENE initialisation:
 | `GRC_MODE`                       | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                                                                                                                                                            |
 | `GRC_EVIDENCE_DIR`               | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                                                                                                                                                         |
 | `GRC_DISARM_AFTER_FRAMES`        | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                                                                                                                                                     |
-| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2, render-stream/3 since G4e2, render-stream/4 since G5d). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
+| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2, render-stream/3 since G4e2, render-stream/4 since G5d, render-stream/5 since G55d). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
 | `GRC_STREAM_PATCH_OUT`           | G1b2: absolute `.rs2` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                                                                                                                                                        |
-| `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`, and G4e2's `perturb-glyph` (the mirror records rect.x + 0.25 on every glyph command from the frame on). `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected)                   |
+| `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`, G4e2's `perturb-glyph` (the mirror records rect.x + 0.25 on every glyph command from the frame on), G5d's `perturb-vertex` and G55d's `perturb-shader` (the mirror records every non-builtin shader code set from the frame on with `COLOR.rgb` inverted before its last `}`; the engine and the hook log keep the true code). `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected)                   |
 | `GRC_SABOTAGE_OP`                | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                                                                                                                                                                 |
 | `GRC_SABOTAGE_FRAME`             | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                                                                                                                                                                   |
 | `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                                                                                                                                                     |
 | `GRC_UNKNOWN_ITEM`               | 2026-10-10, read at arm with a stream: `strict` (default; also unset or empty: gate 0's sticky `pre-existing-object`) or `skip`, the opt-in diagnostic of [protocol/unknown-item-skip.md](protocol/unknown-item-skip.md): unknown canvas/item RIDs and every known item under one are withheld, the session declares `unknown_item_policy: "skip"` and every transaction carries `unknown_items`. Anything else refuses to publish|
-| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/4 since G5d, subprotocol `render-stream.4`; /3 from G4e2; /2 from G2b2; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
+| `GRC_SHADER_POLICY`              | G55d (gate5_5-design.md D4), read at arm with a stream: `source` (default; also unset or empty: shader code travels as `render-stream-shader/1` payloads under the resource policy), `params` (every non-builtin shader entry is `withheld`: hash and size only, no code byte in the stream, the store or HTTP) or `exclude` (every non-builtin shader is `unsupported` / `shader-excluded`). CanvasItemMaterial shaders are engine content and travel under every policy. Declared in the session's `materials.shader_policy`. Anything else refuses to publish |
+| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/5 since G55d, subprotocol `render-stream.5`; /4 from G5d; /3 from G4e2; /2 from G2b2; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
 | `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                                               |
 | `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                                     |
 | `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                                       |
 | `GRC_RESOURCE_FORMATS`           | G2a, read at arm with a stream: the `Image` formats whose bytes are copied, a comma-separated subset of `L8,LA8,R8,RG8,RGB8,RGBA8` (the default); any other name refuses to publish                                                                                                                                                                                                                       |
 | `GRC_RESOURCE_MAX_PAYLOAD_BYTES` | G2a: the largest canonical payload copied, a decimal integer ≥ 1, default 67108864 (64 MiB); a larger texture is logged `payload-too-large` and not copied. An engine without the `Image` binds or `image_ptr` refuses to publish (`image-access-unavailable`)                                                                                                                                            |
-| `GRC_RESOURCE_STORE_DIR`         | G2b2: absolute content-addressed store (`sha256/<hash>.grt`, `index.jsonl`) every `ok` payload of each published snapshot is written to; required when a file sink is open and delivery is not inline (else the stream refuses: `resource-store-missing`)                                                                                                                                                 |
+| `GRC_RESOURCE_STORE_DIR`         | G2b2: absolute content-addressed store (`sha256/<hash>.grt`, `.grm` since G5e, `.grp` since G55d, `index.jsonl`) every `ok` payload of each published snapshot is written to; required when a file sink is open and delivery is not inline (else the stream refuses: `resource-store-missing`)                                                                                                                                                 |
 | `GRC_RESOURCE_INLINE_MAX_BYTES`  | G2b2: the largest payload a file sink carries in band as a `resource` record, default 0 (out of band); delivery is `inline` when it is at least the max payload size, `mixed` in between. Live connections follow it too (G2c2); above 1 MiB the live listener is refused                                                                                                                                 |
 | `GRC_RESOURCE_BUDGET_BYTES`      | G2b2: the payload bytes the capture may retain (the mirror's plus those the last publication pins), default 536870912; above it the stream ends with `resource-budget-exceeded` (result.json `stream.reason`), as a store write failure does with `resource-store-failed`                                                                                                                                 |
 
@@ -3769,6 +3779,153 @@ Images (under the run directory): `mesh/reference/shots/step-{0..9}.png` against
 - Multi-surface `mesh_create_from_surfaces` hashes in the hook log (the mirror carries them).
 - Item-rect caching across a custom-AABB change without a redraw (Q1f), browser receivers (gate
   7), and exactness on another GPU or driver.
+
+## Gate 5.5d result (2026-10-11)
+
+G55d ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55d", "As built (G55d)") passes:
+the capture, the receiver and every gate runner speak
+[render-stream/5](protocol/render-stream-5.md), and `CanvasItemMaterial` blend and light modes
+travel end to end. `pnpm render-stream:gate55 -- --legs g55b,g55c,g55d` is **90/90**, first in
+`artifacts/render-stream/gate55/20261011T034704Z/` and again on the final, merged build in
+`gate55/20261011T091759Z/` (ignored, not committed).
+
+**Final build (merged with `main` at 22909275: G5f and the gate 6 tools).** `build-capture.sh`
+17/17 ctests, every pure self-test (`self-test-report` included) and the receiver self-tests
+(`codec2`, `applier2`, ws/http interop). Each gate's run directory:
+
+| gate | result | run directory |
+| --- | --- | --- |
+| −1 | 28/28 | `gate-minus1/20261011T083309Z/` |
+| 0 | 24/24 | `gate0/20261011T083424Z/` |
+| 1 | 65/65 | `gate1/20261011T084517Z/` |
+| 2 | 85/85 | `gate2/20261011T093608Z/` |
+| 3 | 56/56 | `gate3/20261011T083311Z/` |
+| 4 | 185/185 | `gate4/20261011T084519Z/` |
+| 5 (g5b–g5g, G5f's live legs included) | 116/116 | `gate5/20261011T081217Z/` |
+
+The first gate 2 pass of the final build scored 83/85 (`gate2/20261011T090459Z/`) on the known
+`live-animate` frame-971 pin. Before the merge, the same work passed:
+
+| gate | result | run directory |
+| --- | --- | --- |
+| −1 | 28/28 | `gate-minus1/20261011T041335Z/` |
+| 0 | 24/24 | `gate0/20261011T041337Z/` |
+| 1 | 65/65 | `gate1/20261011T045413Z/` |
+| 2 | 85/85 | `gate2/20261011T050522Z/` |
+| 3 | 56/56 | `gate3/20261011T041955Z/` |
+| 4 | 185/185 | `gate4/20261011T045414Z/` |
+| 5 (g5b–g5e, g5g) | 101/101 | `gate5/20261011T042938Z/` |
+
+The first pre-merge gate 1 pass scored 63/65 (`gate1/20261011T041954Z/`). Its live checker still
+expected subprotocol `render-stream.4`, and its receiver-state comparison did not carry the new
+tables.
+
+What landed:
+
+- **The mirror.** The capture now keeps a shader table and a material table (Q3b), each with its
+  own id counter. Versions count as the hook log counts them, and there are no tombstones: freeing a
+  shader nulls every material that names it, and freeing a material nulls every item that names it.
+- **Item and canvas state.** Items carry `material`, `use_parent_material` and `instance_params`, and
+  canvases carry their modulate. The derived entries `unsupported-material` (from the effective
+  material), `unknown-material` and `param-type` are emitted, and so is the sticky `canvas-light`
+  entry.
+- **Policy, sabotage and payloads.** `GRC_SHADER_POLICY` and `perturb-shader` are wired. GRP1 code
+  payloads go to the store (`.grp`, `shader-code` index lines), to inline records and to the live
+  hub. Every snapshot is stamped V5.
+- **The receiver.** It follows Q5: shaders compile through `shader_create` plus `shader_set_code`
+  from verified GRP1 code, materials and their parameters are rebuilt as exact Variant types, and
+  items and canvas 1 get their material fields and modulate. It also gains `ignore-material`,
+  `ignore-canvas-modulate` and `stale-param`, `applied.json` /5 and /5 state dumps.
+- **The g55d group.** `lib/gate55d-checks.ts` and `lib/gate55-wire.ts` hold its checks.
+
+Legs and classes (gate55-cim, both scenes under `cim/` and `cim-modulate/`):
+
+| leg | class |
+| --- | --- |
+| `capture-cim`, `capture-cim-modulate` | `success` (both sinks and the store) |
+| `capture-cim-inline`, `capture-cim-modulate-inline` | `success` (every payload inline, GRP1 included) |
+| `receiver-cim{,-patch,-inline}`, `receiver-cim-modulate{,-patch,-inline}` | `success`, every pixel equal to the reference |
+| `sabotage-cim-freeze` | `pixel-mismatch`: marker {1..9}, `BD` {1..9}, `LO` {2..9}, `LU` {3..9}, `RC` {4..9}, `UP` {6..9}, `BA` {7..9}, every other region {9} |
+| `sabotage-cim-omit-material-set-shader` | `pixel-mismatch`: `LU` {3..9}, `RC` {5..9}, `UP` {8,9} |
+| `sabotage-cim-receiver-ignore-material` | `pixel-mismatch`: `BA`, `BS`, `BU`, `BP`, `UP` {0..9}, `BD` {0}, `LO` {0,1}, `LU` {3..9}, `RC` all but {4}; `BM` and `LM` never |
+| `sabotage-cim-modulate-receiver-ignore-canvas-modulate` | `pixel-mismatch`: every region and the marker {0..7}, `LO` {2..7}, `LU` never |
+| `capture-shader` (g55c) | `success` on /5 (G55e adds its receivers) |
+| `capture-refused` (g55c) | `unsupported`: `unsupported-material` on the five refused items only |
+
+Images, all under the run directory:
+
+- `cim/reference/shots/step-{0..9}.png` against `cim/receiver/shots/seq-<n>.png`, with
+  `receiver-patch/` and `receiver-inline/` beside it;
+- the same for `cim-modulate/`, where `seq-28.png` shows the (0,1,1) canvas modulate, `LU`
+  unshaded and `LO` visible;
+- the sabotages' shots under `cim/sabotage-*/receiver/shots/`, `cim/sabotage-receiver-*/shots/` and
+  `cim-modulate/sabotage-receiver-*/shots/`.
+
+- **Wire.** At every transaction of both sinks, and of the inline capture, the shader and material
+  tables equal the hook log replayed to the end of that frame (`material-commands`). Each item
+  reaches CimSim's builtin blend and light mode through item → parent → material → shader at every
+  settle frame (`builtin-modes`). Each table event lands in exactly one patch transaction
+  (`material-census-wire`):
+  - the frees of the disabled, light_only and unshaded shaders at 11, 21 and 31;
+  - shader 9 at 31;
+  - `RI`'s material 11 leaving at 41;
+  - material 12 at 51.
+
+  `UC`'s `use_parent_material` flips at 61 with no redraw (`fresh-without-redraw`). There is no
+  shader or material traffic at steps 7 and 9 (`resource-quiet`).
+- **Bytes and cost.**
+  - **Store:** 8 GRP1 payloads, 1 578 B; every CIM shader is 193 B, 142 B of code.
+  - **`param_f64`:** 264 B in a full transaction (33 parameters), 24 B in a patch carrying one material.
+  - **Sinks over 400 frames:** full 7 268 953 B, patch 313 752 B, all-inline 7 291 423 B.
+  - **Hook cost at step 0** (8 shaders, 36 parameters): copy 7.0 µs, hash 9.7 µs, scan 13.3 µs and
+    decode 3.1 µs in total. Step 3's new shader costs 3.1, 2.0 and 2.8 µs.
+  - **Each receiver:** creates 9 shaders and 12 materials, sets 36 parameters and fetches 8 payloads
+    out of band (none inline). Step 0 costs 398 RS calls, 60 of them material calls.
+
+### Findings
+
+- **The /5 receiver tipped G5f's live legs into a phase lock, and a decoder fix brought them back.**
+  After the merge, every branch run of `--legs g5c,g5f` failed some g5f check, a different one
+  each time: `pins-bounded`/`obsolete-retired` at frame 851, `warm-host-no-gets`, or the
+  stale-coalesce leg's step 1. Main's code passed 2/2 on the same machine (A/B runs in this
+  session's scratchpad). The /5 receiver cost about 150 µs more per transaction: in a headless
+  benchmark over the same recording, `decode_record` took 684 → 729 µs, `needed()` 13 µs more and
+  `apply_state` 32 µs more. That was enough to push the 60 Hz credit loop into a stable
+  every-other-frame lock (`coalesced` 290–400 instead of 0–11). The warm leg then saw a different
+  set of `DF` phases than the cold one.
+
+  Most of `decode_record`'s time was a per-byte GDScript loop that checks the meta is printable
+  ASCII. It now does a native Latin-1 decode plus one regex search, and the loop runs only to name
+  the bad byte of a record that has one. That saves 170 µs per transaction and makes the receiver
+  faster than main's. g5f then passed alone (`--legs g5c,g5f`) and in the full gate 5 run
+  (116/116).
+- **The hook log has to apply D5 too.** A CIM flush frees the old shader while its material still
+  names it, then binds the new one. The mirror nulls the material at version + 1 on the free, and the
+  G55a log did not, so the log's versions trailed the wire's by one after steps 1–3. The log now
+  applies the rule silently, with no line of its own, and readers replay it from the `free` line.
+- **G55w's validators derived `unsupported-material` from the item's own material.** D9 says the
+  effective one, which is what the mirror emits. Both validators (TS and GDScript) now walk
+  `use_parent_material`.
+- **`rs::DecodedParam` could not tell a `Vector2` from a `PackedVector2Array`.** Both reported
+  `"vector2"`. It now has a `packed` flag.
+
+### Deviations from the contract
+
+As built (G55d) 3–8 in the design doc: the `exclude` policy is `withheld` and a D11 reason wins;
+`RID()` parameters are erased; code with no known `shader_type` is refused with `shader-mode`;
+`canvas-light` keeps first-observed order after `degenerate-host-size`; the receiver's conservative
+choices (it never creates an unsupported material, sets the modulate only when it differs, and
+already has `stale-param`); and g55d reuses g55b's legs and adds three checks
+(`canvas-modulate-wire`, `shader-store`, `receiver-state-dumps`).
+
+### What G55d does not prove
+
+- `ShaderMaterial` on a receiver: instance parameters, default and parameter textures, packed
+  arrays, the `params`/`exclude` policies and `perturb-shader` (G55e). The capture carries them, but no
+  receiver leg replays them yet.
+- Materials through a stall or over live HTTP (G55f), late-join materials and the process-global CIM
+  shader cache (gate 8), and browser receivers (gate 7).
+- `Light2D`: typed only (`canvas-light`). Exactness on another GPU or driver.
 
 ## Unknown-item skip (2026-10-10)
 

@@ -479,8 +479,10 @@ int main() {
   EXPECT(lines.size() == 2);
   EXPECT(has(lines[0], "\"op\":\"free\",\"id\":1,") &&
          has(lines[0], "\"rid\":\"700\",\"version\":1,\"kind\":\"shader\",\"status\":\"freed\""));
+  // G55d (D5): freeing shader 700 set material 800 (which named it) to no shader, version 3 -> 4,
+  // with no line of its own; the material's own free then carries version 4.
   EXPECT(has(lines[1], "\"op\":\"free\",\"id\":1,") &&
-         has(lines[1], "\"rid\":\"800\",\"version\":3,\"kind\":\"material\",\"status\":\"freed\""));
+         has(lines[1], "\"rid\":\"800\",\"version\":4,\"kind\":\"material\",\"status\":\"freed\""));
   EXPECT(log.shader_id(700) == 0 && log.material_id(800) == 0);
 
   if (g_failures != 0) {

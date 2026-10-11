@@ -4,7 +4,7 @@
 #
 #   bash run-gate55.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g55b,g55c]
+#     [--legs g55b,g55c,g55d]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -12,14 +12,23 @@
 # (comma-separated); the default is every group whose increment has landed: g55b (G55b: the
 # CanvasItemMaterial fixture fixtures/gate55-cim's import; for the base scene under <out>/cim/ and
 # for variant `modulate` under <out>/cim-modulate/, a 400-frame headless capture with both sinks and
-# the store that classifies `unsupported` on the current wire with every item naming a material
-# typed, its rendered reference, a same-build repeat and an extension-armed reference) and g55c (G55c:
-# fixtures/gate55-shader's import, a 400-frame headless capture with both sinks and the store that
-# classifies `unsupported` on the current wire with canvas_item_set_material typed, its rendered
-# reference and a same-build repeat with the material oracle on, an extension-armed reference with
-# the oracle off, all under <out>/shader/; and the `refused` variant's capture and rendered
-# reference with the oracle on, under <out>/shader-refused/). g55d, g55e and g55f are known but
-# have not landed.
+# the store -- `success` on render-stream/5 since G55d, every item naming its material --, its
+# rendered reference, a same-build repeat and an extension-armed reference), g55c (G55c:
+# fixtures/gate55-shader's import, a 400-frame headless capture with both sinks and the store --
+# `success` on /5 since G55d --, its rendered reference and a same-build repeat with the material
+# oracle on, an extension-armed reference with the oracle off, all under <out>/shader/; and the
+# `refused` variant's capture -- `unsupported` with its five refused items and shaders typed -- and
+# rendered reference with the oracle on, under <out>/shader-refused/) and g55d (G55d:
+# CanvasItemMaterial end to end on render-stream/5 over g55b's two scene directories, reusing
+# g55b's capture and reference there, so requesting g55d alone runs g55b first: the receiver/
+# import once; per scene an all-inline 400-frame capture (capture-inline, no store) and rendered
+# receivers on the capture's full sink (receiver), its patch sink with state dumps at the settle
+# seqs (receiver-patch) and on capture-inline (receiver-inline); on the base scene the host
+# sabotages freeze-frame @11 and omit-op material_set_shader @21 (sabotage-freeze,
+# sabotage-omit-material-set-shader: a capture plus a rendered receiver each) and the receiver
+# sabotage ignore-material on the main capture (sabotage-receiver-ignore-material); on the modulate
+# scene the receiver sabotage ignore-canvas-modulate (sabotage-receiver-ignore-canvas-modulate)).
+# g55e and g55f are known but have not landed.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -44,7 +53,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g55b g55c)
+LANDED_GROUPS=(g55b g55c g55d)
 KNOWN_GROUPS=(g55b g55c g55d g55e g55f)
 
 EXTENSION=""
@@ -146,6 +155,27 @@ else
 	done
 fi
 
+# g55d's receivers replay g55b's captures and compare with g55b's references (gate5_5-design.md
+# G55b amendment 8): requesting g55d without g55b runs g55b too. Groups run in LANDED order.
+case " ${GROUPS_RUN[*]} " in
+*" g55d "*)
+	case " ${GROUPS_RUN[*]} " in
+	*" g55b "*) ;;
+	*)
+		echo "run-gate55: g55d needs g55b's captures and references in the same run: adding g55b"
+		GROUPS_RUN+=(g55b)
+		;;
+	esac
+	;;
+esac
+ORDERED_GROUPS=()
+for group in "${LANDED_GROUPS[@]}"; do
+	case " ${GROUPS_RUN[*]} " in
+	*" $group "*) ORDERED_GROUPS+=("$group") ;;
+	esac
+done
+GROUPS_RUN=("${ORDERED_GROUPS[@]}")
+
 ACTUAL_BINARY_SHA256="$(sha256sum "$BINARY" | awk '{print $1}')"
 if [ "$ACTUAL_BINARY_SHA256" != "$EXPECTED_BINARY_SHA256" ]; then
 	echo "run-gate55: WARNING: $BINARY sha256 is $ACTUAL_BINARY_SHA256, expected $EXPECTED_BINARY_SHA256 (continuing: --binary may intentionally point at a different build)" >&2
@@ -196,7 +226,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The capture writes both sinks under gate 2's .rs2 names whatever wire version main speaks
-# (render-stream/4 since G5d, /5 from G55d), and its payload store <capture>/store.
+# (render-stream/5 since G55d), and its payload store <capture>/store.
 RECORDING_NAME=recording.rs2
 PATCH_RECORDING_NAME=recording-patch.rs2
 CAPTURE_WITH_PATCH=1
@@ -242,8 +272,9 @@ run_reference() {
 
 # One scene of fixtures/gate55-cim (variant "" = base) under <scene dir>: the capture host
 # (headless, release template, extension armed, both sinks and the store, strace + /proc maps/fd
-# sample). Before G55d every item naming a material is typed unsupported-state; counters.json counts
-# the material calls.
+# sample). On render-stream/5 (G55d) every material, shader and item material field is carried
+# (before G55d every item naming a material was typed unsupported-state); counters.json counts the
+# material calls.
 run_cim_capture() {
 	local scene="$1" variant="$2"
 	echo "run-gate55: capture-${scene##*/}"
@@ -307,8 +338,9 @@ run_g55c() {
 	fi
 
 	# capture-shader and capture-refused: the capture host (headless, release template, extension
-	# armed, both sinks and the store, strace + /proc maps/fd sample). On the current wire every
-	# material item is typed unsupported-state; counters.json counts the material calls.
+	# armed, both sinks and the store, strace + /proc maps/fd sample). On render-stream/5 (G55d)
+	# capture-shader carries every ShaderMaterial; capture-refused types its five refused items and
+	# shaders; counters.json counts the material calls.
 	echo "run-gate55: capture-shader"
 	CAPTURE_FIXTURE_DIR="$SHADER_FIXTURE_DIR"
 	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size)
@@ -343,10 +375,103 @@ run_g55c() {
 	GS_RUN_DIR=""
 }
 
+# Step k's applied frame (S=1, N=10; gate5_5-design.md Q6).
+step_frame55() { echo $((1 + 10 * $1)); }
+
+# A headless sabotage capture of fixtures/gate55-cim's base scene on the fixture's own default run
+# (102 frames), both sinks and its store.
+cim_sabotage_capture() {
+	local dir="$1"
+	shift
+	CAPTURE_FIXTURE_DIR="$CIM_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size "$@")
+	run_capture "$dir" "" none
+}
+
+# One scene's all-inline capture: the 400-frame capture again with no store and both thresholds
+# raised so every payload, GRP1 included, is a resource record (memory rs-g2b2-texture-wire-facts).
+run_cim_capture_inline() {
+	local scene="$1" variant="$2"
+	echo "run-gate55: g55d: capture-${scene##*/}-inline (every payload inline, no store)"
+	CAPTURE_FIXTURE_DIR="$CIM_FIXTURE_DIR"
+	CAPTURE_STORE_DIR=none
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_RESOURCE_INLINE_MAX_BYTES=16777216
+		GRC_RESOURCE_MAX_PAYLOAD_BYTES=16777216)
+	if [ -n "$variant" ]; then
+		CAPTURE_EXTRA_ENV+=(RS_FIXTURE_VARIANT="$variant")
+	fi
+	run_capture "$scene/capture-inline" "$CAPTURE_QUIT_FRAME" none
+}
+
+# One scene's honest receivers, inside the group's gamescope: the capture's full sink, its patch
+# sink (state dumps at the settle seqs) and capture-inline.
+run_cim_receivers() {
+	local scene="$1" name="${1##*/}"
+	echo "run-gate55: g55d: receiver-$name (full sink)"
+	run_rendered_receiver "$scene/capture" "$scene/receiver"
+	echo "run-gate55: g55d: receiver-$name-patch (patch sink, state dumps at the settle seqs)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_STATE=1
+	run_rendered_receiver "$scene/capture" "$scene/receiver-patch"
+	echo "run-gate55: g55d: receiver-$name-inline (capture-inline, no store)"
+	run_rendered_receiver "$scene/capture-inline" "$scene/receiver-inline"
+}
+
+run_g55d() {
+	local B="$OUT/cim" M="$OUT/cim-modulate" scene
+	for scene in "$B" "$M"; do
+		if [ ! -f "$scene/capture/$RECORDING_NAME" ] || [ ! -d "$scene/reference/shots" ]; then
+			echo "run-gate55: g55d needs g55b's capture and reference in $scene (g55b ran first?)" >&2
+			exit 2
+		fi
+	done
+	# The release template cannot run a loose project until the editor generated .godot/ (memory
+	# receiver-needs-import-before-script): import the receiver once.
+	echo "run-gate55: g55d: import (receiver)"
+	LEG_ENV=()
+	run_headless "$B/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$B/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $RECEIVER_DIR failed, see $B/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	run_cim_capture_inline "$B" ""
+	run_cim_capture_inline "$M" modulate
+
+	# Host sabotages on the base scene; predictions are fixtures/gate55-cim/expected.json
+	# "predictions" (make_expected.py, never hand-edited).
+	echo "run-gate55: g55d: sabotage-freeze (capture, freeze-frame @$(step_frame55 1))"
+	cim_sabotage_capture "$B/sabotage-freeze/capture" GRC_SABOTAGE=freeze-frame \
+		GRC_SABOTAGE_FRAME="$(step_frame55 1)"
+	echo "run-gate55: g55d: sabotage-omit-material-set-shader (capture, omit-op material_set_shader @$(step_frame55 2))"
+	cim_sabotage_capture "$B/sabotage-omit-material-set-shader/capture" GRC_SABOTAGE=omit-op \
+		GRC_SABOTAGE_OP=material_set_shader GRC_SABOTAGE_FRAME="$(step_frame55 2)"
+
+	echo "run-gate55: bringing up private gamescope for g55d receiver legs"
+	gs_start 640 360 "$OUT/gamescope-g55d"
+
+	run_cim_receivers "$B"
+	run_cim_receivers "$M"
+	for kind in freeze omit-material-set-shader; do
+		echo "run-gate55: g55d: sabotage-$kind (receiver)"
+		run_rendered_receiver "$B/sabotage-$kind/capture" "$B/sabotage-$kind/receiver"
+	done
+	echo "run-gate55: g55d: sabotage-receiver-ignore-material (RS_RECEIVER_SABOTAGE=ignore-material on cim/capture)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=ignore-material)
+	run_rendered_receiver "$B/capture" "$B/sabotage-receiver-ignore-material"
+	echo "run-gate55: g55d: sabotage-receiver-ignore-canvas-modulate (RS_RECEIVER_SABOTAGE=ignore-canvas-modulate on cim-modulate/capture)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=ignore-canvas-modulate)
+	run_rendered_receiver "$M/capture" "$M/sabotage-receiver-ignore-canvas-modulate"
+
+	gs_teardown "$OUT/gamescope-g55d"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g55b) run_g55b ;;
 	g55c) run_g55c ;;
+	g55d) run_g55d ;;
 	esac
 done
 

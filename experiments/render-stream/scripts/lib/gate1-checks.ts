@@ -725,6 +725,8 @@ export function resolvedStateOf(
   items: unknown[];
   textures: unknown[];
   meshes?: unknown[];
+  shaders?: unknown[];
+  materials?: unknown[];
 } {
   return {
     status: t.status,
@@ -737,6 +739,10 @@ export function resolvedStateOf(
     textures: t.textures,
     // render-stream/4 (G5e): the receiver's state dumps carry the mesh table too.
     ...(t.meshes !== undefined ? { meshes: t.meshes } : {}),
+    // render-stream/5 (G55d): and the shader and material tables, after the meshes.
+    ...(t.shaders !== undefined
+      ? { shaders: t.shaders, materials: t.materials ?? [] }
+      : {}),
   };
 }
 

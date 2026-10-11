@@ -6,10 +6,13 @@
 // vptr.
 //
 // With GRC_STREAM_OUT and/or GRC_STREAM_PATCH_OUT set and the library armed,
-// it also publishes render-stream/4 recordings (protocol/render-stream-4.md: /3 plus the
-// immediate geometry ops, add_set_transform and add_clip_ignore since gate5-design.md "G5d"; /3
-// added the msdf command at gate4-design.md "G4e2"; protocol/gate1-design.md "G1b2",
-// gate2-design.md "G2b2"): GRC_STREAM_OUT is
+// it also publishes render-stream/5 recordings (protocol/render-stream-5.md: /4 plus the shader
+// and material tables, item material state, canvas modulate and GRP1 shader payloads since
+// gate5_5-design.md "G55d"; /4 added the immediate geometry ops, add_set_transform,
+// add_clip_ignore and meshes at gate5-design.md "G5d"/"G5e"; /3 the msdf command at
+// gate4-design.md "G4e2"; protocol/gate1-design.md "G1b2", gate2-design.md "G2b2"). The shader
+// source policy GRC_SHADER_POLICY (source | params | exclude, default source; gate5_5-design.md
+// D4) is read at arm and declared in the session's `materials`: GRC_STREAM_OUT is
 // the `full`-encoding file sink, GRC_STREAM_PATCH_OUT the `patch`-encoding
 // one; either or both.
 // The canvas mirror is enabled and the root viewport queried right after the
@@ -21,7 +24,8 @@
 //
 // Sabotage (GRC_SABOTAGE / GRC_SABOTAGE_FRAME / GRC_SABOTAGE_OP, validated by
 // rs2::parse_sabotage; a refusal publishes nothing): omit-update and omit-op
-// act in the mirror, as do G4e2's perturb-glyph and G5d's perturb-vertex, freeze-frame,
+// act in the mirror, as do G4e2's perturb-glyph, G5d's perturb-vertex and G55d's
+// perturb-shader, freeze-frame,
 // perturb-transform and
 // patch-drop-item in
 // the publisher, drop-message (G1c2), ignore-credit and stale-coalesce (G1d)
@@ -194,6 +198,8 @@ struct Stream {
   std::string reason;  // empty -> null
   // protocol/unknown-item-skip.md: GRC_UNKNOWN_ITEM, read at arm.
   rs2::UnknownItemPolicy unknown_item_policy = rs2::UnknownItemPolicy::Strict;
+  // gate5_5-design.md D4: GRC_SHADER_POLICY, read at arm (source | params | exclude).
+  rs2::ShaderPolicy shader_policy = rs2::ShaderPolicy::Source;
   std::unique_ptr<rs2::FileRecordSink> full_sink;
   std::unique_ptr<rs2::FileRecordSink> patch_sink;
   std::unique_ptr<rs2::Publisher> publisher;
@@ -257,6 +263,23 @@ Live g_live;
 
 // GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
 using rs2::RootSizePolicy;
+
+// GRC_SHADER_POLICY, read at arm (gate5_5-design.md D4): unset or empty is `source`.
+bool parse_shader_policy(const char *value, rs2::ShaderPolicy *out) {
+  if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "source") == 0) {
+    *out = rs2::ShaderPolicy::Source;
+    return true;
+  }
+  if (std::strcmp(value, "params") == 0) {
+    *out = rs2::ShaderPolicy::Params;
+    return true;
+  }
+  if (std::strcmp(value, "exclude") == 0) {
+    *out = rs2::ShaderPolicy::Exclude;
+    return true;
+  }
+  return false;
+}
 
 // GRC_UNKNOWN_ITEM, read at arm (protocol/unknown-item-skip.md).
 bool parse_unknown_item_policy(const char *value, rs2::UnknownItemPolicy *out) {
@@ -766,6 +789,19 @@ void stream_start() {
     }
     return;
   }
+  const char *shader_policy = std::getenv("GRC_SHADER_POLICY");
+  if (!parse_shader_policy(shader_policy, &g_stream.shader_policy)) {
+    const std::string error = std::string("invalid GRC_SHADER_POLICY=") + shader_policy +
+                              " (expected source, params or exclude)";
+    log_line("stream: refused shader policy (" + error + ")");
+    g_stream.shader_policy = rs2::ShaderPolicy::Source;
+    g_stream.status = "refused";
+    g_stream.reason = error;
+    if (!g_live.listen.empty()) {
+      live_decided("refused", "stream refused: " + error);
+    }
+    return;
+  }
   const char *unknown_item = std::getenv("GRC_UNKNOWN_ITEM");
   if (!parse_unknown_item_policy(unknown_item, &g_stream.unknown_item_policy)) {
     const std::string error = std::string("invalid GRC_UNKNOWN_ITEM=") + unknown_item +
@@ -939,9 +975,10 @@ void stream_start() {
   }
 
   rs2::Session session;
-  // G5d (gate5-design.md D1, render-stream-4.md): the capture speaks render-stream/4 (/3 since
-  // G4e2). The mirror stamps its snapshots V4 to match.
-  session.version = rs2::ProtocolVersion::V4;
+  // G55d (gate5_5-design.md D1, render-stream-5.md): the capture speaks render-stream/5 (/4 from
+  // G5d, /3 from G4e2). The mirror stamps its snapshots V5 to match.
+  session.version = rs2::ProtocolVersion::V5;
+  session.materials.shader_policy = g_stream.shader_policy;
   session.session_id = rs2::generate_id();
   session.engine.version_string = g_state.fp.version_string;
   session.engine.sha256 = g_state.fp.exe_sha256;
@@ -1072,6 +1109,13 @@ void stream_start() {
     rs::mirror_set_perturb_glyph(sabotage.config.frame);
   } else if (sabotage.config.kind == rs2::SabotageKind::PerturbVertex) {
     rs::mirror_set_perturb_vertex(sabotage.config.frame);
+  } else if (sabotage.config.kind == rs2::SabotageKind::PerturbShader) {
+    rs::mirror_set_perturb_shader(sabotage.config.frame);
+  }
+  // G55d (gate5_5-design.md D4): the declared shader-source policy.
+  rs::mirror_set_shader_policy(g_stream.shader_policy);
+  if (g_stream.shader_policy != rs2::ShaderPolicy::Source) {
+    log_line(std::string("stream: shader_policy=") + rs2::to_wire(g_stream.shader_policy));
   }
   // render-stream-1.md "Session record": `viewport` and the blocks, all read
   // after the root-size policy.
@@ -1123,7 +1167,7 @@ void stream_start() {
     server_config.host = live_host;
     server_config.port = live_port;
     server_config.max_clients = 1;  // D5: one receiver at a time (a second gets 503)
-    server_config.subprotocol = "render-stream.4";  // render-stream-4.md "Live transport"
+    server_config.subprotocol = "render-stream.5";  // render-stream-5.md "Live transport"
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();

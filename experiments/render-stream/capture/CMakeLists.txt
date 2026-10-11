@@ -81,7 +81,7 @@ add_test(NAME abi_decode COMMAND abi_decode_test)
 # through its public API with no engine, including draw-index ties, root geometry, the omit-op
 # sabotage, the texture table (ids, versions, tombstones, replace, derived unsupported entries)
 # and the clip reset of canvas_item_clear (diffed against the previous snapshot).
-add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp
+add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp src/rs_shader_payload.cpp
   src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
 target_include_directories(rs_mirror_test PRIVATE src)
 target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
@@ -96,6 +96,7 @@ add_executable(rs_publish_test
   src/rs2_diff.cpp
   src/rs_publish.cpp
   src/rs_mirror.cpp
+  src/rs_shader_payload.cpp
   src/rs_resource_store.cpp
   src/rs_texture_payload.cpp
   src/rs_mesh_payload.cpp

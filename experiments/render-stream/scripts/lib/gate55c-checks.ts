@@ -11,9 +11,10 @@
 //     fragment() rasterized by lib/geometry-raster.ts, and a hand census;
 //   - the reference's material oracle (material_oracle.gd), which reads the rendered reference's own
 //     shader code, material parameters and instance parameters back through the RenderingServer;
-//   - the capture: until G55e the wire types `canvas_item_set_material` as `unsupported-state`,
-//     so the capture legs classify `unsupported`; counters.json counts the four material calls the
-//     record hooks before calibrator 8;
+//   - the capture: since G55d it speaks render-stream/5, so capture-shader classifies `success`
+//     (every ShaderMaterial and its shader carried; end to end with a receiver is G55e's) and
+//     capture-refused `unsupported` with exactly its five refused items and shaders typed;
+//     counters.json counts the four material calls the record hooked before calibrator 8;
 //   - the capture's shader/material hook log (G55a, evidence/resources.jsonl kind shader,
 //     material and item-material lines): the census, hook-hash parity and the D11 scan.
 //
@@ -78,6 +79,7 @@ import type {
   Gate5Texture,
   Rgba8,
 } from "./gate5-expected";
+import { loadWire5, type Wire5 } from "./gate55-wire";
 import type { Gate5Raster } from "./geometry-raster";
 
 // ---------------------------------------------------------------------------------------------
@@ -661,32 +663,63 @@ export function evaluateShaderLogClean(
   return { problems };
 }
 
-/** Pure: on the pre-/5 wire the capture classifies `unsupported`; its unsupported ops are exactly
- * `typed.ops`, every entry `typed.reason` (draw-index ties aside); at every settle frame the items
- * carrying an entry are exactly `typed.items`; and no item's content_version moves over the run
- * except the marker's (a parameter, instance parameter, code or material change is not content,
- * D9: TI's pixels change at 1, 3 and 4 with its commands recorded once). */
-export function evaluateShaderCaptureTyped(
+/** The shader table of one transaction, as evaluateShaderCapture5 reads it (render-stream/5). */
+export interface ShaderTableView {
+  frame: number;
+  shaders: readonly { id: number; status: string; reason: string | null }[];
+}
+
+/** Pure (render-stream/5, G55d): the base capture classifies `success` with no unsupported entry
+ * at all; the refused variant (`refusedItems` non-empty) classifies `unsupported`, its only
+ * unsupported op canvas_item_set_material, every entry item-level `unsupported-material`, naming at
+ * every settle frame exactly the refused items (TIME, screen texture, SDF, global uniform and
+ * spatial: their effective material names an unsupported shader, render-stream-5.md "Derived
+ * item-level entries"). In both, every shader-table entry (wire ids ascending paired with
+ * `shader_order`) is `ok` where `shader_scan` predicts no reason and `unsupported` with exactly the
+ * predicted reason otherwise (shader-time, shader-screen-texture, shader-sdf,
+ * shader-global-uniform, shader-mode); and no item's content_version moves over the run except
+ * the marker's (a parameter, instance parameter, code or material change is not content, D9: TI's
+ * pixels change at 1, 3 and 4 with its commands recorded once). */
+export function evaluateShaderCapture5(
   expected: Pick<
     Gate55ShaderExpected,
-    "typed" | "creation_order" | "steps" | "last_step"
+    "creation_order" | "steps" | "shader_order" | "shader_scan"
   >,
+  refusedItems: readonly string[],
   capture: Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full">,
+  shaderTables: readonly ShaderTableView[],
 ): { problems: string[]; ops: string[]; versions: Record<string, number[]> } {
   const problems: string[] = [];
-  if (capture.result_class !== "unsupported")
+  const refused = refusedItems.length > 0;
+  const wantClass = refused ? "unsupported" : "success";
+  if (capture.result_class !== wantClass)
     problems.push(
-      `class ${capture.result_class}, expected unsupported: ${capture.reasons.slice(0, 2).join(" | ")}`,
+      `class ${capture.result_class}, expected ${wantClass}: ${capture.reasons.slice(0, 2).join(" | ")}`,
     );
   const ops = unsupportedOps(capture.full);
-  if (JSON.stringify(ops) !== JSON.stringify([...expected.typed.ops].sort()))
+  const wantOps = refused ? ["canvas_item_set_material"] : [];
+  if (JSON.stringify(ops) !== JSON.stringify(wantOps))
     problems.push(
-      `unsupported ops ${JSON.stringify(ops)} != ${JSON.stringify(expected.typed.ops)}`,
+      `unsupported ops ${JSON.stringify(ops)} != ${JSON.stringify(wantOps)}`,
     );
-  for (const t of capture.full.transactions)
-    for (const u of t.meta.unsupported)
-      if (u.reason !== expected.typed.reason && u.reason !== "draw-index-tie")
-        problems.push(`frame ${t.meta.frame}: unsupported ${u.op} ${u.reason}`);
+  for (const t of capture.full.transactions) {
+    const bad = t.meta.unsupported.find(
+      (u) =>
+        u.reason !== "draw-index-tie" &&
+        !(
+          refused &&
+          u.op === "canvas_item_set_material" &&
+          u.reason === "unsupported-material" &&
+          u.item !== null
+        ),
+    );
+    if (bad) {
+      problems.push(
+        `frame ${t.meta.frame}: unsupported entry ${JSON.stringify(bad)}`,
+      );
+      break;
+    }
+  }
   const ids = new Set<number>();
   for (const t of capture.full.transactions)
     for (const i of t.meta.items) ids.add(i.id);
@@ -709,15 +742,49 @@ export function evaluateShaderCaptureTyped(
       continue;
     }
     const typed = t.meta.unsupported
-      .filter((u) => expected.typed.ops.includes(u.op) && u.item !== null)
+      .filter(
+        (u) =>
+          u.op === "canvas_item_set_material" &&
+          u.reason === "unsupported-material" &&
+          u.item !== null,
+      )
       .map((u) => nameOf.get(u.item as number) ?? `#${u.item}`)
       .sort();
-    const want = [...expected.typed.items].sort();
+    const want = [...refusedItems].sort();
     if (JSON.stringify(typed) !== JSON.stringify(want))
       problems.push(
-        `step ${s.step}: typed items ${JSON.stringify(typed)} != ${JSON.stringify(want)}`,
+        `step ${s.step}: unsupported-material items ${JSON.stringify(typed)} != ${JSON.stringify(want)}`,
       );
   }
+  // The shader table against the D11 scan.
+  const shaderIds = new Set<number>();
+  for (const t of shaderTables) for (const x of t.shaders) shaderIds.add(x.id);
+  const shaderSorted = [...shaderIds].sort((a, b) => a - b);
+  if (shaderSorted.length !== expected.shader_order.length)
+    problems.push(
+      `${shaderSorted.length} shader ids on the wire (${shaderSorted.join(",")}), expected ${expected.shader_order.length} (${expected.shader_order.join(",")})`,
+    );
+  const shaderName = new Map(
+    shaderSorted.map((id, k) => [id, expected.shader_order[k]]),
+  );
+  const seenBad = new Set<string>();
+  for (const t of shaderTables)
+    for (const x of t.shaders) {
+      const name = shaderName.get(x.id) ?? `#${x.id}`;
+      const scan = expected.shader_scan[name];
+      const wantStatus = scan?.reason ? "unsupported" : "ok";
+      const wantReason = scan?.reason ?? null;
+      if (
+        (x.status !== wantStatus || (x.reason ?? null) !== wantReason) &&
+        !seenBad.has(name)
+      ) {
+        seenBad.add(name);
+        problems.push(
+          `frame ${t.frame}: shader ${name} (${x.id}) is ${x.status}/${x.reason}, expected ${wantStatus}/${wantReason}`,
+        );
+      }
+    }
+  if (shaderTables.length === 0) problems.push("no /5 shader tables");
   const versions: Record<string, Set<number>> = {};
   for (const t of capture.full.transactions)
     for (const i of t.meta.items) {
@@ -1165,10 +1232,19 @@ export async function runGate55c(
     ),
   ];
 
-  const capture = await evaluateCapture(dir, { expectedClass: "unsupported" });
+  const capture = await evaluateCapture(dir, { expectedClass: "success" });
   const refusedCapture = await evaluateCapture(refusedDir, {
     expectedClass: "unsupported",
   });
+  const tables = (w: Wire5): ShaderTableView[] =>
+    w.transactions.map((t) => ({
+      frame: t.frame,
+      shaders: t.state.shaders ?? [],
+    }));
+  const wire = await loadWire5(join(dir, "capture", RECORDING_NAME));
+  const refusedWire = await loadWire5(
+    join(refusedDir, "capture", RECORDING_NAME),
+  );
   const counters = await readJson<{ counts?: Record<string, number> }>(
     join(dir, "capture", "evidence", "counters.json"),
   );
@@ -1236,8 +1312,16 @@ export async function runGate55c(
     refusedRasters,
   );
 
-  const typed = evaluateShaderCaptureTyped(expected, capture);
-  const refusedTyped = evaluateShaderCaptureTyped(refused, refusedCapture);
+  const typed = evaluateShaderCapture5(expected, [], capture, tables(wire));
+  if (wire.error) typed.problems.unshift(`${wire.path}: ${wire.error}`);
+  const refusedTyped = evaluateShaderCapture5(
+    refused,
+    Object.keys(expected.variants.refused.refused_items),
+    refusedCapture,
+    tables(refusedWire),
+  );
+  if (refusedWire.error)
+    refusedTyped.problems.unshift(`${refusedWire.path}: ${refusedWire.error}`);
   // fresh-without-redraw: TI changes pixels at 1, 3 and 4 while its commands are recorded once.
   const freshProblems = [...fresh.problems];
   for (const k of [1, 3, 4])
@@ -1444,9 +1528,9 @@ export async function runGate55c(
     ),
     check(
       "leg-class-capture-shader",
-      "the capture-shader leg classifies as unsupported on the pre-/5 wire: armed, stream closed, both sinks valid, the only unsupported op canvas_item_set_material (unsupported-state) on exactly the eight material items at every settle frame, and no item's content_version moves but the marker's",
+      "the capture-shader leg classifies as success on render-stream/5: armed, stream closed, both sinks valid and equivalent, no unsupported entry, every shader entry ok (the seven ShaderMaterials' shaders carried), and no item's content_version moves but the marker's",
       typed.problems,
-      `${capture.result_class}: ${typed.ops.join(", ")} typed; content_version per item ${Object.entries(
+      `${capture.result_class}; content_version per item ${Object.entries(
         typed.versions,
       )
         .map(([k, v]) => `${k}:${v.length}`)
@@ -1455,9 +1539,9 @@ export async function runGate55c(
     ),
     check(
       "leg-class-capture-refused",
-      "the capture-refused leg classifies as unsupported on the pre-/5 wire with the same typing over its thirteen material items",
+      "the capture-refused leg classifies as unsupported on render-stream/5: its only entries are item-level canvas_item_set_material / unsupported-material on exactly the five refused items (TM, SC, SD, GU, SP) at every settle frame, and its five refused shaders are unsupported with exactly shader-time, shader-screen-texture, shader-sdf, shader-global-uniform and shader-mode (every other shader ok)",
       refusedTyped.problems,
-      `${refusedCapture.result_class}: ${refusedTyped.ops.join(", ")} typed`,
+      `${refusedCapture.result_class}: ${refusedTyped.ops.join(", ")} typed (${Object.keys(expected.variants.refused.refused_items).join(",")})`,
       refusedCapture.artifacts,
     ),
   );

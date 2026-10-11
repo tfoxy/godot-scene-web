@@ -12,6 +12,12 @@ no autoload, no extension and no file from `fixtures/`. The contract is
 superseded at G2b2). G1d added the live options for a stall, a reconnect and a resync
 (`RS_RECEIVER_STALL`, `_RECONNECT`, `_RESYNC`).
 
+**Since G55d the receiver speaks `render-stream/5`** ([`../protocol/render-stream-5.md`](../protocol/render-stream-5.md),
+contract [`../protocol/gate5_5-design.md`](../protocol/gate5_5-design.md) "Q5. Receiver"): `rs2_decoder.gd`'s
+module-wide default version is 5 (it was 4 from G5d, 3 from G4e2), the live client's subprotocol is
+`render-stream.5` and its `hello` says `render-stream/5`. A `GRS4` recording is refused with `bad-magic`; the
+self-tests decode golden-2/3/4 at their own versions explicitly. See "Shaders and materials (G55d)" below.
+
 | File                         | Role                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `project.godot`              | 640×360, stretch disabled, `gl_compatibility`, typed-GDScript warnings at error level. `default_clear_color` is magenta on purpose: the session's `clear_color` must replace it.                                                                                                                                                                                                                                                                                                                                        |
@@ -39,7 +45,15 @@ mise exec -- godot --headless --path experiments/render-stream/receiver --script
 ```
 
 The self-tests print `[rs2-selftest] ok` / `[applier2-selftest] ok` and exit 0, or print each
-failure and exit 1. `RS_SELFTEST_GOLDEN_DIR` overrides the golden-2 directory (default
+failure and exit 1. Since G55d `applier2_selftest.gd` runs golden-4 (decoded as version 4) and
+golden-5 (`full`/`patch`/`inline.rs5`: identical per-seq stats, `[74, 1, 1, 2, 2, 0, 16, 24, 18, 0, 27, 104, 1, 1, 44]`
+-- golden-4's eleven seqs cost exactly what they cost on /4, since a white canvas modulate is the
+engine's default and makes no call --
+RenderingServer calls; seq 12's shaders, materials and every parameter's exact Variant type; the
+`ignore-material`, `ignore-canvas-modulate` and `stale-param` sabotages; `params.rs5` with no, a
+tampered and a real shader library), and checks the live control messages against golden-5's
+`control/valid/`. golden-4 state 8's `add_triangle_array` prints `Condition "count > p_indices.size()"`
+(engine-rejected on purpose); that line is expected. `RS_SELFTEST_GOLDEN_DIR` overrides the golden-2 directory (default
 `<receiver>/../protocol/golden-2`); `RS_SELFTEST_TMP_DIR` the applier test's scratch directory.
 `codec2_selftest.gd` always also runs against its sibling `<receiver>/../protocol/golden-3`
 (version 3), which is not independently overridable.
@@ -66,12 +80,13 @@ Resources (G2b2, gate2-design.md Q5 "Environment"; both modes unless noted):
 
 | Variable                       | Meaning                                                                                                                                                                                                                                                |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RS_RECEIVER_CACHE_DIR`        | absolute content-addressed cache (`sha256/<hash>.grt`); required when the session's delivery is not inline (replay-failure `resource-unavailable` otherwise)                                                                                           |
+| `RS_RECEIVER_CACHE_DIR`        | absolute content-addressed cache (`sha256/<hash>.grt`, `.grm` for mesh surfaces since G5e, `.grp` for shader code since G55d); required when the session's delivery is not inline (replay-failure `resource-unavailable` otherwise)                   |
+| `RS_RECEIVER_SHADER_LIBRARY`   | G55d (gate5_5-design.md D4, Q5): absolute operator-local library (`sha256/<hash>.grp`) a `withheld` shader's code comes from, verified by hash. Without it, or without that hash, the shader is skipped and `unsupported` gains `{seq, item: null, name: "shader_set_code", reason: "shader-withheld", shader}` once per shader and hash. Never a fetch, never cached |
 | `RS_RECEIVER_CACHE_MODE`       | `fresh` (default: the directory must be absent or empty, else replay-failure `cache-not-fresh`) or `warm` (it must exist)                                                                                                                              |
 | `RS_RECEIVER_STORE_DIR`        | file mode: the capture's store, the origin for `fetch: "directory"`; reading from it is a fetch                                                                                                                                                        |
 | `RS_RECEIVER_FETCH_TIMEOUT_MS` | live: a GET not complete this long after it was issued is `resource-unavailable` (default 10000)                                                                                                                                                       |
 | `RS_RECEIVER_FETCH_DELAY_MS`   | an injected delay before each fetch, default 0                                                                                                                                                                                                         |
-| `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction), `ignore-cache` (fetch even on a cache hit), `wrong-http-token` (live only, G2e: correct token on the upgrade, wrong one on every GET), `ignore-clip` (gate3-design.md Q5, G3b: every `canvas_item_set_clip` call passes `false`), `clip-before-clear` (G3b: the pre-gate-3 apply order -- the clip setter before content, with no shadow reset on clear), `drop-msdf` (G4e2), `ignore-set-transform` and `ignore-clip-ignore` (G5d), `drop-mesh-surface` (G5e: a mesh build never adds its surface 1) `stale-mesh` (G5e: in-place payload changes of a resident surface are ignored) or `refuse-canvas-texture` (every draw naming a canvas-texture entry is skipped, logged with reason `canvas-texture-headless` and counted in `skipped_commands`: a recording made with the headless CanvasTexture shim replayed as the default capture would have refused it, [canvas-texture-headless.md](../protocol/canvas-texture-headless.md) "Simulated refusal"); all exist only to fail checks or to compare pictures |
+| `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction), `ignore-cache` (fetch even on a cache hit), `wrong-http-token` (live only, G2e: correct token on the upgrade, wrong one on every GET), `ignore-clip` (gate3-design.md Q5, G3b: every `canvas_item_set_clip` call passes `false`), `clip-before-clear` (G3b: the pre-gate-3 apply order -- the clip setter before content, with no shadow reset on clear), `drop-msdf` (G4e2), `ignore-set-transform` and `ignore-clip-ignore` (G5d), `drop-mesh-surface` (G5e: a mesh build never adds its surface 1) `stale-mesh` (G5e: in-place payload changes of a resident surface are ignored) or `refuse-canvas-texture` (every draw naming a canvas-texture entry is skipped, logged with reason `canvas-texture-headless` and counted in `skipped_commands`: a recording made with the headless CanvasTexture shim replayed as the default capture would have refused it, [canvas-texture-headless.md](../protocol/canvas-texture-headless.md) "Simulated refusal"), `ignore-material` (G55d: `canvas_item_set_material` is never called), `ignore-canvas-modulate` (G55d: `canvas_set_modulate` is never called) or `stale-param` (G55e: a material's parameters are set only when the material is created); all exist only to fail checks or to compare pictures |
 
 Exit codes: `0` status `ok`; `3` replay-failure (`applied.json` written); `2` usage error
 (`RS_RECEIVER_OUT` missing or not absolute, a malformed `RS_RECEIVER_SHOT_SEQS` or
@@ -134,7 +149,18 @@ entry, transactions and shots with `stream: 2`, and `shots/stream-2-seq-<n>.png`
 `skipped: "resync"` and no `applied_us`; it is acked `received` only; `live.resync` records the
 step, seq and frame.
 
-## `applied.json` (`render-stream-receiver-applied/4`)
+## `applied.json` (`render-stream-receiver-applied/5`)
+
+Since G55d (gate5_5-design.md Q5) `/5`: `/4`'s shape, each applied transaction's `resources` gaining
+`shaders_created`, `shader_code_sets`, `shader_payload_fetches` (GRP1 payloads fetched from the store or
+over HTTP), `materials_created`, `param_sets` (`material_set_param` calls, removals included) and
+`instance_param_sets` (`canvas_item_set_instance_shader_parameter` calls, removals included), all
+integers; `resources_summary` gains their totals; `fetches[]` `kind` may be `shader`; `unsupported`
+may carry the receiver's own `shader-withheld` entries (above). State dumps of a `/5` stream gain the
+canvases' `modulate`, the items' `material`, `use_parent_material` and `instance_params` (between
+`texture_repeat` and `content_version`), and the `shaders` and `materials` tables (after `meshes`),
+all in render-stream-5.md's resolved shapes and key order (parameters as `{name, type, value}`, a
+`rid` value as `{"tex": <id>}`), so a dump compares with the capture's resolved state.
 
 Since G5e (gate5-design.md Q5) `/4`: `/3`'s shape below, each applied transaction's `resources`
 gaining `meshes_created`, `meshes_rebuilt`, `surface_updates`, `mesh_upload_bytes` and
@@ -185,6 +211,35 @@ also requested, else `null`); `shots_missed` is `[]`; `live` is `null`. `viewpor
   `add_surface`), a layout change (counts, buffer lengths, AABB, uv_scale) `mesh_clear` and every
   surface again; a custom AABB change one call. An `add_mesh` naming a freed, unsupported or
   absent mesh is skipped and recorded.
+- **Shaders and materials (G55d, gate5_5-design.md Q5).** Apply order: textures, meshes, shaders,
+  materials, items, canvas 1. Residency is lazy: a material is resident while an item names it as
+  its own `material` (every effective material, D9, is one of those), a shader while a resident
+  material names it, and the textures of those materials' `rid` parameters, their shaders'
+  `default_textures` and the items' `rid` instance parameters count as named. A shader is
+  `RenderingServer.shader_create()` plus `shader_set_code(rid, code)` with the code exactly as its
+  verified GRP1 payload (`sha256/<hash>.grp`, fetched and cached like a texture, or inline) carries
+  it -- never through a `Shader` resource, which would run the preprocessor again; a new hash is
+  `shader_set_code` on the same RID; `default_textures` are
+  `shader_set_default_texture_parameter` calls (a removed one with `RID()`); `source: null` is a
+  `shader_create` alone. A `withheld` shader's code comes from `RS_RECEIVER_SHADER_LIBRARY` or the
+  shader is skipped (`shader-withheld`). An `unsupported` shader is never compiled. A material is
+  `material_create()`, `material_set_shader` (`RID()` for none, an unsupported or a skipped shader:
+  the engine then draws its default shader) and one `material_set_param` per changed parameter,
+  `null` for a removed one, each rebuilt as the exact Variant type (`float`/`int` from the float64;
+  real_t types narrowed to float32 by their constructors, which is exact; packed arrays as
+  `Packed*Array`; `rid` as the receiver's RID for that texture; transform2d as /0's xforms, basis
+  row-major, transform3d basis then origin, projection by column). An `unsupported` material is never
+  created; an item naming it draws without one (an unsupported `canvas_item_set_material` command
+  is logged). Removed shaders and materials are freed (D5: no tombstones). Items get
+  `canvas_item_set_material`, `canvas_item_set_use_parent_material` and
+  `canvas_item_set_instance_shader_parameter` (`null` for a removed one) only when the value
+  differs from what was last sent; canvas 1's `modulate` is `canvas_set_modulate` on the root canvas
+  only when it differs from the last value applied, starting from the engine's white (a scene that
+  never modulates costs no call; `dispose()` puts it back to white only if a non-white value was
+  applied). A shader compile error is the engine's own `SHADER ERROR`
+  print, which the runner classifies `replay-failure` / `shader-compile`. Headless,
+  `material_get_param` cannot witness any of this (dummy storage drops parameters), so the
+  self-test asserts on the applier's recorded calls.
 - **Resolved state, identity reconciliation.** Each transaction is decoded and accepted by
   `Rs2Decoder.Stream`, which resolves a patch against the previous state. `RsApplier.apply_state`
   then follows gate 0's Q5 steps 2–8 against the resolved state: free vanished, create new, parent

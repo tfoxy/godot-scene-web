@@ -28,6 +28,7 @@
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
 #include "rs_sha256.h"
+#include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
 
 namespace {
@@ -117,9 +118,11 @@ std::vector<Entry> ties(const Snapshot &s) {
 
 Entry tie(uint32_t id) { return {id, "canvas_item_set_draw_index", UnsupportedReason::DrawIndexTie}; }
 
+// G55d (render-stream-5.md "Derived item-level entries"): a material RID the material table does
+// not know is item-level unknown-material (never /4's unsupported-state).
 bool has_material_entry(const Snapshot &s, uint32_t id) {
   for (const auto &u : s.unsupported) {
-    if (u.has_item && u.item == id && u.reason == UnsupportedReason::UnsupportedState &&
+    if (u.has_item && u.item == id && u.reason == UnsupportedReason::UnknownMaterial &&
         u.op == "canvas_item_set_material")
       return true;
   }
@@ -340,7 +343,8 @@ void test_unsupported_and_material() {
             two->commands[2].name == "canvas_item_add_circle",
         "unsupported commands keep their place in command order");
   check(two->content_version == 4, "each add_* bumps content_version (material does not)");
-  check(has_material_entry(s, 2), "a non-null material gives an unsupported-state entry");
+  check(has_material_entry(s, 2), "an unknown material RID gives an unknown-material entry");
+  check(!item(s, 2)->has_material, "an unknown material RID is material: null on the wire");
 
   // Item order, then op order (byte order); one entry per distinct name.
   check(s.unsupported.size() == 4, "4 de-duplicated unsupported entries");
@@ -352,15 +356,15 @@ void test_unsupported_and_material() {
     check(u[1].item == 2 && u[1].op == "canvas_item_add_circle", "item 2: add_circle");
     check(u[2].item == 2 && u[2].op == "canvas_item_add_line", "item 2: add_line once");
     check(u[3].item == 2 && u[3].op == "canvas_item_set_material" &&
-              u[3].reason == UnsupportedReason::UnsupportedState,
-          "item 2: set_material, unsupported-state, sorted among the ops");
+              u[3].reason == UnsupportedReason::UnknownMaterial,
+          "item 2: set_material, unknown-material, sorted among the ops");
   }
   check(s.failures.empty(), "unsupported is not a capture failure");
 
   m.set_material(101, 0, 2);
   m.clear(101, 2);
   s = m.snapshot(2, 2).state;
-  check(!has_material_entry(s, 2), "a null material clears the unsupported-state entry");
+  check(!has_material_entry(s, 2), "a null material clears the unknown-material entry");
   check(s.unsupported.size() == 1 && s.unsupported[0].item == 1,
         "only item 1's add_polygon is left after clear + null material");
 }
@@ -813,7 +817,7 @@ void test_tie_ordering_with_unsupported_op() {
   const std::vector<Entry> expected = {
       {1, "canvas_item_add_circle", UnsupportedReason::UnsupportedOp},
       tie(1),
-      {2, "canvas_item_set_material", UnsupportedReason::UnsupportedState},
+      {2, "canvas_item_set_material", UnsupportedReason::UnknownMaterial},
   };
   check(item_entries(s) == expected,
         "item-level entries by item id, then op byte order "
@@ -1565,7 +1569,7 @@ void test_geometry_taps() {
   m.add_set_transform(100, {1, 0, 0, 1, 0, 0}, 1);
   grc::rs::Captured c = m.snapshot(1, 1);
   const Snapshot &s = c.state;
-  check(s.version == grc::rs2::ProtocolVersion::V4, "snapshots are stamped render-stream/4");
+  check(s.version == grc::rs2::ProtocolVersion::V5, "snapshots are stamped render-stream/5");
   const auto *it = item(s, 1);
   check(it != nullptr && it->commands.size() == 10 && it->content_version == 10,
         "ten taps, ten commands, ten content_version bumps");
@@ -1615,7 +1619,7 @@ void test_geometry_taps() {
             m.snapshot(2, 2).state.textures[0].status == grc::rs2::TextureStatus::Freed,
         "a /4 op naming a freed texture keeps its tombstone");
   const grc::rs2::Transaction full = grc::rs2::make_full(s);
-  check(full.version == grc::rs2::ProtocolVersion::V4, "make_full carries the V4 stamp");
+  check(full.version == grc::rs2::ProtocolVersion::V5, "make_full carries the V5 stamp");
 
   // Skinned triangle arrays and out-of-range axis modes are typed refusals.
   Mirror k;
@@ -2063,7 +2067,7 @@ void test_mesh_add_mesh_and_tombstones() {
         "recreation: the new id arrives and the old tombstone leaves in the same snapshot");
   // The patch between them carries the mesh change: removed 1, entry 3.
   const grc::rs2::Transaction patch = grc::rs2::make_patch(m.snapshot(2, 2).state, cap.state);
-  check(patch.version == grc::rs2::ProtocolVersion::V4, "snapshots are V4");
+  check(patch.version == grc::rs2::ProtocolVersion::V5, "snapshots are V5");
   m.free_rid(0x500, 4);
   m.mesh_set_custom_aabb(0x500, {1, 1, 0, 1, 1, 0}, 4);
   cap = m.snapshot(4, 4);
@@ -2449,6 +2453,347 @@ void test_skip_patch_full_equivalence() {
   check(states[4].items.size() == 3, "state 5: the orphaned subtree is published again");
 }
 
+// --- G55d: shaders, materials, item and canvas material state (gate5_5-design.md Q3b) -----------
+
+// A shader code as the hook hands it over: classification plus the GRP1 payload.
+grc::rs::ShaderCodeInput shader_input(const std::string &code, const char *status = "ok",
+                                      const char *reason = "", bool builtin = false,
+                                      const char *blend = "mix", const char *light = "normal") {
+  grc::rs::ShaderCodeInput input;
+  input.copy.status = status;
+  input.copy.reason = reason;
+  input.copy.mode = "canvas_item";
+  input.copy.builtin = builtin;
+  input.copy.builtin_blend_mode = blend;
+  input.copy.builtin_light_mode = light;
+  input.copy.code_bytes = static_cast<int64_t>(code.size());
+  auto payload =
+      std::make_shared<grc::rs::PayloadBytes>(grc::rs::encode_payload(code));
+  input.copy.hash = grc::sha256_hex(payload->data(), payload->size());
+  input.copy.payload_bytes = static_cast<int64_t>(payload->size());
+  input.bytes = payload;
+  return input;
+}
+
+grc::rs::DecodedParam scalar(const char *type, std::vector<double> f) {
+  grc::rs::DecodedParam p;
+  p.type = type;
+  p.n = 1;
+  p.f = std::move(f);
+  return p;
+}
+
+const grc::rs2::ShaderEntry *shader(const Snapshot &s, uint32_t id) {
+  for (const auto &e : s.shaders)
+    if (e.id == id) return &e;
+  return nullptr;
+}
+
+const grc::rs2::MaterialEntry *material(const Snapshot &s, uint32_t id) {
+  for (const auto &e : s.materials)
+    if (e.id == id) return &e;
+  return nullptr;
+}
+
+bool has_entry(const Snapshot &s, uint32_t item_id, const char *op, UnsupportedReason reason) {
+  for (const auto &u : s.unsupported)
+    if (u.has_item && u.item == item_id && u.op == op && u.reason == reason) return true;
+  return false;
+}
+
+const char kCimAdd[] = "shader_type canvas_item;\nrender_mode blend_add;\n";
+const char kTint[] = "shader_type canvas_item;\nuniform vec4 tint;\nvoid fragment() {\n\tCOLOR = tint;\n}\n";
+
+void test_material_tables_lifecycle() {
+  using grc::rs2::ShaderStatus;
+  using grc::rs2::VariantType;
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);  // item 1
+  m.set_parent(100, kRootCanvas, 1);
+  m.add_rect(100, kRect, kRed, false, 1);
+  // CanvasItemMaterial.new() + the idle flush (Q1a): material_create, three params, then
+  // shader_create + shader_set_code + material_set_shader.
+  m.material_create(0x700, 1);
+  m.material_set_param(0x700, "particles_anim_h_frames", scalar("int", {1}), 1);
+  m.material_set_param(0x700, "particles_anim_v_frames", scalar("int", {1}), 1);
+  m.material_set_param(0x700, "particles_anim_loop", scalar("bool", {0}), 1);
+  m.set_material(100, 0x700, 1);
+  const auto add = shader_input(kCimAdd, "ok", "", true, "add", "normal");
+  m.shader_create(0x800, 1);
+  m.shader_set_code(0x800, add, 1);
+  m.material_set_shader(0x700, 0x800, 1);
+  grc::rs::Captured cap = m.snapshot(1, 1);
+  const Snapshot &s = cap.state;
+  const auto *sh = shader(s, 1);
+  const auto *mat = material(s, 1);
+  check(s.shaders.size() == 1 && sh != nullptr && sh->version == 2 &&
+            sh->status == ShaderStatus::Ok && sh->has_mode && sh->has_source &&
+            sh->source == grc::rs2::ShaderSource::Payload && sh->hash == add.copy.hash &&
+            sh->payload_bytes == add.bytes->size(),
+        "shader_create + set_code: id 1, version 2, payload source, the hook's hash and size");
+  check(sh != nullptr && sh->has_builtin &&
+            sh->builtin.blend_mode == grc::rs2::BlendMode::Add &&
+            sh->builtin.light_mode == grc::rs2::LightMode::Normal,
+        "a recognized CanvasItemMaterial shader carries its builtin blend and light modes");
+  check(cap.payloads.count(add.copy.hash) == 1 &&
+            cap.payloads.at(add.copy.hash).get() == add.bytes.get(),
+        "the snapshot pins the ok shader's GRP1 payload, shared");
+  check(mat != nullptr && mat->version == 5 && mat->has_shader && mat->shader == 1 &&
+            mat->params.size() == 3 && mat->params[0].name == "particles_anim_h_frames" &&
+            mat->params[1].name == "particles_anim_loop" &&
+            mat->params[2].name == "particles_anim_v_frames" &&
+            mat->params[1].type == VariantType::Bool && mat->params[0].type == VariantType::Int &&
+            mat->params[0].floats == std::vector<double>{1.0},
+        "material: version 1 + 3 params + set_shader = 5, params sorted by name, typed values");
+  const auto *it = item(s, 1);
+  check(it != nullptr && it->has_material && it->material == 1 && it->content_version == 1,
+        "the item names material 1; setting a material does not redraw (D9)");
+  check(s.unsupported.empty(), "a supported material gives no unsupported entry (/5)");
+
+  // D5: freeing the shader while the material names it nulls the material (version + 1).
+  m.free_rid(0x800, 2);
+  cap = m.snapshot(2, 2);
+  mat = material(cap.state, 1);
+  check(cap.state.shaders.empty() && mat != nullptr && !mat->has_shader && mat->version == 6,
+        "free(shader): no tombstone; its material goes to shader null at version + 1");
+  check(cap.payloads.empty(), "a freed shader's payload is no longer pinned");
+  // Freeing the material resets every item naming it.
+  m.free_rid(0x700, 3);
+  cap = m.snapshot(3, 3);
+  it = item(cap.state, 1);
+  check(cap.state.materials.empty() && it != nullptr && !it->has_material,
+        "free(material): no tombstone; the item's material goes to null");
+  // Recreation gets new ids.
+  m.material_create(0x700, 4);
+  m.shader_create_from_code(0x801, shader_input(kTint), 4);
+  m.material_set_shader(0x700, 0x801, 4);
+  cap = m.snapshot(4, 4);
+  check(material(cap.state, 2) != nullptr && shader(cap.state, 2) != nullptr &&
+            shader(cap.state, 2)->version == 1 && !shader(cap.state, 2)->has_builtin,
+        "a recreated material and a new shader take fresh ids; create_from_code is version 1");
+}
+
+void test_material_params() {
+  using grc::rs2::MaterialReason;
+  using grc::rs2::MaterialStatus;
+  using grc::rs2::VariantType;
+  Mirror m;
+  bind_root(&m);
+  grc::rs::PayloadPtr tex_bytes;
+  m.texture_2d_create(0x500, rgba8_copy(4, 4, fill(4, 4, 10), &tex_bytes), tex_bytes, 1);  // tex 1
+  m.material_create(0x700, 1);
+  m.material_set_param(0x700, "tint", scalar("color", {0.2, 0.4, 0.6, 1.0}), 1);
+  grc::rs::DecodedParam lv;
+  lv.type = "float32";
+  lv.packed = true;
+  lv.n = 2;
+  lv.f = {0.25, 0.5};
+  m.material_set_param(0x700, "lv", lv, 1);
+  grc::rs::DecodedParam tex;
+  tex.type = "rid";
+  tex.n = 1;
+  tex.tex_rid = 0x500;
+  m.material_set_param(0x700, "pal", tex, 1);
+  Snapshot s = m.snapshot(1, 1).state;
+  const auto *mat = material(s, 1);
+  check(mat != nullptr && mat->status == MaterialStatus::Ok && mat->version == 4 &&
+            mat->params.size() == 3 && mat->params[0].name == "lv" &&
+            mat->params[0].type == VariantType::PackedFloat32Array && mat->params[0].n == 2 &&
+            mat->params[1].name == "pal" && mat->params[1].type == VariantType::Rid &&
+            mat->params[1].has_tex && mat->params[1].tex == 1 && mat->params[1].floats.empty() &&
+            mat->params[2].floats.size() == 4,
+        "a packed float32 array (n 2), a rid naming texture 1, a colour: sorted, typed");
+  // OBJECT is rejected (no change, no version); NIL erases.
+  grc::rs::DecodedParam object;
+  object.type = "object";
+  object.status = "unsupported";
+  object.reason = "param-type";
+  m.material_set_param(0x700, "tint", object, 2);
+  s = m.snapshot(2, 2).state;
+  check(material(s, 1)->version == 4 && material(s, 1)->params.size() == 3,
+        "an OBJECT value is rejected: no change, no version (D6)");
+  m.material_set_param(0x700, "tint", scalar("nil", {}), 3);
+  s = m.snapshot(3, 3).state;
+  check(material(s, 1)->version == 5 && material(s, 1)->params.size() == 2,
+        "NIL erases the parameter, version + 1");
+  // A texture a parameter names becomes a tombstone when freed, not a dangling id.
+  m.free_rid(0x500, 4);
+  s = m.snapshot(4, 4).state;
+  check(s.textures.size() == 1 && s.textures[0].status == grc::rs2::TextureStatus::Freed,
+        "a freed texture a material parameter names is kept as a tombstone");
+  // An unsupported type makes the entry unsupported until that name is set again.
+  grc::rs::DecodedParam str;
+  str.type = "string";
+  str.status = "unsupported";
+  str.reason = "param-type";
+  m.material_set_param(0x700, "label", str, 5);
+  s = m.snapshot(5, 5).state;
+  mat = material(s, 1);
+  check(mat->status == MaterialStatus::Unsupported && mat->has_reason &&
+            mat->reason == MaterialReason::ParamType && mat->params.size() == 2,
+        "a param-type value: the entry is unsupported/param-type and the value is not carried");
+  m.material_set_param(0x700, "label", scalar("float", {0.5}), 6);
+  s = m.snapshot(6, 6).state;
+  check(material(s, 1)->status == MaterialStatus::Ok && material(s, 1)->params.size() == 3,
+        "setting that name to a supported value makes the entry ok again");
+  grc::rs::DecodedParam unknown_tex = tex;
+  unknown_tex.tex_rid = 0x999;
+  m.material_set_param(0x700, "pal", unknown_tex, 7);
+  s = m.snapshot(7, 7).state;
+  check(material(s, 1)->reason == MaterialReason::UnknownTexture,
+        "a rid naming an unknown texture makes the entry unknown-texture");
+  // material_create_from_shader with an unknown shader RID.
+  m.material_create_from_shader(0x701, 0x888, 8);
+  s = m.snapshot(8, 8).state;
+  check(material(s, 2) != nullptr && !material(s, 2)->has_shader &&
+            material(s, 2)->reason == MaterialReason::UnknownShader,
+        "create_from_shader with an unknown shader RID: shader null, unknown-shader");
+}
+
+void test_material_items_and_derived_entries() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);  // 1: parent with the material
+  m.canvas_item_create(101, 1);  // 2: child, use_parent_material
+  m.canvas_item_create(102, 1);  // 3: unknown material
+  m.canvas_item_create(103, 1);  // 4: instance params
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, 100, 1);
+  m.set_parent(102, kRootCanvas, 1);
+  m.set_parent(103, kRootCanvas, 1);
+  m.set_draw_index(102, 1, 1);
+  m.set_draw_index(103, 2, 1);
+  m.shader_create_from_code(0x800, shader_input(kTint, "unsupported", "shader-time"), 1);
+  m.material_create_from_shader(0x700, 0x800, 1);
+  m.set_material(100, 0x700, 1);
+  m.set_use_parent_material(101, true, 1);
+  m.set_material(102, 0x777, 1);
+  m.set_instance_shader_parameter(103, "inst_color", scalar("color", {0.2, 0.8, 0.4, 1}), 1);
+  grc::rs::DecodedParam str;
+  str.type = "string";
+  str.status = "unsupported";
+  str.reason = "param-type";
+  m.set_instance_shader_parameter(103, "label", str, 1);
+  m.set_instance_shader_parameter(103, "unset", scalar("nil", {}), 1);
+  grc::rs::Captured cap = m.snapshot(1, 1);
+  const Snapshot &s = cap.state;
+  check(shader(s, 1) != nullptr && shader(s, 1)->status == grc::rs2::ShaderStatus::Unsupported &&
+            shader(s, 1)->reason == grc::rs2::ShaderReason::ShaderTime &&
+            shader(s, 1)->has_hash,
+        "a shader-time shader is unsupported but keeps its hash");
+  check(cap.payloads.empty(), "an unsupported shader's payload is not carried");
+  check(has_entry(s, 1, "canvas_item_set_material", UnsupportedReason::UnsupportedMaterial),
+        "the item naming the unsupported shader's material: unsupported-material");
+  check(has_entry(s, 2, "canvas_item_set_material", UnsupportedReason::UnsupportedMaterial) &&
+            !item(s, 2)->has_material && item(s, 2)->use_parent_material,
+        "its use_parent_material child (own material null): unsupported-material (D9 effective)");
+  check(has_entry(s, 3, "canvas_item_set_material", UnsupportedReason::UnknownMaterial) &&
+            !item(s, 3)->has_material,
+        "an unknown material RID: material null plus unknown-material");
+  const auto *four = item(s, 4);
+  check(has_entry(s, 4, "canvas_item_set_instance_shader_parameter", UnsupportedReason::ParamType) &&
+            four->instance_params.size() == 2 && four->instance_params[0].name == "inst_color" &&
+            four->instance_params[1].name == "unset" &&
+            four->instance_params[1].type == grc::rs2::VariantType::Nil &&
+            four->content_version == 0,
+        "instance params: supported ones carried sorted, NIL kept as nil, a param-type entry");
+  check(s.unsupported.size() == 4, "exactly four item-level entries");
+  // The child stops inheriting: its entry leaves.
+  m.set_use_parent_material(101, false, 2);
+  check(!has_entry(m.snapshot(2, 2).state, 2, "canvas_item_set_material",
+                   UnsupportedReason::UnsupportedMaterial),
+        "use_parent_material off: the child's effective material is its own (null)");
+}
+
+void test_canvas_modulate_and_light() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_set_modulate(kRootCanvas, Color4{1, 1, 0, 1}, 2);
+  Snapshot s = m.snapshot(2, 2).state;
+  check(s.canvases[0].modulate == Color4({1, 1, 0, 1}), "canvas_set_modulate: the canvas field");
+  m.canvas_light_attach_to_canvas(0x900, 0, 3);
+  check(m.snapshot(3, 3).state.unsupported.empty(), "a light attached to RID() is not typed");
+  m.canvas_light_attach_to_canvas(0x900, kRootCanvas, 3);
+  m.canvas_light_attach_to_canvas(0x901, kRootCanvas, 3);
+  s = m.snapshot(3, 3).state;
+  check(s.unsupported.size() == 1 && !s.unsupported[0].has_item &&
+            s.unsupported[0].op == "canvas_light_attach_to_canvas" &&
+            s.unsupported[0].reason == UnsupportedReason::CanvasLight,
+        "a light on a canvas: one sticky session-level canvas-light entry");
+  m.canvas_set_modulate(0x4444, Color4{0, 1, 1, 1}, 4);
+  s = m.snapshot(4, 4).state;
+  check(s.failures.size() == 1 && s.failures[0].reason == FailureReason::PreExistingObject,
+        "an unknown canvas RID follows the unknown-RID rule");
+}
+
+void test_shader_policy_and_perturb() {
+  using grc::rs2::ShaderSource;
+  using grc::rs2::ShaderStatus;
+  for (const auto policy : {grc::rs2::ShaderPolicy::Params, grc::rs2::ShaderPolicy::Exclude}) {
+    Mirror m;
+    bind_root(&m);
+    m.set_shader_policy(policy);
+    const auto tint = shader_input(kTint);
+    const auto cim = shader_input(kCimAdd, "ok", "", true, "add", "normal");
+    m.shader_create_from_code(0x800, tint, 1);
+    m.shader_create(0x801, 1);
+    m.shader_set_code(0x801, cim, 1);
+    grc::rs::Captured cap = m.snapshot(1, 1);
+    const auto *a = shader(cap.state, 1);
+    const auto *b = shader(cap.state, 2);
+    const bool params = policy == grc::rs2::ShaderPolicy::Params;
+    check(a != nullptr && a->source == ShaderSource::Withheld && a->hash == tint.copy.hash &&
+              a->payload_bytes == tint.bytes->size() &&
+              (params ? a->status == ShaderStatus::Ok
+                      : (a->status == ShaderStatus::Unsupported &&
+                         a->reason == grc::rs2::ShaderReason::ShaderExcluded)),
+          params ? "params: a custom shader is withheld with the hash and size it would have"
+                 : "exclude: a custom shader is unsupported/shader-excluded, withheld");
+    check(b != nullptr && b->source == ShaderSource::Payload && b->status == ShaderStatus::Ok &&
+              cap.payloads.size() == 1 && cap.payloads.count(cim.copy.hash) == 1,
+          "the builtin CanvasItemMaterial shader still travels as a payload (D4, D7)");
+  }
+  // perturb-shader (Q3c): from its frame, a non-builtin code with fragment() ending in } moves.
+  Mirror m;
+  bind_root(&m);
+  m.set_perturb_shader(3);
+  const auto tint = shader_input(kTint);
+  m.shader_create_from_code(0x800, tint, 1);
+  m.shader_create_from_code(0x802, shader_input(kCimAdd, "ok", "", true, "add"), 3);
+  check(shader(m.snapshot(1, 1).state, 1)->hash == tint.copy.hash,
+        "perturb-shader: code recorded before its frame never moves");
+  m.shader_set_code(0x800, tint, 3);
+  grc::rs::Captured cap = m.snapshot(3, 3);
+  const auto *a = shader(cap.state, 1);
+  const std::string expected = std::string(kTint).insert(
+      std::string(kTint).rfind('}'), "\tCOLOR.rgb = vec3(1.0) - COLOR.rgb;\n");
+  const auto want = grc::rs::encode_payload(expected);
+  check(a != nullptr && a->hash == grc::sha256_hex(want.data(), want.size()) &&
+            a->payload_bytes == want.size() && cap.payloads.count(a->hash) == 1 &&
+            *cap.payloads.at(a->hash) == want,
+        "perturb-shader: the inversion line before the last }, a new payload and hash");
+  check(shader(cap.state, 2)->hash == shader_input(kCimAdd).copy.hash,
+        "perturb-shader never touches a builtin shader");
+}
+
+void test_material_omit_op() {
+  Mirror m;
+  bind_root(&m);
+  m.set_omit_op("material_set_shader", 2);
+  m.material_create(0x700, 1);
+  m.shader_create(0x800, 1);
+  m.shader_set_code(0x800, shader_input(kCimAdd, "ok", "", true, "add"), 1);
+  m.material_set_shader(0x700, 0x800, 1);
+  m.shader_create(0x801, 2);
+  m.shader_set_code(0x801, shader_input(kCimAdd, "ok", "", true, "sub"), 2);
+  m.free_rid(0x800, 2);
+  m.material_set_shader(0x700, 0x801, 2);  // omitted
+  const Snapshot s = m.snapshot(2, 2).state;
+  check(material(s, 1) != nullptr && !material(s, 1)->has_shader && material(s, 1)->version == 3,
+        "omit-op material_set_shader: the old shader's free still nulls it; the new bind is lost");
+}
+
 int main() {
   test_fresh_session();
   test_ids_and_recycled_rid();
@@ -2510,6 +2855,12 @@ int main() {
   test_skip_reparent_into_and_out_of_withheld();
   test_skip_free_unknown();
   test_skip_patch_full_equivalence();
+  test_material_tables_lifecycle();
+  test_material_params();
+  test_material_items_and_derived_entries();
+  test_canvas_modulate_and_light();
+  test_shader_policy_and_perturb();
+  test_material_omit_op();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

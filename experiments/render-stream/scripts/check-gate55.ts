@@ -8,8 +8,9 @@
 //     experiments/render-stream/scripts/check-gate55.ts --out <evidence dir>
 //
 // Each group's checks live in its own lib (g55b: lib/gate55b-checks.ts, g55c:
-// lib/gate55c-checks.ts), which its self-test drives with synthetic values. A group that was not
-// run is reported `not-run` and fails the gate.
+// lib/gate55c-checks.ts, g55d: lib/gate55d-checks.ts over g55b's scene directories), which its
+// self-test drives with synthetic values. A group that was not run is reported `not-run` and fails
+// the gate.
 
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -28,13 +29,14 @@ import {
   type Gate55ShaderExpected,
   runGate55c,
 } from "./lib/gate55c-checks";
+import { runGate55d } from "./lib/gate55d-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
 
 /** Every group of protocol/gate5_5-design.md "Increments", and those whose increment landed. */
 export const ALL_GROUPS = ["g55b", "g55c", "g55d", "g55e", "g55f"] as const;
-export const LANDED_GROUPS: readonly string[] = ["g55b", "g55c"];
+export const LANDED_GROUPS: readonly string[] = ["g55b", "g55c", "g55d"];
 
 export interface Gate55Report {
   schema: "render-stream-gate55-report/1";
@@ -45,7 +47,9 @@ export interface Gate55Report {
   legs: Record<string, Gate55LegEntry>;
   checks: Gate5Check[];
   checkpoints: Gate5Checkpoint[];
-  /** per fixture: material counters, shader hashes, content versions (G55e adds bytes and costs) */
+  /** per fixture: material counters, shader hashes, content versions; from G55d, under `g55d`,
+   * per step shader/material counts on the wire, GRP1 and param_f64 bytes, hook-log copy/hash/
+   * scan/decode ns, receiver fetches and calls */
   materials: Record<string, unknown>;
   /** per fixture: reference vs reference-repeat per region and pixel class, every shot */
   budgets: Record<string, RegionBudget5[]>;
@@ -124,6 +128,25 @@ async function main(): Promise<void> {
     report.budgets[expected.fixture] = r.budgets;
     report.freshness[expected.fixture] = r.freshness;
   }
+  if (run.includes("g55d")) {
+    // G55d's receivers over g55b's scenes (<out>/cim, <out>/cim-modulate).
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate55-cim", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate55CimExpected;
+    const r = await runGate55d(out, expected);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    report.checkpoints.push(...r.checkpoints);
+    for (const [key, m] of Object.entries(r.materials))
+      report.materials[key] = {
+        ...((report.materials[key] as Record<string, unknown> | undefined) ??
+          {}),
+        g55d: m,
+      };
+  }
   for (const group of report.groups.not_run)
     report.checks.push({
       id: `group-${group}`,
@@ -158,7 +181,19 @@ async function main(): Promise<void> {
       shader_hashes?: Record<string, Record<string, string>>;
       hook_census?: Record<string, number | string>;
       calibrator8?: string;
+      g55d?: { per_step?: Record<string, Record<string, unknown>> };
     };
+    if (v.g55d?.per_step)
+      console.log(
+        `  materials on the wire (${name}), step:shaders/materials/GRP1 B/param_f64 B (patch): ${Object.entries(
+          v.g55d.per_step,
+        )
+          .map(
+            ([k, r]) =>
+              `${k}:${r.shaders}/${r.materials}/${r.grp1_payload_bytes}/${r.param_f64_bytes_patch}`,
+          )
+          .join(" ")}`,
+      );
     if (v.hook_census)
       console.log(
         `  material census (${name}, calibrator 8 ${v.calibrator8}): ${Object.entries(

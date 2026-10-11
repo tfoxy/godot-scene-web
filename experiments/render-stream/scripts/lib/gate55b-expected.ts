@@ -161,3 +161,37 @@ export function rasters55(
     out.set(s.step, rasterize55(e, variant, s.step));
   return out;
 }
+
+/** Per step: each item's own material (CimSim id or null) and use_parent_material, from the
+ * calls through that step (a freed material leaves every item naming it, D5). */
+export function expectedItemMaterials(
+  e: Gate55Expected,
+  variant: Gate55Variant,
+): Map<number, Map<string, { material: number | null; use_parent: boolean }>> {
+  const out = new Map<
+    number,
+    Map<string, { material: number | null; use_parent: boolean }>
+  >();
+  const cur = new Map<string, { material: number | null; use_parent: boolean }>(
+    e.variants[variant].creation_order.map((n) => [
+      n,
+      { material: null, use_parent: false },
+    ]),
+  );
+  for (const s of e.variants[variant].steps) {
+    for (const c of s.rs_material_calls) {
+      if (c.call === "canvas_item_set_material") {
+        const it = cur.get(c.item as string);
+        if (it) it.material = (c.material as number | null) ?? null;
+      } else if (c.call === "canvas_item_set_use_parent_material") {
+        const it = cur.get(c.item as string);
+        if (it) it.use_parent = c.value as boolean;
+      } else if (c.call === "free" && c.kind === "material") {
+        for (const it of cur.values())
+          if (it.material === c.material) it.material = null;
+      }
+    }
+    out.set(s.step, new Map([...cur].map(([n, v]) => [n, { ...v }] as const)));
+  }
+  return out;
+}

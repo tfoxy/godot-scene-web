@@ -1,8 +1,8 @@
 class_name RsLiveClient
 extends RefCounted
-## The receiver's side of render-stream/4 live transport (render-stream-4.md "Live transport",
-## since G5d; render-stream-3.md "Live transport" from G4e2; render-stream-2.md "Live transport";
-## gate1-design.md "Q2f", "Q5. Receiver", "G1c2"): a WebSocketPeer client, the control messages it
+## The receiver's side of render-stream/5 live transport (render-stream-5.md, since G55d;
+## render-stream-4.md "Live transport" from G5d; render-stream-3.md "Live transport" from G4e2;
+## render-stream-2.md "Live transport"; gate1-design.md "Q2f", "Q5. Receiver", "G1c2"): a WebSocketPeer client, the control messages it
 ## sends (hello, ack, resync) and the one the host may send (error).
 ##
 ## Two engine facts this class exists to get right:
@@ -15,8 +15,8 @@ extends RefCounted
 ## Control messages are compact JSON with the documented key order (JSON.stringify with
 ## sort_keys false); the host accepts any order. Nothing here touches the RenderingServer.
 
-const SUBPROTOCOL: String = "render-stream.4"
-const PROTOCOL: String = "render-stream/4"
+const SUBPROTOCOL: String = "render-stream.5"
+const PROTOCOL: String = "render-stream/5"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
 const ACK_STAGES: Array[String] = ["received", "applied", "submitted"]
 

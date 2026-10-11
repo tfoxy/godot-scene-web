@@ -30,10 +30,10 @@ import {
   type TextureReason,
 } from "../lib/render-stream-2";
 
-/** The wire magic of every synthetic recording: GRS4 since G5d (render-stream-4.md; GRS3 from
- * G4e2), what the capture publishes and the checkers decode by default. */
+/** The wire magic of every synthetic recording: GRS5 since G55d (render-stream-5.md; GRS4 from
+ * G5d, GRS3 from G4e2), what the capture publishes and the checkers decode by default. */
 export const MAGIC2 = Buffer.from([
-  0x47, 0x52, 0x53, 0x34, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x47, 0x52, 0x53, 0x35, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 export const GRT1_MAGIC = Buffer.from([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -330,7 +330,7 @@ export function encodeSession(opts: TSessionOptions): Buffer {
   return encodeRecord(
     {
       type: "session",
-      protocol: "render-stream/4",
+      protocol: "render-stream/5",
       session_id: opts.sessionId ?? "0123456789abcdef0123456789abcdef",
       stream: {
         stream_id:
@@ -366,6 +366,8 @@ export function encodeSession(opts: TSessionOptions): Buffer {
         host_window_size: opts.hostWindowSize ?? [640, 360],
       },
       resources: sessionResources(opts),
+      // render-stream-5.md "Session": the shader-source policy, right after resources.
+      materials: { shader_policy: "source" },
       features: JSON.parse(
         JSON.stringify(opts.rendered ? RS2_FEATURES_RENDERED : RS2_FEATURES),
       ),
@@ -574,12 +576,17 @@ export function encodeTransaction(
       visibility_layer: it.visibility_layer,
       texture_filter: it.texture_filter ?? "default",
       texture_repeat: it.texture_repeat ?? "default",
+      // render-stream-5.md "Item": no synthetic item names a material.
+      material: null,
+      use_parent_material: false,
+      instance_params: [],
       content_version: it.content_version,
       commands,
     };
   });
   const canvasMetas = canvases.map((c) => {
-    canvasF.push(...c.xform);
+    // render-stream-5.md "Canvas": transform (6) then modulate (4, white here).
+    canvasF.push(...c.xform, 1, 1, 1, 1);
     return {
       id: c.id,
       origin: c.origin ?? (c.id === 1 ? "root-query" : "created"),
@@ -588,13 +595,14 @@ export function encodeTransaction(
       items: c.items,
     };
   });
-  // render-stream-4.md "Transaction blocks": five blocks, cmd_i32 (no synthetic command carries
-  // ints) and mesh_f32 (no synthetic mesh) empty.
+  // render-stream-5.md "Transaction blocks": six blocks, cmd_i32 (no synthetic command carries
+  // ints), mesh_f32 (no synthetic mesh) and param_f64 (no synthetic material) empty.
   const blocks: (number[] | Int32Array)[] = [
     itemF,
     canvasF,
     cmdF,
     new Int32Array(0),
+    [],
     [],
   ];
   const failures = state.failures ?? [];
@@ -615,16 +623,21 @@ export function encodeTransaction(
       removed_items: removedItems,
       removed_textures: removedTextures,
       removed_meshes: [],
+      removed_shaders: [],
+      removed_materials: [],
       canvases: canvasMetas,
       items: itemMetas,
       textures: textures.map(textureMeta),
       meshes: [],
+      shaders: [],
+      materials: [],
       blocks: [
         { name: "item_f32", type: "f32", count: itemF.length },
         { name: "canvas_f32", type: "f32", count: canvasF.length },
         { name: "cmd_f32", type: "f32", count: cmdF.length },
         { name: "cmd_i32", type: "i32", count: 0 },
         { name: "mesh_f32", type: "f32", count: 0 },
+        { name: "param_f64", type: "f64", count: 0 },
       ],
     },
     blocks,

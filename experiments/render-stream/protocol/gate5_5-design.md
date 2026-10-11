@@ -904,6 +904,50 @@ and the spike only counts.
 
 **Pass criteria**: gates −1 to 5 green on /5, `--legs g55b,g55c,g55d` green; "Gate 5.5d result".
 
+**As built (G55d, 2026-10-11).** Every g55d check passed on the first engine run (`--legs
+g55b,g55c,g55d` 90/90): both sinks' shader and material tables equal the hook log at every frame,
+the three receivers equal the reference on every pixel of both scenes, and the four sabotages
+mismatch in exactly Q6b's (as-built) sets. Amendments:
+
+1. **`unsupported-material` follows the effective material in both validators.** G55w's TS and
+   GDScript validators derived it from the item's own `material`. D9 says the effective one, which
+   the mirror computes, so both now walk `use_parent_material` up the item parents exactly as
+   `_update_dirty_item` does (`rcc:2514-2525`). golden-5 is unchanged and still passes.
+2. **The hook log applies D5 too.** Freeing a shader sets every material in the log that names it
+   to no shader at version + 1, with no line of its own. A reader replays it from the `free` line.
+   Without this the log's material versions trail the mirror's by one after every CIM flush that
+   frees the old shader before binding the new one (steps 1, 2 and 3 of `gate55-cim`).
+3. **Policy details.** Under `exclude`, a non-builtin shader is `unsupported` with `source`
+   `withheld` (hash and size kept). A D11 reason, if any, wins over `shader-excluded`. A `rid`
+   parameter set to `RID()` is erased, because GLES3 then falls back to the default texture as for
+   an unset sampler. Code with no known `shader_type` keeps the no-code shape (mode, source and hash
+   null) and is `unsupported` / `shader-mode`. The wire has no spelling for such a mode.
+4. **`rs::DecodedParam` gains `packed`.** Its `type` names a packed array by element type, so
+   `"vector2"` was both a `Vector2` and a `PackedVector2Array`. Packed `int64` elements beyond ±2^53
+   are `param-range`, as a scalar `int` is.
+5. **Session-level order.** `canvas-light` sorts in first-observed order after
+   `degenerate-host-size` (render-stream-1.md's "first session-level entry"), not first as golden-5
+   writes it. No validator orders session-level entries among themselves.
+6. **Classes of the other gate 5.5 legs on /5.** `capture-cim` and `capture-cim-modulate` classify
+   `success`. `capture-shader` also classifies `success`, because the mirror carries every
+   `ShaderMaterial` table field Q3b names (instance parameters, default textures and packed arrays
+   included). G55e adds its receivers. `capture-refused` is `unsupported`, and its only entries are
+   `canvas_item_set_material` / `unsupported-material` on the five refused items.
+7. **Receiver.** An `unsupported` material is never created, so items naming it draw with no
+   material and record an unsupported `canvas_item_set_material` command. An `ok` material whose
+   shader is unusable gets `RID()`. `canvas_set_modulate` is called only when canvas 1's modulate
+   differs from the last value applied, starting from white, so a scene that never modulates costs no
+   call. A withheld shader with no library entry is recorded as `shader-withheld`. `stale-param`
+   (G55e's sabotage) is already implemented.
+8. **Runner.** g55d reuses g55b's `capture` and `reference` legs in `<out>/cim*/`, so `--legs
+   g55d` adds g55b. The wire census check is `material-census-wire`, because g55b already owns
+   `cim-material-census`. Three checks were added beyond the contract: `canvas-modulate-wire`,
+   `shader-store` and `receiver-state-dumps`.
+9. **Receiver cost.** The /5 decode and apply cost about 150 µs more per transaction. That was
+   enough to phase-lock G5f's live credit loop into every-other-frame delivery, and its checks
+   then failed. `decode_record`'s per-byte printable-ASCII loop now runs natively first, which
+   saves 170 µs per transaction (README "Gate 5.5d result", Findings).
+
 ---
 
 ### G55e — `ShaderMaterial` end to end, policies, `perturb-shader` (opus)

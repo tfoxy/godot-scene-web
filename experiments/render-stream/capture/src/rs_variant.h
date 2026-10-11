@@ -38,6 +38,9 @@ struct DecodedParam {
   std::uint64_t tex_rid = 0;
   std::string status = "ok";  // "ok" | "unsupported"
   std::string reason;         // "" when ok; "param-type" | "param-range" | "decode-unavailable"
+  // True for one of the eight packed numeric arrays (G55d): `type` alone is ambiguous there
+  // ("vector2" names both a scalar Vector2 and a PackedVector2Array's element type).
+  bool packed = false;
 };
 
 // Decodes a `const Variant *` the engine passed into a hook argument (D8, Q2). `variant_ptr` may

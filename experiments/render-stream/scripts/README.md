@@ -1673,31 +1673,47 @@ or id is unknown, and the draw transform applies but not the command's own.
 mise exec -- pnpm render-stream:gate55 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g55b,g55c]
+  [--legs g55b,g55c,g55d]
 ```
 
 - `run-gate55.sh`: the orchestrator (`run_g55b` with `run_cim_capture` and `run_cim_rendered`,
-  `run_g55c`, `run_reference` with `REFERENCE_ARMED`, `REFERENCE_VARIANT`, `REFERENCE_FIXTURE_DIR`
-  and `REFERENCE_MATERIAL_ORACLE`). Groups g55d, g55e and g55f are known but have not landed, so
-  asking for them exits 2. The captures write both sinks under gate 2's `.rs2` names whatever wire
-  version `main` speaks.
+  `run_g55c`, `run_g55d` with `run_cim_capture_inline`, `cim_sabotage_capture` and
+  `run_cim_receivers`, `run_reference` with `REFERENCE_ARMED`, `REFERENCE_VARIANT`,
+  `REFERENCE_FIXTURE_DIR` and `REFERENCE_MATERIAL_ORACLE`). g55d replays g55b's captures and
+  compares with g55b's references, so `--legs g55d` adds g55b (and says so); groups run in landed
+  order. Groups g55e and g55f are known but have not landed, so asking for them exits 2. The
+  captures write both sinks under gate 2's `.rs2` names; they speak render-stream/5 since G55d.
 - `check-gate55.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate55-report/1`:
   gate 5's shape with `materials` (per fixture: the material `counters.json` counts, the oracle's
   shader hash per step and the capture's `content_version`s per item; g55b: per variant the
   material census as measured and predicted, calibrator 8's state, `content_version`s and the
-  raster's pixel classes), `budgets` and `freshness`).
+  raster's pixel classes; g55d: per variant under `g55d` the shader policy, the GRP1 store, receiver
+  budgets, sabotage regions, receiver counter totals, the wire census events and `per_step`:
+  shader and material counts at the settle frame, GRP1 payload bytes first published, `param_f64`
+  bytes on the patch sink and in one full transaction, the hook log's `copy_ns`/`hash_ns`/
+  `scan_ns`/`decode_ns`, and per receiver its shader fetches, material calls and `rs_calls`),
+  `budgets` and `freshness`).
 - `lib/gate55b-expected.ts`: `fixtures/gate55-cim/expected.json`'s types, `asGate5` (one variant
-  as a gate 5 scene) and `rasterize55` (the raster on the 2-bit-alpha target).
+  as a gate 5 scene), `rasterize55` (the raster on the 2-bit-alpha target) and
+  `expectedItemMaterials` (each item's CimSim material and `use_parent_material` per step).
 - `lib/gate55b-checks.ts`: the g55b checks: self-consistency against the Python blend twin's
   probes, the material census (counters before calibrator 8, the hook log per step window after),
-  the pre-/5 capture typing, `runGate55b`.
+  the /5 capture (`evaluateCimCapture5`), `runGate55b`.
+- `lib/gate55-wire.ts`: `loadWire5`, a render-stream/5 recording decoded at version 5 explicitly:
+  per transaction its wire meta (a patch's partial lists, the `param_f64` size) beside its resolved
+  state (shader and material tables, item material fields, canvas modulate), plus the resource
+  records.
+- `lib/gate55d-checks.ts`: the g55d checks: the hook-log replay with D5 (`replayMaterialLog`,
+  `materialLogDivergence`), `classifyMaterialLeg` (D15), the builtin-mode, canvas-modulate,
+  census, freshness, quiet, typed-clean, state-dump and store evaluators, `materialsPerStep`,
+  `runGate55d`.
 - `lib/geometry-raster.ts` (gate 5's) gained a per-mesh `blend` (`add`, `sub`, `mul`,
   `premul_alpha`, `disabled`; absent is `mix`) and `targetAlphaBits`; an alpha-0 shape under an
   alpha-scaled blend covers nothing.
 - `lib/gate55c-checks.ts`: the g55c checks (fixtures/gate55-shader): `expected.json`'s types, the
   refused variant's view, the oracle checks, the capture typing, `runGate55c`. Image, presence,
   freshness and leg comparisons are gate 5's (`lib/gate5-checks.ts`, `lib/geometry-raster.ts`).
-- `test/self-test-gate55b.ts`, `test/self-test-gate55c.ts`: below.
+- `test/self-test-gate55b.ts`, `test/self-test-gate55c.ts`, `test/self-test-gate55d.ts`: below.
 
 ## Gate 5.5 legs and evidence under `--out`
 
@@ -1717,6 +1733,16 @@ mise exec -- pnpm render-stream:gate55 -- \
 | `reference-shader-repeat` | g55c  | `shader/reference-repeat/`   | the same again                                                                                    |
 | `reference-shader-armed`  | g55c  | `shader/reference-armed/`    | rendered, extension armed with `GRC_STREAM_OUT` and a store, oracle off                           |
 | `reference-refused`       | g55c  | `shader-refused/reference/`  | rendered, variant `refused`, oracle on                                                            |
+| `import-receiver-cim`     | g55d  | `cim/import/receiver/`       | the mise editor's `--import` of `receiver/`                                                       |
+| `capture-cim-inline`      | g55d  | `cim/capture-inline/`        | as `capture-cim` with no store and `GRC_RESOURCE_INLINE_MAX_BYTES`/`GRC_RESOURCE_MAX_PAYLOAD_BYTES` 16 MiB: every payload, GRP1 included, a resource record |
+| `receiver-cim`            | g55d  | `cim/receiver/`              | rendered receiver on `capture/`'s full sink and store: `applied.json`, `shots/seq-<n>.png` at the settle seqs |
+| `receiver-cim-patch`      | g55d  | `cim/receiver-patch/`        | the same on the patch sink, plus `state/seq-<n>.json` at the settle seqs                          |
+| `receiver-cim-inline`     | g55d  | `cim/receiver-inline/`       | rendered receiver on `capture-inline/`                                                            |
+| `sabotage-cim-freeze`     | g55d  | `cim/sabotage-freeze/{capture,receiver}/` | a 102-frame capture with `GRC_SABOTAGE=freeze-frame` @11 and its rendered receiver   |
+| `sabotage-cim-omit-material-set-shader` | g55d | `cim/sabotage-omit-material-set-shader/{capture,receiver}/` | `GRC_SABOTAGE=omit-op`, `GRC_SABOTAGE_OP=material_set_shader` @21 |
+| `sabotage-cim-receiver-ignore-material` | g55d | `cim/sabotage-receiver-ignore-material/` | `RS_RECEIVER_SABOTAGE=ignore-material` on `capture/`                          |
+| `capture-cim-modulate-inline`, `receiver-cim-modulate`, `-patch`, `-inline` | g55d | `cim-modulate/…` | the same four with `RS_FIXTURE_VARIANT=modulate`                         |
+| `sabotage-cim-modulate-receiver-ignore-canvas-modulate` | g55d | `cim-modulate/sabotage-receiver-ignore-canvas-modulate/` | `RS_RECEIVER_SABOTAGE=ignore-canvas-modulate` on `cim-modulate/capture/` |
 
 ## Gate 5.5 criteria (g55b)
 
@@ -1739,10 +1765,12 @@ the raster on every pixel (exact; within 1 for `mul` and the .6 strips but `disa
 alpha is exact). `presence-reference` requires every visible rect present, `freshness-reference`
 `fresh` with only the marker redrawn after step 0 (`UC` at 6), `reference-repeat-budget` and
 `armed-transparent` the legs pixel for pixel, alpha included. `leg-class-capture-cim` and
-`leg-class-capture-cim-modulate` require class `unsupported`, `canvas_item_set_material` /
-`unsupported-state` as the only entries, on exactly `typed_entries` at every settle frame (`RI`
-not at 4), each item's `add_rect` commands float32-exact and unmodulated, and every item's
-`content_version` constant but the marker's. `cim-support-legs-exit` requires the import and the
+`leg-class-capture-cim-modulate` require class `success` on render-stream/5 with no unsupported
+entry, each item's `add_rect` commands float32-exact and unmodulated, each item's `material` the
+one CimSim gave it at every settle frame (CimSim's attached ids paired with the wire's in ascending
+order: `RI` null at 4, a new id from 5) and its `use_parent_material` CimSim's (`UC` from 6), and
+every item's `content_version` constant but the marker's (before G55d: `unsupported`, every item
+naming a material typed `unsupported-state`). `cim-support-legs-exit` requires the import and the
 six rendered legs to exit 0.
 
 ## Gate 5.5 criteria (g55c)
@@ -1767,10 +1795,14 @@ each live shader's GRP1 hash, size and include markers, as the oracle reads them
 on the shader fixture (`shader-expected-image-reference`, `shader-presence-reference`,
 `shader-freshness-reference` with `TI` fresh at 1, 3 and 4 and its `content_version` constant,
 `shader-reference-repeat-budget`, `shader-armed-transparent`) and on the refused reference
-(`refused-expected-image-reference`, every region exact). `leg-class-capture-shader` and
-`leg-class-capture-refused` require class `unsupported`, `canvas_item_set_material`
-(`unsupported-state`) as the only unsupported op, on exactly the material items at every settle
-frame, and every item's `content_version` constant but the marker's. `shader-support-legs-exit`
+(`refused-expected-image-reference`, every region exact). On render-stream/5 (since G55d)
+`leg-class-capture-shader` requires class `success` with no unsupported entry and every shader
+entry `ok`; `leg-class-capture-refused` requires class `unsupported`, its only entries item-level
+`canvas_item_set_material` / `unsupported-material` on exactly `TM`, `SC`, `SD`, `GU` and `SP` at
+every settle frame, and its shader entries (wire ids ascending paired with `shader_order`) `ok`
+except the five refused ones, `unsupported` with exactly `shader_scan`'s reason (`shader-time`,
+`shader-screen-texture`, `shader-sdf`, `shader-global-uniform`, `shader-mode`). Both require every
+item's `content_version` constant but the marker's. `shader-support-legs-exit`
 requires the import and rendered legs to exit 0.
 
 Three checks read G55a's shader and material hook log (`evidence/resources.jsonl`, kinds `shader`,
@@ -1788,6 +1820,62 @@ Three checks read G55a's shader and material hook log (`evidence/resources.jsonl
 - `shader-scan` requires every code line's mode, `uses` and status and reason to equal
   `shader_scan`: the five refused reasons, and `inst`'s `instance_uniform`.
 
+## Gate 5.5 criteria (g55d)
+
+Per scene, ids prefixed `cim-` and `cim-modulate-` (G55b amendment 8); every wire read decodes at
+version 5 explicitly (`lib/gate55-wire.ts`). The hook log (`evidence/resources.jsonl`) is replayed
+with D5: a `free` of a shader nulls every material naming it at version + 1 with no line of its
+own, as the log's registry and the mirror do.
+
+- `material-commands`: at every transaction of both capture sinks (and of `capture-inline` against
+  its own log), the shader and material tables equal the replay at the end of that frame: shader
+  id, version, status, reason, mode, source, hash, payload size, builtin descriptor, uses and
+  default textures; material id, version, status, reason, shader and parameter names, types and
+  counts (the log carries no values; a packed array's log type is its element type). Nothing on
+  the wire the log lacks, nothing live in the log missing (D15 `material-log-divergence`).
+- `builtin-modes`: at every settle frame of both sinks each item's `material` and
+  `use_parent_material` are CimSim's, each item in `effective` reaches through item → parent (while
+  `use_parent_material`) → material → shader a builtin descriptor with exactly that blend and light
+  mode, each own CanvasItemMaterial's shader carries `builtin` exactly, and every other item draws
+  with no material.
+- `canvas-modulate-wire`: the root canvas's `modulate` equals `canvas_modulate` at every settle
+  frame of both sinks.
+- `material-census-wire`: each table event CimSim predicts after step 0 lands in exactly one patch
+  transaction at its applied frame: the freed shaders in `removed_shaders` (11, 21, 31), step 3's
+  new shader id, step 4's material in `removed_materials` (41), step 5's recreation as a new id
+  larger than every earlier one (51), and `RI`'s material null at 41 and the new id at 51 on the
+  patch item entry and the full sink.
+- `shader-store`: every `ok`/`payload` shader hash of either sink is `store/sha256/<hash>.grp`,
+  hashing to its name, a valid GRP1 payload of its entry's size, with an `index.jsonl` line typed
+  `shader-code`; `capture-inline` has no store and sends each shader hash as a resource record
+  before the first transaction naming it.
+- `fresh-without-redraw`: `UC`'s `use_parent_material` flips at step 6's applied frame while its
+  `content_version` keeps one value; the patch transaction carries `UC` with commands null; the
+  `receiver-cim` UP region changes at 6 and every receiver region changes exactly when `fresh`.
+- `resource-quiet`: no patch transaction in steps 7's and 9's windows carries a shader or material
+  entry or removal; every honest receiver's `applied.json` shows zero `shaders_created`,
+  `shader_code_sets`, `shader_payload_fetches`, `materials_created`, `param_sets` and
+  `instance_param_sets` there, and over the run creates each shader and material id once.
+- `receiver-vs-reference`: the three honest receivers equal the reference on every pixel of every
+  settle shot, raw per channel with alpha (budget 0). `expected-image-receiver`: the same shots
+  against the blend-aware raster with g55b's classes.
+- `receiver-state-dumps`: `receiver-patch`'s dumps equal the patch recording's resolved /5 state
+  (`statesEqual`, shaders, materials, item material fields and canvas modulate included).
+- `leg-class-capture-cim-inline`: `success`, inline delivery, no material-log-divergence.
+  `leg-class-receiver-cim`, `-patch`, `-inline`: `success` by `classifyLeg` plus D15
+  (`classifyMaterialLeg`: a material-log-divergence is `capture-failure`, a receiver `SHADER ERROR`
+  is `replay-failure` / `shader-compile`). Each sabotage's `leg-class-<leg>` requires
+  `pixel-mismatch` with mismatching regions per step exactly `expected.json` `predictions[<dir>]`,
+  shots aligned by requested sequence (`shot-seqs.txt`).
+- `receiver-typed-clean`: honest receivers record no `applied.json` `unsupported` and no `skipped*`
+  counter; no receiver stdout (sabotages included) has `SHADER ERROR`, `Shader compilation failed`
+  or a script error. `cim-receiver-import-exit`: the receiver import exited 0.
+
+applied.json fields read (`render-stream-receiver-applied/5`): `status`, `end_seen`,
+`transactions[].{seq, frame, record_sha256, rs_calls, resources.{shaders_created,
+shader_code_sets, shader_payload_fetches, materials_created, param_sets, instance_param_sets,
+skipped*}}`, `shots[].seq`, `unsupported[]`; state dumps: the whole resolved /5 `state`.
+
 ## Gate 5.5 self-test
 
 ```bash
@@ -1795,6 +1883,7 @@ mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/sc
 python3 experiments/render-stream/fixtures/gate55-cim/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55c.ts
 python3 experiments/render-stream/fixtures/gate55-shader/make_expected.py --check
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55d.ts
 ```
 
 `self-test-gate55b.ts` checks the rasterizer's blend modes on bytes typed in by hand: `add`, `sub`
@@ -1808,9 +1897,10 @@ an exact `add` pixel off by 1, `UC` not following its parent at 6, `LO` drawn as
 repeat differing in one alpha byte. `material-census` passes before calibrator 8 and, on a hook log
 built from `rs_material_calls`, after it (teardown frees ignored), and fails on a short
 `material_set_param`, a `shader_create` logged a step late, an omitted `material_set_shader` and a
-half-planned calibrator. `leg-class-capture-cim` passes on synthetic recordings of both variants
-and fails on class `success`, `RI` typed at 4, a modulated marker command, a moved `content_version`
-and an `unsupported-op` entry.
+half-planned calibrator. `leg-class-capture-cim` passes on synthetic /5 recordings of both
+variants (wire material ids offset from CimSim's) and fails on class `unsupported`, an
+`unsupported-material` entry, `RI` still naming its freed material at 4, `UC` not inheriting at 6,
+a modulated marker command and a moved `content_version`.
 
 `self-test-gate55c.ts` runs both self-consistency checks on the committed `expected.json` and
 fails them on an off-grid colour, a wrong `fresh`, overlapping regions, a freed shader coming back
@@ -1818,13 +1908,28 @@ and a phase off its settle frame. It runs `oracle-agrees` and `shader-code-model
 made from `expected.json`, then fails them on a parameter typed `int`, a colour written as a
 double instead of float32, `I2`'s default typed `color`, `MR` not freed, a frame off, the repeat's
 bytes differing, `tint`'s hash unchanged at step 3 and include markers on `pal`. The counter,
-stdout, step-log and capture-typing checks run on synthetic values, failing on a short count, an
-unexpected draw, a compile error, a missing step, class `success`, a redrawn item, an untyped item
-and another reason. The hook-log checks run on a log written out from the census itself (passing, with a
+stdout, step-log and /5 capture checks run on synthetic values, failing on a short count, an
+unexpected draw, a compile error, a missing step, class `unsupported` for `capture-shader`, a
+redrawn item, a refused item not typed, a pre-/5 `unsupported-state` entry, the `TIME` shader
+carried `ok` and a base item typed `unsupported-material`. The hook-log checks run on a log written out from the census itself (passing, with a
 teardown free after the quit frame, for both variants and the armed reference's quit). They then
 fail on a `material_set_shader` missing, a version off, `gain`'s erase not typed `nil`, an extra
 material, a line off the main thread, the step-3 code change never hooked, `sh_a` never freed and
 `TIME` not refused.
+
+`self-test-gate55d.ts` synthesizes, from `expected.json`'s `rs_material_calls`, a hook log (D5
+applied silently in its registry), both /5 sinks frame by frame and an `applied.json`, for both
+scenes. `material-commands` passes and fails on the step-1 shader free missing from the log, a
+material version, a shader hash, a parameter type and a material the log lacks (an omitted line is
+ignored); `classifyMaterialLeg`'s precedence is checked. `builtin-modes` fails on `UP`'s sub shader
+reading `add` at 8, `RI` still naming its freed material at 4 and `UC` not inheriting at 6;
+`canvas-modulate-wire` on a white canvas in `modulate`. `material-census-wire` names the step 3, 4
+and 5 events and fails on the recreation a frame late, a removal missing from `removed_materials`
+and a freed shader still on the full sink. `fresh-without-redraw` fails on `UC` redrawn, its
+`content_version` moving and the receiver's `UP` unchanged at 6; `resource-quiet` on a parameter
+set at step 7, a material entry at step 9, a receiver without the /5 counters and a shader created
+twice. The typed-clean, state-dump, sabotage-prediction (through `evaluateLegClass5`), report and
+store (a temporary GRP1 store) evaluators each pass and fail.
 
 # Gate 6
 

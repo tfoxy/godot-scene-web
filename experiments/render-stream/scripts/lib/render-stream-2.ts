@@ -32,11 +32,10 @@
 // a material table, canvas modulate, item material/use_parent_material/instance_params and the
 // param_f64 (f64) block -- too small a delta each (gate4-design.md G4e1: "Renaming files is not
 // part of this contract") to justify duplicating this module. `version` selects the expected
-// magic (GRS2/GRS3/GRS4/GRS5) and the decoded/resolved schema strings. Since G5d the capture, the
-// receiver and every gate checker speak /4 (/3 from G4e2 to G5d; G55d later switches them to /5),
-// so the parameter defaults to 4; /2 and /3 decoding remain only for golden-2/ and golden-3/, and
-// /5 decoding is exercised only against golden-5/ (self-test-rs2.ts passes 2/3/4/5 explicitly per
-// golden directory). Every new command, sabotage kind, the mesh table and the shader/material
+// magic (GRS2/GRS3/GRS4/GRS5) and the decoded/resolved schema strings. Since G55d the capture, the
+// receiver and every gate checker speak /5 (/4 from G5d to G55d, /3 from G4e2 to G5d), so the
+// parameter defaults to 5; /2, /3 and /4 decoding remain only for golden-2/ to golden-4/
+// (self-test-rs2.ts passes 2/3/4/5 explicitly per golden directory). Every new command, sabotage kind, the mesh table and the shader/material
 // tables are always representable regardless of `version` -- an older stream simply never
 // contains them in practice, since the capture never emits them below its own version.
 //
@@ -674,15 +673,11 @@ export const MAGIC: Uint8Array = new Uint8Array([
 export const MAGIC_V3: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x33, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
-// render-stream-4.md: the GRS4 magic, selected by `version: 4`. The capture and receiver still
-// speak /3 (G5d switches them), so `version` keeps defaulting to 3 everywhere below; /4 decoding
-// is exercised only against golden-4/ until then.
+// render-stream-4.md: the GRS4 magic, selected by `version: 4` (golden-4/ only since G55d).
 export const MAGIC_V4: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x34, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
-// render-stream-5.md: the GRS5 magic, selected by `version: 5`. The capture and receiver still
-// speak /4 (G55d switches them), so `version` keeps defaulting to 3 everywhere below; /5
-// decoding is exercised only against golden-5/ until then.
+// render-stream-5.md: the GRS5 magic, selected by `version: 5` -- the default since G55d.
 export const MAGIC_V5: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x35, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -2472,7 +2467,7 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 4,
+  version: 2 | 3 | 4 | 5 = 5,
 ): {
   records: RawRecord[];
   errors: string[];
@@ -2543,7 +2538,7 @@ export interface DecodedRecord {
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 = 4,
+  version: 2 | 3 | 4 | 5 = 5,
 ): {
   record?: DecodedRecord;
   errors: string[];
@@ -2700,7 +2695,7 @@ export function decodeRecord(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 4,
+  version: 2 | 3 | 4 | 5 = 5,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -4107,9 +4102,8 @@ function checkResolvedInvariants(
   const actualUnsupportedMesh = new Set<string>();
   // new at /5 (render-stream-5.md "Derived item-level entries"): unsupported-material is the
   // only one of the three new derived reasons that is independently reconstructable from the
-  // resolved state (an item's effective material -- here, its OWN "material" field; G55w's own
-  // golden-5 vectors never exercise use_parent_material's cross-item effective-material walk,
-  // which is D9's mirror concern, not this codec/validator's -- is unsupported, names an
+  // resolved state (an item's effective material -- D9's use_parent_material walk, below; G55w
+  // checked the item's own "material" only, G55d made it the effective one -- is unsupported, names an
   // unsupported shader, or names a texture parameter or default texture whose entry is
   // unsupported). unknown-material and the instance param-type entry both describe a value the
   // wire could not represent at all (an unknown RID, an unsupported-typed parameter), so there is
@@ -4117,10 +4111,30 @@ function checkResolvedInvariants(
   // only (the referenced item exists, and -- for unknown-material -- its resolved "material" is
   // null) below, in the per-entry loop.
   const actualUnsupportedMaterial = new Set<string>();
+  // G55d (gate5_5-design.md D9, Q4 "Derived item-level entries"): the EFFECTIVE material, as the
+  // engine's _update_dirty_item walks it (renderer_canvas_cull.cpp:2514-2525): an item with
+  // use_parent_material takes its item parent's material, continuing up while that parent also
+  // has use_parent_material; a top-level item (parent a canvas or none) keeps its own.
+  const effectiveMaterial = (item: (typeof items)[number]): number | null => {
+    let material = item.material ?? null;
+    if (!item.use_parent_material) return material;
+    let parent = item.parent;
+    const seen = new Set<number>([item.id]);
+    while (parent !== null && parent.kind === "item" && !seen.has(parent.id)) {
+      seen.add(parent.id);
+      const p = byId.get(parent.id);
+      if (p === undefined) break;
+      material = p.material ?? null;
+      if (!p.use_parent_material) break;
+      parent = p.parent;
+    }
+    return material;
+  };
   if (isV5) {
     for (const item of items) {
-      if (item.material === undefined || item.material === null) continue;
-      const mat = materialById.get(item.material);
+      const effective = effectiveMaterial(item);
+      if (effective === null) continue;
+      const mat = materialById.get(effective);
       if (mat === undefined) continue;
       let unsupported = mat.status === "unsupported";
       if (!unsupported && mat.shader !== null) {
@@ -4387,7 +4401,7 @@ function checkResolvedInvariants(
 
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 4,
+  version: 2 | 3 | 4 | 5 = 5,
 ): string[] {
   const isV5 = version === 5;
   const isV4 = isV5 || version === 4;
@@ -5198,7 +5212,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 4,
+  version: 2 | 3 | 4 | 5 = 5,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];

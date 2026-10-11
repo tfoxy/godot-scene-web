@@ -12,8 +12,9 @@
 // 2. evaluateOracleAgrees and evaluateOracleShaderCode on oracle lines made from expected.json
 //    (pass) and with a type, a value one float32 ulp off, a status, a frame, a hash, an include
 //    marker or one leg's bytes off (each fails).
-// 3. evaluateCounters, evaluateShaderLogClean, evaluateStepLog and evaluateShaderCaptureTyped on
-//    synthetic values.
+// 3. evaluateCounters, evaluateShaderLogClean, evaluateStepLog and evaluateShaderCapture5 on
+//    synthetic render-stream/5 values (capture-shader success, capture-refused unsupported with
+//    its five refused items and shaders typed), each with a failing case.
 // 4. The shader/material hook log (G55a): evaluateMaterialCensus on a log synthesized from the
 //    census itself (passes, with a teardown free after the quit frame), then with a line missing, a
 //    version off, a parameter's type wrong, an extra material and a line off the main thread;
@@ -38,7 +39,7 @@ import {
   evaluateMaterialCensus,
   evaluateOracleAgrees,
   evaluateOracleShaderCode,
-  evaluateShaderCaptureTyped,
+  evaluateShaderCapture5,
   evaluateShaderHookParity,
   evaluateShaderLogClean,
   evaluateShaderScan,
@@ -49,6 +50,7 @@ import {
   type OracleLine,
   type OracleLog,
   refusedView,
+  type ShaderTableView,
 } from "../lib/gate55c-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -279,6 +281,7 @@ function oracleCases(expected: Gate55ShaderExpected): void {
 
 function syntheticCapture(
   expected: Gate55ShaderExpected,
+  refusedItems: readonly string[] = [],
 ): Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full"> {
   const idOf = (name: string) => expected.creation_order.indexOf(name) + 2;
   const transactions = expected.steps.map((s, k) => ({
@@ -290,16 +293,16 @@ function syntheticCapture(
         content_version: name === "Marker" ? s.step + 1 : 1,
         commands: [],
       })),
-      unsupported: expected.typed.items.map((name) => ({
+      unsupported: refusedItems.map((name) => ({
         op: "canvas_item_set_material",
         item: idOf(name),
-        reason: "unsupported-state",
+        reason: "unsupported-material",
       })),
     },
     sha256: "",
   }));
   return {
-    result_class: "unsupported",
+    result_class: refusedItems.length > 0 ? "unsupported" : "success",
     reasons: [],
     full: {
       path: "synthetic",
@@ -310,6 +313,21 @@ function syntheticCapture(
       transactions,
     } as unknown as RecordingSummary,
   };
+}
+
+/** Shader tables over the steps: every shader of shader_order live (ids 10 + its index, so the
+ * check must pair by order), status and reason from shader_scan. */
+function syntheticShaderTables(
+  expected: Gate55ShaderExpected,
+): ShaderTableView[] {
+  return expected.steps.map((s) => ({
+    frame: s.settle_frame,
+    shaders: expected.shader_order.map((name, k) => ({
+      id: 10 + k,
+      status: expected.shader_scan[name]?.reason ? "unsupported" : "ok",
+      reason: expected.shader_scan[name]?.reason ?? null,
+    })),
+  }));
 }
 
 function captureCases(expected: Gate55ShaderExpected): void {
@@ -372,42 +390,83 @@ function captureCases(expected: Gate55ShaderExpected): void {
   );
 
   const good = syntheticCapture(expected);
+  const tables = syntheticShaderTables(expected);
   passes(
     "leg-class-capture-shader",
-    evaluateShaderCaptureTyped(expected, good).problems,
+    evaluateShaderCapture5(expected, [], good, tables).problems,
   );
   const refused = refusedView(expected);
+  const refusedItems = Object.keys(expected.variants.refused.refused_items);
+  const refusedTables = syntheticShaderTables(refused);
   passes(
     "leg-class-capture-refused",
-    evaluateShaderCaptureTyped(refused, syntheticCapture(refused)).problems,
+    evaluateShaderCapture5(
+      refused,
+      refusedItems,
+      syntheticCapture(refused, refusedItems),
+      refusedTables,
+    ).problems,
   );
   fails(
-    "leg-class-capture-shader (class success)",
-    evaluateShaderCaptureTyped(expected, { ...good, result_class: "success" })
-      .problems,
-    "class success",
+    "leg-class-capture-shader (class unsupported)",
+    evaluateShaderCapture5(
+      expected,
+      [],
+      { ...good, result_class: "unsupported" },
+      tables,
+    ).problems,
+    "class unsupported",
   );
   const redrawn = clone(good);
   redrawn.full.transactions[1].meta.items[0].content_version = 2;
   fails(
     "leg-class-capture-shader (TI redrawn)",
-    evaluateShaderCaptureTyped(expected, redrawn).problems,
+    evaluateShaderCapture5(expected, [], redrawn, tables).problems,
     "TI's content_version",
   );
-  const missing = clone(good);
+  const missing = syntheticCapture(refused, refusedItems);
   missing.full.transactions[4].meta.unsupported.pop();
   fails(
-    "leg-class-capture-shader (an item not typed)",
-    evaluateShaderCaptureTyped(expected, missing).problems,
-    "step 4: typed items",
+    "leg-class-capture-refused (a refused item not typed)",
+    evaluateShaderCapture5(refused, refusedItems, missing, refusedTables)
+      .problems,
+    "step 4: unsupported-material items",
   );
-  const reason = clone(good);
+  const reason = syntheticCapture(refused, refusedItems);
   reason.full.transactions[0].meta.unsupported[0].reason =
-    "unsupported-op" as never;
+    "unsupported-state" as never;
   fails(
-    "leg-class-capture-shader (another reason)",
-    evaluateShaderCaptureTyped(expected, reason).problems,
-    "unsupported-op",
+    "leg-class-capture-refused (pre-/5 unsupported-state)",
+    evaluateShaderCapture5(refused, refusedItems, reason, refusedTables)
+      .problems,
+    "unsupported-state",
+  );
+  const okTime = clone(refusedTables);
+  const timeIdx = refused.shader_order.indexOf("time");
+  for (const t of okTime)
+    t.shaders = t.shaders.map((x, k) =>
+      k === timeIdx ? { ...x, status: "ok", reason: null } : x,
+    );
+  fails(
+    "leg-class-capture-refused (the TIME shader carried ok)",
+    evaluateShaderCapture5(
+      refused,
+      refusedItems,
+      syntheticCapture(refused, refusedItems),
+      okTime,
+    ).problems,
+    "shader time",
+  );
+  const typedBase = syntheticCapture(expected, ["TI"]);
+  fails(
+    "leg-class-capture-shader (an item typed unsupported-material)",
+    evaluateShaderCapture5(
+      expected,
+      [],
+      { ...typedBase, result_class: "success" },
+      tables,
+    ).problems,
+    "unsupported-material",
   );
 }
 

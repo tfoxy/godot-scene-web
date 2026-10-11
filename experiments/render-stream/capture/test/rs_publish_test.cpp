@@ -29,6 +29,7 @@
 #include "rs2_snapshot.h"
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
+#include "rs_shader_payload.h"
 #include "rs_publish.h"
 #include "rs_resource_store.h"
 #include "rs_sha256.h"
@@ -1188,6 +1189,189 @@ void test_stale_texture() {
 
 }  // namespace
 
+// G55d (render-stream-5.md "Session", "Features"): a V5 template starts every sink with GRS5 and a
+// "render-stream/5" session whose features are golden-5's lists (headless resources aside).
+void test_start_v5() {
+  const Features f = gate2_features(true, ProtocolVersion::V5);
+  const std::vector<std::string> item_state = {
+      "behind",          "children",       "clip",           "custom_rect",
+      "draw_index",      "instance_params", "material",      "modulate",
+      "parent",          "self_modulate",  "texture_filter", "texture_repeat",
+      "transform",       "use_parent_material", "visibility_layer", "visible",
+      "z_index",         "z_relative"};
+  check(f.item_state == item_state, "V5 item_state gains instance_params, material, use_parent_material");
+  check(f.canvas_state == std::vector<std::string>({"modulate", "transform"}), "V5 canvas_state");
+  check(f.resources == std::vector<std::string>(
+                           {"material", "mesh", "shader", "texture_2d", "texture_2d_placeholder"}),
+        "V5 resources gain material and shader (headless: no canvas_texture)");
+  check(f.observed_unsupported_ops ==
+            std::vector<std::string>({"canvas_item_add_animation_slice",
+                                      "canvas_item_add_lcd_texture_rect_region",
+                                      "canvas_item_add_multimesh", "canvas_item_add_particles",
+                                      "canvas_item_attach_skeleton",
+                                      "canvas_light_attach_to_canvas"}),
+        "V5 observed_unsupported_ops: canvas_item_set_material out, canvas_light in");
+  check(f.unobserved ==
+            std::vector<std::string>(
+                {"canvas_item_set_canvas_group_mode", "canvas_item_set_copy_to_backbuffer",
+                 "canvas_item_set_light_mask", "canvas_item_set_sort_children_by_y",
+                 "canvas_item_set_visibility_notifier", "canvas_texture_set_shading_parameters",
+                 "global_shader_parameter_add", "global_shader_parameter_remove",
+                 "global_shader_parameter_set", "global_shader_parameter_set_override",
+                 "material_set_next_pass", "material_set_render_priority", "shader_set_path_hint",
+                 "texture_set_size_override", "viewport_remove_canvas",
+                 "viewport_set_canvas_cull_mask", "viewport_set_global_canvas_transform",
+                 "viewport_set_snap_2d_transforms_to_pixel",
+                 "viewport_set_snap_2d_vertices_to_pixel"}),
+        "V5 unobserved: golden-5's nineteen");
+  MemoryRecordSink full;
+  full.open("memory://full");
+  Publisher publisher(&full, nullptr, SabotageConfig(), golden_policy());
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V5;
+  tmpl.features = f;
+  tmpl.materials.shader_policy = grc::rs2::ShaderPolicy::Params;
+  check(publisher.start(tmpl), "start() with a V5 template");
+  const std::vector<std::uint8_t> magic5 = magic(ProtocolVersion::V5);
+  check(magic5.size() == 8 && magic5[3] == 0x35 && nth_write(full, 0) == magic5,
+        "the sink starts with the /5 magic GRS5");
+  const std::vector<std::uint8_t> session = nth_write(full, 1);
+  check(contains(session, "\"protocol\":\"render-stream/5\"") &&
+            contains(session, "\"materials\":{\"shader_policy\":\"params\"}") &&
+            contains(session, "\"render-stream-shader/1\""),
+        "the session says render-stream/5, declares the shader policy and the GRP1 payload");
+}
+
+// G55d (render-stream-5.md "Shader payload"): GRP1 code payloads share the texture and mesh
+// payloads' store, inline threshold and order; only `ok` shaders whose code travels ("payload").
+struct ShaderScene {
+  Mirror m;
+  std::string hash_a, hash_b, hash_time;
+  std::uint64_t bytes_a = 0;
+  std::uint64_t code_a = 0;
+  grc::rs2::ShaderPolicy policy = grc::rs2::ShaderPolicy::Source;
+
+  explicit ShaderScene(grc::rs2::ShaderPolicy p = grc::rs2::ShaderPolicy::Source) : policy(p) {
+    m.reset();
+    m.set_root(kRootViewport, kRootCanvas, kIdentityXform);
+    m.set_shader_policy(policy);
+  }
+  static grc::rs::ShaderCodeInput code(const std::string &text, const char *status = "ok",
+                                       const char *reason = "") {
+    grc::rs::ShaderCodeInput input;
+    input.copy.status = status;
+    input.copy.reason = reason;
+    input.copy.mode = "canvas_item";
+    auto payload = std::make_shared<grc::rs::PayloadBytes>(grc::rs::encode_payload(text));
+    input.copy.hash = grc::sha256_hex(payload->data(), payload->size());
+    input.copy.payload_bytes = static_cast<std::int64_t>(payload->size());
+    input.copy.code_bytes = static_cast<std::int64_t>(text.size());
+    input.bytes = std::move(payload);
+    return input;
+  }
+  Captured frame(int f) {
+    const std::uint64_t u = static_cast<std::uint64_t>(f);
+    if (f == 1) {
+      const auto a = code("shader_type canvas_item;\nvoid fragment() { COLOR = vec4(1.0); }\n");
+      hash_a = a.copy.hash;
+      bytes_a = a.bytes->size();
+      code_a = static_cast<std::uint64_t>(a.copy.code_bytes);
+      const auto t = code("shader_type canvas_item;\nvoid fragment() { COLOR.r = TIME; }\n",
+                          "unsupported", "shader-time");
+      hash_time = t.copy.hash;
+      m.shader_create_from_code(700, a, u);
+      m.shader_create_from_code(701, t, u);
+      m.material_create_from_shader(800, 700, u);
+      m.canvas_item_create(100, u);
+      m.set_parent(100, kRootCanvas, u);
+      m.add_rect(100, {0, 0, 8, 8}, kRed, false, u);
+      m.set_material(100, 800, u);
+    } else if (f == 2) {
+      const auto b = code("shader_type canvas_item;\nvoid fragment() { COLOR = vec4(0.5); }\n");
+      hash_b = b.copy.hash;
+      m.shader_set_code(700, b, u);
+    }
+    return m.snapshot(0, u);
+  }
+};
+
+void test_shader_payloads() {
+  const std::string dir = tmp_dir("shader-store");
+  grc::rs::ResourceStore store;
+  std::string error;
+  check(store.open(dir, &error), "open the shader store");
+  MemoryRecordSink full;
+  MemoryRecordSink patch;
+  full.open("memory://full");
+  patch.open("memory://patch");
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V5;
+  tmpl.features = gate2_features(true, ProtocolVersion::V5);
+  Publisher publisher(&full, &patch, SabotageConfig(), golden_policy(0), &store);
+  publisher.start(tmpl);
+  ShaderScene scene;
+  for (int f = 1; f <= 3; ++f) {
+    check(publisher.publish(scene.frame(f), static_cast<std::uint64_t>(f), 0),
+          "publish a shader frame " + std::to_string(f));
+  }
+  publisher.finish(EndReason::Shutdown);
+  check(store.hashes() == 2, "the store holds both versions of the ok shader, never the TIME one");
+  for (const std::string &hash : {scene.hash_a, scene.hash_b}) {
+    const std::vector<std::uint8_t> file = read_bytes(dir + "/sha256/" + hash + ".grp");
+    check(!file.empty() && sha_of(file) == hash,
+          "store file " + hash.substr(0, 8) + ".grp hashes to its name");
+  }
+  const std::string index = read_text(dir + "/index.jsonl");
+  check(index.find("{\"hash\":\"" + scene.hash_a + "\",\"bytes\":" +
+                   std::to_string(scene.bytes_a) + ",\"type\":\"shader-code\",\"code_bytes\":" +
+                   std::to_string(scene.code_a) + ",\"first_frame\":1}") != std::string::npos,
+        "index.jsonl: a shader-code line with its code length and first frame");
+  check(read_bytes(dir + "/sha256/" + scene.hash_time + ".grp").empty(),
+        "an unsupported shader's code is not stored");
+
+  // Every payload inline: each ok shader version travels once, before its first transaction; the
+  // frame-2 patch carries only the shader entry.
+  MemoryRecordSink inline_full;
+  MemoryRecordSink inline_patch;
+  inline_full.open("memory://inline-full");
+  inline_patch.open("memory://inline-patch");
+  Publisher all_inline(&inline_full, &inline_patch, SabotageConfig(), golden_policy(16777216),
+                       nullptr);
+  all_inline.start(tmpl);
+  ShaderScene scene2;
+  for (int f = 1; f <= 3; ++f) {
+    check(all_inline.publish(scene2.frame(f), static_cast<std::uint64_t>(f), 0),
+          "inline shader publish " + std::to_string(f));
+  }
+  all_inline.finish(EndReason::Shutdown);
+  check(record_kinds(inline_full) == "rtrtte" && record_kinds(inline_patch) == "rtrtte",
+        "a; seq 1; b; seq 2; seq 3; end -- in each sink");
+  const std::vector<std::uint8_t> patch2 = nth_write(inline_patch, 5);
+  check(contains(patch2, "\"shaders\":[{\"id\":1,") && contains(patch2, "\"items\":[]") &&
+            contains(patch2, "\"materials\":[]"),
+        "the frame-2 patch carries the shader entry and no item or material");
+
+  // GRC_SHADER_POLICY=params: no code byte anywhere -- no store file, no resource record.
+  const std::string pdir = tmp_dir("shader-store-params");
+  grc::rs::ResourceStore pstore;
+  check(pstore.open(pdir, &error), "open the params store");
+  MemoryRecordSink pfull;
+  pfull.open("memory://params-full");
+  Session ptmpl = tmpl;
+  ptmpl.materials.shader_policy = grc::rs2::ShaderPolicy::Params;
+  Publisher params(&pfull, nullptr, SabotageConfig(), golden_policy(16777216), &pstore);
+  params.start(ptmpl);
+  ShaderScene scene3(grc::rs2::ShaderPolicy::Params);
+  for (int f = 1; f <= 3; ++f) {
+    params.publish(scene3.frame(f), static_cast<std::uint64_t>(f), 0);
+  }
+  params.finish(EndReason::Shutdown);
+  check(pstore.hashes() == 0 && record_kinds(pfull) == "ttte",
+        "params: no stored payload and no resource record");
+  check(contains(nth_write(pfull, 2), "\"source\":\"withheld\""),
+        "params: the shader entry is withheld");
+}
+
 int main() {
   test_start_two_sinks();
   test_sink_presence();
@@ -1207,6 +1391,8 @@ int main() {
   test_store_directory();
   test_inline_records();
   test_mesh_payloads();
+  test_start_v5();
+  test_shader_payloads();
   test_wrong_hash();
   test_stale_texture();
   if (g_failures != 0) {

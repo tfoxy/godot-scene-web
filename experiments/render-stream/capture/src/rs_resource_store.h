@@ -5,10 +5,14 @@
 //                               (temporary file + rename)
 //   <dir>/sha256/<hash>.grm     one render-stream-mesh/1 payload per hash (G5e, render-stream-4.md
 //                               "Mesh payload"), the same way
+//   <dir>/sha256/<hash>.grp     one render-stream-shader/1 payload per hash (G55d,
+//                               render-stream-5.md "Shader payload"), the same way
 //   <dir>/index.jsonl           per hash, in the order they were stored:
 //                               {"hash","bytes","type":"texture-2d","format","width","height",
 //                               "mipmaps","first_frame"} or {"hash","bytes","type":"mesh-surface",
 //                               "primitive","format","vertex_count","index_count","first_frame"}
+//                               or {"hash","bytes","type":"shader-code","code_bytes",
+//                               "first_frame"}
 //
 // The publisher (rs_publish.h) puts every `ok` image hash and (G5e) every `ok` mesh's surface
 // hash of each published snapshot that the store lacks. A write failure is the caller's sticky `resource-store-failed`.
@@ -81,6 +85,10 @@ class ResourceStore {
   // Stores a complete GRM1 payload whose SHA-256 is `surface.hash` (G5e), as put() does.
   Put put_mesh(const rs2::MeshSurface &surface, const std::vector<std::uint8_t> &payload,
                std::uint64_t frame, std::string *error);
+  // Stores a complete GRP1 payload whose SHA-256 is `shader.hash` (G55d, render-stream-5.md
+  // "Shader payload"), as put() does: `<dir>/sha256/<hash>.grp`, index type "shader-code".
+  Put put_shader(const rs2::ShaderEntry &shader, const std::vector<std::uint8_t> &payload,
+                 std::uint64_t frame, std::string *error);
 
   bool has(const std::string &hash) const { return hashes_.count(hash) != 0; }
   std::uint64_t hashes() const { return hashes_.size(); }
