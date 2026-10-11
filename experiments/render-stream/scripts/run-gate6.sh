@@ -21,6 +21,9 @@
 # @21 (each a capture plus a rendered receiver) and the receiver sabotages ignore-clip and
 # stale-texture on capture-scene. Every rendered leg shoots the settle frames and the
 # intermediate frames 13, 53 and 93 (Q6c); receivers shoot the seqs published at those frames.
+# g6h (G6h, lib/gate6h-legs.sh): fixtures/gate6-hd (1920x1080, canvas_items) under <out>/hd/: its
+# native capture, references at 1920x1080 (repeat, armed) and 960x540 (repeat), and 1920x1080
+# receivers on both sinks.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -34,6 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 SCENE_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate6-scene"
+HD_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate6-hd"
 FIXTURE_DIR="$SCENE_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
@@ -44,7 +48,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g6a)
+LANDED_GROUPS=(g6a g6h)
 KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p)
 
 EXTENSION=""
@@ -367,9 +371,13 @@ run_g6a() {
 	GS_RUN_DIR=""
 }
 
+# shellcheck source=lib/gate6h-legs.sh
+source "$SCRIPT_DIR/lib/gate6h-legs.sh"
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g6a) run_g6a ;;
+	g6h) run_g6h ;;
 	esac
 done
 
