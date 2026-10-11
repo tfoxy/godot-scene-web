@@ -539,6 +539,16 @@ run_g1c() {
 	live_receiver "$OUT/sabotage-drop-message" rendered
 	finish_live_host "$OUT/sabotage-drop-message/host"
 
+	# G6r self-test (gate6-design.md "G6r"): rate control on the gate 1 fixture. GRC_PUBLISH_FPS=30
+	# on a 60 fps host/receiver; file sinks (always on, start_live_host) must publish one
+	# transaction per frame exactly as every other g1c leg's, unaffected by the live connection's
+	# own pacing. check-gate1.ts's checkLiveRate30 verifies the published rate lands near 30 fps
+	# and that the file sink is untouched.
+	echo "run-gate1: live-rate-30 (GRC_PUBLISH_FPS=30; G6r self-test)"
+	start_live_host "$OUT/live-rate-30/host" GRC_PUBLISH_FPS=30
+	live_receiver "$OUT/live-rate-30" rendered
+	finish_live_host "$OUT/live-rate-30/host"
+
 	gs_teardown "$OUT/gamescope-g1c"
 	GS_RUN_DIR=""
 }

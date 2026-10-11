@@ -1,0 +1,215 @@
+class_name RsPerf
+extends RefCounted
+## Receiver perf instrumentation (gate6-design.md Q3d, Q5 "Perf (G6r)"), gated by
+## RS_RECEIVER_PERF_OUT: writes `render-stream-receiver-perf/1` -- histograms for `decode_us`
+## (RsApplier.accept_record: decode and patch resolution, combined; `resolve_us` is not split out
+## separately in this increment, which does not touch rs_applier.gd), `apply_us` (RsApplier.
+## apply_state: apply and upload, combined; `upload_us` is likewise not split, though upload
+## bytes are already in applied.json's resources_summary and are not duplicated here),
+## `fetch_us` (reusing the fetch stage's own existing start_us/end_us, never re-timed) and
+## `frame_interval_us`; counts of received/applied/submitted transactions (from the caller's own
+## _acks_sent, not re-tracked here); `gpu_render_ms`/`cpu_render_ms` with a status (`measured` on
+## a rendered desktop-GL viewport with RenderingServer.viewport_set_measure_render_time enabled,
+## `skipped-headless` under --headless, matching receiver.gd's own existing headless-detection
+## vocabulary at _viewport_report.size_check); and a one-line-per-second timeline carrying RSS
+## (read directly from /proc/self/statm through FileAccess, D9: process RSS, never an engine
+## counter), RenderingServer.get_rendering_info's texture/buffer/video memory, and the disk
+## cache's entry count and bytes (RsResourceCache.entries()/bytes(), the only cache totals
+## receiver.gd exposes without reaching into RsResourceCache's own fields).
+##
+## Memory-cache (in-process) entries/bytes, pipeline compilation counts and live RIDs per kind are
+## declared `unavailable` rather than guessed: they would need new accessors on RsResourceCache or
+## RsApplier, both out of this increment's file list (receiver.gd and rs_perf.gd only).
+
+const SCHEMA: String = "render-stream-receiver-perf/1"
+
+## A fixed-size log-linear histogram (16 sub-buckets per octave, 25 octaves -> 400 buckets,
+## covering integer microsecond samples up to 2^25 - 1 before the top bucket clamps), the same
+## bucket scheme as capture/src/rs_histogram.h (Q3d), reimplemented here since the receiver is a
+## separate GDScript process with no access to the C++ library.
+class Histogram:
+	const OCTAVES: int = 25
+	const SUB_BUCKETS: int = 16
+	const BUCKET_COUNT: int = OCTAVES * SUB_BUCKETS  # 400
+
+	var buckets: Array[int] = []
+	var count: int = 0
+	var sum: int = 0
+	var minimum: int = -1
+	var maximum: int = 0
+
+	func _init() -> void:
+		buckets.resize(BUCKET_COUNT)
+		buckets.fill(0)
+
+	## octave = floor(log2(value)) (clamped to OCTAVES - 1); sub = floor(16 * (value/2^octave - 1))
+	## within that octave (clamped to SUB_BUCKETS - 1). Values 0 and 1 both land in bucket 0.
+	static func bucket_index(value: int) -> int:
+		if value <= 1:
+			return 0
+		var value_f: float = float(value)
+		var log2_value: float = log(value_f) / log(2.0)
+		var octave_f: float = floor(log2_value)
+		var octave: int = int(octave_f)
+		if octave >= OCTAVES:
+			return BUCKET_COUNT - 1
+		var base: int = 1 << octave
+		# A value exactly on a power-of-two boundary can round `octave` up by float error.
+		if base > value:
+			octave -= 1
+			base = 1 << octave
+		elif (base << 1) <= value:
+			octave += 1
+			if octave >= OCTAVES:
+				return BUCKET_COUNT - 1
+			base = 1 << octave
+		var remainder: int = value - base
+		var sub_numerator: int = remainder * SUB_BUCKETS
+		var sub: int = sub_numerator / base
+		if sub >= SUB_BUCKETS:
+			sub = SUB_BUCKETS - 1
+		return octave * SUB_BUCKETS + sub
+
+	static func bucket_lower_bound(index: int) -> int:
+		var octave: int = index / SUB_BUCKETS
+		var sub: int = index % SUB_BUCKETS
+		var base: int = 1 << octave
+		var numerator: int = base * sub
+		return base + numerator / SUB_BUCKETS
+
+	func add(value: int) -> void:
+		if value < 0:
+			value = 0
+		count += 1
+		sum += value
+		minimum = value if minimum < 0 else min(minimum, value)
+		maximum = max(maximum, value)
+		buckets[bucket_index(value)] += 1
+
+	func to_dict() -> Dictionary:
+		var bucket_pairs: Array = []
+		for i in range(BUCKET_COUNT):
+			if buckets[i] > 0:
+				bucket_pairs.append([bucket_lower_bound(i), buckets[i]])
+		return {
+			"count": count,
+			"sum": sum,
+			"min": 0 if minimum < 0 else minimum,
+			"max": maximum,
+			"mean": (float(sum) / count) if count > 0 else 0.0,
+			"buckets": bucket_pairs,
+		}
+
+
+var decode_us := Histogram.new()
+var apply_us := Histogram.new()
+var fetch_us := Histogram.new()
+var frame_interval_us := Histogram.new()
+
+var _last_frame_us: int = -1
+var _start_ms: int = 0
+var _last_timeline_second: int = -1
+var _timeline: Array[Dictionary] = []
+## Set once, the first time a render-time query is attempted (Godot's own
+## viewport_set_measure_render_time must run before the first measured frame).
+var _measure_enabled: bool = false
+
+const BYTES_PER_PAGE_STATM_UNIT: int = 4096  # overridden by the actual page size, below
+
+
+func _init() -> void:
+	_start_ms = Time.get_ticks_msec()
+
+
+## Call once per _process/_process_live callback, before anything else this frame does.
+func record_frame_interval() -> void:
+	var now_us: int = Time.get_ticks_usec()
+	if _last_frame_us >= 0:
+		frame_interval_us.add(now_us - _last_frame_us)
+	_last_frame_us = now_us
+
+
+## Enables render-time measurement on `viewport_rid`, once. A no-op (and the eventual query stays
+## at its default 0.0) under a dummy/headless rendering method; receiver.gd gates the resulting
+## status on DisplayServer.get_name(), matching its own existing headless vocabulary.
+func enable_render_time_measurement(viewport_rid: RID) -> void:
+	if _measure_enabled:
+		return
+	_measure_enabled = true
+	RenderingServer.viewport_set_measure_render_time(viewport_rid, true)
+
+
+## {"status", "value"} for one of the two measured_render_time getters. `headless` is
+## DisplayServer.get_name() == "headless" (receiver.gd's own check, reused rather than
+## reintroduced here).
+func render_time(viewport_rid: RID, headless: bool, gpu: bool) -> Dictionary:
+	if headless:
+		return {"status": "skipped-headless", "value": null}
+	var ms: float = (RenderingServer.viewport_get_measured_render_time_gpu(viewport_rid) if gpu
+		else RenderingServer.viewport_get_measured_render_time_cpu(viewport_rid))
+	return {"status": "measured", "value": ms}
+
+
+## RSS in bytes, read directly from /proc/self/statm (field 2, in pages; D9: process RSS, never
+## an engine memory counter). 0 when unreadable (e.g. not on Linux).
+static func read_rss_bytes() -> int:
+	var file: FileAccess = FileAccess.open("/proc/self/statm", FileAccess.READ)
+	if file == null:
+		return 0
+	var line: String = file.get_line()
+	file.close()
+	var parts: PackedStringArray = line.split(" ", false)
+	if parts.size() < 2 or not parts[1].is_valid_int():
+		return 0
+	# /proc/self/statm's unit is the kernel page size, almost always 4096 on x86-64 Linux; there
+	# is no portable GDScript getpagesize(), so this is declared, not guessed, as a known
+	# approximation rather than silently assumed exact.
+	return parts[1].to_int() * BYTES_PER_PAGE_STATM_UNIT
+
+
+## Appends one timeline entry at most once per whole second since this RsPerf was created.
+func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int) -> void:
+	var elapsed_s: int = (Time.get_ticks_msec() - _start_ms) / 1000
+	if elapsed_s <= _last_timeline_second:
+		return
+	_last_timeline_second = elapsed_s
+	_timeline.append({
+		"t_us": Time.get_ticks_usec(),
+		"rss_bytes": read_rss_bytes(),
+		"texture_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED),
+		"buffer_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED),
+		"video_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED),
+		"cache_entries_disk": cache_entries_disk,
+		"cache_bytes_disk": cache_bytes_disk,
+		# Declared, not guessed (D9): pipeline compilations and live RIDs per kind would need new
+		# RsApplier/RsResourceCache accessors, out of this increment's file list.
+		"pipeline_compilations": null,
+		"live_rids": null,
+		"cache_entries_memory": null,
+		"cache_bytes_memory": null,
+	})
+
+
+## The full render-stream-receiver-perf/1 document. `counts` is the caller's own
+## {"received", "applied", "submitted"} (receiver.gd's _acks_sent, not duplicated here), or null
+## in file mode, which has no acks (D9: declared, not guessed, rather than a misleading all-zero).
+func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
+	return {
+		"schema": SCHEMA,
+		"histograms": {
+			"decode_us": decode_us.to_dict(),
+			"apply_us": apply_us.to_dict(),
+			"fetch_us": fetch_us.to_dict(),
+			"frame_interval_us": frame_interval_us.to_dict(),
+		},
+		"unavailable_stages": [
+			{"stage": "resolve_us", "reason": "combined with decode_us inside RsApplier.accept_record, which G6r does not split"},
+			{"stage": "upload_us", "reason": "combined with apply_us inside RsApplier.apply_state, which G6r does not split (upload bytes are in resources_summary)"},
+		],
+		"render_time": {
+			"cpu_render_ms": render_time(viewport_rid, headless, false),
+			"gpu_render_ms": render_time(viewport_rid, headless, true),
+		},
+		"counts": counts,
+		"timeline": _timeline,
+	}

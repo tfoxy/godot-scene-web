@@ -565,11 +565,20 @@ struct Hub::Conn {
   std::optional<rs::Captured> stale;  // stale-coalesce: the first missed target since the last send
   std::set<std::string> carried;  // G2b2: payload hashes this connection already carried inline
   std::uint64_t stale_frame = 0;
+  std::uint64_t stale_ns = 0;  // the frame callback's time when `stale` was captured (G6r Q3c)
+  // Rate control (G6r): the schedule starts at this connection's first send; `started` is false
+  // until then, so that very first send (right after the hello) is never rate-gated.
+  bool schedule_started = false;
+  std::uint64_t t0_ns = 0;
+  std::uint64_t next_due_ns = 0;
   EndStats stats;
   struct Sent {
     std::uint64_t ns = 0;
     std::uint64_t frame = 0;
     unsigned acked = 0;  // bit per stage already timed
+    // G6r Q3c "Staleness": the frame callback's time the sent snapshot was captured at (equal to
+    // `ns` except for a stale-coalesce send, which carries an earlier capture).
+    std::uint64_t capture_ns = 0;
   };
   std::map<std::uint64_t, Sent> sent_at;
   std::vector<std::uint64_t> latency[3];
@@ -784,6 +793,13 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
               sent->second.acked |= bit;
               c.latency[stage_index(message.stage)].push_back(
                   (event.t_ns - std::min(event.t_ns, sent->second.ns)) / 1000);
+              // Q3d staleness_us[applied|submitted] (G6r): the host-clock age of what the
+              // receiver just applied or submitted, from when its snapshot was captured (not
+              // merely when it was sent -- a stale-coalesce send's capture can be far earlier).
+              if (message.stage == AckStage::Applied || message.stage == AckStage::Submitted) {
+                staleness_hist_[stage_index(message.stage)].add(
+                    (event.t_ns - std::min(event.t_ns, sent->second.capture_ns)) / 1000);
+              }
             }
           }
         }
@@ -802,8 +818,13 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
               ++c.s.resyncs;
             }
             if (sent != c.sent_at.end()) {
-              c.credit_rtt.push_back((event.t_ns - std::min(event.t_ns, sent->second.ns)) / 1000);
+              const std::uint64_t rtt_us =
+                  (event.t_ns - std::min(event.t_ns, sent->second.ns)) / 1000;
+              c.credit_rtt.push_back(rtt_us);
               c.credit_frames.push_back(frame - std::min(frame, sent->second.frame));
+              // Q3d credit_rtt_us[stage] (G6r): keyed by this connection's own credit stage (a
+              // resync answers the credit too, with no ack `stage` of its own to key by).
+              credit_rtt_hist_[stage_index(c.credit_stage)].add(rtt_us);
             }
           } else {
             ignored = "stale";
@@ -836,16 +857,26 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
   }
 }
 
-bool Hub::wants_snapshot(std::uint64_t frame) const {
+bool Hub::wants_snapshot(std::uint64_t frame, std::uint64_t now_ns) const {
   const bool ignore_credit =
       config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
   const bool stale_coalesce =
       config_.stale_coalesce_frame != 0 && frame >= config_.stale_coalesce_frame;
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
-    if ((c.state == State::AwaitHello && c.hello_received) ||
-        (c.state == State::Streaming &&
-         (c.credit || ignore_credit || (stale_coalesce && !c.stale.has_value())))) {
+    if (c.state == State::AwaitHello && c.hello_received) {
+      return true;
+    }
+    if (c.state != State::Streaming) {
+      continue;
+    }
+    // G6r: under rate control, credit alone is not enough -- a tick must also be due. The
+    // stale-coalesce clause is unaffected by pacing: it needs a snapshot to keep as the pending
+    // target the moment one is missing, independent of whether a send would currently be due.
+    if ((c.credit || ignore_credit) && (ignore_credit || tick_due(c, now_ns))) {
+      return true;
+    }
+    if (stale_coalesce && !c.stale.has_value()) {
       return true;
     }
   }
@@ -869,12 +900,49 @@ bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send) 
     return true;
   }
   c.s.bytes_sent += message.size();
-  return transport_->send_binary(c.id, message);
+  const std::uint64_t t0 = monotonic_ns();
+  const bool ok = transport_->send_binary(c.id, message);
+  enqueue_hist_.add((monotonic_ns() - t0) / 1000);  // Q3d enqueue_us (G6r)
+  return ok;
+}
+
+bool Hub::tick_due(const Conn &c, std::uint64_t now_ns) const {
+  if (config_.publish_period_ns == 0 || !c.schedule_started) {
+    return true;
+  }
+  return now_ns + config_.publish_period_ns / 4 >= c.next_due_ns;
+}
+
+void Hub::advance_schedule(Conn &c, std::uint64_t now_ns) {
+  if (config_.publish_period_ns == 0) {
+    return;
+  }
+  if (!c.schedule_started) {
+    c.schedule_started = true;
+    c.t0_ns = now_ns;
+    c.next_due_ns = now_ns + config_.publish_period_ns;
+    return;
+  }
+  // The next due tick is the first multiple-of-P step strictly after `now`, anchored at the old
+  // next_due_ns (itself always t0 + k*P for some integer k) rather than recomputed from scratch
+  // against raw `now`. Anchoring at next_due_ns (not `now`) matters when a send fires slightly
+  // *early*, inside tick_due()'s slack window: `now` can then be a hair before next_due_ns, and
+  // a naive "t0 + (floor((now - t0)/P) + 1)*P" recomputation floors back down to the tick just
+  // serviced instead of advancing past it, double-firing on the very next callback. Anchoring at
+  // next_due_ns sidesteps that: when `now` is still before it (the early/on-time case), one
+  // period is simply added; when `now` is at or past it (credit blocked for a while, the late
+  // case), the step jumps straight to the first tick after `now`, skipping every missed one in
+  // between -- "never burst" (Q3c).
+  std::uint64_t steps = 1;
+  if (now_ns >= c.next_due_ns) {
+    steps = (now_ns - c.next_due_ns) / config_.publish_period_ns + 1;
+  }
+  c.next_due_ns += steps * config_.publish_period_ns;
 }
 
 std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::uint64_t frame,
                                   std::uint64_t now_ns, std::uint64_t epoch,
-                                  std::uint64_t snapshot_ns, bool first,
+                                  std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
                                   std::uint64_t stale_from) {
   // G2b2: the inline payloads this connection has not carried yet, one resource record per
   // message, ahead of the transaction that needs them (render-stream-2.md "Live transport");
@@ -974,6 +1042,12 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
       saturating_add(c.stats.encode_ns_total, (full ? t1 - t0 : 0) + (t2 - t1));
   c.stats.diff_ns_total = saturating_add(c.stats.diff_ns_total, full ? 0 : t1 - t0);
   c.stats.snapshot_ns_total = saturating_add(c.stats.snapshot_ns_total, snapshot_ns);
+  // Q3d encode_us / diff_us (G6r): the same costs just accumulated above, also sampled into the
+  // cross-connection histograms perf.json reports distributions from.
+  encode_hist_.add(((full ? t1 - t0 : 0) + (t2 - t1)) / 1000);
+  if (!full) {
+    diff_hist_.add((t1 - t0) / 1000);
+  }
 
   const std::uint64_t seq = cur.seq;
   const bool had_credit = c.credit;
@@ -1003,7 +1077,7 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
     c.credit = false;
     c.in_flight = seq;
     c.uncredited.insert(seq);
-    c.sent_at[seq] = Conn::Sent{now_ns, frame, 0};
+    c.sent_at[seq] = Conn::Sent{now_ns, frame, 0, capture_ns};
     c.s.max_in_flight = std::max<std::uint64_t>(c.s.max_in_flight, c.uncredited.size());
   }
   Line sent;
@@ -1091,7 +1165,10 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
         c.stats.encode_ns_total = saturating_add(c.stats.encode_ns_total, t1 - t0);
         c.state = State::Streaming;
         ++c.s.frames_offered;
-        sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, true);
+        sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, true, now_ns);
+        // G6r: this very first send starts the connection's rate schedule (its tick 0); it is
+        // never itself rate-gated (there is nothing to compare "due" against until now).
+        advance_schedule(c, now_ns);
       } else if (now_ns > c.opened_ns &&
                  (now_ns - c.opened_ns) / 1000000 > config_.hello_timeout_ms) {
         const std::string detail =
@@ -1112,33 +1189,75 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
       ++c.s.frames_offered;
       const bool ignore_credit =
           config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
+      const bool rate_limited = config_.publish_period_ns != 0;
+      // G6r Q3c: ignore-credit's whole point is a send at every callback, credit or not, so it
+      // bypasses pacing too, not only credit. Under the default GRC_PUBLISH_FPS=uncapped,
+      // tick_due() is always true, so `due` adds nothing and every ticks_*/frames_rate_idle
+      // counter below stays 0 (each is gated on `rate_limited`).
+      const bool due = ignore_credit || tick_due(c, now_ns);
       if (c.credit && c.stale.has_value()) {
         // stale-coalesce: the first missed target goes out instead of the newest state.
-        const rs::Captured stale = std::move(*c.stale);
-        c.stale.reset();
-        sent_json = send_transaction(c, stale, frame, now_ns, epoch, snapshot_ns, false,
-                                     c.stale_frame);
+        if (due) {
+          if (rate_limited) {
+            ++c.s.ticks_due;
+          }
+          const rs::Captured stale = std::move(*c.stale);
+          const std::uint64_t stale_capture_ns = c.stale_ns;
+          c.stale.reset();
+          const std::uint64_t sent_before = c.s.sent;
+          sent_json = send_transaction(c, stale, frame, now_ns, epoch, snapshot_ns, false,
+                                       stale_capture_ns, c.stale_frame);
+          advance_schedule(c, now_ns);
+          if (rate_limited && c.s.sent > sent_before) {
+            ++c.s.ticks_sent;
+          }
+        } else {
+          ++c.s.frames_rate_idle;
+        }
       } else if (c.credit || ignore_credit) {
-        if (snapshot == nullptr) {
-          continue;
+        if (due) {
+          if (rate_limited) {
+            ++c.s.ticks_due;
+          }
+          if (snapshot == nullptr) {
+            continue;
+          }
+          const std::uint64_t sent_before = c.s.sent;
+          sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, false,
+                                       now_ns);
+          advance_schedule(c, now_ns);
+          if (rate_limited && c.s.sent > sent_before) {
+            ++c.s.ticks_sent;
+          }
+        } else {
+          ++c.s.frames_rate_idle;
         }
-        sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, false);
-      } else if (epoch != c.epoch_sent) {
-        // No credit and the mirror moved since the last send: the one pending target (the
-        // mirror itself) is replaced by this callback's state; nothing is serialized.
-        if (!c.pending) {
-          c.pending_since_frame = frame;
-          c.pending_since_ns = now_ns;
-          ++c.s.pending_episodes;
+      } else {
+        // No credit (and not ignore-credit): a due tick with no credit is counted independently
+        // of whether the mirror actually changed since the last send (Q3c: "callbacks where a
+        // tick was due without credit").
+        if (rate_limited && due) {
+          ++c.s.ticks_due;
+          ++c.s.ticks_credit_blocked;
         }
-        c.pending = true;
-        c.s.max_pending = 1;
-        ++c.s.coalesced;
-        note_pending_age(c, frame, now_ns);
-        if (config_.stale_coalesce_frame != 0 && frame >= config_.stale_coalesce_frame &&
-            !c.stale.has_value() && snapshot != nullptr) {
-          c.stale = *snapshot;
-          c.stale_frame = frame;
+        if (epoch != c.epoch_sent) {
+          // The mirror moved since the last send: the one pending target (the mirror itself) is
+          // replaced by this callback's state; nothing is serialized.
+          if (!c.pending) {
+            c.pending_since_frame = frame;
+            c.pending_since_ns = now_ns;
+            ++c.s.pending_episodes;
+          }
+          c.pending = true;
+          c.s.max_pending = 1;
+          ++c.s.coalesced;
+          note_pending_age(c, frame, now_ns);
+          if (config_.stale_coalesce_frame != 0 && frame >= config_.stale_coalesce_frame &&
+              !c.stale.has_value() && snapshot != nullptr) {
+            c.stale = *snapshot;
+            c.stale_ns = now_ns;
+            c.stale_frame = frame;
+          }
         }
       }
     }
@@ -1267,16 +1386,22 @@ std::vector<const rs::PayloadMap *> Hub::held_payloads() const {
 
 std::uint32_t Hub::on_http_get(const std::string &hash, std::uint16_t status, std::uint64_t bytes,
                                std::uint64_t t_ns, std::uint64_t frame) {
-  // One receiver at a time (max_clients 1): the newest connection that is not closed.
+  // With one receiver, the GET is its own (max_clients 1, today's default). With more than one
+  // open connection (GRC_LIVE_MAX_CONNECTIONS > 1, G6r/D13), which receiver asked for it is
+  // ambiguous, so it is counted at the host level only (the caller's ServingSummary) and no
+  // connection's summary or live log gains a line for it.
   Conn *streaming = nullptr;
+  std::size_t open = 0;
   for (auto &entry : conns_) {
     Conn &c = *entry.second;
-    if (c.state != State::Closed &&
-        (streaming == nullptr || c.s.connection > streaming->s.connection)) {
-      streaming = &c;
+    if (c.state != State::Closed) {
+      ++open;
+      if (streaming == nullptr || c.s.connection > streaming->s.connection) {
+        streaming = &c;
+      }
     }
   }
-  if (streaming == nullptr) {
+  if (streaming == nullptr || open > 1) {
     return 0;
   }
   Conn &c = *streaming;
@@ -1324,6 +1449,10 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.field("sent_without_credit", static_cast<int64_t>(s.sent_without_credit));
     json.field("stale_sent", static_cast<int64_t>(s.stale_sent));
     json.field("max_in_flight", static_cast<int64_t>(s.max_in_flight));
+    json.field("ticks_due", static_cast<int64_t>(s.ticks_due));
+    json.field("ticks_sent", static_cast<int64_t>(s.ticks_sent));
+    json.field("ticks_credit_blocked", static_cast<int64_t>(s.ticks_credit_blocked));
+    json.field("frames_rate_idle", static_cast<int64_t>(s.frames_rate_idle));
     json.field("max_queued_bytes", static_cast<int64_t>(s.max_queued_bytes));
     json.field("max_message_sent", static_cast<int64_t>(s.max_message_sent));
     json.field("bytes_sent", static_cast<int64_t>(s.bytes_sent));
@@ -1359,6 +1488,18 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.object_end();
   }
   json.array_end();
+  // G6r (D8): the host's rate configuration, in evidence form -- not itself a wire field until
+  // the /6 session's `publication` key lands (G6b); GRC_PUBLISH_FPS=uncapped (the default) is
+  // "every-frame"/null, matching a file sink's declared publication exactly.
+  json.key("publication").object_begin();
+  json.field("mode", config_.publish_period_ns == 0 ? std::string("every-frame")
+                                                     : std::string("rate"));
+  if (config_.publish_period_ns == 0) {
+    json.field_null("target_fps");
+  } else {
+    json.field("target_fps", static_cast<int64_t>(config_.publish_target_fps));
+  }
+  json.object_end();
   if (resources != nullptr) {
     json.key("resources").object_begin();
     json.field("http_gets", static_cast<int64_t>(resources->http_gets));

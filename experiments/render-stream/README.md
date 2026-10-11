@@ -555,6 +555,9 @@ Environment, read once at SCENE initialisation:
 | `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                                               |
 | `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                                     |
 | `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                                       |
+| `GRC_PUBLISH_FPS`                | G6r (D8, Q3c), read at arm with `GRC_LIVE_LISTEN`: `uncapped` (default; today's behaviour, a transaction at every frame callback that holds credit) or a decimal integer `1..240`, a target rate for live connections only. File sinks are never rate-limited by this. Connection `c` publishes at tick `k` due at its own `t0 + k·P` (`t0` its first send, `P = 1/target`); a due tick without credit stays due (`ticks_credit_blocked`) and goes out as soon as credit returns, carrying the newest state; a missed tick is never caught up on (no burst). Anything else refuses to publish |
+| `GRC_LIVE_MAX_CONNECTIONS`       | G6r (D13), read at arm with `GRC_LIVE_LISTEN`: a decimal integer `1..4`, default 1 (the previous hard `busy` refusal for a second connection). Delivery state is already per connection; pins are the union of every open connection's base, and one snapshot copy per frame serves all of them. With more than one connection open, a resource GET is counted at the host level only, never attributed to a specific connection (ambiguous which one asked). Anything else refuses to publish |
+| `GRC_HOOK_LOG`                   | G6r (Q3d), read at arm: `on` (default) or `off`. With `off`, `evidence/resources.jsonl` is never opened (no per-call lines reach disk; the hooks' own buffered lines are still drained every frame, just discarded, so a long run's buffer never grows unbounded) -- `counters.json` and the mirror are unaffected either way. Anything else refuses to publish |
 | `GRC_RESOURCE_FORMATS`           | G2a, read at arm with a stream: the `Image` formats whose bytes are copied, a comma-separated subset of `L8,LA8,R8,RG8,RGB8,RGBA8` (the default); any other name refuses to publish                                                                                                                                                                                                                       |
 | `GRC_RESOURCE_MAX_PAYLOAD_BYTES` | G2a: the largest canonical payload copied, a decimal integer ≥ 1, default 67108864 (64 MiB); a larger texture is logged `payload-too-large` and not copied. An engine without the `Image` binds or `image_ptr` refuses to publish (`image-access-unavailable`)                                                                                                                                            |
 | `GRC_RESOURCE_STORE_DIR`         | G2b2: absolute content-addressed store (`sha256/<hash>.grt`, `.grm` since G5e, `.grp` since G55d, `index.jsonl`) every `ok` payload of each published snapshot is written to; required when a file sink is open and delivery is not inline (else the stream refuses: `resource-store-missing`)                                                                                                                                                 |
@@ -599,6 +602,22 @@ reason, connections}`. Written at decision time and rewritten at disarm and shut
   (`listening|refused|failed`), `address`, `port`, `reason`; written when the listener is decided.
 - `live-summary.json` (G1c2) — `render-stream-live-summary/1`: per connection the transactions
   formed and sent, coalesced callbacks, acks per stage, credit round trips, close code and side.
+  G6r adds a top-level `publication` (`{mode: "every-frame"|"rate", target_fps}`, the evidence
+  form of `GRC_PUBLISH_FPS`, not itself a wire field until the /6 session's `publication` key
+  lands) and, per connection, `ticks_due`, `ticks_sent`, `ticks_credit_blocked` and
+  `frames_rate_idle` (all 0 under the default `uncapped`).
+- `perf.json` (G6r, Q3d, written at disarm and shutdown) — `render-stream-capture-perf/1`:
+  log-linear histograms (`capture/src/rs_histogram.h`, 400 fixed buckets, ≤6.25% relative error,
+  plus exact count/sum/min/max) for `frame_interval_us`, `frame_callback_us`, `snapshot_us`,
+  `diff_us`, `encode_us`, `enqueue_us`, and `credit_rtt_us`/`staleness_us` each
+  `{applied, submitted}`; an `unavailable_stages` list naming every Q3d stage this increment did
+  not wire (`store_write_us`, the texture/mesh/shader `copy_us`/`hash_us` pairs, `param_decode_us`,
+  `http_serve_us`) with the file it would need, none of them in G6r's own file list; `cpu.
+  main_thread_us` (exact, `CLOCK_THREAD_CPUTIME_ID`) and `cpu.io_thread_us` (`null`: no handle to
+  the I/O thread without touching `rs_ws.h`); and `connections[]`'s own rate counters.
+- `perf-timeline.jsonl` (G6r, one line per second) — frame count, RSS (`/proc/self/statm`) and,
+  per connection, `sent`, `credits`, `coalesced`, `ticks_credit_blocked`, `max_pending_age_us` and
+  `bytes_sent`.
 - `fingerprint.json` — version string, sha256, build-id, pie, load bias, live
   vptr, singleton address, abstract address point, pure placeholder, pid, and the
   `/proc/self/maps` lines of the main binary.
@@ -4647,3 +4666,167 @@ repeated runs:
 - `GRC_LIVE_MAX_CONNECTIONS`, rate control, or anything engine-side: G6t touches none of it (G6r's
   job). The throttle proxy and sampler are ready for G6c/G6l/G6s/G6p to drive against a real host
   and receiver, but have only ever been exercised against synthetic loopback servers here.
+
+## Gate 6r result (2026-10-11)
+
+G6r ([protocol/gate6-design.md](protocol/gate6-design.md) "G6r") passes: rate control, the
+`GRC_LIVE_MAX_CONNECTIONS` admission limit and perf instrumentation on render-stream/5, with the
+default (`GRC_PUBLISH_FPS=uncapped`) unchanged and no gate 6 wire version. Per the increment's own
+scoping rule (`rs_live.cpp`+`entry.cpp` only, not `hooks.cpp`/`rs_resource_store.cpp`/
+`rs_texture_payload.cpp`/`rs_mesh_payload.cpp`/`rs_shader_payload.cpp`/`rs_variant.cpp`/`rs_ws.cpp`),
+Q3d's `store_write_us`, the texture/mesh/shader `copy_us`/`hash_us` pairs, `param_decode_us` and
+`http_serve_us` are declared `unavailable` in `perf.json` rather than wired or guessed, and the
+receiver's perf equivalently declares `resolve_us`/`upload_us` unavailable (combined inside
+`RsApplier.accept_record`/`apply_state`, which this increment does not split).
+
+- **Rate control (`capture/src/rs_live.{h,cpp}`, Q3c).** Per connection: `period_ns` (0 =
+  uncapped), `t0_ns`/`next_due_ns` (started at the connection's own first send, never reset), and
+  counters `ticks_due`, `ticks_sent`, `ticks_credit_blocked`, `frames_rate_idle` (all 0 under the
+  default). A due tick without credit stays due and is counted; a due tick with credit sends and
+  advances the schedule to the first tick strictly after "now", anchored at the *previous*
+  `next_due_ns` rather than recomputed from `t0` and raw `now` -- the literal `t0 +
+  (⌊(now-t0)/P⌋+1)·P` formula, applied when a send fires slightly *early* inside the due check's
+  quarter-period slack (the common case, not an edge case), can floor back to the tick just
+  serviced instead of the next one, double-firing on the very next callback. Anchoring at the old
+  `next_due_ns` fixes it: `now < next_due_ns` (early/on-time) adds one period; `now >= next_due_ns`
+  (credit blocked for a while) jumps straight to the first tick after `now`, skipping every missed
+  one -- "never burst" without ever needing to catch up tick by tick.
+- **Multi-connection admission (D13).** `GRC_LIVE_MAX_CONNECTIONS=1..4` sets
+  `ServerConfig::max_clients`; the `Hub` already tracked every connection independently (pins as
+  the union of every open connection's base, one snapshot copy per frame for all of them). The one
+  real change: with more than one connection open, `on_http_get` no longer attributes a GET to
+  "the newest connection" (which would misattribute a different receiver's fetch) -- it returns 0
+  and counts the GET at the host level only.
+- **Histogram (`capture/src/rs_histogram.{h,cpp}`, new).** A fixed 400-bucket log-linear
+  histogram, 16 linear sub-buckets per octave (25 octaves, covering samples up to 2^25-1 before
+  the top bucket clamps), ≤6.25% relative error, plus exact count/sum/min/max/mean. Below octave 4
+  (values < 16) 16 equal-width sub-buckets cannot all be distinct -- most stay permanently
+  unreachable, harmlessly, since the index formula is still injective over every value that
+  actually occurs. `rs_histogram_test.cpp` (218 440 checks: an exhaustive sweep plus a
+  reference-formula cross-check) passes clean. The receiver's perf.json reimplements the same
+  bucket scheme in GDScript (`rs_perf.gd`'s `Histogram`), since it is a separate process with no
+  access to the C++ library.
+- **perf.json / perf-timeline.jsonl (`entry.cpp`).** `frame_interval_us`, `frame_callback_us` and
+  `snapshot_us` measured directly in `entry.cpp`; `diff_us`, `encode_us`, `enqueue_us`,
+  `credit_rtt_us`/`staleness_us` (`{applied, submitted}`) as cross-connection histograms owned by
+  the `Hub` (the same costs already accumulated into `EndStats`, now also sampled per call).
+  `cpu.main_thread_us` is exact (`CLOCK_THREAD_CPUTIME_ID`); `cpu.io_thread_us` is `null` (no
+  handle to the I/O thread without touching `rs_ws.h`). `perf-timeline.jsonl` adds one line per
+  second: frame count, RSS (`/proc/self/statm`) and, per connection, `sent`/`credits`/
+  `coalesced`/`ticks_credit_blocked`/`max_pending_age_us`/`bytes_sent`.
+- **GRC_HOOK_LOG (Q3d).** `off` stops `entry.cpp` from ever opening `resources.jsonl`, and
+  `resources_drain()` now always drains (and, with the file closed, discards) the hooks' buffered
+  lines every frame rather than only when the file is open -- fixing a latent unbounded-buffer-
+  growth risk that existed whenever the file failed to open, not only under the new flag.
+  `counters.json` and the mirror read from the hooks directly, never from this file, so they are
+  unaffected either way; the per-call line-*building* cost inside `rs_resource_log.cpp` is
+  unchanged (out of this increment's file list), so `off`'s measured saving is the file I/O and
+  buffer retention only, not the hook's own formatting cost.
+- **Receiver (`receiver/receiver.gd`, new `receiver/rs_perf.gd`).** `RS_RECEIVER_LOG=summary`
+  drops `applied.json`'s `transactions` array to `null` (shots and failures stay; the backing
+  array is never appended to either, so nothing grows unbounded). `RS_RECEIVER_PERF_OUT` writes
+  `render-stream-receiver-perf/1` on every exit path (`_fail`/`_finish`/`_finish_live`, via
+  `_write_report()`): histograms for `decode_us` (`RsApplier.accept_record`), `apply_us`
+  (`RsApplier.apply_state`), `fetch_us` (reusing the fetch stage's own existing timestamps, never
+  re-timed) and `frame_interval_us`; `cpu_render_ms`/`gpu_render_ms` via
+  `RenderingServer.viewport_get_measured_render_time_{cpu,gpu}` with a status
+  (`skipped-headless` under `--headless`, reusing receiver.gd's own existing headless
+  vocabulary); `counts` (`received`/`applied`/`submitted`, from the existing `_acks_sent`, `null`
+  in file mode, which has no acks); and a one-line-per-second timeline (RSS via `FileAccess` on
+  `/proc/self/statm`, `RenderingServer.get_rendering_info`'s texture/buffer/video memory, the disk
+  cache's entry count and bytes). Smoke-tested standalone against `protocol/golden-5/inline.rs5`
+  in both `RS_RECEIVER_LOG` modes: `applied.json.transactions` is `null` under `summary` and a
+  15-entry array under `full`; `perf.json` validates with populated `decode_us`/`apply_us`
+  histograms, `fetch_us` exactly 0 (no fetches: an inline session), `render_time` both
+  `skipped-headless`, and `counts` correctly `null` (file mode).
+
+**Self-test leg**: `live-rate-30` (gate 1's `g1c` group, `GRC_PUBLISH_FPS=30` on the fixture's
+60 fps host and receiver). `checkLiveRate30` (`scripts/lib/gate1-live-checks.ts`) compares it
+against the plain `live` leg on the *same fixed timeline*: the file sinks (`recording.rs2`,
+`recording-patch.rs2`) must publish exactly as many transactions as `live`'s did, proving rate
+control affects only the live connection, never the file publisher.
+
+| Metric | `live-rate-30` (target 30, host/receiver 60 fps) |
+| --- | --- |
+| requested | 30 fps |
+| published (measured) | 518 sent over 1036 streaming frames = **30.00 fps** |
+| file sink (full) transactions | 1080, 0 errors -- identical to the `live` leg's 1080, 0 errors |
+| file sink (patch) transactions | 1080, 0 errors -- identical to the `live` leg's 1080, 0 errors |
+| `ticks_due` / `ticks_sent` / `ticks_credit_blocked` / `frames_rate_idle` | 517 / 517 / 0 / 143 |
+| `max_in_flight` | 1 |
+
+The connection's very first send (right after the hello) is not itself a counted tick (it starts
+the schedule); `sent` = 1 + `ticks_sent`. `ticks_credit_blocked` is 0: the fixture's receiver
+always returns credit well within one 30 fps period. `frames_rate_idle` (143) accounts for the
+rest of the 1036 streaming callbacks: `1036 = 1 (first send) + 517 (ticks_sent) + 143
+(frames_rate_idle) + 375` -- the remaining callbacks are the ones spent waiting for credit to
+return in between (counted in `frames_offered` but not in any of the four rate counters, which
+only classify callbacks once streaming and not already accounted for by a send).
+
+**How it was tested**:
+
+- `rs_histogram_test` (218 440 checks), `rs_live_test` (261 checks, including four new rate-
+  schedule tests: uncapped unchanged, 15/30/60 fps targets with a no-burst spacing check, a
+  credit-blocked stall with no catch-up burst, and two independent connections) -- both via
+  `ctest` from `experiments/render-stream/capture/build`, alongside the full existing capture
+  suite (18 targets, all green, nothing regressed by the `wants_snapshot()` signature change or
+  the `send_transaction()`/`Conn` additions).
+- `mise exec -- pnpm exec tsc --noEmit -p experiments/render-stream/tsconfig.json`: clean;
+  `mise exec -- pnpm exec biome check` clean on every file this increment touched.
+- `scripts/test/self-test-gate1.ts`: 402/402 assertions, 89 fabricated evidence scenarios. Adding
+  `checkLiveRate30` to g1c's check list meant the self-test's own fully-passing "good tree"
+  fixture needed a `live-rate-30` host built alongside `live`'s (same file sink, same ~30 fps
+  send cadence by construction) for that one new check to find evidence for; without it the
+  "good tree passes every check" assertion failed (401/402) until `buildLiveLegs()` was extended.
+- The receiver smoke-tested standalone (not via a gate) against `protocol/golden-5/inline.rs5` in
+  both `RS_RECEIVER_LOG` modes, as described above.
+- Gates -1, 0, 1 and 2 green with defaults (gate 1's full `g1a,g1b,g1c,g1d`, now including
+  `live-rate-30`, 66/66 checks; gate 2's live-animate checks, sensitive to per-transaction timing
+  per memory `rs-g55d-rs5-switch-facts`, are unperturbed by code that only runs under non-default
+  `GRC_PUBLISH_FPS`/`GRC_LIVE_MAX_CONNECTIONS`/`GRC_HOOK_LOG`). Gate 5.5 green with defaults.
+- `rs-g55d-rs5-switch-facts` also flags G5f specifically: a ~150 µs per-transaction receiver
+  slowdown breaks its live checks. A dedicated benchmark (five warm-cache repeats, file-mode
+  replay of a real 400-transaction capture through the receiver, `RS_RECEIVER_PERF_OUT` unset)
+  measured this increment's receiver.gd within **~5 µs/transaction** of main's (3395-3402 ms
+  total both sides; see memory `g5f-stale-coalesce-receiver-vs-reference-flake`). `pnpm
+  render-stream:gate5 -- --legs g5c,g5f` (g5f's own checks only run when g5c is also requested)
+  then showed one flaky check, `receiver-vs-reference`, on the `sabotage-mesh-stale-coalesce` leg
+  alone (two runs, different step each time); A/B testing the identical fixture against main's
+  unmodified receiver.gd (G6r's receiver.gd and rs_perf.gd fully reverted/removed) reproduced the
+  exact same failure, 33/38, proving it is pre-existing and not a regression from this increment
+  -- recorded as `g5f-stale-coalesce-receiver-vs-reference-flake` rather than "fixed" by changing
+  code that was already zero-cost.
+
+### Deviations from Q3d's full instrumentation list
+
+Scoped to the files G6r's own section names (`rs_live.{h,cpp}`, `entry.cpp`, `rs_histogram.{h,cpp}`,
+`receiver.gd`, `rs_perf.gd`); every omission below is declared in `perf.json`'s
+`unavailable_stages` (capture) or the receiver perf's own list, not silently missing:
+
+- `store_write_us`, `texture_copy_us`/`_hash_us`, `mesh_copy_us`/`_hash_us`,
+  `shader_copy_us`/`_hash_us`, `param_decode_us` -- need `rs_resource_store.cpp`,
+  `rs_texture_payload.cpp`, `rs_mesh_payload.cpp` or `rs_shader_payload.cpp`/`rs_variant.cpp`.
+- `http_serve_us`, `cpu.io_thread_us` -- need a handle to the I/O thread, which `rs_ws.h` does not
+  expose to `entry.cpp`.
+- Receiver `resolve_us`/`upload_us` -- combined with `decode_us`/`apply_us` respectively inside
+  `RsApplier.accept_record`/`apply_state`, which this increment does not split (upload bytes are
+  already in `applied.json`'s `resources_summary`, not duplicated in perf.json).
+- Receiver timeline `pipeline_compilations`, `live_rids`, `cache_entries_memory`/
+  `cache_bytes_memory` -- would need new `RsApplier`/`RsResourceCache` accessors, out of this
+  increment's two receiver files.
+- `rs_perf.gd`'s `Histogram` has no dedicated GDScript unit test (no existing fast per-class
+  self-test harness for a standalone RefCounted class in this project; it was instead verified by
+  smoke-testing the whole receiver against `protocol/golden-5/inline.rs5` and by the C++
+  `Histogram`'s own exhaustive test proving the shared bucket-math algorithm).
+
+### What G6r does not prove
+
+- A true gate 6 measurement matrix, report or deltas analysis (G6p); this increment's own
+  `live-rate-30` table above is a single self-test, not the warmup-plus-five-repeats protocol
+  D11 requires.
+- Rate control under the `constrained` transport profile, dual connections at genuinely different
+  *target* rates (both connections here share one `GRC_PUBLISH_FPS`; D13's "two at once, at
+  different rates" is proved by independent receiver `--max-fps`, not independent publish
+  targets, since GRC_PUBLISH_FPS is one hub-wide setting), or any of G6c's rate legs
+  (`rate-15/-30/-60`, `mismatch-*`, `dual-60-15`, `recv-delay`, `gpu-heavy`) -- those are G6c's.
+- The full Q3d instrumentation list end to end (see "Deviations" above).

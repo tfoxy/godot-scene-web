@@ -1648,3 +1648,70 @@ export function liveLegReport(e: LiveLegEvaluation): LiveLegReport {
     first_applied_frame: e.first_applied_frame,
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// G6r self-test leg (gate6-design.md "G6r"): live-rate-30, added to g1c
+// ---------------------------------------------------------------------------------------------
+
+/** GRC_PUBLISH_FPS=30 on the gate 1 fixture's 60 fps host/receiver: the live connection's
+ * published rate must land near 30 fps, and the file sinks (always open on a live host, D8 "file
+ * sinks always write every-frame") must publish exactly as many transactions as the rate-
+ * unaffected "live" leg's -- the same fixed timeline, so a difference can only come from rate
+ * control leaking into the file publisher. */
+export async function checkLiveRate30(outDir: string): Promise<Gate1Check> {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  const hostDir = join(outDir, "live-rate-30", "host");
+  const host = await loadLiveHost(hostDir);
+  const baseline = await loadLiveHost(join(outDir, "live", "host"));
+  const summary = connectionSummary(host);
+  const artifacts = [
+    join(hostDir, "evidence", "live-summary.json"),
+    join(hostDir, RECORDING_NAME),
+    join(hostDir, PATCH_RECORDING_NAME),
+  ];
+  if (!summary) {
+    problems.push(
+      "no connection summary (did the host listen and the receiver connect?)",
+    );
+  } else {
+    const frames = summary.frames_offered ?? 0;
+    const sent = summary.sent ?? 0;
+    const hostFps = 60; // start_live_host's --max-fps 60
+    const achievedFps = frames > 0 ? (sent / frames) * hostFps : 0;
+    notes.push(
+      `sent ${sent} over ${frames} streaming frames (~${achievedFps.toFixed(2)} fps)`,
+    );
+    // A generous bound for a real headless run with file-sink and scheduler noise alongside it
+    // (gate6-design.md Q7d's own rate-30 leg, measured under cleaner conditions with no
+    // concurrent file sink, uses a tighter [0.95, 1.02]).
+    if (frames === 0 || achievedFps < 0.85 * 30 || achievedFps > 1.15 * 30) {
+      problems.push(
+        `achieved ~${achievedFps.toFixed(2)} fps, want roughly 30 (0.85x-1.15x)`,
+      );
+    }
+  }
+  if (host.full.transactions.length !== baseline.full.transactions.length) {
+    problems.push(
+      `file sink (full) has ${host.full.transactions.length} transactions, the rate-unaffected "live" leg has ${baseline.full.transactions.length}`,
+    );
+  }
+  if (host.patch.transactions.length !== baseline.patch.transactions.length) {
+    problems.push(
+      `file sink (patch) has ${host.patch.transactions.length} transactions, the rate-unaffected "live" leg has ${baseline.patch.transactions.length}`,
+    );
+  }
+  if (host.full.errors.length > 0) {
+    problems.push(`file sink (full) errors: ${host.full.errors.join("; ")}`);
+  }
+  if (host.patch.errors.length > 0) {
+    problems.push(`file sink (patch) errors: ${host.patch.errors.join("; ")}`);
+  }
+  return check(
+    "live-rate-30",
+    'G6r self-test: GRC_PUBLISH_FPS=30 publishes near 30 fps on the live connection; the file sinks publish exactly as many transactions as the rate-unaffected "live" leg\'s',
+    problems,
+    notes.join("; "),
+    artifacts,
+  );
+}

@@ -1895,8 +1895,10 @@ async function buildLiveLegs(
       ...overrides["sabotage-drop-message"],
     },
   } as const;
+  let liveFiles: LiveFiles | undefined;
   for (const [leg, opts] of Object.entries(legs)) {
     const files = liveStreams(opts);
+    if (leg === "live") liveFiles = files;
     await writeLiveHost(join(out, leg, "host"), files, opts);
     const shots = await writeLiveReceiver(
       join(out, leg, "receiver"),
@@ -1907,6 +1909,16 @@ async function buildLiveLegs(
     if (leg === "live")
       await writeLiveReplay(out, projects, files.received, shots);
   }
+  // G6r self-test leg (gate6-design.md "G6r"): live-rate-30, host only (checkLiveRate30 reads no
+  // receiver evidence). Reuses "live"'s own files/opts: its sends are already modeled every 2
+  // host frames (liveSends), which is already ~30 fps on this fixture's 60 fps host, and its
+  // file sink (writeCaptureLeg's quit/start/stepFrames) is identical to every other leg's, so
+  // checkLiveRate30's "matches the live leg's file sink exactly" comparison holds by construction.
+  await writeLiveHost(
+    join(out, "live-rate-30", "host"),
+    liveFiles as LiveFiles,
+    legs.live,
+  );
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -322,8 +322,8 @@ struct Rig {
   void step(int state_n, std::uint64_t now_ns = 0) {
     ++frame;
     const Captured snapshot = captured_state(state_n);
-    hub.on_frame(frame, now_ns == 0 ? frame * 16000000ULL : now_ns,
-                 hub.wants_snapshot(frame) ? &snapshot : nullptr, epoch, 1000);
+    const std::uint64_t t_ns = now_ns == 0 ? frame * 16000000ULL : now_ns;
+    hub.on_frame(frame, t_ns, hub.wants_snapshot(frame, t_ns) ? &snapshot : nullptr, epoch, 1000);
   }
   std::string stream_id() const { return hub.summaries().at(0).stream_id; }
 };
@@ -331,12 +331,14 @@ struct Rig {
 void test_hello_and_first_transaction() {
   Rig rig;
   rig.hub.on_event(opened(7), 0);
-  check(!rig.hub.wants_snapshot(rig.frame + 1), "no snapshot wanted before hello");
+  check(!rig.hub.wants_snapshot(rig.frame + 1, (rig.frame + 1) * 16000000ULL),
+        "no snapshot wanted before hello");
   rig.step(1);
   rig.step(1);
   check(rig.transport.sent.empty(), "nothing is sent before the hello");
   rig.hub.on_event(text(7, kHelloSubmitted), rig.frame);
-  check(rig.hub.wants_snapshot(rig.frame + 1), "a received hello wants a snapshot");
+  check(rig.hub.wants_snapshot(rig.frame + 1, (rig.frame + 1) * 16000000ULL),
+        "a received hello wants a snapshot");
   rig.step(1);
   const std::vector<Sent> bin = rig.transport.of(Sent::Binary);
   check(bin.size() == 2, "hello -> two binary messages (session, seq 1)");
@@ -407,7 +409,8 @@ void test_v3_hub_and_control() {
     hub.on_event(opened(7), 0);
     hub.on_event(text(7, hello3), 0);
     const Captured snapshot = captured_state(1);
-    hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1) ? &snapshot : nullptr, 1, 1000);
+    hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1, 16000000ULL) ? &snapshot : nullptr, 1,
+                 1000);
     const std::vector<Sent> bin = transport.of(Sent::Binary);
     const std::vector<std::uint8_t> m = magic(ProtocolVersion::V3);
     check(bin.size() == 2 && bin[0].bytes.size() > 8 &&
@@ -459,7 +462,8 @@ void test_v4_hub_and_control() {
     hub.on_event(opened(7), 0);
     hub.on_event(text(7, hello4), 0);
     const Captured snapshot = captured_state(1);
-    hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1) ? &snapshot : nullptr, 1, 1000);
+    hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1, 16000000ULL) ? &snapshot : nullptr, 1,
+                 1000);
     const std::vector<Sent> bin = transport.of(Sent::Binary);
     const std::vector<std::uint8_t> m = magic(ProtocolVersion::V4);
     check(bin.size() == 2 && bin[0].bytes.size() > 8 &&
@@ -851,7 +855,8 @@ void test_stall_coalescing() {
   const std::string sid = rig.stream_id();
   rig.step(1);  // frame 2: no credit, mirror unchanged
   rig.step(1);  // frame 3
-  check(!rig.hub.wants_snapshot(rig.frame + 1), "no snapshot wanted while stalled");
+  check(!rig.hub.wants_snapshot(rig.frame + 1, (rig.frame + 1) * 16000000ULL),
+        "no snapshot wanted while stalled");
   ConnectionSummary s = rig.hub.summaries().at(0);
   check(s.coalesced == 0 && s.max_pending == 0, "an unchanged mirror coalesces nothing");
   rig.epoch = 2;
@@ -871,7 +876,8 @@ void test_stall_coalescing() {
                                                std::to_string(s.max_pending_age_us) + ")");
   check(rig.transport.of(Sent::Binary).size() == 2, "nothing is sent while stalled");
   rig.hub.on_event(text(1, ack(sid, 1, "submitted")), rig.frame);
-  check(rig.hub.wants_snapshot(rig.frame + 1), "the returned credit wants a snapshot");
+  check(rig.hub.wants_snapshot(rig.frame + 1, (rig.frame + 1) * 16000000ULL),
+        "the returned credit wants a snapshot");
   rig.step(4);  // frame 8: the newest state goes out
   std::vector<Sent> bin = rig.transport.of(Sent::Binary);
   check(bin.size() == 3, "one transaction after the credit");
@@ -913,7 +919,8 @@ void test_ignore_credit() {
   rig.step(1);  // frame 1: seq 1
   rig.step(1);  // frame 2: no credit, before the sabotage frame
   check(rig.transport.of(Sent::Binary).size() == 2, "credit is honoured before the frame");
-  check(rig.hub.wants_snapshot(3), "ignore-credit wants a snapshot without credit");
+  check(rig.hub.wants_snapshot(3, 3 * 16000000ULL),
+        "ignore-credit wants a snapshot without credit");
   rig.step(2);  // frame 3: seq 2 without credit
   rig.step(3);  // frame 4: seq 3 without credit
   const std::string sid = rig.stream_id();
@@ -938,12 +945,13 @@ void test_stale_coalesce() {
   rig.hub.on_event(text(1, kHelloSubmitted), 0);
   rig.step(1);  // frame 1: seq 1 (state 1)
   const std::string sid = rig.stream_id();
-  check(rig.hub.wants_snapshot(2), "stale-coalesce wants a snapshot to keep");
+  check(rig.hub.wants_snapshot(2, 2 * 16000000ULL),
+        "stale-coalesce wants a snapshot to keep");
   rig.epoch = 2;
   rig.step(2);  // frame 2: missed target, state 2 kept
   rig.epoch = 3;
   rig.step(3);  // frame 3: missed again; the kept copy stays state 2
-  check(!rig.hub.wants_snapshot(4), "one stale copy at most");
+  check(!rig.hub.wants_snapshot(4, 4 * 16000000ULL), "one stale copy at most");
   rig.hub.on_event(text(1, ack(sid, 1, "submitted")), rig.frame);
   rig.step(4);  // frame 4: the stale copy goes out as seq 2
   rig.hub.on_event(text(1, ack(sid, 2, "submitted")), rig.frame);
@@ -958,6 +966,193 @@ void test_stale_coalesce() {
   }
   const ConnectionSummary s = rig.hub.summaries().at(0);
   check(s.stale_sent == 1 && s.max_in_flight == 1, "one stale send, still one in flight");
+}
+
+// ----------------------------------------------------------------- rate control (G6r, Q3c)
+
+constexpr std::uint64_t kHostPeriodNs = 16666666ULL;  // a 60 fps host, matching Rig::step's own
+
+// Drives `frames` host callbacks at a fixed 60 fps clock on a fresh connection, acking every
+// send immediately at the credit stage (so credit itself never limits pacing -- only the
+// schedule does), and returns the connection's summary. `stall_from`/`stall_to` (host frame
+// numbers, inclusive) withhold every ack in that window, to exercise ticks_credit_blocked.
+// `send_frames`, when given, collects the host frame index of every actual send (seq >= 1, in
+// order), for burst checks.
+ConnectionSummary run_rate_schedule(std::uint64_t publish_period_ns, int frames,
+                                    int stall_from = -1, int stall_to = -1,
+                                    std::vector<int> *send_frames = nullptr) {
+  LiveConfig config;
+  config.publish_period_ns = publish_period_ns;
+  Rig rig(config);
+  rig.hub.on_event(opened(1), 0);
+  rig.hub.on_event(text(1, kHelloSubmitted), 0);
+  std::string sid;
+  std::uint64_t acked_through = 0;
+  for (int i = 1; i <= frames; ++i) {
+    const std::uint64_t t_ns = static_cast<std::uint64_t>(i) * kHostPeriodNs;
+    rig.step(1, t_ns);
+    if (sid.empty()) {
+      sid = rig.stream_id();
+    }
+    const std::uint64_t sent_count = rig.transport.of(Sent::Binary).size();
+    const std::uint64_t latest_seq = sent_count == 0 ? 0 : sent_count - 1;
+    const bool stalled = stall_from >= 0 && i >= stall_from && i <= stall_to;
+    if (latest_seq > acked_through) {
+      if (send_frames != nullptr) {
+        send_frames->push_back(i);
+      }
+      if (!stalled) {
+        rig.hub.on_event(text(1, ack(sid, latest_seq, "submitted"), t_ns), rig.frame);
+        acked_through = latest_seq;
+      }
+    }
+  }
+  return rig.hub.summaries().at(0);
+}
+
+// GRC_PUBLISH_FPS=uncapped (publish_period_ns 0) reproduces today's behaviour exactly: a send at
+// every callback that holds credit, independent of any schedule.
+void test_rate_uncapped_unchanged() {
+  const ConnectionSummary s = run_rate_schedule(0, 120);
+  check(s.sent == 120, "uncapped sends every callback (got " + std::to_string(s.sent) + ")");
+  check(s.ticks_due == 0 && s.ticks_sent == 0 && s.ticks_credit_blocked == 0 &&
+            s.frames_rate_idle == 0,
+        "the rate counters stay 0 under the default (uncapped)");
+}
+
+// 15/30/60 fps targets on a 60 fps host, every ack immediate: the published rate lands within a
+// few percent of the target over a multi-second run (the only slack is integer rounding of the
+// period and of the 60 fps host clock itself).
+void test_rate_targets() {
+  const struct {
+    int target_fps;
+    int frames;  // 10 s at 60 fps
+  } kCases[] = {{15, 600}, {30, 600}, {60, 600}};
+  for (const auto &tc : kCases) {
+    const std::uint64_t period_ns = 1000000000ULL / static_cast<std::uint64_t>(tc.target_fps);
+    std::vector<int> send_frames;
+    const ConnectionSummary s = run_rate_schedule(period_ns, tc.frames, -1, -1, &send_frames);
+    const double seconds = static_cast<double>(tc.frames) * static_cast<double>(kHostPeriodNs) /
+                           1e9;
+    const double achieved = static_cast<double>(s.sent) / seconds;
+    check(achieved >= 0.9 * tc.target_fps && achieved <= 1.1 * tc.target_fps,
+          "target " + std::to_string(tc.target_fps) + " fps achieved " +
+              std::to_string(achieved) + " fps (sent " + std::to_string(s.sent) + " over " +
+              std::to_string(seconds) + " s)");
+    check(s.ticks_credit_blocked == 0, "every ack is immediate: nothing credit-blocked");
+    check(s.ticks_due == s.ticks_sent, "every due tick sent (credit was always available)");
+    // Never bursts: consecutive sends are never closer than half the target's host-frame
+    // spacing (the schedule should space them at ~P apart, never fire twice back to back to
+    // "catch up"). At 60 fps the target equals the host rate, so every frame is expected to
+    // send; the no-burst property is only meaningful (and checked) below 60.
+    const double host_frames_per_tick = 60.0 / tc.target_fps;
+    if (tc.target_fps < 60) {
+      check(s.frames_rate_idle > 0, "a target below the host's 60 fps leaves idle callbacks");
+      int min_gap = 1 << 30;
+      for (std::size_t i = 1; i < send_frames.size(); ++i) {
+        min_gap = std::min(min_gap, send_frames[i] - send_frames[i - 1]);
+      }
+      check(send_frames.size() < 2 || min_gap >= static_cast<int>(host_frames_per_tick) - 1,
+            "target " + std::to_string(tc.target_fps) +
+                " fps: no two sends closer than ~1 period apart (min gap " +
+                std::to_string(min_gap) + " host frames, expected ~" +
+                std::to_string(host_frames_per_tick) + ")");
+    }
+  }
+}
+
+// A due tick without credit is counted (ticks_credit_blocked) and stays due, exactly as the
+// existing coalescing/pending accounting already proves for the uncapped case; rate control
+// just adds the counter. A long stall must not cause a burst once credit returns: at most one
+// send happens on the callback credit returns, not one per tick missed during the stall.
+void test_rate_credit_blocked_and_no_burst() {
+  const std::uint64_t period_ns = 1000000000ULL / 30;  // 30 fps target, 60 fps host
+  // Stall acks for host frames 10..40 inclusive (roughly half a second: well over 10 missed
+  // 30 fps ticks), then resume acking immediately.
+  std::vector<int> send_frames;
+  const ConnectionSummary s = run_rate_schedule(period_ns, 120, 10, 40, &send_frames);
+  check(s.ticks_credit_blocked > 5,
+        "several ticks were due with no credit during the stall (got " +
+            std::to_string(s.ticks_credit_blocked) + ")");
+  check(s.ticks_sent <= s.ticks_due, "sent ticks never exceed due ticks (no catch-up burst)");
+  check(s.max_in_flight == 1, "never more than one transaction in flight at once");
+  // No burst after the stall: roughly 15 ticks (30 fps * ~0.5 s) were missed during it, so a
+  // "catch up on every missed tick" implementation would send a run of ~15 transactions right
+  // after recovery (one per missed tick). The schedule is phase-locked to the connection's own
+  // t0 (Q3c), not reset to "now" on recovery, so this synthetic receiver's unrealistically
+  // instant acks (every send re-credited before the very next host callback) can make the
+  // schedule's fixed-phase grid briefly realign over a few close-together sends before
+  // settling back to the normal ~1-per-2-frames cadence -- still far short of one send per
+  // missed tick. A real receiver's non-zero credit latency (including the gate 1 fixture's
+  // live-rate-30 leg) does not exercise this instant-ack corner.
+  const std::size_t sends_soon_after = static_cast<std::size_t>(
+      std::count_if(send_frames.begin(), send_frames.end(),
+                    [](int f) { return f > 40 && f <= 50; }));
+  check(sends_soon_after <= 10,
+        "no catch-up burst: nowhere near one send per missed tick in the 10 frames right after "
+        "the stall (got " +
+            std::to_string(sends_soon_after) + ", vs ~15 missed ticks)");
+}
+
+// GRC_PUBLISH_FPS configures one target for the whole hub (D8), shared by every connection, but
+// each connection's schedule state (t0, next_due, counters) is its own (Q3c "Per connection").
+// This proves that independence: a second connection joining well after the first must reach
+// the SAME target rate measured from ITS OWN first send, not be starved or accelerated by
+// however far along the first connection's schedule already is (D13 "Gate 6 proves two at once").
+void test_rate_two_connections() {
+  LiveConfig config;
+  config.publish_period_ns = 1000000000ULL / 60;  // both connections target 60 fps
+  Rig rig(config);
+  rig.hub.on_event(opened(1), 0);
+  rig.hub.on_event(text(1, kHelloSubmitted), 0);
+  std::string sid1;
+  std::uint64_t acked1 = 0;
+  const int kSecondHello = 40;  // connection 2 joins 40 host frames (~0.67 s) after connection 1
+  std::string sid2;
+  std::uint64_t acked2 = 0;
+  for (int i = 1; i <= 300; ++i) {
+    const std::uint64_t t_ns = static_cast<std::uint64_t>(i) * kHostPeriodNs;
+    if (i == kSecondHello) {
+      rig.hub.on_event(opened(2), t_ns);
+      rig.hub.on_event(text(2, kHelloSubmitted, t_ns), t_ns);
+    }
+    rig.step(1, t_ns);
+    if (sid1.empty()) {
+      sid1 = rig.hub.summaries().at(0).stream_id;
+    }
+    if (i >= kSecondHello && sid2.empty() && rig.hub.summaries().size() > 1) {
+      sid2 = rig.hub.summaries().at(1).stream_id;
+    }
+    // Ack up to each connection's current `sent` count immediately, so credit never limits
+    // either one's pacing -- only each one's own schedule does.
+    const auto &summaries = rig.hub.summaries();
+    if (!sid1.empty() && summaries[0].sent > acked1) {
+      rig.hub.on_event(text(1, ack(sid1, summaries[0].sent, "submitted"), t_ns), rig.frame);
+      acked1 = summaries[0].sent;
+    }
+    if (summaries.size() > 1 && !sid2.empty() && summaries[1].sent > acked2) {
+      rig.hub.on_event(text(2, ack(sid2, summaries[1].sent, "submitted"), t_ns), rig.frame);
+      acked2 = summaries[1].sent;
+    }
+  }
+  const ConnectionSummary s1 = rig.hub.summaries().at(0);
+  const ConnectionSummary s2 = rig.hub.summaries().at(1);
+  // Connection 1 ran the full 300 frames (5 s) at 60 fps target == the 60 fps host: every
+  // callback should be due.
+  const double seconds1 = 300.0 * static_cast<double>(kHostPeriodNs) / 1e9;
+  const double rate1 = static_cast<double>(s1.sent) / seconds1;
+  check(rate1 >= 0.9 * 60 && rate1 <= 1.1 * 60,
+        "connection 1's 60 fps target achieved " + std::to_string(rate1) + " fps");
+  // Connection 2 joined late but at the SAME 60 fps target (one LiveConfig per hub): its own
+  // schedule starts at its own first send, not connection 1's, so it should ALSO reach ~60 fps
+  // measured from when it actually started, not be starved or accelerated by connection 1.
+  const double seconds2 = (300 - kSecondHello + 1) * static_cast<double>(kHostPeriodNs) / 1e9;
+  const double rate2 = static_cast<double>(s2.sent) / seconds2;
+  check(rate2 >= 0.85 * 60 && rate2 <= 1.15 * 60,
+        "connection 2's independent schedule (joined late) achieved " + std::to_string(rate2) +
+            " fps over its own " + std::to_string(seconds2) + " s");
+  check(s1.ticks_credit_blocked == 0 && s2.ticks_credit_blocked == 0,
+        "both connections' acks were immediate: nothing credit-blocked");
 }
 
 }  // namespace
@@ -986,7 +1181,8 @@ void test_inline_resources() {
   const auto step = [&](int n) {
     ++frame;
     const Captured c = with_payloads(n);
-    hub.on_frame(frame, frame * 1000000ULL, hub.wants_snapshot(frame) ? &c : nullptr, frame, 0);
+    hub.on_frame(frame, frame * 1000000ULL,
+                 hub.wants_snapshot(frame, frame * 1000000ULL) ? &c : nullptr, frame, 0);
   };
   const auto kinds = [&transport]() {
     std::string out;
@@ -1098,7 +1294,8 @@ struct ServeRig {
     std::vector<const grc::rs::PayloadMap *> sendable = hub.held_payloads();
     sendable.insert(sendable.begin(), &c.payloads);
     served.pin(sendable, frame, &events);
-    hub.on_frame(frame, frame * 1000000ULL, hub.wants_snapshot(frame) ? &c : nullptr, frame, 0);
+    hub.on_frame(frame, frame * 1000000ULL,
+                 hub.wants_snapshot(frame, frame * 1000000ULL) ? &c : nullptr, frame, 0);
     served.retire(c.payloads, hub.base_payloads(), frame, &events);
     return events;
   }
@@ -1201,6 +1398,10 @@ int main() {
   test_stale_coalesce();
   test_inline_resources();
   test_served_resources();
+  test_rate_uncapped_unchanged();
+  test_rate_targets();
+  test_rate_credit_blocked_and_no_burst();
+  test_rate_two_connections();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

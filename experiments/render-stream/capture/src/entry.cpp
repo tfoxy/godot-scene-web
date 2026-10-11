@@ -114,6 +114,7 @@
 
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -121,6 +122,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -131,6 +134,7 @@
 #include "iface.h"
 #include "report.h"
 #include "rs_canvas_texture_shim.h"
+#include "rs_histogram.h"
 #include "rs_live.h"
 #include "rs_mirror.h"
 #include "rs_publish.h"
@@ -215,6 +219,11 @@ struct Stream {
   // (rs_resource_log.h), written whenever a stream is enabled.
   std::FILE *resources_file = nullptr;
   std::string resources_path;
+  // GRC_HOOK_LOG (G6r, Q3d), read at arm: with `off`, resources.jsonl's file is never opened (no
+  // per-call lines reach disk) and the buffered lines are discarded every frame instead of
+  // written, so a long run's buffer never grows unbounded. Counters, counters.json and the
+  // mirror are unaffected either way: they do not read resources.jsonl.
+  bool hook_log_on = true;
 };
 
 Stream g_stream;
@@ -260,6 +269,55 @@ bool is_lower_hex64(const std::string &text) {
 }
 
 Live g_live;
+
+// Perf instrumentation (gate6-design.md Q3d, G6r): evidence/perf.json
+// (render-stream-capture-perf/1, written at disarm and shutdown) and evidence/perf-timeline.jsonl
+// (one line per second). Scoped to what capture/src/rs_live.cpp and entry.cpp can measure without
+// touching any other file (store_write_us, texture/mesh/shader copy_us and hash_us, param_decode_us
+// and the I/O thread's own CPU time would need rs_resource_store.cpp, rs_texture_payload.cpp,
+// rs_mesh_payload.cpp, rs_shader_payload.cpp, rs_variant.cpp or rs_ws.cpp, all out of scope for
+// this increment; they are declared, not silently missing, in perf.json's `unavailable_stages`).
+struct Perf {
+  uint64_t arm_ns = 0;
+  uint64_t last_frame_ns = 0;  // for frame_interval_us; 0 before the first armed frame
+  Histogram frame_interval_us;
+  Histogram frame_callback_us;
+  Histogram snapshot_us;
+  struct timespec main_thread_cpu_start {};
+  bool main_thread_cpu_start_ok = false;
+  std::FILE *timeline_file = nullptr;
+  std::string timeline_path;
+  int64_t timeline_last_second = -1;  // the last whole second a timeline line was written for
+};
+
+Perf g_perf;
+
+// Main-thread CPU time so far (CLOCK_THREAD_CPUTIME_ID), in microseconds; -1 when unavailable.
+// Correct only when called from the main thread, as every entry point here is (the gdextension
+// frame/arm/disarm callbacks).
+int64_t main_thread_cpu_us() {
+  struct timespec ts {};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+    return -1;
+  }
+  return static_cast<int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
+}
+
+// The process's resident set size in bytes, from /proc/self/statm (field 2, in pages) through
+// plain file reads (D9: process RSS, never an engine memory counter). 0 when unreadable.
+uint64_t read_rss_bytes() {
+  std::ifstream in("/proc/self/statm");
+  if (!in) {
+    return 0;
+  }
+  uint64_t pages = 0, resident_pages = 0;
+  in >> pages >> resident_pages;
+  if (!in) {
+    return 0;
+  }
+  const long page_size = sysconf(_SC_PAGESIZE);
+  return page_size > 0 ? resident_pages * static_cast<uint64_t>(page_size) : 0;
+}
 
 // GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
 using rs2::RootSizePolicy;
@@ -520,6 +578,170 @@ uint64_t monotonic_ns() {
                                    .count());
 }
 
+// --- perf instrumentation (gate6-design.md Q3d, G6r) --------------------------
+
+// At arm: starts the clocks perf.json's deltas and perf-timeline.jsonl's seconds are measured
+// against.
+void perf_arm() {
+  g_perf.arm_ns = monotonic_ns();
+  g_perf.last_frame_ns = 0;
+  g_perf.timeline_last_second = -1;
+  g_perf.main_thread_cpu_start_ok =
+      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &g_perf.main_thread_cpu_start) == 0;
+}
+
+// Writes one evidence/perf-timeline.jsonl line the first time this is called in a new whole
+// second since arm (so at most one line per second, however often the frame callback runs).
+void perf_timeline_tick(uint64_t now_ns) {
+  if (!g_state.evidence_ready || g_perf.arm_ns == 0 || now_ns < g_perf.arm_ns) {
+    return;
+  }
+  const int64_t second = static_cast<int64_t>((now_ns - g_perf.arm_ns) / 1000000000ull);
+  if (second <= g_perf.timeline_last_second) {
+    return;
+  }
+  g_perf.timeline_last_second = second;
+  if (g_perf.timeline_file == nullptr) {
+    g_perf.timeline_path = path_join(g_state.evidence_dir, "perf-timeline.jsonl");
+    g_perf.timeline_file = std::fopen(g_perf.timeline_path.c_str(), "w");
+    if (g_perf.timeline_file == nullptr) {
+      log_line("perf: cannot open " + g_perf.timeline_path);
+      return;
+    }
+  }
+  // A compact one-line-per-record JSON builder: JsonWriter pretty-prints across several lines,
+  // which would break the jsonl contract (one JSON object per line), so this stays a plain
+  // string build, as rs_live.cpp's own per-connection log lines do.
+  std::string line = "{\"t_us\":" + std::to_string(now_ns / 1000) +
+                     ",\"frame\":" + std::to_string(g_state.frames_total) +
+                     ",\"rss_bytes\":" + std::to_string(read_rss_bytes()) + ",\"connections\":[";
+  if (g_live.hub != nullptr) {
+    bool first = true;
+    for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
+      if (!first) {
+        line += ",";
+      }
+      first = false;
+      line += "{\"connection\":" + std::to_string(s.connection) +
+              ",\"sent\":" + std::to_string(s.sent) +
+              ",\"credits\":" + std::to_string(s.credits) +
+              ",\"coalesced\":" + std::to_string(s.coalesced) +
+              ",\"ticks_credit_blocked\":" + std::to_string(s.ticks_credit_blocked) +
+              ",\"max_pending_age_us\":" + std::to_string(s.max_pending_age_us) +
+              ",\"bytes_sent\":" + std::to_string(s.bytes_sent) + "}";
+    }
+  }
+  line += "]}";
+  std::fwrite(line.data(), 1, line.size(), g_perf.timeline_file);
+  std::fputc('\n', g_perf.timeline_file);
+  std::fflush(g_perf.timeline_file);
+}
+
+// render-stream-capture-perf/1 (Q3d), written at disarm and shutdown.
+std::string perf_json() {
+  JsonWriter json;
+  json.object_begin();
+  json.field("schema", std::string("render-stream-capture-perf/1"));
+  json.key("histograms").object_begin();
+  json.key("frame_interval_us");
+  g_perf.frame_interval_us.write_json(&json);
+  json.key("frame_callback_us");
+  g_perf.frame_callback_us.write_json(&json);
+  json.key("snapshot_us");
+  g_perf.snapshot_us.write_json(&json);
+  // Always present, even with no live connection (an empty histogram, not a missing key): these
+  // are Hub-owned costs with nothing to report when there is no Hub, which is itself informative
+  // (count 0), not the same as "this stage was never wired" (unavailable_stages, below).
+  const Histogram kEmpty;
+  json.key("diff_us");
+  (g_live.hub != nullptr ? g_live.hub->diff_histogram() : kEmpty).write_json(&json);
+  json.key("encode_us");
+  (g_live.hub != nullptr ? g_live.hub->encode_histogram() : kEmpty).write_json(&json);
+  json.key("enqueue_us");
+  (g_live.hub != nullptr ? g_live.hub->enqueue_histogram() : kEmpty).write_json(&json);
+  json.key("credit_rtt_us").object_begin();
+  json.key("applied");
+  (g_live.hub != nullptr ? g_live.hub->credit_rtt_histogram(rs2::AckStage::Applied) : kEmpty)
+      .write_json(&json);
+  json.key("submitted");
+  (g_live.hub != nullptr ? g_live.hub->credit_rtt_histogram(rs2::AckStage::Submitted) : kEmpty)
+      .write_json(&json);
+  json.object_end();
+  json.key("staleness_us").object_begin();
+  json.key("applied");
+  (g_live.hub != nullptr ? g_live.hub->staleness_histogram(rs2::AckStage::Applied) : kEmpty)
+      .write_json(&json);
+  json.key("submitted");
+  (g_live.hub != nullptr ? g_live.hub->staleness_histogram(rs2::AckStage::Submitted) : kEmpty)
+      .write_json(&json);
+  json.object_end();
+  json.object_end();  // histograms
+  // D9 "declared, never guessed": every Q3d stage this increment did not wire (it would need
+  // rs_resource_store.cpp, rs_texture_payload.cpp, rs_mesh_payload.cpp, rs_shader_payload.cpp,
+  // rs_variant.cpp or rs_ws.cpp -- none in G6r's file list) is named here with why, rather than
+  // silently missing from `histograms`.
+  json.key("unavailable_stages").array_begin();
+  static const struct {
+    const char *stage;
+    const char *needs;
+  } kUnavailable[] = {
+      {"store_write_us", "rs_resource_store.cpp"},
+      {"texture_copy_us", "rs_texture_payload.cpp"},
+      {"texture_hash_us", "rs_texture_payload.cpp"},
+      {"mesh_copy_us", "rs_mesh_payload.cpp"},
+      {"mesh_hash_us", "rs_mesh_payload.cpp"},
+      {"shader_copy_us", "rs_shader_payload.cpp"},
+      {"shader_hash_us", "rs_shader_payload.cpp"},
+      {"param_decode_us", "rs_variant.cpp"},
+      {"http_serve_us", "rs_ws.cpp (I/O thread)"},
+  };
+  for (const auto &u : kUnavailable) {
+    json.object_begin();
+    json.field("stage", std::string(u.stage));
+    json.field("reason",
+               std::string("not wired by G6r: needs ") + u.needs + ", out of its file list");
+    json.object_end();
+  }
+  json.array_end();
+  json.key("cpu").object_begin();
+  const int64_t main_us = main_thread_cpu_us();
+  if (g_perf.main_thread_cpu_start_ok && main_us >= 0) {
+    const int64_t start_us = static_cast<int64_t>(g_perf.main_thread_cpu_start.tv_sec) * 1000000 +
+                             g_perf.main_thread_cpu_start.tv_nsec / 1000;
+    json.field("main_thread_us", main_us - start_us);
+  } else {
+    json.field_null("main_thread_us");
+  }
+  // The I/O thread's own CPU time would need a handle rs_ws.h does not expose; out of scope.
+  json.field_null("io_thread_us");
+  json.object_end();
+  json.key("connections").array_begin();
+  if (g_live.hub != nullptr) {
+    for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
+      json.object_begin();
+      json.field("connection", static_cast<int64_t>(s.connection));
+      json.field("ticks_due", static_cast<int64_t>(s.ticks_due));
+      json.field("ticks_sent", static_cast<int64_t>(s.ticks_sent));
+      json.field("ticks_credit_blocked", static_cast<int64_t>(s.ticks_credit_blocked));
+      json.field("frames_rate_idle", static_cast<int64_t>(s.frames_rate_idle));
+      json.object_end();
+    }
+  }
+  json.array_end();
+  json.object_end();
+  return json.take();
+}
+
+void perf_finish() {
+  if (g_state.evidence_ready) {
+    emit("perf.json", perf_json());
+  }
+  if (g_perf.timeline_file != nullptr) {
+    std::fclose(g_perf.timeline_file);
+    g_perf.timeline_file = nullptr;
+  }
+}
+
 void write_xform(JsonWriter *json, const std::string &name, const rs2::Xform &xform) {
   json->key(name).array_begin();
   for (float value : xform) {
@@ -585,6 +807,11 @@ std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before
 
 // Appends whatever the hooks logged since the last call to
 // evidence/resources.jsonl. Main thread (frame callback, stream end).
+//
+// Always drains (take_lines()), even when the file is not open (GRC_HOOK_LOG=off, or it failed
+// to open): the hooks keep buffering lines into ResourceLog regardless (counters.json and the
+// mirror read from the hooks directly, not from this file, Q3d), so leaving them undrained would
+// grow that buffer without bound over a long run.
 void resources_drain() {
   const std::string lines = rs::resource_log().take_lines();
   if (lines.empty() || g_stream.resources_file == nullptr) {
@@ -599,7 +826,11 @@ void resources_drain() {
 // Starts the log for a stream that just opened: GRC_RESOURCE_* were validated
 // by the caller; the root viewport RID marks root-viewport filter calls.
 void resources_start(uint64_t root_viewport_rid) {
-  if (g_state.evidence_ready) {
+  // GRC_HOOK_LOG=off (Q3d, G6r): the file is never opened, so resources.jsonl gets no per-call
+  // lines; resources_drain() above still drains (and discards) the hooks' own buffer every
+  // frame. The hooks themselves still run (payload copies, the mirror update, counters.json) --
+  // only this file's content is skipped.
+  if (g_state.evidence_ready && g_stream.hook_log_on) {
     g_stream.resources_path = path_join(g_state.evidence_dir, "resources.jsonl");
     g_stream.resources_file = std::fopen(g_stream.resources_path.c_str(), "w");
     if (g_stream.resources_file == nullptr) {
@@ -734,6 +965,28 @@ bool env_non_negative(const char *name, uint64_t fallback, uint64_t *out) {
   return true;
 }
 
+// GRC_PUBLISH_FPS (D8, Q3c, G6r): "uncapped" (default, every frame callback that holds credit)
+// or a decimal integer 1..240 fps, read at arm. Live connections only -- a Publisher file sink
+// is never rate-limited by this.
+bool parse_publish_fps(const char *value, uint64_t *period_ns, uint64_t *target_fps) {
+  if (value == nullptr || *value == '\0' || std::string(value) == "uncapped") {
+    *period_ns = 0;
+    *target_fps = 0;
+    return true;
+  }
+  const std::string text(value);
+  if (text.size() > 3 || text.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  const uint64_t fps = std::stoull(text);
+  if (fps < 1 || fps > 240) {
+    return false;
+  }
+  *target_fps = fps;
+  *period_ns = 1000000000ull / fps;
+  return true;
+}
+
 std::string live_json() {
   JsonWriter json;
   json.object_begin();
@@ -815,6 +1068,19 @@ void stream_start() {
     }
     return;
   }
+  // GRC_HOOK_LOG (Q3d, G6r): on|off, default on.
+  const std::string hook_log = env_string("GRC_HOOK_LOG");
+  if (!hook_log.empty() && hook_log != "on" && hook_log != "off") {
+    const std::string error = "invalid GRC_HOOK_LOG=" + hook_log + " (expected on or off)";
+    log_line("stream: refused hook log mode (" + error + ")");
+    g_stream.status = "refused";
+    g_stream.reason = error;
+    if (!g_live.listen.empty()) {
+      live_decided("refused", "stream refused: " + error);
+    }
+    return;
+  }
+  g_stream.hook_log_on = hook_log != "off";
   // Gate 2 (G2a): the resource policy and the payload copy capability
   // (gate2-design.md D3, Q3). A stream never runs with texture copies it cannot
   // make, so either failure refuses to publish, as an invalid GRC_ROOT_SIZE does.
@@ -865,6 +1131,9 @@ void stream_start() {
   std::string live_host;
   uint16_t live_port = 0;
   rs2::LiveConfig live_config;
+  // GRC_LIVE_MAX_CONNECTIONS (D13, G6r): the WebSocket admission limit (ServerConfig::
+  // max_clients below); the Hub itself already tracks every connection independently.
+  uint64_t live_max_connections = 1;
   // G2e: empty/None unless GRC_LIVE_AUTH=token successfully generates and writes one below.
   std::string live_auth_token;
   rs2::Auth live_auth = rs2::Auth::None;
@@ -883,6 +1152,14 @@ void stream_start() {
     } else if (!env_positive("GRC_LIVE_HELLO_TIMEOUT_MS", 5000, &live_config.hello_timeout_ms)) {
       live_ok = false;
       why = "invalid GRC_LIVE_HELLO_TIMEOUT_MS (a decimal integer >= 1)";
+    } else if (!parse_publish_fps(std::getenv("GRC_PUBLISH_FPS"), &live_config.publish_period_ns,
+                                  &live_config.publish_target_fps)) {
+      live_ok = false;
+      why = "invalid GRC_PUBLISH_FPS (uncapped, or a decimal integer 1..240)";
+    } else if (!env_positive("GRC_LIVE_MAX_CONNECTIONS", 1, &live_max_connections) ||
+               live_max_connections > 4) {
+      live_ok = false;
+      why = "invalid GRC_LIVE_MAX_CONNECTIONS (a decimal integer 1..4)";
     } else if (!live_config.tap_dir.empty() && live_config.tap_dir[0] != '/') {
       live_ok = false;
       why = "GRC_LIVE_TAP_DIR must be absolute";
@@ -1166,7 +1443,9 @@ void stream_start() {
     live::ServerConfig server_config;
     server_config.host = live_host;
     server_config.port = live_port;
-    server_config.max_clients = 1;  // D5: one receiver at a time (a second gets 503)
+    // D5 default 1 (one receiver at a time, a second gets 503); GRC_LIVE_MAX_CONNECTIONS (D13,
+    // G6r) raises it up to 4.
+    server_config.max_clients = static_cast<std::size_t>(live_max_connections);
     server_config.subprotocol = "render-stream.5";  // render-stream-5.md "Live transport"
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     g_live.address = live_host;
@@ -1421,7 +1700,11 @@ void stream_publish(uint64_t frame) {
   }
   resources_drain();
   live_drain(frame);
-  const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot(frame);
+  // G6r: one steady-clock read shared by the due-tick check below and, when a snapshot is taken,
+  // by the hub's own on_frame() timing -- the quarter-period slack in tick_due() absorbs the few
+  // nanoseconds this function otherwise takes before the snapshot would have been copied.
+  const uint64_t now_ns = monotonic_ns();
+  const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot(frame, now_ns);
   const uint64_t epoch = rs::mirror_epoch();
   // G2c2: with a live server the snapshot is taken at every callback, so the served set always
   // holds the current state's payloads (D7), even when no connection takes a transaction.
@@ -1435,6 +1718,9 @@ void stream_publish(uint64_t frame) {
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   const uint64_t snapshot_ns = monotonic_ns() - t0;
+  if (g_state.evidence_ready) {
+    g_perf.snapshot_us.add(snapshot_ns / 1000);  // Q3d snapshot_us (G6r)
+  }
   // gate2-design.md Q3: the retained payloads -- the mirror's current ones, those the previous
   // publication still pins and (G2c2) those still servable over HTTP -- stay within
   // GRC_RESOURCE_BUDGET_BYTES.
@@ -1626,6 +1912,7 @@ bool attempt(const char *phase) {
   }
   g_state.armed = true;
   g_state.vptr_written = true;
+  perf_arm();
   stream_start();
   if (g_state.evidence_ready) {
     touch_file(path_join(g_state.evidence_dir, "armed.marker"));
@@ -1652,12 +1939,23 @@ void do_disarm(const char *phase) {
   emit("disarm.json", disarm_json());
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
   emit_canvas_texture_shim();
+  perf_finish();
   emit("result.json", result_json());
 }
 
 void on_startup() { attempt("startup"); }
 
 void on_frame() {
+  const uint64_t frame_start_ns = monotonic_ns();
+  // Q3d frame_interval_us (G6r): measured only while armed, from one armed callback to the
+  // next -- the unarmed/validate-mode callbacks before arming are not part of any measured arm
+  // (D11's `unarmed` arm is "no extension at all", so this code does not even run for it).
+  if (g_state.armed && g_state.evidence_ready) {
+    if (g_perf.last_frame_ns != 0) {
+      g_perf.frame_interval_us.add((frame_start_ns - g_perf.last_frame_ns) / 1000);
+    }
+    g_perf.last_frame_ns = frame_start_ns;
+  }
   ++g_state.frames_total;
   live_linger(false);  // after a disarm: the receivers' closes, then the server stop
   hooks_set_frame(g_state.frames_total + 1);
@@ -1677,6 +1975,11 @@ void on_frame() {
       stream_finish(rs2::EndReason::Disarm);
       do_disarm("frame");
     }
+  }
+  if (armed_at_start && g_state.evidence_ready) {
+    const uint64_t now_ns = monotonic_ns();
+    g_perf.frame_callback_us.add((now_ns - frame_start_ns) / 1000);  // Q3d frame_callback_us
+    perf_timeline_tick(now_ns);
   }
 }
 

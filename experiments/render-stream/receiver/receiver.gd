@@ -63,6 +63,17 @@ extends Node
 ##                                never called) or stale-param (G55e: a material's parameters are
 ##                                set only when it is created); all fifteen exist only to fail
 ##                                checks or compare
+##
+## Perf (G6r, both modes; rs_perf.gd):
+##   RS_RECEIVER_PERF_OUT   absolute path; writes render-stream-receiver-perf/1 alongside
+##                          applied.json on every exit path: histograms for decode_us (accept_
+##                          record), apply_us (apply_state), fetch_us and frame_interval_us;
+##                          cpu_render_ms/gpu_render_ms with a status (skipped-headless under
+##                          --headless); received/applied/submitted counts; a one-line-per-second
+##                          timeline (RSS, RenderingServer.get_rendering_info's texture/buffer/
+##                          video memory, the disk cache's entries and bytes). Unset: off.
+##   RS_RECEIVER_LOG        full (default) or summary: summary drops applied.json's
+##                          `transactions` array (shots and failures stay), for soak and perf legs.
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash), and (G5e) every surface payload of an `ok` mesh
 ## an add_mesh names that is not resident with that hash, and (G55d) the GRP1 code of every `ok`
@@ -190,6 +201,11 @@ var _withheld_reported: Dictionary[String, bool] = {}
 var _fetch_delay_ms: int = 0
 var _fetch_timeout_ms: int = 10000
 var _inline_since_applied: int = 0
+# Perf instrumentation (G6r, Q5 "Perf"): RS_RECEIVER_PERF_OUT (absolute perf.json path, unset:
+# off) and RS_RECEIVER_LOG (full default | summary, drops _transactions from applied.json).
+var _perf: RsPerf = null
+var _perf_out_path: String = ""
+var _log_mode: String = "full"
 # Live HTTP fetches (G2c2).
 var _fetch_kind: String = ""
 var _fetcher: RsResourceFetcher = null
@@ -259,6 +275,9 @@ func _ready() -> void:
 	if not _parse_resource_env(false):
 		_quit(EXIT_USAGE)
 		return
+	if not _parse_perf_env():
+		_quit(EXIT_USAGE)
+		return
 
 	var display_server: String = _init_report("file")
 	if not _open_cache():
@@ -298,6 +317,8 @@ func _ready() -> void:
 		return
 
 	_applier = RsApplier.new(get_viewport().get_viewport_rid(), get_viewport().find_world_2d().canvas)
+	if _perf != null:
+		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
 	var raw: Dictionary = _records[_next_record]
 	_next_record += 1
 	if not _begin_session(RsApplier.accept_record(_data, Rs2Decoder.as_int(raw["offset"]), _stream)):
@@ -327,7 +348,9 @@ func _init_report(mode: String) -> String:
 		"failure": null,
 		"end_seen": false,
 		"viewport": _viewport_report,
-		"transactions": _transactions,
+		# RS_RECEIVER_LOG=summary (G6r) drops this array (shots and failures stay); _transactions
+		# itself is never appended to under summary mode either, so neither grows unbounded.
+		"transactions": null if _log_mode == "summary" else _transactions,
 		"shots": _shots,
 		"shots_missed": [],
 		"unsupported": _unsupported,
@@ -384,6 +407,23 @@ func _parse_resource_env(live: bool) -> bool:
 	_cache.library_dir = library_dir
 	_cache.ignore_cache = sabotage == "ignore-cache"
 	_sabotage = sabotage
+	return true
+
+
+## RS_RECEIVER_PERF_OUT / RS_RECEIVER_LOG (G6r, Q5 "Perf"). Logs and returns false when malformed.
+func _parse_perf_env() -> bool:
+	_perf_out_path = OS.get_environment("RS_RECEIVER_PERF_OUT").strip_edges()
+	if _perf_out_path != "" and not _perf_out_path.is_absolute_path():
+		_log("error: RS_RECEIVER_PERF_OUT must be an absolute path (got %s)" % JSON.stringify(_perf_out_path))
+		return false
+	_log_mode = OS.get_environment("RS_RECEIVER_LOG").strip_edges()
+	if _log_mode == "":
+		_log_mode = "full"
+	if _log_mode != "full" and _log_mode != "summary":
+		_log("error: RS_RECEIVER_LOG must be full or summary (got %s)" % JSON.stringify(_log_mode))
+		return false
+	if _perf_out_path != "":
+		_perf = RsPerf.new()
 	return true
 
 
@@ -496,7 +536,15 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	if error != "":
 		_fail_with_error(seq, error)
 		return {"ok": false, "stats": {}}
+	if _perf != null:
+		# The whole fetch stage for this transaction, including HTTP fetches live mode may have
+		# run across several earlier _process calls (resources["fetch_us"] already carries those
+		# through `prefetched`, not re-timed here).
+		_perf.fetch_us.add(Rs2Decoder.as_int(resources["fetch_us"]))
+	var apply_t0: int = Time.get_ticks_usec() if _perf != null else 0
 	var stats: Dictionary = _applier.apply_state(_stream, _cache)
+	if _perf != null:
+		_perf.apply_us.add(Time.get_ticks_usec() - apply_t0)
 	var applied: Dictionary = stats["resources"]
 	for key: String in ["created", "updated", "replaced", "freed", "upload_bytes", "skipped_commands"]:
 		resources[key] = applied[key]
@@ -615,6 +663,9 @@ func _begin_session(accepted: Dictionary) -> bool:
 
 
 func _process(_delta: float) -> void:
+	if _perf != null:
+		_perf.record_frame_interval()
+		_perf.sample_timeline(_cache.entries(), _cache.bytes())
 	if _live:
 		_process_live()
 		return
@@ -629,7 +680,10 @@ func _process(_delta: float) -> void:
 	# The only place transaction RS calls happen: _fetch_and_apply touches the RenderingServer
 	# only after the record decoded, the stream accepted (and resolved) it and every payload it
 	# needs is available.
+	var decode_t0: int = Time.get_ticks_usec() if _perf != null else 0
 	var result: Dictionary = RsApplier.accept_record(_data, Rs2Decoder.as_int(raw["offset"]), _stream)
+	if _perf != null:
+		_perf.decode_us.add(Time.get_ticks_usec() - decode_t0)
 	var errors: PackedStringArray = result["errors"]
 	var record: Dictionary = result["record"]
 	var meta: Dictionary = record["meta"]
@@ -722,7 +776,8 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 
 func _record_transaction(meta: Dictionary, record: Dictionary, stats: Dictionary) -> void:
 	var entry: Dictionary = _transaction_entry(FILE_STREAM, meta, record)
-	_transactions.append(entry)
+	if _log_mode != "summary":
+		_transactions.append(entry)
 	_note_applied(entry, meta, stats)
 	var seq: int = entry["seq"]
 
@@ -1227,6 +1282,9 @@ func _ready_live() -> void:
 	if not _parse_resource_env(true):
 		_quit(EXIT_USAGE)
 		return
+	if not _parse_perf_env():
+		_quit(EXIT_USAGE)
+		return
 	var display_server: String = _init_report("live")
 	if not _open_cache():
 		return
@@ -1268,6 +1326,8 @@ func _ready_live() -> void:
 		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
 		return
 	_applier = RsApplier.new(get_viewport().get_viewport_rid(), get_viewport().find_world_2d().canvas)
+	if _perf != null:
+		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
 	_client = RsLiveClient.new()
 	var opened: Error = _client.open(_url, _inbound_bytes, _token)
 	if opened != OK:
@@ -1542,7 +1602,10 @@ func _receive_binary(message: PackedByteArray) -> void:
 		_begin_session(RsApplier.accept_record(_data, 8, _stream))
 		return
 	var expected_seq: int = _stream.last_seq + 1
+	var decode_t0: int = Time.get_ticks_usec() if _perf != null else 0
 	var accepted: Dictionary = RsApplier.accept_record(_data, offset, _stream)
+	if _perf != null:
+		_perf.decode_us.add(Time.get_ticks_usec() - decode_t0)
 	var errors: PackedStringArray = accepted["errors"]
 	var record: Dictionary = accepted["record"]
 	var meta: Dictionary = record["meta"]
@@ -1564,7 +1627,8 @@ func _receive_binary(message: PackedByteArray) -> void:
 		"transaction":
 			var entry: Dictionary = _transaction_entry(_conn_index, meta, record)
 			entry["received_us"] = now_us
-			_transactions.append(entry)
+			if _log_mode != "summary":
+				_transactions.append(entry)
 			var received_seq: int = entry["seq"]
 			_send(RsLiveClient.ack(_stream_id, received_seq, "received", now_us))
 			_acks_sent["received"] = Rs2Decoder.as_int(_acks_sent["received"]) + 1
@@ -1872,6 +1936,26 @@ func _write_report() -> void:
 		_log("error: cannot write %s: %s" % [_out_path, error_string(FileAccess.get_open_error())])
 		return
 	file.store_string(JSON.stringify(_report, "  ", false) + "\n")
+	file.close()
+	_write_perf_report()
+
+
+## RS_RECEIVER_PERF_OUT (G6r): render-stream-receiver-perf/1, written alongside applied.json on
+## every exit path (_fail, _finish, _finish_live all call _write_report()).
+func _write_perf_report() -> void:
+	if _perf == null:
+		return
+	var headless: bool = DisplayServer.get_name() == "headless"
+	var viewport_rid: RID = get_viewport().get_viewport_rid() if is_inside_tree() else RID()
+	# Acks (received/applied/submitted) are a live-transport concept; file mode has none, so
+	# `counts` stays null there rather than a misleading all-zero (D9: declared, not guessed).
+	var doc: Dictionary = _perf.to_dict(viewport_rid, headless, _acks_sent if _live else null)
+	DirAccess.make_dir_recursive_absolute(_perf_out_path.get_base_dir())
+	var file: FileAccess = FileAccess.open(_perf_out_path, FileAccess.WRITE)
+	if file == null:
+		_log("error: cannot write %s: %s" % [_perf_out_path, error_string(FileAccess.get_open_error())])
+		return
+	file.store_string(JSON.stringify(doc, "  ", false) + "\n")
 	file.close()
 
 
