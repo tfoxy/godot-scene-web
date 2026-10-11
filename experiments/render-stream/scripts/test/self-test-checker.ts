@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import {
   type Criterion,
+  checkCanvasHookLog,
   checkCaptureCounts,
   checkDisarmAndCompletion,
   checkDrawPaths,
@@ -49,6 +50,75 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 async function writeText(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, text);
+}
+
+// G6k (gate6-design.md Q2): a minimal, fully-shaped render-stream-resource-log/1 line (every key
+// RESOURCE_LINE_KEYS names, in order, most null), for checkCanvasHookLog's scenarios -- the only
+// gate -1 criterion that reads evidence/resources.jsonl, so buildGoodEvidence never writes one.
+const RESOURCE_LINE_DEFAULTS = {
+  frame: 1,
+  t_us: 0,
+  thread: "main",
+  op: "",
+  id: null,
+  by_id: null,
+  rid: null,
+  version: null,
+  kind: null,
+  status: null,
+  reason: null,
+  format: null,
+  width: null,
+  height: null,
+  mipmaps: null,
+  data_bytes: null,
+  payload_bytes: null,
+  hash: null,
+  copy_ns: null,
+  hash_ns: null,
+  conn: null,
+  http_status: null,
+  target: null,
+  ref_id: null,
+  value: null,
+  layer: null,
+  root_viewport: null,
+  surface: null,
+  buffer: null,
+  offset: null,
+  bytes: null,
+  primitive: null,
+  vertex_count: null,
+  index_count: null,
+  outcome: null,
+  mode: null,
+  source: null,
+  builtin: null,
+  uses: null,
+  scan_ns: null,
+  param: null,
+  type: null,
+  n: null,
+  decode_ns: null,
+  sublayer: null,
+  transform: null,
+  parent: null,
+  mirroring: null,
+  repeat: null,
+} as const;
+
+function canvasLine(
+  op: string,
+  rid: string,
+  extra: Record<string, unknown> = {},
+): string {
+  return JSON.stringify({
+    ...RESOURCE_LINE_DEFAULTS,
+    op,
+    rid,
+    kind: "canvas",
+    ...extra,
+  });
 }
 
 /** Where the fixture's calibrator-2 drawings land (expected.json draw_paths.visible_samples). */
@@ -1006,6 +1076,65 @@ const scenarios: Scenario[] = [
     },
     run: async (dir, expected) => [await checkOlderRecord(dir, expected)],
     expect: { "older-record-loads": "fail" },
+  },
+  {
+    name: "calibrator-9 canvas lines carrying every expected constant pass canvas-hook-log",
+    build: async (dir, expected) => {
+      const c9 = expected.canvas9;
+      const lines = [
+        canvasLine("viewport_remove_canvas", "2001", { target: "2000" }),
+        canvasLine("viewport_set_global_canvas_transform", "2000", {
+          transform: c9.global_transform,
+        }),
+        canvasLine("viewport_set_canvas_stacking", "2001", {
+          target: "2000",
+          layer: c9.layer,
+          sublayer: c9.sublayer,
+        }),
+        canvasLine("canvas_set_item_mirroring", "2001", {
+          target: "2100",
+          mirroring: c9.mirroring,
+        }),
+        canvasLine("canvas_set_item_repeat", "2100", { repeat: c9.repeat }),
+        canvasLine("canvas_set_parent", "2001", { parent: "2002" }),
+      ];
+      await writeText(
+        join(dir, "headless-stream", "evidence", "resources.jsonl"),
+        `${lines.join("\n")}\n`,
+      );
+    },
+    run: async (dir, expected) => [await checkCanvasHookLog(dir, expected)],
+    expect: { "canvas-hook-log": "pass" },
+  },
+  {
+    name: "a canvas_set_parent line with no non-null parent fails canvas-hook-log",
+    build: async (dir, expected) => {
+      const c9 = expected.canvas9;
+      const lines = [
+        canvasLine("viewport_remove_canvas", "2001", { target: "2000" }),
+        canvasLine("viewport_set_global_canvas_transform", "2000", {
+          transform: c9.global_transform,
+        }),
+        canvasLine("viewport_set_canvas_stacking", "2001", {
+          target: "2000",
+          layer: c9.layer,
+          sublayer: c9.sublayer,
+        }),
+        canvasLine("canvas_set_item_mirroring", "2001", {
+          target: "2100",
+          mirroring: c9.mirroring,
+        }),
+        canvasLine("canvas_set_item_repeat", "2100", { repeat: c9.repeat }),
+        // Every canvas_set_parent call this run made named RID() (parent absent).
+        canvasLine("canvas_set_parent", "2001", {}),
+      ];
+      await writeText(
+        join(dir, "headless-stream", "evidence", "resources.jsonl"),
+        `${lines.join("\n")}\n`,
+      );
+    },
+    run: async (dir, expected) => [await checkCanvasHookLog(dir, expected)],
+    expect: { "canvas-hook-log": "fail" },
   },
 ];
 

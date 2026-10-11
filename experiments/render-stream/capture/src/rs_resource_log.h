@@ -83,6 +83,27 @@
 // naming an unknown mesh or surface is "unknown", everything else that reaches the registry is
 // "applied"). omit-op on a mesh call writes its line with "sabotage":true,"omitted":true and
 // leaves the registry untouched, as the texture taps do.
+//
+// G6k (gate6-design.md Q2, calibrator 9) adds `kind: "canvas"` lines for the six new hooks:
+// viewport_remove_canvas, viewport_set_global_canvas_transform, viewport_set_canvas_stacking,
+// canvas_set_item_mirroring, canvas_set_item_repeat and canvas_set_parent. This module keeps no
+// canvas registry of its own (no id/version: a canvas's identity and state are the mirror's
+// field, G6b); every line is presence-only, decoded straight off the call's own arguments, as
+// G55a's item-material lines are. `rid` is the call's primary RID (the canvas for every op
+// except viewport_set_global_canvas_transform, where there is no canvas argument and `rid` is
+// the viewport instead, and canvas_set_item_repeat, whose only RID argument is the item);
+// `target` is a second RID the call names (the viewport for the two viewport_* taps, the item
+// for canvas_set_item_mirroring). New trailing columns, present (null unless relevant) on every
+// line: `sublayer` (viewport_set_canvas_stacking's sublayer; its layer reuses the existing
+// `layer` column), `transform` (viewport_set_global_canvas_transform's Transform2D, flattened
+// column-major: [a, b, c, d, origin.x, origin.y], as canvas_item_add_set_transform's counters.json
+// entry already is), `parent` (canvas_set_parent's parent RID, decimal string, or null for
+// `RID()`; its scale argument is not logged -- this log is evidence, not the wire, and D2's "no
+// classification yet" rule leaves the sticky canvas-follow-viewport/canvas-repeat typing to G6b),
+// `mirroring` (canvas_set_item_mirroring's Point2, `[x, y]`) and `repeat` (canvas_set_item_repeat's
+// Point2 and int flattened to `[size.x, size.y, times]`). No status/reason/outcome: unlike G55a's
+// item-material lines, G6k types no refusal (there is nothing yet to refuse against -- that is
+// G6b's mirror).
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
@@ -307,6 +328,25 @@ class ResourceLog {
   void canvas_set_modulate(const TapContext &ctx, std::uint64_t canvas);
   void canvas_light_attach_to_canvas(const TapContext &ctx, std::uint64_t light,
                                      std::uint64_t canvas);
+
+  // --- canvases (gate6-design.md Q2, G6k, calibrator 9): decode and log only, no registry, no
+  // classification (that is G6b's mirror). `transform`/`mirroring`/`repeat_size` point at 6/2/2
+  // contiguous floats (a caller-owned Transform2D/Point2, valid only for the duration of the
+  // call; the method reads and copies, never retains the pointer). -----------------------------
+  //
+  void viewport_remove_canvas(const TapContext &ctx, std::uint64_t viewport,
+                              std::uint64_t canvas);
+  void viewport_set_global_canvas_transform(const TapContext &ctx, std::uint64_t viewport,
+                                            const float *transform);
+  void viewport_set_canvas_stacking(const TapContext &ctx, std::uint64_t viewport,
+                                    std::uint64_t canvas, std::int32_t layer,
+                                    std::int32_t sublayer);
+  void canvas_set_item_mirroring(const TapContext &ctx, std::uint64_t canvas, std::uint64_t item,
+                                 const float *mirroring);
+  void canvas_set_item_repeat(const TapContext &ctx, std::uint64_t item,
+                              const float *repeat_size, std::int32_t repeat_times);
+  // `scale` is not logged (see the header comment above); only `parent`'s presence matters here.
+  void canvas_set_parent(const TapContext &ctx, std::uint64_t canvas, std::uint64_t parent);
 
   // The wire id of a texture RID the log knows, or 0.
   std::uint64_t texture_id(std::uint64_t rid) const;

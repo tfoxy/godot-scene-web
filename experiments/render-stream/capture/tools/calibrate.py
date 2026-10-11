@@ -33,7 +33,7 @@ import re
 import struct
 import sys
 
-CALIBRATOR_VERSION = "8"
+CALIBRATOR_VERSION = "9"
 SCHEMA = "render-stream-calibration/1"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
@@ -148,6 +148,15 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("canvas_item_set_instance_shader_parameter",),
     ),
     ("canvas_light_attach_to_canvas", ("canvas_light_attach_to_canvas",)),
+    # calibrator 9: gate6-design.md Q2 -- CanvasLayer attach/stacking/removal, canvas-item
+    # mirroring/repeat and the root's global canvas transform. Decode and hook-log only; no
+    # mirror change (that lands in G6b).
+    ("viewport_remove_canvas", ("viewport_remove_canvas",)),
+    ("viewport_set_global_canvas_transform", ("viewport_set_global_canvas_transform",)),
+    ("viewport_set_canvas_stacking", ("viewport_set_canvas_stacking",)),
+    ("canvas_set_item_mirroring", ("canvas_set_item_mirroring",)),
+    ("canvas_set_item_repeat", ("canvas_set_item_repeat",)),
+    ("canvas_set_parent", ("canvas_set_parent",)),
 )
 
 ET_EXEC = 2

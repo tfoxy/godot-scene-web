@@ -1,5 +1,7 @@
 #include "rs_resource_log.h"
 
+#include <cstdio>
+
 #include "rs_mesh_payload.h"
 #include "rs_texture_payload.h"
 
@@ -7,6 +9,15 @@ namespace grc {
 namespace rs {
 
 namespace {
+
+// 9 significant digits round-trips an IEEE-754 float32 exactly (report.cpp's JsonWriter::
+// field(float) uses the same format), which is all this log needs: a reader that parses the
+// JSON number back gets the identical float32 value.
+void append_float(std::string *out, float value) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.9g", static_cast<double>(value));
+  *out += buf;
+}
 
 // Appends a JSON string literal; every value here is an identifier, a decimal
 // RID or a hex digest, so only `"` and `\` need escaping.
@@ -77,6 +88,18 @@ struct ResourceLog::Line {
   std::int64_t n = 0;
   bool has_decode_ns = false;
   std::int64_t decode_ns = 0;
+  // G6k (gate6-design.md Q2): canvas trailing columns, null on every other line.
+  bool has_sublayer = false;
+  std::int32_t sublayer = 0;
+  bool has_transform = false;
+  float transform[6] = {};
+  std::uint64_t parent = 0;  // 0 = null
+  bool has_parent = false;
+  bool has_mirroring = false;
+  float mirroring[2] = {};
+  bool has_repeat = false;
+  float repeat_size[2] = {};
+  std::int32_t repeat_times = 0;
 };
 
 void ResourceLog::emit(const Line &l) {
@@ -260,6 +283,50 @@ void ResourceLog::emit(const Line &l) {
   i64_or_null(l.has_n, l.n);
   key("decode_ns");
   i64_or_null(l.has_decode_ns, l.decode_ns);
+  // G6k (gate6-design.md Q2): canvas trailing columns, null on every other line.
+  key("sublayer");
+  i64_or_null(l.has_sublayer, l.sublayer);
+  key("transform");
+  if (l.has_transform) {
+    o += "[";
+    for (int i = 0; i < 6; ++i) {
+      if (i != 0) {
+        o += ",";
+      }
+      append_float(&o, l.transform[i]);
+    }
+    o += "]";
+  } else {
+    o += "null";
+  }
+  key("parent");
+  if (l.has_parent) {
+    append_string(&o, std::to_string(l.parent));
+  } else {
+    o += "null";
+  }
+  key("mirroring");
+  if (l.has_mirroring) {
+    o += "[";
+    append_float(&o, l.mirroring[0]);
+    o += ",";
+    append_float(&o, l.mirroring[1]);
+    o += "]";
+  } else {
+    o += "null";
+  }
+  key("repeat");
+  if (l.has_repeat) {
+    o += "[";
+    append_float(&o, l.repeat_size[0]);
+    o += ",";
+    append_float(&o, l.repeat_size[1]);
+    o += ",";
+    o += std::to_string(l.repeat_times);
+    o += "]";
+  } else {
+    o += "null";
+  }
   // G2b2: present only on a sabotage's own lines (spurious-texture-update's version bump; an
   // op the omit-op sabotage left out of the registry, `omitted`).
   if (l.sabotage) {
@@ -1649,6 +1716,120 @@ void ResourceLog::canvas_light_attach_to_canvas(const TapContext &ctx, std::uint
     line.target = canvas;
     line.status = "unsupported";
     line.reason = "canvas-light";
+  }
+  emit(line);
+}
+
+// --- canvases (gate6-design.md Q2, G6k, calibrator 9): decode and log only, no registry, no
+// classification (that is G6b's mirror). See the header comment for the field layout. ---------
+
+void ResourceLog::viewport_remove_canvas(const TapContext &ctx, std::uint64_t viewport,
+                                         std::uint64_t canvas) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "viewport_remove_canvas");
+  line.rid = canvas;
+  line.kind = "canvas";
+  if (viewport != 0) {
+    line.has_target = true;
+    line.target = viewport;
+  }
+  emit(line);
+}
+
+void ResourceLog::viewport_set_global_canvas_transform(const TapContext &ctx,
+                                                        std::uint64_t viewport,
+                                                        const float *transform) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "viewport_set_global_canvas_transform");
+  line.rid = viewport;  // no canvas argument on this call
+  line.kind = "canvas";
+  if (transform != nullptr) {
+    line.has_transform = true;
+    for (int i = 0; i < 6; ++i) {
+      line.transform[i] = transform[i];
+    }
+  }
+  emit(line);
+}
+
+void ResourceLog::viewport_set_canvas_stacking(const TapContext &ctx, std::uint64_t viewport,
+                                               std::uint64_t canvas, std::int32_t layer,
+                                               std::int32_t sublayer) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "viewport_set_canvas_stacking");
+  line.rid = canvas;
+  line.kind = "canvas";
+  if (viewport != 0) {
+    line.has_target = true;
+    line.target = viewport;
+  }
+  line.has_layer = true;
+  line.layer = layer;
+  line.has_sublayer = true;
+  line.sublayer = sublayer;
+  emit(line);
+}
+
+void ResourceLog::canvas_set_item_mirroring(const TapContext &ctx, std::uint64_t canvas,
+                                            std::uint64_t item, const float *mirroring) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_set_item_mirroring");
+  line.rid = canvas;
+  line.kind = "canvas";
+  if (item != 0) {
+    line.has_target = true;
+    line.target = item;
+  }
+  if (mirroring != nullptr) {
+    line.has_mirroring = true;
+    line.mirroring[0] = mirroring[0];
+    line.mirroring[1] = mirroring[1];
+  }
+  emit(line);
+}
+
+void ResourceLog::canvas_set_item_repeat(const TapContext &ctx, std::uint64_t item,
+                                         const float *repeat_size, std::int32_t repeat_times) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_set_item_repeat");
+  line.rid = item;  // the call's only RID argument
+  line.kind = "canvas";
+  if (repeat_size != nullptr) {
+    line.has_repeat = true;
+    line.repeat_size[0] = repeat_size[0];
+    line.repeat_size[1] = repeat_size[1];
+    line.repeat_times = repeat_times;
+  }
+  emit(line);
+}
+
+void ResourceLog::canvas_set_parent(const TapContext &ctx, std::uint64_t canvas,
+                                    std::uint64_t parent) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  Line line = base_line(ctx, "canvas_set_parent");
+  line.rid = canvas;
+  line.kind = "canvas";
+  if (parent != 0) {
+    line.has_parent = true;
+    line.parent = parent;
   }
   emit(line);
 }
