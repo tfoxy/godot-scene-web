@@ -1825,3 +1825,67 @@ teardown free after the quit frame, for both variants and the armed reference's 
 fail on a `material_set_shader` missing, a version off, `gain`'s erase not typed `nil`, an extra
 material, a line off the main thread, the step-3 code change never hooked, `sh_a` never freed and
 `TIME` not refused.
+
+# Gate 6
+
+Gate 6's increments are tracked in [../protocol/gate6-design.md](../protocol/gate6-design.md)
+"Increments". Each lands its own subsection here as it completes.
+
+## Gate 6 files (g6t)
+
+G6t ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6t") is the measurement/report
+tooling: new files only, no engine or capture change, no gate legs of its own.
+
+- `lib/render-stream-report.ts`: the `render-stream-report/1` types (D10, Q7f), `validate()`
+  (schema plus internal-consistency checks, collecting every problem rather than stopping at the
+  first) and `aggregate()` (the scenario-level `aggregate` block, recomputed from exactly five
+  repeats; both `report-gate6.ts build` and `validate()` call it, so a report this module builds
+  always round-trips).
+- `lib/provenance.ts`: host facts (`/proc/cpuinfo`, `os`), the gamescope version string and
+  `sha256File`, all best-effort and engine-free.
+- `lib/proc-sampler.ts`: 1 Hz `/proc/<pid>/status` (VmRSS, VmHWM, Threads) and
+  `/proc/<pid>/task/*/stat` (per-thread utime/stime, USER_HZ assumed 100) for a process this
+  runner already owns (D9: engine memory counters are unavailable in release templates, so
+  residency is measured from `/proc` instead).
+- `throttle-proxy.ts` (D12): a loopback TCP proxy (`node:net` only) between a receiver and the
+  host's single listener, with a token bucket (rate + burst) and a fixed one-way delay per
+  direction. Profile `constrained`: 500 000 B/s, 64 KiB burst, 30 ms delay. Importable
+  (`startThrottleProxy`) or a standalone CLI; prints `{"listening_port":<port>}` once bound and
+  writes a `render-stream-throttle-proxy-stats/1` document (bytes and latency per direction) on
+  `--duration-s`, SIGINT or SIGTERM.
+- `analyze-deltas.ts` (D15): reads a `resources.jsonl` hook log and computes, per resource kind,
+  hash-at-publish savings (version bumps superseded within the same engine frame) and mesh
+  region-update deltas (`mesh_surface_update_region`'s own `bytes`, exact). Deliberately reports
+  `whole_version_bytes_available: false` rather than estimating a mesh's whole-buffer byte size,
+  which the hook log never logs (memory: g6t-report-tooling-facts). Texture updates have no
+  partial-update path in this hook log, so their delta always equals the whole.
+- `report-gate6.ts`: `validate <report.json>` and `build <run-set dir> --out <file> [--deltas
+  <resources.jsonl>]`. `build`'s run-set directory layout is this file's own convention (documented
+  in its header): `run.json`, `provenance.json`, and per scenario
+  `scenarios/<id>/{meta.json,warmup/repeat.json,repeat-1..5/repeat.json}`. Refuses to write a
+  report that fails `validate()`. `pnpm render-stream:report -- validate|build …` forwards a
+  literal `--` into this script's own argv (memory: pnpm-script-dashdash-forwarding), handled in
+  `main()`.
+- `test/self-test-report.ts`: see below.
+- `package.json` `render-stream:report`.
+
+## Gate 6 self-test (g6t)
+
+```bash
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-report.ts
+```
+
+40 assertions: a fabricated `render-stream-report/1` validates clean, then one perturbation per
+`validate()` rule each fails with its expected code (`bad-schema`, `run-entry`, `repeat-count`,
+`scenario-entry`, `rate-entry` ×2, `dist-entry`, `memory-entry`, `aggregate-mismatch`,
+`optimizations-entry`); `aggregate()` against five hand-picked values (median/min/max/cov) and a
+metric dropped entirely when any one repeat reports it unavailable; the throttle proxy measured
+against two real loopback TCP servers -- a saturating echo stream stays within 5% of the configured
+rate, and discrete low-rate messages stay within 2ms of the configured delay, both read from the
+proxy's own `stats.json` (memory: g6t-report-tooling-facts explains why rate and delay need
+separate scenarios); the `/proc` sampler against a real spawned child process (positive VmRSS, at
+least one thread, thread CPU time increasing after it does work); `provenance.ts`'s host probe and
+`sha256File` against a real temp file; `analyze-deltas.ts` against fabricated hook-log lines
+(hash-at-publish supersession, mesh region-update deltas, texture whole-equals-delta, parameter
+bytes per frame, and a malformed line skipped during parsing); and a `report-gate6.ts build()` +
+`validate()` round trip through a fabricated run-set directory.

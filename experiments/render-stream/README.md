@@ -3904,3 +3904,80 @@ with a default-constructed `uvs`. `capture/test/abi_decode.cpp` now pins both th
 offset and `sizeof`. The shape of a wrong-ABI failure is worth remembering: the
 hooks still forwarded correctly (the engine never noticed), only the _recording_
 was wrong — a silent-corruption class that only bit-exact expected values catch.
+
+## Gate 6t result (2026-10-11)
+
+G6t ([protocol/gate6-design.md](protocol/gate6-design.md) "G6t") passes: the measurement/report
+tooling landed as new files only, touching no engine, capture or receiver code, per its wave-1
+"no dependencies" entry in the Waves table. It owns:
+
+- `scripts/lib/render-stream-report.ts` -- the `render-stream-report/1` schema (D10, Q7f): types,
+  `validate()` (schema plus internal-consistency checks: exactly 5 repeats, `presented` always
+  `unavailable`, `recv_gpu_render_ms` measured only for a rendered desktop-GL receiver, every
+  `measured` value sourced, `memory` leaves as plain finite numbers from `/proc` with no status
+  wrapper, and the `aggregate` block recomputed and compared), and `aggregate()` (median/min/max/
+  coefficient-of-variation across exactly five repeats, dropping any metric path that any one
+  repeat reports unavailable rather than aggregating a mix of real numbers and absent ones).
+- `scripts/throttle-proxy.ts` (D12) -- a loopback-only TCP proxy (`node:net` only) in front of a
+  host's listener, with a token bucket plus a fixed one-way delay per direction (`constrained`:
+  500 000 B/s, 64 KiB burst, 30 ms). Both importable (`startThrottleProxy`) and a standalone CLI.
+- `scripts/lib/proc-sampler.ts` -- 1 Hz `/proc/<pid>/status` and `/proc/<pid>/task/*/stat` reads
+  (D9: engine memory counters are unavailable in release templates).
+- `scripts/lib/provenance.ts` -- host facts, the gamescope version string, `sha256File`.
+- `scripts/analyze-deltas.ts` (D15) -- hash-at-publish and mesh region-update delta savings from a
+  `resources.jsonl` hook log, reported honestly rather than estimated where the log does not carry
+  the needed byte size (mesh whole-buffer bytes; see "What G6t does not prove").
+- `scripts/report-gate6.ts` -- `validate <report.json>` and `build <run-set dir> --out <file>
+  [--deltas <resources.jsonl>]`, wired to `pnpm render-stream:report`.
+
+**How it was tested**: `scripts/test/self-test-report.ts`, 40 assertions, all green, stable across
+repeated runs:
+
+- `validate()`: a fabricated report validates clean; one perturbation per rule each fails with its
+  expected code (`bad-schema`, `run-entry`, `repeat-count`, `scenario-entry`, `rate-entry` ×2,
+  `dist-entry`, `memory-entry`, `aggregate-mismatch`, `optimizations-entry`).
+- `aggregate()`: median/min/max/cov of `[1,2,3,4,5]` computed by hand (cov ≈ 0.527); a metric
+  unavailable in one of five repeats is dropped from the result entirely.
+- `throttle-proxy.ts` against two real loopback TCP servers: a saturating echo stream stayed within
+  5% of the configured 500 000 B/s (measured 97-102% across runs); discrete low-rate messages (one
+  byte every 120 ms, well under the bucket's drain rate) stayed within 2 ms of the configured 30 ms
+  delay (measured mean 30.0-30.2 ms both directions). The two had to be separate scenarios: a
+  saturating stream's per-chunk latency is dominated by token-bucket queueing (measured ~1.5 s at
+  saturation), which would otherwise swamp the ±2 ms delay check (memory:
+  g6t-report-tooling-facts).
+- `proc-sampler.ts` against a real spawned `node` child doing ~1s of CPU work: positive VmRSS, at
+  least one thread, and that thread's summed CPU time measurably increasing between two samples.
+- `provenance.ts` against this machine (positive logical CPUs/RAM, non-empty kernel string) and a
+  real temp file (`sha256File` matches an independently computed digest).
+- `analyze-deltas.ts` against fabricated `resources.jsonl` lines: a same-frame texture version bump
+  correctly identified as superseded (and its own, not the superseding version's, bytes/hash_ns/
+  copy_ns counted); a mesh's two region updates summed to an exact 200-byte delta with
+  `whole_version_bytes_available: false`; a texture's delta equalling its whole (`savings_bytes:
+  0`); mixed-unit parameter bytes per frame; and `parseHookLog` skipping one malformed line.
+- `report-gate6.ts build()` assembling a report from a fabricated run-set directory that then
+  validates clean, exercised both in-process and as the real `pnpm render-stream:report -- build
+  ...` / `-- validate ...` CLI against a scratch run-set directory (outside the repo, not
+  committed).
+- `mise exec -- pnpm exec biome check` and `mise exec -- pnpm exec tsc --noEmit -p
+  experiments/render-stream/tsconfig.json` both clean on every file this increment touched.
+
+### What G6t does not prove
+
+- That any of this runs against a REAL gate 6 capture, receiver or soak run: no `resources.jsonl`,
+  `perf.json` or receiver `applied.json` from an actual Godot session exists yet (G6a/G6k/G6r/G6l
+  land those). `report-gate6.ts build()`'s run-set directory layout is this increment's own
+  convention, not something another file in the repository already defines; whichever increment
+  first calls `build()` on a real measurement run may need to adjust it.
+- A true mesh "whole-version bytes" baseline: `MeshSurfaceCopy` lines carry `vertex_count`/
+  `index_count`, never a byte size, so `analyze-deltas.ts` cannot compute a mesh savings
+  percentage without `rs_mesh_payload.h`'s format-to-stride mapping (out of scope here; memory:
+  g6t-report-tooling-facts). The mesh delta total itself (from region updates' own `bytes`) is
+  exact.
+- `recv_gpu_render_ms`'s "rendered desktop-GL receiver" classification: the committed provenance
+  shape has no explicit headless/rendered flag, so `isRenderedDesktopGlReceiver()` in
+  `render-stream-report.ts` infers it from `rendering_method === "gl_compatibility"` plus a
+  non-empty, non-placeholder `adapter.name` -- a judgment call documented in that file's header,
+  not a normative field G6b/G6c's receiver provenance is guaranteed to populate the same way.
+- `GRC_LIVE_MAX_CONNECTIONS`, rate control, or anything engine-side: G6t touches none of it (G6r's
+  job). The throttle proxy and sampler are ready for G6c/G6l/G6s/G6p to drive against a real host
+  and receiver, but have only ever been exercised against synthetic loopback servers here.
