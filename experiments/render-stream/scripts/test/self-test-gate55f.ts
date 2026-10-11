@@ -25,6 +25,11 @@
 // 8. checkWarmHostNoGetsShader: zero GETs and matching cache-hit/fetch counts pass; any GET, any
 //    fetch, a cache-hit mismatch or a non-benign checkpoint on either leg fails.
 //
+// 9. The stale-coalesce sabotage outside its stall (2026-10-11 G5f flake fix): staleFromOfSeq
+//    reads the host's `sent.stale_from`; wireStateEqualsFullAtFrame compares against another full
+//    frame; checkReceiverVsReferenceShader tolerates a `stale_exact` checkpoint on the sabotage
+//    leg only -- not on a good leg, and not one whose wire does not equal full at stale_from.
+//
 // Exits non-zero if any assertion fails.
 
 import type { StallReport } from "../lib/gate1-g1d-checks";
@@ -42,6 +47,7 @@ import {
   type G55fLegEvidence,
   g55fWindows,
   mismatchingRegionNames,
+  staleFromOfSeq,
   stepShots55f,
   wireStateEqualsFullAtFrame,
 } from "../lib/gate55f-checks";
@@ -175,6 +181,8 @@ function fakeHost(
     mismatched_pixels: 5,
     regions: { PH: 3, TI: 2, RM: 0, IN: 0 },
     benign: false,
+    stale_from: null,
+    stale_exact: null,
   };
   assertEqual(
     mismatchingRegionNames(cp),
@@ -296,6 +304,8 @@ function fakeEval(
     mismatched_pixels: 10,
     regions: Object.fromEntries(expectedUnion.map((r) => [r, 1])),
     benign: false,
+    stale_from: null,
+    stale_exact: null,
   };
   const baseStall: StallReport = {
     steps_applied_during: [2, 3],
@@ -390,6 +400,8 @@ function fakeEval(
     mismatched_pixels: 2,
     regions: { PH: 2 },
     benign: true,
+    stale_from: null,
+    stale_exact: null,
   };
   const exactCp: G55fCheckpoint = {
     ...benignCp,
@@ -572,6 +584,115 @@ function fakeEval(
     await checkWarmHostNoGetsShader(notWarmEvals),
     false,
     "checkWarmHostNoGetsShader: a non-warm cache mode fails",
+  );
+}
+
+// -------------------------------------------------------------------------------------------- 9
+
+{
+  const host = {
+    full: {
+      recording: {
+        transactions: [
+          { seq: 1, frame: 366, encoding: "full", state: { p: 366 } },
+          { seq: 2, frame: 367, encoding: "full", state: { p: 367 } },
+        ],
+      },
+    },
+    connections: [
+      {
+        host: {
+          log: [
+            { frame: 365, sent: { seq: 40 } },
+            { frame: 367, sent: { seq: 41, stale_from: 366 } },
+          ],
+        },
+        tap: {
+          recording: {
+            transactions: [
+              { seq: 41, frame: 367, encoding: "patch", state: { p: 366 } },
+            ],
+          },
+        },
+      },
+    ],
+  } as unknown as G2cHost;
+  assertEqual(staleFromOfSeq(host, 41), 366, "staleFromOfSeq: a stale send");
+  assertEqual(staleFromOfSeq(host, 40), null, "staleFromOfSeq: a newest send");
+  assertEqual(staleFromOfSeq(host, 99), null, "staleFromOfSeq: no such send");
+  assertEqual(
+    wireStateEqualsFullAtFrame(host, 367),
+    false,
+    "wireStateEqualsFullAtFrame: a stale send differs from full at its own frame",
+  );
+  assertEqual(
+    wireStateEqualsFullAtFrame(host, 367, 366),
+    true,
+    "wireStateEqualsFullAtFrame: a stale send equals full at stale_from",
+  );
+
+  const exact: G55fCheckpoint = {
+    step: 0,
+    seq: 1,
+    frame: 307,
+    shot: "",
+    reference: "",
+    mismatched_pixels: 0,
+    regions: {},
+    benign: true,
+    stale_from: null,
+    stale_exact: null,
+  };
+  const staleCp: G55fCheckpoint = {
+    ...exact,
+    step: 1,
+    seq: 41,
+    frame: 367,
+    mismatched_pixels: 640,
+    regions: { PH: 640 },
+    benign: false,
+    stale_from: 366,
+    stale_exact: true,
+  };
+  const evalsWith = (leg: string, cp: G55fCheckpoint) =>
+    new Map(
+      [
+        "live-shader",
+        "live-shader-warm",
+        "live-shader-stall",
+        "sabotage-shader-stale-coalesce",
+      ].map((l) => [
+        l,
+        fakeEval(
+          null,
+          undefined,
+          { expected_missed_steps: [] } as unknown as StallReport,
+          l === "sabotage-shader-stale-coalesce" ? 3 : null,
+          l === leg ? [exact, cp] : [exact],
+        ),
+      ]),
+    );
+  assertCheck(
+    checkReceiverVsReferenceShader(
+      evalsWith("sabotage-shader-stale-coalesce", staleCp),
+    ),
+    true,
+    "checkReceiverVsReferenceShader: a stale_exact PH-only shot on the sabotage leg passes",
+  );
+  assertCheck(
+    checkReceiverVsReferenceShader(
+      evalsWith("sabotage-shader-stale-coalesce", {
+        ...staleCp,
+        stale_exact: false,
+      }),
+    ),
+    false,
+    "checkReceiverVsReferenceShader: a stale shot whose wire is not full at stale_from fails",
+  );
+  assertCheck(
+    checkReceiverVsReferenceShader(evalsWith("live-shader", staleCp)),
+    false,
+    "checkReceiverVsReferenceShader: a stale_exact shot on a good leg fails (no sabotage there)",
   );
 }
 

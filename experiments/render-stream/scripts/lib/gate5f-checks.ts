@@ -17,6 +17,16 @@
 // exactly the case where that proof fails: its post-stall DF mismatch is real, not benign, which
 // is what makes the leg classify pixel-mismatch instead of success.
 //
+// The sabotage is not confined to the stall, though: from its arm frame on, the host rewrites
+// EVERY coalesced send to carry the first missed target (`sent.stale_from` in its live log), and
+// under CPU load the 60 Hz credit loop phase-locks to every other frame (memory
+// rs-g55d-rs5-switch-facts), so ordinary sends outside the stall carry a one- or two-frame-old
+// snapshot too. A settle shot landing on one of those differs from reference-live in DF because
+// the wire deliberately holds an older DF, not because the receiver is wrong (the 2026-10-11 G5f
+// flake). On the sabotage leg only, receiver-vs-reference therefore judges such a checkpoint
+// against the frame the wire says it carries: `stale_exact` (DF-only, and the tap's state at the
+// shot's frame equals the host's full recording at `stale_from` exactly).
+//
 // Pure over an evidence directory written by run-gate5.sh's run_g5f (under <out>/mesh/), so
 // nothing here launches a process.
 //
@@ -61,6 +71,7 @@ import {
   loadResolved,
 } from "./gate2b-checks";
 import {
+  type ConnTimeline,
   connTimelines,
   fetchesAfterApplied,
   type G2cHost,
@@ -104,6 +115,8 @@ export const G5F_STALL_SPEC = "1:2000";
 /** DF is the only region a live shot's frame offset (from a stall) can move away from the
  * reference's; every other region is static between its own step. */
 export const G5F_CONTINUOUS_REGION = "DF";
+/** The leg whose host runs GRC_SABOTAGE=stale-coalesce. */
+export const G5F_SABOTAGE_LEG = "sabotage-mesh-stale-coalesce";
 
 export const G5F_LEGS: readonly G2bLegExpectation[] = [
   { leg: "live-mesh", expected_class: "success" },
@@ -286,6 +299,16 @@ export interface G5fCheckpoint {
    * a region that changes every frame, not a correctness problem. Null when there is no shot to
    * judge (seq === null) or no wire transaction at that frame to check against. */
   benign: boolean | null;
+  /** The frame whose snapshot the host's send of this shot's seq carried (its live log's
+   * `sent.stale_from`; only the stale-coalesce sabotage writes it), null for a newest-state send
+   * or no shot. */
+  stale_from: number | null;
+  /** true when `stale_from` is set, the only region differing from reference-live is DF (or
+   * none), and the tap's resolved state at this shot's frame equals the host's full recording at
+   * `stale_from` exactly: the wire deliberately holds an older DF and the receiver shows it. The
+   * sabotage leg's receiver-vs-reference tolerance (never a good leg's: a stale send there is a
+   * host bug). Null when there is no shot or the send was not stale. */
+  stale_exact: boolean | null;
 }
 
 function xywh(box: readonly number[]): [number, number, number, number] {
@@ -320,13 +343,18 @@ export function stepShots5f(
 /** Whether a connection's tapped resolved state at `frame` equals the host's own full file
  * recording's state at that same frame (null when either side has no transaction there). The
  * generic wire-correctness check (reused per checkpoint, not only at a stall's recovery seq, as
- * `checkLiveResolvesToRecordingMesh` runs it over every transaction of the GOOD legs). */
+ * `checkLiveResolvesToRecordingMesh` runs it over every transaction of the GOOD legs).
+ * `fullFrame` (default `frame`) names a different full-recording frame to compare against: a
+ * stale send's `stale_from`. */
 export function wireStateEqualsFullAtFrame(
   host: G2cHost,
   frame: number | null,
+  fullFrame: number | null = frame,
 ): boolean | null {
-  if (frame === null) return null;
-  const full = host.full.recording?.transactions.find((t) => t.frame === frame);
+  if (frame === null || fullFrame === null) return null;
+  const full = host.full.recording?.transactions.find(
+    (t) => t.frame === fullFrame,
+  );
   const tap = host.connections[0]?.tap.recording?.transactions.find(
     (t) => t.frame === frame,
   );
@@ -334,8 +362,19 @@ export function wireStateEqualsFullAtFrame(
   return statesEqual(full.state, tap.state);
 }
 
+/** The frame whose snapshot the host's (first connection's) send of `seq` carried, per its live
+ * log's `sent.stale_from`; null when that send carried the newest state or is not logged. */
+export function staleFromOfSeq(
+  host: G2cHost,
+  seq: number | null,
+): number | null {
+  if (seq === null) return null;
+  const line = host.connections[0]?.host.log?.find((l) => l.sent?.seq === seq);
+  return line?.sent?.stale_from ?? null;
+}
+
 /** Every settle step's checkpoint against reference-live's step shot, per region, with
- * `benign` judged from the host's own wire (see G5fCheckpoint's doc). */
+ * `benign` and `stale_exact` judged from the host's own wire (see G5fCheckpoint's doc). */
 export async function g5fCheckpoints(
   expected: { regions: Record<string, readonly number[]> },
   e: G5fLegEvidence,
@@ -354,6 +393,8 @@ export async function g5fCheckpoints(
       mismatched_pixels: null,
       regions: {},
       benign: null,
+      stale_from: null,
+      stale_exact: null,
     };
     out.push(cp);
     if (!at) continue;
@@ -375,13 +416,22 @@ export async function g5fCheckpoints(
         ref.height,
         xywh(box),
       ).mismatched_pixels;
+    const regions = mismatchingRegionNames(cp);
+    // Every mismatching pixel lies in DF (none outside every region, none in another region).
+    const onlyDf =
+      regions.length === 1 &&
+      regions[0] === G5F_CONTINUOUS_REGION &&
+      cp.regions[G5F_CONTINUOUS_REGION] === cp.mismatched_pixels;
     if (cp.mismatched_pixels === 0) cp.benign = true;
-    else if (e.host) {
-      const regions = mismatchingRegionNames(cp);
-      const onlyDf =
-        regions.length === 1 && regions[0] === G5F_CONTINUOUS_REGION;
+    else if (e.host)
       cp.benign =
         onlyDf && wireStateEqualsFullAtFrame(e.host, cp.frame) === true;
+    if (e.host) {
+      cp.stale_from = staleFromOfSeq(e.host, cp.seq);
+      if (cp.stale_from !== null)
+        cp.stale_exact =
+          (cp.mismatched_pixels === 0 || onlyDf) &&
+          wireStateEqualsFullAtFrame(e.host, cp.frame, cp.stale_from) === true;
     }
   }
   return out;
@@ -647,11 +697,32 @@ export function checkLiveResolvesToRecordingMesh(evals: Evals): G2bCheck {
   );
 }
 
+/** connTimelines, except that a connection whose close line follows its close frame's own
+ * callback `state` line counts as open through that callback. The host retires to
+ * `current ∪ bases` inside the callback, so at the quit frame (851) the previous send is still a
+ * base when retirement runs and the end/close come after. Whether that matters is load-dependent:
+ * when the credit loop phase-locks to every other frame (memory rs-g55d-rs5-switch-facts) and 851
+ * is a pending frame rather than a send, the last send's DF surface stays rightly pinned, and the
+ * plain close frame (base null from 851) called it "servable, named by nothing". */
+export function connTimelinesAtCallback(host: G2cHost): ConnTimeline[] {
+  return connTimelines(host).map((c, i) => {
+    if (c.closed === null) return c;
+    const log = host.connections[i]?.host.log ?? [];
+    const closeAt = log.findIndex((l) => l.event === "close");
+    const callbackAt = log.findIndex(
+      (l) => l.frame === c.closed && typeof l.state === "string",
+    );
+    return callbackAt >= 0 && callbackAt < closeAt
+      ? { ...c, closed: c.closed + 1 }
+      : c;
+  });
+}
+
 export function pinsOfMesh(host: G2cHost): PinsReport {
   return pinsReport(
     host.hook.lines,
     host.full.recording?.transactions ?? [],
-    connTimelines(host),
+    connTimelinesAtCallback(host),
     512 * 1024 * 1024,
     okResourceHashes,
   );
@@ -931,50 +1002,107 @@ export function checkReceiverVsReferenceMesh(evals: Evals): G2bCheck {
       (c) => !expectedMissed.has(c.step) && c.step !== excludeStep,
     );
     if (checked.length === 0) problems.push(`${leg}: no checkpoints`);
+    // Outside its stall, the sabotage leg's host still rewrites every ordinary coalesced send to
+    // carry an older frame (see the header): a shot on one of those is judged against the frame
+    // the wire says it carries (`stale_exact`), never on a good leg, where a stale send is a bug.
+    const staleTolerated = leg === G5F_SABOTAGE_LEG;
     let ok = 0;
+    let stale = 0;
     for (const c of checked) {
       evidence.push(c.shot);
       if (c.seq === null) problems.push(`${leg} step ${c.step}: no shot`);
       else if (c.mismatched_pixels === null)
         problems.push(`${leg} step ${c.step}: unreadable shot`);
-      else if (c.benign !== true && c.mismatched_pixels > 0)
+      else if (c.benign === true || c.mismatched_pixels === 0) ok++;
+      else if (staleTolerated && c.stale_exact === true) {
+        ok++;
+        stale++;
+      } else
         problems.push(
-          `${leg} step ${c.step} (seq ${c.seq}): ${c.mismatched_pixels} px differ in ${mismatchingRegionNames(c).join(",")}`,
+          `${leg} step ${c.step} (seq ${c.seq}${c.stale_from !== null ? `, stale_from ${c.stale_from}${c.stale_exact === true ? "" : ", not stale_exact"}` : ""}): ${c.mismatched_pixels} px differ in ${mismatchingRegionNames(c).join(",") || "no region"}`,
         );
-      else ok++;
     }
-    notes.push(`${leg} ${ok}/${checked.length}`);
+    notes.push(
+      `${leg} ${ok}/${checked.length}${stale > 0 ? ` (${stale} on a stale_from send, wire == full at stale_from)` : ""}`,
+    );
   }
   return check(
     "receiver-vs-reference",
-    "every g5f leg's shot at every settle step outside the stall window equals reference-live's step shot exactly, full frame (reference-live runs the same fixture at G5f's own live timeline, so DF's per-frame band lines up with the live shot's actual frame); a DF-only difference is tolerated when the wire's own state at that frame equals the host's full recording there (ordinary round-trip jitter, not a correctness problem)",
+    "every g5f leg's shot at every settle step outside the stall window equals reference-live's step shot exactly, full frame (reference-live runs the same fixture at G5f's own live timeline, so DF's per-frame band lines up with the live shot's actual frame); a DF-only difference is tolerated when the wire's own state at that frame equals the host's full recording there (ordinary round-trip jitter, not a correctness problem), and on the stale-coalesce sabotage leg only when the shot's send is labelled stale_from F and the wire's state there equals the host's full recording at F exactly (the sabotage rewriting an ordinary coalesced send outside the stall, which CPU load makes common)",
     problems,
     notes.join(", "),
     evidence,
   );
 }
 
+/** What live-mesh-warm's cache could and did serve, judged from its own wire rather than from
+ * live-mesh's: under CPU load the 60 Hz credit loop phase-locks to every other frame (memory
+ * rs-g55d-rs5-switch-facts), so each leg's wire carries a different subset of DF's per-frame
+ * surfaces, and the warm wire can name payloads live-mesh never fetched (it must then GET them)
+ * or skip ones it did (fewer cache hits). `cachedNamed` counts the ok payload hashes the warm
+ * tap ever named that live-mesh fetched (= its cache); `uncachedNamed` the ones it did not. */
+export function warmCacheReport(
+  live: Pick<G5fEvaluation, "e">,
+  warm: Pick<G5fEvaluation, "e">,
+): {
+  liveCache: Set<string>;
+  cachedNamed: number;
+  uncachedNamed: string[];
+  fetched: string[];
+  gets: number;
+  hits: number | null;
+} {
+  const liveCache = new Set(
+    (live.e.applied?.fetches ?? [])
+      .filter((f) => f.status === 200 && typeof f.hash === "string")
+      .map((f) => f.hash as string),
+  );
+  const named = new Set<string>();
+  for (const t of warm.e.host?.connections[0]?.tap.recording?.transactions ??
+    [])
+    for (const h of okResourceHashes(t)) named.add(h);
+  return {
+    liveCache,
+    cachedNamed: [...named].filter((h) => liveCache.has(h)).length,
+    uncachedNamed: [...named].filter((h) => !liveCache.has(h)).sort(),
+    fetched: [
+      ...new Set(
+        (warm.e.applied?.fetches ?? [])
+          .map((f) => f.hash)
+          .filter((h): h is string => typeof h === "string"),
+      ),
+    ].sort(),
+    gets: httpGets(warm.e.host?.hook.lines ?? []).length,
+    hits: warm.e.applied?.resources_summary?.cache_hits ?? null,
+  };
+}
+
 export async function checkWarmHostNoGetsMesh(evals: Evals): Promise<G2bCheck> {
   const problems: string[] = [];
+  let detail = "";
   const warm = evals.get("live-mesh-warm");
   const live = evals.get("live-mesh");
   const host = warm?.e.host;
   if (!warm || !host || !live)
     problems.push("live-mesh-warm or live-mesh not evaluated");
   else {
-    const gets = httpGets(host.hook.lines).length;
-    if (gets !== 0 || (host.serving?.http_gets ?? -1) !== 0)
+    const w = warmCacheReport(live, warm);
+    detail = `${w.gets} GETs, ${w.hits} cache hits = ${w.cachedNamed} payloads its wire named that live-mesh's cache holds${w.uncachedNamed.length > 0 ? ` (${w.uncachedNamed.length} named, not cached: ${w.uncachedNamed.map((h) => h.slice(0, 12)).join(",")})` : ""}, shots equal reference-live's`;
+    if (
+      w.gets !== w.fetched.length ||
+      (host.serving?.http_gets ?? -1) !== w.gets
+    )
       problems.push(
-        `the warm host logged ${gets} GETs (summary ${host.serving?.http_gets})`,
+        `the warm host logged ${w.gets} GETs (summary ${host.serving?.http_gets}), the warm receiver fetched ${w.fetched.length}`,
       );
-    const s = warm.e.applied?.resources_summary;
-    const liveFetched =
-      live.e.applied?.resources_summary?.distinct_fetched ?? -1;
-    if ((s?.distinct_fetched ?? -1) !== 0)
-      problems.push(`the warm receiver fetched ${s?.distinct_fetched}`);
-    if ((s?.cache_hits ?? -1) !== liveFetched)
+    for (const h of w.fetched)
+      if (!w.uncachedNamed.includes(h))
+        problems.push(
+          `the warm receiver fetched ${h.slice(0, 12)}, which ${w.liveCache.has(h) ? "live-mesh's cache already holds" : "its own wire never named"}`,
+        );
+    if (w.hits !== w.cachedNamed)
       problems.push(
-        `${s?.cache_hits} cache hits, live-mesh fetched ${liveFetched}`,
+        `${w.hits} cache hits, but its wire named ${w.cachedNamed} payloads live-mesh's cache holds (live-mesh fetched ${w.liveCache.size})`,
       );
     if (warm.e.applied?.cache?.mode !== "warm")
       problems.push("the receiver's cache mode is not warm");
@@ -991,9 +1119,9 @@ export async function checkWarmHostNoGetsMesh(evals: Evals): Promise<G2bCheck> {
   }
   return check(
     "warm-host-no-gets",
-    "live-mesh-warm (a new host and a new receiver on live-mesh's cache, mode warm): the host answers no GET at all, the receiver fetches nothing and hits its cache once per payload live-mesh fetched, and its shot per step equals reference-live exactly (as live-mesh's does)",
+    "live-mesh-warm (a new host and a new receiver on live-mesh's cache, mode warm): the receiver hits its cache once per payload its own wire names that live-mesh fetched, and fetches (and the host answers a GET for) only payloads its wire names that live-mesh never fetched -- none on a quiet machine, where both legs' wires carry every DF frame; under load each leg's wire carries a different subset of DF's per-frame surfaces -- and its shot per step equals reference-live exactly (as live-mesh's does)",
     problems,
-    `0 GETs, ${warm?.e.applied?.resources_summary?.cache_hits ?? 0} cache hits, shots equal reference-live's`,
+    detail,
     [join(host?.dir ?? "live-mesh-warm", "evidence", "resources.jsonl")],
   );
 }

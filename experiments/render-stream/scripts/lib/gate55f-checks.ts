@@ -20,6 +20,16 @@
 // is exactly the case where that proof fails: its post-stall mismatch is real, not benign, which
 // is what makes the leg classify pixel-mismatch instead of success.
 //
+// The sabotage is not confined to the stall, though: from its arm frame on, the host rewrites
+// EVERY coalesced send to carry the first missed target (`sent.stale_from` in its live log), and
+// under CPU load the 60 Hz credit loop phase-locks to every other frame (memory
+// rs-g55d-rs5-switch-facts), so ordinary sends outside the stall carry a one- or two-frame-old
+// snapshot too. A settle shot landing on one of those differs from reference-live in PH because
+// the wire deliberately holds an older PH, not because the receiver is wrong (the 2026-10-11 G5f
+// flake, same checker shape). On the sabotage leg only, receiver-vs-reference therefore judges
+// such a checkpoint against the frame the wire says it carries: `stale_exact` (PH-only, and the
+// tap's state at the shot's frame equals the host's full recording at `stale_from` exactly).
+//
 // Pure over an evidence directory written by run-gate55.sh's run_g55f (under <out>/shader-live/),
 // so nothing here launches a process.
 //
@@ -108,6 +118,8 @@ export const G55F_STALL_SPEC = "1:2000";
 /** PH is the one region a live shot's frame offset (from a stall) can move away from the
  * reference's; every other region is static between its own step. */
 export const G55F_CONTINUOUS_REGION = "PH";
+/** The leg whose host runs GRC_SABOTAGE=stale-coalesce. */
+export const G55F_SABOTAGE_LEG = "sabotage-shader-stale-coalesce";
 
 export const G55F_LEGS: readonly G2bLegExpectation[] = [
   { leg: "live-shader", expected_class: "success" },
@@ -292,6 +304,16 @@ export interface G55fCheckpoint {
    * problem. Null when there is no shot to judge (seq === null) or no wire transaction at that
    * frame to check against. */
   benign: boolean | null;
+  /** The frame whose snapshot the host's send of this shot's seq carried (its live log's
+   * `sent.stale_from`; only the stale-coalesce sabotage writes it), null for a newest-state send
+   * or no shot. */
+  stale_from: number | null;
+  /** true when `stale_from` is set, the only region differing from reference-live is PH (or
+   * none), and the tap's resolved state at this shot's frame equals the host's full recording at
+   * `stale_from` exactly: the wire deliberately holds an older PH and the receiver shows it. The
+   * sabotage leg's receiver-vs-reference tolerance (never a good leg's: a stale send there is a
+   * host bug). Null when there is no shot or the send was not stale. */
+  stale_exact: boolean | null;
 }
 
 function xywh(box: readonly number[]): [number, number, number, number] {
@@ -326,13 +348,18 @@ export function stepShots55f(
 /** Whether a connection's tapped resolved state at `frame` equals the host's own full file
  * recording's state at that same frame (null when either side has no transaction there). The
  * generic wire-correctness check (reused per checkpoint, not only at a stall's recovery seq, as
- * `checkLiveResolvesToRecordingShader` runs it over every transaction of the GOOD legs). */
+ * `checkLiveResolvesToRecordingShader` runs it over every transaction of the GOOD legs).
+ * `fullFrame` (default `frame`) names a different full-recording frame to compare against: a
+ * stale send's `stale_from`. */
 export function wireStateEqualsFullAtFrame(
   host: G2cHost,
   frame: number | null,
+  fullFrame: number | null = frame,
 ): boolean | null {
-  if (frame === null) return null;
-  const full = host.full.recording?.transactions.find((t) => t.frame === frame);
+  if (frame === null || fullFrame === null) return null;
+  const full = host.full.recording?.transactions.find(
+    (t) => t.frame === fullFrame,
+  );
   const tap = host.connections[0]?.tap.recording?.transactions.find(
     (t) => t.frame === frame,
   );
@@ -340,8 +367,19 @@ export function wireStateEqualsFullAtFrame(
   return statesEqual(full.state, tap.state);
 }
 
+/** The frame whose snapshot the host's (first connection's) send of `seq` carried, per its live
+ * log's `sent.stale_from`; null when that send carried the newest state or is not logged. */
+export function staleFromOfSeq(
+  host: G2cHost,
+  seq: number | null,
+): number | null {
+  if (seq === null) return null;
+  const line = host.connections[0]?.host.log?.find((l) => l.sent?.seq === seq);
+  return line?.sent?.stale_from ?? null;
+}
+
 /** Every settle step's checkpoint against reference-live's step shot, per region, with
- * `benign` judged from the host's own wire (see G55fCheckpoint's doc). */
+ * `benign` and `stale_exact` judged from the host's own wire (see G55fCheckpoint's doc). */
 export async function g55fCheckpoints(
   expected: { regions: Record<string, readonly number[]> },
   e: G55fLegEvidence,
@@ -360,6 +398,8 @@ export async function g55fCheckpoints(
       mismatched_pixels: null,
       regions: {},
       benign: null,
+      stale_from: null,
+      stale_exact: null,
     };
     out.push(cp);
     if (!at) continue;
@@ -381,13 +421,22 @@ export async function g55fCheckpoints(
         ref.height,
         xywh(box),
       ).mismatched_pixels;
+    const regions = mismatchingRegionNames(cp);
+    // Every mismatching pixel lies in PH (none outside every region, none in another region).
+    const onlyPh =
+      regions.length === 1 &&
+      regions[0] === G55F_CONTINUOUS_REGION &&
+      cp.regions[G55F_CONTINUOUS_REGION] === cp.mismatched_pixels;
     if (cp.mismatched_pixels === 0) cp.benign = true;
-    else if (e.host) {
-      const regions = mismatchingRegionNames(cp);
-      const onlyPh =
-        regions.length === 1 && regions[0] === G55F_CONTINUOUS_REGION;
+    else if (e.host)
       cp.benign =
         onlyPh && wireStateEqualsFullAtFrame(e.host, cp.frame) === true;
+    if (e.host) {
+      cp.stale_from = staleFromOfSeq(e.host, cp.seq);
+      if (cp.stale_from !== null)
+        cp.stale_exact =
+          (cp.mismatched_pixels === 0 || onlyPh) &&
+          wireStateEqualsFullAtFrame(e.host, cp.frame, cp.stale_from) === true;
     }
   }
   return out;
@@ -956,23 +1005,33 @@ export function checkReceiverVsReferenceShader(evals: Evals): G2bCheck {
       (c) => !expectedMissed.has(c.step) && c.step !== excludeStep,
     );
     if (checked.length === 0) problems.push(`${leg}: no checkpoints`);
+    // Outside its stall, the sabotage leg's host still rewrites every ordinary coalesced send to
+    // carry an older frame (see the header): a shot on one of those is judged against the frame
+    // the wire says it carries (`stale_exact`), never on a good leg, where a stale send is a bug.
+    const staleTolerated = leg === G55F_SABOTAGE_LEG;
     let ok = 0;
+    let stale = 0;
     for (const c of checked) {
       evidence.push(c.shot);
       if (c.seq === null) problems.push(`${leg} step ${c.step}: no shot`);
       else if (c.mismatched_pixels === null)
         problems.push(`${leg} step ${c.step}: unreadable shot`);
-      else if (c.benign !== true && c.mismatched_pixels > 0)
+      else if (c.benign === true || c.mismatched_pixels === 0) ok++;
+      else if (staleTolerated && c.stale_exact === true) {
+        ok++;
+        stale++;
+      } else
         problems.push(
-          `${leg} step ${c.step} (seq ${c.seq}): ${c.mismatched_pixels} px differ in ${mismatchingRegionNames(c).join(",")}`,
+          `${leg} step ${c.step} (seq ${c.seq}${c.stale_from !== null ? `, stale_from ${c.stale_from}${c.stale_exact === true ? "" : ", not stale_exact"}` : ""}): ${c.mismatched_pixels} px differ in ${mismatchingRegionNames(c).join(",") || "no region"}`,
         );
-      else ok++;
     }
-    notes.push(`${leg} ${ok}/${checked.length}`);
+    notes.push(
+      `${leg} ${ok}/${checked.length}${stale > 0 ? ` (${stale} on a stale_from send, wire == full at stale_from)` : ""}`,
+    );
   }
   return check(
     "receiver-vs-reference",
-    "every g55f leg's shot at every settle step outside the stall window equals reference-live's step shot exactly, full frame (reference-live runs the same fixture at G55f's own live timeline, so PH's per-frame value lines up with the live shot's actual frame); a PH-only difference is tolerated when the wire's own state at that frame equals the host's full recording there (ordinary round-trip jitter, not a correctness problem)",
+    "every g55f leg's shot at every settle step outside the stall window equals reference-live's step shot exactly, full frame (reference-live runs the same fixture at G55f's own live timeline, so PH's per-frame value lines up with the live shot's actual frame); a PH-only difference is tolerated when the wire's own state at that frame equals the host's full recording there (ordinary round-trip jitter, not a correctness problem), and on the stale-coalesce sabotage leg only when the shot's send is labelled stale_from F and the wire's state there equals the host's full recording at F exactly (the sabotage rewriting an ordinary coalesced send outside the stall, which CPU load makes common)",
     problems,
     notes.join(", "),
     evidence,
