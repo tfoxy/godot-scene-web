@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   type Criterion,
+  checkCanvasHookLog,
   checkCaptureCounts,
   checkDisarmAndCompletion,
   checkDrawPaths,
@@ -60,6 +61,7 @@ const CRITERION_NUMBER: Record<string, number> = {
   "scripted-shapes-bit-exact": 9,
   "mesh-surface-and-draw": 9,
   "mesh-region-updates": 9,
+  "canvas-hook-log": 9,
   "older-record-loads": 10,
 };
 
@@ -103,6 +105,7 @@ export async function runChecks(outDir: string): Promise<NumberedCriterion[]> {
     checkDrawPaths(outDir, expected),
     checkNewDrawingsVisible(outDir, expected),
     checkOlderRecord(outDir, expected),
+    checkCanvasHookLog(outDir, expected),
   ]);
 
   return results.flat().map((criterion) => {

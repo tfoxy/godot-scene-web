@@ -376,7 +376,13 @@
     "canvas_set_modulate",
     "canvas_item_set_use_parent_material",
     "canvas_item_set_instance_shader_parameter",
-    "canvas_light_attach_to_canvas"
+    "canvas_light_attach_to_canvas",
+    "viewport_remove_canvas",
+    "viewport_set_global_canvas_transform",
+    "viewport_set_canvas_stacking",
+    "canvas_set_item_mirroring",
+    "canvas_set_item_repeat",
+    "canvas_set_parent"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",
@@ -443,6 +449,20 @@
     "canvas_set_modulate",
     "canvas_item_set_use_parent_material",
     "canvas_item_set_instance_shader_parameter",
-    "canvas_light_attach_to_canvas"
-  ]
+    "canvas_light_attach_to_canvas",
+    "viewport_remove_canvas",
+    "viewport_set_global_canvas_transform",
+    "viewport_set_canvas_stacking",
+    "canvas_set_item_mirroring",
+    "canvas_set_item_repeat",
+    "canvas_set_parent"
+  ],
+  "canvas9": {
+    "description": "Calibrator-9 hooks (gate6-design.md Q2, spike.gd _exercise_calibrator9_hooks): the evidence/resources.jsonl kind:\"canvas\" lines these six raw/node calls carry, matched by op and these decoded values among possibly-multiple lines of the same op (other CanvasLayers in this fixture also fire viewport_set_canvas_stacking/canvas_set_parent with their own, different values).",
+    "layer": 2,
+    "sublayer": 0,
+    "global_transform": [1, 0, 0, 1, 8.5, 4.25],
+    "mirroring": [16.25, 8.5],
+    "repeat": [32.5, 24.25, 3]
+  }
 }

@@ -126,11 +126,12 @@ export const TEXTURE_DRAW_OPS: readonly string[] = [
 ];
 
 /** RenderingServer texture calls the hook log records (Q3 "Hook log"), plus (G5a,
- * gate5-design.md Q3d) the mesh calls it gains kind:"mesh" lines for and (G55a,
+ * gate5-design.md Q3d) the mesh calls it gains kind:"mesh" lines for, (G55a,
  * gate5_5-design.md Q3d) the shader/material/item-material calls it gains lines for --
  * including shader_create_from_code/shader_set_code/material_set_param, which only logged a
  * counters.json entry (RID only) before G55a, and canvas_item_set_material (hooked since
- * calibrator 2), logged now for the material census though its item field stays G55d's. */
+ * calibrator 2), logged now for the material census though its item field stays G55d's -- and
+ * (G6k, gate6-design.md Q2) the six calibrator-9 canvas calls it gains kind:"canvas" lines for. */
 export const RESOURCE_LOG_OPS: readonly string[] = [
   "canvas_item_set_default_texture_filter",
   "canvas_item_set_default_texture_repeat",
@@ -138,7 +139,10 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
   "canvas_item_set_material",
   "canvas_item_set_use_parent_material",
   "canvas_light_attach_to_canvas",
+  "canvas_set_item_mirroring",
+  "canvas_set_item_repeat",
   "canvas_set_modulate",
+  "canvas_set_parent",
   "canvas_texture_create",
   "canvas_texture_set_channel",
   "canvas_texture_set_texture_filter",
@@ -166,15 +170,18 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
   "texture_2d_placeholder_create",
   "texture_2d_update",
   "texture_replace",
+  "viewport_remove_canvas",
+  "viewport_set_canvas_stacking",
   "viewport_set_default_canvas_item_texture_filter",
   "viewport_set_default_canvas_item_texture_repeat",
+  "viewport_set_global_canvas_transform",
 ];
 
 /** Exact key order of a render-stream-resource-log/1 line (the contract's keys, then G2a's, then
  * G5a's mesh trailing columns (gate5-design.md Q3d), then G55a's shader/material/item-material
- * trailing columns (gate5_5-design.md Q3d)). Since G2b2 a sabotage's own line appends `sabotage`
- * (and `omitted` for an op the omit-op sabotage dropped from the capture), and the publisher
- * writes `store` / `inline` lines. */
+ * trailing columns (gate5_5-design.md Q3d), then G6k's canvas trailing columns (gate6-design.md
+ * Q2)). Since G2b2 a sabotage's own line appends `sabotage` (and `omitted` for an op the omit-op
+ * sabotage dropped from the capture), and the publisher writes `store` / `inline` lines. */
 export const RESOURCE_LINE_KEYS: readonly string[] = [
   "frame",
   "t_us",
@@ -220,6 +227,11 @@ export const RESOURCE_LINE_KEYS: readonly string[] = [
   "type",
   "n",
   "decode_ns",
+  "sublayer",
+  "transform",
+  "parent",
+  "mirroring",
+  "repeat",
 ];
 
 // Viewport.DefaultCanvasItemTextureFilter / _Repeat scene enums (root.json texture_defaults), and
@@ -304,6 +316,18 @@ export interface ResourceLine {
   type: string | null;
   n: number | null;
   decode_ns: number | null;
+  /** G6k (gate6-design.md Q2): canvas trailing columns, null on every other line.
+   * `viewport_set_canvas_stacking`'s layer reuses the generic `layer` column above; its
+   * sublayer is this one. `transform` is `viewport_set_global_canvas_transform`'s Transform2D,
+   * flattened column-major `[a, b, c, d, origin.x, origin.y]`. `parent` is
+   * `canvas_set_parent`'s parent RID (decimal string), null for `RID()`. `mirroring` is
+   * `canvas_set_item_mirroring`'s Point2 `[x, y]`. `repeat` is `canvas_set_item_repeat`'s Point2
+   * and int flattened to `[size.x, size.y, times]`. */
+  sublayer: number | null;
+  transform: number[] | null;
+  parent: string | null;
+  mirroring: number[] | null;
+  repeat: number[] | null;
   /** G2b2: a sabotage's own line; `omitted` for an op the omit-op sabotage dropped */
   sabotage?: boolean;
   omitted?: boolean;
@@ -993,9 +1017,13 @@ export async function checkCensus(
           `${leg} step ${s.step}: census ${JSON.stringify(have)}, expected ${JSON.stringify(want)}`,
         );
     }
-    // After the quit frame only the scene teardown's frees may appear.
+    // After the quit frame only the scene teardown's frees may appear -- plus, since G6k hooked
+    // it, viewport_remove_canvas: every Viewport (the root included) removes its current World2D
+    // canvas on NOTIFICATION_EXIT_TREE (scene/main/viewport.cpp:611-615), which fires for the
+    // root viewport itself when the SceneTree tears down, with no fixture-specific trigger.
     for (const op of Object.keys(got.after_quit))
-      if (op !== "free") problems.push(`${leg}: ${op} after the quit frame`);
+      if (op !== "free" && op !== "viewport_remove_canvas")
+        problems.push(`${leg}: ${op} after the quit frame`);
   }
   const capture = census.capture;
   return {

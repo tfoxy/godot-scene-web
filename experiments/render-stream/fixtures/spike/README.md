@@ -154,8 +154,19 @@ template, for both the headless legs and the rendered gamescope legs.
   `use_parent_material` (`canvas_item_set_use_parent_material`); a default-colour (white)
   `CanvasModulate` is added as a child (`canvas_set_modulate`; white changes no pixel, D10); and
   a raw canvas gets a light attached (`canvas_light_create`, `canvas_light_attach_to_canvas`).
-  None of this draws, so the pixels do not change. Gate −1 then plans 73 hooks with every
-  optional counter positive, and `armed.png == unarmed.png`.
+  None of this draws, so the pixels do not change.
+
+- Calibrator-9 hooks, added for gate 6 G6k (`gate6-design.md` Q2): a `CanvasLayer`, parented to a
+  throwaway `Node` so its sibling index (and so its stacking sublayer) is deterministically 0,
+  gets an explicit `set_layer` (`viewport_set_canvas_stacking`), `set_follow_viewport(true)`
+  (`canvas_set_parent` with a non-null parent) and then a `remove_child` (`viewport_remove_canvas`).
+  A raw canvas item, parented to the world canvas so `canvas_set_item_mirroring`'s own canvas
+  lookup does not log an engine error, gets a raw `canvas_set_item_mirroring` and
+  `canvas_set_item_repeat`. The root viewport's `global_canvas_transform` is written to a non-
+  identity value and immediately reset to identity again (stretch is disabled, so both values are
+  exact) before anything draws, so every other calibrator's pixel sample keeps its position by
+  the screenshot frame. None of this draws, so the pixels do not change. Gate −1 then plans 79
+  hooks with every optional counter positive, and `armed.png == unarmed.png`.
 
 - `expected.json`: the exact rect/color/polygon values above (plus float32 hex bits) in the shape
   the capture library's `counters.json` captures them, and which counters must be positive. See

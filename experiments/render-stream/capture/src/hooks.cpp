@@ -224,6 +224,29 @@ using FnMaterialCreateFromShader = RID (*)(void *, RID, int32_t, RID);
 //   1612: virtual void canvas_item_set_instance_shader_parameter(RID, const StringName &,
 //                                                                const Variant &) = 0;
 //         (FnMaterialSetParam: the same ABI as material_set_param)
+//
+// --- calibrator 9 (optional): gate6-design.md Q2 -- CanvasLayer attach/stacking/removal,
+// canvas-item mirroring/repeat and the root's global canvas transform. Decode and hook-log only;
+// no mirror change (G6b). canvas_set_item_mirroring's REAL ABI takes two RIDs (p_canvas, p_item),
+// not the one gate6-design.md's Q2 shorthand describes -- confirmed against
+// ../../../godot-4.5.1-stable/servers/rendering_server.h:1526, trusted over the design doc per
+// AGENTS.md "Godot References" -----------------------------------------------------------------
+//
+//   1032: virtual void viewport_remove_canvas(RID p_viewport, RID p_canvas) = 0;
+//         (FnSetMaterial: the same ABI as viewport_attach_canvas)
+//   1043: virtual void viewport_set_global_canvas_transform(RID, const Transform2D &) = 0;
+using FnViewportSetGlobalCanvasTransform = void (*)(void *, RID, const Transform2D *);
+//   1044: virtual void viewport_set_canvas_stacking(RID p_viewport, RID p_canvas, int p_layer,
+//                                                   int p_sublayer) = 0;
+using FnViewportSetCanvasStacking = void (*)(void *, RID, RID, int32_t, int32_t);
+//   1526: virtual void canvas_set_item_mirroring(RID p_canvas, RID p_item,
+//                                                const Point2 &p_mirroring) = 0;
+using FnCanvasSetItemMirroring = void (*)(void *, RID, RID, const Point2 *);
+//   1527: virtual void canvas_set_item_repeat(RID p_item, const Point2 &p_repeat_size,
+//                                             int p_repeat_times) = 0;
+using FnCanvasSetItemRepeat = void (*)(void *, RID, const Point2 *, int32_t);
+//   1529: virtual void canvas_set_parent(RID p_canvas, RID p_parent, float p_scale) = 0;
+using FnCanvasSetParent = void (*)(void *, RID, RID, float);
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -308,6 +331,13 @@ enum HookId : size_t {
   kSetUseParentMaterial,
   kSetInstanceShaderParameter,
   kCanvasLightAttachToCanvas,
+  // calibrator 9
+  kViewportRemoveCanvas,
+  kViewportSetGlobalCanvasTransform,
+  kViewportSetCanvasStacking,
+  kCanvasSetItemMirroring,
+  kCanvasSetItemRepeat,
+  kCanvasSetParent,
   kHookCount,
 };
 
@@ -581,6 +611,38 @@ struct ViewportCanvasTransformKey {
   Transform2D transform;
 };
 
+// Calibrator 9 (gate6-design.md Q2): CanvasLayer stacking/attachment and canvas-item
+// mirroring/repeat.
+struct ViewportTransformKey {
+  uint64_t viewport;
+  Transform2D transform;
+};
+
+struct CanvasStackingKey {
+  uint64_t viewport;
+  uint64_t canvas;
+  int32_t layer;
+  int32_t sublayer;
+};
+
+struct CanvasItemMirroringKey {
+  uint64_t canvas;
+  uint64_t item;
+  Point2 mirroring;
+};
+
+struct CanvasItemRepeatKey {
+  uint64_t item;
+  Point2 repeat_size;
+  int32_t repeat_times;
+};
+
+struct CanvasParentKey {
+  uint64_t canvas;
+  uint64_t parent;
+  float scale;
+};
+
 // Calibrator 5 (gate2-design.md Q2): the texture-rect draws' full arguments,
 // and the new texture hooks' arguments.
 struct TextureRectKey {
@@ -731,6 +793,13 @@ Log<PodEntry<ItemColorKey>> g_canvas_set_modulates;
 Log<PodEntry<ItemValueKey>> g_set_use_parent_materials;
 Log<PodEntry<RidTripleKey>> g_set_instance_shader_parameters;
 Log<PodEntry<RidTripleKey>> g_canvas_light_attaches;
+// calibrator 9
+Log<PodEntry<RidTripleKey>> g_viewport_remove_canvases;
+Log<PodEntry<ViewportTransformKey>> g_viewport_global_canvas_transforms;
+Log<PodEntry<CanvasStackingKey>> g_canvas_stackings;
+Log<PodEntry<CanvasItemMirroringKey>> g_canvas_item_mirrorings;
+Log<PodEntry<CanvasItemRepeatKey>> g_canvas_item_repeats;
+Log<PodEntry<CanvasParentKey>> g_canvas_set_parents;
 
 template <typename Key>
 PodEntry<Key> pod(const Key &key) {
@@ -2238,6 +2307,103 @@ void hook_canvas_light_attach_to_canvas(void *self, RID light, RID canvas) {
   original<FnSetMaterial>(kCanvasLightAttachToCanvas)(self, light, canvas);
 }
 
+// --- calibrator 9 hooks (gate6-design.md Q2): decode and hook-log only -- no mirror change
+// (that is G6b). ------------------------------------------------------------------------------
+
+void hook_viewport_remove_canvas(void *self, RID viewport, RID canvas) {
+  bump(kViewportRemoveCanvas);
+  log_entry(&g_viewport_remove_canvases, rids(viewport.id, canvas.id));
+  if (resources().active()) {
+    resources().viewport_remove_canvas(tap_context(), viewport.id, canvas.id);
+  }
+  original<FnSetMaterial>(kViewportRemoveCanvas)(self, viewport, canvas);
+}
+
+void hook_viewport_set_global_canvas_transform(void *self, RID viewport,
+                                                const Transform2D *transform) {
+  bump(kViewportSetGlobalCanvasTransform);
+  if (transform != nullptr) {
+    ViewportTransformKey key;
+    zero(&key);
+    key.viewport = viewport.id;
+    key.transform = *transform;
+    log_entry(&g_viewport_global_canvas_transforms, pod(key));
+    if (resources().active()) {
+      resources().viewport_set_global_canvas_transform(tap_context(), viewport.id,
+                                                        &transform->columns[0].x);
+    }
+  }
+  original<FnViewportSetGlobalCanvasTransform>(kViewportSetGlobalCanvasTransform)(self, viewport,
+                                                                                   transform);
+}
+
+void hook_viewport_set_canvas_stacking(void *self, RID viewport, RID canvas, int32_t layer,
+                                        int32_t sublayer) {
+  bump(kViewportSetCanvasStacking);
+  CanvasStackingKey key;
+  zero(&key);
+  key.viewport = viewport.id;
+  key.canvas = canvas.id;
+  key.layer = layer;
+  key.sublayer = sublayer;
+  log_entry(&g_canvas_stackings, pod(key));
+  if (resources().active()) {
+    resources().viewport_set_canvas_stacking(tap_context(), viewport.id, canvas.id, layer,
+                                              sublayer);
+  }
+  original<FnViewportSetCanvasStacking>(kViewportSetCanvasStacking)(self, viewport, canvas, layer,
+                                                                     sublayer);
+}
+
+// canvas_set_item_mirroring's real ABI takes two RIDs (p_canvas, p_item); see the ABI comment
+// block above.
+void hook_canvas_set_item_mirroring(void *self, RID canvas, RID item, const Point2 *mirroring) {
+  bump(kCanvasSetItemMirroring);
+  if (mirroring != nullptr) {
+    CanvasItemMirroringKey key;
+    zero(&key);
+    key.canvas = canvas.id;
+    key.item = item.id;
+    key.mirroring = *mirroring;
+    log_entry(&g_canvas_item_mirrorings, pod(key));
+    if (resources().active()) {
+      resources().canvas_set_item_mirroring(tap_context(), canvas.id, item.id, &mirroring->x);
+    }
+  }
+  original<FnCanvasSetItemMirroring>(kCanvasSetItemMirroring)(self, canvas, item, mirroring);
+}
+
+void hook_canvas_set_item_repeat(void *self, RID item, const Point2 *repeat_size,
+                                  int32_t repeat_times) {
+  bump(kCanvasSetItemRepeat);
+  if (repeat_size != nullptr) {
+    CanvasItemRepeatKey key;
+    zero(&key);
+    key.item = item.id;
+    key.repeat_size = *repeat_size;
+    key.repeat_times = repeat_times;
+    log_entry(&g_canvas_item_repeats, pod(key));
+    if (resources().active()) {
+      resources().canvas_set_item_repeat(tap_context(), item.id, &repeat_size->x, repeat_times);
+    }
+  }
+  original<FnCanvasSetItemRepeat>(kCanvasSetItemRepeat)(self, item, repeat_size, repeat_times);
+}
+
+void hook_canvas_set_parent(void *self, RID canvas, RID parent, float scale) {
+  bump(kCanvasSetParent);
+  CanvasParentKey key;
+  zero(&key);
+  key.canvas = canvas.id;
+  key.parent = parent.id;
+  key.scale = scale;
+  log_entry(&g_canvas_set_parents, pod(key));
+  if (resources().active()) {
+    resources().canvas_set_parent(tap_context(), canvas.id, parent.id);
+  }
+  original<FnCanvasSetParent>(kCanvasSetParent)(self, canvas, parent, scale);
+}
+
 // --- calibrator 3 hooks --------------------------------------------------------
 
 void hook_viewport_attach_canvas(void *self, RID viewport, RID canvas) {
@@ -2658,6 +2824,15 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_set_instance_shader_parameter)},
     {kCanvasLightAttachToCanvas, "canvas_light_attach_to_canvas",
      as_ptr(&hook_canvas_light_attach_to_canvas)},
+    {kViewportRemoveCanvas, "viewport_remove_canvas", as_ptr(&hook_viewport_remove_canvas)},
+    {kViewportSetGlobalCanvasTransform, "viewport_set_global_canvas_transform",
+     as_ptr(&hook_viewport_set_global_canvas_transform)},
+    {kViewportSetCanvasStacking, "viewport_set_canvas_stacking",
+     as_ptr(&hook_viewport_set_canvas_stacking)},
+    {kCanvasSetItemMirroring, "canvas_set_item_mirroring",
+     as_ptr(&hook_canvas_set_item_mirroring)},
+    {kCanvasSetItemRepeat, "canvas_set_item_repeat", as_ptr(&hook_canvas_set_item_repeat)},
+    {kCanvasSetParent, "canvas_set_parent", as_ptr(&hook_canvas_set_parent)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -2874,6 +3049,13 @@ struct Snapshot {
   Log<PodEntry<MaterialShaderKey>> material_create_from_shader_calls;
   Log<PodEntry<ItemColorKey>> canvas_set_modulates;
   Log<PodEntry<ItemValueKey>> set_use_parent_materials;
+  // calibrator 9
+  Log<PodEntry<RidTripleKey>> viewport_remove_canvases;
+  Log<PodEntry<ViewportTransformKey>> viewport_global_canvas_transforms;
+  Log<PodEntry<CanvasStackingKey>> canvas_stackings;
+  Log<PodEntry<CanvasItemMirroringKey>> canvas_item_mirrorings;
+  Log<PodEntry<CanvasItemRepeatKey>> canvas_item_repeats;
+  Log<PodEntry<CanvasParentKey>> canvas_set_parents;
 };
 
 Snapshot take_snapshot() {
@@ -2952,6 +3134,12 @@ Snapshot take_snapshot() {
   s.set_use_parent_materials = g_set_use_parent_materials;
   s.set_instance_shader_parameters = g_set_instance_shader_parameters;
   s.canvas_light_attaches = g_canvas_light_attaches;
+  s.viewport_remove_canvases = g_viewport_remove_canvases;
+  s.viewport_global_canvas_transforms = g_viewport_global_canvas_transforms;
+  s.canvas_stackings = g_canvas_stackings;
+  s.canvas_item_mirrorings = g_canvas_item_mirrorings;
+  s.canvas_item_repeats = g_canvas_item_repeats;
+  s.canvas_set_parents = g_canvas_set_parents;
   return s;
 }
 
@@ -3462,6 +3650,42 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
               write_rid(j, "light", e.key.a);
               write_rid(j, "canvas", e.key.b);
             });
+  // Calibrator 9 (gate6-design.md Q2): decode only, no classification (that is G6b's mirror).
+  write_log(&json, "viewport_remove_canvas", s.viewport_remove_canvases,
+            [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
+              write_rid(j, "viewport", e.key.a);
+              write_rid(j, "canvas", e.key.b);
+            });
+  write_log(&json, "viewport_set_global_canvas_transform", s.viewport_global_canvas_transforms,
+            [](JsonWriter *j, const PodEntry<ViewportTransformKey> &e) {
+              write_rid(j, "viewport", e.key.viewport);
+              write_floats(j, "transform", e.key.transform);
+            });
+  write_log(&json, "viewport_set_canvas_stacking", s.canvas_stackings,
+            [](JsonWriter *j, const PodEntry<CanvasStackingKey> &e) {
+              write_rid(j, "viewport", e.key.viewport);
+              write_rid(j, "canvas", e.key.canvas);
+              j->field("layer", static_cast<int64_t>(e.key.layer));
+              j->field("sublayer", static_cast<int64_t>(e.key.sublayer));
+            });
+  write_log(&json, "canvas_set_item_mirroring", s.canvas_item_mirrorings,
+            [](JsonWriter *j, const PodEntry<CanvasItemMirroringKey> &e) {
+              write_rid(j, "canvas", e.key.canvas);
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "mirroring", e.key.mirroring);
+            });
+  write_log(&json, "canvas_set_item_repeat", s.canvas_item_repeats,
+            [](JsonWriter *j, const PodEntry<CanvasItemRepeatKey> &e) {
+              write_rid(j, "item", e.key.item);
+              write_floats(j, "repeat_size", e.key.repeat_size);
+              j->field("repeat_times", static_cast<int64_t>(e.key.repeat_times));
+            });
+  write_log(&json, "canvas_set_parent", s.canvas_set_parents,
+            [](JsonWriter *j, const PodEntry<CanvasParentKey> &e) {
+              write_rid(j, "canvas", e.key.canvas);
+              write_rid(j, "parent", e.key.parent);
+              write_floats(j, "scale", &e.key.scale, 1);
+            });
   json.object_end();
 
   // Distinct calls that arrived after an optional hook's log was full.
@@ -3558,6 +3782,15 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
              static_cast<int64_t>(s.set_instance_shader_parameters.dropped));
   json.field("canvas_light_attach_to_canvas",
              static_cast<int64_t>(s.canvas_light_attaches.dropped));
+  json.field("viewport_remove_canvas",
+             static_cast<int64_t>(s.viewport_remove_canvases.dropped));
+  json.field("viewport_set_global_canvas_transform",
+             static_cast<int64_t>(s.viewport_global_canvas_transforms.dropped));
+  json.field("viewport_set_canvas_stacking", static_cast<int64_t>(s.canvas_stackings.dropped));
+  json.field("canvas_set_item_mirroring",
+             static_cast<int64_t>(s.canvas_item_mirrorings.dropped));
+  json.field("canvas_set_item_repeat", static_cast<int64_t>(s.canvas_item_repeats.dropped));
+  json.field("canvas_set_parent", static_cast<int64_t>(s.canvas_set_parents.dropped));
   json.object_end();
 
   // G2a: the payload-copy capability and the texture hook log's counters.

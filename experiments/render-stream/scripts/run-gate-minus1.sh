@@ -162,16 +162,22 @@ PY
 # evidence (argv/env/exit code, optionally strace + a /proc maps/fd sample) beside it.
 # ---------------------------------------------------------------------------------------------
 run_headless_leg() {
-	local leg_name="$1" grc_mode="$2" calibration_path="$3" binary_path="$4" disarm_frames="${5:-}"
+	local leg_name="$1" grc_mode="$2" calibration_path="$3" binary_path="$4" disarm_frames="${5:-}" want_stream="${6:-}"
 	local leg_dir="$OUT/$leg_name"
 	local evidence_dir="$leg_dir/evidence"
 	mkdir -p "$evidence_dir"
 
 	# Inherited GRC_* values are stripped so, e.g., an exported GRC_CALIBRATION cannot leak into
 	# refuse-nocal.
-	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY -u GRC_CALIBRATION -u GRC_DISARM_AFTER_FRAMES -u GRC_SCREENSHOT -u GRC_SCREENSHOT_FRAME GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir")
+	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY -u GRC_CALIBRATION -u GRC_DISARM_AFTER_FRAMES -u GRC_SCREENSHOT -u GRC_SCREENSHOT_FRAME -u GRC_STREAM_OUT -u GRC_RESOURCE_STORE_DIR GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir")
 	[ -n "$calibration_path" ] && cmd+=(GRC_CALIBRATION="$calibration_path")
 	[ -n "$disarm_frames" ] && cmd+=(GRC_DISARM_AFTER_FRAMES="$disarm_frames")
+	# G6k (gate6-design.md Q2): a stream opens resources.jsonl (capture/src/entry.cpp's
+	# resources_start, called only from the stream-open path, not merely on arm). No other
+	# headless leg sets this; only the canvas-hook-log criterion reads this leg's evidence.
+	if [ "$want_stream" = "1" ]; then
+		cmd+=(GRC_STREAM_OUT="$leg_dir/recording.rs2" GRC_RESOURCE_STORE_DIR="$leg_dir/store")
+	fi
 
 	{
 		echo "binary: $binary_path"
@@ -181,6 +187,7 @@ run_headless_leg() {
 		echo "GRC_EVIDENCE_DIR=$evidence_dir"
 		echo "GRC_CALIBRATION=${calibration_path:-<unset>}"
 		echo "GRC_DISARM_AFTER_FRAMES=${disarm_frames:-<unset>}"
+		echo "GRC_STREAM_OUT=$([ "$want_stream" = "1" ] && echo "$leg_dir/recording.rs2" || echo "<unset>")"
 	} >"$leg_dir/invocation.txt"
 
 	local want_strace=0
@@ -240,6 +247,12 @@ run_headless_leg "headless-armed" "arm" "$CALIBRATION" "$BINARY" "60"
 
 echo "run-gate-minus1: headless-validate"
 run_headless_leg "headless-validate" "validate" "$CALIBRATION" "$BINARY" ""
+
+# G6k (gate6-design.md Q2): the only gate -1 leg with a file sink open, so resources.jsonl exists
+# to check the six calibrator-9 canvas lines against (canvas-hook-log). No other criterion reads
+# this leg; headless-armed (above) is untouched.
+echo "run-gate-minus1: headless-stream"
+run_headless_leg "headless-stream" "arm" "$CALIBRATION" "$BINARY" "60" "1"
 
 echo "run-gate-minus1: refuse-sha"
 mkdir -p "$OUT/refuse-sha"

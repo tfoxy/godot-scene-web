@@ -121,6 +121,15 @@ const PANEL_MODULATE: Color = Color(0.875, 1, 1, 1)
 const LATE_Z_INDEX: int = 1
 const LATE_SELF_MODULATE: Color = Color(0.5, 0.75, 1, 1)
 
+# Calibrator-9 hooks (gate6-design.md Q2): a CanvasLayer's stacking/follow_viewport/removal, a
+# raw canvas_set_item_mirroring/_repeat, and a Viewport.global_canvas_transform write that is
+# reset to identity again before anything draws (see _exercise_calibrator9_hooks).
+const CANVAS9_LAYER: int = 2
+const CANVAS9_GLOBAL_TRANSFORM_ORIGIN: Vector2 = Vector2(8.5, 4.25)
+const CANVAS9_MIRRORING: Vector2 = Vector2(16.25, 8.5)
+const CANVAS9_REPEAT_SIZE: Vector2 = Vector2(32.5, 24.25)
+const CANVAS9_REPEAT_TIMES: int = 3
+
 const RELABEL_FRAME: int = 30
 const QUIT_FRAME: int = 400
 const DEFAULT_SCREENSHOT_FRAME: int = 60
@@ -233,6 +242,7 @@ func _ready() -> void:
 	panel.set_instance_shader_parameter("spike_instance_test", Color(1, 1, 1, 1))
 
 	_exercise_calibrator8_hooks()
+	_exercise_calibrator9_hooks()
 
 	queue_redraw()
 
@@ -355,6 +365,37 @@ func _exercise_calibrator8_hooks() -> void:
 	RenderingServer.canvas_light_attach_to_canvas(light, scratch_canvas)
 	RenderingServer.free_rid(light)
 	RenderingServer.free_rid(scratch_canvas)
+
+
+## Calibrator-9 hooks (gate6-design.md Q2): a CanvasLayer's stacking (set_layer), attachment to
+## the viewport, follow_viewport (canvas_set_parent with a non-null parent) and removal
+## (viewport_remove_canvas); a raw canvas_set_item_mirroring/_repeat on an orphan item parented to
+## the world canvas (canvas_set_item_mirroring looks the item up on that canvas,
+## renderer_canvas_cull.cpp:514-521, so an unparented item would only log an engine error); and a
+## Viewport.global_canvas_transform write, reset to identity again immediately after -- the root's
+## stretch is disabled (project.godot), so both the non-default and the reset value are exact, and
+## the reset keeps every other calibrator's pixel sample at its original position by the time the
+## screenshot frame runs. canvas9_parent exists only so canvas9_layer's sibling index (its
+## viewport_set_canvas_stacking sublayer) is deterministically 0.
+func _exercise_calibrator9_hooks() -> void:
+	var canvas9_parent: Node = Node.new()
+	add_child(canvas9_parent)
+	var canvas9_layer: CanvasLayer = CanvasLayer.new()
+	canvas9_parent.add_child(canvas9_layer)  # enters tree: viewport_attach_canvas, viewport_set_canvas_transform
+	canvas9_layer.set_layer(CANVAS9_LAYER)  # viewport_set_canvas_stacking(layer=2, sublayer=0)
+	canvas9_layer.set_follow_viewport(true)  # canvas_set_parent(canvas, world canvas, scale): non-null
+	canvas9_parent.remove_child(canvas9_layer)  # viewport_remove_canvas
+	canvas9_layer.queue_free()
+
+	var canvas9_item: RID = RenderingServer.canvas_item_create()
+	RenderingServer.canvas_item_set_parent(canvas9_item, get_world_2d().get_canvas())
+	RenderingServer.canvas_set_item_mirroring(get_world_2d().get_canvas(), canvas9_item, CANVAS9_MIRRORING)
+	RenderingServer.canvas_set_item_repeat(canvas9_item, CANVAS9_REPEAT_SIZE, CANVAS9_REPEAT_TIMES)
+	RenderingServer.free_rid(canvas9_item)
+
+	var vp: Viewport = get_viewport()
+	vp.set_global_canvas_transform(Transform2D(Vector2(1, 0), Vector2(0, 1), CANVAS9_GLOBAL_TRANSFORM_ORIGIN))
+	vp.set_global_canvas_transform(Transform2D())  # back to identity before any draw/screenshot
 
 
 func _process(_delta: float) -> void:

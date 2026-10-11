@@ -195,7 +195,7 @@ assuming any particular sentinel.
 ### Hooked slots on the pinned binary
 
 "Tier" is the calibrator version that first emitted the slot. Tier 1 is gate −1's
-set and is required; tiers 2, 3, 4, 5 and 8 are optional (see "Calibration records and
+set and is required; tiers 2, 3, 4, 5, 8 and 9 are optional (see "Calibration records and
 hook versions" below). Tier 3 is gate 0's: the state the retained canvas mirror
 (`capture/src/rs_mirror.h`) needs, beside the tier 1 and 2 hooks it also taps.
 Tier 4 is gate 1 G1e's: the two draw-order fields the mirror held at
@@ -216,7 +216,10 @@ shader_payload.h`) and a parameter's Variant into D8's typed, float64-component
 shape (`capture/src/rs_variant.h`). As with tier 2's material hooks, none of the
 decoded content crosses into `counters.json` -- only `evidence/resources.jsonl`
 (`kind`:"shader"/"material"/"item-material" lines) and, once gate 5.5 has a
-mirror (G55d), the mirror.
+mirror (G55d), the mirror. Tier 9 is gate 6 G6k's (gate6-design.md Q2): `CanvasLayer`
+attach/stacking/removal, canvas-item mirroring/repeat and the root's global canvas
+transform. Decode and hook-log only (`evidence/resources.jsonl` `kind`:"canvas"
+lines) -- no mirror, publisher or wire change; that is G6b's job.
 "Captured" is what the hook records beside its count. Every signature is copied
 from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 
@@ -286,6 +289,12 @@ from the 4.5.1 header, with the line cited in `capture/src/hooks.cpp`.
 | `canvas_item_set_use_parent_material`             | 489  | 8    | item, enable                                                                                         |
 | `canvas_item_set_instance_shader_parameter`       | 490  | 8    | item (`StringName`/`Variant` decoded with a stream, never into `counters.json`)                     |
 | `canvas_light_attach_to_canvas`                   | 503  | 8    | light, canvas                                                                                        |
+| `viewport_remove_canvas`                          | 314  | 9    | viewport, canvas                                                                                     |
+| `viewport_set_global_canvas_transform`            | 323  | 9    | viewport, transform                                                                                  |
+| `viewport_set_canvas_stacking`                    | 324  | 9    | viewport, canvas, layer, sublayer                                                                     |
+| `canvas_set_item_mirroring`                       | 436  | 9    | canvas, item, mirroring (real ABI has two RIDs; gate6-design.md Q2's shorthand omits one)             |
+| `canvas_set_item_repeat`                          | 437  | 9    | item, repeat size, repeat times                                                                       |
+| `canvas_set_parent`                               | 439  | 9    | canvas, parent (scale not logged, Q2)                                                                 |
 | `get_default_clear_color` (probe, not hooked)     | 577  | 1    | —                                                                                                  |
 
 Floats are written as values and as float32 bit patterns (`*_bits`). Arrays keep
@@ -319,7 +328,7 @@ That record may come from a sibling calibrating another binary with whatever
   omission is recorded in three places:
   - `calibration-check.json` gets an ok `hook_plan` entry whose detail names the
     omitted hooks, for example:
-    `8 of 73 hooks named by the record; omitted (record predates them): …`.
+    `8 of 79 hooks named by the record; omitted (record predates them): …`.
   - `counters.json` lists the hook under `hooks_omitted`, and its `counts` value
     is `null` rather than `0`. A `null` means "not installed", which is
     different from "never called".
@@ -4647,6 +4656,100 @@ repeated runs:
 - `GRC_LIVE_MAX_CONNECTIONS`, rate control, or anything engine-side: G6t touches none of it (G6r's
   job). The throttle proxy and sampler are ready for G6c/G6l/G6s/G6p to drive against a real host
   and receiver, but have only ever been exercised against synthetic loopback servers here.
+
+## Gate 6k result (2026-10-11)
+
+G6k ([protocol/gate6-design.md](protocol/gate6-design.md) "G6k", Q2) passes: calibrator 9 hooks the
+six slots Q2 predicted, confirmed by `calibrate.py`/`scripts/calibrate.sh` against the pinned
+binary exactly as predicted: `viewport_remove_canvas` 314, `viewport_set_global_canvas_transform`
+323, `viewport_set_canvas_stacking` 324, `canvas_set_item_mirroring` 436, `canvas_set_item_repeat`
+437, `canvas_set_parent` 439. Gate −1 goes from 73 to 79 hooks, none omitted; the committed record
+now names 80 slots (79 hooks plus the `get_default_clear_color` probe). `build-capture.sh`
+**17/17** ctests (`rs_resource_log` extended, no new
+executable), `scripts/calibrate.sh --check` clean, gate −1 **29/29** (79 hooks, all six positive,
+`old-record` still arms a calibrator-1 record with 71 hooks omitted), gate 0 **24/24**, gate 1
+(groups g1a-g1d) **65/65**, gate 2 (groups g2a-g2e) **85/85** (one `live-animate`
+pins-bounded/obsolete-retired rerun, the pre-existing load-timing flake named in
+`.agents/memory/preexisting-check-failures.md`; it did not recur). Every pure self-test (checker,
+gate 0, gate 1, gate 2) and `tsc --noEmit`/`biome check` on every file this increment touched
+stayed clean: checker 75/75, gate 0 237/237, gate 1 402/402, gate 2 406/406.
+
+Decode and hook-log only, exactly as scoped: none of the six calls the mirror, publisher or wire
+format (`rs_mirror.*`/`rs_publish.*` untouched, render-stream/4 unchanged) -- that is G6b's job.
+
+What landed:
+
+- **Calibrator 9, six new optional slots** (`capture/src/hooks.cpp`): each hook bumps its
+  `counters.json` entry and, with `resources().active()`, writes an `evidence/resources.jsonl`
+  `kind:"canvas"` line (`capture/src/rs_resource_log.{h,cpp}`) with no registry and no
+  classification -- a canvas's identity and state stay the mirror's field (G6b). New trailing
+  columns, null on every other line: `sublayer` (`layer` itself reuses the existing column),
+  `transform` (flattened `[a, b, c, d, origin.x, origin.y]`), `parent` (decimal string or null for
+  `RID()`; the scale argument is not logged), `mirroring` (`[x, y]`) and `repeat` (`[size.x,
+  size.y, times]`). `RESOURCE_LINE_KEYS`/`RESOURCE_LOG_OPS` (`gate2-checks.ts`) and `GATE0_HOOKS`
+  (`gate0-checks.ts`) extended to match; `validateResourceLine`'s exact-key-order check means every
+  existing line in every gate now carries five more trailing nulls too.
+- **`fixtures/spike/`'s `_exercise_calibrator9_hooks`**: a `CanvasLayer`, parented to a throwaway
+  `Node` so its stacking sublayer is deterministically 0, gets an explicit `set_layer`, a
+  `set_follow_viewport(true)` (a non-null `canvas_set_parent`) and a `remove_child`
+  (`viewport_remove_canvas`); a raw canvas item, parented to the world canvas (so
+  `canvas_set_item_mirroring`'s own canvas lookup does not log an engine error,
+  `renderer_canvas_cull.cpp:514-521`), gets a raw `canvas_set_item_mirroring` and
+  `canvas_set_item_repeat`; the root's `global_canvas_transform` is written non-identity then
+  reset to identity again before anything draws (stretch is disabled, so both values are exact),
+  so every other calibrator's pixel sample keeps its frame-60 position.
+- **A new gate −1 leg, `headless-stream`**: the only gate −1 leg with a file sink
+  (`GRC_STREAM_OUT`) and resource store (`GRC_RESOURCE_STORE_DIR`) open, so `evidence/
+  resources.jsonl` exists to check -- `headless-armed` and every other leg are untouched.
+  `GRC_MODE=arm` alone never opens one (`entry.cpp`'s `resources_start()` runs only from the
+  stream-open path), and no gate −1 leg had before this. The new `canvas-hook-log` criterion reads
+  it alone, matching each of the six ops among resources.jsonl's `kind:"canvas"` lines against the
+  fixture's own constants (`expected.json`'s new `canvas9` block).
+- **`gate2-checks.ts`'s `census` criterion widened**: every `Viewport` (the root included) calls
+  `viewport_remove_canvas` on `NOTIFICATION_EXIT_TREE` (`scene/main/viewport.cpp:611-615`) -- a
+  universal engine behaviour, not specific to gate 2's fixture -- so the root viewport's own exit
+  at `SceneTree` teardown now logs one after gate 2's quit frame on every stream-enabled leg. The
+  "after the quit frame only teardown frees" rule now allows `viewport_remove_canvas` beside
+  `free`.
+
+### Findings
+
+- **`canvas_set_item_mirroring`'s real ABI has two RIDs** (`RID p_canvas, RID p_item, const
+  Point2 &p_mirroring`, `rendering_server.h:1526`), not the one `gate6-design.md` Q2's ABI
+  shorthand ("436 is `(RID, const Vector2 *)`") shows. The slot number it predicted (436) was
+  still exactly right -- `calibrate.py` discovers slots by name, independent of the hooked
+  function's own decoded ABI -- so this was purely a decode-arity bug, caught by cross-checking
+  the real header before writing the `using Fn... = ...` alias, not by any runtime failure (the
+  hook still forwards the real pointer to the engine unchanged either way). `canvas_set_item_
+  repeat`'s one RID argument is an item, not a canvas, despite the design doc calling that column
+  "canvas RID" generically (memory: rs-g6k-canvas-hook-facts).
+- **`evidence/resources.jsonl` needs an open stream, not just an armed capture.** Gate −1 never
+  set `GRC_STREAM_OUT` on any leg before this increment (git history confirms G5a and G55a added
+  `kind:"mesh"`/`"shader"`/`"material"`/`"item-material"` lines to the SAME file without ever
+  checking them at gate −1 -- their first hook-log checks land at gate 2/5c/55b/55c, which all
+  open streams). Validating a brand-new hook's hook-log content from gate −1 itself needed a new
+  leg, not a new check against existing evidence.
+- **The root viewport's own teardown call was the only gate 2 regression.** Hooking slot 314 is
+  purely additive everywhere else it was already exercised (gate −1's spike, gate 0's and gate
+  1's fixtures): only gate 2's `census` criterion asserts an exact, closed set of post-quit-frame
+  ops, so it was the one place a new, always-present teardown call needed an explicit allowance.
+  `gate5c-checks.ts`/`gate55c-checks.ts` have their own `after_quit` counters but only *report* the
+  count, scoped to `kind:"mesh"`/`"shader"`/`"material"` lines that a `kind:"canvas"` line never
+  matches, so they were never at risk.
+
+### What G6k does not prove
+
+- That the mirror, publisher or receiver understand any of these six calls: `rs_mirror.*` gained
+  no canvas-layer table, no stacking/attach/transform fields, and the wire format did not move
+  past render-stream/4. A `CanvasLayer`, `global_canvas_transform`, mirroring or repeat in a real
+  scene changes nothing a receiver renders yet -- that is G6b's `fixtures/gate6-scene`/`gate6-hd`
+  work.
+- `canvas_set_parent`'s `scale` argument, or `viewport_set_canvas_stacking`'s/`canvas_set_item_
+  repeat`'s values beyond what the spike fixture's own constants exercise: the hook log carries
+  exactly what Q2 named and no more (D2's "no classification yet" rule).
+- Rendering or pixels: none of the six calls draws anything, by design (the fixture additions are
+  on an empty `CanvasLayer` and orphan/world-canvas items), so this increment proves decode
+  correctness and hook-log shape, not visual behaviour.
 
 ## Gate 6r result (2026-10-11)
 

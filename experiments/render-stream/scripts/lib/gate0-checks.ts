@@ -93,9 +93,10 @@ export const STORE_DIR_NAME = "store";
  * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent` (gate1-design.md
  * G1e), calibrator 5's eleven texture hooks (gate2-design.md Q2), calibrator 6's
  * `canvas_item_add_clip_ignore` (gate3-design.md Q2), calibrator 7's eight hooks
- * (gate5-design.md Q2) and calibrator 8's nine materials/canvas-shader hooks (gate5_5-design.md
- * Q2) -- the record is shared by gate -1, gate 0, gate 1, gate 2, gate 3, gate 4 and gate 5, so
- * every one of them plans all 73. */
+ * (gate5-design.md Q2), calibrator 8's nine materials/canvas-shader hooks (gate5_5-design.md
+ * Q2) and calibrator 9's six CanvasLayer/canvas-item hooks (gate6-design.md Q2) -- the record is
+ * shared by gate -1, gate 0, gate 1, gate 2, gate 3, gate 4 and gate 5, so every one of them
+ * plans all 79. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
   "canvas_item_add_animation_slice",
@@ -138,7 +139,10 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_item_set_z_as_relative_to_parent",
   "canvas_item_set_z_index",
   "canvas_light_attach_to_canvas",
+  "canvas_set_item_mirroring",
+  "canvas_set_item_repeat",
   "canvas_set_modulate",
+  "canvas_set_parent",
   "canvas_texture_create",
   "canvas_texture_set_channel",
   "canvas_texture_set_texture_filter",
@@ -167,9 +171,12 @@ export const GATE0_HOOKS: readonly string[] = [
   "texture_2d_update",
   "texture_replace",
   "viewport_attach_canvas",
+  "viewport_remove_canvas",
+  "viewport_set_canvas_stacking",
   "viewport_set_canvas_transform",
   "viewport_set_default_canvas_item_texture_filter",
   "viewport_set_default_canvas_item_texture_repeat",
+  "viewport_set_global_canvas_transform",
 ];
 
 /** Session `features` of a HEADLESS host at render-stream/4, exactly (render-stream-2.md "Session

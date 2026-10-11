@@ -14,6 +14,7 @@ import { join } from "node:path";
 
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-diff";
+import { engineCall, loadResourceLog } from "./gate2-checks";
 
 export type CriterionStatus = "pass" | "fail" | "unavailable";
 
@@ -1161,11 +1162,22 @@ interface ExpectedDrawPaths {
   visible_samples: { samples: Array<{ name: string; x: number; y: number }> };
 }
 
+/** Calibrator-9 (gate6-design.md Q2) constants spike.gd's _exercise_calibrator9_hooks passed,
+ * matched against evidence/resources.jsonl's kind:"canvas" lines (checkCanvasHookLog). */
+export interface ExpectedCanvas9 {
+  layer: number;
+  sublayer: number;
+  global_transform: number[];
+  mirroring: number[];
+  repeat: number[];
+}
+
 export interface ExpectedWithDrawPaths extends ExpectedJson {
   draw_paths: ExpectedDrawPaths;
   /** The optional hooks (calibrators 2 and 3): optional to the library, all exercised by the fixture. */
   optional_hooks: string[];
   optional_counters_must_be_positive: string[];
+  canvas9: ExpectedCanvas9;
 }
 
 function entries(
@@ -1756,5 +1768,96 @@ export async function checkOlderRecord(
     evidence,
     problems,
     `armed with ${counters?.hooks_planned?.length} hooks planned, ${omitted.length} omitted with null counts; add_rect=${counts.canvas_item_add_rect}, add_polygon=${counts.canvas_item_add_polygon}; disarm restored`,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Calibrator 9 (gate6-design.md Q2, G6k): the spike's six new canvas hooks each decode and log
+// at least one line (kind:"canvas") carrying the constants _exercise_calibrator9_hooks passed --
+// evidence/resources.jsonl is the only place these six are checked at all before G6b's mirror.
+// ---------------------------------------------------------------------------------------------
+
+export async function checkCanvasHookLog(
+  outDir: string,
+  expected: ExpectedWithDrawPaths,
+): Promise<Criterion> {
+  const id = "canvas-hook-log";
+  const description =
+    'evidence/resources.jsonl\'s six calibrator-9 kind:"canvas" lines (viewport_remove_canvas, viewport_set_global_canvas_transform, viewport_set_canvas_stacking, canvas_set_item_mirroring, canvas_set_item_repeat, canvas_set_parent) each carry at least one call with the constants spike.gd passed, on the one gate -1 leg with a file sink open ("headless-stream")';
+  const legDir = join(outDir, "headless-stream");
+  const evidence = join(legDir, "evidence", "resources.jsonl");
+  const { lines, problem } = await loadResourceLog(legDir);
+  if (problem) {
+    return verdict(
+      id,
+      description,
+      evidence,
+      [`resources.jsonl ${problem}`],
+      "",
+    );
+  }
+  const canvasLines = lines.filter((l) => l.kind === "canvas" && engineCall(l));
+  const c9 = expected.canvas9;
+  const problems: string[] = [];
+
+  if (!canvasLines.some((l) => l.op === "viewport_remove_canvas")) {
+    problems.push("no viewport_remove_canvas line");
+  }
+  if (
+    !canvasLines.some(
+      (l) =>
+        l.op === "viewport_set_global_canvas_transform" &&
+        sameNumbers(l.transform, c9.global_transform),
+    )
+  ) {
+    problems.push(
+      `no viewport_set_global_canvas_transform line with transform=${JSON.stringify(c9.global_transform)}`,
+    );
+  }
+  if (
+    !canvasLines.some(
+      (l) =>
+        l.op === "viewport_set_canvas_stacking" &&
+        l.layer === c9.layer &&
+        l.sublayer === c9.sublayer,
+    )
+  ) {
+    problems.push(
+      `no viewport_set_canvas_stacking line with layer=${c9.layer} sublayer=${c9.sublayer}`,
+    );
+  }
+  if (
+    !canvasLines.some(
+      (l) =>
+        l.op === "canvas_set_item_mirroring" &&
+        sameNumbers(l.mirroring, c9.mirroring),
+    )
+  ) {
+    problems.push(
+      `no canvas_set_item_mirroring line with mirroring=${JSON.stringify(c9.mirroring)}`,
+    );
+  }
+  if (
+    !canvasLines.some(
+      (l) =>
+        l.op === "canvas_set_item_repeat" && sameNumbers(l.repeat, c9.repeat),
+    )
+  ) {
+    problems.push(
+      `no canvas_set_item_repeat line with repeat=${JSON.stringify(c9.repeat)}`,
+    );
+  }
+  if (
+    !canvasLines.some((l) => l.op === "canvas_set_parent" && l.parent !== null)
+  ) {
+    problems.push("no canvas_set_parent line with a non-null parent");
+  }
+
+  return verdict(
+    id,
+    description,
+    evidence,
+    problems,
+    `matched all six ops among ${canvasLines.length} kind:"canvas" lines`,
   );
 }

@@ -91,7 +91,8 @@ int main() {
          "\"offset\":null,\"bytes\":null,\"primitive\":null,\"vertex_count\":null,"
          "\"index_count\":null,\"outcome\":null,\"mode\":null,\"source\":null,\"builtin\":null,"
          "\"uses\":null,\"scan_ns\":null,\"param\":null,\"type\":null,\"n\":null,"
-         "\"decode_ns\":null}");
+         "\"decode_ns\":null,\"sublayer\":null,\"transform\":null,\"parent\":null,"
+         "\"mirroring\":null,\"repeat\":null}");
   EXPECT(has(lines[1], "\"op\":\"texture_2d_placeholder_create\",\"id\":2,"));
   EXPECT(has(lines[1], "\"kind\":\"placeholder\",\"status\":\"ok\",\"reason\":null,\"format\":null"));
   EXPECT(has(lines[2], "\"thread\":\"other\""));
@@ -437,7 +438,7 @@ int main() {
   EXPECT(lines.size() == 3);
   EXPECT(has(lines[0], "\"op\":\"material_set_param\",\"id\":1,") &&
          has(lines[0], "\"version\":3,\"kind\":\"material\"") &&
-         has(lines[0], "\"param\":\"tint\",\"type\":\"color\",\"n\":1,\"decode_ns\":15}") &&
+         has(lines[0], "\"param\":\"tint\",\"type\":\"color\",\"n\":1,\"decode_ns\":15,") &&
          has(lines[0], "\"outcome\":\"applied\""));
   EXPECT(has(lines[1], "\"id\":1,") &&
          has(lines[1], "\"version\":3,\"kind\":\"material\"") &&  // unchanged: OBJECT is rejected
@@ -470,6 +471,41 @@ int main() {
   EXPECT(has(lines[4], "\"rid\":\"11\",\"version\":null,\"kind\":\"item-material\","
                        "\"status\":null,\"reason\":null,") &&
          has(lines[4], "\"target\":null,"));
+
+  // G6k (gate6-design.md Q2, calibrator 9): canvas lines, decode only, no registry.
+  const float global_transform[6] = {1.0f, 0.0f, 0.0f, 1.0f, 8.5f, 4.25f};
+  const float mirroring[2] = {16.25f, 8.5f};
+  const float repeat_size[2] = {32.5f, 24.25f};
+  log.viewport_remove_canvas(main_ctx, 1000, 1001);
+  log.viewport_remove_canvas(main_ctx, 0, 1002);  // null viewport: target absent
+  log.viewport_set_global_canvas_transform(main_ctx, 1000, global_transform);
+  log.viewport_set_canvas_stacking(main_ctx, 1000, 1001, 2, 0);
+  log.canvas_set_item_mirroring(main_ctx, 1001, 1100, mirroring);
+  log.canvas_set_item_repeat(main_ctx, 1100, repeat_size, 3);
+  log.canvas_set_parent(main_ctx, 1001, 1003);
+  log.canvas_set_parent(main_ctx, 1001, 0);  // RID(): parent absent
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 8);
+  EXPECT(has(lines[0], "\"op\":\"viewport_remove_canvas\",") && has(lines[0], "\"rid\":\"1001\",") &&
+         has(lines[0], "\"kind\":\"canvas\",") && has(lines[0], "\"target\":\"1000\","));
+  EXPECT(has(lines[1], "\"rid\":\"1002\",") && has(lines[1], "\"target\":null,"));
+  EXPECT(has(lines[2], "\"op\":\"viewport_set_global_canvas_transform\",") &&
+         has(lines[2], "\"rid\":\"1000\",") &&
+         has(lines[2], "\"transform\":[1,0,0,1,8.5,4.25],"));
+  EXPECT(has(lines[3], "\"op\":\"viewport_set_canvas_stacking\",") &&
+         has(lines[3], "\"rid\":\"1001\",") && has(lines[3], "\"target\":\"1000\",") &&
+         has(lines[3], "\"layer\":2,") && has(lines[3], "\"sublayer\":0,"));
+  EXPECT(has(lines[4], "\"op\":\"canvas_set_item_mirroring\",") &&
+         has(lines[4], "\"rid\":\"1001\",") && has(lines[4], "\"target\":\"1100\",") &&
+         has(lines[4], "\"mirroring\":[16.25,8.5],"));
+  EXPECT(has(lines[5], "\"op\":\"canvas_set_item_repeat\",") && has(lines[5], "\"rid\":\"1100\",") &&
+         has(lines[5], "\"repeat\":[32.5,24.25,3]}"));
+  EXPECT(has(lines[6], "\"op\":\"canvas_set_parent\",") && has(lines[6], "\"rid\":\"1001\",") &&
+         has(lines[6], "\"parent\":\"1003\","));
+  EXPECT(has(lines[7], "\"rid\":\"1001\",") && has(lines[7], "\"parent\":null,"));
+  for (const std::string &l : lines) {
+    EXPECT(has(l, "\"kind\":\"canvas\",") && has(l, "\"status\":null,\"reason\":null,"));
+  }
 
   // free: a known shader or material is logged and leaves the registry.
   log.free_rid(main_ctx, 700);
