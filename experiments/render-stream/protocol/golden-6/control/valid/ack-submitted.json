@@ -1,0 +1,7 @@
+{
+  "type": "ack",
+  "stream_id": "0123456789abcdef0123456789abcdef",
+  "seq": 1,
+  "stage": "submitted",
+  "t_us": 4200
+}

@@ -1,0 +1,6 @@
+{
+  "type": "resync",
+  "stream_id": "0123456789abcdef0123456789abcdef",
+  "seq": 7,
+  "reason": "unapplied-stale"
+}

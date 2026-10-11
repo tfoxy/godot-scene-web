@@ -32,10 +32,16 @@ const MAGIC_V4_HEX: String = "475253340d0a1a0a"
 ## THIS SAME FILE too (gate5_5-design.md D1): a shader table, a material table, canvas modulate,
 ## item material/use_parent_material/instance_params and the param_f64 (f64) block.
 const MAGIC_V5_HEX: String = "475253350d0a1a0a"
+## render-stream-6.md (G6w): the GRS6 magic, selected by `version == 6`. /6 is implemented IN
+## THIS SAME FILE too (gate6-design.md D1): presentation stretch declarations, a new top-level
+## "publication" session key, canvas layer/sublayer and five new session-level unsupported
+## reasons.
+const MAGIC_V6_HEX: String = "475253360d0a1a0a"
 const PROTOCOL: String = "render-stream/2"
 const PROTOCOL_V3: String = "render-stream/3"
 const PROTOCOL_V4: String = "render-stream/4"
 const PROTOCOL_V5: String = "render-stream/5"
+const PROTOCOL_V6: String = "render-stream/6"
 const MAX_SAFE_INT: float = 9007199254740991.0
 const U32_MAX: float = 4294967295.0
 const ITEM_FLOATS: int = 18
@@ -52,6 +58,11 @@ const SESSION_KEYS_V5: Array = [
 	"type", "protocol", "session_id", "stream", "engine", "capture", "viewport", "resources",
 	"materials", "features", "sabotage", "blocks",
 ]
+## render-stream-6.md "Session": a new "publication" key, right after "features".
+const SESSION_KEYS_V6: Array = [
+	"type", "protocol", "session_id", "stream", "engine", "capture", "viewport", "resources",
+	"materials", "features", "publication", "sabotage", "blocks",
+]
 const STREAM_KEYS: Array = ["stream_id", "connection", "transport", "encoding"]
 const TRANSPORTS: Array = ["file", "websocket"]
 const ENCODINGS: Array = ["full", "patch"]
@@ -63,11 +74,24 @@ const VIEWPORT_KEYS: Array = [
 	"canvas_cull_mask", "root_canvas", "logical_size", "stretch", "stretch_applied_by",
 	"root_size_policy", "host_size_status", "host_window_size",
 ]
+## render-stream-6.md "Viewport": presentation_size (right after root_size_policy, before
+## host_size_status) plus font_oversampling/snap_2d (after host_window_size).
+const VIEWPORT_KEYS_V6: Array = [
+	"canvas_cull_mask", "root_canvas", "logical_size", "stretch", "stretch_applied_by",
+	"root_size_policy", "presentation_size", "host_size_status", "host_window_size",
+	"font_oversampling", "snap_2d",
+]
+const SNAP_2D_KEYS: Array = ["transforms", "vertices"]
+## render-stream-6.md "Publication": a new top-level session key, distinct from
+## features.publication.
+const PUBLICATION_KEYS: Array = ["mode", "target_fps"]
+const PUBLICATION_MODES: Array = ["every-frame", "rate"]
 const STRETCH_KEYS: Array = ["mode", "aspect", "scale_mode"]
 const STRETCH_MODES: Array = ["disabled", "canvas_items", "viewport"]
 const STRETCH_ASPECTS: Array = ["ignore", "keep", "keep_width", "keep_height", "expand"]
 const SCALE_MODES: Array = ["fractional", "integer"]
 const ROOT_SIZE_POLICIES: Array = ["observe", "enforce-min-size"]
+const ROOT_SIZE_POLICIES_V6: Array = ["observe", "enforce-min-size", "presentation"]
 const HOST_SIZE_STATUSES: Array = ["match", "degenerate-visible", "degenerate-window"]
 const RESOURCES_KEYS: Array = [
 	"hash", "payload", "delivery", "inline_max_bytes", "max_payload_bytes", "permitted_formats",
@@ -145,6 +169,15 @@ const ITEM_UNSUPPORTED_REASONS: Array = [
 const SESSION_UNSUPPORTED_REASONS_V5: Array = [
 	"non-root-viewport", "extra-canvas", "degenerate-host-size", "canvas-light",
 ]
+## new at /6 (render-stream-6.md "Session-level unsupported reasons"): five new session-level
+## entries. "extra-canvas" stays schema-legal (so a malformed vector naming it still gets the
+## specific unsupported-mismatch code) but is rejected semantically in
+## _check_resolved_invariants() -- it never legitimately occurs at /6.
+const SESSION_UNSUPPORTED_REASONS_V6: Array = [
+	"non-root-viewport", "extra-canvas", "degenerate-host-size", "canvas-light",
+	"canvas-stacking-tie", "canvas-repeat", "canvas-follow-viewport", "global-canvas-transform",
+	"snap-2d",
+]
 ## render-stream-5.md "Decoders accept 'unsupported-state' for canvas_item_attach_skeleton only
 ## at /5": canvas_item_set_material's unsupported-state no longer occurs (superseded by item-
 ## level material state), so /5 decoders reject it -- checked explicitly in
@@ -155,6 +188,8 @@ const ITEM_UNSUPPORTED_REASONS_V5: Array = [
 	"unsupported-material", "unknown-material", "param-type",
 ]
 const CANVAS_KEYS: Array = ["id", "origin", "role", "attached", "items"]
+## render-stream-6.md "Canvas": layer/sublayer, right after attached and before items.
+const CANVAS_KEYS_V6: Array = ["id", "origin", "role", "attached", "layer", "sublayer", "items"]
 const ORIGINS: Array = ["created", "root-query", "adopted"]
 const ITEM_KEYS: Array = [
 	"id", "origin", "parent", "children", "visible", "draw_index", "z_index", "z_relative",
@@ -455,7 +490,9 @@ static func split_records(data: PackedByteArray, version: int = 5) -> Dictionary
 	var records: Array[Dictionary] = []
 	var errors := PackedStringArray()
 	var expected_magic: String = MAGIC_HEX
-	if version == 5:
+	if version == 6:
+		expected_magic = MAGIC_V6_HEX
+	elif version == 5:
 		expected_magic = MAGIC_V5_HEX
 	elif version == 4:
 		expected_magic = MAGIC_V4_HEX
@@ -636,7 +673,7 @@ class Schema:
 			integer(entry.get("count"), path + ".count", 0, Rs2Decoder.U32_MAX)
 
 	func resources(meta: Dictionary, version: int) -> void:
-		var is_v4_or_later: bool = version == 4 or version == 5
+		var is_v4_or_later: bool = version == 4 or version == 5 or version == 6
 		var keys: Array = Rs2Decoder.RESOURCES_KEYS_V4 if is_v4_or_later else Rs2Decoder.RESOURCES_KEYS
 		var resources_dict: Dictionary = object(meta.get("resources"), keys, "meta.resources")
 		exact(resources_dict.get("hash"), "sha256", "meta.resources.hash")
@@ -666,9 +703,12 @@ class Schema:
 				fail("meta.resources.fetch must be \"none\" exactly when delivery is \"inline\"")
 
 	func session(meta: Dictionary, version: int) -> void:
-		var is_v5: bool = version == 5
-		var session_keys: Array = Rs2Decoder.SESSION_KEYS_V5 if is_v5 else Rs2Decoder.SESSION_KEYS
-		# protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and /5.
+		var is_v6: bool = version == 6
+		# is_v5 means "V5 or later": /6 is a delta on /5 that keeps everything /5 added unless
+		# render-stream-6.md says otherwise.
+		var is_v5: bool = is_v6 or version == 5
+		var session_keys: Array = Rs2Decoder.SESSION_KEYS_V6 if is_v6 else (Rs2Decoder.SESSION_KEYS_V5 if is_v5 else Rs2Decoder.SESSION_KEYS)
+		# protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and later.
 		var skip_declared: bool = version >= 4 and meta.has(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
 		if skip_declared:
 			session_keys = Rs2Decoder.keys_with(session_keys, "sabotage", Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
@@ -676,7 +716,9 @@ class Schema:
 		if skip_declared:
 			exact(meta.get(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY), "skip", "meta.unknown_item_policy")
 		var expected_protocol: String = Rs2Decoder.PROTOCOL
-		if is_v5:
+		if is_v6:
+			expected_protocol = Rs2Decoder.PROTOCOL_V6
+		elif is_v5:
 			expected_protocol = Rs2Decoder.PROTOCOL_V5
 		elif version == 4:
 			expected_protocol = Rs2Decoder.PROTOCOL_V4
@@ -701,18 +743,42 @@ class Schema:
 		integer(capture.get("calibrator_version"), "meta.capture.calibrator_version", 0, Rs2Decoder.MAX_SAFE_INT)
 		sorted_strings(capture.get("hooks_planned"), "meta.capture.hooks_planned")
 		sorted_strings(capture.get("hooks_omitted"), "meta.capture.hooks_omitted")
-		var viewport: Dictionary = object(meta.get("viewport"), Rs2Decoder.VIEWPORT_KEYS, "meta.viewport")
+		var viewport: Dictionary = object(meta.get("viewport"), Rs2Decoder.VIEWPORT_KEYS_V6 if is_v6 else Rs2Decoder.VIEWPORT_KEYS, "meta.viewport")
 		integer(viewport.get("canvas_cull_mask"), "meta.viewport.canvas_cull_mask", 0, Rs2Decoder.U32_MAX)
 		integer(viewport.get("root_canvas"), "meta.viewport.root_canvas", -Rs2Decoder.MAX_SAFE_INT, Rs2Decoder.MAX_SAFE_INT)
 		int_pair(viewport.get("logical_size"), "meta.viewport.logical_size")
 		var stretch: Dictionary = object(viewport.get("stretch"), Rs2Decoder.STRETCH_KEYS, "meta.viewport.stretch")
-		one_of(stretch.get("mode"), Rs2Decoder.STRETCH_MODES, "meta.viewport.stretch.mode")
+		var stretch_mode: String = one_of(stretch.get("mode"), Rs2Decoder.STRETCH_MODES, "meta.viewport.stretch.mode")
 		one_of(stretch.get("aspect"), Rs2Decoder.STRETCH_ASPECTS, "meta.viewport.stretch.aspect")
 		one_of(stretch.get("scale_mode"), Rs2Decoder.SCALE_MODES, "meta.viewport.stretch.scale_mode")
 		exact(viewport.get("stretch_applied_by"), "receiver", "meta.viewport.stretch_applied_by")
-		one_of(viewport.get("root_size_policy"), Rs2Decoder.ROOT_SIZE_POLICIES, "meta.viewport.root_size_policy")
+		var root_size_policy: String = one_of(viewport.get("root_size_policy"), Rs2Decoder.ROOT_SIZE_POLICIES_V6 if is_v6 else Rs2Decoder.ROOT_SIZE_POLICIES, "meta.viewport.root_size_policy")
 		one_of(viewport.get("host_size_status"), Rs2Decoder.HOST_SIZE_STATUSES, "meta.viewport.host_size_status")
 		int_pair(viewport.get("host_window_size"), "meta.viewport.host_window_size")
+		if is_v6 and ok:
+			# render-stream-6.md "Viewport": presentation_size, font_oversampling, snap_2d.
+			int_pair(viewport.get("presentation_size"), "meta.viewport.presentation_size")
+			var oversampling: Variant = viewport.get("font_oversampling")
+			if ok and (typeof(oversampling) != TYPE_FLOAT and typeof(oversampling) != TYPE_INT):
+				fail("meta.viewport.font_oversampling is not a number", "viewport-entry")
+			elif ok and not (oversampling > 0):
+				fail("meta.viewport.font_oversampling is not a positive number", "viewport-entry")
+			var snap2d: Dictionary = object(viewport.get("snap_2d"), Rs2Decoder.SNAP_2D_KEYS, "meta.viewport.snap_2d")
+			boolean(snap2d.get("transforms"), "meta.viewport.snap_2d.transforms")
+			boolean(snap2d.get("vertices"), "meta.viewport.snap_2d.vertices")
+			if ok:
+				# presentation_size must equal logical_size unless the policy is "presentation",
+				# and even then must still equal it under stretch "disabled" (a presentation that
+				# differs under disabled stretch would change layout -- refused at capture time as
+				# root-size-invalid, never observed on the wire).
+				var presentation_size: Array = viewport.get("presentation_size")
+				var logical_size: Array = viewport.get("logical_size")
+				var same_pair: bool = presentation_size[0] == logical_size[0] and presentation_size[1] == logical_size[1]
+				if root_size_policy != "presentation":
+					if not same_pair:
+						fail("meta.viewport.presentation_size differs from logical_size without root_size_policy \"presentation\"", "viewport-entry")
+				elif stretch_mode == "disabled" and not same_pair:
+					fail("meta.viewport.presentation_size differs from logical_size under stretch \"disabled\"", "viewport-entry")
 		resources(meta, version)
 		if is_v5:
 			# render-stream-5.md "Session": a new "materials" key, right after "resources".
@@ -729,6 +795,20 @@ class Schema:
 		sorted_strings(features.get("observed_unsupported_ops"), "meta.features.observed_unsupported_ops")
 		sorted_strings(features.get("unobserved"), "meta.features.unobserved")
 		exact(features.get("publication"), Rs2Decoder.PUBLICATION, "meta.features.publication")
+		if is_v6 and ok:
+			# render-stream-6.md "Publication": a new top-level session key, distinct from
+			# features.publication above.
+			var publication: Dictionary = object(meta.get("publication"), Rs2Decoder.PUBLICATION_KEYS, "meta.publication")
+			var pub_mode: String = one_of(publication.get("mode"), Rs2Decoder.PUBLICATION_MODES, "meta.publication.mode")
+			var target_fps: Variant = publication.get("target_fps")
+			if ok and target_fps != null:
+				integer(target_fps, "meta.publication.target_fps", 1, Rs2Decoder.MAX_SAFE_INT)
+			if ok and (pub_mode == "every-frame") != (target_fps == null):
+				fail("meta.publication: \"every-frame\" must carry target_fps null, and \"rate\" must carry a non-null target_fps", "publication-entry")
+			if ok and pub_mode == "rate" and Rs2Decoder.as_int(target_fps) > 240:
+				fail("meta.publication: \"rate\"'s target_fps must be in 1..240", "publication-entry")
+			if ok and pub_mode == "rate" and stream.get("transport") == "file":
+				fail("meta.publication: a \"file\" stream must not declare publication \"rate\"", "publication-entry")
 		var sabotage: Variant = meta.get("sabotage")
 		if ok and sabotage != null:
 			var spec: Dictionary = object(sabotage, Rs2Decoder.SABOTAGE_KEYS, "meta.sabotage")
@@ -901,15 +981,17 @@ class Schema:
 			last_name = name
 
 	func transaction(meta: Dictionary, version: int) -> void:
-		var is_v5: bool = version == 5
+		var is_v6: bool = version == 6
+		# is_v5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
+		var is_v5: bool = is_v6 or version == 5
 		var is_v4: bool = is_v5 or version == 4
 		var transaction_keys: Array = Rs2Decoder.TRANSACTION_KEYS
 		if is_v5:
 			transaction_keys = Rs2Decoder.TRANSACTION_KEYS_V5
 		elif is_v4:
 			transaction_keys = Rs2Decoder.TRANSACTION_KEYS_V4
-		# protocol/unknown-item-skip.md "Transaction": legal only at /4 and /5; whether it must be
-		# present is the session's call (Stream checks the coupling).
+		# protocol/unknown-item-skip.md "Transaction": legal only at /4 and later; whether it must
+		# be present is the session's call (Stream checks the coupling).
 		var has_unknown_items: bool = is_v4 and meta.has(Rs2Decoder.UNKNOWN_ITEMS_KEY)
 		if has_unknown_items:
 			transaction_keys = Rs2Decoder.keys_with(transaction_keys, "unsupported", Rs2Decoder.UNKNOWN_ITEMS_KEY)
@@ -938,7 +1020,12 @@ class Schema:
 				return
 			string(entry["op"], path + ".op")
 			if entry["item"] == null:
-				one_of(entry["reason"], Rs2Decoder.SESSION_UNSUPPORTED_REASONS_V5 if is_v5 else Rs2Decoder.SESSION_UNSUPPORTED_REASONS, path + ".reason")
+				var session_reasons: Array = Rs2Decoder.SESSION_UNSUPPORTED_REASONS
+				if is_v6:
+					session_reasons = Rs2Decoder.SESSION_UNSUPPORTED_REASONS_V6
+				elif is_v5:
+					session_reasons = Rs2Decoder.SESSION_UNSUPPORTED_REASONS_V5
+				one_of(entry["reason"], session_reasons, path + ".reason")
 			else:
 				integer(entry["item"], path + ".item", 1, Rs2Decoder.MAX_SAFE_INT)
 				one_of(entry["reason"], Rs2Decoder.ITEM_UNSUPPORTED_REASONS_V5 if is_v5 else Rs2Decoder.ITEM_UNSUPPORTED_REASONS, path + ".reason")
@@ -959,13 +1046,18 @@ class Schema:
 		var canvases: Array = array(meta.get("canvases"), "meta.canvases")
 		for i: int in canvases.size():
 			var path: String = "meta.canvases[%d]" % i
-			var canvas: Dictionary = object(canvases[i], Rs2Decoder.CANVAS_KEYS, path)
+			var canvas: Dictionary = object(canvases[i], Rs2Decoder.CANVAS_KEYS_V6 if is_v6 else Rs2Decoder.CANVAS_KEYS, path)
 			integer(canvas.get("id"), path + ".id", 1, Rs2Decoder.MAX_SAFE_INT)
 			one_of(canvas.get("origin"), Rs2Decoder.ORIGINS, path + ".origin")
 			var role: Variant = canvas.get("role")
 			if ok and role != null:
 				exact(role, "root", path + ".role")
 			boolean(canvas.get("attached"), path + ".attached")
+			if is_v6 and ok:
+				# render-stream-6.md "Canvas": layer/sublayer, right after attached and before
+				# items. Any sign -- the renderer's own stacking order places no range limit.
+				integer(canvas.get("layer"), path + ".layer", -Rs2Decoder.MAX_SAFE_INT, Rs2Decoder.MAX_SAFE_INT, "canvas-entry")
+				integer(canvas.get("sublayer"), path + ".sublayer", -Rs2Decoder.MAX_SAFE_INT, Rs2Decoder.MAX_SAFE_INT, "canvas-entry")
 			int_list(canvas.get("items"), path + ".items")
 		var items: Array = array(meta.get("items"), "meta.items")
 		for i: int in items.size():
@@ -1521,6 +1613,11 @@ static func _lift_canvas(canvas: Dictionary, canvas_floats: PackedFloat32Array) 
 		"attached": canvas["attached"], "items": int_list(canvas["items"]),
 		"xform": [canvas_floats[0], canvas_floats[1], canvas_floats[2], canvas_floats[3], canvas_floats[4], canvas_floats[5]],
 	}
+	# render-stream-6.md "Decoded and resolved forms": layer/sublayer are plain integers carried
+	# straight from the wire's own canvas entry (never block floats).
+	if canvas.has("layer"):
+		out["layer"] = as_int(canvas["layer"])
+		out["sublayer"] = as_int(canvas["sublayer"])
 	if canvas_floats.size() >= 10:
 		out["modulate"] = [canvas_floats[6], canvas_floats[7], canvas_floats[8], canvas_floats[9]]
 	return out
@@ -1752,6 +1849,9 @@ class Stream:
 	var session_encoding: String = ""
 	## protocol/unknown-item-skip.md: the session declared unknown_item_policy "skip".
 	var unknown_item_skip: bool = false
+	## render-stream-6.md "Session-level unsupported reasons": true iff the session's
+	## viewport.snap_2d.transforms or .vertices is true (a session-level constant, /6 only).
+	var snap_declared: bool = false
 	var inline_max_bytes: int = 0
 	var resource_records: int = 0
 	var resource_bytes: int = 0
@@ -1795,6 +1895,34 @@ class Stream:
 				var resources_meta: Dictionary = meta["resources"]
 				inline_max_bytes = Rs2Decoder.as_int(resources_meta["inline_max_bytes"])
 				unknown_item_skip = meta.has(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
+				if version == 6:
+					var viewport_meta_for_snap: Dictionary = meta["viewport"]
+					var snap2d_meta: Variant = viewport_meta_for_snap.get("snap_2d")
+					if snap2d_meta is Dictionary:
+						var snap2d_dict: Dictionary = snap2d_meta
+						snap_declared = snap2d_dict.get("transforms") == true or snap2d_dict.get("vertices") == true
+					# render-stream-6.md "Viewport"/gate6-design.md Q3a: host_size_status must be
+					# consistent with host_window_size, presentation_size and the host_visible_rect
+					# session block (session blocks: clear_color[0], root_canvas_xform[1],
+					# host_visible_rect[2], host_final_xform[3], content_scale_factor[4]).
+					var session_blocks: Array = record["blocks"]
+					var host_visible_rect: PackedFloat32Array = session_blocks[2]
+					var visible_w: float = host_visible_rect[2]
+					var visible_h: float = host_visible_rect[3]
+					var logical_size: Array = viewport_meta_for_snap["logical_size"]
+					var presentation_size: Array = viewport_meta_for_snap["presentation_size"]
+					var host_window_size: Array = viewport_meta_for_snap["host_window_size"]
+					var window_matches_presentation: bool = Rs2Decoder.as_int(host_window_size[0]) == Rs2Decoder.as_int(presentation_size[0]) and Rs2Decoder.as_int(host_window_size[1]) == Rs2Decoder.as_int(presentation_size[1])
+					var visible_matches_logical: bool = visible_w == float(Rs2Decoder.as_int(logical_size[0])) and visible_h == float(Rs2Decoder.as_int(logical_size[1]))
+					var expected_status: String = "degenerate-window"
+					if window_matches_presentation and visible_matches_logical:
+						expected_status = "match"
+					elif not visible_matches_logical:
+						expected_status = "degenerate-visible"
+					var actual_status: String = viewport_meta_for_snap["host_size_status"]
+					if actual_status != expected_status:
+						errors.append(Rs2Decoder.err("viewport-entry", "session.viewport.host_size_status is \"%s\", expected \"%s\" from host_window_size/presentation_size/host_visible_rect" % [actual_status, expected_status]))
+						return errors
 				if Rs2Decoder.as_int(meta["viewport"]["root_canvas"]) != 1:
 					errors.append(Rs2Decoder.err("root-canvas", "session.viewport.root_canvas is %d, not 1" % Rs2Decoder.as_int(meta["viewport"]["root_canvas"])))
 					return errors
@@ -1813,8 +1941,8 @@ class Stream:
 				# render-stream-4.md "Resources": mesh (GRM1), shader (GRP1, new at /5) and texture
 				# (GRT1) payloads share one hash namespace and one resource record shape; tell
 				# them apart by their own 8-byte magic.
-				var is_v4_or_later: bool = version == 4 or version == 5
-				var is_shader_payload: bool = version == 5 and payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsShaderPayload.GRP1_MAGIC_HEX
+				var is_v4_or_later: bool = version == 4 or version == 5 or version == 6
+				var is_shader_payload: bool = (version == 5 or version == 6) and payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsShaderPayload.GRP1_MAGIC_HEX
 				var is_mesh_payload: bool = is_v4_or_later and payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsMeshPayload.GRM1_MAGIC_HEX
 				if is_shader_payload:
 					var shader_decoded: Dictionary = RsShaderPayload.decode(payload)
@@ -1896,7 +2024,9 @@ class Stream:
 
 	func _accept_transaction(meta: Dictionary, offset: int, blocks: Array) -> PackedStringArray:
 		var errors := PackedStringArray()
-		var is_v5: bool = version == 5
+		var is_v6: bool = version == 6
+		# is_v5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
+		var is_v5: bool = is_v6 or version == 5
 		var is_v4: bool = is_v5 or version == 4
 		var seq: int = Rs2Decoder.as_int(meta["seq"])
 		var frame: int = Rs2Decoder.as_int(meta["frame"])
@@ -2527,9 +2657,26 @@ class Stream:
 
 	func _check_resolved_invariants(seq: int, unsupported_meta: Array, is_v4: bool, is_v5: bool) -> String:
 		var where: String = "transaction seq %d" % seq
+		var is_v6: bool = version == 6
 		var canvas_ids: Dictionary[int, bool] = {}
 		for id: int in canvases:
 			canvas_ids[id] = true
+		# render-stream-6.md "Session-level unsupported reasons": canvas-stacking-tie is derived
+		# whenever two ATTACHED canvases in this transaction's resolved table share
+		# (layer, sublayer) -- the renderer would otherwise order them by canvas RID, which no
+		# receiver can reproduce.
+		var stacking_groups: Dictionary[String, int] = {}
+		if is_v6:
+			for id: int in canvases:
+				var stack_canvas: Dictionary = canvases[id]
+				if not stack_canvas["attached"]:
+					continue
+				var key: String = "%d:%d" % [Rs2Decoder.as_int(stack_canvas.get("layer", 0)), Rs2Decoder.as_int(stack_canvas.get("sublayer", 0))]
+				stacking_groups[key] = stacking_groups.get(key, 0) + 1
+		var actual_stacking_tie: bool = false
+		for key: String in stacking_groups:
+			if stacking_groups[key] >= 2:
+				actual_stacking_tie = true
 		var item_ids: Dictionary[int, bool] = {}
 		for id: int in items:
 			item_ids[id] = true
@@ -2840,6 +2987,8 @@ class Stream:
 		var declared_unsupported_texture: Dictionary[String, bool] = {}
 		var declared_unsupported_mesh: Dictionary[String, bool] = {}
 		var declared_unsupported_material: Dictionary[String, bool] = {}
+		var declared_stacking_tie: bool = false
+		var declared_snap_2d: bool = false
 		for value: Variant in unsupported_meta:
 			var entry: Dictionary = value
 			var op: String = entry["op"]
@@ -2852,6 +3001,39 @@ class Stream:
 				# (well-formedness) is all this validator can do.
 				if reason == "canvas-light" and op != "canvas_light_attach_to_canvas":
 					return Rs2Decoder.err("unsupported-mismatch", "%s: canvas-light entry names op %s, expected canvas_light_attach_to_canvas" % [where, op])
+				# render-stream-6.md "Session-level unsupported reasons": extra-canvas never
+				# legitimately occurs at /6 (a canvas attached to the root viewport is
+				# supported) -- /6 decoders reject it outright, exactly as /5 rejects
+				# unsupported-state naming canvas_item_set_material.
+				if is_v6 and reason == "extra-canvas":
+					return Rs2Decoder.err("unsupported-mismatch", "%s: extra-canvas entry (op %s) is never valid at /6 (a canvas attached to the root viewport is supported)" % [where, op])
+				if reason == "canvas-stacking-tie":
+					if op != "viewport_set_canvas_stacking":
+						return Rs2Decoder.err("unsupported-mismatch", "%s: canvas-stacking-tie entry names op %s, expected viewport_set_canvas_stacking" % [where, op])
+					if not actual_stacking_tie:
+						return Rs2Decoder.err("unsupported-mismatch", "%s: canvas-stacking-tie entry does not correspond to two attached canvases sharing (layer, sublayer)" % where)
+					declared_stacking_tie = true
+				elif reason == "canvas-repeat":
+					# Sticky, like canvas-light: no independent "actual" signal (the mirroring/
+					# repeat vector never reaches the wire).
+					if op != "canvas_set_item_mirroring" and op != "canvas_set_item_repeat":
+						return Rs2Decoder.err("unsupported-mismatch", "%s: canvas-repeat entry names op %s, expected canvas_set_item_mirroring or canvas_set_item_repeat" % [where, op])
+				elif reason == "canvas-follow-viewport":
+					# Sticky, like canvas-light: no independent "actual" signal (the parent RID
+					# never reaches the wire).
+					if op != "canvas_set_parent":
+						return Rs2Decoder.err("unsupported-mismatch", "%s: canvas-follow-viewport entry names op %s, expected canvas_set_parent" % [where, op])
+				elif reason == "global-canvas-transform":
+					# NOT sticky, but still forward-only: the live global canvas transform itself
+					# is never wire-visible, only the session's one arm-time host_final_xform.
+					if op != "viewport_set_global_canvas_transform":
+						return Rs2Decoder.err("unsupported-mismatch", "%s: global-canvas-transform entry names op %s, expected viewport_set_global_canvas_transform" % [where, op])
+				elif reason == "snap-2d":
+					if op != "viewport_set_snap_2d_transforms_to_pixel" and op != "viewport_set_snap_2d_vertices_to_pixel":
+						return Rs2Decoder.err("unsupported-mismatch", "%s: snap-2d entry names op %s, expected a viewport_set_snap_2d_*_to_pixel setter" % [where, op])
+					if not snap_declared:
+						return Rs2Decoder.err("unsupported-mismatch", "%s: snap-2d entry present while the session declares no snap_2d flag" % where)
+					declared_snap_2d = true
 				continue
 			item_level_started = true
 			var item_id: int = Rs2Decoder.as_int(entry["item"])
@@ -2931,6 +3113,10 @@ class Stream:
 			for pair: String in actual_unsupported_material:
 				if not declared_unsupported_material.has(pair):
 					return Rs2Decoder.err("unsupported-mismatch", "%s: item (%s)'s effective material is unsupported, with no unsupported-material entry" % [where, pair.replace(":", ", ")])
+		if actual_stacking_tie and not declared_stacking_tie:
+			return Rs2Decoder.err("unsupported-mismatch", "%s: two attached canvases share (layer, sublayer), but no canvas-stacking-tie entry is declared" % where)
+		if snap_declared and not declared_snap_2d:
+			return Rs2Decoder.err("unsupported-mismatch", "%s: the session declares a snap_2d flag, but this transaction has no snap-2d entry" % where)
 		return ""
 
 	static func _same_id_set(declared: Array, claimed: Array) -> bool:

@@ -77,7 +77,18 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV5 = {0x47, 0x52, 0x53, 0x35,
 inline constexpr const char *kProtocolV5 = "render-stream/5";
 inline constexpr const char *kShaderPayloadSchema = "render-stream-shader/1";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5 };
+// render-stream/6 (G6w, render-stream-6.md): a session-and-canvas delta on /5 (gate6-design.md
+// D1): presentation stretch declarations (`presentation_size`, `font_oversampling`, `snap_2d`),
+// a new session key `publication`, canvas `layer`/`sublayer`, and five new session-level
+// unsupported reasons. Transactions, blocks, items, commands, payloads, HTTP and control messages
+// are byte-identical to /5 apart from the magic/protocol/subprotocol strings. As with /3 to /5
+// (memory: g4e1-rs3-version-switch-pattern), /6 is a protocol-version switch on Session, not a
+// fork: the capture and the receiver keep speaking /5 until G6b.
+inline constexpr std::array<std::uint8_t, 8> kMagicV6 = {0x47, 0x52, 0x53, 0x36,
+                                                          0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV6 = "render-stream/6";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6 };
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
@@ -187,6 +198,12 @@ enum class UnsupportedReason : std::uint8_t {
   UnknownMaterial,      // new at /5: canvas_item_set_material named a material RID the mirror never saw
   ParamType,            // new at /5: an instance shader parameter of an unsupported Variant type
   CanvasLight,          // new at /5: session-level, sticky -- canvas_light_attach_to_canvas observed
+  // --- new at /6 (gate6-design.md Q4), all session-level ("item": null) -------------------------
+  CanvasStackingTie,       // viewport_set_canvas_stacking: two attached canvases share (layer, sublayer)
+  CanvasRepeat,             // canvas_set_item_mirroring/_repeat, sticky
+  CanvasFollowViewport,     // canvas_set_parent, sticky
+  GlobalCanvasTransform,    // viewport_set_global_canvas_transform differs from the arm-time stretch
+  Snap2d,                   // viewport_set_snap_2d_transforms_to_pixel/_vertices_to_pixel
 };
 
 enum class SabotageKind : std::uint8_t {
@@ -218,7 +235,8 @@ enum class Encoding : std::uint8_t { Full, Patch };
 enum class StretchMode : std::uint8_t { Disabled, CanvasItems, Viewport };
 enum class StretchAspect : std::uint8_t { Ignore, Keep, KeepWidth, KeepHeight, Expand };
 enum class ScaleMode : std::uint8_t { Fractional, Integer };
-enum class RootSizePolicy : std::uint8_t { Observe, EnforceMinSize };
+// Presentation: new at /6 (gate6-design.md D2, Q3a): `GRC_ROOT_SIZE=presentation:<W>x<H>`.
+enum class RootSizePolicy : std::uint8_t { Observe, EnforceMinSize, Presentation };
 // protocol/unknown-item-skip.md: what the mirror does with a canvas or item RID it never saw
 // created. Strict (the default) is gate 0's sticky `pre-existing-object` capture failure; Skip is
 // the opt-in diagnostic mode (GRC_UNKNOWN_ITEM=skip) that withholds the affected subtrees instead.
@@ -303,6 +321,12 @@ enum class MaterialReason : std::uint8_t { UnknownShader, UnknownTexture, ParamT
 // gate5_5-design.md D4: the session's declared shader-source policy.
 enum class ShaderPolicy : std::uint8_t { Source, Params, Exclude };
 
+// --- new at /6 (render-stream-6.md "Session"; gate6-design.md D8) -----------------------------
+
+// The session's declared live-publication rate control: `GRC_PUBLISH_FPS=uncapped|<1..240>`. A
+// `file` stream is always EveryFrame/null.
+enum class PublicationMode : std::uint8_t { EveryFrame, Rate };
+
 // Wire spellings (render-stream-2.md). Each returns a string literal.
 inline const char *to_wire(Origin v) {
   switch (v) {
@@ -345,6 +369,11 @@ inline const char *to_wire(UnsupportedReason v) {
   case UnsupportedReason::UnknownMaterial: return "unknown-material";
   case UnsupportedReason::ParamType: return "param-type";
   case UnsupportedReason::CanvasLight: return "canvas-light";
+  case UnsupportedReason::CanvasStackingTie: return "canvas-stacking-tie";
+  case UnsupportedReason::CanvasRepeat: return "canvas-repeat";
+  case UnsupportedReason::CanvasFollowViewport: return "canvas-follow-viewport";
+  case UnsupportedReason::GlobalCanvasTransform: return "global-canvas-transform";
+  case UnsupportedReason::Snap2d: return "snap-2d";
   }
   return "unsupported-op";
 }
@@ -403,7 +432,12 @@ inline const char *to_wire(StretchAspect v) {
 }
 inline const char *to_wire(ScaleMode v) { return v == ScaleMode::Fractional ? "fractional" : "integer"; }
 inline const char *to_wire(RootSizePolicy v) {
-  return v == RootSizePolicy::Observe ? "observe" : "enforce-min-size";
+  switch (v) {
+  case RootSizePolicy::Observe: return "observe";
+  case RootSizePolicy::EnforceMinSize: return "enforce-min-size";
+  case RootSizePolicy::Presentation: return "presentation";
+  }
+  return "observe";
 }
 inline const char *to_wire(HostSizeStatus v) {
   switch (v) {
@@ -668,6 +702,10 @@ inline const char *to_wire(ShaderPolicy v) {
   return "source";
 }
 
+inline const char *to_wire(PublicationMode v) {
+  return v == PublicationMode::EveryFrame ? "every-frame" : "rate";
+}
+
 // ----------------------------------------------------------------------------------- session
 
 struct EngineInfo {
@@ -698,14 +736,35 @@ struct Stretch {
   ScaleMode scale_mode = ScaleMode::Fractional;
 };
 
+// render-stream-6.md "Session": the root's snap-to-pixel settings (gate6-design.md D17), new at
+// /6, read through Viewport method binds at arm.
+struct Snap2DInfo {
+  bool transforms = false;
+  bool vertices = false;
+};
+
 struct ViewportInfo {
   std::uint32_t canvas_cull_mask = 0xFFFFFFFFu;
   std::uint32_t root_canvas = kRootCanvasId;
   std::array<std::int32_t, 2> logical_size = {0, 0};
   Stretch stretch;
   RootSizePolicy root_size_policy = RootSizePolicy::Observe;
+  // new at /6 (gate6-design.md D2, Q3a): the policy's declared presentation size. Equals
+  // logical_size unless root_size_policy is Presentation.
+  std::array<std::int32_t, 2> presentation_size = {0, 0};
   HostSizeStatus host_size_status = HostSizeStatus::Match;
   std::array<std::int32_t, 2> host_window_size = {0, 0};
+  // new at /6: Viewport.get_oversampling() (float32), always positive.
+  float font_oversampling = 1.0f;
+  // new at /6 (D17): the root's snap_2d_transforms_to_pixel/_vertices_to_pixel project settings.
+  Snap2DInfo snap_2d;
+};
+
+// render-stream-6.md "Session": a new session key, right after `features` (gate6-design.md D8).
+struct PublicationInfo {
+  PublicationMode mode = PublicationMode::EveryFrame;
+  bool has_target_fps = false;  // false -> "target_fps": null
+  std::int32_t target_fps = 0;
 };
 
 // render-stream-2.md session "resources": the resource policy for this stream.
@@ -766,6 +825,7 @@ struct Session {
   ResourcesInfo resources;  // new at /2, between viewport and features
   MaterialsInfo materials;  // new at /5, between resources and features
   Features features;
+  PublicationInfo publication;  // new at /6, between features and sabotage
   Sabotage sabotage;
   // protocol/unknown-item-skip.md: Skip adds `"unknown_item_policy":"skip"` after `sabotage` (at
   // /4 and /5 only); Strict adds nothing, so a strict session is byte-identical to one encoded
@@ -954,6 +1014,10 @@ struct CanvasState {
   Origin origin = Origin::Created;
   CanvasRole role = CanvasRole::None;
   bool attached = false;
+  // new at /6 (render-stream-6.md "Canvas"): RS defaults 0, 0; reset to (0,0) on attach
+  // (gate6-design.md Q3b).
+  std::int32_t layer = 0;
+  std::int32_t sublayer = 0;
   Xform xform = kIdentityXform;
   std::vector<std::uint32_t> items;
   Color4 modulate = kWhite;  // new at /5 (render-stream-5.md "Canvas"): canvas_f32 grows 6 -> 10

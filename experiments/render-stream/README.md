@@ -555,9 +555,6 @@ Environment, read once at SCENE initialisation:
 | `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                                               |
 | `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                                     |
 | `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                                       |
-| `GRC_PUBLISH_FPS`                | G6r (D8, Q3c), read at arm with `GRC_LIVE_LISTEN`: `uncapped` (default; today's behaviour, a transaction at every frame callback that holds credit) or a decimal integer `1..240`, a target rate for live connections only. File sinks are never rate-limited by this. Connection `c` publishes at tick `k` due at its own `t0 + k·P` (`t0` its first send, `P = 1/target`); a due tick without credit stays due (`ticks_credit_blocked`) and goes out as soon as credit returns, carrying the newest state; a missed tick is never caught up on (no burst). Anything else refuses to publish |
-| `GRC_LIVE_MAX_CONNECTIONS`       | G6r (D13), read at arm with `GRC_LIVE_LISTEN`: a decimal integer `1..4`, default 1 (the previous hard `busy` refusal for a second connection). Delivery state is already per connection; pins are the union of every open connection's base, and one snapshot copy per frame serves all of them. With more than one connection open, a resource GET is counted at the host level only, never attributed to a specific connection (ambiguous which one asked). Anything else refuses to publish |
-| `GRC_HOOK_LOG`                   | G6r (Q3d), read at arm: `on` (default) or `off`. With `off`, `evidence/resources.jsonl` is never opened (no per-call lines reach disk; the hooks' own buffered lines are still drained every frame, just discarded, so a long run's buffer never grows unbounded) -- `counters.json` and the mirror are unaffected either way. Anything else refuses to publish |
 | `GRC_RESOURCE_FORMATS`           | G2a, read at arm with a stream: the `Image` formats whose bytes are copied, a comma-separated subset of `L8,LA8,R8,RG8,RGB8,RGBA8` (the default); any other name refuses to publish                                                                                                                                                                                                                       |
 | `GRC_RESOURCE_MAX_PAYLOAD_BYTES` | G2a: the largest canonical payload copied, a decimal integer ≥ 1, default 67108864 (64 MiB); a larger texture is logged `payload-too-large` and not copied. An engine without the `Image` binds or `image_ptr` refuses to publish (`image-access-unavailable`)                                                                                                                                            |
 | `GRC_RESOURCE_STORE_DIR`         | G2b2: absolute content-addressed store (`sha256/<hash>.grt`, `.grm` since G5e, `.grp` since G55d, `index.jsonl`) every `ok` payload of each published snapshot is written to; required when a file sink is open and delivery is not inline (else the stream refuses: `resource-store-missing`)                                                                                                                                                 |
@@ -602,22 +599,6 @@ reason, connections}`. Written at decision time and rewritten at disarm and shut
   (`listening|refused|failed`), `address`, `port`, `reason`; written when the listener is decided.
 - `live-summary.json` (G1c2) — `render-stream-live-summary/1`: per connection the transactions
   formed and sent, coalesced callbacks, acks per stage, credit round trips, close code and side.
-  G6r adds a top-level `publication` (`{mode: "every-frame"|"rate", target_fps}`, the evidence
-  form of `GRC_PUBLISH_FPS`, not itself a wire field until the /6 session's `publication` key
-  lands) and, per connection, `ticks_due`, `ticks_sent`, `ticks_credit_blocked` and
-  `frames_rate_idle` (all 0 under the default `uncapped`).
-- `perf.json` (G6r, Q3d, written at disarm and shutdown) — `render-stream-capture-perf/1`:
-  log-linear histograms (`capture/src/rs_histogram.h`, 400 fixed buckets, ≤6.25% relative error,
-  plus exact count/sum/min/max) for `frame_interval_us`, `frame_callback_us`, `snapshot_us`,
-  `diff_us`, `encode_us`, `enqueue_us`, and `credit_rtt_us`/`staleness_us` each
-  `{applied, submitted}`; an `unavailable_stages` list naming every Q3d stage this increment did
-  not wire (`store_write_us`, the texture/mesh/shader `copy_us`/`hash_us` pairs, `param_decode_us`,
-  `http_serve_us`) with the file it would need, none of them in G6r's own file list; `cpu.
-  main_thread_us` (exact, `CLOCK_THREAD_CPUTIME_ID`) and `cpu.io_thread_us` (`null`: no handle to
-  the I/O thread without touching `rs_ws.h`); and `connections[]`'s own rate counters.
-- `perf-timeline.jsonl` (G6r, one line per second) — frame count, RSS (`/proc/self/statm`) and,
-  per connection, `sent`, `credits`, `coalesced`, `ticks_credit_blocked`, `max_pending_age_us` and
-  `bytes_sent`.
 - `fingerprint.json` — version string, sha256, build-id, pie, load bias, live
   vptr, singleton address, abstract address point, pure placeholder, pid, and the
   `/proc/self/maps` lines of the main binary.
@@ -4830,3 +4811,76 @@ Scoped to the files G6r's own section names (`rs_live.{h,cpp}`, `entry.cpp`, `rs
   targets, since GRC_PUBLISH_FPS is one hub-wide setting), or any of G6c's rate legs
   (`rate-15/-30/-60`, `mismatch-*`, `dual-60-15`, `recv-delay`, `gpu-heavy`) -- those are G6c's.
 - The full Q3d instrumentation list end to end (see "Deviations" above).
+
+## Gate 6w result (2026-10-11)
+
+G6w ([protocol/gate6-design.md](protocol/gate6-design.md) "G6w") passes: render-stream/6 is
+implemented as a protocol-version switch on the same `rs2_codec.*`/`rs2_diff.*`/
+`render-stream-2.ts`/`rs2_decoder.gd` modules /3-/5 already extended (memory:
+g4e1-rs3-version-switch-pattern), touching no capture, receiver or runner code -- both still speak
+/5 until G6b. [protocol/render-stream-6.md](protocol/render-stream-6.md) specifies the delta as a
+document like render-stream-5.md.
+
+/6 adds, on top of /5: a new magic/protocol/subprotocol string; three new `viewport` keys
+(`presentation_size`, `font_oversampling`, `snap_2d`) and a new `root_size_policy` value
+(`presentation`); a new top-level session key `publication` (rate control, distinct from
+`features.publication`); two new canvas keys (`layer`, `sublayer`); five new session-level
+`unsupported` reasons (`canvas-stacking-tie`, `canvas-repeat`, `canvas-follow-viewport`,
+`global-canvas-transform`, `snap-2d`); and three `features` list changes. `extra-canvas` stays a
+schema-legal spelling but is rejected outright at /6 (mirroring how /5 rejects `unsupported-state`
+naming `canvas_item_set_material`). Transactions, blocks, items and commands are byte-identical to
+/5.
+
+**As built**: `font_oversampling` is the one deliberate exception to render-stream-0.md's "floats
+never appear in JSON" rule (gate6-design.md Q4 marks it `(new, float32)` as a bare JSON number).
+Its canonical form -- the shortest fixed-point decimal that round-trips to the float64 widening of
+the value, matching JavaScript's `Number::toString` (no trailing `.0`, unlike Python's `repr`) --
+is implemented identically in `rs2_codec.cpp`'s `append_json_float()` and `make_golden.py`'s
+`_json_float()`; the TypeScript decoder needs no special handling since its generic
+`meta-noncanonical` check already re-serialises with native `JSON.stringify`, and GDScript performs
+no canonical re-serialisation check at all (render-stream-0.md's existing exemption), so it only
+parses the value and checks positivity.
+
+`protocol/golden-6/` re-derives golden-5's fifteen states byte for byte under the new magic/
+protocol (presentation_size equal to logical_size, oversampling 1, snap off, publication
+every-frame, root canvas at layer 0/sublayer 0), then adds four more: state 16 (a second canvas
+attached at layer 1/sublayer 0 with two new items), state 17 (only the layer changes, 1 -> -1), 18
+(the canvas is detached, its items stay in the table), 19 (the canvas is reattached at layer 2 --
+never carrying forward its detached layer -- alongside a third canvas at the same layer, a
+canvas-stacking-tie, plus canvas-repeat/canvas-follow-viewport/global-canvas-transform declared
+together). Three dedicated independent small streams follow params.rs5's precedent:
+`presentation.rs6` (canvas_items, logical 1920x1080, presentation 960x540, oversampling 0.5),
+`snap.rs6` (both flags true, every transaction carries the snap-2d entry), `rate.rs6` (a websocket
+stream, publication rate/30). `invalid/` carries the thirteen new failure modes render-stream-6.md
+lists; no new payload format at /6, so there is no `payload-invalid/` (golden-3's precedent).
+
+**How it was tested**:
+
+- `protocol/golden-6/make_golden.py --check` (stdlib only): 65 outputs match, deterministic
+  regeneration. `make_golden.py --check` for golden-2 through golden-5 still match unchanged (62,
+  47, 37 and 51 outputs respectively -- unaffected by this increment).
+- `build-capture.sh`: all 18 ctests pass, including the new `rs6_codec_test` (full.rs6/patch.rs6/
+  inline.rs6 byte-for-byte against `rs2_codec.cpp`'s V6 output, plus `rs2_diff.cpp`'s
+  `make_full()`/`make_patch()`/`resolve()` round-tripping states 16-19 through the version-
+  parameterized diff engine) and the unchanged rs2-rs5 codec tests.
+- `scripts/test/self-test-rs2.ts` (TypeScript): all golden-2 through golden-6 suites green,
+  including all thirteen golden-6 invalid vectors with their exact codes, the three new
+  independent legs, and bidirectional bad-magic checks against /5.
+- `receiver/tests/codec2_selftest.gd` (GDScript, headless): `[rs2-selftest] ok` against all five
+  golden directories, same coverage as the TypeScript suite.
+- `mise exec -- pnpm exec biome check` and `mise exec -- pnpm exec tsc --noEmit -p
+  experiments/render-stream/tsconfig.json` clean on every file this increment touched.
+
+### What G6w does not prove
+
+- That the capture or receiver speak /6 at all: both still negotiate /5 (G6b's job). This
+  increment is pure codec/golden-vector work, exactly as gate5_5-design.md's G55w was for /5.
+  `calibrator_version`/`hooks_planned` in the golden-6 session are /5's values unchanged -- the
+  real calibrator 9 hooks (canvas stacking, mirroring, repeat, parent, global canvas transform)
+  are G6k's job, not this increment's.
+- That `canvas-repeat`, `canvas-follow-viewport` or `global-canvas-transform` ever correspond to a
+  real engine call: none of the three has a wire-visible argument (a mirroring vector, a parent
+  RID, a live transform), so golden-6's vectors declare them directly rather than deriving them
+  from any other field -- exactly as `canvas-light` already does at /5. Only `canvas-stacking-tie`
+  and `snap-2d` have an independently checkable "actual" signal (the resolved canvas table and the
+  session's own `snap_2d` flags, respectively).

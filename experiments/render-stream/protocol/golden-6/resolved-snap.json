@@ -1,0 +1,239 @@
+{
+  "schema": "render-stream-6-resolved/1",
+  "transactions": [
+    {
+      "seq": 1,
+      "frame": 1,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "viewport_set_snap_2d_transforms_to_pixel",
+            "item": null,
+            "reason": "snap-2d"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "color": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [],
+        "materials": []
+      }
+    },
+    {
+      "seq": 2,
+      "frame": 2,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "viewport_set_snap_2d_transforms_to_pixel",
+            "item": null,
+            "reason": "snap-2d"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "color": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [],
+        "materials": []
+      }
+    }
+  ]
+}
