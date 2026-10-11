@@ -49,13 +49,35 @@ extends SceneTree
 ##      resource-hash-mismatch, a missing one resource-unavailable, an undecodable one
 ##      resource-invalid.
 ## The live control messages (RsLiveClient):
-##   6. hello (render-stream/4 since G5d), ack and resync encode to exactly the golden control/valid/*.json
-##      messages, and parse_host_text accepts the golden error message and nothing else.
+##   6. hello (render-stream/5 since G55d), ack and resync encode to exactly golden-5's
+##      control/valid/*.json messages, and parse_host_text accepts the golden error message and
+##      nothing else.
+## Shaders and materials (G55d, gate5_5-design.md Q5) on golden-5 (protocol/golden-5/: golden-4's
+## eleven states as /5, then seq 12 -- a builtin CanvasItemMaterial shader and a custom one, three
+## materials, items naming them, a use_parent_material child, instance parameters and a non-white
+## canvas modulate --, seq 13 one parameter change, seq 14 one code change, seq 15 a shader-time
+## shader, an unknown material, a param-type material and instance parameter):
+##   7. full.rs5, patch.rs5 and inline.rs5 produce identical per-seq stats, the golden-4 states keep
+##      their costs, seq 12 creates and compiles both shaders and the three materials and sets every
+##      parameter, the items' materials, use_parent_material, instance parameters and the canvas
+##      modulate; seq 13 is one material_set_param, seq 14 one shader_set_code on the same RID,
+##      seq 15 never compiles the unsupported shader; every parameter is rebuilt as its exact
+##      Variant type and value (material_get_param is no witness: dummy storage drops parameters,
+##      so the applier's own recorded calls are asserted).
+##   8. ignore-material never calls canvas_item_set_material, ignore-canvas-modulate never calls
+##      canvas_set_modulate, stale-param sets parameters only at creation.
+##   9. params.rs5 (policy params): the withheld shader is skipped and reported shader-withheld
+##      without a library, and compiled from a library built from the golden payloads with one.
+##  10. Hand-built: default textures set and reset, removed parameters, instance parameters,
+##      materials and shaders freed, an unsupported material never created.
 
 var _failures: Array[String] = []
 var _golden: String = ""
 var _tmp: String = ""
 var _payloads: Dictionary[String, PackedByteArray] = {}
+## G55d: golden-5 (render-stream/5) and its payloads (textures, meshes and GRP1 shader code).
+var _golden5: String = ""
+var _payloads5: Dictionary[String, PackedByteArray] = {}
 
 
 func _initialize() -> void:
@@ -65,7 +87,8 @@ func _initialize() -> void:
 	_tmp = OS.get_environment("RS_SELFTEST_TMP_DIR")
 	if _tmp == "":
 		_tmp = ProjectSettings.globalize_path("user://applier2-selftest")
-	print("[applier2-selftest] golden %s, scratch %s" % [_golden, _tmp])
+	_golden5 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-5").simplify_path()
+	print("[applier2-selftest] golden %s and %s, scratch %s" % [_golden, _golden5, _tmp])
 	var index: Dictionary = _read_json("index.json")
 	if index.is_empty():
 		_finish()
@@ -83,6 +106,14 @@ func _initialize() -> void:
 		var mesh_file: String = mesh_entry["file"]
 		var mesh_hash: String = mesh_entry["hash"]
 		_payloads[mesh_hash] = _read_bytes(mesh_file)
+	var index5: Dictionary = _read_json_in(_golden5, "index.json")
+	for key: String in ["payloads", "mesh_payloads", "shader_payloads"]:
+		var list5: Array = index5.get(key, [])
+		for value: Variant in list5:
+			var entry5: Dictionary = value
+			var file5: String = entry5["file"]
+			var hash5: String = entry5["hash"]
+			_payloads5[hash5] = _read_bytes_in(_golden5, file5)
 	_test_control_messages()
 	_test_cache(index)
 	# The root canvas is attached to the root viewport only from the first frame on (SceneTree
@@ -102,6 +133,11 @@ func _run_applier_tests() -> void:
 	_test_applier_msdf()
 	_test_applier_geometry()
 	_test_applier_meshes()
+	_test_applier_golden5_encodings()
+	_test_applier_golden5_variants()
+	_test_applier_golden5_sabotages()
+	_test_applier_withheld()
+	_test_applier_material_lifetimes()
 	_finish()
 
 
@@ -122,14 +158,22 @@ func _check(condition: Variant, what: String) -> void:
 
 
 func _read_bytes(relative: String) -> PackedByteArray:
-	var path: String = _golden.path_join(relative)
+	return _read_bytes_in(_golden, relative)
+
+
+func _read_bytes_in(dir: String, relative: String) -> PackedByteArray:
+	var path: String = dir.path_join(relative)
 	var data: PackedByteArray = FileAccess.get_file_as_bytes(path)
 	_check(not data.is_empty(), "cannot read %s" % path)
 	return data
 
 
 func _read_json(relative: String) -> Dictionary:
-	var path: String = _golden.path_join(relative)
+	return _read_json_in(_golden, relative)
+
+
+func _read_json_in(dir: String, relative: String) -> Dictionary:
+	var path: String = dir.path_join(relative)
 	var json := JSON.new()
 	if json.parse(FileAccess.get_file_as_string(path)) != OK or typeof(json.data) != TYPE_DICTIONARY:
 		_failures.append("cannot parse %s" % path)
@@ -144,20 +188,25 @@ func _new_applier() -> RsApplier:
 	return RsApplier.new(root.get_viewport_rid(), root.find_world_2d().canvas)
 
 
-## A cache holding every golden payload in memory (as inline records or earlier fetches would).
-func _memory_cache() -> RsResourceCache:
+## A cache holding every golden payload in memory (as inline records or earlier fetches would);
+## `five`: golden-5's (G55d).
+func _memory_cache(five: bool = false) -> RsResourceCache:
 	var cache := RsResourceCache.new()
-	for hash: String in _payloads:
-		_check(cache.add_inline(hash, _payloads[hash]) == "", "golden payload %s decodes" % hash)
+	var source: Dictionary[String, PackedByteArray] = _payloads5 if five else _payloads
+	for hash: String in source:
+		_check(cache.add_inline(hash, source[hash]) == "", "golden payload %s decodes" % hash)
 	return cache
 
 
 ## Runs one recording through `applier` record by record, as receiver.gd does. Returns one row per
-## record: {kind, errors, rs_calls (that record's own), stats}.
+## record: {kind, errors, rs_calls (that record's own), stats}. The version is the file's: `.rs4`
+## (golden-4, decoded as version 4 since the receiver's default became 5 at G55d) or `.rs5`
+## (golden-5).
 func _apply(applier: RsApplier, file: String, cache: RsResourceCache) -> Array[Dictionary]:
-	var data: PackedByteArray = _read_bytes(file)
-	var records: Array[Dictionary] = Rs2Decoder.split_records(data)["records"]
-	var stream := Rs2Decoder.Stream.new()
+	var version: int = 5 if file.get_extension() == "rs5" else 4
+	var data: PackedByteArray = _read_bytes_in(_golden5 if version == 5 else _golden, file)
+	var records: Array[Dictionary] = Rs2Decoder.split_records(data, version)["records"]
+	var stream := Rs2Decoder.Stream.new(version)
 	var out: Array[Dictionary] = []
 	for raw: Dictionary in records:
 		var before: int = applier.rs_calls
@@ -177,7 +226,7 @@ func _apply(applier: RsApplier, file: String, cache: RsResourceCache) -> Array[D
 					var resource_hash: String = meta["hash"]
 					_check(cache.add_inline(resource_hash, payload) == "", "%s: inline payload decodes" % file)
 				"transaction":
-					var need: Dictionary = applier.needed(stream.items, stream.textures, stream.meshes)
+					var need: Dictionary = applier.needed(stream.items, stream.textures, stream.meshes, stream.shaders, stream.materials)
 					var hashes: Array = need["hashes"]
 					for value: Variant in hashes:
 						var hash: String = value
@@ -830,7 +879,7 @@ func _test_control_messages() -> void:
 		"resync": RsLiveClient.resync(stream_id, 7, "unapplied-stale"),
 	}
 	for name: String in encoded:
-		var golden: Dictionary = _read_json("control/valid/%s.json" % name)
+		var golden: Dictionary = _read_json_in(_golden5, "control/valid/%s.json" % name)
 		var text: String = RsLiveClient.encode(encoded[name])
 		var json := JSON.new()
 		if json.parse(text) != OK or typeof(json.data) != TYPE_DICTIONARY:
@@ -841,8 +890,375 @@ func _test_control_messages() -> void:
 		_check(JSON.stringify(got) == JSON.stringify(golden), "control %s differs from the golden: %s vs %s" % [name, JSON.stringify(got), JSON.stringify(golden)])
 		_check(not text.contains(" "), "control %s is compact: %s" % [name, text])
 		_check(not RsLiveClient.parse_host_text(text)["ok"], "parse_host_text refuses a %s message" % name)
-	_check(RsLiveClient.SUBPROTOCOL == "render-stream.4" and RsLiveClient.PROTOCOL == "render-stream/4", "the live client speaks render-stream/4")
-	var error_text: String = FileAccess.get_file_as_string(_golden.path_join("control/valid/error-message-too-large.json"))
+	_check(RsLiveClient.SUBPROTOCOL == "render-stream.5" and RsLiveClient.PROTOCOL == "render-stream/5", "the live client speaks render-stream/5")
+	var error_text: String = FileAccess.get_file_as_string(_golden5.path_join("control/valid/error-message-too-large.json"))
 	var parsed: Dictionary = RsLiveClient.parse_host_text(error_text)
 	_check(parsed["ok"] and parsed["reason"] == "message-too-large", "parse_host_text reads the golden error message")
 	_check(not RsLiveClient.parse_host_text("not json")["ok"], "parse_host_text refuses non-JSON")
+
+# --------------------------------------------------------------------------- shaders and materials (G55d)
+
+
+## One comparable row per transaction with the G55d material counters.
+static func _row5(result: Dictionary) -> String:
+	var stats: Dictionary = result["stats"]
+	return _row(result) + str(stats["material_resources"])
+
+
+static func _mres(stats: Dictionary) -> Dictionary:
+	return stats["material_resources"]
+
+
+## (7) golden-5 through the three encodings: identical stats, and the material work per seq.
+func _test_applier_golden5_encodings() -> void:
+	var rows_by_file: Dictionary[String, Array] = {}
+	for file: String in ["full.rs5", "patch.rs5", "inline.rs5"]:
+		var applier: RsApplier = _new_applier()
+		var cache: RsResourceCache = _memory_cache(true) if file != "inline.rs5" else RsResourceCache.new()
+		var results: Array[Dictionary] = _apply(applier, file, cache)
+		var rows: Array[String] = []
+		var calls: Array[int] = []
+		for result: Dictionary in results:
+			var errors: PackedStringArray = result["errors"]
+			_check(errors.is_empty(), "%s: %s" % [file, str(errors)])
+			if result["kind"] == "transaction":
+				rows.append(_row5(result))
+				calls.append(result["rs_calls"])
+		rows_by_file[file] = rows
+		print("[applier2-selftest] %s rs_calls per seq %s" % [file, str(calls)])
+		var tx: Array[Dictionary] = _transaction_stats(results)
+		if tx.size() != 15:
+			_failures.append("%s applied %d transactions, expected 15" % [file, tx.size()])
+			_dispose_checked(applier, file)
+			continue
+		# golden-4's states: unchanged costs (a white canvas modulate is the engine's default: no call).
+		_check(calls[5] == 0 and calls[9] == 0, "%s: seq 6 and seq 10 still cost 0 calls: %s" % [file, str(calls)])
+		var m1: Dictionary = _mres(tx[0])
+		_check(m1["modulate_sets"] == 0 and m1["materials_created"] == 0 and m1["shaders_created"] == 0, "%s seq 1: a white root canvas modulate costs no call, no material work: %s" % [file, str(m1)])
+		_check(calls.slice(0, 11) == [74, 1, 1, 2, 2, 0, 16, 24, 18, 0, 27], "%s: golden-5's first eleven seqs cost exactly golden-4's calls: %s" % [file, str(calls)])
+		for i: int in range(1, 11):
+			var mi: Dictionary = _mres(tx[i])
+			var total: int = 0
+			for key: String in mi:
+				total += Rs2Decoder.as_int(mi[key])
+			_check(total == 0, "%s seq %d: golden-4's state makes no material call: %s" % [file, i + 1, str(mi)])
+		# seq 12: shader 1 (CIM add) and 2 (tint) created and compiled; materials 1-3 created;
+		# material 1's shader 1, material 2's shader 2, material 3 none; 3 + 29 parameters; items
+		# 11, 12 and 14 name materials, 13 sets use_parent_material, item 12's two instance
+		# parameters; the non-white canvas modulate.
+		var m12: Dictionary = _mres(tx[11])
+		var want12: Dictionary = {
+			"shaders_created": 2, "shader_code_sets": 2, "shaders_freed": 0, "default_texture_sets": 0,
+			"materials_created": 3, "materials_freed": 0, "material_shader_sets": 2, "param_sets": 32,
+			"instance_param_sets": 2, "material_sets": 3, "use_parent_material_sets": 1,
+			"modulate_sets": 1,
+		}
+		_check(str(m12) == str(want12), "%s seq 12 material work %s, expected %s" % [file, str(m12), str(want12)])
+		var set_material_items: Array = []
+		for value: Variant in tx[11]["item_calls"]:
+			var call: Dictionary = value
+			if call["op"] == "set_material":
+				set_material_items.append(call["item"])
+		_check(set_material_items == [11, 12, 14], "%s seq 12: canvas_item_set_material for items %s, expected [11, 12, 14]" % [file, str(set_material_items)])
+		# seq 13: one parameter (p_float 2.5 -> 9.5); seq 14: one code change on the same RID.
+		var m13: Dictionary = _mres(tx[12])
+		_check(m13["param_sets"] == 1 and m13["materials_created"] == 0 and m13["shader_code_sets"] == 0 and tx[12]["rs_calls"] == 1, "%s seq 13: one material_set_param and nothing else: %s, %d calls" % [file, str(m13), tx[12]["rs_calls"]])
+		var calls13: Array = tx[12]["param_calls"]
+		var call13: Dictionary = calls13[0] if calls13.size() == 1 else {}
+		_check(call13.get("name") == "p_float" and typeof(call13.get("value")) == TYPE_FLOAT and call13.get("value") == 9.5, "%s seq 13: p_float set to 9.5 (float): %s" % [file, str(calls13)])
+		var m14: Dictionary = _mres(tx[13])
+		_check(m14["shader_code_sets"] == 1 and m14["shaders_created"] == 0 and tx[13]["rs_calls"] == 1, "%s seq 14: one shader_set_code on the same RID: %s, %d calls" % [file, str(m14), tx[13]["rs_calls"]])
+		# seq 15: material 4 (shader 3, shader-time, never compiled) created with no shader for item
+		# 15; material 5 (param-type) is named by nobody; item 16 (unknown-material) has none.
+		var m15: Dictionary = _mres(tx[14])
+		_check(m15["shaders_created"] == 0 and m15["materials_created"] == 1 and m15["material_shader_sets"] == 0 and m15["material_sets"] == 1, "%s seq 15: the shader-time shader is never compiled, material 4 is created without it: %s" % [file, str(m15)])
+		_check(applier.resident_shaders() == 2 and applier.resident_materials() == 4, "%s: 2 shaders and 4 materials resident at the end, got %d and %d" % [file, applier.resident_shaders(), applier.resident_materials()])
+		_dispose_checked(applier, file)
+	_check(rows_by_file["full.rs5"] == rows_by_file["patch.rs5"], "golden-5: full and patch per-seq applier stats differ")
+	_check(rows_by_file["full.rs5"] == rows_by_file["inline.rs5"], "golden-5: full and inline per-seq applier stats differ")
+	# needed() before seq 12: both shader payloads (GRP1) are named, and nothing once resident.
+	var probe: RsApplier = _new_applier()
+	var data: PackedByteArray = _read_bytes_in(_golden5, "full.rs5")
+	var records: Array[Dictionary] = Rs2Decoder.split_records(data, 5)["records"]
+	var stream := Rs2Decoder.Stream.new(5)
+	var cache: RsResourceCache = _memory_cache(true)
+	for raw: Dictionary in records:
+		var accepted: Dictionary = RsApplier.accept_record(data, Rs2Decoder.as_int(raw["offset"]), stream)
+		if accepted["kind"] == "session":
+			var record: Dictionary = accepted["record"]
+			var session_meta: Dictionary = record["meta"]
+			var session_blocks: Array = record["blocks"]
+			probe.begin_session(session_meta, session_blocks)
+		elif accepted["kind"] == "transaction":
+			var need: Dictionary = probe.needed(stream.items, stream.textures, stream.meshes, stream.shaders, stream.materials)
+			var shader_hashes: Array = need["shader_hashes"]
+			if stream.last_seq == 12:
+				shader_hashes.sort()
+				_check(shader_hashes == ["2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310", "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17"], "needed() at seq 12 names both shader payloads: %s" % str(shader_hashes))
+			elif stream.last_seq == 14:
+				_check(shader_hashes == ["586e44786613868036df5a0a72e1c2a512397d6300502e87d927be6ff7329dbe"], "needed() at seq 14 names only the new code: %s" % str(shader_hashes))
+			else:
+				_check(shader_hashes.is_empty(), "needed() at seq %d names no shader payload: %s" % [stream.last_seq, str(shader_hashes)])
+			probe.apply_state(stream, cache)
+	_dispose_checked(probe, "golden-5 needed")
+
+
+## (7) The exact Variant type and value of every parameter seq 12 sets (D8).
+func _test_applier_golden5_variants() -> void:
+	var applier: RsApplier = _new_applier()
+	var results: Array[Dictionary] = _apply(applier, "full.rs5", _memory_cache(true))
+	var tx: Array[Dictionary] = _transaction_stats(results)
+	if tx.size() != 15:
+		_failures.append("variants: %d transactions" % tx.size())
+		return
+	var got: Dictionary = {}
+	var instance: Dictionary = {}
+	for value: Variant in tx[11]["param_calls"]:
+		var call: Dictionary = value
+		if call["target"] == "material" and call["id"] == 2:
+			got[call["name"]] = call["value"]
+		elif call["target"] == "instance" and call["id"] == 12:
+			instance[call["name"]] = call["value"]
+	var want: Dictionary = {
+		"p_aabb": AABB(Vector3(1, 2, 3), Vector3(4, 5, 6)),
+		"p_basis": Basis.IDENTITY,
+		"p_bool": true,
+		"p_color": Color(0.2, 0.4, 0.6, 1.0),
+		"p_float": 2.5,
+		"p_int": 7,
+		"p_nil": null,
+		"p_packed_color_array": PackedColorArray([Color(0, 0, 0, 1), Color(1, 1, 1, 1)]),
+		"p_packed_float32_array": PackedFloat32Array([0.1, 0.2, 0.3]),
+		"p_packed_float64_array": PackedFloat64Array([1.5, -1.5]),
+		"p_packed_int32_array": PackedInt32Array([1, 2, 3]),
+		"p_packed_int64_array": PackedInt64Array([100, 200]),
+		"p_packed_vector2_array": PackedVector2Array([Vector2(1, 2), Vector2(3, 4)]),
+		"p_packed_vector3_array": PackedVector3Array([Vector3(1, 2, 3), Vector3(4, 5, 6)]),
+		"p_packed_vector4_array": PackedVector4Array([Vector4(1, 2, 3, 4)]),
+		"p_plane": Plane(0, 0, 1, 5),
+		"p_projection": Projection.IDENTITY,
+		"p_quaternion": Quaternion(0, 0, 0, 1),
+		"p_rect2": Rect2(1, 2, 3, 4),
+		"p_rect2i": Rect2i(0, 0, 8, 8),
+		"p_transform2d": Transform2D.IDENTITY,
+		"p_transform3d": Transform3D.IDENTITY,
+		"p_vector2": Vector2(1, 2),
+		"p_vector2i": Vector2i(3, 4),
+		"p_vector3": Vector3(1, 2, 3),
+		"p_vector3i": Vector3i(4, 5, 6),
+		"p_vector4": Vector4(1, 2, 3, 4),
+		"p_vector4i": Vector4i(5, 6, 7, 8),
+	}
+	for name: String in want:
+		var expected: Variant = want[name]
+		var actual: Variant = got.get(name, "<missing>")
+		_check(typeof(actual) == typeof(expected) and actual == expected, "seq 12 material 2 %s: %s (%s), expected %s (%s)" % [name, str(actual), type_string(typeof(actual)), str(expected), type_string(typeof(expected))])
+	var rid_value: Variant = got.get("p_rid")
+	var rid_typed := RID()
+	if typeof(rid_value) == TYPE_RID:
+		rid_typed = rid_value
+	_check(rid_typed.is_valid(), "seq 12 material 2 p_rid is the receiver's RID for texture 7: %s" % str(rid_value))
+	_check(got.size() == 29, "seq 12 sets material 2's 29 parameters, got %d" % got.size())
+	_check(instance.size() == 2 and typeof(instance.get("glow")) == TYPE_FLOAT and instance.get("glow") == 0.5 and instance.has("hidden_default") and instance["hidden_default"] == null, "seq 12 item 12's instance parameters (glow 0.5, hidden_default null): %s" % str(instance))
+	# Member order on non-symmetric values (basis row-major, transform2d columns, projection by
+	# column, transform3d basis then origin, plane normal then d, int64 beyond 2^31).
+	var basis: Variant = applier._param_variant({"name": "b", "type": "basis", "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]}, {})
+	var basis_typed := Basis()
+	if typeof(basis) == TYPE_BASIS:
+		basis_typed = basis
+	_check(basis_typed.x == Vector3(1, 4, 7) and basis_typed.y == Vector3(2, 5, 8), "basis is row-major: %s" % str(basis))
+	var xform: Variant = applier._param_variant({"name": "t", "type": "transform2d", "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]}, {})
+	_check(xform == Transform2D(Vector2(1, 2), Vector2(3, 4), Vector2(5, 6)), "transform2d is /0's xform order: %s" % str(xform))
+	var xform3: Variant = applier._param_variant({"name": "t", "type": "transform3d", "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]}, {})
+	var xform3_typed := Transform3D()
+	if typeof(xform3) == TYPE_TRANSFORM3D:
+		xform3_typed = xform3
+	_check(xform3_typed.basis.x == Vector3(1, 4, 7) and xform3_typed.origin == Vector3(10, 11, 12), "transform3d is a row-major basis then the origin: %s" % str(xform3))
+	var projection: Variant = applier._param_variant({"name": "p", "type": "projection", "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]}, {})
+	var projection_typed := Projection()
+	if typeof(projection) == TYPE_PROJECTION:
+		projection_typed = projection
+	_check(projection_typed.y == Vector4(5, 6, 7, 8), "projection is by column: %s" % str(projection))
+	# float(int): GDScript's own float-literal parser rounds 16-digit literals; the wire's float64
+	# (decode_double) is exact.
+	var big: Variant = applier._param_variant({"name": "i", "type": "packed_int64_array", "value": [4294967296.0, float(-9007199254740991)]}, {})
+	_check(big == PackedInt64Array([4294967296, -9007199254740991]), "packed_int64_array keeps 53-bit integers: %s" % str(big))
+	var tiny: Variant = applier._param_variant({"name": "v", "type": "vector2", "value": [0.1, 0.2]}, {})
+	_check(tiny == Vector2(0.1, 0.2), "vector2 narrows to float32 exactly as the engine's Vector2 does: %s" % str(tiny))
+	_dispose_checked(applier, "variants")
+
+
+## (8) The receiver sabotages.
+func _test_applier_golden5_sabotages() -> void:
+	for sabotage: String in ["ignore-material", "ignore-canvas-modulate", "stale-param"]:
+		var applier: RsApplier = _new_applier()
+		applier.sabotage_ignore_material = sabotage == "ignore-material"
+		applier.sabotage_ignore_canvas_modulate = sabotage == "ignore-canvas-modulate"
+		applier.sabotage_stale_param = sabotage == "stale-param"
+		var results: Array[Dictionary] = _apply(applier, "full.rs5", _memory_cache(true))
+		var tx: Array[Dictionary] = _transaction_stats(results)
+		if tx.size() != 15:
+			_failures.append("%s: %d transactions" % [sabotage, tx.size()])
+			continue
+		var material_sets: int = 0
+		var modulate_sets: int = 0
+		var set_material_calls: int = 0
+		for stats: Dictionary in tx:
+			var m: Dictionary = _mres(stats)
+			material_sets += Rs2Decoder.as_int(m["material_sets"])
+			modulate_sets += Rs2Decoder.as_int(m["modulate_sets"])
+			for value: Variant in stats["item_calls"]:
+				var call: Dictionary = value
+				if call["op"] == "set_material":
+					set_material_calls += 1
+		match sabotage:
+			"ignore-material":
+				_check(material_sets == 0 and set_material_calls == 0 and modulate_sets == 1, "ignore-material: no canvas_item_set_material (%d, %d), modulate untouched (%d)" % [material_sets, set_material_calls, modulate_sets])
+			"ignore-canvas-modulate":
+				_check(modulate_sets == 0 and material_sets == 4, "ignore-canvas-modulate: no canvas_set_modulate (%d), materials untouched (%d)" % [modulate_sets, material_sets])
+			"stale-param":
+				var m12: Dictionary = _mres(tx[11])
+				var m13: Dictionary = _mres(tx[12])
+				_check(m12["param_sets"] == 32 and m13["param_sets"] == 0 and tx[12]["rs_calls"] == 0, "stale-param: parameters at creation only (seq 12 %s, seq 13 %s)" % [str(m12["param_sets"]), str(m13["param_sets"])])
+		_dispose_checked(applier, sabotage)
+
+
+## (9) params.rs5: the withheld shader without and with RS_RECEIVER_SHADER_LIBRARY.
+func _test_applier_withheld() -> void:
+	var withheld_hash: String = "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+	var library: String = _tmp.path_join("shader-library")
+	_clean(library)
+	_write(library.path_join("sha256").path_join(withheld_hash + ".grp"), _payloads5[withheld_hash])
+	var wrong_library: String = _tmp.path_join("shader-library-wrong")
+	_clean(wrong_library)
+	var tampered: PackedByteArray = _payloads5[withheld_hash].duplicate()
+	tampered[tampered.size() - 2] = tampered[tampered.size() - 2] ^ 0x01
+	_write(wrong_library.path_join("sha256").path_join(withheld_hash + ".grp"), tampered)
+	for library_dir: String in ["", wrong_library, library]:
+		var applier: RsApplier = _new_applier()
+		# The memory cache holds every golden payload, the withheld code included: the applier must
+		# still never take a withheld shader's code from anywhere but the library.
+		var cache: RsResourceCache = _memory_cache(true)
+		cache.library_dir = library_dir
+		var results: Array[Dictionary] = _apply(applier, "params.rs5", cache)
+		var tx: Array[Dictionary] = _transaction_stats(results)
+		var what: String = "params.rs5 (library %s)" % (library_dir if library_dir != "" else "<unset>")
+		if tx.size() != 1:
+			_failures.append("%s: %d transactions" % [what, tx.size()])
+			continue
+		var skipped: Array = tx[0]["skipped_shaders"]
+		var m: Dictionary = _mres(tx[0])
+		if library_dir == library:
+			_check(skipped.is_empty() and m["shaders_created"] == 2 and m["shader_code_sets"] == 2 and m["material_shader_sets"] == 2 and applier.resident_shaders() == 2, "%s: the withheld shader is compiled from the library: %s %s" % [what, str(skipped), str(m)])
+		else:
+			var first: Dictionary = skipped[0] if skipped.size() == 1 else {}
+			_check(first.get("id") == 2 and first.get("reason") == "shader-withheld" and first.get("hash") == withheld_hash, "%s: the withheld shader is skipped as shader-withheld: %s" % [what, str(skipped)])
+			_check(m["shaders_created"] == 1 and m["materials_created"] == 2 and m["material_shader_sets"] == 1 and applier.resident_shaders() == 1, "%s: only the CIM shader is compiled; material 2 has no shader: %s" % [what, str(m)])
+		_dispose_checked(applier, what)
+	_clean(library)
+	_clean(wrong_library)
+
+
+## A hand-built /5 item naming `material` with `instance_params`.
+static func _material_item(id: int, material: Variant, instance_params: Array, use_parent: bool = false) -> Dictionary:
+	var item: Dictionary = _clip_test_item(id)
+	item["clip"] = false
+	item["material"] = material
+	item["use_parent_material"] = use_parent
+	item["instance_params"] = instance_params
+	return item
+
+
+static func _shader_entry(id: int, version: int, hash: Variant, defaults: Array, status: String = "ok", source: Variant = "payload") -> Dictionary:
+	return {
+		"id": id, "origin": "created", "status": status, "reason": null if status == "ok" else "shader-time",
+		"version": version, "mode": "canvas_item", "source": source, "hash": hash,
+		"payload_bytes": 0, "builtin": null, "uses": [], "default_textures": defaults,
+	}
+
+
+static func _material_entry(id: int, version: int, shader: Variant, params: Array, status: String = "ok") -> Dictionary:
+	return {
+		"id": id, "origin": "created", "status": status, "reason": null if status == "ok" else "param-type",
+		"version": version, "shader": shader, "params": params,
+	}
+
+
+## (10) Hand-built lifetimes: default textures, removed parameters and instance parameters,
+## freed materials and shaders, an unsupported material, a codeless shader.
+func _test_applier_material_lifetimes() -> void:
+	var tint_v1: String = "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+	var cache: RsResourceCache = _memory_cache(true)
+	var image_hash: String = "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9"
+	var decoded: Dictionary = cache.decoded(image_hash)
+	var image_entry: Dictionary = {
+		"id": 1, "kind": "image", "status": "ok", "hash": image_hash, "format": decoded["format"],
+		"width": decoded["width"], "height": decoded["height"], "mipmaps": decoded["mipmaps"],
+		"payload_bytes": 0, "canvas": null, "version": 1,
+	}
+	var applier: RsApplier = _new_applier()
+	var stream := Rs2Decoder.Stream.new(5)
+	stream.canvases = {1: {"items": [50, 51], "xform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "modulate": [1.0, 1.0, 1.0, 1.0]}}
+	stream.textures = {1: image_entry}
+	stream.shaders = {
+		1: _shader_entry(1, 1, tint_v1, [{"name": "tex", "index": 0, "tex": 1}]),
+		2: _shader_entry(2, 1, null, [], "ok", null),
+	}
+	stream.materials = {
+		1: _material_entry(1, 1, 1, [{"name": "a", "type": "float", "value": 1.0}, {"name": "t", "type": "rid", "value": {"tex": 1}}]),
+		2: _material_entry(2, 1, 2, []),
+		3: _material_entry(3, 1, null, [], "unsupported"),
+	}
+	stream.items = {
+		50: _material_item(50, 1, [{"name": "glow", "type": "float", "value": 0.5}]),
+		51: _material_item(51, 3, [], true),
+	}
+	var need: Dictionary = applier.needed(stream.items, stream.textures, stream.meshes, stream.shaders, stream.materials)
+	_check(need["ids"] == [1] and need["shader_hashes"] == [tint_v1], "lifetimes: the parameter/default texture and the named shader's code are needed: %s" % str(need))
+	var r1: Dictionary = applier.apply_state(stream, cache)
+	var m1: Dictionary = _mres(r1)
+	_check(m1["shaders_created"] == 1 and m1["materials_created"] == 1 and m1["default_texture_sets"] == 1 and m1["param_sets"] == 2 and m1["instance_param_sets"] == 1 and m1["use_parent_material_sets"] == 1 and m1["material_sets"] == 1 and m1["modulate_sets"] == 0, "lifetimes setup: %s" % str(m1))
+	_check(_named_unsupported(r1) == [[51, "canvas_item_set_material", "unsupported-material"]], "lifetimes: the unsupported material is never created, its item recorded: %s" % str(_named_unsupported(r1)))
+	_check(applier.resident_shaders() == 1 and applier.resident_materials() == 1 and applier.resident_textures() == 1, "lifetimes: shader 2 and material 2 (named by nobody) are not resident")
+	var t_call: Variant = null
+	for value: Variant in r1["param_calls"]:
+		var call: Dictionary = value
+		if call["name"] == "t":
+			t_call = call["value"]
+	var t_rid := RID()
+	if typeof(t_call) == TYPE_RID:
+		t_rid = t_call
+	_check(t_rid.is_valid(), "lifetimes: the rid parameter is the resident texture's RID: %s" % str(t_call))
+	# Unchanged: no call at all.
+	var before: int = applier.rs_calls
+	applier.apply_state(stream, cache)
+	_check(applier.rs_calls == before, "lifetimes: an unchanged state makes no call (%d)" % (applier.rs_calls - before))
+	# Remove the default texture, parameter `a` and the instance parameter; item 51 names material 2
+	# (a codeless shader): shader_create alone, then the material with it.
+	stream.shaders = {1: _shader_entry(1, 2, tint_v1, []), 2: _shader_entry(2, 1, null, [], "ok", null)}
+	stream.materials = {
+		1: _material_entry(1, 2, 1, [{"name": "t", "type": "rid", "value": {"tex": 1}}]),
+		2: _material_entry(2, 1, 2, []),
+	}
+	stream.items = {50: _material_item(50, 1, []), 51: _material_item(51, 2, [], true)}
+	var r2: Dictionary = applier.apply_state(stream, cache)
+	var m2: Dictionary = _mres(r2)
+	_check(m2["default_texture_sets"] == 1 and m2["param_sets"] == 1 and m2["instance_param_sets"] == 1 and m2["shaders_created"] == 1 and m2["shader_code_sets"] == 0 and m2["materials_created"] == 1 and m2["material_shader_sets"] == 1 and m2["material_sets"] == 1, "lifetimes removals and a codeless shader: %s" % str(m2))
+	var nulls: Array = []
+	for value: Variant in r2["param_calls"]:
+		var call: Dictionary = value
+		nulls.append([call["target"], call["name"], call["value"]])
+	_check(nulls == [["material", "a", null], ["instance", "glow", null]], "lifetimes: removed parameters are set to null: %s" % str(nulls))
+	# Material 1 and shader 1 leave the tables (D5): both freed, item 50's material reset to none.
+	stream.shaders = {2: _shader_entry(2, 1, null, [], "ok", null)}
+	stream.materials = {2: _material_entry(2, 1, 2, [])}
+	stream.items = {50: _material_item(50, null, []), 51: _material_item(51, 2, [], true)}
+	var r3: Dictionary = applier.apply_state(stream, cache)
+	var m3: Dictionary = _mres(r3)
+	_check(m3["materials_freed"] == 1 and m3["shaders_freed"] == 1 and m3["material_sets"] == 1 and _item_ops(r3["item_calls"], 50) == ["set_material"], "lifetimes: removed material and shader freed, item 50 reset: %s %s" % [str(m3), str(_item_ops(r3["item_calls"], 50))])
+	# The shader becomes unsupported: freed, the material's shader reset to none.
+	stream.shaders = {2: _shader_entry(2, 2, null, [], "unsupported", null)}
+	var r4: Dictionary = applier.apply_state(stream, cache)
+	var m4: Dictionary = _mres(r4)
+	_check(m4["shaders_freed"] == 1 and m4["material_shader_sets"] == 1 and applier.resident_shaders() == 0, "lifetimes: an unsupported shader is freed and unset: %s" % str(m4))
+	_dispose_checked(applier, "material lifetimes")

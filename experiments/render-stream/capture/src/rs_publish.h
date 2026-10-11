@@ -109,7 +109,7 @@ struct ParseResult {
 //
 // Accepted: freeze-frame, omit-update, perturb-transform, perturb-glyph (G4e2, render-stream/3;
 // entry.cpp hands it to the mirror), perturb-vertex (G5d, render-stream/4; likewise the
-// mirror's), patch-drop-item, the live kinds
+// mirror's), perturb-shader (G55d, render-stream/5; likewise), patch-drop-item, the live kinds
 // drop-message, ignore-credit and stale-coalesce (entry.cpp refuses them without
 // GRC_LIVE_LISTEN; rs_live.h acts on them), the G2b2 resource kinds stale-texture, wrong-hash
 // and spurious-texture-update, the G2c2 serving kinds drop-resource and unpin (entry.cpp refuses
@@ -136,8 +136,13 @@ std::string generate_id();
 // "Features") adds add_msdf_texture_rect_region to ops and drops
 // canvas_item_add_msdf_texture_rect_region from observed_unsupported_ops. `version` V4 (G5d,
 // render-stream-4.md "Features"): fifteen ops, `resources` gains mesh, observed_unsupported_ops
-// keeps the six still-refused methods and `unobserved` gains the two snap-to-pixel settings. The
-// capture publishes V4 since G5d (V3 from G4e2); V2/V3 remain for golden-shaped tests.
+// keeps the six still-refused methods and `unobserved` gains the two snap-to-pixel settings.
+// `version` V5 (G55d, render-stream-5.md "Features"): item_state gains instance_params, material
+// and use_parent_material, canvas_state is ["modulate","transform"], resources gains material and
+// shader, observed_unsupported_ops swaps canvas_item_set_material for
+// canvas_light_attach_to_canvas, and unobserved loses the instance-parameter and canvas-modulate
+// setters and gains D16's names. The capture publishes V5 since G55d (V4 from G5d, V3 from
+// G4e2); V2-V4 remain for golden-shaped tests.
 Features gate2_features(bool headless_host = false, ProtocolVersion version = ProtocolVersion::V2);
 
 // The resource policy a capture publishes under (GRC_RESOURCE_*).

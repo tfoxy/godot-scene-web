@@ -14,8 +14,8 @@ extends SceneTree
 ## or prints each failure and quits 1.
 ##
 ## Pure-codec properties only (gate2-design.md G2b1 "Pass criteria", gate4-design.md G4e1's,
-## render-stream-4.md G5w's and render-stream-5.md G55w's -- the applier, RsApplier, speaks /4
-## since G5d (applier2_selftest.gd covers it) but not /5 until G55d):
+## render-stream-4.md G5w's and render-stream-5.md G55w's -- the applier, RsApplier, speaks /5
+## since G55d (applier2_selftest.gd covers it); every suite here passes its version explicitly):
 ##   1. decode_record()-equivalent (split_records + decode_record) deep-equals *.decoded.json for
 ##      full/patch/inline.rs2, .rs3, .rs4 and .rs5;
 ##   2. the Stream's resolved state after each transaction deep-equals resolved.json's per-seq

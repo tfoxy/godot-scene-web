@@ -145,6 +145,7 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"unpin", SabotageKind::Unpin},
       {"perturb-glyph", SabotageKind::PerturbGlyph},
       {"perturb-vertex", SabotageKind::PerturbVertex},
+      {"perturb-shader", SabotageKind::PerturbShader},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -230,8 +231,9 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
   if (version == ProtocolVersion::V3) {
     // render-stream-3.md "Features": sorted ascending by byte value.
     features.ops.insert(features.ops.begin(), "add_msdf_texture_rect_region");
-  } else if (version == ProtocolVersion::V4) {
-    // render-stream-4.md "Features": /3's four plus the eleven /4 ops, sorted by byte value.
+  } else if (version == ProtocolVersion::V4 || version == ProtocolVersion::V5) {
+    // render-stream-4.md "Features": /3's four plus the eleven /4 ops, sorted by byte value
+    // (render-stream-5.md "Features": unchanged at /5).
     features.ops = {"add_circle",         "add_clip_ignore",
                     "add_line",           "add_mesh",
                     "add_msdf_texture_rect_region",
@@ -246,15 +248,29 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                          "draw_index",     "modulate",         "parent",         "self_modulate",
                          "texture_filter", "texture_repeat",   "transform",      "visibility_layer",
                          "visible",        "z_index",          "z_relative"};
+  if (version == ProtocolVersion::V5) {
+    // render-stream-5.md "Features": /4's list plus instance_params, material and
+    // use_parent_material, re-sorted; canvas_state is new.
+    features.item_state.push_back("instance_params");
+    features.item_state.push_back("material");
+    features.item_state.push_back("use_parent_material");
+    std::sort(features.item_state.begin(), features.item_state.end());
+    features.canvas_state = {"modulate", "transform"};
+  }
   if (headless_host) {
     features.resources = {"texture_2d", "texture_2d_placeholder"};
     features.unsupported_resources = {{"canvas_texture", "canvas-texture-headless"}};
   } else {
     features.resources = {"canvas_texture", "texture_2d", "texture_2d_placeholder"};
   }
-  if (version == ProtocolVersion::V4) {
+  if (version == ProtocolVersion::V4 || version == ProtocolVersion::V5) {
     // render-stream-4.md "Features": `resources` gains "mesh", kept sorted by byte value.
     features.resources.push_back("mesh");
+    if (version == ProtocolVersion::V5) {
+      // render-stream-5.md "Features": and "material" and "shader".
+      features.resources.push_back("material");
+      features.resources.push_back("shader");
+    }
     std::sort(features.resources.begin(), features.resources.end());
   }
   features.observed_unsupported_ops = {"canvas_item_add_animation_slice",
@@ -289,6 +305,15 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                                          "canvas_item_add_particles",
                                          "canvas_item_attach_skeleton",
                                          "canvas_item_set_material"};
+  } else if (version == ProtocolVersion::V5) {
+    // render-stream-5.md "Features": /4's six lose canvas_item_set_material (item state now) and
+    // gain canvas_light_attach_to_canvas (gate5_5-design.md D10, D16).
+    features.observed_unsupported_ops = {"canvas_item_add_animation_slice",
+                                         "canvas_item_add_lcd_texture_rect_region",
+                                         "canvas_item_add_multimesh",
+                                         "canvas_item_add_particles",
+                                         "canvas_item_attach_skeleton",
+                                         "canvas_light_attach_to_canvas"};
   }
   features.unobserved = {"canvas_item_set_canvas_group_mode",
                          "canvas_item_set_instance_shader_parameter",
@@ -301,10 +326,30 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                          "viewport_remove_canvas",
                          "viewport_set_canvas_cull_mask",
                          "viewport_set_global_canvas_transform"};
-  if (version == ProtocolVersion::V4) {
+  if (version == ProtocolVersion::V4 || version == ProtocolVersion::V5) {
     // render-stream-4.md "Features" (gate3-design.md "Deferred"): the two snap-to-pixel settings.
     features.unobserved.push_back("viewport_set_snap_2d_transforms_to_pixel");
     features.unobserved.push_back("viewport_set_snap_2d_vertices_to_pixel");
+  }
+  if (version == ProtocolVersion::V5) {
+    // render-stream-5.md "Features": canvas_item_set_instance_shader_parameter and
+    // canvas_set_modulate are observed state now; D16's declared-unobserved names join, sorted.
+    const auto drop = [&features](const char *name) {
+      const auto it = std::find(features.unobserved.begin(), features.unobserved.end(), name);
+      if (it != features.unobserved.end()) {
+        features.unobserved.erase(it);
+      }
+    };
+    drop("canvas_item_set_instance_shader_parameter");
+    drop("canvas_set_modulate");
+    for (const char *name :
+         {"canvas_item_set_copy_to_backbuffer", "global_shader_parameter_add",
+          "global_shader_parameter_remove", "global_shader_parameter_set",
+          "global_shader_parameter_set_override", "material_set_next_pass",
+          "material_set_render_priority", "shader_set_path_hint"}) {
+      features.unobserved.push_back(name);
+    }
+    std::sort(features.unobserved.begin(), features.unobserved.end());
   }
   features.publication = kPublication;
   return features;
@@ -456,8 +501,9 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
     }
     std::string why;
     const rs::ResourceStore::Put put =
-        ref.texture != nullptr ? store_->put(*ref.texture, *payload->second, frame, &why)
-                               : store_->put_mesh(*ref.surface, *payload->second, frame, &why);
+        ref.texture != nullptr  ? store_->put(*ref.texture, *payload->second, frame, &why)
+        : ref.surface != nullptr ? store_->put_mesh(*ref.surface, *payload->second, frame, &why)
+                                 : store_->put_shader(*ref.shader, *payload->second, frame, &why);
     if (events_ && put != rs::ResourceStore::Put::Present) {
       events_("store", hash, payload->second->size(), put == rs::ResourceStore::Put::Stored,
               frame);
@@ -526,6 +572,16 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
       if (it != captured->payloads.end()) {
         payloads.emplace(surface.hash, it->second);
       }
+    }
+  }
+  // G55d: shader code payloads, likewise untouched.
+  for (const ShaderEntry &shader : captured->state.shaders) {
+    if (!shader.has_hash) {
+      continue;
+    }
+    const auto it = captured->payloads.find(shader.hash);
+    if (it != captured->payloads.end()) {
+      payloads.emplace(shader.hash, it->second);
     }
   }
   captured->payloads = std::move(payloads);

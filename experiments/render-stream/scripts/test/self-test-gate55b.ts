@@ -12,7 +12,9 @@
 // 3. The image checks on frames built from the raster itself, and on frames perturbed where each
 //    must notice: the contract's α 153 for BD's disabled strip, a mul pixel off by 2.
 // 4. material-census on synthetic counters and hook logs, before and after calibrator 8.
-// 5. leg-class-capture on a synthetic pre-/5 recording.
+// 5. leg-class-capture on a synthetic render-stream/5 recording (success, every item naming
+//    CimSim's material), and with the class, a typed entry, RI's step-4 material, UC's
+//    use_parent_material, the marker's colour or UC's content_version wrong.
 //
 // Exits non-zero if any assertion fails.
 
@@ -33,7 +35,7 @@ import type { Gate5Item, Gate5Op, Rgba } from "../lib/gate5-expected";
 import {
   censusKeyOf,
   checkExpectedSelfConsistent55,
-  evaluateCimCaptureTyped,
+  evaluateCimCapture5,
   evaluateMaterialCensus,
   legName,
   type MaterialLogLine,
@@ -41,6 +43,7 @@ import {
 } from "../lib/gate55b-checks";
 import {
   asGate5,
+  expectedItemMaterials,
   type Gate55Expected,
   type Gate55Variant,
   rasters55,
@@ -567,33 +570,39 @@ function hookLog(variant: Gate55Variant): MaterialLogLine[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 5. leg-class-capture on a synthetic pre-/5 recording
+// 5. leg-class-capture on a synthetic render-stream/5 recording
 // ---------------------------------------------------------------------------------------------
+
+/** Wire material ids deliberately offset from CimSim's (100 + sim id): the check pairs them by
+ * ascending order, never by value. */
+const WIRE_MATERIAL = (sim: number) => 100 + sim;
 
 function syntheticCapture(
   variant: Gate55Variant,
 ): Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full"> {
   const v = expected.variants[variant];
   const typed = rectCommandsByStep(expected, variant);
+  const own = expectedItemMaterials(expected, variant);
   const idOf = new Map(v.creation_order.map((n, j) => [n, j + 2]));
   const transactions = v.steps.map((s, k) => {
-    const items = v.creation_order.map((name) => ({
-      id: idOf.get(name) as number,
-      content_version: name === "Marker" ? 2 + s.step : 2,
-      commands: (typed.get(s.step)?.get(name) ?? []).map((c) => ({ ...c })),
-    }));
-    const unsupported = s.typed_entries.map((name) => ({
-      op: "canvas_item_set_material",
-      item: idOf.get(name) as number,
-      reason: "unsupported-state",
-    }));
+    const items = v.creation_order.map((name) => {
+      const m = own.get(s.step)?.get(name);
+      return {
+        id: idOf.get(name) as number,
+        material:
+          m?.material == null ? null : WIRE_MATERIAL(m.material as number),
+        use_parent_material: m?.use_parent ?? false,
+        content_version: name === "Marker" ? 2 + s.step : 2,
+        commands: (typed.get(s.step)?.get(name) ?? []).map((c) => ({ ...c })),
+      };
+    });
     return {
-      meta: { seq: k + 1, frame: s.settle_frame, items, unsupported },
+      meta: { seq: k + 1, frame: s.settle_frame, items, unsupported: [] },
       sha256: "",
     };
   });
   return {
-    result_class: "unsupported",
+    result_class: "success",
     reasons: [],
     full: {
       path: "synthetic",
@@ -606,37 +615,54 @@ function syntheticCapture(
   };
 }
 for (const variant of ["base", "modulate"] as const) {
-  const r = evaluateCimCaptureTyped(
-    expected,
-    variant,
-    syntheticCapture(variant),
-  );
+  const r = evaluateCimCapture5(expected, variant, syntheticCapture(variant));
   passes(
-    `${variant}: leg-class-capture on a matching synthetic recording`,
+    `${variant}: leg-class-capture on a matching synthetic /5 recording`,
     r.problems,
   );
 }
 {
-  const success = {
+  const base = expected.variants.base;
+  const idOf = (name: string) => 2 + base.creation_order.indexOf(name);
+  const unsupported = {
     ...syntheticCapture("base"),
-    result_class: "success" as const,
+    result_class: "unsupported" as const,
   };
   fails(
-    "leg-class-capture when the capture classifies success",
-    evaluateCimCaptureTyped(expected, "base", success).problems,
-    "class success",
+    "leg-class-capture when the capture classifies unsupported",
+    evaluateCimCapture5(expected, "base", unsupported).problems,
+    "class unsupported",
+  );
+  const entry = syntheticCapture("base");
+  entry.full.transactions[2].meta.unsupported.push({
+    op: "canvas_item_set_material",
+    item: idOf("RI"),
+    reason: "unsupported-material",
+  } as never);
+  fails(
+    "leg-class-capture with an unsupported-material entry",
+    evaluateCimCapture5(expected, "base", entry).problems,
+    "none expected on /5",
   );
   const ri = syntheticCapture("base");
-  const t4 = ri.full.transactions[4];
-  t4.meta.unsupported.push({
-    op: "canvas_item_set_material",
-    item: 2 + expected.variants.base.creation_order.indexOf("RI"),
-    reason: "unsupported-state",
-  });
+  const ri4 = ri.full.transactions[4].meta.items.find(
+    (i) => i.id === idOf("RI"),
+  ) as { material: number | null } | undefined;
+  if (ri4) ri4.material = WIRE_MATERIAL(11);
   fails(
-    "leg-class-capture when RI is still typed at step 4",
-    evaluateCimCaptureTyped(expected, "base", ri).problems,
-    "step 4",
+    "leg-class-capture when RI still names its freed material at step 4",
+    evaluateCimCapture5(expected, "base", ri).problems,
+    "step 4 RI",
+  );
+  const uc = syntheticCapture("base");
+  const uc6 = uc.full.transactions[6].meta.items.find(
+    (i) => i.id === idOf("UC"),
+  ) as { use_parent_material: boolean } | undefined;
+  if (uc6) uc6.use_parent_material = false;
+  fails(
+    "leg-class-capture when UC does not use its parent's material at step 6",
+    evaluateCimCapture5(expected, "base", uc).problems,
+    "step 6 UC",
   );
   const mod = syntheticCapture("modulate");
   const marker = mod.full.transactions[0].meta.items.find(
@@ -646,25 +672,18 @@ for (const variant of ["base", "modulate"] as const) {
   if (marker?.commands[0]?.color) marker.commands[0].color = [0, 0, 0, 1];
   fails(
     "leg-class-capture when the marker's command carries the modulated colour",
-    evaluateCimCaptureTyped(expected, "modulate", mod).problems,
+    evaluateCimCapture5(expected, "modulate", mod).problems,
     "Marker",
   );
-  const uc = syntheticCapture("base");
-  const ucItem = uc.full.transactions[6].meta.items.find(
-    (i) => i.id === 2 + expected.variants.base.creation_order.indexOf("UC"),
+  const redraw = syntheticCapture("base");
+  const ucItem = redraw.full.transactions[6].meta.items.find(
+    (i) => i.id === idOf("UC"),
   );
   if (ucItem) ucItem.content_version = 3;
   fails(
     "leg-class-capture when UC's content_version moves (a redraw)",
-    evaluateCimCaptureTyped(expected, "base", uc).problems,
+    evaluateCimCapture5(expected, "base", redraw).problems,
     "UC's content_version",
-  );
-  const reason = syntheticCapture("base");
-  reason.full.transactions[0].meta.unsupported[0].reason = "unsupported-op";
-  fails(
-    "leg-class-capture with an unsupported-op entry",
-    evaluateCimCaptureTyped(expected, "base", reason).problems,
-    "unsupported-state",
   );
 }
 

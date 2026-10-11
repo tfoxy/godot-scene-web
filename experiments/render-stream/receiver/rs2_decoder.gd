@@ -346,6 +346,31 @@ static func _is_lower_hex(text: String, length: int) -> bool:
 	return true
 
 
+## gate5_5-design.md D9, Q1c (rcc:309-313): the material id (or null) an item of a resolved /5
+## state draws with. While `use_parent_material` is set and the parent is an item, the parent's
+## effective material is taken; a top-level item (parent a canvas, or none) keeps its own.
+## Matches render-stream-2.ts's effectiveMaterial.
+static func effective_material(item_id: int, items: Dictionary) -> Variant:
+	var current: Dictionary = items[item_id]
+	var steps: int = 0
+	while steps <= items.size():
+		var use_parent: bool = current.get("use_parent_material", false)
+		if not use_parent:
+			break
+		var parent: Variant = current["parent"]
+		if parent == null:
+			break
+		var link: Dictionary = parent
+		if link["kind"] != "item":
+			break
+		var parent_id: int = as_int(link["id"])
+		if not items.has(parent_id):
+			break
+		current = items[parent_id]
+		steps += 1
+	return current.get("material")
+
+
 static func int_list(values: Variant) -> Array[int]:
 	var source: Array = values
 	var out: Array[int] = []
@@ -422,12 +447,11 @@ static func _frame(data: PackedByteArray, offset: int) -> Dictionary:
 	return out
 
 
-## `version` (2, 3, 4 or 5) selects the expected magic -- GRS4 (the default since G5d: the
-## capture and receiver speak /4, render-stream-4.md), GRS3 (golden-3/ only; the default from
-## G4e2 to G5d), GRS2 (golden-2/ only) or GRS5 (golden-5/ only, render-stream-5.md, not spoken by
-## the capture/receiver yet -- that is G55d's job). A decoder configured for one version refuses
+## `version` (2, 3, 4 or 5) selects the expected magic -- GRS5 (the default since G55d: the
+## capture and receiver speak /5, render-stream-5.md), GRS4 (golden-4/ only; the default from G5d
+## to G55d), GRS3 (golden-3/ only; the default from G4e2 to G5d) or GRS2 (golden-2/ only). A decoder configured for one version refuses
 ## every other magic the same way it already refuses GRS0/GRS1/anything else that is not its own.
-static func split_records(data: PackedByteArray, version: int = 4) -> Dictionary:
+static func split_records(data: PackedByteArray, version: int = 5) -> Dictionary:
 	var records: Array[Dictionary] = []
 	var errors := PackedStringArray()
 	var expected_magic: String = MAGIC_HEX
@@ -1135,7 +1159,17 @@ class Schema:
 ## entry is a PackedFloat32Array (f32 block) or {"u8_bytes", "sha256"} (u8 block, render-stream-
 ## 2.md "Decoded and resolved forms" -- the raw bytes are NOT kept here; use raw_resource_payload()
 ## for that). `meta` is the parsed JSON whenever it parsed, even if later checks failed.
-static func decode_record(data: PackedByteArray, offset: int, version: int = 4) -> Dictionary:
+static var _non_printable_regex: RegEx = null
+
+
+## Any character outside printable ASCII (0x20-0x7e), compiled once.
+static func _non_printable() -> RegEx:
+	if _non_printable_regex == null:
+		_non_printable_regex = RegEx.create_from_string("[^\\x20-\\x7e]")
+	return _non_printable_regex
+
+
+static func decode_record(data: PackedByteArray, offset: int, version: int = 5) -> Dictionary:
 	var blocks: Array = []
 	var errors := PackedStringArray()
 	var out: Dictionary = {
@@ -1155,14 +1189,19 @@ static func decode_record(data: PackedByteArray, offset: int, version: int = 4) 
 	var meta_start: int = frame["meta_start"]
 	var meta_len: int = frame["meta_len"]
 	var meta_bytes: PackedByteArray = data.slice(meta_start, meta_start + meta_len)
-	for i: int in meta_bytes.size():
-		var b: int = meta_bytes[i]
-		if b < 0x20 or b > 0x7e:
-			errors.append(err("meta-json", "record at offset %d: meta byte %d is 0x%02x, not printable ASCII" % [offset, i, b]))
-			out["errors"] = errors
-			return out
+	# G55d: the printable-ASCII rule checked natively first (a Latin-1 decode plus one regex
+	# search), so the per-byte GDScript loop -- most of a live receiver's per-transaction decode
+	# time on a busy stream -- runs only to name the first bad byte of a record that has one.
+	var meta_text: String = meta_bytes.get_string_from_ascii()
+	if meta_text.length() != meta_bytes.size() or _non_printable().search(meta_text) != null:
+		for i: int in meta_bytes.size():
+			var b: int = meta_bytes[i]
+			if b < 0x20 or b > 0x7e:
+				errors.append(err("meta-json", "record at offset %d: meta byte %d is 0x%02x, not printable ASCII" % [offset, i, b]))
+				out["errors"] = errors
+				return out
 	var json := JSON.new()
-	if json.parse(meta_bytes.get_string_from_ascii()) != OK:
+	if json.parse(meta_text) != OK:
 		errors.append(err("meta-json", "record at offset %d: %s (line %d)" % [offset, json.get_error_message(), json.get_error_line()]))
 		out["errors"] = errors
 		return out
@@ -1652,7 +1691,7 @@ static func _dicts_equal(a: Dictionary, b: Dictionary) -> bool:
 # --------------------------------------------------------------------------- whole recording
 
 
-static func validate_recording(data: PackedByteArray, version: int = 4) -> PackedStringArray:
+static func validate_recording(data: PackedByteArray, version: int = 5) -> PackedStringArray:
 	var errors := PackedStringArray()
 	var split: Dictionary = split_records(data, version)
 	var records: Array[Dictionary] = split["records"]
@@ -1693,12 +1732,11 @@ class Stream:
 	var default_texture_filter: String = "nearest"
 	var default_texture_repeat: String = "disabled"
 
-	## render-stream-5.md (G55w): 2, 3, 4 or 5. `Stream.new()` with no args defaults to 4 since
-	## G5d, matching this file's module-wide default (3 from G4e2 to G5d). G55w's codecs widen
-	## this to 5, but no existing call site passes 5 yet -- that is G55d's job.
-	var version: int = 4
+	## render-stream-5.md (G55w): 2, 3, 4 or 5. `Stream.new()` with no args defaults to 5 since
+	## G55d, matching this file's module-wide default (4 from G5d to G55d, 3 from G4e2 to G5d).
+	var version: int = 5
 
-	func _init(v: int = 4) -> void:
+	func _init(v: int = 5) -> void:
 		version = v
 
 	var records_accepted: int = 0
@@ -2700,8 +2738,9 @@ class Stream:
 		var actual_unsupported_mesh: Dictionary[String, bool] = {}  # "item:canvas_item_add_mesh" -> true
 		# new at /5 (render-stream-5.md "Derived item-level entries"): unsupported-material is the
 		# only one of the three new derived reasons that is independently reconstructable from the
-		# resolved state (an item's OWN "material" field is unsupported, names an unsupported
-		# shader, or names a texture parameter or default texture whose entry is unsupported).
+		# resolved state (an item's EFFECTIVE material -- gate5_5-design.md D9, effective_material()
+		# -- is unsupported, names an unsupported shader, or names a texture parameter or default
+		# texture whose entry is unsupported).
 		# unknown-material and the instance param-type entry describe a value the wire could not
 		# represent at all, so there is no independent "actual" signal for them -- those two are
 		# checked forward-only in the per-entry loop below.
@@ -2711,7 +2750,7 @@ class Stream:
 				var item_for_mat: Dictionary = items[id]
 				if not item_for_mat.has("material"):
 					continue
-				var mat_ref: Variant = item_for_mat["material"]
+				var mat_ref: Variant = Rs2Decoder.effective_material(id, items)
 				if mat_ref == null:
 					continue
 				var mat_id: int = Rs2Decoder.as_int(mat_ref)

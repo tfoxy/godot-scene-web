@@ -8,12 +8,13 @@
 // `-cim-modulate` for the variant), check ids are prefixed `cim-` / `cim-modulate-`.
 //
 // Group g55b: the CanvasItemMaterial fixture (fixtures/gate55-cim) in two scenes, `base` and
-// variant `modulate` (a CanvasModulate on the root canvas). Its captures run on the wire main speaks
-// before G55d, where an item naming any material is item-level `canvas_item_set_material` /
-// `unsupported-state`; each capture leg must classify exactly that (and G55d turns it into
-// `success`). The pixels are checked against an independent model: make_expected.py's CimSim,
-// light-mode and canvas-modulate rules and blend twin, rasterized by lib/geometry-raster.ts with its
-// blend modes. A same-build reference repeat measures the budget (expected 0).
+// variant `modulate` (a CanvasModulate on the root canvas). Since G55d its captures speak
+// render-stream/5, which carries every material, shader and item material field, so each capture
+// leg classifies `success` with every item naming CimSim's material (before G55d an item naming a
+// material was typed `unsupported-state`). The pixels are checked against an independent model:
+// make_expected.py's CimSim, light-mode and canvas-modulate rules and blend twin, rasterized by
+// lib/geometry-raster.ts with its blend modes. A same-build reference repeat measures the budget
+// (expected 0). G55d's receiver legs and checks over the same scenes are lib/gate55d-checks.ts's.
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 5.5"):
 //   legs.json, binary.json
@@ -69,6 +70,7 @@ import {
 import { isShape } from "./gate5-expected";
 import {
   asGate5,
+  expectedItemMaterials,
   GATE55_VARIANTS,
   type Gate55Expected,
   type Gate55Variant,
@@ -458,7 +460,7 @@ export function parseMaterialLog(
 }
 
 // ---------------------------------------------------------------------------------------------
-// leg-class-capture: unsupported, every material item typed
+// leg-class-capture: success on render-stream/5
 // ---------------------------------------------------------------------------------------------
 
 export interface RectCommand {
@@ -496,53 +498,69 @@ export function rectCommandsByStep(
   return out;
 }
 
-/** Pure: the capture classifies `unsupported`; the only unsupported op is canvas_item_set_material
- * and every entry is item-level `unsupported-state`; at every settle frame the entries name exactly
- * the step's `typed_entries` items, and each item's commands are its add_rect calls as recorded
- * (float32-exact, the colours as drawn, never modulated: the canvas modulate is not item state);
- * and every item but the marker keeps one content_version over the whole run (nothing the timeline
- * changes redraws a region: fresh without redraw, D9). */
-export function evaluateCimCaptureTyped(
+/** Pure (render-stream/5, G55d): the capture classifies `success` and carries no unsupported entry
+ * at all (a draw-index tie is no-draw-index-ties' business); at every settle frame each item's
+ * commands are its add_rect calls as recorded (float32-exact, the colours as drawn, never
+ * modulated: the canvas modulate is canvas state), each item's `material` names the material
+ * CimSim gave it (expected.json `rs_material_calls`; CimSim's material ids paired with the wire
+ * ids items name over the run, both ascending) or null, and its use_parent_material is CimSim's
+ * (UC from step 6); and every item but the marker keeps one content_version over the whole run
+ * (nothing the timeline changes redraws a region: fresh without redraw, D9). */
+export function evaluateCimCapture5(
   e: Gate55Expected,
   variant: Gate55Variant,
   capture: Pick<Gate3CaptureEvaluation, "result_class" | "reasons" | "full">,
-): { problems: string[]; ops: string[]; versions: Record<string, number[]> } {
+): {
+  problems: string[];
+  ops: string[];
+  versions: Record<string, number[]>;
+  materials: Record<string, string>;
+} {
   const problems: string[] = [];
   const v = e.variants[variant];
-  if (capture.result_class !== "unsupported")
+  if (capture.result_class !== "success")
     problems.push(
-      `class ${capture.result_class}, expected unsupported: ${capture.reasons.slice(0, 2).join(" | ")}`,
+      `class ${capture.result_class}, expected success: ${capture.reasons.slice(0, 2).join(" | ")}`,
     );
   const ops = unsupportedOps(capture.full);
-  if (JSON.stringify(ops) !== JSON.stringify([...e.typed_ops].sort()))
-    problems.push(
-      `unsupported ops ${JSON.stringify(ops)} != ${JSON.stringify(e.typed_ops)}`,
-    );
+  for (const t of capture.full.transactions) {
+    const u = t.meta.unsupported.find((x) => x.reason !== "draw-index-tie");
+    if (u) {
+      problems.push(
+        `frame ${t.meta.frame}: unsupported entry ${JSON.stringify(u)} (none expected on /5)`,
+      );
+      break;
+    }
+  }
   const ids = new Set<number>();
+  const wireMaterials = new Set<number>();
   for (const t of capture.full.transactions)
-    for (const i of t.meta.items) ids.add(i.id);
+    for (const i of t.meta.items) {
+      ids.add(i.id);
+      if (typeof i.material === "number") wireMaterials.add(i.material);
+    }
   const sorted = [...ids].sort((a, b) => a - b);
   if (sorted.length !== v.creation_order.length)
     problems.push(
       `${sorted.length} item ids in the recording, expected ${v.creation_order.length}`,
     );
   const idOf = new Map(v.creation_order.map((n, k) => [n, sorted[k]]));
-  const nameOf = new Map(v.creation_order.map((n, k) => [sorted[k], n]));
-  for (const t of capture.full.transactions)
-    for (const u of t.meta.unsupported) {
-      if (u.reason === "draw-index-tie") continue;
-      if (
-        u.op !== "canvas_item_set_material" ||
-        u.reason !== "unsupported-state" ||
-        u.item === null
-      ) {
-        problems.push(
-          `frame ${t.meta.frame}: entry ${JSON.stringify(u)} is not item-level canvas_item_set_material/unsupported-state`,
-        );
-        break;
-      }
-    }
+  // CimSim's attached material ids, ascending, against the wire ids items name, ascending.
+  const simAttached = new Set<number>();
+  for (const s of v.steps)
+    for (const c of s.rs_material_calls)
+      if (c.call === "canvas_item_set_material" && c.material != null)
+        simAttached.add(c.material as number);
+  const simSorted = [...simAttached].sort((a, b) => a - b);
+  const wireSorted = [...wireMaterials].sort((a, b) => a - b);
+  if (simSorted.length !== wireSorted.length)
+    problems.push(
+      `items name ${wireSorted.length} material ids over the run (${wireSorted.join(",")}), CimSim attaches ${simSorted.length}`,
+    );
+  const wireOf = new Map(simSorted.map((m, k) => [m, wireSorted[k]]));
+  const own = expectedItemMaterials(e, variant);
   const typed = rectCommandsByStep(e, variant);
+  const materials: Record<string, string> = {};
   for (const s of v.steps) {
     const t = capture.full.transactions.find(
       (x) => x.meta.frame === s.settle_frame,
@@ -553,14 +571,21 @@ export function evaluateCimCaptureTyped(
       );
       continue;
     }
-    const entries = t.meta.unsupported
-      .filter((u) => u.reason !== "draw-index-tie" && u.item !== null)
-      .map((u) => nameOf.get(u.item as number) ?? `#${u.item}`)
-      .sort();
-    if (JSON.stringify(entries) !== JSON.stringify([...s.typed_entries].sort()))
-      problems.push(
-        `step ${s.step}: typed items ${entries.join(",")} != ${[...s.typed_entries].sort().join(",")}`,
-      );
+    const row: string[] = [];
+    for (const [name, want] of own.get(s.step) ?? []) {
+      const item = t.meta.items.find((i) => i.id === idOf.get(name));
+      const wantMaterial =
+        want.material === null ? null : (wireOf.get(want.material) ?? -1);
+      if (want.material !== null) row.push(`${name}=${wantMaterial}`);
+      if (
+        (item?.material ?? null) !== wantMaterial ||
+        (item?.use_parent_material ?? false) !== want.use_parent
+      )
+        problems.push(
+          `step ${s.step} ${name}: material ${item?.material} use_parent_material ${item?.use_parent_material}, expected ${wantMaterial} / ${want.use_parent}`,
+        );
+    }
+    materials[String(s.step)] = row.join(" ");
     for (const [name, want] of typed.get(s.step) ?? []) {
       const item = t.meta.items.find((i) => i.id === idOf.get(name));
       const got = (item?.commands ?? []).map((c) =>
@@ -595,7 +620,7 @@ export function evaluateCimCaptureTyped(
         `${name}'s content_version takes ${seen.size} values over the run (${versions[name].join(",")}), expected one`,
       );
   }
-  return { problems, ops, versions };
+  return { problems, ops, versions, materials };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -683,7 +708,7 @@ async function runScene(
   const dir = join(outDir, SCENE_DIR[variant]);
   const id = (name: string) => `${SCENE_DIR[variant]}-${name}`;
   const e5 = asGate5(e, variant);
-  const capture = await evaluateCapture(dir, { expectedClass: "unsupported" });
+  const capture = await evaluateCapture(dir, { expectedClass: "success" });
   const countersPath = join(dir, "capture", "evidence", "counters.json");
   const counters = await readJson<CountersLike55>(countersPath);
   const hookPath = join(dir, "capture", "evidence", "resources.jsonl");
@@ -736,7 +761,7 @@ async function runScene(
     hookLines,
     G55B_CAPTURE_QUIT_FRAME,
   );
-  const typed = evaluateCimCaptureTyped(e, variant, capture);
+  const typed = evaluateCimCapture5(e, variant, capture);
   const delta1 = repeatCmp.budgets.filter(
     (b) => b.pixels > 0 && b.class !== "exact",
   );
@@ -818,9 +843,14 @@ async function runScene(
     ),
     check(
       `leg-class-${L("capture")}`,
-      "the capture leg classifies as unsupported on the pre-/5 wire: armed, stream closed, both sinks valid, no capture failure; the only unsupported op is canvas_item_set_material, item-level unsupported-state, naming at every settle frame exactly the items with a material (RI not at step 4); every item's commands are its add_rect calls (float32-exact, unmodulated); and every item but the marker keeps one content_version over the run",
+      "the capture leg classifies as success on render-stream/5: armed, stream closed, both sinks valid and equivalent, no unsupported entry; at every settle frame every item's commands are its add_rect calls (float32-exact, unmodulated), its material field names CimSim's material (RI null at step 4, a new id from step 5) and its use_parent_material is CimSim's (UC from step 6); every item but the marker keeps one content_version over the run",
       typed.problems,
-      `${capture.result_class}: ${typed.ops.join(", ")} typed`,
+      `${capture.result_class}; materials per step ${Object.entries(
+        typed.materials,
+      )
+        .filter(([k]) => k === "0" || k === "4" || k === "5")
+        .map(([k, m]) => `${k}: ${m}`)
+        .join("; ")}`,
       capture.artifacts,
     ),
   ];

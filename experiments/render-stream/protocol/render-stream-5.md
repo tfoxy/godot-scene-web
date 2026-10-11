@@ -1,9 +1,8 @@
 # render-stream/5 wire format
 
-Status: specified and golden-tested at G55w (2026-10-10); the codecs exist but nothing speaks /5
-yet -- the capture, the receiver and every gate runner keep speaking render-stream/4 until G55d
-(gate5_5-design.md D1, D17). Written with [gate5_5-design.md](gate5_5-design.md) Q4, which this
-document implements. Codecs (G55w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`,
+Status: specified and golden-tested at G55w (2026-10-10); since G55d (2026-10-11) the capture, the
+receiver and every gate runner speak /5 (gate5_5-design.md D1, D17, "As built (G55d)"). Written
+with [gate5_5-design.md](gate5_5-design.md) Q4, which this document implements. Codecs (G55w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`,
 behind `Session::version`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`,
 behind an explicit `version` parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all
 checked byte-for-byte and state-for-state against `protocol/golden-5/`, per this text. The shader
@@ -18,9 +17,8 @@ As with /3 and /4 (memory g4e1-rs3-version-switch-pattern), /5 is **not** a new 
 version-parameterized C++/TypeScript/GDScript modules /4 already extended grow a fourth value:
 C++'s `Session::version` gains `ProtocolVersion::V5` (still defaulting to `V2`, so every existing
 /2/3/4 caller is unaffected), and the TypeScript/GDScript `version` parameter widens to
-`2 | 3 | 4 | 5` (defaulting to `3` until G5d, `4` since -- G5d landed on `main` while this document
-was being written; G55w carries that default forward unchanged, since the capture and receiver do
-not speak /5 until G55d). Renaming `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/
+`2 | 3 | 4 | 5` (defaulting to `3` until G5d, `4` from G5d and `5` since G55d, when the capture and the receiver
+switched to /5). Renaming `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/
 `rs2_decoder.gd` is not part of this document.
 
 render-stream/5 is render-stream/4 plus:
@@ -404,8 +402,7 @@ vectors (unaffected).
 ## Live transport
 
 As /4, except the subprotocol is `render-stream.5` and the hello's `protocol` is
-`"render-stream/5"`. Not wired anywhere yet -- G55d switches the capture's listener and the
-receiver's live client to /5.
+`"render-stream/5"`. The capture's listener and the receiver's live client speak it since G55d.
 
 ## Optional keys: unknown-item skip
 

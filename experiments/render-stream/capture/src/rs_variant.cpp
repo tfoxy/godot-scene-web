@@ -1,6 +1,7 @@
 #include "rs_variant.h"
 
 #include <cstring>
+#include <type_traits>
 
 #include "abi.h"
 #include "gdextension_interface.h"
@@ -165,10 +166,23 @@ void decode_packed(GDExtensionVariantType type, const void *variant_ptr, const c
     return;
   }
   out->type = type_name;
+  out->packed = true;
   out->n = array.size();
   const Elem *values = array.ptr();
   for (int64_t i = 0; i < out->n; ++i) {
     push(&out->f, values[i]);
+  }
+  if constexpr (std::is_same<Elem, int64_t>::value) {
+    // D8: an int beyond +-2^53 is param-range, in a packed array as in a scalar.
+    for (int64_t i = 0; i < out->n; ++i) {
+      const int64_t v = static_cast<int64_t>(values[i]);
+      if (v > kMaxExactInt || v < -kMaxExactInt) {
+        out->status = "unsupported";
+        out->reason = "param-range";
+        out->f.clear();
+        break;
+      }
+    }
   }
   destroy_concrete(type, &array);
 }

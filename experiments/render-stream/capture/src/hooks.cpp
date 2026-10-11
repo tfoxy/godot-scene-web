@@ -1127,7 +1127,7 @@ rs::MeshSurfaceCopy rehash_mesh_surface(const MeshSurfaceBuffer &buffer,
 // CanvasItemMaterial recognizer runs regardless (a recognized engine-generated shader is never
 // refused by D11, Q1e). `copy_ns` covers the UTF-8 decode and the payload encode, `scan_ns` the
 // token scan and the template comparison, `hash_ns` the SHA-256 alone.
-rs::ShaderCopy copy_shader_code(const void *code_ptr) {
+rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_out = nullptr) {
   rs::ShaderCopy copy;
   const uint64_t t0 = now_ns();
   const std::string code = rs::decode_string(code_ptr);
@@ -1157,21 +1157,25 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr) {
     copy.copy_ns = static_cast<int64_t>(t_decode - t0);
     return copy;
   }
-  const std::vector<uint8_t> payload = rs::encode_payload(code);
+  auto payload = std::make_shared<rs::PayloadBytes>(rs::encode_payload(code));
   const uint64_t t_encode = now_ns();
-  copy.hash = sha256_hex(payload.data(), payload.size());
+  copy.hash = sha256_hex(payload->data(), payload->size());
   const uint64_t t_hash = now_ns();
-  copy.payload_bytes = static_cast<int64_t>(payload.size());
+  copy.payload_bytes = static_cast<int64_t>(payload->size());
   copy.copy_ns = static_cast<int64_t>((t_decode - t0) + (t_encode - t_scan));
   copy.hash_ns = static_cast<int64_t>(t_hash - t_encode);
+  if (payload_out != nullptr) {
+    *payload_out = std::move(payload);  // G55d: the mirror's shader table shares these bytes
+  }
   return copy;
 }
 
 // A material or instance parameter's Variant value (D8), classified applied/rejected/unknown
 // (D6) for the hook log; the decoded name and value never reach counters.json (Q2).
-rs::MaterialParamCopy decode_material_param(const void *value_ptr) {
+rs::MaterialParamCopy decode_material_param(const void *value_ptr,
+                                            rs::DecodedParam *decoded_out = nullptr) {
   const uint64_t t0 = now_ns();
-  const rs::DecodedParam decoded = rs::decode_variant(value_ptr);
+  rs::DecodedParam decoded = rs::decode_variant(value_ptr);
   const uint64_t t1 = now_ns();
   rs::MaterialParamCopy copy;
   copy.type = decoded.type;
@@ -1183,6 +1187,9 @@ rs::MaterialParamCopy decode_material_param(const void *value_ptr) {
     copy.outcome = "rejected";
   } else {
     copy.outcome = "unknown";
+  }
+  if (decoded_out != nullptr) {
+    *decoded_out = std::move(decoded);  // G55d: the mirror keeps the value itself
   }
   return copy;
 }
@@ -1645,7 +1652,7 @@ void hook_set_material(void *self, RID item, RID material) {
     mirror().set_material(item.id, material.id, current_frame());
   }
   // Logged for the material census (gate5_5-design.md Q3d) alongside calibrator 8's own taps;
-  // the item field on the wire/mirror stays G55d's.
+  // since G55d the mirror keeps it as the item's `material` field (D9).
   if (resources().active()) {
     resources().canvas_item_set_material(tap_context(), item.id, material.id);
   }
@@ -2028,9 +2035,15 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
       original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
   log_entry(&g_shader_creates, rids(result.id));
   if (resources().active()) {
+    rs::ShaderCodeInput input;
+    input.copy = copy_shader_code(code, &input.bytes);
+    // Loader threads create shaders too (Q1g): one order for the mirror's and the log's ids.
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("shader_create_from_code");
-    const rs::ShaderCopy copy = copy_shader_code(code);
-    resources().shader_create_from_code(tap_context(), result.id, copy, omit);
+    if (streaming()) {
+      mirror().shader_create_from_code(result.id, input, current_frame());  // omit-op inside
+    }
+    resources().shader_create_from_code(tap_context(), result.id, input.copy, omit);
   }
   return result;
 }
@@ -2039,9 +2052,14 @@ void hook_shader_set_code(void *self, RID shader, const void *code) {
   bump(kShaderSetCode);
   log_entry(&g_shader_codes, rids(shader.id));
   if (resources().active()) {
+    rs::ShaderCodeInput input;
+    input.copy = copy_shader_code(code, &input.bytes);
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("shader_set_code");
-    const rs::ShaderCopy copy = copy_shader_code(code);
-    resources().shader_set_code(tap_context(), shader.id, copy, omit);
+    if (streaming()) {
+      mirror().shader_set_code(shader.id, input, current_frame());
+    }
+    resources().shader_set_code(tap_context(), shader.id, input.copy, omit);
   }
   original<FnShaderSetCode>(kShaderSetCode)(self, shader, code);
 }
@@ -2050,9 +2068,14 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
   bump(kMaterialSetParam);
   log_entry(&g_material_params, rids(material.id));
   if (resources().active()) {
-    const bool omit = omitted("material_set_param");
     const std::string param_name = rs::decode_string_name(name);
-    const rs::MaterialParamCopy copy = decode_material_param(value);
+    rs::DecodedParam decoded;
+    const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const bool omit = omitted("material_set_param");
+    if (streaming()) {
+      mirror().material_set_param(material.id, param_name, decoded, current_frame());
+    }
     resources().material_set_param(tap_context(), material.id, param_name, copy, omit);
   }
   original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
@@ -2065,7 +2088,11 @@ RID hook_shader_create(void *self) {
   const RID result = original<FnCreate>(kShaderCreate)(self);
   log_entry(&g_shader_create_calls, rids(result.id));
   if (resources().active()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("shader_create");
+    if (streaming()) {
+      mirror().shader_create(result.id, current_frame());
+    }
     resources().shader_create(tap_context(), result.id, omit);
   }
   return result;
@@ -2081,8 +2108,13 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
   key.index = index;
   log_entry(&g_shader_default_textures, pod(key));
   if (resources().active()) {
-    const bool omit = omitted("shader_set_default_texture_parameter");
     const std::string param_name = rs::decode_string_name(name);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const bool omit = omitted("shader_set_default_texture_parameter");
+    if (streaming()) {
+      mirror().shader_set_default_texture_parameter(shader.id, param_name, texture.id, index,
+                                                    current_frame());
+    }
     resources().shader_set_default_texture_parameter(tap_context(), shader.id, param_name,
                                                       texture.id, index, omit);
   }
@@ -2095,7 +2127,11 @@ RID hook_material_create(void *self) {
   const RID result = original<FnCreate>(kMaterialCreate)(self);
   log_entry(&g_material_create_calls, rids(result.id));
   if (resources().active()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_create");
+    if (streaming()) {
+      mirror().material_create(result.id, current_frame());
+    }
     resources().material_create(tap_context(), result.id, omit);
   }
   return result;
@@ -2111,7 +2147,11 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
   key.shader = shader.id;
   log_entry(&g_material_create_from_shader_calls, pod(key));
   if (resources().active()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_create_from_shader");
+    if (streaming()) {
+      mirror().material_create_from_shader(result.id, shader.id, current_frame());
+    }
     resources().material_create_from_shader(tap_context(), result.id, shader.id, omit);
   }
   return result;
@@ -2121,7 +2161,11 @@ void hook_material_set_shader(void *self, RID material, RID shader) {
   bump(kMaterialSetShader);
   log_entry(&g_material_set_shaders, rids(material.id, shader.id));
   if (resources().active()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_set_shader");
+    if (streaming()) {
+      mirror().material_set_shader(material.id, shader.id, current_frame());
+    }
     resources().material_set_shader(tap_context(), material.id, shader.id, omit);
   }
   original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
@@ -2130,7 +2174,7 @@ void hook_material_set_shader(void *self, RID material, RID shader) {
 // canvas_set_modulate: the colour itself is not a material parameter (Q2's "never to
 // counters.json" rule does not cover it), so it is captured fully here, as canvas_item_set_
 // modulate/_self_modulate already are; the hook log's own line (kind:"item-material") is
-// presence-only (no mirror canvas field yet, G55d).
+// presence-only. Since G55d the mirror keeps it as the canvas's `modulate` (D10).
 void hook_set_canvas_modulate(void *self, RID canvas, const Color *color) {
   bump(kSetCanvasModulate);
   if (color != nullptr) {
@@ -2139,6 +2183,9 @@ void hook_set_canvas_modulate(void *self, RID canvas, const Color *color) {
     key.item = canvas.id;
     key.color = *color;
     log_entry(&g_canvas_set_modulates, pod(key));
+    if (streaming()) {
+      mirror().canvas_set_modulate(canvas.id, to_color(*color), current_frame());
+    }
   }
   if (resources().active()) {
     resources().canvas_set_modulate(tap_context(), canvas.id);
@@ -2149,6 +2196,9 @@ void hook_set_canvas_modulate(void *self, RID canvas, const Color *color) {
 void hook_set_use_parent_material(void *self, RID item, bool enable) {
   bump(kSetUseParentMaterial);
   log_entry(&g_set_use_parent_materials, item_value(item, enable ? 1 : 0));
+  if (streaming()) {
+    mirror().set_use_parent_material(item.id, enable, current_frame());
+  }
   if (resources().active()) {
     resources().canvas_item_set_use_parent_material(tap_context(), item.id, enable);
   }
@@ -2161,11 +2211,17 @@ void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
                                         const void *value) {
   bump(kSetInstanceShaderParameter);
   log_entry(&g_set_instance_shader_parameters, rids(item.id));
-  if (resources().active()) {
+  if (resources().active() || streaming()) {
     const std::string param_name = rs::decode_string_name(name);
-    const rs::MaterialParamCopy copy = decode_material_param(value);
-    resources().canvas_item_set_instance_shader_parameter(tap_context(), item.id, param_name,
-                                                           copy);
+    rs::DecodedParam decoded;
+    const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
+    if (streaming()) {
+      mirror().set_instance_shader_parameter(item.id, param_name, decoded, current_frame());
+    }
+    if (resources().active()) {
+      resources().canvas_item_set_instance_shader_parameter(tap_context(), item.id, param_name,
+                                                             copy);
+    }
   }
   original<FnMaterialSetParam>(kSetInstanceShaderParameter)(self, item, name, value);
 }
@@ -2173,6 +2229,9 @@ void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
 void hook_canvas_light_attach_to_canvas(void *self, RID light, RID canvas) {
   bump(kCanvasLightAttachToCanvas);
   log_entry(&g_canvas_light_attaches, rids(light.id, canvas.id));
+  if (streaming()) {
+    mirror().canvas_light_attach_to_canvas(light.id, canvas.id, current_frame());
+  }
   if (resources().active()) {
     resources().canvas_light_attach_to_canvas(tap_context(), light.id, canvas.id);
   }

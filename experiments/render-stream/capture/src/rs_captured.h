@@ -1,7 +1,9 @@
 // One captured frame as the publishers see it (gate 2, G2b2): the mirror's render-stream/2
 // snapshot plus the payload bytes of every `ok` image entry it names, keyed by content hash --
-// and, since G5e (render-stream/4), of every surface of every `ok` mesh entry: GRT1 and GRM1
-// payloads share one content-addressed map, store, inline threshold and HTTP path.
+// and, since G5e (render-stream/4), of every surface of every `ok` mesh entry, and since G55d
+// (render-stream/5) the GRP1 code payload of every `ok` shader with `source: "payload"`: GRT1,
+// GRM1 and GRP1 payloads share one content-addressed map, store, inline threshold and HTTP
+// path.
 //
 // The payloads are the GRT1 byte sequences the texture hooks copied at the call
 // (rs_texture_payload.h, gate2-design.md D3), shared, never copied again: a snapshot keeps the
@@ -32,8 +34,9 @@ using PayloadMap = std::map<std::string, PayloadPtr>;
 
 struct Captured {
   rs2::Snapshot state;
-  // Exactly the hashes of the `ok` image entries in `state.textures` and of the surfaces of the
-  // `ok` entries in `state.meshes`.
+  // Exactly the hashes payload_refs(state) names: the `ok` image entries in `state.textures`,
+  // the surfaces of the `ok` entries in `state.meshes` and the `ok` payload-source shaders in
+  // `state.shaders`.
   PayloadMap payloads;
 };
 
@@ -43,11 +46,14 @@ struct PayloadRef {
   std::uint64_t payload_bytes = 0;
   const rs2::TextureEntry *texture = nullptr;  // set for a texture payload (GRT1)
   const rs2::MeshSurface *surface = nullptr;   // set for a mesh surface payload (GRM1)
+  const rs2::ShaderEntry *shader = nullptr;    // set for a shader code payload (GRP1, G55d)
 };
 
 // Every payload `state` names, in table order: the `ok` image textures by id, then each `ok`
-// mesh's surfaces by mesh id and surface index (render-stream-2.md "Resource record": inline
-// records go out in table order). A hash may repeat.
+// mesh's surfaces by mesh id and surface index, then (G55d, render-stream-5.md) each `ok` shader
+// whose code travels as a payload (`source: "payload"`; never a `withheld` one, D4) by shader id
+// (render-stream-2.md "Resource record": inline records go out in table order). A hash may
+// repeat.
 inline std::vector<PayloadRef> payload_refs(const rs2::Snapshot &state) {
   std::vector<PayloadRef> out;
   for (const rs2::TextureEntry &entry : state.textures) {
@@ -71,6 +77,17 @@ inline std::vector<PayloadRef> payload_refs(const rs2::Snapshot &state) {
       ref.surface = &surface;
       out.push_back(ref);
     }
+  }
+  for (const rs2::ShaderEntry &shader : state.shaders) {
+    if (shader.status != rs2::ShaderStatus::Ok || !shader.has_source ||
+        shader.source != rs2::ShaderSource::Payload || !shader.has_hash) {
+      continue;
+    }
+    PayloadRef ref;
+    ref.hash = &shader.hash;
+    ref.payload_bytes = shader.payload_bytes;
+    ref.shader = &shader;
+    out.push_back(ref);
   }
   return out;
 }

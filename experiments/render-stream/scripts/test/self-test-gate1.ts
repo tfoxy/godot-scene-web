@@ -14,7 +14,7 @@
 //    render-stream/2, both sinks, by rs2-test-encoder.ts from a model of the fixture's retained
 //    state, every texture table holding the engine's own unreferenced hue strip; live streams
 //    inline, the hue strip's resource record ahead of seq 1; applied.json
-//    render-stream-receiver-applied/4; PNGs synthesized from fixtures/gate1/expected.json), then
+//    render-stream-receiver-applied/5; PNGs synthesized from fixtures/gate1/expected.json), then
 //    one perturbation per failure mode. Each scenario runs the real runGate1 and asserts the
 //    verdict of the checks and leg classes it targets.
 //
@@ -81,8 +81,8 @@ import {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-// render-stream/4 since G5d (/3 from G4e2): the receiver replays golden-4.
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-4");
+// render-stream/5 since G55d (/4 from G5d, /3 from G4e2): the receiver replays golden-5.
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-5");
 
 let assertions = 0;
 let failures = 0;
@@ -856,7 +856,7 @@ function appliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/4",
+    schema: "render-stream-receiver-applied/5",
     mode: "file",
     recording: {
       path: recordingPath,
@@ -1145,11 +1145,11 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs4"));
+  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs5"));
   await mkdir(minimalDir, { recursive: true });
   await writeFile(join(minimalDir, "recording.rs2"), minimal);
   await writeJson(join(minimalDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/4",
+    schema: "render-stream-receiver-applied/5",
     status: "ok",
     end_seen: true,
     unsupported: expectedReceiverUnsupported(
@@ -1702,7 +1702,7 @@ function liveApplied(
     submitted: opts.rendered ? tx.length : 0,
   };
   return {
-    schema: "render-stream-receiver-applied/4",
+    schema: "render-stream-receiver-applied/5",
     mode: "live",
     recording: {
       path: join(dir, "received.rs2"),
@@ -1833,7 +1833,7 @@ async function writeLiveReceiver(
       "RS_RECEIVER_MODE=live",
       `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
     ],
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.4); hello sent\n[receiver] ok\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream (subprotocol render-stream.5); hello sent\n[receiver] ok\n`,
     files.failSeq !== undefined ? 3 : 0,
   );
   if (!opts.rendered) await writeLiveTrace(dirname(dir), projects);
@@ -2542,7 +2542,7 @@ async function writeG1dLeg(
         };
   const reconnectSeq = first.shots.get(G1D_RECONNECT_STEP);
   await writeJson(join(recvDir, "applied.json"), {
-    schema: "render-stream-receiver-applied/4",
+    schema: "render-stream-receiver-applied/5",
     mode: "live",
     recording: null,
     session_id: LIVE_SESSION,
@@ -2636,7 +2636,7 @@ async function writeG1dLeg(
       "60",
     ],
     env,
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.4); hello sent\n[receiver] ok\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.5); hello sent\n[receiver] ok\n`,
     0,
   );
 }
@@ -2722,7 +2722,7 @@ async function writeKilledLeg(
       "RS_RECEIVER_MODE=live",
       `RS_RECEIVER_URL=ws://127.0.0.1:${LIVE_PORT}/render-stream`,
     ],
-    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.4); hello sent\n`,
+    `[receiver] connected to ws://127.0.0.1:${LIVE_PORT}/render-stream as connection 1 (subprotocol render-stream.5); hello sent\n`,
     137,
   );
 }

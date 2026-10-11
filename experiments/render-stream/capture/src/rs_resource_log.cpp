@@ -584,6 +584,18 @@ void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitte
     line.status = "freed";
     emit(line);
     shader_by_rid_.erase(rid);
+    // G55d (gate5_5-design.md D5; g3ms.cpp:2184-2198): freeing a shader sets every material that
+    // names it to no shader, version + 1 -- the mirror's rule, applied here too so both registries
+    // keep counting the same versions. No line of its own: a reader replays it from this free
+    // line (every material whose last shader was this one).
+    for (auto &entry : material_by_rid_) {
+      MaterialEntry &material_entry = entry.second;
+      if (material_entry.shader_rid == rid) {
+        material_entry.shader_rid = 0;
+        material_entry.version += 1;
+        recompute_material_status(&material_entry);
+      }
+    }
     return;
   }
   MaterialEntry *material = find_material(rid);

@@ -2,7 +2,9 @@
 // render-stream/2 with textures since gate 2 G2b2; render-stream/3's msdf command
 // since gate 4 G4e2; render-stream/4's immediate geometry, add_set_transform and
 // add_clip_ignore since gate 5 G5d -- every snapshot is stamped ProtocolVersion::V4 --
-// and render-stream/4's mesh table and add_mesh since G5e).
+// render-stream/4's mesh table and add_mesh since G5e; render-stream/5 since G55d: every
+// snapshot is stamped V5 and carries the shader and material tables, the item material fields and
+// the canvas modulate).
 //
 // A tap on the RenderingServer hooks that keeps the canvas state a receiver
 // needs to rebuild the frame: canvases, canvas items, their parenting and
@@ -72,6 +74,7 @@
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
 #include "rs_resource_log.h"
+#include "rs_variant.h"
 
 namespace grc {
 namespace rs {
@@ -93,6 +96,11 @@ struct MirrorStats {
   std::uint64_t live_meshes = 0;          // mesh-table entries, tombstones included
   std::uint64_t mesh_unknown = 0;         // a mesh tap naming a RID the table does not know
   std::uint64_t mesh_payload_bytes = 0;   // distinct GRM1 payload bytes the table holds now
+  // Gate 5.5 (G55d).
+  std::uint64_t live_shaders = 0;
+  std::uint64_t live_materials = 0;
+  std::uint64_t shader_payload_bytes = 0;  // distinct GRP1 payload bytes the table holds now
+  std::uint64_t material_unknown = 0;      // a shader/material tap naming a RID the table lacks
   // protocol/unknown-item-skip.md (Skip only; all zero under Strict).
   std::uint64_t unknown_calls = 0;       // hook calls that named an unknown canvas/item RID
   std::uint64_t unknown_rids_named = 0;  // distinct unknown RIDs ever named (freed ones included)
@@ -107,6 +115,15 @@ struct MirrorStats {
 // SurfaceData (or, after a region update, from its own retained buffers with the update applied).
 struct MeshSurfaceInput {
   MeshSurfaceCopy copy;
+  PayloadPtr bytes;
+};
+
+// What a shader-code hook hands the mirror (G55d; gate5_5-design.md Q3a, Q3b): the hook log's
+// classification of the code (rs_resource_log.h ShaderCopy: status, reason, mode, uses, builtin,
+// hash, payload_bytes) and, whenever the hook built one (copy.hash non-empty), the whole GRP1
+// payload, shared like a texture's.
+struct ShaderCodeInput {
+  ShaderCopy copy;
   PayloadPtr bytes;
 };
 
@@ -334,6 +351,68 @@ class Mirror {
   void add_mesh(std::uint64_t item, std::uint64_t mesh, const rs2::Xform &transform,
                 const rs2::Color4 &modulate, std::uint64_t texture, std::uint64_t frame);
 
+  // --- shaders, materials, item and canvas material state (G55d; gate5_5-design.md D4-D10, Q3b,
+  // render-stream-5.md) ----------------------------------------------------------------------
+  //
+  // Two tables, each with its own per-session id counter (from 1, never reused) and `version` 1
+  // at creation, + 1 per accepted mutating call -- the hook log's counting (rs_resource_log.h),
+  // which the checker compares (`material-commands`). No tombstones (D5): freeing a shader sets
+  // every material naming it to no shader (version + 1), freeing a material sets every item
+  // naming it to `material: null`. Only omit-op applies to the shader and material taps (the hook
+  // log has no omit-update); the item and canvas field taps are ordinary mutations (omit-op, then
+  // omit-update). The omit-op names are the RenderingServer method names. A shader or material
+  // tap naming a RID the table does not know changes nothing.
+  //
+  // GRC_SHADER_POLICY (D4), read at arm; survives until reset() (default Source). Params: every
+  // non-builtin shader with code is `withheld` (hash and size kept, no payload anywhere). Exclude:
+  // every non-builtin shader with code is `unsupported` / `shader-excluded`. A recognized
+  // CanvasItemMaterial shader (D7) is engine content and travels as a payload under every policy.
+  void set_shader_policy(rs2::ShaderPolicy policy);
+  // perturb-shader sabotage (Q3c); 0 disables it. From `from_frame` on, every code the mirror
+  // records for a non-builtin shader that contains the identifier `fragment` and ends (ignoring
+  // whitespace) with `}` gets "\tCOLOR.rgb = vec3(1.0) - COLOR.rgb;\n" before that last `}` (a
+  // new payload, re-hashed); the engine and the hook log keep the true code.
+  void set_perturb_shader(std::uint64_t from_frame);
+  // shader_create: a new id, ok, version 1, no code (mode, source and hash null).
+  void shader_create(std::uint64_t rid, std::uint64_t frame);
+  // shader_create_from_code: a new id, version 1, the code classified.
+  void shader_create_from_code(std::uint64_t rid, const ShaderCodeInput &code, std::uint64_t frame);
+  // shader_set_code: new payload and classification, version + 1.
+  void shader_set_code(std::uint64_t rid, const ShaderCodeInput &code, std::uint64_t frame);
+  // shader_set_default_texture_parameter: the (name, index) entry set to a known texture's id or
+  // removed for RID(); an unknown texture RID removes it and marks the entry unresolvable (items
+  // drawing with the shader then get `unsupported-material`). version + 1.
+  void shader_set_default_texture_parameter(std::uint64_t rid, const std::string &name,
+                                            std::uint64_t texture, std::int32_t index,
+                                            std::uint64_t frame);
+  // material_create: a new id, ok, version 1, shader null, no params.
+  void material_create(std::uint64_t rid, std::uint64_t frame);
+  // material_create_from_shader: a new id, version 1, shader set (an unknown non-null shader RID
+  // leaves it null and makes the entry `unsupported` / `unknown-shader`).
+  void material_create_from_shader(std::uint64_t rid, std::uint64_t shader, std::uint64_t frame);
+  // material_set_shader: shader set (RID() -> null; unknown -> null + unknown-shader), version + 1.
+  void material_set_shader(std::uint64_t rid, std::uint64_t shader, std::uint64_t frame);
+  // material_set_param (D6, D8): NIL erases, OBJECT is rejected (no change, no version), a `rid`
+  // names the texture table (RID() erases, as GLES3 then falls back to the default texture; an
+  // unknown RID makes the entry `unknown-texture`), a param-type/param-range value makes the
+  // entry `unsupported` until that name is set to a supported value or erased; version + 1 when
+  // accepted.
+  void material_set_param(std::uint64_t rid, const std::string &name, const DecodedParam &value,
+                          std::uint64_t frame);
+  // canvas_item_set_use_parent_material: the item field (D9).
+  void set_use_parent_material(std::uint64_t item, bool enable, std::uint64_t frame);
+  // canvas_item_set_instance_shader_parameter: instance_params[name] set (NIL kept as type nil,
+  // OBJECT rejected, an unsupported type drops the name and adds the derived
+  // `param-type` item entry until the name is set to a supported value).
+  void set_instance_shader_parameter(std::uint64_t item, const std::string &name,
+                                     const DecodedParam &value, std::uint64_t frame);
+  // canvas_set_modulate: the canvas field (D10). An unknown canvas RID is the unknown-RID rule.
+  void canvas_set_modulate(std::uint64_t canvas, const rs2::Color4 &color, std::uint64_t frame);
+  // canvas_light_attach_to_canvas: a non-null canvas adds the sticky session-level entry
+  // {op: canvas_light_attach_to_canvas, item: null, reason: canvas-light} (D10).
+  void canvas_light_attach_to_canvas(std::uint64_t light, std::uint64_t canvas,
+                                     std::uint64_t frame);
+
   // canvas_item_set_default_texture_filter / _repeat: the item's own fields
   // (RenderingServer enums; an out-of-range value is ignored, as the server's
   // ERR_FAIL_INDEX does). They change the item entry, not content_version.
@@ -431,9 +510,13 @@ class Mirror {
   struct Item {
     rs2::ItemState state;
     std::uint64_t rid = 0;
-    // Non-null material: reported in Snapshot::unsupported only (rs2::ItemState
-    // has no field for it).
-    bool unsupported_state = false;
+    // G55d (render-stream-5.md "Item"): the last canvas_item_set_material named a non-null RID
+    // the material table does not know -- `material: null` plus the derived `unknown-material`.
+    bool unknown_material = false;
+    // G55d: instance parameters (sorted by name on publication) and the names whose last value
+    // had an unsupported type (the derived `param-type` entry while non-empty).
+    std::map<std::string, rs2::Param> instance_params;
+    std::set<std::string> instance_param_unsupported;
     // Non-null skeleton (gate5-design.md D2, calibrator 7): same idea, its own op name.
     bool unsupported_skeleton = false;
     // Skip policy only: the unknown RID this item was parented to (state.parent is then None and
@@ -489,6 +572,34 @@ class Mirror {
     std::uint64_t version = 1;
     std::vector<MeshSurf> surfaces;
     std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  };
+  // One shader (G55d). `has_code` false: shader_create'd, no shader_set_code yet.
+  struct Shader {
+    std::uint32_t id = 0;
+    std::uint64_t rid = 0;
+    std::uint64_t version = 1;
+    bool has_code = false;
+    ShaderCopy copy;     // the hook's classification (perturb-shader: hash/size of the new copy)
+    PayloadPtr bytes;    // the GRP1 payload (null when the hook built none)
+    // (name, index) -> texture-table id; unresolvable_defaults counts entries whose last set
+    // named an unknown texture RID.
+    std::map<std::pair<std::string, std::int32_t>, std::uint32_t> default_textures;
+    std::set<std::pair<std::string, std::int32_t>> unresolvable_defaults;
+  };
+  // One material parameter as the table keeps it: supported (`param`) or refused (`reason`).
+  struct MaterialParam {
+    bool ok = true;
+    rs2::MaterialReason reason = rs2::MaterialReason::ParamType;
+    rs2::Param param;
+  };
+  struct Material {
+    std::uint32_t id = 0;
+    std::uint64_t rid = 0;
+    std::uint64_t version = 1;
+    bool has_shader = false;
+    std::uint32_t shader = 0;
+    bool shader_unknown = false;  // the last shader set named an unknown non-null RID
+    std::map<std::string, MaterialParam> params;
   };
   enum class Kind : std::uint8_t { Canvas, Item };
   struct Target {
@@ -553,6 +664,24 @@ class Mirror {
   // Takes `id` out of the table: a `freed` tombstone while a command names it, gone otherwise.
   void retire_mesh(std::uint32_t id);
   static rs2::MeshEntry wire_mesh(const Mesh &mesh);
+  // Shaders and materials (G55d).
+  Shader *find_shader(std::uint64_t rid);
+  Material *find_material(std::uint64_t rid);
+  // Records `code` into `shader` (classification and payload, perturb-shader applied at `frame`).
+  void take_shader_code(Shader *shader, const ShaderCodeInput &code, std::uint64_t frame) const;
+  rs2::ShaderEntry wire_shader(const Shader &shader) const;
+  static rs2::MaterialEntry wire_material(const Material &material);
+  // A decoded Variant as a wire Param (`tex` already resolved by the caller for a rid); false
+  // with `reason` set for an unsupported value.
+  bool to_param(const std::string &name, const DecodedParam &value, rs2::Param *out,
+                rs2::MaterialReason *reason) const;
+  // D9: the material id an item draws with (own, or up the parent chain while
+  // use_parent_material), 0 for none.
+  std::uint32_t effective_material(const Item &item) const;
+  // render-stream-5.md "Derived item-level entries": the effective material is unsupported,
+  // names an unsupported shader, or names a texture parameter or default texture whose entry is
+  // unsupported (or unresolvable).
+  bool material_unsupported(std::uint32_t material_id) const;
   // render-stream-1.md "Invariant 9" over one container's child list.
   void find_ties(const std::vector<std::uint32_t> &children,
                  std::vector<rs2::UnsupportedRef> *out) const;
@@ -583,6 +712,15 @@ class Mirror {
   std::map<std::uint32_t, Mesh> meshes_;  // ordered by id, tombstones included (G5e)
   std::unordered_map<std::uint64_t, std::uint32_t> mesh_by_rid_;
   std::uint32_t next_mesh_id_ = 1;
+  // G55d: shaders and materials (no tombstones, D5).
+  std::map<std::uint32_t, Shader> shaders_;
+  std::unordered_map<std::uint64_t, std::uint32_t> shader_by_rid_;
+  std::uint32_t next_shader_id_ = 1;
+  std::map<std::uint32_t, Material> materials_;
+  std::unordered_map<std::uint64_t, std::uint32_t> material_by_rid_;
+  std::uint32_t next_material_id_ = 1;
+  rs2::ShaderPolicy shader_policy_ = rs2::ShaderPolicy::Source;
+  std::uint64_t perturb_shader_frame_ = 0;
   rs2::Filter default_filter_ = rs2::Filter::Linear;   // the server's initial values
   rs2::Repeat default_repeat_ = rs2::Repeat::Disabled;  // (renderer_viewport.h:114-115)
   std::unordered_map<std::uint64_t, std::uint32_t> canvas_by_rid_;
@@ -610,6 +748,8 @@ void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
 void mirror_set_perturb_glyph(std::uint64_t from_frame);
 void mirror_set_perturb_vertex(std::uint64_t from_frame);
+void mirror_set_perturb_shader(std::uint64_t from_frame);
+void mirror_set_shader_policy(rs2::ShaderPolicy policy);
 std::uint64_t mirror_epoch();
 Captured mirror_snapshot(std::uint64_t seq, std::uint64_t frame);
 MirrorStats mirror_stats();

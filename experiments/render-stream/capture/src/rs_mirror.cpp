@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "rs_sha256.h"
+#include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
 
 namespace grc {
@@ -65,6 +66,14 @@ void Mirror::reset() {
   meshes_.clear();
   mesh_by_rid_.clear();
   next_mesh_id_ = 1;
+  shaders_.clear();
+  shader_by_rid_.clear();
+  next_shader_id_ = 1;
+  materials_.clear();
+  material_by_rid_.clear();
+  next_material_id_ = 1;
+  shader_policy_ = ShaderPolicy::Source;
+  perturb_shader_frame_ = 0;
   default_filter_ = Filter::Linear;
   default_repeat_ = Repeat::Disabled;
   failures_.clear();
@@ -519,7 +528,41 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     retire_mesh(id);
     return;
   }
-  ++stats_.free_unknown;  // materials, shaders, ... share this slot
+  const auto shader_it = shader_by_rid_.find(rid);
+  if (shader_it != shader_by_rid_.end()) {
+    // G55d (D5; g3ms.cpp:2184-2198): freeing a shader sets every material naming it to no shader
+    // (version + 1); no tombstone.
+    ++epoch_;
+    const std::uint32_t id = shader_it->second;
+    for (auto &entry : materials_) {
+      Material &material = entry.second;
+      if (material.has_shader && material.shader == id) {
+        material.has_shader = false;
+        material.shader = 0;
+        ++material.version;
+      }
+    }
+    shader_by_rid_.erase(shader_it);
+    shaders_.erase(id);
+    return;
+  }
+  const auto material_it = material_by_rid_.find(rid);
+  if (material_it != material_by_rid_.end()) {
+    // G55d (D5; g3ms.cpp:2394-2411, rcc:61-67): freeing a material resets every item naming it.
+    ++epoch_;
+    const std::uint32_t id = material_it->second;
+    for (auto &entry : items_) {
+      ItemState &state = entry.second.state;
+      if (state.has_material && state.material == id) {
+        state.has_material = false;
+        state.material = 0;
+      }
+    }
+    material_by_rid_.erase(material_it);
+    materials_.erase(id);
+    return;
+  }
+  ++stats_.free_unknown;  // anything else this mirror does not model
 }
 
 // --- viewport -------------------------------------------------------------------
@@ -729,16 +772,6 @@ void Mirror::set_behind(std::uint64_t rid, bool behind, std::uint64_t frame) {
   }
 }
 
-void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64_t frame) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (dropped("canvas_item_set_material", frame)) {
-    return;
-  }
-  if (Item *item = item_for(rid, "canvas_item_set_material", frame)) {
-    item->unsupported_state = material != 0;
-  }
-}
-
 void Mirror::attach_skeleton(std::uint64_t rid, std::uint64_t skeleton, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (dropped("canvas_item_attach_skeleton", frame)) {
@@ -931,6 +964,29 @@ bool Mirror::texture_referenced(std::uint32_t id) const {
   for (const auto &entry : items_) {
     for (const Command &command : entry.second.state.commands) {
       if (names_texture(command) && command.has_tex && command.tex == id) {
+        return true;
+      }
+    }
+  }
+  // G55d: a material's rid parameter, an item's rid instance parameter and a shader's default
+  // texture also keep it (each names it by id on the wire).
+  for (const auto &entry : materials_) {
+    for (const auto &param : entry.second.params) {
+      if (param.second.ok && param.second.param.has_tex && param.second.param.tex == id) {
+        return true;
+      }
+    }
+  }
+  for (const auto &entry : items_) {
+    for (const auto &param : entry.second.instance_params) {
+      if (param.second.has_tex && param.second.tex == id) {
+        return true;
+      }
+    }
+  }
+  for (const auto &entry : shaders_) {
+    for (const auto &ref : entry.second.default_textures) {
+      if (ref.second == id) {
         return true;
       }
     }
@@ -1922,6 +1978,699 @@ std::uint64_t Mirror::spurious_texture_update(std::uint64_t frame) {
   return 0;
 }
 
+// --- shaders, materials, item and canvas material state (G55d) -----------------------------------
+
+namespace {
+
+bool shader_mode_from_text(const std::string &text, ShaderMode *out) {
+  static const std::pair<const char *, ShaderMode> kModes[] = {
+      {"canvas_item", ShaderMode::CanvasItem}, {"spatial", ShaderMode::Spatial},
+      {"particles", ShaderMode::Particles},    {"sky", ShaderMode::Sky},
+      {"fog", ShaderMode::Fog},
+  };
+  for (const auto &entry : kModes) {
+    if (text == entry.first) {
+      *out = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool shader_reason_from_text(const std::string &text, ShaderReason *out) {
+  static const std::pair<const char *, ShaderReason> kReasons[] = {
+      {"shader-mode", ShaderReason::ShaderMode},
+      {"shader-screen-texture", ShaderReason::ShaderScreenTexture},
+      {"shader-sdf", ShaderReason::ShaderSdf},
+      {"shader-time", ShaderReason::ShaderTime},
+      {"shader-global-uniform", ShaderReason::ShaderGlobalUniform},
+      {"shader-excluded", ShaderReason::ShaderExcluded},
+      {"payload-too-large", ShaderReason::PayloadTooLarge},
+      {"payload-unavailable", ShaderReason::PayloadUnavailable},
+  };
+  for (const auto &entry : kReasons) {
+    if (text == entry.first) {
+      *out = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool shader_use_from_text(const std::string &text, ShaderUse *out) {
+  static const std::pair<const char *, ShaderUse> kUses[] = {
+      {"global_uniform", ShaderUse::GlobalUniform}, {"instance_uniform", ShaderUse::InstanceUniform},
+      {"light", ShaderUse::Light},                  {"screen_texture", ShaderUse::ScreenTexture},
+      {"sdf", ShaderUse::Sdf},                      {"time", ShaderUse::Time},
+  };
+  for (const auto &entry : kUses) {
+    if (text == entry.first) {
+      *out = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool blend_from_text(const std::string &text, BlendMode *out) {
+  static const std::pair<const char *, BlendMode> kModes[] = {
+      {"mix", BlendMode::Mix},  {"add", BlendMode::Add},
+      {"sub", BlendMode::Sub},  {"mul", BlendMode::Mul},
+      {"premul_alpha", BlendMode::PremulAlpha}, {"disabled", BlendMode::Disabled},
+  };
+  for (const auto &entry : kModes) {
+    if (text == entry.first) {
+      *out = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool light_from_text(const std::string &text, LightMode *out) {
+  static const std::pair<const char *, LightMode> kModes[] = {
+      {"normal", LightMode::Normal}, {"unshaded", LightMode::Unshaded},
+      {"light_only", LightMode::LightOnly},
+  };
+  for (const auto &entry : kModes) {
+    if (text == entry.first) {
+      *out = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+// rs_variant.h's spelling (a packed array names its element type) -> the wire's VariantType.
+bool variant_type_of(const DecodedParam &value, VariantType *out) {
+  static const std::pair<const char *, VariantType> kScalars[] = {
+      {"nil", VariantType::Nil},
+      {"bool", VariantType::Bool},
+      {"int", VariantType::Int},
+      {"float", VariantType::Float},
+      {"vector2", VariantType::Vector2},
+      {"vector2i", VariantType::Vector2i},
+      {"rect2", VariantType::Rect2},
+      {"rect2i", VariantType::Rect2i},
+      {"vector3", VariantType::Vector3},
+      {"vector3i", VariantType::Vector3i},
+      {"transform2d", VariantType::Transform2D},
+      {"vector4", VariantType::Vector4},
+      {"vector4i", VariantType::Vector4i},
+      {"plane", VariantType::Plane},
+      {"quaternion", VariantType::Quaternion},
+      {"aabb", VariantType::Aabb},
+      {"basis", VariantType::Basis},
+      {"transform3d", VariantType::Transform3D},
+      {"projection", VariantType::Projection},
+      {"color", VariantType::Color},
+      {"rid", VariantType::Rid},
+  };
+  static const std::pair<const char *, VariantType> kPacked[] = {
+      {"int32", VariantType::PackedInt32Array},     {"int64", VariantType::PackedInt64Array},
+      {"float32", VariantType::PackedFloat32Array}, {"float64", VariantType::PackedFloat64Array},
+      {"vector2", VariantType::PackedVector2Array}, {"vector3", VariantType::PackedVector3Array},
+      {"vector4", VariantType::PackedVector4Array}, {"color", VariantType::PackedColorArray},
+  };
+  if (value.packed) {
+    for (const auto &entry : kPacked) {
+      if (value.type == entry.first) {
+        *out = entry.second;
+        return true;
+      }
+    }
+    return false;
+  }
+  for (const auto &entry : kScalars) {
+    if (value.type == entry.first) {
+      *out = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+// The code a GRP1 payload carries (magic, u32le meta length, meta, then the code to the end).
+bool payload_code(const PayloadBytes &payload, std::string *code) {
+  if (payload.size() < 12) {
+    return false;
+  }
+  const std::uint32_t meta_len = static_cast<std::uint32_t>(payload[8]) |
+                                 (static_cast<std::uint32_t>(payload[9]) << 8) |
+                                 (static_cast<std::uint32_t>(payload[10]) << 16) |
+                                 (static_cast<std::uint32_t>(payload[11]) << 24);
+  const std::size_t start = 12u + static_cast<std::size_t>(meta_len);
+  if (start > payload.size()) {
+    return false;
+  }
+  code->assign(reinterpret_cast<const char *>(payload.data()) + start, payload.size() - start);
+  return true;
+}
+
+// Q3c: true when `code` contains the identifier `fragment` (outside comments, not after `.`) and
+// its last non-whitespace character is `}`, whose offset goes to `*close`.
+bool perturbable_code(const std::string &code, std::size_t *close) {
+  bool has_fragment = false;
+  const std::size_t n = code.size();
+  std::size_t i = 0;
+  char prev = 0;
+  while (i < n) {
+    const char c = code[i];
+    if (c == '/' && i + 1 < n && code[i + 1] == '/') {
+      while (i < n && code[i] != '\n') {
+        ++i;
+      }
+      continue;
+    }
+    if (c == '/' && i + 1 < n && code[i + 1] == '*') {
+      const std::size_t end = code.find("*/", i + 2);
+      i = end == std::string::npos ? n : end + 2;
+      continue;
+    }
+    const bool start = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
+    if (start) {
+      std::size_t j = i + 1;
+      while (j < n && ((code[j] >= 'A' && code[j] <= 'Z') || (code[j] >= 'a' && code[j] <= 'z') ||
+                       (code[j] >= '0' && code[j] <= '9') || code[j] == '_')) {
+        ++j;
+      }
+      if (prev != '.' && code.compare(i, j - i, "fragment") == 0) {
+        has_fragment = true;
+      }
+      prev = 'a';
+      i = j;
+      continue;
+    }
+    if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+      prev = c;
+    }
+    ++i;
+  }
+  if (!has_fragment) {
+    return false;
+  }
+  std::size_t last = n;
+  while (last > 0) {
+    const char c = code[last - 1];
+    if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+      break;
+    }
+    --last;
+  }
+  if (last == 0 || code[last - 1] != '}') {
+    return false;
+  }
+  *close = last - 1;
+  return true;
+}
+
+}  // namespace
+
+void Mirror::set_shader_policy(ShaderPolicy policy) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  shader_policy_ = policy;
+}
+
+void Mirror::set_perturb_shader(std::uint64_t from_frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  perturb_shader_frame_ = from_frame;
+}
+
+Mirror::Shader *Mirror::find_shader(std::uint64_t rid) {
+  const auto it = shader_by_rid_.find(rid);
+  return it == shader_by_rid_.end() ? nullptr : &shaders_.at(it->second);
+}
+
+Mirror::Material *Mirror::find_material(std::uint64_t rid) {
+  const auto it = material_by_rid_.find(rid);
+  return it == material_by_rid_.end() ? nullptr : &materials_.at(it->second);
+}
+
+void Mirror::take_shader_code(Shader *shader, const ShaderCodeInput &code,
+                              std::uint64_t frame) const {
+  shader->has_code = true;
+  shader->copy = code.copy;
+  shader->bytes = code.bytes;
+  if (perturb_shader_frame_ == 0 || frame < perturb_shader_frame_ || code.copy.builtin ||
+      code.bytes == nullptr) {
+    return;
+  }
+  // Q3c (perturb-shader): the recorded code only; the engine and the hook log keep the true code.
+  std::string text;
+  std::size_t close = 0;
+  if (!payload_code(*code.bytes, &text) || !perturbable_code(text, &close)) {
+    return;
+  }
+  text.insert(close, "\tCOLOR.rgb = vec3(1.0) - COLOR.rgb;\n");
+  auto payload = std::make_shared<PayloadBytes>(encode_payload(text));
+  shader->copy.hash = sha256_hex(payload->data(), payload->size());
+  shader->copy.payload_bytes = static_cast<std::int64_t>(payload->size());
+  shader->copy.code_bytes = static_cast<std::int64_t>(text.size());
+  shader->bytes = std::move(payload);
+}
+
+ShaderEntry Mirror::wire_shader(const Shader &shader) const {
+  ShaderEntry out;
+  out.id = shader.id;
+  out.version = shader.version;
+  for (const auto &entry : shader.default_textures) {
+    DefaultTextureRef ref;
+    ref.name = entry.first.first;
+    ref.index = entry.first.second;
+    ref.tex = entry.second;
+    out.default_textures.push_back(std::move(ref));
+  }
+  if (!shader.has_code) {
+    return out;  // render-stream-5.md "Shader table": mode, source, hash null, payload_bytes 0
+  }
+  const ShaderCopy &copy = shader.copy;
+  ShaderMode mode = ShaderMode::CanvasItem;
+  if (!shader_mode_from_text(copy.mode, &mode)) {
+    // Code with no (or no known) `shader_type`: GLES3 derives no mode from it and draws the
+    // material as none (g3ms.h:651-658). The wire has no spelling for that mode, so the entry keeps
+    // the no-code shape and is refused with shader-mode (G55d decision; never seen in a fixture).
+    out.status = ShaderStatus::Unsupported;
+    out.has_reason = true;
+    out.reason = ShaderReason::ShaderMode;
+    return out;
+  }
+  out.has_mode = true;
+  out.mode = mode;
+  out.has_source = true;
+  out.source = ShaderSource::Payload;
+  out.has_hash = !copy.hash.empty();
+  out.hash = copy.hash;
+  out.payload_bytes = static_cast<std::uint64_t>(std::max<std::int64_t>(copy.payload_bytes, 0));
+  if (copy.builtin) {
+    BuiltinCanvasItemMaterial builtin;
+    if (blend_from_text(copy.builtin_blend_mode, &builtin.blend_mode) &&
+        light_from_text(copy.builtin_light_mode, &builtin.light_mode)) {
+      builtin.particles_animation = copy.builtin_particles_animation;
+      out.has_builtin = true;
+      out.builtin = builtin;
+    }
+  }
+  for (const std::string &use : copy.uses) {
+    ShaderUse value;
+    if (shader_use_from_text(use, &value)) {
+      out.uses.push_back(value);
+    }
+  }
+  std::sort(out.uses.begin(), out.uses.end(), [](ShaderUse a, ShaderUse b) {
+    return std::string(to_wire(a)) < std::string(to_wire(b));
+  });
+  out.uses.erase(std::unique(out.uses.begin(), out.uses.end()), out.uses.end());
+  if (copy.status != "ok") {
+    out.status = ShaderStatus::Unsupported;
+    out.has_reason = true;
+    if (!shader_reason_from_text(copy.reason, &out.reason)) {
+      out.reason = ShaderReason::PayloadUnavailable;
+    }
+  }
+  // D4: the policy never touches engine-generated CanvasItemMaterial code (D7).
+  if (!out.has_builtin && shader_policy_ != ShaderPolicy::Source) {
+    out.source = ShaderSource::Withheld;
+    if (shader_policy_ == ShaderPolicy::Exclude && out.status == ShaderStatus::Ok) {
+      out.status = ShaderStatus::Unsupported;
+      out.has_reason = true;
+      out.reason = ShaderReason::ShaderExcluded;
+    }
+  }
+  return out;
+}
+
+MaterialEntry Mirror::wire_material(const Material &material) {
+  MaterialEntry out;
+  out.id = material.id;
+  out.version = material.version;
+  out.has_shader = material.has_shader;
+  out.shader = material.shader;
+  if (material.shader_unknown) {
+    out.status = MaterialStatus::Unsupported;
+    out.has_reason = true;
+    out.reason = MaterialReason::UnknownShader;
+  }
+  for (const auto &entry : material.params) {
+    const MaterialParam &param = entry.second;
+    if (param.ok) {
+      out.params.push_back(param.param);
+    } else if (out.status == MaterialStatus::Ok) {
+      out.status = MaterialStatus::Unsupported;
+      out.has_reason = true;
+      out.reason = param.reason;
+    }
+  }
+  return out;
+}
+
+bool Mirror::to_param(const std::string &name, const DecodedParam &value, Param *out,
+                      MaterialReason *reason) const {
+  out->name = name;
+  if (value.status != "ok") {
+    *reason = value.reason == "param-range" ? MaterialReason::ParamRange : MaterialReason::ParamType;
+    return false;
+  }
+  VariantType type;
+  if (!variant_type_of(value, &type)) {
+    *reason = MaterialReason::ParamType;
+    return false;
+  }
+  out->type = type;
+  out->n = static_cast<std::int32_t>(value.n);
+  out->has_tex = false;
+  out->tex = 0;
+  out->floats.clear();
+  if (type == VariantType::Rid) {
+    out->n = 1;
+    const auto it = texture_by_rid_.find(value.tex_rid);
+    if (value.tex_rid == 0 || it == texture_by_rid_.end()) {
+      *reason = MaterialReason::UnknownTexture;
+      return false;
+    }
+    out->has_tex = true;
+    out->tex = it->second;
+    return true;
+  }
+  if (type == VariantType::Nil) {
+    out->n = 1;
+    return true;
+  }
+  const std::size_t want =
+      static_cast<std::size_t>(value.n) * static_cast<std::size_t>(variant_components(type));
+  if (value.f.size() != want) {
+    *reason = MaterialReason::ParamType;
+    return false;
+  }
+  out->floats = value.f;
+  return true;
+}
+
+std::uint32_t Mirror::effective_material(const Item &item) const {
+  // D9 (renderer_canvas_cull.cpp:2514-2525): own material, or the item parent's while
+  // use_parent_material chains up; a top-level item keeps its own.
+  std::uint32_t material = item.state.has_material ? item.state.material : 0;
+  if (!item.state.use_parent_material) {
+    return material;
+  }
+  ParentRef parent = item.state.parent;
+  std::size_t guard = 0;
+  while (parent.kind == ParentKind::Item && guard++ < items_.size()) {
+    const auto it = items_.find(parent.id);
+    if (it == items_.end()) {
+      break;
+    }
+    const ItemState &p = it->second.state;
+    material = p.has_material ? p.material : 0;
+    if (!p.use_parent_material) {
+      break;
+    }
+    parent = p.parent;
+  }
+  return material;
+}
+
+bool Mirror::material_unsupported(std::uint32_t material_id) const {
+  const auto it = materials_.find(material_id);
+  if (it == materials_.end()) {
+    return false;
+  }
+  const Material &material = it->second;
+  const auto texture_unsupported = [this](std::uint32_t tex) {
+    const auto t = textures_.find(tex);
+    return t != textures_.end() && t->second.status == TextureStatus::Unsupported;
+  };
+  if (wire_material(material).status == MaterialStatus::Unsupported) {
+    return true;
+  }
+  for (const auto &entry : material.params) {
+    if (entry.second.ok && entry.second.param.has_tex &&
+        texture_unsupported(entry.second.param.tex)) {
+      return true;
+    }
+  }
+  if (material.has_shader) {
+    const auto s = shaders_.find(material.shader);
+    if (s != shaders_.end()) {
+      if (wire_shader(s->second).status == ShaderStatus::Unsupported ||
+          !s->second.unresolvable_defaults.empty()) {
+        return true;
+      }
+      for (const auto &entry : s->second.default_textures) {
+        if (texture_unsupported(entry.second)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+void Mirror::shader_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("shader_create", frame)) {
+    return;
+  }
+  Shader shader;
+  shader.id = next_shader_id_++;
+  shader.rid = rid;
+  shader_by_rid_[rid] = shader.id;
+  shaders_.emplace(shader.id, std::move(shader));
+}
+
+void Mirror::shader_create_from_code(std::uint64_t rid, const ShaderCodeInput &code,
+                                     std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("shader_create_from_code", frame)) {
+    return;
+  }
+  Shader shader;
+  shader.id = next_shader_id_++;
+  shader.rid = rid;
+  take_shader_code(&shader, code, frame);
+  shader_by_rid_[rid] = shader.id;
+  shaders_.emplace(shader.id, std::move(shader));
+}
+
+void Mirror::shader_set_code(std::uint64_t rid, const ShaderCodeInput &code, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped_identity("shader_set_code", frame)) {
+    return;
+  }
+  Shader *shader = find_shader(rid);
+  if (shader == nullptr) {
+    ++stats_.material_unknown;
+    return;
+  }
+  take_shader_code(shader, code, frame);
+  ++shader->version;
+}
+
+void Mirror::shader_set_default_texture_parameter(std::uint64_t rid, const std::string &name,
+                                                  std::uint64_t texture, std::int32_t index,
+                                                  std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped_identity("shader_set_default_texture_parameter", frame)) {
+    return;
+  }
+  Shader *shader = find_shader(rid);
+  if (shader == nullptr) {
+    ++stats_.material_unknown;
+    return;
+  }
+  const auto key = std::make_pair(name, index);
+  shader->default_textures.erase(key);
+  shader->unresolvable_defaults.erase(key);
+  if (texture != 0) {
+    const auto it = texture_by_rid_.find(texture);
+    if (it != texture_by_rid_.end()) {
+      shader->default_textures[key] = it->second;
+    } else {
+      shader->unresolvable_defaults.insert(key);
+    }
+  }
+  ++shader->version;
+}
+
+void Mirror::material_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("material_create", frame)) {
+    return;
+  }
+  Material material;
+  material.id = next_material_id_++;
+  material.rid = rid;
+  material_by_rid_[rid] = material.id;
+  materials_.emplace(material.id, std::move(material));
+}
+
+void Mirror::material_create_from_shader(std::uint64_t rid, std::uint64_t shader,
+                                         std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || dropped_identity("material_create_from_shader", frame)) {
+    return;
+  }
+  Material material;
+  material.id = next_material_id_++;
+  material.rid = rid;
+  if (shader != 0) {
+    const auto it = shader_by_rid_.find(shader);
+    if (it != shader_by_rid_.end()) {
+      material.has_shader = true;
+      material.shader = it->second;
+    } else {
+      material.shader_unknown = true;
+    }
+  }
+  material_by_rid_[rid] = material.id;
+  materials_.emplace(material.id, std::move(material));
+}
+
+void Mirror::material_set_shader(std::uint64_t rid, std::uint64_t shader, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped_identity("material_set_shader", frame)) {
+    return;
+  }
+  Material *material = find_material(rid);
+  if (material == nullptr) {
+    ++stats_.material_unknown;
+    return;
+  }
+  material->has_shader = false;
+  material->shader = 0;
+  material->shader_unknown = false;
+  if (shader != 0) {
+    const auto it = shader_by_rid_.find(shader);
+    if (it != shader_by_rid_.end()) {
+      material->has_shader = true;
+      material->shader = it->second;
+    } else {
+      material->shader_unknown = true;
+    }
+  }
+  ++material->version;
+}
+
+void Mirror::material_set_param(std::uint64_t rid, const std::string &name,
+                                const DecodedParam &value, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped_identity("material_set_param", frame)) {
+    return;
+  }
+  Material *material = find_material(rid);
+  if (material == nullptr) {
+    ++stats_.material_unknown;
+    return;
+  }
+  if (value.type == "object") {
+    return;  // D6: GLES3 rejects an OBJECT value (g3ms.cpp:2463); no change, no version
+  }
+  if (!value.packed && (value.type == "nil" || (value.type == "rid" && value.status == "ok" &&
+                                                value.tex_rid == 0))) {
+    // D6: NIL erases (g3ms.cpp:2460-2461). RID() is erased too: GLES3 then falls back to the
+    // shader's default texture exactly as for an unset sampler (g3ms.cpp:2302-2326).
+    material->params.erase(name);
+    ++material->version;
+    return;
+  }
+  MaterialParam param;
+  param.ok = to_param(name, value, &param.param, &param.reason);
+  material->params[name] = std::move(param);
+  ++material->version;
+}
+
+void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_set_material", frame)) {
+    return;
+  }
+  Item *item = item_for(rid, "canvas_item_set_material", frame);
+  if (item == nullptr) {
+    return;
+  }
+  // D9: item state, never content_version (ci.cpp:1169-1177).
+  item->state.has_material = false;
+  item->state.material = 0;
+  item->unknown_material = false;
+  if (material != 0) {
+    const auto it = material_by_rid_.find(material);
+    if (it != material_by_rid_.end()) {
+      item->state.has_material = true;
+      item->state.material = it->second;
+    } else {
+      item->unknown_material = true;
+    }
+  }
+}
+
+void Mirror::set_use_parent_material(std::uint64_t rid, bool enable, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_set_use_parent_material", frame)) {
+    return;
+  }
+  if (Item *item = item_for(rid, "canvas_item_set_use_parent_material", frame)) {
+    item->state.use_parent_material = enable;
+  }
+}
+
+void Mirror::set_instance_shader_parameter(std::uint64_t rid, const std::string &name,
+                                           const DecodedParam &value, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_set_instance_shader_parameter", frame)) {
+    return;
+  }
+  Item *item = item_for(rid, "canvas_item_set_instance_shader_parameter", frame);
+  if (item == nullptr) {
+    return;
+  }
+  if (value.type == "object") {
+    return;  // iu.cpp:112: an OBJECT is rejected
+  }
+  Param param;
+  MaterialReason reason;
+  item->instance_params.erase(name);
+  item->instance_param_unsupported.erase(name);
+  // Q3b: NIL is kept as type nil and replayed as such (the server then restores its default).
+  // A rid names the texture table like a material parameter; an unresolvable one is a param-type
+  // entry (the wire has no instance-level unknown-texture reason).
+  if (to_param(name, value, &param, &reason)) {
+    item->instance_params[name] = std::move(param);
+  } else {
+    item->instance_param_unsupported.insert(name);
+  }
+  item->state.instance_params.clear();
+  for (const auto &entry : item->instance_params) {
+    item->state.instance_params.push_back(entry.second);
+  }
+}
+
+void Mirror::canvas_set_modulate(std::uint64_t canvas, const Color4 &color, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_set_modulate";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  const auto it = canvas_by_rid_.find(canvas);
+  if (it == canvas_by_rid_.end()) {
+    unknown(canvas, kOp, frame);
+    return;
+  }
+  canvases_.at(it->second).state.modulate = color;
+}
+
+void Mirror::canvas_light_attach_to_canvas(std::uint64_t light, std::uint64_t canvas,
+                                           std::uint64_t frame) {
+  (void)light;
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_light_attach_to_canvas";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (canvas != 0) {
+    session_unsupported(kOp, UnsupportedReason::CanvasLight);  // D10: sticky
+  }
+}
+
 // --- publication ----------------------------------------------------------------
 
 void Mirror::find_ties(const std::vector<std::uint32_t> &children,
@@ -1966,9 +2715,11 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   Captured captured;
   Snapshot &out = captured.state;
-  // G5d (gate5-design.md D1): the capture speaks render-stream/4; the stamp makes make_full /
-  // make_patch carry the mesh table (G5e) and the cmd_i32 / mesh_f32 blocks.
-  out.version = ProtocolVersion::V4;
+  // G55d (gate5_5-design.md D1): the capture speaks render-stream/5; the stamp makes make_full /
+  // make_patch carry the shader and material tables, the item material fields, the canvas
+  // modulate and param_f64 (memory rs-g5d-rs4-switch-facts: Session V5 alone is not enough), on
+  // top of /4's mesh table and cmd_i32 / mesh_f32 blocks.
+  out.version = ProtocolVersion::V5;
   out.seq = seq;
   out.frame = frame;
   out.failures = failures_;
@@ -2021,6 +2772,27 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     const Texture &texture = entry.second;
     if (texture.kind == TextureKind::Canvas && texture.has_diffuse) {
       referenced.insert(texture.diffuse_id);
+    }
+  }
+  // G55d: so do material rid parameters, item rid instance parameters and shader default
+  // textures.
+  for (const auto &entry : materials_) {
+    for (const auto &param : entry.second.params) {
+      if (param.second.ok && param.second.param.has_tex) {
+        referenced.insert(param.second.param.tex);
+      }
+    }
+  }
+  for (const auto &entry : items_) {
+    for (const auto &param : entry.second.instance_params) {
+      if (param.second.has_tex) {
+        referenced.insert(param.second.tex);
+      }
+    }
+  }
+  for (const auto &entry : shaders_) {
+    for (const auto &ref : entry.second.default_textures) {
+      referenced.insert(ref.second);
     }
   }
   for (auto it = textures_.begin(); it != textures_.end();) {
@@ -2110,8 +2882,20 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
         }
       }
     }
-    if (item.unsupported_state) {
-      add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnsupportedState);
+    // G55d (render-stream-5.md "Derived item-level entries"): at most one canvas_item_set_material
+    // entry per item -- an unknown material RID, else an unsupported effective material (D9) --
+    // and one canvas_item_set_instance_shader_parameter param-type entry.
+    if (item.unknown_material) {
+      add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnknownMaterial);
+    } else {
+      const std::uint32_t effective = effective_material(item);
+      if (effective != 0 && material_unsupported(effective)) {
+        add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnsupportedMaterial);
+      }
+    }
+    if (!item.instance_param_unsupported.empty()) {
+      add_item_entry(state.id, "canvas_item_set_instance_shader_parameter",
+                     UnsupportedReason::ParamType);
     }
     if (item.unsupported_skeleton) {
       add_item_entry(state.id, "canvas_item_attach_skeleton", UnsupportedReason::UnsupportedState);
@@ -2168,6 +2952,22 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       }
     }
   }
+  // G55d: the shader and material tables (sorted by id); the payload of every `ok` shader whose
+  // code travels (`source: "payload"`: never a withheld one, D4) -- exactly payload_refs' set.
+  out.shaders.reserve(shaders_.size());
+  for (const auto &entry : shaders_) {
+    const Shader &shader = entry.second;
+    ShaderEntry wire = wire_shader(shader);
+    if (wire.status == ShaderStatus::Ok && wire.has_source &&
+        wire.source == ShaderSource::Payload && wire.has_hash && shader.bytes != nullptr) {
+      captured.payloads.emplace(wire.hash, shader.bytes);
+    }
+    out.shaders.push_back(std::move(wire));
+  }
+  out.materials.reserve(materials_.size());
+  for (const auto &entry : materials_) {
+    out.materials.push_back(wire_material(entry.second));
+  }
   return captured;
 }
 
@@ -2184,6 +2984,15 @@ MirrorStats Mirror::stats() const {
     const Texture &texture = entry.second;
     if (texture.bytes != nullptr && hashes.insert(texture.copy.hash).second) {
       out.texture_payload_bytes += texture.bytes->size();
+    }
+  }
+  out.live_shaders = shaders_.size();
+  out.live_materials = materials_.size();
+  std::set<std::string> shader_hashes;
+  for (const auto &entry : shaders_) {
+    const Shader &shader = entry.second;
+    if (shader.bytes != nullptr && shader_hashes.insert(shader.copy.hash).second) {
+      out.shader_payload_bytes += shader.bytes->size();
     }
   }
   out.live_meshes = meshes_.size();
@@ -2250,6 +3059,12 @@ void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame) {
 void mirror_set_perturb_vertex(std::uint64_t from_frame) {
   mirror_instance().set_perturb_vertex(from_frame);
 }
+
+void mirror_set_perturb_shader(std::uint64_t from_frame) {
+  mirror_instance().set_perturb_shader(from_frame);
+}
+
+void mirror_set_shader_policy(ShaderPolicy policy) { mirror_instance().set_shader_policy(policy); }
 
 void mirror_set_perturb_glyph(std::uint64_t from_frame) {
   mirror_instance().set_perturb_glyph(from_frame);

@@ -52,7 +52,9 @@ import {
   type ResolvedCanvas,
   type ResolvedCommand,
   type ResolvedItem,
+  type ResolvedMaterial,
   type ResolvedMesh,
+  type ResolvedShader,
   type ResolvedState,
   type ResolvedTexture,
   type EndMeta as Rs2EndMeta,
@@ -60,7 +62,9 @@ import {
   type TransactionMeta as Rs2TransactionMeta,
   sortedResolvedCanvases,
   sortedResolvedItems,
+  sortedResolvedMaterials,
   sortedResolvedMeshes,
+  sortedResolvedShaders,
   sortedResolvedTextures,
   splitRecords,
   type UnknownItemsMeta,
@@ -188,7 +192,12 @@ export const GATE0_HOOKS: readonly string[] = [
  * Since G5d every capture speaks render-stream/4 (render-stream-4.md "Features"): fifteen `ops`
  * (the ten geometry and command-list ops plus `add_multiline` leave `observed_unsupported_ops`,
  * which keeps the six still-refused methods), `resources` gains `mesh`, and `unobserved` gains the
- * two snap-to-pixel viewport settings. */
+ * two snap-to-pixel viewport settings. Since G55d every capture speaks render-stream/5
+ * (render-stream-5.md "Features"): `item_state` gains `instance_params`, `material` and
+ * `use_parent_material`, the new `canvas_state` is `["modulate","transform"]`, `resources` gains
+ * `material` and `shader`, `observed_unsupported_ops` swaps `canvas_item_set_material` for
+ * `canvas_light_attach_to_canvas`, and `unobserved` loses the instance-parameter and
+ * canvas-modulate setters and gains gate5_5-design.md D16's names. */
 export const RS2_FEATURES = {
   ops: [
     "add_circle",
@@ -213,18 +222,28 @@ export const RS2_FEATURES = {
     "clip",
     "custom_rect",
     "draw_index",
+    "instance_params",
+    "material",
     "modulate",
     "parent",
     "self_modulate",
     "texture_filter",
     "texture_repeat",
     "transform",
+    "use_parent_material",
     "visibility_layer",
     "visible",
     "z_index",
     "z_relative",
   ],
-  resources: ["mesh", "texture_2d", "texture_2d_placeholder"],
+  canvas_state: ["modulate", "transform"],
+  resources: [
+    "material",
+    "mesh",
+    "shader",
+    "texture_2d",
+    "texture_2d_placeholder",
+  ],
   unsupported_resources: [
     { resource: "canvas_texture", reason: "canvas-texture-headless" },
   ],
@@ -234,16 +253,22 @@ export const RS2_FEATURES = {
     "canvas_item_add_multimesh",
     "canvas_item_add_particles",
     "canvas_item_attach_skeleton",
-    "canvas_item_set_material",
+    "canvas_light_attach_to_canvas",
   ],
   unobserved: [
     "canvas_item_set_canvas_group_mode",
-    "canvas_item_set_instance_shader_parameter",
+    "canvas_item_set_copy_to_backbuffer",
     "canvas_item_set_light_mask",
     "canvas_item_set_sort_children_by_y",
     "canvas_item_set_visibility_notifier",
-    "canvas_set_modulate",
     "canvas_texture_set_shading_parameters",
+    "global_shader_parameter_add",
+    "global_shader_parameter_remove",
+    "global_shader_parameter_set",
+    "global_shader_parameter_set_override",
+    "material_set_next_pass",
+    "material_set_render_priority",
+    "shader_set_path_hint",
     "texture_set_size_override",
     "viewport_remove_canvas",
     "viewport_set_canvas_cull_mask",
@@ -254,15 +279,22 @@ export const RS2_FEATURES = {
   publication: "snapshot-or-patch",
 } as const;
 
-/** The session protocol every capture publishes since G5d (render-stream-4.md; render-stream/3
- * from G4e2). */
-export const WIRE_PROTOCOL = "render-stream/4";
+/** The session protocol every capture publishes since G55d (render-stream-5.md; render-stream/4
+ * from G5d, render-stream/3 from G4e2). */
+export const WIRE_PROTOCOL = "render-stream/5";
 
 /** The session `features` of a rendered (GPU-backed) host: RS2_FEATURES with `canvas_texture`
  * supported and nothing refused. */
 export const RS2_FEATURES_RENDERED = {
   ...RS2_FEATURES,
-  resources: ["canvas_texture", "mesh", "texture_2d", "texture_2d_placeholder"],
+  resources: [
+    "canvas_texture",
+    "material",
+    "mesh",
+    "shader",
+    "texture_2d",
+    "texture_2d_placeholder",
+  ],
   unsupported_resources: [],
 } as const;
 
@@ -271,7 +303,11 @@ export const RS2_FEATURES_RENDERED = {
  * "Resources") `payload` is `payloads`, the mesh and texture payload formats sharing one policy. */
 export const FILE_RESOURCES = {
   hash: "sha256",
-  payloads: ["render-stream-mesh/1", "render-stream-texture/1"],
+  payloads: [
+    "render-stream-mesh/1",
+    "render-stream-shader/1",
+    "render-stream-texture/1",
+  ],
   delivery: "out-of-band",
   inline_max_bytes: 0,
   max_payload_bytes: 67108864,
@@ -481,6 +517,10 @@ export interface TransactionMeta {
   textures: ResolvedTexture[];
   /** render-stream/4 (G5e): the resolved mesh table, ascending id; absent before /4 */
   meshes?: ResolvedMesh[];
+  /** render-stream/5 (G55d): the resolved shader and material tables, ascending id; absent
+   * before /5 */
+  shaders?: ResolvedShader[];
+  materials?: ResolvedMaterial[];
   /** protocol/unknown-item-skip.md: a skip session's per-transaction account */
   unknown_items?: UnknownItemsMeta;
 }
@@ -600,7 +640,7 @@ export interface AppliedResources {
 }
 
 /** The applied.json schema the receiver writes since G2b2. */
-export const APPLIED_SCHEMA = "render-stream-receiver-applied/4";
+export const APPLIED_SCHEMA = "render-stream-receiver-applied/5";
 
 export interface StepLine {
   step: number;
@@ -720,6 +760,12 @@ export function summarizeRecording(
           textures: sortedResolvedTextures(state),
           ...(meta.meshes !== undefined
             ? { meshes: sortedResolvedMeshes(state) }
+            : {}),
+          ...(meta.shaders !== undefined
+            ? {
+                shaders: sortedResolvedShaders(state),
+                materials: sortedResolvedMaterials(state),
+              }
             : {}),
         },
         wire: meta,
@@ -1698,7 +1744,7 @@ export function checkManifestPresent(recording: RecordingSummary): Gate0Check {
   }
   return check(
     "manifest-present",
-    "the capture session carries protocol render-stream/4, a full file stream, the exact /4 features, the file sinks' resources (out-of-band, directory fetch, the six permitted formats), engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
+    "the capture session carries protocol render-stream/5, a full file stream, the exact /5 features, the file sinks' resources (out-of-band, directory fetch, the six permitted formats), engine.display_server headless, viewport.root_canvas 1, root_size_policy enforce-min-size with host_size_status match and a 640x360 logical and host window size, stretch applied by the receiver, and sabotage null",
     problems,
     "session manifest as specified",
     [recording.path],
@@ -1928,7 +1974,7 @@ export function checkReceiverConsumedStream(
   }
   return check(
     "receiver-consumed-stream",
-    "applied.json is render-stream-receiver-applied/4; the receiver applied seqs 1..N with each record_sha256 equal to the host-computed hash, every shot has applied_through == seq, recording.sha256 is the capture file's, and it fetched and uploaded no texture (nothing draws one)",
+    "applied.json is render-stream-receiver-applied/5 (/4 from G5e); the receiver applied seqs 1..N with each record_sha256 equal to the host-computed hash, every shot has applied_through == seq, recording.sha256 is the capture file's, and it fetched and uploaded no texture (nothing draws one)",
     problems,
     `${host.transactions.length} transactions consumed in order, hashes match`,
     [appliedPath, host.path],
@@ -2152,7 +2198,7 @@ export async function checkReceiverTypedClean(
     );
   return check(
     "receiver-typed-clean",
-    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-4/inline.rs4 (render-stream/4 since G5d; golden-3/inline.rs3 from G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
+    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-5/inline.rs5 (render-stream/5 since G55d; golden-4/inline.rs4 from G5d, golden-3/inline.rs3 from G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
     problems,
     `selftest ok, golden replay ok with ${want.length} unsupported entries, no script diagnostics`,
     [selftestLog, minimalLog, minimalApplied],
