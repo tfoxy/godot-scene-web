@@ -5155,3 +5155,130 @@ three things go wrong:
 **Still not proved** (unchanged from the `benign` rule): DF's own pixels at an off-frame or stale
 shot. reference-live has no shot at that frame, so a receiver that drew DF wrongly but everything
 else right would pass there. It would fail at every on-frame shot.
+
+## Gate 6h result (2026-10-11)
+
+G6h ([protocol/gate6-design.md](protocol/gate6-design.md) "G6h") passes. The 1920×1080
+`canvas_items` fixture `fixtures/gate6-hd` holds nine copies of the combined scene in a 3×3
+`GridContainer`, cell c at phase 7c with TEXA offset 100c and HUD layer 1 + c. Its references run at
+both presentations, and its native legs run on render-stream/5. `pnpm render-stream:gate6 --
+--legs g6a,g6h` passes **52/52** in `artifacts/render-stream/gate6/g6h-final/` (ignored, not
+committed; about 15 min wall clock). The first run of `--legs g6h` alone (`gate6/g6h-dev1/`)
+already passed all 20 g6h checks.
+
+**What was added.** `fixtures/gate6-hd/`:
+- `project.godot` (1920×1080, `canvas_items`, `keep`) and `gate6_hd.gd`: the grid, gate6-scene's
+  timelines for every cell, and the variants `animate` and `gpu-heavy`.
+- `hd_oracle.gd`.
+- `shaders/burn.gdshader`.
+- `make_expected.py` and `expected.json`, which compose gate6-scene's model per cell plus the 0.5
+  scale.
+- The synced builder, oracle, loader and shader. `make_expected.py --sync` copies them and
+  `--check` fails when a copy differs.
+
+Gate 6 runner and checker files:
+- `scripts/lib/gate6h-legs.sh`, sourced by `run-gate6.sh`.
+- `scripts/lib/gate6h-checks.ts`, run by `check-gate6.ts`.
+- `scripts/test/self-test-gate6h.ts`, which adds 27 assertions to `self-test-gate6.ts` (66 in all).
+
+No capture, receiver or shared library changed.
+
+| Leg | Class | Pixels |
+| --- | --- | --- |
+| `capture-hd-native` (headless, `enforce-min-size`: root window 1920×1080) | `unsupported` (`extra-canvas` only: the nine HUD layers) | — |
+| `reference-hd-native`, `-repeat`, `-armed` (gamescope 1920×1080) | rendered | equal to each other on every pixel |
+| `reference-hd-half`, `-repeat` (gamescope 960×540, `--resolution 960x540`) | rendered | equal to each other on every pixel |
+| `receiver-hd-native`, `-patch` (1920×1080) | `unsupported` | `success`: every pixel outside the nine `HU` regions of every shot equals the reference |
+
+**Measured budgets.** Reference against the hand model:
+
+- Native: 23 759 684 decided pixels over 15 shots (twelve settle shots and frames 13, 53 and 93),
+  0 beyond their allowance. 361 263 of them use delta 1.
+- Half: 5 767 806 decided pixels, 0 beyond their allowance, 45 973 using delta 1. Half is the scene
+  under scale(0.5) with StyleBoxFlat's feather at `aa_size / 0.5`, the source's
+  `sbf.cpp:497-511`. It matched on the first run.
+
+`reference-repeat` against `reference` is 0 of 31 104 000 pixel-shots at native and 0 of 7 776 000
+at half, in every region and pixel class. `reference-armed` against `reference` is 0 of
+31 104 000. Receiver against reference is 0 in each receiver's 30 140 928 compared pixel-shots.
+Inside each cell's `HU`, the two differ in exactly that cell's HUD panel, 168×28 pixels, while the
+HUD shows: 508 032 pixel-shots per receiver. The Q6g budget is 0 at both presentations.
+
+**Costs at HD** (`capture-hd-native`, 496 items and 2 278 commands at the last settle frame, file
+sinks only):
+
+| Measure | Value |
+| --- | --- |
+| Full sink | 99.2 MB over 122 transactions: 813 KB per transaction (max 830 KB) |
+| Patch sink | 11.5 MB over 122 transactions: 94 KB per transaction on average (the first, full transaction 788 KB) |
+| Atlas at native | 4 LA8 pages of 256×256 at every settle step (525 KB of payload) |
+| Atlas at half (reference oracle) | 8 pages: caches at the oversampled 6, 7 and 8 px beside the logical 12, 14 and 16 px |
+| Host frame callback | 6.7 ms mean (max 15.7 ms), both sinks |
+| Host snapshot | 0.46 ms mean |
+| Host CPU | 0.94 s on the main thread for 122 frames |
+| Capture leg wall clock | 1.5 s |
+| Each rendered 1920×1080 leg | about 25 s (receivers included; 25 to 69 s under other agents' load in the dev run), mostly the fifteen PNG shots |
+
+`census["capture-hd-native"]` in `result.json` carries the sink figures. G6p measures costs
+properly (warmup, repeats, arms).
+
+**Checks** (`lib/gate6h-checks.ts`):
+- The capture: `leg-class-capture-hd-native`, `hd-session`, `hd-recordings` and
+  `hd-draw-index-tie`. `hd-session` requires logical 1920×1080, `canvas_items`/`keep`,
+  `enforce-min-size` with the host window at 1920×1080, status `match`, and the host's final
+  transform the identity. `hd-draw-index-tie` requires Grid and the nine TLs at distinct indices
+  from frame 1.
+- The step logs: `hd-step-log`.
+- The oracle: `hd-grid-layout`, `hd-oversampling-reference`, `hd-cell-oracle` and
+  `hd-atlas-parity`. `hd-oversampling-reference` requires 1.0 and stretch 1 at native, 0.5 and 0.5
+  at half. `hd-cell-oracle` covers 432 cell lines, the repeats byte-identical. `hd-atlas-parity`
+  runs at native, both sinks, 4 pages at every step.
+- The references: `hd-expected-self-consistent`, `hd-expected-image-reference-{native,half}`,
+  `hd-presence-reference` (11 586 shape-shots), `hd-freshness-reference` (both presentations),
+  `hd-reference-repeat-budget-{native,half}` and `hd-armed-transparent`.
+- The receivers: `leg-class-receiver-hd-native{,-patch}` and `hd-receiver-vs-reference`.
+
+**Runs.** `gate6/g6h-dev1/` was `--legs g6h` on the first try: 20/20 g6h checks, with the not-run
+g6a group failing the gate by design. `gate6/g6h-final/` is `--legs g6a,g6h`, 52/52.
+Gates −1 to 5.5 were not rerun: no capture, receiver or shared library file changed. Only gate 6's
+runner, checker and self-test changed, and `--legs g6a` reran inside the final run.
+
+### Findings
+
+- **One viewport, one focus owner.** The builder's `grab_focus()` in every cell leaves only cell
+  8's LineEdit focused. The others draw no focus box and no caret. `deselect_on_focus_loss_enabled`
+  defaults to true and would also clear their selections, so `gate6_hd.gd` turns it off per cell.
+- **The presentation is the window size.** `--resolution 960x540` in a 960×540 gamescope gives
+  stretch 0.5 and oversampling 0.5 with the visible rect still 1920×1080. The grid lays out
+  identically at both sizes.
+- **The half model held on the first run.** The model is gate 5g's StyleBoxFlat port at
+  `aa_size / 0.5` plus scale(0.5) on every transform and scissor. Text boxes needed no widening at
+  oversampling 0.5.
+- **No frame-1 tie** among Grid and the nine TLs, as in G6a.
+
+### Deviations
+
+All recorded in gate6-design.md "As built (G6h)":
+- The capture runs the 122-frame file timeline, not 400, so `hd-recordings` replaces
+  `recordings-decode`.
+- Half-scale pixel classes are decided per pixel by the raster's 1/16 px edge rule, not per shape.
+- `gate6_hd.gd` copies gate6_scene.gd's timeline logic rather than sharing it, because of `res://`
+  independence.
+- `expected.json` is 3.2 MB.
+- The check names carry an `hd-` prefix so they stay unique in the combined report.
+- `hd-cell-oracle`, `hd-session`, `hd-step-log` and `hd-draw-index-tie` go beyond the contract's
+  check list.
+
+### What G6h does not prove
+
+- The HUD layers end to end, a capture at half (`presentation:960x540`), atlas parity at half,
+  and receivers at half. All of these are G6b's on /6.
+- HD live, rate, stall or soak behaviour, and the `gpu-heavy` calibration. These belong to G6l,
+  G6c, G6s and G6p. `gpu-heavy` and `animate` were only smoke-captured: both classify `unsupported`
+  with exactly `extra-canvas`, and `burn` is carried `ok`.
+- Text glyph pixels against a hand model (undecided, as in G6a).
+- Another GPU, and browser receivers.
+
+Images (under the run directory): `hd/reference-native/shots/{step-0..11,frame-13,frame-53,frame-93}.png`
+(1920×1080) against `hd/receiver-native/shots/seq-<frame>.png`, and
+`hd/reference-half/shots/*.png` (960×540).

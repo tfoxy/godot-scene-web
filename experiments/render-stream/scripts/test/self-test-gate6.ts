@@ -19,6 +19,7 @@
 // 6. evaluateSceneCensus on a hook log synthesized from the census (passes), then with TEXA's update
 //    missing, a hash off, an extra mesh call or the HUD hidden one frame too long (each fails).
 // 7. evaluateUnsupportedClass and evaluateNoTies6.
+// 8. Gate 6h: test/self-test-gate6h.ts on the committed fixtures/gate6-hd/expected.json.
 //
 // Exits non-zero if any assertion fails.
 
@@ -49,8 +50,10 @@ import {
   type OracleLog6,
   type Shots6,
 } from "../lib/gate6a-checks";
+import type { Gate6HdExpected } from "../lib/gate6h-checks";
 import type { Wire5Tx } from "../lib/gate55-wire";
 import { rasterizeItems } from "../lib/geometry-raster";
+import { selfTestGate6h } from "./self-test-gate6h";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -857,6 +860,17 @@ async function main(): Promise<void> {
       "tie",
     );
   }
+
+  // 8. Gate 6h.
+  selfTestGate6h(
+    assert,
+    JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate6-hd", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate6HdExpected,
+  );
 
   console.log(
     `\nself-test-gate6: ${assertions - failures}/${assertions} assertions passed`,

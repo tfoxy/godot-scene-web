@@ -1148,6 +1148,43 @@ G6b); `reference-repeat-budget` at both.
 **Pass criteria**: `--legs g6a,g6h` green; README "Gate 6h result" with both presentations'
 budgets and the HD transaction and atlas sizes.
 
+**As built (G6h, 2026-10-11).** `--legs g6h` passed 20/20 on its first full run, and `--legs
+g6a,g6h` passes (README "Gate 6h result"). Every model prediction held at both presentations,
+including the half lowering. What Q6e left open, or what the run settled:
+
+1. **One focus owner.** One viewport has one focus owner, so the builder's `grab_focus()` in every
+   cell leaves only cell 8's LineEdit focused. Cells 0 to 7 draw no focus box and no caret (G6a's
+   probe). `deselect_on_focus_loss_enabled` defaults to true and would also clear their
+   selections. `gate6_hd.gd` sets it false on each LineEdit before the next cell grabs focus, and
+   the model drops `LE.focus` outside cell 8 (`le_focus` in each cell view, checked by the oracle).
+2. **Cell placement.** The builder places `Scene` at `origin`. In the HD fixture `Scene` is a child
+   of its `Cell`, so `gate6_hd.gd` passes the cell origin (TL and the HUD panel are positioned
+   outside the cell's transform and need it) and then resets `Scene.position` to zero. Nothing in
+   `scene_builder.gd` changed. `--sync` copies the builder, `scene_oracle.gd`, `loader.gd` and
+   `phase_tint.gdshader`, and `--check` fails on any difference. The HD oracle (`hd_oracle.gd`)
+   reuses `scene_oracle.gd`'s readers per cell. The timelines are a copy of gate6_scene.gd's in
+   `gate6_hd.gd`, not shared code, because `res://` independence rules out a cross-project
+   preload.
+3. **The frame-1 tie does not happen** (as G6a): Grid and the nine TLs carry distinct draw indices
+   from frame 1. `draw_index_ties` is `[]`, and `hd-draw-index-tie` asserts it.
+4. **Half-scale classes are per pixel, not per shape.** Q6f said "a shape is `exact` under `half`
+   only when every edge lands on an integer pixel". The raster already decides each pixel by its
+   centre and leaves undecided any pixel within 1/16 px of an edge. An even logical edge then
+   decides its pixels, and a half-pixel edge (MS's odd offsets, the circle) leaves exactly the
+   pixels it crosses undecided. That rule is stricter than a whole-shape class and matched the
+   reference on every decided pixel. The half lowering differs from the native one only in
+   antialiased StyleBoxFlats (fill and feather ring at `aa_size / 0.5`, band still `aa_size/2 + 1`
+   screen pixels), carried as `ops_half`.
+5. **The capture runs the fixture's 122-frame file timeline**, not 400. The full sink is ~813 KB
+   per transaction at HD (99 MB at 122 frames), and the 400-frame /proc sample is a g6a check.
+   `recordings-decode`'s 400-frame rule is replaced by `hd-recordings`.
+6. **Expected size.** `expected.json` is 3.2 MB: the per-value PB lists at both presentations
+   (split into a constant background list and a bar list) and 28 TEXA textures.
+   `make_expected.py` regenerates it in about 12 s.
+7. **`gpu-heavy`** defaults to `RS_FIXTURE_BURN_ITERATIONS=1000`. A smoke capture classified
+   `unsupported` with only `extra-canvas`, with the `burn` shader carried `ok` as a payload. G6c
+   calibrates the count.
+
 ---
 
 ### G6b — render-stream/6: presentation, canvas layers, snap, receiver stretch (opus)

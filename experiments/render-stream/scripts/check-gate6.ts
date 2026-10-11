@@ -8,7 +8,8 @@
 //     experiments/render-stream/scripts/check-gate6.ts --out <evidence dir>
 //
 // Each group's checks live in its own lib (g6a: lib/gate6a-checks.ts, fixtures/gate6-scene on
-// render-stream/5), which its self-test drives with synthetic values. A landed group that was not
+// render-stream/5; g6h: lib/gate6h-checks.ts, fixtures/gate6-hd), which its self-test drives with
+// synthetic values. A landed group that was not
 // run is reported `not-run` and fails the gate.
 
 import { readFile, writeFile } from "node:fs/promises";
@@ -24,6 +25,11 @@ import {
   type RegionBudget6,
   runGate6a,
 } from "./lib/gate6a-checks";
+import {
+  type G6hLegEntry,
+  type Gate6HdExpected,
+  runGate6h,
+} from "./lib/gate6h-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -38,7 +44,7 @@ export const ALL_GROUPS = [
   "g6c",
   "g6p",
 ] as const;
-export const LANDED_GROUPS: readonly string[] = ["g6a"];
+export const LANDED_GROUPS: readonly string[] = ["g6a", "g6h"];
 
 export interface Gate6Report {
   schema: "render-stream-gate6-report/1";
@@ -46,7 +52,7 @@ export interface Gate6Report {
   binary: { path: string | null; sha256: string | null };
   gate_passed: boolean;
   groups: { run: string[]; landed: string[]; not_run: string[] };
-  legs: Record<string, G6aLegEntry>;
+  legs: Record<string, G6aLegEntry | G6hLegEntry>;
   checks: Gate6Check[];
   checkpoints: Gate6Checkpoint[];
   /** per leg pair: per region and pixel class, every shot (reference-repeat: Q6g's budget) */
@@ -112,6 +118,22 @@ async function main(): Promise<void> {
       ),
     ) as Gate6Expected;
     const r = await runGate6a(out, expected);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    report.checkpoints.push(...r.checkpoints);
+    Object.assign(report.budgets, r.budgets);
+    Object.assign(report.freshness, r.freshness);
+    Object.assign(report.mismatch_tables, r.mismatch_tables);
+    Object.assign(report.census, r.census);
+  }
+  if (run.includes("g6h")) {
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate6-hd", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate6HdExpected;
+    const r = await runGate6h(out, expected);
     report.checks.push(...r.checks);
     Object.assign(report.legs, r.legs);
     report.checkpoints.push(...r.checkpoints);

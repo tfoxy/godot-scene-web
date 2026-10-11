@@ -2221,3 +2221,70 @@ RT line offset or the repeat's bytes off; atlas parity and the LineEdit's rects 
 synthetic wire states; a hook log synthesized from the census passes and fails with TEXA's update
 missing, TEXB's hash off, an extra mesh call or the HUD hidden one frame too long; and the
 unsupported class and the frame-1 tie each pass and fail.
+
+## Gate 6 files (g6h)
+
+G6h ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6h") runs the 1920×1080
+`canvas_items` fixture `fixtures/gate6-hd` (nine copies of the combined scene in a 3×3 grid) at
+both presentations on render-stream/5: `--legs g6h` (and `g6a,g6h` for the increment's pass).
+
+- `lib/gate6h-legs.sh`: `run_g6h`, sourced by `run-gate6.sh` (kept apart so concurrent groups
+  merge trivially). One private gamescope at 1920×1080 for the native legs, one at 960×540 for the
+  half references; every rendered leg passes `--resolution` explicitly.
+- `lib/gate6h-checks.ts`: expected.json's types (`render-stream-gate6-hd-expected/1`), the
+  presentation transform (`hdItems`: scale(0.5) composed onto every item transform and scissor,
+  `ops_half` where the half lowering differs), the per-pixel region index, every g6h criterion, and
+  `runGate6h`, which walks the shots one at a time (a 1920×1080 raster and seven frames per shot).
+- `check-gate6.ts` runs `runGate6h` when `g6h` ran; the report's `legs` take G6h entries, its
+  `budgets` the per-region-family `hd-reference-repeat-{native,half}` and `hd-reference-armed-native`
+  tables, and `census["capture-hd-native"]` the HD costs (bytes per transaction on both sinks, the
+  items, commands and atlas pages at the last settle frame).
+- `test/self-test-gate6h.ts`: see "Gate 6 self-test (g6h)".
+
+## Gate 6 legs and evidence under `--out` (g6h)
+
+| Leg | Directory | Runs |
+| --- | --- | --- |
+| `import` | `hd/import/{fixture,receiver}/` | the mise editor's `--import` of `fixtures/gate6-hd` and `receiver/` |
+| `capture-hd-native` | `hd/capture-native/` | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=enforce-min-size` (the headless root becomes the logical 1920×1080: stretch identity), the 122-frame file timeline |
+| `reference-hd-native`, `-repeat` | `hd/reference-native{,-repeat}/` | rendered in the 1920×1080 gamescope, `--resolution 1920x1080`, oracle on: `shots/step-0..11.png`, `shots/frame-{13,53,93}.png`, `steps.jsonl`, `oracle.jsonl` |
+| `reference-hd-native-armed` | `hd/reference-native-armed/` | the same, extension armed with a full-sink stream and a store, oracle off |
+| `receiver-hd-native`, `-patch` | `hd/receiver-native{,-patch}/` | rendered 1920×1080 receivers on `capture-native`'s full and patch sinks (patch: state dumps at the settle seqs), shooting the settle seqs and the seqs of frames 13, 53, 93 |
+| `reference-hd-half`, `-repeat` | `hd/reference-half{,-repeat}/` | rendered in the 960×540 gamescope, `--resolution 960x540` (stretch 0.5, oversampling 0.5), oracle on |
+
+## Gate 6 criteria (g6h)
+
+On the capture: `leg-class-capture-hd-native` (`unsupported` with exactly
+`viewport_attach_canvas`/`extra-canvas`: the nine HUD layers before G6b), `hd-session` (logical
+1920×1080, `canvas_items`/`keep`, `enforce-min-size` with the host window at 1920×1080 and status
+`match`, the host's final transform the identity), `hd-recordings` (both sinks decode with 122
+transactions; the patch sink resolves to the full one), `hd-draw-index-tie` (no tie; Grid and the
+nine top-level TLs at distinct draw indices from frame 1) and `hd-step-log` (the capture's and every
+reference's). On the oracle: `hd-grid-layout` (the grid at (0,0) 1920×1080 and each Cell at its
+3×3 origin, 640×360, at both presentations), `hd-oversampling-reference` (1.0, 1920×1080 and stretch
+1 at native; 0.5, 960×540 and 0.5 at half; the step's canvas transform), `hd-cell-oracle` (every
+cell's scroll, HUD layer, PB, SM, CM, RichTextLabel and LineEdit focus against the model at the
+cell's phase; repeat oracles byte-identical) and `hd-atlas-parity` (native: the reference's atlas
+pages are exactly the capture's LA8 textures at every settle step, both sinks). On the references:
+`hd-expected-self-consistent` (the static rules, then each presentation's raster: only BG panels,
+the clear colour or band outside the regions, clear bottom strips, `fresh` as the rasters say),
+`hd-expected-image-reference-{native,half}` (every decided pixel of every cell of every shot equals
+the model), `hd-presence-reference`, `hd-freshness-reference` (both presentations),
+`hd-reference-repeat-budget-{native,half}` and `hd-armed-transparent` (pixel for pixel). On the
+receivers: `leg-class-receiver-hd-native{,-patch}` (`unsupported` with the capture's reasons, also
+in `applied.json`, every seq applied, every pixel outside the nine `HU` regions equal to the
+reference) and `hd-receiver-vs-reference` (budget 0; inside each `HU` exactly the HUD panel's pixels
+differ while that cell's HUD shows above the root canvas).
+
+## Gate 6 self-test (g6h)
+
+`test/self-test-gate6.ts` runs `test/self-test-gate6h.ts` on the committed
+`fixtures/gate6-hd/expected.json` (27 of its 66 assertions): the static rules pass, and overlapping
+regions, an odd region edge, an SM phase off D6, focus on two cells and a shared HUD layer each
+fail; the half presentation draws `ops_half` under scale(0.5); the half rasters of steps 0 and 1
+keep BG clean and agree with `fresh` (a painted strip pixel and a flipped flag fail); synthetic
+frames with each cell's HUD panel differing pass the HU rule, a missing panel fails and a
+difference outside HU is a mismatch; oracle lines made from the model pass the grid, oversampling
+and cell checks, and a moved cell, the half oracle at oversampling 1, an off PB value and differing
+repeat bytes fail; the HD session passes at the logical window and fails at 64×64; Grid and nine
+TLs pass at distinct draw indices and fail tied.
