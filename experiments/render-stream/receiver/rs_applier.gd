@@ -108,6 +108,13 @@ var sabotage_drop_mesh_surface: bool = false
 ## surface are ignored (no region update); layout changes still rebuild. Exists only to fail
 ## checks.
 var sabotage_stale_mesh: bool = false
+## RS_RECEIVER_SABOTAGE=refuse-canvas-texture (protocol/canvas-texture-headless.md "Simulated
+## refusal"): every draw whose texture names a canvas-texture entry is skipped, logged with the
+## reason the default headless capture gives it (`canvas-texture-headless`) and counted in
+## skipped_commands. It replays a recording
+## made with GRC_HEADLESS_CANVAS_TEXTURE=synthesize as the default capture would have refused it.
+## Exists only to compare pictures; never a fidelity mode.
+var sabotage_refuse_canvas_texture: bool = false
 
 var _viewport: RID
 var _root_canvas: RID
@@ -690,7 +697,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 						var texture: Dictionary = _texture_for(command, textures)
 						if not texture["drawable"]:
 							skipped += 1
-							unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": "unsupported-texture"})
+							unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": texture.get("reason", "unsupported-texture")})
 							continue
 						var tex_rid: RID = texture["rid"]
 						var dest: PackedFloat32Array = _floats(command["rect"])
@@ -713,7 +720,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 						var msdf_texture: Dictionary = _texture_for(command, textures)
 						if not msdf_texture["drawable"]:
 							skipped += 1
-							unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": "unsupported-texture"})
+							unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": msdf_texture.get("reason", "unsupported-texture")})
 							continue
 						var msdf_rid: RID = msdf_texture["rid"]
 						var msdf_dest: PackedFloat32Array = _floats(command["rect"])
@@ -738,7 +745,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 							var geometry_texture: Dictionary = _texture_for(command, textures)
 							if not geometry_texture["drawable"]:
 								skipped += 1
-								unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": "unsupported-texture"})
+								unsupported_commands.append({"item": id, "name": "canvas_item_" + op_name, "reason": geometry_texture.get("reason", "unsupported-texture")})
 								continue
 							geometry_tex = geometry_texture["rid"]
 						_replay_geometry(state.rid, command, geometry_tex)
@@ -769,7 +776,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 						var mesh_texture: Dictionary = _texture_for(command, textures)
 						if not mesh_texture["drawable"]:
 							skipped += 1
-							unsupported_commands.append({"item": id, "name": "canvas_item_add_mesh", "reason": "unsupported-texture"})
+							unsupported_commands.append({"item": id, "name": "canvas_item_add_mesh", "reason": mesh_texture.get("reason", "unsupported-texture")})
 							continue
 						var mesh_tex: RID = mesh_texture["rid"]
 						var mesh_xform: PackedFloat32Array = _floats(command["transform"])
@@ -1089,6 +1096,8 @@ func _texture_for(command: Dictionary, textures: Dictionary) -> Dictionary:
 		return {"drawable": true, "rid": RID()}
 	if status != "ok" or not _textures.has(id):
 		return {"drawable": false, "rid": RID()}
+	if sabotage_refuse_canvas_texture and entry["kind"] == "canvas":
+		return {"drawable": false, "rid": RID(), "reason": "canvas-texture-headless"}
 	return {"drawable": true, "rid": _textures[id].rid}
 
 

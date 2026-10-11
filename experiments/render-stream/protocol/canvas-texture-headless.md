@@ -4,8 +4,9 @@ Status: decision record and options study, 2026-10-09, written with G2d
 ([gate2-design.md](gate2-design.md) "G2d"). The decision is the user's: **a headless capture host
 refuses `CanvasTexture`, typed, until one of the options below is proven.** Source citations are
 `path:line` in the pinned `../godot-4.5.1-stable` checkout unless another version is named.
-Update 2026-10-10: option (a) is built as an opt-in experiment. It passes criteria 1–4, and the
-refusal is still the default. See "Experiment (a) result" at the end.
+Update 2026-10-10: option (a) is built as an opt-in experiment. It passes criteria 1–4. Criterion 5
+was run once on the target game: it arms, publishes and disarms by frames, but the game cannot
+exit 0. The refusal is still the default. See "Experiment (a) result" at the end.
 
 ## The problem
 
@@ -294,8 +295,8 @@ headless shim** (`GRC_HEADLESS_CANVAS_TEXTURE=synthesize`). Pass criteria:
 ## Experiment (a) result (2026-10-10)
 
 Approved by the user on 2026-10-10 and built on branch `rs/canvas-texture-shim`. **Criteria 1–4 pass on the
-pinned 4.5.1 release template. Criterion 5 (the target game) is pending: launching it needs a
-separate approval.** The typed refusal is still the default. Without the opt-in, nothing changes,
+pinned 4.5.1 release template. Criterion 5 (the target game) was run once on 2026-10-10: it arms,
+publishes and disarms by frames, but it cannot exit 0 (see "Criterion 5 result").** The typed refusal is still the default. Without the opt-in, nothing changes,
 not even an evidence file.
 
 ### As built
@@ -449,4 +450,46 @@ joins the table.
 - Any engine other than the pinned 4.5.1 release template's dummy rasterizer. A fork whose dummy
   allocates canvas textures gets pass-through (`engine_allocated`). A fork whose dummy validates
   RIDs is unchecked.
-- The target game (criterion 5).
+- That the shim adds anything visible on the target game. See "Criterion 5 result".
+
+### Simulated refusal
+
+The receiver's `RS_RECEIVER_SABOTAGE=refuse-canvas-texture` replays a recording made with
+`synthesize` the way the default capture would have refused it. Every draw whose texture names a
+`canvas` texture-table entry is skipped. The receiver logs it as `unsupported command …
+(canvas-texture-headless) logged, not drawn` and counts it in that transaction's
+`resources.skipped_commands`, as it does for any texture it cannot draw. The rule covers texture
+rects and regions, MSDF, the geometry ops that carry a texture, and `add_mesh`. Nothing else
+changes. One recording replayed both ways shows exactly what the shim adds, without a second
+capture. That matters when the capture host is a game whose launches are rationed. On gate 2 g2f's
+`shim-headless` capture the sabotage removes the canvas-texture draw of step 11: that shot differs
+from the shim replay, and the 11 others are identical. It is a picture comparison, never a
+fidelity mode. A real shim-off capture also refuses `RID()` draws under D11, and this replay does
+not reproduce that.
+
+### Criterion 5 result (2026-10-10)
+
+One isolated `--headless` launch of the target game was approved and run. The game was loaded
+through the modder route (an env-gated `LoadExtension` at mod init), with
+`GRC_HEADLESS_CANVAS_TEXTURE=synthesize` and `GRC_UNKNOWN_ITEM=skip`
+([unknown-item-skip.md](unknown-item-skip.md)). Calibration, evidence, recordings and images are
+game-derived, so they stay in the consumer repository's ignored research folder.
+
+- **Arms, publishes, disarms by frames: pass.** The shim armed on the `headless` display server and
+  synthesized private ids for every canvas texture created while armed: none were
+  engine-allocated, and there were no foreign frees. The full and patch recordings closed at
+  `GRC_DISARM_AFTER_FRAMES` with end reason `disarm`, the vptr was restored, and the TS decoder
+  validates the recording with no error.
+- **Exit 0: not achievable on this game.** The game was still alive 20 s after the disarm. It was
+  then stopped per the runbook with TERM, and it died by SIGABRT ("terminate called without an
+  active exception", wait status 134) before any GDExtension shutdown callback. That is the game's
+  own behaviour, with or without the extension (gate −0.5's control leg). Criterion 5 should read:
+  "arms, publishes, disarms by frames and stays alive after the disarm. The process's own exit
+  status on TERM is not judged."
+- **What it shows: nothing yet.** The extension loads after the game's root scene nodes are
+  constructed, so they are unknown RIDs. Under `skip`, every item whose parent chain reaches one of
+  them is withheld, and that is every item that draws, the canvas-texture draws included. The
+  published state holds only items that draw nothing: unparented, not-in-tree instances and a few
+  of their children. The receiver therefore replays the clear colour only, with or without the
+  simulated refusal. The shim's identities are correct, but they are invisible until late join
+  (gate 8's adoption pass) publishes the withheld subtrees.
