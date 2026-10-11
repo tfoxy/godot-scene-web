@@ -288,9 +288,10 @@ export interface ResourceLine {
   outcome: "applied" | "rejected" | "unknown" | null;
   /** G55a (gate5_5-design.md Q3d): shader/material/item-material trailing columns, null on every
    * other line. `builtin` is the D7 CanvasItemMaterial recognition, or null when unrecognized or
-   * not a shader line. */
+   * not a shader line. The hook writes `source` "payload" whatever the policy; "withheld" only
+   * appears in a view with the policy applied (gate55e-checks.ts applyPolicyToLog, D4). */
   mode: string | null;
-  source: "payload" | null;
+  source: "payload" | "withheld" | null;
   builtin: {
     kind: "canvas_item_material";
     blend_mode: string;

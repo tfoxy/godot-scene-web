@@ -8,7 +8,8 @@
 //     experiments/render-stream/scripts/check-gate55.ts --out <evidence dir>
 //
 // Each group's checks live in its own lib (g55b: lib/gate55b-checks.ts, g55c:
-// lib/gate55c-checks.ts, g55d: lib/gate55d-checks.ts over g55b's scene directories), which its
+// lib/gate55c-checks.ts, g55d: lib/gate55d-checks.ts over g55b's scene directories, g55e:
+// lib/gate55e-checks.ts over g55c's directories and its own policy directories), which its
 // self-test drives with synthetic values. A group that was not run is reported `not-run` and fails
 // the gate.
 
@@ -30,13 +31,19 @@ import {
   runGate55c,
 } from "./lib/gate55c-checks";
 import { runGate55d } from "./lib/gate55d-checks";
+import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
 
 /** Every group of protocol/gate5_5-design.md "Increments", and those whose increment landed. */
 export const ALL_GROUPS = ["g55b", "g55c", "g55d", "g55e", "g55f"] as const;
-export const LANDED_GROUPS: readonly string[] = ["g55b", "g55c", "g55d"];
+export const LANDED_GROUPS: readonly string[] = [
+  "g55b",
+  "g55c",
+  "g55d",
+  "g55e",
+];
 
 export interface Gate55Report {
   schema: "render-stream-gate55-report/1";
@@ -147,6 +154,26 @@ async function main(): Promise<void> {
         g55d: m,
       };
   }
+  if (run.includes("g55e")) {
+    // G55e's receivers, policies and sabotages over g55c's directories (<out>/shader,
+    // <out>/shader-refused) and its own (<out>/shader-policy-params, <out>/shader-policy-exclude).
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate55-shader", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate55eExpected;
+    const r = await runGate55e(out, expected);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    report.checkpoints.push(...r.checkpoints);
+    report.materials[expected.fixture] = {
+      ...((report.materials[expected.fixture] as
+        | Record<string, unknown>
+        | undefined) ?? {}),
+      g55e: r.materials,
+    };
+  }
   for (const group of report.groups.not_run)
     report.checks.push({
       id: `group-${group}`,
@@ -182,18 +209,23 @@ async function main(): Promise<void> {
       hook_census?: Record<string, number | string>;
       calibrator8?: string;
       g55d?: { per_step?: Record<string, Record<string, unknown>> };
+      g55e?: { per_step?: Record<string, Record<string, unknown>> };
     };
-    if (v.g55d?.per_step)
-      console.log(
-        `  materials on the wire (${name}), step:shaders/materials/GRP1 B/param_f64 B (patch): ${Object.entries(
-          v.g55d.per_step,
-        )
-          .map(
-            ([k, r]) =>
-              `${k}:${r.shaders}/${r.materials}/${r.grp1_payload_bytes}/${r.param_f64_bytes_patch}`,
+    for (const [label, ps] of [
+      ["g55d", v.g55d?.per_step],
+      ["g55e", v.g55e?.per_step],
+    ] as const)
+      if (ps)
+        console.log(
+          `  materials on the wire (${name}, ${label}), step:shaders/materials/GRP1 B/param_f64 B (patch): ${Object.entries(
+            ps,
           )
-          .join(" ")}`,
-      );
+            .map(
+              ([k, r]) =>
+                `${k}:${r.shaders}/${r.materials}/${r.grp1_payload_bytes}/${r.param_f64_bytes_patch}`,
+            )
+            .join(" ")}`,
+        );
     if (v.hook_census)
       console.log(
         `  material census (${name}, calibrator 8 ${v.calibrator8}): ${Object.entries(
