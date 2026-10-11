@@ -4,7 +4,7 @@
 #
 #   bash run-gate6.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g6a]
+#     [--legs g6a,g6h,g6l]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -24,6 +24,13 @@
 # g6h (G6h, lib/gate6h-legs.sh): fixtures/gate6-hd (1920x1080, canvas_items) under <out>/hd/: its
 # native capture, references at 1920x1080 (repeat, armed) and 960x540 (repeat), and 1920x1080
 # receivers on both sinks.
+# g6l (G6l, on render-stream/5): under <out>/live/ the `animate` variant on the live timeline
+# (S=300, N=60, quit 1080, `steps` time): live hosts with rendered live receivers shooting 12
+# settle and 40 motion windows -- live-scene (fresh cache), live-scene-warm (on live-scene's
+# cache), live-stall (RS_RECEIVER_STALL=2:2000), live-reconnect (RS_RECEIVER_RECONNECT=5, memory
+# kept) and sabotage-live-stale-coalesce (the stall, stale-coalesce @420) -- then
+# reference-live-frames (the reference shooting every host frame a receiver shot, and every
+# stale_from frame) and reference-file (the animate reference on the file timeline).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -48,7 +55,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g6a g6h)
+LANDED_GROUPS=(g6a g6h g6l)
 KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p)
 
 EXTENSION=""
@@ -374,10 +381,222 @@ run_g6a() {
 # shellcheck source=lib/gate6h-legs.sh
 source "$SCRIPT_DIR/lib/gate6h-legs.sh"
 
+# ---------------------------------------------------------------------------------------------
+# G6l (gate6-design.md "G6l", Q7c): live motion, the 2-s stall, reconnect and the warm cache on
+# fixtures/gate6-scene's `animate` variant with the live timeline (S=300, N=60, step k at 300 +
+# 60k, settled 7 frames later, quit at S + 13N = 1080) and `steps` time (D6: host frame f is
+# reference frame f whatever the wall clock does). Everything lives under <out>/live/:
+#   import/{fixture,receiver}/  editor --import passes (memory receiver-needs-import-before-script)
+#   <leg>/host/       a live host (headless, armed, both sinks and the store, tap, --max-fps 60)
+#   <leg>/receiver/   its rendered live receiver (--max-fps 60, the shot windows of g6l_windows)
+#   reference-live-frames/   the rendered reference on the live timeline shooting every host frame
+#                            a receiver shot, plus every frame a shot transaction's snapshot came
+#                            from (stale-coalesce's `stale_from`), as shots/frame-<f>.png
+#   reference-file/          the rendered `animate` reference on the file timeline (live-steps)
+# Legs: live-scene (fresh cache), live-scene-warm (a new host + receiver on live-scene's cache,
+# mode warm), live-stall (RS_RECEIVER_STALL=2:2000), live-reconnect (RS_RECEIVER_RECONNECT=5,
+# RS_RECEIVER_RECONNECT_MEMORY=keep), sabotage-live-stale-coalesce (the stall, host
+# GRC_SABOTAGE=stale-coalesce from step 2's frame 420).
+G6L_START_FRAME=300
+G6L_STEP_FRAMES=60
+G6L_LAST_STEP=11
+G6L_QUIT_FRAME=$((G6L_START_FRAME + G6L_STEP_FRAMES * 13))
+G6L_STALL_SPEC="2:2000"
+G6L_RECONNECT_STEP=5
+G6L_SABOTAGE_FRAME=$((G6L_START_FRAME + G6L_STEP_FRAMES * 2))
+# Q7c: 40 motion windows of 10 frames spread over frames 320..1060 (labels 100..139, from 320 +
+# floor(18.5 i)), listed after the twelve settle windows (labels 0..11: from the settle frame to
+# the frame before the next step, the last to the quit). The receiver shoots the first applied
+# transaction in each window, trying windows in list order, so a motion window never takes a
+# settle shot.
+G6L_MOTION_WINDOWS=40
+G6L_MOTION_FIRST=320
+G6L_MOTION_LABEL=100
+
+g6l_windows() {
+	local k from to out="" sep=""
+	for k in $(seq 0 "$G6L_LAST_STEP"); do
+		from=$((G6L_START_FRAME + G6L_STEP_FRAMES * k + 7))
+		to=$((G6L_START_FRAME + G6L_STEP_FRAMES * (k + 1) - 1))
+		[ "$k" -eq "$G6L_LAST_STEP" ] && to=$G6L_QUIT_FRAME
+		out+="$sep$k:$from-$to"
+		sep=","
+	done
+	for k in $(seq 0 $((G6L_MOTION_WINDOWS - 1))); do
+		from=$((G6L_MOTION_FIRST + (37 * k) / 2))
+		out+=",$((G6L_MOTION_LABEL + k)):$from-$((from + 9))"
+	done
+	echo "$out"
+}
+
+# start_live_scene_host <dir> [extra env words...]: the gate6-scene host (headless, armed, both
+# file sinks and their store, the live tap, --max-fps 60, `animate`, live timeline) serving on
+# 127.0.0.1:0 in the background. Waits for evidence/live.json and sets LIVE_PORT ("" when the host
+# is not listening).
+start_live_scene_host() {
+	local dir="$1" waited=0
+	shift
+	mkdir -p "$dir/evidence" "$dir/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		GRC_ROOT_SIZE=enforce-min-size GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
+		RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=live RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "$@"
+	)
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$SCENE_FIXTURE_DIR"
+	LIVE_HOST_PID="$BG_PID"
+	LIVE_PORT=""
+	while [ "$waited" -lt 400 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
+		LIVE_PORT="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
+	fi
+	echo "run-gate6: ${dir#"$OUT"/} listening on port ${LIVE_PORT:-<none>}"
+}
+
+# g6l_receiver <leg dir> [extra env words...]: a rendered live receiver on the current host's
+# port with a fresh cache at <leg>/receiver/cache (the extra words may override it), --max-fps 60
+# and the shot windows of g6l_windows (credit stage submitted).
+g6l_receiver() {
+	local leg="$1" dir="$1/receiver"
+	shift
+	mkdir -p "$dir"
+	if [ -z "$LIVE_PORT" ]; then
+		echo "the live host is not listening (see $leg/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate6: ${dir#"$OUT"/} skipped: the host is not listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache"
+		RS_RECEIVER_SHOT_WINDOWS="$(g6l_windows)" "$@"
+	)
+	RENDERED_EXTRA_ARGS=(--max-fps 60)
+	run_rendered "$dir" "$RECEIVER_DIR"
+}
+
+# g6l_leg <leg> <host words...> -- <receiver words...>: one live host and one receiver against
+# it, then the host to its quit frame.
+g6l_leg() {
+	local leg="$1"
+	shift
+	local -a host_words=() receiver_words=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		host_words+=("$1")
+		shift
+	done
+	[ $# -gt 0 ] && shift
+	receiver_words=("$@")
+	start_live_scene_host "$L/$leg/host" ${host_words[@]+"${host_words[@]}"}
+	g6l_receiver "$L/$leg" ${receiver_words[@]+"${receiver_words[@]}"}
+	finish_bg "$L/$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+}
+
+# The host frames reference-live-frames must shoot (a CSV): for every shot of every g6l receiver,
+# the frame of the transaction it shot and, when the host's live log says that send carried an
+# older snapshot (stale-coalesce's `stale_from`), that frame too.
+g6l_shot_frames() {
+	python3 - "$1" <<'PY'
+import json, os, sys
+
+root = sys.argv[1]
+frames = set()
+for leg in sorted(os.listdir(root)):
+    applied = os.path.join(root, leg, "receiver", "applied.json")
+    if not os.path.isfile(applied):
+        continue
+    try:
+        with open(applied) as f:
+            a = json.load(f)
+    except ValueError:
+        continue
+    tx = {(t.get("stream", 1), t.get("seq")): t.get("frame") for t in a.get("transactions") or []}
+    stale = {}
+    for n in (1, 2, 3, 4):
+        path = os.path.join(root, leg, "host", "tap", "live-%d.jsonl" % n)
+        if not os.path.isfile(path):
+            continue
+        with open(path) as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                sent = entry.get("sent")
+                if isinstance(sent, dict) and sent.get("stale_from") is not None:
+                    stale[(n, sent.get("seq"))] = sent["stale_from"]
+    for s in a.get("shots") or []:
+        key = (s.get("stream", 1), s.get("seq"))
+        if tx.get(key) is not None:
+            frames.add(int(tx[key]))
+        if key in stale:
+            frames.add(int(stale[key]))
+print(",".join(str(f) for f in sorted(frames)))
+PY
+}
+
+run_g6l() {
+	local L="$OUT/live" frames
+	mkdir -p "$L/import"
+	echo "run-gate6: g6l: import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$L/import/fixture" none -- mise exec -- godot --headless --path "$SCENE_FIXTURE_DIR" --import
+	if [ "$(cat "$L/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate6: import of $SCENE_FIXTURE_DIR failed, see $L/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	LEG_ENV=()
+	run_headless "$L/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$L/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate6: import of $RECEIVER_DIR failed, see $L/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate6: bringing up private gamescope for g6l legs"
+	gs_start 640 360 "$OUT/gamescope-g6l"
+
+	echo "run-gate6: g6l: live-scene (host + rendered live receiver, fresh cache)"
+	g6l_leg live-scene
+	echo "run-gate6: g6l: live-scene-warm (a new host + a new rendered receiver on live-scene's cache)"
+	g6l_leg live-scene-warm -- RS_RECEIVER_CACHE_DIR="$L/live-scene/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	echo "run-gate6: g6l: live-stall (RS_RECEIVER_STALL=$G6L_STALL_SPEC)"
+	g6l_leg live-stall -- RS_RECEIVER_STALL="$G6L_STALL_SPEC"
+	echo "run-gate6: g6l: live-reconnect (RS_RECEIVER_RECONNECT=$G6L_RECONNECT_STEP, memory kept)"
+	g6l_leg live-reconnect -- RS_RECEIVER_RECONNECT="$G6L_RECONNECT_STEP" RS_RECEIVER_RECONNECT_MEMORY=keep
+	echo "run-gate6: g6l: sabotage-live-stale-coalesce (stale-coalesce @$G6L_SABOTAGE_FRAME, RS_RECEIVER_STALL=$G6L_STALL_SPEC)"
+	g6l_leg sabotage-live-stale-coalesce GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$G6L_SABOTAGE_FRAME" -- \
+		RS_RECEIVER_STALL="$G6L_STALL_SPEC"
+
+	frames="$(g6l_shot_frames "$L")"
+	echo "run-gate6: g6l: reference-live-frames (the frames the receivers shot: $frames)"
+	mkdir -p "$L/reference-live-frames/shots"
+	LEG_ENV=(
+		RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=live RS_FIXTURE_SHOT_FRAMES="$frames"
+		RS_FIXTURE_SHOT_DIR="$L/reference-live-frames/shots"
+		RS_FIXTURE_STEP_LOG="$L/reference-live-frames/steps.jsonl"
+	)
+	run_rendered "$L/reference-live-frames" "$SCENE_FIXTURE_DIR"
+	echo "run-gate6: g6l: reference-file (animate, file timeline: live-steps' step-determined regions)"
+	mkdir -p "$L/reference-file/shots"
+	LEG_ENV=(
+		RS_FIXTURE_VARIANT=animate RS_FIXTURE_SHOT_DIR="$L/reference-file/shots"
+		RS_FIXTURE_STEP_LOG="$L/reference-file/steps.jsonl"
+	)
+	run_rendered "$L/reference-file" "$SCENE_FIXTURE_DIR"
+
+	gs_teardown "$OUT/gamescope-g6l"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g6a) run_g6a ;;
 	g6h) run_g6h ;;
+	g6l) run_g6l ;;
 	esac
 done
 

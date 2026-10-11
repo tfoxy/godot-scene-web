@@ -187,6 +187,27 @@ func library_code(hash: String) -> Dictionary:
 	return {"ok": true, "code": code, "detail": ""}
 
 
+## The hashes held in memory, sorted (G6l: live.reconnect's record of what survives).
+func memory_hashes() -> Array[String]:
+	var out: Array[String] = []
+	for hash: String in _memory:
+		out.append(hash)
+	out.sort()
+	return out
+
+
+## The hashes the cache directory holds a payload file for, sorted (G6l).
+func cache_hashes() -> Array[String]:
+	var out: Array[String] = []
+	if dir == "":
+		return out
+	for file_name: String in DirAccess.get_files_at(dir.path_join(CACHE_SUBDIR)):
+		if _is_payload_file(file_name):
+			out.append(file_name.get_basename())
+	out.sort()
+	return out
+
+
 ## Forgets every payload held in memory (a live reconnect: the new session's payloads come from
 ## the stream's inline records, the cache directory or a fetch, never from the old session).
 func clear_memory() -> void:

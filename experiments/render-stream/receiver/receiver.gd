@@ -87,7 +87,8 @@ extends Node
 ## RS_RECEIVER_URL host and port, one keep-alive HTTPClient, sequentially, polled from _process:
 ## the transaction waits (unapplied, unacknowledged beyond `received`) until every payload it
 ## needs is in, and the rendered loop keeps presenting the previous state meanwhile. After a
-## reconnect the payloads held in memory are dropped, so connection 2 takes them from the cache.
+## reconnect the payloads held in memory are dropped (RS_RECEIVER_RECONNECT_MEMORY=drop, the
+## default), so connection 2 takes them from the cache, or kept (keep, G6l).
 ##
 ## Live mode (RS_RECEIVER_MODE=live, G1c2):
 ##   RS_RECEIVER_URL             ws://127.0.0.1:<port>/render-stream or ws://[::1]:<port>/... (required)
@@ -107,6 +108,13 @@ extends Node
 ##   RS_RECEIVER_RECONNECT       <step> (G1d): after the shot for <step> (and its submitted ack),
 ##                               close with 1000, free every RID the applier made, and connect
 ##                               again: a fresh session on received-2.rs2
+##   RS_RECEIVER_RECONNECT_MEMORY drop (default, G2c2) or keep (G6l, gate6-design.md Q7c): what
+##                               the payloads held in memory do across RS_RECEIVER_RECONNECT.
+##                               drop: connection 2 takes them from its inline records, the
+##                               cache directory or a fetch; keep: they stay (content-addressed,
+##                               already verified by hash), so only payloads in neither memory nor
+##                               the cache directory are fetched. live.reconnect records the mode
+##                               and the hashes in memory and in the cache at that moment
 ##   RS_RECEIVER_RESYNC          <step> (G1d): refuse the first transaction in that step's window
 ##                               unapplied, send `resync` for it, and ignore patches until a full
 ##                               transaction arrives
@@ -248,6 +256,8 @@ var _stall_ms: int = 0
 var _reconnect_step: int = -1
 var _reconnect_due: bool = false
 var _reconnecting: bool = false
+## RS_RECEIVER_RECONNECT_MEMORY (G6l): "drop" (G2c2's rule) or "keep".
+var _reconnect_memory: String = "drop"
 var _resync_step: int = -1
 var _resync_done: bool = false
 var _awaiting_full: bool = false
@@ -1400,6 +1410,12 @@ func _parse_g1d_options() -> bool:
 			_reconnect_step = text.to_int()
 		else:
 			_resync_step = text.to_int()
+	var memory: String = OS.get_environment("RS_RECEIVER_RECONNECT_MEMORY").strip_edges()
+	if memory != "":
+		if memory != "drop" and memory != "keep":
+			_log("error: RS_RECEIVER_RECONNECT_MEMORY must be drop or keep (got %s)" % JSON.stringify(memory))
+			return false
+		_reconnect_memory = memory
 	for named: Array in [["RS_RECEIVER_STALL", _stall_step], ["RS_RECEIVER_RECONNECT", _reconnect_step], ["RS_RECEIVER_RESYNC", _resync_step]]:
 		var step: int = named[1]
 		if step >= 0 and _window_of(step).is_empty():
@@ -1539,8 +1555,13 @@ func _start_next_connection() -> void:
 	_stream = Rs2Decoder.Stream.new()
 	_inline_since_applied = 0
 	# G2c2: connection 2 owes nothing to connection 1: payloads come from its own inline records,
-	# the cache directory or a fetch, never from this process's memory.
-	_cache.clear_memory()
+	# the cache directory or a fetch, never from this process's memory. G6l (keep): the memory
+	# map survives, content-addressed and verified by hash, so nothing held is fetched again.
+	reconnect["memory"] = _reconnect_memory
+	reconnect["memory_hashes"] = _cache.memory_hashes()
+	reconnect["cache_hashes"] = _cache.cache_hashes()
+	if _reconnect_memory == "drop":
+		_cache.clear_memory()
 	_pending_apply = {}
 	if _fetcher != null:
 		_fetcher.cancel()

@@ -20,6 +20,7 @@
 //    missing, a hash off, an extra mesh call or the HUD hidden one frame too long (each fails).
 // 7. evaluateUnsupportedClass and evaluateNoTies6.
 // 8. Gate 6h: test/self-test-gate6h.ts on the committed fixtures/gate6-hd/expected.json.
+// 9. Group g6l: self-test-gate6l.ts's cases for lib/gate6l-checks.ts.
 //
 // Exits non-zero if any assertion fails.
 
@@ -54,6 +55,7 @@ import type { Gate6HdExpected } from "../lib/gate6h-checks";
 import type { Wire5Tx } from "../lib/gate55-wire";
 import { rasterizeItems } from "../lib/geometry-raster";
 import { selfTestGate6h } from "./self-test-gate6h";
+import { selfTestG6l } from "./self-test-gate6l";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -871,6 +873,8 @@ async function main(): Promise<void> {
       ),
     ) as Gate6HdExpected,
   );
+  // 9. Group g6l (self-test-gate6l.ts).
+  selfTestG6l(e, { assert, passes, fails });
 
   console.log(
     `\nself-test-gate6: ${assertions - failures}/${assertions} assertions passed`,
