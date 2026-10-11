@@ -1218,6 +1218,16 @@ fails at the very first frame on a hash neither set names. (4) `loadHost` (gate2
 a live host's own evidence only; it never populates a connection's `received` (the receiver's copy
 of the stream) -- G5f's own loader assigns `received.rs2`/`received-<n>.rs2` itself, the same way
 gate 2c2's `loadG2cLeg` already does. Memory: `rs-g5f-live-mesh-facts`.
+(5) **(2026-10-11 flake fix) Do not assume every frame is sent.** Under CPU load the credit loop
+phase-locks to every other frame. Three consequences:
+
+- `stale-coalesce` then rewrites every ordinary coalesced send (`sent.stale_from`), not only the
+  recovery. On the sabotage leg only, a shot is judged against the frame its wire carries
+  (`stale_exact`).
+- `warm-host-no-gets` compares the warm leg's hits and GETs with what its own tap named.
+- Pins at the quit frame count a connection open through the callback that precedes its close.
+
+The README "G5f flake fix" section has the evidence. G55f carries the same `stale_exact` rule.
 
 ## Deferred, with owners
 
