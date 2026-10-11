@@ -1,0 +1,1121 @@
+// Gate 5 group g5f (protocol/gate5-design.md "G5f"): live meshes through dropped presentations.
+// Live legs on fixtures/gate5-mesh with gate 1's and gate 2's live timeline (S=300, N=60,
+// LAST_STEP=9, quit=851 -- G5F_* below), reusing gate 2's live-resource machinery (G2cHost,
+// pinsReport, the HTTP/pin/retire checks) generalized to GRM1 mesh surface hashes, and gate 1's
+// G1d stall report (send/credit frames, coalescing, the recovery transaction) unchanged.
+//
+// DF (fixtures/gate5-mesh's every-frame deforming mesh) is the one resource busy enough to stress
+// pins/retirement/coalescing continuously; every other mesh is static between its own step. DF's
+// band nature (gate5-design.md Q6d: "compared leg to leg only") means a per-step reference image
+// is only exactly right for a shot taken at the SAME absolute frame as the reference's, and a live
+// shot can land a frame or two off its nominal settle frame from ordinary round-trip jitter (not
+// only a stall: DF's step-5 rebuild measurably delays one send by a frame on its own). A
+// checkpoint whose only mismatching region is DF is therefore judged `benign` when the wire's own
+// resolved state at the shot's actual frame equals the host's full file recording at that frame
+// (wireStateEqualsFullAtFrame) -- the same newest-state proof `mesh-fetches-latest-only` uses for
+// the stall's recovery transaction, applied to every checkpoint. The stale-coalesce sabotage is
+// exactly the case where that proof fails: its post-stall DF mismatch is real, not benign, which
+// is what makes the leg classify pixel-mismatch instead of success.
+//
+// Pure over an evidence directory written by run-gate5.sh's run_g5f (under <out>/mesh/), so
+// nothing here launches a process.
+//
+// Evidence layout added by group g5f under <out>/mesh/ (beside g5c's and g5e's):
+//   import/fixture-g5f/, import/receiver-g5f/   editor --import passes
+//   reference-live/                             rendered reference at G5f's own timeline:
+//                                                shots/step-<k>.png, steps.jsonl
+//   <leg>/host/     a live host on G5f's timeline: recording.rs2, recording-patch.rs2, store/,
+//                   steps.jsonl, evidence/{result,live,live-summary}.json,
+//                   evidence/resources.jsonl, tap/stream-1.rs2, tap/live-1.jsonl
+//   <leg>/receiver/ its live receiver: applied.json, received.rs2, cache/, shots/seq-<n>.png
+// Legs: live-mesh, live-mesh-warm (receiver on live-mesh's cache, mode warm), live-mesh-stall
+// (RS_RECEIVER_STALL=1:2000 after step 1), sabotage-mesh-stale-coalesce (the same stall, host
+// GRC_SABOTAGE=stale-coalesce from step 1's frame).
+
+import { join } from "node:path";
+
+import {
+  decodePngRgba,
+  readJson,
+  readTextOrUndefined,
+} from "./gate-minus1-checks";
+import { diffRgba, readExitCode } from "./gate0-checks";
+import {
+  type G1dShot,
+  parseStall,
+  type ShotWindow,
+  type StallReport,
+  stallReport,
+} from "./gate1-g1d-checks";
+import {
+  deliveryReasons,
+  deliveryReport,
+  type LiveHostEvidence,
+} from "./gate1-live-checks";
+import {
+  G2B_PRECEDENCE,
+  type G2bCheck,
+  type G2bClass,
+  type G2bClassification,
+  type G2bLegExpectation,
+  loadResolved,
+} from "./gate2b-checks";
+import {
+  connTimelines,
+  fetchesAfterApplied,
+  type G2cHost,
+  getsVsFetches,
+  httpGets,
+  loadHost,
+  meshTableHashes,
+  okImageHashes,
+  okMeshHashes,
+  type PinsReport,
+  pinsReport,
+  sameBytesOrPrefix,
+  tableHashes,
+  unadvertisedGets,
+} from "./gate2c-checks";
+import type { Gate5MeshExpected, Gate5MeshStep } from "./gate5c-checks";
+import type { ResolvedTransaction } from "./render-stream-2";
+import { statesEqual } from "./render-stream-2";
+
+/** The fixture also serves two ordinary textures over the same resource mechanism (TEXG, Q6a,
+ * and the engine's default-theme hue strip, memory rs-g2a-texture-census-facts): pins, retirement
+ * and GET-advertising are keyed by hash regardless of resource kind, so the "servable" and
+ * "advertised" sets g5f checks against must union both kinds, not meshes alone. */
+function okResourceHashes(t: ResolvedTransaction | undefined): Set<string> {
+  return new Set([...okImageHashes(t), ...okMeshHashes(t)]);
+}
+function resourceTableHashes(t: ResolvedTransaction): Set<string> {
+  return new Set([...tableHashes(t), ...meshTableHashes(t)]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The live timeline and the legs (run-gate5.sh's G5F_* constants, mirrored)
+// ---------------------------------------------------------------------------------------------
+
+export const G5F_START_FRAME = 300;
+export const G5F_STEP_FRAMES = 60;
+export const G5F_LAST_STEP = 9;
+export const G5F_QUIT_FRAME =
+  G5F_START_FRAME + G5F_STEP_FRAMES * G5F_LAST_STEP + 11;
+export const G5F_STALL_SPEC = "1:2000";
+/** DF is the only region a live shot's frame offset (from a stall) can move away from the
+ * reference's; every other region is static between its own step. */
+export const G5F_CONTINUOUS_REGION = "DF";
+
+export const G5F_LEGS: readonly G2bLegExpectation[] = [
+  { leg: "live-mesh", expected_class: "success" },
+  { leg: "live-mesh-warm", expected_class: "success" },
+  { leg: "live-mesh-stall", expected_class: "success" },
+  { leg: "sabotage-mesh-stale-coalesce", expected_class: "pixel-mismatch" },
+];
+/** Legs whose pins/retirement/HTTP must hold exactly (gate 2's live checks for GRM1): every leg
+ * but the stale-coalesce sabotage, which deliberately serves a stale snapshot. */
+export const G5F_GOOD: readonly string[] = [
+  "live-mesh",
+  "live-mesh-warm",
+  "live-mesh-stall",
+];
+/** Legs whose host stalls the receiver (RS_RECEIVER_STALL). */
+export const G5F_STALL_LEGS: readonly string[] = [
+  "live-mesh-stall",
+  "sabotage-mesh-stale-coalesce",
+];
+
+export function g5fWindows(): ShotWindow[] {
+  const out: ShotWindow[] = [];
+  for (let k = 0; k <= G5F_LAST_STEP; k++) {
+    const from = G5F_START_FRAME + G5F_STEP_FRAMES * k + 7;
+    const to =
+      k === G5F_LAST_STEP
+        ? G5F_QUIT_FRAME
+        : G5F_START_FRAME + G5F_STEP_FRAMES * (k + 1) - 1;
+    out.push({ step: k, from, to });
+  }
+  return out;
+}
+
+function check(
+  id: string,
+  criterion: string,
+  problems: string[],
+  okDetail: string,
+  evidence: string[],
+): G2bCheck {
+  return {
+    id,
+    criterion,
+    passed: problems.length === 0,
+    status: problems.length === 0 ? "pass" : "fail",
+    detail:
+      problems.length === 0
+        ? okDetail
+        : `${problems.slice(0, 8).join("; ")}${problems.length > 8 ? ` (+${problems.length - 8} more)` : ""}`,
+    evidence,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Evidence
+// ---------------------------------------------------------------------------------------------
+
+export interface G5fFetch {
+  stream?: number;
+  seq?: number;
+  hash?: string;
+  source?: string;
+  kind?: string;
+  status?: number | null;
+  bytes?: number;
+  start_us?: number;
+  end_us?: number;
+  verified?: boolean;
+  headers?: Record<string, string>;
+}
+
+export interface G5fApplied {
+  schema?: string;
+  mode?: string;
+  status?: string;
+  failure?: { seq: number | null; reason: string; detail?: string } | null;
+  end_seen?: boolean;
+  streams?: Array<{
+    connection?: number | null;
+    received_path?: string;
+    received_sha256?: string | null;
+    received_bytes?: number;
+    end_seen?: boolean;
+    closed_by?: string | null;
+  }>;
+  transactions?: Array<{
+    stream?: number;
+    seq?: number;
+    frame?: number;
+    encoding?: string;
+    record_sha256?: string;
+    received_us?: number | null;
+    applied_us?: number | null;
+    submitted_us?: number | null;
+    skipped?: string | null;
+    resources?: Record<string, number> | null;
+  }>;
+  shots?: Array<{ stream?: number; seq?: number; step?: number | null }>;
+  shots_missed?: number[];
+  cache?: { mode?: string } | null;
+  fetches?: G5fFetch[];
+  resources_summary?: Record<string, number>;
+  live?: {
+    credit_stage?: string;
+    presented?: string;
+    stall?: {
+      step?: number;
+      ms?: number;
+      after_seq?: number;
+      after_frame?: number;
+      start_us?: number;
+      end_us?: number;
+      injected?: boolean;
+      mechanism?: string;
+    } | null;
+  } | null;
+}
+
+export interface G5fLegEvidence {
+  leg: string;
+  host: G2cHost | null;
+  receiverDir: string;
+  applied: G5fApplied | undefined;
+  log: string;
+  exit: number | null;
+}
+
+export async function loadG5fLeg(
+  outDir: string,
+  leg: string,
+): Promise<G5fLegEvidence> {
+  const legDir = join(outDir, leg);
+  const host = await loadHost(join(legDir, "host"));
+  const receiverDir = join(legDir, "receiver");
+  // loadHost (gate2c-checks.ts) loads the host's own evidence only; the receiver's copy of each
+  // connection's stream (received.rs2, received-<n>.rs2) is this leg's, not the host's.
+  for (const c of host.connections) {
+    const name = c.n === 1 ? "received.rs2" : `received-${c.n}.rs2`;
+    const r = await loadResolved(join(receiverDir, name));
+    c.received = r.present ? r : null;
+  }
+  const applied = await readJson<G5fApplied>(join(receiverDir, "applied.json"));
+  return {
+    leg,
+    host,
+    receiverDir,
+    applied:
+      applied && typeof applied === "object"
+        ? (applied as G5fApplied)
+        : undefined,
+    log: (await readTextOrUndefined(join(receiverDir, "stdout.log"))) ?? "",
+    exit: await readExitCode(receiverDir),
+  };
+}
+
+export async function loadReferenceLive(
+  outDir: string,
+): Promise<{ dir: string }> {
+  return { dir: join(outDir, "reference-live") };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Checkpoints: a receiver shot against reference-live's step shot, per expected.json region
+// ---------------------------------------------------------------------------------------------
+
+export interface G5fCheckpoint {
+  step: number;
+  seq: number | null;
+  frame: number | null;
+  shot: string;
+  reference: string;
+  mismatched_pixels: number | null;
+  /** mismatching pixels per expected.json region, name -> count */
+  regions: Record<string, number>;
+  /** true when the only region differing from reference-live is DF (G5F_CONTINUOUS_REGION) and
+   * the wire's resolved state at this shot's actual frame equals the host's full file recording
+   * at that same frame: a benign effect of the live timeline (a shot lands a frame or two off its
+   * nominal settle frame -- gate1-design.md's "first applied transaction in the window" rule,
+   * exercised here by ordinary round-trip jitter around DF's step-5 rebuild, not only a stall) on
+   * a region that changes every frame, not a correctness problem. Null when there is no shot to
+   * judge (seq === null) or no wire transaction at that frame to check against. */
+  benign: boolean | null;
+}
+
+function xywh(box: readonly number[]): [number, number, number, number] {
+  return [box[0], box[1], box[2] - box[0], box[3] - box[1]];
+}
+
+/** The regions (by name) with at least one mismatching pixel. */
+export function mismatchingRegionNames(cp: G5fCheckpoint): string[] {
+  return Object.entries(cp.regions)
+    .filter(([, n]) => n > 0)
+    .map(([name]) => name)
+    .sort();
+}
+
+/** Each step's shot (stream 1 only; G5f never reconnects) of a live receiver. */
+export function stepShots5f(
+  a: G5fApplied | undefined,
+): Map<number, { seq: number; frame: number | null }> {
+  const out = new Map<number, { seq: number; frame: number | null }>();
+  const frames = new Map((a?.transactions ?? []).map((t) => [t.seq, t.frame]));
+  for (const s of a?.shots ?? []) {
+    if (!Number.isInteger(s.step) || !Number.isInteger(s.seq)) continue;
+    if (out.has(s.step as number)) continue;
+    out.set(s.step as number, {
+      seq: s.seq as number,
+      frame: frames.get(s.seq as number) ?? null,
+    });
+  }
+  return out;
+}
+
+/** Whether a connection's tapped resolved state at `frame` equals the host's own full file
+ * recording's state at that same frame (null when either side has no transaction there). The
+ * generic wire-correctness check (reused per checkpoint, not only at a stall's recovery seq, as
+ * `checkLiveResolvesToRecordingMesh` runs it over every transaction of the GOOD legs). */
+export function wireStateEqualsFullAtFrame(
+  host: G2cHost,
+  frame: number | null,
+): boolean | null {
+  if (frame === null) return null;
+  const full = host.full.recording?.transactions.find((t) => t.frame === frame);
+  const tap = host.connections[0]?.tap.recording?.transactions.find(
+    (t) => t.frame === frame,
+  );
+  if (!full || !tap) return null;
+  return statesEqual(full.state, tap.state);
+}
+
+/** Every settle step's checkpoint against reference-live's step shot, per region, with
+ * `benign` judged from the host's own wire (see G5fCheckpoint's doc). */
+export async function g5fCheckpoints(
+  expected: { regions: Record<string, readonly number[]> },
+  e: G5fLegEvidence,
+  referenceDir: string,
+): Promise<G5fCheckpoint[]> {
+  const out: G5fCheckpoint[] = [];
+  const shots = stepShots5f(e.applied);
+  for (let step = 0; step <= G5F_LAST_STEP; step++) {
+    const at = shots.get(step);
+    const cp: G5fCheckpoint = {
+      step,
+      seq: at?.seq ?? null,
+      frame: at?.frame ?? null,
+      shot: at ? join(e.receiverDir, "shots", `seq-${at.seq}.png`) : "",
+      reference: join(referenceDir, "shots", `step-${step}.png`),
+      mismatched_pixels: null,
+      regions: {},
+      benign: null,
+    };
+    out.push(cp);
+    if (!at) continue;
+    const ref = await decodePngRgba(cp.reference);
+    const got = await decodePngRgba(cp.shot);
+    if (!ref || !got || ref.width !== got.width || ref.height !== got.height)
+      continue;
+    cp.mismatched_pixels = diffRgba(
+      ref.data,
+      got.data,
+      ref.width,
+      ref.height,
+    ).mismatched_pixels;
+    for (const [name, box] of Object.entries(expected.regions))
+      cp.regions[name] = diffRgba(
+        ref.data,
+        got.data,
+        ref.width,
+        ref.height,
+        xywh(box),
+      ).mismatched_pixels;
+    if (cp.mismatched_pixels === 0) cp.benign = true;
+    else if (e.host) {
+      const regions = mismatchingRegionNames(cp);
+      const onlyDf =
+        regions.length === 1 && regions[0] === G5F_CONTINUOUS_REGION;
+      cp.benign =
+        onlyDf && wireStateEqualsFullAtFrame(e.host, cp.frame) === true;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The stall, reused from gate 1's G1d (frame-exact send/credit/recovery, never reimplemented)
+// ---------------------------------------------------------------------------------------------
+
+/** The stalled leg's stall report (gate1-g1d-checks.ts's, unmodified: it reads only
+ * `applied?.live?.stall`, `host.log`/`host.tap`/`host.full` and the windows/shots given). Also
+ * returns the step whose window contains the recovery frame (the "first post-stall shot"). */
+export function g5fStallReport(
+  host: LiveHostEvidence,
+  applied: G5fApplied | undefined,
+  steps:
+    | { step: number; applied_frame: number; settle_frame: number }[]
+    | undefined,
+): { report: StallReport; postStallStep: number | null } {
+  const windows = g5fWindows();
+  const shots: G1dShot[] = (applied?.shots ?? [])
+    .filter((s) => Number.isInteger(s.step) && Number.isInteger(s.seq))
+    .map((s) => ({
+      stream: s.stream ?? 1,
+      seq: s.seq as number,
+      step: s.step as number,
+    }));
+  const requested = parseStall(
+    // run-gate5.sh passes RS_RECEIVER_STALL directly; env.txt is read by the caller and handed
+    // in as `applied.live.stall.ms`/`.step` already, so re-derive the <step>:<ms> spec from them.
+    applied?.live?.stall
+      ? `${applied.live.stall.step}:${applied.live.stall.ms}`
+      : undefined,
+  );
+  const report = stallReport(
+    host,
+    // AppliedLive's declared shape is a superset of what stallReport reads (applied.live.stall
+    // only); G5fApplied carries the identical stall fields.
+    applied as unknown as Parameters<typeof stallReport>[1],
+    steps,
+    windows,
+    shots,
+    requested,
+  );
+  const recoveryFrame = report.recovery?.frame ?? null;
+  const postStallStep =
+    recoveryFrame === null
+      ? null
+      : (windows.find((w) => recoveryFrame >= w.from && recoveryFrame <= w.to)
+          ?.step ?? null);
+  return { report, postStallStep };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Classification
+// ---------------------------------------------------------------------------------------------
+
+export interface G5fEvaluation {
+  e: G5fLegEvidence;
+  checkpoints: G5fCheckpoint[];
+  stall: StallReport | null;
+  postStallStep: number | null;
+  classification: G2bClassification;
+}
+
+export async function classifyG5fLeg(
+  e: G5fLegEvidence,
+  expected: { regions: Record<string, readonly number[]> },
+  referenceDir: string,
+): Promise<G5fEvaluation> {
+  const fired = new Map<G2bClass, string[]>();
+  const fire = (cls: G2bClass, reason: string) =>
+    fired.set(cls, [...(fired.get(cls) ?? []), `${cls}: ${reason}`]);
+  const host = e.host;
+  const a = e.applied;
+
+  // 1. capture-failure
+  if (!host) fire("capture-failure", "no live host evidence");
+  else {
+    const c0 = host.connections[0]?.host;
+    const res = c0?.captureResult;
+    if (
+      res?.status !== "armed" ||
+      res?.stream?.status !== "closed" ||
+      res?.stream?.reason
+    )
+      fire(
+        "capture-failure",
+        `host status ${res?.status} stream ${res?.stream?.status} ${res?.stream?.reason ?? ""}`,
+      );
+    if (c0?.live?.status !== "listening")
+      fire(
+        "capture-failure",
+        `the live listener is ${JSON.stringify(c0?.live?.status ?? null)}`,
+      );
+    for (const r of [host.full, host.patch])
+      if (r.errors.length > 0)
+        fire("capture-failure", `${r.path}: ${r.errors[0]}`);
+    if (host.hook.problem)
+      fire("capture-failure", `resources.jsonl ${host.hook.problem}`);
+    for (const c of host.connections) {
+      if (!c.tap.present)
+        fire("capture-failure", `tap/stream-${c.n}.rs2 missing`);
+    }
+  }
+  // 2. unsupported
+  for (const c of host?.connections ?? [])
+    for (const t of c.received?.recording?.transactions ?? [])
+      if (t.state.unsupported.length > 0) {
+        fire(
+          "unsupported",
+          `seq ${t.seq}: ${t.state.unsupported.map((u) => `${u.op}/${u.reason}`).join(",")}`,
+        );
+        break;
+      }
+  // The stall report (gate 1's G1d, unmodified): send/credit frames, the recovery transaction,
+  // and which windows lie wholly inside the stall (missed by design, not a failure).
+  const { report: stall, postStallStep } = host
+    ? g5fStallReport(
+        host.connections[0].host,
+        a,
+        host.connections[0].host.steps,
+      )
+    : { report: null as unknown as StallReport, postStallStep: null };
+  const expectedMissed = new Set(host ? stall.expected_missed_steps : []);
+
+  // 3. replay-failure
+  if (!a) fire("replay-failure", "applied.json missing or unparseable");
+  else {
+    if (a.status !== "ok")
+      fire(
+        "replay-failure",
+        `status=${a.status} failure=${JSON.stringify(a.failure ?? null)}`,
+      );
+    if (a.end_seen !== true) fire("replay-failure", "end_seen is not true");
+  }
+  if (host && a) {
+    const c = host.connections[0];
+    if (c) {
+      const same = sameBytesOrPrefix(c.received, c.tap, false);
+      if (same !== null) fire("replay-failure", `connection ${c.n}: ${same}`);
+    }
+    const shots = stepShots5f(a);
+    const missing = Array.from(
+      { length: G5F_LAST_STEP + 1 },
+      (_, k) => k,
+    ).filter((k) => !shots.has(k) && !expectedMissed.has(k));
+    if (missing.length > 0)
+      fire(
+        "replay-failure",
+        `no shot for step(s) ${missing.join(",")} (shots_missed ${JSON.stringify(a.shots_missed ?? null)})`,
+      );
+  }
+  // 4. delivery-violation (gate 1's generic delivery report, reused unmodified; `stale-state`
+  // reasons are a content-level question for a continuously-animating mesh, not a protocol
+  // violation, and are the pixel-mismatch class's job here -- see "stale-coalesce" below)
+  if (host)
+    for (const c of host.connections)
+      for (const r of deliveryReasons(deliveryReport(c.host)).filter(
+        (x) => !x.includes("stale-state"),
+      ))
+        fire(
+          "delivery-violation",
+          `connection ${c.n}: ${r.slice(r.indexOf(":") + 2)}`,
+        );
+
+  // 5. pixel-mismatch: every checkpoint whose mismatch is not `benign` (see G5fCheckpoint's doc;
+  // this is where the stale-coalesce sabotage's post-stall DF mismatch fires, since its wire
+  // state does not equal the host's full recording at that frame).
+  const checkpoints =
+    a?.status === "ok" ? await g5fCheckpoints(expected, e, referenceDir) : [];
+  for (const cp of checkpoints)
+    if (cp.seq !== null && cp.benign !== true)
+      fire(
+        "pixel-mismatch",
+        `step ${cp.step} (seq ${cp.seq}): ${cp.mismatched_pixels ?? "unreadable"} px differ in ${mismatchingRegionNames(cp).join(",") || "?"}`,
+      );
+
+  const result_class =
+    G2B_PRECEDENCE.find((cls) => fired.has(cls)) ?? "success";
+  return {
+    e,
+    checkpoints,
+    stall: host ? stall : null,
+    postStallStep,
+    classification: {
+      result_class,
+      reasons: G2B_PRECEDENCE.flatMap((cls) => fired.get(cls) ?? []),
+      mismatching_steps: checkpoints
+        .filter((c) => c.seq !== null && c.benign !== true)
+        .map((c) => c.step),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Checks
+// ---------------------------------------------------------------------------------------------
+
+type Evals = Map<string, G5fEvaluation>;
+
+function hostOf(evals: Evals, leg: string): G2cHost | null {
+  return evals.get(leg)?.e.host ?? null;
+}
+
+export function checkLiveTapEqualsReceivedMesh(evals: Evals): G2bCheck {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  for (const leg of G5F_LEGS.map((l) => l.leg)) {
+    const ev = evals.get(leg);
+    const host = ev?.e.host;
+    if (!host) {
+      problems.push(`${leg}: not evaluated`);
+      continue;
+    }
+    for (const c of host.connections) {
+      const same = sameBytesOrPrefix(c.received, c.tap, false);
+      if (same !== null) problems.push(`${leg}: ${same}`);
+      else notes.push(`${leg} ${c.tap.bytes} B`);
+    }
+  }
+  return check(
+    "live-tap-equals-received",
+    "on every g5f leg, the received stream is byte for byte the host's tap",
+    problems,
+    notes.join(", "),
+    G5F_LEGS.map((l) =>
+      join(evals.get(l.leg)?.e.receiverDir ?? l.leg, "received.rs2"),
+    ),
+  );
+}
+
+export function checkLiveResolvesToRecordingMesh(evals: Evals): G2bCheck {
+  const problems: string[] = [];
+  let compared = 0;
+  for (const leg of G5F_GOOD) {
+    const host = hostOf(evals, leg);
+    if (!host?.full.recording) {
+      problems.push(`${leg}: no full recording`);
+      continue;
+    }
+    const byFrame = new Map(
+      host.full.recording.transactions.map((t) => [t.frame, t]),
+    );
+    for (const c of host.connections)
+      for (const t of c.tap.recording?.transactions ?? []) {
+        compared++;
+        const f = byFrame.get(t.frame);
+        if (!f || !statesEqual(f.state, t.state)) {
+          problems.push(
+            `${leg} seq ${t.seq} (frame ${t.frame}) is not the full recording's state at that frame`,
+          );
+          break;
+        }
+      }
+  }
+  return check(
+    "live-resolves-to-recording",
+    "every transaction every g5f good leg sent resolves to the full file recording's state at the same frame, mesh table included",
+    problems,
+    `${compared} live transactions equal the host recordings`,
+    G5F_GOOD.map((l) => join(hostOf(evals, l)?.dir ?? l, "tap")),
+  );
+}
+
+export function pinsOfMesh(host: G2cHost): PinsReport {
+  return pinsReport(
+    host.hook.lines,
+    host.full.recording?.transactions ?? [],
+    connTimelines(host),
+    512 * 1024 * 1024,
+    okResourceHashes,
+  );
+}
+
+export function checkPinsBoundedMesh(
+  evals: Evals,
+  pins: Map<string, PinsReport>,
+): G2bCheck {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  for (const leg of G5F_GOOD) {
+    const p = pins.get(leg);
+    if (!p || p.frames_compared === 0) {
+      problems.push(`${leg}: no pin or retire lines to compare`);
+      continue;
+    }
+    for (const m of [...p.missing, ...p.late, ...p.over_budget].slice(0, 3))
+      problems.push(`${leg}: ${m}`);
+    notes.push(
+      `${leg} ${p.frames_compared} frames, retained max ${p.retained_max} (${p.retained_bytes_max} B)`,
+    );
+  }
+  return check(
+    "pins-bounded",
+    "on every g5f good host, after every frame callback the servable GRM1 surface hashes (replayed from the pin and retire lines) equal the full recording's ok mesh hashes at that frame united with the connection's base, bytes never exceeding the budget",
+    problems,
+    notes.join("; "),
+    G5F_GOOD.map((l) =>
+      join(hostOf(evals, l)?.dir ?? l, "evidence", "resources.jsonl"),
+    ),
+  );
+}
+
+export function checkObsoleteRetiredMesh(
+  evals: Evals,
+  pins: Map<string, PinsReport>,
+): G2bCheck {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  for (const leg of G5F_GOOD) {
+    const p = pins.get(leg);
+    if (!p) {
+      problems.push(`${leg}: not evaluated`);
+      continue;
+    }
+    for (const m of [...p.late, ...p.early].slice(0, 3))
+      problems.push(`${leg}: ${m}`);
+    if (p.retirements === 0) problems.push(`${leg}: nothing was retired`);
+    notes.push(`${leg} ${p.retirements} retired of ${p.pins} pinned`);
+  }
+  return check(
+    "obsolete-retired",
+    "on every g5f good host, a GRM1 surface hash is retired at the first frame callback after which neither the current state nor the connection's base names it, and never while one still does; DF's every-frame churn retires hundreds of superseded surfaces over the run",
+    problems,
+    notes.join("; "),
+    G5F_GOOD.map((l) =>
+      join(hostOf(evals, l)?.dir ?? l, "evidence", "resources.jsonl"),
+    ),
+  );
+}
+
+export function checkHttpGetsMatchFetchesMesh(evals: Evals): G2bCheck {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  for (const leg of G5F_GOOD) {
+    const ev = evals.get(leg);
+    const host = ev?.e.host;
+    if (!host || !ev?.e.applied) {
+      problems.push(`${leg}: not evaluated`);
+      continue;
+    }
+    const gets = httpGets(host.hook.lines);
+    for (const p of getsVsFetches(gets, ev.e.applied.fetches ?? []))
+      problems.push(`${leg}: ${p}`);
+    const summaryGets = host.serving?.http_gets;
+    if (summaryGets !== gets.length)
+      problems.push(
+        `${leg}: live-summary http_gets ${summaryGets}, ${gets.length} GET lines`,
+      );
+    notes.push(`${leg} ${gets.length}`);
+  }
+  return check(
+    "http-gets-match-fetches",
+    "on every g5f good leg, the host's GET log equals the receiver's http fetch list hash for hash and byte for byte, in order; every hash fetched at most once per process; every fetch a verified 200 with Content-Type application/octet-stream, the right Cache-Control, ETag and Content-Length",
+    problems,
+    `GETs per leg: ${notes.join(", ")}`,
+    G5F_GOOD.map((l) =>
+      join(hostOf(evals, l)?.dir ?? l, "evidence", "resources.jsonl"),
+    ),
+  );
+}
+
+export function checkGetsAdvertisedMesh(evals: Evals): G2bCheck {
+  const problems: string[] = [];
+  let total = 0;
+  for (const leg of G5F_LEGS.map((l) => l.leg)) {
+    const host = hostOf(evals, leg);
+    if (!host) {
+      problems.push(`${leg}: not evaluated`);
+      continue;
+    }
+    const gets = httpGets(host.hook.lines);
+    total += gets.length;
+    for (const p of unadvertisedGets(
+      gets,
+      connTimelines(host),
+      resourceTableHashes,
+    ).slice(0, 3))
+      problems.push(`${leg}: ${p}`);
+  }
+  return check(
+    "gets-advertised",
+    "on every g5f host, every GET names a mesh surface or texture hash a transaction already sent on the connection names, at an earlier frame callback",
+    problems,
+    `${total} GETs, each advertised first`,
+    G5F_LEGS.map((l) =>
+      join(hostOf(evals, l.leg)?.dir ?? l.leg, "evidence", "resources.jsonl"),
+    ),
+  );
+}
+
+export function checkFetchBeforeAppliedMesh(evals: Evals): G2bCheck {
+  const problems: string[] = [];
+  let total = 0;
+  for (const leg of G5F_LEGS.map((l) => l.leg)) {
+    const ev = evals.get(leg);
+    if (!ev?.e.applied) {
+      problems.push(`${leg}: not evaluated`);
+      continue;
+    }
+    total += (ev.e.applied.fetches ?? []).length;
+    for (const p of fetchesAfterApplied(
+      ev.e.applied as unknown as Parameters<typeof fetchesAfterApplied>[0],
+    ).slice(0, 3))
+      problems.push(`${leg}: ${p}`);
+  }
+  return check(
+    "fetch-before-applied",
+    "every http fetch for seq n ended (receiver clock) before n's applied ack, on every g5f leg",
+    problems,
+    `${total} fetches, each before its applied ack`,
+    G5F_LEGS.map((l) =>
+      join(evals.get(l.leg)?.e.receiverDir ?? l.leg, "applied.json"),
+    ),
+  );
+}
+
+export function checkMeshFetchesLatestOnly(evals: Evals): G2bCheck {
+  const problems: string[] = [];
+  let detail = "";
+  const ev = evals.get("live-mesh-stall");
+  const stall = ev?.stall;
+  const step = ev?.postStallStep;
+  if (!ev || !stall?.recovery || step === null || step === undefined) {
+    problems.push("live-mesh-stall: no stall recovery evidence");
+  } else {
+    const r = stall.recovery;
+    const windows = g5fWindows();
+    const w = windows.find((x) => x.step === step);
+    if (!w) problems.push(`no shot window for step ${step}`);
+    if (r.state_equals_full !== true)
+      problems.push(
+        `the recovery transaction (seq ${r.seq}, frame ${r.frame}) does not equal the host's full recording at that frame -- it should carry the newest DF state, not a stale one`,
+      );
+    const duringStall = (ev.e.applied?.fetches ?? []).filter(
+      (f) =>
+        stall.recovery &&
+        typeof f.start_us === "number" &&
+        typeof stall.send_frame === "number",
+    );
+    const fetchesForRecovery = (ev.e.applied?.fetches ?? []).filter(
+      (f) => f.seq === r.seq,
+    );
+    if (fetchesForRecovery.length === 0)
+      problems.push(`no fetch recorded for the recovery seq ${r.seq}`);
+    const cp = ev.checkpoints.find((c) => c.step === step);
+    detail = `stall after seq ${stall.stalled_seq} (frame ${stall.send_frame}), credit at frame ${stall.credit_frame}; recovery seq ${r.seq} at frame ${r.frame} equals the host's full recording there (${r.state_equals_full}), ${fetchesForRecovery.length} fetch(es), ${duringStall.length} during the stall window itself`;
+    void cp;
+  }
+  return check(
+    "mesh-fetches-latest-only",
+    "live-mesh-stall: the receiver fetches nothing while stalled; the first transaction after the stall carries the host's newest DF surface (equal to the full recording at that frame), fetched for that transaction",
+    problems,
+    detail,
+    [join(ev?.e.receiverDir ?? "live-mesh-stall", "applied.json")],
+  );
+}
+
+/** The regions expected.json's `steps[].fresh` says change at any step applied during the stall
+ * (steps_applied_during; the fixture's own per-step region table, make_expected.py's prediction,
+ * never a diff of rendered shots): DF is in every step's `fresh` set (it changes every frame)
+ * union the other regions the swallowed steps themselves touch (gate5-design.md Q6d -- step 2's
+ * RM update and step 3's RM/DF/Marker change, both inside the 1:2000 stall, make RM and Marker
+ * stale too, not only DF). */
+function regionsChangedDuringStall(
+  steps: readonly Pick<Gate5MeshStep, "step" | "fresh">[],
+  stall: StallReport,
+): string[] {
+  const touched = new Set(stall.steps_applied_during);
+  const out = new Set<string>();
+  for (const s of steps)
+    if (touched.has(s.step))
+      for (const [name, fresh] of Object.entries(s.fresh))
+        if (fresh) out.add(name);
+  return [...out].sort();
+}
+
+export function checkStaleCoalesce(
+  evals: Evals,
+  steps: readonly Pick<Gate5MeshStep, "step" | "fresh">[],
+): G2bCheck {
+  const problems: string[] = [];
+  let detail = "";
+  const ev = evals.get("sabotage-mesh-stale-coalesce");
+  const stall = ev?.stall;
+  const step = ev?.postStallStep;
+  if (!ev || !stall?.recovery || step === null || step === undefined) {
+    problems.push("sabotage-mesh-stale-coalesce: no stall recovery evidence");
+  } else {
+    const r = stall.recovery;
+    const expectedRegions = regionsChangedDuringStall(steps, stall);
+    if (r.stale_from === null)
+      problems.push(
+        `the recovery transaction (seq ${r.seq}, frame ${r.frame}) is not labelled stale_from -- the sabotage did not trigger`,
+      );
+    if (r.state_equals_full !== false)
+      problems.push(
+        `the recovery transaction equals the host's full recording at frame ${r.frame} -- the stale snapshot had no effect on the wire`,
+      );
+    const cp = ev.checkpoints.find((c) => c.step === step);
+    if (!cp || cp.seq === null)
+      problems.push(`no post-stall shot for step ${step}`);
+    else {
+      const regions = mismatchingRegionNames(cp);
+      if (regions.length === 0)
+        problems.push(
+          `step ${step}: the stale shot is pixel-identical to reference-live's -- the sabotage had no visible effect`,
+        );
+      else if (JSON.stringify(regions) !== JSON.stringify(expectedRegions))
+        problems.push(
+          `step ${step}: mismatching regions ${regions.join(",")}, expected exactly ${expectedRegions.join(",")} (the regions expected.json says the swallowed steps touch)`,
+        );
+      if (cp.benign === true)
+        problems.push(
+          `step ${step}: the mismatch was judged benign (the wire's own state equals the host's full recording at frame ${cp.frame}) -- the sabotage had no effect on the wire`,
+        );
+      detail = `recovery seq ${r.seq} at frame ${r.frame}, stale_from ${r.stale_from}; step ${step}'s shot (frame ${cp.frame}) mismatches reference-live exactly in ${regions.join(",") || "none"}, not benign`;
+    }
+  }
+  return check(
+    "stale-coalesce",
+    "sabotage-mesh-stale-coalesce: the recovery transaction is labelled stale_from and does not equal the host's full recording at its frame; the leg's overall classification is pixel-mismatch, and the regions differing from reference-live at the post-stall shot are exactly the ones expected.json's per-step fresh table says the stall's swallowed steps touch (DF always, plus whatever else changed during the stall), judged not benign (the wire itself is wrong, not just off by a frame)",
+    problems,
+    detail,
+    [join(ev?.e.receiverDir ?? "sabotage-mesh-stale-coalesce", "applied.json")],
+  );
+}
+
+export function checkReceiverVsReferenceMesh(evals: Evals): G2bCheck {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  const evidence: string[] = [];
+  for (const leg of G5F_LEGS.map((l) => l.leg)) {
+    const ev = evals.get(leg);
+    if (!ev) {
+      problems.push(`${leg}: not evaluated`);
+      continue;
+    }
+    // Windows wholly inside a stall have no shot at all (expected, gate1-design.md G1d); the
+    // sabotage leg's own post-stall shot is deliberately non-benign and is the "stale-coalesce"
+    // check's job, not this one's.
+    const expectedMissed = new Set(ev.stall?.expected_missed_steps ?? []);
+    const excludeStep =
+      leg === "sabotage-mesh-stale-coalesce" ? ev.postStallStep : null;
+    const checked = ev.checkpoints.filter(
+      (c) => !expectedMissed.has(c.step) && c.step !== excludeStep,
+    );
+    if (checked.length === 0) problems.push(`${leg}: no checkpoints`);
+    let ok = 0;
+    for (const c of checked) {
+      evidence.push(c.shot);
+      if (c.seq === null) problems.push(`${leg} step ${c.step}: no shot`);
+      else if (c.mismatched_pixels === null)
+        problems.push(`${leg} step ${c.step}: unreadable shot`);
+      else if (c.benign !== true && c.mismatched_pixels > 0)
+        problems.push(
+          `${leg} step ${c.step} (seq ${c.seq}): ${c.mismatched_pixels} px differ in ${mismatchingRegionNames(c).join(",")}`,
+        );
+      else ok++;
+    }
+    notes.push(`${leg} ${ok}/${checked.length}`);
+  }
+  return check(
+    "receiver-vs-reference",
+    "every g5f leg's shot at every settle step outside the stall window equals reference-live's step shot exactly, full frame (reference-live runs the same fixture at G5f's own live timeline, so DF's per-frame band lines up with the live shot's actual frame); a DF-only difference is tolerated when the wire's own state at that frame equals the host's full recording there (ordinary round-trip jitter, not a correctness problem)",
+    problems,
+    notes.join(", "),
+    evidence,
+  );
+}
+
+export async function checkWarmHostNoGetsMesh(evals: Evals): Promise<G2bCheck> {
+  const problems: string[] = [];
+  const warm = evals.get("live-mesh-warm");
+  const live = evals.get("live-mesh");
+  const host = warm?.e.host;
+  if (!warm || !host || !live)
+    problems.push("live-mesh-warm or live-mesh not evaluated");
+  else {
+    const gets = httpGets(host.hook.lines).length;
+    if (gets !== 0 || (host.serving?.http_gets ?? -1) !== 0)
+      problems.push(
+        `the warm host logged ${gets} GETs (summary ${host.serving?.http_gets})`,
+      );
+    const s = warm.e.applied?.resources_summary;
+    const liveFetched =
+      live.e.applied?.resources_summary?.distinct_fetched ?? -1;
+    if ((s?.distinct_fetched ?? -1) !== 0)
+      problems.push(`the warm receiver fetched ${s?.distinct_fetched}`);
+    if ((s?.cache_hits ?? -1) !== liveFetched)
+      problems.push(
+        `${s?.cache_hits} cache hits, live-mesh fetched ${liveFetched}`,
+      );
+    if (warm.e.applied?.cache?.mode !== "warm")
+      problems.push("the receiver's cache mode is not warm");
+    // Neither leg stalls, so every checkpoint against reference-live must be a full match or a
+    // benign DF-only one (the same round-trip jitter g5fCheckpoints already judges: comparing
+    // live-mesh's and live-mesh-warm's shots against each other, rather than against
+    // reference-live, would otherwise double-count that jitter as a failure).
+    for (const cp of [...warm.checkpoints, ...live.checkpoints]) {
+      if (cp.seq === null || cp.benign === true) continue;
+      problems.push(
+        `step ${cp.step}: ${cp.mismatched_pixels ?? "unreadable"} px differ in ${mismatchingRegionNames(cp).join(",") || "?"}`,
+      );
+    }
+  }
+  return check(
+    "warm-host-no-gets",
+    "live-mesh-warm (a new host and a new receiver on live-mesh's cache, mode warm): the host answers no GET at all, the receiver fetches nothing and hits its cache once per payload live-mesh fetched, and its shot per step equals reference-live exactly (as live-mesh's does)",
+    problems,
+    `0 GETs, ${warm?.e.applied?.resources_summary?.cache_hits ?? 0} cache hits, shots equal reference-live's`,
+    [join(host?.dir ?? "live-mesh-warm", "evidence", "resources.jsonl")],
+  );
+}
+
+function checkLegClass5f(
+  e: G2bLegExpectation,
+  c: G2bClassification,
+  extra: string[],
+  evidence: string[],
+): G2bCheck {
+  const problems: string[] = [...extra];
+  if (c.result_class !== e.expected_class)
+    problems.push(
+      `class ${c.result_class}, expected ${e.expected_class}: ${c.reasons.slice(0, 3).join(" | ")}`,
+    );
+  return check(
+    `leg-class-${e.leg}`,
+    `${e.leg} classifies ${e.expected_class}`,
+    problems,
+    `class ${c.result_class}`,
+    evidence,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The g5f group
+// ---------------------------------------------------------------------------------------------
+
+export interface G5fLegReport {
+  group: "g5f";
+  expected_class: G2bClass;
+  result_class: G2bClass;
+  reasons: string[];
+  exit_code: number | null;
+  artifacts: string[];
+}
+
+export interface G5fResult {
+  checks: G2bCheck[];
+  legs: Record<string, G5fLegReport>;
+  stall: {
+    live_mesh_stall: {
+      send_frame: number | null;
+      credit_frame: number | null;
+      post_stall_step: number | null;
+      coalesced_delta: number | null;
+    };
+    sabotage: {
+      send_frame: number | null;
+      credit_frame: number | null;
+      post_stall_step: number | null;
+      stale_from: number | null;
+    };
+  };
+}
+
+export async function runGate5f(
+  outDir: string,
+  expected: Pick<Gate5MeshExpected, "regions" | "steps">,
+): Promise<G5fResult> {
+  const M = join(outDir, "mesh");
+  const referenceDir = join(M, "reference-live");
+  const loaded = new Map<string, G5fLegEvidence>();
+  for (const l of G5F_LEGS) loaded.set(l.leg, await loadG5fLeg(M, l.leg));
+  const evals: Evals = new Map();
+  for (const l of G5F_LEGS) {
+    const e = loaded.get(l.leg) as G5fLegEvidence;
+    evals.set(l.leg, await classifyG5fLeg(e, expected, referenceDir));
+  }
+  const pins = new Map<string, PinsReport>();
+  for (const leg of G5F_GOOD) {
+    const host = hostOf(evals, leg);
+    if (host) pins.set(leg, pinsOfMesh(host));
+  }
+  const checks: G2bCheck[] = [
+    checkLiveTapEqualsReceivedMesh(evals),
+    checkLiveResolvesToRecordingMesh(evals),
+    checkPinsBoundedMesh(evals, pins),
+    checkObsoleteRetiredMesh(evals, pins),
+    checkHttpGetsMatchFetchesMesh(evals),
+    checkGetsAdvertisedMesh(evals),
+    checkFetchBeforeAppliedMesh(evals),
+    checkMeshFetchesLatestOnly(evals),
+    checkReceiverVsReferenceMesh(evals),
+    checkStaleCoalesce(evals, expected.steps),
+    await checkWarmHostNoGetsMesh(evals),
+  ];
+  const legs: Record<string, G5fLegReport> = {};
+  for (const l of G5F_LEGS) {
+    const ev = evals.get(l.leg) as G5fEvaluation;
+    const artifacts = [
+      join(ev.e.receiverDir, "applied.json"),
+      join(ev.e.receiverDir, "stdout.log"),
+    ];
+    checks.push(checkLegClass5f(l, ev.classification, [], artifacts));
+    legs[l.leg] = {
+      group: "g5f",
+      expected_class: l.expected_class,
+      result_class: ev.classification.result_class,
+      reasons: ev.classification.reasons,
+      exit_code: ev.e.exit,
+      artifacts,
+    };
+  }
+  const stallEv = evals.get("live-mesh-stall");
+  const sabEv = evals.get("sabotage-mesh-stale-coalesce");
+  return {
+    checks,
+    legs,
+    stall: {
+      live_mesh_stall: {
+        send_frame: stallEv?.stall?.send_frame ?? null,
+        credit_frame: stallEv?.stall?.credit_frame ?? null,
+        post_stall_step: stallEv?.postStallStep ?? null,
+        coalesced_delta: stallEv?.stall?.coalesced_delta ?? null,
+      },
+      sabotage: {
+        send_frame: sabEv?.stall?.send_frame ?? null,
+        credit_frame: sabEv?.stall?.credit_frame ?? null,
+        post_stall_step: sabEv?.postStallStep ?? null,
+        stale_from: sabEv?.stall?.recovery?.stale_from ?? null,
+      },
+    },
+  };
+}

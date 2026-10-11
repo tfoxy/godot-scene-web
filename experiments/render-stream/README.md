@@ -1,4 +1,4 @@
-# render-stream experiment — gates −1, 0, 1, 2, 3 and 4: capture seam, first stream, retained state, live delivery, textures, clipping, text
+# render-stream experiment — gates −1, 0, 1, 2, 3, 4 and 5: capture seam, first stream, retained state, live delivery, textures, clipping, text, geometry and meshes
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
@@ -60,14 +60,16 @@ byte-identical to the rendered reference and every glyph command float32-exact a
 independent oracle; LCD text stays typed `unsupported`, and `RichTextLabel`'s
 `canvas_item_add_set_transform` did until G5d; MSDF text landed on `render-stream/3`.
 
-Gate 5 is in progress (see "Gate 5b result" onward below): G5b's immediate-geometry fixture and
-reference rasterizer, G5w's render-stream/4 codecs, G5a's calibrator 7, G5c, and G5d (see "Gate 5d
-result"), which moved the capture, the receiver and every gate runner to
-[protocol/render-stream-4.md](protocol/render-stream-4.md), which every gate now runs on: every
-immediate geometry op, `add_set_transform` and `add_clip_ignore` travel as the engine's own call
-arguments and replay pixel-exact, so G3d's clip-ignore variant and every G4d `RichTextLabel` leg
-now classify `success`. G5c's mesh fixture, oracle and census have landed too; meshes on the
-wire (G5e), styleboxes (G5g) and live meshes (G5f) remain.
+Gate 5 passed on 2026-10-11 (see "Gate 5b result" onward and "Gate 5 summary" below): G5b's
+immediate-geometry fixture and reference rasterizer, G5w's render-stream/4 codecs, G5a's
+calibrator 7, G5c, and G5d (see "Gate 5d result"), which moved the capture, the receiver and every
+gate runner to [protocol/render-stream-4.md](protocol/render-stream-4.md), which every gate now
+runs on: every immediate geometry op, `add_set_transform` and `add_clip_ignore` travel as the
+engine's own call arguments and replay pixel-exact, so G3d's clip-ignore variant and every G4d
+`RichTextLabel` leg now classify `success`. G5c's mesh fixture, oracle and census, G5e's meshes on
+the wire, G5g's styleboxes and, last, G5f's live meshes through dropped presentations (stall,
+coalescing and newest-state recovery on `fixtures/gate5-mesh`'s GRM1 surfaces) all landed; gate 5's
+own runner and checker (`pnpm render-stream:gate5 -- --legs g5b,g5c,g5d,g5e,g5f,g5g`) are 116/116.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -3904,6 +3906,170 @@ with a default-constructed `uvs`. `capture/test/abi_decode.cpp` now pins both th
 offset and `sizeof`. The shape of a wrong-ABI failure is worth remembering: the
 hooks still forwarded correctly (the engine never noticed), only the _recording_
 was wrong — a silent-corruption class that only bit-exact expected values catch.
+
+## Gate 5f result (2026-10-11)
+
+G5f ([protocol/gate5-design.md](protocol/gate5-design.md) "G5f") passes: live meshes survive a
+dropped presentation. No capture-side (C++) or receiver-side (GDScript) change was needed —
+`GRC_SABOTAGE=stale-coalesce` and the pin/retire/HTTP-serving machinery are already generic over
+resource kind in `rs_live.cpp`/`entry.cpp` (gate 1's and gate 2's own work), and
+`fixtures/gate5-mesh` already honours `RS_FIXTURE_START_FRAME`/`_STEP_FRAMES`/`_QUIT_FRAME` the
+way gate 1/2's fixtures do — so the whole increment is runner (`run-gate5.sh`'s new `run_g5f`) and
+checker (`lib/gate5f-checks.ts`) wiring onto gate 1's G1d stall report and gate 2's G2c2 live-
+resource checks, generalized to GRM1 mesh surfaces. `pnpm render-stream:gate5 -- --legs
+g5b,g5c,g5d,g5e,g5f,g5g` is **116/116** in `artifacts/render-stream/gate5/20261011T040840Z/` (g5f
+under `mesh/<leg>/`; ignored, not committed). On the same build: gate −1 PASS
+(`gate-minus1/20261011T042351Z/`), gate 0 PASS (`gate0/20261011T042509Z/`), gate 1 65/65
+(`gate1/20261011T042826Z/`), gate 2 85/85 (`gate2/20261011T043831Z/`) — no regression.
+
+**The live timeline** (gate 1's and gate 2's pattern, reused unchanged): S=300, N=60, the mesh
+fixture's own `LAST_STEP`=9, quit=851. Four legs, each its own host and receiver on
+`fixtures/gate5-mesh`: `live-mesh` (fresh cache), `live-mesh-warm` (a new host and receiver on
+`live-mesh`'s cache, mode warm), `live-mesh-stall` (`RS_RECEIVER_STALL=1:2000` after step 1), and
+`sabotage-mesh-stale-coalesce` (the same stall, host `GRC_SABOTAGE=stale-coalesce` from step 1's
+frame). A fifth rendered run, `reference-live`, is the mesh fixture at this *same* live timeline
+with the capture extension absent — the ground truth every leg's shots are compared against.
+
+| Leg | Class | Exit |
+| --- | --- | --- |
+| `live-mesh` | `success` | 0 |
+| `live-mesh-warm` | `success` | 0 |
+| `live-mesh-stall` | `success` | 0 |
+| `sabotage-mesh-stale-coalesce` | `pixel-mismatch` | 0 |
+
+Measured stall timing (both stalling legs, independently): send frame 367, credit frame 489 (122
+frames at a 2000 ms request — matching memory `rs-g1d-stall-facts`'s gate-1 numbers almost
+exactly), the post-stall shot landing in step 3's window (step 2's window lies wholly inside the
+stall and has no shot at all, by design). `live-mesh-stall`'s recovery transaction (seq 307, frame
+489) resolves to exactly the host's own full file recording at frame 489 — the newest state, not a
+missed one. `sabotage-mesh-stale-coalesce`'s recovery transaction (seq 306, same frame 489) is
+labelled `stale_from: 368` and does **not** equal the host's full recording there; its step-3 shot
+mismatches `reference-live` exactly in `DF`, `Marker` and `RM` — every region `expected.json`'s
+per-step `fresh` table says steps 2 and 3 (both swallowed by the stall) touch, not only `DF`, the
+one region that changes every frame.
+
+**Checks** (`lib/gate5f-checks.ts`, all passing): `live-tap-equals-received`,
+`live-resolves-to-recording` (2202 live transactions equal the host recordings),
+`pins-bounded`/`obsolete-retired` (replayed from the pin/retire lines against the full recording's
+`okImageHashes ∪ okMeshHashes`, since the fixture also serves TEXG and the engine's hue strip over
+the same mechanism; retained max 11–12 hashes, 26.5–26.8 KB), `http-gets-match-fetches`
+(112 GETs total: `live-mesh` 38, `live-mesh-warm` 0, `live-mesh-stall` 37, every one a verified 200
+with the right headers), `gets-advertised`, `fetch-before-applied`, `mesh-fetches-latest-only`
+(during the stall no `DF` hash is fetched; the first post-stall transaction's `DF` surface equals
+the host's newest), `receiver-vs-reference` (`live-mesh` 10/10, `live-mesh-warm` 10/10,
+`live-mesh-stall` 9/9, `sabotage-mesh-stale-coalesce` 8/8 — each leg's own stall-window step
+excluded, a DF-only difference tolerated when the wire's own state at that frame equals the host's
+full recording there), `stale-coalesce` (the region set above), `warm-host-no-gets` (0 GETs, 38
+cache hits, shots equal `reference-live`'s), and `leg-class-*` for all four legs.
+
+Images (under the run directory): `mesh/reference-live/shots/step-{0..9}.png` against
+`mesh/live-mesh/receiver/shots/seq-<n>.png`, `mesh/live-mesh-warm/receiver/shots/` and
+`mesh/live-mesh-stall/receiver/shots/` (step 2 absent, swallowed by the stall), and
+`mesh/sabotage-mesh-stale-coalesce/receiver/shots/seq-306.png` (step 3, the stale shot) against
+`mesh/live-mesh-stall/receiver/shots/seq-307.png` (step 3, the healthy recovery) and
+`mesh/reference-live/shots/step-3.png`.
+
+### Findings
+
+- **DF's band nature (gate5-design.md Q6d: "compared leg to leg only") means even an unstalled
+  leg's shot can land a host frame off its nominal settle frame.** `live-mesh`'s step-5 shot (DF's
+  rebuild step: free + create + add, one call more than DF's usual two) landed at frame 608, one
+  frame past the window's `from` (607), purely from round-trip timing around the heavier
+  transaction — no stall involved. A per-step static reference image is only pixel-exact for a
+  shot taken at DF's *exact* frame, so a checkpoint whose only mismatching region is `DF` is judged
+  `benign` against the wire itself (the connection's tapped resolved state at the shot's actual
+  frame equals the host's own full file recording there, `statesEqual`), not against a fixed
+  region allow-list. See memory `rs-g5f-live-mesh-facts`.
+- **The stale-coalesce sabotage's effect is not confined to the continuously-animating region.**
+  The stale snapshot it resends is from right after step 1, so step 2's and step 3's own changes
+  (both swallowed by the 1:2000 stall) are stale too — `RM` and `Marker`, not only `DF`. The
+  expected mismatching-region set is derived from `expected.json`'s per-step `fresh` table unioned
+  over `StallReport.steps_applied_during`, never hardcoded to one region.
+- **Pins, retirement and GET-advertising must union image and mesh hashes.** The mesh fixture also
+  serves two ordinary textures (TEXG and the engine's default-theme hue strip) over the identical
+  resource mechanism; gate 2c2's hash extractors default to textures only, and G5f's own checks
+  pass `okImageHashes(t) ∪ okMeshHashes(t)` into the generalized `pinsReport`/`unadvertisedGets`
+  (gate2c-checks.ts gained an optional hash-extractor parameter, backward compatible: gate 2's own
+  checks keep their default).
+
+### What G5f does not prove
+
+- Resource pinning or retirement at a budget tight enough to actually evict something (the mesh
+  fixture's live retained set never exceeded 12 hashes / 26.8 KB over an 851-frame run).
+  Reconnect, resync, or a killed live-mesh receiver (gate 1's G1d already proves the mechanism;
+  G5f reuses it unchanged).
+- A second resource kind changing every frame at once (only `DF` churns continuously here); a
+  frame-exact ground truth for a region whose *reference* also depends on continuous time (G5f's
+  `benign` rule needs the wire, not a synthesized image, specifically because of this).
+- Browser receivers (gate 7), non-loopback serving and late join (gate 8), and exactness on
+  another GPU or driver.
+
+## Gate 5 summary
+
+Gate 5 passes: every increment from G5a through G5g lands, and `pnpm render-stream:gate5 --
+--legs g5b,g5c,g5d,g5e,g5f,g5g` is **116/116** in
+`artifacts/render-stream/gate5/20261011T040840Z/`, on the same build as gate −1 PASS
+(`gate-minus1/20261011T042351Z/`), gate 0 PASS (`gate0/20261011T042509Z/`), gate 1 65/65
+(`gate1/20261011T042826Z/`) and gate 2 85/85 (`gate2/20261011T043831Z/`). Every leg is at its
+expected class; images are under each leg's `shots/` in the run directory, and the references are
+`reference/shots/step-{0..9}.png` (`mesh/reference/shots/` and `mesh/reference-live/shots/` for
+the mesh fixture's batch and live timelines, `style/reference/shots/` for the stylebox fixture).
+
+What it proves, by increment:
+
+- **G5a.** Calibrator 7 hooks eight geometry/mesh calls (73 hooks); whole copies are taken at the
+  hook on the calling thread, and the mesh hook log carries per-surface version, hash and buffer
+  columns distinct from the image columns (Q3d).
+- **G5b.** render-stream/4 carries every immediate-geometry op (circle, line, multiline, nine-patch,
+  polygon, polyline, primitive, rect, triangle-array, set-transform, clip-ignore) as the engine's
+  own call arguments, float32-exact against an independent rasterizer (`geometry-raster.ts`):
+  760 commands compared, 0 using their 2-ulp allowance.
+- **G5c.** `fixtures/gate5-mesh`'s eight meshes (an `ArrayMesh`, two raw dynamic meshes, a
+  `Polygon2D`'s own mesh, a loaded resource and a freed-but-named tombstone) census exactly against
+  the mesh oracle's GPU readback (219 surface-steps) and a same-build repeat (budget 0).
+- **G5d.** render-stream/4 landed for every gate: `add_set_transform` and `add_clip_ignore` travel
+  as commands, so G3d's clip-ignore variant and G4d's `RichTextLabel` legs now classify `success`;
+  the sabotages (freeze-frame, perturb-vertex, omit-op) and the receiver sabotages
+  (ignore-set-transform, ignore-clip-ignore) each mismatch exactly their predicted regions.
+- **G5e.** Meshes travel on render-stream/4 end to end: the mirror's mesh table, GRM1 payloads in
+  the store/inline/live, the receiver's in-place residency (create, region update, rebuild, free),
+  `drop-mesh-surface` and `stale-mesh`. 1200 transactions agree with the hook log; 37 GRM1 payloads
+  (33 004 B) serve 765 receiver upload rows (62 504 B: 8 creates, 402 in-place updates, 3 rebuilds,
+  350 custom AABBs, 2 frees) three ways (full sink, patch sink, all-inline) identically.
+- **G5g.** Nine-patch and `StyleBoxFlat` (sharp, bordered, rounded, shadowed, skewed), the default
+  theme's `Panel`, `TabBar`'s flipped draw, and a focused `RichTextLabel`'s clip-ignored focus box:
+  324 commands float32-exact, 100 nine-patches equal, a stylebox band budget of 0.
+- **G5f.** Live meshes through a dropped presentation: a receiver that stalls for two seconds on
+  a continuously-deforming mesh resource catches up to the newest `DF` surface in one coalesced
+  transaction (not a stale one), and `stale-coalesce` classifies `pixel-mismatch` in exactly the
+  regions the swallowed steps touch. See "Gate 5f result" above.
+
+Costs measured in this run:
+
+- **Geometry (G5b).** Capture hook census: `circle` 4, `line` 15, `multiline` 3, `nine_patch` 2,
+  `polygon` 7, `polyline` 8, `primitive` 4, `rect` 24, `set_transform` 6, `triangle_array` 4,
+  `texture_2d_create` 3. Full sink 4 148 430 B, patch 259 717 B over 400 frames.
+- **Meshes (G5c/G5e).** `DF`, the one every-frame mesh, logs 150 hook lines over the batch
+  timeline (median copy 2.0 µs, hash 5.9 µs) and 1049 after its step-5 rebuild (`DF2`); the store
+  holds 37 GRM1 payloads (33 004 B) because `DF`'s displacement repeats every 8 frames, so its
+  hashes do too. Full sink 2 603 881 B, patch 546 737 B, all-inline 2 665 222 B (400 frames). Live
+  surface bytes per step: 3 532 B (steps 0–4), 2 642, 2 358, 2 074, 2 085, 2 085.
+- **Styleboxes (G5g).** Vertex/index counts exact per Q1h: `SF` 8/18, `SB` 24/66, `SR` 108/318,
+  `SS` 32/84, `SK` 24/66, `DP` 72/210, `FL` 24/66, `RT` 144/432 — a stylebox band budget of 0 over
+  every repeat.
+- **Live meshes (G5f).** Retained store: 11–12 hashes, 26.5–26.8 KB max over an 851-frame live
+  run. GETs: 38 cold, 0 warm, 37 after a 2 s stall (122-frame gap). See "Gate 5f result" for the
+  stall timing and the stale-coalesce region set.
+
+### What gate 5 does not prove
+
+- Multimesh and GPU particles (typed `unsupported`, deferred to gate 8's census and gate 6).
+- A resource budget tight enough to actually evict a mesh surface or texture under load (gate 6).
+- Lazy hashing, spill-to-disk, cache eviction and parallel fetches at scale (gate 6).
+- Browser receivers and their HTTP caches (gate 7).
+- Non-loopback serving, late join, authorization beyond a bearer token, and the target game's own
+  meshes, textures, shaders and materials at scale (gate 8).
+- Exactness on another GPU or driver than the RTX 2060 this experiment runs on.
 
 ## Gate 6t result (2026-10-11)
 

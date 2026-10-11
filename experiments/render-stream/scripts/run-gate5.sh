@@ -26,11 +26,17 @@
 # sinks, a headless receiver under strace, an all-inline 400-frame capture and its receiver, the
 # host sabotages freeze-frame @11, omit-op mesh_surface_update_vertex_region @21 and perturb-vertex
 # @21 each with a rendered receiver, and the receiver sabotages drop-mesh-surface and stale-mesh on
-# g5c's capture; g5e needs g5c's capture and reference in the same run) and g5g (G5g:
-# fixtures/gate5-style under <out>/style/ -- import, capture (`success` on /4), reference, repeat
-# and armed reference, rendered receivers on both sinks, a headless receiver under strace and the
-# receiver sabotage ignore-nine-patch-axis; it imports receiver/ itself). g5f is known but has not
-# landed.
+# g5c's capture; g5e needs g5c's capture and reference in the same run), g5f (G5f: live legs on
+# fixtures/gate5-mesh with gate 1's and gate 2's live timeline (S=300, N=60, LAST_STEP=9, quit=851)
+# under <out>/mesh/ -- a rendered reference at that same timeline (so DF's per-frame band lines up
+# with the live shots), live-mesh (host + rendered live receiver, fresh cache), live-mesh-warm (a
+# new host + a new rendered receiver on live-mesh's cache), live-mesh-stall
+# (RS_RECEIVER_STALL=1:2000, step 1) and sabotage-mesh-stale-coalesce (the same stall, host
+# GRC_SABOTAGE=stale-coalesce from step 1's frame); g5f imports both projects itself and does not
+# need g5c's own legs) and g5g (G5g: fixtures/gate5-style under <out>/style/ -- import, capture
+# (`success` on /4), reference, repeat and armed reference, rendered receivers on both sinks, a
+# headless receiver under strace and the receiver sabotage ignore-nine-patch-axis; it imports
+# receiver/ itself).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -55,7 +61,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g5b g5c g5d g5e g5g)
+LANDED_GROUPS=(g5b g5c g5d g5e g5f g5g)
 KNOWN_GROUPS=(g5b g5c g5d g5e g5f g5g)
 
 EXTENSION=""
@@ -69,6 +75,18 @@ LEGS_ARG=""
 CAPTURE_QUIT_FRAME=400
 HEADLESS_TIMEOUT_S=180
 RENDERED_TIMEOUT_S=180
+
+# G5f: the live timeline (gate 1's and gate 2's pattern) on fixtures/gate5-mesh's own step model
+# (LAST_STEP 9, SETTLE_OFFSET 7, QUIT_AFTER_LAST_SETTLE 4): S=300, N=60 so a 60 fps receiver has
+# slack between steps, quit = S + N*LAST_STEP + 7 + 4.
+G5F_LAST_STEP=9
+G5F_START_FRAME=300
+G5F_STEP_FRAMES=60
+G5F_QUIT_FRAME=$((G5F_START_FRAME + G5F_STEP_FRAMES * G5F_LAST_STEP + 11))
+# <step>:<ms> (gate1-design.md G1d, memory rs-g1d-stall-facts): after step 1's shot, block the
+# receiver long enough that DF (every-frame geometry) changes for well over 60 frames and step 2's
+# applied change (frame S+2N) lands inside the stall.
+G5F_STALL_SPEC="1:2000"
 
 usage() {
 	sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -220,18 +238,28 @@ source "$SCRIPT_DIR/lib/legs.sh"
 # settle frames and the step log. REFERENCE_ARMED=1 loads the capture extension armed with a
 # full-sink stream and its store. REFERENCE_VARIANT sets RS_FIXTURE_VARIANT. REFERENCE_FIXTURE_DIR
 # picks the project (default FIXTURE_DIR) and REFERENCE_MESH_ORACLE=1 turns the mesh oracle on
-# (RS_FIXTURE_MESH_LOG=<dir>/meshes.jsonl, fixtures/gate5-mesh only). All are reset after the call.
+# (RS_FIXTURE_MESH_LOG=<dir>/meshes.jsonl, fixtures/gate5-mesh only). REFERENCE_START_FRAME /
+# _STEP_FRAMES / _QUIT_FRAME (G5f) override the fixture's own step timeline, so the shots land on
+# the live timeline's own frames (DF's per-frame band only lines up with a live shot taken at the
+# identical frame number). All are reset after the call.
 REFERENCE_ARMED=0
 REFERENCE_VARIANT=""
 REFERENCE_FIXTURE_DIR=""
 REFERENCE_MESH_ORACLE=0
+REFERENCE_START_FRAME=""
+REFERENCE_STEP_FRAMES=""
+REFERENCE_QUIT_FRAME=""
 run_reference() {
 	local dir="$1" armed="$REFERENCE_ARMED" variant="$REFERENCE_VARIANT"
 	local project="${REFERENCE_FIXTURE_DIR:-$FIXTURE_DIR}" oracle="$REFERENCE_MESH_ORACLE"
+	local start="$REFERENCE_START_FRAME" span="$REFERENCE_STEP_FRAMES" quit="$REFERENCE_QUIT_FRAME"
 	REFERENCE_ARMED=0
 	REFERENCE_VARIANT=""
 	REFERENCE_FIXTURE_DIR=""
 	REFERENCE_MESH_ORACLE=0
+	REFERENCE_START_FRAME=""
+	REFERENCE_STEP_FRAMES=""
+	REFERENCE_QUIT_FRAME=""
 	mkdir -p "$dir/shots"
 	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl")
 	if [ -n "$variant" ]; then
@@ -239,6 +267,15 @@ run_reference() {
 	fi
 	if [ "$oracle" = "1" ]; then
 		LEG_ENV+=(RS_FIXTURE_MESH_LOG="$dir/meshes.jsonl")
+	fi
+	if [ -n "$start" ]; then
+		LEG_ENV+=(RS_FIXTURE_START_FRAME="$start")
+	fi
+	if [ -n "$span" ]; then
+		LEG_ENV+=(RS_FIXTURE_STEP_FRAMES="$span")
+	fi
+	if [ -n "$quit" ]; then
+		LEG_ENV+=(RS_FIXTURE_QUIT_FRAME="$quit")
 	fi
 	if [ "$armed" = "1" ]; then
 		mkdir -p "$dir/evidence"
@@ -462,6 +499,138 @@ run_g5e() {
 	GS_RUN_DIR=""
 }
 
+# G5f: live legs on fixtures/gate5-mesh, gate 1's and gate 2's live timeline (G5F_START_FRAME,
+# G5F_STEP_FRAMES, G5F_QUIT_FRAME above). start_live_mesh_host <dir> [extra env words...]: the
+# mesh fixture host (headless, armed, both file sinks and their store, --max-fps 60) serving on
+# 127.0.0.1:0 in the background. Waits for evidence/live.json and sets LIVE_PORT ("" when the host
+# is not listening).
+start_live_mesh_host() {
+	local dir="$1" waited=0
+	shift
+	mkdir -p "$dir/evidence" "$dir/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		GRC_ROOT_SIZE=enforce-min-size GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
+		RS_FIXTURE_START_FRAME="$G5F_START_FRAME" RS_FIXTURE_STEP_FRAMES="$G5F_STEP_FRAMES"
+		RS_FIXTURE_QUIT_FRAME="$G5F_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "$@"
+	)
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$MESH_FIXTURE_DIR"
+	LIVE_HOST_PID="$BG_PID"
+	LIVE_PORT=""
+	while [ "$waited" -lt 400 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
+		LIVE_PORT="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
+	fi
+	echo "run-gate5: ${dir#"$OUT"/} listening on port ${LIVE_PORT:-<none>}"
+}
+
+# The live receiver's shot windows for G5f's timeline: <step>:<from>-<to>, steps 0..G5F_LAST_STEP
+# (gate 1's rule: from the settle frame to the frame before the next step; the last to the quit).
+g5f_windows() {
+	local k from to out="" sep=""
+	for k in $(seq 0 "$G5F_LAST_STEP"); do
+		from=$((G5F_START_FRAME + G5F_STEP_FRAMES * k + 7))
+		to=$((G5F_START_FRAME + G5F_STEP_FRAMES * (k + 1) - 1))
+		[ "$k" -eq "$G5F_LAST_STEP" ] && to=$G5F_QUIT_FRAME
+		out+="$sep$k:$from-$to"
+		sep=","
+	done
+	echo "$out"
+}
+
+# g5f_receiver <leg dir> <rendered|headless> [extra env words...]: a live receiver on the current
+# host's port with a fresh cache at <leg>/receiver/cache (the extra words may override it) and
+# --max-fps 60. Rendered receivers shoot the step windows (credit stage submitted); headless ones
+# run with credit stage applied under strace -e openat.
+g5f_receiver() {
+	local leg="$1" kind="$2" dir="$1/receiver"
+	shift 2
+	mkdir -p "$dir"
+	if [ -z "$LIVE_PORT" ]; then
+		echo "the live host is not listening (see $leg/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate5: ${dir#"$OUT"/} skipped: the host is not listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache" "$@"
+	)
+	if [ "$kind" = "headless" ]; then
+		LEG_ENV+=(RS_RECEIVER_CREDIT_STAGE=applied)
+		run_headless "$dir" openat -- "$BINARY" --headless --max-fps 60 --path "$RECEIVER_DIR"
+	else
+		LEG_ENV+=(RS_RECEIVER_SHOT_WINDOWS="$(g5f_windows)")
+		RENDERED_EXTRA_ARGS=(--max-fps 60)
+		run_rendered "$dir" "$RECEIVER_DIR"
+	fi
+}
+
+# g5f_leg <leg> <rendered|headless> <host words...> -- <receiver words...>: one live host and one
+# receiver against it, then the host to its quit frame.
+g5f_leg() {
+	local leg="$1" kind="$2"
+	shift 2
+	local -a host_words=() receiver_words=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		host_words+=("$1")
+		shift
+	done
+	[ $# -gt 0 ] && shift
+	receiver_words=("$@")
+	start_live_mesh_host "$M/$leg/host" ${host_words[@]+"${host_words[@]}"}
+	g5f_receiver "$M/$leg" "$kind" ${receiver_words[@]+"${receiver_words[@]}"}
+	finish_bg "$M/$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+}
+
+run_g5f() {
+	local M="$OUT/mesh" f1
+	f1=$((G5F_START_FRAME + G5F_STEP_FRAMES * 1))
+	mkdir -p "$M/import"
+	echo "run-gate5: g5f: import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$M/import/fixture-g5f" none -- mise exec -- godot --headless --path "$MESH_FIXTURE_DIR" --import
+	if [ "$(cat "$M/import/fixture-g5f/exit-code.txt")" != "0" ]; then
+		echo "run-gate5: import of $MESH_FIXTURE_DIR failed, see $M/import/fixture-g5f/stdout.log" >&2
+		exit 1
+	fi
+	LEG_ENV=()
+	run_headless "$M/import/receiver-g5f" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$M/import/receiver-g5f/exit-code.txt")" != "0" ]; then
+		echo "run-gate5: import of $RECEIVER_DIR failed, see $M/import/receiver-g5f/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate5: bringing up private gamescope for g5f legs"
+	gs_start 640 360 "$OUT/gamescope-g5f"
+
+	echo "run-gate5: g5f: reference-live (S=$G5F_START_FRAME N=$G5F_STEP_FRAMES quit=$G5F_QUIT_FRAME)"
+	REFERENCE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
+	REFERENCE_START_FRAME="$G5F_START_FRAME"
+	REFERENCE_STEP_FRAMES="$G5F_STEP_FRAMES"
+	REFERENCE_QUIT_FRAME="$G5F_QUIT_FRAME"
+	run_reference "$M/reference-live"
+
+	echo "run-gate5: g5f: live-mesh (host + rendered live receiver, fresh cache, shot windows $(g5f_windows))"
+	g5f_leg live-mesh rendered
+	echo "run-gate5: g5f: live-mesh-warm (a new host + a new rendered receiver on live-mesh's cache, mode warm)"
+	g5f_leg live-mesh-warm rendered -- \
+		RS_RECEIVER_CACHE_DIR="$M/live-mesh/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	echo "run-gate5: g5f: live-mesh-stall (RS_RECEIVER_STALL=$G5F_STALL_SPEC)"
+	g5f_leg live-mesh-stall rendered -- RS_RECEIVER_STALL="$G5F_STALL_SPEC"
+	echo "run-gate5: g5f: sabotage-mesh-stale-coalesce (stale-coalesce @$f1, RS_RECEIVER_STALL=$G5F_STALL_SPEC)"
+	g5f_leg sabotage-mesh-stale-coalesce rendered GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$f1" -- \
+		RS_RECEIVER_STALL="$G5F_STALL_SPEC"
+
+	gs_teardown "$OUT/gamescope-g5f"
+	GS_RUN_DIR=""
+}
+
 # G5g: fixtures/gate5-style through G5b's and G5d's legs, evidence under <out>/style/ in their
 # shape. Predictions are fixtures/gate5-style/expected.json's (make_expected.py).
 run_g5g() {
@@ -526,6 +695,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g5c) run_g5c ;;
 	g5d) run_g5d ;;
 	g5e) run_g5e ;;
+	g5f) run_g5f ;;
 	g5g) run_g5g ;;
 	esac
 done

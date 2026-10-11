@@ -289,7 +289,7 @@ export interface G2cLegEvidence {
   exit: number | null;
 }
 
-async function loadHost(dir: string): Promise<G2cHost> {
+export async function loadHost(dir: string): Promise<G2cHost> {
   const summary = await readJson<{
     connections?: Array<{ connection?: number }>;
     resources?: ServingSummary;
@@ -405,6 +405,24 @@ export function tableHashes(t: ResolvedTransaction): Set<string> {
   return out;
 }
 
+/** G5f: the `ok` mesh surface hashes of a resolved state (every surface of every mesh the table
+ * resolves `ok`, which is exactly what the store must keep servable -- render-stream-4.md's mesh
+ * table has no single per-mesh hash, since a mesh may hold several surfaces). */
+export function okMeshHashes(t: ResolvedTransaction | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const m of t?.state.meshes ?? [])
+    if (m.status === "ok") for (const s of m.surfaces) out.add(s.hash);
+  return out;
+}
+
+/** G5f: every surface hash a transaction's mesh table names (any status), for gets-advertised. */
+export function meshTableHashes(t: ResolvedTransaction): Set<string> {
+  const out = new Set<string>();
+  for (const m of t.state.meshes ?? [])
+    for (const s of m.surfaces) out.add(s.hash);
+  return out;
+}
+
 /** The serving lines of a hook log, in order. */
 export function servingLines(lines: readonly HookLine[]): HookLine[] {
   return lines.filter(
@@ -476,13 +494,17 @@ export interface PinsReport {
  * Replays the host's pin and retire lines frame by frame and compares the servable set after
  * each frame callback with what D7 says it must be: the full recording's state at that frame
  * (the mirror's payloads) united with every open connection's base (its last tapped transaction).
- * Pure.
+ * Pure. `hashesOf` extracts the resource kind's servable hashes from a resolved transaction
+ * (default: image textures); G5f passes `okMeshHashes` for GRM1 mesh surfaces.
  */
 export function pinsReport(
   hookLines: readonly HookLine[],
   full: readonly ResolvedTransaction[],
   conns: readonly ConnTimeline[],
   budget: number,
+  hashesOf: (
+    t: ResolvedTransaction | undefined,
+  ) => ReadonlySet<string> = okImageHashes,
 ): PinsReport {
   const out: PinsReport = {
     frames_compared: 0,
@@ -508,10 +530,10 @@ export function pinsReport(
   out.first_frame = firstFrame;
   out.last_frame = lastFrame;
   for (let f = firstFrame; f <= lastFrame; f++) {
-    const expected = new Set(okImageHashes(byFrame.get(f)));
+    const expected = new Set(hashesOf(byFrame.get(f)));
     for (const c of conns) {
       const base = baseAt(c, f);
-      if (base) for (const h of okImageHashes(base)) expected.add(h);
+      if (base) for (const h of hashesOf(base)) expected.add(h);
     }
     while (k < serving.length && serving[k].frame === f) {
       const l = serving[k++];
@@ -550,10 +572,11 @@ export function pinsReport(
 }
 
 /** gets-advertised (pure): every GET names a hash of a transaction sent on its connection at an
- * earlier frame callback. */
+ * earlier frame callback. `hashesOf` defaults to the texture table (G5f passes `meshTableHashes`). */
 export function unadvertisedGets(
   gets: readonly HookLine[],
   conns: readonly ConnTimeline[],
+  hashesOf: (t: ResolvedTransaction) => ReadonlySet<string> = tableHashes,
 ): string[] {
   const out: string[] = [];
   for (const g of gets) {
@@ -565,7 +588,7 @@ export function unadvertisedGets(
       continue;
     }
     const sent = c.sends.filter((t) => t.frame < g.frame);
-    if (!g.hash || !sent.some((t) => tableHashes(t).has(g.hash as string)))
+    if (!g.hash || !sent.some((t) => hashesOf(t).has(g.hash as string)))
       out.push(
         `GET ${g.hash?.slice(0, 12) ?? "<malformed>"} at frame ${g.frame} on connection ${g.conn}: no earlier transaction on it names that hash`,
       );
@@ -785,7 +808,7 @@ export function checkpointMismatching(cps: readonly G2cCheckpoint[]): number[] {
 /** null when the received stream is the tap byte for byte; "prefix" when it is shorter and the
  * receiver closed that connection itself before the end record (checked byte-wise by the
  * caller); otherwise why not. */
-function sameBytesOrPrefix(
+export function sameBytesOrPrefix(
   received: Resolved | null,
   tap: Resolved,
   closedByReceiverEarly: boolean,
@@ -797,7 +820,7 @@ function sameBytesOrPrefix(
   return `received ${received.bytes} B (${received.sha256?.slice(0, 12)}) differs from the tap's ${tap.bytes} B (${tap.sha256?.slice(0, 12)})`;
 }
 
-async function isPrefix(
+export async function isPrefix(
   receivedPath: string,
   tapPath: string,
 ): Promise<boolean> {

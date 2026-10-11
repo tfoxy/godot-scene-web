@@ -1183,6 +1183,42 @@ target's, and the first post-stall applied state's `DF` surface hash equals the 
 last, "Gate 5 summary": run directories, image paths, per-leg classes, census, parity and budget
 tables, mesh bytes and copy/hash cost per step, and an explicit "what this does not prove" list.
 
+**As built (G5f, 2026-10-11).** `--legs g5b,g5c,g5d,g5e,g5f,g5g` is 116/116; gates −1, 0, 1 and 2
+all pass on the same build, no regression. No capture-side (C++) or receiver-side (GDScript)
+change was needed -- `stale-coalesce` and the pin/retire/HTTP-serving machinery are already generic
+over resource kind (Hub/`ServedResources` key everything by content hash), and the mesh fixture
+already honours `RS_FIXTURE_START_FRAME`/`_STEP_FRAMES`/`_QUIT_FRAME` the way gate 1/2's fixtures
+do -- so the whole increment is runner (`run-gate5.sh`'s `run_g5f`) and checker
+(`lib/gate5f-checks.ts`) wiring, reusing gate 1's `stallReport` (send/credit frames, the recovery
+transaction, `steps_applied_during`) unmodified and gate 2c2's `pinsReport`/`unadvertisedGets`
+generalized with an optional hash-extractor parameter (default unchanged, so gate 2's own checks
+are untouched). Timeline: S=300, N=60, the mesh fixture's own `LAST_STEP`=9, quit=851; a fifth
+rendered leg, `reference-live`, runs the fixture at this same timeline with the extension absent,
+the ground truth every live shot is compared against (the batch `reference` under `mesh/reference/`
+uses a different S/N and is not frame-comparable to a live shot). Measured: `RS_RECEIVER_STALL=1:2000`
+after step 1 gives send frame 367, credit frame 489 (122 frames), the post-stall shot landing in
+step 3's window with step 2's wholly inside the stall (no shot, by design). Amendments: (1) **A
+per-step static reference is only pixel-exact for a shot taken at `DF`'s exact frame.** `DF`
+changes every host frame, so round-trip jitter alone -- not only a stall -- can land a shot a frame
+off its nominal settle frame (measured: `live-mesh`'s unstalled step-5 shot, at `DF`'s rebuild
+step, landed at frame 608 instead of the window's 607). A checkpoint whose only mismatching region
+is `DF` is therefore judged `benign` against the wire itself (the connection's tapped resolved
+state at the shot's actual frame equals the host's own full file recording there, `statesEqual`),
+never against a fixed region allow-list; `mesh-fetches-latest-only` and the generic pixel-mismatch
+classification both reuse this one rule. (2) **The stale-coalesce sabotage's mismatch is not
+confined to `DF`.** Its resent snapshot is from right after step 1, so step 2's and step 3's own
+changes (both swallowed by the stall) are stale too -- `RM` and `Marker` as well as `DF`. The
+expected mismatching-region set for `stale-coalesce` is derived from `expected.json`'s per-step
+`fresh` table unioned over `StallReport.steps_applied_during`, never hardcoded to the one
+continuously-changing region. (3) **Pins, retirement and GET-advertising union image and mesh
+hashes.** `fixtures/gate5-mesh` also serves TEXG and the engine's default-theme hue strip over the
+identical mechanism; `okImageHashes(t) ∪ okMeshHashes(t)` (and the table-hash equivalent) is the
+extractor G5f passes into the generalized `pinsReport`/`unadvertisedGets`, or every GRM1-only check
+fails at the very first frame on a hash neither set names. (4) `loadHost` (gate2c-checks.ts) loads
+a live host's own evidence only; it never populates a connection's `received` (the receiver's copy
+of the stream) -- G5f's own loader assigns `received.rs2`/`received-<n>.rs2` itself, the same way
+gate 2c2's `loadG2cLeg` already does. Memory: `rs-g5f-live-mesh-facts`.
+
 ## Deferred, with owners
 
 - **Multimesh** (typed `unsupported`): gate 8's census of the target game decides; `CPUParticles2D`
