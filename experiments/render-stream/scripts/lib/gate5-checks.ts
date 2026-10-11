@@ -104,7 +104,14 @@ export type Gate5Check = Gate3Check;
 
 export const ALL_GROUPS = ["g5b", "g5c", "g5d", "g5e", "g5f", "g5g"] as const;
 /** Groups whose increment has landed; run-gate5.sh's LANDED_GROUPS must say the same. */
-export const LANDED_GROUPS: readonly string[] = ["g5b", "g5c", "g5d", "g5g"];
+export const LANDED_GROUPS: readonly string[] = [
+  "g5b",
+  "g5c",
+  "g5d",
+  "g5e",
+  "g5f",
+  "g5g",
+];
 
 export const G5B_SUPPORT_LEGS = [
   "import",
@@ -896,6 +903,9 @@ export interface Gate5Report {
   /** G5e: the mesh fixture's wire census, parity, store, receiver uploads and fetches, sabotage
    * regions and per-step mesh costs (lib/gate5e-checks.ts) */
   g5e?: import("./gate5e-checks").Gate5eResult["report"];
+  /** G5f: live legs on the mesh fixture (stall, coalescing, newest-state recovery, the
+   * stale-coalesce sabotage), lib/gate5f-checks.ts. */
+  g5f?: import("./gate5f-checks").G5fResult;
 }
 
 export interface Gate5Context {

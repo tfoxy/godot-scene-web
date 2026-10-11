@@ -18,6 +18,7 @@ import { readGroups, runGate5 } from "./lib/gate5-checks";
 import type { Gate5Expected } from "./lib/gate5-expected";
 import { type Gate5MeshExpected, runGate5c } from "./lib/gate5c-checks";
 import { runGate5e } from "./lib/gate5e-checks";
+import { runGate5f } from "./lib/gate5f-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -96,6 +97,16 @@ async function main(): Promise<void> {
       report.g5e = g5e.report;
       report.gate_passed =
         report.gate_passed && g5e.checks.every((c) => c.status === "pass");
+    }
+    // G5f: live legs on the mesh fixture (its own reference-live and hosts, under <out>/mesh/;
+    // reads meshExpected.regions only, so it needs g5c in the same run for that, not g5c's legs).
+    if (groups.run.includes("g5f")) {
+      const g5f = await runGate5f(out, meshExpected);
+      report.checks.push(...g5f.checks);
+      Object.assign(report.legs, g5f.legs);
+      report.g5f = g5f;
+      report.gate_passed =
+        report.gate_passed && g5f.checks.every((c) => c.status === "pass");
     }
   }
   await writeFile(
@@ -221,6 +232,15 @@ async function main(): Promise<void> {
             `${k}:${v.mesh_lines}/${v.payloads_made}/${v.copy_ns_median}/${v.hash_ns_median}/${v.live_surface_bytes}`,
         )
         .join(" ")}`,
+    );
+  }
+  if (report.g5f) {
+    const g = report.g5f;
+    console.log(
+      `  g5f live-mesh-stall: send frame ${g.stall.live_mesh_stall.send_frame}, credit frame ${g.stall.live_mesh_stall.credit_frame}, post-stall step ${g.stall.live_mesh_stall.post_stall_step}, coalesced +${g.stall.live_mesh_stall.coalesced_delta}`,
+    );
+    console.log(
+      `  g5f sabotage-mesh-stale-coalesce: send frame ${g.stall.sabotage.send_frame}, credit frame ${g.stall.sabotage.credit_frame}, post-stall step ${g.stall.sabotage.post_stall_step}, stale_from ${g.stall.sabotage.stale_from}`,
     );
   }
   const passed = report.checks.filter((c) => c.passed).length;
