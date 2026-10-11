@@ -9,9 +9,10 @@
 //
 // Each group's checks live in its own lib (g55b: lib/gate55b-checks.ts, g55c:
 // lib/gate55c-checks.ts, g55d: lib/gate55d-checks.ts over g55b's scene directories, g55e:
-// lib/gate55e-checks.ts over g55c's directories and its own policy directories), which its
-// self-test drives with synthetic values. A group that was not run is reported `not-run` and fails
-// the gate.
+// lib/gate55e-checks.ts over g55c's directories and its own policy directories, g55f:
+// lib/gate55f-checks.ts, live legs on fixtures/gate55-shader with gate 1's live timeline), which
+// its self-test drives with synthetic values. A group that was not run is reported `not-run` and
+// fails the gate.
 
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -32,6 +33,7 @@ import {
 } from "./lib/gate55c-checks";
 import { runGate55d } from "./lib/gate55d-checks";
 import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
+import { runGate55f } from "./lib/gate55f-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -43,6 +45,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g55c",
   "g55d",
   "g55e",
+  "g55f",
 ];
 
 export interface Gate55Report {
@@ -173,6 +176,19 @@ async function main(): Promise<void> {
         | undefined) ?? {}),
       g55e: r.materials,
     };
+  }
+  if (run.includes("g55f")) {
+    // g55f's live legs reuse g55c's fixtures/gate55-shader expected.json (regions, steps/fresh);
+    // its own evidence lives under <out>/shader-live/, independent of g55c's <out>/shader/.
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate55-shader", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate55ShaderExpected;
+    const r = await runGate55f(out, expected);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
   }
   for (const group of report.groups.not_run)
     report.checks.push({

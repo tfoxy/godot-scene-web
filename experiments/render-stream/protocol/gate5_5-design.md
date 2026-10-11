@@ -1033,6 +1033,41 @@ post-stall shot in `PH` and `TI`.
 and, last, "Gate 5.5 summary": run directories, image paths, per-leg classes, census, parity and
 budget tables, material bytes and costs, and an explicit "what this does not prove" list.
 
+**As built (G55f, 2026-10-11).** Exactly the G5f pattern (gate5-design.md "G5f"): no capture-side
+or receiver-side change, because `GRC_SABOTAGE=stale-coalesce`, the pin/retire/HTTP machinery and
+`fixtures/gate55-shader`'s own `RS_FIXTURE_START_FRAME`/`_STEP_FRAMES`/`_QUIT_FRAME` handling are
+already generic over resource kind. The whole increment is runner (`run-gate55.sh`'s `run_g55f`,
+which also teaches `run_reference` the `REFERENCE_START_FRAME`/`_STEP_FRAMES`/`_QUIT_FRAME`
+override G5f's `run_reference` already had) and checker (`lib/gate55f-checks.ts`) wiring onto gate
+1's G1d stall report and gate 2's live-resource checks, generalized to GRP1 shader-code hashes
+(`okShaderHashes`/`shaderTableHashes`, gate2c-checks.ts, mirroring `okMeshHashes`/
+`meshTableHashes`). `--legs g55b,g55c,g55d,g55e,g55f` passed on the first engine run. One
+correction to this section's own prediction:
+
+- **The stale-coalesce region set is `IN`, `Marker`, `PH`, `RM` and `TI`, not "`PH` and `TI`".**
+  Measured: the stall (`RS_RECEIVER_STALL=1:2000` after step 1) runs send frame 367 to credit
+  frame 489, so `StallReport.steps_applied_during` is `[2, 3]` — step 2's `I2.inst_color` change
+  (`IN`) and step 3's `tint.code` change (`TI` and `RM`, the shared shader) are both swallowed,
+  and the fixture's own marker updates every step (`Marker` is `fresh` at every one, unlike
+  `fixtures/gate5-mesh`'s). The checker derives the expected set generically from
+  `expected.json`'s per-step `fresh` table unioned over `steps_applied_during` — the same rule
+  memory `rs-g5f-live-mesh-facts` fact 3 established and warned not to replace with a hardcoded
+  guess — and the measured mismatch matches that derivation exactly, not this section's narrower
+  guess. See memory `rs-g55f-stale-coalesce-region-set`.
+- **`params-latest-only` (contract) is `shader-fetches-latest-only`.** It asserts the recovery
+  transaction's resolved state equals the host's full recording at that frame (covers `phase` and
+  the tint code hash in one proof, `statesEqual`), and that any fetch tied to the recovery seq
+  names only a hash the newest state actually holds — never every shader-kind fetch the leg ever
+  made, since a fresh-cache receiver legitimately fetches the other five shaders' hashes earlier,
+  unrelated to the stall.
+- **No "bearer" check was added.** None of the four legs set `GRC_LIVE_AUTH`; G5f's own template
+  had none either. Gate 2e's bearer-token check stays leg-specific to gate 2.
+- **A self-test exists this time.** `test/self-test-gate55f.ts` (G5f had none) drives
+  `g55fWindows`, `stepShots55f`, `wireStateEqualsFullAtFrame`, `mismatchingRegionNames`,
+  `checkShaderFetchesLatestOnly`, `checkStaleCoalesce`, `checkReceiverVsReferenceShader` and
+  `checkWarmHostNoGetsShader` with fabricated evidence, each with a passing and at least one
+  failing case.
+
 ## Deferred, with owners
 
 - **The GSW browser receiver's shader path: gate 7.** It transpiles its supported subset through

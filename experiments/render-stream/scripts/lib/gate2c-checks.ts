@@ -423,6 +423,25 @@ export function meshTableHashes(t: ResolvedTransaction): Set<string> {
   return out;
 }
 
+/** G55f: the `ok` GRP1 shader-code hashes of a resolved state -- every non-builtin shader the
+ * table resolves `ok` with `source: "payload"` (the store keeps exactly these servable; a
+ * `withheld` source, under policy `params`, has no payload in the store at all). */
+export function okShaderHashes(
+  t: ResolvedTransaction | undefined,
+): Set<string> {
+  const out = new Set<string>();
+  for (const s of t?.state.shaders ?? [])
+    if (s.status === "ok" && s.source === "payload" && s.hash) out.add(s.hash);
+  return out;
+}
+
+/** G55f: every hash a transaction's shader table names (any status), for gets-advertised. */
+export function shaderTableHashes(t: ResolvedTransaction): Set<string> {
+  const out = new Set<string>();
+  for (const s of t.state.shaders ?? []) if (s.hash) out.add(s.hash);
+  return out;
+}
+
 /** The serving lines of a hook log, in order. */
 export function servingLines(lines: readonly HookLine[]): HookLine[] {
   return lines.filter(

@@ -1,4 +1,4 @@
-# render-stream experiment — gates −1, 0, 1, 2, 3, 4 and 5: capture seam, first stream, retained state, live delivery, textures, clipping, text, geometry and meshes
+# render-stream experiment — gates −1, 0, 1, 2, 3, 4, 5 and 5.5: capture seam, first stream, retained state, live delivery, textures, clipping, text, geometry, meshes and materials
 
 Gate 0 passed on 2026-10-09 (see "Gate 0 result" below): one opaque rectangle and a step marker,
 captured by the stock release template under `--headless`, replayed by a separate receiver
@@ -71,18 +71,23 @@ the wire, G5g's styleboxes and, last, G5f's live meshes through dropped presenta
 coalescing and newest-state recovery on `fixtures/gate5-mesh`'s GRM1 surfaces) all landed; gate 5's
 own runner and checker (`pnpm render-stream:gate5 -- --legs g5b,g5c,g5d,g5e,g5f,g5g`) are 116/116.
 
-Gate 5.5 is in progress (see "Gate 5.5b result" onward below): G55a's calibrator 8 (73 hooks),
-G55b's `CanvasItemMaterial` and G55c's `ShaderMaterial` fixtures, G55w's render-stream/5 codecs, and
-G55d (see "Gate 5.5d result"), which moved the capture, the receiver and every gate runner to
-[protocol/render-stream-5.md](protocol/render-stream-5.md). **Every gate, −1 through 5.5, now runs
-on render-stream/5**: shaders and materials travel as two tables (GRP1 code payloads by hash), items
-carry `material`/`use_parent_material`/`instance_params`, canvases carry their modulate, and
-`CanvasItemMaterial` blend and light modes replay pixel-exact on a native receiver. G55e (see "Gate
-5.5e result") carried `ShaderMaterial` end to end: captured code compiles on a native receiver,
-every parameter equals what the reference reads back, `GRC_SHADER_POLICY=params` keeps every code
-byte off the stream (a receiver compiles from an operator-local library) and `exclude` refuses the
-shaders, with `--legs g55b,g55c,g55d,g55e` at 115/115. Live parameters and code through a stall
-(G55f) remain.
+Gate 5.5 passed on 2026-10-11 (see "Gate 5.5b result" onward and "Gate 5.5 summary" below): G55a's
+calibrator 8 (73 hooks), G55b's `CanvasItemMaterial` and G55c's `ShaderMaterial` fixtures, G55w's
+render-stream/5 codecs, and G55d (see "Gate 5.5d result"), which moved the capture, the receiver
+and every gate runner to [protocol/render-stream-5.md](protocol/render-stream-5.md). **Every
+gate, −1 through 5.5, now runs on render-stream/5**: shaders and materials travel as two tables
+(GRP1 code payloads by hash), items carry `material`/`use_parent_material`/`instance_params`,
+canvases carry their modulate, and `CanvasItemMaterial` blend and light modes replay pixel-exact
+on a native receiver. G55e (see "Gate 5.5e result") carried `ShaderMaterial` end to end: captured
+code compiles on a native receiver, every parameter equals what the reference reads back,
+`GRC_SHADER_POLICY=params` keeps every code byte off the stream (a receiver compiles from an
+operator-local library) and `exclude` refuses the shaders. G55f (see "Gate 5.5f result") closed
+gate 5.5: live `ShaderMaterial` parameters and code survive a dropped presentation — a receiver
+that stalls for two seconds on `fixtures/gate55-shader`'s continuously-changing `PH` parameter
+catches up to the newest code and value in one coalesced transaction, and `stale-coalesce`
+classifies `pixel-mismatch` in exactly the regions the stall's swallowed steps touch. Gate 5.5's
+own runner and checker (`pnpm render-stream:gate55 -- --legs g55b,g55c,g55d,g55e,g55f`) are
+130/130.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -4092,6 +4097,178 @@ As built (G55e) 2–7 in the design doc:
 - Exactness on another GPU or driver.
 - The library's provenance. It is trusted by hash only: the receiver verifies each GRP1 file
   against the wire hash, but does not check where the file came from.
+
+## Gate 5.5f result (2026-10-11)
+
+G55f ([protocol/gate5_5-design.md](protocol/gate5_5-design.md) "G55f") passes: live `ShaderMaterial`
+parameters and code survive a dropped presentation, and gate 5.5 is complete. No capture-side
+(C++) or receiver-side (GDScript) change was needed — exactly G5f's finding
+(gate5-design.md "G5f"), since `GRC_SABOTAGE=stale-coalesce`, the pin/retire/HTTP machinery and
+`fixtures/gate55-shader`'s own `RS_FIXTURE_START_FRAME`/`_STEP_FRAMES`/`_QUIT_FRAME` handling are
+already generic over resource kind. The whole increment is runner (`run-gate55.sh`'s new
+`run_g55f`, plus `REFERENCE_START_FRAME`/`_STEP_FRAMES`/`_QUIT_FRAME` added to `run_reference`)
+and checker (`lib/gate55f-checks.ts`) wiring onto gate 1's G1d stall report and gate 2's live
+pin/retire/HTTP checks, generalized to GRP1 shader-code hashes
+(`okShaderHashes`/`shaderTableHashes`, gate2c-checks.ts). `pnpm render-stream:gate55 -- --legs
+g55b,g55c,g55d,g55e,g55f` is **130/130** in `artifacts/render-stream/gate55/20261011T112118Z/`
+(g55f's evidence under `shader-live/<leg>/`; ignored, not committed). On the same build: gate −1
+PASS (`gate-minus1/20261011T112145Z/`), gate 0 PASS (`gate0/20261011T112300Z/`), gate 1 65/65
+(`gate1/20261011T112614Z/`), gate 2 85/85 (`gate2/20261011T113612Z/`) — no regression.
+
+**The live timeline** is gate 1's and G5f's exact pattern, reused unchanged: S=300, N=60, the
+shader fixture's own `LAST_STEP`=9, quit=851. Four legs, each its own host and receiver on
+`fixtures/gate55-shader`: `live-shader` (fresh cache), `live-shader-warm` (a new host and receiver
+on `live-shader`'s cache, mode warm), `live-shader-stall` (`RS_RECEIVER_STALL=1:2000` after step
+1), and `sabotage-shader-stale-coalesce` (the same stall, host `GRC_SABOTAGE=stale-coalesce` from
+step 1's frame). A fifth rendered run, `reference-live`, is the shader fixture at this *same* live
+timeline with the capture extension absent — the ground truth every leg's shots are compared
+against.
+
+| Leg | Class | Exit |
+| --- | --- | --- |
+| `live-shader` | `success` | 0 |
+| `live-shader-warm` | `success` | 0 |
+| `live-shader-stall` | `success` | 0 |
+| `sabotage-shader-stale-coalesce` | `pixel-mismatch` | 0 |
+
+Measured stall timing (both stalling legs, independently): send frame 367, credit frame 488–489
+(121–122 frames at a 2000 ms request — matching memory `rs-g1d-stall-facts`'s gate-1 numbers
+almost exactly), the post-stall shot landing in step 3's window (step 2's window lies wholly
+inside the stall and has no shot at all, by design). `live-shader-stall`'s recovery transaction
+(seq 317, frame 488) resolves to exactly the host's own full file recording at frame 488 — the
+newest state (`phase` and the `tint_b` code hash both included in that one proof), not a missed
+one; only the one shader-kind fetch tied to that seq names a hash, and it is the newest one.
+`sabotage-shader-stale-coalesce`'s recovery transaction (seq 312, frame 489) is labelled
+`stale_from: 368` and does **not** equal the host's full recording there; its step-3 shot
+mismatches `reference-live` exactly in `IN`, `Marker`, `PH`, `RM` and `TI` — every region
+`expected.json`'s per-step `fresh` table says steps 2 and 3 (both swallowed by the stall) touch,
+not only `PH`, the one region that changes every frame (memory
+`rs-g55f-stale-coalesce-region-set`).
+
+**Checks** (`lib/gate55f-checks.ts`, all passing): `live-tap-equals-received`,
+`live-resolves-to-recording` (2225 live transactions equal the host recordings),
+`pins-bounded`/`obsolete-retired` (replayed from the pin/retire lines against the full recording's
+`okImageHashes ∪ okShaderHashes`, since the fixture also serves TEX16/TEX16B and the engine's hue
+strip over the same mechanism; retained max 9–10 hashes, 22.9–23.2 KB), `http-gets-match-fetches`
+(20 GETs total: `live-shader` 10, `live-shader-warm` 0, `live-shader-stall` 10, every one a
+verified 200 with the right headers), `gets-advertised`, `fetch-before-applied`,
+`shader-fetches-latest-only` (the recovery transaction equals the host's newest; the one
+shader-kind fetch tied to its seq names only a hash the newest state holds),
+`receiver-vs-reference` (`live-shader` 10/10, `live-shader-warm` 10/10, `live-shader-stall` 9/9,
+`sabotage-shader-stale-coalesce` 8/8 — each leg's own stall-window step excluded, a `PH`-only
+difference tolerated when the wire's own state at that frame equals the host's full recording
+there), `stale-coalesce` (the region set above), `warm-host-no-gets` (0 GETs, 10 cache hits, shots
+equal `reference-live`'s), and `leg-class-*` for all four legs.
+
+Images (under the run directory): `shader-live/reference-live/shots/step-{0..9}.png` against
+`shader-live/live-shader/receiver/shots/seq-<n>.png`, `shader-live/live-shader-warm/receiver/shots/`
+and `shader-live/live-shader-stall/receiver/shots/` (step 2 absent, swallowed by the stall), and
+`shader-live/sabotage-shader-stale-coalesce/receiver/shots/seq-312.png` (step 3, the stale shot)
+against `shader-live/live-shader-stall/receiver/shots/seq-317.png` (step 3, the healthy recovery)
+and `shader-live/reference-live/shots/step-3.png`.
+
+### Findings
+
+- **The design doc's own G55f text undersold the stale-coalesce mismatch.** It named `PH` and `TI`;
+  the measured set is `IN`, `Marker`, `PH`, `RM` and `TI`. Step 2 (`I2.inst_color`) and step 3
+  (`tint.code → tint_b`, shared by `TI`'s and `RM`'s materials) are both swallowed by the stall,
+  and this fixture's marker is `fresh` at *every* step (unlike `fixtures/gate5-mesh`'s), unlike
+  `gate5-mesh`'s G5f, where the swallowed steps' own regions happened to be narrower. The checker
+  derives the expected set generically from `expected.json`'s per-step `fresh` table unioned over
+  `StallReport.steps_applied_during` — the same rule memory `rs-g5f-live-mesh-facts` established
+  and warned not to replace with a hardcoded guess — never from this section's or the contract's
+  own prediction. See memory `rs-g55f-stale-coalesce-region-set`.
+- **"Only the newest hash is fetched" must scope to the recovery seq, not the whole leg.** A
+  fresh-cache receiver legitimately fetches the other five shaders' GRP1 hashes earlier in the run
+  (the step-0 bootstrap), unrelated to the stall; comparing the whole leg's fetched-hash set
+  against "the newest state's hashes" fails on every real run for that reason alone.
+- **Pins, retirement and GET-advertising must union image and shader hashes.** The shader fixture
+  also serves TEX16 and TEX16B (drawn by `PA`) and the engine's default-theme hue strip over the
+  identical resource mechanism; `okImageHashes(t) ∪ okShaderHashes(t)` feeds the generalized
+  `pinsReport`/`unadvertisedGets`, the same shape G5f established for `okImageHashes ∪
+  okMeshHashes`.
+
+### What G55f does not prove
+
+- Resource pinning or retirement at a budget tight enough to actually evict something (the shader
+  fixture's live retained set never exceeded 10 hashes / 23.2 KB over an 851-frame run).
+  Reconnect, resync, or a killed live-shader receiver (gate 1's G1d already proves the mechanism;
+  G55f reuses it unchanged).
+- A second resource kind changing every frame at once (only `PH` churns continuously here); a
+  frame-exact ground truth for a region whose *reference* also depends on continuous time (G55f's
+  `benign` rule needs the wire, not a synthesized image, specifically because of this).
+- `TIME`, the screen texture, SDF and global uniforms live (they stay typed, as in G55e).
+- Browser receivers (gate 7), non-loopback serving and late join (gate 8), and exactness on
+  another GPU or driver.
+
+## Gate 5.5 summary
+
+Gate 5.5 passes: every increment from G55a through G55f lands, every gate from −1 through 5.5 now
+runs on [render-stream/5](protocol/render-stream-5.md), and `pnpm render-stream:gate55 -- --legs
+g55b,g55c,g55d,g55e,g55f` is **130/130** in `artifacts/render-stream/gate55/20261011T112118Z/`, on
+the same build as gate −1 PASS (`gate-minus1/20261011T112145Z/`), gate 0 PASS
+(`gate0/20261011T112300Z/`), gate 1 65/65 (`gate1/20261011T112614Z/`) and gate 2 85/85
+(`gate2/20261011T113612Z/`). Every leg is at its expected class; images are under each leg's
+`shots/` in the run directory, and the references are `reference/shots/step-{0..9}.png` for the
+batch timeline (`cim/`, `cim-modulate/`, `shader/`, `shader-refused/`) and
+`shader-live/reference-live/shots/` for G55f's own live timeline.
+
+What it proves, by increment:
+
+- **G55a.** Calibrator 8 hooks nine `CanvasItemMaterial`/`ShaderMaterial` calls (73 hooks total);
+  whole decoded `Variant` parameter values are copied at the hook on the calling thread, and the
+  shader/material hook log carries op, entity, version and (for a parameter) D8's type spelling,
+  distinct from the image and mesh columns (Q3d).
+- **G55b.** `fixtures/gate55-cim`'s blend modes and light modes (`add`, `sub`, `mul`,
+  `premul_alpha`, `disabled`, `mix`; `light_only`, `unshaded`, `use_parent_material`) rasterize
+  float32-exact against an independent Python twin: 2 304 000 pixel-shots per leg compared, a
+  `BD` alpha prediction refuted and corrected (the root render target is `RGB10_A2`), budget 0 on
+  a repeat.
+- **G55c.** `fixtures/gate55-shader`'s seven synthetic shaders (code change, recreation, parameter
+  erase, texture parameter, packed array, instance parameter) census exactly against the material
+  oracle's `shader_get_code`/`material_get_param` readback (230 shader-steps) and a same-build
+  repeat (budget 0); the server's preprocessed code (collapsed whitespace, `@@` include markers)
+  is independently ported, not assumed.
+- **G55d.** [render-stream/5](protocol/render-stream-5.md) landed for every gate: shaders and
+  materials travel as two tables, items carry `material`/`use_parent_material`/`instance_params`,
+  canvases carry their modulate, and `CanvasItemMaterial` blend/light modes replay pixel-exact on
+  a native receiver (90/90 on the first engine run); the hook log applies D5 (a shader free nulls
+  every material naming it at version + 1).
+- **G55e.** `ShaderMaterial` travels end to end: a native receiver compiles captured GRP1 code and
+  rebuilds every parameter exactly; `GRC_SHADER_POLICY=params` keeps every code byte off the
+  stream (a receiver compiles from an operator-local library) and `exclude` refuses the shaders;
+  every sabotage mismatches in exactly its predicted regions (115/115).
+- **G55f.** Live parameters and code through a dropped presentation: a receiver that stalls for
+  two seconds on a continuously-changing shader parameter (`PH`) catches up to the newest `tint_b`
+  code and `phase` value in one coalesced transaction (not a stale one), and `stale-coalesce`
+  classifies `pixel-mismatch` in exactly the regions the swallowed steps touch. See "Gate 5.5f
+  result" above.
+
+Costs measured in this run:
+
+- **Materials (G55b/d).** `gate55-cim` and its `modulate` variant: 8→6 shaders, 11→10 materials,
+  GRP1 code published once (1578 B at step 0, 204 B at step 3's recreation), `param_f64` 0–264 B
+  per patch transaction. Hook census: `canvas_item_set_material`=13, `material_set_param`=36,
+  `shader_set_code`=9, `material_create`=12, `material_set_shader`=17, `shader_create`=9.
+- **Shaders (G55c/e).** `gate55-shader`: 6 live shaders throughout (`sh_a`→`sh_b` at step 8), GRP1
+  code published at steps 0 (1311 B, six shaders), 3 (313 B, `tint_b`) and 8 (131 B, `sh_b`);
+  `param_f64` 80–2480 B per patch transaction (`PH`'s per-frame `phase` dominates step 9's
+  258-frame window, 2480 B). 417 `material_set_param` calls, 9 `canvas_item_set_material`.
+- **Live shaders (G55f).** Retained store: 9–10 hashes, 22.9–23.2 KB max over an 851-frame live
+  run. GETs: 10 cold, 0 warm, 10 after a 2 s stall (121–122-frame gap). See "Gate 5.5f result" for
+  the stall timing and the stale-coalesce region set.
+
+### What gate 5.5 does not prove
+
+- The GSW browser or web-export receiver's shader path (gate 7): transpiling the supported subset,
+  typing the rest `unsupported`, and a `params`-policy effect keyed by shader hash.
+- Shader `TIME`, the screen texture, `BackBufferCopy`/`CanvasGroup`, `Light2D`/occluders/SDF/light
+  masks, and global shader uniforms on a receiver (deferred, with owners, to gate 6 or later).
+- Sampler arrays, `Array`/`String`/`Dictionary` parameters, and a resource budget tight enough to
+  actually evict a shader or material under load (gate 6/8).
+- The shader library's provenance beyond its hash, late-join materials, non-loopback serving, and
+  authorization beyond a bearer token (gate 8).
+- Exactness on another GPU or driver than the RTX 2060 this experiment runs on.
 
 ## Unknown-item skip (2026-10-10)
 

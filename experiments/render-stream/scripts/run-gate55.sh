@@ -37,8 +37,14 @@
 # capture-inline (shader/receiver{,-patch,-inline}), on capture-refused (shader-refused/receiver),
 # on capture-policy-params without a library (receiver-nolib) and with the library the reference
 # oracle dumped (receiver-lib, RS_RECEIVER_SHADER_LIBRARY); and the receiver sabotages
-# ignore-material and stale-param on capture-shader).
-# g55f is known but has not landed.
+# ignore-material and stale-param on capture-shader) and g55f (G55f: live legs on
+# fixtures/gate55-shader with gate 1's live timeline (S=300, N=60, LAST_STEP=9, quit=851) under
+# <out>/shader-live/ -- a rendered reference at that same timeline (so PH's per-frame phase lines
+# up with the live shots), live-shader (host + rendered live receiver, fresh cache),
+# live-shader-warm (a new host + a new rendered receiver on live-shader's cache),
+# live-shader-stall (RS_RECEIVER_STALL=1:2000, step 1) and sabotage-shader-stale-coalesce (the
+# same stall, host GRC_SABOTAGE=stale-coalesce from step 1's frame); g55f imports both projects
+# itself and does not need g55c's own legs).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -63,7 +69,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g55b g55c g55d g55e)
+LANDED_GROUPS=(g55b g55c g55d g55e g55f)
 KNOWN_GROUPS=(g55b g55c g55d g55e g55f)
 
 EXTENSION=""
@@ -77,6 +83,20 @@ LEGS_ARG=""
 CAPTURE_QUIT_FRAME=400
 HEADLESS_TIMEOUT_S=180
 RENDERED_TIMEOUT_S=180
+
+# G55f: the live timeline (gate 1's and gate 5f's pattern, memories rs-g1d-stall-facts and
+# rs-g5f-live-mesh-facts) on fixtures/gate55-shader's own step model (LAST_STEP 9, SETTLE_OFFSET
+# 7, QUIT_AFTER_LAST_SETTLE 4): S=300, N=60 so a 60 fps receiver has slack between steps, quit =
+# S + N*LAST_STEP + 7 + 4. Identical numbers to gate5-design.md G5f's G5F_* on purpose: the same
+# engine mechanics, measured there, carry over (gate5_5-design.md G55f).
+G55F_LAST_STEP=9
+G55F_START_FRAME=300
+G55F_STEP_FRAMES=60
+G55F_QUIT_FRAME=$((G55F_START_FRAME + G55F_STEP_FRAMES * G55F_LAST_STEP + 11))
+# <step>:<ms> (gate1-design.md G1d): after step 1's shot, block the receiver long enough that PH
+# (every-frame shader parameter) changes for well over 60 frames and step 3's code change (tint
+# -> tint_b, applied frame S+3N=480) lands inside the stall.
+G55F_STALL_SPEC="1:2000"
 
 usage() {
 	sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -261,21 +281,40 @@ source "$SCRIPT_DIR/lib/legs.sh"
 # settle frames and the step log. REFERENCE_ARMED=1 loads the capture extension armed with a
 # full-sink stream and its store. REFERENCE_VARIANT sets RS_FIXTURE_VARIANT. REFERENCE_FIXTURE_DIR
 # picks the project (default FIXTURE_DIR) and REFERENCE_MATERIAL_ORACLE=1 turns the material oracle
-# on (RS_FIXTURE_MATERIAL_LOG=<dir>/materials.jsonl, fixtures/gate55-shader only). All are reset
-# after the call.
+# on (RS_FIXTURE_MATERIAL_LOG=<dir>/materials.jsonl, fixtures/gate55-shader only).
+# REFERENCE_START_FRAME / _STEP_FRAMES / _QUIT_FRAME (G55f, gate5-design.md G5f's identical
+# pattern) override the fixture's own step timeline, so the shots land on the live timeline's own
+# frames (PH's per-frame phase only lines up with a live shot taken at the identical frame
+# number). All are reset after the call.
 REFERENCE_ARMED=0
 REFERENCE_VARIANT=""
 REFERENCE_FIXTURE_DIR=""
 REFERENCE_MATERIAL_ORACLE=0
+REFERENCE_START_FRAME=""
+REFERENCE_STEP_FRAMES=""
+REFERENCE_QUIT_FRAME=""
 run_reference() {
 	local dir="$1" armed="$REFERENCE_ARMED" variant="$REFERENCE_VARIANT"
 	local project="${REFERENCE_FIXTURE_DIR:-$FIXTURE_DIR}" oracle="$REFERENCE_MATERIAL_ORACLE"
+	local start="$REFERENCE_START_FRAME" span="$REFERENCE_STEP_FRAMES" quit="$REFERENCE_QUIT_FRAME"
 	REFERENCE_ARMED=0
 	REFERENCE_VARIANT=""
 	REFERENCE_FIXTURE_DIR=""
 	REFERENCE_MATERIAL_ORACLE=0
+	REFERENCE_START_FRAME=""
+	REFERENCE_STEP_FRAMES=""
+	REFERENCE_QUIT_FRAME=""
 	mkdir -p "$dir/shots"
 	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl")
+	if [ -n "$start" ]; then
+		LEG_ENV+=(RS_FIXTURE_START_FRAME="$start")
+	fi
+	if [ -n "$span" ]; then
+		LEG_ENV+=(RS_FIXTURE_STEP_FRAMES="$span")
+	fi
+	if [ -n "$quit" ]; then
+		LEG_ENV+=(RS_FIXTURE_QUIT_FRAME="$quit")
+	fi
 	if [ -n "$variant" ]; then
 		LEG_ENV+=(RS_FIXTURE_VARIANT="$variant")
 	fi
@@ -576,12 +615,145 @@ run_g55e() {
 	GS_RUN_DIR=""
 }
 
+# G55f: live legs on fixtures/gate55-shader, gate 1's live timeline (G55F_START_FRAME,
+# G55F_STEP_FRAMES, G55F_QUIT_FRAME above). start_live_shader_host <dir> [extra env words...]: the
+# shader fixture host (headless, armed, both file sinks and their store, --max-fps 60) serving on
+# 127.0.0.1:0 in the background. Waits for evidence/live.json and sets LIVE_PORT ("" when the host
+# is not listening).
+start_live_shader_host() {
+	local dir="$1" waited=0
+	shift
+	mkdir -p "$dir/evidence" "$dir/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		GRC_ROOT_SIZE=enforce-min-size GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
+		RS_FIXTURE_START_FRAME="$G55F_START_FRAME" RS_FIXTURE_STEP_FRAMES="$G55F_STEP_FRAMES"
+		RS_FIXTURE_QUIT_FRAME="$G55F_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "$@"
+	)
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$SHADER_FIXTURE_DIR"
+	LIVE_HOST_PID="$BG_PID"
+	LIVE_PORT=""
+	while [ "$waited" -lt 400 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
+		LIVE_PORT="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
+	fi
+	echo "run-gate55: ${dir#"$OUT"/} listening on port ${LIVE_PORT:-<none>}"
+}
+
+# The live receiver's shot windows for G55f's timeline: <step>:<from>-<to>, steps
+# 0..G55F_LAST_STEP (gate 1's rule: from the settle frame to the frame before the next step; the
+# last to the quit).
+g55f_windows() {
+	local k from to out="" sep=""
+	for k in $(seq 0 "$G55F_LAST_STEP"); do
+		from=$((G55F_START_FRAME + G55F_STEP_FRAMES * k + 7))
+		to=$((G55F_START_FRAME + G55F_STEP_FRAMES * (k + 1) - 1))
+		[ "$k" -eq "$G55F_LAST_STEP" ] && to=$G55F_QUIT_FRAME
+		out+="$sep$k:$from-$to"
+		sep=","
+	done
+	echo "$out"
+}
+
+# g55f_receiver <leg dir> <rendered|headless> [extra env words...]: a live receiver on the
+# current host's port with a fresh cache at <leg>/receiver/cache (the extra words may override
+# it) and --max-fps 60. Rendered receivers shoot the step windows (credit stage submitted).
+g55f_receiver() {
+	local leg="$1" kind="$2" dir="$1/receiver"
+	shift 2
+	mkdir -p "$dir"
+	if [ -z "$LIVE_PORT" ]; then
+		echo "the live host is not listening (see $leg/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate55: ${dir#"$OUT"/} skipped: the host is not listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache" "$@"
+	)
+	if [ "$kind" = "headless" ]; then
+		LEG_ENV+=(RS_RECEIVER_CREDIT_STAGE=applied)
+		run_headless "$dir" openat -- "$BINARY" --headless --max-fps 60 --path "$RECEIVER_DIR"
+	else
+		LEG_ENV+=(RS_RECEIVER_SHOT_WINDOWS="$(g55f_windows)")
+		RENDERED_EXTRA_ARGS=(--max-fps 60)
+		run_rendered "$dir" "$RECEIVER_DIR"
+	fi
+}
+
+# g55f_leg <leg> <rendered|headless> <host words...> -- <receiver words...>: one live host and
+# one receiver against it, then the host to its quit frame.
+g55f_leg() {
+	local leg="$1" kind="$2"
+	shift 2
+	local -a host_words=() receiver_words=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		host_words+=("$1")
+		shift
+	done
+	[ $# -gt 0 ] && shift
+	receiver_words=("$@")
+	start_live_shader_host "$S/$leg/host" ${host_words[@]+"${host_words[@]}"}
+	g55f_receiver "$S/$leg" "$kind" ${receiver_words[@]+"${receiver_words[@]}"}
+	finish_bg "$S/$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+}
+
+run_g55f() {
+	local S="$OUT/shader-live" f1
+	f1=$((G55F_START_FRAME + G55F_STEP_FRAMES * 1))
+	mkdir -p "$S/import"
+	echo "run-gate55: g55f: import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$S/import/fixture-g55f" none -- mise exec -- godot --headless --path "$SHADER_FIXTURE_DIR" --import
+	if [ "$(cat "$S/import/fixture-g55f/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $SHADER_FIXTURE_DIR failed, see $S/import/fixture-g55f/stdout.log" >&2
+		exit 1
+	fi
+	LEG_ENV=()
+	run_headless "$S/import/receiver-g55f" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$S/import/receiver-g55f/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $RECEIVER_DIR failed, see $S/import/receiver-g55f/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate55: bringing up private gamescope for g55f legs"
+	gs_start 640 360 "$OUT/gamescope-g55f"
+
+	echo "run-gate55: g55f: reference-live (S=$G55F_START_FRAME N=$G55F_STEP_FRAMES quit=$G55F_QUIT_FRAME)"
+	REFERENCE_FIXTURE_DIR="$SHADER_FIXTURE_DIR"
+	REFERENCE_START_FRAME="$G55F_START_FRAME"
+	REFERENCE_STEP_FRAMES="$G55F_STEP_FRAMES"
+	REFERENCE_QUIT_FRAME="$G55F_QUIT_FRAME"
+	run_reference "$S/reference-live"
+
+	echo "run-gate55: g55f: live-shader (host + rendered live receiver, fresh cache, shot windows $(g55f_windows))"
+	g55f_leg live-shader rendered
+	echo "run-gate55: g55f: live-shader-warm (a new host + a new rendered receiver on live-shader's cache)"
+	g55f_leg live-shader-warm rendered -- \
+		RS_RECEIVER_CACHE_DIR="$S/live-shader/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	echo "run-gate55: g55f: live-shader-stall (RS_RECEIVER_STALL=$G55F_STALL_SPEC)"
+	g55f_leg live-shader-stall rendered -- RS_RECEIVER_STALL="$G55F_STALL_SPEC"
+	echo "run-gate55: g55f: sabotage-shader-stale-coalesce (stale-coalesce @$f1, RS_RECEIVER_STALL=$G55F_STALL_SPEC)"
+	g55f_leg sabotage-shader-stale-coalesce rendered GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$f1" -- \
+		RS_RECEIVER_STALL="$G55F_STALL_SPEC"
+
+	gs_teardown "$OUT/gamescope-g55f"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g55b) run_g55b ;;
 	g55c) run_g55c ;;
 	g55d) run_g55d ;;
 	g55e) run_g55e ;;
+	g55f) run_g55f ;;
 	esac
 done
 

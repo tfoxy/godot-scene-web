@@ -1722,8 +1722,15 @@ mise exec -- pnpm render-stream:gate55 -- \
   `textureHashNames`/`wireParamView`), `evaluatePolicyRespected` (with `codeBytesIn`),
   `evaluateReceiverTyped`, `residentShaderVersions`, `viewExpected` (a receiver view as a scene),
   `runGate55e`. It reuses g55d's log replay, store, state-dump and per-step evaluators.
+- `lib/gate55f-checks.ts`: the g55f checks (live legs on fixtures/gate55-shader, gate 1's live
+  timeline): `g55fWindows`/`g55fStallReport` (gate 1's G1d stall report, unmodified),
+  `g55fCheckpoints` (a settle shot against `reference-live`'s, `PH`-only benign when the wire's
+  own state at that frame equals the host's full recording), `checkShaderFetchesLatestOnly`,
+  `checkStaleCoalesce` (the expected mismatch set derived from `expected.json`'s per-step `fresh`
+  table unioned over `StallReport.steps_applied_during`), gate 2's live pin/retire/HTTP checks
+  generalized with `okShaderHashes`/`shaderTableHashes` (gate2c-checks.ts), `runGate55f`.
 - `test/self-test-gate55b.ts`, `test/self-test-gate55c.ts`, `test/self-test-gate55d.ts`,
-  `test/self-test-gate55e.ts`: below.
+  `test/self-test-gate55e.ts`, `test/self-test-gate55f.ts`: below.
 
 ## Gate 5.5 legs and evidence under `--out`
 
@@ -1763,6 +1770,12 @@ mise exec -- pnpm render-stream:gate55 -- \
 | `receiver-params-lib`     | g55e  | `shader-policy-params/receiver-lib/`   | the same with `RS_RECEIVER_SHADER_LIBRARY=<out>/shader-policy-params/library`, a copy of `reference-shader`'s oracle `shader-library/` |
 | `sabotage-shader-freeze`, `-omit-param`, `-perturb-shader` | g55e | `shader/sabotage-{freeze,omit-param,perturb-shader}/{capture,receiver}/` | 102-frame captures with `freeze-frame` @11, `omit-op material_set_param` @21, `perturb-shader` @21, each with its rendered receiver |
 | `sabotage-shader-receiver-ignore-material`, `-stale-param` | g55e | `shader/sabotage-receiver-{ignore-material,stale-param}/` | `RS_RECEIVER_SABOTAGE` on `shader/capture/` |
+| `import-fixture-g55f`, `import-receiver-g55f` | g55f | `shader-live/import/{fixture,receiver}-g55f/` | the mise editor's `--import` of `fixtures/gate55-shader` and `receiver/` (g55f imports both itself) |
+| `reference-live`           | g55f  | `shader-live/reference-live/`  | rendered, extension absent, gate 1's live timeline (`RS_FIXTURE_START_FRAME=300`, `_STEP_FRAMES=60`, `_QUIT_FRAME=851`): `shots/step-0..9.png` |
+| `live-shader`              | g55f  | `shader-live/live-shader/{host,receiver}/` | a live host (armed, both sinks, the store, `GRC_LIVE_LISTEN`) and a rendered live receiver, fresh cache |
+| `live-shader-warm`         | g55f  | `shader-live/live-shader-warm/{host,receiver}/` | a new host and receiver, `RS_RECEIVER_CACHE_DIR=live-shader/receiver/cache`, `RS_RECEIVER_CACHE_MODE=warm` |
+| `live-shader-stall`        | g55f  | `shader-live/live-shader-stall/{host,receiver}/` | `RS_RECEIVER_STALL=1:2000` (after step 1's shot) |
+| `sabotage-shader-stale-coalesce` | g55f | `shader-live/sabotage-shader-stale-coalesce/{host,receiver}/` | the same stall, host `GRC_SABOTAGE=stale-coalesce` from step 1's frame |
 
 ## Gate 5.5 criteria (g55b)
 
@@ -1943,6 +1956,29 @@ tables' ground truth per frame, with D4 applied to their view (`applyPolicyToLog
   `predictions[<leg>]`. Each sabotage's `leg-class-<leg>`: `pixel-mismatch` with regions exactly
   `predictions[<leg>]`.
 
+## Gate 5.5 criteria (g55f)
+
+Live legs on `fixtures/gate55-shader` with gate 1's live timeline (S=300, N=60, `LAST_STEP`=9,
+quit=851, identical to gate5-design.md G5f's); `reference-live` is the fixture at that same
+timeline, extension absent, so `PH`'s per-frame phase lines up with a live shot's actual frame.
+`live-tap-equals-received` and `live-resolves-to-recording` are gate 1's generic checks over every
+leg's connection. `pins-bounded`/`obsolete-retired`/`gets-advertised` replay the host's pin/retire/
+GET lines against the full recording's `okImageHashes(t) ∪ okShaderHashes(t)` (the fixture also
+serves TEX16/TEX16B and the engine's hue strip over the same mechanism), `http-gets-match-fetches`
+and `fetch-before-applied` are gate 2's. `shader-fetches-latest-only` requires
+`live-shader-stall`'s recovery transaction to equal the host's full recording at its frame
+(`statesEqual`, covering `phase` and the tint code hash in one proof) and every fetch tied to the
+recovery seq to name only a hash that state actually holds. `receiver-vs-reference` requires every
+leg's settle shot outside its stall window to equal `reference-live`'s exactly, a `PH`-only
+difference tolerated when the wire's own state at that frame equals the host's full recording
+there. `stale-coalesce` requires `sabotage-shader-stale-coalesce`'s recovery transaction to be
+labelled `stale_from` and unequal to the full recording, and its post-stall shot to mismatch
+exactly the regions `expected.json`'s per-step `fresh` table says `StallReport.
+steps_applied_during` touches (measured: `IN`, `Marker`, `PH`, `RM`, `TI` — memory
+`rs-g55f-stale-coalesce-region-set`). `warm-host-no-gets` requires zero GETs, the warm receiver's
+cache hits to equal `live-shader`'s fetch count, and its shots to equal `reference-live`'s too.
+`leg-class-*` requires the four legs' classes (`success`, `success`, `success`, `pixel-mismatch`).
+
 ## Gate 5.5 self-test
 
 ```bash
@@ -1952,6 +1988,7 @@ mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/sc
 python3 experiments/render-stream/fixtures/gate55-shader/make_expected.py --check
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55d.ts
 mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55e.ts
+mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-gate55f.ts
 ```
 
 `self-test-gate55b.ts` checks the rasterizer's blend modes on bytes typed in by hand: `add`, `sub`
@@ -2011,6 +2048,23 @@ fails on a `payload` entry, a GRP1 file in the store, code in a log, a blind con
 declared policy. `shader-receiver-typed` and `residentShaderVersions` pass and fail. Last, each
 receiver view's raster differs from the reference raster in exactly its predicted regions and
 steps, and the freeze prediction holds the marker at {1..9}.
+
+`self-test-gate55f.ts` (G5f, gate5-design.md's structural template, had none) drives
+`lib/gate55f-checks.ts`'s pure evaluators on fabricated evidence, never a real run: `g55fWindows`
+against the ten hand-computed `[from, to]` windows; `stepShots55f` (first shot per step wins,
+invalid entries skipped); `wireStateEqualsFullAtFrame` (equal states, differing states, no
+transaction at that frame, no frame given); `mismatchingRegionNames`. `checkShaderFetchesLatestOnly`
+passes when the recovery transaction equals a fabricated "newest" state and its own fetch names
+that state's hash, and fails on a stale recovery and on a fetch (at the recovery seq) naming a
+hash the newest state does not hold -- an unrelated earlier fetch (a fresh cache's other five
+shaders) must not trip it. `checkStaleCoalesce` passes when a checkpoint's mismatching regions
+equal a hand-built `fresh` table's union over `steps_applied_during`, and fails on a narrower
+region set, a benign mismatch, `state_equals_full: true` and a missing `stale_from`.
+`checkReceiverVsReferenceShader` passes on exact and benign (`PH`-only) checkpoints and fails on a
+real mismatch, while confirming the sabotage leg's own post-stall step and a window wholly inside
+the stall are both excluded. `checkWarmHostNoGetsShader` passes on zero GETs with matching
+cache-hit/fetch counts and fails on any GET, any receiver fetch, a cache-hit mismatch or a
+non-warm cache mode.
 
 # Gate 6
 
