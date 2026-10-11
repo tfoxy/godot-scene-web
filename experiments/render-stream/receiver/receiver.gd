@@ -45,7 +45,10 @@ extends Node
 ##                                ignore-nine-patch-axis (G5g: every add_nine_patch is drawn
 ##                                stretch/stretch), drop-mesh-surface (G5e: a mesh build never adds
 ##                                its surface 1) or stale-mesh (G5e: in-place payload changes of a
-##                                resident surface are ignored); all eleven exist only to fail checks
+##                                resident surface are ignored) or refuse-canvas-texture (every
+##                                draw naming a canvas texture is skipped and recorded as
+##                                canvas-texture-headless, the default headless capture's
+##                                picture); all twelve exist only to fail checks or compare
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash), and (G5e) every surface payload of an `ok` mesh
 ## an add_mesh names that is not resident with that hash, is made available: from memory (inline resource
@@ -112,7 +115,7 @@ const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -545,6 +548,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_ignore_nine_patch_axis = _sabotage == "ignore-nine-patch-axis"
 	_applier.sabotage_drop_mesh_surface = _sabotage == "drop-mesh-surface"
 	_applier.sabotage_stale_mesh = _sabotage == "stale-mesh"
+	_applier.sabotage_refuse_canvas_texture = _sabotage == "refuse-canvas-texture"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	return true
