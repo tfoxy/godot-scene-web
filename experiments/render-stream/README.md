@@ -89,6 +89,15 @@ classifies `pixel-mismatch` in exactly the regions the stall's swallowed steps t
 own runner and checker (`pnpm render-stream:gate55 -- --legs g55b,g55c,g55d,g55e,g55f`) are
 130/130.
 
+Gate 6 is in progress (see "Gate 6t result" onward). G6b (see "Gate 6b result") moved the capture,
+the receiver and every gate runner to [protocol/render-stream-6.md](protocol/render-stream-6.md).
+**Every gate, −1 through 6, now runs on render-stream/6.** The session declares the presentation
+size, font oversampling, snap settings and publication rate. `GRC_ROOT_SIZE=presentation:<W>x<H>`
+makes a headless host evaluate a `canvas_items` stretch at the presentation size. The receiver
+adopts the session's stretch. Root-viewport `CanvasLayer`s travel with their layer and sublayer and
+replay pixel-exact. Follow-viewport, parallax repeat, a changed global canvas transform, stacking
+ties and snap-to-pixel stay typed.
+
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
 
@@ -552,15 +561,15 @@ Environment, read once at SCENE initialisation:
 | `GRC_MODE`                       | `validate` (default; all checks, all evidence, never writes the vptr) or `arm`                                                                                                                                                                                                                                                                                                                            |
 | `GRC_EVIDENCE_DIR`               | absolute directory, created if missing. Unset → the same payloads go to stdout as `[grc] evidence <name> …` lines                                                                                                                                                                                                                                                                                         |
 | `GRC_DISARM_AFTER_FRAMES`        | integer; disarm after that many armed frame callbacks. Unset → stay armed until the shutdown callback                                                                                                                                                                                                                                                                                                     |
-| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2, render-stream/3 since G4e2, render-stream/4 since G5d, render-stream/5 since G55d). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
+| `GRC_STREAM_OUT`                 | absolute `.rs2` path of the full-encoding sink (render-stream/1 from G1b2, render-stream/2 since G2b2, render-stream/3 since G4e2, render-stream/4 since G5d, render-stream/5 since G55d, render-stream/6 since G6b). When this or `GRC_STREAM_PATCH_OUT` is set and the library armed, enable the canvas mirror, run the root query and publish. Unset → hooks behave as at gate −1                                                                                                                                    |
 | `GRC_STREAM_PATCH_OUT`           | G1b2: absolute `.rs2` path of the patch-encoding sink (seq 1 full, then patches on `seq-1`), fed from the same per-frame snapshot as the full sink                                                                                                                                                                                                                                                        |
 | `GRC_SABOTAGE`                   | test sabotage: `freeze-frame`, `omit-update`, `perturb-transform` (gate 0), `omit-op`, `patch-drop-item` (G1b2), `drop-message`, `ignore-credit`, `stale-coalesce` (live, need `GRC_LIVE_LISTEN`), G2b2's `stale-texture`, `wrong-hash` (needs a store) and `spurious-texture-update`, G4e2's `perturb-glyph` (the mirror records rect.x + 0.25 on every glyph command from the frame on), G5d's `perturb-vertex` and G55d's `perturb-shader` (the mirror records every non-builtin shader code set from the frame on with `COLOR.rgb` inverted before its last `}`; the engine and the hook log keep the true code). `drop-resource`, `unpin` (G2c2) and any other value refuse to publish (arming is unaffected)                   |
 | `GRC_SABOTAGE_OP`                | G1b2: the RenderingServer method `omit-op` drops from `GRC_SABOTAGE_FRAME` on (`free`, `canvas_item_set_visible`, …); required for `omit-op`, refused with any other kind                                                                                                                                                                                                                                 |
 | `GRC_SABOTAGE_FRAME`             | first sabotaged frame, an integer ≥ 1, default 21. Read only when `GRC_SABOTAGE` is set                                                                                                                                                                                                                                                                                                                   |
-| `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below). Anything else refuses to publish                                                                                                                                                                                                     |
+| `GRC_ROOT_SIZE`                  | gate 1 (G1a), read at arm with a stream: `observe` (default; declare only) or `enforce-min-size` (`Window.set_min_size(content_scale_size)` on the root, see below), and since G6b `presentation:<W>x<H>` (decimal, 1..16384 each; `Window.set_min_size(W, H)`: under `canvas_items` the headless host evaluates the stretch, font oversampling and StyleBoxFlat feather of a W×H window, declared as the /6 session's `presentation_size`, `font_oversampling` and `host_final_xform`; under stretch `disabled` a W×H other than the logical size refuses to publish, `root-size-invalid`, gate6-design.md D4). Anything else refuses to publish. Since G6b `host_size_status` compares the window with the presentation size (the logical size unless `presentation:`) |
 | `GRC_UNKNOWN_ITEM`               | 2026-10-10, read at arm with a stream: `strict` (default; also unset or empty: gate 0's sticky `pre-existing-object`) or `skip`, the opt-in diagnostic of [protocol/unknown-item-skip.md](protocol/unknown-item-skip.md): unknown canvas/item RIDs and every known item under one are withheld, the session declares `unknown_item_policy: "skip"` and every transaction carries `unknown_items`. Anything else refuses to publish|
 | `GRC_SHADER_POLICY`              | G55d (gate5_5-design.md D4), read at arm with a stream: `source` (default; also unset or empty: shader code travels as `render-stream-shader/1` payloads under the resource policy), `params` (every non-builtin shader entry is `withheld`: hash and size only, no code byte in the stream, the store or HTTP) or `exclude` (every non-builtin shader is `unsupported` / `shader-excluded`). CanvasItemMaterial shaders are engine content and travel under every policy. Declared in the session's `materials.shader_policy`. Anything else refuses to publish |
-| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/5 since G55d, subprotocol `render-stream.5`; /4 from G5d; /3 from G4e2; /2 from G2b2; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Any other host refuses (`non-loopback`) |
+| `GRC_LIVE_LISTEN`                | G1c2: `127.0.0.1:<port>` or `[::1]:<port>` (0 = ephemeral). Enables the mirror and root query like `GRC_STREAM_OUT` and serves the stream (render-stream/5 since G55d, subprotocol `render-stream.5`; /4 from G5d; /3 from G4e2; /2 from G2b2; out-of-band payloads over `GET /resources/sha256/<hash>` on the same listener since G2c2) over the library's own WebSocket server (one receiver at a time). Since G6b the stream is render-stream/6, subprotocol `render-stream.6`, and each connection's session declares `publication` from `GRC_PUBLISH_FPS`. Any other host refuses (`non-loopback`) |
 | `GRC_LIVE_TAP_DIR`               | G1c2: absolute directory for `stream-<n>.rs2` (every binary message formed for connection n, resource records included) and `live-<n>.jsonl` (the live log)                                                                                                                                                                                                                                               |
 | `GRC_LIVE_MAX_MESSAGE_BYTES`     | G1c2: default 16777216; the cap is the minimum of this and the receiver's `hello.inbound_buffer_bytes` (larger: `error` + close 1009)                                                                                                                                                                                                                                                                     |
 | `GRC_LIVE_HELLO_TIMEOUT_MS`      | G1c2: default 5000; no `hello` in time → close 1002                                                                                                                                                                                                                                                                                                                                                       |
@@ -5405,3 +5414,142 @@ Images, under `artifacts/render-stream/gate6/g6l-final/live/`:
   `frame-550.png` it differs in AN, CM, LB, MS, Marker, PB, RT, SC, SM and TR.
 - `live-stall/receiver/shots/seq-258.png`, the stall's recovery shot, equals `frame-550.png`.
 - `live-reconnect/receiver/shots/stream-2-seq-<n>.png` are connection 2's shots.
+
+## Gate 6b result (2026-10-11)
+
+G6b ([protocol/gate6-design.md](protocol/gate6-design.md) "G6b") passes. It moves the capture, the
+receiver and every gate runner to [protocol/render-stream-6.md](protocol/render-stream-6.md).
+`pnpm render-stream:gate6 -- --legs g6a,g6h,g6l,g6b` passes **92/92** (g6a 32, g6h 20, g6l 22, g6b
+18) in `artifacts/render-stream/gate6/g6b-m1-gate6-174100/`, on `main` at d0df9b8e (G6l) merged.
+The pre-merge run `gate6/g6b-r2-gate6-171316/` (`--legs g6a,g6h,g6b`) was 69/70 on its first
+attempt. `atlas-parity-half` failed it, see finding 1. After the fix it re-checked 70/70 on the same
+evidence.
+
+Every earlier gate was re-run on /6 after the merge. The directories are under
+`artifacts/render-stream/<gate>/g6b-m1-*` and are ignored, not committed:
+
+| Gate | Result |
+| --- | --- |
+| −1 | PASS, 29/29 |
+| 0 | 24/24 |
+| 1 | 66/66 |
+| 2 | 85/85 |
+| 3 | 56/56 |
+| 4 | 185/185 |
+| 5 | 116/116 |
+| 5.5 | 130/130 |
+
+The pre-merge runs (`g6b-r2-*`) also passed gate 0 (24/24), gate 1 (66/66), gate 2 (85/85) and gate 3
+(56/56).
+
+**What changed.**
+- **Capture.** The mirror (`rs_mirror.*`) keeps each canvas's `layer` and `sublayer`. Attaching a
+  canvas to the root viewport is supported and resets its stacking to (0,0). Removing it detaches
+  the canvas and keeps its items. The mirror derives `canvas-stacking-tie`, `snap-2d` and
+  `global-canvas-transform`, the last compared bitwise with the arm-time `host_final_xform`, and
+  it types `canvas-repeat` and `canvas-follow-viewport` as sticky entries. Calibrator 9's six hooks
+  now tap the mirror. Every snapshot is stamped V6.
+- **Arm.** `entry.cpp` and `rs_root_query.*` add `GRC_ROOT_SIZE=presentation:<W>x<H>`: one
+  `Window.set_min_size(W, H)` at arm. Under stretch `disabled` a size other than the logical one
+  is refused before anything opens (`root-size-invalid`). The new `host_size_status` compares the
+  window with the presentation size. The capture reads oversampling, the snap flags and the stretch
+  transform through method binds.
+- **Publication.** The session carries `publication`: every-frame/null on file sinks, and on a live
+  connection the `GRC_PUBLISH_FPS` target. The live listener speaks `render-stream.6`.
+- **Receiver.** It adopts a `canvas_items` session's stretch. It checks the window size against
+  `presentation_size` and its oversampling against `font_oversampling`, typing
+  `presentation-mismatch`, `oversampling-mismatch` and `stretch-mode` while still drawing. It
+  creates, attaches, stacks, transforms and modulates its own canvases. It writes
+  `render-stream-receiver-applied/6`. Two sabotages are new, `ignore-canvas-stacking` and
+  `ignore-presentation`.
+- **Runners and checkers.** Every runner and checker switched to /6, following memory
+  rs-g55d-rs5-switch-facts' checklist. g6a, g6h and g6l now classify `success` (sabotages
+  `pixel-mismatch`) and compare HU. The `refused` variant gains a `follow_viewport` layer. Group
+  `g6b` is `lib/gate6b-legs.sh` with `lib/gate6b-checks.ts`. `test/self-test-gate6b.ts` adds 27
+  assertions, so `self-test-gate6.ts` has 132.
+
+| Leg | Class | Pixels |
+| --- | --- | --- |
+| `capture-hd-half`, `-inline` (`presentation:960x540`) | `success` | — |
+| `capture-hd-half-at-logical` (the hazard's capture, `enforce-min-size`) | `success` | — |
+| `capture-snap` (`snap_2d_transforms_to_pixel=true`) | `unsupported`: `snap-2d` in each of 122 transactions | — |
+| `receiver-hd-half`, `-patch`, `-inline` (960×540) | `success` | every pixel of all 15 shots equals `reference-hd-half` (7 776 000 per leg) |
+| `receiver-hd-half-at-logical` (the hazard) | `unsupported`: `presentation-mismatch`, `oversampling-mismatch` | flat regions equal; text and antialiased regions differ |
+| `sabotage-receiver-ignore-presentation` | `unsupported`: `oversampling-mismatch` | every region of every cell and BG differs at all 15 shots |
+| `sabotage-receiver-ignore-canvas-stacking` (scene) | `pixel-mismatch` | HU at step 9 and frame 93 only, as predicted |
+| g6a's default and `animate` legs; g6h's native legs; g6l's honest legs | `success` | every pixel, HU included |
+| g6a `refused` | `unsupported`: `canvas-follow-viewport` replaces `extra-canvas` | every pixel outside RF |
+
+**The hazard, measured** (`presentation-hazard-measured`: differing pixel-shots over 15 shots, nine
+cells). These are the evidence for D1 and D2:
+
+- The flat regions are 0 each: AN, BG, CD, CM, MS, Marker, NP, SM, TL and TR.
+- The text-only regions differ: RT 110 511, LB 38 178 and HU 6 156.
+- The antialiased-only region differs: HB 3 780.
+- The mixed regions differ: SC 53 829, LE 29 910, BT 15 840 and PB 10 240.
+
+**Other checks.** `canvas-commands` holds on both sinks: 400 transactions of the scene's HUD and
+1 098 canvas-transactions of the nine HD layers equal the hook log's stacking. `canvas-stacking-parity`
+compares 240 canvas-steps with the oracles. `stylebox-aa-scale` holds for 768 triangle arrays over
+45 items at half and 768 at native, with no ulp used. `atlas-parity-half` holds for 48 drawn page
+cells. `receiver-typed-clean` holds for 13 receivers: g6a's 8, g6h's 2 and g6b's 3 half ones.
+
+**Costs.** The HD half capture's full sink is 99 209 334 B (122 transactions), the patch sink
+11 471 140 B and the inline capture 101 544 312 B, about native's. Receiver per-transaction cost was
+benchmarked on a headless file-mode replay of a real 400-transaction gate6-scene capture: main's
+receiver on main's /5 capture against this branch's receiver on its /6 capture, one warmup plus 5
+warm-cache repeats, `RS_RECEIVER_PERF_OUT` on. The medians per transaction over 401 records:
+
+| Receiver | decode | apply | decode + apply + fetch |
+| --- | --- | --- | --- |
+| main | 6 061.7 µs | 793.9 µs | 6 855.6 µs (6 782–6 970) |
+| this branch | 6 072.7 µs | 805.8 µs | 6 878.6 µs (6 785–7 084) |
+
+That is +23 µs (0.3 %), inside the run-to-run spread and far below the ~150 µs that tipped G5f's
+live checks (memory rs-g55d-rs5-switch-facts). Wall time was 4.31 s for both. Gate 5's live g5f
+and gate 6's g6l legs passed on /6.
+
+### Findings
+
+1. **The half oracle's logical-size atlas pages are shaping-only.** The first run failed
+   `atlas-parity-half` because the 12/14/16 px pages the half reference's oracle lists are on no
+   wire texture. The TextServer rasterizes glyphs at the logical size to measure text, but nothing
+   draws them, so no texture is created. The check now compares the oversampled pages (native
+   sizes × 0.5) both ways, and requires that no logical-size page appears on the wire.
+2. **`ignore-canvas-stacking` differs only at a negative layer.** An unstacked canvas ties the root
+   canvas at (0,0). The renderer orders the tie by RID, and the receiver's canvas is the newer one,
+   so it draws above, exactly as layer 1 does. Q6h's {0..7, 10} is amended to {9, frame 93}.
+3. **The hazard types `oversampling-mismatch` too**, and `ignore-presentation` must skip the
+   visible-rect check to present anything at all (gate6-design.md "As built (G6b)" 2 and 3).
+4. **The stacking lands in the attach frame** (Q1e's prediction held). No transaction of any capture
+   carries a tie.
+5. Only gate 0's receiver-typecheck caught `float(<Variant>)` in `receiver.gd`. The headless
+   self-tests never load `receiver.gd` (memory rs-g6b-rs6-switch-facts).
+
+### Deviations
+
+- `capture-hd-half-inline` is an added leg, because `receiver-hd-half-inline` needs an inline
+  capture. `capture-hd-half-at-logical` is its own capture, configured like `capture-hd-native`.
+- g6b reuses g6a's `scene/capture` and g6h's `reference-half`, so `run-gate6.sh` refuses g6b without
+  g6a and g6h and runs it last.
+- `canvas-commands` joins canvases to RIDs by their first stacking line. No hook-log line was added
+  for attach or create.
+- The session-level order is degenerate-host-size, snap-2d, the sticky entries, then the
+  per-snapshot global-canvas-transform and canvas-stacking-tie (As built 7).
+
+### What G6b does not prove
+
+- Snap replay, follow-viewport and parallax repeat stay typed, never replayed (gate 8). The same
+  holds for `global-canvas-transform`, which no fixture changes at runtime.
+- Stretch modes other than `canvas_items` with aspect `keep`. `viewport` is typed `stretch-mode` and
+  no leg runs it.
+- More than one presentation per capture session (gate 7), live rates and two receivers (G6c), and
+  stability (G6s).
+
+Images, under `artifacts/render-stream/gate6/g6b-m1-gate6-174100/`:
+
+- `hd/receiver-half/shots/seq-28.png` equals `hd/reference-half/shots/step-2.png`.
+- `hd/receiver-half-at-logical/shots/seq-28.png` is the hazard: full-size glyph atlases drawn at
+  half, and the narrower feather.
+- `hd/sabotage-receiver-ignore-presentation/shots/seq-28.png` shows the top-left quarter at scale 1.
+- `scene/sabotage-receiver-ignore-canvas-stacking/shots/seq-98.png` is step 9, with the HUD over BG.

@@ -4,7 +4,9 @@
 // add_clip_ignore since gate 5 G5d -- every snapshot is stamped ProtocolVersion::V4 --
 // render-stream/4's mesh table and add_mesh since G5e; render-stream/5 since G55d: every
 // snapshot is stamped V5 and carries the shader and material tables, the item material fields and
-// the canvas modulate).
+// the canvas modulate; render-stream/6 since G6b: every snapshot is stamped V6, canvases carry
+// `layer`/`sublayer`, extra canvases attached to the root viewport are supported, and the five
+// /6 session-level reasons are emitted).
 //
 // A tap on the RenderingServer hooks that keeps the canvas state a receiver
 // needs to rebuild the frame: canvases, canvas items, their parenting and
@@ -413,6 +415,36 @@ class Mirror {
   void canvas_light_attach_to_canvas(std::uint64_t light, std::uint64_t canvas,
                                      std::uint64_t frame);
 
+  // --- canvases on render-stream/6 (G6b; gate6-design.md D3, Q3b), calibrator 9 ---------------
+  // viewport_attach_canvas (above) sets `attached` and resets the stacking to (0,0)
+  // (rv.cpp:1265-1266); a canvas attached to the root viewport is supported (no extra-canvas).
+  // viewport_remove_canvas: `attached = false`; the canvas and its items stay in the table.
+  void viewport_remove_canvas(std::uint64_t viewport, std::uint64_t canvas, std::uint64_t frame);
+  // viewport_set_canvas_stacking: the canvas's `layer` and `sublayer`.
+  void viewport_set_canvas_stacking(std::uint64_t viewport, std::uint64_t canvas,
+                                    std::int32_t layer, std::int32_t sublayer,
+                                    std::uint64_t frame);
+  // viewport_set_global_canvas_transform: the root's current global canvas transform. While it
+  // differs bitwise from the arm-time reference (set_global_canvas_reference) every snapshot
+  // carries {op: viewport_set_global_canvas_transform, item: null, reason:
+  // global-canvas-transform}.
+  void viewport_set_global_canvas_transform(std::uint64_t viewport, const rs2::Xform &xform,
+                                            std::uint64_t frame);
+  // canvas_set_item_mirroring / canvas_set_item_repeat: a non-zero vector adds the sticky
+  // session-level canvas-repeat entry named after the op.
+  void canvas_set_item_mirroring(std::uint64_t canvas, std::uint64_t item, float x, float y,
+                                 std::uint64_t frame);
+  void canvas_set_item_repeat(std::uint64_t item, float x, float y, std::int32_t times,
+                              std::uint64_t frame);
+  // canvas_set_parent: a non-null parent adds the sticky session-level canvas-follow-viewport
+  // entry; RID() changes nothing.
+  void canvas_set_parent(std::uint64_t canvas, std::uint64_t parent, std::uint64_t frame);
+  // Arm-time declarations (Q3a): the stretch x global transform the global canvas transform is
+  // compared with (the session's host_final_xform), and the root's snap_2d flags (D17; either
+  // set -> every snapshot carries the session-level snap-2d entry). Both survive until reset().
+  void set_global_canvas_reference(const rs2::Xform &xform);
+  void set_snap_2d(bool transforms, bool vertices);
+
   // canvas_item_set_default_texture_filter / _repeat: the item's own fields
   // (RenderingServer enums; an out-of-range value is ignored, as the server's
   // ERR_FAIL_INDEX does). They change the item entry, not content_version.
@@ -694,6 +726,12 @@ class Mirror {
   std::uint64_t perturb_glyph_frame_ = 0;
   std::uint64_t perturb_vertex_frame_ = 0;
   bool degenerate_host_size_ = false;
+  // G6b (Q3a, Q3b): the arm-time global canvas transform reference and the latest value the root
+  // viewport set; the root's snap_2d flags.
+  rs2::Xform global_reference_ = rs2::kIdentityXform;
+  rs2::Xform global_current_ = rs2::kIdentityXform;
+  bool snap_transforms_ = false;
+  bool snap_vertices_ = false;
   bool canvas_texture_headless_ = false;
   // D11 (G5d): a canvas_texture_create returned RID() this session (sticky until reset()). On a
   // headless host it makes RID() on the /4 geometry ops ambiguous. A create with a non-null RID

@@ -48,6 +48,10 @@ void Mirror::reset() {
   perturb_glyph_frame_ = 0;
   perturb_vertex_frame_ = 0;
   degenerate_host_size_ = false;
+  global_reference_ = kIdentityXform;
+  global_current_ = kIdentityXform;
+  snap_transforms_ = false;
+  snap_vertices_ = false;
   canvas_texture_headless_ = false;
   canvas_texture_created_ = false;
   unknown_policy_ = UnknownItemPolicy::Strict;
@@ -585,9 +589,121 @@ void Mirror::viewport_attach_canvas(std::uint64_t viewport, std::uint64_t canvas
   }
   Canvas &target = canvases_.at(it->second);
   target.state.attached = true;
-  if (target.state.id != kRootCanvasId) {
-    session_unsupported(kOp, UnsupportedReason::ExtraCanvas);
+  // render-stream-6.md "Canvas": viewport_attach_canvas resets the stacking to (0,0)
+  // (rv.cpp:1265-1266). Since G6b a canvas attached to the root viewport is supported: no
+  // extra-canvas entry (gate6-design.md D3, Q3b).
+  target.state.layer = 0;
+  target.state.sublayer = 0;
+}
+
+void Mirror::viewport_remove_canvas(std::uint64_t viewport, std::uint64_t canvas,
+                                    std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_remove_canvas";
+  if (dropped(kOp, frame)) {
+    return;
   }
+  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
+    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+    return;
+  }
+  const auto it = canvas_by_rid_.find(canvas);
+  if (it == canvas_by_rid_.end()) {
+    unknown(canvas, kOp, frame);
+    return;
+  }
+  // Q3b: its items stay in the table (undrawn), as gate 0 keeps a detached canvas.
+  canvases_.at(it->second).state.attached = false;
+}
+
+void Mirror::viewport_set_canvas_stacking(std::uint64_t viewport, std::uint64_t canvas,
+                                          std::int32_t layer, std::int32_t sublayer,
+                                          std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_canvas_stacking";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
+    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+    return;
+  }
+  const auto it = canvas_by_rid_.find(canvas);
+  if (it == canvas_by_rid_.end()) {
+    unknown(canvas, kOp, frame);
+    return;
+  }
+  Canvas &target = canvases_.at(it->second);
+  target.state.layer = layer;
+  target.state.sublayer = sublayer;
+}
+
+void Mirror::viewport_set_global_canvas_transform(std::uint64_t viewport, const Xform &xform,
+                                                  std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_global_canvas_transform";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
+    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+    return;
+  }
+  global_current_ = xform;
+}
+
+void Mirror::canvas_set_item_mirroring(std::uint64_t canvas, std::uint64_t item, float x,
+                                       float y, std::uint64_t frame) {
+  (void)canvas;
+  (void)item;
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_set_item_mirroring";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (x != 0.0f || y != 0.0f) {
+    session_unsupported(kOp, UnsupportedReason::CanvasRepeat);  // sticky (Q3b)
+  }
+}
+
+void Mirror::canvas_set_item_repeat(std::uint64_t item, float x, float y, std::int32_t times,
+                                    std::uint64_t frame) {
+  (void)item;
+  (void)times;
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_set_item_repeat";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (x != 0.0f || y != 0.0f) {
+    session_unsupported(kOp, UnsupportedReason::CanvasRepeat);  // sticky (Q3b)
+  }
+}
+
+void Mirror::canvas_set_parent(std::uint64_t canvas, std::uint64_t parent, std::uint64_t frame) {
+  (void)canvas;
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_set_parent";
+  if (dropped(kOp, frame)) {
+    return;
+  }
+  if (parent != 0) {
+    session_unsupported(kOp, UnsupportedReason::CanvasFollowViewport);  // sticky (Q3b)
+  }
+}
+
+void Mirror::set_global_canvas_reference(const Xform &xform) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  global_reference_ = xform;
+  global_current_ = xform;
+}
+
+void Mirror::set_snap_2d(bool transforms, bool vertices) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++epoch_;
+  snap_transforms_ = transforms;
+  snap_vertices_ = vertices;
 }
 
 void Mirror::viewport_set_canvas_transform(std::uint64_t viewport, std::uint64_t canvas,
@@ -2719,7 +2835,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   // make_patch carry the shader and material tables, the item material fields, the canvas
   // modulate and param_f64 (memory rs-g5d-rs4-switch-facts: Session V5 alone is not enough), on
   // top of /4's mesh table and cmd_i32 / mesh_f32 blocks.
-  out.version = ProtocolVersion::V5;
+  // G6b (gate6-design.md D1): render-stream/6 -- canvases carry layer/sublayer and the /6
+  // session-level reasons; every table above is /5's.
+  out.version = ProtocolVersion::V6;
   out.seq = seq;
   out.frame = frame;
   out.failures = failures_;
@@ -2754,8 +2872,51 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     ref.reason = UnsupportedReason::DegenerateHostSize;
     out.unsupported.push_back(std::move(ref));
   }
+  // G6b (render-stream-6.md "Session-level unsupported reasons"): snap-2d is an arm-time
+  // constant, so it is observed at session start, right after degenerate-host-size. One entry,
+  // named after the transforms setter when that flag is set, else the vertices setter.
+  if (snap_transforms_ || snap_vertices_) {
+    UnsupportedRef ref;
+    ref.op = snap_transforms_ ? "viewport_set_snap_2d_transforms_to_pixel"
+                              : "viewport_set_snap_2d_vertices_to_pixel";
+    ref.has_item = false;
+    ref.reason = UnsupportedReason::Snap2d;
+    out.unsupported.push_back(std::move(ref));
+  }
   out.unsupported.insert(out.unsupported.end(), session_unsupported_.begin(),
                          session_unsupported_.end());
+  // The two per-snapshot conditions follow the sticky entries: the global canvas transform
+  // while it differs bitwise from the arm-time reference, then a stacking tie between two
+  // attached canvases (the renderer would order them by RID, rv.h:125-130).
+  if (std::memcmp(global_current_.data(), global_reference_.data(),
+                  sizeof(float) * global_current_.size()) != 0) {
+    UnsupportedRef ref;
+    ref.op = "viewport_set_global_canvas_transform";
+    ref.has_item = false;
+    ref.reason = UnsupportedReason::GlobalCanvasTransform;
+    out.unsupported.push_back(std::move(ref));
+  }
+  {
+    std::set<std::pair<std::int32_t, std::int32_t>> keys;
+    bool tie = false;
+    for (const auto &entry : canvases_) {
+      const CanvasState &state = entry.second.state;
+      if (!state.attached) {
+        continue;
+      }
+      if (!keys.insert({state.layer, state.sublayer}).second) {
+        tie = true;
+        break;
+      }
+    }
+    if (tie) {
+      UnsupportedRef ref;
+      ref.op = "viewport_set_canvas_stacking";
+      ref.has_item = false;
+      ref.reason = UnsupportedReason::CanvasStackingTie;
+      out.unsupported.push_back(std::move(ref));
+    }
+  }
 
   // A tombstone leaves the table at the first snapshot in which nothing names it
   // (gate2-design.md Q3).

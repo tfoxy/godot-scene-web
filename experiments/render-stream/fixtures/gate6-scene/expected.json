@@ -3372,7 +3372,7 @@
   ],
   "variants": {
     "refused": {
-      "creation_order": ["Scene","BG","SC","SC_HScroll","SC_VScroll","SC_Focus","Rows","Row0","R0","L0","Row1","R1","L1","Row2","R2","L2","Row3","R3","L3","TL","Row4","R4","L4","Row5","R5","L5","Row6","R6","L6","Row7","R7","L7","RT","RT_VScroll","TR","NP","Marker","ZH","PB","BT","LE","CD","MS","SM","CMU","CMO","HB","HB0","HB1","HB2","AN","LB","RFParticles","RFLight","RFTime","RFLcd","HUDPanel","HUDLabel"],
+      "creation_order": ["Scene","BG","SC","SC_HScroll","SC_VScroll","SC_Focus","Rows","Row0","R0","L0","Row1","R1","L1","Row2","R2","L2","Row3","R3","L3","TL","Row4","R4","L4","Row5","R5","L5","Row6","R6","L6","Row7","R7","L7","RT","RT_VScroll","TR","NP","Marker","ZH","PB","BT","LE","CD","MS","SM","CMU","CMO","HB","HB0","HB1","HB2","AN","LB","RFParticles","RFLight","RFTime","RFLcd","RFFollow","HUDPanel","HUDLabel"],
       "regions": {
         "SC": [8,8,176,120],
         "RT": [184,8,384,120],
@@ -3444,10 +3444,10 @@
         {"step":10,"applied_frame":101,"settle_frame":108,"marker_rgba8":[51,153,51,255],"canvas_transform":[1,0,0,1,8,4],"fresh":{"SC":true,"RT":true,"TR":true,"NP":true,"Marker":true,"HU":true,"PB":true,"BT":true,"LE":true,"CD":true,"MS":true,"SM":true,"CM":true,"HB":true,"AN":true,"LB":true,"TL":true,"RF":true},"oracle":{"oversampling":1.0,"v_scroll":76,"content_position":[0.0,-76.0],"hud":{"layer":1,"visible":true},"pb_value":36.08,"sm":{"phase":3,"tint":[1.0,0.0,1.0,1.0],"shader_sha256":"fb86853b97f37fde5cf2547f6d106f96691b4fe65527463759a298bbfacf63bd"},"cm_blend_mode":2,"rich_text":{"line_offsets":[0.0,23.0,46.0,69.0,92.0,115.0,138.0,161.0,184.0],"content_height":207,"v_scroll":95.0}}},
         {"step":11,"applied_frame":111,"settle_frame":118,"marker_rgba8":[255,51,255,255],"canvas_transform":[1,0,0,1,8,4],"fresh":{"SC":false,"RT":false,"TR":false,"NP":false,"Marker":true,"HU":false,"PB":true,"BT":false,"LE":false,"CD":false,"MS":true,"SM":true,"CM":false,"HB":false,"AN":true,"LB":false,"TL":false,"RF":false},"oracle":{"oversampling":1.0,"v_scroll":76,"content_position":[0.0,-76.0],"hud":{"layer":1,"visible":true},"pb_value":40.0,"sm":{"phase":0,"tint":[1.0,0.0,1.0,1.0],"shader_sha256":"fb86853b97f37fde5cf2547f6d106f96691b4fe65527463759a298bbfacf63bd"},"cm_blend_mode":2,"rich_text":{"line_offsets":[0.0,23.0,46.0,69.0,92.0,115.0,138.0,161.0,184.0],"content_height":207,"v_scroll":95.0}}}
       ],
-      "unsupported": [["canvas_item_add_lcd_texture_rect_region","unsupported-op"],["canvas_item_add_multimesh","unsupported-op"],["canvas_item_set_material","unsupported-material"],["canvas_light_attach_to_canvas","canvas-light"],["viewport_attach_canvas","extra-canvas"]]
+      "unsupported": [["canvas_item_add_lcd_texture_rect_region","unsupported-op"],["canvas_item_add_multimesh","unsupported-op"],["canvas_item_set_material","unsupported-material"],["canvas_light_attach_to_canvas","canvas-light"],["canvas_set_parent","canvas-follow-viewport"]]
     }
   },
-  "unsupported": [["viewport_attach_canvas","extra-canvas"]],
+  "unsupported": [],
   "predictions": {
     "sabotage-freeze": {
       "frame": 11,
@@ -3459,13 +3459,13 @@
         "step-5": ["AN","CM","LB","MS","Marker","PB","RT","SC","SM","TR"],
         "step-6": ["AN","BT","CD","CM","LB","MS","Marker","PB","RT","SC","SM","TR"],
         "step-7": ["AN","BT","CD","CM","HB","LB","LE","MS","Marker","PB","RT","SC","SM","TR"],
-        "step-8": ["AN","BT","CD","CM","HB","LB","LE","MS","Marker","PB","RT","SC","SM","TR"],
-        "step-9": ["BT","CD","CM","HB","LB","LE","MS","Marker","PB","RT","SC","SM","TR"],
-        "step-10": ["AN","BG","BT","CD","CM","HB","LB","LE","MS","Marker","NP","PB","RT","SC","SM","TL","TR"],
-        "step-11": ["AN","BG","BT","CD","CM","HB","LB","LE","MS","Marker","NP","PB","RT","SC","SM","TL","TR"],
+        "step-8": ["AN","BT","CD","CM","HB","HU","LB","LE","MS","Marker","PB","RT","SC","SM","TR"],
+        "step-9": ["BT","CD","CM","HB","HU","LB","LE","MS","Marker","PB","RT","SC","SM","TR"],
+        "step-10": ["AN","BG","BT","CD","CM","HB","HU","LB","LE","MS","Marker","NP","PB","RT","SC","SM","TL","TR"],
+        "step-11": ["AN","BG","BT","CD","CM","HB","HU","LB","LE","MS","Marker","NP","PB","RT","SC","SM","TL","TR"],
         "frame-13": ["AN","MS","Marker","PB","SC","SM"],
         "frame-53": ["AN","CM","LB","MS","Marker","PB","RT","SC","SM","TR"],
-        "frame-93": ["AN","BT","CD","CM","HB","LB","LE","MS","Marker","PB","RT","SC","SM","TR"]
+        "frame-93": ["AN","BT","CD","CM","HB","HU","LB","LE","MS","Marker","PB","RT","SC","SM","TR"]
       }
     },
     "sabotage-omit-transform": {
@@ -3565,6 +3565,25 @@
         "frame-13": [],
         "frame-53": ["TR"],
         "frame-93": []
+      }
+    },
+    "sabotage-receiver-ignore-canvas-stacking": {
+      "shots": {
+        "step-0": [],
+        "step-1": [],
+        "step-2": [],
+        "step-3": [],
+        "step-4": [],
+        "step-5": [],
+        "step-6": [],
+        "step-7": [],
+        "step-8": [],
+        "step-9": ["HU"],
+        "step-10": [],
+        "step-11": [],
+        "frame-13": [],
+        "frame-53": [],
+        "frame-93": ["HU"]
       }
     }
   }

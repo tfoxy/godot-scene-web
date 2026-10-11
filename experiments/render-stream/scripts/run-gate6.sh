@@ -4,13 +4,13 @@
 #
 #   bash run-gate6.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g6a,g6h,g6l]
+#     [--legs g6a,g6h,g6l,g6b]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
 # artifacts/render-stream/gate6/<UTC>/ and must not already hold files. --legs selects leg groups
-# (comma-separated); the default is every group whose increment has landed: g6a (G6a, on
-# render-stream/5): the fixture's and the receiver's import; under <out>/scene/ a 400-frame
+# (comma-separated); the default is every group whose increment has landed. Every capture and
+# receiver speaks render-stream/6 since G6b. g6a (G6a): the fixture's and the receiver's import; under <out>/scene/ a 400-frame
 # headless capture with both sinks and the store (capture-scene), an all-inline capture
 # (capture-scene-inline), its rendered reference and a same-build repeat with the scene oracle on
 # (reference-scene, -repeat), an extension-armed reference with the oracle off (-armed), and
@@ -24,19 +24,25 @@
 # g6h (G6h, lib/gate6h-legs.sh): fixtures/gate6-hd (1920x1080, canvas_items) under <out>/hd/: its
 # native capture, references at 1920x1080 (repeat, armed) and 960x540 (repeat), and 1920x1080
 # receivers on both sinks.
-# g6l (G6l, on render-stream/5): under <out>/live/ the `animate` variant on the live timeline
+# g6l (G6l): under <out>/live/ the `animate` variant on the live timeline
 # (S=300, N=60, quit 1080, `steps` time): live hosts with rendered live receivers shooting 12
 # settle and 40 motion windows -- live-scene (fresh cache), live-scene-warm (on live-scene's
 # cache), live-stall (RS_RECEIVER_STALL=2:2000), live-reconnect (RS_RECEIVER_RECONNECT=5, memory
 # kept) and sabotage-live-stale-coalesce (the stall, stale-coalesce @420) -- then
 # reference-live-frames (the reference shooting every host frame a receiver shot, and every
 # stale_from frame) and reference-file (the animate reference on the file timeline).
+# g6b (G6b, lib/gate6b-legs.sh; needs g6a and g6h in the same run): the
+# HD fixture captured at presentation:960x540 (both sinks, and inline) with 960x540 receivers on
+# each, the presentation hazard (an enforce-min-size capture presented at 960x540), a snap-to-pixel
+# capture of a scratch copy of gate6-scene, and the receiver sabotages ignore-presentation (HD
+# half) and ignore-canvas-stacking (scene).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
 # and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_* variable and passes only
 # what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size
-# (gate6-design.md D4: stretch `disabled`).
+# (gate6-design.md D4: stretch `disabled`; for gate6-hd the logical 1920x1080 window) except g6b's
+# half captures, GRC_ROOT_SIZE=presentation:960x540 (D2).
 
 set -euo pipefail
 
@@ -55,7 +61,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g6a g6h g6l)
+LANDED_GROUPS=(g6a g6h g6l g6b)
 KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p)
 
 EXTENSION=""
@@ -158,6 +164,21 @@ else
 	done
 fi
 
+# g6b replays g6a's scene capture and compares with g6h's half reference.
+case " ${GROUPS_RUN[*]} " in
+*" g6b "*)
+	for needed in g6a g6h; do
+		case " ${GROUPS_RUN[*]} " in
+		*" $needed "*) ;;
+		*)
+			echo "run-gate6: leg group g6b needs g6a and g6h in the same run (--legs g6a,g6h,g6b)" >&2
+			exit 2
+			;;
+		esac
+	done
+	;;
+esac
+
 ACTUAL_BINARY_SHA256="$(sha256sum "$BINARY" | awk '{print $1}')"
 if [ "$ACTUAL_BINARY_SHA256" != "$EXPECTED_BINARY_SHA256" ]; then
 	echo "run-gate6: WARNING: $BINARY sha256 is $ACTUAL_BINARY_SHA256, expected $EXPECTED_BINARY_SHA256 (continuing: --binary may intentionally point at a different build)" >&2
@@ -208,7 +229,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The capture writes both sinks under gate 2's .rs2 names whatever wire version main speaks
-# (render-stream/5 until G6b), and its payload store <capture>/store.
+# (render-stream/6 since G6b), and its payload store <capture>/store.
 RECORDING_NAME=recording.rs2
 PATCH_RECORDING_NAME=recording-patch.rs2
 CAPTURE_WITH_PATCH=1
@@ -380,6 +401,8 @@ run_g6a() {
 
 # shellcheck source=lib/gate6h-legs.sh
 source "$SCRIPT_DIR/lib/gate6h-legs.sh"
+# shellcheck source=lib/gate6b-legs.sh
+source "$SCRIPT_DIR/lib/gate6b-legs.sh"
 
 # ---------------------------------------------------------------------------------------------
 # G6l (gate6-design.md "G6l", Q7c): live motion, the 2-s stall, reconnect and the warm cache on
@@ -592,11 +615,17 @@ run_g6l() {
 	GS_RUN_DIR=""
 }
 
-for group in "${GROUPS_RUN[@]}"; do
+# g6b runs after g6a and g6h whatever order --legs names them in.
+for group in g6a g6h g6l g6b; do
+	case " ${GROUPS_RUN[*]} " in
+	*" $group "*) ;;
+	*) continue ;;
+	esac
 	case "$group" in
 	g6a) run_g6a ;;
 	g6h) run_g6h ;;
 	g6l) run_g6l ;;
+	g6b) run_g6b ;;
 	esac
 done
 

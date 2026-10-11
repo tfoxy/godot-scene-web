@@ -2,8 +2,9 @@
 // render-stream-5.md): every transaction's wire form (a patch's partial lists, with
 // `shaders`/`materials`/`removed_*` and the `param_f64` block size) beside its resolved state
 // (the shader and material tables, items with `material`/`use_parent_material`/`instance_params`,
-// canvases with `modulate`). Always decoded at version 5 explicitly, whatever render-stream-2.ts's
-// default is: gate 0's RecordingSummary carries neither table.
+// canvases with `modulate`). Always decoded at an explicit version -- 6 since G6b (the capture's
+// wire; its tables are /5's, canvases gain `layer`/`sublayer`), 5 before -- whatever
+// render-stream-2.ts's default is: gate 0's RecordingSummary carries neither table.
 //
 // Pure over bytes apart from loadWire5's one read; nothing launches a process.
 
@@ -64,8 +65,9 @@ export function wire5FromBytes(
     return out;
   }
   try {
-    const decoded = decodeRecording(data, 5);
-    const resolved = resolveRecording(data, 5);
+    // render-stream/6 since G6b (/5 from G55d): gate 5.5's tables are /5's, unchanged at /6.
+    const decoded = decodeRecording(data, 6);
+    const resolved = resolveRecording(data, 6);
     let k = 0;
     const pending: Wire5Resource[] = [];
     for (const record of decoded.records) {

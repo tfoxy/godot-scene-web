@@ -1215,6 +1215,70 @@ antialiased regions differ, each non-zero, with counts reported, the evidence fo
 **Pass criteria**: gates −1 to 5.5 green on /6; `--legs g6a,g6h,g6b` green (and `g6l` if it has
 landed); README "Gate 6b result".
 
+**As built (G6b, 2026-10-11).** The capture, the receiver and every gate runner speak
+render-stream/6. `--legs g6a,g6h,g6l,g6b` passes 92/92 (g6a 32, g6h 20, g6l 22, g6b 18) after
+merging G6l, and gates −1 to 5.5 are green on /6 (README "Gate 6b result"). The default scene and the
+HD fixture classify `success`: the HUD layers travel with their stacking, and every receiver
+comparison covers HU. What Q3 to Q7 left open, or what the runs settled:
+
+1. **The stacking lands in the attach frame** (Q1e's prediction held). Every layer is first
+   published on its own key, never at (0,0). No transaction of any capture carries a
+   `canvas-stacking-tie`. A layer's sublayer is its CanvasLayer node's index, the
+   `get_index()` that `update_draw_order` passes.
+2. **The hazard types two reasons.** At window 960×540 the receiver's oversampling is 0.5, and an
+   enforce-min-size host declares 1. So `receiver-hd-half-at-logical` is typed
+   `oversampling-mismatch` as well as `presentation-mismatch` (Q7b named only the second). Against
+   `reference-hd-half` every flat region (AN, BG, CD, CM, MS, Marker, NP, SM, TL, TR) is equal over
+   all 15 shots. The text-only regions differ (RT 110 511, LB 38 178, HU 6 156 pixel-shots,
+   atlases rasterized at oversampling 1). So does the antialiased-only region (HB 3 780: the
+   feather at `aa_size`, not `aa_size / 0.5`), and so do the mixed ones (SC, LE, BT, PB). This is
+   the evidence for D1 and D2.
+3. **`ignore-presentation` also skips the visible-rect check.** Otherwise the logical-size check
+   (3) would end the replay as `viewport-mismatch`, a replay failure with no picture, which is not
+   Q6h's "presents the top-left quarter". With the check skipped, every region of every cell and BG
+   differs at all 15 shots. The window equals the presentation, so the leg is typed only
+   `oversampling-mismatch` (its own 1 against 0.5).
+4. **`ignore-canvas-stacking` differs only at a negative layer.** Q6h said {0..7, 10}. But the
+   renderer breaks the (0,0) tie by canvas RID (`rv.h:125-130`), and the receiver's
+   `canvas_create` comes after the viewport's World2D canvas. So an unstacked HUD still draws over
+   the root canvas, as layer 1 does. HU differs exactly while the HUD shows at layer −1: step 9
+   and frame 93. `make_expected.py` predicts that set, and it matched.
+5. **The half oracle's logical-size atlas pages are shaping-only.** At half, `font_get_size_cache_
+   info` lists 12/14/16 px pages next to the drawn 6/7/8 px ones. The TextServer rasterizes glyphs
+   at the logical size to measure them, but nothing draws them, so no texture is ever created
+   (memory rs-g6h-hd-facts counted 8 pages at half). `atlas-parity-half` compares the oversampled
+   pages (the native oracle's sizes × 0.5) with the wire both ways: 48 page cells on both sinks. It
+   requires that no logical-size page is on the wire.
+6. **StyleBoxFlat at half is exact.** 768 triangle arrays over 45 items per presentation equal
+   gate 5g's port at `aa_size / 0.5` (half) and `aa_size` (native). None needed the 2-ulp
+   allowance.
+7. **Session-level order.** Q4 says "ordered by first observation". The mirror emits
+   `degenerate-host-size`, then `snap-2d`, then the sticky entries in first-observed order, then
+   the per-snapshot `global-canvas-transform` and `canvas-stacking-tie`. `snap-2d` is one entry
+   per transaction. It names the transforms setter when that flag is set, else the vertices
+   setter. `global-canvas-transform` compares bitwise with the arm-time `host_final_xform`.
+8. **`root-size-invalid` is decided before any sink opens**, by one read-only root query, under
+   `presentation:` only. `host_size_status` compares the window with the presentation size. A
+   `presentation:` status other than `match` is the sticky `root-size-enforce-failed`, as with
+   `enforce-min-size`.
+9. **The `refused` variant drops `extra-canvas` and gains `canvas-follow-viewport`.** Its new
+   `follow_viewport` CanvasLayer (layer 2) holds `RFFollow`, a 24×24 ColorRect at (592,308). Both
+   its followed and unfollowed positions, before and after step 10's (8, 4) shift, stay inside RF.
+   Its reasons are exactly `canvas-light`, `canvas-follow-viewport`, the multimesh and LCD
+   `unsupported-op` commands and `unsupported-material`.
+10. **Legs beyond Q7b's list.** `receiver-hd-half-inline` needs an inline capture, so
+    `capture-hd-half-inline` was added. `capture-hd-half-at-logical` is its own capture, although
+    its configuration equals `capture-hd-native`'s. g6b reuses g6a's `scene/capture` and g6h's
+    `reference-half`, so the runner refuses g6b without them. `canvas-commands` joins each wire
+    canvas to its RID by its first stacking line, because the hook log has no create or attach
+    lines.
+11. **g6l on /6.** Every live leg classifies `success` (the sabotage `pixel-mismatch`) and compares
+    HU. HU joined the step-only regions of `live-steps`. All 244 live shots matched.
+12. **Receiver cost.** One `_apply_canvas` per non-root canvas per transaction, each call only on a
+    change. In a headless file replay of a 400-transaction gate6-scene capture (warmup + 5 warm
+    repeats), the median decode + apply + fetch per transaction was 6 878.6 µs on /6 against
+    main's 6 855.6 µs on /5: +23 µs, inside the spread (README "Gate 6b result").
+
 ---
 
 ### G6l — live motion, stall, reconnect, warm (opus)

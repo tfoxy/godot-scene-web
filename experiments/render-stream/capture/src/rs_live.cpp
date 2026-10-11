@@ -343,7 +343,8 @@ const char *to_wire(AckStage stage) {
 
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
                    ProtocolVersion version) {
-  const char *const protocol = version == ProtocolVersion::V5   ? kProtocolV5
+  const char *const protocol = version == ProtocolVersion::V6   ? kProtocolV6
+                               : version == ProtocolVersion::V5 ? kProtocolV5
                                : version == ProtocolVersion::V4 ? kProtocolV4
                                : version == ProtocolVersion::V3 ? kProtocolV3
                                                                 : kProtocol;
@@ -734,7 +735,8 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         protocol_error(c, "second hello", frame, event.t_ns);
         return;
       }
-      const char *const protocol = template_.version == ProtocolVersion::V5   ? kProtocolV5
+      const char *const protocol = template_.version == ProtocolVersion::V6   ? kProtocolV6
+                                   : template_.version == ProtocolVersion::V5 ? kProtocolV5
                                    : template_.version == ProtocolVersion::V4 ? kProtocolV4
                                    : template_.version == ProtocolVersion::V3 ? kProtocolV3
                                                                               : kProtocol;
@@ -1144,6 +1146,17 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
         c.session.stream.connection = c.s.connection;
         c.session.stream.transport = Transport::Websocket;
         c.session.stream.encoding = Encoding::Patch;
+        // render-stream-6.md "Publication" (G6b, gate6-design.md D8): a live connection declares
+        // GRC_PUBLISH_FPS; uncapped is every-frame/null, as every file sink.
+        if (config_.publish_period_ns == 0) {
+          c.session.publication.mode = PublicationMode::EveryFrame;
+          c.session.publication.has_target_fps = false;
+          c.session.publication.target_fps = 0;
+        } else {
+          c.session.publication.mode = PublicationMode::Rate;
+          c.session.publication.has_target_fps = true;
+          c.session.publication.target_fps = static_cast<std::int32_t>(config_.publish_target_fps);
+        }
         const std::uint64_t t0 = monotonic_ns();
         const std::vector<std::uint8_t> session_bytes = encode_session(c.session);
         const std::uint64_t t1 = monotonic_ns();
@@ -1488,9 +1501,9 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.object_end();
   }
   json.array_end();
-  // G6r (D8): the host's rate configuration, in evidence form -- not itself a wire field until
-  // the /6 session's `publication` key lands (G6b); GRC_PUBLISH_FPS=uncapped (the default) is
-  // "every-frame"/null, matching a file sink's declared publication exactly.
+  // G6r (D8): the host's rate configuration, in evidence form -- the same value every /6
+  // connection's session declares as `publication` since G6b; GRC_PUBLISH_FPS=uncapped (the
+  // default) is "every-frame"/null, matching a file sink's declared publication exactly.
   json.key("publication").object_begin();
   json.field("mode", config_.publish_period_ns == 0 ? std::string("every-frame")
                                                      : std::string("rate"));

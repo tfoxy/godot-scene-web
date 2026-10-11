@@ -1,5 +1,5 @@
 // Gate 6a checks (protocol/gate6-design.md "G6a", "Q6", "Q7b"): fixtures/gate6-scene, its scene
-// oracle and the file legs on render-stream/5.
+// oracle and the file legs, on render-stream/6 since G6b (render-stream/5 when G6a landed).
 //
 // Everything here reads an evidence directory written by run-gate6.sh's g6a group, or is pure over
 // values already read from one, so scripts/test/self-test-gate6.ts can drive each check with
@@ -18,11 +18,12 @@
 //   - the capture: its classification, its hook log against the census, its wire against the
 //     oracle (atlas, scroll, parameters, LineEdit rects).
 //
-// Before G6b the wire is render-stream/5, whose only answer to the HUD's CanvasLayer is the
-// session-level `extra-canvas` (Q7b): every leg classifies `unsupported` with exactly that reason
-// (the refused variant: exactly its reasons), and every pixel comparison with a receiver excludes
-// HU (and RF in `refused`). The pixel verdict each leg must reach (success, or pixel-mismatch at
-// exactly the predicted shots and regions) is judged on the remaining pixels.
+// Since G6b the wire is render-stream/6, which carries the HUD's CanvasLayer (layer, sublayer,
+// transform, modulate) and the receiver replays it (Q7b): the default scene classifies `success`
+// (sabotage receivers `pixel-mismatch` at exactly their predicted shots and regions), the refused
+// variant `unsupported` with exactly its reasons, and every receiver comparison covers every
+// region, HU included (RF stays excluded in `refused`). Before G6b (render-stream/5) every leg was
+// `unsupported` with `extra-canvas` and HU was excluded.
 //
 // Evidence layout under <out>/ (see scripts/README.md "Gate 6"):
 //   scene/import/{fixture,receiver}/  editor --import of fixtures/gate6-scene and receiver/
@@ -197,13 +198,13 @@ export const G6A_LEGS: G6aLeg[] = [
   ),
 ];
 
-/** Regions never compared receiver against reference on /5 (the HUD layer is extra-canvas) and,
- * in `refused`, the refused region. */
-/** The HUD panel's pixels (168x28): what a /5 receiver leaves out of HU while the HUD shows. */
+/** The HUD panel's pixels (168x28): what a /5 receiver left out of HU while the HUD showed. */
 export const HUD_PANEL_PIXELS = 168 * 28;
 
+/** Regions never compared receiver against reference: in `refused`, the refused region. Since
+ * G6b (render-stream/6) HU is compared like every other region. */
 export function excludedRegions(variant: string): Set<string> {
-  return new Set(variant === "refused" ? ["HU", "RF"] : ["HU"]);
+  return new Set(variant === "refused" ? ["RF"] : []);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1543,16 +1544,32 @@ export function unsupportedPairs(recording: RecordingSummary): string[] {
   return [...out].sort();
 }
 
-/** Pure: a classification is `unsupported` for exactly `want` (op/reason pairs) and nothing else
- * fired: no capture-failure, no replay-failure. */
+/** The class a leg must reach: `unsupported` when it types anything (`want` non-empty), else
+ * `pixel-mismatch` for a sabotage receiver that must differ, else `success` (render-stream/6, G6b:
+ * the default scene types nothing). */
+export function wantedClass(
+  want: readonly [string, string][],
+  mismatch = false,
+): "unsupported" | "pixel-mismatch" | "success" {
+  return want.length > 0
+    ? "unsupported"
+    : mismatch
+      ? "pixel-mismatch"
+      : "success";
+}
+
+/** Pure: a classification is `wantedClass(want, mismatch)` for exactly `want` (op/reason pairs)
+ * and nothing else fired: no capture-failure, no replay-failure. */
 export function evaluateUnsupportedClass(
   cls: { result_class: string; reasons: readonly string[] },
   pairs: readonly string[],
   want: readonly [string, string][],
+  mismatch = false,
 ): string[] {
   const problems: string[] = [];
-  if (cls.result_class !== "unsupported")
-    problems.push(`class ${cls.result_class}, expected unsupported`);
+  const wanted = wantedClass(want, mismatch);
+  if (cls.result_class !== wanted)
+    problems.push(`class ${cls.result_class}, expected ${wanted}`);
   const other = cls.reasons.filter(
     (r) => !r.startsWith("unsupported:") && !r.startsWith("pixel-mismatch:"),
   );
@@ -1688,26 +1705,28 @@ export async function runGate6a(
   // Captures: classification, decoding, sinks, ties, step logs.
   const caps = new Map<string, Gate3CaptureEvaluation>();
   for (const leg of G6A_LEGS.filter((l) => l.kind === "capture")) {
+    const want = leg.variant === "refused" ? r.unsupported : e.unsupported;
     const ev = await evaluateCapture(out, {
       legDir: leg.dir,
-      expectedClass: "unsupported",
+      expectedClass: wantedClass(want),
     });
     caps.set(leg.dir, ev);
-    const want = leg.variant === "refused" ? r.unsupported : e.unsupported;
     const pairs = unsupportedPairs(ev.full);
     const problems = evaluateUnsupportedClass(ev, pairs, want);
     checks.push(
       check(
         `leg-class-${leg.leg}`,
-        `the ${leg.leg} leg classifies unsupported with exactly ${want.map((w) => w.join("/")).join(", ")} on render-stream/5 (before G6b the HUD's CanvasLayer is extra-canvas): armed, stream closed, both sinks valid and equivalent, host size match, no capture failure`,
+        want.length > 0
+          ? `the ${leg.leg} leg classifies unsupported with exactly ${want.map((w) => w.join("/")).join(", ")} on render-stream/6 (the HUD layer is supported; the follow_viewport layer is canvas-follow-viewport): armed, stream closed, both sinks valid and equivalent, host size match, no capture failure`
+          : `the ${leg.leg} leg classifies success on render-stream/6 (the HUD's CanvasLayer is carried: no extra-canvas, no stacking tie, no unsupported entry at all): armed, stream closed, both sinks valid and equivalent, host size match, no capture failure`,
         problems,
-        `${ev.result_class}: ${pairs.join(", ")}`,
+        `${ev.result_class}: ${pairs.join(", ") || "nothing typed"}`,
         ev.artifacts,
       ),
     );
     legs[leg.leg] = {
       group: "g6a",
-      expected_class: "unsupported",
+      expected_class: wantedClass(want),
       result_class: ev.result_class,
       reasons: ev.reasons,
       exit_code: ev.exit_code,
@@ -1722,7 +1741,10 @@ export async function runGate6a(
   ]) {
     caps.set(
       dir,
-      await evaluateCapture(out, { legDir: dir, expectedClass: "unsupported" }),
+      await evaluateCapture(out, {
+        legDir: dir,
+        expectedClass: wantedClass(e.unsupported),
+      }),
     );
   }
   const main = caps.get("scene/capture") as Gate3CaptureEvaluation;
@@ -2057,6 +2079,7 @@ export async function runGate6a(
       cls,
       recording ? unsupportedPairs(recording) : [],
       want,
+      leg.pixel === "pixel-mismatch",
     );
     const ap = appliedPairs(applied);
     const wantAp = want.map(([op, reason]) => `${op}/${reason}`).sort();
@@ -2071,21 +2094,24 @@ export async function runGate6a(
     );
     problems.push(...pv.problems);
     mismatchTables[leg.leg] = pv.table;
-    const totalHu = diffs.reduce((n, d) => n + (d.diff?.excluded.HU ?? 0), 0);
+    const where =
+      exclude.size > 0
+        ? `outside ${[...exclude].join(" and ")}`
+        : "on every pixel";
     checks.push(
       check(
         `leg-class-${leg.leg}`,
         leg.pixel === "pixel-mismatch"
-          ? `the ${leg.leg} leg classifies unsupported (exactly the capture's /5 reasons, also in applied.json) and, outside ${[...exclude].join(" and ")}, differs from the reference at exactly expected.json predictions["${leg.prediction}"]'s regions per shot`
-          : `the ${leg.leg} leg (rendered receiver on ${leg.capture}/${leg.sink}) classifies unsupported with exactly the capture's /5 reasons (also in applied.json), applied every seq, and every pixel outside ${[...exclude].join(" and ")} of every shot equals the reference`,
+          ? `the ${leg.leg} leg classifies ${wantedClass(want, true)} (the capture's /6 reasons, if any, also in applied.json, and no receiver-typed entry) and, ${where} (HU included since G6b), differs from the reference at exactly expected.json predictions["${leg.prediction}"]'s regions per shot`
+          : `the ${leg.leg} leg (rendered receiver on ${leg.capture}/${leg.sink}) classifies ${wantedClass(want)} (the capture's /6 reasons, if any, also in applied.json, and no receiver-typed entry), applied every seq, and ${where} (HU included since G6b) every shot equals the reference`,
         problems.slice(0, 8),
-        `${cls.result_class}, pixels ${pv.verdict} (HU differs in ${totalHu} pixel-shots, not compared)`,
+        `${cls.result_class}, pixels ${pv.verdict}`,
         [join(dir, "applied.json"), join(dir, "shots")],
       ),
     );
     legs[leg.leg] = {
       group: "g6a",
-      expected_class: "unsupported",
+      expected_class: wantedClass(want, leg.pixel === "pixel-mismatch"),
       result_class: cls.result_class,
       pixel_verdict: pv.verdict,
       expected_pixel_verdict: leg.pixel,
@@ -2104,19 +2130,6 @@ export async function runGate6a(
               .join(", ")})`,
           );
         else if (!d.diff) vsRef.push(`${leg.leg} ${d.shot}: missing`);
-      // What the exclusion hides is exactly the HUD layer the /5 receiver cannot draw: HU differs
-      // in the HUD panel's 168x28 pixels while the HUD is visible above the root canvas, and
-      // nowhere at steps 8 (hidden) and 9 (behind BG).
-      for (const d of diffs) {
-        const shot = view.shots.find((x) => x.id === d.shot);
-        const hud = view.steps[shot?.step ?? 0]?.oracle.hud;
-        const want = hud?.visible && hud.layer > 0 ? HUD_PANEL_PIXELS : 0;
-        const got = d.diff?.excluded.HU ?? 0;
-        if (d.diff && got !== want)
-          vsRef.push(
-            `${leg.leg} ${d.shot}: HU differs in ${got} pixels, expected exactly the HUD panel's ${want}`,
-          );
-      }
       vsRefDetail.push(
         `${leg.leg} ${diffs.reduce((n, d) => n + (d.diff?.compared ?? 0), 0)}`,
       );
@@ -2125,7 +2138,7 @@ export async function runGate6a(
   checks.push(
     check(
       "receiver-vs-reference",
-      "receiver-scene, -patch, -inline, receiver-animate and receiver-refused: every pixel of every shot (settle and intermediate) equals its reference's, raw per channel with alpha, outside HU (the HUD's CanvasLayer is not carried before G6b) and, in refused, RF; budget 0 (Q6g); inside HU they differ in exactly the HUD panel's 168x28 pixels while the HUD shows above the root canvas and nowhere at steps 8 and 9",
+      "receiver-scene, -patch, -inline, receiver-animate and receiver-refused: every pixel of every shot (settle and intermediate) equals its reference's, raw per channel with alpha, HU included (the HUD's CanvasLayer is carried and replayed since G6b, render-stream/6), RF excluded in refused; budget 0 (Q6g)",
       vsRef.slice(0, 10),
       `pixels compared: ${vsRefDetail.join(", ")}`,
       G6A_LEGS.filter((l) => l.pixel === "success").map((l) =>

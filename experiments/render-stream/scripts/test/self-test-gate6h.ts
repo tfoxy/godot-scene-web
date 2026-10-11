@@ -205,7 +205,19 @@ export function selfTestGate6h(
         b,
         [456, 88, 624, 116].map((v, k) => (v + c.origin[k % 2]) / 2),
       );
-    const exclude = excludedRegionsHd(e);
+    // render-stream/5's per-cell HU exclusion (kept for hudExclusionProblems); since G6b
+    // excludedRegionsHd is empty and every HU is compared.
+    const exclude = new Set(e.cells.map((cell) => `c${cell.cell}.HU`));
+    assert("hd: on /6 nothing is excluded", excludedRegionsHd(e).size === 0);
+    assert(
+      "hd: on /6 a missing HUD panel is a mismatch",
+      pixelVerdictHd([
+        {
+          shot: shot.id,
+          diff: diffFramesHd(a, b, ri, excludedRegionsHd(e)),
+        },
+      ]).verdict === "pixel-mismatch",
+    );
     const d = diffFramesHd(a, b, ri, exclude);
     passes(
       "hd: each cell's HU differs in exactly its HUD panel",

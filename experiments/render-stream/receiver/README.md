@@ -12,11 +12,34 @@ no autoload, no extension and no file from `fixtures/`. The contract is
 superseded at G2b2). G1d added the live options for a stall, a reconnect and a resync
 (`RS_RECEIVER_STALL`, `_RECONNECT`, `_RESYNC`).
 
-**Since G55d the receiver speaks `render-stream/5`** ([`../protocol/render-stream-5.md`](../protocol/render-stream-5.md),
-contract [`../protocol/gate5_5-design.md`](../protocol/gate5_5-design.md) "Q5. Receiver"): `rs2_decoder.gd`'s
-module-wide default version is 5 (it was 4 from G5d, 3 from G4e2), the live client's subprotocol is
-`render-stream.5` and its `hello` says `render-stream/5`. A `GRS4` recording is refused with `bad-magic`; the
-self-tests decode golden-2/3/4 at their own versions explicitly. See "Shaders and materials (G55d)" below.
+**Since G6b the receiver speaks `render-stream/6`** ([`../protocol/render-stream-6.md`](../protocol/render-stream-6.md),
+contract [`../protocol/gate6-design.md`](../protocol/gate6-design.md) "Q5. Receiver"): `rs2_decoder.gd`'s
+module-wide default version is 6 (5 from G55d, 4 from G5d, 3 from G4e2), the live client's subprotocol is
+`render-stream.6` and its `hello` says `render-stream/6`. A `GRS5` recording is refused with `bad-magic`; the
+self-tests decode golden-2 to golden-5 at their own versions explicitly. See "Presentation and canvas layers
+(G6b)" and "Shaders and materials (G55d)" below.
+
+### Presentation and canvas layers (G6b)
+
+- **Stretch.** At the session, before any item exists, a `canvas_items` session makes the root window
+  adopt the session's stretch (`content_scale_mode`, `_aspect`, `_stretch` from `scale_mode`,
+  `content_scale_size = logical_size`, `content_scale_factor` from the session block), so the engine
+  computes the reference's stretch transform and oversampling. `disabled` keeps the project's
+  settings; `viewport` is typed `stretch-mode` and drawn with the receiver's own settings. Then (1) the
+  root window size must equal `presentation_size`, else `presentation-mismatch`, and (2) the root
+  viewport's `get_oversampling()` must equal `font_oversampling` (float32), else
+  `oversampling-mismatch`; both are typed and still drawn, a headless receiver skips both. (3) The
+  visible rect must equal `logical_size` (`viewport-mismatch`, a replay failure, as before). Run a
+  half presentation with `--resolution 960x540` in a 960x540 gamescope.
+- **Canvases.** Each non-root canvas id gets its own `canvas_create`; while `attached` it is attached to
+  the root viewport (`viewport_attach_canvas`, which resets the engine's stacking to (0,0) and its
+  transform to identity), stacked (`viewport_set_canvas_stacking` with the wire's `layer`, `sublayer`),
+  transformed and modulated, each only on change; leaving `attached` is `viewport_remove_canvas`,
+  leaving the state `free`. Canvases apply after materials and before items. Wire canvas 1 stays the
+  viewport's own canvas.
+- **Typed session entries** (`canvas-stacking-tie`, `canvas-repeat`, `canvas-follow-viewport`,
+  `global-canvas-transform`, `snap-2d`) are reported in `applied.json` and not replayed: no repeat, no
+  follow, the receiver's own stretch only, no snap.
 
 | File                         | Role                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -86,7 +109,7 @@ Resources (G2b2, gate2-design.md Q5 "Environment"; both modes unless noted):
 | `RS_RECEIVER_STORE_DIR`        | file mode: the capture's store, the origin for `fetch: "directory"`; reading from it is a fetch                                                                                                                                                        |
 | `RS_RECEIVER_FETCH_TIMEOUT_MS` | live: a GET not complete this long after it was issued is `resource-unavailable` (default 10000)                                                                                                                                                       |
 | `RS_RECEIVER_FETCH_DELAY_MS`   | an injected delay before each fetch, default 0                                                                                                                                                                                                         |
-| `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction), `ignore-cache` (fetch even on a cache hit), `wrong-http-token` (live only, G2e: correct token on the upgrade, wrong one on every GET), `ignore-clip` (gate3-design.md Q5, G3b: every `canvas_item_set_clip` call passes `false`), `clip-before-clear` (G3b: the pre-gate-3 apply order -- the clip setter before content, with no shadow reset on clear), `drop-msdf` (G4e2), `ignore-set-transform` and `ignore-clip-ignore` (G5d), `drop-mesh-surface` (G5e: a mesh build never adds its surface 1) `stale-mesh` (G5e: in-place payload changes of a resident surface are ignored) or `refuse-canvas-texture` (every draw naming a canvas-texture entry is skipped, logged with reason `canvas-texture-headless` and counted in `skipped_commands`: a recording made with the headless CanvasTexture shim replayed as the default capture would have refused it, [canvas-texture-headless.md](../protocol/canvas-texture-headless.md) "Simulated refusal"), `ignore-material` (G55d: `canvas_item_set_material` is never called), `ignore-canvas-modulate` (G55d: `canvas_set_modulate` is never called) `stale-param` (G55e: a material's parameters are set only when the material is created) or `stale-texture` (G6a: a resident RGBA8 image keeps its first payload, LA8 atlas pages still update); all exist only to fail checks or to compare pictures |
+| `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction), `ignore-cache` (fetch even on a cache hit), `wrong-http-token` (live only, G2e: correct token on the upgrade, wrong one on every GET), `ignore-clip` (gate3-design.md Q5, G3b: every `canvas_item_set_clip` call passes `false`), `clip-before-clear` (G3b: the pre-gate-3 apply order -- the clip setter before content, with no shadow reset on clear), `drop-msdf` (G4e2), `ignore-set-transform` and `ignore-clip-ignore` (G5d), `drop-mesh-surface` (G5e: a mesh build never adds its surface 1) `stale-mesh` (G5e: in-place payload changes of a resident surface are ignored) or `refuse-canvas-texture` (every draw naming a canvas-texture entry is skipped, logged with reason `canvas-texture-headless` and counted in `skipped_commands`: a recording made with the headless CanvasTexture shim replayed as the default capture would have refused it, [canvas-texture-headless.md](../protocol/canvas-texture-headless.md) "Simulated refusal"), `ignore-material` (G55d: `canvas_item_set_material` is never called), `ignore-canvas-modulate` (G55d: `canvas_set_modulate` is never called) `stale-param` (G55e: a material's parameters are set only when the material is created), `stale-texture` (G6a: a resident RGBA8 image keeps its first payload, LA8 atlas pages still update), `ignore-canvas-stacking` (G6b: extra canvases are attached but never stacked, so they draw at (0,0) in canvas RID order) or `ignore-presentation` (G6b: stretch stays disabled whatever the session says and the visible-rect check is skipped, so a half presentation shows the top-left of the logical frame at scale 1); all exist only to fail checks or to compare pictures |
 
 Exit codes: `0` status `ok`; `3` replay-failure (`applied.json` written); `2` usage error
 (`RS_RECEIVER_OUT` missing or not absolute, a malformed `RS_RECEIVER_SHOT_SEQS` or
@@ -150,7 +173,16 @@ entry, transactions and shots with `stream: 2`, and `shots/stream-2-seq-<n>.png`
 `skipped: "resync"` and no `applied_us`; it is acked `received` only; `live.resync` records the
 step, seq and frame.
 
-## `applied.json` (`render-stream-receiver-applied/5`)
+## `applied.json` (`render-stream-receiver-applied/6`)
+
+Since G6b (gate6-design.md Q5) `/6`: `/5`'s shape; `viewport` gains `presentation_size`, `window_size`,
+`oversampling` (the root viewport's `get_oversampling()`), `presentation_check`
+(`ok | mismatch | skipped-headless`) and `stretch_applied`; each applied transaction's `resources` (and
+`resources_summary`) gains `canvases_created`, `canvas_attach` (`viewport_attach_canvas` and
+`viewport_remove_canvas` calls) and `canvas_stacking_sets`; `unsupported` may carry the receiver's own
+typed session entries (`seq` null, `item` null, `name` `viewport`, `reason` `presentation-mismatch`,
+`oversampling-mismatch` or `stretch-mode`). State dumps of a `/6` stream carry each canvas's `layer`
+and `sublayer` (after `attached`), as render-stream-6.md's resolved form.
 
 Since G55d (gate5_5-design.md Q5) `/5`: `/4`'s shape, each applied transaction's `resources` gaining
 `shaders_created`, `shader_code_sets`, `shader_payload_fetches` (GRP1 payloads fetched from the store or

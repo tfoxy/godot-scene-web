@@ -471,7 +471,7 @@ async function main(): Promise<void> {
   }
 }
 
-// protocol/unknown-item-skip.md "Session"/"Transaction": the two optional keys, at /5 (the test encoder speaks /5 since G55d).
+// protocol/unknown-item-skip.md "Session"/"Transaction": the two optional keys, at /6 (the test encoder speaks /6 since G6b).
 function unknownItemCases(): void {
   const account = (calls: number) => ({
     unknown_rids: 1,
@@ -492,16 +492,16 @@ function unknownItemCases(): void {
     unknownItemPolicy: "skip",
   });
   ok(
-    validateRecording(skip, 5).length === 0,
-    `unknown items: a /5 skip session validates (${validateRecording(skip, 5)[0] ?? ""})`,
+    validateRecording(skip, 6).length === 0,
+    `unknown items: a /6 skip session validates (${validateRecording(skip, 6)[0] ?? ""})`,
   );
-  const decoded = decodeRecording(skip, 5);
+  const decoded = decodeRecording(skip, 6);
   const session = decoded.records[0].meta;
   ok(
     session.type === "session" && session.unknown_item_policy === "skip",
     "unknown items: the session decodes unknown_item_policy",
   );
-  const resolved = resolveRecording(skip, 5);
+  const resolved = resolveRecording(skip, 6);
   ok(
     isDeepStrictEqual(resolved.transactions[1].state.unknown_items, account(5)),
     "unknown items: the patch transaction resolves with its complete account",
@@ -517,7 +517,7 @@ function unknownItemCases(): void {
     }) && !isPartialUnknownItems({}),
     "unknown items: nothing withheld (or a strict transaction) is not partial",
   );
-  const metaSchema = (bytes: Uint8Array, version: 5, what: string) => {
+  const metaSchema = (bytes: Uint8Array, version: 6, what: string) => {
     const errors = validateRecording(bytes, version);
     ok(
       errors.length === 1 && errors[0].startsWith("meta-schema: "),
@@ -526,7 +526,7 @@ function unknownItemCases(): void {
   };
   metaSchema(
     encodeRs2Recording(states([true, true]), opts),
-    5,
+    6,
     "unknown_items in a strict session",
   );
   metaSchema(
@@ -534,7 +534,7 @@ function unknownItemCases(): void {
       ...opts,
       unknownItemPolicy: "skip",
     }),
-    5,
+    6,
     "a skip transaction without unknown_items",
   );
   metaSchema(
@@ -542,7 +542,7 @@ function unknownItemCases(): void {
       ...opts,
       unknownItemPolicy: "strict" as "skip",
     }),
-    5,
+    6,
     'unknown_item_policy "strict" (absent is the only spelling of strict)',
   );
 }

@@ -15,8 +15,8 @@
 //    render-stream-receiver-applied/5; PNGs synthesized from the timeline), then one perturbation
 //    per failure mode. Each scenario runs the real runGate0 and asserts the verdict of the checks
 //    and leg classes it targets.
-// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-5/corrupt-meta.rs5 from
-//    golden-5/patch.rs5 byte for byte (render-stream/5 since G55d, /4 from G5d, /3 from G4e2) and finds its target by seq when resource records precede
+// 3. Helpers the runner uses: corruptTransactionMeta reproduces golden-6/corrupt-meta.rs6 from
+//    golden-6/patch.rs6 byte for byte (render-stream/6 since G6b, /5 from G55d, /4 from G5d, /3 from G4e2) and finds its target by seq when resource records precede
 //    it; summarizeRecording skips resource records; joinSettleSeqs fails on a missing frame.
 //
 // Exits non-zero if any assertion fails.
@@ -68,9 +68,9 @@ import {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
-// render-stream/5 since G55d (/4 from G5d, /3 from G4e2): the receiver replays golden-5, and the
+// render-stream/6 since G6b (/5 from G55d, /4 from G5d, /3 from G4e2): the receiver replays golden-6, and the
 // checkers decode /5.
-const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-5");
+const GOLDEN_DIR = join(EXPERIMENT_DIR, "protocol", "golden-6");
 
 let assertions = 0;
 let failures = 0;
@@ -351,7 +351,7 @@ function appliedFor(
 ): Record<string, unknown> {
   const summary = summarizeRecording(recordingPath, new Uint8Array(bytes));
   return {
-    schema: "render-stream-receiver-applied/5",
+    schema: "render-stream-receiver-applied/6",
     mode: "file",
     recording: {
       path: recordingPath,
@@ -641,7 +641,7 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
-  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs5"));
+  const minimal = await readFile(join(GOLDEN_DIR, "inline.rs6"));
   await writeReceiverProcess(minimalDir, projects, minimal, [], false);
   const minimalApplied = await readJsonFile<Record<string, unknown>>(
     join(minimalDir, "applied.json"),
@@ -2126,13 +2126,13 @@ function classifyUnitCases(): void {
 }
 
 async function helperCases(): Promise<void> {
-  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs5")));
+  const minimal = new Uint8Array(await readFile(join(GOLDEN_DIR, "patch.rs6")));
   const corrupt = new Uint8Array(
-    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs5")),
+    await readFile(join(GOLDEN_DIR, "corrupt-meta.rs6")),
   );
   const made = corruptTransactionMeta(minimal, 3);
   assert(
-    "corruptTransactionMeta(golden-5 patch.rs5, 3) is golden-5/corrupt-meta.rs5 byte for byte",
+    "corruptTransactionMeta(golden-6 patch.rs6, 3) is golden-6/corrupt-meta.rs6 byte for byte",
     made.length === corrupt.length && made.every((b, i) => b === corrupt[i]),
   );
   const rec = new Uint8Array(encodeRecording({ quit: 52 }));

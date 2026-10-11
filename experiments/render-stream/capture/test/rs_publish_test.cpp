@@ -1242,6 +1242,38 @@ void test_start_v5() {
         "the session says render-stream/5, declares the shader policy and the GRP1 payload");
 }
 
+// G6b (render-stream-6.md "Session", "Features"): a V6 template starts every sink with GRS6 and a
+// "render-stream/6" session whose canvas_state, observed_unsupported_ops and unobserved are
+// golden-6's lists, with the presentation keys and a file sink's every-frame publication.
+void test_start_v6() {
+  const Features f = gate2_features(true, ProtocolVersion::V6);
+  const Features f5 = gate2_features(true, ProtocolVersion::V5);
+  check(f.ops == f5.ops && f.item_state == f5.item_state && f.resources == f5.resources,
+        "V6 ops, item_state and resources are /5's");
+  check(f.canvas_state == golden::kFeatureCanvasStateV6, "V6 canvas_state gains layer");
+  check(f.observed_unsupported_ops == golden::kFeatureObservedUnsupportedV6,
+        "V6 observed_unsupported_ops: golden-6's nine");
+  check(f.unobserved == golden::kFeatureUnobservedV6, "V6 unobserved: golden-6's eighteen");
+  MemoryRecordSink full;
+  full.open("memory://full");
+  Publisher publisher(&full, nullptr, SabotageConfig(), golden_policy());
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V6;
+  tmpl.features = f;
+  tmpl.viewport.presentation_size = tmpl.viewport.logical_size;
+  tmpl.viewport.font_oversampling = 1.0f;
+  check(publisher.start(tmpl), "start() with a V6 template");
+  const std::vector<std::uint8_t> magic6 = magic(ProtocolVersion::V6);
+  check(magic6.size() == 8 && magic6[3] == 0x36 && nth_write(full, 0) == magic6,
+        "the sink starts with the /6 magic GRS6");
+  const std::vector<std::uint8_t> session = nth_write(full, 1);
+  check(contains(session, "\"protocol\":\"render-stream/6\"") &&
+            contains(session, "\"font_oversampling\":1,") &&
+            contains(session, "\"snap_2d\":{\"transforms\":false,\"vertices\":false}") &&
+            contains(session, "\"publication\":{\"mode\":\"every-frame\",\"target_fps\":null}"),
+        "the session says render-stream/6 with oversampling, snap and every-frame publication");
+}
+
 // G55d (render-stream-5.md "Shader payload"): GRP1 code payloads share the texture and mesh
 // payloads' store, inline threshold and order; only `ok` shaders whose code travels ("payload").
 struct ShaderScene {
@@ -1392,6 +1424,7 @@ int main() {
   test_inline_records();
   test_mesh_payloads();
   test_start_v5();
+  test_start_v6();
   test_shader_payloads();
   test_wrong_hash();
   test_stale_texture();

@@ -1,7 +1,7 @@
 // Gate 6 group g6l (protocol/gate6-design.md "G6l", Q7c): live motion compared frame for frame,
 // a 2-s receiver stall across a resource update, reconnect and a warm cache, on
 // fixtures/gate6-scene's `animate` variant with the live timeline (S=300, N=60, quit 1080) and
-// `steps` time (D6), on render-stream/5.
+// `steps` time (D6), on render-stream/6 since G6b (render-stream/5 when G6l landed).
 //
 // The rule every pixel judgement here follows (memories g5f-stale-coalesce-receiver-vs-reference-
 // flake and rs-g5f-live-mesh-facts): a live shot is never compared with a nominal frame. Each shot
@@ -10,9 +10,9 @@
 // That wire frame W is checked against the host's own full recording (the tap's resolved state
 // must equal the full recording's at W), and the shot against the rendered reference's shot of
 // that exact host frame W (reference-live-frames shoots every such frame; frame-indexed time makes
-// host frame f reference frame f). Budget 0, whole frame, outside HU (before G6b the HUD's
-// CanvasLayer is the session-level `extra-canvas`, as in G6a). An honest leg's W must equal the
-// frame the shot claims; the sabotage's rewritten sends are exactly where W differs.
+// host frame f reference frame f). Budget 0, whole frame, HU included since G6b (on /5 the HUD's
+// CanvasLayer was the session-level `extra-canvas` and HU was excluded). An honest leg's W must
+// equal the frame the shot claims; the sabotage's rewritten sends are exactly where W differs.
 //
 // Pure over an evidence directory written by run-gate6.sh's run_g6l (under <out>/live/), or pure
 // over values read from one, so scripts/test/self-test-gate6.ts drives each evaluator with
@@ -109,8 +109,9 @@ export const G6L_MOTION_LABEL = 100;
  * reconnect, and, As built (G6l), after a transaction that waited on an HTTP fetch or was shot). */
 export const G6L_MAX_GAP = 2;
 /** The regions continuous animation never touches in `animate` (Q6c: MS, SM, AN, PB every frame;
- * Q6d: TR and RT through TEXA, LB, SC and CD), HU aside (excluded on /5): at a settle shot their
- * pixels are the step's alone, so they equal the file-timeline reference's step shot. */
+ * Q6d: TR and RT through TEXA, LB, SC and CD): at a settle shot their pixels are the step's alone,
+ * so they equal the file-timeline reference's step shot. HU joined at G6b (render-stream/6 carries
+ * the HUD layer; on /5 it was excluded). */
 export const G6L_STEP_ONLY_REGIONS: readonly string[] = [
   "NP",
   "Marker",
@@ -119,13 +120,13 @@ export const G6L_STEP_ONLY_REGIONS: readonly string[] = [
   "CM",
   "HB",
   "TL",
+  "HU",
 ];
 /** Q7c: the regions whose per-frame motion makes a stale post-stall target differ always. */
 export const G6L_STALE_MOTION_REGIONS: readonly string[] = ["MS", "SM", "AN"];
-/** Before G6b, render-stream/5's only answer to the HUD layer (G6a). */
-export const G6L_WIRE_UNSUPPORTED: readonly string[] = [
-  "viewport_attach_canvas/extra-canvas",
-];
+/** What the live wire types: nothing since G6b (render-stream/6 carries the HUD layer); on /5 it
+ * was `viewport_attach_canvas/extra-canvas` (G6a). */
+export const G6L_WIRE_UNSUPPORTED: readonly string[] = [];
 
 export interface G6lLeg {
   leg: string;
@@ -385,10 +386,10 @@ export interface G6lCheckpoint {
   /** the tap's state at this seq equals the full recording's at `wire` */
   wire_equals_full: boolean | null;
   shot: string;
-  /** mismatching pixels against reference-live-frames' frame-<wire>.png (outside HU) */
+  /** mismatching pixels against reference-live-frames' frame-<wire>.png (whole frame) */
   vs_wire: number | null;
   vs_wire_regions: string[];
-  /** mismatching pixels against reference-live-frames' frame-<frame>.png (outside HU) */
+  /** mismatching pixels against reference-live-frames' frame-<frame>.png (whole frame) */
   vs_frame: number | null;
   vs_frame_regions: string[];
 }
@@ -407,7 +408,8 @@ export const loadFrame: FrameLoader = (path) => {
   return p;
 };
 
-/** Mismatching pixel count and regions of two frames, regions at `frame`, HU excluded. */
+/** Mismatching pixel count and regions of two frames, regions at `frame` (nothing excluded in
+ * `animate` since G6b; HU was on /5). */
 export function compareAt(
   e: Pick<Gate6Expected, "shots">,
   a: Frame6 | null,
@@ -853,7 +855,7 @@ export function evaluateWarmFetches(
 
 /** The regions a post-stall stale target differs in, derived from expected.json's per-step
  * `fresh` table (memory rs-g55f-stale-coalesce-region-set): every region fresh at a step applied
- * during the stall, plus Q7c's per-frame regions; HU excluded on /5. */
+ * during the stall, plus Q7c's per-frame regions; HU compared since G6b. */
 export function staleFreshRegions(
   steps: readonly { step: number; fresh: Record<string, boolean> }[],
   during: readonly number[],
@@ -863,7 +865,6 @@ export function staleFreshRegions(
     if (during.includes(s.step))
       for (const [name, fresh] of Object.entries(s.fresh))
         if (fresh) out.add(name);
-  out.delete("HU");
   return [...out].sort();
 }
 
@@ -1799,21 +1800,26 @@ export function checkLiveResources(evals: Evals): Gate6Check[] {
   ];
 }
 
-/** leg-class-<leg>: on /5 every g6l leg classifies `unsupported` with exactly extra-canvas (the
- * HUD layer, as G6a), nothing else firing but pixel-mismatch; its pixel verdict outside HU is
- * `success` (honest) or `pixel-mismatch` (the sabotage, with the stale-target proof below). */
+/** The class a g6l leg must reach on render-stream/6: `success` (honest) or `pixel-mismatch`
+ * (the sabotage); nothing is typed since G6b (on /5 every leg was `unsupported` with extra-canvas). */
+export function g6lExpectedClass(leg: Pick<G6lLeg, "expected_pixel">): string {
+  return leg.expected_pixel === "pixel-mismatch" ? "pixel-mismatch" : "success";
+}
+
+/** leg-class-<leg>: on /6 every g6l leg classifies `success` (honest) or `pixel-mismatch` (the
+ * sabotage, with the stale-target proof below) with no unsupported entry, nothing else firing;
+ * its pixel verdict covers the whole frame, HU included. */
 export function checkLegClass(
   e: Pick<Gate6Expected, "steps">,
   ev: G6lEvaluation,
 ): Gate6Check {
   const problems: string[] = [];
-  if (ev.result_class !== "unsupported")
+  const wanted = g6lExpectedClass(ev.leg);
+  if (ev.result_class !== wanted)
     problems.push(
-      `class ${ev.result_class}, expected unsupported: ${ev.reasons.slice(0, 2).join(" | ")}`,
+      `class ${ev.result_class}, expected ${wanted}: ${ev.reasons.slice(0, 2).join(" | ")}`,
     );
-  const other = ev.reasons.filter(
-    (r) => !r.startsWith("unsupported:") && !r.startsWith("pixel-mismatch:"),
-  );
+  const other = ev.reasons.filter((r) => !r.startsWith("pixel-mismatch:"));
   if (other.length > 0)
     problems.push(`other classes fired: ${other.slice(0, 2).join(" | ")}`);
   if (
@@ -1834,7 +1840,7 @@ export function checkLegClass(
           : ""
       }`,
     );
-  let detail = `${ev.result_class} (${ev.unsupported_pairs.join(", ")}), pixels ${ev.pixel_verdict}`;
+  let detail = `${ev.result_class} (${ev.unsupported_pairs.join(", ") || "nothing typed"}), pixels ${ev.pixel_verdict}`;
   if (ev.leg.expected_pixel === "pixel-mismatch") {
     const r = ev.stall?.recovery;
     if (!r) problems.push("no stall recovery evidence");
@@ -1876,7 +1882,7 @@ export function checkLegClass(
   }
   return check(
     `leg-class-${ev.leg.leg}`,
-    `${ev.leg.leg} classifies unsupported with exactly extra-canvas on render-stream/5 (the HUD layer, before G6b) and its pixels outside HU are ${
+    `${ev.leg.leg} classifies ${g6lExpectedClass(ev.leg)} on render-stream/6 with no unsupported entry (the HUD layer is carried since G6b) and its pixels, HU included, are ${
       ev.leg.expected_pixel === "success"
         ? "success"
         : "pixel-mismatch exactly where stale-coalesce sent an older snapshot: the first post-stall shot equals the reference at stale_from and differs from its own frame in MS, SM, AN and every region the fresh table says the swallowed steps touch"
@@ -2072,7 +2078,7 @@ export async function runGate6l(
     checks.push(checkLegClass(e, ev));
     legs[l.leg] = {
       group: "g6l",
-      expected_class: "unsupported",
+      expected_class: g6lExpectedClass(l),
       result_class: ev.result_class,
       pixel_verdict: ev.pixel_verdict,
       expected_pixel_verdict: l.expected_pixel,

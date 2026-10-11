@@ -482,11 +482,12 @@ static func _frame(data: PackedByteArray, offset: int) -> Dictionary:
 	return out
 
 
-## `version` (2, 3, 4 or 5) selects the expected magic -- GRS5 (the default since G55d: the
-## capture and receiver speak /5, render-stream-5.md), GRS4 (golden-4/ only; the default from G5d
-## to G55d), GRS3 (golden-3/ only; the default from G4e2 to G5d) or GRS2 (golden-2/ only). A decoder configured for one version refuses
+## `version` (2 to 6) selects the expected magic -- GRS6 (the default since G6b: the capture and
+## receiver speak /6, render-stream-6.md), GRS5 (golden-5/ only; the default from G55d to G6b),
+## GRS4 (golden-4/ only; the default from G5d to G55d), GRS3 (golden-3/ only; the default from
+## G4e2 to G5d) or GRS2 (golden-2/ only). A decoder configured for one version refuses
 ## every other magic the same way it already refuses GRS0/GRS1/anything else that is not its own.
-static func split_records(data: PackedByteArray, version: int = 5) -> Dictionary:
+static func split_records(data: PackedByteArray, version: int = 6) -> Dictionary:
 	var records: Array[Dictionary] = []
 	var errors := PackedStringArray()
 	var expected_magic: String = MAGIC_HEX
@@ -1261,7 +1262,7 @@ static func _non_printable() -> RegEx:
 	return _non_printable_regex
 
 
-static func decode_record(data: PackedByteArray, offset: int, version: int = 5) -> Dictionary:
+static func decode_record(data: PackedByteArray, offset: int, version: int = 6) -> Dictionary:
 	var blocks: Array = []
 	var errors := PackedStringArray()
 	var out: Dictionary = {
@@ -1788,7 +1789,7 @@ static func _dicts_equal(a: Dictionary, b: Dictionary) -> bool:
 # --------------------------------------------------------------------------- whole recording
 
 
-static func validate_recording(data: PackedByteArray, version: int = 5) -> PackedStringArray:
+static func validate_recording(data: PackedByteArray, version: int = 6) -> PackedStringArray:
 	var errors := PackedStringArray()
 	var split: Dictionary = split_records(data, version)
 	var records: Array[Dictionary] = split["records"]
@@ -1829,11 +1830,11 @@ class Stream:
 	var default_texture_filter: String = "nearest"
 	var default_texture_repeat: String = "disabled"
 
-	## render-stream-5.md (G55w): 2, 3, 4 or 5. `Stream.new()` with no args defaults to 5 since
-	## G55d, matching this file's module-wide default (4 from G5d to G55d, 3 from G4e2 to G5d).
-	var version: int = 5
+	## 2 to 6. `Stream.new()` with no args defaults to 6 since G6b, matching this file's
+	## module-wide default (5 from G55d to G6b, 4 from G5d to G55d, 3 from G4e2 to G5d).
+	var version: int = 6
 
-	func _init(v: int = 5) -> void:
+	func _init(v: int = 6) -> void:
 		version = v
 
 	var records_accepted: int = 0

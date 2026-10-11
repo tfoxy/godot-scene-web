@@ -12,7 +12,7 @@
 //  4. windowsWithoutCandidate: a window whose only transaction was shot for an earlier-listed
 //     window is legitimately missed; a window with an unshot transaction is not.
 //  5. evaluateFetchLatestOnly, evaluateReconnectFetches, evaluateWarmFetches and staleFreshRegions.
-//  6. wireSends, compareAt (HU never compared) and gate 5f's connTimelinesAtCallback as g6l uses it.
+//  6. wireSends, compareAt (HU compared since G6b) and gate 5f's connTimelinesAtCallback as g6l uses it.
 
 import type { LiveLogLine } from "../lib/gate1-live-checks";
 import type { G2cHost } from "../lib/gate2c-checks";
@@ -411,7 +411,7 @@ export function selfTestG6l(e: Gate6Expected, h: SelfTestHooks): void {
 
     const set = staleFreshRegions(e.steps, [3, 4]);
     assert(
-      "stale regions: MS, SM, AN plus steps 3 and 4's fresh regions, HU never",
+      "stale regions: MS, SM, AN plus steps 3 and 4's fresh regions (HU is not fresh there)",
       ["MS", "SM", "AN", "TR", "RT", "CM", "Marker", "PB"].every((r) =>
         set.includes(r),
       ) &&
@@ -437,10 +437,13 @@ export function selfTestG6l(e: Gate6Expected, h: SelfTestHooks): void {
     const ms = regionsAtFrame(e, 400).MS;
     const hu = regionsAtFrame(e, 400).HU;
     b.rgba.set([0, 0, 0, 255], (hu[1] * w + hu[0]) * 4);
+    const dh = compareAt(e, a, b, 400);
     assert(
-      "compareAt: a difference inside HU is never compared",
-      compareAt(e, a, b, 400).mismatched === 0,
+      "compareAt: a difference inside HU is compared (render-stream/6, G6b)",
+      dh.mismatched === 1 && JSON.stringify(dh.regions) === '["HU"]',
+      JSON.stringify(dh),
     );
+    b.rgba.set([10, 20, 30, 255], (hu[1] * w + hu[0]) * 4);
     b.rgba.set([0, 0, 0, 255], (ms[1] * w + ms[0]) * 4);
     const d = compareAt(e, a, b, 400);
     assert(

@@ -226,8 +226,8 @@ using FnMaterialCreateFromShader = RID (*)(void *, RID, int32_t, RID);
 //         (FnMaterialSetParam: the same ABI as material_set_param)
 //
 // --- calibrator 9 (optional): gate6-design.md Q2 -- CanvasLayer attach/stacking/removal,
-// canvas-item mirroring/repeat and the root's global canvas transform. Decode and hook-log only;
-// no mirror change (G6b). canvas_set_item_mirroring's REAL ABI takes two RIDs (p_canvas, p_item),
+// canvas-item mirroring/repeat and the root's global canvas transform. G6k decoded and hook-logged
+// them; since G6b each also taps the mirror (render-stream/6, gate6-design.md Q3b). canvas_set_item_mirroring's REAL ABI takes two RIDs (p_canvas, p_item),
 // not the one gate6-design.md's Q2 shorthand describes -- confirmed against
 // ../../../godot-4.5.1-stable/servers/rendering_server.h:1526, trusted over the design doc per
 // AGENTS.md "Godot References" -----------------------------------------------------------------
@@ -2307,12 +2307,15 @@ void hook_canvas_light_attach_to_canvas(void *self, RID light, RID canvas) {
   original<FnSetMaterial>(kCanvasLightAttachToCanvas)(self, light, canvas);
 }
 
-// --- calibrator 9 hooks (gate6-design.md Q2): decode and hook-log only -- no mirror change
-// (that is G6b). ------------------------------------------------------------------------------
+// --- calibrator 9 hooks (gate6-design.md Q2): decoded and hook-logged since G6k, mirror taps
+// since G6b (Q3b). ----------------------------------------------------------------------------
 
 void hook_viewport_remove_canvas(void *self, RID viewport, RID canvas) {
   bump(kViewportRemoveCanvas);
   log_entry(&g_viewport_remove_canvases, rids(viewport.id, canvas.id));
+  if (streaming()) {
+    mirror().viewport_remove_canvas(viewport.id, canvas.id, current_frame());
+  }
   if (resources().active()) {
     resources().viewport_remove_canvas(tap_context(), viewport.id, canvas.id);
   }
@@ -2328,6 +2331,10 @@ void hook_viewport_set_global_canvas_transform(void *self, RID viewport,
     key.viewport = viewport.id;
     key.transform = *transform;
     log_entry(&g_viewport_global_canvas_transforms, pod(key));
+    if (streaming()) {
+      mirror().viewport_set_global_canvas_transform(viewport.id, to_xform(*transform),
+                                                    current_frame());
+    }
     if (resources().active()) {
       resources().viewport_set_global_canvas_transform(tap_context(), viewport.id,
                                                         &transform->columns[0].x);
@@ -2347,6 +2354,10 @@ void hook_viewport_set_canvas_stacking(void *self, RID viewport, RID canvas, int
   key.layer = layer;
   key.sublayer = sublayer;
   log_entry(&g_canvas_stackings, pod(key));
+  if (streaming()) {
+    mirror().viewport_set_canvas_stacking(viewport.id, canvas.id, layer, sublayer,
+                                          current_frame());
+  }
   if (resources().active()) {
     resources().viewport_set_canvas_stacking(tap_context(), viewport.id, canvas.id, layer,
                                               sublayer);
@@ -2366,6 +2377,10 @@ void hook_canvas_set_item_mirroring(void *self, RID canvas, RID item, const Poin
     key.item = item.id;
     key.mirroring = *mirroring;
     log_entry(&g_canvas_item_mirrorings, pod(key));
+    if (streaming()) {
+      mirror().canvas_set_item_mirroring(canvas.id, item.id, mirroring->x, mirroring->y,
+                                         current_frame());
+    }
     if (resources().active()) {
       resources().canvas_set_item_mirroring(tap_context(), canvas.id, item.id, &mirroring->x);
     }
@@ -2383,6 +2398,10 @@ void hook_canvas_set_item_repeat(void *self, RID item, const Point2 *repeat_size
     key.repeat_size = *repeat_size;
     key.repeat_times = repeat_times;
     log_entry(&g_canvas_item_repeats, pod(key));
+    if (streaming()) {
+      mirror().canvas_set_item_repeat(item.id, repeat_size->x, repeat_size->y, repeat_times,
+                                      current_frame());
+    }
     if (resources().active()) {
       resources().canvas_set_item_repeat(tap_context(), item.id, &repeat_size->x, repeat_times);
     }
@@ -2398,6 +2417,9 @@ void hook_canvas_set_parent(void *self, RID canvas, RID parent, float scale) {
   key.parent = parent.id;
   key.scale = scale;
   log_entry(&g_canvas_set_parents, pod(key));
+  if (streaming()) {
+    mirror().canvas_set_parent(canvas.id, parent.id, current_frame());
+  }
   if (resources().active()) {
     resources().canvas_set_parent(tap_context(), canvas.id, parent.id);
   }

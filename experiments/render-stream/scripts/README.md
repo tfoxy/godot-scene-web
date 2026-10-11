@@ -1703,7 +1703,7 @@ mise exec -- pnpm render-stream:gate55 -- \
 - `lib/gate55b-checks.ts`: the g55b checks: self-consistency against the Python blend twin's
   probes, the material census (counters before calibrator 8, the hook log per step window after),
   the /5 capture (`evaluateCimCapture5`), `runGate55b`.
-- `lib/gate55-wire.ts`: `loadWire5`, a render-stream/5 recording decoded at version 5 explicitly:
+- `lib/gate55-wire.ts`: `loadWire5`, a recording decoded at an explicit version (5 from G55d, 6 since G6b):
   per transaction its wire meta (a patch's partial lists, the `param_f64` size) beside its resolved
   state (shader and material tables, item material fields, canvas modulate), plus the resource
   records.
@@ -2133,7 +2133,7 @@ bytes per frame, and a malformed line skipped during parsing); and a `report-gat
 ## Gate 6 files (g6a)
 
 G6a ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6a") runs the combined scene
-`fixtures/gate6-scene` through its file legs on render-stream/5:
+`fixtures/gate6-scene` through its file legs (render-stream/5 when it landed, /6 since G6b):
 
 ```bash
 mise exec -- pnpm render-stream:gate6 -- \
@@ -2226,7 +2226,8 @@ unsupported class and the frame-1 tie each pass and fail.
 
 G6h ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6h") runs the 1920×1080
 `canvas_items` fixture `fixtures/gate6-hd` (nine copies of the combined scene in a 3×3 grid) at
-both presentations on render-stream/5: `--legs g6h` (and `g6a,g6h` for the increment's pass).
+both presentations (render-stream/5 when it landed, /6 since G6b): `--legs g6h` (and `g6a,g6h` for the
+increment's pass).
 
 - `lib/gate6h-legs.sh`: `run_g6h`, sourced by `run-gate6.sh` (kept apart so concurrent groups
   merge trivially). One private gamescope at 1920×1080 for the native legs, one at 960×540 for the
@@ -2293,7 +2294,8 @@ TLs pass at distinct draw indices and fail tied.
 
 G6l ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6l", Q7c) runs live motion, the
 2-s stall, reconnect and the warm cache on `fixtures/gate6-scene`'s `animate` variant with the live
-timeline (S=300, N=60, quit 1080) and `steps` time, on render-stream/5 (`--legs g6l`).
+timeline (S=300, N=60, quit 1080) and `steps` time (render-stream/5 when it landed, /6 since G6b;
+`--legs g6l`).
 
 - `run-gate6.sh` `run_g6l`: one private gamescope at 640×360; `start_live_scene_host`,
   `g6l_receiver`, `g6l_leg` (gate 5.5f's live-leg pattern), `g6l_windows` (12 settle windows, then
@@ -2353,4 +2355,84 @@ fresh table marks at the swallowed steps.
 the live step and region lookup, motion attribution (each cause passes and a fast-receiver gap
 fails), the host's credit-to-send, missed-window candidates, `fetch-latest-only`, the reconnect and
 warm fetch rules, the stale region set, the wire frame of a stale send, HU exclusion and the close
-frame rule, each with a failing case.
+frame rule, each with a failing case. Since G6b HU is compared (the HUD layer travels on /6), and
+the HU case asserts that a difference inside HU counts.
+
+## Gate 6 files (g6b)
+
+G6b ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6b") switches the capture, the
+receiver and every gate runner to render-stream/6 and adds group `g6b`: `--legs g6a,g6h,g6l,g6b`
+(g6b needs g6a's scene capture and g6h's half reference in the same run; `run-gate6.sh` refuses it
+alone and runs it last whatever order `--legs` names).
+
+- `lib/gate6b-legs.sh`: `run_g6b`, sourced by `run-gate6.sh`. Headless captures of
+  `fixtures/gate6-hd` at `GRC_ROOT_SIZE=presentation:960x540` (both sinks and, separately, all
+  inline) and at `enforce-min-size` (the hazard), a scratch copy of `fixtures/gate6-scene` with an
+  `override.cfg` setting `rendering/2d/snap/snap_2d_transforms_to_pixel=true` (imported, then
+  captured), one private gamescope at 960×540 for the half receivers, the hazard and
+  `ignore-presentation`, and one at 640×360 for `ignore-canvas-stacking`.
+- `lib/gate6b-checks.ts`: every g6b criterion, pure over values read from the evidence, and
+  `runGate6b`, which walks the HD shots once at 960×540 for all five half legs.
+- `check-gate6.ts` runs `runGate6b` when `g6b` ran; the report gains `hazard` (the hazard's
+  differing pixel-shots per region).
+- G6b also changed g6a, g6h and g6l's checks for /6: the default scene and the HD fixture classify
+  `success` (`wantedClass`), sabotage receivers `pixel-mismatch`, the refused variant `unsupported`
+  with `canvas-follow-viewport` in place of `extra-canvas`, and every receiver comparison covers HU.
+- `test/self-test-gate6b.ts`: see "Gate 6 self-test (g6b)".
+
+## Gate 6 legs and evidence under `--out` (g6b)
+
+| Leg | Directory | Runs |
+| --- | --- | --- |
+| `capture-hd-half` | `hd/capture-half/` | the release template, `--headless`, armed, both sinks, the store, `GRC_ROOT_SIZE=presentation:960x540` (root window 960×540: stretch 0.5, oversampling 0.5), 122 frames |
+| `capture-hd-half-inline` | `hd/capture-half-inline/` | the same, every payload inline, no store |
+| `capture-hd-half-at-logical` | `hd/capture-half-at-logical/` | the hazard's capture: `enforce-min-size` (window 1920×1080, oversampling 1) |
+| `capture-snap` | `snap/{project,import,capture}/` | a scratch copy of gate6-scene with snap-to-pixel transforms on, imported, captured headless (122 frames) |
+| `receiver-hd-half`, `-patch`, `-inline` | `hd/receiver-half{,-patch,-inline}/` | rendered 960×540 receivers (`--resolution 960x540`) on `capture-half`'s full and patch sinks (patch: state dumps) and `capture-half-inline` |
+| `receiver-hd-half-at-logical` | `hd/receiver-half-at-logical/` | the hazard: a 960×540 receiver on `capture-half-at-logical` |
+| `sabotage-receiver-ignore-presentation` | `hd/sabotage-receiver-ignore-presentation/` | `RS_RECEIVER_SABOTAGE=ignore-presentation`, 960×540, on `capture-half` |
+| `sabotage-receiver-ignore-canvas-stacking` | `scene/sabotage-receiver-ignore-canvas-stacking/` | `RS_RECEIVER_SABOTAGE=ignore-canvas-stacking`, 640×360, on g6a's `scene/capture` |
+
+## Gate 6 criteria (g6b)
+
+`leg-class-capture-hd-half{,-inline,-at-logical}` (`success`: nothing typed) and
+`leg-class-capture-snap` (`unsupported` with exactly
+`viewport_set_snap_2d_transforms_to_pixel`/`snap-2d`). `presentation-declared`: every /6 capture's
+session (policy, `presentation_size`, window, status `match`, `font_oversampling`, `snap_2d`, the
+logical `host_visible_rect`, `host_final_xform` scale 0.5 at half and the identity elsewhere, a
+file sink's `publication` every-frame/null). `snap-typed`: exactly one session-level `snap-2d` entry
+in every transaction of both sinks. `canvas-commands`: on both sinks of `capture-scene` and
+`capture-hd-half`, every layer canvas's wire layer, sublayer and attachment equal the hook log's last
+calibrator-9 stacking/removal line at each frame (each canvas joined to its RID by its first
+stacking line), the root canvas stays attached at (0,0), no `canvas-stacking-tie` occurs and every
+layer is first published on its own key (the stacking lands in the attach frame).
+`canvas-stacking-parity`: at every settle step the wire's layers equal the oracle's `(layer,
+get_index())` (the scene's HUD; the nine HD HUDs at half). `atlas-parity-half`: the half oracle's
+pages at the oversampled sizes equal `capture-hd-half`'s LA8 textures both ways on both sinks; its
+pages at the logical sizes are shaping-only and on no wire texture. `stylebox-aa-scale`: every
+antialiased StyleBoxFlat's triangle arrays at every settle step equal gate 5g's port at
+`aa_size / 0.5` (half) and `aa_size` (native): indices exact, points within 2 ulp, colours exact.
+`leg-class-receiver-hd-half{,-patch,-inline}` and `receiver-vs-reference-half`: `success`, the
+stretch adopted, presentation and oversampling checks ok, every pixel of every shot equal to
+`reference-hd-half`. `presentation-hazard-measured`: the hazard receiver classifies `unsupported`,
+typed `presentation-mismatch` and `oversampling-mismatch`; against `reference-hd-half` every flat
+region is equal and the text-only and antialiased-only regions each differ (counts reported).
+`leg-class-sabotage-receiver-ignore-presentation`: every region of every cell and BG differs at
+every shot, typed `oversampling-mismatch`. `leg-class-sabotage-receiver-ignore-canvas-stacking`:
+`pixel-mismatch` at exactly `predictions["sabotage-receiver-ignore-canvas-stacking"]` with no
+stacking call made. `receiver-typed-clean`: every honest rendered receiver of g6a, g6h and g6b writes
+`render-stream-receiver-applied/6` with `presentation_check` ok, `stretch_applied` exactly for
+`canvas_items` sessions and no receiver-typed entry.
+
+## Gate 6 self-test (g6b)
+
+`self-test-gate6.ts` section 10 runs `test/self-test-gate6b.ts` on synthetic sessions, hook-log
+lines, wire states and `applied.json`, and on the committed `fixtures/gate6-hd/expected.json`: a
+half session passes `presentation-declared` and oversampling 1, a degenerate status, a rate
+publication and an identity final transform each fail; `snap-2d` in every transaction passes and a
+missing one fails; a HUD stacked in its attach frame passes `canvas-commands` and a lagging layer, a
+first publication at (0,0) and a tie each fail; wire stacking against oracle HUDs passes and fails;
+the model's half triangle arrays for c0.BT pass against themselves, a point 2 ulp off passes using
+the allowance, 3 ulp, a missing array and the native lowering fail; a clean applied.json passes and a
+typed `presentation-mismatch` or an unadopted stretch fails; the hazard kinds (TR flat, RT text, HB
+antialiased, BT both) and a flat region that differs fails.

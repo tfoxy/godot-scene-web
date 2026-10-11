@@ -34,8 +34,8 @@
 // callback.
 //
 // The root-size policy GRC_ROOT_SIZE (observe | enforce-min-size; G1a,
-// gate1-design.md "Q1") is applied at arm between the root query and the
-// session record. What it saw and did goes on the wire -- the session's
+// gate1-design.md "Q1"; presentation:<W>x<H> since G6b, gate6-design.md Q3a) is applied at arm
+// between the root query and the session record. What it saw and did goes on the wire -- the session's
 // `viewport` object and blocks, read after the policy; the session-level
 // `degenerate-host-size` entry whenever host_size_status != match; the sticky
 // failure `root-size-enforce-failed` when enforce-min-size could not make it
@@ -352,13 +352,46 @@ bool parse_unknown_item_policy(const char *value, rs2::UnknownItemPolicy *out) {
   return false;
 }
 
-bool parse_root_size_policy(const char *value, RootSizePolicy *out) {
+// `presentation` receives W x H for presentation:<W>x<H> (decimal, 1..16384 each; G6b,
+// gate6-design.md Q3a) and is left untouched otherwise.
+bool parse_root_size_policy(const char *value, RootSizePolicy *out, int32_t presentation[2]) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "observe") == 0) {
     *out = RootSizePolicy::Observe;
     return true;
   }
   if (std::strcmp(value, "enforce-min-size") == 0) {
     *out = RootSizePolicy::EnforceMinSize;
+    return true;
+  }
+  static const char kPrefix[] = "presentation:";
+  if (std::strncmp(value, kPrefix, sizeof(kPrefix) - 1) == 0) {
+    const char *p = value + sizeof(kPrefix) - 1;
+    int64_t dims[2] = {0, 0};
+    for (int i = 0; i < 2; ++i) {
+      const char *start = p;
+      while (*p >= '0' && *p <= '9') {
+        dims[i] = dims[i] * 10 + (*p - '0');
+        if (dims[i] > 16384) {
+          return false;
+        }
+        ++p;
+      }
+      if (p == start || dims[i] < 1) {
+        return false;
+      }
+      if (i == 0) {
+        if (*p != 'x') {
+          return false;
+        }
+        ++p;
+      }
+    }
+    if (*p != '\0') {
+      return false;
+    }
+    *out = RootSizePolicy::Presentation;
+    presentation[0] = static_cast<int32_t>(dims[0]);
+    presentation[1] = static_cast<int32_t>(dims[1]);
     return true;
   }
   return false;
@@ -1031,9 +1064,10 @@ void stream_start() {
                           sabotage_kind != nullptr ? sabotage_op : nullptr);
   const char *root_size = std::getenv("GRC_ROOT_SIZE");
   RootSizePolicy policy = RootSizePolicy::Observe;
-  if (!parse_root_size_policy(root_size, &policy)) {
+  int32_t presentation_wh[2] = {0, 0};
+  if (!parse_root_size_policy(root_size, &policy, presentation_wh)) {
     const std::string error = std::string("invalid GRC_ROOT_SIZE=") + root_size +
-                              " (expected observe or enforce-min-size)";
+                              " (expected observe, enforce-min-size or presentation:<W>x<H>)";
     log_line("stream: refused root size policy (" + error + ")");
     g_stream.status = "refused";
     g_stream.reason = error;
@@ -1081,6 +1115,26 @@ void stream_start() {
     return;
   }
   g_stream.hook_log_on = hook_log != "off";
+  // G6b (gate6-design.md D4, Q3a): presentation:<W>x<H> under stretch `disabled` with W x H other
+  // than the logical size would change layout, so the stream refuses to publish
+  // (root-size-invalid) before anything is opened. One read-only root query decides it.
+  if (policy == RootSizePolicy::Presentation) {
+    const rs::RootInfo probe = rs::root_query_run();
+    if (probe.content_scale_mode == 0 && (presentation_wh[0] != probe.logical_size[0] ||
+                                          presentation_wh[1] != probe.logical_size[1])) {
+      const std::string error =
+          "root-size-invalid: GRC_ROOT_SIZE=" + std::string(root_size) +
+          " under stretch disabled differs from the logical size " +
+          std::to_string(probe.logical_size[0]) + "x" + std::to_string(probe.logical_size[1]);
+      log_line("stream: refused root size policy (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+  }
   // Gate 2 (G2a): the resource policy and the payload copy capability
   // (gate2-design.md D3, Q3). A stream never runs with texture copies it cannot
   // make, so either failure refuses to publish, as an invalid GRC_ROOT_SIZE does.
@@ -1252,9 +1306,9 @@ void stream_start() {
   }
 
   rs2::Session session;
-  // G55d (gate5_5-design.md D1, render-stream-5.md): the capture speaks render-stream/5 (/4 from
-  // G5d, /3 from G4e2). The mirror stamps its snapshots V5 to match.
-  session.version = rs2::ProtocolVersion::V5;
+  // G6b (gate6-design.md D1, render-stream-6.md): the capture speaks render-stream/6 (/5 from
+  // G55d, /4 from G5d, /3 from G4e2). The mirror stamps its snapshots V6 to match.
+  session.version = rs2::ProtocolVersion::V6;
   session.materials.shader_policy = g_stream.shader_policy;
   session.session_id = rs2::generate_id();
   session.engine.version_string = g_state.fp.version_string;
@@ -1319,9 +1373,21 @@ void stream_start() {
   bool enforce_called = false;
   bool enforce_ok = true;
   std::string enforce_detail;
-  if (policy == RootSizePolicy::EnforceMinSize) {
+  // render-stream-6.md "Viewport": the declared presentation size -- the policy's W x H under
+  // presentation:, the logical size otherwise (gate6-design.md Q3a).
+  int32_t presentation_size[2] = {before.logical_size[0], before.logical_size[1]};
+  if (policy == RootSizePolicy::Presentation) {
+    presentation_size[0] = presentation_wh[0];
+    presentation_size[1] = presentation_wh[1];
+  }
+  if (policy == RootSizePolicy::EnforceMinSize || policy == RootSizePolicy::Presentation) {
     enforce_called = true;
-    if (!rs::root_enforce_min_size(before, &enforce_detail)) {
+    const bool written =
+        policy == RootSizePolicy::Presentation
+            ? rs::root_set_min_size(before, presentation_wh[0], presentation_wh[1],
+                                    &enforce_detail)
+            : rs::root_enforce_min_size(before, &enforce_detail);
+    if (!written) {
       enforce_ok = false;
     }
     // Read back what the write did; the declaration is always the after state.
@@ -1331,14 +1397,19 @@ void stream_start() {
       rs::mirror_fail_root_query(after.failed_step);
     }
   }
-  const rs2::HostSizeStatus host_status = rs::host_size_status(after);
-  if (policy == RootSizePolicy::EnforceMinSize && host_status != rs2::HostSizeStatus::Match) {
+  if (policy != RootSizePolicy::Presentation) {
+    presentation_size[0] = after.logical_size[0];
+    presentation_size[1] = after.logical_size[1];
+  }
+  const rs2::HostSizeStatus host_status = rs::host_size_status(after, presentation_size);
+  if (policy != RootSizePolicy::Observe && host_status != rs2::HostSizeStatus::Match) {
     enforce_ok = false;
     if (enforce_detail.empty()) {
       enforce_detail = std::string(rs2::to_wire(host_status)) + ": window " +
                        size_text(after.window_size) + ", visible " +
                        rect_size_text(after.visible_rect) + ", logical " +
-                       size_text(after.logical_size);
+                       size_text(after.logical_size) + ", presentation " +
+                       size_text(presentation_size);
     }
   }
   if (host_status != rs2::HostSizeStatus::Match) {
@@ -1406,8 +1477,24 @@ void stream_start() {
              " stretch=" + std::to_string(root.content_scale_stretch) + ")");
   }
   session.viewport.root_size_policy = policy;
+  session.viewport.presentation_size = {presentation_size[0], presentation_size[1]};
   session.viewport.host_size_status = host_status;
   session.viewport.host_window_size = {root.window_size[0], root.window_size[1]};
+  // G6b (Q3a, D17): the oversampling and snap settings the host evaluates with, read after the
+  // policy. A failed read leaves a non-positive oversampling, which the root query already failed
+  // on; the wire must stay positive, so fall back to 1 then.
+  session.viewport.font_oversampling = root.font_oversampling > 0.0f ? root.font_oversampling : 1.0f;
+  session.viewport.snap_2d.transforms = root.snap_2d_transforms;
+  session.viewport.snap_2d.vertices = root.snap_2d_vertices;
+  rs::mirror_instance().set_snap_2d(root.snap_2d_transforms, root.snap_2d_vertices);
+  // Q3b: viewport_set_global_canvas_transform is compared with the arm-time stretch x global
+  // transform, the session's host_final_xform.
+  rs::mirror_instance().set_global_canvas_reference(root.final_transform);
+  log_line("viewport: presentation=" + size_text(presentation_size) + " oversampling=" +
+           std::to_string(root.font_oversampling) + " snap_2d=" +
+           (root.snap_2d_transforms ? "T" : "-") + (root.snap_2d_vertices ? "V" : "-") +
+           " stretch_transform=[" + std::to_string(root.stretch_transform[0]) + "," +
+           std::to_string(root.stretch_transform[3]) + "]");
   session.clear_color = root.clear_color;
   session.root_canvas_xform = root.canvas_xform;
   session.host_visible_rect = root.visible_rect;
@@ -1446,7 +1533,7 @@ void stream_start() {
     // D5 default 1 (one receiver at a time, a second gets 503); GRC_LIVE_MAX_CONNECTIONS (D13,
     // G6r) raises it up to 4.
     server_config.max_clients = static_cast<std::size_t>(live_max_connections);
-    server_config.subprotocol = "render-stream.5";  // render-stream-5.md "Live transport"
+    server_config.subprotocol = "render-stream.6";  // render-stream-6.md "Live transport"
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();

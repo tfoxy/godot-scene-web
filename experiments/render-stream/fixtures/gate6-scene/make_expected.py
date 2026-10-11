@@ -193,7 +193,8 @@ for _r in range(8):
     if _r == 3:
         CREATION_ORDER.append("TL")
 CREATION_ORDER += ["RT", "RT_VScroll", "TR", "NP", "Marker", "ZH", "PB", "BT", "LE", "CD", "MS", "SM", "CMU", "CMO", "HB", "HB0", "HB1", "HB2", "AN", "LB"]
-REFUSED_ITEMS = ["RFParticles", "RFLight", "RFTime", "RFLcd"]
+# G6b: RFFollow, the follow_viewport layer's ColorRect, is created last in _build_refused.
+REFUSED_ITEMS = ["RFParticles", "RFLight", "RFTime", "RFLcd", "RFFollow"]
 HUD_ITEMS = ["HUDPanel", "HUDLabel"]
 CREATED_LATER = [{"name": "Row8", "step": 9}, {"name": "R8", "step": 9}, {"name": "L8", "step": 9}]
 FREED = [{"name": "Row2", "step": 9}, {"name": "R2", "step": 9}, {"name": "L2", "step": 9}]
@@ -722,7 +723,8 @@ def pb_redraw_frames():
 
 def predictions(variant=""):
     """Per sabotage leg, the (shot, region) pairs where a receiver of that leg differs from the
-    reference, recomputed from the model. HU is excluded before G6b (the receiver draws no HUD)."""
+    reference, recomputed from the model. Since G6b (render-stream/6) the receiver draws the HUD
+    layer, so HU is a region like any other."""
     op_lists = {}
 
     def sigs(frame, **kw):
@@ -740,7 +742,7 @@ def predictions(variant=""):
         if shot["frame"] < 11:
             continue
         now, _ = sigs(shot["frame"])
-        cells[shot["id"]] = sorted(r for r in names if r != "HU" and now.get(r) != frozen.get(r))
+        cells[shot["id"]] = sorted(r for r in names if now.get(r) != frozen.get(r))
     out["sabotage-freeze"] = {"frame": 11, "shots": cells}
 
     # omit-op canvas_item_set_transform @21: every item keeps the local transform it had at frame 20
@@ -756,7 +758,7 @@ def predictions(variant=""):
         held = {name: before.get(name, translate(0, 0)) for name in local_true}
         now, _ = sigs(shot["frame"])
         held_sig, _ = sigs(shot["frame"], local_xforms=held)
-        cells[shot["id"]] = sorted(r for r in names if r != "HU" and now.get(r) != held_sig.get(r))
+        cells[shot["id"]] = sorted(r for r in names if now.get(r) != held_sig.get(r))
     out["sabotage-omit-transform"] = {"frame": 21, "op": "canvas_item_set_transform", "shots": cells}
 
     # perturb-vertex @21: an item re-recorded from frame 21 on with a perturbable command, and MS's
@@ -812,7 +814,7 @@ def predictions(variant=""):
                     hit.add(name)
             if not covered_by(b, regs.values()):
                 hit.add("BG")
-        cells[shot["id"]] = sorted(h for h in hit if h != "HU")
+        cells[shot["id"]] = sorted(hit)
     out["sabotage-receiver-ignore-clip"] = {"shots": cells}
 
     # receiver stale-texture: RGBA8 images keep their first payload; TEXA's step-3 update never
@@ -827,6 +829,18 @@ def predictions(variant=""):
             hit.append("RT")
         cells[shot["id"]] = sorted(hit)
     out["sabotage-receiver-stale-texture"] = {"shots": cells}
+
+    # receiver ignore-canvas-stacking (G6b): the receiver attaches the HUD's canvas and never
+    # stacks it, so it draws at the attach default (0,0), after the root canvas (the renderer breaks
+    # the tie by canvas RID, rv.h:125-130, and the receiver's own canvas_create comes after the
+    # viewport's World2D canvas). That is the reference's picture whenever the HUD's layer is
+    # positive; HU differs exactly while the HUD shows at a negative layer (step 9: over BG instead
+    # of behind it). Q6h's {0..7, 10} assumed attach order would put it under the root canvas.
+    cells = {}
+    for shot in SHOTS:
+        st = state(shot["frame"], variant)
+        cells[shot["id"]] = ["HU"] if st["hud_visible"] and st["hud_layer"] < 0 else []
+    out["sabotage-receiver-ignore-canvas-stacking"] = {"shots": cells}
     return out
 
 
@@ -1020,18 +1034,19 @@ def build():
                 "class": refused["class"],
                 "shots": refused["shots"],
                 "steps": refused["steps"],
-                # what /5 types for the refused variant before G6b (Q6d), op/reason pairs
+                # what /6 types for the refused variant (Q6d, G6b), op/reason pairs: the HUD is
+                # supported, and the follow_viewport layer adds canvas-follow-viewport
                 "unsupported": sorted([
                     ["canvas_item_add_lcd_texture_rect_region", "unsupported-op"],
                     ["canvas_item_add_multimesh", "unsupported-op"],
                     ["canvas_item_set_material", "unsupported-material"],
                     ["canvas_light_attach_to_canvas", "canvas-light"],
-                    ["viewport_attach_canvas", "extra-canvas"],
+                    ["canvas_set_parent", "canvas-follow-viewport"],
                 ]),
             }
         },
-        # what /5 types for the default scene before G6b: the HUD layer's canvas, session-level
-        "unsupported": [["viewport_attach_canvas", "extra-canvas"]],
+        # what /6 types for the default scene (G6b): nothing; the HUD layer is supported
+        "unsupported": [],
         "predictions": predictions(),
     }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Gate 6 group g6h (protocol/gate6-design.md "G6h", "Q6e", "Q7b"): fixtures/gate6-hd, nine copies
-# of the gate 6 scene at logical 1920x1080 under `canvas_items` stretch, on render-stream/5.
+# of the gate 6 scene at logical 1920x1080 under `canvas_items` stretch, on render-stream/6 since
+# G6b (render-stream/5 when G6h landed).
 # Sourced by run-gate6.sh after lib/legs.sh; it relies on run-gate6.sh's OUT, HD_FIXTURE_DIR,
 # RECEIVER_DIR, EXTENSION, CALIBRATION, RECORDING_NAME, PATCH_RECORDING_NAME and scene_receiver.
 #
