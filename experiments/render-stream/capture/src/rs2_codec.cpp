@@ -1,6 +1,8 @@
 #include "rs2_codec.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <tuple>
@@ -168,6 +170,34 @@ void append_json_int(std::string &out, T value) {
 }
 
 void append_json_bool(std::string &out, bool value) { out += value ? "true" : "false"; }
+
+// render-stream-6.md "As built": the ONLY JSON-embedded float this wire carries
+// (`viewport.font_oversampling`) -- every other float lives in a block (render-stream-0.md
+// "Floats never appear in JSON"). Canonical form is the shortest fixed-point decimal (never
+// scientific notation) that round-trips to the exact float64 widening of `value`, matching
+// JavaScript's own `Number::toString` for this magnitude range (no trailing ".0" on a whole
+// number) -- the TypeScript decoder's generic meta-noncanonical check re-serialises with
+// `JSON.stringify`, so this encoder must already produce what that would. Python's
+// `make_golden.py` implements the identical search (`_json_float()`).
+void append_json_float(std::string &out, float value) {
+  const double widened = static_cast<double>(value);
+  char buf[64];
+  for (int precision = 0; precision <= 17; ++precision) {
+    std::snprintf(buf, sizeof(buf), "%.*f", precision, widened);
+    if (std::strtod(buf, nullptr) == widened) {
+      break;
+    }
+  }
+  std::string s(buf);
+  if (s.find('.') != std::string::npos) {
+    std::size_t last_nonzero = s.find_last_not_of('0');
+    if (s[last_nonzero] == '.') {
+      --last_nonzero;
+    }
+    s.erase(last_nonzero + 1);
+  }
+  out += s;
+}
 
 void append_json_string_array(std::string &out, const std::vector<std::string> &values) {
   out.push_back('[');
@@ -444,6 +474,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V6) {
+    return std::vector<std::uint8_t>(kMagicV6.begin(), kMagicV6.end());
+  }
   if (version == ProtocolVersion::V5) {
     return std::vector<std::uint8_t>(kMagicV5.begin(), kMagicV5.end());
   }
@@ -458,12 +491,15 @@ std::vector<std::uint8_t> magic(ProtocolVersion version) {
 std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
-  const char *protocol = session.version == ProtocolVersion::V5
-                              ? kProtocolV5
-                              : (session.version == ProtocolVersion::V4
-                                     ? kProtocolV4
-                                     : (session.version == ProtocolVersion::V3 ? kProtocolV3
-                                                                                : kProtocol));
+  const char *protocol = session.version == ProtocolVersion::V6
+                              ? kProtocolV6
+                              : (session.version == ProtocolVersion::V5
+                                     ? kProtocolV5
+                                     : (session.version == ProtocolVersion::V4
+                                            ? kProtocolV4
+                                            : (session.version == ProtocolVersion::V3
+                                                   ? kProtocolV3
+                                                   : kProtocol)));
   append_json_string(m, protocol);
   m += ",\"session_id\":";
   append_json_string(m, session.session_id);
@@ -502,6 +538,13 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string_array(m, sorted_copy(session.capture.hooks_omitted));
   m += "}";
 
+  const bool is_v6 = session.version == ProtocolVersion::V6;
+  // is_v5 means "V5 or later": /6 is a delta on /5 that keeps everything /5 added (shader/
+  // material tables, canvas modulate, item material state) unless render-stream-6.md says
+  // otherwise.
+  const bool is_v5 = is_v6 || session.version == ProtocolVersion::V5;
+  const bool is_v4_or_later = is_v5 || session.version == ProtocolVersion::V4;
+
   m += ",\"viewport\":{\"canvas_cull_mask\":";
   append_json_int(m, session.viewport.canvas_cull_mask);
   m += ",\"root_canvas\":";
@@ -520,16 +563,33 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   m += ",\"stretch_applied_by\":\"receiver\"";
   m += ",\"root_size_policy\":";
   append_json_string(m, to_wire(session.viewport.root_size_policy));
+  if (is_v6) {
+    // render-stream-6.md "Session": presentation_size, right after root_size_policy and before
+    // host_size_status.
+    m += ",\"presentation_size\":[";
+    append_json_int(m, session.viewport.presentation_size[0]);
+    m += ",";
+    append_json_int(m, session.viewport.presentation_size[1]);
+    m += "]";
+  }
   m += ",\"host_size_status\":";
   append_json_string(m, to_wire(session.viewport.host_size_status));
   m += ",\"host_window_size\":[";
   append_json_int(m, session.viewport.host_window_size[0]);
   m += ",";
   append_json_int(m, session.viewport.host_window_size[1]);
-  m += "]}";
-
-  const bool is_v5 = session.version == ProtocolVersion::V5;
-  const bool is_v4_or_later = is_v5 || session.version == ProtocolVersion::V4;
+  m += "]";
+  if (is_v6) {
+    // render-stream-6.md "Session": font_oversampling and snap_2d, after host_window_size.
+    m += ",\"font_oversampling\":";
+    append_json_float(m, session.viewport.font_oversampling);
+    m += ",\"snap_2d\":{\"transforms\":";
+    append_json_bool(m, session.viewport.snap_2d.transforms);
+    m += ",\"vertices\":";
+    append_json_bool(m, session.viewport.snap_2d.vertices);
+    m += "}";
+  }
+  m += "}";
 
   m += ",\"resources\":{\"hash\":\"sha256\",";
   if (is_v5) {
@@ -598,6 +658,20 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string(m, session.features.publication);
   m += "}";
 
+  if (is_v6) {
+    // render-stream-6.md "Session": a new top-level "publication" key, right after "features"
+    // (gate6-design.md D8) -- distinct from features.publication above.
+    m += ",\"publication\":{\"mode\":";
+    append_json_string(m, to_wire(session.publication.mode));
+    m += ",\"target_fps\":";
+    if (session.publication.has_target_fps) {
+      append_json_int(m, session.publication.target_fps);
+    } else {
+      m += "null";
+    }
+    m += "}";
+  }
+
   m += ",\"sabotage\":";
   if (session.sabotage.kind == SabotageKind::None) {
     m += "null";
@@ -638,6 +712,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
 }
 
 std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
+  // render-stream-6.md: transactions are byte-identical to /5 (gate6-design.md D1), so is_v6 is
+  // only needed for the unknown_items version gate below and the new canvas layer/sublayer keys.
+  const bool is_v6 = transaction.version == ProtocolVersion::V6;
   std::string m;
   m += "{\"type\":\"transaction\",\"seq\":";
   append_json_int(m, transaction.seq);
@@ -689,10 +766,11 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   m += "]";
 
   // protocol/unknown-item-skip.md "Transaction": in a session that declares
-  // `unknown_item_policy: "skip"` (and only then, at /4 and /5), every transaction carries what it
-  // left out, right after `unsupported`. Complete in full and patch transactions alike.
+  // `unknown_item_policy: "skip"` (and only then, at /4, /5 and /6), every transaction carries
+  // what it left out, right after `unsupported`. Complete in full and patch transactions alike.
   if (transaction.unknown_items.present && (transaction.version == ProtocolVersion::V4 ||
-                                            transaction.version == ProtocolVersion::V5)) {
+                                            transaction.version == ProtocolVersion::V5 ||
+                                            is_v6)) {
     const UnknownItems &unknown = transaction.unknown_items;
     m += ",\"unknown_items\":{\"unknown_rids\":";
     append_json_int(m, unknown.unknown_rids);
@@ -710,7 +788,8 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   m += ",\"default_texture_repeat\":";
   append_json_string(m, to_wire(transaction.default_texture_repeat));
 
-  const bool is_v5 = transaction.version == ProtocolVersion::V5;
+  // is_v5 means "V5 or later" (see rs2_diff.cpp's make_patch() comment).
+  const bool is_v5 = is_v6 || transaction.version == ProtocolVersion::V5;
   const bool is_v4 = is_v5 || transaction.version == ProtocolVersion::V4;
 
   m += ",\"removed_canvases\":";
@@ -751,6 +830,13 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     }
     m += ",\"attached\":";
     append_json_bool(m, canvas.attached);
+    if (is_v6) {
+      // render-stream-6.md "Canvas": layer/sublayer, right after attached and before items.
+      m += ",\"layer\":";
+      append_json_int(m, canvas.layer);
+      m += ",\"sublayer\":";
+      append_json_int(m, canvas.sublayer);
+    }
     m += ",\"items\":";
     append_json_id_array(m, canvas.items);
     m += "}";

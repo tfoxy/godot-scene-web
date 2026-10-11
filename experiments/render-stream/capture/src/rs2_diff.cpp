@@ -111,6 +111,11 @@ bool canvas_state_equal(const CanvasState &a, const CanvasState &b) {
   if (a.origin != b.origin || a.role != b.role || a.attached != b.attached || a.items != b.items) {
     return false;
   }
+  // new at /6: layer/sublayer participate too (render-stream-6.md "Canvas"); every pre-/6
+  // CanvasState leaves them at the default (0, 0), so this is a no-op for /2-/5 comparisons.
+  if (a.layer != b.layer || a.sublayer != b.sublayer) {
+    return false;
+  }
   // new at /5: canvas modulate participates too (render-stream-5.md "Canvas"); every pre-/5
   // CanvasState leaves it at the default kWhite, so this is a no-op for /2-/4 comparisons.
   return arrays_equal_bits(a.xform, b.xform) && arrays_equal_bits(a.modulate, b.modulate);
@@ -284,10 +289,11 @@ Transaction make_full(const Snapshot &cur) {
   t.default_texture_repeat = cur.default_texture_repeat;
   t.canvases = cur.canvases;
   t.textures = cur.textures;
-  if (cur.version == ProtocolVersion::V4 || cur.version == ProtocolVersion::V5) {
+  if (cur.version == ProtocolVersion::V4 || cur.version == ProtocolVersion::V5 ||
+      cur.version == ProtocolVersion::V6) {
     t.meshes = cur.meshes;
   }
-  if (cur.version == ProtocolVersion::V5) {
+  if (cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
@@ -378,7 +384,9 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
       t.removed_textures.push_back(id);
     }
   }
-  const bool is_v5 = cur.version == ProtocolVersion::V5;
+  // is_v5 means "V5 or later" (render-stream-6.md is a delta on /5's tables, carrying its
+  // shader/material tables and mesh table forward unchanged).
+  const bool is_v5 = cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6;
   const bool is_v4_or_later = is_v5 || cur.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
     for (const auto &[id, ptr] : base_meshes) {
@@ -476,7 +484,8 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   out.default_texture_filter = txn.default_texture_filter;
   out.default_texture_repeat = txn.default_texture_repeat;
 
-  const bool is_v5 = txn.version == ProtocolVersion::V5;
+  // is_v5 means "V5 or later" (see make_patch()'s comment above).
+  const bool is_v5 = txn.version == ProtocolVersion::V5 || txn.version == ProtocolVersion::V6;
   const bool is_v4_or_later = is_v5 || txn.version == ProtocolVersion::V4;
 
   if (txn.encoding == Encoding::Full) {

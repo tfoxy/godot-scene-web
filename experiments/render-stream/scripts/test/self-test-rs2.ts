@@ -1,23 +1,23 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the render-stream/2, /3, /4 AND /5 TypeScript decoder/validator/resolver
+// Self-test for the render-stream/2, /3, /4, /5 AND /6 TypeScript decoder/validator/resolver
 // (lib/render-stream-2.ts) against the golden vectors they share with the C++ codec/diff and the
 // GDScript decoder (protocol/golden-2/, render-stream-2.md; protocol/golden-3/,
 // render-stream-3.md; protocol/golden-4/, render-stream-4.md; protocol/golden-5/,
-// render-stream-5.md).
+// render-stream-5.md; protocol/golden-6/, render-stream-6.md).
 //
 //   mise exec -- pnpm exec tsx --conditions=development scripts/test/self-test-rs2.ts
 //
-// render-stream/3 (G4e1), /4 (G5w) and /5 (G55w) are implemented in render-stream-2.ts itself,
-// behind an explicit `version` parameter -- not forked render-stream-3.ts/-4.ts/-5.ts modules
-// (gate4-design.md G4e1: "Renaming files is not part of this contract"). runSuite() below runs
-// the same checks against golden-2 (version 2, unchanged), golden-3 (version 3), golden-4
-// (version 4) and golden-5 (version 5); "renamed tests are not required" means the per-check
-// messages below still say "rs2"-flavoured things like ".rs2"/".rs3"/".rs4"/".rs5" from
-// `entry.file` itself, not from a hardcoded suffix.
+// render-stream/3 (G4e1), /4 (G5w), /5 (G55w) and /6 (G6w) are implemented in render-stream-2.ts
+// itself, behind an explicit `version` parameter -- not forked render-stream-3.ts/-4.ts/-5.ts/
+// -6.ts modules (gate4-design.md G4e1: "Renaming files is not part of this contract").
+// runSuite() below runs the same checks against golden-2 (version 2, unchanged), golden-3
+// (version 3), golden-4 (version 4), golden-5 (version 5) and golden-6 (version 6); "renamed
+// tests are not required" means the per-check messages below still say "rs2"-flavoured things
+// like ".rs2"/".rs3"/".rs4"/".rs5"/".rs6" from `entry.file` itself, not from a hardcoded suffix.
 //
-// Checks, each required by gate2-design.md's G2b1 "Pass criteria" (and, for golden-3/-4/-5, by
-// gate4-design.md's G4e1, render-stream-4.md's G5w and render-stream-5.md's G55w "Pass
-// criteria"):
+// Checks, each required by gate2-design.md's G2b1 "Pass criteria" (and, for golden-3/-4/-5/-6, by
+// gate4-design.md's G4e1, render-stream-4.md's G5w, render-stream-5.md's G55w and
+// gate6-design.md's G6w "Pass criteria"):
 //   - decodeRecording() deep-equals each of full/patch/inline.decoded.json;
 //   - recordSha256() reproduces every record's sha256 in all three decoded forms;
 //   - validateRecording() of all three valid vectors is [];
@@ -28,9 +28,12 @@
 //   - golden-5 only: params.rs5 (gate5_5-design.md D4's "params" shader-source policy) decodes,
 //     validates clean and resolves to resolved-params.json -- its own independent leg, since it
 //     is a separate small recording, not part of the shared resolved.json;
-//   - every invalid/*.rs2, .rs3, .rs4 or .rs5 is rejected with exactly one error of the right
-//     code;
-//   - corrupt-meta.rs2/.rs3/.rs4/.rs5 is rejected with "meta-json";
+//   - golden-6 only: presentation.rs6, snap.rs6 and rate.rs6 (gate6-design.md Q4's three
+//     dedicated small streams) each decode, validate clean and resolve to their own
+//     resolved-*.json -- independent legs, mirroring params.rs5;
+//   - every invalid/*.rs2, .rs3, .rs4, .rs5 or .rs6 is rejected with exactly one error of the
+//     right code;
+//   - corrupt-meta.rs2/.rs3/.rs4/.rs5/.rs6 is rejected with "meta-json";
 //   - every payload-invalid/*.grt (golden-2 only: /3 does not change the payload format) throws
 //     the named code from decodeTexturePayload(); every payload-invalid/*.grm (golden-4 only)
 //     throws the named code from decodeMeshPayload(); every payload-invalid/*.grp (golden-5
@@ -78,6 +81,7 @@ const GOLDEN2_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-2");
 const GOLDEN3_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-3");
 const GOLDEN4_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-4");
 const GOLDEN5_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-5");
+const GOLDEN6_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-6");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -120,13 +124,20 @@ interface GoldenIndex {
   // golden-5 only (render-stream-5.md "Shader payload").
   shader_payloads?: Array<{ file: string; hash: string; bytes: number }>;
   // golden-5 only: params.rs5's own independent leg (gate5_5-design.md D4).
-  params_leg?: {
-    file: string;
-    hex: string;
-    decoded: string;
-    sha256: string;
-    resolved: string;
-  };
+  params_leg?: IndependentLeg;
+  // golden-6 only: presentation.rs6/snap.rs6/rate.rs6's own independent legs (render-stream-6.md
+  // "Golden vectors"), mirroring params_leg.
+  presentation_leg?: IndependentLeg;
+  snap_leg?: IndependentLeg;
+  rate_leg?: IndependentLeg;
+}
+
+interface IndependentLeg {
+  file: string;
+  hex: string;
+  decoded: string;
+  sha256: string;
+  resolved: string;
 }
 
 let failures = 0;
@@ -165,20 +176,22 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 
 // Runs every check against one golden directory, decoding with the given protocol `version`
 // (2 for golden-2/, 3 for golden-3/ -- gate4-design.md G4e1; 4 for golden-4/ -- render-stream-4.md
-// G5w; 5 for golden-5/ -- render-stream-5.md G55w). The checks themselves are the same for all
-// four: only the directory and the `version` argument threaded into decodeRecording()/
-// validateRecording()/resolveRecording() differ.
+// G5w; 5 for golden-5/ -- render-stream-5.md G55w; 6 for golden-6/ -- render-stream-6.md G6w).
+// The checks themselves are the same for all five: only the directory and the `version` argument
+// threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5,
+  version: 2 | 3 | 4 | 5 | 6,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-5")
-    ? "golden-5"
-    : goldenDir.endsWith("golden-4")
-      ? "golden-4"
-      : goldenDir.endsWith("golden-3")
-        ? "golden-3"
-        : "golden-2";
+  const label = goldenDir.endsWith("golden-6")
+    ? "golden-6"
+    : goldenDir.endsWith("golden-5")
+      ? "golden-5"
+      : goldenDir.endsWith("golden-4")
+        ? "golden-4"
+        : goldenDir.endsWith("golden-3")
+          ? "golden-3"
+          : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -362,9 +375,16 @@ async function runSuite(
     );
   }
 
-  // --- golden-5 only: params.rs5's own independent leg (gate5_5-design.md D4) ------------------
-  if (index.params_leg !== undefined) {
-    const legEntry = index.params_leg;
+  // --- independent legs: golden-5's params.rs5 (gate5_5-design.md D4) and golden-6's
+  // presentation.rs6/snap.rs6/rate.rs6 (render-stream-6.md "Golden vectors") -- each a separate,
+  // independent small recording, not part of the shared full/patch/inline streams. ------------
+  for (const legEntry of [
+    index.params_leg,
+    index.presentation_leg,
+    index.snap_leg,
+    index.rate_leg,
+  ]) {
+    if (legEntry === undefined) continue;
     const bytes = await readBytes(goldenDir, legEntry.file);
     const expectedDecoded = JSON.parse(
       await readFile(join(goldenDir, legEntry.decoded), "utf8"),
@@ -396,15 +416,18 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN3_DIR, 3);
   await runSuite(GOLDEN4_DIR, 4);
   await runSuite(GOLDEN5_DIR, 5);
+  await runSuite(GOLDEN6_DIR, 6);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
-  // /4 decode refuses /3 and a /3 decode refuses /4, and a /5 decode refuses /4 and a /4 decode
-  // refuses /5 (render-stream-4.md/render-stream-5.md, same rule) ------------------------------
+  // /4 decode refuses /3 and a /3 decode refuses /4, a /5 decode refuses /4 and a /4 decode
+  // refuses /5, and a /6 decode refuses /5 and a /5 decode refuses /6 (render-stream-4.md/
+  // render-stream-5.md/render-stream-6.md, same rule) -------------------------------------------
   const full2 = await readBytes(GOLDEN2_DIR, "full.rs2");
   const full3 = await readBytes(GOLDEN3_DIR, "full.rs3");
   const full4 = await readBytes(GOLDEN4_DIR, "full.rs4");
   const full5 = await readBytes(GOLDEN5_DIR, "full.rs5");
+  const full6 = await readBytes(GOLDEN6_DIR, "full.rs6");
   ok(
     validateRecording(full3, 2)[0]?.startsWith("bad-magic: ") ?? false,
     "golden-3/full.rs3 decoded as version 2 is rejected with bad-magic",
@@ -428,6 +451,14 @@ async function main(): Promise<void> {
   ok(
     validateRecording(full4, 5)[0]?.startsWith("bad-magic: ") ?? false,
     "golden-4/full.rs4 decoded as version 5 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full6, 5)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-6/full.rs6 decoded as version 5 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full5, 6)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-5/full.rs5 decoded as version 6 is rejected with bad-magic",
   );
 
   unknownItemCases();

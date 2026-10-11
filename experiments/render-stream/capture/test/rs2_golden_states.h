@@ -315,6 +315,46 @@ inline Session golden_session_v5(Encoding stream_encoding, const std::string &st
   return session;
 }
 
+// new at /6 (G6w, render-stream-6.md "Features"): canvas_state gains "layer";
+// observed_unsupported_ops gains three canvas ops; unobserved loses viewport_remove_canvas and
+// viewport_set_global_canvas_transform (both now hooked and session-level-observed) and gains
+// canvas_set_disable_scale. No hook/calibrator change (G6k's job): hooks_planned and
+// calibrator_version stay exactly /5's.
+inline const std::vector<std::string> kFeatureCanvasStateV6 = {"layer", "modulate", "transform"};
+
+inline const std::vector<std::string> kFeatureObservedUnsupportedV6 = {
+    "canvas_item_add_animation_slice", "canvas_item_add_lcd_texture_rect_region",
+    "canvas_item_add_multimesh", "canvas_item_add_particles", "canvas_item_attach_skeleton",
+    "canvas_light_attach_to_canvas", "canvas_set_item_mirroring", "canvas_set_item_repeat",
+    "canvas_set_parent"};
+
+inline const std::vector<std::string> kFeatureUnobservedV6 = {
+    "canvas_item_set_canvas_group_mode", "canvas_item_set_copy_to_backbuffer",
+    "canvas_item_set_light_mask", "canvas_item_set_sort_children_by_y",
+    "canvas_item_set_visibility_notifier", "canvas_set_disable_scale",
+    "canvas_texture_set_shading_parameters", "global_shader_parameter_add",
+    "global_shader_parameter_remove", "global_shader_parameter_set",
+    "global_shader_parameter_set_override", "material_set_next_pass",
+    "material_set_render_priority", "shader_set_path_hint", "texture_set_size_override",
+    "viewport_set_canvas_cull_mask", "viewport_set_snap_2d_transforms_to_pixel",
+    "viewport_set_snap_2d_vertices_to_pixel"};
+
+inline Session golden_session_v6(Encoding stream_encoding, const std::string &stream_id,
+                                  const std::string &session_id, Delivery delivery) {
+  Session session = golden_session_v5(stream_encoding, stream_id, session_id, delivery);
+  session.version = ProtocolVersion::V6;
+  session.features.canvas_state = kFeatureCanvasStateV6;
+  session.features.observed_unsupported_ops = kFeatureObservedUnsupportedV6;
+  session.features.unobserved = kFeatureUnobservedV6;
+  // render-stream-6.md "Viewport": presentation_size equal to logical_size, font_oversampling 1,
+  // snap_2d both false, root_size_policy "observe" (all already ViewportInfo's defaults).
+  session.viewport.presentation_size = session.viewport.logical_size;
+  session.viewport.font_oversampling = 1.0f;
+  // render-stream-6.md "Publication": a file sink is always every-frame/null (PublicationInfo's
+  // defaults).
+  return session;
+}
+
 inline CanvasState root_canvas(std::vector<std::uint32_t> items) {
   CanvasState c;
   c.id = 1;
@@ -1188,6 +1228,96 @@ inline const std::vector<UnsupportedRef> kState15Unsupported = []() {
   return v;
 }();
 
+// --- states 16-19, new at /6 (G6w): a second canvas, layer changes, removal, a stacking tie ---
+// render-stream-6.md "Golden vectors". Ground truth for protocol/golden-6/{full,patch,inline}.rs6's
+// sixteenth through nineteenth transactions, hand-transcribed from protocol/golden-6/
+// make_golden.py's state16()..state19().
+
+inline const Xform kCanvas2Xform = {1.0f, 0.0f, 0.0f, 1.0f, 50.0f, 50.0f};
+inline const Color4 kCanvas2Modulate = {0.75f, 0.625f, 0.25f, 1.0f};
+
+// Non-root canvas builder (render-stream-6.md "Canvas"): origin "created", role None (-> JSON
+// null), parameterized attached/layer/sublayer -- unlike root_canvas() above, which is always
+// origin root-query/role root/attached true/layer 0/sublayer 0.
+inline CanvasState canvas_entry(std::vector<std::uint32_t> items, bool attached = true,
+                                 Xform xform = kIdentityXform, Color4 modulate = kWhite,
+                                 std::int32_t layer = 0, std::int32_t sublayer = 0) {
+  CanvasState c;
+  c.origin = Origin::Created;
+  c.role = CanvasRole::None;
+  c.attached = attached;
+  c.layer = layer;
+  c.sublayer = sublayer;
+  c.xform = xform;
+  c.items = std::move(items);
+  c.modulate = modulate;
+  return c;
+}
+
+inline ItemState item18() {
+  ItemState it;
+  it.id = 18;
+  it.parent = ParentRef{ParentKind::Canvas, 2};
+  it.xform = kIdentityXform;
+  it.draw_index = 0;
+  it.content_version = 1;
+  it.commands = {add_rect({0.0f, 0.0f, 16.0f, 16.0f}, {0.875f, 0.5f, 0.125f, 1.0f})};
+  return it;
+}
+
+inline ItemState item19() {
+  ItemState it;
+  it.id = 19;
+  it.parent = ParentRef{ParentKind::Canvas, 2};
+  it.xform = {1.0f, 0.0f, 0.0f, 1.0f, 20.0f, 0.0f};
+  it.draw_index = 1;
+  it.content_version = 1;
+  it.commands = {add_rect({0.0f, 0.0f, 16.0f, 16.0f}, {0.125f, 0.5f, 0.875f, 1.0f})};
+  return it;
+}
+
+inline const UnsupportedRef kCanvasStackingTie = []() {
+  UnsupportedRef u;
+  u.op = "viewport_set_canvas_stacking";
+  u.has_item = false;
+  u.reason = UnsupportedReason::CanvasStackingTie;
+  return u;
+}();
+
+inline const UnsupportedRef kCanvasRepeat = []() {
+  UnsupportedRef u;
+  u.op = "canvas_set_item_mirroring";
+  u.has_item = false;
+  u.reason = UnsupportedReason::CanvasRepeat;
+  return u;
+}();
+
+inline const UnsupportedRef kCanvasFollowViewport = []() {
+  UnsupportedRef u;
+  u.op = "canvas_set_parent";
+  u.has_item = false;
+  u.reason = UnsupportedReason::CanvasFollowViewport;
+  return u;
+}();
+
+inline const UnsupportedRef kGlobalCanvasTransform = []() {
+  UnsupportedRef u;
+  u.op = "viewport_set_global_canvas_transform";
+  u.has_item = false;
+  u.reason = UnsupportedReason::GlobalCanvasTransform;
+  return u;
+}();
+
+// Session-level entries sort first (no ordering constraint among them); state15's own item-level
+// tail is reused verbatim (kState15Unsupported[0] is kCanvasLight, so entries 1.. are the sorted
+// item-level tail).
+inline const std::vector<UnsupportedRef> kState19Unsupported = []() {
+  std::vector<UnsupportedRef> v = {kCanvasLight, kCanvasStackingTie, kCanvasRepeat,
+                                    kCanvasFollowViewport, kGlobalCanvasTransform};
+  v.insert(v.end(), kState15Unsupported.begin() + 1, kState15Unsupported.end());
+  return v;
+}();
+
 // --- the fifteen states -----------------------------------------------------------------------
 
 inline Snapshot state(int n) {
@@ -1391,6 +1521,57 @@ inline Snapshot state(int n) {
       s.materials.push_back(material5);
     }
     s.unsupported = kState15Unsupported;
+    break;
+  case 16:
+    // new at /6 (G6w): a second canvas (id 2) attached to the root viewport at layer 1/
+    // sublayer 0, with a non-identity transform, a non-white modulate, and two new items
+    // (18, 19) parented to it.
+    s = state(15);
+    s.seq = 16;
+    s.frame = 16;
+    s.version = ProtocolVersion::V6;
+    {
+      CanvasState canvas2 = canvas_entry({18, 19}, true, kCanvas2Xform, kCanvas2Modulate, 1, 0);
+      canvas2.id = 2;
+      s.canvases.push_back(canvas2);
+    }
+    s.items.push_back(item18());
+    s.items.push_back(item19());
+    break;
+  case 17:
+    // relative to 16: ONLY canvas 2's layer changes (1 -> -1) -- the patch carries exactly one
+    // canvas entry, nothing else.
+    s = state(16);
+    s.seq = 17;
+    s.frame = 17;
+    s.canvases[1] = canvas_entry({18, 19}, true, kCanvas2Xform, kCanvas2Modulate, -1, 0);
+    s.canvases[1].id = 2;
+    break;
+  case 18:
+    // relative to 17: canvas 2 is removed from the viewport (attached: false); its items (18,
+    // 19) stay in the table, parented to it, as gate 0 keeps a detached canvas's items.
+    s = state(17);
+    s.seq = 18;
+    s.frame = 18;
+    s.canvases[1] = canvas_entry({18, 19}, false, kCanvas2Xform, kCanvas2Modulate, -1, 0);
+    s.canvases[1].id = 2;
+    break;
+  case 19:
+    // relative to 18: canvas 2 is reattached (layer 2/sublayer 0, never carrying forward its
+    // detached layer -1) and a third canvas (id 3, no items) is created at the SAME
+    // (layer, sublayer) -- a canvas-stacking-tie -- and the session gains canvas-repeat,
+    // canvas-follow-viewport and global-canvas-transform together.
+    s = state(18);
+    s.seq = 19;
+    s.frame = 19;
+    s.canvases[1] = canvas_entry({18, 19}, true, kCanvas2Xform, kCanvas2Modulate, 2, 0);
+    s.canvases[1].id = 2;
+    {
+      CanvasState canvas3 = canvas_entry({}, true, kIdentityXform, kWhite, 2, 0);
+      canvas3.id = 3;
+      s.canvases.push_back(canvas3);
+    }
+    s.unsupported = kState19Unsupported;
     break;
   default:
     break;

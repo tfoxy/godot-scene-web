@@ -1,29 +1,30 @@
 extends SceneTree
 ## Rs2Decoder / RsTexturePayload / RsMeshPayload / RsShaderPayload self-test against the shared
 ## golden vectors (protocol/golden-2/, protocol/golden-3/ G4e1, protocol/golden-4/ G5w,
-## protocol/golden-5/ G55w).
+## protocol/golden-5/ G55w, protocol/golden-6/ G6w).
 ##
 ##   godot --headless --path receiver --script res://tests/codec2_selftest.gd
 ##
 ## RS_SELFTEST_GOLDEN_DIR overrides the golden-2 directory (default
-## <receiver>/../protocol/golden-2); golden-3, golden-4 and golden-5 are always read from their
-## siblings, <receiver>/../protocol/golden-3, golden-4 and golden-5 (not independently
-## overridable -- this self-test is the one for ALL FOUR directories, per gate4-design.md G4e1:
-## "Renaming files is not part of this contract", so separate codec3_selftest.gd/
-## codec4_selftest.gd/codec5_selftest.gd were not added). Prints "[rs2-selftest] ok" and quits 0,
-## or prints each failure and quits 1.
+## <receiver>/../protocol/golden-2); golden-3, golden-4, golden-5 and golden-6 are always read
+## from their siblings, <receiver>/../protocol/golden-3, golden-4, golden-5 and golden-6 (not
+## independently overridable -- this self-test is the one for ALL FIVE directories, per
+## gate4-design.md G4e1: "Renaming files is not part of this contract", so separate
+## codec3_selftest.gd/codec4_selftest.gd/codec5_selftest.gd/codec6_selftest.gd were not added).
+## Prints "[rs2-selftest] ok" and quits 0, or prints each failure and quits 1.
 ##
 ## Pure-codec properties only (gate2-design.md G2b1 "Pass criteria", gate4-design.md G4e1's,
-## render-stream-4.md G5w's and render-stream-5.md G55w's -- the applier, RsApplier, speaks /5
-## since G55d (applier2_selftest.gd covers it); every suite here passes its version explicitly):
+## render-stream-4.md G5w's, render-stream-5.md G55w's and gate6-design.md G6w's -- the applier,
+## RsApplier, speaks /5 since G55d (applier2_selftest.gd covers it; every suite here passes its
+## version explicitly) but not /6 until G6b):
 ##   1. decode_record()-equivalent (split_records + decode_record) deep-equals *.decoded.json for
-##      full/patch/inline.rs2, .rs3, .rs4 and .rs5;
+##      full/patch/inline.rs2, .rs3, .rs4, .rs5 and .rs6;
 ##   2. the Stream's resolved state after each transaction deep-equals resolved.json's per-seq
 ##      state (session_id/stream_id/encoding excepted, as self-test-rs2.ts), for all three streams
 ##      in each golden directory;
-##   3. every invalid/*.rs2/.rs3/.rs4/.rs5 yields its index.json code, and validate_recording() of
-##      all three valid vectors in each directory is [];
-##   4. corrupt-meta.rs2/.rs3/.rs4/.rs5's broken transaction is rejected with "meta-json";
+##   3. every invalid/*.rs2/.rs3/.rs4/.rs5/.rs6 yields its index.json code, and
+##      validate_recording() of all three valid vectors in each directory is [];
+##   4. corrupt-meta.rs2/.rs3/.rs4/.rs5/.rs6's broken transaction is rejected with "meta-json";
 ##   5. every payload-invalid/*.grt (golden-2 only: /3 does not change the payload format) yields
 ##      its code from RsTexturePayload.decode(); every payload-invalid/*.grm (golden-4 only)
 ##      yields its code from RsMeshPayload.decode(); every payload-invalid/*.grp (golden-5 only)
@@ -34,7 +35,10 @@ extends SceneTree
 ##      golden-5 shader_payloads/*.grp likewise against RsShaderPayload.decode();
 ##   7. golden-5 only: params.rs5 (gate5_5-design.md D4's "params" shader-source policy) decodes,
 ##      validates clean and resolves to resolved-params.json -- its own independent leg, since it
-##      is a separate small recording, not part of the shared resolved.json.
+##      is a separate small recording, not part of the shared resolved.json;
+##   8. golden-6 only: presentation.rs6, snap.rs6 and rate.rs6 (gate6-design.md Q4's three
+##      dedicated small streams) decode, validate clean and resolve to their own resolved-*.json
+##      -- independent legs, mirroring params.rs5.
 
 var _failures: Array[String] = []
 var _golden: String = ""
@@ -47,19 +51,27 @@ func _initialize() -> void:
 	var golden3: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-3").simplify_path()
 	var golden4: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-4").simplify_path()
 	var golden5: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-5").simplify_path()
+	var golden6: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-6").simplify_path()
 	_run_suite(_golden, 2)
 	_run_suite(golden3, 3)
 	_run_suite(golden4, 4)
 	_run_suite(golden5, 5)
+	_run_suite(golden6, 6)
 
-	# A /5 decode refuses a /4-magic stream and vice versa (render-stream-4.md/render-stream-5.md:
-	# "Decoders refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder").
+	# A /5 decode refuses a /4-magic stream and vice versa, and a /6 decode refuses a /5-magic
+	# stream and vice versa (render-stream-4.md/render-stream-5.md/render-stream-6.md: "Decoders
+	# refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder").
 	var full4: PackedByteArray = FileAccess.get_file_as_bytes(golden4.path_join("full.rs4"))
 	var full5: PackedByteArray = FileAccess.get_file_as_bytes(golden5.path_join("full.rs5"))
+	var full6: PackedByteArray = FileAccess.get_file_as_bytes(golden6.path_join("full.rs6"))
 	var errors_4_as_5: PackedStringArray = Rs2Decoder.validate_recording(full4, 5)
 	_check(errors_4_as_5.size() > 0 and Rs2Decoder.code_of(errors_4_as_5[0]) == "bad-magic", "golden-4/full.rs4 decoded as version 5 should be rejected with bad-magic, got %s" % str(errors_4_as_5))
 	var errors_5_as_4: PackedStringArray = Rs2Decoder.validate_recording(full5, 4)
 	_check(errors_5_as_4.size() > 0 and Rs2Decoder.code_of(errors_5_as_4[0]) == "bad-magic", "golden-5/full.rs5 decoded as version 4 should be rejected with bad-magic, got %s" % str(errors_5_as_4))
+	var errors_6_as_5: PackedStringArray = Rs2Decoder.validate_recording(full6, 5)
+	_check(errors_6_as_5.size() > 0 and Rs2Decoder.code_of(errors_6_as_5[0]) == "bad-magic", "golden-6/full.rs6 decoded as version 5 should be rejected with bad-magic, got %s" % str(errors_6_as_5))
+	var errors_5_as_6: PackedStringArray = Rs2Decoder.validate_recording(full5, 6)
+	_check(errors_5_as_6.size() > 0 and Rs2Decoder.code_of(errors_5_as_6[0]) == "bad-magic", "golden-5/full.rs5 decoded as version 6 should be rejected with bad-magic, got %s" % str(errors_5_as_6))
 
 	_finish()
 
@@ -79,7 +91,10 @@ func _run_suite(golden_dir: String, version: int) -> void:
 	_test_payloads(index, version)
 	_test_mesh_payloads(index, version)
 	_test_shader_payloads(index, version)
-	_test_params_leg(index, version)
+	_test_independent_leg(index, version, "params_leg")
+	_test_independent_leg(index, version, "presentation_leg")
+	_test_independent_leg(index, version, "snap_leg")
+	_test_independent_leg(index, version, "rate_leg")
 
 
 func _finish() -> void:
@@ -166,6 +181,8 @@ func _decode_recording(data: PackedByteArray, version: int) -> Dictionary:
 		schema = "render-stream-4-decoded/1"
 	elif version == 5:
 		schema = "render-stream-5-decoded/1"
+	elif version == 6:
+		schema = "render-stream-6-decoded/1"
 	return {
 		"schema": schema,
 		"magic": data.slice(0, 8).hex_encode(),
@@ -207,7 +224,7 @@ func _snapshot_state(stream: Rs2Decoder.Stream, meta: Dictionary) -> Dictionary:
 		"items": items_out,
 		"textures": textures_out,
 	}
-	if stream.version == 4 or stream.version == 5:
+	if stream.version == 4 or stream.version == 5 or stream.version == 6:
 		var mesh_ids: Array[int] = []
 		for id: int in stream.meshes:
 			mesh_ids.append(id)
@@ -216,7 +233,7 @@ func _snapshot_state(stream: Rs2Decoder.Stream, meta: Dictionary) -> Dictionary:
 		for id: int in mesh_ids:
 			meshes_out.append(stream.meshes[id])
 		out["meshes"] = meshes_out
-	if stream.version == 5:
+	if stream.version == 5 or stream.version == 6:
 		var shader_ids: Array[int] = []
 		for id: int in stream.shaders:
 			shader_ids.append(id)
@@ -302,8 +319,9 @@ func _test_invalid(index: Dictionary, version: int) -> void:
 	var invalid: Array = index["invalid"]
 	# golden-2 has 12 invalid vectors (its full /2 rule set); golden-3 has exactly the 5 new
 	# failure modes /3 adds; golden-4 has the 11 new failure modes /4 adds; golden-5 has the 14
-	# new failure modes /5 adds (each contract: every rule left unchanged is already covered by
-	# an earlier golden directory's own vectors, and is not re-derived there).
+	# new failure modes /5 adds; golden-6 has the 13 new failure modes /6 adds (each contract:
+	# every rule left unchanged is already covered by an earlier golden directory's own vectors,
+	# and is not re-derived there).
 	var expected_count: int = 12
 	if version == 3:
 		expected_count = 5
@@ -311,6 +329,8 @@ func _test_invalid(index: Dictionary, version: int) -> void:
 		expected_count = 11
 	elif version == 5:
 		expected_count = 14
+	elif version == 6:
+		expected_count = 13
 	_check(invalid.size() == expected_count, "index.json lists %d invalid vectors, expected %d" % [invalid.size(), expected_count])
 	for value: Variant in invalid:
 		var vector: Dictionary = value
@@ -381,7 +401,7 @@ func _test_payloads(index: Dictionary, version: int) -> void:
 	var payloads: Array = index["payloads"]
 	# golden-3, golden-4 and golden-5 have one more payload than golden-2: the 512x512 "page"
 	# (state 7).
-	var expected_count: int = 5 if (version == 3 or version == 4 or version == 5) else 4
+	var expected_count: int = 5 if (version == 3 or version == 4 or version == 5 or version == 6) else 4
 	_check(payloads.size() == expected_count, "index.json lists %d payloads, expected %d" % [payloads.size(), expected_count])
 	for value: Variant in payloads:
 		var vector: Dictionary = value
@@ -449,13 +469,14 @@ func _test_shader_payloads(index: Dictionary, version: int) -> void:
 		_check(data.size() == Rs2Decoder.as_int(vector["bytes"]), "%s total bytes %d, expected %d" % [file, data.size(), Rs2Decoder.as_int(vector["bytes"])])
 
 
-## golden-5 only: params.rs5's own independent leg (gate5_5-design.md D4) -- a separate small
-## recording (not part of the shared full/patch/inline streams), compared against its own
-## params.decoded.json / resolved-params.json.
-func _test_params_leg(index: Dictionary, version: int) -> void:
-	if not index.has("params_leg"):
+## An independent leg: golden-5's params.rs5 (gate5_5-design.md D4) or golden-6's
+## presentation.rs6/snap.rs6/rate.rs6 (render-stream-6.md "Golden vectors") -- each a separate,
+## small recording (not part of the shared full/patch/inline streams), compared against its own
+## <file>.decoded.json / resolved-<name>.json.
+func _test_independent_leg(index: Dictionary, version: int, key: String) -> void:
+	if not index.has(key):
 		return
-	var leg: Dictionary = index["params_leg"]
+	var leg: Dictionary = index[key]
 	var file: String = leg["file"]
 	var data: PackedByteArray = _read_bytes(file)
 	var decoded_file: String = leg["decoded"]
@@ -493,7 +514,7 @@ func _test_params_leg(index: Dictionary, version: int) -> void:
 					_failures.append("%s seq %d resolved state: %s" % [file, resolved_index + 1, diff])
 			resolved_index += 1
 	_check(resolved_index == expected_transactions.size(), "%s: saw %d transactions, %s has %d" % [file, resolved_index, resolved_file, expected_transactions.size()])
-	print("[rs2-selftest] %s -> params leg ok" % file)
+	print("[rs2-selftest] %s -> independent leg ok" % file)
 
 
 ## Deep equality after JSON parsing: any two numbers compare as floats.

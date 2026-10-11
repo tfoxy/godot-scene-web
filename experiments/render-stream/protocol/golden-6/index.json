@@ -1,0 +1,296 @@
+{
+  "schema": "render-stream-6-golden-index/1",
+  "protocol": "render-stream/6",
+  "valid": [
+    {
+      "file": "full.rs6",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "9781ef9bd640ee76973d9f7032194bddb41fb3678220e490836daeab2d4ec47d"
+    },
+    {
+      "file": "patch.rs6",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "08350741186235d5ad2a7ffbc95a4946d9ab9492ce894c6fe15e7715f85d510f"
+    },
+    {
+      "file": "inline.rs6",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "f037114832971ac6bedf812479b470f0e80779845e32e85dd35e0c5bfec89e55"
+    }
+  ],
+  "resolved": "resolved.json",
+  "presentation_leg": {
+    "file": "presentation.rs6",
+    "hex": "presentation.hex",
+    "decoded": "presentation.decoded.json",
+    "sha256": "cdf7a3efd5b862130a598ad26215b6242af7dbcfd875cbaa28a3972e937c7517",
+    "resolved": "resolved-presentation.json"
+  },
+  "snap_leg": {
+    "file": "snap.rs6",
+    "hex": "snap.hex",
+    "decoded": "snap.decoded.json",
+    "sha256": "3b2cbe3d06571f31ebb831e29332f41b68c839c3dd263c24bcf1c5df1069bb90",
+    "resolved": "resolved-snap.json"
+  },
+  "rate_leg": {
+    "file": "rate.rs6",
+    "hex": "rate.hex",
+    "decoded": "rate.decoded.json",
+    "sha256": "b9a86e1d29e92bd567e806dd1d74d3777213a42decceced83f90a81975020917",
+    "resolved": "resolved-rate.json"
+  },
+  "inline_resources": [
+    {
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "bytes": 1135,
+      "record_index": 1
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 2
+    },
+    {
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "bytes": 1135,
+      "record_index": 5
+    },
+    {
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "bytes": 447,
+      "record_index": 7
+    },
+    {
+      "hash": "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437",
+      "bytes": 1135,
+      "record_index": 11
+    },
+    {
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "bytes": 256,
+      "record_index": 14
+    },
+    {
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "bytes": 297,
+      "record_index": 15
+    },
+    {
+      "hash": "62c07418eb102e442122992cdacefc057a530ee24bb47e3ea3034bd7c75f387a",
+      "bytes": 281,
+      "record_index": 16
+    },
+    {
+      "hash": "1c68b94d68817069d53580212d0fcceac80eec854e5d1bd6399b9b7160e98bbc",
+      "bytes": 281,
+      "record_index": 18
+    },
+    {
+      "hash": "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17",
+      "bytes": 203,
+      "record_index": 21
+    },
+    {
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157,
+      "record_index": 22
+    },
+    {
+      "hash": "586e44786613868036df5a0a72e1c2a512397d6300502e87d927be6ff7329dbe",
+      "bytes": 163,
+      "record_index": 25
+    },
+    {
+      "hash": "f50e1b48065c02d118f568210a9bb22b6923f89b2810db7d041ffc9da440394c",
+      "bytes": 131,
+      "record_index": 26
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs6",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs6 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs6",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '5' (GRS5), not '6'"
+    },
+    {
+      "file": "invalid/viewport-presentation.rs6",
+      "code": "viewport-entry",
+      "description": "presentation_size is [999,999], but root_size_policy is \"observe\" (must equal logical_size)"
+    },
+    {
+      "file": "invalid/viewport-oversampling.rs6",
+      "code": "viewport-entry",
+      "description": "font_oversampling is 0, which is not positive"
+    },
+    {
+      "file": "invalid/viewport-size-status.rs6",
+      "code": "viewport-entry",
+      "description": "host_size_status is \"match\" but host_window_size [999,999] disagrees with presentation_size [640,360]"
+    },
+    {
+      "file": "invalid/publication-rate-null.rs6",
+      "code": "publication-entry",
+      "description": "publication.mode is \"rate\" but target_fps is null"
+    },
+    {
+      "file": "invalid/publication-rate-range.rs6",
+      "code": "publication-entry",
+      "description": "publication.target_fps is 300, out of range 1..240"
+    },
+    {
+      "file": "invalid/publication-file-rate.rs6",
+      "code": "publication-entry",
+      "description": "stream.transport is \"file\" but publication.mode is \"rate\""
+    },
+    {
+      "file": "invalid/canvas-entry.rs6",
+      "code": "canvas-entry",
+      "description": "canvas 1's \"sublayer\" is a string, not an integer"
+    },
+    {
+      "file": "invalid/canvas-stacking-tie-miss.rs6",
+      "code": "unsupported-mismatch",
+      "description": "canvases 1 and 2 both sit at layer 0/sublayer 0, but no canvas-stacking-tie entry is declared"
+    },
+    {
+      "file": "invalid/canvas-stacking-tie-false.rs6",
+      "code": "unsupported-mismatch",
+      "description": "a canvas-stacking-tie entry is declared, but only one canvas exists (no tie)"
+    },
+    {
+      "file": "invalid/snap-miss.rs6",
+      "code": "unsupported-mismatch",
+      "description": "the session declares snap_2d.transforms true, but the transaction has no snap-2d entry"
+    },
+    {
+      "file": "invalid/snap-false.rs6",
+      "code": "unsupported-mismatch",
+      "description": "a snap-2d entry is declared, but the session's snap_2d flags are both false"
+    },
+    {
+      "file": "invalid/extra-canvas-on-root.rs6",
+      "code": "unsupported-mismatch",
+      "description": "an unsupported[] entry names reason \"extra-canvas\", which is never valid at /6"
+    }
+  ],
+  "payloads": [
+    {
+      "file": "payloads/a1.grt",
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/a2.grt",
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/f.grt",
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "format": "LA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 137
+    },
+    {
+      "file": "payloads/p.grt",
+      "hash": "f6627c820b3e0bce58471b2441627478709cf7d6f4886776d91f01ced28d48f3",
+      "format": "RGBA8",
+      "width": 8,
+      "height": 8,
+      "mipmaps": true,
+      "bytes": 447
+    },
+    {
+      "file": "payloads/page.grt",
+      "hash": "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    }
+  ],
+  "mesh_payloads": [
+    {
+      "file": "payloads/mesh1-a.grm",
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "primitive": "triangles",
+      "format": 33554440,
+      "vertex_count": 3,
+      "index_count": 0,
+      "bytes": 256
+    },
+    {
+      "file": "payloads/mesh1-b.grm",
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "primitive": "triangles",
+      "format": 33558544,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 297
+    },
+    {
+      "file": "payloads/mesh2-v1.grm",
+      "hash": "62c07418eb102e442122992cdacefc057a530ee24bb47e3ea3034bd7c75f387a",
+      "primitive": "triangles",
+      "format": 33558536,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 281
+    },
+    {
+      "file": "payloads/mesh2-v2.grm",
+      "hash": "1c68b94d68817069d53580212d0fcceac80eec854e5d1bd6399b9b7160e98bbc",
+      "primitive": "triangles",
+      "format": 33558536,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 281
+    }
+  ],
+  "shader_payloads": [
+    {
+      "file": "payloads/shader1-add.grp",
+      "hash": "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17",
+      "bytes": 203
+    },
+    {
+      "file": "payloads/shader2-tint-v1.grp",
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157
+    },
+    {
+      "file": "payloads/shader2-tint-v2.grp",
+      "hash": "586e44786613868036df5a0a72e1c2a512397d6300502e87d927be6ff7329dbe",
+      "bytes": 163
+    },
+    {
+      "file": "payloads/shader3-time.grp",
+      "hash": "f50e1b48065c02d118f568210a9bb22b6923f89b2810db7d041ffc9da440394c",
+      "bytes": 131
+    }
+  ]
+}

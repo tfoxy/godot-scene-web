@@ -202,6 +202,17 @@ target_compile_definitions(rs5_codec_test PRIVATE
   GRC_GOLDEN5_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-5")
 add_test(NAME rs5_codec COMMAND rs5_codec_test)
 
+# Gate 6 (G6w): render-stream/6 is a protocol-version switch on the SAME /2 codec/diff modules
+# (Session::version/Transaction::version/Snapshot::version), proven byte-identical to
+# protocol/golden-6/{full,patch,inline}.rs6 -- presentation stretch declarations, the top-level
+# publication key and canvas layer/sublayer.
+add_executable(rs6_codec_test test/rs6_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs6_codec_test PRIVATE src test)
+target_link_libraries(rs6_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs6_codec_test PRIVATE
+  GRC_GOLDEN6_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-6")
+add_test(NAME rs6_codec COMMAND rs6_codec_test)
+
 # Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
 # golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).
 add_executable(rs_sha256_test test/rs_sha256_test.cpp src/rs_sha256.cpp)

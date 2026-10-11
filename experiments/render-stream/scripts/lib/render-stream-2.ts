@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -85,7 +85,12 @@ export type UnsupportedReason =
   | "unsupported-material"
   | "unknown-material"
   | "param-type"
-  | "canvas-light";
+  | "canvas-light"
+  | "canvas-stacking-tie"
+  | "canvas-repeat"
+  | "canvas-follow-viewport"
+  | "global-canvas-transform"
+  | "snap-2d";
 /** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
  * storage never allocates a canvas texture (protocol/canvas-texture-headless.md).
  * unknown-mesh/skinned-geometry: new at /4 (render-stream-4.md "Command"). */
@@ -123,11 +128,13 @@ export type StretchAspect =
   | "keep_height"
   | "expand";
 export type ScaleMode = "fractional" | "integer";
-export type RootSizePolicy = "observe" | "enforce-min-size";
+export type RootSizePolicy = "observe" | "enforce-min-size" | "presentation";
 export type HostSizeStatus =
   | "match"
   | "degenerate-visible"
   | "degenerate-window";
+// --- new at /6 (render-stream-6.md "Publication") ----------------------------------------------
+export type PublicationMode = "every-frame" | "rate";
 
 export type Filter =
   | "default"
@@ -353,8 +360,16 @@ export interface SessionMeta {
     };
     stretch_applied_by: "receiver";
     root_size_policy: RootSizePolicy;
+    /** new at /6 (render-stream-6.md "Viewport"): present only when decoded at version 6, right
+     * after root_size_policy. Equals logical_size unless root_size_policy is "presentation". */
+    presentation_size?: [number, number];
     host_size_status: HostSizeStatus;
     host_window_size: [number, number];
+    /** new at /6: Viewport.get_oversampling(), a float32 widened to a JSON number -- the only
+     * JSON-embedded float this wire carries (render-stream-6.md "As built"). */
+    font_oversampling?: number;
+    /** new at /6 (gate6-design.md D17): the root's snap-to-pixel project settings. */
+    snap_2d?: { transforms: boolean; vertices: boolean };
   };
   resources: ResourcesMeta;
   /** new at /5 (render-stream-5.md "Session"): present only when decoded at version 5. */
@@ -372,6 +387,10 @@ export interface SessionMeta {
     unobserved: string[];
     publication: string;
   };
+  /** new at /6 (render-stream-6.md "Publication"): a new TOP-LEVEL session key, right after
+   * `features` -- distinct from features.publication above. Present only when decoded at
+   * version 6. */
+  publication?: { mode: PublicationMode; target_fps: number | null };
   sabotage: { kind: SabotageKind; frame: number; op: string | null } | null;
   /** protocol/unknown-item-skip.md: present (always "skip") only in a session that opted into
    * skipping unknown canvas/item RIDs, right after `sabotage`, at /4 and /5. Absent = strict. */
@@ -554,6 +573,10 @@ export interface TransactionCanvas {
   origin: Origin;
   role: CanvasRole;
   attached: boolean;
+  /** new at /6 (render-stream-6.md "Canvas"): present only when decoded at version 6, right
+   * after attached and before items. */
+  layer?: number;
+  sublayer?: number;
   items: number[];
 }
 
@@ -681,6 +704,12 @@ export const MAGIC_V4: Uint8Array = new Uint8Array([
 export const MAGIC_V5: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x35, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-6.md: the GRS6 magic, selected by `version: 6`. The capture and receiver still
+// speak /5 (G6b switches them), so `version` keeps defaulting to 4 everywhere below; /6 decoding
+// is exercised only against golden-6/ until then.
+export const MAGIC_V6: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x36, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -713,6 +742,22 @@ const SESSION_KEYS_V5 = [
   "sabotage",
   "blocks",
 ];
+// render-stream-6.md "Session": a new "publication" key, right after "features".
+const SESSION_KEYS_V6 = [
+  "type",
+  "protocol",
+  "session_id",
+  "stream",
+  "engine",
+  "capture",
+  "viewport",
+  "resources",
+  "materials",
+  "features",
+  "publication",
+  "sabotage",
+  "blocks",
+];
 const STREAM_KEYS = ["stream_id", "connection", "transport", "encoding"];
 const ENGINE_KEYS = [
   "version_string",
@@ -732,7 +777,26 @@ const VIEWPORT_KEYS = [
   "host_size_status",
   "host_window_size",
 ];
+// render-stream-6.md "Viewport": presentation_size (right after root_size_policy, before
+// host_size_status) plus font_oversampling/snap_2d (after host_window_size).
+const VIEWPORT_KEYS_V6 = [
+  "canvas_cull_mask",
+  "root_canvas",
+  "logical_size",
+  "stretch",
+  "stretch_applied_by",
+  "root_size_policy",
+  "presentation_size",
+  "host_size_status",
+  "host_window_size",
+  "font_oversampling",
+  "snap_2d",
+];
 const STRETCH_KEYS = ["mode", "aspect", "scale_mode"];
+const SNAP_2D_KEYS = ["transforms", "vertices"];
+// render-stream-6.md "Publication" (a new top-level session key, distinct from
+// features.publication).
+const PUBLICATION_KEYS = ["mode", "target_fps"];
 const RESOURCES_KEYS = [
   "hash",
   "payload",
@@ -890,6 +954,16 @@ function keysWith(
 }
 const UNSUPPORTED_KEYS = ["op", "item", "reason"];
 const CANVAS_KEYS = ["id", "origin", "role", "attached", "items"];
+// render-stream-6.md "Canvas": layer/sublayer, right after attached and before items.
+const CANVAS_KEYS_V6 = [
+  "id",
+  "origin",
+  "role",
+  "attached",
+  "layer",
+  "sublayer",
+  "items",
+];
 const ITEM_KEYS = [
   "id",
   "origin",
@@ -1165,6 +1239,21 @@ const SESSION_UNSUPPORTED_REASONS_V5 = [
   "extra-canvas",
   "degenerate-host-size",
   "canvas-light",
+] as const;
+// new at /6 (render-stream-6.md "Session-level unsupported reasons"): five new session-level
+// entries. "extra-canvas" stays schema-legal (so a malformed vector naming it still gets the
+// specific unsupported-mismatch code, not a generic one) but is rejected semantically below --
+// it never legitimately occurs at /6 (render-stream-6.md "As built").
+const SESSION_UNSUPPORTED_REASONS_V6 = [
+  "non-root-viewport",
+  "extra-canvas",
+  "degenerate-host-size",
+  "canvas-light",
+  "canvas-stacking-tie",
+  "canvas-repeat",
+  "canvas-follow-viewport",
+  "global-canvas-transform",
+  "snap-2d",
 ] as const;
 const AXIS_STRETCH_MODES = ["stretch", "tile", "tile_fit"] as const;
 const PRIMITIVES = [
@@ -1452,12 +1541,12 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5,
+  version: 2 | 3 | 4 | 5 | 6,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
   ];
-  const isV4OrLater = version === 4 || version === 5;
+  const isV4OrLater = version === 4 || version === 5 || version === 6;
   const keys = isV4OrLater ? RESOURCES_KEYS_V4 : RESOURCES_KEYS;
   if (!isPlainObject(resources) || !hasExactKeys(resources, keys)) {
     return err("has the wrong keys");
@@ -1517,15 +1606,22 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5,
+  version: 2 | 3 | 4 | 5 | 6,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV5 = version === 5;
-  // protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and /5.
+  const isV6 = version === 6;
+  // isV5 means "V5 or later": /6 is a delta on /5 that keeps everything /5 added unless
+  // render-stream-6.md says otherwise.
+  const isV5 = isV6 || version === 5;
+  // protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and later.
   const skipDeclared = version >= 4 && UNKNOWN_ITEM_POLICY_KEY in meta;
-  const sessionKeys = isV5 ? SESSION_KEYS_V5 : SESSION_KEYS;
+  const sessionKeys = isV6
+    ? SESSION_KEYS_V6
+    : isV5
+      ? SESSION_KEYS_V5
+      : SESSION_KEYS;
   if (
     !hasExactKeys(
       meta,
@@ -1537,13 +1633,15 @@ function checkSessionSchema(
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV5
-    ? "render-stream/5"
-    : version === 4
-      ? "render-stream/4"
-      : version === 3
-        ? "render-stream/3"
-        : "render-stream/2";
+  const expectedProtocol = isV6
+    ? "render-stream/6"
+    : isV5
+      ? "render-stream/5"
+      : version === 4
+        ? "render-stream/4"
+        : version === 3
+          ? "render-stream/3"
+          : "render-stream/2";
   if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
@@ -1589,7 +1687,10 @@ function checkSessionSchema(
   }
 
   const viewport = meta.viewport;
-  if (!isPlainObject(viewport) || !hasExactKeys(viewport, VIEWPORT_KEYS)) {
+  if (
+    !isPlainObject(viewport) ||
+    !hasExactKeys(viewport, isV6 ? VIEWPORT_KEYS_V6 : VIEWPORT_KEYS)
+  ) {
     return err('"viewport" has the wrong keys');
   }
   if (
@@ -1598,10 +1699,12 @@ function checkSessionSchema(
     !intPair(viewport.logical_size) ||
     !intPair(viewport.host_window_size) ||
     !isOneOf(viewport.stretch_applied_by, ["receiver"] as const) ||
-    !isOneOf(viewport.root_size_policy, [
-      "observe",
-      "enforce-min-size",
-    ] as const) ||
+    !isOneOf(
+      viewport.root_size_policy,
+      isV6
+        ? (["observe", "enforce-min-size", "presentation"] as const)
+        : (["observe", "enforce-min-size"] as const),
+    ) ||
     !isOneOf(viewport.host_size_status, [
       "match",
       "degenerate-visible",
@@ -1609,6 +1712,29 @@ function checkSessionSchema(
     ] as const)
   ) {
     return err('"viewport" has an invalid field');
+  }
+  if (isV6) {
+    // render-stream-6.md "Viewport": presentation_size, font_oversampling, snap_2d.
+    if (!intPair(viewport.presentation_size)) {
+      return err('"viewport.presentation_size" is not a pair of integers');
+    }
+    if (
+      typeof viewport.font_oversampling !== "number" ||
+      !(viewport.font_oversampling > 0)
+    ) {
+      return [
+        `viewport-entry: record at offset ${offset}: "font_oversampling" is not a positive number`,
+      ];
+    }
+    const snap2d = viewport.snap_2d;
+    if (
+      !isPlainObject(snap2d) ||
+      !hasExactKeys(snap2d, SNAP_2D_KEYS) ||
+      typeof snap2d.transforms !== "boolean" ||
+      typeof snap2d.vertices !== "boolean"
+    ) {
+      return err('"viewport.snap_2d" has the wrong keys or an invalid field');
+    }
   }
   const stretch = viewport.stretch;
   if (
@@ -1625,6 +1751,30 @@ function checkSessionSchema(
     !isOneOf(stretch.scale_mode, ["fractional", "integer"] as const)
   ) {
     return err('"viewport.stretch" has the wrong keys or an invalid field');
+  }
+  if (isV6) {
+    // render-stream-6.md "Viewport": presentation_size must equal logical_size unless the policy
+    // is "presentation", and even then must still equal it under stretch "disabled" (a
+    // presentation that differs from the logical size under disabled stretch would change
+    // layout -- refused at capture time as root-size-invalid, never observed on the wire).
+    const presentationSize = viewport.presentation_size as [number, number];
+    const logicalSize = viewport.logical_size as [number, number];
+    const samePair = (a: [number, number], b: [number, number]) =>
+      a[0] === b[0] && a[1] === b[1];
+    if (viewport.root_size_policy !== "presentation") {
+      if (!samePair(presentationSize, logicalSize)) {
+        return [
+          `viewport-entry: record at offset ${offset}: "presentation_size" differs from "logical_size" without root_size_policy "presentation"`,
+        ];
+      }
+    } else if (
+      (stretch as { mode: StretchMode }).mode === "disabled" &&
+      !samePair(presentationSize, logicalSize)
+    ) {
+      return [
+        `viewport-entry: record at offset ${offset}: "presentation_size" differs from "logical_size" under stretch "disabled"`,
+      ];
+    }
   }
 
   const resourcesErr = checkResourcesSchema(meta.resources, offset, version);
@@ -1656,6 +1806,47 @@ function checkSessionSchema(
     typeof features.publication !== "string"
   ) {
     return err('"features" has the wrong keys or an invalid field');
+  }
+
+  if (isV6) {
+    // render-stream-6.md "Publication": a new top-level session key, distinct from
+    // features.publication above.
+    const publication = meta.publication;
+    if (
+      !isPlainObject(publication) ||
+      !hasExactKeys(publication, PUBLICATION_KEYS) ||
+      !isOneOf(publication.mode, ["every-frame", "rate"] as const) ||
+      !(
+        publication.target_fps === null ||
+        (isInt(publication.target_fps) && publication.target_fps >= 1)
+      )
+    ) {
+      return err('"publication" has the wrong keys or an invalid field');
+    }
+    if (
+      (publication.mode === "every-frame") !==
+      (publication.target_fps === null)
+    ) {
+      return [
+        `publication-entry: record at offset ${offset}: "every-frame" must carry target_fps null, and "rate" must carry a non-null target_fps`,
+      ];
+    }
+    if (
+      publication.mode === "rate" &&
+      (publication.target_fps as number) > 240
+    ) {
+      return [
+        `publication-entry: record at offset ${offset}: "rate"'s target_fps must be in 1..240`,
+      ];
+    }
+    if (
+      publication.mode === "rate" &&
+      (meta.stream as { transport?: string }).transport === "file"
+    ) {
+      return [
+        `publication-entry: record at offset ${offset}: a "file" stream must not declare publication "rate"`,
+      ];
+    }
   }
 
   const sabotage = meta.sabotage;
@@ -1954,19 +2145,21 @@ function checkMaterialEntrySchema(m: unknown, offset: number): string[] {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5,
+  version: 2 | 3 | 4 | 5 | 6,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV5 = version === 5;
+  const isV6 = version === 6;
+  // isV5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
+  const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
   const transactionKeys = isV5
     ? TRANSACTION_KEYS_V5
     : isV4
       ? TRANSACTION_KEYS_V4
       : TRANSACTION_KEYS;
-  // protocol/unknown-item-skip.md "Transaction": legal only at /4 and /5; whether it must be
+  // protocol/unknown-item-skip.md "Transaction": legal only at /4 and later; whether it must be
   // present is the session's call (validateRecording checks the coupling).
   const hasUnknownItems = isV4 && UNKNOWN_ITEMS_KEY in meta;
   if (
@@ -2032,13 +2225,17 @@ function checkTransactionSchema(
     ) {
       return err("an unsupported[] entry is malformed");
     }
-    const allowedReasons = isV5
+    const allowedReasons = isV6
       ? u.item === null
-        ? SESSION_UNSUPPORTED_REASONS_V5
+        ? SESSION_UNSUPPORTED_REASONS_V6
         : ITEM_UNSUPPORTED_REASONS_V5
-      : u.item === null
-        ? SESSION_UNSUPPORTED_REASONS
-        : ITEM_UNSUPPORTED_REASONS;
+      : isV5
+        ? u.item === null
+          ? SESSION_UNSUPPORTED_REASONS_V5
+          : ITEM_UNSUPPORTED_REASONS_V5
+        : u.item === null
+          ? SESSION_UNSUPPORTED_REASONS
+          : ITEM_UNSUPPORTED_REASONS;
     if (!isOneOf(u.reason, allowedReasons)) {
       return err("an unsupported[] entry is malformed");
     }
@@ -2078,7 +2275,7 @@ function checkTransactionSchema(
   for (const c of meta.canvases) {
     if (
       !isPlainObject(c) ||
-      !hasExactKeys(c, CANVAS_KEYS) ||
+      !hasExactKeys(c, isV6 ? CANVAS_KEYS_V6 : CANVAS_KEYS) ||
       !isInt(c.id) ||
       !isOneOf(c.origin, ["created", "root-query", "adopted"] as const) ||
       !(c.role === "root" || c.role === null) ||
@@ -2086,6 +2283,11 @@ function checkTransactionSchema(
       !isIntArray(c.items)
     ) {
       return err("a canvases[] entry is malformed");
+    }
+    if (isV6 && (!isInt(c.layer) || !isInt(c.sublayer))) {
+      return [
+        `canvas-entry: record at offset ${offset}: canvas ${String(c.id)}'s "layer"/"sublayer" must both be integers`,
+      ];
     }
   }
 
@@ -2441,7 +2643,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5,
+  version: 2 | 3 | 4 | 5 | 6,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -2467,19 +2669,21 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 5,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 5
-      ? MAGIC_V5
-      : version === 4
-        ? MAGIC_V4
-        : version === 3
-          ? MAGIC_V3
-          : MAGIC;
+    version === 6
+      ? MAGIC_V6
+      : version === 5
+        ? MAGIC_V5
+        : version === 4
+          ? MAGIC_V4
+          : version === 3
+            ? MAGIC_V3
+            : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -2538,7 +2742,7 @@ export interface DecodedRecord {
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 5,
 ): {
   record?: DecodedRecord;
   errors: string[];
@@ -2695,13 +2899,14 @@ export function decodeRecord(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 5,
 ): {
   schema:
     | "render-stream-2-decoded/1"
     | "render-stream-3-decoded/1"
     | "render-stream-4-decoded/1"
-    | "render-stream-5-decoded/1";
+    | "render-stream-5-decoded/1"
+    | "render-stream-6-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -2719,22 +2924,26 @@ export function decodeRecording(
     records.push(decoded.record);
   }
   const magic =
-    version === 5
-      ? MAGIC_V5
-      : version === 4
-        ? MAGIC_V4
-        : version === 3
-          ? MAGIC_V3
-          : MAGIC;
+    version === 6
+      ? MAGIC_V6
+      : version === 5
+        ? MAGIC_V5
+        : version === 4
+          ? MAGIC_V4
+          : version === 3
+            ? MAGIC_V3
+            : MAGIC;
   return {
     schema:
-      version === 5
-        ? "render-stream-5-decoded/1"
-        : version === 4
-          ? "render-stream-4-decoded/1"
-          : version === 3
-            ? "render-stream-3-decoded/1"
-            : "render-stream-2-decoded/1",
+      version === 6
+        ? "render-stream-6-decoded/1"
+        : version === 5
+          ? "render-stream-5-decoded/1"
+          : version === 4
+            ? "render-stream-4-decoded/1"
+            : version === 3
+              ? "render-stream-3-decoded/1"
+              : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -2958,6 +3167,10 @@ export interface ResolvedCanvas {
   origin: Origin;
   role: CanvasRole;
   attached: boolean;
+  /** new at /6 (render-stream-6.md "Decoded and resolved forms"): present only when resolved at
+   * version 6, right after attached and before items. */
+  layer?: number;
+  sublayer?: number;
   items: number[];
   xform: [number, number, number, number, number, number];
   /** new at /5 (render-stream-5.md "Canvas"): present only when resolved at version 5. */
@@ -3107,11 +3320,18 @@ function liftCanvas(c: TransactionCanvas, floats: number[]): ResolvedCanvas {
     number,
     number,
   ];
+  // render-stream-6.md "Decoded and resolved forms": layer/sublayer are plain integers carried
+  // straight from the wire's own TransactionCanvas (never block floats), spliced in right after
+  // attached and before items to match the wire's key order exactly (statesEqual() is
+  // JSON.stringify-based).
+  const layerFields =
+    c.layer !== undefined ? { layer: c.layer, sublayer: c.sublayer } : {};
   const out: ResolvedCanvas = {
     id: c.id,
     origin: c.origin,
     role: c.role,
     attached: c.attached,
+    ...layerFields,
     items: c.items,
     xform,
   };
@@ -3868,6 +4088,8 @@ function checkResolvedInvariants(
   meta: TransactionMeta,
   state: ResolvedState,
   offset: number,
+  isV6 = false,
+  snapDeclared = false,
 ): string[] {
   const where = `transaction seq ${meta.seq}`;
   const isV5 = meta.shaders !== undefined;
@@ -3878,6 +4100,18 @@ function checkResolvedInvariants(
   const shaders = sortedResolvedShaders(state);
   const materials = sortedResolvedMaterials(state);
   const canvasIds = new Set(canvases.map((c) => c.id));
+  // render-stream-6.md "Session-level unsupported reasons": canvas-stacking-tie is derived
+  // whenever two ATTACHED canvases in this transaction's resolved table share (layer, sublayer)
+  // -- the renderer would otherwise order them by canvas RID, which no receiver can reproduce.
+  const stackingGroups = new Map<string, number>();
+  if (isV6) {
+    for (const c of canvases) {
+      if (!c.attached) continue;
+      const key = `${c.layer ?? 0}:${c.sublayer ?? 0}`;
+      stackingGroups.set(key, (stackingGroups.get(key) ?? 0) + 1);
+    }
+  }
+  const actualStackingTie = [...stackingGroups.values()].some((n) => n >= 2);
   const itemIds = new Set(items.map((i) => i.id));
   const textureIds = new Set(textures.map((t) => t.id));
   const textureById = new Map(textures.map((t) => [t.id, t] as const));
@@ -4218,6 +4452,8 @@ function checkResolvedInvariants(
   const declaredUnsupportedTexture = new Set<string>();
   const declaredUnsupportedMesh = new Set<string>();
   const declaredUnsupportedMaterial = new Set<string>();
+  let declaredStackingTie = false;
+  let declaredSnap2d = false;
   for (const entry of meta.unsupported) {
     if (entry.item === null) {
       if (itemLevelStarted) {
@@ -4235,6 +4471,69 @@ function checkResolvedInvariants(
         return [
           `unsupported-mismatch: ${where}: canvas-light entry names op ${entry.op}, expected canvas_light_attach_to_canvas`,
         ];
+      }
+      // render-stream-6.md "Session-level unsupported reasons": extra-canvas never legitimately
+      // occurs at /6 (a canvas attached to the root viewport is supported) -- /6 decoders reject
+      // it outright, exactly as /5 rejects unsupported-state naming canvas_item_set_material.
+      if (isV6 && entry.reason === "extra-canvas") {
+        return [
+          `unsupported-mismatch: ${where}: extra-canvas entry (op ${entry.op}) is never valid at /6 (a canvas attached to the root viewport is supported)`,
+        ];
+      }
+      if (entry.reason === "canvas-stacking-tie") {
+        if (entry.op !== "viewport_set_canvas_stacking") {
+          return [
+            `unsupported-mismatch: ${where}: canvas-stacking-tie entry names op ${entry.op}, expected viewport_set_canvas_stacking`,
+          ];
+        }
+        if (!actualStackingTie) {
+          return [
+            `unsupported-mismatch: ${where}: canvas-stacking-tie entry does not correspond to two attached canvases sharing (layer, sublayer)`,
+          ];
+        }
+        declaredStackingTie = true;
+      } else if (entry.reason === "canvas-repeat") {
+        // Sticky, like canvas-light: no independent "actual" signal (the mirroring/repeat vector
+        // never reaches the wire).
+        if (
+          entry.op !== "canvas_set_item_mirroring" &&
+          entry.op !== "canvas_set_item_repeat"
+        ) {
+          return [
+            `unsupported-mismatch: ${where}: canvas-repeat entry names op ${entry.op}, expected canvas_set_item_mirroring or canvas_set_item_repeat`,
+          ];
+        }
+      } else if (entry.reason === "canvas-follow-viewport") {
+        // Sticky, like canvas-light: no independent "actual" signal (the parent RID never
+        // reaches the wire).
+        if (entry.op !== "canvas_set_parent") {
+          return [
+            `unsupported-mismatch: ${where}: canvas-follow-viewport entry names op ${entry.op}, expected canvas_set_parent`,
+          ];
+        }
+      } else if (entry.reason === "global-canvas-transform") {
+        // NOT sticky, but still forward-only: the live global canvas transform itself is never
+        // wire-visible, only the session's one arm-time host_final_xform snapshot.
+        if (entry.op !== "viewport_set_global_canvas_transform") {
+          return [
+            `unsupported-mismatch: ${where}: global-canvas-transform entry names op ${entry.op}, expected viewport_set_global_canvas_transform`,
+          ];
+        }
+      } else if (entry.reason === "snap-2d") {
+        if (
+          entry.op !== "viewport_set_snap_2d_transforms_to_pixel" &&
+          entry.op !== "viewport_set_snap_2d_vertices_to_pixel"
+        ) {
+          return [
+            `unsupported-mismatch: ${where}: snap-2d entry names op ${entry.op}, expected a viewport_set_snap_2d_*_to_pixel setter`,
+          ];
+        }
+        if (!snapDeclared) {
+          return [
+            `unsupported-mismatch: ${where}: snap-2d entry present while the session declares no snap_2d flag`,
+          ];
+        }
+        declaredSnap2d = true;
       }
       continue;
     }
@@ -4393,6 +4692,16 @@ function checkResolvedInvariants(
       ];
     }
   }
+  if (actualStackingTie && !declaredStackingTie) {
+    return [
+      `unsupported-mismatch: ${where}: two attached canvases share (layer, sublayer), but no canvas-stacking-tie entry is declared`,
+    ];
+  }
+  if (snapDeclared && !declaredSnap2d) {
+    return [
+      `unsupported-mismatch: ${where}: the session declares a snap_2d flag, but this transaction has no snap-2d entry`,
+    ];
+  }
 
   return [];
 }
@@ -4401,9 +4710,12 @@ function checkResolvedInvariants(
 
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 5,
 ): string[] {
-  const isV5 = version === 5;
+  const isV6 = version === 6;
+  // isV5 means "V5 or later" (render-stream-6.md: transactions/items/commands are byte-identical
+  // to /5).
+  const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
@@ -4422,6 +4734,46 @@ export function validateRecording(
     ];
   }
   const inlineMaxBytes = sessionMeta.resources.inline_max_bytes;
+  // render-stream-6.md "Viewport"/gate6-design.md Q3a: host_size_status must be consistent with
+  // host_window_size, presentation_size and the host_visible_rect session block ("match" iff
+  // host_window_size == presentation_size and the visible rect's size equals logical_size;
+  // "degenerate-visible" iff the visible size differs from logical_size; "degenerate-window"
+  // otherwise). Needs the decoded host_visible_rect block (session blocks: clear_color[0],
+  // root_canvas_xform[1], host_visible_rect[2], host_final_xform[3], content_scale_factor[4]),
+  // so this can only be checked here, once the session record is fully decoded.
+  if (isV6) {
+    const hostVisibleRect = first.record.blocks[2] as number[];
+    const visibleSize: [number, number] = [
+      hostVisibleRect[2],
+      hostVisibleRect[3],
+    ];
+    const logicalSize = sessionMeta.viewport.logical_size;
+    const presentationSize =
+      sessionMeta.viewport.presentation_size ??
+      sessionMeta.viewport.logical_size;
+    const hostWindowSize = sessionMeta.viewport.host_window_size;
+    const samePair = (a: [number, number], b: [number, number]) =>
+      a[0] === b[0] && a[1] === b[1];
+    const expectedStatus =
+      samePair(hostWindowSize, presentationSize) &&
+      samePair(visibleSize, logicalSize)
+        ? "match"
+        : !samePair(visibleSize, logicalSize)
+          ? "degenerate-visible"
+          : "degenerate-window";
+    if (sessionMeta.viewport.host_size_status !== expectedStatus) {
+      return [
+        `viewport-entry: session.viewport.host_size_status is "${sessionMeta.viewport.host_size_status}", expected "${expectedStatus}" from host_window_size/presentation_size/host_visible_rect`,
+      ];
+    }
+  }
+  // render-stream-6.md "Session-level unsupported reasons": snap-2d is a session-level constant
+  // (D17's setters are unhooked, so only the arm-time value is ever known), checked against every
+  // transaction of the stream.
+  const snapDeclared =
+    isV6 &&
+    (sessionMeta.viewport.snap_2d?.transforms === true ||
+      sessionMeta.viewport.snap_2d?.vertices === true);
 
   let bytesTotal = MAGIC.length + first.record.byte_length;
   let maxRecordBytes = first.record.byte_length;
@@ -4769,7 +5121,13 @@ export function validateRecording(
         meta,
         decoded.record.blocks as number[][],
       );
-      const resolvedErrors = checkResolvedInvariants(meta, nextState, offset);
+      const resolvedErrors = checkResolvedInvariants(
+        meta,
+        nextState,
+        offset,
+        isV6,
+        snapDeclared,
+      );
       if (resolvedErrors.length > 0) return resolvedErrors;
 
       // texture-version / mesh-version, across the whole stream so far.
@@ -5203,7 +5561,8 @@ export interface ResolvedRecording {
     | "render-stream-2-resolved/1"
     | "render-stream-3-resolved/1"
     | "render-stream-4-resolved/1"
-    | "render-stream-5-resolved/1";
+    | "render-stream-5-resolved/1"
+    | "render-stream-6-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -5212,7 +5571,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 = 5,
+  version: 2 | 3 | 4 | 5 | 6 = 5,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -5248,10 +5607,10 @@ export function resolveRecording(
         canvases: sortedResolvedCanvases(state),
         items: sortedResolvedItems(state),
         textures: sortedResolvedTextures(state),
-        ...(version === 4 || version === 5
+        ...(version === 4 || version === 5 || version === 6
           ? { meshes: sortedResolvedMeshes(state) }
           : {}),
-        ...(version === 5
+        ...(version === 5 || version === 6
           ? {
               shaders: sortedResolvedShaders(state),
               materials: sortedResolvedMaterials(state),
@@ -5262,13 +5621,15 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 5
-        ? "render-stream-5-resolved/1"
-        : version === 4
-          ? "render-stream-4-resolved/1"
-          : version === 3
-            ? "render-stream-3-resolved/1"
-            : "render-stream-2-resolved/1",
+      version === 6
+        ? "render-stream-6-resolved/1"
+        : version === 5
+          ? "render-stream-5-resolved/1"
+          : version === 4
+            ? "render-stream-4-resolved/1"
+            : version === 3
+              ? "render-stream-3-resolved/1"
+              : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,
