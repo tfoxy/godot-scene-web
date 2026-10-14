@@ -13,7 +13,7 @@
 // be a GRT1 texture, a GRM1 mesh surface or a GRP1 shader code; render-stream-2.ts tells them
 // apart by the 8-byte magic before choosing which decoder to call).
 
-import { createHash } from "node:crypto";
+import { type HashFn, sha256Hex } from "./sha256";
 
 export const GRP1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x50, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -60,8 +60,16 @@ function hasExactKeys(
 
 const META_KEYS = ["type", "code_bytes"] as const;
 
+// gate7-design.md G7j/Q5: an injected hash, not a hard `node:crypto` import -- see
+// render-stream-2.ts's `hashImpl`/`setHashImpl` for why (browser-loadable decoder).
+let hashImpl: HashFn = sha256Hex;
+
+export function setHashImpl(fn: HashFn): void {
+  hashImpl = fn;
+}
+
 export function shaderPayloadSha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  return hashImpl(bytes);
 }
 
 // render-stream-5.md "Shader payload render-stream-shader/1": GRP1 magic, u32 meta_len,

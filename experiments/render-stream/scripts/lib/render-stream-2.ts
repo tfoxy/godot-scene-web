@@ -46,7 +46,6 @@
 // forward by G55w) calls for a new file per NEW payload format, to keep the payload-format growth
 // out of this already-large module.
 
-import { createHash } from "node:crypto";
 import {
   type DecodedMeshPayload,
   decodeMeshPayload,
@@ -57,6 +56,7 @@ import {
   decodeShaderPayload,
   GRP1_MAGIC,
 } from "./render-stream-shader";
+import { type HashFn, sha256Hex } from "./sha256";
 
 // --------------------------------------------------------------------------------------- wire types
 
@@ -1403,8 +1403,20 @@ function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// gate7-design.md G7j/Q5: an injected hash rather than a hard `node:crypto` import, so this
+// module (and its two payload-format siblings) can be bundled for a browser. Defaults to the pure
+// `sha256Hex` -- what a browser gets -- and Node callers may inject a `node:crypto`-backed
+// function instead; `scripts/test/self-test-browser-decoder.ts` verifies the two give
+// byte-identical results on every golden payload and resolves every golden recording identically
+// either way.
+let hashImpl: HashFn = sha256Hex;
+
+export function setHashImpl(fn: HashFn): void {
+  hashImpl = fn;
+}
+
 function hashBytes(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  return hashImpl(bytes);
 }
 
 function bytesToAscii(bytes: Uint8Array): string | null {
