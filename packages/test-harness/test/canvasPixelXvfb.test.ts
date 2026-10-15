@@ -52,7 +52,14 @@
 // one on the driver users have. A box with no GPU still gets SwiftShader and the
 // suite still measures the arithmetic; the `renderer` in the log says which was
 // used.
+//
+// `GSW_CANVAS_PIXEL_HEADLESS=new` is the third launch, and the one to use on a
+// desktop box: `--headless=new --enable-gpu --use-angle=vulkan` with DISPLAY and
+// WAYLAND_DISPLAY stripped, i.e. the real GPU through ANGLE/Vulkan and NO window
+// (headed Chromium here reaches the user's Wayland compositor even under Xvfb).
+// Measured 2026-10-14: ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA GeForce RTX 2060)).
 
+import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Browser, chromium, type Page } from "@playwright/test";
@@ -78,7 +85,22 @@ type Rgba = [number, number, number, number];
  *  would be asserting a rounding mode rather than the arithmetic. */
 const TOLERANCE = 3;
 
-const headless = process.env.GSW_CANVAS_PIXEL_HEADLESS === "1";
+const headlessMode = process.env.GSW_CANVAS_PIXEL_HEADLESS;
+const headless = headlessMode === "1" || headlessMode === "new";
+
+function launchOptions(): Parameters<typeof chromium.launch>[0] {
+  if (headlessMode !== "new") return { headless, args: [] };
+  const env = { ...process.env };
+  delete env.DISPLAY;
+  delete env.WAYLAND_DISPLAY;
+  // `headless: false` so Playwright adds no old-headless switches of its own;
+  // `--headless=new` is what removes the window.
+  return {
+    headless: false,
+    args: ["--headless=new", "--enable-gpu", "--use-angle=vulkan"],
+    env,
+  };
+}
 
 const TRANSPARENT: Rgba = [0, 0, 0, 0];
 
@@ -123,7 +145,7 @@ describe.skipIf(!headless && !process.env.DISPLAY)(
   () => {
     beforeAll(async () => {
       bundleText = await bundleBrowserEntry();
-      browser = await chromium.launch({ headless, args: [] });
+      browser = await chromium.launch(launchOptions());
       page = await browser.newPage({ viewport: { width: 400, height: 300 } });
       page.on("pageerror", (error) => {
         console.error(
@@ -165,6 +187,16 @@ describe.skipIf(!headless && !process.env.DISPLAY)(
     }, 180000);
 
     afterAll(async () => {
+      // `GSW_CANVAS_PIXEL_DUMP=<file>` writes every sampled byte of every case
+      // that ran, so two builds can be compared EXACTLY rather than within
+      // TOLERANCE (how a change proves the default paths draw the same bytes).
+      const dump = process.env.GSW_CANVAS_PIXEL_DUMP;
+      if (dump) {
+        const out = Object.fromEntries(
+          [...results].map(([name, result]) => [name, result.samples]),
+        );
+        await writeFile(dump, `${JSON.stringify(out, null, 1)}\n`);
+      }
       await browser?.close();
     });
 
