@@ -6149,3 +6149,142 @@ checked on one GPU. Whether GSW's MIX matches Godot's to 0 or to 1 is G7a's comp
 does not provide Godot's opaque-target alpha (`ZERO, ONE`, `rasterizer_canvas_gles3.cpp:755-799`),
 under which MUL leaves the destination's alpha alone and multiplies straight colour. That is left
 to G7s's material mapping.
+
+## Gate 6p result (2026-10-15)
+
+G6p ([protocol/gate6-design.md](protocol/gate6-design.md) "G6p", Q7g) passes: the measurement
+matrix, D15's deltas analysis and a validated `render-stream-report/1` over all 20 Q7g scenarios.
+`pnpm render-stream:gate6 -- --legs g6p` is **6/6 on g6p's own checks** (`clean-exit`,
+`after-window-shots`, `deltas-input`, `report-valid`, `report-complete`, `repeat-stability`),
+`artifacts/render-stream/gate6/g6p-r1/`. The overall gate exit is non-zero only because `g6p` is
+not in the default `--legs` set (by design: the matrix takes about 80 minutes, so a plain
+`pnpm render-stream:gate6` stays fast) and the other six groups therefore report `not-run` in a
+`--legs g6p`-only invocation -- the same convention G6c's own standalone rerun used (README "Gate
+6c result"). Measured on a quiet machine (load average 0.69/1.02/1.13 just before the run started,
+no other Godot or gamescope process on the box; Ryzen 5 5500, RTX 2060, gamescope 3.16.19
+headless), one warmup plus five repeats per scenario, about 80 minutes end to end.
+
+**Files**: `scripts/lib/gate6p-legs.sh` (the matrix driver: `g6p_run_unarmed`, `g6p_run_armed_idle`,
+`g6p_run_scenario`, all reusing `lib/gate6c-legs.sh`'s host/receiver/proxy/reference helpers on the
+same `rate` timeline G6c measures) and `scripts/lib/gate6p-checks.ts` (the 20-scenario registry,
+`unarmedRepeatOf` for the `unarmed` arm's bespoke mostly-`unavailable` repeat, and `runGate6p`,
+which writes `report-gate6.ts build`'s own run-set directory layout and calls `buildReport`/
+`validate` unchanged). `scripts/sample-rate.ts` is new: the `unarmed` arm loads no capture
+extension at all, so it has none of the other arms' `perf-timeline.jsonl`, and its host frame rate
+comes instead from a least-squares slope of `RS_FIXTURE_STEP_LOG`'s wall-clock-timestamped step
+lines (D6's realtime pacing makes one game second one wall-clock second here). `run-gate6.sh`
+gains a `DEFAULT_GROUPS` array distinct from `LANDED_GROUPS`: `g6p` is landed (selectable via
+`--legs`) but excluded from the implicit default run, mirroring the contract's "excluded from
+default `--legs`" instruction. `gate6c-checks.ts` gained `export` on eight already-pure helpers
+(`dist`, `rate`, `exactDist`, `memoryOf`, `cpuOf`, `slopePerMin`, `gamescopeVersion`, `gitInfo`,
+`parseJsonl`) so `gate6p-checks.ts` could reuse them verbatim instead of duplicating them --
+no behaviour change, confirmed by self-test-gate6c's existing cases still passing unmodified.
+
+### The matrix
+
+Nine `gate6-scene` scenarios (`unarmed`, `armed-idle`, `streaming` at 15/30/60/uncapped-host60/
+uncapped, a cold-cache repeat of 60, a `GRC_HOOK_LOG=on` repeat of 60), the same eight on
+`gate6-hd` native (no hook-log pair), `gate6-hd` half streaming at 60 (warm), and `constrained`
+plus `dual-60-15` on `gate6-scene` -- 20 in all, each one discarded warmup plus five measured
+repeats. `unarmed`'s two scenarios load no extension; `armed-idle`'s two are G6c's own
+`rate-baseline` shape (armed, listening, no subscriber). Warm cache (the default) points every
+repeat's receiver at one shared cache directory the warmup fills; cold gives every repeat
+(warmup included) its own fresh, never-reused cache directory.
+
+### Headline costs
+
+**Capture and publication overhead**, from `cpu.host_process_s` (cumulative host CPU over the
+fixture's fixed ~30 s `rate`-timeline lifetime, so every arm of one fixture is directly
+comparable without needing `unarmed`'s missing frame-interval distribution):
+
+| Fixture | unarmed | armed-idle | capture overhead | streaming-60 | publish overhead |
+| --- | --- | --- | --- | --- | --- |
+| gate6-scene (640x360) | 0.58 s | 1.04 s | +0.46 s/30 s (≈256 µs/host frame) | 1.27 s | +0.23 s/30 s (≈128 µs/frame) |
+| gate6-hd native (1920x1080) | 1.38 s | 4.00 s | +2.62 s/30 s (≈1456 µs/frame) | 4.11 s | +0.11 s/30 s (≈61 µs/frame) |
+
+The hook-log pair (`scene-rate-60-hooklog`, `GRC_HOOK_LOG=on`, against `scene-rate-60`'s `off`):
+1.66 s against 1.27 s -- **+0.39 s/30 s, ≈217 µs/host frame** for the hook log's own cost on this
+fixture, the same order of magnitude as the capture and publish overheads above.
+
+**Bytes per published transaction** (`bytes.transaction` median): gate6-scene ≈ 19.5-19.9 KB;
+gate6-hd, native and half alike, ≈ 173.7 KB. Presentation scale does not move it -- the wire
+payload is driven by scene content (textures, meshes), not by the pixel count the host renders at.
+
+**Maximum sustained published rate.** gate6-hd native's published rate lands at **≈13.0-13.3/s
+on every one of rate-15, rate-30, rate-60, rate-uncapped-host60 and rate-uncapped** -- the request
+stops mattering once the receiver cannot keep up. The receiver's own `recv_decode_us` + `recv_apply_us`
+medians there are ≈19-20 ms + 13-16 ms ≈ 33-35 ms per transaction, which alone caps throughput near
+30/s before credit RTT (submitted median 61-72 ms) tightens it further to the observed ≈13/s.
+gate6-hd half reaches ≈16.0/s (credit RTT ≈52 ms) -- a smaller receiver-side raster cost than
+native, consistent with less GPU work at half resolution on the same wire content. gate6-scene's
+ceiling is far higher: uncapped-both-ends reached **105.7/s** (credit RTT median 9.0 ms, host frame
+rate ≈22 200/s -- nothing on the host side is the limit). At the capped target 60, gate6-scene
+split across repeats the same way G6c's own rate-60 did ("As built (G6c)" 2): `scene-rate-60`
+landed in the bad credit-RTT phase (published 30.05/s, median credit RTT 18.1 ms, ≈ two host
+frames), `scene-rate-60-cold` landed in the good phase (58.84/s) on the very same configuration.
+This is the known credit-window-1 / 60 Hz phase effect, now reproduced independently in G6p's own
+data, not a new finding.
+
+**Cold vs warm startup.** Every warm-cache repeat (the default) fetched nothing over HTTP in its
+measured window -- `scene-rate-60` and `hd-native-rate-60` both show `bytes.fetches: 0`,
+`bytes.http_bytes: 0` on every one of their five repeats, confirming the shared warmup cache is
+doing its job. The cold-cache repeats of 60 re-fetch from nothing every time: `scene-rate-60-cold`
+128 fetches / 1 525 360 bytes per repeat (≈11.9 KB/fetch), `hd-native-rate-60-cold` 932 fetches /
+5 256 316 bytes (≈5.6 KB/fetch, many more, smaller atlas-page fetches on the larger fixture).
+
+**Receiver apply/upload/GPU cost** (`recv_decode_us`/`recv_apply_us`/`recv_gpu_render_ms`
+medians; upload is reported `unavailable` everywhere -- "combined with apply_us in the receiver",
+`gate6c-checks.ts repeatOf`): gate6-scene ≈ 1.9-2.3 ms decode, 1.3-1.6 ms apply, 0.26-0.37 ms GPU;
+gate6-hd (native and half) ≈ 16-20 ms decode, 13-15.6 ms apply, 1.6-2.0 ms GPU -- an 8-10x jump
+tracking the ≈9x bytes-per-transaction increase, consistent with decode/apply being dominated by
+texture copy and hashing over the payload rather than a fixed per-transaction cost.
+
+**Memory.** Host RSS stays small and mostly flat across every scenario (84-101 MB, slope 0.3-11
+MB/min over the 20 s window). Receiver RSS grows faster (gate6-scene ≈17-78 MB/min, gate6-hd
+≈85-102 MB/min) -- every repeat starts a brand-new receiver process with an empty in-memory cache
+that fills from the local disk cache (warm) or the network (cold) during the measured window, so
+this is first-fill growth, not a soak leak; G6s's 300 s soak (README "G6s live-buffer fix") is the
+one that measures leak-shaped growth.
+
+### D15: deltas and parameter bytes (`scripts/analyze-deltas.ts`, from `scene-rate-60-hooklog`'s
+### `resources.jsonl`)
+
+| Kind | resources | version-creating ops | superseded versions | superseded payload bytes | delta bytes total | whole-version bytes available |
+| --- | --- | --- | --- | --- | --- | --- |
+| image (texture) | 8 | 51 | 2 | 147 681 | 2 614 287 | no |
+| mesh | 1 | 1 675 | 2 | 0 | 214 016 | no (g6t-report-tooling-facts: no whole-buffer byte size in the hook log) |
+| shader | 3 | 8 | 2 | 0 | 1 158 | no |
+| material | 2 | 436 | 13 | 0 | 0 | no (param-only, no payload) |
+
+`param_bytes_per_frame`: 419 frames, 429 elements total, mean **1.02 elements/frame** -- on this
+fixture's content, parameters change barely at all frame to frame, so a parameter-delta
+optimization would save little here specifically (the candidate still stands on gate 5.5's own
+material findings for scenes with more active parameter animation). Every `savings_bytes` is
+`null`: the hook log never carries a byte size that would let a whole-version baseline be computed
+for any of these kinds (texture lines here came back `whole_version_bytes_available: false` too,
+on this particular hook log), so `analyze-deltas.ts` reports the real numbers it has rather than
+estimating one it does not, exactly as G6t built it.
+
+### Stability
+
+`repeat-stability` never fails on a high CoV by design -- it only fails if a scenario is missing
+its aggregate block. On this run it named **162 metrics above 10% CoV** across the 20 scenarios,
+concentrated in small-integer-count and bursty fields that are expected to be noisy over only five
+repeats: `bytes.fetches`/`bytes.http_bytes` (0 on every warm repeat, so any cold-adjacent reading
+swings the CoV to 200%+), `cpu.host_io_thread_s`, `queues.max_pending_age_us`, and
+`stages.recv_fetch_us.p50` on scenarios with few or no fetches. Densely-sampled fields
+(`rates.published.value`, `stages.recv_decode_us.p50`, `stages.recv_apply_us.p50`,
+`memory.*_rss_start/end`) stayed well under 10% everywhere they were measured. The full per-metric
+list is in `render-stream-report.json`'s `scenarios[].aggregate`, not reproduced here.
+
+### What G6p does not prove
+
+Per-leg pass/fail semantics (G6a-G6c's own `leg-class-*`/`rate-achieved`/etc. checks do that; G6p
+only measures cost, it does not re-judge correctness). A true mesh whole-version byte baseline
+(g6t-report-tooling-facts, unchanged). Stability over minutes (G6s's soak, not a 20 s window).
+Rates or costs on a non-loopback network beyond `constrained`'s one throttle-proxy profile (gate
+8). `recv_gpu_render_ms`'s classification depends on `isRenderedDesktopGlReceiver`'s provenance
+heuristic (render-stream-report.ts header note 2), unchanged here. The `unarmed` arm's host frame
+rate is a wall-clock slope over ≈9 s of step lines (game time 6-15 s), not a 20 s windowed
+distribution like every other arm's -- a cruder but honestly-labelled measurement (D11 gives it no
+extension to measure with).
