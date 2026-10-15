@@ -141,11 +141,11 @@ export async function buildGate0View(
   }
 }
 
-function sha256File(path: string): string {
+export function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-async function readJson<T>(path: string): Promise<T | undefined> {
+export async function readJson<T>(path: string): Promise<T | undefined> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as T;
   } catch {
@@ -153,7 +153,7 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   }
 }
 
-function filesUnder(root: string, prefix = ""): string[] {
+export function filesUnder(root: string, prefix = ""): string[] {
   if (!existsSync(join(root, prefix))) return [];
   const out: string[] = [];
   for (const entry of readdirSync(join(root, prefix), {
@@ -242,7 +242,7 @@ export function jsonDiffPaths(
 }
 
 /** Native-only runner and harness files a web leg is not expected to reproduce. */
-function nativeOnly(rel: string): boolean {
+export function nativeOnly(rel: string): boolean {
   return (
     rel.startsWith("cache/") ||
     rel.startsWith("diff/") ||
@@ -283,7 +283,7 @@ export interface Gate7GroupResult {
   startup: Record<string, unknown>[];
 }
 
-function mk(
+export function mk(
   id: string,
   criterion: string,
   problems: string[],

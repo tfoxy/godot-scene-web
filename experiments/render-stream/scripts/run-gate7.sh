@@ -67,8 +67,20 @@
 #             and for g7-1 `cargo test ordering_model` on the gate 1 source's recording
 #             (<out>/gate1/ordering-model.log). check-gate7.ts judges every gsw leg with its gate's
 #             own checker (lib/gate7-gsw.ts) plus G7a's checks (lib/gate7-gsw-checks.ts).
-#             `--receiver web|gsw` limits the run to one browser; g7-1..g7-3 have no web half yet
-#             (G7b).
+#             `--receiver web|gsw` limits the run to one browser (the web half of g7-1..g7-3 is
+#             G7b's, below).
+# Groups landed (G7b): the web half of
+#   g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6
+#             every FILE receiver leg of gates 1 to 6 in the web export (the gsw half is G7a's,
+#             G7t's and G7s's; the live legs are G7l's and G7g's). Sources (D21): `--source
+#             gate<N>=<dir>` per gate, or `--make-sources`, which runs run-gate<N>.sh with only the
+#             gate's file-leg groups (g1a,g1b / g2a,g2b,g2d / g3a-g3d / g4a-g4f / g5b,g5c,g5d,g5e,g5g /
+#             g55b-g55e / g6a,g6h,g6b) into <out>/sources-made/gate<N>/. gate7-tool.ts web-legs
+#             discovers the source's file receiver legs (lib/gate7b-adapters.ts) and replays each one
+#             in the web export into <out>/gate<N>/web/<leg>, then replays every leg whose shots
+#             differ from native once more into <out>/gate<N>/web-repeat/<leg> (Q7's same-build
+#             repeat). check-gate7.ts judges each gate with the gate's own checker through views of
+#             the source (native, blank, web, banded; lib/gate7b-adapters.ts header).
 #
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
@@ -87,7 +99,7 @@ RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
 KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
-LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-dev g7-bench)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-dev g7-bench)
 
 OUT=""
 LEGS_ARG=""
@@ -312,10 +324,6 @@ for g in 0 1 2 3; do
 		echo "run-gate7: g7-$g runs on the desktop only (drop --env device)" >&2
 		exit 2
 	fi
-	if [ "$g" != 0 ] && ! want_gsw; then
-		echo "run-gate7: g7-$g has no web half yet (G7b); use --receiver gsw or drop --receiver" >&2
-		exit 2
-	fi
 	SOURCE_GATES+=("$g")
 done
 if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
@@ -341,6 +349,42 @@ for g in "${SOURCE_GATES[@]}"; do
 		SOURCES[gate$g]="$OUT/sources-made/gate$g"
 		g7tool source-provenance --extension "$EXTENSION" --out "${SOURCES[gate$g]}/gate7-source.json"
 	fi
+done
+# G7b: the gates 1 to 6 sources (the same D21 rule as gate 0's).
+G7B_GROUPS=(g7-1:gate1:run-gate1.sh:g1a,g1b g7-2:gate2:run-gate2.sh:g2a,g2b,g2d
+	g7-3:gate3:run-gate3.sh:g3a,g3b,g3c,g3d g7-4:gate4:run-gate4.sh:g4a,g4b,g4c,g4d,g4e,g4f
+	g7-5:gate5:run-gate5.sh:g5b,g5c,g5d,g5e,g5g g7-55:gate55:run-gate55.sh:g55b,g55c,g55d,g55e
+	g7-6:gate6:run-gate6.sh:g6a,g6h,g6b)
+G7B_RUN=()
+for spec in "${G7B_GROUPS[@]}"; do
+	IFS=: read -r group gate runner source_legs <<<"$spec"
+	has_group "$group" && want_web || continue
+	G7B_RUN+=("$group:$gate")
+	if [ "$HARNESS_ENV" != "desktop" ]; then
+		echo "run-gate7: $group runs on the desktop only (drop --env device)" >&2
+		exit 2
+	fi
+	if [ -n "${SOURCES[$gate]:-}" ]; then
+		continue
+	fi
+	if [ "$MAKE_SOURCES" = 0 ]; then
+		echo "run-gate7: $group needs --source $gate=<run dir> or --make-sources" >&2
+		exit 2
+	fi
+	if [ ! -f "$EXTENSION" ]; then
+		echo "run-gate7: $group needs the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
+		exit 1
+	fi
+	EXTENSION="$(realpath "$EXTENSION")"
+	echo "run-gate7: making the $gate source run ($runner --legs $source_legs)" >&2
+	set +e
+	bash "$SCRIPT_DIR/$runner" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
+		--out "$OUT/sources-made/$gate" --legs "$source_legs"
+	source_exit=$?
+	set -e
+	echo "run-gate7: $runner exit=$source_exit (source-run-valid judges it)" >&2
+	SOURCES[$gate]="$OUT/sources-made/$gate"
+	g7tool source-provenance --extension "$EXTENSION" --out "${SOURCES[$gate]}/gate7-source.json"
 done
 {
 	printf '{"sources": {'
@@ -571,6 +615,25 @@ if [ "${#SOURCE_GATES[@]}" -gt 0 ] && want_gsw; then
 				ordering_model -- --nocapture
 		fi
 	done
+fi
+if [ "${#G7B_RUN[@]}" -gt 0 ]; then
+	if [ -z "$BUNDLE" ]; then
+		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
+	fi
+	BUNDLE="$(realpath "$BUNDLE")"
+	EXTENSION="$(realpath "$EXTENSION")"
+	for pair in "${G7B_RUN[@]}"; do
+		group="${pair%%:*}"
+		gate="${pair#*:}"
+		echo "run-gate7: $group web legs ($gate, bundle $BUNDLE)" >&2
+		g7tool web-legs --group "$group" --source "${SOURCES[$gate]}" --bundle "$BUNDLE" --out "$OUT" \
+			--repeat-differing
+		CHECK_ARGS+=(--source "$gate=${SOURCES[$gate]}")
+	done
+	case " ${CHECK_ARGS[*]} " in
+	*" --bundle "*) ;;
+	*) CHECK_ARGS+=(--bundle "$BUNDLE" --extension "$EXTENSION") ;;
+	esac
 fi
 if has_group g7-dev; then
 	if [ "$HARNESS_ENV" = "desktop" ]; then run_g7_dev_desktop; else run_g7_dev_device; fi

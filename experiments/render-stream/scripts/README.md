@@ -2794,3 +2794,73 @@ The files:
   exits 0.
 - **Reported, not gating:** `probe-render-time` and `pw1-web-equals-native` (Q7 P-W1, every shot
   byte-equal to native).
+
+## Gate 7 files, legs and criteria (g7-1 to g7-6 web export, G7b)
+
+G7b ([../protocol/gate7-design.md](../protocol/gate7-design.md) "G7b", Q4, Q7, Q8, D11, D21, D34)
+replays every **file** receiver leg of gates 1 to 6 in the G7e web export, on the GDScript decoder,
+and judges each gate with that gate's own checker:
+
+```bash
+pnpm render-stream:gate7 -- --legs g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6 \
+  --source gate1=<run>,gate2=<run>,gate3=<run>,gate4=<run>,gate5=<run>,gate55=<run>,gate6=<run>
+# or --make-sources: runs run-gate<N>.sh with only the file-leg groups into <out>/sources-made/
+```
+
+A source needs `gate7-source.json` (`gate7-tool.ts source-provenance --extension E --out
+<run>/gate7-source.json`, written right after the run). A full native run of a gate serves as its
+source. The view keeps only the file-leg groups (g1a,g1b / g2a,g2b,g2d / g3a-g3d / g4a-g4f /
+g5b,g5c,g5d,g5e,g5g / g55b-g55e / g6a,g6h,g6b); the live groups are G7l's and G7g's.
+
+- `lib/gate7b-adapters.ts`:
+  - `discoverFileReceiverLegs` finds every leg of the source whose `env.txt` sets
+    `RS_RECEIVER_RECORDING` (not `RS_RECEIVER_URL`) and whose `argv.txt` runs the receiver
+    project. Four kinds are typed, not replayed: `native-only-trace` (an strace leg),
+    `native-only-editor` (a debug-editor support leg), `native-only-warm-cache`
+    (`RS_RECEIVER_CACHE_MODE=warm`; Q4: the web has no cache directory) and `live-derived` (a
+    replay of a live receiver's received tap).
+  - `buildMirrorView` makes a view of the source. Every entry links to the source and a replaced
+    leg links to its target. Strace legs are relocated: `strace.txt` is copied with the source
+    path rewritten to the view's. `result.json` is dropped, and `legs.json` names only the view's
+    groups.
+  - `checkGateWeb` runs the gate's CLI checker (`check-gate<N>.ts --out <view>`) on four views:
+    - `native-view`: no leg replaced;
+    - `blank-view`: every replayed leg is an empty directory;
+    - `web-view`: the web legs;
+    - `banded-view`: the web legs, except that every shot whose differing pixels are all
+      `readback` or `delta1` is replaced by the native shot.
+
+    A check whose verdict differs between `native-view` and `blank-view` reads a replayed leg. It
+    is reported as `<id>@web` and judged on the banded view; when the raw web verdict differs, the
+    detail quotes it. Every other check is source-only. `<out>/gate<N>/classification.json` records
+    the legs, the web and source-only check ids, the checks that fail raw, and every shot's
+    classes.
+  - `classifyShot` sorts each differing pixel into one of three classes:
+    - `readback`: some 10-bit value v gives the native byte `floor(v/4)` and the web byte
+      `round(v*255/1023)`, and alpha is equal;
+    - `delta1`: every colour channel is within 1, and alpha is equal;
+    - `other`: anything else.
+  - `NOT_APPLICABLE_AT_WEB` lists gate 2's `fresh-cache` and `warm-cache` (Q4). They are reported
+    and do not gate.
+- `gate7-tool.ts`:
+  - `discover --source <run>` lists the source's file receiver legs.
+  - `web-legs --group g7-<N> --source <run> --bundle <dir> --out <run> [--only a,b]
+    [--repeat-differing]` replays them into `<out>/gate<N>/web/<leg>`. With `--repeat-differing`,
+    it then replays every leg whose shots differ from native once more, into
+    `<out>/gate<N>/web-repeat/<leg>`.
+- `lib/gate7-web-legs.ts` copies the native leg's `shot-seqs.txt` into the web leg, because gate
+  5.5d's checker reads it.
+- `test/self-test-gate7b.ts` covers `classifyShot`, discovery and the view.
+
+Gate 7's own checks for each gate, all suffixed `@web`:
+
+| Check | Gating | What it requires |
+| --- | --- | --- |
+| the gate's own receiver checks | yes | they pass on the banded view (Q7 band; gate7-design.md "As built (G7b)") |
+| `source-run-valid` | yes | the native view passes every web check, and `gate7-source.json` matches the build (D21) |
+| `browser-provenance`, `console-clean`, `evidence-complete` | yes | as for g7-0 |
+| `applied-equals-native` | yes | as for g7-0, with source paths inside values mapped to their URL paths; a leg with a `web-*` refusal is reported by `web-refusals` instead |
+| `compositor-equals-readback` | yes | on the honest `receiver` legs and the HD presentation legs, when the last shot is of the exit state and opaque |
+| `pw1-classes` | yes | no `other` pixel, except on a leg with a `web-*` refusal |
+| `web-repeat-identical` | yes | each differing leg's repeat is byte-identical to its first run |
+| `raw-web-checks`, `pw1-web-equals-native`, `web-refusals`, `legs-not-replayed`, `fresh-cache`, `warm-cache` | no | reported only |
