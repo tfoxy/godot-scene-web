@@ -19,6 +19,11 @@ extends Node
 ##                           S + N k + 2 for k in {1, 5, 9}
 ##   RS_FIXTURE_ORACLE_LOG   absolute path: scene_oracle.gd's JSONL (reference legs only: refused,
 ##                           exit 2, when a GRC_* capture variable is set)
+##   RS_FIXTURE_QUIT_TIME    rate and soak only: seconds of game time to quit at, at least the
+##                           timeline's own (30 / 370); G6c's constrained sabotage drains a backlog
+##   RS_FIXTURE_FREEZE_STATE a JSON array with one builder `freeze_state()` object (G6c): applied
+##                           right after step 11, so a reference ends in a realtime host's exact
+##                           frozen state. Rate and soak step logs carry `freeze` at step 11
 
 const Builder := preload("res://scene_builder.gd")
 const SceneOracle := preload("res://scene_oracle.gd")
@@ -64,6 +69,9 @@ var _game_time: float = 0.0
 var _next_step: int = 1
 ## Time-indexed timelines: the frame at which each applied step settles (-1 until applied).
 var _settle_at: Dictionary[int, int] = {}
+var _quit_time: float = 0.0
+## G6c: the frozen leftovers to apply after step 11 (empty: none).
+var _freeze_override: Dictionary = {}
 
 
 func _ready() -> void:
@@ -99,7 +107,7 @@ func _process(delta: float) -> void:
 			var settle: int = _frame + SETTLE_OFFSET
 			_settle_at[_next_step] = settle
 			_apply_step(_next_step)
-			_log_step(_next_step, _frame, settle)
+			_log_step(_next_step, _frame, settle, [inst.freeze_state()] if _next_step == LAST_STEP else [])
 			_next_step += 1
 
 	var game_frame: int = floori(_game_time * Builder.FPS)
@@ -122,6 +130,8 @@ func _frame_indexed() -> bool:
 
 func _apply_step(step: int) -> void:
 	inst.apply_step(step)
+	if step == LAST_STEP and not _freeze_override.is_empty():
+		inst.apply_freeze_state(_freeze_override)
 	if step == 10:
 		# The root canvas transform: every root-canvas item moves by (8, 4), the HUD does not.
 		get_viewport().canvas_transform = Transform2D(0.0, Vector2(8, 4))
@@ -156,7 +166,7 @@ func _step_time(step: int) -> float:
 func _quit_due() -> bool:
 	if _frame_indexed():
 		return _frame >= _quit_frame
-	return _game_time >= (RATE_QUIT if _timeline == "rate" else SOAK_QUIT) and _next_step > LAST_STEP
+	return _game_time >= _quit_time and _next_step > LAST_STEP
 
 
 func _read_environment() -> bool:
@@ -198,6 +208,26 @@ func _read_environment() -> bool:
 	if quit < 0:
 		return false
 	_quit_frame = quit
+
+	_quit_time = RATE_QUIT if _timeline == "rate" else SOAK_QUIT
+	if OS.has_environment("RS_FIXTURE_QUIT_TIME"):
+		var quit_text: String = OS.get_environment("RS_FIXTURE_QUIT_TIME").strip_edges()
+		if _frame_indexed() or not quit_text.is_valid_float() or quit_text.to_float() < _quit_time:
+			_error("RS_FIXTURE_QUIT_TIME needs the rate or soak timeline and seconds >= %s (got %s)" % [_quit_time, JSON.stringify(quit_text)])
+			return false
+		_quit_time = quit_text.to_float()
+	if OS.has_environment("RS_FIXTURE_FREEZE_STATE"):
+		var parsed: Variant = JSON.parse_string(OS.get_environment("RS_FIXTURE_FREEZE_STATE"))
+		var ok: bool = parsed is Array
+		if ok:
+			var states: Array = parsed
+			ok = states.size() == 1 and states[0] is Dictionary
+			if ok:
+				_freeze_override = states[0]
+				ok = _freeze_override.has("sc") and _freeze_override.has("lb") and _freeze_override.has("cd_k")
+		if not ok:
+			_error("RS_FIXTURE_FREEZE_STATE must be a JSON array of one freeze_state() object")
+			return false
 
 	if _timeline == "file":
 		for k: int in FILE_MID_STEPS:
@@ -260,8 +290,12 @@ func _error(text: String) -> void:
 	printerr("[fixture] error: " + text)
 
 
-func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
+func _log_step(step: int, applied_frame: int, settle_frame: int, freeze: Array = []) -> void:
 	if _step_log_file == null:
+		return
+	if not freeze.is_empty():
+		_step_log_file.store_line("{\"step\":%d,\"applied_frame\":%d,\"settle_frame\":%d,\"freeze\":%s}" % [step, applied_frame, settle_frame, JSON.stringify(freeze)])
+		_step_log_file.flush()
 		return
 	_step_log_file.store_line("{\"step\":%d,\"applied_frame\":%d,\"settle_frame\":%d}" % [step, applied_frame, settle_frame])
 	_step_log_file.flush()

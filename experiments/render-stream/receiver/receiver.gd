@@ -108,6 +108,9 @@ extends Node
 ##   RS_RECEIVER_SHOT_WINDOWS    CSV of <step>:<from>-<to> host-frame windows: the first applied
 ##                               transaction whose frame is in a window is shot (after
 ##                               frame_post_draw) and its state dumped (optional)
+##   RS_RECEIVER_SHOT_FINAL      1 (G6c): after the end record, shoot the last applied state once
+##                               more (shots/final.png, a shot with "final": true and that
+##                               transaction's seq and frame) before closing
 ##   RS_RECEIVER_RECEIVED_OUT    absolute path of the received bytes (default <dirname>/received.rs2)
 ##   RS_RECEIVER_INBOUND_BYTES   WebSocketPeer.inbound_buffer_size, set before connecting
 ##                               (default 16777216)
@@ -253,7 +256,12 @@ var _inline_since_applied: int = 0
 var _perf: RsPerf = null
 var _perf_out_path: String = ""
 var _log_mode: String = "full"
-# Live HTTP fetches (G2c2).
+var _perf_headless: bool = false
+# G6c: RS_RECEIVER_SHOT_FINAL=1 (live): after the end record, one more shot of the last applied
+# state (`final.png`) before the receiver closes.
+var _shot_final: bool = false
+var _final_shot_done: bool = false
+var _last_applied_frame: int = -1
 var _fetch_kind: String = ""
 var _fetcher: RsResourceFetcher = null
 ## The transaction waiting for its fetches: {entry, meta, resources (its fetch counters so far)}.
@@ -520,6 +528,7 @@ func _parse_perf_env() -> bool:
 		return false
 	if _perf_out_path != "":
 		_perf = RsPerf.new()
+		_perf_headless = DisplayServer.get_name() == "headless"
 	return true
 
 
@@ -851,6 +860,7 @@ func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
 func _process(_delta: float) -> void:
 	if _perf != null:
 		_perf.record_frame_interval()
+		_perf.record_render_time(_perf_headless)
 		# G6s: memory-cache entries/bytes and live RIDs per kind fill the fields G6r left
 		# unavailable (rs_perf.gd); live_rids is null before the session creates _applier.
 		var live_rids: Variant = null
@@ -945,6 +955,7 @@ func _transaction_entry(stream: int, meta: Dictionary, record: Dictionary) -> Di
 func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> void:
 	var seq: int = entry["seq"]
 	_last_applied_seq = seq
+	_last_applied_frame = entry["frame"]
 	entry["process_frame"] = Engine.get_process_frames()
 	entry["created"] = stats["created"]
 	entry["freed"] = stats["freed"]
@@ -1447,6 +1458,12 @@ func _ready_live() -> void:
 	if not _parse_windows() or not _parse_g1d_options():
 		_quit(EXIT_USAGE)
 		return
+	var shot_final: String = OS.get_environment("RS_RECEIVER_SHOT_FINAL").strip_edges()
+	if shot_final != "" and shot_final != "1":
+		_log("error: RS_RECEIVER_SHOT_FINAL must be 1 or unset (got %s)" % JSON.stringify(shot_final))
+		_quit(EXIT_USAGE)
+		return
+	_shot_final = shot_final == "1"
 	_received_path = OS.get_environment("RS_RECEIVER_RECEIVED_OUT")
 	if _received_path == "":
 		_received_path = _out_path.get_base_dir().path_join("received.rs2")
@@ -1517,7 +1534,7 @@ func _ready_live() -> void:
 	}
 	_streams.append(_stream_report)
 	_log("mode live, url %s, out %s, received %s, credit %s, inbound %d, windows %s, stall %s, reconnect %s, resync %s, display %s" % [_url, _out_path, _received_path, _credit_stage, _inbound_bytes, JSON.stringify(_windows), "%d:%d" % [_stall_step, _stall_ms] if _stall_step >= 0 else "off", str(_reconnect_step) if _reconnect_step >= 0 else "off", str(_resync_step) if _resync_step >= 0 else "off", display_server])
-	if display_server == "headless" and not _windows.is_empty():
+	if display_server == "headless" and (not _windows.is_empty() or _shot_final):
 		_fail(null, "shot-unavailable", "shot windows were requested, but the display server is headless")
 		return
 
@@ -1675,6 +1692,12 @@ func _process_live() -> void:
 		if _finished:
 			return
 	if _end_seen and _waiting.is_empty() and not _submit_pending:
+		if _shot_final and not _final_shot_done:
+			# RS_RECEIVER_SHOT_FINAL: the last applied state, drawn once more, before the close.
+			_final_shot_done = true
+			_submit_pending = true
+			RenderingServer.frame_post_draw.connect(_after_final_shot, CONNECT_ONE_SHOT)
+			return
 		# The receiver closes: the host lingers for this close after sending the end record, because
 		# a WebSocketPeer loses any message that arrives in the same poll() as a close frame
 		# (wsl_peer.cpp: no packets once the state is not OPEN; a clean close clears in_buffer).
@@ -2047,6 +2070,32 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 			"closed_us": null,
 		}
 		_reconnect_due = true
+
+
+## RS_RECEIVER_SHOT_FINAL (G6c): `final.png`, the last applied transaction's state after the end
+## record, so a realtime leg's final state is shot whatever host frame its freeze landed at.
+func _after_final_shot() -> void:
+	if _finished:
+		return
+	var image: Image = get_viewport().get_texture().get_image()
+	var path: String = _shot_dir.path_join("final.png")
+	var made: Error = DirAccess.make_dir_recursive_absolute(_shot_dir)
+	if image == null or made != OK or image.save_png(path) != OK:
+		_fail(_last_seq_or_null(), "shot-failed", "the final shot could not be saved to %s" % path)
+		return
+	_shots.append({
+		"stream": _conn_index,
+		"seq": _last_applied_seq,
+		"step": null,
+		"final": true,
+		"frame": _last_applied_frame,
+		"path": path,
+		"state_path": null,
+		"process_frame": Engine.get_process_frames(),
+		"applied_through": _last_applied_seq,
+	})
+	_log("final shot seq %d frame %d -> %s" % [_last_applied_seq, _last_applied_frame, path])
+	_submit_pending = false
 
 
 ## RS_RECEIVER_RESYNC: the first transaction applied inside the resync step's window is refused

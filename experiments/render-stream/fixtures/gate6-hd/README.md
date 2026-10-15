@@ -24,7 +24,8 @@ python3 experiments/render-stream/fixtures/gate6-hd/make_expected.py --sync   # 
   layer 1 + c) and phase 7c frames. The timelines, time modes, shots and step log are
   gate6_scene.gd's, applied to every cell at the same frames. Variables: gate6_scene.gd's
   (`RS_FIXTURE_VARIANT` is `animate` or `gpu-heavy` here) plus `RS_FIXTURE_BURN_ITERATIONS`
-  (`gpu-heavy` only, default 1000).
+  (`gpu-heavy` only, default 1000) and, since G6c, `RS_FIXTURE_FREEZE_STATE` (nine
+  `freeze_state()` objects, one per cell; rate and soak step logs carry them at step 11).
 - `hd_oracle.gd` (`render-stream-gate6-hd-oracle/1`, reference legs only): at each settle frame the
   viewport's oversampling, window size, visible rect, stretch scale and canvas transform, the grid's
   rect, each cell's rect and Scene position plus everything gate6-scene's oracle reads for one copy

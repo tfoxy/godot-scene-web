@@ -13,6 +13,11 @@
 // The two constraints combine as "whichever makes a byte wait longest": `DirectionShaper` always
 // waits out the delay floor first, then the token bucket, in a loop (a chunk arriving while the
 // bucket is still refilling for an earlier chunk waits behind it, FIFO, one shaper per direction).
+// Since G6c the link also has a bounded buffer (`queueLimitBytes`: one burst plus the
+// bandwidth-delay product, about 80 KB for `constrained`): above it the source socket is paused,
+// so TCP backpressure reaches the sender (a host that ignores credit then queues on its own side,
+// where `max_queued_bytes` sees it), and a side that stops sending (FIN, reset) no longer drops
+// what the proxy still holds for the other: that is delivered first, then the other side is ended.
 //
 // Profile `constrained` (D12): 500_000 B/s (4 Mbit/s) per direction, 64 KiB burst, 30 ms delay.
 // `unlimited` is a passthrough (rate 0 means "no limit" here, not "stalled") used by the proxy's
@@ -24,9 +29,10 @@
 //     --target-host 127.0.0.1 --target-port <port> [--listen-port <port>] \
 //     [--profile constrained|unlimited] [--rate-bytes-per-s N] [--burst-bytes N] [--delay-ms N] \
 //     [--duration-s N] [--stats-out <file>]
-// Prints `{"listening_port":<port>}` as its first stdout line once bound, so a parent process
-// that asked for an ephemeral port (`--listen-port 0`, the default) can read it back. Stops and
-// writes `--stats-out` (default stdout) on SIGINT/SIGTERM, or after `--duration-s` if given.
+// Prints `{"listening_port":<port>,"pid":<pid>}` as its first stdout line once bound, so a parent
+// process that asked for an ephemeral port (`--listen-port 0`, the default) can read it back, and
+// (G6c) signal this very process rather than a wrapper. Stops and writes `--stats-out` (default
+// stdout) on SIGINT/SIGTERM, or after `--duration-s` if given.
 
 import { writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
@@ -133,16 +139,46 @@ class DirectionShaper {
   private queue: Promise<void> = Promise.resolve();
   bytesForwarded = 0;
   readonly latencyMs = newRunningStats();
+  /** Bytes read from the source and not yet written to the destination (G6c). */
+  pendingBytes = 0;
+  maxPendingBytes = 0;
+  pauses = 0;
+  private paused = false;
 
+  /** `queueLimitBytes` (G6c, 0 = unbounded): the link's own buffer. Above it the source socket is
+   * paused, so the sender's TCP window closes and its own send queue grows, as it would behind a
+   * real 4 Mbit/s link; it resumes once half of that has drained. Without it the proxy read
+   * everything the host wrote at once, and a host ignoring credit never saw backpressure. */
   constructor(
+    private readonly src: Socket,
     private readonly dst: Socket,
     private readonly bucket: TokenBucket,
     private readonly delayMs: number,
+    private readonly queueLimitBytes = 0,
   ) {}
 
   push(chunk: Buffer): void {
     const arrivalMs = Date.now();
+    this.pendingBytes += chunk.length;
+    this.maxPendingBytes = Math.max(this.maxPendingBytes, this.pendingBytes);
+    if (
+      this.queueLimitBytes > 0 &&
+      !this.paused &&
+      this.pendingBytes > this.queueLimitBytes
+    ) {
+      this.paused = true;
+      this.pauses++;
+      this.src.pause();
+    }
     this.queue = this.queue.then(() => this.forward(chunk, arrivalMs));
+  }
+
+  private released(n: number): void {
+    this.pendingBytes -= n;
+    if (this.paused && this.pendingBytes <= this.queueLimitBytes / 2) {
+      this.paused = false;
+      if (!this.src.destroyed) this.src.resume();
+    }
   }
 
   /** Resolves once every chunk pushed so far has been written out (or the destination closed). */
@@ -162,9 +198,13 @@ class DirectionShaper {
       const sentAtMs = Date.now();
       record(this.latencyMs, sentAtMs - arrivalMs);
       if (!this.dst.write(piece)) {
-        await new Promise<void>((resolve) => this.dst.once("drain", resolve));
+        await new Promise<void>((resolve) => {
+          this.dst.once("drain", resolve);
+          this.dst.once("close", resolve);
+        });
       }
       this.bytesForwarded += piece.length;
+      this.released(piece.length);
       offset += take;
     }
   }
@@ -193,23 +233,27 @@ class DirectionShaper {
 
 // --------------------------------------------------------------------------------------- proxy
 
+export interface ThrottleDirectionStats {
+  bytes_total: number;
+  achieved_bytes_per_s: number;
+  latency_ms: ReturnType<typeof summarize>;
+  /** G6c: the largest number of bytes one connection's direction held (read, not yet written) */
+  max_pending_bytes: number;
+  /** G6c: how often a source socket was paused because its direction held more than the limit */
+  pauses: number;
+}
+
 export interface ThrottleProxyStats {
   schema: "render-stream-throttle-proxy-stats/1";
   rate_bytes_per_s: number;
   burst_bytes: number;
   delay_ms: number;
+  /** G6c: the per-connection, per-direction buffer above which the source is paused (0: none) */
+  queue_limit_bytes: number;
   duration_s: number;
   connections: number;
-  client_to_server: {
-    bytes_total: number;
-    achieved_bytes_per_s: number;
-    latency_ms: ReturnType<typeof summarize>;
-  };
-  server_to_client: {
-    bytes_total: number;
-    achieved_bytes_per_s: number;
-    latency_ms: ReturnType<typeof summarize>;
-  };
+  client_to_server: ThrottleDirectionStats;
+  server_to_client: ThrottleDirectionStats;
 }
 
 export interface ThrottleProxyHandle {
@@ -225,11 +269,49 @@ export interface ThrottleProxyOptions {
   profile?: ThrottleProfile;
 }
 
+/** The link's buffer per connection and direction (G6c): one burst plus the bytes in flight
+ * during the one-way delay at the configured rate (the bandwidth-delay product). 0 when the
+ * profile is unlimited. */
+export function queueLimitBytes(profile: ThrottleProfile): number {
+  if (profile.rateBytesPerSec <= 0) return 0;
+  return (
+    profile.burstBytes +
+    Math.ceil((profile.rateBytesPerSec * profile.delayMs) / 1000)
+  );
+}
+
+function directionStats(
+  shapers: readonly DirectionShaper[],
+  durationS: number,
+): ThrottleDirectionStats {
+  const latency = newRunningStats();
+  let bytes = 0;
+  let maxPending = 0;
+  let pauses = 0;
+  for (const s of shapers) {
+    bytes += s.bytesForwarded;
+    latency.count += s.latencyMs.count;
+    latency.sum += s.latencyMs.sum;
+    latency.min = Math.min(latency.min, s.latencyMs.min);
+    latency.max = Math.max(latency.max, s.latencyMs.max);
+    maxPending = Math.max(maxPending, s.maxPendingBytes);
+    pauses += s.pauses;
+  }
+  return {
+    bytes_total: bytes,
+    achieved_bytes_per_s: bytes / durationS,
+    latency_ms: summarize(latency),
+    max_pending_bytes: maxPending,
+    pauses,
+  };
+}
+
 export function startThrottleProxy(
   opts: ThrottleProxyOptions,
 ): Promise<ThrottleProxyHandle> {
   const profile = opts.profile ?? THROTTLE_PROFILES.constrained;
   const listenHost = opts.listenHost ?? "127.0.0.1";
+  const limit = queueLimitBytes(profile);
   const startedAtMs = Date.now();
   let connections = 0;
 
@@ -243,73 +325,72 @@ export function startThrottleProxy(
     profile.burstBytes || 1,
     profile.rateBytesPerSec,
   );
-  const clientToServerStats = { bytes: 0, latency: newRunningStats() };
-  const serverToClientStats = { bytes: 0, latency: newRunningStats() };
+  // Every connection's shapers (the WebSocket and each HTTP connection), summed at stop().
+  const toServerShapers: DirectionShaper[] = [];
+  const toClientShapers: DirectionShaper[] = [];
   const openSockets = new Set<Socket>();
 
   return new Promise((resolveStart, rejectStart) => {
-    const server = createServer((client) => {
+    // allowHalfOpen (G6c): a FIN from one side must not end the other direction before what the
+    // proxy still holds for it has been delivered (a host that quits with a backlog in the link).
+    const server = createServer({ allowHalfOpen: true }, (client) => {
       connections++;
       openSockets.add(client);
       const upstream = connect({
         host: opts.targetHost,
         port: opts.targetPort,
+        allowHalfOpen: true,
       });
       openSockets.add(upstream);
 
       const toUpstream = new DirectionShaper(
+        client,
         upstream,
         clientToServerBucket,
         profile.delayMs,
+        limit,
       );
       const toClient = new DirectionShaper(
+        upstream,
         client,
         serverToClientBucket,
         profile.delayMs,
+        limit,
       );
+      toServerShapers.push(toUpstream);
+      toClientShapers.push(toClient);
 
       client.on("data", (chunk: Buffer) => toUpstream.push(chunk));
       upstream.on("data", (chunk: Buffer) => toClient.push(chunk));
 
-      const closeBoth = () => {
-        openSockets.delete(client);
-        openSockets.delete(upstream);
-        if (!client.destroyed) client.destroy();
-        if (!upstream.destroyed) upstream.destroy();
+      // When one side stops sending (FIN, reset or close), whatever the proxy already holds for
+      // the other side is still delivered, then that side is ended: the link drains, as a real
+      // one would. A destroyed destination just drops the rest.
+      let upstreamDone = false;
+      let clientDone = false;
+      const finish = (socket: Socket) => {
+        openSockets.delete(socket);
+        if (!socket.destroyed) socket.end();
+        setTimeout(() => {
+          if (!socket.destroyed) socket.destroy();
+        }, 2000).unref();
       };
-      client.on("close", closeBoth);
-      upstream.on("close", closeBoth);
-      client.on("error", closeBoth);
-      upstream.on("error", closeBoth);
-
-      // Drain the shapers' queues into the running totals as chunks finish, rather than only at
-      // stop() -- a long-lived connection (the whole point of this proxy) must not wait until
-      // close to be reflected in stats.json if a caller inspects it mid-run.
-      const poll = setInterval(() => {
-        clientToServerStats.bytes = toUpstream.bytesForwarded;
-        serverToClientStats.bytes = toClient.bytesForwarded;
-        clientToServerStats.latency.count = toUpstream.latencyMs.count;
-        clientToServerStats.latency.sum = toUpstream.latencyMs.sum;
-        clientToServerStats.latency.min = Math.min(
-          clientToServerStats.latency.min,
-          toUpstream.latencyMs.min,
-        );
-        clientToServerStats.latency.max = Math.max(
-          clientToServerStats.latency.max,
-          toUpstream.latencyMs.max,
-        );
-        serverToClientStats.latency.count = toClient.latencyMs.count;
-        serverToClientStats.latency.sum = toClient.latencyMs.sum;
-        serverToClientStats.latency.min = Math.min(
-          serverToClientStats.latency.min,
-          toClient.latencyMs.min,
-        );
-        serverToClientStats.latency.max = Math.max(
-          serverToClientStats.latency.max,
-          toClient.latencyMs.max,
-        );
-      }, 200);
-      client.on("close", () => clearInterval(poll));
+      const upstreamStopped = () => {
+        if (upstreamDone) return;
+        upstreamDone = true;
+        void toClient.drained().then(() => finish(client));
+      };
+      const clientStopped = () => {
+        if (clientDone) return;
+        clientDone = true;
+        void toUpstream.drained().then(() => finish(upstream));
+      };
+      upstream.on("end", upstreamStopped);
+      upstream.on("close", upstreamStopped);
+      upstream.on("error", upstreamStopped);
+      client.on("end", clientStopped);
+      client.on("close", clientStopped);
+      client.on("error", clientStopped);
     });
 
     server.on("error", rejectStart);
@@ -331,18 +412,11 @@ export function startThrottleProxy(
                 rate_bytes_per_s: profile.rateBytesPerSec,
                 burst_bytes: profile.burstBytes,
                 delay_ms: profile.delayMs,
+                queue_limit_bytes: limit,
                 duration_s: durationS,
                 connections,
-                client_to_server: {
-                  bytes_total: clientToServerStats.bytes,
-                  achieved_bytes_per_s: clientToServerStats.bytes / durationS,
-                  latency_ms: summarize(clientToServerStats.latency),
-                },
-                server_to_client: {
-                  bytes_total: serverToClientStats.bytes,
-                  achieved_bytes_per_s: serverToClientStats.bytes / durationS,
-                  latency_ms: summarize(serverToClientStats.latency),
-                },
+                client_to_server: directionStats(toServerShapers, durationS),
+                server_to_client: directionStats(toClientShapers, durationS),
               });
             });
           }),
@@ -405,7 +479,9 @@ async function main(): Promise<void> {
     listenPort: opts.listenPort,
     profile: opts.profile,
   });
-  console.log(JSON.stringify({ listening_port: handle.port }));
+  console.log(
+    JSON.stringify({ listening_port: handle.port, pid: process.pid }),
+  );
 
   let stopping = false;
   const stopAndReport = async () => {

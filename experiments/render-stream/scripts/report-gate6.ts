@@ -3,9 +3,13 @@
 // an existing report file, `build` assembles one from a run-set directory a measurement increment
 // (G6r/G6l/G6c/G6p) wrote.
 //
-//   mise exec -- pnpm render-stream:report -- validate <report.json>
+//   mise exec -- pnpm render-stream:report -- validate <report.json> [--repeats 1]
 //   mise exec -- pnpm render-stream:report -- build <run-set dir> --out <report.json> \
-//     [--deltas <resources.jsonl>]
+//     [--deltas <resources.jsonl>] [--repeats 1]
+//
+// `--repeats 1` (G6c) is the single functional repeat a gate leg writes: each scenario has
+// `repeat-1/` only, no warmup directory, and the report carries `warmup: null` and
+// `aggregate: null` (validated, not aggregated); the default is Q7f's five repeats.
 //
 // `build`'s run-set directory layout (this file's own convention -- nothing elsewhere in the
 // repository defines the per-repeat measurement format yet, since that is G6r/G6l/G6c/G6p's job;
@@ -65,25 +69,30 @@ async function buildProvenance(dir: string): Promise<ReportProvenance> {
   };
 }
 
-async function buildScenario(dir: string, id: string): Promise<ReportScenario> {
+async function buildScenario(
+  dir: string,
+  id: string,
+  count: 1 | 5,
+): Promise<ReportScenario> {
   const scenarioDir = join(dir, "scenarios", id);
   const meta = await readJson<Omit<ReportScenario, "repeats" | "aggregate">>(
     join(scenarioDir, "meta.json"),
   );
   const repeats: ReportRepeat[] = [];
-  for (let i = 1; i <= 5; i++) {
+  for (let i = 1; i <= count; i++) {
     repeats.push(
       await readJson<ReportRepeat>(
         join(scenarioDir, `repeat-${i}`, "repeat.json"),
       ),
     );
   }
+  if (count === 1) return { ...meta, warmup: null, repeats, aggregate: null };
   return { ...meta, repeats, aggregate: aggregate(repeats) };
 }
 
 export async function buildReport(
   dir: string,
-  opts: { deltasPath?: string } = {},
+  opts: { deltasPath?: string; repeats?: 1 | 5 } = {},
 ): Promise<RenderStreamReport> {
   const run = await readJson<ReportRun>(join(dir, "run.json"));
   const provenance = await buildProvenance(dir);
@@ -94,7 +103,8 @@ export async function buildReport(
     .map((e) => e.name)
     .sort();
   const scenarios: ReportScenario[] = [];
-  for (const id of scenarioIds) scenarios.push(await buildScenario(dir, id));
+  for (const id of scenarioIds)
+    scenarios.push(await buildScenario(dir, id, opts.repeats ?? 5));
 
   let optimizations: RenderStreamReport["optimizations"] = null;
   if (opts.deltasPath) {
@@ -111,11 +121,21 @@ export async function buildReport(
   };
 }
 
-function parseArgs(argv: string[]): { out?: string; deltas?: string } {
-  const out: { out?: string; deltas?: string } = {};
+function parseArgs(argv: string[]): {
+  out?: string;
+  deltas?: string;
+  repeats?: 1 | 5;
+} {
+  const out: { out?: string; deltas?: string; repeats?: 1 | 5 } = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") out.out = argv[++i];
     else if (argv[i] === "--deltas") out.deltas = argv[++i];
+    else if (argv[i] === "--repeats") {
+      const n = argv[++i];
+      if (n !== "1" && n !== "5")
+        throw new Error(`report-gate6: --repeats must be 1 or 5 (got ${n})`);
+      out.repeats = n === "1" ? 1 : 5;
+    }
   }
   return out;
 }
@@ -133,7 +153,7 @@ async function main(): Promise<void> {
         "report-gate6: usage: report-gate6.ts validate <report.json>",
       );
     const report = await readJson<unknown>(target);
-    const errors = validate(report);
+    const errors = validate(report, { repeats: parseArgs(rest).repeats });
     if (errors.length === 0) {
       console.log(`report-gate6: ${target} is a valid render-stream-report/1`);
       return;
@@ -148,10 +168,10 @@ async function main(): Promise<void> {
       throw new Error(
         "report-gate6: usage: report-gate6.ts build <run-set dir> --out <file> [--deltas <resources.jsonl>]",
       );
-    const { out, deltas } = parseArgs(rest);
+    const { out, deltas, repeats } = parseArgs(rest);
     if (!out) throw new Error("report-gate6: build needs --out <file.json>");
-    const report = await buildReport(target, { deltasPath: deltas });
-    const errors = validate(report);
+    const report = await buildReport(target, { deltasPath: deltas, repeats });
+    const errors = validate(report, { repeats });
     if (errors.length > 0) {
       console.error(
         "report-gate6: built report fails validation, refusing to write it:",

@@ -26,7 +26,12 @@ python3 experiments/render-stream/fixtures/gate6-scene/make_expected.py --check
   `RS_FIXTURE_STEP_FRAMES`, `RS_FIXTURE_QUIT_FRAME`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_SHOT_DIR`
   (`step-<k>.png` at each settle frame, `frame-<f>.png` at each extra frame), `RS_FIXTURE_SHOT_FRAMES`
   (extra frames; the file timeline always adds 13, 53 and 93) and `RS_FIXTURE_ORACLE_LOG` (refused,
-  exit 2, when a `GRC_*` capture variable is set). Output lines start with `[fixture]`.
+  exit 2, when a `GRC_*` capture variable is set). G6c adds `RS_FIXTURE_QUIT_TIME` (rate and soak
+  only: a later quit, in seconds of game time) and `RS_FIXTURE_FREEZE_STATE` (a JSON array of one
+  `freeze_state()` object, applied right after step 11); rate and soak step logs carry step 11's
+  `freeze` leftovers (SC's scroll, LB's text, CD's k: what the freeze does not reset, and what a
+  realtime host's wall clock decides), so a reference can render a realtime host's exact final
+  state. Output lines start with `[fixture]`.
 - `scene_builder.gd`: the scene under one top-level `Scene` Control, parameterized by origin, cell
   index c (TEXA content offset 100c, HUD layer 1 + c) and phase φ (frames) for G6h's `gate6-hd`. It
   owns the step table (`apply_step`), the per-frame animation (`on_frame`) and the generators of

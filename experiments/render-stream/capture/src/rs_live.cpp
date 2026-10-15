@@ -1349,6 +1349,9 @@ std::vector<ConnectionSummary> Hub::summaries() const {
     }
     s.credit_rtt_us = latency_stats(c.credit_rtt);
     s.credit_rtt_frames = latency_stats(c.credit_frames);
+    s.credit_rtt_count = c.credit_rtt.size();
+    for (const std::uint64_t v : c.credit_rtt) s.credit_rtt_sum_us += v;
+    for (const std::uint64_t v : c.credit_frames) s.credit_rtt_frames_sum += v;
     out.push_back(std::move(s));
   }
   std::sort(out.begin(), out.end(), [](const ConnectionSummary &a, const ConnectionSummary &b) {

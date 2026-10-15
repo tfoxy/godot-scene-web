@@ -18,7 +18,9 @@ extends Node
 ## RS_FIXTURE_VARIANT (`animate`, `gpu-heavy`), RS_FIXTURE_TIME, RS_FIXTURE_TIMELINE,
 ## RS_FIXTURE_START_FRAME, RS_FIXTURE_STEP_FRAMES, RS_FIXTURE_QUIT_FRAME, RS_FIXTURE_STEP_LOG,
 ## RS_FIXTURE_SHOT_DIR, RS_FIXTURE_SHOT_FRAMES, RS_FIXTURE_ORACLE_LOG (hd_oracle.gd, reference legs
-## only), plus RS_FIXTURE_BURN_ITERATIONS (`gpu-heavy` only; default 1000, G6c calibrates it).
+## only), plus RS_FIXTURE_BURN_ITERATIONS (`gpu-heavy` only; default 1000, G6c calibrates it) and
+## RS_FIXTURE_FREEZE_STATE (G6c: a JSON array of nine builder `freeze_state()` objects, one per
+## cell, applied right after step 11; rate and soak step logs carry `freeze` at step 11).
 
 const Builder := preload("res://scene_builder.gd")
 const HdOracle := preload("res://hd_oracle.gd")
@@ -72,6 +74,8 @@ var _frame: int = 0
 var _game_time: float = 0.0
 var _next_step: int = 1
 var _settle_at: Dictionary[int, int] = {}
+## G6c: each cell's frozen leftovers to apply after step 11 (empty: none).
+var _freeze_override: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -146,7 +150,7 @@ func _process(delta: float) -> void:
 			var settle: int = _frame + SETTLE_OFFSET
 			_settle_at[_next_step] = settle
 			_apply_step(_next_step)
-			_log_step(_next_step, _frame, settle)
+			_log_step(_next_step, _frame, settle, _freeze_states() if _next_step == LAST_STEP else [])
 			_next_step += 1
 
 	var game_frame: int = floori(_game_time * Builder.FPS)
@@ -171,10 +175,20 @@ func _frame_indexed() -> bool:
 func _apply_step(step: int) -> void:
 	for inst: Builder in insts:
 		inst.apply_step(step)
+	if step == LAST_STEP and not _freeze_override.is_empty():
+		for c: int in range(CELLS):
+			insts[c].apply_freeze_state(_freeze_override[c])
 	if step == 10:
 		# The root canvas transform: every root-canvas item of every cell moves by (8, 4) logical
 		# pixels; the HUD layers do not.
 		get_viewport().canvas_transform = Transform2D(0.0, Vector2(8, 4))
+
+
+func _freeze_states() -> Array:
+	var out: Array = []
+	for inst: Builder in insts:
+		out.append(inst.freeze_state())
+	return out
 
 
 func _step_at(frame: int, offset: int) -> int:
@@ -252,6 +266,23 @@ func _read_environment() -> bool:
 		return false
 	_quit_frame = quit
 
+	if OS.has_environment("RS_FIXTURE_FREEZE_STATE"):
+		var parsed: Variant = JSON.parse_string(OS.get_environment("RS_FIXTURE_FREEZE_STATE"))
+		var ok: bool = parsed is Array
+		if ok:
+			var states: Array = parsed
+			ok = states.size() == CELLS
+			for entry: Variant in states:
+				if not ok or not (entry is Dictionary):
+					ok = false
+					break
+				var state: Dictionary = entry
+				ok = state.has("sc") and state.has("lb") and state.has("cd_k")
+				_freeze_override.append(state)
+		if not ok:
+			_error("RS_FIXTURE_FREEZE_STATE must be a JSON array of %d freeze_state() objects" % CELLS)
+			return false
+
 	if _timeline == "file":
 		for k: int in FILE_MID_STEPS:
 			_extra_frames.append(_start_frame + _step_frames * k + FILE_MID_OFFSET)
@@ -311,8 +342,12 @@ func _error(text: String) -> void:
 	printerr("[fixture] error: " + text)
 
 
-func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
+func _log_step(step: int, applied_frame: int, settle_frame: int, freeze: Array = []) -> void:
 	if _step_log_file == null:
+		return
+	if not freeze.is_empty():
+		_step_log_file.store_line("{\"step\":%d,\"applied_frame\":%d,\"settle_frame\":%d,\"freeze\":%s}" % [step, applied_frame, settle_frame, JSON.stringify(freeze)])
+		_step_log_file.flush()
 		return
 	_step_log_file.store_line("{\"step\":%d,\"applied_frame\":%d,\"settle_frame\":%d}" % [step, applied_frame, settle_frame])
 	_step_log_file.flush()

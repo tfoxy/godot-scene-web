@@ -809,6 +809,29 @@ func apply_step(step: int) -> void:
 	marker.set_color(MARKER_COLORS[step])
 
 
+## G6c (gate6-design.md "As built (G6c)"): what step 11's freeze leaves time-dependent -- the
+## `animate` writes it does not reset (SC's scroll, LB's text, CD's k). A realtime host's freeze
+## lands at whatever game frame the wall clock reached, and a game frame it skipped skips that
+## frame's write too, so the owner logs these at step 11 and a reference reproduces them exactly
+## (`apply_freeze_state`).
+func freeze_state() -> Dictionary:
+	return {"sc": sc.scroll_vertical, "lb": lb.text, "cd_k": cd.k}
+
+
+## Sets the leftovers `freeze_state()` names (after step 11 on a reference); false when `state`
+## lacks one of them.
+func apply_freeze_state(state: Dictionary) -> bool:
+	if not (state.get("sc") is float or state.get("sc") is int) or not (state.get("lb") is String) or not (state.get("cd_k") is float or state.get("cd_k") is int):
+		return false
+	var sc_value: float = state["sc"]
+	var lb_text: String = state["lb"]
+	var cd_value: float = state["cd_k"]
+	sc.scroll_vertical = int(sc_value)
+	lb.text = lb_text
+	cd.set_k(int(cd_value))
+	return true
+
+
 func _pose_frame(f: int) -> int:
 	return f + phase
 

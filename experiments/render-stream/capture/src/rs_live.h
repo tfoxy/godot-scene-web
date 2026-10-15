@@ -287,6 +287,11 @@ struct ConnectionSummary {
   LatencyStats credit_rtt_us;
   // Host frames between a send and the frame callback that consumed its credit.
   LatencyStats credit_rtt_frames;
+  // G6c: running totals of the two above (count, sum of microseconds, sum of host frames), so a
+  // per-second timeline gives the mean credit round trip of any window.
+  std::uint64_t credit_rtt_count = 0;
+  std::uint64_t credit_rtt_sum_us = 0;
+  std::uint64_t credit_rtt_frames_sum = 0;
 };
 
 // The live host's HTTP serving totals (G2c2), for the summary's `resources` object: every GET

@@ -23,6 +23,7 @@
 // 9. Group g6l: self-test-gate6l.ts's cases for lib/gate6l-checks.ts.
 // 10. Group g6s: self-test-gate6s.ts's cases for lib/gate6s-checks.ts.
 // 11. Gate 6b: test/self-test-gate6b.ts (the pure g6b checks) on synthetic values and the HD file.
+// 12. Group g6c: self-test-gate6c.ts's cases for lib/gate6c-checks.ts.
 //
 // Exits non-zero if any assertion fails.
 
@@ -57,6 +58,7 @@ import type { Gate6HdExpected } from "../lib/gate6h-checks";
 import type { Wire5Tx } from "../lib/gate55-wire";
 import { rasterizeItems } from "../lib/geometry-raster";
 import { selfTestGate6b } from "./self-test-gate6b";
+import { selfTestGate6c } from "./self-test-gate6c";
 import { selfTestGate6h } from "./self-test-gate6h";
 import { selfTestG6l } from "./self-test-gate6l";
 import { selfTestG6s } from "./self-test-gate6s";
@@ -908,6 +910,9 @@ async function main(): Promise<void> {
 
   // 11. Gate 6b (test/self-test-gate6b.ts).
   selfTestGate6b(assert, hdExpected);
+
+  // 12. Group g6c (self-test-gate6c.ts).
+  selfTestGate6c({ assert, passes, fails });
 
   console.log(
     `\nself-test-gate6: ${assertions - failures}/${assertions} assertions passed`,
