@@ -6695,3 +6695,114 @@ against gate 6's fixtures, expectations and `render-stream-report/1` as the conf
 baseline (gate7-design.md, already under way in parallel on several of this repository's disjoint
 files per its D23). The first gate-8-bound items gate 6 leaves fully specified but unimplemented
 are late-join adoption and compressed texture formats.
+## Gate 7m result (2026-10-15)
+
+G7m ([protocol/gate7-design.md](protocol/gate7-design.md) "G7m", D24 to D28, Q13e) ran G7d's
+documented bench command on the moto g31, the only phone attached (standing approval, D28). The
+g86 is not attached; its arm stays `device-unavailable` and operator-attended, out of scope here
+(G7v's attended session runs it, per the design doc's fork). The web-export receiver arm stays
+`unavailable` (`web-export-not-built`): it needs G7e, which is pending, and it was not built here.
+
+Command, reusing G7d's final desktop run's bench recordings verbatim (copied into this worktree's
+ignored `artifacts/render-stream/gate7/g7m-inputs/`, not regenerated):
+
+```bash
+pnpm render-stream:gate7 -- --legs g7-dev,g7-bench --env device --device g31 --receiver gsw \
+  --bench-inputs artifacts/render-stream/gate7/g7m-inputs/inputs/inputs.json
+```
+
+`check-gate7.ts`: 12/12 group checks pass, including the five-repeat `dev-bench-<input>-gsw-g31-
+complete` checks (5/5 valid repeats each) and `device-provenance` / `device-session-settings-
+restored`. Evidence kept at `artifacts/render-stream/gate7/g7m-g31/` (ignored, not committed).
+
+**The budget, recomputed from the measured panel.** rAF `tp_ms` measured 17.00 to 17.03 ms across
+the run's two independent probes, matching G7d's 17.02 ms smoke finding (not the nominal 16.67 ms
+"60 Hz"). **0.5·T_p is therefore about 8.50 to 8.51 ms, not the nominal 8.3 ms.** The table below
+uses each leg's own measured budget.
+
+**g31 five-repeat bench (GSW), ms p50/p95, against G7d's desktop numbers** (Ryzen 5 5500,
+headless Chromium 148, from "Gate 7d result"):
+
+| Input | phase | g31 p50/p95 | desktop p50/p95 | g31/desktop (p50) |
+| --- | --- | --- | --- | --- |
+| scene-full | decode (incl. hash) | 9.935 / 10.985 | 1.41 / 2.03 | 7.0x |
+| scene-full | hash | 6.525 / 7.260 | 0.75 / 1.15 | 8.7x |
+| scene-full | validate | 0.990 / 1.250 | 0.17 / 0.26 | 5.8x |
+| scene-full | resolve | 0.830 / 0.995 | 0.11 / 0.20 | 7.5x |
+| scene-full | **total** | **11.790 / 12.990** | 1.69 / 2.44 | **7.0x** |
+| scene-patch | decode (incl. hash) | 0.750 / 4.715 | 0.06 / 0.40 | 12.5x |
+| scene-patch | hash | 0.290 / 2.920 | 0.02 / 0.22 | 14.5x |
+| scene-patch | validate | 2.015 / 2.630 | 0.13 / 0.19 | 15.5x |
+| scene-patch | resolve | 0.130 / 0.920 | 0.01 / 0.07 | 13.0x |
+| scene-patch | **total** | **3.040 / 7.395** | 0.21 / 0.61 | **14.5x** |
+| hd-patch | decode (incl. hash) | 6.130 / 10.785 | 1.09 / 1.81 | 5.6x |
+| hd-patch | hash | 4.375 / 7.260 | 0.73 / 1.24 | 6.0x |
+| hd-patch | validate | 3.550 / 7.220 | 0.67 / 0.85 | 5.3x |
+| hd-patch | resolve | 0.875 / 1.530 | 0.16 / 0.27 | 5.5x |
+| hd-patch | **total** | **10.565 / 16.790** | 1.89 / 2.89 | **5.6x** |
+| pace-patch | decode (incl. hash) | 0.975 / 1.310 | 0.07 / 0.11 | 13.9x |
+| pace-patch | hash | 0.365 / 0.585 | 0.02 / 0.03 | 18.3x |
+| pace-patch | validate | 0.425 / 0.790 | 0.04 / 0.07 | 10.6x |
+| pace-patch | resolve | 0.125 / 0.205 | 0.01 / 0.02 | 12.5x |
+| pace-patch | **total** | **1.575 / 2.160** | 0.12 / 0.19 | **13.1x** |
+
+Against the measured budget (p95 total vs 0.5·T_p): **scene-full misses at 12.990 ms vs 8.505 ms
+(+53 %)**; **hd-patch misses at 16.790 ms vs 8.507 ms (+97 %)**; scene-patch passes at 7.395 ms vs
+8.505 ms (1.11 ms headroom); pace-patch passes at 2.160 ms vs 8.507 ms (6.35 ms headroom). Apply is
+not applicable: GSW's applier does not exist before G7a, so this bench measures decode, hash,
+validate and resolve only (apply is G7v's measurement). Native and web rows do not apply to this
+device bench (native is desktop-only in G7d; web is `unavailable`).
+
+**D27 verdict for GSW on the g31: not met.** `scene-full` and `hd-patch` — the two inputs carrying
+a full frame or a large inline resource payload — miss the 0.5·T_p budget at p95. The typed
+finding is `device-decode-over-budget` (receiver `gsw`, phone `g31`, inputs `scene-full` and
+`hd-patch`, per-phase numbers in the table above). `scene-patch` and `pace-patch` (small
+per-transaction deltas, no large payload to hash) pass with headroom. The phone/desktop ratio
+(5.6x to 14.5x on p50) is well above D27's estimated 4 to 5x factor, confirming G7d's one-repeat
+smoke over five repeats. **This triggers G7o** for the GSW receiver; it is not void. The g86 arm
+did not run (not attached) and is recorded `device-unavailable`; G7v runs it first, attended.
+
+**Ranked bottlenecks, for G7o.**
+
+1. **SHA-256 hashing** (G7j's pure-TypeScript inline-payload hash) is the single largest phase on
+   both inputs that carry a large payload: 6.525 ms p50 (55 % of scene-full's 11.790 ms total) and
+   4.375 ms p50 (41 % of hd-patch's 10.565 ms) — confirms G7d's one-repeat finding over five
+   repeats. G7o's candidates (move hashing off the rAF path, or a wasm SHA-256) target this first.
+2. **Decode minus hash** (framing and value parsing) is the second-largest cost on those same two
+   inputs (about 3.41 ms p50 on scene-full, 1.76 ms on hd-patch), and the dominant cost on the
+   small patch-only inputs, though their totals stay well under budget regardless (G7o's
+   candidate: `DataView` decoding with no per-record object churn).
+3. **Validate** is disproportionately costly on `scene-patch` (2.015 ms p50, 66 % of its 3.040 ms
+   total, bigger than its own decode) and shows a wide p50/p95 spread on `hd-patch` (3.550 /
+   7.220 ms, about 2.0x), worth watching for GC-pause-like jitter, though not yet the top target.
+4. **Resolve** is the smallest contributor everywhere (0.13 to 1.53 ms p50) and not a G7o priority.
+
+**CPU frequency and thermal**, sampled at the two session-start probes plus six 30-s samples over
+the run (about 150 s: the g7-dev session check and the four g7-bench legs):
+
+- Both clusters ran **uncapped** this run: A55 `scaling_max_khz` 1 800 000 of `cpuinfo_max_khz`
+  1 800 000 (`derated: false`); A75 `scaling_max_khz` 2 000 000 of 2 000 000 (`derated: false`).
+  This **differs from G7d's one-repeat smoke**, which found the A75 capped at 1 354 000
+  (`derated` true). **The cap varies between runs; it is not a fixed property of the device.**
+  `scaling_cur_khz` still dropped under idle between legs (A55 observed down to 774 000 at one
+  30-s sample), consistent with a normal governor, not a sustained throttle.
+- Thermal status stayed `none` (code 0) for all samples; CPU/GPU/NPU reported a flat 45.5 °C
+  (likely a coarse sensor ceiling, as G7d also saw); battery temperature rose 23.3 to 23.6 °C.
+- Battery held at 72 % throughout (charging on USB); no drop recorded over the run.
+- Session settings (`stay_on_while_plugged_in`, `accelerometer_rotation`, `user_rotation`) were
+  applied for the run and fully restored afterward (2 / 0 / 0, as found); no adb forward or
+  reverse was left behind.
+
+### Deviations
+
+- Only the GSW receiver ran. The web-export arm needs G7e and was not attempted, per scope.
+- The g86 arm did not run: the phone is not attached, and the task's scope excludes targeting it.
+- `--bench-inputs` reused G7d's final desktop run's recordings (`g7d-r1/g7-bench/inputs`) verbatim,
+  copied into this worktree's artifacts; no desktop capture was regenerated.
+
+### What G7m does not prove
+
+It does not cover the g86 (G7v's attended session runs that arm first), the web-export receiver
+(waits for G7e), or GSW's apply cost (G7a's applier, measured at G7v). Per the contract, the
+`device-decode-over-budget` finding is itself the result: G7o is scoped next, and no decode
+optimization was attempted here.

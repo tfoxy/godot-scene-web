@@ -1572,6 +1572,15 @@ Void if gate 6 fixed D20. Otherwise:
   it passes the increment.
 - **Consequence**: a probe that contradicts Q13a or Q13b is recorded "As built" here, as G7h did
   for Q1b, before G7v relies on it.
+- **As built (G7m, 2026-10-15)**, details in the README's "Gate 7m result": the g31's five-repeat
+  GSW bench (web stubbed `unavailable`, pending G7e; g86 not attached). `device-decode-over-budget`
+  on `scene-full` (p95 12.990 ms, +53 %) and `hd-patch` (p95 16.790 ms, +97 %) against the measured
+  0.5·T_p ≈ 8.50–8.51 ms (T_p ~17.0 ms, as G7d found); `scene-patch` and `pace-patch` pass. This
+  **triggers G7o** for GSW, ranked: SHA-256 hashing first, decode-minus-hash second, validate's
+  jitter on `hd-patch` a secondary watch item. **Contradicts G7d's one-repeat smoke on CPU caps**:
+  this run's A55 and A75 both ran uncapped (`derated: false` throughout, all probes and samples),
+  where G7d's single repeat saw the A75 capped at 1.354 GHz. The cap is not a fixed device property
+  and must be sampled per run, not assumed from one prior probe.
 
 ### G7b — web export: every gate's file legs (opus)
 
