@@ -1,0 +1,40 @@
+; Gate 7 pace fixture for the render-stream capture experiment (G7d, gate7-design.md Q13d `pace`).
+; One 32x32 opaque texture on a 640x360 root, moving 1 px per host frame and wrapping, so every
+; transaction after the first is one transform patch. See README.md.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-gate7-pace-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://pace.tscn"
+run/low_processor_mode_sleep_usec=0
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as gates 0-6: each warning leveled individually, 2 == ERROR.
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)

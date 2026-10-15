@@ -1,0 +1,2 @@
+GLES: ARM, Mali-G615 MC2, OpenGL ES 3.2 v1.r44p1
+  refresh-rate              : 90.00fps

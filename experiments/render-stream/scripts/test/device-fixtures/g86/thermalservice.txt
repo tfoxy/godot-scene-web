@@ -1,0 +1,4 @@
+IsStatusOverride: false
+Thermal Status: 0
+Cached temperatures:
+	Temperature{mValue=47.713, mType=0, mName=CPU, mStatus=0}

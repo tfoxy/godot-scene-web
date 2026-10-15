@@ -1,0 +1,2 @@
+** MEMINFO in pid 15792 [com.android.chrome] **
+           TOTAL PSS:   150681            TOTAL RSS:   144674       TOTAL SWAP PSS:    82665

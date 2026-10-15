@@ -1,0 +1,4 @@
+model=moto g86 5G
+manufacturer=motorola
+release=15
+sdk=35

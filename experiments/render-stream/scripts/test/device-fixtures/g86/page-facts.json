@@ -1,0 +1,11 @@
+{
+  "renderer": "ANGLE (ARM, Mali-G615 MC2, OpenGL ES 3.2)",
+  "vendor": "Google Inc. (ARM)",
+  "userAgent": "Mozilla/5.0 (Linux; Android 15; moto g86 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.137 Mobile Safari/537.36",
+  "innerWidth": 790,
+  "innerHeight": 316,
+  "devicePixelRatio": 3.487597942352295,
+  "orientation": "landscape-primary",
+  "visibilityState": "visible",
+  "crossOriginIsolated": true
+}

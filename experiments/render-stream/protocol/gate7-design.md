@@ -1474,6 +1474,31 @@ Void if gate 6 fixed D20. Otherwise:
   devices` without the selected serial must give `device-unavailable`. A fake trace with 300 ms of
   hidden time must make the watchdog mark the repeat `invalid`.
 - G7d never touches a phone. It leaves G7m a single command per phone to run.
+- **As built (G7d, 2026-10-15)**, details in the README's "Gate 7d result":
+  - The groups are `g7-dev` (Q13d's plan, plus the pace fixture's native legs) and `g7-bench`
+    (Q13e). Bench legs are named `native-bench-<input>`, `ctl-bench-<input>-<gsw|web>` and
+    `dev-bench-<input>-<gsw|web>-<id>`. The inputs are `scene-full`, `scene-patch` (the gate 6
+    `animate` capture's two sinks), `hd-patch` and `pace-patch`. G7m's command is
+    `--legs g7-dev,g7-bench --env device --device g31 --receiver gsw --bench-inputs <inputs.json>`.
+    The g86 additionally needs `RS_GATE7_OPERATOR_ATTENDED=g86`.
+  - GSW's per-transaction validate comes from a new incremental `createRecordingValidator` in
+    `render-stream-2.ts`. `validateRecording` is now a loop over it, with identical results. The
+    bench page is served cross-origin isolated, for 5-µs timers.
+  - **The web-export arm is stubbed `unavailable` until G7e.** `build-web-receiver.sh --bench` and
+    the bench entry scene were not built, because they need G7e's preset, shell and shims.
+  - The user's standing approval let G7d smoke-test the g31. This contradicts Q13a:
+    - **The panel vsyncs at about 58.8 Hz** (rAF 17.02 ms; SurfaceFlinger's VSyncTracker reports
+      16.98 ms). A 60 Hz host therefore drifts through every phase about every 0.87 s, instead of
+      Q13c/D26's per-run phase lock.
+    - Chrome uses ANGLE on the Mali-G52.
+    - There is no timer query, so `dev-gpu` has only the fence and headroom paths.
+    - RGB10_A2 is renderable and readable.
+    - The landscape viewport is 828×330 CSS px.
+    - adb-reverse RTT is 3.1 / 4.1 ms (p50 / p95) for 100 B and 67 ms for 813 KB.
+    - The A75 was capped at 1.354 GHz while Thermal Status stayed 0.
+  - One-repeat GSW smoke totals on the g31 ran 5–16× the desktop's. scene-full's p95 was 13.0 ms,
+    and SHA-256 alone took 6.5 ms of it. Q13e's 4–5× factor is therefore optimistic for GSW, and
+    hashing is a G7o candidate. G7m's five-repeat run is the measurement.
 
 ### G7e — web export: build, shims, gate 0 (opus)
 

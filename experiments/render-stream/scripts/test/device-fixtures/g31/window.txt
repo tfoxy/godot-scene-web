@@ -1,0 +1,2 @@
+    mAwake=true mScreenOnEarly=true mScreenOnFully=true
+    mShowingDream=false mDreamingLockscreen=false

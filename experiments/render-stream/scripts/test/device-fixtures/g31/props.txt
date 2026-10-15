@@ -1,0 +1,4 @@
+model=moto g31
+manufacturer=motorola
+release=12
+sdk=31

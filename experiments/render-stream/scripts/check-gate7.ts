@@ -19,7 +19,15 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-/** The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…"). None have landed. */
+import {
+  type BenchTableRow,
+  type Gate7Check,
+  runGate7BenchChecks,
+  runGate7DevChecks,
+} from "./lib/gate7d-checks";
+
+/** The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus G7d's phone groups
+ * (`g7-dev`, Q13d; `g7-bench`, Q13e). */
 export const ALL_GROUPS = [
   "g7-0",
   "g7-1",
@@ -32,8 +40,10 @@ export const ALL_GROUPS = [
   "g7-lc",
   "g7-r",
   "g7-k",
+  "g7-dev",
+  "g7-bench",
 ] as const;
-export const LANDED_GROUPS: readonly string[] = [];
+export const LANDED_GROUPS: readonly string[] = ["g7-dev", "g7-bench"];
 
 interface HarnessCheck {
   id: string;
@@ -63,6 +73,12 @@ export interface Gate7Report {
     probes_schema: string | null;
     checks: HarnessCheck[];
   } | null;
+  /** G7d: the run's environment (run-gate7.sh run.json). */
+  env: { env: string; device: string | null; receiver: string | null } | null;
+  /** G7d: each landed group's checks. */
+  group_checks: Record<string, Gate7Check[]>;
+  /** G7d: the bench's per-receiver, per-input, per-phase table (g7-bench). */
+  bench_table: BenchTableRow[];
 }
 
 function parseArgs(argv: string[]): { out: string; legs: string[] } {
@@ -119,12 +135,28 @@ async function main(): Promise<void> {
     : null;
 
   const notRun = ALL_GROUPS.filter((g) => !legs.includes(g));
-  // With no gate-numbered groups landed, gate 7 as a whole cannot pass yet (D23 is explicit:
-  // G7h lands now, but "Gate 7 passes when every increment ... has landed"). This checker still
-  // reports G7h's own harness checks as pass/fail, so that increment's own CI signal is real,
-  // without claiming gate 7 overall is green.
+  const env = await readJsonOrUndefined<{
+    env: string;
+    device: string | null;
+    receiver: string | null;
+  }>(join(out, "run.json"));
+  const device = env?.env === "device" ? env.device : null;
+  const groupChecks: Record<string, Gate7Check[]> = {};
+  let benchTable: BenchTableRow[] = [];
+  if (legs.includes("g7-dev"))
+    groupChecks["g7-dev"] = await runGate7DevChecks(out, device);
+  if (legs.includes("g7-bench")) {
+    const bench = await runGate7BenchChecks(out, device, env?.receiver ?? null);
+    groupChecks["g7-bench"] = bench.checks;
+    benchTable = bench.table;
+  }
+  // `gate_passed` here means "every group this run requested passed": gate 7 as a whole needs every
+  // increment (D23, "Gate 7 passes when…"), which the summary (G7z) judges, not this run.
   const harnessOk = harness ? harness.checks.every((c) => c.ok) : true;
-  const gatePassed = legs.length === 0 && harnessOk;
+  const groupsOk = Object.values(groupChecks).every((list) =>
+    list.every((c) => c.ok),
+  );
+  const gatePassed = harnessOk && groupsOk;
 
   const report: Gate7Report = {
     schema: "render-stream-gate7-report/1",
@@ -136,6 +168,9 @@ async function main(): Promise<void> {
       not_run: [...notRun],
     },
     harness,
+    env: env ?? null,
+    group_checks: groupChecks,
+    bench_table: benchTable,
   };
 
   await import("node:fs/promises").then(({ writeFile, mkdir }) =>
@@ -154,11 +189,27 @@ async function main(): Promise<void> {
       "check-gate7: no harness evidence at <out>/g7h-probes/evidence/probes.json",
     );
   }
-  console.log(
-    `check-gate7: ${ALL_GROUPS.length} total leg groups, 0 landed yet, ${legs.length} requested this run`,
+  for (const [group, list] of Object.entries(groupChecks))
+    for (const c of list)
+      console.log(`${c.ok ? "PASS" : "FAIL"}  ${group}  ${c.id}  ${c.detail}`);
+  const ms = (x: number | undefined) =>
+    x === undefined ? "-" : (x / 1000).toFixed(3);
+  for (const row of benchTable)
+    console.log(
+      `bench  ${row.leg}  ${Object.entries(row.phases)
+        .map(([k, v]) => `${k} ${ms(v.p50_us)}/${ms(v.p95_us)}`)
+        .join("  ")}  (ms p50/p95)  ${row.verdict ?? ""}`,
+    );
+  const total = Object.values(groupChecks).reduce((n, l) => n + l.length, 0);
+  const passed = Object.values(groupChecks).reduce(
+    (n, l) => n + l.filter((c) => c.ok).length,
+    0,
   );
   console.log(
-    `check-gate7: gate_passed=${gatePassed} (gate 7 overall is not yet checkable -- no g7-* group has landed)`,
+    `check-gate7: ${ALL_GROUPS.length} leg groups (${LANDED_GROUPS.length} landed), ${legs.length} requested; group checks ${passed}/${total}`,
+  );
+  console.log(
+    `check-gate7: gate_passed=${gatePassed} (the requested groups; gate 7 overall needs every increment)`,
   );
 
   if (!gatePassed) process.exitCode = 1;

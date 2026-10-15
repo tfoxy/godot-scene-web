@@ -1,0 +1,405 @@
+{
+  "schema": "render-stream-gate7-pace-expected/1",
+  "comment": "G7d (gate7-design.md Q13d pace). The model pace.gd implements; scripts/lib/gate7d-checks.ts re-derives every field from `model` and refuses a mismatch, then synthesizes each step frame exactly (clear colour everywhere but the square) and compares shots with a 0-pixel budget.",
+  "model": {
+    "root_size": [640, 360],
+    "clear_rgba8": [51, 51, 102, 255],
+    "square": {
+      "size": 32,
+      "y": 164,
+      "x0": 300,
+      "span": 609,
+      "x_rule": "x(f) = (f + x0) mod span",
+      "quadrants_rgba8": {
+        "tl": [255, 0, 0, 255],
+        "tr": [0, 255, 0, 255],
+        "bl": [0, 0, 255, 255],
+        "br": [255, 255, 255, 255]
+      }
+    },
+    "transactions": 400,
+    "first_frame": 1,
+    "patch_rule": "every transaction after the first: exactly one item, its transform only (commands null), no canvases, textures or removals"
+  },
+  "steps": [
+    {
+      "step": 0,
+      "frame": 10,
+      "x": 310,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [318, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [334, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [318, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [334, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [326, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [326, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [302, 180],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-right",
+          "xy": [350, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    },
+    {
+      "step": 1,
+      "frame": 60,
+      "x": 360,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [368, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [384, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [368, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [384, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [376, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [376, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [352, 180],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-right",
+          "xy": [400, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "frame": 110,
+      "x": 410,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [418, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [434, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [418, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [434, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [426, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [426, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [402, 180],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-right",
+          "xy": [450, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    },
+    {
+      "step": 3,
+      "frame": 160,
+      "x": 460,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [468, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [484, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [468, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [484, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [476, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [476, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [452, 180],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-right",
+          "xy": [500, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    },
+    {
+      "step": 4,
+      "frame": 210,
+      "x": 510,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [518, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [534, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [518, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [534, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [526, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [526, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [502, 180],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-right",
+          "xy": [550, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    },
+    {
+      "step": 5,
+      "frame": 260,
+      "x": 560,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [568, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [584, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [568, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [584, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [576, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [576, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [552, 180],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-right",
+          "xy": [600, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    },
+    {
+      "step": 6,
+      "frame": 308,
+      "x": 608,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [616, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [632, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [616, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [632, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [624, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [624, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [600, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    },
+    {
+      "step": 7,
+      "frame": 360,
+      "x": 51,
+      "y": 164,
+      "markers": [
+        {
+          "name": "square-tl",
+          "xy": [59, 172],
+          "rgba": [255, 0, 0, 255]
+        },
+        {
+          "name": "square-tr",
+          "xy": [75, 172],
+          "rgba": [0, 255, 0, 255]
+        },
+        {
+          "name": "square-bl",
+          "xy": [59, 188],
+          "rgba": [0, 0, 255, 255]
+        },
+        {
+          "name": "square-br",
+          "xy": [75, 188],
+          "rgba": [255, 255, 255, 255]
+        },
+        {
+          "name": "background-above",
+          "xy": [67, 156],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-below",
+          "xy": [67, 204],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-left",
+          "xy": [43, 180],
+          "rgba": [51, 51, 102, 255]
+        },
+        {
+          "name": "background-right",
+          "xy": [91, 180],
+          "rgba": [51, 51, 102, 255]
+        }
+      ]
+    }
+  ]
+}

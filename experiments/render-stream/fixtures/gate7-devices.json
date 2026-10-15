@@ -1,0 +1,67 @@
+{
+  "schema": "render-stream-gate7-devices/1",
+  "comment": "gate7-design.md Q13a/Q13b device table (G7d). browser-harness.ts --env device --device <id> resolves the id to its serial here and passes it to perf-harness selectDevice (D24); device-provenance checks the model, GPU and ANGLE rule below (Q13b). The serials are adb's USB serial numbers of the two test phones, required because both may be attached at once. Facts: g31 from read-only adb queries on 2026-10-15; g86 from packages/perf-harness/baselines/moto-g86-5g-effects-webgpu-runtime.json env.device and docs/perf-harness.md. Null means not measured (the g86 has not been queried over adb by gate 7).",
+  "devices": {
+    "g31": {
+      "label": "moto g31 (baseline)",
+      "serial": "ZY22FD8XP3",
+      "model": "moto g31",
+      "manufacturer": "motorola",
+      "adb_model": "moto_g31",
+      "adb_product": "coful_g",
+      "android_release": "12",
+      "chrome_package": "com.android.chrome",
+      "chrome_version_at_table": "154.0.8037.127",
+      "gpu_renderer_pattern": "Mali-G52",
+      "angle_required": false,
+      "panel_modes_hz": [60],
+      "predicted_tp_ms": 16.667,
+      "tp_rule": "fixed: a repeat whose T_p is not within 5 % of 16.7 ms is a finding (no other mode exists)",
+      "dpr_milli": 2625,
+      "screen_css_px": [914, 411],
+      "attendance": "standing-approval",
+      "session_settings": ["stay-awake-usb", "landscape-lock"],
+      "required_workloads": ["pace", "scene"],
+      "stretch_workloads": ["hd"],
+      "cpu_clusters": [
+        {
+          "name": "A55",
+          "cpus": "0-5",
+          "probe_cpu": 0,
+          "cpuinfo_max_khz": 1800000
+        },
+        {
+          "name": "A75",
+          "cpus": "6-7",
+          "probe_cpu": 6,
+          "cpuinfo_max_khz": 2000000
+        }
+      ],
+      "half_tick_budget_ms": 8.3
+    },
+    "g86": {
+      "label": "moto g86 5G (second device)",
+      "serial": "ZY32LL2X8W",
+      "model": "moto g86 5G",
+      "manufacturer": "motorola",
+      "adb_model": null,
+      "adb_product": null,
+      "android_release": "15",
+      "chrome_package": "com.android.chrome",
+      "chrome_version_at_table": "151.0.7922.137",
+      "gpu_renderer_pattern": "Mali-G615",
+      "angle_required": true,
+      "panel_modes_hz": [60, 90, 120],
+      "predicted_tp_ms": 11.111,
+      "tp_rule": "adaptive: a repeat whose T_p differs from the leg's first repeat by more than 5 % is a panel-mode change, classified at its own T_p",
+      "dpr_milli": 3488,
+      "screen_css_px": [790, 316],
+      "attendance": "operator-attended",
+      "session_settings": [],
+      "required_workloads": ["pace", "scene", "hd"],
+      "stretch_workloads": [],
+      "cpu_clusters": null,
+      "half_tick_budget_ms": 5.6
+    }
+  }
+}

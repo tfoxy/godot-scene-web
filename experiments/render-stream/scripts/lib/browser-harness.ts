@@ -34,6 +34,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
+import type { Duplex } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 import {
   type Browser,
@@ -42,6 +44,16 @@ import {
   chromium,
   type Page,
 } from "@playwright/test";
+
+// G7d (D24): the device path IS perf-harness's, imported, never copied.
+import {
+  type Adb,
+  AdbError,
+  type DeviceBrowser,
+  type DeviceConditions,
+  openDeviceBrowser,
+  reverseServerPort,
+} from "../../../../packages/perf-harness/src/device";
 
 // ---------------------------------------------------------------------------------------------
 // D9: launch flags. These are the ONLY flags that change what Chromium renders with or into --
@@ -328,6 +340,150 @@ export interface HarnessServerOptions {
   role?: "page" | "resource";
   /** `resource` role only: origins allowed to receive `Access-Control-Allow-Origin` (D3). */
   allowedOrigins?: readonly string[];
+  /** G7d: serve every static GET with `Cross-Origin-Opener-Policy: same-origin`,
+   * `Cross-Origin-Embedder-Policy: require-corp` and `Cross-Origin-Resource-Policy: same-origin`,
+   * so the page is `crossOriginIsolated` and `performance.now()` resolves to 5 µs instead of
+   * Chrome's 100 µs (the bench times phases of tens of microseconds). `http://127.0.0.1` is a
+   * secure context, on the phone too (adb reverse keeps the origin byte-identical). */
+  crossOriginIsolated?: boolean;
+}
+
+// ---------------------------------------------------------------------------------------------
+// G7d: a minimal RFC 6455 server side (no `ws` dependency in this workspace, as G7h's echo). It
+// parses masked client frames of any length (7-, 16- and 64-bit), reassembles continuation frames,
+// answers pings and closes, and sends unmasked frames. Used by the device probes' adb-reverse RTT
+// echo (`/echo`) and by self-test-device-harness.ts's recorded-CDP fake.
+// ---------------------------------------------------------------------------------------------
+
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+export interface ServerWebSocket {
+  send(data: Buffer | string): void;
+  close(): void;
+  onMessage(fn: (data: Buffer, isText: boolean) => void): void;
+  onClose(fn: () => void): void;
+}
+
+/** Completes the upgrade on `socket` and returns the connection, or null (and destroys the
+ * socket) when the request is not a WebSocket upgrade. */
+export function acceptWebSocket(
+  req: IncomingMessage,
+  socket: Duplex,
+): ServerWebSocket | null {
+  const key = req.headers["sec-websocket-key"];
+  if (
+    req.headers.upgrade?.toLowerCase() !== "websocket" ||
+    typeof key !== "string"
+  ) {
+    socket.destroy();
+    return null;
+  }
+  const accept = createHash("sha1")
+    .update(key + WS_GUID)
+    .digest("base64");
+  socket.write(
+    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  const messageFns: ((data: Buffer, isText: boolean) => void)[] = [];
+  const closeFns: (() => void)[] = [];
+  let buffered = Buffer.alloc(0);
+  let fragments: Buffer[] = [];
+  let fragmentText = false;
+  let closed = false;
+  const frame = (opcode: number, payload: Buffer): Buffer => {
+    const len = payload.length;
+    const head =
+      len < 126
+        ? Buffer.from([0x80 | opcode, len])
+        : len < 65536
+          ? Buffer.from([0x80 | opcode, 126, len >> 8, len & 0xff])
+          : (() => {
+              const h = Buffer.alloc(10);
+              h[0] = 0x80 | opcode;
+              h[1] = 127;
+              h.writeBigUInt64BE(BigInt(len), 2);
+              return h;
+            })();
+    return Buffer.concat([head, payload]);
+  };
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    for (const fn of closeFns) fn();
+  };
+  socket.on("data", (chunk: Buffer) => {
+    buffered = Buffer.concat([buffered, chunk]);
+    for (;;) {
+      if (buffered.length < 2) return;
+      const fin = (buffered[0] & 0x80) !== 0;
+      const opcode = buffered[0] & 0x0f;
+      const masked = (buffered[1] & 0x80) !== 0;
+      let len = buffered[1] & 0x7f;
+      let pos = 2;
+      if (len === 126) {
+        if (buffered.length < 4) return;
+        len = buffered.readUInt16BE(2);
+        pos = 4;
+      } else if (len === 127) {
+        if (buffered.length < 10) return;
+        len = Number(buffered.readBigUInt64BE(2));
+        pos = 10;
+      }
+      const maskLen = masked ? 4 : 0;
+      if (buffered.length < pos + maskLen + len) return;
+      const mask = masked ? buffered.subarray(pos, pos + 4) : null;
+      const payload = Buffer.from(
+        buffered.subarray(pos + maskLen, pos + maskLen + len),
+      );
+      if (mask)
+        for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+      buffered = buffered.subarray(pos + maskLen + len);
+      if (opcode === 0x8) {
+        if (!closed) socket.write(frame(0x8, Buffer.alloc(0)));
+        socket.end();
+        finish();
+        return;
+      }
+      if (opcode === 0x9) {
+        socket.write(frame(0xa, payload));
+        continue;
+      }
+      if (opcode === 0xa) continue;
+      if (opcode === 0x1 || opcode === 0x2) {
+        fragments = [payload];
+        fragmentText = opcode === 0x1;
+      } else if (opcode === 0x0) {
+        fragments.push(payload);
+      }
+      if (fin) {
+        const data = Buffer.concat(fragments);
+        fragments = [];
+        for (const fn of messageFns) fn(data, fragmentText);
+      }
+    }
+  });
+  socket.on("close", finish);
+  socket.on("error", () => finish());
+  return {
+    send(data) {
+      if (closed) return;
+      const text = typeof data === "string";
+      socket.write(frame(text ? 0x1 : 0x2, text ? Buffer.from(data) : data));
+    },
+    close() {
+      if (closed) return;
+      socket.write(frame(0x8, Buffer.alloc(0)));
+      socket.end();
+      finish();
+    },
+    onMessage(fn) {
+      messageFns.push(fn);
+    },
+    onClose(fn) {
+      closeFns.push(fn);
+    },
+  };
 }
 
 export interface ResourceHitCounts {
@@ -360,6 +516,21 @@ export class HarnessServer {
     this.resourceBodies.set(path, { body, contentType });
   }
 
+  private echoPath: string | null = null;
+  private tickPath: string | null = null;
+
+  /** G7d: answer WebSocket upgrades at `path` with an echo (call before `start()`). */
+  enableWebSocketEcho(path = "/echo"): void {
+    this.echoPath = path;
+  }
+
+  /** G7d: a 60 Hz host stand-in at `path`: every connection gets a 16-byte message per tick,
+   * scheduled against `t0 + k H` (never "now + H", memory rate-schedule-anchor-not-now), for the
+   * device probes' panel-phase drift (hold p50 over time, Q13c). */
+  enableTicker(path = "/tick"): void {
+    this.tickPath = path;
+  }
+
   getHits(path: string): ResourceHitCounts {
     return this.hits.get(path) ?? { get: 0, options: 0 };
   }
@@ -376,6 +547,27 @@ export class HarnessServer {
         res.end(String(err));
       });
     });
+    if (this.echoPath !== null || this.tickPath !== null) {
+      const { echoPath, tickPath } = this;
+      this.server.on("upgrade", (req, socket) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+        if (url.pathname === echoPath) {
+          const ws = acceptWebSocket(req, socket);
+          // Echo every message back as it came (text or binary): the device probes' RTT and
+          // throughput through adb reverse (Q13b "Transport").
+          ws?.onMessage((data, isText) =>
+            ws.send(isText ? data.toString("utf8") : data),
+          );
+          return;
+        }
+        if (url.pathname === tickPath) {
+          const ws = acceptWebSocket(req, socket);
+          if (ws) startTicker(ws, 60);
+          return;
+        }
+        socket.destroy();
+      });
+    }
     await new Promise<void>((res, rej) => {
       this.server?.listen(port, "127.0.0.1", () => res());
       this.server?.on("error", rej);
@@ -480,7 +672,18 @@ export class HarnessServer {
       res.end("not found");
       return;
     }
-    res.writeHead(200, { "Content-Type": contentTypeFor(target) });
+    const isolation: Record<string, string> = this.options.crossOriginIsolated
+      ? {
+          "Cross-Origin-Opener-Policy": "same-origin",
+          "Cross-Origin-Embedder-Policy": "require-corp",
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "Cache-Control": "no-store",
+        }
+      : {};
+    res.writeHead(200, {
+      "Content-Type": contentTypeFor(target),
+      ...isolation,
+    });
     createReadStream(target).pipe(res);
   }
 
@@ -522,6 +725,26 @@ export class HarnessServer {
     res.writeHead(200);
     res.end("ok");
   }
+}
+
+function startTicker(ws: ServerWebSocket, hz: number): void {
+  const periodMs = 1000 / hz;
+  const t0 = performance.now();
+  let k = 0;
+  let stopped = false;
+  ws.onClose(() => {
+    stopped = true;
+  });
+  const tick = () => {
+    if (stopped) return;
+    const payload = Buffer.alloc(16);
+    payload.writeUInt32LE(k, 0);
+    payload.writeDoubleLE(performance.now(), 8);
+    ws.send(payload);
+    k++;
+    setTimeout(tick, Math.max(0, t0 + k * periodMs - performance.now()));
+  };
+  setTimeout(tick, periodMs);
 }
 
 function contentTypeFor(path: string): string {
@@ -706,6 +929,560 @@ export class SuspensionController {
       return true;
     });
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// G7d: `env: "device"` (gate7-design.md D24, D28, Q13b). Chrome on a phone is ATTACHED through
+// perf-harness's `openDeviceBrowser` (adb forward to the DevTools socket, adb reverse for the
+// harness port, the flattened CDP attach, the lock and foreground rules), never launched, so D9's
+// flags, binary sha256 and Wayland guard cannot apply: `checkDeviceProvenance` replaces
+// `checkBrowserProvenance` on device legs. `--device <id>` resolves through the committed device
+// table to a serial, passed to `selectDevice` because both phones may be attached at once.
+// ---------------------------------------------------------------------------------------------
+
+export const DEVICE_TABLE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "fixtures",
+  "gate7-devices.json",
+);
+
+export type DeviceId = "g31" | "g86";
+export type HarnessEnv = "desktop" | "device";
+
+export interface DeviceTableEntry {
+  label: string;
+  serial: string;
+  model: string;
+  manufacturer: string;
+  adb_model: string | null;
+  adb_product: string | null;
+  android_release: string;
+  chrome_package: string;
+  chrome_version_at_table: string;
+  gpu_renderer_pattern: string;
+  angle_required: boolean;
+  panel_modes_hz: number[];
+  predicted_tp_ms: number;
+  tp_rule: string;
+  dpr_milli: number;
+  screen_css_px: [number, number];
+  attendance: "standing-approval" | "operator-attended";
+  session_settings: ("stay-awake-usb" | "landscape-lock")[];
+  required_workloads: string[];
+  stretch_workloads: string[];
+  cpu_clusters:
+    | {
+        name: string;
+        cpus: string;
+        probe_cpu: number;
+        cpuinfo_max_khz: number;
+      }[]
+    | null;
+  half_tick_budget_ms: number;
+}
+
+export function loadDeviceTable(
+  path = DEVICE_TABLE_PATH,
+): Record<string, DeviceTableEntry> {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+    schema?: string;
+    devices?: Record<string, DeviceTableEntry>;
+  };
+  if (parsed.schema !== "render-stream-gate7-devices/1" || !parsed.devices) {
+    throw new Error(`${path} is not a render-stream-gate7-devices/1 table`);
+  }
+  return parsed.devices;
+}
+
+/** A leg the harness refuses (D22): `harness-refused`, never a pass and never a skip. */
+export type HarnessRefusalReason =
+  | "browser-provenance"
+  | "device-provenance"
+  | "device-unavailable"
+  | "device-orientation";
+
+export class HarnessRefusal extends Error {
+  constructor(
+    readonly reason: HarnessRefusalReason,
+    readonly detail: string,
+  ) {
+    super(`${reason}: ${detail}`);
+  }
+}
+
+/** A command-line misuse: the runner exits 2 before anything is launched. */
+export class HarnessUsageError extends Error {}
+
+/**
+ * `--env` / `--device` resolution (D28: "Device arms never run without both flags"). Desktop with no
+ * device is the default; `--env device` without `--device`, `--device` without `--env device`, and
+ * an id the table does not name are usage errors.
+ */
+export function resolveDeviceSelection(
+  env: HarnessEnv,
+  deviceId: string | undefined,
+  table: Record<string, DeviceTableEntry>,
+): { env: HarnessEnv; id: DeviceId | null; entry: DeviceTableEntry | null } {
+  if (env === "desktop") {
+    if (deviceId)
+      throw new HarnessUsageError(
+        `--device ${deviceId} needs --env device (device arms never run without both flags)`,
+      );
+    return { env, id: null, entry: null };
+  }
+  if (!deviceId)
+    throw new HarnessUsageError(
+      `--env device needs --device <${Object.keys(table).join("|")}> (device arms never run without both flags)`,
+    );
+  const entry = table[deviceId];
+  if (!entry)
+    throw new HarnessUsageError(
+      `--device ${deviceId} is not in the device table (known: ${Object.keys(table).join(", ")})`,
+    );
+  return { env, id: deviceId as DeviceId, entry };
+}
+
+/** What the page itself reports on a device leg, read by one `Runtime.evaluate`. */
+export interface DevicePageFacts {
+  renderer: string | null;
+  vendor: string | null;
+  userAgent: string;
+  innerWidth: number;
+  innerHeight: number;
+  devicePixelRatio: number;
+  orientation: string | null;
+  visibilityState: string;
+  crossOriginIsolated: boolean;
+}
+
+/** The expression `DevicePageFacts` comes from (a fresh canvas, so it never touches the page's
+ * own WebGL context). */
+export const DEVICE_PAGE_FACTS_EXPRESSION = `(() => {
+  const canvas = document.createElement("canvas");
+  const gl = canvas.getContext("webgl2");
+  const dbg = gl ? gl.getExtension("WEBGL_debug_renderer_info") : null;
+  const facts = {
+    renderer: gl && dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : null,
+    vendor: gl && dbg ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)) : null,
+    userAgent: navigator.userAgent,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+    orientation: screen.orientation ? screen.orientation.type : null,
+    visibilityState: document.visibilityState,
+    crossOriginIsolated: self.crossOriginIsolated === true,
+  };
+  const lose = gl ? gl.getExtension("WEBGL_lose_context") : null;
+  if (lose) lose.loseContext();
+  return facts;
+})()`;
+
+export interface DeviceFacts {
+  serial: string;
+  model: string;
+  manufacturer: string;
+  androidRelease: string;
+  /** `/json/version`'s `Browser`, e.g. `Chrome/154.0.8037.127`. */
+  chromeVersion: string;
+  /** The same device's Chrome at its previous recorded run, when known (a change is named). */
+  previousChromeVersion: string | null;
+  conditions: DeviceConditions;
+  page: DevicePageFacts | null;
+}
+
+export interface DeviceProvenance {
+  ok: boolean;
+  /** The refusal class when not ok (`device-orientation` when only the orientation failed). */
+  refusal: HarnessRefusalReason | null;
+  reasons: string[];
+  /** Recorded, never refused: the ANGLE backend on the g31, a Chrome version change. */
+  notes: string[];
+  angle: boolean;
+  renderer: string | null;
+  chromeVersion: string;
+  facts: DeviceFacts;
+}
+
+/**
+ * The `device-provenance` check (Q13b, D22). Requires: the device table's model on its serial; a
+ * `WEBGL_debug_renderer_info` renderer naming the table's GPU (ANGLE required only where the table
+ * says so: the g86; the g31's backend is recorded) and never SwiftShader; thermal status `none` and
+ * the battery at 20 % or more (perf-harness's invalidation conditions); a visible page; landscape
+ * (`device-orientation` otherwise). The Chrome version is recorded, and a change since the previous
+ * run is a note, not a refusal.
+ */
+export function checkDeviceProvenance(
+  entry: DeviceTableEntry,
+  facts: DeviceFacts,
+): DeviceProvenance {
+  const reasons: string[] = [];
+  const notes: string[] = [];
+  let orientationOnly = true;
+  const fail = (text: string, orientation = false) => {
+    reasons.push(text);
+    if (!orientation) orientationOnly = false;
+  };
+  if (facts.serial !== entry.serial)
+    fail(`serial ${facts.serial} is not the table's ${entry.serial}`);
+  if (facts.model !== entry.model)
+    fail(
+      `model "${facts.model}" on ${facts.serial} is not the table's "${entry.model}"`,
+    );
+  const renderer = facts.page?.renderer ?? null;
+  const angle = renderer !== null && /ANGLE/.test(renderer);
+  if (!facts.page) {
+    fail("no page facts: the attached tab never answered");
+  } else if (renderer === null) {
+    fail("WEBGL_debug_renderer_info reported no renderer string");
+  } else {
+    if (/SwiftShader|llvmpipe|software/i.test(renderer))
+      fail(`renderer "${renderer}" is a software rasterizer`);
+    if (!renderer.includes(entry.gpu_renderer_pattern))
+      fail(
+        `renderer "${renderer}" does not name the table's GPU "${entry.gpu_renderer_pattern}"`,
+      );
+    if (entry.angle_required && !angle)
+      fail(
+        `renderer "${renderer}" does not name ANGLE, which the table requires`,
+      );
+    if (!entry.angle_required)
+      notes.push(
+        `GPU backend: ${angle ? "ANGLE" : "native GLES"} (recorded, not required)`,
+      );
+  }
+  if (
+    facts.previousChromeVersion &&
+    facts.previousChromeVersion !== facts.chromeVersion
+  )
+    notes.push(
+      `Chrome changed since the previous run: ${facts.previousChromeVersion} -> ${facts.chromeVersion}`,
+    );
+  const c = facts.conditions;
+  if (c.thermalStatusCode !== 0)
+    fail(
+      `thermal status ${c.thermalStatus ?? "unreadable"} (code ${c.thermalStatusCode}) before the first repeat, needs none`,
+    );
+  if (c.batteryPct === null || c.batteryPct < 20)
+    fail(
+      `battery ${c.batteryPct ?? "unreadable"} % before the first repeat, needs >= 20 %`,
+    );
+  if (facts.page && facts.page.visibilityState !== "visible")
+    fail(`the tab is ${facts.page.visibilityState}, not in front`);
+  if (facts.page && facts.page.innerWidth <= facts.page.innerHeight)
+    fail(
+      `portrait viewport ${facts.page.innerWidth}x${facts.page.innerHeight} (${facts.page.orientation ?? "?"}): landscape is required`,
+      true,
+    );
+  const ok = reasons.length === 0;
+  return {
+    ok,
+    refusal: ok
+      ? null
+      : orientationOnly
+        ? "device-orientation"
+        : "device-provenance",
+    reasons,
+    notes,
+    angle,
+    renderer,
+    chromeVersion: facts.chromeVersion,
+    facts,
+  };
+}
+
+/** One repeat's throttle evidence, sampled by the page itself (perf-harness's bake-probe rule). */
+export interface WatchdogSample {
+  /** Total time `document.visibilityState` was not `visible` during the repeat. */
+  hiddenMs: number;
+  hides: number;
+  /** Every rAF interval above the limit, with the work the previous callback did. */
+  longGaps: { gapMs: number; prevWorkMs: number }[];
+  /** The repeat's median rAF interval. */
+  tpMs: number;
+}
+
+export interface WatchdogVerdict {
+  valid: boolean;
+  reasons: string[];
+  uncausedGapsMs: number[];
+}
+
+/**
+ * The watchdog (Q13b, docs/perf-harness.md "A retraction"): a repeat with hidden time > 0, or with a
+ * rAF gap > 250 ms the receiver did not cause, is `invalid` and is re-run, never read as slow. A gap
+ * is receiver-caused when the callback before it worked at least `gap - 2 T_p` (its own work plus
+ * up to two ticks of compositor slack explain it).
+ */
+export function watchdogVerdict(
+  sample: WatchdogSample,
+  gapLimitMs = 250,
+): WatchdogVerdict {
+  const reasons: string[] = [];
+  if (sample.hiddenMs > 0)
+    reasons.push(
+      `hidden ${Math.round(sample.hiddenMs)} ms over ${sample.hides} hide(s): throttled, invalid (not slow)`,
+    );
+  const uncaused = sample.longGaps
+    .filter((g) => g.gapMs > gapLimitMs)
+    .filter((g) => g.prevWorkMs < g.gapMs - 2 * sample.tpMs)
+    .map((g) => g.gapMs);
+  if (uncaused.length > 0)
+    reasons.push(
+      `${uncaused.length} rAF gap(s) > ${gapLimitMs} ms the receiver did not cause (worst ${Math.round(Math.max(...uncaused))} ms)`,
+    );
+  return { valid: reasons.length === 0, reasons, uncausedGapsMs: uncaused };
+}
+
+/** D28: a session setting the harness changed, with the value it restores. */
+export interface SessionSettingChange {
+  name: "stay-awake-usb" | "landscape-lock";
+  namespace: "global" | "system";
+  key: string;
+  before: string;
+  applied: string;
+}
+
+export interface SessionSettingsRecord {
+  device: string;
+  serial: string;
+  changes: SessionSettingChange[];
+  applied_at: string;
+  restored_at: string | null;
+  restore_errors: string[];
+}
+
+async function readSetting(
+  adb: Adb,
+  namespace: "global" | "system",
+  key: string,
+): Promise<string> {
+  return (await adb.shell(`settings get ${namespace} ${key}`)).trim();
+}
+
+/**
+ * D28: the g31's session settings, recorded and then applied: `svc power stayon usb` (which writes
+ * `global stay_on_while_plugged_in` 2) and the landscape lock (`system accelerometer_rotation` 0,
+ * `system user_rotation` 1). Nothing is installed, and a device whose table lists no session
+ * settings (the g86) is never touched.
+ */
+export async function applySessionSettings(
+  adb: Adb,
+  id: string,
+  entry: DeviceTableEntry,
+): Promise<SessionSettingsRecord> {
+  const record: SessionSettingsRecord = {
+    device: id,
+    serial: entry.serial,
+    changes: [],
+    applied_at: new Date().toISOString(),
+    restored_at: null,
+    restore_errors: [],
+  };
+  if (entry.session_settings.includes("stay-awake-usb")) {
+    const before = await readSetting(adb, "global", "stay_on_while_plugged_in");
+    await adb.shell("svc power stayon usb");
+    record.changes.push({
+      name: "stay-awake-usb",
+      namespace: "global",
+      key: "stay_on_while_plugged_in",
+      before,
+      applied: await readSetting(adb, "global", "stay_on_while_plugged_in"),
+    });
+  }
+  if (entry.session_settings.includes("landscape-lock")) {
+    for (const [key, value] of [
+      ["accelerometer_rotation", "0"],
+      ["user_rotation", "1"],
+    ] as const) {
+      const before = await readSetting(adb, "system", key);
+      await adb.shell(`settings put system ${key} ${value}`);
+      record.changes.push({
+        name: "landscape-lock",
+        namespace: "system",
+        key,
+        before,
+        applied: value,
+      });
+    }
+  }
+  return record;
+}
+
+/** Restores every recorded change, last first. Errors are recorded, never thrown. */
+export async function restoreSessionSettings(
+  adb: Adb,
+  record: SessionSettingsRecord,
+): Promise<SessionSettingsRecord> {
+  for (const change of [...record.changes].reverse()) {
+    const value = change.before === "null" ? null : change.before;
+    try {
+      if (value === null)
+        await adb.shell(`settings delete ${change.namespace} ${change.key}`);
+      else
+        await adb.shell(
+          `settings put ${change.namespace} ${change.key} ${value}`,
+        );
+    } catch (error) {
+      record.restore_errors.push(
+        `${change.namespace}/${change.key}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  record.restored_at = new Date().toISOString();
+  return record;
+}
+
+/** A page on the phone's Chrome, attached and in front. */
+export interface DevicePage {
+  evaluate<T>(
+    expression: string,
+    options?: { awaitPromise?: boolean; timeoutMs?: number },
+  ): Promise<T>;
+  facts(): Promise<DevicePageFacts>;
+  close(): Promise<void>;
+}
+
+export interface DeviceHarness {
+  id: DeviceId;
+  entry: DeviceTableEntry;
+  browser: DeviceBrowser;
+  settings: SessionSettingsRecord | null;
+  /** Acquires a target (perf-harness's isolation ladder), navigates and waits for `load`. */
+  openPage(url: string, timeoutMs?: number): Promise<DevicePage>;
+  /** Device facts for `checkDeviceProvenance`, with this page's facts. */
+  facts(page: DevicePage | null): Promise<DeviceFacts>;
+  /** Restores the session settings, removes the forwards, detaches. Idempotent. */
+  close(): Promise<SessionSettingsRecord | null>;
+}
+
+export interface OpenDeviceOptions {
+  id: DeviceId;
+  entry: DeviceTableEntry;
+  /** The harness server's port, reversed onto the phone. */
+  serverPort: number;
+  /** More ports to reverse (a live host's, G7l/G7v). */
+  extraReversePorts?: number[];
+  adbBin?: string;
+  devtoolsPort?: number;
+  foregroundTimeoutMs?: number;
+  previousChromeVersion?: string | null;
+  onProgress?: (message: string) => void;
+}
+
+/**
+ * Opens the phone `id` (D24, D28). Every way the phone can be unusable (not in `adb devices`, not
+ * authorized, offline, locked, no DevTools socket, a tab that never answers) is the harness refusal
+ * `device-unavailable`. The session settings are applied after the attach and restored by `close()`.
+ */
+export async function openHarnessDevice(
+  options: OpenDeviceOptions,
+): Promise<DeviceHarness> {
+  const { id, entry } = options;
+  const progress = options.onProgress ?? (() => {});
+  let browser: DeviceBrowser;
+  try {
+    browser = await openDeviceBrowser({
+      serial: entry.serial,
+      adbBin: options.adbBin,
+      serverPort: options.serverPort,
+      devtoolsPort: options.devtoolsPort,
+      foregroundTimeoutMs: options.foregroundTimeoutMs,
+      onProgress: progress,
+    });
+  } catch (error) {
+    if (error instanceof AdbError)
+      throw new HarnessRefusal("device-unavailable", error.message);
+    throw error;
+  }
+  let settings: SessionSettingsRecord | null = null;
+  try {
+    for (const port of options.extraReversePorts ?? [])
+      await reverseServerPort(browser.adb, port);
+    if (entry.session_settings.length > 0) {
+      settings = await applySessionSettings(browser.adb, id, entry);
+      progress(
+        `session settings applied: ${settings.changes.map((c) => `${c.namespace}/${c.key} ${c.before}->${c.applied}`).join(", ")}`,
+      );
+    }
+  } catch (error) {
+    await browser.close().catch(() => {});
+    throw error;
+  }
+  let closed = false;
+  const harness: DeviceHarness = {
+    id,
+    entry,
+    browser,
+    settings,
+    async openPage(url, timeoutMs = 30_000) {
+      let lease: Awaited<ReturnType<typeof browser.targets.acquire>>;
+      try {
+        lease = await browser.targets.acquire({
+          width: entry.screen_css_px[0],
+          height: entry.screen_css_px[1],
+        });
+      } catch (error) {
+        if (error instanceof AdbError)
+          throw new HarnessRefusal("device-unavailable", error.message);
+        throw error;
+      }
+      const client = browser.client;
+      await client.send("Page.navigate", { url });
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const state = await client
+          .evaluate<string>("document.readyState + ' ' + location.href", {
+            timeoutMs: 10_000,
+          })
+          .catch(() => "");
+        if (
+          state.startsWith("complete ") &&
+          state.includes(new URL(url).pathname)
+        )
+          break;
+        if (Date.now() > deadline) {
+          await lease.release().catch(() => {});
+          throw new HarnessRefusal(
+            "device-unavailable",
+            `the tab never finished loading ${url} (last: ${state || "no answer"})`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      return {
+        evaluate: (expression, opts) => client.evaluate(expression, opts),
+        facts: () =>
+          client.evaluate<DevicePageFacts>(DEVICE_PAGE_FACTS_EXPRESSION),
+        close: () => lease.release(),
+      };
+    },
+    async facts(page) {
+      return {
+        serial: browser.adb.serial ?? "unknown",
+        model: browser.props.model,
+        manufacturer: browser.props.manufacturer,
+        androidRelease: browser.props.androidRelease,
+        chromeVersion: browser.chromeVersion,
+        previousChromeVersion: options.previousChromeVersion ?? null,
+        conditions: await browser.conditions(),
+        page: page ? await page.facts().catch(() => null) : null,
+      };
+    },
+    async close() {
+      if (closed) return settings;
+      closed = true;
+      if (settings) await restoreSessionSettings(browser.adb, settings);
+      for (const port of options.extraReversePorts ?? [])
+        await browser.adb
+          .exec(["reverse", "--remove", `tcp:${port}`])
+          .catch(() => "");
+      await browser.close();
+      return settings;
+    },
+  };
+  return harness;
 }
 
 declare global {

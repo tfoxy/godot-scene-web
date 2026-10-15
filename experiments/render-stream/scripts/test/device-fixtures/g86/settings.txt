@@ -1,0 +1,4 @@
+global.stay_on_while_plugged_in=0
+system.accelerometer_rotation=1
+system.user_rotation=0
+system.screen_off_timeout=60000

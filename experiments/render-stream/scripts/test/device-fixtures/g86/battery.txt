@@ -1,0 +1,6 @@
+Current Battery Service state:
+  AC powered: false
+  USB powered: true
+  level: 58
+  scale: 100
+  temperature: 250
