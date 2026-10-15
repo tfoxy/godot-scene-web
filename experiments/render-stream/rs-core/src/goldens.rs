@@ -436,6 +436,47 @@ impl Suite<'_> {
                 "",
             );
         }
+        // golden-7's window2 leg (render-stream-7.md "As built (G7w)"): three transactions of an
+        // unchanging scene, each of whose resolved `state` equals resolved-rate.json's sole one.
+        if let Some(leg) = index.get("window2_leg").cloned() {
+            let (file, decoded, resolved_file) =
+                (s(&leg, "file"), s(&leg, "decoded"), s(&leg, "resolved"));
+            if let Some(data) = self.decoded_check(&file, &decoded) {
+                let got = validate_recording(&data, self.opts());
+                self.ok(
+                    got.is_ok(),
+                    format!("validateRecording({file}) is []"),
+                    got.err().map(|e| e.to_string()).unwrap_or_default(),
+                );
+                let want = self
+                    .json(&resolved_file)
+                    .and_then(|e| e.pointer("/transactions/0/state").cloned());
+                match resolve_recording(&data, self.version, self.opts) {
+                    Ok((resolved, _)) => {
+                        let txs = resolved
+                            .get("transactions")
+                            .and_then(|t| t.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let ok = !txs.is_empty()
+                            && want.as_ref().is_some_and(|w| {
+                                txs.iter()
+                                    .all(|t| t.get("state").is_some_and(|st| states_equal(st, w)))
+                            });
+                        self.ok(
+                            ok,
+                            format!("every transaction of resolveRecording({file}) has {resolved_file}'s state ({} transactions)", txs.len()),
+                            "",
+                        );
+                    }
+                    Err(e) => self.ok(
+                        false,
+                        format!("resolveRecording({file}) did not throw"),
+                        e.to_string(),
+                    ),
+                }
+            }
+        }
         for key in ["params_leg", "presentation_leg", "snap_leg", "rate_leg"] {
             let Some(leg) = index.get(key).cloned() else {
                 continue;
@@ -482,10 +523,10 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-6 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-7 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
-    for v in 2..=6u8 {
+    for v in 2..=7u8 {
         if only.is_none_or(|o| o == v) {
             checks.extend(run_golden(v, read, opts));
         }
@@ -500,6 +541,7 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (4, 5),
         (6, 5),
         (5, 6),
+        (6, 7),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

@@ -7,7 +7,8 @@
 #     [--bench-inputs <inputs.json>] [--repeats N] [--hold-seconds S] [--plan-only] \
 #     [--extension X.gdextension] [--calibration record.json] [--binary template] \
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest] \
-#     [--bundle /abs/web-receiver/<sha>/bundle]
+#     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
+#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -30,10 +31,10 @@
 #   g7-bench  Q13e's decode/apply microbench. Inputs: --bench-inputs, or captured here into
 #             <out>/g7-bench/inputs/ (gate6-scene `animate` 400 frames, gate6-hd native, the pace
 #             fixture; headless captures, both sinks). Arms (scripts/gate7-bench.ts):
-#               desktop: native-bench-<input> (receiver.gd file mode, headless), ctl-bench-<input>-gsw
+#               desktop: native-bench-<input> (receiver.gd file mode, headless), ctl-bench-<input>-gsw-ts
 #                        (headless Chromium, D9), ctl-bench-<input>-web (G7e web export, same desktop
 #                        Chromium, since G7m)
-#               device:  dev-bench-<input>-gsw-<id> and -web-<id> (both since G7m), plus the device
+#               device:  dev-bench-<input>-gsw-ts-<id> and -web-<id> (both since G7m), plus the device
 #                        probes (run once, by g7-dev's device session check, whichever --receiver)
 #             --receiver limits the run to one receiver: one command per phone and per receiver,
 #               pnpm render-stream:gate7 -- --legs g7-bench --env device --device g31 --receiver gsw \
@@ -55,6 +56,20 @@
 #             <out>/gate0/web/<leg>/; check-gate7.ts judges them with gate 0's own checker
 #             (lib/gate7-adapters.ts). Sources are recorded in <out>/sources.json.
 #
+# Groups landed (G7a, the GSW canvas receiver on the shared Rust core, gate7-design.md "G7a"):
+#   g7-0..g7-3  gates 0 to 3's file-mode receiver legs in the GSW canvas receiver (`gsw`), and
+#             g7-0's web half (G7e). Sources: `--source gate<N>=<dir>` or `--make-sources` (runs
+#             run-gate<N>.sh and records gate7-source.json). The gsw half needs the core built:
+#             build-rs-core.sh (or `--rs-build`), then the bundle (gate7-tool.ts gsw-bundle, or
+#             `--gsw-bundle`), then once per run: rs-core-check goldens natively, the goldens
+#             through the wasm module in Node, self-test-rs-core.ts over every source recording
+#             (<out>/rs-core/*.log); per group gate7-tool.ts gsw-legs into <out>/gate<N>/gsw/,
+#             and for g7-1 `cargo test ordering_model` on the gate 1 source's recording
+#             (<out>/gate1/ordering-model.log). check-gate7.ts judges every gsw leg with its gate's
+#             own checker (lib/gate7-gsw.ts) plus G7a's checks (lib/gate7-gsw-checks.ts).
+#             `--receiver web|gsw` limits the run to one browser; g7-1..g7-3 have no web half yet
+#             (G7b).
+#
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
 # and rendered Godot legs share ONE private `gamescope --backend headless` (lib/gamescope.sh).
@@ -72,7 +87,7 @@ RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
 KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
-LANDED_GROUPS=(g7-0 g7-dev g7-bench)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-dev g7-bench)
 
 OUT=""
 LEGS_ARG=""
@@ -87,6 +102,8 @@ HOLD_SECONDS=30
 PLAN_ONLY=0
 SKIP_HARNESS_SELFTEST=0
 BUNDLE=""
+GSW_BUNDLE=""
+RS_BUILD=""
 EXTENSION="$EXPERIMENT_DIR/capture/build/render_stream_capture.gdextension"
 CALIBRATION="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
@@ -151,6 +168,14 @@ while [ $# -gt 0 ]; do
 		;;
 	--bundle)
 		BUNDLE="${2:-}"
+		shift 2
+		;;
+	--gsw-bundle)
+		GSW_BUNDLE="${2:-}"
+		shift 2
+		;;
+	--rs-build)
+		RS_BUILD="${2:-}"
 		shift 2
 		;;
 	--extension)
@@ -275,34 +300,48 @@ g7tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-tool.ts" "$@")
 }
 
-# --- g7-0 (G7e): the gate 0 source run, before anything else touches the machine. -----------
+# --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----
 CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG")
-if has_group g7-0; then
+[ -n "$RECEIVER" ] && CHECK_ARGS+=(--receiver "$RECEIVER")
+want_gsw() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
+want_web() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; }
+SOURCE_GATES=()
+for g in 0 1 2 3; do
+	has_group "g7-$g" || continue
 	if [ "$HARNESS_ENV" != "desktop" ]; then
-		echo "run-gate7: g7-0 runs on the desktop only (drop --env device)" >&2
+		echo "run-gate7: g7-$g runs on the desktop only (drop --env device)" >&2
 		exit 2
 	fi
+	if [ "$g" != 0 ] && ! want_gsw; then
+		echo "run-gate7: g7-$g has no web half yet (G7b); use --receiver gsw or drop --receiver" >&2
+		exit 2
+	fi
+	SOURCE_GATES+=("$g")
+done
+if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
 	if [ ! -f "$EXTENSION" ]; then
-		echo "run-gate7: g7-0 needs the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
+		echo "run-gate7: g7-0..g7-3 need the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
 		exit 1
 	fi
 	EXTENSION="$(realpath "$EXTENSION")"
-	if [ -z "${SOURCES[gate0]:-}" ]; then
+fi
+for g in "${SOURCE_GATES[@]}"; do
+	if [ -z "${SOURCES[gate$g]:-}" ]; then
 		if [ "$MAKE_SOURCES" = 0 ]; then
-			echo "run-gate7: g7-0 needs --source gate0=<run dir> or --make-sources" >&2
+			echo "run-gate7: g7-$g needs --source gate$g=<run dir> or --make-sources" >&2
 			exit 2
 		fi
-		echo "run-gate7: making the gate 0 source run (run-gate0.sh)" >&2
+		echo "run-gate7: making the gate $g source run (run-gate$g.sh)" >&2
 		set +e
-		bash "$SCRIPT_DIR/run-gate0.sh" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
-			--out "$OUT/sources-made/gate0"
-		gate0_exit=$?
+		bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
+			--out "$OUT/sources-made/gate$g"
+		gate_exit=$?
 		set -e
-		echo "run-gate7: run-gate0.sh exit=$gate0_exit (source-run-valid judges it)" >&2
-		SOURCES[gate0]="$OUT/sources-made/gate0"
-		g7tool source-provenance --extension "$EXTENSION" --out "${SOURCES[gate0]}/gate7-source.json"
+		echo "run-gate7: run-gate$g.sh exit=$gate_exit (source-run-valid judges it)" >&2
+		SOURCES[gate$g]="$OUT/sources-made/gate$g"
+		g7tool source-provenance --extension "$EXTENSION" --out "${SOURCES[gate$g]}/gate7-source.json"
 	fi
-fi
+done
 {
 	printf '{"sources": {'
 	first=1
@@ -417,7 +456,7 @@ run_g7_dev_device() {
 	echo "run-gate7: g7-dev: device session check on $DEVICE (provenance, session settings, probes)"
 	set +e
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-bench.ts" \
-		--arm gsw --env device --device "$DEVICE" --inputs "$D/no-inputs.json" --out "$D" \
+		--arm gsw-ts --env device --device "$DEVICE" --inputs "$D/no-inputs.json" --out "$D" \
 		--probes --hold-seconds "$HOLD_SECONDS")
 	echo "$?" >"$D/exit-code.txt"
 	set -e
@@ -461,7 +500,7 @@ run_g7_bench() {
 		fi
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; then
 			echo "run-gate7: g7-bench: gsw arm (desktop headless Chromium, D9)"
-			bench --arm gsw "${common[@]}" --out "$B"
+			bench --arm gsw-ts "${common[@]}" --out "$B"
 		fi
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; then
 			bench --arm web "${common[@]}" --out "$B"
@@ -469,7 +508,7 @@ run_g7_bench() {
 	else
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; then
 			echo "run-gate7: g7-bench: gsw arm on $DEVICE (with the device probes)"
-			bench --arm gsw --env device --device "$DEVICE" "${common[@]}" --out "$B" --probes --hold-seconds "$HOLD_SECONDS"
+			bench --arm gsw-ts --env device --device "$DEVICE" "${common[@]}" --out "$B" --probes --hold-seconds "$HOLD_SECONDS"
 		fi
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; then
 			bench --arm web --env device --device "$DEVICE" "${common[@]}" --out "$B"
@@ -477,14 +516,61 @@ run_g7_bench() {
 	fi
 }
 
-if has_group g7-0; then
+if has_group g7-0 && want_web; then
 	if [ -z "$BUNDLE" ]; then
 		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
 	fi
 	BUNDLE="$(realpath "$BUNDLE")"
 	echo "run-gate7: g7-0 web legs (bundle $BUNDLE)" >&2
 	g7tool web-legs --group g7-0 --source "${SOURCES[gate0]}" --bundle "$BUNDLE" --out "$OUT"
-	CHECK_ARGS+=(--source "gate0=${SOURCES[gate0]}" --bundle "$BUNDLE" --extension "$EXTENSION")
+	CHECK_ARGS+=(--bundle "$BUNDLE")
+fi
+if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
+	SRC_LIST=""
+	for g in "${SOURCE_GATES[@]}"; do SRC_LIST+="${SRC_LIST:+,}gate$g=${SOURCES[gate$g]}"; done
+	CHECK_ARGS+=(--source "$SRC_LIST" --extension "$EXTENSION")
+fi
+if [ "${#SOURCE_GATES[@]}" -gt 0 ] && want_gsw; then
+	# G7a: the core, the bundle, the goldens and the differential, once per run.
+	if [ -z "$RS_BUILD" ]; then
+		bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/build-rs-core.log" 2>&1 || {
+			echo "run-gate7: build-rs-core.sh failed, see $OUT/build-rs-core.log" >&2
+			exit 1
+		}
+		RS_BUILD="$REPO_ROOT/artifacts/render-stream/rs-core/$(sed -n 's/^sha=//p' "$OUT/build-rs-core.log" | tail -1)"
+	fi
+	RS_BUILD="$(realpath "$RS_BUILD")"
+	if [ -z "$GSW_BUNDLE" ]; then
+		GSW_BUNDLE="$(g7tool gsw-bundle --out "$OUT/gsw-bundle-build" --rs-build "$RS_BUILD" | tail -1)"
+	fi
+	GSW_BUNDLE="$(realpath "$GSW_BUNDLE")"
+	CHECK_ARGS+=(--gsw-bundle "$GSW_BUNDLE")
+	mkdir -p "$OUT/rs-core"
+	logged() {
+		local log="$1"
+		shift
+		set +e
+		"$@" >"$log" 2>&1
+		echo "$?" >"$log.exit"
+		set -e
+	}
+	echo "run-gate7: goldens through the core (native, wasm) and the differential" >&2
+	logged "$OUT/rs-core/goldens-native.log" "$RS_BUILD/bin/rs-core-check" goldens --dir "$EXPERIMENT_DIR/protocol"
+	logged "$OUT/rs-core/goldens-wasm.log" node "$SCRIPT_DIR/test/self-test-rs-core-wasm.mjs" --build "$RS_BUILD"
+	g7tool source-inputs --source "$SRC_LIST" --out "$OUT/rs-core/source-inputs.json"
+	logged "$OUT/rs-core/self-test-rs-core.log" bash -c "cd '$REPO_ROOT' && mise exec -- pnpm exec tsx --conditions=development '$SCRIPT_DIR/test/self-test-rs-core.ts' --inputs '$OUT/rs-core/source-inputs.json' --rs-core-check '$RS_BUILD/bin/rs-core-check'"
+	for g in "${SOURCE_GATES[@]}"; do
+		echo "run-gate7: g7-$g gsw legs (bundle $GSW_BUNDLE)" >&2
+		g7tool gsw-legs --group "g7-$g" --source "${SOURCES[gate$g]}" --bundle "$GSW_BUNDLE" --out "$OUT"
+		if [ "$g" = 1 ]; then
+			mkdir -p "$OUT/gate1"
+			logged "$OUT/gate1/ordering-model.log" env \
+				RS_CORE_ORDERING_RECORDING="${SOURCES[gate1]}/capture/recording.rs2" \
+				RS_CORE_ORDERING_SEQS="$(cat "${SOURCES[gate1]}/receiver/shot-seqs.txt")" \
+				cargo test --offline --release --manifest-path "$EXPERIMENT_DIR/rs-core/Cargo.toml" \
+				ordering_model -- --nocapture
+		fi
+	done
 fi
 if has_group g7-dev; then
 	if [ "$HARNESS_ENV" = "desktop" ]; then run_g7_dev_desktop; else run_g7_dev_device; fi

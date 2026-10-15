@@ -20,12 +20,26 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { Gate0Expected } from "./lib/gate0-checks";
+import { type Gate0Expected, runGate0 } from "./lib/gate0-checks";
+import { runGate1 } from "./lib/gate1-checks";
+import type { Gate1Expected } from "./lib/gate1-expected";
+import { runGate2 } from "./lib/gate2-checks";
+import type { Gate2Expected } from "./lib/gate2-expected";
+import { runGate3 } from "./lib/gate3-checks";
+import type { Gate3Expected } from "./lib/gate3-expected";
+import type { Gate3xExpected } from "./lib/gate3x-expected";
 import {
   checkGate0Web,
   currentBuildProvenance,
   type Gate7GroupResult,
 } from "./lib/gate7-adapters";
+import {
+  checkGswGroup,
+  type GswGate,
+  type GswGroupInput,
+  type GswGroupResult,
+} from "./lib/gate7-gsw";
+import { gswExtraChecks } from "./lib/gate7-gsw-checks";
 
 import {
   type BenchTableRow,
@@ -63,7 +77,21 @@ export const ALL_GROUPS = [
   "g7-dev",
   "g7-bench",
 ] as const;
-export const LANDED_GROUPS: readonly string[] = ["g7-0", "g7-dev", "g7-bench"];
+export const LANDED_GROUPS: readonly string[] = [
+  "g7-0",
+  "g7-1",
+  "g7-2",
+  "g7-3",
+  "g7-dev",
+  "g7-bench",
+];
+/** G7a: the groups with gsw legs (g7-1..g7-3 have no web half yet, G7b). */
+const GSW_GATES: Record<string, GswGate> = {
+  "g7-0": "gate0",
+  "g7-1": "gate1",
+  "g7-2": "gate2",
+  "g7-3": "gate3",
+};
 
 interface HarnessCheck {
   id: string;
@@ -99,8 +127,8 @@ export interface Gate7Report {
   group_checks: Record<string, Gate7Check[]>;
   /** G7d: the bench's per-receiver, per-input, per-phase table (g7-bench). */
   bench_table: BenchTableRow[];
-  /** G7e: one entry per requested group and receiver kind (g7-0 web). */
-  results: Gate7GroupResult[];
+  /** G7e: one entry per requested group and receiver kind (g7-0 web; G7a: g7-0..g7-3 gsw). */
+  results: (Gate7GroupResult | GswGroupResult)[];
 }
 
 interface Args {
@@ -108,7 +136,10 @@ interface Args {
   legs: string[];
   sources: Record<string, string>;
   bundle: string | undefined;
+  gswBundle: string | undefined;
   extension: string | undefined;
+  /** web, gsw, or both (unset). */
+  receiver: string | undefined;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -116,7 +147,9 @@ function parseArgs(argv: string[]): Args {
   let legsArg = "";
   const sources: Record<string, string> = {};
   let bundle: string | undefined;
+  let gswBundle: string | undefined;
   let extension: string | undefined;
+  let receiver: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") {
       out = argv[++i];
@@ -131,6 +164,10 @@ function parseArgs(argv: string[]): Args {
       bundle = resolve(argv[++i] ?? "");
     } else if (argv[i] === "--extension") {
       extension = resolve(argv[++i] ?? "");
+    } else if (argv[i] === "--gsw-bundle") {
+      gswBundle = resolve(argv[++i] ?? "");
+    } else if (argv[i] === "--receiver") {
+      receiver = argv[++i] || undefined;
     }
   }
   if (!out) throw new Error("check-gate7: --out <evidence dir> is required");
@@ -138,7 +175,15 @@ function parseArgs(argv: string[]): Args {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  return { out: resolve(out), legs, sources, bundle, extension };
+  return {
+    out: resolve(out),
+    legs,
+    sources,
+    bundle,
+    gswBundle,
+    extension,
+    receiver,
+  };
 }
 
 async function readJsonOrUndefined<T>(path: string): Promise<T | undefined> {
@@ -149,10 +194,64 @@ async function readJsonOrUndefined<T>(path: string): Promise<T | undefined> {
   }
 }
 
+/** The gate's own checker (D21: judged by its own code, never a fork). */
+async function gateChecker(
+  gate: GswGate,
+): Promise<GswGroupInput["runChecker"]> {
+  const fixtures = join(EXPERIMENT_DIR, "fixtures");
+  const receiverProjectDir = join(EXPERIMENT_DIR, "receiver");
+  const json = async <T>(path: string) =>
+    JSON.parse(await readFile(path, "utf8")) as T;
+  switch (gate) {
+    case "gate0": {
+      const expected = await json<Gate0Expected>(
+        join(fixtures, "gate0", "expected.json"),
+      );
+      return (dir) =>
+        runGate0(dir, {
+          expected,
+          fixtureProjectDir: join(fixtures, "gate0"),
+          receiverProjectDir,
+        }) as never;
+    }
+    case "gate1": {
+      const expected = await json<Gate1Expected>(
+        join(fixtures, "gate1", "expected.json"),
+      );
+      return (dir) =>
+        runGate1(dir, {
+          expected,
+          fixtureProjectDir: join(fixtures, "gate1"),
+          receiverProjectDir,
+        }) as never;
+    }
+    case "gate2": {
+      const expected = await json<Gate2Expected>(
+        join(fixtures, "gate2", "expected.json"),
+      );
+      return (dir) => runGate2(dir, { expected }) as never;
+    }
+    case "gate3": {
+      const expected = await json<Gate3Expected>(
+        join(fixtures, "gate3", "expected.json"),
+      );
+      const xform = await json<Gate3xExpected>(
+        join(fixtures, "gate3-xform", "expected.json"),
+      );
+      return (dir) =>
+        runGate3(dir, {
+          expected,
+          xform,
+          receiverProjectDir,
+          fixtureProjectDir: join(fixtures, "gate3"),
+        }) as never;
+    }
+  }
+}
+
 async function main(): Promise<void> {
-  const { out, legs, sources, bundle, extension } = parseArgs(
-    process.argv.slice(2),
-  );
+  const { out, legs, sources, bundle, gswBundle, extension, receiver } =
+    parseArgs(process.argv.slice(2));
 
   for (const g of legs) {
     if (!(ALL_GROUPS as readonly string[]).includes(g)) {
@@ -194,8 +293,10 @@ async function main(): Promise<void> {
     groupChecks["g7-bench"] = bench.checks;
     benchTable = bench.table;
   }
-  const results: Gate7GroupResult[] = [];
-  if (legs.includes("g7-0")) {
+  const results: (Gate7GroupResult | GswGroupResult)[] = [];
+  const wantWeb = receiver === "web" || (!receiver && bundle !== undefined);
+  const wantGsw = receiver === "gsw" || (!receiver && gswBundle !== undefined);
+  if (legs.includes("g7-0") && wantWeb) {
     const source = sources.gate0;
     if (!source || !bundle || !extension) {
       throw new Error(
@@ -221,6 +322,36 @@ async function main(): Promise<void> {
         ),
       }),
     );
+  }
+  if (wantGsw) {
+    if (!extension)
+      throw new Error(
+        "check-gate7: gsw groups need --extension <.gdextension> (D21)",
+      );
+    const current = currentBuildProvenance(
+      REPO_ROOT,
+      extension,
+      PINNED_LINUX_TEMPLATE,
+    );
+    for (const group of legs.filter((g) => g in GSW_GATES)) {
+      const gate = GSW_GATES[group];
+      const source = sources[gate];
+      if (!source || !gswBundle)
+        throw new Error(
+          `check-gate7: ${group}@gsw needs --source ${gate}=<run> and --gsw-bundle <dir>`,
+        );
+      const input: GswGroupInput = {
+        gate,
+        sourceDir: source,
+        gswRoot: join(out, gate, "gsw"),
+        viewDir: join(out, gate, "gsw-view"),
+        bundleDir: gswBundle,
+        current,
+        runChecker: await gateChecker(gate),
+        extra: () => gswExtraChecks(gate, { out, sourceDir: source }),
+      };
+      results.push(await checkGswGroup(input));
+    }
   }
   // `gate_passed` here means "every group this run requested passed": gate 7 as a whole needs every
   // increment (D23, "Gate 7 passes when…"), which the summary (G7z) judges, not this run.
@@ -270,7 +401,11 @@ async function main(): Promise<void> {
       const tag = c.passed ? "PASS" : c.gating ? "FAIL" : "NOTE";
       console.log(`${tag}  ${r.group}  ${c.id}  ${c.detail}`);
     }
-    for (const s of r.startup) console.log(`startup  ${JSON.stringify(s)}`);
+    if ("startup" in r)
+      for (const s of r.startup) console.log(`startup  ${JSON.stringify(s)}`);
+    if ("not_applicable" in r)
+      for (const n of r.not_applicable)
+        console.log(`N/A   ${r.group}  ${n.id}  ${n.reason}`);
   }
   const ms = (x: number | undefined) =>
     x === undefined ? "-" : (x / 1000).toFixed(3);

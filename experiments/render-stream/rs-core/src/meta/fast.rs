@@ -608,7 +608,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
     tx.clear();
     let v4 = version >= 4;
     let v5 = version >= 5;
-    let v6 = version == 6;
+    let v6 = version >= 6;
     let c = &mut Cur { s: meta, p: 0 };
     c.lit(b"{\"type\":\"transaction\",\"seq\":")?;
     tx.seq = c.int_ge(1)?;

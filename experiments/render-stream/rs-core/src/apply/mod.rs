@@ -7,8 +7,9 @@
 //! their parent, per-z lists concatenated in z order, `modulate` composed down the tree with
 //! `self_modulate` last, `visible`, the cull mask, the 0.007 alpha cut, and the clip as Godot's
 //! integer scissor (`clip-derive.ts`'s rules: the rounded AABB of the transformed item rect
-//! intersected with the clip owner's). Items are not culled against the viewport: Godot's
-//! `global_rect` test only skips items that draw nothing on screen, and drawing them is pixel-exact.
+//! intersected with the clip owner's). An item is attached only when its global rect (custom rect, else
+//! content rect) touches the viewport, borders included (`_attach_canvas_item_for_draw`; G7a: a custom
+//! rect off screen hides on-screen content, gate 3's `cull` region).
 //!
 //! Three paths, chosen per transaction from what changed:
 //! - nothing structural: item rows only (a transform or modulate change moves the subtree's rows),
@@ -20,6 +21,7 @@
 pub mod geom;
 pub mod lower;
 pub mod payloads;
+pub mod residency;
 
 use crate::state::{
     BlendMode, Canvas, EntryStatus, Filter, Id, Item, LightMode, Repeat, ResolvedState,
@@ -48,6 +50,30 @@ pub struct Viewport {
     pub format: Format,
 }
 
+/// Receiver sabotages that live in the applier (gate7-design.md Q5 "Sabotages", G7a): each one exists
+/// only to fail a check, and each is defined on the applied state so the native receiver's
+/// predicted (shot, region) sets apply unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ApplySabotage {
+    /// Native `ignore-clip`: every item draws unclipped.
+    pub ignore_clip: bool,
+    /// Native `clip-before-clear` (gate3-design.md G3b): an item's clip is set only when the wire
+    /// value changes, and a content change of the item resets it to unclipped.
+    pub clip_before_clear: bool,
+    /// Native `reupload`: every named image is uploaded again at every transaction.
+    pub reupload: bool,
+    /// Native `stale-texture` (G6a): a resident RGBA8 image keeps its first payload.
+    pub stale_texture: bool,
+    /// Native `ignore-material`: no item gets its material (mix blend, shaded).
+    pub ignore_material: bool,
+    /// Native `ignore-canvas-modulate`: the root canvas's modulate is never applied.
+    pub ignore_canvas_modulate: bool,
+    /// Native `ignore-canvas-stacking`: canvases keep creation (id) order, layers ignored.
+    pub ignore_canvas_stacking: bool,
+    /// GSW-only `ignore-z`: each canvas draws in `draw_index` walk order, never per z.
+    pub ignore_z: bool,
+}
+
 /// Applier-level typed shortcuts beyond the lowering's (G7x "Scope").
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub enum ApplyShortcut {
@@ -74,10 +100,48 @@ impl ApplyShortcut {
     }
 }
 
+/// Why a transaction took the structural path (bits of [`ApplyStats::why`]).
+pub struct Why;
+impl Why {
+    pub const FIRST: u32 = 1;
+    pub const DEFAULTS: u32 = 1 << 1;
+    pub const MATERIAL: u32 = 1 << 2;
+    pub const TEXTURE_SIZE: u32 = 1 << 3;
+    pub const ITEM_REMOVED: u32 = 1 << 4;
+    pub const ITEM_ADDED: u32 = 1 << 5;
+    pub const CONTENT_SHAPE: u32 = 1 << 6;
+    pub const ORDER_KEY: u32 = 1 << 7;
+    pub const DEPENDENCY: u32 = 1 << 8;
+    pub const CANVAS: u32 = 1 << 9;
+    pub const COMPACT: u32 = 1 << 10;
+    pub const MOVE_FALLBACK: u32 = 1 << 11;
+    pub const NAMES: [&'static str; 12] = [
+        "first",
+        "defaults",
+        "material",
+        "texture-size",
+        "item-removed",
+        "item-added",
+        "content-shape",
+        "order-key",
+        "dependency",
+        "canvas",
+        "compact",
+        "move-fallback",
+    ];
+}
+
 /// Per-apply counters (one frame).
 #[derive(Clone, Debug, Default)]
 pub struct ApplyStats {
     pub structural: bool,
+    /// Why the walk ran ([`Why`] bits; 0 when it did not).
+    pub why: u32,
+    /// The transaction re-assembled the index buffer and draw table without re-walking.
+    pub reassembled: bool,
+    /// Native diagnostics only (`rs-core-check apply-bench`): the walk's and the assembly's time.
+    pub walk_us: f64,
+    pub assemble_us: f64,
     pub relowered: u32,
     pub relowered_in_place: u32,
     pub rows_written: u32,
@@ -93,6 +157,17 @@ pub struct ApplyStats {
     pub texture_uploads: u32,
     pub texture_upload_bytes: u64,
     pub texture_frees: u32,
+    /// Items plus non-root canvases this transaction created and freed (applied.json's
+    /// `transactions[].created` / `freed`).
+    pub created: u32,
+    pub freed: u32,
+    /// Non-root canvases created (`resources.canvases_created`).
+    pub canvases_created: u32,
+    /// Commands of the items whose content was (re)lowered (`commands_replayed`), and of those the
+    /// MSDF and mesh ones (`msdf_commands`, `mesh_commands`).
+    pub commands_replayed: u32,
+    pub msdf_commands: u32,
+    pub mesh_commands: u32,
     pub vertex_count: u32,
     pub index_count: u32,
 }
@@ -138,6 +213,9 @@ impl StructKey {
     }
 }
 
+type MaterialKey = (EntryStatus, Option<Id>);
+type ShaderKey = (EntryStatus, Option<crate::state::Builtin>);
+
 /// The texture sizes a lowering read (id, drawable size and mipmaps).
 type TexSizes = Vec<(Id, Option<(u32, u32, bool)>)>;
 
@@ -164,6 +242,13 @@ struct ItemRec {
     /// The canvas the item was walked under, and whether its material is unshaded.
     canvas: Id,
     unshaded: bool,
+    /// `clip-before-clear` sabotage: the clip the native receiver last sent, and the one in effect.
+    clip_shadow: bool,
+    clip_eff: bool,
+    /// The last walk's scissor for this item (its own or its clip owner's), rounded.
+    scissor: Option<Rect>,
+    /// The last walk found its global rect touching the viewport (attached when it draws).
+    on_screen: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -174,26 +259,30 @@ struct Attach {
     blend: Blend,
 }
 
-struct TexRes {
-    hash: crate::state::Hash,
-    width: u32,
-    height: u32,
-}
-
 /// The applier: owns the packed list it fills.
 pub struct Applier {
     pub list: DrawList,
     viewport: Viewport,
     items: HashMap<Id, ItemRec>,
     free_rows: Vec<u32>,
-    resident: HashMap<Id, TexRes>,
+    /// Resident textures, native semantics (`residency`); the GPU holds the `ok` images.
+    resident: HashMap<Id, residency::Resident>,
+    names: residency::Names,
+    /// The texture ids `prepare` chose for this transaction.
+    pending: std::collections::BTreeSet<Id>,
+    prepared: bool,
+    /// This transaction's texture accounting.
+    pub account: residency::TextureAccount,
+    pub sabotage: ApplySabotage,
     attach: Vec<Attach>,
     vertex_holes: u32,
     /// The canvas, material, shader and canvas-texture entries the last walk used: a full
     /// transaction re-lists every entry, so changes are found by comparison, not by presence.
     canvases: HashMap<Id, Canvas>,
-    materials: HashMap<Id, crate::state::Material>,
-    shaders: HashMap<Id, crate::state::Shader>,
+    /// Only what the walk reads (status and shader; status and builtin): a parameter or code
+    /// change re-walks nothing (G7a: hd-patch animates a material parameter every frame).
+    materials: HashMap<Id, MaterialKey>,
+    shaders: HashMap<Id, ShaderKey>,
     canvas_textures: HashMap<Id, crate::state::Texture>,
     pub shortcut_totals: BTreeMap<&'static str, u64>,
     pub stats: ApplyStats,
@@ -206,32 +295,47 @@ struct TableView<'a> {
     payloads: &'a PayloadStore,
 }
 
-impl<'a> TableView<'a> {
-    /// The image entry a texture id draws from (itself, or a canvas texture's diffuse).
-    fn image(&self, id: Id) -> Option<&'a crate::state::Texture> {
-        let t = self.state.textures.get(&id)?;
-        let img = match t.kind {
-            TextureKind::Image => t,
-            TextureKind::Canvas => {
-                if t.status != EntryStatus::Ok {
-                    return None;
+impl TableView<'_> {
+    /// An `ok` image with pixels, or an `ok` placeholder: how it draws.
+    fn drawable(&self, t: &crate::state::Texture) -> lower::TexDraw {
+        use lower::TexDraw;
+        match (t.status, t.kind) {
+            (EntryStatus::Freed, _) => TexDraw::White,
+            (EntryStatus::Unsupported, _) => TexDraw::Skip,
+            (EntryStatus::Ok, TextureKind::Placeholder) => TexDraw::Sized(4, 4, false),
+            (EntryStatus::Ok, TextureKind::Image) => match t.hash {
+                Some(h) if self.payloads.textures.contains_key(&h) => {
+                    TexDraw::Sized(t.width as u32, t.height as u32, t.mipmaps)
                 }
-                self.state.textures.get(&t.canvas.as_ref()?.diffuse?)?
-            }
-            TextureKind::Placeholder => return None,
-        };
-        (img.kind == TextureKind::Image && img.status == EntryStatus::Ok && img.hash.is_some())
-            .then_some(img)
+                _ => TexDraw::Skip,
+            },
+            (EntryStatus::Ok, TextureKind::Canvas) => TexDraw::Skip,
+        }
     }
 }
 
 impl lower::Tables for TableView<'_> {
-    fn texture_size(&self, id: Id) -> Option<(u32, u32, bool)> {
-        let img = self.image(id)?;
-        self.payloads
-            .textures
-            .contains_key(img.hash.as_ref()?)
-            .then_some((img.width as u32, img.height as u32, img.mipmaps))
+    fn texture_draw(&self, id: Id) -> lower::TexDraw {
+        use lower::TexDraw;
+        let Some(t) = self.state.textures.get(&id) else {
+            return TexDraw::Skip;
+        };
+        if t.kind == TextureKind::Canvas && t.status == EntryStatus::Ok {
+            // A canvas texture draws its diffuse; RID() (unset, freed, not drawable) is white.
+            return match t
+                .canvas
+                .as_ref()
+                .and_then(|c| c.diffuse)
+                .and_then(|d| self.state.textures.get(&d))
+            {
+                Some(d) if d.kind != TextureKind::Canvas => match self.drawable(d) {
+                    TexDraw::Skip => TexDraw::White,
+                    other => other,
+                },
+                _ => TexDraw::White,
+            };
+        }
+        self.drawable(t)
     }
     fn mesh(&self, id: Id) -> Option<(Vec<&MeshGeometry>, Rect)> {
         let m = self.state.meshes.get(&id)?;
@@ -279,6 +383,16 @@ impl lower::Tables for TableView<'_> {
     }
 }
 
+/// A canvas's modulate (white under the `ignore-canvas-modulate` sabotage for the root canvas,
+/// which is the only canvas the native receiver's `canvas_set_modulate` skip touches).
+fn canvas_modulate(state: &ResolvedState, canvas: Id, ignore_root: bool) -> [f32; 4] {
+    match state.canvases.get(&canvas) {
+        Some(c) if c.root && ignore_root => WHITE,
+        Some(c) => c.modulate,
+        None => WHITE,
+    }
+}
+
 fn mul4(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]]
 }
@@ -318,6 +432,11 @@ impl Applier {
             items: HashMap::new(),
             free_rows: Vec::new(),
             resident: HashMap::new(),
+            names: residency::Names::default(),
+            pending: Default::default(),
+            prepared: false,
+            account: Default::default(),
+            sabotage: ApplySabotage::default(),
             attach: Vec::new(),
             vertex_holes: 0,
             canvases: HashMap::new(),
@@ -334,15 +453,75 @@ impl Applier {
         &self.viewport
     }
 
+    /// The last walk's paint order (diagnostics and the `ordering-model` test): each attached
+    /// item with its final transform and composed modulate, in draw order.
+    pub fn paint_order(&self) -> Vec<(Id, Xform, [f32; 4])> {
+        self.attach
+            .iter()
+            .filter_map(|a| {
+                let rec = self.items.get(&a.item)?;
+                let row = self.list.items.get(rec.row as usize)?;
+                Some((a.item, row.xform, row.modulate))
+            })
+            .collect()
+    }
+
+    /// Each visited item's scissor (`clip-parity`): `Some(rect)` as `[x0, y0, x1, y1)` when it or
+    /// an ancestor clips, `None` when nothing clips it; unvisited items are absent.
+    pub fn scissors(&self) -> Vec<(Id, Option<[i32; 4]>)> {
+        let mut out: Vec<(Id, Option<[i32; 4]>)> = self
+            .items
+            .iter()
+            .filter(|(_, r)| r.visited)
+            .map(|(id, r)| {
+                (
+                    *id,
+                    r.scissor.map(|c| {
+                        [
+                            c[0] as i32,
+                            c[1] as i32,
+                            (c[0] + c[2]) as i32,
+                            (c[1] + c[3]) as i32,
+                        ]
+                    }),
+                )
+            })
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
     /// After a lost and restored context: re-send every array and every resident texture.
     pub fn context_restored(&mut self, payloads: &PayloadStore) {
         self.list.dirty.all = true;
         self.list.dirty.draws = true;
-        let ids: Vec<(Id, crate::state::Hash)> =
-            self.resident.iter().map(|(id, r)| (*id, r.hash)).collect();
+        for (id, r) in &self.resident {
+            if r.kind == TextureKind::Placeholder {
+                self.list
+                    .upload_texture(*id, 4, 4, &residency::placeholder_checker());
+            }
+        }
+        let ids: Vec<(Id, crate::state::Hash)> = self
+            .resident
+            .iter()
+            .filter_map(|(id, r)| r.hash.map(|h| (*id, h)))
+            .collect();
         for (id, hash) in ids {
             if let Some(px) = payloads.textures.get(&hash) {
                 self.list.upload_texture(id, px.width, px.height, &px.rgba);
+            }
+        }
+    }
+
+    fn count_commands(&mut self, it: &Item) {
+        self.stats.commands_replayed += it.commands.list.len() as u32;
+        for c in &it.commands.list {
+            match c {
+                crate::state::Command::MsdfTextureRectRegion { .. } => {
+                    self.stats.msdf_commands += 1
+                }
+                crate::state::Command::Mesh { .. } => self.stats.mesh_commands += 1,
+                _ => {}
             }
         }
     }
@@ -430,65 +609,243 @@ impl Applier {
         (lowered, tex_sizes, mesh_versions)
     }
 
-    /// Bring residency in line with the texture table: upload new image versions whose pixels are
-    /// present, free what left or stopped being drawable. Returns the ids whose drawn size changed.
+    /// Step 2's half of the applier (Q14c): update the named textures from the accepted
+    /// transaction and choose which textures this transaction looks at. Must run once between
+    /// `accept` and `apply` (`apply` runs it itself when the adapter did not).
+    pub fn prepare(&mut self, state: &ResolvedState, delta: &TxDelta) {
+        self.names.update(state, delta, self.first);
+        self.pending = residency::candidates(
+            &mut self.names,
+            state,
+            delta,
+            self.first,
+            self.sabotage.reupload,
+        );
+        self.prepared = true;
+    }
+
+    /// The payload hashes this transaction needs that `store` does not hold, in the native
+    /// receiver's order (shaders of named materials, meshes, then named textures by id): Q14c's
+    /// needed set. Call after [`Applier::prepare`].
+    pub fn needed(
+        &self,
+        state: &ResolvedState,
+        delta: &TxDelta,
+        store: &PayloadStore,
+        out: &mut Vec<crate::state::Hash>,
+    ) {
+        out.clear();
+        let push = |h: crate::state::Hash, out: &mut Vec<crate::state::Hash>| {
+            if !store.has(&h) && !out.contains(&h) {
+                out.push(h);
+            }
+        };
+        for sid in self.names.named_payload_shaders(state) {
+            if let Some(h) = state.shaders.get(&sid).and_then(|s| s.hash) {
+                push(h, out);
+            }
+        }
+        let meshes: Vec<Id> = if self.first {
+            state.meshes.keys().copied().collect()
+        } else {
+            delta.meshes_upserted.clone()
+        };
+        for id in meshes {
+            if let Some(m) = state.meshes.get(&id) {
+                if m.status == EntryStatus::Ok {
+                    for s in &m.surfaces {
+                        push(s.hash, out);
+                    }
+                }
+            }
+        }
+        for id in &self.pending {
+            if let Some(t) = state.textures.get(id) {
+                if t.kind == TextureKind::Image && t.status == EntryStatus::Ok {
+                    if let Some(h) = t.hash {
+                        push(h, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bring residency in line with the texture table, the native receiver's way (`residency`):
+    /// free what left the table or became a tombstone, then create, update or replace each chosen
+    /// named texture. Returns the ids whose drawable size changed.
     fn sync_textures(
         &mut self,
         state: &ResolvedState,
         delta: &TxDelta,
         payloads: &PayloadStore,
     ) -> Vec<Id> {
+        use residency::{Resident, Upload};
         let mut resized = Vec::new();
-        let candidates: Vec<Id> = if self.first {
-            state.textures.keys().copied().collect()
+        // Frees first, ascending (`rs_applier.gd` walks the resident ids sorted).
+        let mut gone: Vec<Id> = if self.first {
+            self.resident.keys().copied().collect()
         } else {
-            delta.textures_upserted.clone()
+            delta
+                .textures_removed
+                .iter()
+                .chain(delta.textures_upserted.iter())
+                .copied()
+                .collect()
         };
-        for id in candidates {
+        gone.sort_unstable();
+        gone.dedup();
+        for id in gone {
+            let is_gone = state
+                .textures
+                .get(&id)
+                .is_none_or(|t| t.status == EntryStatus::Freed);
+            if !is_gone {
+                continue;
+            }
+            if let Some(r) = self.resident.remove(&id) {
+                if matches!(r.kind, TextureKind::Image | TextureKind::Placeholder) {
+                    self.list.free_texture(id);
+                    self.stats.texture_frees += 1;
+                }
+                self.account.freed += 1;
+                resized.push(id);
+            }
+        }
+        let pending = std::mem::take(&mut self.pending);
+        for &id in &pending {
             let Some(t) = state.textures.get(&id) else {
                 continue;
             };
-            let drawable = t.kind == TextureKind::Image && t.status == EntryStatus::Ok;
-            match (drawable, t.hash) {
-                (true, Some(hash)) => {
-                    let same = self.resident.get(&id).is_some_and(|r| r.hash == hash);
-                    if same {
+            if t.status != EntryStatus::Ok {
+                continue;
+            }
+            match t.kind {
+                TextureKind::Placeholder => {
+                    if self
+                        .resident
+                        .get(&id)
+                        .is_some_and(|r| r.kind == TextureKind::Placeholder)
+                    {
+                        continue;
+                    }
+                    let placeholder = Resident {
+                        kind: TextureKind::Placeholder,
+                        hash: None,
+                        format: String::new(),
+                        width: 0,
+                        height: 0,
+                        mipmaps: false,
+                    };
+                    match self.resident.insert(id, placeholder) {
+                        Some(_) => self.account.replaced += 1,
+                        None => self.account.created += 1,
+                    }
+                    self.list
+                        .upload_texture(id, 4, 4, &residency::placeholder_checker());
+                    self.stats.texture_uploads += 1;
+                    self.stats.texture_upload_bytes += 64;
+                    resized.push(id);
+                    self.account.uploads.push(Upload {
+                        id,
+                        hash: None,
+                        op: "placeholder",
+                        data_bytes: 0,
+                    });
+                }
+                TextureKind::Canvas => {
+                    if self.resident.contains_key(&id) {
+                        continue;
+                    }
+                    self.resident.insert(
+                        id,
+                        Resident {
+                            kind: TextureKind::Canvas,
+                            hash: None,
+                            format: String::new(),
+                            width: 0,
+                            height: 0,
+                            mipmaps: false,
+                        },
+                    );
+                    self.account.created += 1;
+                    self.account.uploads.push(Upload {
+                        id,
+                        hash: None,
+                        op: "canvas",
+                        data_bytes: 0,
+                    });
+                }
+                TextureKind::Image => {
+                    let Some(hash) = t.hash else {
+                        continue;
+                    };
+                    let old = self.resident.get(&id).cloned();
+                    let same = old
+                        .as_ref()
+                        .is_some_and(|r| r.kind == TextureKind::Image && r.hash == Some(hash));
+                    if same && !self.sabotage.reupload {
+                        continue;
+                    }
+                    if self.sabotage.stale_texture
+                        && old
+                            .as_ref()
+                            .is_some_and(|r| r.kind == TextureKind::Image && r.format == "RGBA8")
+                    {
                         continue;
                     }
                     let Some(px) = payloads.textures.get(&hash) else {
                         continue;
                     };
-                    let old = self.resident.insert(
-                        id,
-                        TexRes {
-                            hash,
-                            width: px.width,
-                            height: px.height,
-                        },
-                    );
-                    if old.map(|o| (o.width, o.height)) != Some((px.width, px.height)) {
+                    let op = match &old {
+                        None => {
+                            self.account.created += 1;
+                            "create"
+                        }
+                        Some(r)
+                            if r.kind == TextureKind::Image
+                                && r.format == px.format
+                                && r.width == px.width
+                                && r.height == px.height
+                                && r.mipmaps == px.mipmaps =>
+                        {
+                            self.account.updated += 1;
+                            "update"
+                        }
+                        Some(_) => {
+                            self.account.replaced += 1;
+                            "replace"
+                        }
+                    };
+                    if old.as_ref().map(|o| (o.kind, o.width, o.height))
+                        != Some((TextureKind::Image, px.width, px.height))
+                    {
                         resized.push(id);
                     }
+                    self.resident.insert(
+                        id,
+                        Resident {
+                            kind: TextureKind::Image,
+                            hash: Some(hash),
+                            format: px.format.clone(),
+                            width: px.width,
+                            height: px.height,
+                            mipmaps: px.mipmaps,
+                        },
+                    );
                     self.list.upload_texture(id, px.width, px.height, &px.rgba);
                     self.stats.texture_uploads += 1;
                     self.stats.texture_upload_bytes += px.rgba.len() as u64;
-                }
-                _ => {
-                    if self.resident.remove(&id).is_some() {
-                        self.list.free_texture(id);
-                        self.stats.texture_frees += 1;
-                        resized.push(id);
-                    }
+                    self.account.upload_bytes += px.data_len as u64;
+                    self.account.uploads.push(Upload {
+                        id,
+                        hash: Some(hash),
+                        op,
+                        data_bytes: px.data_len as u64,
+                    });
                 }
             }
         }
-        for id in &delta.textures_removed {
-            if self.resident.remove(id).is_some() {
-                self.list.free_texture(*id);
-                self.stats.texture_frees += 1;
-                resized.push(*id);
-            }
-        }
+        self.pending = pending;
         resized
     }
 
@@ -501,17 +858,31 @@ impl Applier {
         payloads: &PayloadStore,
     ) -> &ApplyStats {
         self.stats = ApplyStats::default();
+        self.account = Default::default();
+        if !self.prepared {
+            self.prepare(state, delta);
+        }
+        self.prepared = false;
         let tables = TableView { state, payloads };
-        let mut structural = self.first || delta.defaults_changed;
+        let mut why = if self.first { Why::FIRST } else { 0 };
+        if delta.defaults_changed {
+            why |= Why::DEFAULTS;
+        }
         // Materials, shaders and canvas textures decide blends and samplers: a real change re-walks.
         for id in &delta.materials_removed {
-            structural |= self.materials.remove(id).is_some();
+            if self.materials.remove(id).is_some() {
+                why |= Why::MATERIAL;
+            }
         }
         for id in &delta.shaders_removed {
-            structural |= self.shaders.remove(id).is_some();
+            if self.shaders.remove(id).is_some() {
+                why |= Why::MATERIAL;
+            }
         }
         for id in &delta.textures_removed {
-            structural |= self.canvas_textures.remove(id).is_some();
+            if self.canvas_textures.remove(id).is_some() {
+                why |= Why::MATERIAL;
+            }
         }
         let mats: Vec<Id> = if self.first {
             state.materials.keys().copied().collect()
@@ -520,9 +891,10 @@ impl Applier {
         };
         for id in mats {
             if let Some(m) = state.materials.get(&id) {
-                if self.materials.get(&id) != Some(m) {
-                    self.materials.insert(id, m.clone());
-                    structural = true;
+                let key = (m.status, m.shader);
+                if self.materials.get(&id) != Some(&key) {
+                    self.materials.insert(id, key);
+                    why |= Why::MATERIAL;
                 }
             }
         }
@@ -533,9 +905,10 @@ impl Applier {
         };
         for id in shs {
             if let Some(sh) = state.shaders.get(&id) {
-                if self.shaders.get(&id) != Some(sh) {
-                    self.shaders.insert(id, sh.clone());
-                    structural = true;
+                let key = (sh.status, sh.builtin.clone());
+                if self.shaders.get(&id) != Some(&key) {
+                    self.shaders.insert(id, key);
+                    why |= Why::MATERIAL;
                 }
             }
         }
@@ -548,13 +921,13 @@ impl Applier {
             if let Some(t) = state.textures.get(&id) {
                 if t.kind == TextureKind::Canvas && self.canvas_textures.get(&id) != Some(t) {
                     self.canvas_textures.insert(id, t.clone());
-                    structural = true;
+                    why |= Why::MATERIAL;
                 }
             }
         }
         let resized = self.sync_textures(state, delta, payloads);
         if !resized.is_empty() {
-            structural = true;
+            why |= Why::TEXTURE_SIZE;
         }
 
         // Removed items.
@@ -562,7 +935,8 @@ impl Applier {
             if let Some(rec) = self.items.remove(id) {
                 self.free_rows.push(rec.row);
                 self.vertex_holes += rec.vcap;
-                structural = true;
+                self.stats.freed += 1;
+                why |= Why::ITEM_REMOVED;
             }
         }
         if self.first {
@@ -586,6 +960,7 @@ impl Applier {
             delta.items_upserted.clone()
         };
         let mut moved: Vec<Id> = Vec::new();
+        let mut content_walk = false;
         for id in upserted {
             let Some(it) = state.items.get(&id) else {
                 continue;
@@ -614,19 +989,50 @@ impl Applier {
                         canvas_modulate: WHITE,
                         canvas: 0,
                         unshaded: false,
+                        clip_shadow: it.clip,
+                        clip_eff: it.clip,
+                        scissor: None,
+                        on_screen: false,
                     };
                     Self::place_vertices(&mut self.list, &mut rec, &mut self.vertex_holes);
                     self.items.insert(id, rec);
-                    structural = true;
+                    self.stats.created += 1;
+                    self.count_commands(it);
+                    why |= Why::ITEM_ADDED;
                 }
                 true => {
                     let content_changed = self.items[&id].content_version != it.content_version;
+                    {
+                        // clip-before-clear's model (fixtures/gate3/make_expected.py
+                        // `receiver_clip`): a wire change sets the clip, a content change clears it.
+                        let rec = self.items.get_mut(&id).unwrap();
+                        let before = rec.clip_eff;
+                        if it.clip != rec.clip_shadow {
+                            rec.clip_shadow = it.clip;
+                            rec.clip_eff = it.clip;
+                        }
+                        if content_changed {
+                            rec.clip_eff = false;
+                        }
+                        if self.sabotage.clip_before_clear && rec.clip_eff != before {
+                            why |= Why::ORDER_KEY;
+                        }
+                    }
                     if content_changed {
+                        self.count_commands(it);
                         let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
                         self.stats.relowered += 1;
                         let rec = self.items.get_mut(&id).unwrap();
                         let same =
                             lowered.same_shape(&rec.lowered) && lowered.rect == rec.lowered.rect;
+                        // The walk reads an item's content only for its clip rect (a clipping
+                        // item without a custom rect) and whether it draws at all; any other
+                        // change of shape needs only the index buffer and draw table re-assembled.
+                        if (it.clip && !it.custom_rect && lowered.rect != rec.lowered.rect)
+                            || lowered.draws.is_empty() != rec.lowered.draws.is_empty()
+                        {
+                            content_walk = true;
+                        }
                         rec.lowered = lowered;
                         rec.tex_sizes = tex_sizes;
                         rec.mesh_versions = mesh_versions;
@@ -636,13 +1042,13 @@ impl Applier {
                         if same && !moved_range {
                             self.stats.relowered_in_place += 1;
                         } else {
-                            structural = true;
+                            why |= Why::CONTENT_SHAPE;
                         }
                     }
                     let rec = self.items.get_mut(&id).unwrap();
                     if rec.key != key {
                         rec.key = key;
-                        structural = true;
+                        why |= Why::ORDER_KEY;
                     }
                     if rec.xform != it.xform
                         || rec.modulate != it.modulate
@@ -684,14 +1090,17 @@ impl Applier {
                 rec.tex_sizes = tex_sizes;
                 rec.mesh_versions = mesh_versions;
                 Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
-                structural = true;
+                why |= Why::DEPENDENCY;
             }
         }
 
         // Canvases: order facts re-walk; a transform or modulate change moves the canvas's rows.
         let mut moved_canvases: Vec<Id> = Vec::new();
         for id in &delta.canvases_removed {
-            structural |= self.canvases.remove(id).is_some();
+            if self.canvases.remove(id).is_some() {
+                self.stats.freed += 1;
+                why |= Why::CANVAS;
+            }
         }
         let cans: Vec<Id> = if self.first {
             state.canvases.keys().copied().collect()
@@ -715,18 +1124,21 @@ impl Applier {
                     self.canvases.insert(id, c.clone());
                 }
                 _ => {
-                    self.canvases.insert(id, c.clone());
-                    structural = true;
+                    if self.canvases.insert(id, c.clone()).is_none() && !c.root {
+                        self.stats.created += 1;
+                        self.stats.canvases_created += 1;
+                    }
+                    why |= Why::CANVAS;
                 }
             }
         }
 
         if self.vertex_holes as usize > self.list.vertices.len() / 2 && self.vertex_holes > 4096 {
             self.compact();
-            structural = true;
+            why |= Why::COMPACT;
         }
 
-        if !structural {
+        if why == 0 {
             // Rows only: a moved canvas moves its top-level items' subtrees.
             let mut roots: Vec<Id> = Vec::new();
             for c in &moved_canvases {
@@ -738,14 +1150,31 @@ impl Applier {
             for id in roots {
                 if !self.move_subtree(state, id) {
                     // A clip or the alpha cut changed with the move: fall back to the walk.
-                    structural = true;
+                    why |= Why::MOVE_FALLBACK;
                     break;
                 }
             }
         }
-        if structural {
-            self.walk(state);
+        self.stats.why = why;
+        // Content changes of shape alone keep the walk's results (attach list, rows): only the
+        // index buffer and the draw table are re-assembled (G7a's incremental structural apply).
+        let walk = why & !Why::CONTENT_SHAPE != 0 || content_walk;
+        if why != 0 {
+            #[cfg(not(target_arch = "wasm32"))]
+            let t0 = std::time::Instant::now();
+            if walk {
+                self.walk(state);
+            } else {
+                self.stats.reassembled = true;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let t1 = std::time::Instant::now();
             self.assemble(state);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.stats.walk_us = (t1 - t0).as_secs_f64() * 1e6;
+                self.stats.assemble_us = t1.elapsed().as_secs_f64() * 1e6;
+            }
         }
         self.first = false;
         self.stats.vertex_count = self.list.vertices.len() as u32;
@@ -764,7 +1193,11 @@ impl Applier {
             rec.visited = false;
         }
         let mut canvases: Vec<&Canvas> = state.canvases.values().filter(|c| c.attached).collect();
-        canvases.sort_by_key(|c| (c.layer, c.sublayer, c.id));
+        if self.sabotage.ignore_canvas_stacking {
+            canvases.sort_by_key(|c| c.id);
+        } else {
+            canvases.sort_by_key(|c| (c.layer, c.sublayer, c.id));
+        }
         if canvases
             .windows(2)
             .any(|w| (w[0].layer, w[0].sublayer) == (w[1].layer, w[1].sublayer))
@@ -776,20 +1209,47 @@ impl Applier {
             let start = self.attach.len();
             let canvas_xf = geom::mul(&vp.global_xform, &canvas.xform);
             let order = self.sorted_children(state, &canvas.items);
-            for child in order {
+            for &child in order.iter() {
                 self.cull(state, child, &canvas_xf, None, WHITE, 0, None, canvas.id);
             }
             // Per-z lists concatenated in z order; within a z, attach order (a stable sort).
-            self.attach[start..].sort_by_key(|a| a.z);
+            if !self.sabotage.ignore_z {
+                self.attach[start..].sort_by_key(|a| a.z);
+            }
         }
         // Rows of every visited item.
-        let ids: Vec<Id> = self.items.keys().copied().collect();
+        let ids: Vec<Id> = self
+            .items
+            .iter()
+            .filter(|(_, r)| r.visited)
+            .map(|(id, _)| *id)
+            .collect();
         for id in ids {
             self.write_row(state, id);
         }
     }
 
-    fn sorted_children(&mut self, state: &ResolvedState, children: &[Id]) -> Vec<Id> {
+    /// `children` in draw order: as listed when their `draw_index`es already increase strictly (the
+    /// common case: no allocation), else sorted by `draw_index` (ties keep list order, typed).
+    fn sorted_children<'s>(
+        &mut self,
+        state: &'s ResolvedState,
+        children: &'s [Id],
+    ) -> std::borrow::Cow<'s, [Id]> {
+        let mut last = i64::MIN;
+        let mut in_order = true;
+        for c in children {
+            match state.items.get(c) {
+                Some(it) if it.draw_index > last => last = it.draw_index,
+                _ => {
+                    in_order = false;
+                    break;
+                }
+            }
+        }
+        if in_order {
+            return std::borrow::Cow::Borrowed(children);
+        }
         let mut order: Vec<(i64, Id)> = children
             .iter()
             .filter_map(|c| state.items.get(c).map(|it| (it.draw_index, *c)))
@@ -798,7 +1258,7 @@ impl Applier {
         if order.windows(2).any(|w| w[0].0 == w[1].0) {
             self.note(ApplyShortcut::TieAppendOrder.as_str(), 1);
         }
-        order.into_iter().map(|(_, c)| c).collect()
+        std::borrow::Cow::Owned(order.into_iter().map(|(_, c)| c).collect())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -825,7 +1285,14 @@ impl Applier {
         }
         let final_xf = geom::mul(parent_xf, &it.xform);
         let mut own_clip = clip;
-        if it.clip {
+        let clips = if self.sabotage.ignore_clip {
+            false
+        } else if self.sabotage.clip_before_clear {
+            self.items.get(&id).is_some_and(|r| r.clip_eff)
+        } else {
+            it.clip
+        };
+        if clips {
             let rect = if it.custom_rect {
                 it.custom_rect_rect
             } else {
@@ -864,13 +1331,14 @@ impl Applier {
         };
         let (blend, unshaded, light_only) = self.material_of(state, owner.unwrap_or(id));
         let children = self.sorted_children(state, &it.children);
-        for &c in &children {
+        for &c in children.iter() {
             if state.items.get(&c).is_some_and(|ci| ci.behind) {
                 self.cull(state, c, &final_xf, own_clip, modulate, z, owner, canvas);
             }
         }
         if let Some(rec) = self.items.get_mut(&id) {
             rec.visited = true;
+            rec.scissor = own_clip;
             rec.final_xform = final_xf;
             rec.child_modulate = modulate;
             rec.canvas = canvas;
@@ -878,13 +1346,24 @@ impl Applier {
             rec.canvas_modulate = if unshaded {
                 WHITE
             } else {
-                state
-                    .canvases
-                    .get(&canvas)
-                    .map(|c| c.modulate)
-                    .unwrap_or(WHITE)
+                canvas_modulate(state, canvas, self.sabotage.ignore_canvas_modulate)
             };
-            if !rec.lowered.draws.is_empty() && !light_only {
+            // _attach_canvas_item_for_draw: an item is drawn only when its global rect (the custom
+            // rect, else its content's) touches the viewport rect, borders included
+            // (renderer_canvas_cull.cpp:247; gate 3's `cull` region).
+            let rect = if it.custom_rect {
+                it.custom_rect_rect
+            } else {
+                rec.lowered.rect
+            };
+            let vp = [
+                0.0,
+                0.0,
+                self.viewport.width as f32,
+                self.viewport.height as f32,
+            ];
+            rec.on_screen = geom::intersects_inclusive(&vp, &geom::xform_rect(&final_xf, &rect));
+            if !rec.lowered.draws.is_empty() && !light_only && rec.on_screen {
                 let scissor =
                     own_clip.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]);
                 self.attach.push(Attach {
@@ -895,7 +1374,7 @@ impl Applier {
                 });
             }
         }
-        for &c in &children {
+        for &c in children.iter() {
             if !state.items.get(&c).is_some_and(|ci| ci.behind) {
                 self.cull(state, c, &final_xf, own_clip, modulate, z, owner, canvas);
             }
@@ -905,6 +1384,9 @@ impl Applier {
     /// The effective material's blend, and whether it is unshaded or light-only (gate5_5-design.md
     /// D7; no lights reach the wire, so `normal` draws unlit and `light_only` draws nothing).
     fn material_of(&mut self, state: &ResolvedState, owner: Id) -> (Blend, bool, bool) {
+        if self.sabotage.ignore_material {
+            return (Blend::Mix, false, false);
+        }
         let Some(mid) = state.items.get(&owner).and_then(|it| it.material) else {
             return (Blend::Mix, false, false);
         };
@@ -1033,7 +1515,9 @@ impl Applier {
                             }
                             _ => (tid, item_filter, item_repeat),
                         };
-                        if !self.resident.contains_key(&gpu) {
+                        if !self.resident.get(&gpu).is_some_and(|r| {
+                            matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
+                        }) {
                             skips += 1;
                             continue;
                         }
@@ -1116,7 +1600,7 @@ impl Applier {
         if !it.visible || it.visibility_layer & self.viewport.cull_mask == 0 {
             return true;
         }
-        if it.clip {
+        if it.clip && !self.sabotage.ignore_clip {
             return false;
         }
         let modulate = mul4(it.modulate, parent_mod);
@@ -1129,17 +1613,32 @@ impl Applier {
             return true;
         }
         let final_xf = geom::mul(parent_xf, &it.xform);
+        if let Some(rec) = self.items.get(&id) {
+            let rect = if it.custom_rect {
+                it.custom_rect_rect
+            } else {
+                rec.lowered.rect
+            };
+            let vp = [
+                0.0,
+                0.0,
+                self.viewport.width as f32,
+                self.viewport.height as f32,
+            ];
+            if geom::intersects_inclusive(&vp, &geom::xform_rect(&final_xf, &rect)) != rec.on_screen
+            {
+                // Moving on or off screen changes what is attached: the walk decides.
+                return false;
+            }
+        }
+        let ignore_canvas_modulate = self.sabotage.ignore_canvas_modulate;
         if let Some(rec) = self.items.get_mut(&id) {
             rec.final_xform = final_xf;
             rec.child_modulate = modulate;
             rec.canvas_modulate = if rec.unshaded {
                 WHITE
             } else {
-                state
-                    .canvases
-                    .get(&rec.canvas)
-                    .map(|c| c.modulate)
-                    .unwrap_or(WHITE)
+                canvas_modulate(state, rec.canvas, ignore_canvas_modulate)
             };
         }
         self.write_row(state, id);
@@ -1152,5 +1651,7 @@ impl Applier {
     }
 }
 
+#[cfg(test)]
+mod ordering_model;
 #[cfg(test)]
 mod tests;

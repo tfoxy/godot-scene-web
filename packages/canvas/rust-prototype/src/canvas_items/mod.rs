@@ -52,15 +52,21 @@ pub enum Sabotage {
     DropDraws,
     /// Skip uploading dirty item rows unless `dirty.all`: a transform-only frame draws stale rows.
     StaleItemRow,
+    /// gate7-design.md Q5's `premultiplied-upload`: textures are premultiplied (8-bit) on upload
+    /// and sampled as premultiplied, so linear filtering mixes premultiplied texels where Godot
+    /// filters straight ones and premultiplies after.
+    PremultipliedUpload,
 }
 
 impl Sabotage {
-    /// `"drop-draws"` or `"stale-item-row"`; `""`/`"none"` is no sabotage; anything else is refused.
+    /// `"drop-draws"`, `"stale-item-row"` or `"premultiplied-upload"`; `""`/`"none"` is no
+    /// sabotage; anything else is refused.
     pub fn parse(name: &str) -> Result<Option<Sabotage>, String> {
         match name {
             "" | "none" => Ok(None),
             "drop-draws" => Ok(Some(Sabotage::DropDraws)),
             "stale-item-row" => Ok(Some(Sabotage::StaleItemRow)),
+            "premultiplied-upload" => Ok(Some(Sabotage::PremultipliedUpload)),
             other => Err(format!("unknown canvas-items sabotage {other:?}")),
         }
     }

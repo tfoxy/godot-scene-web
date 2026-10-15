@@ -1,0 +1,430 @@
+{
+  "schema": "render-stream-gsw-tolerance/1",
+  "policy": [
+    "Q7: G against R. decided pixels: channel 0, pixels 0 (P-G1).",
+    "delta1: translucent blends (straight-alpha blend unit vs premultiplied shader output, one rounding apart): channel <= 1, any count (P-G3).",
+    "undecided: linearly filtered texture draws, and gate 3c's rotated-edge band: diffs only inside, counted and reported (P-G4).",
+    "Masks are derived from each gate's expected.json by scripts/lib/gsw-tolerance.ts, never from a GSW run; widening one to pass is forbidden (D8)."
+  ],
+  "gates": {
+    "gate0": {
+      "expected": "fixtures/gate0/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": []
+        }
+      ]
+    },
+    "gate1": {
+      "expected": "fixtures/gate1/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 10,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 11,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 12,
+          "delta1": [],
+          "undecided": []
+        }
+      ]
+    },
+    "gate2": {
+      "expected": "fixtures/gate2/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [120, 240, 32, 32],
+              "why": "S2 samples A0 with filter linear"
+            }
+          ]
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [
+            {
+              "region": "s1",
+              "rect": [40, 240, 32, 32],
+              "why": "S1 samples A0 with filter linear"
+            },
+            {
+              "region": "s2",
+              "rect": [120, 240, 32, 32],
+              "why": "S2 samples A0 with filter linear"
+            },
+            {
+              "region": "tr",
+              "rect": [200, 40, 32, 32],
+              "why": "TR samples A0 with filter linear"
+            },
+            {
+              "region": "dr",
+              "rect": [264, 40, 32, 32],
+              "why": "DR samples A0 with filter linear"
+            },
+            {
+              "region": "s3",
+              "rect": [320, 40, 32, 32],
+              "why": "S3 samples A0 with filter linear"
+            },
+            {
+              "region": "bg",
+              "rect": [376, 40, 32, 32],
+              "why": "SB samples B0 with filter linear"
+            },
+            {
+              "region": "sb",
+              "rect": [376, 40, 32, 32],
+              "why": "SB samples B0 with filter linear"
+            },
+            {
+              "region": "raw1",
+              "rect": [432, 40, 32, 32],
+              "why": "RAW1 samples PH with filter linear"
+            },
+            {
+              "region": "raw2",
+              "rect": [480, 40, 32, 32],
+              "why": "RAW2 samples PH with filter linear"
+            }
+          ]
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [120, 240, 32, 32],
+              "why": "S2 samples A0 with filter linear"
+            }
+          ]
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [120, 240, 32, 32],
+              "why": "S2 samples A1 with filter linear"
+            }
+          ]
+        },
+        {
+          "step": 7,
+          "delta1": [
+            {
+              "region": "bg",
+              "rect": [376, 40, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            },
+            {
+              "region": "sb",
+              "rect": [376, 40, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            }
+          ],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [120, 240, 32, 32],
+              "why": "S2 samples A2 with filter linear"
+            }
+          ]
+        },
+        {
+          "step": 8,
+          "delta1": [
+            {
+              "region": "bg",
+              "rect": [376, 40, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            },
+            {
+              "region": "sb",
+              "rect": [376, 40, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            }
+          ],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [120, 240, 32, 32],
+              "why": "S2 samples A2 with filter linear"
+            }
+          ]
+        },
+        {
+          "step": 9,
+          "delta1": [
+            {
+              "region": "bg",
+              "rect": [376, 40, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            },
+            {
+              "region": "sb",
+              "rect": [376, 40, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            }
+          ],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [120, 240, 32, 32],
+              "why": "S2 samples A2 with filter linear"
+            },
+            {
+              "region": "mm",
+              "rect": [120, 120, 16, 16],
+              "why": "MM samples M with filter linear_mipmaps"
+            }
+          ]
+        },
+        {
+          "step": 10,
+          "delta1": [
+            {
+              "region": "bg",
+              "rect": [384, 44, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            },
+            {
+              "region": "sb",
+              "rect": [384, 44, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            }
+          ],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [128, 268, 32, 32],
+              "why": "S2 samples A2 with filter linear"
+            },
+            {
+              "region": "mm",
+              "rect": [128, 124, 16, 16],
+              "why": "MM samples M with filter linear_mipmaps"
+            }
+          ]
+        },
+        {
+          "step": 11,
+          "delta1": [
+            {
+              "region": "bg",
+              "rect": [384, 44, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            },
+            {
+              "region": "sb",
+              "rect": [384, 44, 32, 32],
+              "why": "SB blends B1 (alpha 102/0) over what is below"
+            }
+          ],
+          "undecided": [
+            {
+              "region": "s2",
+              "rect": [128, 268, 32, 32],
+              "why": "S2 samples A2 with filter linear"
+            },
+            {
+              "region": "mm",
+              "rect": [128, 124, 16, 16],
+              "why": "MM samples M with filter linear_mipmaps"
+            }
+          ]
+        }
+      ]
+    },
+    "gate3": {
+      "expected": "fixtures/gate3/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": []
+        }
+      ]
+    },
+    "gate3-xform": {
+      "expected": "fixtures/gate3-xform/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "band_pixels": 191
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "band_pixels": 191
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "band_pixels": 240
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "band_pixels": 240
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "band_pixels": 240
+        }
+      ]
+    }
+  }
+}

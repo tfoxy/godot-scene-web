@@ -42,8 +42,6 @@ pub enum Shortcut {
     AaFeatherOmitted,
     /// width < 0 lines and polylines: 1-px quads, not GL line rasterization (`gsw-hairline`, G7t).
     HairlineAsQuads,
-    /// `add_texture_rect_region` with `clip_uv`: the UV clamp is not applied.
-    ClipUvIgnored,
     /// Nine-patch `tile`/`tile_fit` axes drawn as `stretch`.
     NinePatchTileAsStretch,
     /// `add_msdf_texture_rect_region`: drawn as a plain texture region (`gsw-msdf`, G7t).
@@ -66,7 +64,6 @@ impl Shortcut {
         match self {
             Shortcut::AaFeatherOmitted => "slice-aa-feather-omitted",
             Shortcut::HairlineAsQuads => "slice-hairline-as-quads",
-            Shortcut::ClipUvIgnored => "slice-clip-uv-ignored",
             Shortcut::NinePatchTileAsStretch => "slice-ninepatch-tile-as-stretch",
             Shortcut::MsdfAsPlain => "slice-msdf-as-plain",
             Shortcut::MeshPrimitiveSkipped => "slice-mesh-primitive-skipped",
@@ -120,11 +117,32 @@ impl Lowered {
     }
 }
 
+/// How a command's texture draws (the native receiver's rules, `rs_applier.gd` "Textures"):
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TexDraw {
+    /// An `ok` image with its pixels, or an `ok` placeholder (the engine's 4×4 checker,
+    /// `texture_storage.cpp` `texture_2d_placeholder`), possibly as a canvas texture's diffuse:
+    /// width, height, mipmaps.
+    Sized(u32, u32, bool),
+    /// Drawn with `RID()`, Godot's white default texture: a `freed` tombstone, or a canvas texture
+    /// whose diffuse is unset, freed or not drawable.
+    White,
+    /// Not drawn: an id the table does not hold, or an `unsupported` entry (the wire types it).
+    Skip,
+}
+
 /// What the lowering may ask of the texture and mesh tables.
 pub trait Tables {
-    /// The drawable size of a texture-table id (an `ok` image, or a canvas texture's `ok` image
-    /// diffuse), with whether it has mipmaps; `None` when it cannot be drawn.
-    fn texture_size(&self, id: Id) -> Option<(u32, u32, bool)>;
+    /// How a texture-table id draws ([`TexDraw`]).
+    fn texture_draw(&self, id: Id) -> TexDraw;
+    /// The drawable size of a texture-table id, with whether it has mipmaps; `None` unless
+    /// [`Tables::texture_draw`] is `Sized`.
+    fn texture_size(&self, id: Id) -> Option<(u32, u32, bool)> {
+        match self.texture_draw(id) {
+            TexDraw::Sized(w, h, m) => Some((w, h, m)),
+            _ => None,
+        }
+    }
     /// The surfaces of a drawable mesh (`ok`, every payload present), with its `mesh_get_aabb`
     /// rect; `None` when it cannot be drawn.
     fn mesh(&self, id: Id) -> Option<(Vec<&MeshGeometry>, Rect)>;
@@ -208,6 +226,72 @@ impl<'a> Builder<'a> {
         self.out
             .idx
             .extend_from_slice(&[first, first + 1, first + 2, first + 3, first, first + 2]);
+    }
+
+    /// `quad` with `CANVAS_RECT_CLIP_UV` (canvas.glsl:593-596): the UV is clamped to the source
+    /// rect inset by half a texel. The clamp is piecewise linear along each axis (constant, linear,
+    /// constant), so the quad is split at the parameters where the UV meets the inset bounds and
+    /// each cell's vertices carry the clamped UV: linear interpolation then reproduces the clamp.
+    fn quad_clip_uv(
+        &mut self,
+        dst: [f32; 4],
+        src: [f32; 4],
+        transpose: bool,
+        color: [f32; 4],
+        half: [f32; 2],
+    ) {
+        let flip = [src[2] < 0.0, src[3] < 0.0];
+        let size = [src[2].abs(), src[3].abs()];
+        let lo = [src[0] + half[0], src[1] + half[1]];
+        let hi = [src[0] + size[0] - half[0], src[1] + size[1] - half[1]];
+        // Breakpoints of the quad parameter along each base axis: base axis a drives UV component
+        // `c = a` (or the other one when transposed).
+        let breaks = |a: usize| -> Vec<f32> {
+            let c = if transpose { 1 - a } else { a };
+            let mut v = vec![0.0f32];
+            if size[c] > 0.0 && size[c] > 2.0 * half[c] {
+                v.push(half[c] / size[c]);
+                v.push(1.0 - half[c] / size[c]);
+            }
+            v.push(1.0);
+            v.dedup();
+            v
+        };
+        let (bx, by) = (breaks(0), breaks(1));
+        let uv_at = |b: [f32; 2]| -> [f32; 2] {
+            let t = if transpose { [b[1], b[0]] } else { b };
+            let u = [src[0] + size[0] * t[0], src[1] + size[1] * t[1]];
+            [
+                u[0].clamp(lo[0], hi[0].max(lo[0])),
+                u[1].clamp(lo[1], hi[1].max(lo[1])),
+            ]
+        };
+        let pos_at = |b: [f32; 2]| -> [f32; 2] {
+            let fx = if flip[0] { 1.0 - b[0] } else { b[0] };
+            let fy = if flip[1] { 1.0 - b[1] } else { b[1] };
+            [dst[0] + dst[2].abs() * fx, dst[1] + dst[3].abs() * fy]
+        };
+        for i in 0..bx.len() - 1 {
+            for j in 0..by.len() - 1 {
+                let first = self.out.verts.len() as u32;
+                for b in [
+                    [bx[i], by[j]],
+                    [bx[i], by[j + 1]],
+                    [bx[i + 1], by[j + 1]],
+                    [bx[i + 1], by[j]],
+                ] {
+                    self.vertex(pos_at(b), uv_at(b), color);
+                }
+                self.out.idx.extend_from_slice(&[
+                    first,
+                    first + 1,
+                    first + 2,
+                    first + 3,
+                    first,
+                    first + 2,
+                ]);
+            }
+        }
     }
 
     /// A Godot `CommandPrimitive` of 4 points: triangles (0,1,2) and (0,2,3)
@@ -307,7 +391,11 @@ impl<'a> Builder<'a> {
                 if !self.out.texture_deps.contains(&id) {
                     self.out.texture_deps.push(id);
                 }
-                let (w, h, mip) = self.tables.texture_size(id)?;
+                let (w, h, mip) = match self.tables.texture_draw(id) {
+                    TexDraw::Sized(w, h, mip) => (w, h, mip),
+                    TexDraw::White => return Some((TexRef::White, [1.0, 1.0])),
+                    TexDraw::Skip => return None,
+                };
                 if mip {
                     self.out.note(Shortcut::MipmapsLevel0);
                 }
@@ -340,6 +428,8 @@ fn quads(c: &Commands, span: crate::state::Span) -> Vec<[f32; 4]> {
 struct Region {
     tex: Option<Id>,
     transpose: bool,
+    /// `CANVAS_RECT_CLIP_UV`: UVs clamped half a texel inside the source rect.
+    clip_uv: bool,
     rect: [f32; 4],
     src: [f32; 4],
     modulate: [f32; 4],
@@ -350,6 +440,13 @@ struct Region {
 /// source scaled by `texpixel_size`, transpose swapping the destination size.
 fn region(b: &mut Builder<'_>, r: Region) {
     let Some((texref, px)) = b.uv_scale(r.tex) else {
+        // Item::get_rect still counts the command's rect (the clip rect does not depend on the
+        // texture): sizes made positive, transposed.
+        let mut dst = [r.rect[0], r.rect[1], r.rect[2].abs(), r.rect[3].abs()];
+        if r.transpose {
+            dst.swap(2, 3);
+        }
+        b.add_rect_bounds(dst);
         b.out.note(Shortcut::TextureUnavailableSkipped);
         return;
     };
@@ -388,7 +485,17 @@ fn region(b: &mut Builder<'_>, r: Region) {
         if flip_v {
             src[3] = -src[3];
         }
-        b.quad(dst, src, r.transpose, r.modulate);
+        if r.clip_uv {
+            b.quad_clip_uv(
+                dst,
+                src,
+                r.transpose,
+                r.modulate,
+                [px[0] * 0.5, px[1] * 0.5],
+            );
+        } else {
+            b.quad(dst, src, r.transpose, r.modulate);
+        }
     }
     b.end(d);
 }
@@ -469,6 +576,11 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 modulate,
             } => {
                 let Some((texref, px)) = b.uv_scale(*tex) else {
+                    let mut r = [rect[0], rect[1], rect[2].abs(), rect[3].abs()];
+                    if *transpose {
+                        r.swap(2, 3);
+                    }
+                    b.add_rect_bounds(r);
                     b.out.note(Shortcut::TextureUnavailableSkipped);
                     continue;
                 };
@@ -511,14 +623,12 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 src,
                 modulate,
             } => {
-                if *clip_uv {
-                    b.out.note(Shortcut::ClipUvIgnored);
-                }
                 region(
                     &mut b,
                     Region {
                         tex: *tex,
                         transpose: *transpose,
+                        clip_uv: *clip_uv,
                         rect: *rect,
                         src: *src,
                         modulate: *modulate,
@@ -538,6 +648,7 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     Region {
                         tex: *tex,
                         transpose: false,
+                        clip_uv: false,
                         rect: *rect,
                         src: *src,
                         modulate: *modulate,
@@ -555,6 +666,7 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 modulate,
             } => {
                 let Some((texref, px)) = b.uv_scale(*tex) else {
+                    b.add_rect_bounds(*rect);
                     b.out.note(Shortcut::TextureUnavailableSkipped);
                     continue;
                 };
@@ -733,6 +845,7 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     continue;
                 }
                 let Some((texref, _)) = b.uv_scale(*tex) else {
+                    b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                     b.out.note(Shortcut::TextureUnavailableSkipped);
                     continue;
                 };
@@ -768,6 +881,7 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     continue;
                 };
                 let Some((texref, _)) = b.uv_scale(*tex) else {
+                    b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                     b.out.note(Shortcut::TextureUnavailableSkipped);
                     continue;
                 };
@@ -807,6 +921,7 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     continue;
                 }
                 let Some((texref, _)) = b.uv_scale(*tex) else {
+                    b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                     b.out.note(Shortcut::TextureUnavailableSkipped);
                     continue;
                 };

@@ -58,6 +58,11 @@ fn intersects(a: &Rect, b: &Rect) -> bool {
 }
 
 /// `Rect2::intersection`: `Rect2()` when the two do not overlap.
+/// `Rect2::intersects(p_rect, p_include_borders = true)` (core/math/rect2.h): touching counts.
+pub fn intersects_inclusive(a: &Rect, b: &Rect) -> bool {
+    !(a[0] > b[0] + b[2] || a[0] + a[2] < b[0] || a[1] > b[1] + b[3] || a[1] + a[3] < b[1])
+}
+
 pub fn intersect(a: &Rect, b: &Rect) -> Rect {
     if !intersects(a, b) {
         return [0.0; 4];
