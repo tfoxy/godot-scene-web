@@ -5,8 +5,8 @@ on `main`. G6c (`rs/gate6-g6c`) and G6s (`rs/gate6-g6s`) are on branches, and G6
 started. Nothing here is implemented yet. Hand it out piecewise. Each increment (G7w, G7j, G7h,
 G7c, G7f, G7d, G7e, G7a, G7n, G7m, G7o1, G7x, G7b, G7t, G7s, G7l, G7xn, G7xw, G7g, G7u, G7r, G7k,
 G7q, G7v, G7p, G7z) is one verified commit on `main`, implemented by one agent in its own worktree.
-G7q is gated on fork F1 at the end of this document. G7f is conditional (D20). G7xn and G7xw are
-gated on fork F4. G7o lands nothing since D33 split it.
+G7q is gated on fork F1 at the end of this document. G7f is conditional (D20). G7xn and G7xw were
+gated on fork F4 (approved 2026-10-15). G7o lands nothing since D33 split it.
 
 **Amended 2026-10-14 with a phone acceptance target** (D24 to D28, Q13, increments G7d, G7m, G7o
 and G7v, fork F3). The user's requirement: the receiver must easily work at 60/60 on the user's
@@ -2314,3 +2314,5 @@ Everything else above follows from the handoff, engine source or recorded findin
   The default until the user answers: G7xn and G7xw do not start. Nothing before them depends on
   the answer, and G7x, G7a and the GSW track proceed either way. If G7xw's probe fails even with
   (a), the choice between the JavaScriptBridge split and GDScript goes back to the user (D34).
+  **Resolved 2026-10-15: (a) approved.** G7xn starts once G7x lands `rs-core`, and G7xw after
+  G7xn and G7b, as the increments table says. The nightly is used only for the side-module build.
