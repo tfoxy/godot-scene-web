@@ -15,7 +15,10 @@ export type Phase =
   | "validate"
   | "resolve"
   | "apply"
-  | "total";
+  | "total"
+  // D31/G7o1: the deferred whole-record digest, timed outside decode/total. Zero (and present)
+  // when record_digest is "inline".
+  | "evidence_hash";
 
 export interface PhaseStats {
   count: number;
@@ -45,6 +48,8 @@ export interface BenchInputSummary {
   total_p95_us: number | null;
   tp_ms: number | null;
   notes: string[];
+  /** D31/G7o1: "inline" (pre-G7o1 behaviour) or "deferred"; `gsw` only, `null` for native/web. */
+  record_digest: "inline" | "deferred" | null;
 }
 
 function stats(values: number[]): PhaseStats {
@@ -69,6 +74,8 @@ interface GswSample {
   hash_us: number;
   resolve_us: number;
   validate_us: number;
+  /** D31/G7o1; absent on bench JSON written before this increment (treated as 0). */
+  evidence_hash_us?: number;
 }
 
 interface GswRepeat {
@@ -84,6 +91,8 @@ export interface GswBenchJson {
   schema: "render-stream-gate7-gsw-bench/1";
   input: { name: string; records: number };
   page: { crossOriginIsolated: boolean; timer_resolution_us: number };
+  /** D31/G7o1; absent on bench JSON written before this increment (treated as "inline"). */
+  record_digest?: "inline" | "deferred";
   results: GswRepeat[];
 }
 
@@ -100,6 +109,7 @@ const GSW_PHASES: [Phase, keyof GswSample][] = [
   ["validate", "validate_us"],
   ["resolve", "resolve_us"],
   ["total", "total_us"],
+  ["evidence_hash", "evidence_hash_us"],
 ];
 
 export function summarizeGswBench(json: GswBenchJson): BenchInputSummary {
@@ -118,7 +128,7 @@ export function summarizeGswBench(json: GswBenchJson): BenchInputSummary {
     transactions = Math.max(transactions, tx.length);
     const phases: Partial<Record<Phase, PhaseStats>> = {};
     for (const [phase, key] of GSW_PHASES) {
-      const values = tx.map((s) => s[key] as number);
+      const values = tx.map((s) => (s[key] as number | undefined) ?? 0);
       phases[phase] = stats(values);
       if (verdict.valid && !r.error) {
         const list = pooled.get(phase) ?? [];
@@ -149,6 +159,7 @@ export function summarizeGswBench(json: GswBenchJson): BenchInputSummary {
     total_p95_us: phases.total?.p95_us ?? null,
     tp_ms: median(repeats.filter((r) => r.valid).map((r) => r.tp_ms ?? 0)),
     notes,
+    record_digest: json.record_digest ?? "inline",
   };
 }
 
@@ -286,6 +297,7 @@ export function summarizeNativeBench(
       "native decode_us is RsApplier.accept_record (decode, validation and resolve combined, rs_perf.gd); percentiles from 1/16-octave buckets, means exact",
       "total_p95_us = p95(decode) + p95(apply), an upper bound of p95(decode + apply)",
     ],
+    record_digest: null,
   };
 }
 
