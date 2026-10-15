@@ -3,9 +3,14 @@
 Status: contract for gate 7, written 2026-10-14. At that point gate 6 is complete through G6b and G6l
 on `main`. G6c (`rs/gate6-g6c`) and G6s (`rs/gate6-g6s`) are on branches, and G6p and G6z have not
 started. Nothing here is implemented yet. Hand it out piecewise. Each increment (G7w, G7j, G7h,
-G7c, G7f, G7e, G7a, G7n, G7b, G7t, G7s, G7l, G7g, G7u, G7r, G7k, G7q, G7p, G7z) is one verified
-commit on `main`, implemented by one agent in its own worktree. G7q is gated on fork F1 at the end
-of this document. G7f is conditional (D20).
+G7c, G7f, G7d, G7e, G7a, G7n, G7m, G7b, G7t, G7s, G7l, G7o, G7g, G7u, G7r, G7k, G7q, G7v, G7p,
+G7z) is one verified commit on `main`, implemented by one agent in its own worktree. G7q is gated on
+fork F1 at the end of this document. G7f is conditional (D20), and so is G7o (D27).
+
+**Amended 2026-10-14 with a phone acceptance target** (D24 to D28, Q13, increments G7d, G7m, G7o
+and G7v, fork F3). The user's requirement: the receiver must easily work at 60/60 on the user's
+moto g86 5G, in the browser. Every leg that touches the phone is **operator-attended: it needs the
+user's go-ahead and the phone attached** (D28). Desktop legs stay runnable unattended.
 
 Gate 7 needs a new live-transport version, `render-stream/7`. It is specified here as a delta in Q2
 and finalized by G7w (D2). The documents this extends are [gate6-design.md](gate6-design.md),
@@ -75,12 +80,21 @@ rendered reference as the native receiver. Gate 7 adds:
 8. **Three feature manifests.** `native`, `web-export` and `gsw-canvas` are generated and checked
    (`render-stream-features/2`, Q11). Every `supported` entry cites evidence from that receiver's
    own legs, so neither browser receiver can borrow the other's evidence.
+9. **A phone acceptance target.** Both browser receivers run live on the user's moto g86 5G
+   (Android Chrome, Mali-G615) through the perf harness's existing device plumbing. Each is judged
+   against decided rate, cadence, main-thread, GPU, thermal, memory and startup budgets at a 60 Hz
+   host, separately at credit window 1 and window 2, on a minimal scene, the gate 6 scene and HD
+   (D24 to D28, Q13). A decode/apply microbench on the phone runs early, before the big receiver
+   work depends on the answer (G7d, G7m).
 
 What gate 7 does **not** do: non-loopback serving, TLS (`wss://`, `https://`) and the target game
 (gate 8). It does not negotiate several presentation sizes from one session (gate 8, D12). It adds
 no compressed texture formats (gate 8, D19), no threaded web export and no GDExtension in the
-browser. It does not cover browsers other than the pinned Chromium (Firefox, WebKit) or real
-displays. Presentation feedback stays `unavailable` under headless Chromium (D13). Payload, atlas
+browser. It does not cover browsers other than the pinned desktop Chromium (Firefox, WebKit) and
+the phone's own Chrome, devices other than the one phone (D24), or a phone on a real network: the
+phone reaches the desktop host through `adb reverse` over USB (gate 8 owns Wi-Fi). Presentation
+feedback stays `unavailable` under headless Chromium (D13), and on the phone too, where only the
+compositor's activation rate is available (Q13a). Payload, atlas
 or parameter deltas are not added. GSW gets no MSDF text, no `TIME` and no screen-texture shaders.
 All of these are typed or deferred, with owners, in "Deferred".
 
@@ -111,6 +125,11 @@ All of these are typed or deferred, with owners, in "Deferred".
 | D21 | Source runs | **Browsers replay a native run of each gate made on the same build.** `run-gate7.sh --source <gate>=<run dir>,…` (or `--make-sources`, which runs `run-gate<N>.sh` itself) refuses a source whose recorded `git.commit`, capture library sha256 or template sha256 differs from the current build's, or whose native receiver legs did not pass (`source-run-valid`). Captures, references, `expected.json` and sabotage recordings come from the source. Live legs start their own hosts with the gates' own leg functions (`scripts/lib/legs.sh`, `gate6b-legs.sh`, `gate6h-legs.sh`, G6c's `gate6c-legs.sh`). |
 | D22 | Result classes | **Gate 6's classes, plus:** receiver-typed `unsupported` reasons per browser (Q4, Q5); `replay-failure` reasons `context-lost` and `browser-crash`; and harness refusals `browser-provenance` and `source-run-invalid`, which fail the leg as `harness-refused`, never `success`. A browser console `SHADER ERROR` or a WebGL error is `replay-failure` / `shader-compile` or `webgl-error`. |
 | D23 | Waves against gate 6 | **Gate 7 lands nothing that needs G6c, G6s, G6p or G6z before they land.** G7w, G7j, G7h, G7c and G7f may be written and landed now: they are disjoint from gate 6's open files, or (G7f) explicitly fix one of its findings. Browser file legs (G7a, G7e, G7b, G7t, G7s) need only what is on `main`. G7r needs G6c, G7k needs G6s, G7p needs G6p, and G7z needs G6z. |
+| D24 | Device target and harness | **One phone, the user's moto g86 5G, driven by the perf harness's existing device plumbing, never a parallel one.** Its recorded facts (Q13a) are Android 15, Chrome 151 at the last measurement, `Mali-G615 MC2 (ANGLE)` over OpenGL ES 3.2 (not Vulkan), DPR 3.4876 and a 790×316 CSS landscape viewport. The panel is adaptive "up to 120 Hz" per Motorola, but Chrome measured 89–90 Hz on every committed phone table and 59.5 Hz once, when the panel dropped to 60. So the panel rate is measured per repeat, never assumed. `browser-harness.ts` gains `env: "device"`, built by importing `packages/perf-harness/src/device.ts` (`selectDevice`, `openDeviceBrowser`, `reverseServerPort`, `ensureResponsive`, `sampleConditions`, `readGpuDeviceMetrics`). That gives adb reverse for the harness port and the live host's port, so every URL and the page origin are byte-identical to desktop and D3's allowlist is unchanged. It also gives the flattened CDP attach, the foreground and lock rules, and recorded `isolation` (docs/perf-harness.md "Measuring on a real phone"). The capture host and its gamescope stay on the desktop. Chrome on the phone is attached to, never launched, so D9's flags, binary sha256 and Wayland guard cannot apply. `device-provenance` replaces `browser-provenance` on device legs (Q13b). |
+| D25 | Phone acceptance target | **"Easily works at 60/60" means Q13d's decided checks, at a 60 Hz host, on every one of five repeats, for each browser receiver and each of three workloads (`pace`, `scene`, `hd`).** Every receiver budget is relative to T_p, the measured median rAF interval (predicted 11.1 ms at 90 Hz). The checks are: at least 57 new frames drawn per second; new-frame intervals within the 3:2 cadence (p95 ≤ 2·T_p + 1 ms, max ≤ 50 ms); receiver main-thread work per drawn frame p95 ≤ 0.5·T_p; GPU time per drawn frame p95 ≤ 0.5·T_p where it can be measured, plus a draw-twice headroom leg for GSW; no thermal throttling over a 600-s soak; bounded memory; and warm startup ≤ 3 s. Window 1 and window 2 are judged separately, and the result names the window (F1 made window 2 opt-in). A miss is a finding, never a reason to move a budget. |
+| D26 | Rate mismatch on the phone | **The phone is a 60 Hz host against a 90 Hz (or 120 Hz) rAF, not G6c's 60/60 phase lock, and Q13c's model predicts it.** On a 90 Hz panel, 60 new frames per second can only be shown 3:2: intervals alternate 11.1 and 22.2 ms. That judder is intrinsic and is not a rate loss, so the checks admit it. At window 1 the hold before the next rAF is shorter than on desktop (< T_p), but the phone's work is longer. 60/s holds at every phase only while work plus transport stays within about 5.6 ms (90 Hz) or 8.3 ms (120 Hz). Window 2 takes the hold off the critical path. A panel that falls to 60 Hz is G6c's case again. The web export runs `--max-fps 0` on the phone: a 60 cap on a 90 Hz rAF skips one tick in three (`wm.cpp:83-97`) and doubles the worst hold. GSW draws only in rAF callbacks that applied a transaction. |
+| D27 | Decode risk, measured first | **The web export's GDScript decode is the known risk. A phone microbench settles it before any increment depends on the answer.** On desktop, the native receiver decodes at 6.2–6.5 ms mean per transaction (7.2–7.6 ms under load) and applies at about 0.9–1.0 ms. That is the 400-transaction gate 6 `animate` replay in G6c's README, "Gate 6c result". The live rate-60 leg measured decode p50 2.1 ms and apply 1.5 ms, and 15.8 s of receiver CPU over 30 s. The phone's budget is 5.6 ms for the *whole* frame at 90 Hz. The web export runs the same GDScript in wasm on a Cortex-A78, predicted 3–6× slower, so the prediction is a miss (Q13e). G7d (unattended, wave 1) builds the bench, the minimal fixture and the device harness. G7m (operator-attended, wave 2) runs it on the phone for both receivers, with GSW on G7j's browser-loadable decoder. A miss is the typed finding `device-decode-over-budget`, with per-phase numbers. It triggers G7o, which applies named candidate optimizations under unchanged goldens and budgets. If G7o cannot close the gap, the miss is recorded in that receiver's manifest. No budget is relaxed. G7o is void if G7m passes. |
+| D28 | Operator attendance | **Every device leg is operator-attended: it needs the user's go-ahead and the phone attached.** The phone is the user's personal device. No agent runs adb against it, changes one of its settings (refresh mode, stay-awake, developer options) or launches anything on it without the user's go-ahead in that session. An increment whose verification includes a device leg stops before that leg and asks. Every device leg has a desktop control arm on D9's harness that runs unattended. Device results carry their build sha, and any later change to a receiver, `rs_ws` or `rs_live` marks them stale until an attended re-run (Q11 `manifest-device-target`). Unattended runs (`--legs` without `--env device`) never select `g7-dev`'s device arms. |
 
 ## Q1. What the engine and the browser do
 
@@ -562,6 +581,7 @@ Each gate's checker gains a `receiverKind` parameter and a leg-table mapper. G7a
 | `g7-lc` | `hidden-2s`, `hidden-30s`, `frozen-30s`, `reload`, `close`, `context-loss`, `sabotage-ack-while-hidden` (gsw), `sabotage-css-opacity` | Q10 |
 | `g7-r` | Q9's rate legs per browser, `phase-60` ×5 for `native`, `native-late-poll`, `web`, `gsw` (and window 2 if F1), `dual-native-web`, `dual-native-gsw`, `constrained-<kind>`, `sabotage-ack-on-receipt` (gsw) | Q9 |
 | `g7-k` | `startup-cold`, `startup-warm` (1 + 5 each), `soak-<kind>` (300 s), `sabotage-soak-no-evict-<kind>`, `sabotage-leak-gl-textures` (gsw) | Q10 |
+| `g7-dev` | Q13d: `dev-<pace\|scene\|hd>-w<1\|2>-<kind>`, `dev-gpu-headroom-<workload>-gsw`, `dev-soak-<kind>`, `dev-startup-<warm\|cold>-<kind>`, report-only `dev-maxfps60-scene-w1-web` and `dev-panel-<hz>-…`; each with an unattended desktop control arm `ctl-…` | Q13d. **Device arms are operator-attended (D28)** |
 | `g7-p` | Q12's matrix | report valid |
 
 Gate 7 adds these checks to every browser leg:
@@ -575,6 +595,10 @@ Gate 7 adds these checks to every browser leg:
 | `token-not-logged` | G2e's grep, extended to `console.jsonl`, the harness log and every PUT body |
 | `evidence-complete` | every file a native leg writes exists for the browser leg, by the same names |
 | `hello-recorded` | live legs: the host's summary shows the expected kind, window, manifest sha and presentation integers |
+
+Device legs (`g7-dev`, Q13) replace `browser-provenance` with `device-provenance`, and they skip
+`compositor-equals-readback`, because the canvas is CSS-fitted there. Every other check above
+applies.
 
 ## Q9. Pacing and rates (G7r; `realtime`, timeline `rate`, `animate`; G6c's as-built bounds)
 
@@ -667,7 +691,14 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
             "receiver":{"max_texture_size","max_message_bytes","credit_windows":[1]|[1,2],
                         "fetch_concurrency","cache":"memory+disk"|"memory+http-cache",
                         "shader_policies":[...],"texture_formats":["rgba8",…],
-                        "webgl_compression_extensions":[...]|null}}}
+                        "webgl_compression_extensions":[...]|null,
+                        "device_targets":[{"id":"moto-g86-5g-60","workload":"pace"|"scene"|"hd",
+                                           "credit_window":1|2,
+                                           "status":"met"|"not-met"|"unverified"|"not-applicable",
+                                           "panel_hz":<number>|null,"chrome":<str>|null,
+                                           "build_sha":<str>|null,"failed_checks":[...],
+                                           "evidence":[{"run","leg","check",
+                                                        "receiver_kind"}...]}...]}}}
 ```
 
 - Every file has the same entry ids, the protocol's full entry list. The three files differ in
@@ -676,6 +707,12 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
   reason (`gsw-msdf`, `gsw-shader-transpile`, `gsw-hairline`, `cache-budget-unsupported`). It needs
   the reason and an `owner`.
 - `band` needs a `tolerance` id present in `fixtures/gsw-tolerance.json`.
+- `device_targets` (D25) has one entry per workload and window, so six per browser receiver. The
+  `native` file lists them as `not-applicable`, because the phone runs browsers only. `met` and
+  `not-met` need a device run of **this receiver's** `g7-dev` legs on the manifest's build.
+  Otherwise the entry is `unverified` and quotes the newest device run with its build sha.
+  `not-met` lists the failing Q13d checks. A `not-met` entry is a recorded result, not a
+  manifest error.
 - Checks (G7z):
   - `manifest-check`: `make-features.ts --receiver <kind> --check` regenerates byte-identically.
   - `manifest-matches-session`: as G6z, per receiver.
@@ -686,7 +723,11 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
   - `manifest-refused`: every receiver-typed reason observed in a receiver's legs is a
     `receiver-typed` entry of that receiver's file, and vice versa.
   - `manifest-matches-hello`: every live leg's hello `manifest_sha256` equals its file's sha256.
-- The README's "Gate 7 summary" renders the three manifests side by side as one table.
+  - `manifest-device-target`: every `met` or `not-met` entry cites `g7-dev` device legs of its
+    own receiver kind, on the same build, with `device-provenance` passing. The status equals
+    what Q13d's checks give. An entry whose run is on another build is `unverified`, never `met`.
+- The README's "Gate 7 summary" renders the three manifests side by side as one table, with the
+  device targets as their own table: receiver × workload × window.
 
 ## Q12. `render-stream-report/2`
 
@@ -703,11 +744,31 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
   start.
 - `repeats[].memory` gains `recv_renderer_rss_*`, `recv_gpu_process_rss_*`, `recv_browser_rss_*`,
   `recv_js_heap_*`, `recv_wasm_heap_*` and `recv_gpu_mem_*` (start, end, slope, max).
+- **Device rows (Q13).**
+  - `provenance.env` (new, required in /2) is `{"kind": "desktop" | "device", "device": … | null,
+    "panel": {"raf_interval_p50_us", "mode_hz", "mode_source"} | null}`.
+  - `device` is perf-report/1's `env.device` block verbatim, as `device.ts` produces it:
+    `model`, `androidRelease`, `chrome`, `batteryPct`, `thermalStatus`, `after`, `warnings`,
+    `isolation`, `viewport`, and the rest (docs/perf-report-contract.md). This copies one shape and
+    does not generalize perf-report/1 (D17).
+  - `repeats[].stages` gains `recv_main_thread_us` (per drawn frame), `recv_gpu_time_us`
+    (timer query, otherwise `unavailable`), `recv_new_frame_interval_us`,
+    `recv_credit_rtt_host_frames`, `content_update_hz` and `activation_gap_ms`. The last two are
+    the trace's, as perf-harness computes them.
+  - `repeats[].memory` gains `recv_renderer_pss_*`, `recv_gpu_process_pss_*` (`dumpsys meminfo`)
+    and `recv_gpu_mem_device_*` (`dumpsys gfxinfo`).
+  - `repeats[].device` (new) holds the 30-s thermal and battery samples, `hidden_ms` and
+    `max_raf_gap_ms`.
 - Rules:
-  - `presented` is `unavailable` for every receiver.
+  - `presented` is `unavailable` for every receiver. That includes the phone, where
+    `content_update_hz` is the compositor's activation rate and is never called presented.
   - `recv_gpu_render_ms` is `measured` only where its source says so.
-  - Browser memory is never taken from in-page APIs alone. RSS always comes from `/proc`.
+  - Browser memory is never taken from in-page APIs alone. On desktop, RSS always comes from
+    `/proc`. On the device, PSS comes from `dumpsys meminfo`, and `/proc` and `nvidia-smi`
+    readings are `unavailable`.
   - `recv_gpu_complete_us` is `measured` only for `gsw-canvas`.
+  - A device repeat that fails Q13b's watchdog is reported as `invalid`, with the reason. It is
+    never averaged in.
 
 **Matrix (G7p)**: warm cache, one warmup plus five repeats, realtime, hook log off:
 
@@ -718,9 +779,279 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
 - `fetch_concurrency` 1 vs 4 for `gsw-canvas` at cold 60.
 - `constrained` at 60 for each browser.
 - Window 2 at 60 for each kind, if F1 is approved.
+- **Device rows**: `pace`, `scene` and `hd` at 60, windows 1 and 2, for `web-export` and
+  `gsw-canvas` on the phone. Each has its desktop control row beside it, plus the soak and startup
+  summaries. G7v's attended run on the same build supplies them. If the build has moved since,
+  G7p re-runs them, attended, or omits them and says so (D28).
 
 Derived: per receiver, apply, upload, GPU and frame costs; maximum sustained rate with `limited_by`;
-cold−warm startup; preflight cost per fetch; and memory by process.
+cold−warm startup; preflight cost per fetch; and memory by process. For the device rows, also the
+phone/desktop cost ratio per stage, and per receiver the window at which the phone target was met,
+if any.
+
+## Q13. Phone acceptance target (D24 to D28)
+
+The user's requirement (2026-10-14) is that the receiver must easily work at 60/60 on the user's
+moto g86 5G, using the browser. This section makes that measurable. **Nothing in it was run for
+this amendment, because no phone was attached.** The device facts come from the committed
+perf-harness phone baselines and [docs/perf-harness.md](../../../docs/perf-harness.md), measured
+2026-08-20 to 2026-09-02, and from Motorola's published specification. G7m checks every
+*(device probe)* item before a later increment relies on it. Every budget below is a decision.
+Every predicted outcome is a prediction.
+
+### Q13a. The device
+
+| Fact | Value | Source |
+| ---- | ----- | ------ |
+| Model, OS | moto g86 5G, Android 15 (SDK 35), serial `ZY32LL2X8W`, unrooted | `env.device` of `packages/perf-harness/baselines/moto-g86-5g-effects-webgpu-runtime.json` |
+| Browser | Chrome 151.0.7922.137 at the last measurement. It auto-updates, so it is recorded per run and never pinned | same |
+| GPU | `Mali-G615 MC2 (ANGLE)`, ANGLE over OpenGL ES 3.2 (driver `v1.r44p1`) | docs/perf-harness.md "GPU on the phone" |
+| SoC, RAM | MediaTek Dimensity 7300 (Cortex-A78 big cores at 2.5 GHz), 8 GB | Motorola specification; not measured here |
+| Viewport | landscape 790×316 CSS px at DPR 3.4876 (`naturalViewport`) | baseline |
+| Panel | pOLED, "adaptive refresh rates up to 120 Hz". Chrome measured 89–90 Hz swap on every committed phone table, and 59.5 Hz once, when the adaptive panel had dropped to 60 | Motorola specification; docs/perf-harness.md S5 "panel, not the page", S8, S9 |
+| Unavailable unrooted | Mali busy %, perfetto GPU counters, and renderer or GPU `cpuTime` from CDP | docs/perf-harness.md "Three things this device cannot give you" |
+| Available | trace `contentUpdateHz` and activation gaps, `cpu.byThread` from trace `tdur`, `dumpsys gfxinfo` GPU memory, and `dumpsys battery` / `thermalservice` | same |
+
+Consequences:
+
+- **The panel rate is measured.** T_p is the median rAF interval over the leg's own window. The
+  panel mode is read from `dumpsys display` / `dumpsys SurfaceFlinger` *(device probe: which line
+  names the active refresh rate, unrooted)*. The prediction is T_p = 11.1 ms (90 Hz) at the phone's
+  default setting. A repeat whose T_p differs from the leg's first repeat by more than 5 % is
+  reported as a panel-mode change. It is classified at its own T_p and never averaged with the
+  others. The acceptance target is judged at the phone's default refresh setting, as the user
+  uses it. Other settings are report-only, and only the user changes them.
+- **Presentation is CSS-fitted.** The backing store is the presentation size, and the CSS size is
+  fitted to the viewport with Godot's "keep" rule, as perf-harness `fit.ts` does on a device.
+  - gate6-scene's 640×360 becomes 562×316 CSS px: about 1960×1102 device px, an upscale of
+    about 3.06.
+  - gate6-hd's 1920×1080 lands in the same box at about 1.02 device px per backing px.
+  - So `presentation-mismatch` (gate6-design.md Q5) is expected on every device leg. It is
+    recorded with the hello's CSS size and `dpr_milli` and is not a failure there.
+  - Pixel parity is judged on the desktop only, under Q7. Device legs keep each workload's
+    presence and freshness markers, read from the receiver's own readback outside timed windows.
+  - Landscape is required. A portrait phone is the harness refusal `device-orientation`.
+- **Gate 6 text costs no glyph shader on the phone.** It arrives as Godot's pre-rasterized atlas
+  quads (`add_texture_rect_region`; Q5's lowering table), so GSW never runs hb-gpu's outline
+  dilation. Memory phone-outline-dilation-cost (outlined hb-gpu text at 11 Hz with `outlinePx` 6,
+  against 90 Hz plain) describes `packages/canvas`'s own glyph path, not these receivers. It would
+  apply only if a receiver drew text itself, and gate 7 has none that does.
+
+### Q13b. Device harness, provenance and transport
+
+- **Reuse.** `browser-harness.ts --env device` wraps perf-harness's `device.ts` (D24). Run
+  `--dump-trace-names` first on a new Chrome version, as docs/perf-harness.md requires.
+- **`device-provenance`.** It runs on every device leg, and a failure is `harness-refused`, never
+  a pass. It requires:
+  - model `moto g86 5G`;
+  - `WEBGL_debug_renderer_info` naming Mali-G615 and ANGLE;
+  - the Chrome version recorded (a change since the previous device run is named in the report,
+    not refused);
+  - `thermalStatus` `none` and the battery at 20 % or more before the first repeat (perf-harness's
+    own invalidation conditions);
+  - the phone unlocked and the tab in front (`ensureResponsive`), in landscape.
+- **Watchdog.** This is perf-harness's throttle rule. A repeat with hidden time > 0, or with a rAF
+  gap > 250 ms the receiver did not cause, is `invalid` and is re-run. It is never read as slow
+  (docs/perf-harness.md "A retraction: the 149-second bake was a throttled tab").
+- **Screen.** A 10-minute soak outlives the screen timeout. The operator keeps the screen on, or
+  approves `adb shell svc power stayon usb` for the session, which is restored afterwards (D28).
+- **Transport.** `adb reverse` for the harness port and the live host's port. The page's origin
+  is `http://127.0.0.1:<harness port>`, exactly as on desktop. The phone's credit RTT includes the
+  USB tunnel, so G7m probes it: WebSocket echo RTT p50/p95 for a 100-byte and an 813-KB message,
+  and sustained throughput. The prediction is 1–3 ms RTT and well above gate 6's 1.17 MB/s at
+  60/s, all *(device probe)*. adb over USB is not the user's eventual network (gate 8).
+- **Samplers.**
+  - `sampleConditions` every 30 s (thermal status and max temperature, battery % and temperature).
+  - `dumpsys meminfo <pid>` PSS for the renderer and GPU processes at 0.2 Hz. The PIDs come from
+    CDP `SystemInfo.getProcessInfo` *(device probe: readable unrooted)*.
+  - JS heap from `Performance.getMetrics`, and the wasm heap from the shell.
+  - `dumpsys gfxinfo` "Total GPU memory usage", as `gpu.device.gpuMemoryBytes` is read.
+  - Every repeat is traced as perf-harness traces a device run. That gives the trace's
+    `contentUpdateHz`, activation gaps and `CrRendererMain` `tdur` per task.
+
+### Q13c. The rate mismatch: a 60 Hz host and a 90 or 120 Hz rAF
+
+G6c measured two 60 Hz loops: the 60/60 phase lock, about 29/s in the bad phase. The phone is a
+different case, and this model predicts it. Throughout, host frame H = 16.67 ms.
+
+- **Cadence, at any window.** 60 new frames per second on a 90 Hz panel can only be shown 3:2. New
+  content stays up for one tick, then two (11.1 ms, then 22.2 ms, mean 16.7 ms). That is judder
+  intrinsic to 60-on-90, not lost frames.
+  - Prediction at 90 Hz: the receiver's new-frame intervals are bimodal at about 11.1 and 22.2 ms,
+    roughly half each.
+  - At 120 Hz they are unimodal at 16.7 ms (every second tick).
+  - At 60 Hz they are unimodal at 16.7 ms wherever 60/s holds.
+  - Measured: the rAF timestamps of drawing callbacks that applied a new seq, beside the trace's
+    activation gaps.
+  - `dev-cadence` admits the two-tick intervals and judges anything beyond them.
+- **Window 1.** The host publishes at callback k+1 only if the credit for k has returned:
+  RTT = up + hold + work + down ≤ H − host slack, where hold ∈ [0, T_p).
+  - At 90 Hz, two host frames are three ticks. Successive arrivals land at two rAF phases 5.56 ms
+    apart, so the larger of the two holds lies in [5.56, 11.1) ms whatever the phase. The clocks
+    are independent and the panel is adaptive, so the phase drifts across that range.
+  - **Predicted at 90 Hz.**
+    - work + transport ≤ about 5 ms (p95): 60/s at every phase.
+    - About 5 to 11 ms: phase-dependent. Bad-phase stretches skip callbacks, so the published
+      rate is irregular, between 30 and 57/s, and `dev-rate` fails.
+    - Above 11 ms: at most every other callback, about 30/s or less.
+  - At 120 Hz, arrivals keep one phase (two ticks per host frame) and the hold is < 8.33 ms, so
+    the bound is work + transport ≤ about 8 ms.
+  - A panel at 60 Hz is G6c's case exactly. About half the repeats are predicted near 29/s.
+- **Window 2.** One transaction is in flight while the previous one's credit returns, so the hold
+  leaves the critical path. 60/s holds while RTT ≤ 2H (33.3 ms) and the per-frame work fits one
+  panel tick.
+  - Predicted: window 2 passes `dev-rate` wherever `dev-main-thread` passes, at every panel mode.
+  - Window 2 cannot rescue a per-frame cost above a tick.
+  - It costs a frame of latency. Host-frame-to-draw latency is reported for both windows.
+- **The web export's pacing setting.** Godot runs one main-loop iteration per rAF (`wm.cpp:167`).
+  - With `--max-fps 60` on a 90 Hz rAF, the `target_ticks` skip (`wm.cpp:83-97`) draws on two
+    ticks of three, unaligned with arrivals, so the worst hold doubles to 22.2 ms. Predicted:
+    window 1 fails at every phase. `dev-maxfps60-scene-w1-web` reports it.
+  - So the phone's acceptance configuration is `--max-fps 0`, which is rAF-paced. It redraws
+    every tick, including about 30 redundant frames per second at 90 Hz, so 1.5× the GPU work
+    of 60. That cost is measured, not hidden.
+  - GSW draws only in rAF callbacks that applied a transaction (D13's receiver frame), so it has
+    no redundant draws.
+- **Measured per repeat**: published, applied and drawn new frames per second; credit RTT in host
+  frames (mean, p95); hold p50/p95; T_p and the panel mode; the new-frame interval histogram; the
+  trace's `contentUpdateHz` and activation gaps; and, at window 1, the good/bad phase class with
+  Q9's thresholds.
+
+### Q13d. Workloads, legs and checks
+
+Every device leg is live. The host runs on the desktop at `GRC_PUBLISH_FPS=60` and `--max-fps 60`,
+with `realtime` on, the hook log off and a warm cache. Each leg is one warmup plus five repeats,
+and each repeat measures a 20-s window after 6 s, as G6c does.
+
+| Workload | Scene | What it separates |
+| -------- | ----- | ----------------- |
+| `pace` | `fixtures/gate7-pace/` (G7d): one 32×32 opaque texture on a 640×360 root, moving 1 px per host frame and wrapping. Every transaction is one transform patch | fixed per-frame cost: socket, decode, apply, submit and rAF |
+| `scene` | gate6-scene at 640×360 on G6c's `rate` timeline | the gate 6 scene's cost |
+| `hd` | gate6-hd at `native` presentation, 1920×1080 `canvas_items`, on the live timeline G7g's HD legs use | HD fill, upload and transaction size |
+
+Legs (`g7-dev`):
+
+- `dev-<pace|scene|hd>-w<1|2>-<web|gsw>`: twelve rate legs.
+- `dev-gpu-headroom-<workload>-gsw`.
+- `dev-soak-<web|gsw>`.
+- `dev-startup-<warm|cold>-<web|gsw>`.
+- Report-only: `dev-maxfps60-scene-w1-web`, and `dev-panel-<60|120>-scene-w<1|2>-<kind>`. The
+  `dev-panel` legs run only if the user switches the refresh setting.
+- Each device leg has an unattended desktop control arm, `ctl-<same name>`, on D9's harness. The
+  control arms are report-only. They give the phone/desktop ratio per stage, and they keep every
+  non-device part of the code path testable without the phone.
+
+Decided checks. Each must hold on all five repeats, at the measured T_p:
+
+| Check | Requires | Why this number |
+| ----- | -------- | --------------- |
+| `dev-rate` | drawn new frames ≥ 57.0/s, published ≥ 57.0/s, and applied = published ± 1 % | 0.95 × 60, G6c's as-built lower bound. Desktop native at 60/60 in the good phase measured 58.3/s |
+| `dev-cadence` | new-frame interval p95 ≤ 2·T_p + 1 ms; max ≤ 50 ms (3H); intervals > 34 ms ≤ 0.5 % of drawn frames; trace `contentUpdateHz` ≥ the drawn rate − 1 | admits the 3:2 cadence of Q13c, and rejects more than one dropped host frame in 200 or a compositor that drops new frames |
+| `dev-main-thread` | receiver main-thread work per drawn frame: p95 ≤ 0.5·T_p and p99 ≤ T_p. `CrRendererMain` busy (trace `tdur`) ≤ 50 % of wall. For GSW, the work is `onmessage` decode plus the rAF callback's apply, lowering, execute and submit, from its own timers. For the web export, it is the main-loop task's `tdur` (the rAF task that ran the iteration *(device probe: the task's trace name)*), split by `rs_perf`'s decode and apply timers | The work must fit one tick, or rAF misses a vsync. Half the tick leaves room for Chrome's own main-thread work, for content heavier than the fixtures, and for thermal derating. At 90 Hz, 5.6 ms is also what keeps window 1's worst-phase RTT inside one host frame (Q13c) |
+| `dev-gpu` | Where `EXT_disjoint_timer_query_webgl2` is exposed *(device probe)*: GPU time per drawn frame p95 ≤ 0.5·T_p, for GSW and for the web export (`viewport_get_measured_render_time_gpu` with status `measured`). Always, for GSW: `gpu_complete` (submit → fence signalled) p95 ≤ 2·T_p. Otherwise `unavailable`, and named in that receiver's manifest | the same headroom rule as the main thread. A fence also waits on queueing, so it gets two ticks |
+| `dev-gpu-headroom` (gsw) | with `RS_RECEIVER_DRAW_REPEAT=2` (each frame drawn twice into the stage target and the first discarded), `dev-rate` and `dev-cadence` still pass | shows 50 % GPU headroom with no GPU counter, which this phone does not expose unrooted. The web export has no such seam, so its GPU evidence is `dev-gpu` or nothing |
+| `dev-unthrottled` | Q13b's watchdog holds; thermal `none` before and after every leg | a throttled tab is invalid, not slow |
+| `dev-presence` | each workload's presence and freshness markers hold on readback shots | the receiver drew the right content |
+| `dev-presentation-typed` | `presentation-mismatch` is recorded, with the hello's CSS size and `dpr_milli` | Q13a |
+| `dev-soak` | `hd`, at the lowest window that passed its rate leg (window 1 if neither passed), 60-s warmup then 600 s. `thermalStatusCode` 0 at every 30-s sample. Over the last 60 s, drawn rate ≥ 57/s and main-thread p95 ≤ 1.1 × the first 60 s's. Renderer and GPU-process PSS: last-30-s median − first-30-s median ≤ 16 MiB, slope ≤ 2 MiB/min. JS heap (gsw) ≤ 4 MiB and ≤ 0.5 MiB/min. wasm heap (web) at the end ≤ its value at 60 s + 16 MiB. gfxinfo GPU memory at the end ≤ its value at 60 s + 8 MiB. Renderer PSS peak ≤ 512 MiB. Battery temperature rise reported (perf-harness warns at ≥ 3 °C; USB charging adds heat, so it is recorded, not judged) | Phone throttling builds over minutes, hence twice the desktop's 300 s. `hd` is the heaviest workload. The growth slopes are Q10's. 512 MiB is about 2.3 × the native receiver's whole-process plateau (226 MiB, G6s), a ceiling a correct receiver never approaches |
+| `dev-startup` | warm: navigation → first `submitted`, median ≤ 3 s and max ≤ 5 s over five repeats. Cold: reported, with D15's marks and the wasm compile broken out | Warm is how the user reopens the page. Cold over USB adb says nothing about the user's network |
+
+**Acceptance.** A receiver **meets the phone target at window w** when every decided check passes
+on all three workloads at window w, on one build. For each receiver, the summary says "met at
+window 1", "met at window 2 only (opt-in, F1)" or "not met", and lists the failing checks. F3
+decides what gate 7 itself requires.
+
+**Predictions** (checked, not granted):
+
+- gsw:
+  - `pace` and `scene` pass at both windows.
+  - Window 1 passes only if work plus transport stays within about 5 ms (Q13c).
+  - `hd` passes `dev-rate`. Its `dev-gpu-headroom` is at risk: an RGB10_A2 target of about
+    2.07 MP, plus the blit and the CSS fit, on a two-core Mali.
+- web:
+  - `pace` passes.
+  - `scene` and `hd` fail `dev-main-thread` and `dev-rate` at both windows until G7o (Q13e).
+- Soak:
+  - gsw at `hd` is predicted to stay thermal `none`. S8's phone runs stayed `none`, but they lasted
+    seconds, not 600 s.
+  - web: no basis for a prediction.
+- Startup:
+  - gsw warm well under 1 s.
+  - web warm 1–3 s, with the compiled wasm from Chrome's code cache, and at risk.
+
+### Q13e. The early de-risk: a decode/apply microbench on the phone (G7d, G7m)
+
+**The risk, with numbers.**
+
+- Desktop native receiver, G6c README "Gate 6c result":
+  - Headless file replay of the 400-transaction gate 6 `animate` capture: decode 6.2–6.5 ms mean
+    per transaction, and 7.2–7.6 ms under another agent's load. Apply 0.9–1.0 ms.
+  - The live `rate-60` leg: decode p50 2.1 ms and apply 1.5 ms, and 15.8 s of receiver process
+    CPU over 30 s.
+- The phone's whole-frame budget at 90 Hz is 0.5·T_p = 5.6 ms, so desktop replay decode alone
+  already exceeds it.
+- The web export runs the same GDScript in wasm on a Cortex-A78 at 2.5 GHz, against a Ryzen 5 5500.
+  The prediction is 2–3× for the core and 1.3–2× for wasm against native, so 3–6× overall. That is
+  6–13 ms of live decode and 19–37 ms of replay decode per transaction. The web export would miss
+  `dev-main-thread` on `scene` and `hd` from decode alone, at either window. This ratio is an
+  estimate, and G7m measures it.
+- GSW decodes in V8, with G7j's pure-TypeScript SHA-256 hashing inline payloads. G7j measured
+  correctness, not throughput, so GSW has no prediction until G7d's desktop numbers give one.
+
+**The bench** (G7d builds it, unattended; G7m runs it, attended).
+
+- Inputs:
+  - the same 400-transaction gate 6 `animate` capture G6c's numbers came from;
+  - a gate6-hd capture with a full and patch sequence (G6h's);
+  - the `pace` recording.
+- Each input is replayed in file mode, one transaction per rAF, as a live receiver would apply
+  them. Timers wrap only decode and apply. One warmup plus five repeats.
+- Web export: a bench export of `receiver/` built by `build-web-receiver.sh --bench` into ignored
+  `artifacts/render-stream/web-bench/<sha>/`.
+  - It uses D5's pinned non-mono editor and template, plus a build-time-only entry scene. That
+    scene drives the receiver's own `rs2_decoder.gd` and apply path over a recording embedded in
+    the bench `.pck`.
+  - Committed `receiver/` files are unchanged, so no native re-run is needed.
+  - Reported as `decode_us` and `apply_us` from `rs_perf`'s existing timers.
+  - If the apply path cannot run without G7e's `rs_config` shim, G7d benches decode only. G7m's
+    web apply number then waits for G7e, and G7m still runs before G7b and G7l.
+- GSW: a bench page over G7j's decoder: decode, validate and resolve per transaction, with
+  `hash_us` split out. The applier does not exist before G7a. Its cost is bounded by what remains
+  of the budget, and G7v measures it.
+- Arms:
+  - native headless (`bench-matches-g6c`: within ±15 % of G6c's unloaded replay means);
+  - desktop headless Chromium on D9's harness, both receivers, unattended;
+  - the phone, both receivers, attended. The phone arm also runs Q13a's and Q13b's device probes.
+
+**Decision rule** (G7m). For each receiver and input, take p95 of the per-transaction decode plus
+apply (GSW: decode, validate and resolve).
+
+- **Pass**: ≤ 0.5·T_p at the phone's measured T_p. The phone track proceeds as planned, and G7o is
+  void for that receiver.
+- **Miss**: the typed finding `device-decode-over-budget`, with the receiver, the input, p50/p95
+  per phase (decode, validate, hash, resolve, apply) and the phone/desktop ratio. It triggers G7o.
+- The desktop arm is an early signal. If the web export's desktop wasm bench already exceeds
+  5.6 ms, the phone cannot pass. G7o may then start without waiting for the attended run, and it
+  still needs G7m's phone numbers to close.
+
+**If it misses (G7o).** Candidates are measured one at a time, ranked by the bench's own per-phase
+split. Each must keep every golden (2 to 7) and every native gate byte-identical.
+
+- Web export (GDScript):
+  - static typing on the decoder's hot paths (typed locals and `Array[T]`, which GDScript 4 runs as
+    typed instructions; memory gdscript-strict-cast-port-gotchas);
+  - bulk `PackedByteArray.decode_*` reads instead of per-byte loops;
+  - no per-record `Dictionary` or `Array` allocation on patch records;
+  - applying patches as deltas instead of rebuilding resolved state;
+  - pre-sized buffers.
+- GSW:
+  - `DataView` decoding with no per-record object churn;
+  - inline-payload hashing moved off the rAF path, or a wasm SHA-256;
+  - decode in a Worker, posting resolved deltas so the main thread only applies.
+- Never a candidate: skipping validation or hash verification (the contract requires both), a
+  GDExtension or threads in the web build (out of scope), and moving a budget.
+- If G7o's best result still misses, that receiver's `device_targets` are `not-met`, with the
+  numbers and an owner. F3 then decides what that means for gate 7.
 
 ## Increments
 
@@ -739,9 +1070,10 @@ from G7w on, and every `self-test-*.ts`. In addition:
 | Change | Also re-run |
 | ------ | ----------- |
 | capture or `rs_ws` (G7n, G7q) | `build-capture.sh` (all ctests), gate −1 (79 hooks), gates 1, 2, 6 (`--legs g6l,g6c`) natively on /6 |
-| `receiver/` (G7e, G7f, G7l, G7r) | gates 0 to 6 natively (every receiver leg; this is what proves native behaviour unchanged) |
+| `receiver/` (G7e, G7f, G7l, G7o, G7r) | gates 0 to 6 natively (every receiver leg; this is what proves native behaviour unchanged) |
 | `packages/` (G7c, G7s) | `pnpm test`, `pnpm build`, the canvas pixel suites headless (`canvasPixelXvfb`, `canvasGlyphPixelXvfb` under `--headless=new` Vulkan), the export-surface tests, and the downstream consumer check of AGENTS.md (a scratch vite config in `../sts2-couch-coop/frontend` pointed at the worktree; that checkout stays on clean `main`) |
 | a `g7-*` group | that group and every earlier `g7-*` group landed |
+| a receiver, `rs_ws` or `rs_live`, after G7v | `g7-dev`'s desktop control arms, unattended. The device arms are marked stale (D28) and re-run only at the next attended session |
 
 ### Waves
 
@@ -757,6 +1089,13 @@ flowchart LR
     G7h --> G7a
     G7c[G7c canvas: vertex colours, premul_alpha, wrap, straight alpha, RGB10_A2] --> G7a
     G7f[G7f bounded live decode buffer, conditional] --> G7l
+    G7h --> G7d[G7d device harness, pace fixture, decode bench]
+    G7j --> G7d
+    G7d --> G7m{{G7m phone microbench - operator-attended}}
+    G7m -. if over budget .-> G7o[G7o decode/apply optimization, conditional]
+    G7e --> G7o
+    G7a --> G7o
+    G7o -. if triggered .-> G7v
     G7e[G7e web export build, shims, gate 0] --> G7b[G7b web export: gates 0-6 file legs]
     G7a[G7a GSW core: gates 0-3 file legs] --> G7t[G7t GSW text, geometry, meshes: gates 4-5]
     G7a --> G7s[G7s GSW materials and shaders: gate 5.5]
@@ -775,6 +1114,11 @@ flowchart LR
     G7r --> G7p[G7p measurement matrix, report/2]
     G7k --> G7p
     G7q -. if approved .-> G7p
+    G7r --> G7v{{G7v phone acceptance - device arms operator-attended}}
+    G7k --> G7v
+    G7q --> G7v
+    G7d --> G7v
+    G7v --> G7p
     G7p --> G7z[G7z three manifests, gate 7 summary]
 ```
 
@@ -785,26 +1129,34 @@ flowchart LR
 | G7h | sonnet | 1 | **yes** (harness and probes only) | — |
 | G7c | opus (gsw-renderer agent) | 1 | **yes** (packages only) | — |
 | G7f | sonnet | 1 | **yes**, if G6s left D20 open; lands after G6s | G6s (land) |
+| G7d | opus | 1 | **yes** (harness, fixture and bench; unattended) | G7h, G7j (both landed); template (F2, resolved) |
 | G7e | opus | 2 | yes | G7h; prerequisite template (D5) |
 | G7a | opus (gsw-renderer agent) | 2 | yes | G7h, G7j, G7c |
 | G7n | opus | 2 | yes; rebases `rs_live.cpp` onto G6c | G7w |
+| G7m | sonnet | 2 | yes. **Operator-attended**: run as soon as G7d lands and the user attaches the phone | G7d; the user's go-ahead and the phone attached (D28); G7e only if Q13e's apply fallback applies |
 | G7b | opus | 3 | yes | G7e |
 | G7t | opus (gsw-renderer agent) | 3 | yes | G7a |
 | G7s | opus (gsw-renderer agent) | 3 | yes | G7a |
 | G7l | opus | 3 | yes | G7n, G7e, G7a, G7f (if needed) |
+| G7o | opus | 3 | yes; conditional on G7m's finding (D27), void otherwise | G7m; G7e for the web part, G7a for the GSW part; attended only for its closing phone bench |
 | G7g | opus | 4 | no | G7b, G7t, G7s, G7l; gate 6 complete through G6s |
 | G7u | sonnet | 4 | no | G7l |
 | G7r | opus | 5 | no | G7g, G6c |
 | G7k | sonnet | 5 | no | G7g, G7u, G6s |
 | G7q | opus | 6 | no; F1 approved 2026-10-14 (opt-in) | G7r |
-| G7p | sonnet | 6 | no | G7r, G7k, G6p (G7q if approved) |
-| G7z | sonnet | 7 | no | G7p, G6z (and everything before) |
+| G7v | opus | 7 | no. **Device arms operator-attended**; control arms unattended | G7r, G7k, G7q, G7d, G7o (if triggered) |
+| G7p | sonnet | 8 | no | G7r, G7k, G7v, G6p (G7q if approved) |
+| G7z | sonnet | 9 | no | G7p, G6z (and everything before) |
 
-G7t and G7s both touch `rs-canvas-applier.ts`. The second to land rebases. Gate 7 passes when every
-increment except G7q (and G7f if void) has landed, and `pnpm render-stream:gate7 -- --legs
-g7-0,g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6,g7-lc,g7-r,g7-k` is green on one build. Its source runs
-must be from the same build, G7p's report must validate, and G7z's checks must pass. If F1 is
-declined, the 60/60 negative finding stands in the summary for all three receivers.
+G7t and G7s both touch `rs-canvas-applier.ts`. The second to land rebases. G7o touches
+`receiver/rs2_decoder.gd` and GSW's decode path, so it rebases onto whichever of G7b, G7l and G7t
+lands first. Gate 7 passes when every increment except G7q (and G7f and G7o if void) has landed,
+and `pnpm render-stream:gate7 -- --legs g7-0,g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6,g7-lc,g7-r,g7-k`
+is green on one build. Its source runs must be from the same build, G7p's report must validate,
+and G7z's checks must pass. The phone criterion must also hold: `--env device --legs g7-dev`, an
+attended run on that build, meets Q13d's acceptance as F3 settles it. Until F3 is answered, the
+default is at least one browser receiver. If F1 is declined, the 60/60 negative finding stands in
+the summary for all three receivers.
 
 ---
 
@@ -894,6 +1246,35 @@ Void if gate 6 fixed D20. Otherwise:
   5.5 and 6 is unchanged.
 - **Sabotage**: restoring the append-forever path must fail `rss-bounded` again.
 
+### G7d — device harness, pace fixture, decode/apply bench (opus; unattended)
+
+- **Files**:
+  - `scripts/lib/browser-harness.ts` gains `env: "device"`. It imports
+    `packages/perf-harness/src/device.ts` and copies nothing from it (D24).
+  - `scripts/lib/device-sampler.ts`: `sampleConditions` every 30 s, `dumpsys meminfo` PSS, and
+    gfxinfo GPU memory.
+  - The `device-provenance` check and the watchdog (Q13b).
+  - `run-gate7.sh --env device`. Device arms never run without that flag.
+  - `fixtures/gate7-pace/`, with its native capture and reference legs and `expected.json`
+    (presence markers).
+  - `experiments/render-stream/web/bench/`: the GSW bench page and the web-export bench entry
+    scene.
+  - `build-web-receiver.sh --bench`.
+  - The device probes of Q13a and Q13b, implemented and dry-run against a fake `Adb`.
+  - `scripts/test/self-test-device-harness.ts`.
+- **Checks** (all unattended):
+  - `bench-matches-g6c` natively;
+  - the bench's desktop arms on D9's harness for both receivers, with their numbers quoted in
+    "As built", which is Q13e's early signal;
+  - `device-provenance` and the watchdog against recorded `dumpsys` / CDP fixtures, through the
+    fake `Adb`;
+  - the pace fixture's native receiver legs pass;
+  - `--legs g7-dev` without `--env device` runs only `ctl-` arms.
+- **Sabotage**: a fake device reporting another model, or a SwiftShader renderer, must make
+  `device-provenance` refuse. A fake trace with 300 ms of hidden time must make the watchdog mark
+  the repeat `invalid`.
+- G7d never touches the phone. It leaves G7m a single command to run.
+
 ### G7e — web export: build, shims, gate 0 (opus)
 
 - **Prerequisite**: the official 4.5.1-stable `web_nothreads_release.zip` in
@@ -939,6 +1320,25 @@ Void if gate 6 fixed D20. Otherwise:
   gates 1, 2 and 6 (`g6l`, `g6c`) natively on /6 unchanged.
 - **Sabotages**: `token-ignored` must make the interop test's wrong-token case connect (and its
   check fail); `accept-any-origin` must fail the 403 case.
+
+### G7m — phone decode/apply microbench (sonnet; operator-attended)
+
+- **Before anything runs**: the agent asks the user for the go-ahead and for the phone, attached
+  over USB with debugging enabled, unlocked, in landscape and with the screen kept on (D28). Without
+  them, the increment stops and reports. It never waits on a device or retries one on its own.
+- **Runs**:
+  - the Q13a and Q13b device probes: trace names, panel mode and T_p, timer-query exposure,
+    RGB10_A2 renderable and readable, `dumpsys meminfo` readability, and adb-reverse RTT and
+    throughput;
+  - Q13e's bench on the phone, for both receivers, one warmup plus five repeats per input.
+- **Files**: `evidence/device-probes.json`, the bench results as `render-stream-report/2` device
+  rows, and README "Gate 7m result": the phone/desktop/native table per input and phase, the probe
+  results, and the decision.
+- **Checks**: `device-provenance` and the watchdog on every repeat. Then Q13e's decision rule:
+  pass, or `device-decode-over-budget` per receiver and input. The finding is a result, and it
+  passes the increment.
+- **Consequence**: a probe that contradicts Q13a or Q13b is recorded "As built" here, as G7h did
+  for Q1b, before G7v relies on it.
 
 ### G7b — web export: every gate's file legs (opus)
 
@@ -990,6 +1390,25 @@ Void if gate 6 fixed D20. Otherwise:
 - **Sabotages**: the native live sabotages (`stale-coalesce` and others) with their native sets;
   `no-cors`, `no-token` and `bad-http-token` as `g7-2` states.
 
+### G7o — decode/apply optimization, conditional (opus)
+
+Void unless G7m recorded `device-decode-over-budget`. Otherwise:
+
+- **Change**: Q13e's candidates for the receiver or receivers that missed, one at a time, each kept
+  only if the bench measures a gain. Web: `receiver/rs2_decoder.gd` and the apply path. GSW: the
+  decode path and, if chosen, a decode Worker.
+- **Checks**:
+  - golden-2 to golden-7 identical in all three languages;
+  - gates 0 to 6 natively unchanged;
+  - every `g7-*` group already landed still green;
+  - the bench's desktop arms improved;
+  - then, **attended**, G7m's phone bench re-run, which must meet Q13e's rule.
+- If the best result still misses, the increment lands what it gained. It records
+  `device-decode-over-budget` with the new numbers as that receiver's standing finding, and the
+  budget is unchanged.
+- **Sabotage**: a variant that skips a payload hash check must fail golden `resource-hash`, which
+  shows that the optimization did not buy its speed by dropping verification.
+
 ### G7g — gate 6 scene and HD on both browsers (opus)
 
 - **Files**: the gate 6 adapters; `g7-6` (file legs at 640×360, 1920×1080 and 960×540, and g6l
@@ -1032,25 +1451,64 @@ Void if gate 6 fixed D20. Otherwise:
 - **Sabotage**: `GRC_SABOTAGE=window-overrun` (sends a third) must fail exactly `pending-bounded`
   and `queue-bounded`.
 
+### G7v — phone acceptance (opus; device arms operator-attended)
+
+- **Files**:
+  - the `g7-dev` legs and checks (Q13d) in `run-gate7.sh` and `check-gate7.ts`;
+  - `RS_RECEIVER_DRAW_REPEAT` (gsw);
+  - the web export's `--max-fps 0` device configuration in the shell;
+  - the new-frame interval and main-thread accounting in both receivers' perf timelines;
+  - the report/2 device rows (Q12).
+- **Unattended first**: every `ctl-` arm on D9's harness, green and quoted.
+- **Then attended** (D28): the agent asks for the go-ahead and the phone, then runs
+  `--env device --legs g7-dev`. The window-1 and window-2 legs, the soak and startup legs, and the
+  report-only variants run in one session where possible. A session cut short is resumed leg by
+  leg on the same build, never mixed across builds.
+- **Checks**: Q13d's decided checks for every leg; `device-provenance` and the watchdog on every
+  repeat; and the acceptance statement per receiver and window.
+- **README "Gate 7v result"**, as G6c's result is tabulated:
+  - published, applied and drawn rates per receiver × workload × window, with T_p and the panel
+    mode;
+  - the new-frame interval histograms against Q13c's predicted 3:2 shape;
+  - main-thread and GPU per drawn frame;
+  - the phone/desktop ratio per stage;
+  - the soak's thermal and memory curves, and startup;
+  - which window met the target, per receiver.
+  Every miss is reported as measured, with its failing checks.
+- **Sabotages**:
+  - gsw `ack-on-receipt` on `dev-scene-w1` must fail exactly `credit-from-paced-loop`;
+  - `RS_RECEIVER_DRAW_REPEAT=8` on `hd` must fail `dev-gpu-headroom` and `dev-rate`, which shows
+    that the headroom leg can fail;
+  - a soak with `leak-gl-textures` must fail exactly `dev-soak`'s GPU-memory clause.
+
 ### G7p — measurement matrix, report/2 (sonnet)
 
-- **Files**: `render-stream-report.ts` (/2), `report-gate7.ts`, and the `g7-p` matrix driver.
+- **Files**: `render-stream-report.ts` (/2, including `provenance.env` and the device rows),
+  `report-gate7.ts`, and the `g7-p` matrix driver.
 - **Checks**: `report-valid`, `report-complete` and `repeat-stability` (CoV > 10 % named), as G6p;
-  `after-window-shots` per receiver.
+  `after-window-shots` per receiver; `device-rows-present` (Q12's device rows, each with its
+  `env.device` block, its build sha equal to the report's, and its desktop control row). If the
+  device rows come from an older build, they are omitted and named, never shown as current
+  (D28).
 
 ### G7z — three manifests, gate 7 summary (sonnet)
 
 - **Files**: `make-features.ts --receiver`, `feature-evidence.ts` (per receiver),
   `protocol/features/render-stream-7/{native,web-export,gsw-canvas}.json`, `check-gate7.ts` group
   `g7-z`, and the README.
-- **Checks**: Q11's six checks against one final full run.
+- **Checks**: Q11's seven checks against one final full run, including `manifest-device-target`.
 - **Pass**: one `--legs` run of every group green on one build, with its source runs, and gates −1
-  to 6 green on the same build. The README gains "Gate 7z result" and, last, the "Gate 7 summary":
+  to 6 green on the same build. The phone criterion comes from an attended `g7-dev` run on that
+  build (D28, F3). Without one, the device targets are `unverified` and gate 7 is not declared
+  passed. The README gains "Gate 7z result" and, last, the "Gate 7 summary":
   - run directories and image paths per group and receiver;
   - per-leg classes;
   - P-W1 and P-G1..4 as measured, and every band with its cause;
   - the three manifests side by side;
   - rates per receiver, including the 60/60 phase study;
+  - the phone target per receiver × workload × window (met at window 1, met at window 2 only, or
+    not met with its failing checks), with T_p, the panel mode, the Chrome version and the
+    thermal outcome;
   - suspension and lifecycle outcomes;
   - startup cold and warm;
   - memory by process;
@@ -1073,12 +1531,18 @@ Void if gate 6 fixed D20. Otherwise:
   gate5_5-design.md.
 - **Threaded web export, GDExtension in the browser, other browsers (Firefox, WebKit), real
   displays and presentation feedback**: not scheduled. Each is a separate measurement experiment.
+  The one phone of D24 is the exception, measured through compositor activation, never through
+  presentation feedback.
+- **The phone over Wi-Fi, other phones, and the phone at refresh settings other than its
+  default**: the phone over a real network belongs to **gate 8**, with non-loopback serving. Q13's
+  `adb reverse` transport is its loopback stand-in. Other devices and refresh settings are
+  report-only or unscheduled, and each needs the user's device and go-ahead.
 - **A web-export context-loss recovery without reload**: needs an engine change, which this work
   never makes.
 
 Known before this contract, and still true: render-stream/6 carries everything both browser
 receivers need, and the native receiver's GDScript is platform-neutral except configuration, files
-and `/proc`. Six things were not known, and they change the design:
+and `/proc`. Seven things were not known, and they change the design:
 
 1. A browser cannot send the upgrade header G2e's authorization requires, and Godot's web peer
    silently drops it, so /7 is required (D2, D3).
@@ -1092,6 +1556,11 @@ and `/proc`. Six things were not known, and they change the design:
    arrays, so every panel and button in gate 6 needs G7c.
 6. The native receiver's live buffer grows without bound (G6s), and a browser's wasm heap never
    returns memory (D20).
+7. The user's real target is a phone (2026-10-14). There, a 60 Hz host meets a 90 Hz rAF, not
+   the 60/60 lock G6c measured. The native receiver's desktop decode (6.2–7.6 ms per transaction
+   in replay) already exceeds the phone's whole-frame budget, and the web export runs it in wasm
+   on a slower core. That adds a device harness, an early phone microbench and a conditional
+   optimization increment (D24 to D28, Q13).
 
 ## Open forks for the user
 
@@ -1115,3 +1584,16 @@ Everything else above follows from the handoff, engine source or recorded findin
   release's `SHA512-SUMS.txt`; only `web_nothreads_release.zip` was kept, at
   `~/.cache/godot-render-stream/templates/4.5.1-stable/web_nothreads_release.zip`, sha256
   `7f6c5efc9952f6f02509adfb92298161c0152a1f6a81c0bf9b9f4f913676e9c8`.
+- **F3. What the phone criterion requires of gate 7** (open, added 2026-10-14). D1 judges each
+  browser receiver on its own, and a game picks one by manifest. The user's words are "the
+  receiver must easily work at 60/60" on the phone. If one receiver meets Q13d and the other does
+  not (the predicted case is the web export missing on decode, D27, even after G7o), gate 7 can do
+  one of two things:
+  - **(a)** pass the phone criterion with at least one browser receiver meeting it, while the
+    other's manifest records `not-met` with numbers and an owner;
+  - **(b)** require both to meet it.
+  The default until the user answers is (a), because D1 forbids substitution of *evidence*, not a
+  per-game choice of receiver. (b) would make gate 7's completion depend on G7o reaching an
+  unknown speed-up. Nothing before G7z depends on the answer: every leg runs and is reported the
+  same either way. A window-2-only pass counts as met, labelled as such. That follows from F1's
+  opt-in approval, so it is not part of this fork.
