@@ -1804,6 +1804,16 @@ receiver.
   this run's A55 and A75 both ran uncapped (`derated: false` throughout, all probes and samples),
   where G7d's single repeat saw the A75 capped at 1.354 GHz. The cap is not a fixed device property
   and must be sampled per run, not assumed from one prior probe.
+- **As built, web export (G7m, 2026-10-15)**, details in the README's "Gate 7m (web export)
+  result": once G7e landed, the web arm needed no new build mode -- G7e's HTTPClient source-fetch
+  path already generalizes to a bench input, so `gate7-bench.ts` drives the one `build-web-
+  receiver.sh` bundle through one fresh page per warmup/repeat instead of a second, embedded-
+  recording export. `device-decode-over-budget` on **all four inputs** (p95 54.528 / 29.440 /
+  176.128 / 9.152 ms against the same 8.500 ms budget), 4.0x–10.5x worse than GSW's own g31
+  numbers on the same inputs -- a materially worse outcome than GSW, which passed two of four.
+  Desktop web-export numbers (now also measured, closing G7d's "stubbed `unavailable`" gap) are
+  1.35x–1.74x over native desktop's, confirming the 1.3–2x wasm-overhead estimate. This **triggers
+  G7o** for the web export too, with the same tier-1 candidates already ranked below.
 
 ### G7o1 — record digest off the frame path, TypeScript (sonnet; g31 run unattended)
 

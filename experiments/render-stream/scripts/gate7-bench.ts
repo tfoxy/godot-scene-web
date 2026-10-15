@@ -7,7 +7,8 @@
 //       --receiver-dir <receiver/>                                   # desktop native, headless
 //   gate7-bench.ts --arm gsw --inputs <inputs.json> --out <dir>      # desktop Chromium (D9)
 //   gate7-bench.ts --arm gsw --env device --device g31 --inputs <inputs.json> --out <dir> [--probes]
-//   gate7-bench.ts --arm web ...    # `unavailable` until G7e lands the web export (see below)
+//   gate7-bench.ts --arm web --inputs <inputs.json> --out <dir>        # desktop Chromium, web export
+//   gate7-bench.ts --arm web --env device --device g31 --inputs <inputs.json> --out <dir>
 //
 // Every arm replays each input of inputs.json (render-stream-gate7-bench-inputs/1) once as a warmup
 // and then `--repeats` (5) times, one record per frame:
@@ -19,17 +20,31 @@
 //           Desktop: launchHarnessBrowser + checkBrowserProvenance (D9). Device: openHarnessDevice
 //           + checkDeviceProvenance (D24, Q13b), the device sampler, the watchdog per repeat (an
 //           invalid repeat re-runs the input once), and with --probes the Q13a/Q13b device probes.
-//   web:    the web export of receiver/ (D5) needs G7e's export preset, shell and rs_config/rs_io
-//           shims, which have not landed, so the arm writes `unavailable` with that reason and runs
-//           nothing (G7m's web numbers wait for G7e, as Q13e's apply fallback foresees).
+//   web:    the G7e web export of receiver/ (build-web-receiver.sh, reused/cached by source sha256),
+//           one fresh page per warmup/repeat at receiver.html?env=<base64url JSON>, the SAME file-mode
+//           replay as native (RS_RECEIVER_RECORDING/_STORE_DIR mapped to same-origin URLs the harness
+//           serves, RS_RECEIVER_OUT/_PERF_OUT in-memory paths RsIo PUTs to RS_RECEIVER_EVIDENCE_URL at
+//           exit, Q4) rather than a second, embedded-recording build: G7e's HTTPClient source-fetch
+//           path already generalizes to this, so no new export mode is needed. The canvas size must
+//           equal the session's logical_size (a browser is never "headless", so receiver.gd's hard
+//           viewport-mismatch check applies, unlike native/GSW) -- every bench input is the project's
+//           640x360 default except gate6-hd's own 1920x1080 fixture (WEB_CANVAS_SIZE below). Device:
+//           one self-contained rAF probe (the same web/bench/ page GSW uses, mode=probe) measures this
+//           run's T_p for the decision rule, since the GDScript receiver reports no rAF timing itself.
 // Leg names (the g7-bench vocabulary): native-bench-<input>, ctl-bench-<input>-<gsw|web>,
 // dev-bench-<input>-<gsw|web>-<device>. Each leg writes <out>/<leg>/summary.json; the arm writes
 // <out>/<arm-env>.json. A harness refusal (browser-provenance, device-provenance,
 // device-unavailable, device-orientation) is recorded as `harness-refused`, exit 3.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+} from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +77,7 @@ import {
   summarizeGswBench,
   summarizeNativeBench,
 } from "./lib/gate7-bench-summary";
+import { base64url } from "./lib/gate7-web-legs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const BENCH_DIR = join(SCRIPT_DIR, "..", "web", "bench");
@@ -672,6 +688,360 @@ async function runGswArm(
   return summaries;
 }
 
+// ------------------------------------------------------------------------------------------ web
+
+// receiver.gd:771-775 (Q4 "Shell" item 6): a browser is never DisplayServer "headless", so the
+// hard viewport-mismatch check applies there, unlike native/GSW -- the canvas must equal the
+// session's logical_size. Every bench input but gate6-hd's own fixture (run-gate7.sh
+// HD_FIXTURE_DIR, gate6-design.md D4: 1920x1080) replays at the receiver project's 640x360
+// default.
+const WEB_CANVAS_SIZE: Readonly<Record<string, [number, number]>> = {
+  "hd-patch": [1920, 1080],
+};
+const DEFAULT_WEB_CANVAS: [number, number] = [640, 360];
+const WEB_REPLAY_TIMEOUT_MS = 180_000;
+
+/** build-web-receiver.sh (G7e, D5): reuses a cached bundle by the receiver/ source sha256, or
+ * builds one (8 to 10 s). Called once per gate7-bench.ts invocation, not per repeat. */
+function buildWebBundle(): { bundleDir: string; buildSha256: string } {
+  const script = join(SCRIPT_DIR, "build-web-receiver.sh");
+  const result = spawnSync("bash", [script], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0)
+    throw new Error(`build-web-receiver.sh exited ${result.status ?? "null"}`);
+  const bundleDir = result.stdout.trim().split("\n").filter(Boolean).pop();
+  if (!bundleDir)
+    throw new Error("build-web-receiver.sh printed no bundle directory");
+  const manifest = JSON.parse(
+    readFileSync(join(bundleDir, "build.json"), "utf8"),
+  ) as { pck: { sha256: string } };
+  return { bundleDir, buildSha256: manifest.pck.sha256 };
+}
+
+function ensureStaticLink(target: string, link: string): void {
+  if (existsSync(link)) return;
+  symlinkSync(target, link);
+}
+
+interface WebPageProbesJson {
+  schema: string;
+  raf: { tp_ms: number };
+}
+
+/**
+ * Q13a/Q13b: the GDScript receiver reports no rAF timing of its own, so the device's T_p for the
+ * decision rule comes from the same self-contained probe page the GSW arm uses (web/bench/,
+ * mode=probe), read once per gate7-bench.ts invocation -- a property of this browser/device, not
+ * of which receiver bundle is loaded. Returns null on any failure (desktop's early-signal verdict
+ * does not need T_p; a device decision without it is then visibly "no measured T_p" rather than a
+ * guessed budget).
+ */
+async function probeTpMs(
+  origin: string,
+  openPage: (url: string) => Promise<BenchPage>,
+  server: HarnessServer,
+  evidenceRoot: string,
+): Promise<number | null> {
+  const nonce = randomBytes(8).toString("hex");
+  const dir = join(evidenceRoot, nonce);
+  server.addLeg(nonce, dir);
+  try {
+    const page = await openPage(
+      `${origin}/site/index.html?mode=probe&nonce=${nonce}&hold=0`,
+    );
+    try {
+      await waitBench(page, 60_000, "web-tp-probe");
+    } finally {
+      await page.close().catch(() => {});
+    }
+    const raw = await readFile(join(dir, "page-probes.json"), "utf8").catch(
+      () => null,
+    );
+    if (!raw) return null;
+    return (JSON.parse(raw) as WebPageProbesJson).raf?.tp_ms ?? null;
+  } catch (error) {
+    console.error(`gate7-bench: web-tp-probe: ${error}`);
+    return null;
+  } finally {
+    server.removeLeg(nonce);
+  }
+}
+
+// Window.__rsShell is declared by lib/gate7-web-legs.ts (imported above); re-declaring it here
+// with a narrower shape would conflict (TS2717), so waitWebExit only reads the fields it needs.
+
+async function waitWebExit(
+  page: BenchPage,
+  timeoutMs: number,
+): Promise<{ exit: number | null; error: string | null }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const state = await page
+      .evaluate<{ exit: { code: number } | null; error: string | null } | null>(
+        "window.__rsShell ? { exit: window.__rsShell.exit, error: window.__rsShell.error } : null",
+      )
+      .catch(() => null);
+    if (state?.exit) return { exit: state.exit.code, error: null };
+    if (state?.error) return { exit: null, error: state.error };
+    if (Date.now() > deadline) return { exit: null, error: "timed out" };
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/**
+ * The G7e web export of receiver/, replayed exactly as native's file mode (one record per
+ * `_process`, RS_RECEIVER_PERF_OUT + RS_RECEIVER_LOG=summary -- the same GDScript, so the same
+ * rs_perf.gd perf.json shape), but served over HTTP and run one fresh page per warmup/repeat
+ * instead of one fresh process: RS_RECEIVER_RECORDING and RS_RECEIVER_STORE_DIR are same-origin
+ * URLs the harness serves (Q4 rs_io.gd `prepare_sources`, already proven by G7e's gate 0 web
+ * legs), and RS_RECEIVER_OUT/_PERF_OUT are in-memory paths RsIo PUTs to RS_RECEIVER_EVIDENCE_URL
+ * at exit. No new "--bench" export or embedded-recording entry scene is needed: G7e's HTTPClient
+ * source-fetch path already generalizes to this.
+ */
+async function runWebArm(
+  args: Args,
+  inputs: BenchInput[],
+): Promise<BenchInputSummary[]> {
+  const { bundleDir, buildSha256 } = buildWebBundle();
+  const table = loadDeviceTable();
+  const sel = resolveDeviceSelection(args.env, args.device, table);
+  await mkdir(args.out, { recursive: true });
+  ensureStaticLink(bundleDir, join(args.out, "web-bundle"));
+  const assets = join(args.out, "web-assets");
+  for (const input of inputs) {
+    const dir = join(assets, input.name);
+    await mkdir(dir, { recursive: true });
+    copyFileSync(input.recording, join(dir, "recording.rs2"));
+    if (input.store) ensureStaticLink(input.store, join(dir, "store"));
+  }
+  await buildSite(args, inputs); // reused only for the rAF probe page below (mode=probe)
+  const evidence = join(args.out, "evidence");
+  const server = new HarnessServer({
+    staticRoot: args.out,
+    evidenceRoot: evidence,
+    allowedLegNonces: [],
+  });
+  server.enableWebSocketEcho("/echo");
+  server.enableTicker("/tick");
+  const { port, origin } = await server.start();
+  const summaries: BenchInputSummary[] = [];
+  let closeDriver: () => Promise<unknown> = async () => {};
+  try {
+    let openPage: (url: string) => Promise<BenchPage>;
+    let provenance: unknown;
+    let sampler: DeviceSampler | null = null;
+    if (sel.env === "desktop") {
+      const launchArgs = [
+        ...BROWSER_LAUNCH_ARGS,
+        ...BACKGROUND_THROTTLING_ARGS,
+      ];
+      const launched = await launchHarnessBrowser();
+      closeDriver = () => launched.browser.close();
+      const context = await launched.browser.newContext({
+        viewport: { width: 640, height: 360 },
+      });
+      const probe = await context.newPage();
+      await probe.goto(`${origin}/site/index.html?mode=idle`);
+      const prov = await checkBrowserProvenance(probe, launched, launchArgs, {
+        DISPLAY: undefined,
+        WAYLAND_DISPLAY: undefined,
+      });
+      await probe.close();
+      provenance = {
+        kind: "browser-provenance",
+        ...prov,
+        processes: prov.processes.length,
+      };
+      if (!prov.ok)
+        throw new HarnessRefusal("browser-provenance", prov.reasons.join("; "));
+      openPage = async (url) => {
+        const page = await context.newPage();
+        await page.goto(url);
+        return { evaluate: (e) => page.evaluate(e), close: () => page.close() };
+      };
+    } else {
+      const entry = sel.entry;
+      const id = sel.id as DeviceId;
+      if (!entry) throw new HarnessUsageError("no device entry");
+      if (
+        entry.attendance === "operator-attended" &&
+        process.env.RS_GATE7_OPERATOR_ATTENDED !== id
+      )
+        throw new HarnessRefusal(
+          "device-unavailable",
+          `${id} is operator-attended (D28): set RS_GATE7_OPERATOR_ATTENDED=${id} only with the user's go-ahead in this session`,
+        );
+      const device = await openHarnessDevice({
+        id,
+        entry,
+        serverPort: port,
+        adbBin: args.adbBin,
+        onProgress: (m) => console.log(`gate7-bench: device: ${m}`),
+      });
+      closeDriver = async () => {
+        const settings = await device.close();
+        await writeFile(
+          join(args.out, `session-settings-${id}-web.json`),
+          `${JSON.stringify(settings, null, 2)}\n`,
+        );
+      };
+      const probe = await device.openPage(
+        `${origin}/site/index.html?mode=idle`,
+      );
+      const facts = await device.facts(probe);
+      await probe.close();
+      const prov = checkDeviceProvenance(entry, facts);
+      provenance = {
+        kind: "device-provenance",
+        ...prov,
+        isolation: device.browser.targets.isolation,
+      };
+      await writeFile(
+        join(args.out, `device-provenance-${id}-web.json`),
+        `${JSON.stringify(provenance, null, 2)}\n`,
+      );
+      if (!prov.ok)
+        throw new HarnessRefusal(
+          prov.refusal ?? "device-provenance",
+          prov.reasons.join("; "),
+        );
+      const processInfo = await device.browser.client
+        .send<{ processInfo: { type: string; id: number }[] }>(
+          "SystemInfo.getProcessInfo",
+          {},
+          { flat: true, timeoutMs: 10_000 },
+        )
+        .then((r) => ({ ok: true as const, processes: r.processInfo ?? [] }))
+        .catch((e: Error) => ({ ok: false as const, error: e.message }));
+      await writeFile(
+        join(args.out, `device-cdp-processes-${id}-web.json`),
+        `${JSON.stringify(processInfo, null, 2)}\n`,
+      );
+      const chromePackage = entry.chrome_package;
+      sampler = new DeviceSampler(device.browser.adb, {
+        chromePackage,
+        clusters: entry.cpu_clusters,
+        pids: async () => {
+          if (processInfo.ok) {
+            const ids = processInfo.processes
+              .filter(
+                (p) =>
+                  p.type === "renderer" ||
+                  p.type === "GPU" ||
+                  p.type === "browser",
+              )
+              .map((p) => p.id)
+              .filter((pid) => pid > 0);
+            if (ids.length > 0) return ids;
+          }
+          const text = await device.browser.adb
+            .shell(`pidof ${chromePackage}`)
+            .catch(() => "");
+          return text
+            .trim()
+            .split(/\s+/)
+            .filter((x) => /^\d+$/.test(x))
+            .map(Number);
+        },
+      });
+      sampler.start();
+      openPage = async (url) => {
+        const page = await device.openPage(url);
+        return { evaluate: (e) => page.evaluate(e), close: () => page.close() };
+      };
+    }
+    const tpMs =
+      sel.env === "device"
+        ? await probeTpMs(origin, openPage, server, evidence)
+        : null;
+    for (const input of inputs) {
+      const leg = benchLegName("web", sel.env, input.name, sel.id);
+      const legDir = join(args.out, leg);
+      const [w, h] = WEB_CANVAS_SIZE[input.name] ?? DEFAULT_WEB_CANVAS;
+      const perRepeat: {
+        repeat: number;
+        perf: NativePerfJson | null;
+        exit: number | null;
+      }[] = [];
+      for (let r = 0; r < args.warmup + args.repeats; r++) {
+        const dir = join(
+          legDir,
+          r < args.warmup ? `warmup-${r}` : `repeat-${r - args.warmup}`,
+        );
+        await mkdir(dir, { recursive: true });
+        const nonce = randomBytes(8).toString("hex");
+        server.addLeg(nonce, dir);
+        const env: Record<string, string> = {
+          RS_RECEIVER_RECORDING: `/web-assets/${input.name}/recording.rs2`,
+          RS_RECEIVER_OUT: "/out/applied.json",
+          RS_RECEIVER_PERF_OUT: "/out/perf.json",
+          RS_RECEIVER_LOG: "summary",
+          RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
+          RS_RECEIVER_BUILD_SHA256: buildSha256,
+          ...(input.store
+            ? { RS_RECEIVER_STORE_DIR: `/web-assets/${input.name}/store` }
+            : {}),
+        };
+        const pageConfig = {
+          env,
+          engine_args: [] as string[],
+          canvas: [w, h] as [number, number],
+          sabotage: null as string | null,
+        };
+        await writeFile(
+          join(dir, "page-config.json"),
+          `${JSON.stringify(pageConfig, null, 2)}\n`,
+        );
+        const url = `${origin}/web-bundle/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
+        const t0 = Date.now();
+        const page = await openPage(url);
+        let result: { exit: number | null; error: string | null };
+        try {
+          result = await waitWebExit(page, WEB_REPLAY_TIMEOUT_MS);
+        } finally {
+          await page.close().catch(() => {});
+        }
+        server.removeLeg(nonce);
+        console.log(
+          `gate7-bench: ${leg} ${r < args.warmup ? "warmup" : `repeat ${r - args.warmup}`} exit=${result.exit} ${result.error ? `error=${result.error} ` : ""}${Date.now() - t0} ms`,
+        );
+        if (r < args.warmup) continue;
+        const perfPath = join(dir, "perf.json");
+        perRepeat.push({
+          repeat: r - args.warmup,
+          perf: existsSync(perfPath)
+            ? (JSON.parse(await readFile(perfPath, "utf8")) as NativePerfJson)
+            : null,
+          exit: result.exit,
+        });
+      }
+      const summary = summarizeNativeBench(input.name, perRepeat, "web");
+      await writeLegSummary(
+        legDir,
+        leg,
+        summary,
+        decide(summary, sel.env, tpMs),
+        provenance,
+      );
+      summaries.push(summary);
+    }
+    if (sampler) {
+      const timeline = await sampler.stop();
+      await writeFile(
+        join(args.out, `device-samples-${sel.id}-web.json`),
+        `${JSON.stringify(timeline, null, 2)}\n`,
+      );
+    }
+  } finally {
+    await closeDriver().catch((e) => console.error(`gate7-bench: close: ${e}`));
+    await server.stop();
+  }
+  return summaries;
+}
+
 // ------------------------------------------------------------------------------------------ main
 
 async function main(): Promise<void> {
@@ -692,37 +1062,16 @@ async function main(): Promise<void> {
     started_at: new Date().toISOString(),
   };
   try {
-    if (args.arm === "web") {
-      // D5/G7e: the web export arm needs export_presets.cfg, receiver/web/shell.html and the
-      // rs_config/rs_io shims, none of which exist before G7e. Recorded, never faked.
-      arm.status = "unavailable";
-      arm.reason = "web-export-not-built";
-      arm.detail =
-        "G7e (web export: build, shims, gate 0) has not landed: no export preset, shell or rs_config/rs_io shim exists, so build-web-receiver.sh --bench has nothing to export. The web arm runs once G7e lands (Q13e apply fallback).";
-      for (const input of inputs) {
-        const leg = benchLegName(
-          "web",
-          args.env,
-          input.name,
-          args.device ?? null,
-        );
-        await mkdir(join(args.out, leg), { recursive: true });
-        await writeFile(
-          join(args.out, leg, "summary.json"),
-          `${JSON.stringify({ schema: "render-stream-gate7-bench-leg/1", leg, status: "unavailable", reason: arm.reason, detail: arm.detail }, null, 2)}\n`,
-        );
-      }
-      console.log(`gate7-bench: web arm unavailable: ${arm.detail}`);
-    } else {
-      const summaries =
-        args.arm === "native"
-          ? await runNativeArm(args, inputs)
-          : await runGswArm(args, inputs);
-      arm.status = "success";
-      arm.legs = summaries.map((s) =>
-        benchLegName(args.arm, args.env, s.input, args.device ?? null),
-      );
-    }
+    const summaries =
+      args.arm === "native"
+        ? await runNativeArm(args, inputs)
+        : args.arm === "gsw"
+          ? await runGswArm(args, inputs)
+          : await runWebArm(args, inputs);
+    arm.status = "success";
+    arm.legs = summaries.map((s) =>
+      benchLegName(args.arm, args.env, s.input, args.device ?? null),
+    );
   } catch (error) {
     if (error instanceof HarnessUsageError) throw error;
     if (error instanceof HarnessRefusal) {

@@ -178,7 +178,8 @@ export function mapNativeLeg(
   return { env, engineArgs, canvas, copies, dropped };
 }
 
-function base64url(text: string): string {
+/** The web-export shell's `?env=` encoding (also used directly by gate7-bench.ts's web arm). */
+export function base64url(text: string): string {
   return Buffer.from(text, "utf8")
     .toString("base64")
     .replace(/\+/g, "-")
