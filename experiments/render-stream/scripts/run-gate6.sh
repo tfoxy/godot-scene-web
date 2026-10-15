@@ -4,7 +4,7 @@
 #
 #   bash run-gate6.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g6a,g6h,g6l,g6b]
+#     [--legs g6a,g6h,g6l,g6b,g6c]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -48,6 +48,14 @@
 # reference-step11 (a rendered `animate` reference on the soak timeline itself: realtime pacing
 # makes the step-11 freeze land at a frame the file timeline cannot reproduce, gate6-design.md
 # "As built (G6s)").
+# g6c (G6c, lib/gate6c-legs.sh): under <out>/rates/ the publication-rate legs on the `rate`
+# timeline (realtime, 30 s of game time, GRC_HOOK_LOG=off, no file sink, no tap): rate-baseline
+# (armed, no subscriber), rate-15/-30/-60 (GRC_PUBLISH_FPS), rate-uncapped-host60, rate-uncapped
+# (--max-fps 0 both ends), mismatch-60-recv30, mismatch-15-recv60, dual-60-15
+# (GRC_LIVE_MAX_CONNECTIONS=2), recv-delay (--frame-delay 40), constrained and
+# sabotage-constrained-ignore-credit (throttle-proxy.ts `constrained` between receiver and host),
+# then each leg's final-state reference; then, in a 1920x1080 gamescope, the gpu-heavy calibration
+# and the gpu-heavy leg on gate6-hd. Hosts and receivers carry a /proc sampler (sample-proc.ts).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -73,7 +81,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g6a g6h g6l g6b g6s)
+LANDED_GROUPS=(g6a g6h g6l g6b g6s g6c)
 KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p)
 
 EXTENSION=""
@@ -229,11 +237,26 @@ command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 
 # Whatever ends this script stops the Godot process it owns and tears its own compositor down.
 # Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
+# EXTRA_CHILD_PIDS (g6c): background hosts, receivers, samplers and proxies; each is stopped only
+# while its command line still names this run's binary or a render-stream script (a recycled pid
+# is never touched).
+EXTRA_CHILD_PIDS=()
 cleanup() {
 	if [ -n "${CURRENT_CHILD_PID:-}" ] && kill -0 "$CURRENT_CHILD_PID" 2>/dev/null; then
 		echo "run-gate6: stopping owned process $CURRENT_CHILD_PID" >&2
 		kill "$CURRENT_CHILD_PID" 2>/dev/null || true
 	fi
+	local pid cmdline
+	for pid in ${EXTRA_CHILD_PIDS[@]+"${EXTRA_CHILD_PIDS[@]}"}; do
+		kill -0 "$pid" 2>/dev/null || continue
+		cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+		case "$cmdline" in
+		*"$BINARY"* | *render-stream/scripts/*)
+			echo "run-gate6: stopping owned process $pid" >&2
+			kill "$pid" 2>/dev/null || true
+			;;
+		esac
+	done
 	if [ -n "${GS_RUN_DIR:-}" ]; then
 		gs_teardown "$GS_RUN_DIR" || true
 	fi
@@ -415,6 +438,8 @@ run_g6a() {
 source "$SCRIPT_DIR/lib/gate6h-legs.sh"
 # shellcheck source=lib/gate6b-legs.sh
 source "$SCRIPT_DIR/lib/gate6b-legs.sh"
+# shellcheck source=lib/gate6c-legs.sh
+source "$SCRIPT_DIR/lib/gate6c-legs.sh"
 
 # ---------------------------------------------------------------------------------------------
 # G6l (gate6-design.md "G6l", Q7c): live motion, the 2-s stall, reconnect and the warm cache on
@@ -820,7 +845,7 @@ run_g6s() {
 
 # g6b runs after g6a and g6h whatever order --legs names them in; g6s has no cross-group
 # dependency, so it just runs wherever it falls in this fixed order (last is fine).
-for group in g6a g6h g6l g6b g6s; do
+for group in g6a g6h g6l g6b g6s g6c; do
 	case " ${GROUPS_RUN[*]} " in
 	*" $group "*) ;;
 	*) continue ;;
@@ -831,6 +856,7 @@ for group in g6a g6h g6l g6b g6s; do
 	g6l) run_g6l ;;
 	g6b) run_g6b ;;
 	g6s) run_g6s ;;
+	g6c) run_g6c ;;
 	esac
 done
 

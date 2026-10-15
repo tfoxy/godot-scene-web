@@ -5731,3 +5731,124 @@ Evidence: `artifacts/render-stream/gate-minus1/20261014T205802Z/`,
 20261014T210436Z/`, `artifacts/render-stream/gate2/20261014T214216Z/` (the passing retry),
 `artifacts/render-stream/gate5/20261014T220311Z/`, `artifacts/render-stream/gate55/
 20261014T223109Z/`, `artifacts/render-stream/gate6/20261014T225650Z/`.
+
+## Gate 6c result (2026-10-14)
+
+G6c ([protocol/gate6-design.md](protocol/gate6-design.md) "G6c", Q7d; decisions in "As built
+(G6c)") passes. Before G6s merged, `pnpm render-stream:gate6 -- --legs g6a,g6h,g6l,g6b,g6c` was
+133/133 (`artifacts/render-stream/gate6/r1/`): g6c's 41 checks over 13 legs plus the 92 earlier
+gate-6 checks. Gates −1 (29/29), 0 (24/24), 1 (66/66) and 2 (85/85) passed on that build.
+
+After merging G6s (main `f4720922`), on the final build:
+
+- Gates −1 (29/29), 0 (24/24), 1 (66/66) and 2 (85/85) passed again.
+- `self-test-gate6` passed 217/217 and `self-test-report` 46/46.
+- `--legs g6a,g6h,g6l,g6b,g6s,g6c` was 147/150 (`artifacts/render-stream/gate6/r2/`). Every g6a,
+  g6h, g6l, g6b and g6s check passed.
+- The three failures were g6c timing checks, run while another agent's gate 6 shared the machine
+  (load average 5.0). On mismatch-60-recv30 the host frame-interval p95 was 19.9 ms against the
+  baseline's 17.4 ms. mismatch-15-recv60's receiver drew 56.9 frames/s. On dual-60-15, A's hold p95
+  was 23.4 ms against a contended rate-uncapped-host60's 32.3 ms. In the same run, that receiver
+  drew 49.9 frames/s and its host p95 was 20.3 ms.
+- The g6c rerun (`--legs g6c`, `artifacts/render-stream/gate6/r2-g6c/`) passed all 41 g6c checks;
+  the other groups were not run, as reported.
+
+The table below is r1. The rerun matched it: rate-60 57.8/s, rate-uncapped-host60 57.7, uncapped
+121.6, mismatch-60-recv30 28.8 against a 30.0 receiver, dual 51.2/11.6 (both credit-limited),
+constrained 5.0, recv-delay `injected-delay`, gpu-heavy `gpu-limited`, host p95 17 357–17 360 µs.
+
+**Supported, measured on this box** (Ryzen 5 5500, RTX 2060, gamescope 3.16.19 headless; rate
+timeline, `realtime`, animate, hook log off, window [6 s, 26 s] of game time = 19.0 s between
+timeline lines; rates per second, host clock; `presented` unavailable on every leg):
+
+| Leg | Requested | Host frame | Published | Applied | Submitted | Receiver frame | Credit capacity | limited_by |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| rate-baseline | — (no subscriber) | 60.0 | — | — | — | — | — | — |
+| rate-15 | 15 | 60.0 | 15.0 | 15.0 | 15.0 | 60.0 | 56.3 | (target) |
+| rate-30 | 30 | 60.0 | 30.0 | 30.0 | 30.0 | 60.0 | 58.2 | (target) |
+| rate-60 | 60 | 60.0 | 58.3 | 58.3 | 58.3 | 60.0 | 58.3 | host-frame |
+| rate-uncapped-host60 | uncapped | 60.0 | 58.8 | 58.8 | 58.8 | 60.0 | 58.8 | host-frame |
+| rate-uncapped | uncapped, `--max-fps 0` | 24 047 | 137.0 | 137.0 | 137.0 | 137.8 | 137.0 | credit |
+| mismatch-60-recv30 | 60 | 60.0 | 26.7 | 26.7 | 26.7 | 30.0 | 26.7 | credit |
+| mismatch-15-recv60 | 15 | 60.0 | 15.0 | 15.0 | 15.0 | 60.0 | 29.1 | (target) |
+| dual-60-15 A / B | uncapped | 60.0 | 59.1 / 13.2 | 59.1 / 13.2 | 59.1 / 13.2 | 60.0 / 15.0 | 59.1 / 13.2 | host-frame / credit |
+| recv-delay | 60 | 60.0 | 17.1 | 17.1 | 17.1 | 20.4 | 17.1 | credit |
+| constrained | 60 | 60.0 | 4.95 | 4.9 | 4.9 | 60.0 | 5.0 | transport |
+| sabotage-constrained-ignore-credit | 60 | 60.0 | 34.6 | 15.3 | 15.3 | 60.0 | 5.9 | transport |
+| gpu-heavy (HD native) | 60 | 60.0 | 1.95 | 1.9 | 1.9 | 19.0 | 2.0 | credit |
+
+Credit RTT median / p95 (µs): rate-60 14 982 / 27 152, rate-uncapped-host60 14 388 / 26 493,
+rate-uncapped 6 939 / 8 170, mismatch-60-recv30 32 235 / 62 254, dual A 9 318 / 21 582 and B
+55 853 / 122 579, recv-delay 42 638 / 94 725, constrained 175 948 / 296 425. Host frame callback
+p50: 87 µs idle, 289 µs at 60/s, 27 µs at `--max-fps 0` (snapshot 19 µs, nearly nothing changes
+between two 41 µs frames), 637 µs on gate6-hd. Host frame-interval p95: 17 357–17 360 µs on every
+leg and the baseline. Every `host-unperturbed` holds. Wire: 19.6 KB median transaction, 1.17 MB/s at
+60/s, 1.93 MB/s at 137/s.
+
+- **Mismatch.** At target 60 behind a 30 fps receiver: 632 credit-blocked ticks in the window,
+  `coalesced` 944, oldest pending 333 ms. The receiver loses frames to its own frame-quantized
+  fetches (published/receiver frame 0.89), and the credit capacity accounts for exactly that.
+- **Separation.** recv-delay (`--frame-delay 40`): receiver frame interval p50 49.1 ms, GPU render
+  p50 0.38 ms, CPU render p50 0.35 ms: `injected-delay`. gpu-heavy (`iterations` 6510, calibrated in
+  two rounds, `rates/gpu-heavy-calibration/calibration.json`): frame interval p50 49.3 ms, GPU p50
+  40.8 ms (0.83), CPU render p50 1.65 ms: `gpu-limited`.
+- **Constrained** (`throttle-proxy.ts constrained`): credit RTT p50 176 ms (≥ 60 ms), `max_pending`
+  1, `max_in_flight` 1, `max_queued_bytes` 94 802 (largest message 94 792); the proxy's
+  server-to-client latency mean was 40.8 ms (30 ms floor). The sabotage (ignore-credit from frame
+  900, inline payloads, quit at 75 s) failed exactly `pending-bounded` (1 123 in flight) and
+  `queue-bounded` (594 924 B queued). It classified `delivery-violation`, and its final shot was
+  0 px.
+- **final-latest-state**: every receiver's final shot (`RS_RECEIVER_SHOT_FINAL`) named a frame
+  after step 11's and was 0 px from its reference (the fixture rendered with the host's own step-11
+  leftovers, `RS_FIXTURE_FREEZE_STATE`).
+- **Reports**: 13 single-repeat `render-stream-report/1` files validate (`--repeats 1`). Receiver
+  CPU over a 30-s rate-60 leg: 15.8 s (decode p50 2.1 ms and apply 1.5 ms per transaction).
+- **Receiver RSS** (the `/proc` sampler over the window, 8–28 s after the receiver started):
+  - **Before G6s (r1)**, while the live `_data` buffer grew: rate-60 grew from 197.8 to 240.1 MiB
+    (+42.3, 134 MiB/min), rate-uncapped +51.6 MiB, constrained +7.2 MiB. Peaks were up to 330.6 MiB.
+  - **After G6s (r2-g6c):**
+
+    | Leg | Window growth (MiB) | Peak (MiB) |
+    | --- | --- | --- |
+    | constrained | +2.3 | 183.8 |
+    | rate-15 | +9.8 | 197.6 |
+    | gpu-heavy | +9.0 | 221.0 |
+    | recv-delay | +10.9 | 198.6 |
+    | rate-30 | +15.1 | 213.7 |
+    | rate-uncapped | +17.4 | 215.8 |
+    | rate-60 | +21.2 | 238.5 |
+    | rate-uncapped-host60 | +25.5 | 235.1 |
+
+  - Growth is no longer proportional to bytes received. What remains is warm-up while steps 1–10
+    add content (atlas pages, TEXA versions, caches). The window covers 20 s and ends inside the
+    timeline, so it cannot show the plateau.
+  - G6s's 300-s soak in the same r2 run shows the plateau: the receiver held 226.2 → 226.3 MB
+    (`g6s-rss-bounded` pass).
+  - Host RSS stayed 81–83 MiB on every scene leg and 87–97 MiB on gate6-hd.
+- **Receiver cost unchanged**: a headless file-mode replay of the 400-transaction animate capture,
+  main against this branch, two alternating rounds of five timed runs each.
+  - Against `02e6f4dc`: wall time 3.47–3.85 s per run on both sides (frame-paced); decode_us mean
+    6193/6479 µs (main) against 6247/6212 µs (branch); apply_us 885/898 against 897/878.
+  - Against `f4720922`, with G6s and under another agent's load: decode 7435/9508 µs against
+    7648/7231 µs; apply 984/1223 against 1003/1008.
+  - The branch adds one integer store per applied transaction, plus per-frame work only under
+    `RS_RECEIVER_PERF_OUT`.
+
+**Findings** (gate6-design.md "As built (G6c)" 2–4, 7). These are not proven, or they are
+proven false:
+
+- At 60 published against a 60 fps receiver, 60 per second depends on the phase of two
+  independent 60 Hz loops. With one transaction in flight and a host that sends only at frame
+  callbacks, a credit RTT just over one frame halves the rate. That happened on 5 of 11 dev and
+  final 60/60 legs (28.7–29.95/s, mean RTT 2.04–2.09 host frames), and the host stays prompt (every
+  check holds against the credit capacity). Lifting it needs credit window 2 or a receiver that
+  acks closer to the draw: gate 7.
+- A slow receiver publishes below its frame rate because each HTTP fetch costs it a whole frame
+  (B at 15 fps: 0.73–0.88 of its frames).
+- Over HTTP, ignore-credit on a slow link fails the receiver (`resource-unavailable`, a 404): D7's
+  pin relies on credit.
+- G6t's proxy applied no backpressure and dropped its backlog on close (fixed here).
+
+**What G6c does not prove**: presentation rate (unavailable, D9); five-repeat stability or cold
+against warm (G6p); any rate on a non-loopback network or a second machine (gate 8); the
+constrained leg's numbers for a link other than 4 Mbit/s and 30 ms.

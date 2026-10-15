@@ -20,6 +20,11 @@ extends RefCounted
 ## resident_textures()/resident_meshes()/resident_shaders()/resident_materials(), all pre-existing
 ## read accessors no increment needed to add).
 ##
+## G6c adds, still only with RS_RECEIVER_PERF_OUT: per-frame `gpu_render_us`/`cpu_render_us`
+## histograms (the measured render time sampled every frame, for Q7d's `separation`), `frames`
+## (frames drawn) on every timeline line (the receiver frame rate of any window), and the video
+## adapter and rendering method (render-stream-report/1's provenance.receiver).
+##
 ## Pipeline compilation counts stay declared `unavailable` rather than guessed: nothing here
 ## measures them yet.
 
@@ -107,6 +112,12 @@ var decode_us := Histogram.new()
 var apply_us := Histogram.new()
 var fetch_us := Histogram.new()
 var frame_interval_us := Histogram.new()
+## G6c (gate6-design.md Q7d `separation`): the viewport's measured render time, sampled once per
+## frame (microseconds of RenderingServer.viewport_get_measured_render_time_gpu/_cpu, which read
+## the GL timer queries two frames late, g3u.cpp:324-358); rendered receivers only, frames whose
+## value is still 0 (nothing measured yet) skipped.
+var gpu_render_us := Histogram.new()
+var cpu_render_us := Histogram.new()
 
 var _last_frame_us: int = -1
 var _start_ms: int = 0
@@ -115,6 +126,7 @@ var _timeline: Array[Dictionary] = []
 ## Set once, the first time a render-time query is attempted (Godot's own
 ## viewport_set_measure_render_time must run before the first measured frame).
 var _measure_enabled: bool = false
+var _measure_viewport: RID = RID()
 
 const BYTES_PER_PAGE_STATM_UNIT: int = 4096  # overridden by the actual page size, below
 
@@ -138,7 +150,20 @@ func enable_render_time_measurement(viewport_rid: RID) -> void:
 	if _measure_enabled:
 		return
 	_measure_enabled = true
+	_measure_viewport = viewport_rid
 	RenderingServer.viewport_set_measure_render_time(viewport_rid, true)
+
+
+## G6c: one gpu_render_us/cpu_render_us sample per frame, once measurement is on (rendered only).
+func record_render_time(headless: bool) -> void:
+	if headless or not _measure_enabled:
+		return
+	var gpu_ms: float = RenderingServer.viewport_get_measured_render_time_gpu(_measure_viewport)
+	var cpu_ms: float = RenderingServer.viewport_get_measured_render_time_cpu(_measure_viewport)
+	if gpu_ms > 0.0:
+		gpu_render_us.add(roundi(gpu_ms * 1000.0))
+	if cpu_ms > 0.0:
+		cpu_render_us.add(roundi(cpu_ms * 1000.0))
 
 
 ## {"status", "value"} for one of the two measured_render_time getters. `headless` is
@@ -183,6 +208,8 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 	_last_timeline_second = elapsed_s
 	_timeline.append({
 		"t_us": Time.get_ticks_usec(),
+		# G6c: frames drawn so far (D9's receiver frame rate counts frame_post_draw).
+		"frames": Engine.get_frames_drawn(),
 		"rss_bytes": read_rss_bytes(),
 		"texture_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED),
 		"buffer_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED),
@@ -209,6 +236,8 @@ func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
 			"apply_us": apply_us.to_dict(),
 			"fetch_us": fetch_us.to_dict(),
 			"frame_interval_us": frame_interval_us.to_dict(),
+			"gpu_render_us": gpu_render_us.to_dict(),
+			"cpu_render_us": cpu_render_us.to_dict(),
 		},
 		"unavailable_stages": [
 			{"stage": "resolve_us", "reason": "combined with decode_us inside RsApplier.accept_record, which G6r does not split"},
@@ -219,5 +248,12 @@ func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
 			"gpu_render_ms": render_time(viewport_rid, headless, true),
 		},
 		"counts": counts,
+		# G6c: render-stream-report/1's provenance.receiver (empty adapter strings when headless).
+		"rendering_method": RenderingServer.get_current_rendering_method(),
+		"adapter": {
+			"vendor": RenderingServer.get_video_adapter_vendor(),
+			"name": RenderingServer.get_video_adapter_name(),
+			"api_version": RenderingServer.get_video_adapter_api_version(),
+		},
 		"timeline": _timeline,
 	}

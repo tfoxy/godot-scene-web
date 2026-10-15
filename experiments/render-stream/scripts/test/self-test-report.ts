@@ -45,6 +45,7 @@ import { probeHostProvenance, sha256File } from "../lib/provenance";
 import {
   aggregate,
   type RenderStreamReport,
+  type ReportAggregate,
   type ReportDist,
   type ReportProvenance,
   type ReportRate,
@@ -52,7 +53,11 @@ import {
   validate,
 } from "../lib/render-stream-report";
 import { buildReport } from "../report-gate6";
-import { startThrottleProxy, THROTTLE_PROFILES } from "../throttle-proxy";
+import {
+  queueLimitBytes,
+  startThrottleProxy,
+  THROTTLE_PROFILES,
+} from "../throttle-proxy";
 
 let assertions = 0;
 let failures = 0;
@@ -328,6 +333,31 @@ function reportCases(): void {
   );
   failsWith("only 4 repeats", fourRepeats, "repeat-count");
 
+  // G6c: a single functional repeat (warmup and aggregate null) validates with {repeats: 1} only.
+  const single = clone(good);
+  single.scenarios[0].repeats = single.scenarios[0].repeats.slice(0, 1);
+  single.scenarios[0].warmup = null;
+  single.scenarios[0].aggregate = null;
+  const singleErrors = validate(single, { repeats: 1 });
+  assert(
+    "a single-repeat report (warmup and aggregate null) validates with {repeats: 1}",
+    singleErrors.length === 0,
+    singleErrors.join(" | "),
+  );
+  failsWith(
+    "a single-repeat report under the default five",
+    single,
+    "repeat-count",
+  );
+  const singleWithAggregate = clone(single);
+  singleWithAggregate.scenarios[0].aggregate = {};
+  assert(
+    "a single-repeat report that carries an aggregate fails with aggregate-mismatch",
+    validate(singleWithAggregate, { repeats: 1 }).some((e) =>
+      e.startsWith("aggregate-mismatch:"),
+    ),
+  );
+
   const warmupNotDiscarded = clone(good);
   (
     warmupNotDiscarded.scenarios[0].warmup as unknown as { discarded: boolean }
@@ -375,7 +405,9 @@ function reportCases(): void {
   failsWith("memory field not a number", badMemory, "memory-entry");
 
   const badAggregate = clone(good);
-  badAggregate.scenarios[0].aggregate["rates.host_frame.value"] = {
+  (badAggregate.scenarios[0].aggregate as ReportAggregate)[
+    "rates.host_frame.value"
+  ] = {
     median: -1,
     min: -1,
     max: -1,
@@ -441,6 +473,9 @@ async function throttleProxyRateCase(): Promise<void> {
   const chunk = Buffer.alloc(16384, 7);
   const echo = createServer((sock) => {
     sock.on("data", () => {});
+    // Since G6c the proxy pauses a source above its link buffer, so at stop() this socket still
+    // has unread bytes on the proxy's side and the teardown resets it.
+    sock.on("error", () => {});
     const timer = setInterval(() => {
       if (!sock.destroyed) sock.write(chunk);
     }, 5);
@@ -515,6 +550,67 @@ async function throttleProxyDelayCase(): Promise<void> {
 // ======================================================================================
 // 4. proc-sampler.ts against a real child process
 // ======================================================================================
+
+// G6c: the link has a bounded buffer (the source is paused above queueLimitBytes, so the sender
+// sees TCP backpressure), and a side that ends no longer drops what the proxy still holds.
+async function throttleProxyBackpressureCase(): Promise<void> {
+  // A faster link than `constrained` (same shape) so that enough bytes to fill the loopback
+  // kernel buffers (several MB) cross it in a few seconds.
+  const profile = {
+    rateBytesPerSec: 5_000_000,
+    burstBytes: 65_536,
+    delayMs: 5,
+  };
+  const total = 16_000_000;
+  let writerBlocked = 0;
+  const server = createServer((sock) => {
+    sock.on("error", () => {});
+    const chunk = Buffer.alloc(65_536, 3);
+    let sent = 0;
+    const pump = () => {
+      while (sent < total) {
+        const n = Math.min(chunk.length, total - sent);
+        sent += n;
+        if (!sock.write(chunk.subarray(0, n))) {
+          writerBlocked++;
+          sock.once("drain", pump);
+          return;
+        }
+      }
+      sock.end();
+    };
+    pump();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const handle = await startThrottleProxy({
+    targetHost: "127.0.0.1",
+    targetPort: port,
+    profile,
+  });
+  const client = netConnect({ host: "127.0.0.1", port: handle.port });
+  let received = 0;
+  client.on("data", (d: Buffer) => {
+    received += d.length;
+  });
+  await new Promise<void>((resolve) => client.once("end", () => resolve()));
+  client.destroy();
+  const stats = await handle.stop();
+  server.close();
+  assert(
+    "throttle proxy delivers everything the server sent before its FIN (G6c drain on end)",
+    received === total,
+    `received ${received} of ${total}`,
+  );
+  assert(
+    "throttle proxy pauses a source above its link buffer, so the sender sees backpressure (G6c)",
+    stats.server_to_client.pauses > 0 &&
+      stats.server_to_client.max_pending_bytes <=
+        queueLimitBytes(profile) + 65_536 * 2 &&
+      writerBlocked > 0,
+    `pauses ${stats.server_to_client.pauses}, max pending ${stats.server_to_client.max_pending_bytes} (limit ${queueLimitBytes(profile)}), writer blocked ${writerBlocked}x`,
+  );
+}
 
 async function procSamplerCase(): Promise<void> {
   // The contract's own wording (Q7f's "Checks"): "the sampler reads its own process." A spawned
@@ -826,7 +922,7 @@ async function buildReportCase(tmpDir: string): Promise<void> {
   );
   assert(
     "the built scenario's aggregate was computed, not left empty",
-    Object.keys(built.scenarios[0].aggregate).length > 0,
+    Object.keys(built.scenarios[0].aggregate ?? {}).length > 0,
   );
 }
 
@@ -838,6 +934,7 @@ async function main(): Promise<void> {
   deltaLines();
   await throttleProxyRateCase();
   await throttleProxyDelayCase();
+  await throttleProxyBackpressureCase();
   await procSamplerCase();
 
   const tmpDir = await mkdtemp(join(tmpdir(), "rs-g6t-selftest-"));

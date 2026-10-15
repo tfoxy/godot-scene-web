@@ -678,6 +678,16 @@ void perf_timeline_tick(uint64_t now_ns) {
               ",\"ticks_credit_blocked\":" + std::to_string(s.ticks_credit_blocked) +
               ",\"max_pending_age_us\":" + std::to_string(s.max_pending_age_us) +
               ",\"bytes_sent\":" + std::to_string(s.bytes_sent) +
+              // G6c: the ack counts per stage (host clock), so Q7d's received/applied/submitted
+              // rates come from the measured window, the queue high-water marks so far, and the
+              // credit round trip's running totals (a window's mean RTT, in us and host frames).
+              ",\"acks\":[" + std::to_string(s.acks[0]) + "," + std::to_string(s.acks[1]) + "," +
+              std::to_string(s.acks[2]) + "]" +
+              ",\"max_in_flight\":" + std::to_string(s.max_in_flight) +
+              ",\"max_queued_bytes\":" + std::to_string(s.max_queued_bytes) +
+              ",\"credit_rtt_count\":" + std::to_string(s.credit_rtt_count) +
+              ",\"credit_rtt_sum_us\":" + std::to_string(s.credit_rtt_sum_us) +
+              ",\"credit_rtt_frames_sum\":" + std::to_string(s.credit_rtt_frames_sum) +
               // G6s (Q7e "soak-inline"): this connection's carried-hash set size, read fresh
               // each tick (Hub::summaries()). It only ever grows (render-stream-2.md's
               // resource-duplicate rule means a carried hash is never forgotten), so the check

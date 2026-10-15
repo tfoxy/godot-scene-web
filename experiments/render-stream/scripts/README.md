@@ -2571,3 +2571,87 @@ half; an honest leg's ordinary ±1 transient tick is NOT flagged, via the growth
 or never evicting, fails; `no-evict` passes only truly un-evicted), `checkRssBounded` (flat passes;
 a rise past either side's delta or slope fails; the no-`/proc`-samples fallback) and
 `checkCarriedGrowthBounded` (flat passes; growth at TEXA's own rate passes; runaway growth fails).
+
+## Gate 6 files (g6c)
+
+G6c ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6c", Q7d) measures publication
+rates, rate mismatch, two receivers on one host, an injected receiver delay against a GPU-limited
+receiver, and a constrained transport, on the fixtures' `rate` timeline in `realtime` time
+(`--legs g6c`; "As built (G6c)" in the design records every decision).
+
+- `lib/gate6c-legs.sh` (`run_g6c`): hosts in the background (armed, `GRC_LIVE_LISTEN=127.0.0.1:0`,
+  `GRC_HOOK_LOG=off` unless the sabotage, no file sink, no tap), rendered receivers launched in the
+  background in the private gamescope (`RS_RECEIVER_PERF_OUT`, `RS_RECEIVER_SHOT_FINAL=1`), a
+  `/proc` sampler (`sample-proc.ts`, G6s's CLI) on every host and receiver, `throttle-proxy.ts`
+  between receiver and host on the constrained legs, each leg's final-state reference (the
+  fixture's file timeline with `RS_FIXTURE_FREEZE_STATE` from the host's own step-11 log line), and
+  the `gpu-heavy` calibration (short gate6-hd `gpu-heavy` hosts until the 1920×1080 receiver's GPU
+  p50 is within 15 % of 40 ms; `calibration.json`). The display proof is split: the X socket's
+  ownership once per gamescope session (`display-socket-proof-<size>.json`), each receiver's own
+  `DISPLAY`/`WAYLAND_DISPLAY` in `display-ownership.json` (the full walk takes ~30 s of a busy core
+  and would overlap a measured window). `G6C_LEGS=<csv>` (runner environment) runs a subset.
+- `run-gate6.sh`: group `g6c`, `EXTRA_CHILD_PIDS` (stopped by the cleanup trap only while their
+  command line still names this run's binary or a render-stream script).
+- `lib/gate6c-checks.ts`: the window (step 1's frame plus 20 s of the host clock, from
+  `perf-timeline.jsonl`), rates from the timeline's cumulative counters, the receiver frame rate from
+  its perf timeline's `frames` moved onto its clock, the credit capacity, every Q7d evaluator, the
+  leg classes, `final-latest-state`, and one `render-stream-report/1` per leg (`repeatOf`,
+  `writeLegReport`: `<leg>/report-set/` and `<leg>/render-stream-report.json`, `--repeats 1`).
+- Capture: `perf-timeline.jsonl` connection entries gain `acks` (received, applied, submitted),
+  `max_in_flight`, `max_queued_bytes` and the credit RTT's running totals (`credit_rtt_count`,
+  `_sum_us`, `_frames_sum`); the WebSocket I/O thread is named `rs-ws-io` (the report's
+  `host_io_thread_s` from `/proc`).
+- Receiver: `RS_RECEIVER_SHOT_FINAL`; `rs_perf.gd` adds `gpu_render_us`/`cpu_render_us` per frame,
+  `frames` per timeline line and the adapter.
+- Fixtures: `RS_FIXTURE_FREEZE_STATE`, step 11's `freeze` in rate and soak step logs,
+  `RS_FIXTURE_QUIT_TIME` (gate6-scene).
+- `throttle-proxy.ts`: a bounded link buffer per connection and direction (one burst plus the
+  bandwidth-delay product; the source is paused above it, so TCP backpressure reaches the sender),
+  drain-then-end when a side stops sending, stats summed over every connection
+  (`max_pending_bytes`, `pauses`, `queue_limit_bytes`), and its pid on the first stdout line.
+- `lib/render-stream-report.ts` `validate(report, {repeats: 1})` and `report-gate6.ts --repeats 1`:
+  a single functional repeat (`warmup` and `aggregate` null), validated, not aggregated.
+- `test/self-test-gate6c.ts` (run from `self-test-gate6.ts` section 11); `test/self-test-report.ts`
+  gains the single-repeat and the proxy backpressure cases.
+
+## Gate 6 legs and evidence under `--out` (g6c)
+
+| Leg | Host | Receiver(s) |
+| --- | --- | --- |
+| `rate-baseline` | `--max-fps 60`, listening, no subscriber | none |
+| `rate-15`, `-30`, `-60` | `GRC_PUBLISH_FPS=15/30/60`, `--max-fps 60` | `--max-fps 60` |
+| `rate-uncapped-host60` | uncapped, `--max-fps 60` | `--max-fps 60` |
+| `rate-uncapped` | uncapped, `--max-fps 0` | `--max-fps 0` |
+| `mismatch-60-recv30` | `GRC_PUBLISH_FPS=60`, `--max-fps 60` | `--max-fps 30` |
+| `mismatch-15-recv60` | `GRC_PUBLISH_FPS=15`, `--max-fps 60` | `--max-fps 60` |
+| `dual-60-15` | uncapped, `--max-fps 60`, `GRC_LIVE_MAX_CONNECTIONS=2` | `receiver-a` `--max-fps 60`, `receiver-b` `--max-fps 15` |
+| `recv-delay` | `GRC_PUBLISH_FPS=60` | `--max-fps 60 --frame-delay 40` |
+| `constrained` | `GRC_PUBLISH_FPS=60` | through `throttle-proxy.ts --profile constrained` (`proxy/stats.json`) |
+| `sabotage-constrained-ignore-credit` | as `constrained`, `GRC_SABOTAGE=ignore-credit` from frame 900, `GRC_HOOK_LOG=on`, every payload inline, `RS_FIXTURE_QUIT_TIME=75` | through the proxy |
+| `gpu-heavy` | gate6-hd `gpu-heavy` (native), the calibrated `RS_FIXTURE_BURN_ITERATIONS`, `GRC_PUBLISH_FPS=60` | `--max-fps 60 --resolution 1920x1080` |
+
+All under `rates/<leg>/{host,receiver*,proxy,reference}/`, with `rates/gpu-heavy-calibration/`,
+`rates/provenance-input.json` and `rates/legs-run.txt`.
+
+## Gate 6 criteria (g6c)
+
+Per leg `leg-class-<leg>` (`success`; the sabotage `delivery-violation` failing exactly
+`pending-bounded` and `queue-bounded`) and `final-latest-state-<leg>` (every receiver's final shot
+names a transaction at or after step 11's frame and equals the leg's reference, whole frame, budget
+0). `baseline-recorded`; `rate-achieved` (rate-15/-30/-60, mismatch-15-recv60: published in [0.95 ×
+min(target, credit capacity), 1.02 × target], applied within 2 %, submitted = applied ± 1 (not for
+mismatch-15), receiver frame rate in [57, 61]); `published-vs-host` and `limited-by` (published ≥
+0.95 × min(host frame rate, credit capacity); `limited_by` host-frame, credit or transport with its
+evidence); `rate-mismatch` and `host-unperturbed` (mismatch-60-recv30); `dual-independent`;
+`separation` (recv-delay `injected-delay`, gpu-heavy `gpu-limited`); `credit-rtt`, `pending-bounded`,
+`queue-bounded` and `host-unperturbed` (constrained); `g6c-reports-valid`. The credit capacity is
+the host frame rate over the window's mean credit RTT in host frames ("As built (G6c)" 2).
+
+## Gate 6 self-test (g6c)
+
+`self-test-gate6.ts` section 11 runs `test/self-test-gate6c.ts`: histogram percentiles, the window
+and the timeline rates, the receiver frame rate on its own clock, every rate evaluator with a
+passing case (including a phase-locked 60/60 leg at 30) and failing cases (a host sitting on
+credits, a burst above the target, a slow receiver, a missing credit-blocked tick, B above its frame
+rate, two snapshots per frame), `limited_by` (host-frame, credit, transport), the separation
+classes, the transport bounds and the leg classes.

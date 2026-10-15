@@ -1491,6 +1491,117 @@ as a `render-stream-report/1` with one repeat (validated, not aggregated) so G6p
 (requested, host frame, published, applied, submitted, receiver frame, presented `unavailable`) per
 leg, the `limited_by` findings, and the separation numbers.
 
+**As built (G6c, 2026-10-14).** `--legs g6a,g6h,g6l,g6b,g6c` passed 133/133 (g6c: 41 checks over
+13 legs; README "Gate 6c result"), with gates −1, 0, 1 and 2 green on the same build. After G6s
+merged, gates −1 to 2 are green again. `--legs g6a,g6h,g6l,g6b,g6s,g6c` was 147/150: three g6c
+timing checks failed while another gate 6 ran on the machine, and the g6c rerun was 41/41. The group is
+`lib/gate6c-legs.sh` and `lib/gate6c-checks.ts`. Decisions and findings, each from a run:
+
+1. **Measurement plumbing.** The legs are timed (D11): `GRC_HOOK_LOG=off`, no file sink, no tap.
+   Every rate is counted over Q6c's window, step 1's applied frame (game time 6 s) plus 20 s of the
+   host clock. The counts come from cumulative counters in `perf-timeline.jsonl`, so a rate is an
+   exact count over the 19 s between the first and last timeline lines inside the window. The
+   capture adds to each connection's timeline entry the ack counts per stage, `max_in_flight`,
+   `max_queued_bytes`, and the credit RTT's running totals (count, µs, host frames). It also names
+   the WebSocket I/O thread `rs-ws-io`, so `/proc` gives `host_io_thread_s`. The receiver's
+   `rs_perf.gd` adds `frames` to each timeline line and per-frame `gpu_render_us`/`cpu_render_us`
+   histograms. The receiver frame rate is the window moved onto the receiver's clock by the median
+   of `received_us` minus the host time of each transaction's frame. The host frame-interval p95 of
+   `host-unperturbed` interpolates inside the 6.25 % histogram bucket. It was 17 357–17 360 µs on
+   every leg and the baseline.
+2. **At 60/60, 60 published per second depends on the phase of two clocks.** Rate-60's 0.95 × 60
+   bound, rate-uncapped-host60's 0.95 × host frame rate and dual's "A ≥ 0.95 × 60" fail on about
+   half the runs. Published per second, by run:
+
+   | Leg | dev1 | dev2 | dev3 | dev4 | r1 |
+   | --- | --- | --- | --- | --- | --- |
+   | rate-60 | 57.6 | | 59.1 | 28.7 | 58.3 |
+   | rate-uncapped-host60 | | 29.95 | 29.1 | 29.5 | 58.8 |
+   | dual-60-15 A | | | 29.6 | 58.2 | 59.1 |
+
+   The cause, read from source and evidence: one transaction is in flight (credit window 1), and
+   the host sends only at a frame callback. The receiver reads its socket only in `_process`, then
+   acks `submitted` at `frame_post_draw`, about 6 ms later (hold p50 5.9–6.4 ms in every run). A
+   transaction that lands just after the receiver's `_process` waits most of a receiver frame. Two
+   `--max-fps 60` loops on one clock keep their relative phase for the whole run. In a good phase
+   the credit RTT is about 14 ms and lands within one host frame (window mean 1.02 frames, ~59/s).
+   In a bad phase it is about 23 ms (mean 2.04–2.09 frames), so the host sends every other
+   callback (~29/s), and nothing on the host can recover the lost callback.
+   **As built**, every lower bound is 0.95 × min(nominal, credit capacity). The credit capacity is
+   host frames per second over the window's mean credit RTT in host frames: the most a host that
+   sends only at callbacks can publish with one transaction in flight. It catches a host that sits
+   on a credit or bursts above its target, but it no longer asserts that 60/60 reaches 60 (the
+   upper bounds are unchanged). That claim is a negative finding. Lifting it needs a credit window
+   of 2, or a receiver that reads and acks closer to the draw. Both change the protocol or the
+   receiver's pacing, so they are deferred to gate 7's receiver work.
+3. **A slow receiver loses frames to its own fetches.** mismatch-60-recv30 published 26.7–29.1/s
+   against a receiver at 30.0/s (Q7d asks [0.95, 1.05] ×). dual's B published 10.9–13.2/s against
+   15.0/s. Each TEXA, atlas or mesh fetch is an HTTP round trip polled once per `_process` (G2c2),
+   so a receiver at 30 or 15 fps loses a whole frame per fetch (G6l's receiver holds). As built,
+   `rate-mismatch` is published in [0.95 × min(60, credit capacity), 1.05 × receiver frame rate]
+   plus `ticks_credit_blocked` > 0. The measured ratio to the receiver frame rate is reported.
+4. **`dual-independent`.** A's credit RTT p95 carries the phase of finding 2 (21.6 ms in r1, 26.5 ms
+   for rate-uncapped-host60 in r1, 36.5 ms in a bad-phase run), so comparing it across two runs
+   tests the phase, not B. As built, A's receiver hold p95 (`received_us` to `submitted_us`, the
+   phase-free part of the RTT) must be within 10 % of rate-uncapped-host60's. Across five runs it
+   was 19.7–21.2 ms. Each connection must also be served promptly (0.95 × min(nominal, its own
+   credit capacity)), B must never publish above its frame rate, and there must be one snapshot
+   copy per host frame. Q7d's literal p95 values are reported.
+5. **`limited_by`** is `host-frame` when published reaches 0.95 × the host frame rate. Otherwise,
+   when published reaches 0.95 × the credit capacity, it is `transport` if the link adds at least
+   half the window's mean credit RTT, else `credit`. The link's share is the constrained leg's mean
+   minus rate-60's mean on loopback, so the receiver's fetches over the link count as transport.
+   rate-uncapped: the headless host ran at ~24 000 fps (`--max-fps 0`, low-processor sleep 0), the
+   receiver at ~138 fps, and published 137/s: `credit`, a 7.2 ms round trip.
+6. **`final-latest-state` under realtime time.** Step 11 freezes MS, SM, AN and PB to fixed values.
+   The `animate` writes it does not reset (SC's triangle scroll, LB's "Frame %04d", CD's k) are
+   whatever the wall clock reached, and a game frame that realtime pacing skips also skips its
+   write. The builder's `freeze_state()` logs them in step 11's `freeze` field of rate and soak step
+   logs. Each leg's reference is the fixture's file timeline with `RS_FIXTURE_FREEZE_STATE` set to
+   the host's own values. The receiver's `RS_RECEIVER_SHOT_FINAL` shoots the last applied
+   transaction after the end record, because a realtime leg's freeze lands at no predictable host
+   frame. The shot must name a frame at or after step 11's, and it must equal the reference with
+   budget 0. Every leg was 0 px.
+7. **The sabotage needs inline payloads and a working link buffer.**
+   (a) Over HTTP, ignore-credit on the constrained link failed the receiver with
+   `resource-unavailable` (HTTP 404 at seq 46, dev1). D7 pins "the last transaction sent", which
+   assumes credit, so on a slow link a payload is retired before the receiver's fetch reaches it.
+   As built, the sabotage carries every payload inline (`GRC_RESOURCE_INLINE_MAX_BYTES` 1 MiB,
+   G6s's live cap) and keeps the hook log on (Q3d).
+   (b) As G6t built it, `throttle-proxy.ts` read everything the host wrote at once. The host's own
+   queue therefore never grew, and a host closing the link dropped the proxy's backlog. G6c gives
+   each connection and direction a bounded link buffer: one burst plus the bandwidth-delay product,
+   80 536 B. Above it the source is paused, so TCP backpressure reaches the host. When one side
+   stops sending, the proxy delivers what it holds before ending the other side. Proxy stats are
+   now summed over every connection; before, the last connection overwrote them.
+   (c) The leg quits at 75 s of game time (`RS_FIXTURE_QUIT_TIME`, rate timeline only). The
+   backlog built from frame 900 drains after step 11's freeze (by about 49 s), so the receiver
+   reaches the end record. It fails exactly `pending-bounded` (1 123 in flight) and `queue-bounded`
+   (594 924 B queued against a 131 366 B largest message), classifies `delivery-violation`, and its
+   final shot equals the reference.
+8. **`gpu-heavy` calibration.** Each round runs a short gate6-hd `gpu-heavy` host (file timeline,
+   quit at frame 480) with a 1920×1080 receiver. The next guess is iterations × 40 / GPU p50
+   (at most 8× either way), and a round within 15 % stops. 8000 iterations gave 49.2 ms and 6510
+   gave 38.9 ms; 6510 was chosen (`calibration.json`). In the leg the GPU p50 was 40.8 ms of a 49.3 ms
+   frame interval (0.83 ≥ 0.8: `gpu-limited`). The extra ~9 ms is outside the viewport's GPU timer:
+   presentation through gamescope and the receiver's own work (two HD transactions per second, each
+   about 12 ms of decode, 10 ms of apply and 9 frame-quantized mesh fetches). recv-delay's frame
+   interval p50 is 49.1 ms with a 0.38 ms GPU (`injected-delay`).
+9. **The display proof is split.** `gs_verify_display_ownership` walks every `/proc/*/fd` in bash,
+   about 30 s of one core here. Run per receiver, it overlapped the measured window, and on the
+   dual leg it started receiver A 30 s late. g6c checks the X socket's owners once per gamescope
+   session, and each receiver records its own `DISPLAY`/`WAYLAND_DISPLAY`.
+10. **Reports.** `validate(report, {repeats: 1})` and `report-gate6.ts --repeats 1` accept one
+    functional repeat (`warmup` and `aggregate` null). Every leg writes
+    `rates/<leg>/render-stream-report.json`. Plain-number fields the schema requires but a leg cannot
+    measure (`host_pins_max`, `recv_pipeline_compilations`) carry 0 and are listed in the repeat's
+    `unavailable` array, an extension `validate` ignores. Since G6s merged, `recv_rids_max` comes
+    from the receiver timeline's `live_rids` and `recv_evictions` from its counters. Receiver RSS
+    is measured from the `/proc` sampler. A `/proc` sample taken while the process exits reads 0 and
+    is dropped.
+11. rate-15 and mismatch-15-recv60 are the same configuration in Q7d's table (target 15, host and
+    receiver 60). Both run.
+
 ---
 
 ### G6p — measurement matrix, deltas analysis, report (sonnet)

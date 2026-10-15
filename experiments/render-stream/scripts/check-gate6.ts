@@ -28,6 +28,11 @@ import {
 } from "./lib/gate6a-checks";
 import { type G6bLegEntry, runGate6b } from "./lib/gate6b-checks";
 import {
+  type G6cLegEntry,
+  type G6cRateRow,
+  runGate6c,
+} from "./lib/gate6c-checks";
+import {
   type G6hLegEntry,
   type Gate6HdExpected,
   runGate6h,
@@ -58,6 +63,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g6l",
   "g6b",
   "g6s",
+  "g6c",
 ];
 
 export interface Gate6Report {
@@ -68,7 +74,12 @@ export interface Gate6Report {
   groups: { run: string[]; landed: string[]; not_run: string[] };
   legs: Record<
     string,
-    G6aLegEntry | G6hLegEntry | G6lLegEntry | G6bLegEntry | G6sLegEntry
+    | G6aLegEntry
+    | G6hLegEntry
+    | G6lLegEntry
+    | G6bLegEntry
+    | G6sLegEntry
+    | G6cLegEntry
   >;
   checks: Gate6Check[];
   checkpoints: Gate6Checkpoint[];
@@ -84,8 +95,9 @@ export interface Gate6Report {
   live: Record<string, G6lTiming>;
   /** G6b: the presentation hazard's differing pixel-shots per region base name */
   hazard: Record<string, number>;
-  /** filled by later increments (G6c, G6s) */
-  rates: Record<string, unknown>;
+  /** g6c (G6c): per leg, Q7d's rate table, limits, separation and transport numbers */
+  rates: Record<string, G6cRateRow>;
+  /** filled by later increments (G6s) */
   stability: Record<string, unknown>;
 }
 
@@ -211,6 +223,12 @@ async function main(): Promise<void> {
     Object.assign(report.legs, r.legs);
     Object.assign(report.stability, r.stability);
   }
+  if (run.includes("g6c")) {
+    const r = await runGate6c(out);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    Object.assign(report.rates, r.rates);
+  }
   for (const group of report.groups.not_run)
     report.checks.push({
       id: `group-${group}`,
@@ -253,6 +271,12 @@ async function main(): Promise<void> {
   for (const [leg, t] of Object.entries(report.live))
     console.log(
       `  live ${leg}: credit RTT median ${t.credit_rtt_us?.median ?? "?"} us p95 ${t.credit_rtt_us?.p95 ?? "?"} us, staleness p50 applied ${t.staleness_p50_us.applied ?? "?"} us submitted ${t.staleness_p50_us.submitted ?? "?"} us, ${t.fetch_us.count} fetches p50 ${t.fetch_us.p50 ?? "?"} us p95 ${t.fetch_us.p95 ?? "?"} us${t.stall ? `, stall frames ${t.stall.send_frame}->${t.stall.credit_frame} (${t.stall.measured_ms?.toFixed(0)} ms), recovery ${t.stall.recovery_frame}${t.stall.stale_from !== null ? ` stale_from ${t.stall.stale_from}` : ""}` : ""}${t.reconnect ? `, reconnect after ${t.reconnect.after_frame}, connection 2 from ${t.reconnect.first_frame_2} (${t.reconnect.dispose_to_applied_ms?.toFixed(1)} ms)` : ""}`,
+    );
+  const f = (v: number | null | undefined, d = 1): string =>
+    v === null || v === undefined ? "-" : v.toFixed(d);
+  for (const [leg, row] of Object.entries(report.rates))
+    console.log(
+      `  rates ${leg}: requested ${row.requested ?? "uncapped"}, host ${f(row.host_frame)}, published ${row.published.map((v) => f(v)).join("/")}, applied ${row.applied.map((v) => f(v)).join("/")}, submitted ${row.submitted.map((v) => f(v)).join("/")}, receiver frame ${row.receiver_frame.map((v) => f(v)).join("/")}, presented unavailable${row.limited_by ? `, limited_by ${row.limited_by.limited_by}` : ""}${row.separation ? `, ${row.separation} (frame p50 ${f(row.receiver_frame_interval_p50_us[0], 0)} us, GPU p50 ${f(row.receiver_gpu_render_p50_us[0], 0)} us)` : ""}`,
     );
   for (const [name, c] of Object.entries(report.census))
     console.log(`  census (${name}): ${c}`);

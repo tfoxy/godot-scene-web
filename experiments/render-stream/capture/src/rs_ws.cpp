@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -1026,6 +1027,9 @@ bool Server::start(const ServerConfig &config, ResourceSource *source, std::stri
   impl_->stop_requested.store(false);
   impl_->running.store(true);
   impl_->io_thread = std::thread([this] { impl_->io_loop(); });
+  // G6c: a name the runner's /proc sampler can find (task/<tid>/comm), so the report's
+  // host_io_thread_s is this thread's own CPU time. Best effort: a failure changes nothing else.
+  pthread_setname_np(impl_->io_thread.native_handle(), "rs-ws-io");
   return true;
 }
 

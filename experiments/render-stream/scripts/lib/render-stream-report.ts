@@ -233,9 +233,11 @@ export interface ReportScenario {
     connections: number;
     time: TimeMode;
   };
-  warmup: { run_dir: string; discarded: true };
+  /** null only in a single-repeat functional report (`validate(…, {repeats: 1})`, G6c) */
+  warmup: { run_dir: string; discarded: true } | null;
   repeats: ReportRepeat[];
-  aggregate: ReportAggregate;
+  /** null only in a single-repeat functional report: one repeat is validated, not aggregated */
+  aggregate: ReportAggregate | null;
 }
 
 /** D15; the shape `scripts/analyze-deltas.ts` produces. Optional until G6p computes it for real:
@@ -433,9 +435,18 @@ export function isRenderedDesktopGlReceiver(
   );
 }
 
+/** How many repeats each scenario must carry: Q7f's measured protocol (5, one discarded warmup,
+ * an aggregate) or G6c's single functional repeat (1, `warmup` and `aggregate` both null: "every
+ * g6c leg's measurements are also written as a render-stream-report/1 with one repeat (validated,
+ * not aggregated)"). */
+export interface ValidateOptions {
+  repeats?: 1 | 5;
+}
+
 /** Schema plus internal-consistency checks (Q7f "Rules enforced by validate"). Returns every
  * problem found, each `"<code>: <detail>"`; `[]` means the report is valid. */
-export function validate(input: unknown): string[] {
+export function validate(input: unknown, opts: ValidateOptions = {}): string[] {
+  const expectedRepeats = opts.repeats ?? 5;
   const errors: string[] = [];
   if (!isPlainObject(input)) {
     return ["report-entry: top level is not an object"];
@@ -539,12 +550,21 @@ export function validate(input: unknown): string[] {
         `scenario-entry: ${where}: arm is ${JSON.stringify(raw.arm)}`,
       );
     }
-    if (!isPlainObject(raw.warmup) || raw.warmup.discarded !== true) {
+    if (expectedRepeats === 1) {
+      if (raw.warmup !== null)
+        errors.push(
+          `scenario-entry: ${where}: a single-repeat report has no warmup (warmup must be null)`,
+        );
+      if (raw.aggregate !== null)
+        errors.push(
+          `aggregate-mismatch: ${where}: a single-repeat report is not aggregated (aggregate must be null)`,
+        );
+    } else if (!isPlainObject(raw.warmup) || raw.warmup.discarded !== true) {
       errors.push(`scenario-entry: ${where}: warmup.discarded must be true`);
     }
-    if (!Array.isArray(raw.repeats) || raw.repeats.length !== 5) {
+    if (!Array.isArray(raw.repeats) || raw.repeats.length !== expectedRepeats) {
       errors.push(
-        `repeat-count: ${where}: ${Array.isArray(raw.repeats) ? raw.repeats.length : "none"} repeats, expected exactly 5`,
+        `repeat-count: ${where}: ${Array.isArray(raw.repeats) ? raw.repeats.length : "none"} repeats, expected exactly ${expectedRepeats}`,
       );
       continue;
     }
