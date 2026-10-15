@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>$GODOT_PROJECT_NAME</title>
+<link rel="icon" href="data:,">
+<!--
+  render-stream web-export receiver shell (gate7-design.md Q4 "Shell", G7e). Godot's own $GODOT_*
+  template variables plus the receiver's page glue:
+    1. reads the token from location.hash and removes it with history.replaceState before
+       anything else runs (D3: a fragment never reaches a server or a Referer);
+    2. reads ?env=<base64url JSON> {env: {NAME: value}, engine_args: [...], canvas: [w, h],
+       sabotage: "css-opacity"?} and builds the engine's args: engine_args, then "--", then one
+       --rs-env=NAME=VALUE per entry (RsConfig reads them from OS.get_cmdline_user_args()), plus
+       RS_RECEIVER_PAGE_ORIGIN = location.origin (RsIo's same-origin host and port) and, when a
+       fragment token was given, RS_RECEIVER_TOKEN;
+    3. places performance marks around Engine.init, startGame and its promise, and on the first
+       receiver line, the exit and a context loss (D15);
+    4. exposes window.__rsWasmHeap() (the wasm memory's byteLength; emscripten never shrinks it,
+       D16), captured from WebAssembly.instantiate(Streaming) before godot.js runs;
+    5. on webglcontextlost marks rs-context-lost, PUTs a context-lost.json stub to
+       RS_RECEIVER_EVIDENCE_URL and reloads (the engine itself only alerts "please reload");
+    6. sets the canvas's width/height attributes and CSS size to the presentation size (DPR 1).
+  window.__rsShell carries the parsed config, the exit code ({code, t}) and the engine's printed
+  lines with their performance.now() times, for the harness.
+-->
+<style>
+html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+#canvas { display: block; position: absolute; left: 0; top: 0; }
+/* The engine focuses the canvas on start: no focus ring may enter the compositor's frame. */
+#canvas:focus { outline: none; }
+</style>
+$GODOT_HEAD_INCLUDE
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+(function () {
+	"use strict";
+	const shell = { config: null, token: false, exit: null, lines: [], error: null, contextLost: false };
+	window.__rsShell = shell;
+	// 1. The fragment token, removed before anything else runs.
+	let token = "";
+	if (location.hash.length > 1) {
+		const fragment = new URLSearchParams(location.hash.slice(1));
+		token = fragment.get("token") || "";
+		history.replaceState(null, "", location.pathname + location.search);
+	}
+	shell.token = token !== "";
+	// 2. ?env=<base64url JSON>.
+	let parsed = { env: {}, engine_args: [], canvas: [640, 360], sabotage: null };
+	const encoded = new URLSearchParams(location.search).get("env");
+	if (encoded) {
+		const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+		const text = new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+		parsed = Object.assign(parsed, JSON.parse(text));
+	}
+	shell.config = parsed;
+	// 4. Capture the wasm memory before godot.js instantiates it.
+	let wasmMemory = null;
+	const keep = (result) => {
+		const instance = result && (result.instance || result);
+		const exports = instance && instance.exports;
+		if (exports) {
+			for (const value of Object.values(exports)) {
+				if (value instanceof WebAssembly.Memory) {
+					wasmMemory = value;
+				}
+			}
+		}
+		return result;
+	};
+	const instantiate = WebAssembly.instantiate.bind(WebAssembly);
+	WebAssembly.instantiate = (...a) => instantiate(...a).then(keep);
+	if (WebAssembly.instantiateStreaming) {
+		const streaming = WebAssembly.instantiateStreaming.bind(WebAssembly);
+		WebAssembly.instantiateStreaming = (...a) => streaming(...a).then(keep);
+	}
+	window.__rsWasmHeap = () => (wasmMemory ? wasmMemory.buffer.byteLength : null);
+	// 6. Presentation size, DPR 1.
+	const canvas = document.getElementById("canvas");
+	const size = parsed.canvas;
+	canvas.width = size[0];
+	canvas.height = size[1];
+	canvas.style.width = `${size[0]}px`;
+	canvas.style.height = `${size[1]}px`;
+	if (parsed.sabotage === "css-opacity") {
+		canvas.style.opacity = "0.99";
+	}
+	// 5. Context loss: mark, PUT a stub, reload.
+	canvas.addEventListener("webglcontextlost", () => {
+		performance.mark("rs-context-lost");
+		shell.contextLost = true;
+		const evidence = (parsed.env || {}).RS_RECEIVER_EVIDENCE_URL;
+		const body = JSON.stringify({ schema: "render-stream-context-lost/1", t_ms: performance.now() });
+		const put = evidence
+			? fetch(`${evidence.replace(/\/$/, "")}/context-lost.json`, { method: "PUT", body }).catch(() => {})
+			: Promise.resolve();
+		put.then(() => location.reload());
+	});
+	const args = [...(parsed.engine_args || []), "--"];
+	const env = Object.assign({}, parsed.env || {}, { RS_RECEIVER_PAGE_ORIGIN: location.origin });
+	if (token !== "") {
+		env.RS_RECEIVER_TOKEN = token;
+	}
+	for (const [name, value] of Object.entries(env)) {
+		args.push(`--rs-env=${name}=${value}`);
+	}
+	shell.args = args.filter((a) => !a.startsWith("--rs-env=RS_RECEIVER_TOKEN="));
+	shell.start = () => args;
+}());
+</script>
+<script src="$GODOT_URL"></script>
+<script>
+(function () {
+	"use strict";
+	const shell = window.__rsShell;
+	const GODOT_CONFIG = $GODOT_CONFIG;
+	const print = (stream) => (...parts) => {
+		const line = parts.join(" ");
+		const t = performance.now();
+		if (shell.lines.length < 20000) {
+			shell.lines.push({ t, stream, line });
+		}
+		if (line.startsWith("[receiver]") && performance.getEntriesByName("rs-receiver-first-line").length === 0) {
+			performance.mark("rs-receiver-first-line");
+		}
+		(stream === "err" ? console.error : console.log)(line);
+	};
+	// The print hooks must be in the constructor's config: init() builds the module config
+	// (engine.js), so a startGame override comes too late for them.
+	const engine = new Engine(Object.assign({}, GODOT_CONFIG, {
+		onPrint: print("out"),
+		onPrintError: print("err"),
+	}));
+	performance.mark("rs-engine-init-start");
+	engine.init(GODOT_CONFIG.executable).then(() => {
+		performance.mark("rs-engine-init-end");
+		performance.mark("rs-start-game-start");
+		return engine.startGame({
+			args: shell.start(),
+			onExit: (code) => {
+				performance.mark("rs-exit");
+				shell.exit = { code, t: performance.now() };
+			},
+		});
+	}).then(() => {
+		performance.mark("rs-start-game-end");
+	}, (err) => {
+		performance.mark("rs-start-game-failed");
+		shell.error = String(err && err.message ? err.message : err);
+		console.error(`[shell] ${shell.error}`);
+	});
+}());
+</script>
+</body>
+</html>

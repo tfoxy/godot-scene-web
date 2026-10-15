@@ -8,16 +8,24 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/check-gate7.ts --out <evidence dir>
 //
-// Right now NO `g7-*` leg group has landed (G7a..G7z are all later increments), so `ALL_GROUPS`
-// below is the FINAL vocabulary gate 7 passes against (protocol/gate7-design.md's closing
-// paragraph: `g7-0,g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6,g7-lc,g7-r,g7-k`), every one of them
-// `not-run`, and `gate_passed` reflects ONLY what G7h itself owns: the harness/provenance/probe
-// checks `self-test-browser-harness.ts` already wrote to `<out>/g7h-probes/evidence/probes.json`,
-// read back here and folded into `report.harness`. Requesting any `g7-*` group before its
-// increment lands is refused, exactly as `run-gate6.sh` refuses an unlanded group.
+// `ALL_GROUPS` below is the FINAL vocabulary gate 7 passes against (protocol/gate7-design.md's
+// closing paragraph) plus G7d's phone groups. Landed: g7-dev and g7-bench (G7d), and g7-0's web
+// half (G7e: `--source gate0=<run> --bundle <web bundle> --extension <.gdextension>`,
+// lib/gate7-adapters.ts checkGate0Web, reported in `results`). G7h's harness checks are folded
+// into `report.harness` when present. Requesting a group before its increment lands is refused,
+// exactly as `run-gate6.sh` refuses an unlanded group.
 
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import type { Gate0Expected } from "./lib/gate0-checks";
+import {
+  checkGate0Web,
+  currentBuildProvenance,
+  type Gate7GroupResult,
+} from "./lib/gate7-adapters";
 
 import {
   type BenchTableRow,
@@ -25,6 +33,18 @@ import {
   runGate7BenchChecks,
   runGate7DevChecks,
 } from "./lib/gate7d-checks";
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
+const REPO_ROOT = resolve(EXPERIMENT_DIR, "..", "..");
+const PINNED_LINUX_TEMPLATE = join(
+  homedir(),
+  ".cache",
+  "godot-render-stream",
+  "templates",
+  "4.5.1-stable",
+  "linux_release.x86_64",
+);
 
 /** The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus G7d's phone groups
  * (`g7-dev`, Q13d; `g7-bench`, Q13e). */
@@ -43,7 +63,7 @@ export const ALL_GROUPS = [
   "g7-dev",
   "g7-bench",
 ] as const;
-export const LANDED_GROUPS: readonly string[] = ["g7-dev", "g7-bench"];
+export const LANDED_GROUPS: readonly string[] = ["g7-0", "g7-dev", "g7-bench"];
 
 interface HarnessCheck {
   id: string;
@@ -79,16 +99,38 @@ export interface Gate7Report {
   group_checks: Record<string, Gate7Check[]>;
   /** G7d: the bench's per-receiver, per-input, per-phase table (g7-bench). */
   bench_table: BenchTableRow[];
+  /** G7e: one entry per requested group and receiver kind (g7-0 web). */
+  results: Gate7GroupResult[];
 }
 
-function parseArgs(argv: string[]): { out: string; legs: string[] } {
+interface Args {
+  out: string;
+  legs: string[];
+  sources: Record<string, string>;
+  bundle: string | undefined;
+  extension: string | undefined;
+}
+
+function parseArgs(argv: string[]): Args {
   let out: string | undefined;
   let legsArg = "";
+  const sources: Record<string, string> = {};
+  let bundle: string | undefined;
+  let extension: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") {
       out = argv[++i];
     } else if (argv[i] === "--legs") {
       legsArg = argv[++i] ?? "";
+    } else if (argv[i] === "--source") {
+      for (const pair of (argv[++i] ?? "").split(",").filter(Boolean)) {
+        const eq = pair.indexOf("=");
+        if (eq > 0) sources[pair.slice(0, eq)] = resolve(pair.slice(eq + 1));
+      }
+    } else if (argv[i] === "--bundle") {
+      bundle = resolve(argv[++i] ?? "");
+    } else if (argv[i] === "--extension") {
+      extension = resolve(argv[++i] ?? "");
     }
   }
   if (!out) throw new Error("check-gate7: --out <evidence dir> is required");
@@ -96,7 +138,7 @@ function parseArgs(argv: string[]): { out: string; legs: string[] } {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  return { out: resolve(out), legs };
+  return { out: resolve(out), legs, sources, bundle, extension };
 }
 
 async function readJsonOrUndefined<T>(path: string): Promise<T | undefined> {
@@ -108,7 +150,9 @@ async function readJsonOrUndefined<T>(path: string): Promise<T | undefined> {
 }
 
 async function main(): Promise<void> {
-  const { out, legs } = parseArgs(process.argv.slice(2));
+  const { out, legs, sources, bundle, extension } = parseArgs(
+    process.argv.slice(2),
+  );
 
   for (const g of legs) {
     if (!(ALL_GROUPS as readonly string[]).includes(g)) {
@@ -150,13 +194,41 @@ async function main(): Promise<void> {
     groupChecks["g7-bench"] = bench.checks;
     benchTable = bench.table;
   }
+  const results: Gate7GroupResult[] = [];
+  if (legs.includes("g7-0")) {
+    const source = sources.gate0;
+    if (!source || !bundle || !extension) {
+      throw new Error(
+        "check-gate7: g7-0 needs --source gate0=<run>, --bundle <web bundle> and --extension <.gdextension>",
+      );
+    }
+    const fixtureProjectDir = join(EXPERIMENT_DIR, "fixtures", "gate0");
+    results.push(
+      await checkGate0Web({
+        sourceDir: source,
+        webRoot: join(out, "gate0", "web"),
+        viewDir: join(out, "gate0", "web-view"),
+        bundleDir: bundle,
+        expected: JSON.parse(
+          await readFile(join(fixtureProjectDir, "expected.json"), "utf8"),
+        ) as Gate0Expected,
+        fixtureProjectDir,
+        receiverProjectDir: join(EXPERIMENT_DIR, "receiver"),
+        current: currentBuildProvenance(
+          REPO_ROOT,
+          extension,
+          PINNED_LINUX_TEMPLATE,
+        ),
+      }),
+    );
+  }
   // `gate_passed` here means "every group this run requested passed": gate 7 as a whole needs every
   // increment (D23, "Gate 7 passes when…"), which the summary (G7z) judges, not this run.
   const harnessOk = harness ? harness.checks.every((c) => c.ok) : true;
   const groupsOk = Object.values(groupChecks).every((list) =>
     list.every((c) => c.ok),
   );
-  const gatePassed = harnessOk && groupsOk;
+  const gatePassed = harnessOk && groupsOk && results.every((r) => r.passed);
 
   const report: Gate7Report = {
     schema: "render-stream-gate7-report/1",
@@ -171,6 +243,7 @@ async function main(): Promise<void> {
     env: env ?? null,
     group_checks: groupChecks,
     bench_table: benchTable,
+    results,
   };
 
   await import("node:fs/promises").then(({ writeFile, mkdir }) =>
@@ -192,6 +265,13 @@ async function main(): Promise<void> {
   for (const [group, list] of Object.entries(groupChecks))
     for (const c of list)
       console.log(`${c.ok ? "PASS" : "FAIL"}  ${group}  ${c.id}  ${c.detail}`);
+  for (const r of results) {
+    for (const c of r.checks) {
+      const tag = c.passed ? "PASS" : c.gating ? "FAIL" : "NOTE";
+      console.log(`${tag}  ${r.group}  ${c.id}  ${c.detail}`);
+    }
+    for (const s of r.startup) console.log(`startup  ${JSON.stringify(s)}`);
+  }
   const ms = (x: number | undefined) =>
     x === undefined ? "-" : (x / 1000).toFixed(3);
   for (const row of benchTable)

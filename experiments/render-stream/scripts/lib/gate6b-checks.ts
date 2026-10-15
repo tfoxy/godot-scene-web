@@ -715,7 +715,10 @@ export function evaluateAppliedViewport(
     schema?: string;
     viewport?: AppliedViewport6;
   };
-  if (a.schema !== "render-stream-receiver-applied/6")
+  if (
+    a.schema !== "render-stream-receiver-applied/6" &&
+    a.schema !== "render-stream-receiver-applied/7"
+  )
     problems.push(`${want.leg}: schema ${a.schema}`);
   const v = a.viewport ?? {};
   if (v.presentation_check !== want.check)
