@@ -20,6 +20,7 @@
     "test:webgpu-composite": "xvfb-run -a vitest run packages/test-harness/test/webgpuCompositeXvfb.test.ts",
     "test:webgl-composite": "xvfb-run -a vitest run packages/test-harness/test/webglCompositeXvfb.test.ts",
     "test:canvas-pixel": "xvfb-run -a vitest run packages/test-harness/test/canvasPixelXvfb.test.ts",
+    "test:canvas-modes-pixel": "GSW_CANVAS_MODES_PIXEL=1 vitest run packages/test-harness/test/canvasModesPixel.test.ts --disable-console-intercept",
     "test:canvas-glyph-pixel": "GSW_CANVAS_GLYPH_PIXEL=1 xvfb-run -a vitest run packages/test-harness/test/canvasGlyphPixelXvfb.test.ts",
     "test:glyph-pixel": "GSW_HB_GPU_PIXEL=1 xvfb-run -a vitest run packages/hb-gpu/test/glyphPixelXvfb.test.ts",
     "bench:canvas-upload": "GSW_CANVAS_UPLOAD_BENCH=1 xvfb-run -a vitest run packages/test-harness/test/canvasUploadBenchXvfb.test.ts --disable-console-intercept",

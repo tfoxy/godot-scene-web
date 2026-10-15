@@ -150,8 +150,15 @@ export type {
   CanvasStageOptions,
   StageCanvas,
   StageProjection,
+  StageTarget,
+  StageTargetFormat,
+  StageTargetOptions,
 } from "./present";
-export { createCanvasStage, STAGE_CONTEXT_ATTRIBUTES } from "./present";
+export {
+  createCanvasStage,
+  createStageTarget,
+  STAGE_CONTEXT_ATTRIBUTES,
+} from "./present";
 export type {
   CanvasProfileEvent,
   CanvasProfileIdentity,
@@ -180,7 +187,10 @@ export type {
   RetainedRangeCandidate,
   RetainedRangeSubstitutionPlan,
 } from "./retained-range-cache";
-export { createRetainedRangeCache, RETAINED_RANGE_DEFAULTS } from "./retained-range-cache";
+export {
+  createRetainedRangeCache,
+  RETAINED_RANGE_DEFAULTS,
+} from "./retained-range-cache";
 export type {
   RetainedReplayOptions,
   RetainedReplayRegion,
@@ -188,13 +198,16 @@ export type {
   RetainedSurface,
 } from "./retained-surface";
 export { createRetainedSurface, snapRetainedSize } from "./retained-surface";
+export { RustAtlasPages } from "./rust-atlas-pages";
 export type {
   CanvasTextureCache,
   CanvasTextureHandle,
   CanvasTextureOptions,
   CanvasTextureSource,
+  TextureBindingOptions,
   TextureCacheStats,
+  TextureFilter,
+  TextureSampling,
+  TextureWrap,
 } from "./textures";
-export { createTextureCache } from "./textures";
-
-export { RustAtlasPages } from "./rust-atlas-pages";
+export { createTextureBinding, createTextureCache } from "./textures";

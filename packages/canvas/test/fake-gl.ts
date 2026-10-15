@@ -73,6 +73,12 @@ export interface FakeGlOptions {
    *  `readonly`, like {@link FakeGlOptions.failCreate}, so a table of cases written with `as const`
    *  — the natural way to spell one — is assignable. Nothing here mutates either list. */
   missingAttributes?: readonly string[];
+  /**
+   * `getParameter(IMPLEMENTATION_COLOR_READ_TYPE)`. Defaults to
+   * `UNSIGNED_INT_2_10_10_10_REV`, what a real context offers for an RGB10_A2
+   * read framebuffer.
+   */
+  implementationReadType?: number;
 }
 
 export function createFakeGl(options: FakeGlOptions = {}): FakeGl {
@@ -100,6 +106,14 @@ export function createFakeGl(options: FakeGlOptions = {}): FakeGl {
     ARRAY_BUFFER: 0x8892,
     BLEND: 0x0be2,
     CLAMP_TO_EDGE: 0x812f,
+    // Sampler objects, the RGB10_A2 stage target and its readback.
+    IMPLEMENTATION_COLOR_READ_FORMAT: 0x8b9b,
+    IMPLEMENTATION_COLOR_READ_TYPE: 0x8b9a,
+    MIRRORED_REPEAT: 0x8370,
+    PACK_ALIGNMENT: 0x0d05,
+    REPEAT: 0x2901,
+    RGB10_A2: 0x8059,
+    UNSIGNED_INT_2_10_10_10_REV: 0x8368,
     COLOR_BUFFER_BIT: 0x4000,
     COLOR_ATTACHMENT0: 0x8ce0,
     COMPILE_STATUS: 0x8b81,
@@ -174,6 +188,13 @@ export function createFakeGl(options: FakeGlOptions = {}): FakeGl {
       )
         return drawFramebuffer;
       if (pname === constants.READ_FRAMEBUFFER_BINDING) return readFramebuffer;
+      if (pname === constants.IMPLEMENTATION_COLOR_READ_FORMAT)
+        return constants.RGBA;
+      if (pname === constants.IMPLEMENTATION_COLOR_READ_TYPE)
+        return (
+          options.implementationReadType ??
+          constants.UNSIGNED_INT_2_10_10_10_REV
+        );
       if (pname === constants.TEXTURE_BINDING_2D)
         return boundTextures[activeUnit] ?? null;
       if (pname === constants.UNPACK_ALIGNMENT)
@@ -288,6 +309,35 @@ export function createFakeGl(options: FakeGlOptions = {}): FakeGl {
       record("bindTexture", target, texture);
     },
     texImage2D: (...args: unknown[]) => record("texImage2D", ...args),
+    texStorage2D: (...args: unknown[]) => record("texStorage2D", ...args),
+    createSampler: () => {
+      record("createSampler");
+      return glObject("sampler");
+    },
+    samplerParameteri: (...args: unknown[]) =>
+      record("samplerParameteri", ...args),
+    bindSampler: (unit: number, sampler: unknown) =>
+      record("bindSampler", unit, sampler),
+    deleteSampler: (sampler: unknown) => record("deleteSampler", sampler),
+    // Fills each pixel's FIRST element with its GL row (0 = bottom), so a caller
+    // that flips to top-down can be checked without a real framebuffer.
+    readPixels: (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      format: number,
+      type: number,
+      out: Uint8Array | Uint32Array,
+    ) => {
+      record("readPixels", x, y, width, height, format, type);
+      const stride = out instanceof Uint32Array ? 1 : 4;
+      for (let row = 0; row < height; row += 1) {
+        for (let column = 0; column < width; column += 1) {
+          out[(row * width + column) * stride] = row;
+        }
+      }
+    },
     texSubImage2D: (...args: unknown[]) => record("texSubImage2D", ...args),
     generateMipmap: (...args: unknown[]) => record("generateMipmap", ...args),
     texParameteri: (...args: unknown[]) => record("texParameteri", ...args),

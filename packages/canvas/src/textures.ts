@@ -59,6 +59,110 @@ export interface CanvasTextureHandle {
    * pixels.
    */
   readonly revision: number;
+  /**
+   * The texels are stored STRAIGHT (`rgb` not multiplied by `a`), as Godot
+   * uploads images, and the executor premultiplies each sample AFTER filtering.
+   * Omitted or `false` means the texels are used as they are stored, which is
+   * the package's premultiplied-storage contract described at the top of this
+   * file.
+   *
+   * WHY ANYONE WOULD WANT THE FRINGE. Filtering straight colour is what Godot
+   * does, so a renderer that must reproduce Godot's pixels has to do it too: a
+   * linear sample at a half-transparent edge differs from the premultiplied
+   * filter by tens of levels, not by rounding (the canvas modes pixel suite pins
+   * both numbers).
+   */
+  readonly straightAlpha?: boolean;
+  /**
+   * Sampler state for THIS binding, overriding the texture object's own filter
+   * and wrap (a WebGL2 sampler object on the unit it is drawn from). Omitted
+   * means the texture's own parameters, which is every handle this cache makes.
+   * Use {@link createTextureBinding} to derive one.
+   */
+  readonly sampling?: TextureSampling;
+}
+
+/**
+ * How a texture coordinate outside `[0, 1]` resolves: Godot's
+ * `CanvasItem.texture_repeat` (`DISABLED` = `"clamp"`, `ENABLED` = `"repeat"`,
+ * `MIRROR` = `"mirror"`; `GL_CLAMP_TO_EDGE`, `GL_REPEAT`, `GL_MIRRORED_REPEAT`).
+ */
+export type TextureWrap = "clamp" | "repeat" | "mirror";
+
+/**
+ * Godot's `CanvasItem.texture_filter` without mipmaps: `NEAREST` or `LINEAR`,
+ * applied to both minification and magnification as Godot's GLES3 driver does.
+ */
+export type TextureFilter = "nearest" | "linear";
+
+/** One binding's sampler state. */
+export interface TextureSampling {
+  readonly wrap: TextureWrap;
+  readonly filter: TextureFilter;
+}
+
+/** What {@link createTextureBinding} may override. Every field is optional. */
+export interface TextureBindingOptions {
+  /** Sets the binding's sampler; the missing half defaults to `"clamp"`. */
+  wrap?: TextureWrap;
+  /** Sets the binding's sampler; the missing half defaults to `"linear"`. */
+  filter?: TextureFilter;
+  /**
+   * How the executor reads the texels, overriding `source.straightAlpha`.
+   * `false` over a straight-STORED texture means "these bytes are already
+   * premultiplied content, use them as given", which is Godot's
+   * `BLEND_MODE_PREMULT_ALPHA` reading of a texture Godot uploaded raw.
+   */
+  straightAlpha?: boolean;
+}
+
+/**
+ * The same texture under different sampler or alpha state: a handle that
+ * shares `source`'s GL texture, size and revision.
+ *
+ * Godot sets filter and repeat PER CANVAS ITEM, not per texture, so one texture
+ * can be drawn tiled by one item and clamped by the next, and a
+ * `BLEND_MODE_PREMULT_ALPHA` material reads the same raw texels as
+ * premultiplied that a MIX item reads as straight. A binding is a distinct
+ * handle IDENTITY, so the executor gives it its own texture slot (and its own
+ * sampler) even in a batch that also draws `source` plainly. Create bindings
+ * once and reuse them: a fresh one per draw defeats batching, which keys on
+ * identity.
+ *
+ * Without `wrap` or `filter` the binding keeps `source`'s sampling (for a cache
+ * handle, the texture object's own parameters). Size and revision are read
+ * through, so a later `update` of the source is visible to the binding.
+ */
+export function createTextureBinding(
+  source: CanvasTextureHandle,
+  options: TextureBindingOptions = {},
+): CanvasTextureHandle {
+  const resolved: TextureSampling | undefined =
+    options.wrap !== undefined || options.filter !== undefined
+      ? Object.freeze({
+          wrap: options.wrap ?? "clamp",
+          filter: options.filter ?? "linear",
+        })
+      : source.sampling;
+  const straightAlpha = options.straightAlpha;
+  return Object.freeze({
+    get texture() {
+      return source.texture;
+    },
+    get width() {
+      return source.width;
+    },
+    get height() {
+      return source.height;
+    },
+    get revision() {
+      return source.revision;
+    },
+    get straightAlpha() {
+      return straightAlpha ?? source.straightAlpha === true;
+    },
+    sampling: resolved,
+  });
 }
 
 export interface TextureCacheStats {
@@ -86,6 +190,16 @@ export interface TextureCacheStats {
 export interface CanvasTextureOptions {
   /** `true` when the source already contains `rgb * a`. Defaults to false. */
   premultiplied?: boolean;
+  /**
+   * Store the source's bytes AS GIVEN, with no premultiply, and mark the handle
+   * {@link CanvasTextureHandle.straightAlpha} so the executor premultiplies each
+   * sample after filtering, as Godot does. Defaults to false. Cannot be combined
+   * with `premultiplied: true` (that would need an unpremultiply on upload, which
+   * loses information), and is rejected rather than guessed at. A DOM or bitmap
+   * source must hold straight colour already: decode one with
+   * `createImageBitmap(..., { premultiplyAlpha: "none" })`.
+   */
+  straightAlpha?: boolean;
   /** Generate a complete mip chain. Not suitable for unpadded atlas pages. */
   mipmap?: boolean;
   /** Minification filter. Defaults to LINEAR, or LINEAR_MIPMAP_LINEAR with mips. */
@@ -194,6 +308,8 @@ interface Entry {
   minFilter: number;
   magFilter: number;
   premultiplied: boolean;
+  /** Stored straight: see {@link CanvasTextureHandle.straightAlpha}. */
+  straightAlpha: boolean;
 }
 
 function textureBytes(width: number, height: number, mipmap: boolean): number {
@@ -265,8 +381,14 @@ export function createTextureCache(
     options: CanvasTextureOptions = {},
   ): Required<CanvasTextureOptions> {
     const mipmap = options.mipmap ?? false;
+    if (options.straightAlpha === true && options.premultiplied === true) {
+      throw new TypeError(
+        "texture cache: `straightAlpha` stores the source as given, so it cannot also be a premultiplied source",
+      );
+    }
     return {
       premultiplied: options.premultiplied ?? false,
+      straightAlpha: options.straightAlpha ?? false,
       mipmap,
       minFilter:
         options.minFilter ?? (mipmap ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR),
@@ -294,6 +416,12 @@ export function createTextureCache(
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !premultiplied);
   }
 
+  /** Whether the bytes go to the GPU untouched: a source that is already
+   *  premultiplied, or one stored straight on purpose. */
+  function storesAsGiven(entry: Entry): boolean {
+    return entry.premultiplied || entry.straightAlpha;
+  }
+
   function regenerateMipmap(entry: Entry): void {
     if (entry.mipmap && entry.storageW > 0 && entry.storageH > 0) {
       gl.generateMipmap(gl.TEXTURE_2D);
@@ -303,7 +431,7 @@ export function createTextureCache(
   function uploadSource(entry: Entry, source: CanvasTextureSource): void {
     const raw = rawSourceSize(source);
     gl.bindTexture(gl.TEXTURE_2D, entry.texture);
-    unpackForSource(entry.premultiplied);
+    unpackForSource(storesAsGiven(entry));
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     configure(entry);
     entry.storageW = raw.width;
@@ -319,7 +447,7 @@ export function createTextureCache(
    *  on the texture object and nothing here touches them. */
   function reuploadSource(entry: Entry, source: CanvasTextureSource): void {
     gl.bindTexture(gl.TEXTURE_2D, entry.texture);
-    unpackForSource(entry.premultiplied);
+    unpackForSource(storesAsGiven(entry));
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
     regenerateMipmap(entry);
     entry.revision = nextRevision++;
@@ -336,7 +464,7 @@ export function createTextureCache(
     y: number,
   ): void {
     gl.bindTexture(gl.TEXTURE_2D, entry.texture);
-    unpackForSource(entry.premultiplied);
+    unpackForSource(storesAsGiven(entry));
     gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, source);
     regenerateMipmap(entry);
     entry.revision = nextRevision++;
@@ -420,6 +548,7 @@ export function createTextureCache(
       minFilter: resolved.minFilter,
       magFilter: resolved.magFilter,
       premultiplied: resolved.premultiplied,
+      straightAlpha: resolved.straightAlpha,
     };
     track(entry, width, height);
     stats.entries += 1;
@@ -470,7 +599,7 @@ export function createTextureCache(
         pixels,
         entry.width,
         entry.height,
-        options?.premultiplied ?? false,
+        storesAsGiven(entry),
       );
       entry.refs = 1;
       entries.set(key, entry);

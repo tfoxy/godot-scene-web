@@ -50,7 +50,10 @@ export const DRAW_CLIP_POP = 4;
  * installed skips it.
  */
 export const DRAW_GLYPHS = 5;
-/** An arbitrary triangle list with one texture and per-mesh premultiplied tint. */
+/**
+ * An arbitrary triangle list with one texture, a per-mesh premultiplied tint and
+ * optional per-vertex (straight-alpha) colours.
+ */
 export const DRAW_TEXTURED_MESH = 6;
 /** A screen-dependent pass executed at this exact painter position. */
 export const DRAW_SCREEN_EFFECT = 7;
@@ -144,6 +147,18 @@ export const BLEND_SUB = 2;
 /** Godot `BLEND_MODE_MUL`. */
 export const BLEND_MUL = 3;
 
+/**
+ * Godot's `BLEND_MODE_PREMULT_ALPHA` is deliberately NOT a fifth member here.
+ * Its GL state, `(ONE, ONE_MINUS_SRC_ALPHA)`, IS {@link BLEND_MIX} in this
+ * package, which composites premultiplied colour already; all that differs is
+ * that the source must not be multiplied by its alpha again. That is a property
+ * of the DATA, so it is stated on the data: draw a premultiplied-content texture
+ * through a binding with `straightAlpha: false` (`createTextureBinding`), give a
+ * mesh `premultipliedVertexColors: true`, and pass Godot's straight `modulate` as
+ * the tint (Godot multiplies its straight modulate into premultiplied content).
+ * Widening this union instead would break every consumer that indexes a
+ * four-entry table by it.
+ */
 export type BlendMode =
   | typeof BLEND_MIX
   | typeof BLEND_ADD
@@ -234,6 +249,12 @@ export interface PolylineView {
  * them to design space. UVs are normalized texture coordinates, intentionally
  * not a quad source rect: arbitrary mesh topology must not be forced through a
  * rectangle-shaped source contract.
+ *
+ * Optional per-vertex colours ({@link TexturedMeshView.hasVertexColors}) are the
+ * `colors` array of Godot's `draw_polygon`, `draw_primitive` and
+ * `canvas_item_add_triangle_array`, which is what a `StyleBoxFlat` border or an
+ * anti-aliased feather arrives as. The WebGL executor honours them; the Pixi
+ * renderer (`./pixi`) draws the mesh without them.
  */
 export interface TexturedMeshView {
   /** Godot `Transform2D` mapping local vertex positions into design space. */
@@ -252,6 +273,37 @@ export interface TexturedMeshView {
   b: number;
   a: number;
   blend: BlendMode;
+  /**
+   * Whether {@link TexturedMeshView.vertexColors} is meaningful. Optional so a
+   * view built field-for-field by an older producer still records the plain mesh
+   * it always recorded; `readTexturedMesh` always writes it.
+   */
+  hasVertexColors?: boolean;
+  /**
+   * Flattened per-vertex `r, g, b, a`, four per position, STRAIGHT alpha (`rgb`
+   * NOT multiplied by `a`), 0..1. Only `vertexCount * 4` entries are read, and
+   * only when {@link TexturedMeshView.hasVertexColors} is `true`.
+   *
+   * STRAIGHT, UNLIKE EVERY TINT IN THIS FILE, AND THAT IS ARITHMETIC RATHER THAN
+   * TASTE. The rasterizer interpolates whatever it is given linearly. Godot
+   * interpolates the straight colour and applies alpha afterwards, so a gradient
+   * whose colour AND alpha both vary has the premultiplied value `rgb(t) * a(t)`,
+   * a quadratic in `t`; interpolating `rgb*a` would draw the straight line between
+   * the endpoints instead, which is a different picture rather than a rounding
+   * difference. The executor therefore interpolates these as given and
+   * premultiplies per fragment, unless
+   * {@link TexturedMeshView.premultipliedVertexColors} says they already are.
+   * The colour multiplies the texel and the tint, as Godot's `COLOR` attribute
+   * multiplies `modulate`.
+   */
+  vertexColors?: Float32Array;
+  /**
+   * The vertex colours are ALREADY premultiplied (or, reproducing a Godot
+   * `BLEND_MODE_PREMULT_ALPHA` material, are to be applied exactly as given):
+   * interpolate and multiply them with no alpha applied by the executor.
+   * Optional; omitted means straight.
+   */
+  premultipliedVertexColors?: boolean;
 }
 
 /**
@@ -705,10 +757,26 @@ const NINE_PATCH_INTS = QUAD_INTS;
 // the one int.
 const POLYLINE_HEADER_FLOATS = 5;
 const POLYLINE_INTS = 1;
-// A mesh writes m[6], rgba, then local positions and normalized UV pairs. Its
-// int payload starts with vertex/index counts and blend, followed by indices.
+// A mesh writes m[6], rgba, then local positions and normalized UV pairs, then
+// (only when its flags say so) four straight colour floats per vertex. Its int
+// payload starts with vertex/index counts, blend and flags, followed by indices.
+// The colours go AFTER the UVs so every float offset a reader already computes
+// (positions at +10, UVs right after them) is unchanged by the optional stream.
 const TEXTURED_MESH_HEADER_FLOATS = 10;
-const TEXTURED_MESH_HEADER_INTS = 3;
+const TEXTURED_MESH_HEADER_INTS = 4;
+const TEXTURED_MESH_FLAGS_OFFSET = 3;
+/** Mesh flag bit: the payload carries per-vertex colours. */
+const TEXTURED_MESH_VERTEX_COLORS = 1;
+/** Mesh flag bit: those colours are premultiplied (used as given). */
+const TEXTURED_MESH_PREMULTIPLIED_COLORS = 2;
+
+/** Float payload length of a mesh, from its vertex count and flags. */
+function texturedMeshFloats(vertices: number, flags: number): number {
+  return (
+    TEXTURED_MESH_HEADER_FLOATS +
+    vertices * ((flags & TEXTURED_MESH_VERTEX_COLORS) !== 0 ? 8 : 4)
+  );
+}
 // A glyph run writes m[6], pixelsPerEm, rgba, spreadPx and optional local ink
 // bounds, then two pen floats per glyph; the glyph count is the first int and
 // the atlas slot ids follow it.
@@ -798,6 +866,9 @@ export function createTexturedMeshView(
     b: 1,
     a: 1,
     blend: BLEND_MIX,
+    hasVertexColors: false,
+    vertexColors: new Float32Array(vertices * 4),
+    premultipliedVertexColors: false,
   };
 }
 
@@ -978,7 +1049,11 @@ function fillFragmentPayloadLengths<TTexture>(
     case DRAW_TEXTURED_MESH: {
       const vertices = requireInt(0, "textured mesh vertex count");
       const indexes = requireInt(1, "textured mesh index count");
-      out.floats = TEXTURED_MESH_HEADER_FLOATS + vertices * 4;
+      const flags = requireInt(
+        TEXTURED_MESH_FLAGS_OFFSET,
+        "textured mesh flags",
+      );
+      out.floats = texturedMeshFloats(vertices, flags);
       out.ints = TEXTURED_MESH_HEADER_INTS + indexes;
       return;
     }
@@ -1045,6 +1120,12 @@ function fillFragmentStoragePayloadLengths<TTexture>(
     case DRAW_TEXTURED_MESH: {
       const vertices = storage.ints[intAt];
       const indexes = storage.ints[intAt + 1];
+      const flags = storage.ints[intAt + TEXTURED_MESH_FLAGS_OFFSET];
+      if (!Number.isInteger(flags) || flags < 0) {
+        throw new RangeError(
+          `draw-list fragment textured mesh flags at command ${index} are malformed`,
+        );
+      }
       if (!Number.isInteger(vertices) || vertices < 0) {
         throw new RangeError(
           `draw-list fragment textured mesh vertex count at command ${index} is malformed`,
@@ -1055,7 +1136,7 @@ function fillFragmentStoragePayloadLengths<TTexture>(
           `draw-list fragment textured mesh index count at command ${index} is malformed`,
         );
       }
-      out.floats = TEXTURED_MESH_HEADER_FLOATS + vertices * 4;
+      out.floats = texturedMeshFloats(vertices, flags);
       out.ints = TEXTURED_MESH_HEADER_INTS + indexes;
       return;
     }
@@ -2134,9 +2215,27 @@ export function createDrawList<TTexture = unknown>(
           );
         }
       }
+      // `=== true`, not truthiness: the field is optional, and a view built
+      // without it must keep recording the plain mesh it always recorded.
+      const vertexColors =
+        mesh.hasVertexColors === true ? mesh.vertexColors : undefined;
+      if (
+        mesh.hasVertexColors === true &&
+        (!vertexColors || vertexCount * 4 > vertexColors.length)
+      ) {
+        throw new RangeError(
+          `textured mesh claims ${vertexCount} vertex colours but its colour buffer holds ${Math.floor((vertexColors?.length ?? 0) / 4)}`,
+        );
+      }
+      const flags = vertexColors
+        ? TEXTURED_MESH_VERTEX_COLORS |
+          (mesh.premultipliedVertexColors === true
+            ? TEXTURED_MESH_PREMULTIPLIED_COLORS
+            : 0)
+        : 0;
       const index = beginCommand(
         DRAW_TEXTURED_MESH,
-        TEXTURED_MESH_HEADER_FLOATS + vertexCount * 4,
+        texturedMeshFloats(vertexCount, flags),
         TEXTURED_MESH_HEADER_INTS + indexCount,
         texture,
       );
@@ -2151,10 +2250,17 @@ export function createDrawList<TTexture = unknown>(
         floats[positionsAt + i] = mesh.positions[i];
         floats[positionsAt + vertexCount * 2 + i] = mesh.uvs[i];
       }
+      if (vertexColors) {
+        const colorsAt = positionsAt + vertexCount * 4;
+        for (let i = 0; i < vertexCount * 4; i += 1) {
+          floats[colorsAt + i] = vertexColors[i];
+        }
+      }
       const intAt = intOffsets[index];
       ints[intAt] = vertexCount;
       ints[intAt + 1] = indexCount;
       ints[intAt + 2] = mesh.blend;
+      ints[intAt + TEXTURED_MESH_FLAGS_OFFSET] = flags;
       for (let i = 0; i < indexCount; i += 1) {
         ints[intAt + TEXTURED_MESH_HEADER_INTS + i] = mesh.indices[i];
       }
@@ -2319,6 +2425,20 @@ export function createDrawList<TTexture = unknown>(
       for (let i = 0; i < vertexCount * 2; i += 1) {
         out.positions[i] = floats[positionsAt + i];
         out.uvs[i] = floats[positionsAt + vertexCount * 2 + i];
+      }
+      const meshFlags = ints[intAt + TEXTURED_MESH_FLAGS_OFFSET];
+      const hasVertexColors = (meshFlags & TEXTURED_MESH_VERTEX_COLORS) !== 0;
+      out.hasVertexColors = hasVertexColors;
+      out.premultipliedVertexColors =
+        (meshFlags & TEXTURED_MESH_PREMULTIPLIED_COLORS) !== 0;
+      if (hasVertexColors) {
+        if (!out.vertexColors || out.vertexColors.length < vertexCount * 4) {
+          out.vertexColors = new Float32Array(vertexCount * 4);
+        }
+        const colorsAt = positionsAt + vertexCount * 4;
+        for (let i = 0; i < vertexCount * 4; i += 1) {
+          out.vertexColors[i] = floats[colorsAt + i];
+        }
       }
       for (let i = 0; i < indexCount; i += 1) {
         out.indices[i] = ints[intAt + TEXTURED_MESH_HEADER_INTS + i];

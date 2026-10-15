@@ -67,7 +67,7 @@ import {
   retainedRangeRasterized,
   validateRetainedRangePlan,
 } from "./retained-range-cache";
-import type { CanvasTextureHandle } from "./textures";
+import type { CanvasTextureHandle, TextureSampling } from "./textures";
 
 /**
  * The WebGL2 executor: a draw list in, GL draws out.
@@ -109,6 +109,19 @@ import type { CanvasTextureHandle } from "./textures";
  * `premultipliedAlpha: true` (`./present`). Any one of those five flipped on its
  * own is silent — nothing errors, the picture is just wrong — which is why they
  * are named together here.
+ *
+ * THE OPT-IN EXCEPTIONS, each of which converts back into that contract inside
+ * the fragment and nowhere else: a `straightAlpha` texture is premultiplied AFTER
+ * it is filtered (Godot's order, so a linear sample at a translucent edge matches
+ * Godot's rather than the premultiplied filter), and a mesh's per-vertex colours
+ * are interpolated straight and premultiplied per fragment (unless the mesh says
+ * they are `premultipliedVertexColors`). Godot's `BLEND_MODE_PREMULT_ALPHA` is
+ * MIX here with neither conversion: a premultiplied-content texture bound with
+ * `straightAlpha: false`, premultiplied vertex colours, the straight modulate as
+ * the tint (see the note on `BlendMode`). A binding's `sampling` is a WebGL2
+ * sampler object on that unit for exactly the one draw, unbound again before
+ * anything else can see it. A frame that uses none of these issues no GL call it
+ * did not issue before they existed.
  */
 
 /** A texture handle the executor can draw: the GL object and the size its source
@@ -368,6 +381,9 @@ interface Program {
   uColorMatrices: WebGLUniformLocation | null;
   uRoundedRect: WebGLUniformLocation | null;
   uRoundedRadius: WebGLUniformLocation | null;
+  uStraightMask: WebGLUniformLocation | null;
+  /** The mask last uploaded; a fresh program's uniform is 0. */
+  straightMask: number;
 }
 
 interface CachedGpuRun {
@@ -408,6 +424,14 @@ interface MeshProgram {
   uProjection: WebGLUniformLocation | null;
   uTint: WebGLUniformLocation | null;
   uTexture: WebGLUniformLocation | null;
+  uVertexColors: WebGLUniformLocation | null;
+  uAlphaFlags: WebGLUniformLocation | null;
+  colorBuffer: WebGLBuffer;
+  colorBytes: number;
+  /** Uploaded/enabled state, all of it this program's own: nothing else binds
+   *  its VAO or sets its uniforms, so none of it needs per-frame invalidation. */
+  vertexColors: boolean;
+  alphaFlags: number;
 }
 
 const VERTEX_SRC = `#version 300 es
@@ -441,23 +465,42 @@ void main() {
 const TEXTURED_MESH_VERTEX_SRC = `#version 300 es
 layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec2 a_uv;
+layout(location = 2) in vec4 a_color;    // STRAIGHT vertex colour, read only when u_vertexColors
 uniform vec4 u_projection;
+uniform bool u_vertexColors;
 out vec2 v_uv;
+out vec4 v_color;
 void main() {
   gl_Position = vec4(a_position * u_projection.xy + u_projection.zw, 0.0, 1.0);
   v_uv = a_uv;
+  // Interpolated STRAIGHT, as Godot's color_interp is; premultiplied per fragment.
+  v_color = u_vertexColors ? a_color : vec4(1.0);
 }`;
+
+/** `u_alphaFlags` bit: premultiply the texel after filtering (straight storage). */
+const MESH_PREMULTIPLY_TEXEL = 1;
+/** `u_alphaFlags` bit: premultiply the interpolated vertex colour. */
+const MESH_PREMULTIPLY_VERTEX_COLOR = 2;
 
 const TEXTURED_MESH_FRAGMENT_SRC = `#version 300 es
 precision highp float;
+precision highp int;
 uniform sampler2D u_texture;
 uniform vec4 u_tint;
+uniform int u_alphaFlags;
 in vec2 v_uv;
+in vec4 v_color;
 out vec4 fragColor;
 void main() {
-  // Both the uploaded texel and tint are premultiplied, so ordinary component
-  // multiplication remains premultiplied for the shared blend contract.
-  fragColor = texture(u_texture, v_uv) * u_tint;
+  vec4 texel = texture(u_texture, v_uv);
+  // A straight texel becomes premultiplied only AFTER filtering: Godot's order.
+  if ((u_alphaFlags & ${MESH_PREMULTIPLY_TEXEL}) != 0) texel.rgb *= texel.a;
+  vec4 color = v_color;
+  if ((u_alphaFlags & ${MESH_PREMULTIPLY_VERTEX_COLOR}) != 0) color.rgb *= color.a;
+  // Three premultiplied colours compose with plain multiplies and stay
+  // premultiplied for the shared blend contract. With no vertex colours and a
+  // premultiplied texture this is texel * 1.0 * tint: the old arithmetic exactly.
+  fragColor = texel * color * u_tint;
 }`;
 
 /**
@@ -491,6 +534,7 @@ uniform sampler2D u_textures[${textureSlots}];
 uniform mat3 u_colorMatrices[${colorMatrices}];
 uniform vec4 u_roundedRect;    // centre.xy, half-extent.xy, DESIGN units
 uniform float u_roundedRadius; // <= 0 disables the rounded test entirely
+uniform int u_straightMask;    // bit i: slot i is stored straight, premultiply after sampling
 in vec2 v_uv;
 in vec4 v_color;
 in vec2 v_design;
@@ -513,6 +557,10 @@ void main() {
     }
   }
   vec4 texel = sampleSlot(v_texture, v_uv);
+  // A straight texel is premultiplied AFTER filtering, which is Godot's order.
+  if (((u_straightMask >> v_texture) & 1) != 0) {
+    texel.rgb *= texel.a;
+  }
   if (v_matrix != 0) {
     // The matrix is defined on the texture's OWN colour, so it has to see
     // straight (un-premultiplied) sRGB — apply it to premultiplied channels and a
@@ -764,6 +812,56 @@ export function createCanvasExecutor(
     return ownedWhite;
   }
 
+  /** One sampler object per distinct sampler state, for the life of the context. */
+  const samplers = new Map<string, WebGLSampler>();
+
+  /**
+   * The sampler for a binding's state. Created on first use and never mutated,
+   * so the same object can sit on several units at once.
+   */
+  function samplerFor(sampling: TextureSampling): WebGLSampler | null {
+    const key = `${sampling.wrap}:${sampling.filter}`;
+    const cached = samplers.get(key);
+    if (cached) return cached;
+    const sampler = gl.createSampler();
+    if (!sampler) return null;
+    const wrap =
+      sampling.wrap === "repeat"
+        ? gl.REPEAT
+        : sampling.wrap === "mirror"
+          ? gl.MIRRORED_REPEAT
+          : gl.CLAMP_TO_EDGE;
+    const filter = sampling.filter === "nearest" ? gl.NEAREST : gl.LINEAR;
+    gl.samplerParameteri(sampler, gl.TEXTURE_WRAP_S, wrap);
+    gl.samplerParameteri(sampler, gl.TEXTURE_WRAP_T, wrap);
+    gl.samplerParameteri(sampler, gl.TEXTURE_MIN_FILTER, filter);
+    gl.samplerParameteri(sampler, gl.TEXTURE_MAG_FILTER, filter);
+    samplers.set(key, sampler);
+    return sampler;
+  }
+
+  /**
+   * Put every unit in `mask` back to "use the texture's own parameters".
+   *
+   * IMMEDIATELY AFTER THE DRAW, not at the end of the frame. A sampler binding is
+   * per-UNIT context state that overrides whatever texture is later bound there,
+   * so one left behind would silently re-filter the glyph pass's atlas, an
+   * external effect's texture, or the next frame's plain handle on that unit.
+   */
+  function unbindSamplers(mask: number): void {
+    for (let unit = 0; mask !== 0; unit += 1, mask >>>= 1) {
+      if ((mask & 1) !== 0) gl.bindSampler(unit, null);
+    }
+  }
+
+  /** Upload the quad program's straight-slot mask, only when it changes. Its
+   *  initial value is GL's 0, so a frame with no straight texture never calls. */
+  function applyStraightMask(current: Program, mask: number): void {
+    if (current.straightMask === mask) return;
+    if (current.uStraightMask) gl.uniform1i(current.uStraightMask, mask);
+    current.straightMask = mask;
+  }
+
   function ensureProgram(): Program | null {
     if (program) return program;
     const linked = linkProgram(
@@ -815,6 +913,8 @@ export function createCanvasExecutor(
       uColorMatrices: gl.getUniformLocation(linked, "u_colorMatrices[0]"),
       uRoundedRect: gl.getUniformLocation(linked, "u_roundedRect"),
       uRoundedRadius: gl.getUniformLocation(linked, "u_roundedRadius"),
+      uStraightMask: gl.getUniformLocation(linked, "u_straightMask"),
+      straightMask: 0,
     };
     return program;
   }
@@ -830,12 +930,18 @@ export function createCanvasExecutor(
     const vao = gl.createVertexArray();
     const vertexBuffer = gl.createBuffer();
     const indexBuffer = gl.createBuffer();
+    const colorBuffer = gl.createBuffer();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+    // The colour stream lives in its own buffer, pointed at once and ENABLED only
+    // while a coloured mesh draws (see `emitTexturedMeshCommand`), so a plain mesh
+    // keeps exactly the attribute state it always had.
+    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 16, 0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
     gl.bindVertexArray(null);
     gl.useProgram(linked);
@@ -851,6 +957,12 @@ export function createCanvasExecutor(
       uProjection: gl.getUniformLocation(linked, "u_projection"),
       uTint: gl.getUniformLocation(linked, "u_tint"),
       uTexture,
+      uVertexColors: gl.getUniformLocation(linked, "u_vertexColors"),
+      uAlphaFlags: gl.getUniformLocation(linked, "u_alphaFlags"),
+      colorBuffer,
+      colorBytes: 0,
+      vertexColors: false,
+      alphaFlags: 0,
     };
     return meshProgram;
   }
@@ -870,11 +982,21 @@ export function createCanvasExecutor(
     }
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, batch.instances, 0, floats);
 
+    let straightMask = 0;
+    let samplerMask = 0;
     for (let slot = 0; slot < batch.textureCount; slot += 1) {
-      const entry = batch.textures[slot];
+      // Every texture this executor pushes is an ExecutorTexture; the batcher
+      // only needed the identity.
+      const entry = batch.textures[slot] as ExecutorTexture | null;
       gl.activeTexture(gl.TEXTURE0 + slot);
       gl.bindTexture(gl.TEXTURE_2D, entry ? entry.texture : null);
+      if (entry?.straightAlpha === true) straightMask |= 1 << slot;
+      if (entry?.sampling) {
+        gl.bindSampler(slot, samplerFor(entry.sampling));
+        samplerMask |= 1 << slot;
+      }
     }
+    applyStraightMask(current, straightMask);
     if (batch.colorMatrixCount > 1 && current.uColorMatrices) {
       // `transpose = true`: the draw list stores matrices ROW-major and GLSL reads
       // them column-major, so `m * v` only means what it reads as if the upload
@@ -888,6 +1010,7 @@ export function createCanvasExecutor(
       );
     }
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.quadCount);
+    unbindSamplers(samplerMask);
     stats.batches += 1;
     stats.textureBinds += batch.textureCount;
     if (batch.quadCount > stats.maxBatchQuads) {
@@ -1242,10 +1365,19 @@ export function createCanvasExecutor(
         first * strideBytes + attribute.offset * 4,
       );
     }
+    let straightMask = 0;
+    let samplerMask = 0;
     for (let slot = 0; slot < run.textures.length; slot += 1) {
+      const entry = run.textures[slot];
       gl.activeTexture(gl.TEXTURE0 + slot);
-      gl.bindTexture(gl.TEXTURE_2D, run.textures[slot].texture);
+      gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+      if (entry.straightAlpha === true) straightMask |= 1 << slot;
+      if (entry.sampling) {
+        gl.bindSampler(slot, samplerFor(entry.sampling));
+        samplerMask |= 1 << slot;
+      }
     }
+    applyStraightMask(current, straightMask);
     if (run.colorMatrixCount > 1 && current.uColorMatrices) {
       gl.uniformMatrix3fv(
         current.uColorMatrices,
@@ -1256,6 +1388,7 @@ export function createCanvasExecutor(
       );
     }
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    unbindSamplers(samplerMask);
     stats.batches += 1;
     stats.textureBinds += run.textures.length;
     stats.quads += count;
@@ -1626,6 +1759,7 @@ export function createCanvasExecutor(
       );
     }
     const m = texturedMeshView.m;
+    const vertexColors = texturedMeshView.hasVertexColors === true;
     for (let vertex = 0; vertex < texturedMeshView.vertexCount; vertex += 1) {
       const source = vertex * 2;
       const target = vertex * 4;
@@ -1656,6 +1790,40 @@ export function createCanvasExecutor(
         texturedMeshView.a,
       );
     }
+    const texture = list.textureAt(index) ?? whiteTexture();
+    let alphaFlags = 0;
+    if (texture.straightAlpha === true) alphaFlags |= MESH_PREMULTIPLY_TEXEL;
+    if (vertexColors && texturedMeshView.premultipliedVertexColors !== true)
+      alphaFlags |= MESH_PREMULTIPLY_VERTEX_COLOR;
+    if (mesh.alphaFlags !== alphaFlags) {
+      if (mesh.uAlphaFlags) gl.uniform1i(mesh.uAlphaFlags, alphaFlags);
+      mesh.alphaFlags = alphaFlags;
+    }
+    if (vertexColors) {
+      // Straight colours go up as recorded: the interpolation has to see them
+      // unpremultiplied (see `TexturedMeshView.vertexColors`).
+      const colorFloats = texturedMeshView.vertexCount * 4;
+      const colorBytes = colorFloats * 4;
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.colorBuffer);
+      if (mesh.colorBytes < colorBytes) {
+        gl.bufferData(gl.ARRAY_BUFFER, colorBytes, gl.DYNAMIC_DRAW);
+        mesh.colorBytes = colorBytes;
+      }
+      gl.bufferSubData(
+        gl.ARRAY_BUFFER,
+        0,
+        texturedMeshView.vertexColors as Float32Array,
+        0,
+        colorFloats,
+      );
+    }
+    if (mesh.vertexColors !== vertexColors) {
+      if (vertexColors) gl.enableVertexAttribArray(2);
+      else gl.disableVertexAttribArray(2);
+      if (mesh.uVertexColors)
+        gl.uniform1i(mesh.uVertexColors, vertexColors ? 1 : 0);
+      mesh.vertexColors = vertexColors;
+    }
     const vertexBytes = vertexFloats * 4;
     gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vertexBuffer);
     if (mesh.vertexBytes < vertexBytes) {
@@ -1676,15 +1844,16 @@ export function createCanvasExecutor(
       0,
       texturedMeshView.indexCount,
     );
-    const texture = list.textureAt(index) ?? whiteTexture();
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture.texture);
+    if (texture.sampling) gl.bindSampler(0, samplerFor(texture.sampling));
     gl.drawElements(
       gl.TRIANGLES,
       texturedMeshView.indexCount,
       gl.UNSIGNED_INT,
       0,
     );
+    if (texture.sampling) unbindSamplers(1);
     stats.texturedMeshTriangles += texturedMeshView.indexCount / 3;
     stats.texturedMeshDrawCalls += 1;
     // Mesh setup replaces both bindings, just like a glyph pass. The quad
@@ -1753,7 +1922,11 @@ export function createCanvasExecutor(
     }
 
     let count = 0;
-    for (let index = firstIndex; index < Math.min(list.count, stopBeforeIndex); index += 1) {
+    for (
+      let index = firstIndex;
+      index < Math.min(list.count, stopBeforeIndex);
+      index += 1
+    ) {
       // A mask gap is a painter-order boundary for retained replay: the skipped command has not
       // been selected for this dirty region, so do not silently make two remaining commands look
       // adjacent. Clips/masks and every other kind fail this same exact test.
@@ -2418,6 +2591,7 @@ export function createCanvasExecutor(
       program = null;
       meshProgram = null;
       ownedWhite = null;
+      samplers.clear();
       appliedBlend = null;
       appliedRoundedRadius = -1;
       for (const cache of [...liveCompiledGpuPlans])
@@ -2443,8 +2617,11 @@ export function createCanvasExecutor(
         gl.deleteVertexArray(meshProgram.vao);
         gl.deleteBuffer(meshProgram.vertexBuffer);
         gl.deleteBuffer(meshProgram.indexBuffer);
+        gl.deleteBuffer(meshProgram.colorBuffer);
         meshProgram = null;
       }
+      for (const sampler of samplers.values()) gl.deleteSampler(sampler);
+      samplers.clear();
     },
   };
   return executorApi;

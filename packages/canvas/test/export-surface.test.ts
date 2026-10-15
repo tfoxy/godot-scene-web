@@ -51,6 +51,8 @@ const VALUE_EXPORTS = [
   "createRetainedRangeCache",
   "createRetainedSurface",
   "createScissorBox",
+  "createStageTarget",
+  "createTextureBinding",
   "createTextureCache",
   "DEFAULT_COLOR_MATRIX_SLOTS",
   "damageIntersects",
@@ -180,7 +182,14 @@ const TYPE_EXPORTS = [
   "ScissorBox",
   "StageCanvas",
   "StageProjection",
+  "StageTarget",
+  "StageTargetFormat",
+  "StageTargetOptions",
+  "TextureBindingOptions",
   "TextureCacheStats",
+  "TextureFilter",
+  "TextureSampling",
+  "TextureWrap",
 ];
 
 describe("@godot-scene-web/canvas export surface", () => {
@@ -238,5 +247,7 @@ describe("@godot-scene-web/canvas export surface", () => {
     expect(typeof canvas.createGlyphsView).toBe("function");
     expect(typeof canvas.createTexturedMeshView).toBe("function");
     expect(typeof canvas.setViewColorMatrix).toBe("function");
+    expect(typeof canvas.createTextureBinding).toBe("function");
+    expect(typeof canvas.createStageTarget).toBe("function");
   });
 });

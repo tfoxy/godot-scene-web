@@ -311,3 +311,399 @@ export function createCanvasStage(
     },
   };
 }
+
+/**
+ * The colour format of a {@link StageTarget}.
+ *
+ * - `"rgb10_a2"` is `GL_RGB10_A2`: 10 bits per colour channel and 2 of alpha,
+ *   which is what Godot's GLES3 renderer draws a non-transparent viewport into
+ *   (`drivers/gles3/storage/texture_storage.cpp:2144-2150` in 4.5.1). Blends
+ *   whose result falls between two 8-bit levels are therefore quantised as
+ *   Godot quantises them, and only the 8-bit READBACK rounds them further. A
+ *   2-bit alpha holds only 0, 1/3, 2/3 and 1, read back as 0, 85, 170 and 255.
+ * - `"rgba8"` is the stage canvas's own format, for a caller that wants the same
+ *   offscreen seam without the precision change.
+ */
+export type StageTargetFormat = "rgba8" | "rgb10_a2";
+
+export interface StageTargetOptions {
+  /** Defaults to `"rgb10_a2"`, the reason this type exists. */
+  format?: StageTargetFormat;
+  /** Optional initial size; otherwise call {@link StageTarget.resize}. */
+  width?: number;
+  height?: number;
+}
+
+/**
+ * An offscreen colour target the executor draws into, blitted 1:1 to the stage
+ * canvas. Allocate it at the stage's {@link CanvasStage.stageWidth} by
+ * {@link CanvasStage.stageHeight} and the stage's own projection applies.
+ *
+ * A frame is `target.bind()`, `executor.execute(...)`, `target.blit()`: the
+ * executor draws into whatever framebuffer is bound and never binds one itself.
+ * Readback comes from the target rather than the canvas, so it does not depend
+ * on `preserveDrawingBuffer` or on the compositor.
+ *
+ * The context must be single-sampled (the stage's `antialias: false`): WebGL2
+ * refuses a blit from a single-sample target into a multisampled default
+ * framebuffer with `INVALID_OPERATION`.
+ *
+ * THE CANVAS HOLDS EXACTLY WHAT `readPixels` RETURNS. An `"rgb10_a2"` target is
+ * not copied with `blitFramebuffer`: its 10 -> 8-bit conversion is the
+ * implementation's, and on ANGLE/Vulkan over an RTX 2060 it MEASURES one level
+ * low for 95 of 2048 ramp pixels whose exact value is 0.50-0.55 of a level
+ * above a midpoint, which `readPixels` rounds to nearest. So the presented
+ * frame and the frame read back for a shot would disagree, and a
+ * compositor-equals-readback check could never pass. Instead `blit` draws one
+ * triangle that `texelFetch`es each texel and writes `floor(c * 255 + 0.5) /
+ * 255`: an exact 8-bit level, which no conversion can move.
+ */
+export interface StageTarget {
+  readonly gl: WebGL2RenderingContext;
+  readonly format: StageTargetFormat;
+  /** Integer backing size; 0 while unallocated. */
+  readonly width: number;
+  readonly height: number;
+  readonly allocated: boolean;
+  /** The colour attachment, for a caller that samples the frame afterwards. */
+  readonly texture: WebGLTexture | null;
+  readonly framebuffer: WebGLFramebuffer | null;
+  /**
+   * (Re)allocate at an exact integer size. Contents are undefined afterwards, so
+   * the next frame must clear. Returns false when allocation failed or the
+   * framebuffer is incomplete (the format is not colour-renderable here); the
+   * previous allocation is then kept.
+   */
+  resize(width: number, height: number): boolean;
+  /** Bind as the `FRAMEBUFFER` (draw and read). False while unallocated. */
+  bind(): boolean;
+  /**
+   * Copy the whole target 1:1 into `destination` (the stage canvas's default
+   * framebuffer when omitted), rounding each channel to its nearest 8-bit level
+   * exactly as {@link StageTarget.readPixels} does. Leaves `destination` bound
+   * for drawing and nothing bound for reading.
+   *
+   * An `"rgba8"` target is a `blitFramebuffer`. An `"rgb10_a2"` one is a draw
+   * (see above) that also changes the program, the vertex array, unit 0's
+   * texture and the `BLEND`, `SCISSOR_TEST` and viewport state; the executor
+   * re-establishes every one of those at the start of its next `execute`.
+   * Returns false while unallocated or when the present program cannot link.
+   */
+  blit(destination?: WebGLFramebuffer | null): boolean;
+  /**
+   * Read `RGBA`/`UNSIGNED_BYTE` with rows TOP-DOWN (design order: row 0 is the
+   * top) into `out`, which is replaced by a new array when it is too small. The
+   * GL converts each 10- or 2-bit channel to the nearest 8-bit level,
+   * `round(v * 255 / 1023)` and `round(a * 255 / 3)`.
+   */
+  readPixels(out?: Uint8Array): Uint8Array | null;
+  /**
+   * The raw `UNSIGNED_INT_2_10_10_10_REV` words, rows top-down, for an
+   * `"rgb10_a2"` target whose implementation-chosen read format offers them;
+   * `null` otherwise. Red is bits 0-9, green 10-19, blue 20-29, alpha 30-31.
+   */
+  readPacked(out?: Uint32Array): Uint32Array | null;
+  /** After a context loss: forget the dead handles without calling GL. */
+  invalidate(): void;
+  /** Delete the texture and framebuffer. */
+  dispose(): void;
+}
+
+const PRESENT_VERTEX_SRC = `#version 300 es
+void main() {
+  // One triangle over the viewport: (-1,-1) (3,-1) (-1,3). No attributes.
+  vec2 p = vec2(float((gl_VertexID & 1) << 2), float((gl_VertexID & 2) << 1)) - 1.0;
+  gl_Position = vec4(p, 0.0, 1.0);
+}`;
+
+const PRESENT_FRAGMENT_SRC = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D u_frame;
+out vec4 fragColor;
+void main() {
+  // texelFetch: no filtering, no wrap, the stored level as v / (2^bits - 1).
+  vec4 c = texelFetch(u_frame, ivec2(gl_FragCoord.xy), 0);
+  // readPixels' conversion, made explicit: the nearest 8-bit level, which the
+  // RGBA8 destination then stores without any rounding of its own.
+  fragColor = floor(c * 255.0 + 0.5) / 255.0;
+}`;
+
+function compile(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+): WebGLShader | null {
+  const shader = gl.createShader(type);
+  if (!shader) return null;
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  return shader;
+}
+
+/** Create an offscreen {@link StageTarget}; allocation waits for a size. */
+export function createStageTarget(
+  gl: WebGL2RenderingContext,
+  options: StageTargetOptions = {},
+): StageTarget {
+  const format = options.format ?? "rgb10_a2";
+  let texture: WebGLTexture | null = null;
+  let framebuffer: WebGLFramebuffer | null = null;
+  let width = 0;
+  let height = 0;
+  let byteRow = new Uint8Array(0);
+  let wordRow = new Uint32Array(0);
+  let presentProgram: WebGLProgram | null = null;
+  let presentVao: WebGLVertexArrayObject | null = null;
+
+  function ensurePresentProgram(): WebGLProgram | null {
+    if (presentProgram) return presentProgram;
+    const vs = compile(gl, gl.VERTEX_SHADER, PRESENT_VERTEX_SRC);
+    const fs = compile(gl, gl.FRAGMENT_SHADER, PRESENT_FRAGMENT_SRC);
+    const program = vs && fs ? gl.createProgram() : null;
+    if (program && vs && fs) {
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+    }
+    if (vs) gl.deleteShader(vs);
+    if (fs) gl.deleteShader(fs);
+    if (!program) return null;
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.warn(
+        "[gsw canvas] stage target present program failed:",
+        gl.getProgramInfoLog(program),
+      );
+      gl.deleteProgram(program);
+      return null;
+    }
+    gl.useProgram(program);
+    const frame = gl.getUniformLocation(program, "u_frame");
+    if (frame) gl.uniform1i(frame, 0);
+    presentProgram = program;
+    presentVao = gl.createVertexArray();
+    return program;
+  }
+
+  function discardPresent(callGl: boolean): void {
+    if (callGl) {
+      if (presentProgram) gl.deleteProgram(presentProgram);
+      if (presentVao) gl.deleteVertexArray(presentVao);
+    }
+    presentProgram = null;
+    presentVao = null;
+  }
+
+  function discard(callGl: boolean): void {
+    if (callGl) {
+      if (framebuffer) gl.deleteFramebuffer(framebuffer);
+      if (texture) gl.deleteTexture(texture);
+    }
+    texture = null;
+    framebuffer = null;
+    width = 0;
+    height = 0;
+  }
+
+  function resize(requestedWidth: number, requestedHeight: number): boolean {
+    const nextWidth = Math.max(1, Math.floor(requestedWidth));
+    const nextHeight = Math.max(1, Math.floor(requestedHeight));
+    if (texture && framebuffer && nextWidth === width && nextHeight === height)
+      return true;
+    const nextTexture = gl.createTexture();
+    const nextFramebuffer = gl.createFramebuffer();
+    if (!nextTexture || !nextFramebuffer) {
+      if (nextTexture) gl.deleteTexture(nextTexture);
+      if (nextFramebuffer) gl.deleteFramebuffer(nextFramebuffer);
+      return false;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, nextTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // Immutable storage with an explicit internal format: the format is the
+    // whole point, so it is not left to a texImage2D format/type pairing.
+    gl.texStorage2D(
+      gl.TEXTURE_2D,
+      1,
+      format === "rgb10_a2" ? gl.RGB10_A2 : gl.RGBA8,
+      nextWidth,
+      nextHeight,
+    );
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, nextFramebuffer);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      nextTexture,
+      0,
+    );
+    const complete =
+      gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!complete) {
+      gl.deleteFramebuffer(nextFramebuffer);
+      gl.deleteTexture(nextTexture);
+      return false;
+    }
+    discard(true);
+    texture = nextTexture;
+    framebuffer = nextFramebuffer;
+    width = nextWidth;
+    height = nextHeight;
+    return true;
+  }
+
+  if (options.width !== undefined && options.height !== undefined) {
+    resize(options.width, options.height);
+  }
+
+  // GL rows come back bottom-up; flip in place through one row of scratch.
+  function flipBytes(data: Uint8Array, stride: number): void {
+    if (byteRow.length < stride) byteRow = new Uint8Array(stride);
+    for (
+      let top = 0, bottom = height - 1;
+      top < bottom;
+      top += 1, bottom -= 1
+    ) {
+      const a = top * stride;
+      const b = bottom * stride;
+      byteRow.set(data.subarray(a, a + stride));
+      data.copyWithin(a, b, b + stride);
+      data.set(byteRow.subarray(0, stride), b);
+    }
+  }
+
+  function flipWords(data: Uint32Array, stride: number): void {
+    if (wordRow.length < stride) wordRow = new Uint32Array(stride);
+    for (
+      let top = 0, bottom = height - 1;
+      top < bottom;
+      top += 1, bottom -= 1
+    ) {
+      const a = top * stride;
+      const b = bottom * stride;
+      wordRow.set(data.subarray(a, a + stride));
+      data.copyWithin(a, b, b + stride);
+      data.set(wordRow.subarray(0, stride), b);
+    }
+  }
+
+  return {
+    gl,
+    format,
+    get width() {
+      return width;
+    },
+    get height() {
+      return height;
+    },
+    get allocated() {
+      return texture !== null && framebuffer !== null;
+    },
+    get texture() {
+      return texture;
+    },
+    get framebuffer() {
+      return framebuffer;
+    },
+    resize,
+
+    bind() {
+      if (!framebuffer) return false;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      return true;
+    },
+
+    blit(destination = null) {
+      if (!framebuffer) return false;
+      gl.disable(gl.SCISSOR_TEST);
+      if (format === "rgb10_a2") {
+        const program = ensurePresentProgram();
+        if (!program) return false;
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, destination);
+        gl.viewport(0, 0, width, height);
+        gl.disable(gl.BLEND);
+        gl.useProgram(program);
+        gl.bindVertexArray(presentVao);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindVertexArray(null);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        return true;
+      }
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, destination);
+      gl.blitFramebuffer(
+        0,
+        0,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        gl.COLOR_BUFFER_BIT,
+        gl.NEAREST,
+      );
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      return true;
+    },
+
+    readPixels(out) {
+      if (!framebuffer) return null;
+      const length = width * height * 4;
+      const data = out && out.length >= length ? out : new Uint8Array(length);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+      gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      flipBytes(data, width * 4);
+      return data;
+    },
+
+    readPacked(out) {
+      if (!framebuffer || format !== "rgb10_a2") return null;
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+      const readFormat = gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT);
+      const readType = gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE);
+      if (
+        readFormat !== gl.RGBA ||
+        readType !== gl.UNSIGNED_INT_2_10_10_10_REV
+      ) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        return null;
+      }
+      const length = width * height;
+      const data = out && out.length >= length ? out : new Uint32Array(length);
+      gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
+      gl.readPixels(
+        0,
+        0,
+        width,
+        height,
+        gl.RGBA,
+        gl.UNSIGNED_INT_2_10_10_10_REV,
+        data,
+      );
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      flipWords(data, width);
+      return data;
+    },
+
+    invalidate() {
+      discard(false);
+      discardPresent(false);
+    },
+
+    dispose() {
+      discard(true);
+      discardPresent(true);
+    },
+  };
+}
