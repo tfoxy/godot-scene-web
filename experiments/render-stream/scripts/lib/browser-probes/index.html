@@ -1,0 +1,178 @@
+<!doctype html>
+<!--
+  Minimal WebGL 2 page for G7h's browser probes (protocol/gate7-design.md "G7h", Q1b, Q6).
+
+  It draws ONE opaque, axis-aligned, flat-colored quad covering the whole canvas -- no blending,
+  no texture, no AA edges -- so a probe can assert an exact readback at any pixel without needing
+  a reference image. `window.__probe` is the only surface `self-test-browser-harness.ts` touches;
+  everything else here is wiring to keep that surface honest (a real WebGL2 context on a real
+  canvas, a real rAF loop, a real visibilitychange listener).
+
+  This page is also what `checkBrowserProvenance` loads to read the renderer string: it must work
+  with NO network access beyond the harness server that serves it (no CDN, no font, no image).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>g7h-browser-probe</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #000;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="256" height="256"></canvas>
+    <script>
+      (() => {
+        const canvas = document.getElementById("c");
+        const gl = canvas.getContext("webgl2", {
+          alpha: false,
+          antialias: false,
+          premultipliedAlpha: true,
+          preserveDrawingBuffer: true,
+        });
+
+        const state = {
+          rafCount: 0,
+          rafTimestamps: [],
+          visibilityEvents: [],
+          timerCount: 0,
+          webgl2: Boolean(gl),
+        };
+        window.__probeState = state;
+
+        document.addEventListener("visibilitychange", () => {
+          state.visibilityEvents.push({
+            t: performance.now(),
+            state: document.visibilityState,
+          });
+        });
+
+        function rafLoop(ts) {
+          state.rafCount++;
+          state.rafTimestamps.push(ts);
+          if (state.rafTimestamps.length > 4096) state.rafTimestamps.shift();
+          requestAnimationFrame(rafLoop);
+        }
+        requestAnimationFrame(rafLoop);
+        setInterval(() => {
+          state.timerCount++;
+        }, 50);
+
+        window.__probe = window.__probe || {};
+
+        if (gl) {
+          const vs = gl.createShader(gl.VERTEX_SHADER);
+          gl.shaderSource(
+            vs,
+            "#version 300 es\n" +
+              "layout(location=0) in vec2 pos;\n" +
+              "void main(){ gl_Position = vec4(pos, 0.0, 1.0); }\n",
+          );
+          gl.compileShader(vs);
+
+          const fs = gl.createShader(gl.FRAGMENT_SHADER);
+          gl.shaderSource(
+            fs,
+            "#version 300 es\n" +
+              "precision highp float;\n" +
+              "uniform vec4 color;\n" +
+              "out vec4 outColor;\n" +
+              "void main(){ outColor = color; }\n",
+          );
+          gl.compileShader(fs);
+
+          const prog = gl.createProgram();
+          gl.attachShader(prog, vs);
+          gl.attachShader(prog, fs);
+          gl.linkProgram(prog);
+          if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+            state.linkError =
+              `${gl.getShaderInfoLog(vs)} / ${gl.getShaderInfoLog(fs)} / ${gl.getProgramInfoLog(prog)}`;
+          }
+          const colorLoc = gl.getUniformLocation(prog, "color");
+
+          const buf = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          // A full-viewport quad, two triangles, in clip space.
+          gl.bufferData(
+            gl.ARRAY_BUFFER,
+            new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+            gl.STATIC_DRAW,
+          );
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+          /** Draws the full canvas as one flat RGBA color, 0-255 per channel. No blending: the
+           * drawing buffer is cleared then overwritten with an opaque quad, so the result is
+           * exactly `[r,g,b,a]` at every texel -- deterministic enough to assert byte-exactly. */
+          window.__probe.drawFlatColor = (r, g, b, a = 255) => {
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.disable(gl.BLEND);
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.useProgram(prog);
+            gl.uniform4f(colorLoc, r / 255, g / 255, b / 255, a / 255);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+            gl.enableVertexAttribArray(0);
+            gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            gl.flush();
+          };
+
+          /** Reads back an exact rectangle, top-down (row 0 = top), to compare directly against
+           * a CDP screenshot's PNG row order -- `gl.readPixels` itself is bottom-up. */
+          window.__probe.readPixelsRect = (x, y, w, h) => {
+            const raw = new Uint8Array(w * h * 4);
+            // Flip y: canvas-space (x,y,w,h) top-down -> GL readPixels bottom-up origin.
+            const glY = canvas.height - y - h;
+            gl.readPixels(x, glY, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
+            const out = new Uint8Array(w * h * 4);
+            for (let row = 0; row < h; row++) {
+              const srcRow = h - 1 - row;
+              out.set(
+                raw.subarray(srcRow * w * 4, srcRow * w * 4 + w * 4),
+                row * w * 4,
+              );
+            }
+            return Array.from(out);
+          };
+        }
+
+        window.__probe.glInfo = () => {
+          if (!gl) return { webgl2: false };
+          const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+          return {
+            webgl2: true,
+            renderer: dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : null,
+            vendor: dbg ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)) : null,
+            extensions: gl.getSupportedExtensions() || [],
+            hasTimerQuery: Boolean(gl.getExtension("EXT_disjoint_timer_query_webgl2")),
+            linkError: state.linkError || null,
+          };
+        };
+        window.__probe.rafCount = () => state.rafCount;
+        window.__probe.resetRafCount = () => {
+          state.rafCount = 0;
+        };
+        window.__probe.timerCount = () => state.timerCount;
+        window.__probe.resetTimerCount = () => {
+          state.timerCount = 0;
+        };
+        window.__probe.visibilityEvents = () => state.visibilityEvents;
+        window.__probe.visibilityState = () => document.visibilityState;
+        window.__probe.canvasRect = () => ({
+          width: canvas.width,
+          height: canvas.height,
+        });
+        window.__probeReady = true;
+      })();
+    </script>
+  </body>
+</html>

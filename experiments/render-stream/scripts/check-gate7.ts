@@ -1,0 +1,170 @@
+#!/usr/bin/env -S pnpm exec tsx --conditions=development
+// Gate 7 checker CLI -- SKELETON (G7h; protocol/gate7-design.md "G7h" increment). This mirrors
+// check-gate6.ts's shape (ALL_GROUPS/LANDED_GROUPS, a `render-stream-gate7-report/N` written to
+// <out>/result.json, one line per check, non-zero exit unless gate_passed) so each later
+// increment (G7a, G7e, G7b, G7t, G7s, G7l, G7g, G7u, G7r, G7k, G7p, G7z) extends this file with
+// its own `runGate7<x>` import and a case in `checkGroup`, rather than writing a parallel checker.
+//
+//   mise exec -- pnpm exec tsx --conditions=development \
+//     experiments/render-stream/scripts/check-gate7.ts --out <evidence dir>
+//
+// Right now NO `g7-*` leg group has landed (G7a..G7z are all later increments), so `ALL_GROUPS`
+// below is the FINAL vocabulary gate 7 passes against (protocol/gate7-design.md's closing
+// paragraph: `g7-0,g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6,g7-lc,g7-r,g7-k`), every one of them
+// `not-run`, and `gate_passed` reflects ONLY what G7h itself owns: the harness/provenance/probe
+// checks `self-test-browser-harness.ts` already wrote to `<out>/g7h-probes/evidence/probes.json`,
+// read back here and folded into `report.harness`. Requesting any `g7-*` group before its
+// increment lands is refused, exactly as `run-gate6.sh` refuses an unlanded group.
+
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+
+/** The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…"). None have landed. */
+export const ALL_GROUPS = [
+  "g7-0",
+  "g7-1",
+  "g7-2",
+  "g7-3",
+  "g7-4",
+  "g7-5",
+  "g7-55",
+  "g7-6",
+  "g7-lc",
+  "g7-r",
+  "g7-k",
+] as const;
+export const LANDED_GROUPS: readonly string[] = [];
+
+interface HarnessCheck {
+  id: string;
+  ok: boolean;
+  detail: string;
+}
+
+interface HarnessProbes {
+  schema?: string;
+  gate_passed?: boolean;
+  checks?: HarnessCheck[];
+  [key: string]: unknown;
+}
+
+export interface Gate7Report {
+  schema: "render-stream-gate7-report/1";
+  generated_at: string;
+  gate_passed: boolean;
+  groups: { requested: string[]; landed: string[]; not_run: string[] };
+  /** G7h's own checks (browser-provenance, wayland-fd-zero, the two evidence-PUT checks,
+   * probe-rect-exact-readback, compositor-equals-readback, sabotage-swiftshader-refused), folded
+   * in from `<out>/g7h-probes/evidence/probes.json` if that leg was run. `null` if it was not --
+   * a gate 7 run that never exercised the harness has nothing to say about it, which is reported
+   * honestly rather than assumed passing. */
+  harness: {
+    present: boolean;
+    probes_schema: string | null;
+    checks: HarnessCheck[];
+  } | null;
+}
+
+function parseArgs(argv: string[]): { out: string; legs: string[] } {
+  let out: string | undefined;
+  let legsArg = "";
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--out") {
+      out = argv[++i];
+    } else if (argv[i] === "--legs") {
+      legsArg = argv[++i] ?? "";
+    }
+  }
+  if (!out) throw new Error("check-gate7: --out <evidence dir> is required");
+  const legs = legsArg
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return { out: resolve(out), legs };
+}
+
+async function readJsonOrUndefined<T>(path: string): Promise<T | undefined> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+async function main(): Promise<void> {
+  const { out, legs } = parseArgs(process.argv.slice(2));
+
+  for (const g of legs) {
+    if (!(ALL_GROUPS as readonly string[]).includes(g)) {
+      throw new Error(
+        `check-gate7: unknown leg group: ${g} (known: ${ALL_GROUPS.join(", ")})`,
+      );
+    }
+    if (!LANDED_GROUPS.includes(g)) {
+      throw new Error(
+        `check-gate7: leg group ${g} has not landed yet (landed: ${LANDED_GROUPS.length === 0 ? "none" : LANDED_GROUPS.join(", ")}) -- see protocol/gate7-design.md "Increments"`,
+      );
+    }
+  }
+
+  const probes = await readJsonOrUndefined<HarnessProbes>(
+    join(out, "g7h-probes", "evidence", "probes.json"),
+  );
+  const harness = probes
+    ? {
+        present: true,
+        probes_schema: probes.schema ?? null,
+        checks: probes.checks ?? [],
+      }
+    : null;
+
+  const notRun = ALL_GROUPS.filter((g) => !legs.includes(g));
+  // With no gate-numbered groups landed, gate 7 as a whole cannot pass yet (D23 is explicit:
+  // G7h lands now, but "Gate 7 passes when every increment ... has landed"). This checker still
+  // reports G7h's own harness checks as pass/fail, so that increment's own CI signal is real,
+  // without claiming gate 7 overall is green.
+  const harnessOk = harness ? harness.checks.every((c) => c.ok) : true;
+  const gatePassed = legs.length === 0 && harnessOk;
+
+  const report: Gate7Report = {
+    schema: "render-stream-gate7-report/1",
+    generated_at: new Date().toISOString(),
+    gate_passed: gatePassed,
+    groups: {
+      requested: legs,
+      landed: [...LANDED_GROUPS],
+      not_run: [...notRun],
+    },
+    harness,
+  };
+
+  await import("node:fs/promises").then(({ writeFile, mkdir }) =>
+    mkdir(out, { recursive: true }).then(() =>
+      writeFile(join(out, "result.json"), JSON.stringify(report, null, 2)),
+    ),
+  );
+
+  console.log(`check-gate7: wrote ${join(out, "result.json")}`);
+  if (harness) {
+    for (const c of harness.checks) {
+      console.log(`${c.ok ? "PASS" : "FAIL"}  ${c.id}  ${c.detail}`);
+    }
+  } else {
+    console.log(
+      "check-gate7: no harness evidence at <out>/g7h-probes/evidence/probes.json",
+    );
+  }
+  console.log(
+    `check-gate7: ${ALL_GROUPS.length} total leg groups, 0 landed yet, ${legs.length} requested this run`,
+  );
+  console.log(
+    `check-gate7: gate_passed=${gatePassed} (gate 7 overall is not yet checkable -- no g7-* group has landed)`,
+  );
+
+  if (!gatePassed) process.exitCode = 1;
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});

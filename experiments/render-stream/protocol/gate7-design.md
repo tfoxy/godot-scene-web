@@ -101,7 +101,7 @@ All of these are typed or deferred, with owners, in "Deferred".
 | D11 | Which legs | **Every receiver leg of gates 0 to 6 on both browsers, the live legs of gates 1, 2, 5, 5.5 and 6, and browser-only lifecycle, pacing, startup and memory legs (Q8).** Legs that are receiver-independent (gate −1, every capture and reference leg) are not repeated. They come from the source run (D21). Headless-receiver legs are `not-applicable` for browsers, which always render. |
 | D12 | Presentation size | **Unchanged: one presentation size per capture session (gate6-design.md D2).** Browsers present at `presentation_size` 1:1. The canvas backing store equals it, the harness forces DPR 1, and the CSS size equals the backing size. Any mismatch is typed `presentation-mismatch` and still drawn, scaled by CSS. /7's hello advertises the viewer's backing size, CSS size and DPR (Q2). The host only records them, giving gate 8 the data to choose between a host evaluation per size, renegotiation, or typed resampling (Deferred). |
 | D13 | Rates and presentation in a browser | **Receiver frame = one rAF callback that drew; `submitted` = after the GL submit at the end of that callback; presented stays `unavailable`.** Headless Chromium has no display, and no web API reports when a canvas frame was presented. The rAF timestamp of the *next* callback after a submit is reported as `raf_after_submit`, a separately named metric, never as presented. GSW measures GPU completion with a `fenceSync` polled on later frames (`gpu_complete`, measured). The web export reports it `unavailable`, because the engine exposes no fence. GPU render time is measured only where `EXT_disjoint_timer_query_webgl2` is exposed *(probe)*, else `unavailable`. |
-| D14 | Suspension | **Hidden and frozen pages are receiver stalls with gate 1d semantics, and the WebSocket stays open.** Predicted from the HTML standard *(probe)*: a hidden document gets no rAF callbacks, and a frozen one runs no tasks. Godot's web loop is rAF-driven (`wm.cpp:167`, `emscripten_set_main_loop(…, -1, …)`) and has no `visibilitychange` handler anywhere in `platform/web/js`. Its `max_fps` skip resets after a gap of more than 1 s, so it does not burst on resume (`wm.cpp:89-97`). Credit is returned only from a drawing rAF callback, so a hidden or frozen page holds no credit, and the host coalesces (`max_in_flight ≤ window`, `max_pending ≤ 1`). On resume, the first applied state is the newest. Reload is reconnect, a closed tab is gate 1d's killed receiver, and WebGL context loss is recovered in place by GSW and by page reload for the web export, whose engine only alerts "please reload" (`lgd.js:735-738`). |
+| D14 | Suspension | **Hidden and frozen pages are receiver stalls with gate 1d semantics, and the WebSocket stays open.** Predicted from the HTML standard *(probe)*: a hidden document gets no rAF callbacks, and a frozen one runs no tasks. Godot's web loop is rAF-driven (`wm.cpp:167`, `emscripten_set_main_loop(…, -1, …)`) and has no `visibilitychange` handler anywhere in `platform/web/js`. Its `max_fps` skip resets after a gap of more than 1 s, so it does not burst on resume (`wm.cpp:89-97`). Credit is returned only from a drawing rAF callback, so a hidden or frozen page holds no credit, and the host coalesces (`max_in_flight ≤ window`, `max_pending ≤ 1`). On resume, the first applied state is the newest. Reload is reconnect, a closed tab is gate 1d's killed receiver, and WebGL context loss is recovered in place by GSW and by page reload for the web export, whose engine only alerts "please reload" (`lgd.js:735-738`). **As built (G7h): the hidden/frozen premise does not hold under headless=new on chromium-1223 -- see Q1b's "As built (G7h)" note; G7u needs a different mechanism or the user's sign-off to narrow this.** |
 | D15 | Startup cost | **Navigation-relative marks, cold and warm.** Cold = a fresh profile (no HTTP cache, no payload cache). Warm = a second load in the same profile. Marks: `navigationStart`, bundle/wasm fetched, wasm compiled (web export), engine ready / receiver ready, socket open, session decoded, first transaction applied, first `submitted`, first `raf_after_submit`. One warmup plus five repeats. Native receiver startup (process start to first `frame_post_draw`) is measured alongside for scale. |
 | D16 | Memory accounting | **Per process, from `/proc` and CDP, never from one number.** Renderer, GPU and browser process RSS come from `/proc/<pid>/statm`, using PIDs from CDP `SystemInfo.getProcessInfo`. JS heap comes from CDP `Performance.getMetrics` (`JSHeapUsedSize`). Web export wasm heap comes from the shell (`HEAP8.byteLength`; emscripten never shrinks it). Per-process GPU memory comes from `nvidia-smi`, reusing `packages/perf-harness/src/nvidia.ts`. Engine `get_rendering_info` covers the web export, and GL object counts cover GSW. Soak thresholds are in Q10. |
 | D17 | Report schema | **`render-stream-report/2`, a superset of /1 with a browser receiver profile (Q12).** `validate` accepts /1 and /2. `perf-report/1` is not generalized: it describes A/B arms of browser rendering mechanisms, while /2 describes a host-to-receiver pipeline with a native leg in the same document, and gate 6's condition (a concrete second consumer of one shared shape) is still not met. |
@@ -176,6 +176,43 @@ All of these are typed or deferred, with owners, in "Deferred".
   Receivers read shots from their own WebGL framebuffer with `readPixels` (GSW) or the engine's
   viewport texture (web export). A CDP screenshot of the page is used only as the compositor check
   of an opaque frame (Q7 `compositor-equals-readback`).
+
+**As built (G7h, 2026-10-14).** Every *(probe)* item above was run for real against chromium-1223
+(148.0.7778.96, D9's exact flags), through `scripts/lib/browser-harness.ts` and
+`scripts/test/self-test-browser-harness.ts` (README "Gate 7h result"). Six of the eight hold or are
+confirmed with a caveat; one is a direct contradiction with a consequence for later increments:
+
+1. **The hidden-page bullet does NOT hold, and none of Q1b's three candidates hides a
+   headless=new page on this build.** `Target.activateTarget` on an auxiliary page,
+   `Browser.setWindowBounds(minimized)` and `Emulation.setFocusEmulationEnabled(false)` all return
+   success from CDP but leave `document.visibilityState === "visible"` and rAF running at the full
+   rate. Worse, `Page.setWebLifecycleState("frozen")` itself -- the mechanism D14 cites directly
+   for "a frozen document runs no tasks" -- has no effect either: rAF and a `setInterval` both kept
+   running through a 1.2 s frozen window, no `visibilitychange` fired, and
+   `Page.setLifecycleEventsEnabled(true)` never emits a `frozen`/`resume` lifecycle event. This was
+   checked three independent ways (direct CDP round-trips, the lifecycle-event listener, and a
+   fully passive page that reports its own counters by `console.log` on a timer, so no
+   `Runtime.evaluate` poll from Node could itself be "waking" it) before being recorded here.
+   **Consequence: G7u (suspension and lifecycle) cannot exercise D14's hidden/frozen legs through
+   any CDP override on this Chromium build in this sandbox.** G7u needs either a different
+   mechanism (a real display; a different Chromium release; or testing `wm.cpp`'s gap-reset logic
+   directly rather than through a browser) or the user's sign-off to report the hidden/frozen legs
+   `unavailable` under headless=new and test D14's bounded-pending-state/newest-on-resume claims
+   some other way. `SuspensionController`'s `hideVia*`/`freeze` methods are still implemented and
+   return a measured `tookEffect` (not the CDP call's bare success), for whichever mechanism G7u
+   ultimately uses.
+2. **The preflight-caching and HTTP-cache bullets hold, confirmed in an isolated two-process
+   probe** (one `node:http` server, no other probe run first): a cold fetch costs one preflight and
+   one GET, a same-page repeat and a same-process reload cost zero of each, and a genuinely fresh
+   browser process costs one more of each. Inside the FULL G7h probe sequence (after probes 1-4 run
+   on the same browser/page), the measured hit counts are confounded -- the first fetch there costs
+   two of each instead of one, and the fresh-process phase shows zero new hits -- and this was not
+   root-caused further given the cost already sunk into it (README "Gate 7h result" Finding 3). The
+   qualitative behaviour is confirmed; an exact hit COUNT from this harness's combined sequence is
+   not to be trusted, and G7l should re-measure in isolation if a count becomes load-bearing.
+3. **`compositor-equals-readback` holds exactly** (max channel delta 0 over 65 536 px of a flat
+   opaque colour), supporting D7's prediction that GSW's RGB10_A2 stage readback and the page
+   compositor agree.
 
 ### Q1c. What GSW already has (survey of `packages/`, 2026-10-14)
 
