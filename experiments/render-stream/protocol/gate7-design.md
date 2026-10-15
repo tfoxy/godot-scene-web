@@ -796,7 +796,7 @@ flowchart LR
 | G7u | sonnet | 4 | no | G7l |
 | G7r | opus | 5 | no | G7g, G6c |
 | G7k | sonnet | 5 | no | G7g, G7u, G6s |
-| G7q | opus | 6 | no; **only with the user's go-ahead (F1)** | G7r |
+| G7q | opus | 6 | no; F1 approved 2026-10-14 (opt-in) | G7r |
 | G7p | sonnet | 6 | no | G7r, G7k, G6p (G7q if approved) |
 | G7z | sonnet | 7 | no | G7p, G6z (and everything before) |
 
@@ -1102,8 +1102,16 @@ Everything else above follows from the handoff, engine source or recorded findin
   browsers pace by rAF, so they inherit the problem. Gate 7 measures it either way (G7r). Approving
   F1 lets G7q implement a negotiated window of 2: still bounded, one replaceable pending target,
   pins over two bases. Declining keeps window 1 and records 60/60 as a measured limit.
+  **Resolved 2026-10-14: approved as opt-in.** G7q implements window 2 as specified, with window 1
+  still the default and the correctness baseline. The user expects window 2 to become the default
+  eventually (live streaming normally runs a bounded window rather than stop-and-wait); G7q's
+  measurements, not this note, decide whether and when that change is proposed.
 - **F2. Downloading the 4.5.1 web export template.** G7e needs the official 4.5.1-stable
   `web_nothreads_release.zip`. It is not on this machine, so it must be fetched from the official
   Godot release archive (the full export-templates `.tpz` is about 1 GB). It is recorded with its
   sha256 and never committed. Nothing in the web-export track can start without it. GSW work and
   the harness can.
+  **Resolved 2026-10-14: approved and fetched.** The official `.tpz` passed its sha512 against the
+  release's `SHA512-SUMS.txt`; only `web_nothreads_release.zip` was kept, at
+  `~/.cache/godot-render-stream/templates/4.5.1-stable/web_nothreads_release.zip`, sha256
+  `7f6c5efc9952f6f02509adfb92298161c0152a1f6a81c0bf9b9f4f913676e9c8`.
