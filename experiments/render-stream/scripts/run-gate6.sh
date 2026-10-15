@@ -56,6 +56,14 @@
 # sabotage-constrained-ignore-credit (throttle-proxy.ts `constrained` between receiver and host),
 # then each leg's final-state reference; then, in a 1920x1080 gamescope, the gpu-heavy calibration
 # and the gpu-heavy leg on gate6-hd. Hosts and receivers carry a /proc sampler (sample-proc.ts).
+# g6p (G6p, lib/gate6p-legs.sh; NOT in the default --legs, select it explicitly): Q7g's
+# measurement matrix under <out>/matrix/ -- 20 scenarios, one discarded warmup plus 5 measured
+# repeats each (about an hour): gate6-scene's unarmed/armed-idle arms, streaming at 15/30/60/
+# uncapped-host60/uncapped, a cold-cache repeat of 60 and a hook-log-on repeat of 60 (D15's input);
+# the same on gate6-hd native; gate6-hd half streaming at 60 (warm); gate6-scene constrained-60 and
+# dual-60-15. `unarmed` loads no capture extension at all (sample-rate.ts's wall-clock step-log
+# slope is its only host-rate signal); every other arm reuses gate6c-legs.sh's host/receiver/proxy/
+# reference helpers on the same `rate` timeline g6c measures.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -80,8 +88,12 @@ set -euo pipefail
 
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
-# Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g6a g6h g6l g6b g6s g6c)
+# Groups whose increment has landed (selectable via --legs), in run order.
+LANDED_GROUPS=(g6a g6h g6l g6b g6s g6c g6p)
+# The default run-set when --legs is omitted: every landed group except g6p, whose Q7g
+# measurement matrix (warmup + 5 repeats x 20 scenarios) takes about an hour, so a plain
+# `pnpm render-stream:gate6` stays fast; select it explicitly with --legs ...,g6p.
+DEFAULT_GROUPS=(g6a g6h g6l g6b g6s g6c)
 KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p)
 
 EXTENSION=""
@@ -162,7 +174,7 @@ fi
 
 GROUPS_RUN=()
 if [ -z "$LEGS_ARG" ]; then
-	GROUPS_RUN=("${LANDED_GROUPS[@]}")
+	GROUPS_RUN=("${DEFAULT_GROUPS[@]}")
 else
 	IFS=',' read -r -a requested <<<"$LEGS_ARG"
 	for group in "${requested[@]}"; do
@@ -440,6 +452,8 @@ source "$SCRIPT_DIR/lib/gate6h-legs.sh"
 source "$SCRIPT_DIR/lib/gate6b-legs.sh"
 # shellcheck source=lib/gate6c-legs.sh
 source "$SCRIPT_DIR/lib/gate6c-legs.sh"
+# shellcheck source=lib/gate6p-legs.sh
+source "$SCRIPT_DIR/lib/gate6p-legs.sh"
 
 # ---------------------------------------------------------------------------------------------
 # G6l (gate6-design.md "G6l", Q7c): live motion, the 2-s stall, reconnect and the warm cache on
@@ -843,9 +857,9 @@ run_g6s() {
 	GS_RUN_DIR=""
 }
 
-# g6b runs after g6a and g6h whatever order --legs names them in; g6s has no cross-group
-# dependency, so it just runs wherever it falls in this fixed order (last is fine).
-for group in g6a g6h g6l g6b g6s g6c; do
+# g6b runs after g6a and g6h whatever order --legs names them in; g6s and g6p have no cross-group
+# dependency, so each just runs wherever it falls in this fixed order (last is fine).
+for group in g6a g6h g6l g6b g6s g6c g6p; do
 	case " ${GROUPS_RUN[*]} " in
 	*" $group "*) ;;
 	*) continue ;;
@@ -857,6 +871,7 @@ for group in g6a g6h g6l g6b g6s g6c; do
 	g6b) run_g6b ;;
 	g6s) run_g6s ;;
 	g6c) run_g6c ;;
+	g6p) run_g6p ;;
 	esac
 done
 

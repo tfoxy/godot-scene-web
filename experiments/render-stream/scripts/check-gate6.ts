@@ -42,6 +42,7 @@ import {
   type G6lTiming,
   runGate6l,
 } from "./lib/gate6l-checks";
+import { type G6pLegEntry, runGate6p } from "./lib/gate6p-checks";
 import { type G6sLegEntry, runGate6s } from "./lib/gate6s-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -80,6 +81,7 @@ export interface Gate6Report {
     | G6bLegEntry
     | G6sLegEntry
     | G6cLegEntry
+    | G6pLegEntry
   >;
   checks: Gate6Check[];
   checkpoints: Gate6Checkpoint[];
@@ -99,6 +101,12 @@ export interface Gate6Report {
   rates: Record<string, G6cRateRow>;
   /** filled by later increments (G6s) */
   stability: Record<string, unknown>;
+  /** g6p (G6p): the measurement matrix's render-stream-report/1 path and a one-line per-scenario
+   * summary (not in the default --legs; select it explicitly) */
+  matrix: {
+    report_path: string | null;
+    scenario_summary: Record<string, string>;
+  };
 }
 
 function parseArgs(argv: string[]): { out: string } {
@@ -143,6 +151,7 @@ async function main(): Promise<void> {
     hazard: {},
     rates: {},
     stability: {},
+    matrix: { report_path: null, scenario_summary: {} },
   };
 
   if (run.includes("g6a")) {
@@ -229,6 +238,12 @@ async function main(): Promise<void> {
     Object.assign(report.legs, r.legs);
     Object.assign(report.rates, r.rates);
   }
+  if (run.includes("g6p")) {
+    const r = await runGate6p(out);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    report.matrix = r.matrix;
+  }
   for (const group of report.groups.not_run)
     report.checks.push({
       id: `group-${group}`,
@@ -280,6 +295,10 @@ async function main(): Promise<void> {
     );
   for (const [name, c] of Object.entries(report.census))
     console.log(`  census (${name}): ${c}`);
+  if (report.matrix.report_path)
+    console.log(`  g6p matrix report: ${report.matrix.report_path}`);
+  for (const [id, line] of Object.entries(report.matrix.scenario_summary))
+    console.log(`  g6p ${id}: ${line}`);
   if (Object.keys(report.hazard).length > 0)
     console.log(
       `  presentation hazard, differing pixel-shots per region: ${Object.entries(

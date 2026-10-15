@@ -320,7 +320,7 @@ export interface G6cLegEvidence {
   reference_shot: string;
 }
 
-function parseJsonl<T>(text: string | undefined): T[] {
+export function parseJsonl<T>(text: string | undefined): T[] {
   const out: T[] = [];
   for (const line of (text ?? "").split("\n")) {
     if (line.trim() === "") continue;
@@ -1133,7 +1133,7 @@ const HOST_STAGE_MAP: [string, string][] = [
   ["http_serve_us", "http_serve_us"],
 ];
 
-function dist(
+export function dist(
   h: PerfHist | undefined,
   unit: string,
   source: string,
@@ -1170,7 +1170,11 @@ function dist(
   };
 }
 
-function exactDist(values: number[], unit: string, source: string): ReportDist {
+export function exactDist(
+  values: number[],
+  unit: string,
+  source: string,
+): ReportDist {
   if (values.length === 0)
     return {
       status: "not-applicable",
@@ -1200,7 +1204,7 @@ function exactDist(values: number[], unit: string, source: string): ReportDist {
   };
 }
 
-function rate(
+export function rate(
   value: number | null,
   source: string,
   notApplicable?: string,
@@ -1225,7 +1229,7 @@ function rate(
 }
 
 /** Least-squares slope of (minutes, bytes). */
-function slopePerMin(points: [number, number][]): number {
+export function slopePerMin(points: [number, number][]): number {
   if (points.length < 2) return 0;
   const n = points.length;
   const mx = points.reduce((a, [x]) => a + x, 0) / n;
@@ -1239,7 +1243,7 @@ function slopePerMin(points: [number, number][]): number {
   return den === 0 ? 0 : num / den;
 }
 
-function memoryOf(all: ProcSampleLine[]): {
+export function memoryOf(all: ProcSampleLine[]): {
   start: number;
   end: number;
   slope: number;
@@ -1262,7 +1266,7 @@ function memoryOf(all: ProcSampleLine[]): {
   };
 }
 
-function cpuOf(samples: ProcSampleLine[], thread?: string): number {
+export function cpuOf(samples: ProcSampleLine[], thread?: string): number {
   const last = samples[samples.length - 1];
   if (!last) return 0;
   return last.threadCpu
@@ -1463,12 +1467,12 @@ export interface ProvenanceInput {
 
 /** `gamescope --version` reduced to its version number (the raw line carries ANSI colour codes
  * and a log prefix). */
-function gamescopeVersion(): string {
+export function gamescopeVersion(): string {
   const raw = probeGamescopeVersion();
   return raw?.match(/gamescope version (\S+)/)?.[1] ?? raw ?? "unknown";
 }
 
-function gitInfo(): { commit: string; dirty: boolean } {
+export function gitInfo(): { commit: string; dirty: boolean } {
   const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
   const status = spawnSync("git", ["status", "--porcelain"], {
     encoding: "utf8",

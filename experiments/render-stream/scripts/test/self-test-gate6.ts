@@ -24,6 +24,7 @@
 // 10. Group g6s: self-test-gate6s.ts's cases for lib/gate6s-checks.ts.
 // 11. Gate 6b: test/self-test-gate6b.ts (the pure g6b checks) on synthetic values and the HD file.
 // 12. Group g6c: self-test-gate6c.ts's cases for lib/gate6c-checks.ts.
+// 13. Group g6p: self-test-gate6p.ts's cases for lib/gate6p-checks.ts and sample-rate.ts.
 //
 // Exits non-zero if any assertion fails.
 
@@ -61,6 +62,7 @@ import { selfTestGate6b } from "./self-test-gate6b";
 import { selfTestGate6c } from "./self-test-gate6c";
 import { selfTestGate6h } from "./self-test-gate6h";
 import { selfTestG6l } from "./self-test-gate6l";
+import { selfTestGate6p } from "./self-test-gate6p";
 import { selfTestG6s } from "./self-test-gate6s";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -913,6 +915,9 @@ async function main(): Promise<void> {
 
   // 12. Group g6c (self-test-gate6c.ts).
   selfTestGate6c({ assert, passes, fails });
+
+  // 13. Group g6p (self-test-gate6p.ts).
+  await selfTestGate6p({ assert, passes, fails });
 
   console.log(
     `\nself-test-gate6: ${assertions - failures}/${assertions} assertions passed`,
