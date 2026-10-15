@@ -11,6 +11,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl"] }
 bytemuck = { version = "1", features = ["derive"] }
+# `canvas-items` only: the packed CanvasItem draw list its executor runs (gate7-design.md Q14b, D30).
+gsw-canvas-draw-list = { path = "../rust-draw-list", optional = true }
 
 [build-dependencies]
 # `gl-backend`: translate shader.wgsl to GLSL at build time, with the naga wgpu-hal uses (same version).
@@ -31,6 +33,13 @@ webgl = ["wgpu/webgl"]
 fault-injection = []
 # The direct-WebGL2 backend (`RustRenderer.createWithGl`): glow calls with no wgpu device in between.
 gl-backend = ["dep:naga"]
+# The packed CanvasItem draw-list executor (`canvas_items`): WebGL2 through glow, no wgpu. Off by
+# default and off in `build-web.sh`, so `RustRenderer` and every wire contract are unchanged (D30).
+# On wasm32 without `webgl` the wgpu renderer (and `RustRenderer`'s exports) is not compiled at all.
+canvas-items = ["dep:gsw-canvas-draw-list"]
+# Test-only wasm-bindgen exports over `canvas-items` (`CanvasItemsTestHarness`, PDL1 in, shots out).
+# Never enable it in a module that ships: a dependency's wasm-bindgen exports land in the final module.
+canvas-items-test = ["canvas-items"]
 
 [profile.release]
 opt-level = "s"

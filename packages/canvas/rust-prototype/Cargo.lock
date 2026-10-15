@@ -180,6 +180,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glow",
+ "gsw-canvas-draw-list",
  "js-sys",
  "naga",
  "serde",
@@ -188,6 +189,13 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "gsw-canvas-draw-list"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]

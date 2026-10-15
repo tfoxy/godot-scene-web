@@ -215,7 +215,7 @@ async function exitCode(dir: string): Promise<string | null> {
   return (await readText(join(dir, "exit-code.txt")))?.trim() ?? null;
 }
 
-async function shotChecks(
+export async function shotChecks(
   e: PaceExpected,
   label: string,
   shots: { step: number; frame: number; path: string }[],

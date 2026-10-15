@@ -1,0 +1,33 @@
+<!doctype html>
+<!--
+  Gate 7x Rust-arm bench page (G7x, protocol/gate7-design.md "G7x", Q14c): the gsw-rs and
+  gsw-rs-inline arms of scripts/gate7-bench.ts. Served like index.html (cross-origin isolated, D9
+  on the desktop, adb reverse on a phone); loads ./gsw-rs/rs_gsw_wasm.js (rs-gsw-wasm, built by
+  scripts/build-rs-core.sh). bench-rs.ts documents the parameters and the timers.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>render-stream gate 7x Rust bench</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #333366;
+        color: #fff;
+        font: 12px monospace;
+      }
+      canvas {
+        display: block;
+        width: 64px;
+        height: 36px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="frame" width="64" height="36"></canvas>
+    <pre id="status">loading</pre>
+    <script type="module" src="./bench-rs.js"></script>
+  </body>
+</html>

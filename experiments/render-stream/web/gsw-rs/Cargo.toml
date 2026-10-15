@@ -1,0 +1,23 @@
+[package]
+name = "rs-gsw-wasm"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "The GSW browser receiver's wasm module (gate7-design.md Q14a, Q14c): render-stream-core and the canvas-items executor linked into one module, with bytes crossing in once per message and a fixed stats block out"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+render-stream-core = { path = "../../rs-core" }
+gsw-canvas-draw-list = { path = "../../../../packages/canvas/rust-draw-list" }
+godot-scene-web-rust-prototype = { path = "../../../../packages/canvas/rust-prototype", default-features = false, features = ["canvas-items"] }
+wasm-bindgen = "=0.2.129"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

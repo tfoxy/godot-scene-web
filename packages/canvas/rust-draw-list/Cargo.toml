@@ -1,0 +1,12 @@
+[package]
+name = "gsw-canvas-draw-list"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A packed, generic Godot CanvasItem draw list: little-endian POD arrays a producer owns and an executor borrows for one frame"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
