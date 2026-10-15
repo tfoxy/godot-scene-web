@@ -4,7 +4,7 @@
 #
 #   bash run-gate6.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g6a,g6h,g6l,g6b,g6c]
+#     [--legs g6a,g6h,g6l,g6b,g6c,g6z]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -64,6 +64,10 @@
 # dual-60-15. `unarmed` loads no capture extension at all (sample-rate.ts's wall-clock step-log
 # slope is its only host-rate signal); every other arm reuses gate6c-legs.sh's host/receiver/proxy/
 # reference helpers on the same `rate` timeline g6c measures.
+# g6z (G6z, scripts/make-features.ts + lib/gate6z-checks.ts; runs last, no capture of its own):
+# Q8's four manifest checks against protocol/features/render-stream-6.json, reusing whichever of
+# g6a's scene/{capture,capture-inline,animate/capture}, g6h's hd/capture-native, g6a's
+# refused/capture and g6b's snap/capture recordings this run's groups produced.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -88,13 +92,15 @@ set -euo pipefail
 
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
-# Groups whose increment has landed (selectable via --legs), in run order.
-LANDED_GROUPS=(g6a g6h g6l g6b g6s g6c g6p)
+# Groups whose increment has landed (selectable via --legs), in run order. g6z runs last: it has
+# no capture of its own, only checks against whichever earlier groups ran in this invocation.
+LANDED_GROUPS=(g6a g6h g6l g6b g6s g6c g6p g6z)
 # The default run-set when --legs is omitted: every landed group except g6p, whose Q7g
 # measurement matrix (warmup + 5 repeats x 20 scenarios) takes about an hour, so a plain
-# `pnpm render-stream:gate6` stays fast; select it explicitly with --legs ...,g6p.
-DEFAULT_GROUPS=(g6a g6h g6l g6b g6s g6c)
-KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p)
+# `pnpm render-stream:gate6` stays fast; select it explicitly with --legs ...,g6p. g6z is cheap
+# (no capture) and stays in the default set so a plain run always re-validates the manifest.
+DEFAULT_GROUPS=(g6a g6h g6l g6b g6s g6c g6z)
+KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p g6z)
 
 EXTENSION=""
 CALIBRATION=""
@@ -204,6 +210,21 @@ case " ${GROUPS_RUN[*]} " in
 		*" $needed "*) ;;
 		*)
 			echo "run-gate6: leg group g6b needs g6a and g6h in the same run (--legs g6a,g6h,g6b)" >&2
+			exit 2
+			;;
+		esac
+	done
+	;;
+esac
+
+# g6z's checks read g6a's scene/{capture,refused/capture} and g6b's snap/capture recordings.
+case " ${GROUPS_RUN[*]} " in
+*" g6z "*)
+	for needed in g6a g6b; do
+		case " ${GROUPS_RUN[*]} " in
+		*" $needed "*) ;;
+		*)
+			echo "run-gate6: leg group g6z needs g6a and g6b in the same run (--legs g6a,g6h,g6b,g6z)" >&2
 			exit 2
 			;;
 		esac

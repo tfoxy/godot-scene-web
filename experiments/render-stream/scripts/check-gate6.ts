@@ -44,11 +44,14 @@ import {
 } from "./lib/gate6l-checks";
 import { type G6pLegEntry, runGate6p } from "./lib/gate6p-checks";
 import { type G6sLegEntry, runGate6s } from "./lib/gate6s-checks";
+import { runGate6z, verifyManifestEvidence } from "./lib/gate6z-checks";
+import { buildManifest } from "./make-features";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
 
-/** Every group of protocol/gate6-design.md Q7b, and those whose increment landed. */
+/** Every group of protocol/gate6-design.md Q7b, and those whose increment landed. g6z (Q8) runs
+ * last: it has no capture of its own, only checks against the groups already run. */
 export const ALL_GROUPS = [
   "g6a",
   "g6h",
@@ -57,7 +60,11 @@ export const ALL_GROUPS = [
   "g6s",
   "g6c",
   "g6p",
+  "g6z",
 ] as const;
+/** g6p is deliberately excluded (its ~80-minute matrix is not part of the default run, memory
+ * gate6p-default-vs-landed-groups); g6z IS included, since run-gate6.sh's DEFAULT_GROUPS now runs
+ * it by default (no capture of its own, cheap to run alongside the other six). */
 export const LANDED_GROUPS: readonly string[] = [
   "g6a",
   "g6h",
@@ -65,6 +72,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g6b",
   "g6s",
   "g6c",
+  "g6z",
 ];
 
 export interface Gate6Report {
@@ -243,6 +251,25 @@ async function main(): Promise<void> {
     report.checks.push(...r.checks);
     Object.assign(report.legs, r.legs);
     report.matrix = r.matrix;
+  }
+  if (run.includes("g6z")) {
+    const r = await runGate6z(out);
+    report.checks.push(...r.checks);
+    try {
+      report.checks.push(
+        verifyManifestEvidence(buildManifest(), report.checks),
+      );
+    } catch (error) {
+      report.checks.push({
+        id: "manifest-evidence",
+        criterion:
+          "every supported entry's gate6 evidence check id appears as pass in the gate 6 run quoted by the summary",
+        passed: false,
+        status: "fail",
+        detail: `manifest did not build: ${String(error)}`,
+        evidence: [],
+      });
+    }
   }
   for (const group of report.groups.not_run)
     report.checks.push({
