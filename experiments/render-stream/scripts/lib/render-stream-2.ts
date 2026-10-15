@@ -4720,30 +4720,71 @@ function checkResolvedInvariants(
 
 // --------------------------------------------------------------------------------------- validateRecording
 
-export function validateRecording(
-  data: Uint8Array,
+/**
+ * The incremental form of `validateRecording` (G7d, gate7-design.md Q13e: a receiver validates one
+ * record per message, so the bench times validation per transaction). `records[0]` must be the
+ * session record; `accept(i)` validates record `i` against everything accepted before it and
+ * returns its first error, or undefined. Call it for i = 1, 2, ... in order, never twice for one
+ * index; `records` may grow between calls (a live caller appends each message's record). `finish()`
+ * is the end-of-stream verdict. `errors` is set when the session record itself is invalid, and then
+ * both methods return it. `validateRecording` is exactly this over a whole file.
+ */
+export interface RecordingValidator {
+  errors: string[] | null;
+  accept(index: number): string[] | undefined;
+  finish(): string[];
+}
+
+/**
+ * G7d bench seam (gate7-design.md Q13e): when set, `RecordingValidator.accept` adds the time it
+ * spends in `decodeRecord` (framing a record's meta and blocks, hashing included) to `decode_us`
+ * and in `applyTransaction` (patch resolution) to `resolve_us`, read from `now()` (microseconds).
+ * Null by default: then each phase costs one null check. The bench's validate time is accept's
+ * total minus both.
+ */
+export interface ValidatorPhaseTimer {
+  now(): number;
+  decode_us: number;
+  resolve_us: number;
+}
+
+let validatorPhaseTimer: ValidatorPhaseTimer | null = null;
+
+export function setValidatorPhaseTimer(
+  timer: ValidatorPhaseTimer | null,
+): void {
+  validatorPhaseTimer = timer;
+}
+
+export function createRecordingValidator(
+  records: RawRecord[],
   version: 2 | 3 | 4 | 5 | 6 = 6,
-): string[] {
+): RecordingValidator {
+  const rejected = (errors: string[]): RecordingValidator => ({
+    errors,
+    accept: () => errors,
+    finish: () => errors,
+  });
   const isV6 = version === 6;
   // isV5 means "V5 or later" (render-stream-6.md: transactions/items/commands are byte-identical
   // to /5).
   const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
-  const split = splitRecords(data, version);
-  if (split.errors.length > 0) return [split.errors[0]];
-  if (split.records.length === 0)
-    return ["missing-session: the recording has no records"];
+  if (records.length === 0)
+    return rejected(["missing-session: the recording has no records"]);
 
-  const first = decodeRecord(split.records[0], version);
+  const first = decodeRecord(records[0], version);
   if (first.errors.length > 0 || first.record === undefined)
-    return [first.errors[0]];
+    return rejected([first.errors[0]]);
   const sessionMeta = first.record.meta;
   if (sessionMeta.type !== "session")
-    return [`missing-session: the first record has type "${sessionMeta.type}"`];
+    return rejected([
+      `missing-session: the first record has type "${sessionMeta.type}"`,
+    ]);
   if (sessionMeta.viewport.root_canvas !== 1) {
-    return [
+    return rejected([
       `root-canvas: session.viewport.root_canvas is ${sessionMeta.viewport.root_canvas}, not 1`,
-    ];
+    ]);
   }
   const inlineMaxBytes = sessionMeta.resources.inline_max_bytes;
   // render-stream-6.md "Viewport"/gate6-design.md Q3a: host_size_status must be consistent with
@@ -4774,9 +4815,9 @@ export function validateRecording(
           ? "degenerate-visible"
           : "degenerate-window";
     if (sessionMeta.viewport.host_size_status !== expectedStatus) {
-      return [
+      return rejected([
         `viewport-entry: session.viewport.host_size_status is "${sessionMeta.viewport.host_size_status}", expected "${expectedStatus}" from host_window_size/presentation_size/host_visible_rect`,
-      ];
+      ]);
     }
   }
   // render-stream-6.md "Session-level unsupported reasons": snap-2d is a session-level constant
@@ -4821,12 +4862,15 @@ export function validateRecording(
   const lastSeenMaterial = new Map<number, ResolvedMaterial>();
   let endSeen = false;
 
-  for (let i = 1; i < split.records.length; i++) {
-    const decoded = decodeRecord(split.records[i], version);
+  const accept = (i: number): string[] | undefined => {
+    const timer = validatorPhaseTimer;
+    const decodeT0 = timer ? timer.now() : 0;
+    const decoded = decodeRecord(records[i], version);
+    if (timer) timer.decode_us += timer.now() - decodeT0;
     if (decoded.errors.length > 0 || decoded.record === undefined)
       return [decoded.errors[0]];
     const meta = decoded.record.meta;
-    const offset = split.records[i].offset;
+    const offset = records[i].offset;
 
     if (meta.type === "session")
       return [`duplicate-session: a second session record at offset ${offset}`];
@@ -4843,7 +4887,7 @@ export function validateRecording(
           `meta-schema: record at offset ${offset}: resource payload block did not decode as u8`,
         ];
       }
-      const rawPayload = rawResourcePayload(split.records[i]);
+      const rawPayload = rawResourcePayload(records[i]);
       // render-stream-4.md "Resources": mesh (GRM1), shader (GRP1, new at /5) and texture (GRT1)
       // payloads share one hash namespace and one resource record shape; tell them apart by
       // their own 8-byte magic.
@@ -4906,7 +4950,7 @@ export function validateRecording(
       resourceByteTotal += meta.bytes;
       bytesTotal += decoded.record.byte_length;
       maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
-      continue;
+      return undefined;
     }
 
     if (meta.type === "transaction") {
@@ -5128,11 +5172,13 @@ export function validateRecording(
           `block-count: record at offset ${offset}: decoded block lengths disagree with items/canvases/commands/meshes/materials counts`,
         ];
       }
+      const resolveT0 = timer ? timer.now() : 0;
       const nextState = applyTransaction(
         state,
         meta,
         decoded.record.blocks as number[][],
       );
+      if (timer) timer.resolve_us += timer.now() - resolveT0;
       const resolvedErrors = checkResolvedInvariants(
         meta,
         nextState,
@@ -5309,7 +5355,7 @@ export function validateRecording(
       else patchCount += 1;
       bytesTotal += decoded.record.byte_length;
       maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
-      continue;
+      return undefined;
     }
 
     // meta.type === "end"
@@ -5332,17 +5378,39 @@ export function validateRecording(
         `end-stats-mismatch: end record stats disagree with the recording`,
       ];
     }
-    if (i !== split.records.length - 1) {
+    if (i !== records.length - 1) {
       return [
         `trailing-bytes: data follows the end record at offset ${offset}`,
       ];
     }
     endSeen = true;
-  }
+    return undefined;
+  };
 
-  if (!endSeen)
-    return ["recording-incomplete: the recording ends without an end record"];
-  return [];
+  return {
+    errors: null,
+    accept,
+    finish: () =>
+      endSeen
+        ? []
+        : ["recording-incomplete: the recording ends without an end record"],
+  };
+}
+
+/** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
+export function validateRecording(
+  data: Uint8Array,
+  version: 2 | 3 | 4 | 5 | 6 = 6,
+): string[] {
+  const split = splitRecords(data, version);
+  if (split.errors.length > 0) return [split.errors[0]];
+  const validator = createRecordingValidator(split.records, version);
+  if (validator.errors) return validator.errors;
+  for (let i = 1; i < split.records.length; i++) {
+    const errors = validator.accept(i);
+    if (errors) return errors;
+  }
+  return validator.finish();
 }
 
 function checkPatchRules(

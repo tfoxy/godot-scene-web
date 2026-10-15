@@ -1,0 +1,2 @@
+Total GPU memory usage:
+  20000000 bytes, 19.07 MB

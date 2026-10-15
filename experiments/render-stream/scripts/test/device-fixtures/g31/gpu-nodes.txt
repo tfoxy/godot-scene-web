@@ -1,0 +1,12 @@
+<</sys/kernel/ged/hal/gpu_utilization>>1
+cat: /sys/kernel/ged/hal/gpu_utilization: Permission denied
+<<end>>
+<</sys/class/misc/mali0/device/utilization>>1
+cat: /sys/class/misc/mali0/device/utilization: No such file or directory
+<<end>>
+<</proc/gpufreq/gpufreq_var_dump>>1
+cat: /proc/gpufreq/gpufreq_var_dump: Permission denied
+<<end>>
+<</sys/kernel/ged/hal/current_freqency>>1
+cat: /sys/kernel/ged/hal/current_freqency: Permission denied
+<<end>>

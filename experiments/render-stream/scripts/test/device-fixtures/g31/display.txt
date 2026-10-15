@@ -1,0 +1,3 @@
+  DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", 1080 x 2400, modeId 1, defaultModeId 1, supportedModes [{id=1, width=1080, height=2400, fps=60.0, alternativeRefreshRates=[]}], supportedReadyForModes [], colorMode 0, supportedColorModes [0]}
+    mActiveModeId=1
+    mDefaultModeId=1

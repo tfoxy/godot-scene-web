@@ -1,0 +1,12 @@
+IsStatusOverride: false
+Thermal Status: 0
+Cached temperatures:
+	Temperature{mValue=45.5, mType=0, mName=CPU, mStatus=0}
+	Temperature{mValue=45.5, mType=1, mName=GPU, mStatus=0}
+	Temperature{mValue=45.5, mType=9, mName=NPU, mStatus=0}
+	Temperature{mValue=29.0, mType=3, mName=SKIN, mStatus=0}
+	Temperature{mValue=19.8, mType=2, mName=BATTERY, mStatus=0}
+	Temperature{mValue=23.0, mType=5, mName=POWER_AMPLIFIER, mStatus=0}
+HAL Ready: true
+HAL connection:
+	ThermalHAL 2.0 connected: yes

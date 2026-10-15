@@ -1,0 +1,6 @@
+cpu0/cpuinfo_max_freq=1800000
+cpu0/scaling_max_freq=1800000
+cpu0/scaling_cur_freq=774000
+cpu6/cpuinfo_max_freq=2000000
+cpu6/scaling_max_freq=2000000
+cpu6/scaling_cur_freq=1295000

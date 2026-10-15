@@ -1,0 +1,35 @@
+<!doctype html>
+<!--
+  Gate 7 GSW bench page (G7d, protocol/gate7-design.md Q13e). Served by scripts/gate7-bench.ts
+  through browser-harness.ts's HarnessServer (cross-origin isolated, so performance.now() resolves
+  to 5 us), on desktop headless Chromium (D9) and on a phone's Chrome over adb reverse (D24).
+  ?mode=bench: replay one recording, one record per rAF, timing decode / hash / validate / resolve.
+  ?mode=probe: the Q13a/Q13b page probes (WebGL facts, RGB10_A2, rAF T_p, viewport, RTT, hold drift).
+  Results are PUT to /evidence/<nonce>/ (D10); window.__bench reports progress.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>render-stream gate 7 bench</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #333366;
+        color: #fff;
+        font: 12px monospace;
+      }
+      canvas {
+        display: block;
+        width: 64px;
+        height: 36px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="frame" width="64" height="36"></canvas>
+    <pre id="status">loading</pre>
+    <script type="module" src="./bench.js"></script>
+  </body>
+</html>

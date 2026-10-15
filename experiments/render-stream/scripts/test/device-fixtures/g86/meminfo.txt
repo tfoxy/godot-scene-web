@@ -1,0 +1,2 @@
+** MEMINFO in pid 20001 [com.android.chrome] **
+           TOTAL PSS:   200000
