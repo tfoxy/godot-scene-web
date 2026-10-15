@@ -1234,7 +1234,10 @@ byte-identical.
     `web_dlink_nothreads_release.zip` (D5's preset sets `variant/extensions_support=false`, which
     G7o changes only if the web export adopts the core) and an emscripten toolchain (`emcc` is
     absent, D5). Both are downloads that need the operator's approval, as F2's template did. GSW's
-    path needs neither.
+    path needs neither. **Approved and fetched 2026-10-15:** `web_dlink_nothreads_release.zip`
+    from the same sha512-verified official 4.5.1 `.tpz`, beside D5's template, sha256
+    `68162ae9249ca3b7ce53dde8cdfab59463bd6518dca9123df41e5cc8fb1bd454`; emscripten 4.0.11 (Godot
+    4.5.1's own web CI `EM_VERSION`) via emsdk at `~/.cache/godot-render-stream/emsdk`.
 - Never a candidate: skipping validation or hash verification (the contract requires both),
   threads in the web build (out of scope), and moving a budget.
 - If G7o's best result still misses, that receiver's `device_targets` are `not-met` on that phone,
@@ -1606,7 +1609,7 @@ Void unless G7m recorded `device-decode-over-budget` on either phone. Otherwise:
 - **Tier 2** (Q13e's shared Rust decode core) is reached only if tier 1's best still misses on the
   g31 and the profile shows tier 1 cannot close the gap. It is then its own increment, named when
   it is reached, with the same checks below. Its web-export prerequisites (the dlink template and
-  emscripten) are fetched only with the operator's approval.
+  emscripten) were approved and fetched on 2026-10-15 (see Q13e).
 - **Checks**:
   - golden-2 to golden-7 identical in all three languages;
   - gates 0 to 6 natively unchanged;
