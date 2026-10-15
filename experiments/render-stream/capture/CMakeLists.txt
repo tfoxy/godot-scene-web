@@ -150,6 +150,7 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2"
   GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3"
   GRC_GOLDEN4_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-4"
+  GRC_GOLDEN7_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-7"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 
@@ -212,6 +213,17 @@ target_link_libraries(rs6_codec_test PRIVATE grc_warnings)
 target_compile_definitions(rs6_codec_test PRIVATE
   GRC_GOLDEN6_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-6")
 add_test(NAME rs6_codec COMMAND rs6_codec_test)
+
+# Gate 7 (G7w): render-stream/7 is a live-transport-only protocol-version switch on the SAME /2
+# codec module (Session::version), proven byte-identical to protocol/golden-7/{rate,window2}.rs7
+# -- the publication.credit_window delta (gate7-design.md D2). No rs2_diff.cpp linkage needed:
+# both golden-7 legs are hand-built Transactions, never make_full()/make_patch().
+add_executable(rs7_codec_test test/rs7_codec_test.cpp src/rs2_codec.cpp)
+target_include_directories(rs7_codec_test PRIVATE src test)
+target_link_libraries(rs7_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs7_codec_test PRIVATE
+  GRC_GOLDEN7_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-7")
+add_test(NAME rs7_codec COMMAND rs7_codec_test)
 
 # Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
 # golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).

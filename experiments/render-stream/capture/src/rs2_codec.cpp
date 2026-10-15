@@ -474,6 +474,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V7) {
+    return std::vector<std::uint8_t>(kMagicV7.begin(), kMagicV7.end());
+  }
   if (version == ProtocolVersion::V6) {
     return std::vector<std::uint8_t>(kMagicV6.begin(), kMagicV6.end());
   }
@@ -491,15 +494,17 @@ std::vector<std::uint8_t> magic(ProtocolVersion version) {
 std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
-  const char *protocol = session.version == ProtocolVersion::V6
-                              ? kProtocolV6
-                              : (session.version == ProtocolVersion::V5
-                                     ? kProtocolV5
-                                     : (session.version == ProtocolVersion::V4
-                                            ? kProtocolV4
-                                            : (session.version == ProtocolVersion::V3
-                                                   ? kProtocolV3
-                                                   : kProtocol)));
+  const char *protocol =
+      session.version == ProtocolVersion::V7
+          ? kProtocolV7
+          : (session.version == ProtocolVersion::V6
+                 ? kProtocolV6
+                 : (session.version == ProtocolVersion::V5
+                        ? kProtocolV5
+                        : (session.version == ProtocolVersion::V4
+                               ? kProtocolV4
+                               : (session.version == ProtocolVersion::V3 ? kProtocolV3
+                                                                          : kProtocol))));
   append_json_string(m, protocol);
   m += ",\"session_id\":";
   append_json_string(m, session.session_id);
@@ -538,7 +543,11 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string_array(m, sorted_copy(session.capture.hooks_omitted));
   m += "}";
 
-  const bool is_v6 = session.version == ProtocolVersion::V6;
+  const bool is_v7 = session.version == ProtocolVersion::V7;
+  // is_v6 means "V6 or later": /7 is a delta on /6 that keeps everything /6 added (presentation
+  // stretch declarations, the top-level publication key, canvas layer/sublayer) unless
+  // render-stream-7.md says otherwise.
+  const bool is_v6 = is_v7 || session.version == ProtocolVersion::V6;
   // is_v5 means "V5 or later": /6 is a delta on /5 that keeps everything /5 added (shader/
   // material tables, canvas modulate, item material state) unless render-stream-6.md says
   // otherwise.
@@ -669,6 +678,11 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
     } else {
       m += "null";
     }
+    if (is_v7) {
+      // render-stream-7.md "Session": publication gains credit_window, right after target_fps.
+      m += ",\"credit_window\":";
+      append_json_int(m, session.publication.credit_window);
+    }
     m += "}";
   }
 
@@ -712,9 +726,11 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
 }
 
 std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
-  // render-stream-6.md: transactions are byte-identical to /5 (gate6-design.md D1), so is_v6 is
-  // only needed for the unknown_items version gate below and the new canvas layer/sublayer keys.
-  const bool is_v6 = transaction.version == ProtocolVersion::V6;
+  // render-stream-7.md: transactions are byte-identical to /6 (gate7-design.md D2), so is_v6
+  // (meaning "V6 or later") is only needed for the unknown_items version gate below and the
+  // canvas layer/sublayer keys /6 added.
+  const bool is_v6 = transaction.version == ProtocolVersion::V6 ||
+                      transaction.version == ProtocolVersion::V7;
   std::string m;
   m += "{\"type\":\"transaction\",\"seq\":";
   append_json_int(m, transaction.seq);

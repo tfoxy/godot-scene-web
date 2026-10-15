@@ -290,10 +290,11 @@ Transaction make_full(const Snapshot &cur) {
   t.canvases = cur.canvases;
   t.textures = cur.textures;
   if (cur.version == ProtocolVersion::V4 || cur.version == ProtocolVersion::V5 ||
-      cur.version == ProtocolVersion::V6) {
+      cur.version == ProtocolVersion::V6 || cur.version == ProtocolVersion::V7) {
     t.meshes = cur.meshes;
   }
-  if (cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6) {
+  if (cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
+      cur.version == ProtocolVersion::V7) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
@@ -384,9 +385,10 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
       t.removed_textures.push_back(id);
     }
   }
-  // is_v5 means "V5 or later" (render-stream-6.md is a delta on /5's tables, carrying its
-  // shader/material tables and mesh table forward unchanged).
-  const bool is_v5 = cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6;
+  // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
+  // its shader/material tables and mesh table forward unchanged).
+  const bool is_v5 = cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
+                      cur.version == ProtocolVersion::V7;
   const bool is_v4_or_later = is_v5 || cur.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
     for (const auto &[id, ptr] : base_meshes) {
@@ -485,7 +487,8 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   out.default_texture_repeat = txn.default_texture_repeat;
 
   // is_v5 means "V5 or later" (see make_patch()'s comment above).
-  const bool is_v5 = txn.version == ProtocolVersion::V5 || txn.version == ProtocolVersion::V6;
+  const bool is_v5 = txn.version == ProtocolVersion::V5 || txn.version == ProtocolVersion::V6 ||
+                      txn.version == ProtocolVersion::V7;
   const bool is_v4_or_later = is_v5 || txn.version == ProtocolVersion::V4;
 
   if (txn.encoding == Encoding::Full) {

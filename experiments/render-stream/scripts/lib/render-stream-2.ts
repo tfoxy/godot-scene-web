@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -390,8 +390,13 @@ export interface SessionMeta {
   };
   /** new at /6 (render-stream-6.md "Publication"): a new TOP-LEVEL session key, right after
    * `features` -- distinct from features.publication above. Present only when decoded at
-   * version 6. */
-  publication?: { mode: PublicationMode; target_fps: number | null };
+   * version 6 or later. `credit_window` is new at /7 (render-stream-7.md "Session"), present only
+   * when decoded at version 7. */
+  publication?: {
+    mode: PublicationMode;
+    target_fps: number | null;
+    credit_window?: number;
+  };
   sabotage: { kind: SabotageKind; frame: number; op: string | null } | null;
   /** protocol/unknown-item-skip.md: present (always "skip") only in a session that opted into
    * skipping unknown canvas/item RIDs, right after `sabotage`, at /4 and /5. Absent = strict. */
@@ -709,6 +714,11 @@ export const MAGIC_V5: Uint8Array = new Uint8Array([
 export const MAGIC_V6: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x36, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-7.md: the GRS7 magic, selected by `version: 7` (golden-7/ only; /7 is a
+// live-transport-only delta -- G7n keeps the capture and receiver speaking /6 by default).
+export const MAGIC_V7: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x37, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -796,6 +806,9 @@ const SNAP_2D_KEYS = ["transforms", "vertices"];
 // render-stream-6.md "Publication" (a new top-level session key, distinct from
 // features.publication).
 const PUBLICATION_KEYS = ["mode", "target_fps"];
+// render-stream-7.md "Session": publication gains "credit_window", right after "target_fps"
+// (gate7-design.md D2/D4).
+const PUBLICATION_KEYS_V7 = ["mode", "target_fps", "credit_window"];
 const RESOURCES_KEYS = [
   "hash",
   "payload",
@@ -1553,12 +1566,13 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
   ];
-  const isV4OrLater = version === 4 || version === 5 || version === 6;
+  const isV4OrLater =
+    version === 4 || version === 5 || version === 6 || version === 7;
   const keys = isV4OrLater ? RESOURCES_KEYS_V4 : RESOURCES_KEYS;
   if (!isPlainObject(resources) || !hasExactKeys(resources, keys)) {
     return err("has the wrong keys");
@@ -1618,17 +1632,23 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV6 = version === 6;
+  const isV7 = version === 7;
+  // isV6 means "V6 or later": /7 is a delta on /6 that keeps everything /6 added (presentation
+  // stretch declarations, the top-level publication key, canvas layer/sublayer) unless
+  // render-stream-7.md says otherwise.
+  const isV6 = isV7 || version === 6;
   // isV5 means "V5 or later": /6 is a delta on /5 that keeps everything /5 added unless
   // render-stream-6.md says otherwise.
   const isV5 = isV6 || version === 5;
   // protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and later.
   const skipDeclared = version >= 4 && UNKNOWN_ITEM_POLICY_KEY in meta;
+  // /7 adds no new top-level session key (only publication's own shape changes), so SESSION_KEYS_V6
+  // covers /6 and /7 alike.
   const sessionKeys = isV6
     ? SESSION_KEYS_V6
     : isV5
@@ -1645,15 +1665,17 @@ function checkSessionSchema(
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV6
-    ? "render-stream/6"
-    : isV5
-      ? "render-stream/5"
-      : version === 4
-        ? "render-stream/4"
-        : version === 3
-          ? "render-stream/3"
-          : "render-stream/2";
+  const expectedProtocol = isV7
+    ? "render-stream/7"
+    : isV6
+      ? "render-stream/6"
+      : isV5
+        ? "render-stream/5"
+        : version === 4
+          ? "render-stream/4"
+          : version === 3
+            ? "render-stream/3"
+            : "render-stream/2";
   if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
@@ -1822,16 +1844,20 @@ function checkSessionSchema(
 
   if (isV6) {
     // render-stream-6.md "Publication": a new top-level session key, distinct from
-    // features.publication above.
+    // features.publication above. render-stream-7.md adds "credit_window", checked only at /7.
     const publication = meta.publication;
     if (
       !isPlainObject(publication) ||
-      !hasExactKeys(publication, PUBLICATION_KEYS) ||
+      !hasExactKeys(
+        publication,
+        isV7 ? PUBLICATION_KEYS_V7 : PUBLICATION_KEYS,
+      ) ||
       !isOneOf(publication.mode, ["every-frame", "rate"] as const) ||
       !(
         publication.target_fps === null ||
         (isInt(publication.target_fps) && publication.target_fps >= 1)
-      )
+      ) ||
+      (isV7 && !isInt(publication.credit_window))
     ) {
       return err('"publication" has the wrong keys or an invalid field');
     }
@@ -1858,6 +1884,24 @@ function checkSessionSchema(
       return [
         `publication-entry: record at offset ${offset}: a "file" stream must not declare publication "rate"`,
       ];
+    }
+    if (isV7) {
+      // render-stream-7.md "Session": credit_window is 1..2, and a "file" stream is always 1
+      // (gate7-design.md D2/D4).
+      const creditWindow = publication.credit_window as number;
+      if (creditWindow < 1 || creditWindow > 2) {
+        return [
+          `publication-entry: record at offset ${offset}: publication.credit_window is ${creditWindow}, out of range 1..2`,
+        ];
+      }
+      if (
+        (meta.stream as { transport?: string }).transport === "file" &&
+        creditWindow !== 1
+      ) {
+        return [
+          `publication-entry: record at offset ${offset}: stream.transport is "file" but publication.credit_window is ${creditWindow}, not 1`,
+        ];
+      }
     }
   }
 
@@ -2157,12 +2201,13 @@ function checkMaterialEntrySchema(m: unknown, offset: number): string[] {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV6 = version === 6;
+  // isV6 means "V6 or later" (render-stream-7.md: transactions are byte-identical to /6).
+  const isV6 = version === 6 || version === 7;
   // isV5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
   const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
@@ -2655,7 +2700,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -2681,21 +2726,23 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 6
-      ? MAGIC_V6
-      : version === 5
-        ? MAGIC_V5
-        : version === 4
-          ? MAGIC_V4
-          : version === 3
-            ? MAGIC_V3
-            : MAGIC;
+    version === 7
+      ? MAGIC_V7
+      : version === 6
+        ? MAGIC_V6
+        : version === 5
+          ? MAGIC_V5
+          : version === 4
+            ? MAGIC_V4
+            : version === 3
+              ? MAGIC_V3
+              : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -2767,7 +2814,7 @@ export interface DecodeRecordOptions {
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
   opts?: DecodeRecordOptions,
 ): {
   record?: DecodedRecord;
@@ -2925,14 +2972,15 @@ export function decodeRecord(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
     | "render-stream-3-decoded/1"
     | "render-stream-4-decoded/1"
     | "render-stream-5-decoded/1"
-    | "render-stream-6-decoded/1";
+    | "render-stream-6-decoded/1"
+    | "render-stream-7-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -2950,26 +2998,30 @@ export function decodeRecording(
     records.push(decoded.record);
   }
   const magic =
-    version === 6
-      ? MAGIC_V6
-      : version === 5
-        ? MAGIC_V5
-        : version === 4
-          ? MAGIC_V4
-          : version === 3
-            ? MAGIC_V3
-            : MAGIC;
+    version === 7
+      ? MAGIC_V7
+      : version === 6
+        ? MAGIC_V6
+        : version === 5
+          ? MAGIC_V5
+          : version === 4
+            ? MAGIC_V4
+            : version === 3
+              ? MAGIC_V3
+              : MAGIC;
   return {
     schema:
-      version === 6
-        ? "render-stream-6-decoded/1"
-        : version === 5
-          ? "render-stream-5-decoded/1"
-          : version === 4
-            ? "render-stream-4-decoded/1"
-            : version === 3
-              ? "render-stream-3-decoded/1"
-              : "render-stream-2-decoded/1",
+      version === 7
+        ? "render-stream-7-decoded/1"
+        : version === 6
+          ? "render-stream-6-decoded/1"
+          : version === 5
+            ? "render-stream-5-decoded/1"
+            : version === 4
+              ? "render-stream-4-decoded/1"
+              : version === 3
+                ? "render-stream-3-decoded/1"
+                : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -4797,7 +4849,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
   options?: DecodeRecordOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -4808,7 +4860,10 @@ export function createRecordingValidator(
     digestPending: () => [],
     digest: (i: number) => hashBytes(records[i].bytes),
   });
-  const isV6 = version === 6;
+  // isV6 means "V6 or later" (render-stream-7.md: transactions/items/commands/invariants are
+  // byte-identical to /6).
+  const isV7 = version === 7;
+  const isV6 = isV7 || version === 6;
   // isV5 means "V5 or later" (render-stream-6.md: transactions/items/commands are byte-identical
   // to /5).
   const isV5 = isV6 || version === 5;
@@ -5458,7 +5513,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
 ): string[] {
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
@@ -5700,7 +5755,8 @@ export interface ResolvedRecording {
     | "render-stream-3-resolved/1"
     | "render-stream-4-resolved/1"
     | "render-stream-5-resolved/1"
-    | "render-stream-6-resolved/1";
+    | "render-stream-6-resolved/1"
+    | "render-stream-7-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -5709,7 +5765,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -5745,10 +5801,10 @@ export function resolveRecording(
         canvases: sortedResolvedCanvases(state),
         items: sortedResolvedItems(state),
         textures: sortedResolvedTextures(state),
-        ...(version === 4 || version === 5 || version === 6
+        ...(version === 4 || version === 5 || version === 6 || version === 7
           ? { meshes: sortedResolvedMeshes(state) }
           : {}),
-        ...(version === 5 || version === 6
+        ...(version === 5 || version === 6 || version === 7
           ? {
               shaders: sortedResolvedShaders(state),
               materials: sortedResolvedMaterials(state),
@@ -5759,15 +5815,17 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 6
-        ? "render-stream-6-resolved/1"
-        : version === 5
-          ? "render-stream-5-resolved/1"
-          : version === 4
-            ? "render-stream-4-resolved/1"
-            : version === 3
-              ? "render-stream-3-resolved/1"
-              : "render-stream-2-resolved/1",
+      version === 7
+        ? "render-stream-7-resolved/1"
+        : version === 6
+          ? "render-stream-6-resolved/1"
+          : version === 5
+            ? "render-stream-5-resolved/1"
+            : version === 4
+              ? "render-stream-4-resolved/1"
+              : version === 3
+                ? "render-stream-3-resolved/1"
+                : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

@@ -119,6 +119,10 @@ class Line {
 
 struct Value {
   bool is_string = false;
+  // render-stream-7.md "Hello": `token`/`manifest_sha256` may be JSON null -- the only control
+  // message fields that ever are (every other type/key stays flat strings and non-negative
+  // integers, per the class comment above).
+  bool is_null = false;
   std::string text;
   std::uint64_t number = 0;
 };
@@ -158,10 +162,19 @@ class Parser {
           if (!integer(&value.number)) {
             return fail(error, "\"" + key + "\" is not a non-negative integer <= 2^53-1");
           }
+        } else if (c == 'n') {
+          // render-stream-7.md "Hello": `null` is legal only for `token`/`manifest_sha256`,
+          // enforced below once the whole object is parsed and the field is known.
+          if (s_.compare(p_, 4, "null") != 0) {
+            return fail(error, "\"" + key + "\": invalid literal (flat object: strings, "
+                                             "non-negative integers or null only)");
+          }
+          p_ += 4;
+          value.is_null = true;
         } else {
           return fail(error, "\"" + key +
-                                 "\": only strings and non-negative integers are allowed (flat "
-                                 "object)");
+                                 "\": only strings, non-negative integers and null are allowed "
+                                 "(flat object)");
         }
         for (const auto &field : *fields) {
           if (field.first == key) {
@@ -343,7 +356,8 @@ const char *to_wire(AckStage stage) {
 
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
                    ProtocolVersion version) {
-  const char *const protocol = version == ProtocolVersion::V6   ? kProtocolV6
+  const char *const protocol = version == ProtocolVersion::V7   ? kProtocolV7
+                               : version == ProtocolVersion::V6 ? kProtocolV6
                                : version == ProtocolVersion::V5 ? kProtocolV5
                                : version == ProtocolVersion::V4 ? kProtocolV4
                                : version == ProtocolVersion::V3 ? kProtocolV3
@@ -375,7 +389,26 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   ControlMessage message;
   if (type->text == "hello") {
     message.type = ControlType::Hello;
-    keys = {"type", "protocol", "receiver", "credit_stage", "inbound_buffer_bytes"};
+    if (version == ProtocolVersion::V7) {
+      // render-stream-7.md "Hello": /6's five keys plus receiver_kind, credit_window, token,
+      // manifest_sha256 and five presentation integers (gate7-design.md Q2).
+      keys = {"type",
+              "protocol",
+              "receiver",
+              "receiver_kind",
+              "credit_stage",
+              "credit_window",
+              "inbound_buffer_bytes",
+              "token",
+              "manifest_sha256",
+              "presentation_backing_w",
+              "presentation_backing_h",
+              "presentation_css_w",
+              "presentation_css_h",
+              "dpr_milli"};
+    } else {
+      keys = {"type", "protocol", "receiver", "credit_stage", "inbound_buffer_bytes"};
+    }
   } else if (type->text == "ack") {
     message.type = ControlType::Ack;
     keys = {"type", "stream_id", "seq", "stage", "t_us"};
@@ -408,7 +441,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   };
   const auto num = [&](const char *key, std::uint64_t *dst) {
     const Value *value = find(key);
-    if (value->is_string) {
+    if (value->is_string || value->is_null) {
       return fail(std::string("\"") + key + "\" must be an integer");
     }
     *dst = value->number;
@@ -428,6 +461,50 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
         message.credit_stage = AckStage::Applied;
       } else {
         return fail("credit_stage \"" + stage + "\" is not submitted or applied");
+      }
+      if (version == ProtocolVersion::V7) {
+        if (!str("receiver_kind", &message.receiver_kind)) {
+          return false;
+        }
+        if (message.receiver_kind != "native" && message.receiver_kind != "web-export" &&
+            message.receiver_kind != "gsw-canvas") {
+          return fail("receiver_kind \"" + message.receiver_kind +
+                       "\" is not native, web-export or gsw-canvas");
+        }
+        if (!num("credit_window", &message.credit_window)) {
+          return false;
+        }
+        if (message.credit_window < 1 || message.credit_window > 2) {
+          return fail("credit_window " + std::to_string(message.credit_window) +
+                       " is not 1 or 2");
+        }
+        const Value *token_value = find("token");
+        if (token_value->is_null) {
+          message.has_token = false;
+          message.token.clear();
+        } else if (token_value->is_string && is_lower_hex(token_value->text, 64)) {
+          message.has_token = true;
+          message.token = token_value->text;
+        } else {
+          return fail("\"token\" must be 64 lowercase hex or null");
+        }
+        const Value *manifest_value = find("manifest_sha256");
+        if (manifest_value->is_null) {
+          message.has_manifest_sha256 = false;
+          message.manifest_sha256.clear();
+        } else if (manifest_value->is_string && is_lower_hex(manifest_value->text, 64)) {
+          message.has_manifest_sha256 = true;
+          message.manifest_sha256 = manifest_value->text;
+        } else {
+          return fail("\"manifest_sha256\" must be 64 lowercase hex or null");
+        }
+        if (!num("presentation_backing_w", &message.presentation_backing_w) ||
+            !num("presentation_backing_h", &message.presentation_backing_h) ||
+            !num("presentation_css_w", &message.presentation_css_w) ||
+            !num("presentation_css_h", &message.presentation_css_h) ||
+            !num("dpr_milli", &message.dpr_milli)) {
+          return false;
+        }
       }
       // render-stream-2.md "Golden vectors": a hello for another version is invalid.
       if (message.protocol != protocol) {

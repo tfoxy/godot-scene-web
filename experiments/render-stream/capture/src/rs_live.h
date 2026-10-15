@@ -130,6 +130,19 @@ struct ControlMessage {
   std::string receiver;
   AckStage credit_stage = AckStage::Submitted;  // received is never a valid credit stage
   std::uint64_t inbound_buffer_bytes = 0;
+  // hello, /7 only (render-stream-7.md "Hello", gate7-design.md Q2). Parsing only -- no Hub
+  // behaviour reads these yet (G7n).
+  std::string receiver_kind;  // "native" | "web-export" | "gsw-canvas"
+  std::uint64_t credit_window = 1;
+  bool has_token = false;  // false -> the hello's "token" was null
+  std::string token;       // 64 lowercase hex when has_token
+  bool has_manifest_sha256 = false;
+  std::string manifest_sha256;  // 64 lowercase hex when has_manifest_sha256
+  std::uint64_t presentation_backing_w = 0;
+  std::uint64_t presentation_backing_h = 0;
+  std::uint64_t presentation_css_w = 0;
+  std::uint64_t presentation_css_h = 0;
+  std::uint64_t dpr_milli = 0;
   // ack, resync
   std::string stream_id;
   std::uint64_t seq = 0;
@@ -152,6 +165,9 @@ struct ControlMessage {
 // `version` (G4e2) selects the hello protocol a receiver must announce: "render-stream/2" (the
 // default, golden-2's control vectors), "render-stream/3" (render-stream-3.md "Live transport")
 // or "render-stream/4" (render-stream-4.md "Live transport"; what the capture speaks since G5d).
+// At ProtocolVersion::V7 the hello has nine more keys (render-stream-7.md "Hello", gate7-design.md
+// Q2): `receiver_kind`, `credit_window`, `token`, `manifest_sha256` and five presentation
+// integers; `token`/`manifest_sha256` may be JSON `null`, the only place this parser accepts it.
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
                    ProtocolVersion version = ProtocolVersion::V2);
 
