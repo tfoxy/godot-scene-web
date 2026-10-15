@@ -37,6 +37,7 @@ import {
   type G6lTiming,
   runGate6l,
 } from "./lib/gate6l-checks";
+import { type G6sLegEntry, runGate6s } from "./lib/gate6s-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -51,7 +52,13 @@ export const ALL_GROUPS = [
   "g6c",
   "g6p",
 ] as const;
-export const LANDED_GROUPS: readonly string[] = ["g6a", "g6h", "g6l", "g6b"];
+export const LANDED_GROUPS: readonly string[] = [
+  "g6a",
+  "g6h",
+  "g6l",
+  "g6b",
+  "g6s",
+];
 
 export interface Gate6Report {
   schema: "render-stream-gate6-report/1";
@@ -59,7 +66,10 @@ export interface Gate6Report {
   binary: { path: string | null; sha256: string | null };
   gate_passed: boolean;
   groups: { run: string[]; landed: string[]; not_run: string[] };
-  legs: Record<string, G6aLegEntry | G6hLegEntry | G6lLegEntry | G6bLegEntry>;
+  legs: Record<
+    string,
+    G6aLegEntry | G6hLegEntry | G6lLegEntry | G6bLegEntry | G6sLegEntry
+  >;
   checks: Gate6Check[];
   checkpoints: Gate6Checkpoint[];
   /** per leg pair: per region and pixel class, every shot (reference-repeat: Q6g's budget) */
@@ -188,6 +198,18 @@ async function main(): Promise<void> {
     Object.assign(report.mismatch_tables, r.mismatch_tables);
     Object.assign(report.census, r.census);
     Object.assign(report.hazard, r.hazard);
+  }
+  if (run.includes("g6s")) {
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate6-scene", "expected.json"),
+        "utf8",
+      ),
+    ) as Gate6Expected;
+    const r = await runGate6s(out, expected);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    Object.assign(report.stability, r.stability);
   }
   for (const group of report.groups.not_run)
     report.checks.push({

@@ -230,6 +230,8 @@ void ServedResources::retire(const PayloadMap &current,
                              std::vector<ServeEvent> *events) {
   std::lock_guard<std::mutex> lock(mutex_);
   const bool unpin = unpin_frame_ != 0 && frame >= unpin_frame_;
+  const bool retain_superseded =
+      retain_superseded_frame_ != 0 && frame >= retain_superseded_frame_;
   // Whatever must be retained and is not yet (nothing, after a correct pin()).
   for (const auto &entry : current) {
     add_locked(entry.first, entry.second, frame, events);
@@ -247,6 +249,12 @@ void ServedResources::retire(const PayloadMap &current,
     }
   }
   note_max_locked();
+  if (retain_superseded) {
+    // Every hash this host ever pinned stays servable: nothing is retired, so served_ (and its
+    // bytes_) only grows for as long as content keeps changing. Deliberately not "capped" in any
+    // way -- that is the sabotage.
+    return;
+  }
   for (auto it = served_.begin(); it != served_.end();) {
     const bool in_current = current.count(it->first) != 0;
     const bool in_base = base_hashes.count(it->first) != 0;

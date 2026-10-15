@@ -321,6 +321,11 @@ export interface Applied3 {
     cache_hits?: number;
     uploads?: number;
     upload_bytes?: number;
+    // G6s (gate6-design.md Q5 "Resource budgets"): always present (RsResourceCache's own
+    // counters), regardless of whether a cache directory is configured.
+    evictions_memory?: number;
+    evictions_disk?: number;
+    refetch_after_evict?: number;
   };
 }
 

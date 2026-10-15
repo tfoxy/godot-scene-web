@@ -221,7 +221,15 @@ export interface G2cApplied {
     closed_by?: string | null;
   }>;
   transactions?: G2cTransaction[];
-  shots?: Array<{ stream?: number; seq?: number; step?: number | null }>;
+  shots?: Array<{
+    stream?: number;
+    seq?: number;
+    step?: number | null;
+    // G6s (gate6-design.md Q7e): the wire frame this shot's transaction was published at (live
+    // shots only), so a realtime-timeline checker can pick the latest one without the
+    // per-transaction array RS_RECEIVER_LOG=summary drops.
+    frame?: number;
+  }>;
   shots_missed?: number[];
   cache?: Applied3["cache"];
   fetches?: G2cFetch[];

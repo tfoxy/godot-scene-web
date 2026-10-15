@@ -2426,7 +2426,7 @@ stacking call made. `receiver-typed-clean`: every honest rendered receiver of g6
 
 ## Gate 6 self-test (g6b)
 
-`self-test-gate6.ts` section 10 runs `test/self-test-gate6b.ts` on synthetic sessions, hook-log
+`self-test-gate6.ts` section 11 runs `test/self-test-gate6b.ts` on synthetic sessions, hook-log
 lines, wire states and `applied.json`, and on the committed `fixtures/gate6-hd/expected.json`: a
 half session passes `presentation-declared` and oversampling 1, a degenerate status, a rate
 publication and an identity final transform each fail; `snap-2d` in every transaction passes and a
@@ -2436,3 +2436,138 @@ the model's half triangle arrays for c0.BT pass against themselves, a point 2 ul
 the allowance, 3 ulp, a missing array and the native lowering fail; a clean applied.json passes and a
 typed `presentation-mismatch` or an unadopted stretch fails; the hazard kinds (TR flat, RT text, HB
 antialiased, BT both) and a flat region that differs fails.
+
+## Gate 6 files (g6s)
+
+G6s ([../protocol/gate6-design.md](../protocol/gate6-design.md) "G6s", Q5 "Resource budgets", Q7e
+"Stability (g6s)") runs a 300-s-measured (370-s total) soak on `fixtures/gate6-scene`'s `animate`
+variant, the `soak` timeline, `realtime` time and `GRC_HOOK_LOG=off`, on render-stream/5
+(`--legs g6s`).
+
+- `receiver/rs_resource_cache.gd`: `memory_budget_bytes`/`cache_budget_bytes` (defaults 268435456 /
+  0 -- unlimited, so every other gate's behaviour is unchanged), `no_evict`, `set_needed()` (the
+  current transaction's needed-hash set, gate2-design.md Q5), a shared LRU counter for both layers
+  (a warm cache's existing files seed it from mtime), `_evict_memory_over_budget`/
+  `_evict_disk_over_budget` and the `evictions_memory`/`evictions_disk`/`refetch_after_evict`
+  counters. `memory_entries()`/`memory_bytes()` are new read accessors.
+- `receiver/receiver.gd`: `RS_RECEIVER_MEMORY_BUDGET_BYTES`/`_CACHE_BUDGET_BYTES` parsing,
+  `no-evict` added to `SABOTAGES`, `_obtain_needed` calls `set_needed()` before its fetch loop, a
+  live shot's dict gains `frame` (RS_RECEIVER_LOG=summary drops the transaction array a realtime
+  checker would otherwise use to find it), `_summary` gains the three eviction counters
+  (unconditionally: memory eviction needs no cache directory), and `_process` passes the memory
+  cache's entries/bytes and `RsApplier`'s `resident_items()`/`resident_textures()`/`_meshes()`/
+  `_shaders()`/`_materials()` (all four of the last pre-existing) into `rs_perf.gd`.
+- `receiver/rs_perf.gd`: `sample_timeline()` gains `cache_entries_memory`/`cache_bytes_memory` and
+  `live_rids`, filling in fields G6r declared `unavailable`.
+- `receiver/rs_applier.gd`: one new one-line accessor, `resident_items()`, beside the pre-existing
+  `resident_textures()`/`_meshes()`/`_shaders()`/`_materials()`.
+- `receiver/tests/applier2_selftest.gd`: `_test_cache_budgets()` (LRU eviction at both layers,
+  `set_needed()` protection, `no-evict`, `refetch_after_evict`, a warm cache's mtime seeding), run
+  from `_initialize()`.
+- `capture/src/rs2_snapshot.h`, `rs_publish.cpp`: a new `SabotageKind::RetainSuperseded`
+  (`retain-superseded`), the usual mechanical plumbing (parse table, `to_wire`).
+- `capture/src/rs_resource_store.{h,cpp}`: `ServedResources::set_retain_superseded_frame()`; from
+  that frame on, `retire()` retires nothing at all, so the host's retained set and bytes grow for
+  as long as content keeps changing.
+- `capture/src/rs_live.cpp`, `rs_live.h`: `ConnectionSummary` gains `carried_size` (current, not a
+  lifetime total), filled by `Hub::summaries()`. `carried` itself is unchanged -- never pruned.
+  An earlier draft pruned it to the connection's current base and re-sent a hash that returned,
+  which broke the first real `soak-inline` run with `resource-duplicate` (render-stream-2.md:
+  "each hash at most once" per stream; MS's mesh surface recurs every 90 frames under its
+  sine-wave motion). `carried` necessarily holds one entry per distinct hash ever sent, for the
+  connection's whole life; `checkCarriedGrowthBounded` checks the rate instead (below).
+- `capture/src/entry.cpp`: the `RetainSuperseded` dispatch (needs `GRC_LIVE_LISTEN`, like `unpin`/
+  `drop-resource`); `perf_timeline_tick()` gains `mirror_items`/`_textures`/`_meshes`/`_materials`
+  (`rs::mirror_stats()`, pre-existing), `host_retained`/`_bytes` (`ServedResources::retained()`/
+  `retained_bytes()`, pre-existing) and each connection's `carried_size` -- the only host-side time
+  series available for a 300-s-plus leg, since the hook log is off.
+- `scripts/sample-proc.ts`: a CLI wrapping `lib/proc-sampler.ts` for a long-running background
+  process, appending one `ProcSample` JSON line per tick so a hard `kill`/`kill -9` (the runner's
+  own cleanup convention) never loses collected data. Sampled on the host pid only (easy: it is
+  already backgrounded via `start_headless_bg` before the receiver's blocking `run_rendered`); the
+  receiver's RSS/video-mem comes from its own `RS_RECEIVER_PERF_OUT` timeline instead, a documented
+  simplification (self-test-gate6s.ts case 4 covers the fallback).
+- `run-gate6.sh` `run_g6s`: one private gamescope at 640×360; `reference-step11` (a rendered
+  `animate` reference on the SOAK timeline itself at the SAME `--max-fps 60` as every host and
+  receiver here, not the file timeline and not uncapped: step 11's freeze stops every continuous
+  update -- MS, SM, AN, and animate's SC/LB/CD/TEXA -- wherever it happened to be on the frame
+  before the freeze fired, and that frame depends on both the timeline and the achieved frame
+  rate, so this reference also takes ~370 s); `start_soak_scene_host`,
+  `g6s_receiver`, `g6s_leg` (the live-leg pattern, plus starting/stopping `sample-proc.ts` on the
+  host pid around the receiver call); `g6s_windows` (11 early/mid windows spread 1000..19499 for
+  motion sampling, unrelated to step 11, plus a 12th window placed at 21910..22190, strictly after
+  step 11's nominal trigger frame of 21900 = 60 fps × 365 s. Realtime pacing means the real trigger
+  frame is unknown in advance, but the `--max-fps 60` cap means the achieved rate is never above
+  60, so a slower run only reaches fewer frames in the same 365 s of real time -- the real trigger
+  can therefore only be ≤ 21900, never above it, so this window always lands after the freeze. The
+  uniform 12-window scheme this replaced could instead pick its "first transaction in the window"
+  from before the real trigger: measured, a 546-frame-early shot (frame 21350 against a real
+  trigger at 21896), 15 347 mismatched pixels in exactly the continuous-formula regions step 11
+  freezes -- SC, PB, SM, MS, AN, LB); generous 420-s `HEADLESS_TIMEOUT_S`/`RENDERED_TIMEOUT_S`,
+  restored after the group.
+- `lib/gate6s-checks.ts`: every g6s criterion, pure over values read from the evidence --
+  `residencyMetrics`/`checkResidencyBounded` (two halves, matching Q7e's "and": first-third vs.
+  last-third max with a small slack for an ordinary ±1-2 transient tick; and, for the two metrics
+  Q5 actually budgets or structurally caps (receiver memory-cache bytes against its configured
+  budget; host retained payloads against 4× the live mirror's hash-backed resource count + 16,
+  Q5's "current ∪ bases" with one connection), the window's own max against that bound. Once a
+  metric has a bound, the bound alone decides it, not both halves ANDed -- active LRU eviction makes
+  the receiver's memory-cache entry count swing by itself near a byte budget, independent of any
+  real growth: measured on a real honest soak-scene run, 113 in the first third, 120 in the last,
+  while bytes stayed under budget throughout -- so ANDing the growth half in would have flagged an
+  honest leg. An honest leg's check fails on any growth or over-bound metric; a sabotage's fails
+  only when exactly its named metric does), `checkCacheBudgetRespected` (bytes within budget plus
+  payload, eviction actually exercised; the needed-set clause is proven by
+  `applier2_selftest.gd`'s `_test_cache_budgets()`, not re-derived here: a 300-s soak's
+  `GRC_HOOK_LOG=off`/`RS_RECEIVER_LOG=summary` evidence has no per-event trail for it),
+  `checkRssBounded` (the `/proc` sampler, or the engines' own `rss_bytes` with no sampler file),
+  `checkSoakPixels` (the final shot -- by its own recorded `frame`, the highest one reached --
+  against `reference-step11`) and `checkCarriedGrowthBounded` (soak-inline only: the carried-hash
+  set's growth rate, never its flatness -- see "Deviations" in the README result).
+- `check-gate6.ts` adds `g6s` to `LANDED_GROUPS` and `report.stability` per leg
+  (`residencyMetrics` plus the eviction counters).
+- `test/self-test-gate6s.ts`: the g6s cases, run from `self-test-gate6.ts`.
+- Additive, shared: `gate2b-checks.ts`'s `Applied3.resources_summary` gains the three eviction
+  counters and its `shots` entries gain `frame`; `gate2c-checks.ts`'s `G2cApplied` reuses both.
+
+## Gate 6 legs and evidence under `--out` (g6s)
+
+| Leg | Directory | Runs |
+| --- | --- | --- |
+| `import` | `g6s/import/{fixture,receiver}/` | the editor's `--import` of both projects |
+| `reference-step11` | `g6s/reference-step11/` | rendered reference, `animate`, SOAK timeline (its own ~370-s natural quit): `shots/step-11.png` |
+| `soak-scene` | `g6s/soak-scene/{host,receiver}/` | host: release template, `--headless --max-fps 60`, armed, `GRC_HOOK_LOG=off`, no file sinks, live listener, `RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=soak`, `scripts/sample-proc.ts` on its pid; receiver: rendered live, `--max-fps 60`, fresh cache, memory 1 MiB / disk 4 MiB, `RS_RECEIVER_LOG=summary`, `RS_RECEIVER_PERF_OUT` |
+| `soak-inline` | `g6s/soak-inline/` | host `GRC_RESOURCE_INLINE_MAX_BYTES=GRC_RESOURCE_MAX_PAYLOAD_BYTES=1048576` (live mode's own inline cap); receiver: no cache directory or store, the generous default memory budget (eviction never runs: a carried hash is never resent, so an evicted recurring one -- MS, SM -- would be unrecoverable) |
+| `sabotage-soak-no-evict` | `g6s/sabotage-soak-no-evict/` | receiver `RS_RECEIVER_SABOTAGE=no-evict`, the same budgets |
+| `sabotage-soak-retain-superseded` | `g6s/sabotage-soak-retain-superseded/` | host `GRC_SABOTAGE=retain-superseded GRC_SABOTAGE_FRAME=1`, the same budgets |
+
+## Gate 6 criteria (g6s)
+
+`residency-bounded` (host mirror items/textures/meshes/materials, host retained payloads, receiver
+memory-cache entries, receiver live RIDs per kind: max over the measured window's last third ≤ max
+over its first third plus a small slack, `and` -- for the two metrics with a budget-derived bound
+(receiver memory-cache bytes, host retained payloads), where the bound alone decides it instead --
+the window's own max ≤ that bound; an honest leg's check fails on any flagged metric, a sabotage's
+fails only when exactly its named metric is); `cache-budget-respected` (memory- and disk-cache bytes ≤ their
+budget plus one payload, `evictions_memory` > 0 -- the opposite for `no-evict`); `rss-bounded`
+(host RSS median delta ≤ 4 MiB and slope ≤ 0.5 MiB/min; receiver ≤ 16 MiB and ≤ 2 MiB/min; receiver
+`VIDEO_MEM_USED` at the end ≤ its value at 60 s + 1 MiB); `soak-pixels` (the final shot equals
+`reference-step11`'s, whole frame outside HU, budget 0); `soak-inline`'s extra
+`carried-growth-bounded` (the carried-hash set's growth rate stays near what genuinely novel
+inline content explains, at most 200/min against TEXA's own ~120/min under `animate` -- not that
+it stops growing: render-stream-2.md's resource-duplicate rule means it never can, see "Deviations"
+in the README result).
+
+## Gate 6 self-test (g6s)
+
+`self-test-gate6.ts` section 10 runs `test/self-test-gate6s.ts`: the windowing math
+(`relativeSeries`, `maxInWindowThird`, `medianInWindowEnd`, `slopePerMinute`) on synthetic points,
+then each check on fabricated evidence -- `checkResidencyBounded` (flat passes; an honest leg's
+growth fails; each sabotage passes when exactly its metric grew and fails when the wrong metric (or
+an extra one) grew; a metric that plateaus BEFORE the window even starts -- the real shape both
+G6s sabotages produce -- is still caught, via the budget-derived-bound half rather than the growth
+half; an honest leg's ordinary ±1 transient tick is NOT flagged, via the growth slack),
+`checkCacheBudgetRespected` (within budget with evictions passes; over budget,
+or never evicting, fails; `no-evict` passes only truly un-evicted), `checkRssBounded` (flat passes;
+a rise past either side's delta or slope fails; the no-`/proc`-samples fallback) and
+`checkCarriedGrowthBounded` (flat passes; growth at TEXA's own rate passes; runaway growth fails).

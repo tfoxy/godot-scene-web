@@ -116,7 +116,8 @@ export type SabotageKind =
   | "unpin"
   | "perturb-glyph"
   | "perturb-vertex"
-  | "perturb-shader";
+  | "perturb-shader"
+  | "retain-superseded";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -858,6 +859,7 @@ const SABOTAGE_KINDS = [
   "perturb-glyph",
   "perturb-vertex",
   "perturb-shader",
+  "retain-superseded",
 ] as const;
 
 const TRANSACTION_KEYS = [

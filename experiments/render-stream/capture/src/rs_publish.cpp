@@ -146,6 +146,7 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"perturb-glyph", SabotageKind::PerturbGlyph},
       {"perturb-vertex", SabotageKind::PerturbVertex},
       {"perturb-shader", SabotageKind::PerturbShader},
+      {"retain-superseded", SabotageKind::RetainSuperseded},
   };
   bool known = false;
   for (const auto &entry : kKinds) {

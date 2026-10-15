@@ -127,7 +127,7 @@ const SABOTAGE_KINDS: Array = [
 	"freeze-frame", "omit-update", "perturb-transform", "omit-op", "patch-drop-item",
 	"drop-message", "ignore-credit", "stale-coalesce", "stale-texture", "wrong-hash",
 	"spurious-texture-update", "drop-resource", "unpin", "perturb-glyph", "perturb-vertex",
-	"perturb-shader",
+	"perturb-shader", "retain-superseded",
 ]
 const TRANSACTION_KEYS: Array = [
 	"type", "seq", "frame", "encoding", "base_seq", "status", "failures", "unsupported",

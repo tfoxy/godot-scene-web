@@ -63,7 +63,16 @@ extends Node
 ##                                never called) or stale-param (G55e: a material's parameters are
 ##                                set only when it is created) or (G6a) stale-texture (a resident
 ##                                RGBA8 image keeps its first payload; LA8 atlas pages still
-##                                update); all sixteen exist only to fail checks or compare
+##                                update) or (G6s) no-evict (RsResourceCache's budgets are
+##                                ignored); all seventeen exist only to fail checks or compare
+##
+## Resource budgets (G6s, gate6-design.md Q5 "Resource budgets"; both modes; rs_resource_cache.gd):
+##   RS_RECEIVER_MEMORY_BUDGET_BYTES  unset: unlimited (off by default, every other gate's
+##                                    receiver included); set: in-memory payloads past this many
+##                                    bytes are evicted least-recently-used, never a hash the
+##                                    current transaction's resolved state needs
+##   RS_RECEIVER_CACHE_BUDGET_BYTES   disk; default 0 (unlimited), the same rule
+## evictions_memory, evictions_disk and refetch_after_evict land in applied.json's `cache` block.
 ##
 ## Perf (G6r, both modes; rs_perf.gd):
 ##   RS_RECEIVER_PERF_OUT   absolute path; writes render-stream-receiver-perf/1 alongside
@@ -74,7 +83,10 @@ extends Node
 ##                          timeline (RSS, RenderingServer.get_rendering_info's texture/buffer/
 ##                          video memory, the disk cache's entries and bytes). Unset: off.
 ##   RS_RECEIVER_LOG        full (default) or summary: summary drops applied.json's
-##                          `transactions` array (shots and failures stay), for soak and perf legs.
+##                          `transactions`, `fetches`, `uploads` and `mesh_uploads` arrays (shots,
+##                          failures and resources_summary's totals stay), for soak and perf legs
+##                          (G6s: all four stop accumulating, not just their report field, so none
+##                          grows unbounded over a long soak).
 ## Before a transaction is applied, every `ok` image a command of its resolved state names that is
 ## not resident (or resident with another hash), and (G5e) every surface payload of an `ok` mesh
 ## an add_mesh names that is not resident with that hash, and (G55d) the GRP1 code of every `ok`
@@ -178,7 +190,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "ignore-presentation"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "ignore-presentation", "no-evict"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -227,6 +239,9 @@ var _summary: Dictionary = {
 	"shaders_created": 0, "shader_code_sets": 0, "shader_payload_fetches": 0, "materials_created": 0,
 	"param_sets": 0, "instance_param_sets": 0,
 	"canvases_created": 0, "canvas_attach": 0, "canvas_stacking_sets": 0,
+	# G6s (gate6-design.md Q5 "Resource budgets"): unconditionally present (memory eviction needs
+	# no RS_RECEIVER_CACHE_DIR), synced from _cache's own counters at _write_report().
+	"evictions_memory": 0, "evictions_disk": 0, "refetch_after_evict": 0,
 }
 ## G55d: "<stream>:<shader id>:<hash>" of every shader-withheld skip already reported.
 var _withheld_reported: Dictionary[String, bool] = {}
@@ -257,6 +272,15 @@ var _credit_stage: String = "submitted"
 var _inbound_bytes: int = DEFAULT_INBOUND_BYTES
 var _received_path: String = ""
 var _received_file: FileAccess = null
+## G6s (live-buffer trim): `_data` holds at most the one message currently being decoded
+## (RsApplier indexes a record by an offset local to `_data`, so nothing more is needed); the
+## current connection's received byte count, which used to read `_data.size()`, is tracked here
+## instead (rs-g6s-live-data-unbounded-growth.md). The whole-stream sha256 is read back from
+## `_received_path` -- an exact mirror of `_data`'s old content, flushed every message -- once
+## per connection at its end, rather than hashed incrementally on the hot per-message path (a
+## benchmark measured incremental HashingContext.update() at +36 us/message, a measurable
+## slowdown; a once-per-connection file read-back costs nothing there).
+var _data_received_bytes: int = 0
 var _session_seen: bool = false
 var _stream_id: String = ""
 var _windows: Array[Dictionary] = []  # {step, from, to, shot: bool}
@@ -395,12 +419,15 @@ func _init_report(mode: String) -> String:
 		"shots_missed": [],
 		"unsupported": _unsupported,
 		"live": null,
-		# G2b2 (render-stream-receiver-applied/3, gate2-design.md Q5 "applied.json").
+		# G2b2 (render-stream-receiver-applied/3, gate2-design.md Q5 "applied.json"). G6s:
+		# RS_RECEIVER_LOG=summary drops these too (resources_summary keeps the totals), the same
+		# rule as "transactions" above; _fetches/_uploads/_mesh_uploads are never appended to
+		# under summary mode either, so none of the three grows unbounded over a long soak.
 		"cache": null,
-		"fetches": _fetches,
-		"uploads": _uploads,
+		"fetches": null if _log_mode == "summary" else _fetches,
+		"uploads": null if _log_mode == "summary" else _uploads,
 		# G5e (render-stream-receiver-applied/4).
-		"mesh_uploads": _mesh_uploads,
+		"mesh_uploads": null if _log_mode == "summary" else _mesh_uploads,
 		"resources_summary": _summary,
 	}
 	return display_server
@@ -441,13 +468,42 @@ func _parse_resource_env(live: bool) -> bool:
 	if library_dir != "" and not library_dir.is_absolute_path():
 		_log("error: RS_RECEIVER_SHADER_LIBRARY must be an absolute directory (got %s)" % JSON.stringify(library_dir))
 		return false
+	# G6s (gate6-design.md Q5 "Resource budgets"): unset is unlimited for both (-1: RsResourceCache's
+	# own "no budget" sentinel; 0 is RS_RECEIVER_CACHE_BUDGET_BYTES's literal "unlimited" instead,
+	# so it goes through the shared non-negative parser), so every other gate's receiver -- none of
+	# which sets either variable -- keeps budgets off and its existing behaviour unchanged.
+	var memory_budget_text: String = OS.get_environment("RS_RECEIVER_MEMORY_BUDGET_BYTES").strip_edges()
+	var memory_budget: int = -1
+	if memory_budget_text != "":
+		if not memory_budget_text.is_valid_int() or memory_budget_text.to_int() < 0:
+			_log("error: RS_RECEIVER_MEMORY_BUDGET_BYTES must be an integer >= 0 (got %s)" % JSON.stringify(memory_budget_text))
+			return false
+		memory_budget = memory_budget_text.to_int()
+	var cache_budget: int = _non_negative_env("RS_RECEIVER_CACHE_BUDGET_BYTES", 0)
+	if cache_budget < 0:
+		return false
 	_cache.dir = cache_dir
 	_cache.mode = cache_mode
 	_cache.store_dir = store_dir
 	_cache.library_dir = library_dir
 	_cache.ignore_cache = sabotage == "ignore-cache"
+	_cache.no_evict = sabotage == "no-evict"
+	_cache.memory_budget_bytes = memory_budget
+	_cache.cache_budget_bytes = cache_budget
 	_sabotage = sabotage
 	return true
+
+
+## A non-negative integer environment value, or `fallback` when unset; -1 (after logging) when
+## malformed. Unlike _positive_env, 0 is accepted (RS_RECEIVER_CACHE_BUDGET_BYTES's "unlimited").
+func _non_negative_env(variable: String, fallback: int) -> int:
+	var text: String = OS.get_environment(variable).strip_edges()
+	if text == "":
+		return fallback
+	if not text.is_valid_int() or text.to_int() < 0:
+		_log("error: %s must be an integer >= 0 (got %s)" % [variable, JSON.stringify(text)])
+		return -1
+	return text.to_int()
 
 
 ## RS_RECEIVER_PERF_OUT / RS_RECEIVER_LOG (G6r, Q5 "Perf"). Logs and returns false when malformed.
@@ -509,6 +565,9 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 	var hashes: Array = need["hashes"]
 	var mesh_hashes: Array = need["mesh_hashes"]
 	var shader_hashes: Array = need["shader_hashes"]
+	# G6s (gate2-design.md Q5, gate6-design.md Q5 "Resource budgets"): eviction must not touch any
+	# of these while this loop is making them available, one call at a time, below.
+	_cache.set_needed(hashes)
 	var fetch_us: int = Rs2Decoder.as_int(resources["fetch_us"])
 	for value: Variant in hashes:
 		var hash: String = value
@@ -531,11 +590,13 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 			var start_us: int = got["start_us"]
 			var end_us: int = got["end_us"]
 			fetch_us += end_us - start_us
-			_fetches.append({
-				"stream": stream_index, "seq": seq, "hash": hash, "source": "directory",
-				"status": null, "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
-				"verified": got["verified"], "kind": "mesh" if mesh else ("shader" if shader else "texture"),
-			})
+			# G6s: dropped under RS_RECEIVER_LOG=summary, as the other per-transaction arrays are.
+			if _log_mode != "summary":
+				_fetches.append({
+					"stream": stream_index, "seq": seq, "hash": hash, "source": "directory",
+					"status": null, "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
+					"verified": got["verified"], "kind": "mesh" if mesh else ("shader" if shader else "texture"),
+				})
 			resources["fetched"] = Rs2Decoder.as_int(resources["fetched"]) + 1
 			if shader:
 				resources["shader_payload_fetches"] = Rs2Decoder.as_int(resources["shader_payload_fetches"]) + 1
@@ -614,18 +675,25 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		_unsupported.append({"seq": seq, "item": null, "name": "shader_set_code", "reason": skip["reason"], "shader": shader_id})
 		_log("seq %d: shader %d (%s) skipped: %s (%s)" % [seq, shader_id, skip_hash, skip["reason"], skip["detail"]])
 	stats["resources"] = resources
+	# G6s: RS_RECEIVER_LOG=summary drops these per-transaction arrays too, the same as
+	# _transactions (_record_transaction), never just their report field -- a 300-s soak can
+	# apply tens of thousands of transactions, and an array appended every one of them, never
+	# trimmed, is exactly the unbounded RSS growth the soak measures (summary counters below are
+	# O(1) running totals and stay unconditional).
 	var mesh_uploads: Array = stats["mesh_uploads"]
 	for value: Variant in mesh_uploads:
 		var mesh_upload: Dictionary = value
 		mesh_upload["stream"] = stream_index
 		mesh_upload["seq"] = seq
-		_mesh_uploads.append(mesh_upload)
+		if _log_mode != "summary":
+			_mesh_uploads.append(mesh_upload)
 	var uploads: Array = stats["uploads"]
 	for value: Variant in uploads:
 		var upload: Dictionary = value
 		upload["stream"] = stream_index
 		upload["seq"] = seq
-		_uploads.append(upload)
+		if _log_mode != "summary":
+			_uploads.append(upload)
 		if upload["op"] != "placeholder":
 			_summary["uploads"] = Rs2Decoder.as_int(_summary["uploads"]) + 1
 			_summary["upload_bytes"] = Rs2Decoder.as_int(_summary["upload_bytes"]) + Rs2Decoder.as_int(upload["data_bytes"])
@@ -783,7 +851,16 @@ func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
 func _process(_delta: float) -> void:
 	if _perf != null:
 		_perf.record_frame_interval()
-		_perf.sample_timeline(_cache.entries(), _cache.bytes())
+		# G6s: memory-cache entries/bytes and live RIDs per kind fill the fields G6r left
+		# unavailable (rs_perf.gd); live_rids is null before the session creates _applier.
+		var live_rids: Variant = null
+		if _applier != null:
+			live_rids = {
+				"items": _applier.resident_items(), "textures": _applier.resident_textures(),
+				"meshes": _applier.resident_meshes(), "shaders": _applier.resident_shaders(),
+				"materials": _applier.resident_materials(),
+			}
+		_perf.sample_timeline(_cache.entries(), _cache.bytes(), _cache.memory_entries(), _cache.memory_bytes(), live_rids)
 	if _live:
 		_process_live()
 		return
@@ -1349,6 +1426,7 @@ func _finish() -> void:
 
 func _ready_live() -> void:
 	_live = true
+	_data_received_bytes = 0
 	_out_path = OS.get_environment("RS_RECEIVER_OUT")
 	if _out_path == "" or not _out_path.is_absolute_path():
 		_log("error: RS_RECEIVER_OUT must be an absolute applied.json path (got %s)" % JSON.stringify(_out_path))
@@ -1641,8 +1719,11 @@ func _start_next_connection() -> void:
 	_received_file.flush()
 	_received_file.close()
 	_received_file = null
-	_stream_report["received_sha256"] = Rs2Decoder.sha256_hex(_data)
-	_stream_report["received_bytes"] = _data.size()
+	# G6s (live-buffer trim): `_data` no longer holds the whole connection; `_received_path` is
+	# its exact byte-for-byte mirror (every message was store_buffer()+flush()ed as it arrived),
+	# so the final sha256 is read back from disk once here rather than carried in memory.
+	_stream_report["received_sha256"] = Rs2Decoder.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
+	_stream_report["received_bytes"] = _data_received_bytes
 	var owned_before: int = _applier.owned_rids()
 	var freed: int = _applier.dispose()
 	var leftover: int = _applier.owned_rids()
@@ -1662,6 +1743,7 @@ func _start_next_connection() -> void:
 		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
 		return
 	_data = PackedByteArray()
+	_data_received_bytes = 0
 	_stream = Rs2Decoder.Stream.new()
 	_inline_since_applied = 0
 	# G2c2: connection 2 owes nothing to connection 1: payloads come from its own inline records,
@@ -1720,7 +1802,8 @@ func _receive_binary(message: PackedByteArray) -> void:
 	_data.append_array(message)
 	_received_file.store_buffer(message)
 	_received_file.flush()
-	_stream_report["received_bytes"] = _data.size()
+	_data_received_bytes += message.size()
+	_stream_report["received_bytes"] = _data_received_bytes
 	if not _session_seen:
 		# The first message is the magic followed by exactly the session record.
 		var split: Dictionary = Rs2Decoder.split_records(message)
@@ -1734,6 +1817,10 @@ func _receive_binary(message: PackedByteArray) -> void:
 			return
 		_session_seen = true
 		_begin_session(RsApplier.accept_record(_data, 8, _stream))
+		# G6s (live-buffer trim): the session record is the whole of this message; nothing of
+		# it is needed once applied, so `_data` goes back to empty rather than growing for the
+		# rest of the connection.
+		_data = PackedByteArray()
 		return
 	var expected_seq: int = _stream.last_seq + 1
 	var decode_t0: int = Time.get_ticks_usec() if _perf != null else 0
@@ -1776,6 +1863,12 @@ func _receive_binary(message: PackedByteArray) -> void:
 			_log("end record after %d transactions" % _stream.transactions)
 		_:
 			_fail(null, "live-framing", "unexpected %s record" % kind)
+	# G6s (live-buffer trim): every message after the first is exactly one record (enforced
+	# above), so `_data` holds nothing more to decode once this one is accepted; the next
+	# message's `offset := _data.size()` starts back at 0. Bounds receiver RSS by the largest
+	# in-flight record instead of growing with total bytes received
+	# (rs-g6s-live-data-unbounded-growth.md).
+	_data = PackedByteArray()
 
 
 func _apply_newest() -> void:
@@ -1844,7 +1937,10 @@ func _poll_fetches() -> void:
 			"status": result["status"], "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
 			"verified": false, "delay_us": result["delay_us"], "headers": result["headers"],
 		}
-		_fetches.append(fetch_entry)
+		# G6s: dropped under RS_RECEIVER_LOG=summary (fetch_entry is still mutated below, just
+		# never kept).
+		if _log_mode != "summary":
+			_fetches.append(fetch_entry)
 		resources["fetch_us"] = Rs2Decoder.as_int(resources["fetch_us"]) + (end_us - start_us)
 		if error == "":
 			# A 200 body: verified against its name first (a mismatch leaves verified false).
@@ -1909,6 +2005,10 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 			"state_path": _state_paths.get(_seq_name(seq)),
 			"process_frame": Engine.get_process_frames(),
 			"applied_through": _last_applied_seq,
+			# G6s (gate6-design.md Q7e): the wire frame this shot's transaction was published at,
+			# so a realtime-timeline checker can find the right shot without the per-transaction
+			# array RS_RECEIVER_LOG=summary drops.
+			"frame": Rs2Decoder.as_int(entry["frame"]),
 		})
 		_log("shot step %d seq %d frame %d -> %s" % [step, seq, Rs2Decoder.as_int(entry["frame"]), path])
 	if step >= 0 and step == _stall_step and _live_report["stall"] == null:
@@ -2052,6 +2152,10 @@ func _write_report() -> void:
 		var cache_report: Dictionary = _cache_report
 		cache_report["entries_after"] = _cache.entries()
 		cache_report["bytes_after"] = _cache.bytes()
+	# G6s: unconditional (memory eviction needs no cache dir at all).
+	_summary["evictions_memory"] = _cache.evictions_memory
+	_summary["evictions_disk"] = _cache.evictions_disk
+	_summary["refetch_after_evict"] = _cache.refetch_after_evict
 	if _applier != null:
 		var floats: Array[float] = []
 		for value: float in _applier.root_canvas_xform():
@@ -2060,10 +2164,13 @@ func _write_report() -> void:
 	if _live:
 		if _received_file != null:
 			_received_file.flush()
-		var sha256: String = Rs2Decoder.sha256_hex(_data)
+		# G6s (live-buffer trim): `_data` only ever holds the message in flight; `_received_path`
+		# is its exact byte-for-byte mirror, so the whole connection's sha256 is read back from
+		# disk once here instead of carried in memory (rs-g6s-live-data-unbounded-growth.md).
+		var sha256: String = Rs2Decoder.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
 		_stream_report["received_sha256"] = sha256
-		_stream_report["received_bytes"] = _data.size()
-		_report["recording"] = {"path": _received_path, "sha256": sha256, "bytes": _data.size()}
+		_stream_report["received_bytes"] = _data_received_bytes
+		_report["recording"] = {"path": _received_path, "sha256": sha256, "bytes": _data_received_bytes}
 	DirAccess.make_dir_recursive_absolute(_out_path.get_base_dir())
 	var file: FileAccess = FileAccess.open(_out_path, FileAccess.WRITE)
 	if file == null:

@@ -5553,3 +5553,181 @@ Images, under `artifacts/render-stream/gate6/g6b-m1-gate6-174100/`:
   half, and the narrower feather.
 - `hd/sabotage-receiver-ignore-presentation/shots/seq-28.png` shows the top-left quarter at scale 1.
 - `scene/sabotage-receiver-ignore-canvas-stacking/shots/seq-98.png` is step 9, with the HUD over BG.
+
+## Gate 6s result (2026-10-11)
+
+G6s ([protocol/gate6-design.md](protocol/gate6-design.md) "G6s", Q5 "Resource budgets", Q7e
+"Stability") adds receiver cache budgets with LRU eviction that never evicts the needed set, a
+host sabotage that never retires a hash, and a 300-s-plus soak against `fixtures/gate6-scene`'s
+`animate` variant on the `soak` timeline (`realtime` time, `GRC_HOOK_LOG=off`).
+`pnpm render-stream:gate6 -- --legs g6a,g6l,g6s` was **67/73** (g6a 32, g6l 22, g6s 19) in
+`artifacts/render-stream/gate6/g6s-final/`, on `main` at 02e6f4dc (G6b) merged. The 6 checks that
+did not pass were all `rss-bounded`, one per g6s leg (Finding 5, below). **Fixed 2026-10-14** --
+see "G6s live-buffer fix (2026-10-14)" below: `rss-bounded` now passes on every leg, and the
+rest of this section's table and findings are left as they read at the time, for the negative
+result's own record.
+
+| Leg | Window | `residency-bounded` | `cache-budget-respected` | `rss-bounded` | `soak-pixels` |
+| --- | --- | --- | --- | --- | --- |
+| `soak-scene` (fresh cache, memory 1 MiB / disk 4 MiB) | 370 s | pass | pass | **fail** (below) | pass, 0 px |
+| `soak-inline` (every payload inline, memory budget off) | 370 s | pass | pass | **fail** | pass, 0 px |
+| `sabotage-soak-no-evict` | 370 s | pass (fails exactly `receiver memory-cache entries`) | pass | **fail** | pass, 0 px |
+| `sabotage-soak-retain-superseded` | 370 s | pass (fails exactly `host retained payloads`) | pass | **fail** | pass, 0 px |
+
+**Residency, per leg** (host mirror hash-backed resources = textures + meshes + materials;
+receiver memory-cache bytes against its 1 MiB budget + one payload; host retained against
+4 × live mirror + 16, see "As built (G6s)" 3):
+
+| Leg | Host mirror (tex/mesh/mat) | Host retained (bound 56) | Receiver memory-cache entries | Receiver memory-cache bytes (bound ~1.06 MiB) |
+| --- | --- | --- | --- | --- |
+| `soak-scene` | 7/1/2 | 10 | 120 | 1 048 436 B |
+| `soak-inline` | 7/1/2 | 10 | 131 (no bound: inline, no budget) | 1 577 664 B (no bound) |
+| `sabotage-soak-no-evict` | 7/1/2 | 10 | **128, over bound (1 525 360 B > 1 065 088 B)** | 1 525 360 B |
+| `sabotage-soak-retain-superseded` | 7/1/2 | **139, over bound (56)** | 120 | 1 048 436 B |
+
+**Eviction and refetch, per leg** (`applied.json`'s `resources_summary`): `soak-scene` --
+`evictions_memory` 9, `evictions_disk` 0, `refetch_after_evict` 0; `soak-inline` -- 0/0/0 (by
+design: no cache directory or store, so an evicted recurring hash would be unrecoverable);
+`sabotage-soak-no-evict` -- 0/0/0 (the sabotage turns eviction off, and it stayed off);
+`sabotage-soak-retain-superseded` -- 9/0/0 (the sabotage is host-side; the receiver's own budget
+is exercised exactly as in the honest leg). That an evicted hash was never in the needed set at
+eviction time is proven by `receiver/tests/applier2_selftest.gd`'s `_test_cache_budgets()`, not
+re-derived from this run's evidence: `RS_RECEIVER_LOG=summary` and `GRC_HOOK_LOG=off` leave no
+per-event trail for a 300-s soak to reconstruct it from externally.
+
+**RSS, per leg** (`/proc`-sampled, median of the last 30 s minus median of the first 30 s of the
+measured window; budgets 4 MiB / 0.5 MiB/min host, 16 MiB / 2 MiB/min receiver): host stayed flat
+on every leg (well under budget); receiver rose 305.9, 304.7, 305.9 and 305.9 MiB (slope ~68
+MiB/min) on `soak-scene`, `soak-inline`, `sabotage-soak-no-evict` and `sabotage-soak-retain-
+superseded` respectively. Timelines: `g6s/<leg>/host/proc-samples.jsonl` and
+`g6s/<leg>/receiver/proc-samples.jsonl`; residency curves: `g6s/<leg>/host/evidence/perf-timeline.
+jsonl` (`host_retained`, `mirror_items`/`_textures`/`_meshes`/`_materials`, each connection's
+`carried_size`) and `g6s/<leg>/receiver/perf.json`'s `timeline` (`cache_entries_memory`/`_disk`,
+`cache_bytes_memory`/`_disk`, `live_rids`).
+
+### Findings
+
+1. **`reference-step11` must run the soak timeline at the same capped rate as every leg.** The
+   file timeline or an uncapped rate freezes step 11's continuous state (SC, PB, SM, MS, AN, LB)
+   at a different phase -- either mismatch alone cost thousands of pixels before this reference
+   was fixed (gate6-design.md "As built (G6s)" 1).
+2. **A fixed, uniform shot-window scheme picked a pre-freeze transaction for the "final" shot.**
+   `g6s_windows()`'s last window started well before the real step-11 trigger frame on one run
+   (21350 against 21896), so its "first transaction in the window" was 546 frames stale: 15 347
+   mismatched pixels, every one in a region step 11 resets and none anywhere else. Fixed by
+   placing the last window strictly after step 11's nominal trigger frame (21900 = 60 fps × 365 s),
+   which the `--max-fps 60` cap guarantees the real trigger can never exceed (As built 2).
+   `soak-pixels` has been 0 mismatched pixels on every leg since.
+3. **`residency-bounded`'s two Q7e halves need independent evaluation.** The receiver memory-
+   cache entry count swings on its own under active LRU eviction near a byte budget (measured:
+   113 to 120 within one honest leg's own window, bytes flat under budget throughout) -- ANDing
+   the growth half into the budget-bound half would fail an honest leg. As built, a metric with a
+   budget-derived bound is judged on that bound alone; a metric with neither keeps the growth
+   half, with a small slack (2) for an ordinary transient tick. Both sabotages' extra residency is
+   already at its full, flat, elevated level before the measured window even starts (the burst is
+   fixture setup, finished by game time ~15 s), so only the budget-bound half can catch either one
+   (As built 3).
+4. **`soak-inline`'s carried-hash set cannot shrink, by protocol.** render-stream-2.md's
+   `resource-duplicate` rule (each hash carried at most once, ever) ruled out an earlier draft that
+   pruned it; "bounded" is a growth-rate ceiling (200/min) instead. Measured rate: 0/min, not
+   TEXA's assumed ~120/min -- `_animate` stops updating TEXA once `apply_step(9)` frees the last
+   reference, at game time ~14 s, before the measured window starts (As built 4).
+5. **`rss-bounded` fails on every leg, root-caused to `receiver.gd`'s live-mode `_data` buffer**
+   (memory rs-g6s-live-data-unbounded-growth): every incoming byte is appended and never trimmed
+   except on reconnect, because records are resolved by absolute offset into it. `received.rs2`'s
+   file size matched the measured RSS delta almost exactly, and the growth rate dropped from
+   ~1.1-1.2 MB/s to ~40-45 KB/s exactly at the step-11 freeze. This is shared, live-mode-wide
+   architecture (every gate with a live leg uses the same offset-indexed decode), not something a
+   cache-budget-scoped increment should change; it is reported here as a genuine, documented
+   negative result (As built 5).
+
+### Deviations
+
+- `RS_RECEIVER_MEMORY_BUDGET_BYTES` defaults to unlimited (`-1`, off), not the `268435456` the
+  design text originally named: a literal numeric default would have turned budgets on for every
+  gate's receiver, not just g6s's (As built 7).
+- `soak-inline` keeps the receiver's generous default memory budget rather than Q7e's tight one
+  (no fallback source for an evicted recurring hash) and so checks only the carried-growth rate,
+  never eviction.
+- `rss-bounded` fails on every leg (Finding 5); not relaxed, not silently passed.
+
+### What G6s does not prove
+
+- That the receiver's own RSS is bounded over a live connection this long (Finding 5): the
+  resource-cache budgets this increment adds are themselves proven bounded (`cache-budget-
+  respected` passes on every leg), but the surrounding live-mode buffer is not.
+- Anything about rates, two receivers, or a constrained transport (G6c); a measurement matrix or a
+  `render-stream-report/1` (G6p); the supported-feature manifest (G6z).
+- Stability under a leg longer than ~370 s, or with more than one connection.
+
+Evidence, under `artifacts/render-stream/gate6/g6s-final/g6s/`:
+
+- `reference-step11/shots/step-11.png` is the soak-timeline reference's frozen final state.
+- `<leg>/receiver/shots/seq-<n>.png` is each leg's own final shot (picked by the highest recorded
+  `frame`), pixel-identical to the reference on every leg.
+- `sabotage-soak-no-evict/receiver/perf.json`'s `timeline` shows `cache_bytes_memory` crossing the
+  1 MiB budget and staying there; `sabotage-soak-retain-superseded/host/evidence/perf-timeline.
+  jsonl` shows `host_retained` at 139 against the honest legs' 10.
+
+## G6s live-buffer fix (2026-10-14)
+
+Finding 5 above is fixed. `receiver.gd`'s live-mode `_receive_binary` grew `_data` by one
+WebSocket message forever because `RsApplier.accept_record(_data, offset, _stream)` resolves
+each record by an offset local to `_data` -- but every message after the first is already exactly
+one whole record (the function's own framing check enforces this), so nothing in `_data` is ever
+needed again once that record is accepted. `_data` is now reset to an empty `PackedByteArray`
+right after each message is processed (and after the session record specifically, which is the
+whole of the first message); the next message's `offset := _data.size()` is simply 0 from then
+on. Memory is bounded by the largest single in-flight record, not by total bytes ever received.
+
+Two fields used to read the running totals straight off `_data`, which no longer holds them:
+`received_bytes` is now a running counter (`_data_received_bytes`, incremented alongside the
+append, before the reset) and `received_sha256` is read back once, at connection end or
+reconnect, from `_received_path` -- `_data`'s exact byte-for-byte mirror on disk, since every
+message is `store_buffer()`+`flush()`ed as it arrives. A standalone check (`sha256_hex` over the
+430 MB `g6s-final/soak-scene` recording read back from disk) reproduced that original run's
+recorded `received_sha256` exactly, confirming the switch changes nothing about what is reported.
+
+**Benchmark (headless, no network; `scripts/README` lacked a prior live-path bench, so this one is
+ad hoc): real per-message byte-length distribution** framed out of the parked `g6s-final/
+soak-scene/receiver/received.rs2` (22 013 messages, mean 4544 B, max 94 791 B) **replayed through
+synthetic buffers of those exact sizes**, timing exactly what changed in the hot path:
+
+| Variant | mean | p50 | p95 | p99 | max |
+| --- | --- | --- | --- | --- | --- |
+| main (02e6f4dc): `_data.append_array(message)` into the one ever-growing buffer | 18.2 us | 18 us | 21 us | 33 us | 1094 us |
+| this branch: `_data.append_array(message)` into a buffer reset to empty every message, plus the counter | 10.1 us | 10 us | 14 us | 23 us | 149 us |
+
+No slowdown -- the branch is faster (appending into a buffer that never grows past one message
+beats appending into one that grows to the whole stream). Neither shows O(n^2) growth over the
+run (first-10%-mean/last-10%-mean ratios 0.81x and 0.71x). An earlier attempt hashed every message
+incrementally with a `HashingContext` instead of reading `received_sha256` back from disk once;
+that measured **+36 us/message** on the same distribution (mean 54.9 us against main's 18.2 us) --
+a real, measurable slowdown given G55d's precedent (a +150 us/transaction receiver cost alone
+phase-locked the 60 Hz credit loop, `rs-g55d-rs5-switch-facts`) -- and was discarded for the
+file-read-back approach actually shipped. The one-time read-back itself (not in the hot path):
+~252 ms to read the 430 MB file plus ~1.28 s to hash it, paid once per connection at its end, not
+per message.
+
+**Full regression on the fixed tree**, same extension/calibration, sequential (no gate run
+overlapped another in this worktree): gate −1 29/29, gate 0 24/24, gate 1 66/66, gate 2 85/85
+(85/85 on retry; the first attempt hit the documented `live-animate` pins-under-load flake while
+another agent's gate 6 legs ran concurrently on the same machine -- `rs-g55d-rs5-switch-facts`),
+gate 5 (`g5b,g5c,g5d,g5e,g5f,g5g`) 116/116, gate 5.5 (`g55b,g55c,g55d,g55e,g55f`) 130/130, gate 6
+(`g6a,g6h,g6l,g6b,g6s`) **109/109, including all four `g6s-rss-bounded-*` checks, now passing**.
+g6l's `motion-monotonic` (the canary for exactly this kind of per-transaction slowdown) passed on
+the first run, no rerun needed.
+
+**RSS, per g6s leg, after the fix** (same median-of-last-30s minus median-of-first-30s window as
+the original measurement; budget 16 MiB / 2 MiB per min): `soak-scene` +28 672 B, `soak-inline`
++8192 B, `sabotage-soak-no-evict` +36 864 B, `sabotage-soak-retain-superseded` +4096 B -- all four
+near-flat, against the pre-fix 305.9 / 304.7 / 305.9 / 305.9 MiB. Host RSS stayed flat on every
+leg, as before. `cache-budget-respected`, `residency-bounded` (including both sabotages still
+failing exactly their predicted metric) and `soak-pixels` (0 mismatched pixels) all still pass,
+unchanged by this fix.
+
+Evidence: `artifacts/render-stream/gate-minus1/20261014T205802Z/`,
+`artifacts/render-stream/gate0/20261014T205949Z/`, `artifacts/render-stream/gate1/
+20261014T210436Z/`, `artifacts/render-stream/gate2/20261014T214216Z/` (the passing retry),
+`artifacts/render-stream/gate5/20261014T220311Z/`, `artifacts/render-stream/gate55/
+20261014T223109Z/`, `artifacts/render-stream/gate6/20261014T225650Z/`.

@@ -1378,6 +1378,102 @@ and never drops a needed hash.
 **Pass criteria**: `--legs g6a,g6l,g6s` green; README "Gate 6s result" with the RSS and residency
 curves (paths to the timeline files), eviction counts and refetches.
 
+**As built (G6s, 2026-10-11).** `--legs g6a,g6l,g6s` is **67/73** (g6a 32, g6l 22, g6s 19) on
+render-stream/6, merging G6b, and gates −1, 0, 1 (66/66) and 2 (85/85) are green on the same tree.
+The 6 that do not pass are all `rss-bounded`, one per g6s leg (finding 5, below) -- every other
+g6s check, including both sabotages hitting exactly their predicted metric, passes. Amendments and
+findings, each from a real run:
+
+1. **`reference-step11` needs the soak timeline at the same capped rate as every leg, not the
+   file timeline or an uncapped rate.** Step 11's freeze (`scene_builder.gd`'s `frozen` flag) stops
+   every continuous per-frame update -- `_animate`'s SC/LB/CD, `_set_mesh_pose`'s MS, the SM/AN
+   players -- wherever they happened to be on the frame the freeze fired, which the freeze then
+   locks in with explicit resets (`sm_player`/`an_player` seek-to-0-and-pause, `tween.kill()`,
+   `pb.value = PB_FREEZE_VALUE`, mesh pose 0, shader `phase` 0). The frame the freeze fires on is
+   timeline- and rate-specific: the file timeline reaches it deterministically at a small frame
+   count; an uncapped rendered run crossed game time 365 s around frame 500 000+ (roughly 1650
+   fps in gamescope headless with GL compatibility, no vsync). Either mismatch alone cost
+   thousands of pixels before this reference was fixed to run the soak timeline itself at
+   `--max-fps 60`.
+2. **A fixed, uniform shot-window scheme can select a pre-freeze transaction for the "final"
+   shot, even when the freeze has already fired.** `g6s_windows()` first spread 12 equal windows
+   from frame 1000 to 23199 so one would always contain whatever frame real time reached by 370 s
+   (D6: realtime pacing means the trigger frame is not known in advance). The receiver shoots "the
+   first applied transaction in each window" (the documented, cross-gate rule). On one real run
+   the host's own `steps.jsonl` fired step 11 at frame 21896, but the last window started at
+   21350 and its first transaction landed there too -- 546 frames before the freeze -- so the
+   "final" shot still carried the pre-freeze, frame-dependent state: 15 347 mismatched pixels,
+   every one in SC, PB, SM, MS, AN or LB (exactly the regions step 11 resets) and none anywhere
+   else. Since `--max-fps 60` caps the achieved rate at or below 60, the real trigger frame can
+   only be ≤ nominal (60 × 365 = 21900), never above it: `g6s_windows()` now places its last
+   window at 21910..22190, strictly after that ceiling, so its first transaction is always
+   post-freeze regardless of how the achieved rate compared to nominal. Fixed, `soak-pixels` is
+   0 mismatched pixels on every leg, every run since.
+3. **`residency-bounded` needs its two Q7e halves evaluated independently, each over a different
+   kind of noise.** The growth half ("max over the last third ≤ max over the first third") is not
+   a reliable signal for a metric under active LRU eviction: the receiver's memory-cache entry
+   COUNT swings on its own near a byte budget as differently sized payloads are evicted and
+   re-admitted (measured on a real honest `soak-scene` run: first-third max 113, last-third max
+   120, while bytes stayed under budget throughout) -- ANDing that into the budget-bound half
+   would fail an honest leg. As built, a metric with a budget-derived bound (receiver memory-cache
+   bytes against its configured budget; host retained payloads against 4× the live mirror's
+   hash-backed resource count + 16, Q5's uncapped "current ∪ bases" with the one connection every
+   g6s leg runs) is judged on that bound alone. A metric with neither keeps the growth half, with
+   a small additive slack (2) for an ordinary ±1 transient tick during a routine retire/re-add
+   (measured: an honest leg's `host_retained` ticked 10→11 for one sample). Both sabotages'
+   residency is already at its full, elevated, flat level by the window's own first sample (the
+   burst that produces it is fixture setup, steps 0 to 10, finishing around game time 15 s, well
+   before the window starts at 60 s), so the growth half alone would never have caught either one
+   regardless of slack; the budget-bound half catches both (`sabotage-soak-no-evict`'s receiver
+   memory-cache bytes against its 1 MiB budget; `sabotage-soak-retain-superseded`'s host retained
+   139 against a live-mirror-derived bound of 56).
+4. **The wire's `resource-duplicate` rule means the per-connection `carried` set cannot be pruned,
+   so "bounded" for `soak-inline` means a growth rate, not flatness.** render-stream-2.md allows
+   each hash to be carried at most once, ever, per stream. An earlier draft pruned `Conn::carried`
+   to "reachable from the connection's base" so a returning hash could be re-carried; it broke the
+   first real `soak-inline` run with `resource-duplicate` (MS's mesh surface recurs every 90
+   frames under its sine-wave motion). `carried` is unchanged -- never pruned, as the protocol
+   requires -- and `checkCarriedGrowthBounded` checks its growth RATE against a ceiling (200/min)
+   instead. Measured, the rate is 0/min in the checked window [60 s, 360 s], not TEXA's
+   originally-estimated ~120/min: `_animate`'s own code guards every `TEXA` update on
+   `texa != null`, and `apply_step(9)` sets `texa = null` (`scene_builder.gd`: "RT no longer names
+   TEXA: dropping the last reference frees it") at game time ~14 s, before the measured window
+   even starts. The ceiling still does its job against a genuine runaway (every self-test case
+   above it fails); it simply never fires on this fixture's own honest traffic.
+5. **`rss-bounded` fails on every g6s leg, root-caused, not fixed in this increment.** Receiver
+   RSS rose 305-306 MiB against a 16 MiB budget on the final run (slope ~68 MiB/min against 2
+   MiB/min), on every leg including the honest ones -- `cache_entries_memory`/`_bytes` and
+   `get_rendering_info`'s own counters stay flat for the whole run, so the growth is not the
+   resource cache this increment adds budgets to. Root cause (memory
+   rs-g6s-live-data-unbounded-growth): `receiver.gd`'s live-mode message handler appends every
+   incoming byte to one buffer (`_data.append_array(message)`) that is never trimmed except on
+   reconnect, because `RsApplier.accept_record(_data, offset, _stream)` resolves each record by an
+   absolute byte offset into it -- live mode reuses the same offset-indexed API file mode uses
+   against a one-time whole-file read. For a short live leg (seconds, at most ~1080 frames) this
+   is invisible; a 370-s soak is the first leg to run long enough to notice: `received.rs2`'s file
+   size matched the measured RSS delta almost exactly, and the growth rate dropped sharply at the
+   step-11 freeze frame (from ~1.1-1.2 MB/s to ~40-45 KB/s), exactly when the continuous per-frame
+   replay driving most of the wire traffic stops. Bounding `_data` (truncating consumed bytes and
+   rebasing `offset`, or decoding each message independently) belongs to `receiver.gd`'s shared
+   live-mode decode path, used by every gate with a live leg, including G6b's concurrent work --
+   not to a cache-budget-scoped increment. This is reported as a deliberate, documented negative
+   result, not a relaxed budget or a fabricated pass: the Q7e thresholds are correct, the receiver
+   does not yet meet them over a run this long.
+6. **`soak-inline`'s receiver keeps the generous default memory budget, not Q7e's tight one.**
+   With no cache directory and no store, an evicted hash that recurs (MS, SM) is unrecoverable: the
+   host never resends a carried hash (finding 4), and inline delivery has no HTTP fallback.
+   `GRC_RESOURCE_INLINE_MAX_BYTES`/`GRC_RESOURCE_MAX_PAYLOAD_BYTES` are capped at 1 048 576 --
+   live mode's own hard inline ceiling (`entry.cpp`'s `kLiveInlineMaxBytes`), below the 16 MiB
+   first tried.
+7. **Both budget environment variables default to unlimited (off), matching every other gate's
+   receiver.** `RS_RECEIVER_MEMORY_BUDGET_BYTES` unset is `-1` (`RsResourceCache`'s own "no
+   budget" sentinel), not the `268 435 456` this section originally specified: a literal default
+   would have turned budgets on everywhere, including gates with no idea the knob exists.
+   `RS_RECEIVER_CACHE_BUDGET_BYTES` keeps `0` (unlimited) as its default, the pre-existing
+   "unlimited" value for that variable, so it goes through the shared non-negative-integer env
+   parser unchanged; the memory variable needed its own parser since `-1` there means "unset",
+   not "malformed".
+
 ---
 
 ### G6c — rates, mismatch, dual receivers, separation, constrained transport (opus)

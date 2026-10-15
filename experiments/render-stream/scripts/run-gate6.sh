@@ -36,6 +36,18 @@
 # each, the presentation hazard (an enforce-min-size capture presented at 960x540), a snap-to-pixel
 # capture of a scratch copy of gate6-scene, and the receiver sabotages ignore-presentation (HD
 # half) and ignore-canvas-stacking (scene).
+# g6s (G6s, on render-stream/6 since G6b): under <out>/g6s/ the `animate` variant on the `soak`
+# timeline (realtime, step 11 at game time 365 s, quit 370 s) with GRC_HOOK_LOG=off: four 370-s
+# legs -- soak-scene (fresh cache, the full 1 MiB/4 MiB memory/disk budgets), soak-inline (every
+# payload inline, no cache dir or store so eviction never runs -- a carried hash is never resent,
+# memory g6s-carried-set-resource-duplicate -- the host's carried-hash set checked for growing
+# only as fast as genuinely novel content explains), sabotage-soak-no-evict
+# (RS_RECEIVER_SABOTAGE=no-evict) and sabotage-soak-retain-superseded
+# (GRC_SABOTAGE=retain-superseded) -- each with a runner-side `/proc` sampler on the host pid
+# (scripts/sample-proc.ts) and the receiver's own RS_RECEIVER_PERF_OUT timeline; then
+# reference-step11 (a rendered `animate` reference on the soak timeline itself: realtime pacing
+# makes the step-11 freeze land at a frame the file timeline cannot reproduce, gate6-design.md
+# "As built (G6s)").
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -61,7 +73,7 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g6a g6h g6l g6b)
+LANDED_GROUPS=(g6a g6h g6l g6b g6s)
 KNOWN_GROUPS=(g6a g6h g6b g6l g6s g6c g6p)
 
 EXTENSION=""
@@ -615,8 +627,200 @@ run_g6l() {
 	GS_RUN_DIR=""
 }
 
-# g6b runs after g6a and g6h whatever order --legs names them in.
-for group in g6a g6h g6l g6b; do
+# ---------------------------------------------------------------------------------------------
+# G6s (gate6-design.md "G6s", Q5 "Resource budgets", Q7e "Stability (g6s)"): receiver cache
+# budgets and eviction over a 300-s soak (realtime, timeline `soak`, variant `animate`,
+# GRC_HOOK_LOG=off). No file sinks and no live tap: the soak has no use for either (the hook log
+# is off, and nothing here reads tap/*.jsonl), so each leg's only evidence is the host's
+# perf-timeline.jsonl, a runner-side `/proc` sampler on the host pid (scripts/sample-proc.ts) and
+# the receiver's own applied.json/perf.json. Everything lives under <out>/g6s/.
+G6S_MEMORY_BUDGET_BYTES=1048576 # 1 MiB (Q7e: 64 TEXA payloads)
+G6S_CACHE_BUDGET_BYTES=4194304  # 4 MiB
+G6S_INLINE_MAX_BYTES=1048576    # soak-inline: every payload goes inline (live mode's own cap)
+
+# g6s_windows: 11 windows spread across frame 1000..20499 for early/mid motion sampling, plus one
+# final window placed AFTER step 11's nominal trigger frame (60 fps * 365 s = 21900). Realtime
+# pacing (D6) means the real trigger frame is unknown in advance, but the --max-fps 60 cap means
+# the achieved rate can only be at or below 60 fps, so any slower run only reduces how many
+# frames land inside the same 365 s of real time -- the actual trigger frame can therefore only be
+# <= 21900, never above it. Starting the last window there always lands at or after the freeze
+# (gate6-design.md "As built (G6s)"; a window starting at frame 1000+k*1850, as this used to do
+# uniformly, could instead land its "first transaction" inside the window BEFORE the real trigger
+# fired -- measured, a 546-frame-early shot at frame 21350 against a real trigger at 21896, 15 347
+# mismatched pixels in exactly the continuous-formula regions step 11 freezes: SC, PB, SM, MS, AN,
+# LB). Quit follows 5 s later (observed frame ~22144 at this build's achieved rate), leaving room
+# for at least one applied transaction before the connection closes.
+g6s_windows() {
+	local k from to out="" sep=""
+	for k in $(seq 0 9); do
+		from=$((1000 + k * 1850))
+		to=$((from + 1849))
+		out+="$sep$k:$from-$to"
+		sep=","
+	done
+	out+="$sep""10:20000-20499"
+	out+="$sep""11:21910-22190"
+	echo "$out"
+}
+
+# start_soak_scene_host <dir> [extra env words...]: the gate6-scene host (headless, armed, the
+# soak timeline, animate variant, GRC_HOOK_LOG=off, the live listener, --max-fps 60) serving on
+# 127.0.0.1:0 in the background. Waits for evidence/live.json and sets LIVE_PORT ("" when the host
+# is not listening).
+start_soak_scene_host() {
+	local dir="$1" waited=0
+	shift
+	mkdir -p "$dir/evidence"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_ROOT_SIZE=enforce-min-size GRC_HOOK_LOG=off
+		GRC_LIVE_LISTEN=127.0.0.1:0 RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=soak
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "$@"
+	)
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$SCENE_FIXTURE_DIR"
+	LIVE_HOST_PID="$BG_PID"
+	LIVE_PORT=""
+	while [ "$waited" -lt 400 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
+		LIVE_PORT="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
+	fi
+	echo "run-gate6: ${dir#"$OUT"/} listening on port ${LIVE_PORT:-<none>}"
+}
+
+# g6s_receiver <leg dir> [extra env words...]: a rendered live receiver on the current host's
+# port, RS_RECEIVER_LOG=summary (a 370-s soak's transaction array would be enormous), a perf.json,
+# Q7e's memory budget by default (the caller's extra env words may override it, soak-inline's
+# does), --max-fps 60 and the shot windows of g6s_windows().
+g6s_receiver() {
+	local leg="$1" dir="$1/receiver"
+	shift
+	mkdir -p "$dir"
+	if [ -z "$LIVE_PORT" ]; then
+		echo "the live host is not listening (see $leg/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate6: ${dir#"$OUT"/} skipped: the host is not listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$LIVE_PORT/render-stream"
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_LOG=summary RS_RECEIVER_PERF_OUT="$dir/perf.json"
+		RS_RECEIVER_MEMORY_BUDGET_BYTES="$G6S_MEMORY_BUDGET_BYTES" RS_RECEIVER_SHOT_WINDOWS="$(g6s_windows)" "$@"
+	)
+	RENDERED_EXTRA_ARGS=(--max-fps 60)
+	run_rendered "$dir" "$RECEIVER_DIR"
+}
+
+# g6s_leg <leg> <host words...> -- <receiver words...>: one live host and one receiver against
+# it, a runner-side /proc sampler on the host pid throughout (scripts/sample-proc.ts), then the
+# host to its own 370-s quit.
+g6s_leg() {
+	local leg="$1"
+	shift
+	local -a host_words=() receiver_words=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		host_words+=("$1")
+		shift
+	done
+	[ $# -gt 0 ] && shift
+	receiver_words=("$@")
+	start_soak_scene_host "$G6S/$leg/host" ${host_words[@]+"${host_words[@]}"}
+	local sampler_pid=""
+	if [ -n "$LIVE_HOST_PID" ]; then
+		(
+			cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+				"$SCRIPT_DIR/sample-proc.ts" --pid "$LIVE_HOST_PID" --out "$G6S/$leg/host/proc-samples.jsonl"
+		) >"$G6S/$leg/host/sample-proc.log" 2>&1 &
+		sampler_pid=$!
+	fi
+	g6s_receiver "$G6S/$leg" ${receiver_words[@]+"${receiver_words[@]}"}
+	finish_bg "$G6S/$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+	if [ -n "$sampler_pid" ]; then
+		kill "$sampler_pid" 2>/dev/null || true
+		wait "$sampler_pid" 2>/dev/null || true
+	fi
+}
+
+run_g6s() {
+	local G6S="$OUT/g6s" old_headless="$HEADLESS_TIMEOUT_S" old_rendered="$RENDERED_TIMEOUT_S"
+	mkdir -p "$G6S/import"
+	echo "run-gate6: g6s: import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$G6S/import/fixture" none -- mise exec -- godot --headless --path "$SCENE_FIXTURE_DIR" --import
+	if [ "$(cat "$G6S/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate6: import of $SCENE_FIXTURE_DIR failed, see $G6S/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	LEG_ENV=()
+	run_headless "$G6S/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$G6S/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate6: import of $RECEIVER_DIR failed, see $G6S/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate6: bringing up private gamescope for g6s legs"
+	gs_start 640 360 "$OUT/gamescope-g6s"
+
+	# Each leg (including this reference) runs the fixture's soak timeline to its own natural
+	# ~370-s quit.
+	HEADLESS_TIMEOUT_S=420
+	RENDERED_TIMEOUT_S=420
+
+	# reference-step11 MUST run the soak timeline itself, at the SAME --max-fps 60 as every host
+	# and receiver here, not the file timeline and not uncapped: step 11's freeze (gate6_scene.gd's
+	# `frozen` flag) stops every continuous per-frame update (MS, SM, AN, and the animate variant's
+	# SC/LB/CD/TEXA) exactly where it happened to be on the frame before the freeze fired, and that
+	# frame number depends on both the timeline (file: a deterministic frame count; soak: whatever
+	# frame real-time pacing reached when game time first hit 365 s -- measured 21895 here,
+	# consistently across --max-fps 60 runs on this host/build) and the achieved frame rate (an
+	# uncapped rendered reference ran at roughly 1650 fps, crossing game time 365 s around frame
+	# 500 000+ instead). Either mismatch alone is thousands of pixels (gate6-design.md
+	# "As built (G6s)").
+	echo "run-gate6: g6s: reference-step11 (soak timeline, animate variant, --max-fps 60: step 11's freeze)"
+	mkdir -p "$G6S/reference-step11/shots"
+	LEG_ENV=(
+		RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=soak
+		RS_FIXTURE_SHOT_DIR="$G6S/reference-step11/shots" RS_FIXTURE_STEP_LOG="$G6S/reference-step11/steps.jsonl"
+	)
+	RENDERED_EXTRA_ARGS=(--max-fps 60)
+	run_rendered "$G6S/reference-step11" "$SCENE_FIXTURE_DIR"
+
+	echo "run-gate6: g6s: soak-scene (fresh cache, memory 1 MiB / disk 4 MiB)"
+	g6s_leg soak-scene -- RS_RECEIVER_CACHE_DIR="$G6S/soak-scene/receiver/cache" \
+		RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES"
+
+	# No cache dir and no store (pure inline, G2c2's HTTP fetcher never starts): a hash evicted
+	# from memory under budget pressure could never be recovered (the host never resends a
+	# carried hash, memory g6s-carried-set-resource-duplicate), and MS's and SM's payloads
+	# legitimately recur. So this leg keeps the receiver's own generous default memory budget
+	# (268435456, which this fixture's whole payload footprint never approaches) rather than
+	# Q7e's tight one, and exercises only the carried-set growth check.
+	echo "run-gate6: g6s: soak-inline (every payload inline, no eviction pressure)"
+	g6s_leg soak-inline GRC_RESOURCE_INLINE_MAX_BYTES="$G6S_INLINE_MAX_BYTES" \
+		GRC_RESOURCE_MAX_PAYLOAD_BYTES="$G6S_INLINE_MAX_BYTES" -- \
+		RS_RECEIVER_MEMORY_BUDGET_BYTES=268435456
+
+	echo "run-gate6: g6s: sabotage-soak-no-evict (RS_RECEIVER_SABOTAGE=no-evict)"
+	g6s_leg sabotage-soak-no-evict -- RS_RECEIVER_CACHE_DIR="$G6S/sabotage-soak-no-evict/receiver/cache" \
+		RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES" RS_RECEIVER_SABOTAGE=no-evict
+
+	echo "run-gate6: g6s: sabotage-soak-retain-superseded (GRC_SABOTAGE=retain-superseded)"
+	g6s_leg sabotage-soak-retain-superseded GRC_SABOTAGE=retain-superseded GRC_SABOTAGE_FRAME=1 -- \
+		RS_RECEIVER_CACHE_DIR="$G6S/sabotage-soak-retain-superseded/receiver/cache" \
+		RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES"
+
+	HEADLESS_TIMEOUT_S="$old_headless"
+	RENDERED_TIMEOUT_S="$old_rendered"
+
+	gs_teardown "$OUT/gamescope-g6s"
+	GS_RUN_DIR=""
+}
+
+# g6b runs after g6a and g6h whatever order --legs names them in; g6s has no cross-group
+# dependency, so it just runs wherever it falls in this fixed order (last is fine).
+for group in g6a g6h g6l g6b g6s; do
 	case " ${GROUPS_RUN[*]} " in
 	*" $group "*) ;;
 	*) continue ;;
@@ -626,6 +830,7 @@ for group in g6a g6h g6l g6b; do
 	g6h) run_g6h ;;
 	g6l) run_g6l ;;
 	g6b) run_g6b ;;
+	g6s) run_g6s ;;
 	esac
 done
 

@@ -645,9 +645,25 @@ void perf_timeline_tick(uint64_t now_ns) {
   // A compact one-line-per-record JSON builder: JsonWriter pretty-prints across several lines,
   // which would break the jsonl contract (one JSON object per line), so this stays a plain
   // string build, as rs_live.cpp's own per-connection log lines do.
+  //
+  // G6s (gate6-design.md Q7e "residency-bounded"): mirror_stats()'s live table sizes and the
+  // served resources' current (not max) retained count/bytes, so a soak's checker can compare a
+  // window's first third against its last third -- the hook log is off for a soak (GRC_HOOK_LOG),
+  // so this 1 Hz tick is the only host-side time series available for a long-running leg.
+  const rs::MirrorStats mirror_stats_now = rs::mirror_stats();
+  const std::uint64_t served_retained = g_live.served != nullptr ? g_live.served->retained() : 0;
+  const std::uint64_t served_retained_bytes =
+      g_live.served != nullptr ? g_live.served->retained_bytes() : 0;
   std::string line = "{\"t_us\":" + std::to_string(now_ns / 1000) +
                      ",\"frame\":" + std::to_string(g_state.frames_total) +
-                     ",\"rss_bytes\":" + std::to_string(read_rss_bytes()) + ",\"connections\":[";
+                     ",\"rss_bytes\":" + std::to_string(read_rss_bytes()) +
+                     ",\"mirror_items\":" + std::to_string(mirror_stats_now.live_items) +
+                     ",\"mirror_textures\":" + std::to_string(mirror_stats_now.live_textures) +
+                     ",\"mirror_meshes\":" + std::to_string(mirror_stats_now.live_meshes) +
+                     ",\"mirror_materials\":" + std::to_string(mirror_stats_now.live_materials) +
+                     ",\"host_retained\":" + std::to_string(served_retained) +
+                     ",\"host_retained_bytes\":" + std::to_string(served_retained_bytes) +
+                     ",\"connections\":[";
   if (g_live.hub != nullptr) {
     bool first = true;
     for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
@@ -661,7 +677,12 @@ void perf_timeline_tick(uint64_t now_ns) {
               ",\"coalesced\":" + std::to_string(s.coalesced) +
               ",\"ticks_credit_blocked\":" + std::to_string(s.ticks_credit_blocked) +
               ",\"max_pending_age_us\":" + std::to_string(s.max_pending_age_us) +
-              ",\"bytes_sent\":" + std::to_string(s.bytes_sent) + "}";
+              ",\"bytes_sent\":" + std::to_string(s.bytes_sent) +
+              // G6s (Q7e "soak-inline"): this connection's carried-hash set size, read fresh
+              // each tick (Hub::summaries()). It only ever grows (render-stream-2.md's
+              // resource-duplicate rule means a carried hash is never forgotten), so the check
+              // here is on its growth rate, not on it staying flat.
+              ",\"carried_size\":" + std::to_string(s.carried_size) + "}";
     }
   }
   line += "]}";
@@ -1262,7 +1283,8 @@ void stream_start() {
                            kind == rs2::SabotageKind::IgnoreCredit ||
                            kind == rs2::SabotageKind::StaleCoalesce ||
                            kind == rs2::SabotageKind::DropResource ||
-                           kind == rs2::SabotageKind::Unpin;
+                           kind == rs2::SabotageKind::Unpin ||
+                           kind == rs2::SabotageKind::RetainSuperseded;
     if (live_kind && !live_ok) {
       why = std::string(rs2::to_wire(kind)) + " needs GRC_LIVE_LISTEN";
     } else if (!files && (kind == rs2::SabotageKind::FreezeFrame ||
@@ -1544,6 +1566,8 @@ void stream_start() {
       g_live.served->set_unpin_frame(sabotage.config.frame);
     } else if (sabotage.config.kind == rs2::SabotageKind::DropResource) {
       g_live.served->set_drop_frame(sabotage.config.frame);
+    } else if (sabotage.config.kind == rs2::SabotageKind::RetainSuperseded) {
+      g_live.served->set_retain_superseded_frame(sabotage.config.frame);
     }
     g_live.serving.budget_bytes = g_stream.budget_bytes;
     if (!g_live.server->start(server_config, g_live.served.get(), &error)) {

@@ -11,6 +11,11 @@
 // record larger than the message cap is `message-too-large` like a transaction; a resync keeps
 // what the connection already carried, a new connection carries everything again -- and every
 // larger payload is fetched by the receiver over HTTP (`fetch: "http"`) from the same listener.
+// `carried` is never pruned: render-stream-2.md's resource-duplicate rule ("each hash at most
+// once" per stream) makes that a correctness requirement, not an oversight (confirmed the hard
+// way, gate6-design.md G6s: a hash that recurs, such as a mesh surface's periodic pose, must
+// never be carried a second time), so a long-running connection's set holds one entry per
+// distinct hash it has ever sent, for its whole life.
 // The hub does not serve HTTP itself: it reports what each connection pins (the payloads of its
 // base, the last transaction sent on it; base_payloads()) so the caller's ServedResources
 // (rs_resource_store.h) keeps them servable until the next transaction, and it attributes every
@@ -262,6 +267,10 @@ struct ConnectionSummary {
   std::uint64_t bytes_sent = 0;       // binary message bytes handed to the transport
   std::uint64_t resource_records = 0;  // G2b2: inline resource records sent (payloads carried)
   std::uint64_t resource_bytes = 0;    // G2b2: their payload bytes
+  // G6s (gate6-design.md Q7e "soak-inline"): the connection's carried-hash set's CURRENT size
+  // (not accumulated -- Hub::summaries() fills this fresh from Conn::carried each call), for the
+  // perf timeline's first-third/last-third residency comparison.
+  std::uint64_t carried_size = 0;
   // G2c2: resource GETs answered while this connection was the one streaming (on_http_get), the
   // bytes of the 200 bodies, and how many were not 200.
   std::uint64_t http_gets = 0;

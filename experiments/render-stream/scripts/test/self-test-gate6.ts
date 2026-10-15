@@ -21,7 +21,8 @@
 // 7. evaluateUnsupportedClass and evaluateNoTies6.
 // 8. Gate 6h: test/self-test-gate6h.ts on the committed fixtures/gate6-hd/expected.json.
 // 9. Group g6l: self-test-gate6l.ts's cases for lib/gate6l-checks.ts.
-// 10. Gate 6b: test/self-test-gate6b.ts (the pure g6b checks) on synthetic values and the HD file.
+// 10. Group g6s: self-test-gate6s.ts's cases for lib/gate6s-checks.ts.
+// 11. Gate 6b: test/self-test-gate6b.ts (the pure g6b checks) on synthetic values and the HD file.
 //
 // Exits non-zero if any assertion fails.
 
@@ -58,6 +59,7 @@ import { rasterizeItems } from "../lib/geometry-raster";
 import { selfTestGate6b } from "./self-test-gate6b";
 import { selfTestGate6h } from "./self-test-gate6h";
 import { selfTestG6l } from "./self-test-gate6l";
+import { selfTestG6s } from "./self-test-gate6s";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -901,8 +903,10 @@ async function main(): Promise<void> {
   selfTestGate6h(assert, hdExpected);
   // 9. Group g6l (self-test-gate6l.ts).
   selfTestG6l(e, { assert, passes, fails });
+  // 10. Group g6s (self-test-gate6s.ts).
+  selfTestG6s({ assert, passes, fails });
 
-  // 10. Gate 6b (test/self-test-gate6b.ts).
+  // 11. Gate 6b (test/self-test-gate6b.ts).
   selfTestGate6b(assert, hdExpected);
 
   console.log(
