@@ -312,6 +312,9 @@ fn texture_region_uses_texpixel_size_and_flips() {
             width: 16,
             height: 16,
             rgba: vec![255; 16 * 16 * 4],
+            format: "RGBA8".into(),
+            mipmaps: false,
+            data_len: 16 * 16 * 4,
         },
     );
     let mut a = Applier::new(viewport());
@@ -326,4 +329,84 @@ fn texture_region_uses_texpixel_size_and_flips() {
     let v2 = a.list.vertices[2];
     assert_eq!(v2.pos, [10.0, 12.0]);
     assert_eq!(v2.uv, [1.0, 1.0]);
+}
+
+#[test]
+fn custom_rect_off_screen_hides_on_screen_content_and_moving_on_screen_rewalks() {
+    // _attach_canvas_item_for_draw: the item's global rect (here its custom rect) must touch the
+    // viewport for the item to draw, whatever its commands cover (gate 3's `cull` region).
+    let mut it = item(1, ON_ROOT, rect_cmds([0.0, 0.0, 8.0, 8.0], [1.0; 4]));
+    it.custom_rect = true;
+    it.custom_rect_rect = [-100.0, 0.0, 10.0, 10.0];
+    let mut s = state_with(vec![it]);
+    let mut a = Applier::new(viewport());
+    let store = PayloadStore::default();
+    a.apply(&s, &full_delta(&s), &store);
+    a.list.consumed();
+    assert!(a.list.draws.is_empty());
+    // Touching the viewport's edge counts (Rect2::intersects with borders).
+    s.items.get_mut(&1).unwrap().xform = [1.0, 0.0, 0.0, 1.0, 90.0, 0.0];
+    let delta = TxDelta {
+        items_upserted: vec![1],
+        ..TxDelta::default()
+    };
+    let st = a.apply(&s, &delta, &store).clone();
+    assert!(st.structural, "coming on screen re-walks");
+    assert_eq!(a.list.draws.len(), 1);
+}
+
+#[test]
+fn clip_uv_splits_the_quad_where_the_uv_meets_the_half_texel_inset() {
+    let mut cmds = Commands::default();
+    cmds.list.push(Command::TextureRectRegion {
+        tex: Some(5),
+        transpose: false,
+        clip_uv: true,
+        rect: [0.0, 0.0, 32.0, 32.0],
+        src: [4.0, 0.0, 8.0, 8.0],
+        modulate: [1.0; 4],
+    });
+    let mut s = state_with(vec![item(1, ON_ROOT, cmds)]);
+    let hash = Hash([7; 32]);
+    s.textures.insert(
+        5,
+        Texture {
+            id: 5,
+            kind: TextureKind::Image,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            hash: Some(hash),
+            format: Some("RGBA8".into()),
+            width: 16,
+            height: 16,
+            mipmaps: false,
+            payload_bytes: 100,
+            canvas: None,
+        },
+    );
+    let mut store = PayloadStore::default();
+    store.textures.insert(
+        hash,
+        payloads::TexturePixels {
+            width: 16,
+            height: 16,
+            rgba: vec![255; 16 * 16 * 4],
+            format: "RGBA8".into(),
+            mipmaps: false,
+            data_len: 16 * 16 * 4,
+        },
+    );
+    let mut a = Applier::new(viewport());
+    a.apply(&s, &full_delta(&s), &store);
+    // 3 × 3 cells of 4 vertices; UVs clamped to [4.5, 11.5] / 16 and [0.5, 7.5] / 16.
+    assert_eq!(a.list.vertices.len(), 36);
+    let (lo, hi) = (4.5 / 16.0, 11.5 / 16.0);
+    for v in &a.list.vertices {
+        assert!(v.uv[0] >= lo - 1e-7 && v.uv[0] <= hi + 1e-7, "{:?}", v.uv);
+        assert!(v.uv[1] >= 0.5 / 16.0 - 1e-7 && v.uv[1] <= 7.5 / 16.0 + 1e-7);
+    }
+    // The cut is where the uv reaches the inset: half a texel of 8 is 1/16 of the 32-px rect.
+    assert!(a.list.vertices.iter().any(|v| (v.pos[0] - 2.0).abs() < 1e-5));
+    assert!(a.list.vertices.iter().any(|v| (v.pos[0] - 30.0).abs() < 1e-5));
 }

@@ -17,6 +17,11 @@ pub struct TexturePixels {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// The payload's own `Image.Format` name, mipmaps flag and `data` length (every level): what
+    /// the native receiver's upload accounting reads (`rs_applier.gd`, `uploads[].data_bytes`).
+    pub format: String,
+    pub mipmaps: bool,
+    pub data_len: usize,
 }
 
 /// One mesh surface's 2D geometry.
@@ -99,6 +104,9 @@ pub fn texture_rgba8(
         width,
         height,
         rgba,
+        format: format.to_string(),
+        mipmaps: false,
+        data_len: data.len(),
     })
 }
 
@@ -241,8 +249,9 @@ impl PayloadStore {
         match payload_kind(bytes, version) {
             PayloadKind::Texture => {
                 let t = decode_texture(bytes)?;
-                let px = texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data)
+                let mut px = texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data)
                     .map_err(bad)?;
+                px.mipmaps = t.mipmaps;
                 self.textures.insert(*expected, px);
             }
             PayloadKind::Mesh => {

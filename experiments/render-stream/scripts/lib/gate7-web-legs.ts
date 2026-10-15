@@ -65,8 +65,14 @@ export interface WebRunContext {
   sourceDir: string;
   /** The web-export bundle directory (build-web-receiver.sh), linked at /web-bundle. */
   bundleDir: string;
-  /** build.json's pck sha256, passed as RS_RECEIVER_BUILD_SHA256. */
+  /** build.json's pck sha256 (web) or the bundle's sha256 (gsw), passed as
+   * RS_RECEIVER_BUILD_SHA256. */
   buildSha256: string;
+  /** Which browser receiver (G7a): `web` (default) serves `/web-bundle/receiver.html`, the web
+   * export's shell; `gsw` serves `/gsw-bundle/receiver.html`, the GSW canvas receiver
+   * (web/gsw-receiver/). Both read the same `?env=` page configuration and report through the
+   * same `window.__rsShell` contract. */
+  kind?: "web" | "gsw";
   timeoutMs?: number;
   log?: (line: string) => void;
 }
@@ -200,7 +206,10 @@ export async function runWebLegs(
   const log = ctx.log ?? ((line: string) => console.log(line));
   await mkdir(join(ctx.out, "sources"), { recursive: true });
   ensureLink(resolve(ctx.sourceDir), join(ctx.out, "sources", ctx.gate));
-  ensureLink(resolve(ctx.bundleDir), join(ctx.out, "web-bundle"));
+  ensureLink(
+    resolve(ctx.bundleDir),
+    join(ctx.out, ctx.kind === "gsw" ? "gsw-bundle" : "web-bundle"),
+  );
   let onApplied: (() => Promise<void>) | undefined;
   const server = new HarnessServer({
     staticRoot: ctx.out,
@@ -220,7 +229,7 @@ export async function runWebLegs(
         }),
       );
       log(
-        `gate7-web: ${spec.leg} exit=${results[results.length - 1].exitCode}`,
+        `gate7-${ctx.kind ?? "web"}: ${spec.leg} exit=${results[results.length - 1].exitCode}`,
       );
     }
   } finally {
@@ -268,7 +277,8 @@ async function runOne(
     canvas: mapped.canvas,
     sabotage: spec.sabotage ?? null,
   };
-  const url = `${origin}/web-bundle/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
+  const bundle = ctx.kind === "gsw" ? "gsw-bundle" : "web-bundle";
+  const url = `${origin}/${bundle}/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
   await writeFile(
     join(spec.webDir, "page-config.json"),
     `${JSON.stringify({ url, ...pageConfig, dropped: mapped.dropped }, null, 2)}\n`,

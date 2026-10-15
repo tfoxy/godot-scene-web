@@ -4,9 +4,12 @@
 //!                         [--sabotage skip-payload-hash]
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]
-//!   rs-core-check validate <recording>... [--version 2..6] [--recover]
+//!   rs-core-check validate <recording>... [--version 2..7] [--recover]
+//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
+//!   rs-core-check scissors <recording> [--store <dir>]
+//!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!
-//! `goldens` runs golden-2 ... golden-6 (exits non-zero on any failing check). `diff` feeds every
+//! `goldens` runs golden-2 ... golden-7 (exits non-zero on any failing check). `diff` feeds every
 //! record of every input through the validator and writes one JSONL line per record (record sha256,
 //! and per transaction its seq, the sha256 of its canonical resolved JSON and its unsupported list),
 //! the native side of `scripts/test/self-test-rs-core.ts`. `bench` times `accept` per record.
@@ -29,7 +32,7 @@ use std::time::Instant;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..6>] [--sabotage skip-payload-hash]\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..7>] [--sabotage skip-payload-hash]\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]\n  \
          rs-core-check validate <recording>... [--version 2..6]"
@@ -87,6 +90,9 @@ fn main() -> ExitCode {
         "goldens" => cmd_goldens(&args),
         "diff" => cmd_diff(&args),
         "bench" => cmd_bench(&args),
+        "apply-bench" => cmd_apply_bench(&args),
+        "scissors" => cmd_scissors(&args),
+        "state-dump" => cmd_state_dump(&args),
         "validate" => cmd_validate(&args),
         _ => usage(),
     }
@@ -99,7 +105,7 @@ fn cmd_goldens(args: &Args) -> ExitCode {
     );
     let only = match args.get("only").map(|s| s.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=6).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=7).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     let opts = match args.get("sabotage") {
@@ -473,7 +479,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
 fn cmd_validate(args: &Args) -> ExitCode {
     let forced = match args.get("version").map(|v| v.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=6).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=7).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     if args.positional.is_empty() {
@@ -549,4 +555,265 @@ fn recover_chain(data: &[u8], version: u8) -> Result<(usize, usize, String), wir
         }
     }
     Ok((rejected, accepted, wire::sha256(&chain).to_hex()))
+}
+
+/// `apply-bench <recording> --store <dir>`: accept, provide (from the capture's store) and apply
+/// every transaction natively (no GL), timing `Applier::apply` and counting why each structural
+/// walk ran ([`render_stream_core::apply::Why`]). A diagnostic for the applier's paths.
+fn cmd_apply_bench(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::{Applier, Viewport, Why};
+    let Some(path) = args.positional.first() else {
+        return usage();
+    };
+    let store = args.get("store").map(PathBuf::from);
+    let repeats = args
+        .get("repeats")
+        .and_then(|r| r.parse::<usize>().ok())
+        .unwrap_or(3)
+        .max(1);
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("rs-core-check apply-bench: {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let run = || -> Result<(Vec<f64>, Vec<u32>), wire::Error> {
+        let version = wire::version_of_magic(&data)
+            .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+        let spans = wire::split_records(&data, version)?;
+        let mut v = Validator::new(
+            spans[0].bytes(&data),
+            spans[0].offset,
+            Options::new(version),
+        )?;
+        let s = v.session();
+        let size = s
+            .viewport
+            .presentation_size
+            .unwrap_or(s.viewport.logical_size);
+        let mut a = Applier::new(Viewport {
+            width: size[0].max(1) as u32,
+            height: size[1].max(1) as u32,
+            clear: s.clear_color,
+            global_xform: geom::IDENTITY,
+            cull_mask: s.viewport.canvas_cull_mask as u32,
+            format: gsw_canvas_draw_list::Format::Rgb10A2,
+        });
+        let mut payloads = PayloadStore::default();
+        let mut need = Vec::new();
+        let (mut times, mut whys) = (Vec::new(), Vec::new());
+        for span in &spans[1..] {
+            match v.accept(span.bytes(&data), span.offset)? {
+                Accepted::Resource { hash } => {
+                    if let Some(b) = v.inline_payload(&hash) {
+                        payloads.provide(b, &hash, version, true)?;
+                    }
+                }
+                Accepted::End => {}
+                Accepted::Transaction => {
+                    a.prepare(v.state(), v.delta());
+                    a.needed(v.state(), v.delta(), &payloads, &mut need);
+                    for h in &need {
+                        let dir = store.as_ref().ok_or_else(|| {
+                            wire::Error::new("resource-unavailable", "no --store")
+                        })?;
+                        let mut bytes = None;
+                        for ext in ["grt", "grm", "grp"] {
+                            let p = dir.join("sha256").join(format!("{}.{ext}", h.to_hex()));
+                            if let Ok(b) = std::fs::read(&p) {
+                                bytes = Some(b);
+                                break;
+                            }
+                        }
+                        let b = bytes
+                            .ok_or_else(|| wire::Error::new("resource-unavailable", h.to_hex()))?;
+                        payloads.provide(&b, h, version, true)?;
+                    }
+                    let t = Instant::now();
+                    let st = a.apply(v.state(), v.delta(), &payloads);
+                    times.push(t.elapsed().as_secs_f64() * 1e6);
+                    whys.push(st.why);
+                    if st.why != 0 && std::env::var("RS_APPLY_BENCH_VERBOSE").is_ok() {
+                        eprintln!(
+                            "seq {} why {:#x} walk {:.1} us assemble {:.1} us total {:.1} us",
+                            v.state().seq,
+                            st.why,
+                            st.walk_us,
+                            st.assemble_us,
+                            times.last().unwrap()
+                        );
+                    }
+                    a.list.consumed();
+                }
+            }
+        }
+        Ok((times, whys))
+    };
+    let mut all = Vec::new();
+    let mut whys = Vec::new();
+    for _ in 0..repeats {
+        match run() {
+            Ok((t, w)) => {
+                all.extend(t);
+                whys = w;
+            }
+            Err(e) => {
+                eprintln!("rs-core-check apply-bench: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let pct = |p: f64| all[((p * all.len() as f64).ceil() as usize).clamp(1, all.len()) - 1];
+    let walks = whys.iter().filter(|w| **w != 0).count();
+    println!(
+        "{path}: {} transactions, apply us p50 {:.1} p95 {:.1} max {:.1}; structural walks {walks}",
+        whys.len(),
+        pct(0.5),
+        pct(0.95),
+        all[all.len() - 1]
+    );
+    for (bit, name) in Why::NAMES.iter().enumerate() {
+        let n = whys.iter().filter(|w| *w & (1 << bit) != 0).count();
+        if n > 0 {
+            println!("  why {name}: {n}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `scissors <recording> [--store <dir>]` (gate7-design.md G7a `clip-parity`, Q14d "Lowering"):
+/// replays every transaction through the applier (natively, no GL) and prints one JSON line per
+/// transaction, `{"seq":n,"items":[[id,[x0,y0,x1,y1]|null],...]}`: every item the walk visited,
+/// with the integer scissor it draws under (its own or its clip owner's, half-open) or null.
+/// `scripts/lib/gate7-gsw-checks.ts` compares it with `clip-derive.ts` item by item.
+fn cmd_scissors(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::{Applier, Viewport};
+    let Some(path) = args.positional.first() else {
+        return usage();
+    };
+    let store = args.get("store").map(PathBuf::from);
+    let run = || -> Result<(), wire::Error> {
+        let data = std::fs::read(path)
+            .map_err(|e| wire::Error::new("recording-unreadable", e.to_string()))?;
+        let version = wire::version_of_magic(&data)
+            .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+        let spans = wire::split_records(&data, version)?;
+        let mut v = Validator::new(
+            spans[0].bytes(&data),
+            spans[0].offset,
+            Options::new(version),
+        )?;
+        let s = v.session();
+        let mut a = Applier::new(Viewport {
+            width: s.viewport.logical_size[0].max(1) as u32,
+            height: s.viewport.logical_size[1].max(1) as u32,
+            clear: s.clear_color,
+            global_xform: geom::IDENTITY,
+            cull_mask: s.viewport.canvas_cull_mask as u32,
+            format: gsw_canvas_draw_list::Format::Rgb10A2,
+        });
+        let mut payloads = PayloadStore::default();
+        let mut need = Vec::new();
+        let mut out = std::io::stdout().lock();
+        for span in &spans[1..] {
+            match v.accept(span.bytes(&data), span.offset)? {
+                Accepted::Resource { hash } => {
+                    if let Some(b) = v.inline_payload(&hash) {
+                        payloads.provide(b, &hash, version, true)?;
+                    }
+                }
+                Accepted::End => {}
+                Accepted::Transaction => {
+                    a.prepare(v.state(), v.delta());
+                    a.needed(v.state(), v.delta(), &payloads, &mut need);
+                    for h in &need {
+                        let Some(dir) = store.as_ref() else { break };
+                        for ext in ["grt", "grm", "grp"] {
+                            let p = dir.join("sha256").join(format!("{}.{ext}", h.to_hex()));
+                            if let Ok(b) = std::fs::read(&p) {
+                                payloads.provide(&b, h, version, true)?;
+                                break;
+                            }
+                        }
+                    }
+                    a.apply(v.state(), v.delta(), &payloads);
+                    a.list.consumed();
+                    let items: Vec<J> = a
+                        .scissors()
+                        .into_iter()
+                        .map(|(id, r)| json!([id, r.map(|r| json!(r)).unwrap_or(J::Null)]))
+                        .collect();
+                    let line = json!({"seq": v.state().seq, "items": items});
+                    let _ = writeln!(out, "{line}");
+                }
+            }
+        }
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rs-core-check scissors: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `state-dump <recording> --seqs a,b,... --out <dir>`: writes `<dir>/seq-<n>.json`, the resolved
+/// state after transaction n exactly as the native receiver's `RS_RECEIVER_STATE_SEQS` dump spells
+/// it (`canon::write_state_godot`); the GSW receiver's `state_dump()` is the same function.
+fn cmd_state_dump(args: &Args) -> ExitCode {
+    let (Some(path), Some(seqs), Some(out)) =
+        (args.positional.first(), args.get("seqs"), args.get("out"))
+    else {
+        return usage();
+    };
+    let seqs: Vec<i64> = seqs
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let run = || -> Result<usize, wire::Error> {
+        let data = std::fs::read(path)
+            .map_err(|e| wire::Error::new("recording-unreadable", e.to_string()))?;
+        let version = wire::version_of_magic(&data)
+            .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+        let spans = wire::split_records(&data, version)?;
+        let mut v = Validator::new(
+            spans[0].bytes(&data),
+            spans[0].offset,
+            Options::new(version),
+        )?;
+        std::fs::create_dir_all(out).map_err(|e| wire::Error::new("out", e.to_string()))?;
+        let mut n = 0;
+        for span in &spans[1..] {
+            if let Accepted::Transaction = v.accept(span.bytes(&data), span.offset)? {
+                let seq = v.state().seq;
+                if seqs.contains(&seq) {
+                    let mut buf = Vec::new();
+                    canon::write_state_godot(&mut buf, v.state());
+                    buf.push(b'\n');
+                    std::fs::write(Path::new(out).join(format!("seq-{seq}.json")), buf)
+                        .map_err(|e| wire::Error::new("out", e.to_string()))?;
+                    n += 1;
+                }
+            }
+        }
+        Ok(n)
+    };
+    match run() {
+        Ok(n) => {
+            println!("state-dump: {n} states");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("rs-core-check state-dump: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }

@@ -45,7 +45,7 @@ pub fn version_of_magic(data: &[u8]) -> Option<u8> {
         return None;
     }
     let v = data[3].wrapping_sub(b'0');
-    if (2..=6).contains(&v) && data[..MAGIC_LEN] == magic(v) {
+    if (2..=7).contains(&v) && data[..MAGIC_LEN] == magic(v) {
         Some(v)
     } else {
         None
@@ -405,10 +405,10 @@ mod tests {
 
     #[test]
     fn magic_round_trip() {
-        for v in 2..=6 {
+        for v in 2..=7 {
             assert_eq!(version_of_magic(&magic(v)), Some(v));
         }
-        assert_eq!(version_of_magic(&magic(7)), None);
+        assert_eq!(version_of_magic(&magic(8)), None);
         assert_eq!(version_of_magic(b"GRS6"), None);
     }
 

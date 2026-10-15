@@ -21,8 +21,8 @@
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-
 import sharp from "../../../packages/test-harness/node_modules/sharp/lib/index.js";
+import { loadRecording } from "./lib/gate0-checks";
 import {
   type Gate7Check,
   PACE_EXPECTED_PATH,
@@ -187,8 +187,18 @@ async function sceneReport(run: string, nativeDir: string): Promise<void> {
     for (const r of raw.results)
       for (const s of r.shots) shots.set(s.seq, join(evidence, nonce, s.path));
   }
+  // gate6-scene's regions follow the root canvas (make_expected.py: "at steps 10 and 11 the root
+  // canvas moves by (8, 4) and so do the regions"): offset each seq's boxes by its root canvas
+  // origin (G7a: G7x's report used the step-0 boxes, which moved SM's and LE's pixels into "BG").
+  const recording = await loadRecording(join(nativeDir, "recording.rs2"));
+  const rootOrigin = (seq: number): [number, number] => {
+    const t = recording.transactions.find((x) => x.meta.seq === seq);
+    const root = t?.meta.canvases.find((c) => c.role === "root");
+    return root ? [root.xform[4], root.xform[5]] : [0, 0];
+  };
   const rows: unknown[] = [];
   for (const seq of seqs) {
+    const [ox, oy] = rootOrigin(seq);
     const native = join(nativeDir, "shots", `seq-${seq}.png`);
     const mine = shots.get(seq);
     if (!mine || !existsSync(native)) {
@@ -217,7 +227,11 @@ async function sceneReport(run: string, nativeDir: string): Promise<void> {
           d = Math.max(d, Math.abs(n[o + c] - g[o + c]));
         const name =
           Object.entries(expected.regions).find(
-            ([, b]) => x >= b[0] && x < b[2] && y >= b[1] && y < b[3],
+            ([, b]) =>
+              x >= b[0] + ox &&
+              x < b[2] + ox &&
+              y >= b[1] + oy &&
+              y < b[3] + oy,
           )?.[0] ?? "BG";
         bump(name, d);
       }

@@ -12,7 +12,40 @@ use crate::meta::{self, DecodeBufs, TxMeta};
 use crate::state::*;
 use crate::wire::{self, BlockType, Error};
 
-struct W<'a>(&'a mut Vec<u8>);
+/// The writer; the flag selects Godot's float spelling (the native receiver's state dumps,
+/// [`write_state_godot`]) instead of JavaScript's.
+struct W<'a>(&'a mut Vec<u8>, bool);
+
+/// One float as Godot 4.5.1's `JSON.stringify(..., full_precision = true)` prints it
+/// (core/io/json.cpp `_stringify` FLOAT, core/string/ustring.cpp `String::num`): `0.0` for zero,
+/// else `%.{p}lf` with `p = max(1, 17 - floor(log10|x|))` (at most 32), trailing zeros removed
+/// down to one digit after the point.
+pub fn write_godot_float(out: &mut Vec<u8>, x: f64) {
+    if x == 0.0 {
+        out.extend_from_slice(b"0.0");
+        return;
+    }
+    if x.is_nan() {
+        out.extend_from_slice(b"nan");
+        return;
+    }
+    if x.is_infinite() {
+        out.extend_from_slice(if x < 0.0 { b"-inf" } else { b"inf" });
+        return;
+    }
+    let magnitude = x.abs().log10();
+    let precision = (17 - magnitude.floor() as i64).clamp(1, 32) as usize;
+    let mut text = format!("{x:.precision$}");
+    if text.contains('.') {
+        while text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.push('0');
+        }
+    }
+    out.extend_from_slice(text.as_bytes());
+}
 
 impl W<'_> {
     #[inline]
@@ -36,7 +69,15 @@ impl W<'_> {
     }
     #[inline]
     fn f32(&mut self, v: f32) {
-        write_number(self.0, v as f64);
+        self.f64(v as f64);
+    }
+    #[inline]
+    fn f64(&mut self, v: f64) {
+        if self.1 {
+            write_godot_float(self.0, v);
+        } else {
+            write_number(self.0, v);
+        }
     }
     #[inline]
     fn bool(&mut self, b: bool) {
@@ -72,7 +113,7 @@ impl W<'_> {
             if i > 0 {
                 self.0.push(b',');
             }
-            write_number(self.0, x);
+            self.f64(x);
         }
         self.0.push(b']');
     }
@@ -429,7 +470,7 @@ fn params(w: &mut W, ps: &[Param]) {
                 w.int(*t as i64);
                 w.raw("}");
             }
-            ParamValue::Scalar(x) => write_number(w.0, *x),
+            ParamValue::Scalar(x) => w.f64(*x),
             ParamValue::Flat(v) => w.f64s(v),
             ParamValue::Nested { components, values } => {
                 w.raw("[");
@@ -782,8 +823,20 @@ fn list<T>(w: &mut W, items: impl Iterator<Item = T>, mut f: impl FnMut(&mut W, 
 
 /// The resolved `state` object of a transaction (`ResolvedTransaction.state`).
 pub fn write_state(out: &mut Vec<u8>, st: &ResolvedState) {
+    write_state_as(out, st, false)
+}
+
+/// The native receiver's state dump (`receiver.gd` `_state_json`, written with
+/// `JSON.stringify(state, "", false, true)`): the same keys in the same order as
+/// [`write_state`], without `unknown_items` (the dump never carries it), every float spelled as
+/// Godot spells it ([`write_godot_float`]). Byte-identical to the native dump of the same state.
+pub fn write_state_godot(out: &mut Vec<u8>, st: &ResolvedState) {
+    write_state_as(out, st, true)
+}
+
+fn write_state_as(out: &mut Vec<u8>, st: &ResolvedState, godot: bool) {
     let v = st.version;
-    let w = &mut W(out);
+    let w = &mut W(out, godot);
     w.raw("{");
     w.key("status");
     w.str(st.status.as_str());
@@ -812,7 +865,7 @@ pub fn write_state(out: &mut Vec<u8>, st: &ResolvedState) {
         w.str(u.reason);
         w.raw("}");
     });
-    if let Some(u) = &st.unknown_items {
+    if let Some(u) = st.unknown_items.as_ref().filter(|_| !godot) {
         w.raw(",");
         w.key("unknown_items");
         w.raw("{");

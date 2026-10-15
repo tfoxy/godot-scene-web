@@ -46,7 +46,7 @@ const checks = mod
 const failed = checks.filter((c) => !c.ok);
 for (const c of failed) console.log(`FAIL ${c.name}: ${c.detail}`);
 console.log(
-  `self-test-rs-core-wasm: ${checks.length - failed.length}/${checks.length} checks pass (wasm32, ${only ? `golden-${only}` : "golden-2..6"}${sabotage ? ", sabotage skip-payload-hash" : ""})`,
+  `self-test-rs-core-wasm: ${checks.length - failed.length}/${checks.length} checks pass (wasm32, ${only ? `golden-${only}` : "golden-2..7"}${sabotage ? ", sabotage skip-payload-hash" : ""})`,
 );
 if (sabotage) {
   const caught = failed.some((c) => c.name.includes("resource-hash"));

@@ -96,6 +96,8 @@ const VIEWPORT_KEYS_V6: &[&str] = &[
 const STRETCH_KEYS: &[&str] = &["mode", "aspect", "scale_mode"];
 const SNAP_2D_KEYS: &[&str] = &["transforms", "vertices"];
 const PUBLICATION_KEYS: &[&str] = &["mode", "target_fps"];
+/// render-stream-7.md "Publication": `credit_window` right after `target_fps`.
+const PUBLICATION_KEYS_V7: &[&str] = &["mode", "target_fps", "credit_window"];
 const RESOURCES_KEYS: &[&str] = &[
     "hash",
     "payload",
@@ -872,6 +874,8 @@ pub struct Publication {
     /// "every-frame" or "rate".
     pub mode: &'static str,
     pub target_fps: Option<i64>,
+    /// /7 only (render-stream-7.md "Publication"): the granted credit window, 1 or 2.
+    pub credit_window: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1020,7 +1024,7 @@ fn check_session(
     version: u8,
     blocks: &mut Vec<BlockDesc>,
 ) -> Result<Session, Error> {
-    let v6 = version == 6;
+    let v6 = version >= 6;
     let v5 = version >= 5;
     let skip_declared = version >= 4 && ck.has_key(meta, "unknown_item_policy");
     let base = if v6 {
@@ -1260,14 +1264,30 @@ fn check_session(
     let mut publication = None;
     if v6 {
         let p = (|| {
-            let p = ck.fields(at("publication"), PUBLICATION_KEYS)?;
+            let keys = if version >= 7 {
+                PUBLICATION_KEYS_V7
+            } else {
+                PUBLICATION_KEYS
+            };
+            let p = ck.fields(at("publication"), keys)?;
             let mode = ck.one_of_str(p.at(0), &["every-frame", "rate"])?;
             let target_fps = if ck.null(p.at(1)) {
                 None
             } else {
                 Some(ck.int_ge(p.at(1), 1)?)
             };
-            Some(Publication { mode, target_fps })
+            // The wide shape check (an integer at all) is meta-schema; the 1..2 rule below is
+            // publication-entry (render-stream-7.md "As built (G7w)").
+            let credit_window = if version >= 7 {
+                Some(ck.int_ge(p.at(2), 0)?)
+            } else {
+                None
+            };
+            Some(Publication {
+                mode,
+                target_fps,
+                credit_window,
+            })
         })();
         let Some(p) = p else {
             return Err(ck.schema("\"publication\" has the wrong keys or an invalid field"));
@@ -1283,6 +1303,20 @@ fn check_session(
                 "publication-entry",
                 "\"rate\"'s target_fps must be in 1..240",
             ));
+        }
+        if let Some(w) = p.credit_window {
+            if !(1..=2).contains(&w) {
+                return Err(ck.err(
+                    "publication-entry",
+                    "publication.credit_window must be in 1..2",
+                ));
+            }
+            if w != 1 && stream.transport == "file" {
+                return Err(ck.err(
+                    "publication-entry",
+                    "a \"file\" stream must declare publication.credit_window 1",
+                ));
+            }
         }
         if p.mode == "rate" && stream.transport == "file" {
             return Err(ck.err(
@@ -2230,7 +2264,7 @@ fn check_command(ck: &mut Ck, cmd: Value) -> Result<CmdMeta, Error> {
 /// `checkTransactionSchema`, filling `tx`.
 fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> Result<(), Error> {
     tx.clear();
-    let v6 = version == 6;
+    let v6 = version >= 6;
     let v5 = version >= 5;
     let v4 = version >= 4;
     let base = if v5 {

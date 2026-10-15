@@ -1235,8 +1235,8 @@ impl Validator {
     /// `missing-session`, `root-canvas` and (/6) `viewport-entry`'s host-size rule.
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
-            (2..=6).contains(&opts.version),
-            "render-stream version 2..=6"
+            (2..=7).contains(&opts.version),
+            "render-stream version 2..=7"
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();
@@ -1266,7 +1266,7 @@ impl Validator {
                 ),
             ));
         }
-        if opts.version == 6 {
+        if opts.version >= 6 {
             let v = &session.viewport;
             let visible = [
                 session.host_visible_rect[2] as f64,
@@ -1293,7 +1293,7 @@ impl Validator {
             }
         }
         let snap_declared =
-            opts.version == 6 && session.viewport.snap_2d.is_some_and(|(t, v)| t || v);
+            opts.version >= 6 && session.viewport.snap_2d.is_some_and(|(t, v)| t || v);
         let digest = match opts.digest {
             DigestPolicy::Inline => Some(wire::record_sha256(session_record)),
             DigestPolicy::Deferred => None,
@@ -2257,7 +2257,7 @@ impl Validator {
                 if root {
                     ix.root_count -= 1;
                 }
-                if attached && v == 6 {
+                if attached && v >= 6 {
                     ix.stack_remove(layer);
                 }
             }
@@ -2266,7 +2266,7 @@ impl Validator {
                 if c.root {
                     ix.root_count += 1;
                 }
-                if c.attached && v == 6 {
+                if c.attached && v >= 6 {
                     ix.stack_add(layer);
                 }
                 ix.canvas.insert(id, (c.root, c.attached, layer));
@@ -2959,7 +2959,7 @@ impl Validator {
             (0usize, 0usize, 0usize, 0usize, 0usize);
         let mut declared_stack = false;
         let mut declared_snap = false;
-        let actual_stack = v == 6 && ix.stack_ties > 0;
+        let actual_stack = v >= 6 && ix.stack_ties > 0;
         for e in &tx.unsupported {
             let op = &*e.op;
             let Some(item) = e.item else {
@@ -2973,7 +2973,7 @@ impl Validator {
                         "canvas-light entry names op {op}, expected canvas_light_attach_to_canvas"
                     )));
                 }
-                if v == 6 && e.reason == "extra-canvas" {
+                if v >= 6 && e.reason == "extra-canvas" {
                     return Err(mm(format!(
                         "extra-canvas entry (op {op}) is never valid at /6 (a canvas attached to the root viewport is supported)"
                     )));

@@ -429,7 +429,7 @@ function main(): void {
       );
     for (const l of tail) console.log(l);
     expect(
-      "rs-core-check goldens passes golden-2 ... golden-6",
+      "rs-core-check goldens passes golden-2 ... golden-7",
       run.status === 0,
     );
   }

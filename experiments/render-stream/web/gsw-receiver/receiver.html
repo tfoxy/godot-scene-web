@@ -1,0 +1,31 @@
+<!doctype html>
+<!--
+  The GSW canvas receiver (gate7-design.md Q5, G7a): main.ts over rs-gsw-wasm. Served by the
+  browser harness (scripts/lib/browser-harness.ts) from a bundle directory that holds this page,
+  receiver.js (esbuild, conditions ["development"]) and gsw-rs/ (scripts/build-rs-core.sh). The
+  canvas backing store is sized by the session (presentation size 1:1, D12); its CSS size is set
+  equal to it. Nothing else is drawn on the page.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>render-stream GSW receiver</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="frame" width="640" height="360"></canvas>
+    <script type="module" src="./receiver.js"></script>
+  </body>
+</html>

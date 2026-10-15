@@ -77,6 +77,7 @@ precision highp float;
 precision highp int;
 uniform sampler2D u_texture;
 uniform bool u_premultiply;
+uniform bool u_texel_premultiply;
 in vec2 v_uv;
 in vec4 v_color;
 flat in vec4 v_tint;
@@ -84,7 +85,7 @@ out vec4 fragColor;
 void main() {
   vec4 texel = texture(u_texture, v_uv);
   // A straight texel becomes premultiplied only AFTER filtering: Godot's order.
-  if (u_premultiply) texel.rgb *= texel.a;
+  if (u_texel_premultiply) texel.rgb *= texel.a;
   vec4 color = v_color;
   if (u_premultiply) color.rgb *= color.a;
   fragColor = texel * color * v_tint;
@@ -217,6 +218,7 @@ struct Objects {
     program: glow::Program,
     u_projection: Option<glow::UniformLocation>,
     u_premultiply: Option<glow::UniformLocation>,
+    u_texel_premultiply: Option<glow::UniformLocation>,
     present_program: glow::Program,
     present_vertex_array: glow::VertexArray,
     vertex_array: glow::VertexArray,
@@ -283,6 +285,7 @@ impl Objects {
             gl.use_program(Some(program));
             let u_projection = gl.get_uniform_location(program, "u_projection");
             let u_premultiply = gl.get_uniform_location(program, "u_premultiply");
+            let u_texel_premultiply = gl.get_uniform_location(program, "u_texel_premultiply");
             gl.uniform_1_i32(
                 gl.get_uniform_location(program, "u_texture").as_ref(),
                 UNIT_DRAW as i32,
@@ -386,6 +389,7 @@ impl Objects {
                 program,
                 u_projection,
                 u_premultiply,
+                u_texel_premultiply,
                 present_program,
                 present_vertex_array,
                 vertex_array,
@@ -750,8 +754,22 @@ impl CanvasItemsExecutor {
                     };
                     self.bind_draw_texture(texture, stats);
                     let start = offset as usize;
-                    let bytes =
+                    let straight =
                         &list.texture_bytes[start..start + 4 * width as usize * height as usize];
+                    let premultiplied: Vec<u8>;
+                    let bytes = if self.options.sabotage == Some(Sabotage::PremultipliedUpload) {
+                        premultiplied = straight
+                            .chunks_exact(4)
+                            .flat_map(|p| {
+                                let a = u32::from(p[3]);
+                                let m = |c: u8| ((u32::from(c) * a + 127) / 255) as u8;
+                                [m(p[0]), m(p[1]), m(p[2]), p[3]]
+                            })
+                            .collect();
+                        &premultiplied[..]
+                    } else {
+                        straight
+                    };
                     unsafe {
                         self.gl.c().tex_image_2d(
                             glow::TEXTURE_2D,
@@ -999,6 +1017,7 @@ impl CanvasItemsExecutor {
         let Some(target) = objects.target.as_ref() else {
             return;
         };
+        let sabotage = self.options.sabotage;
         let gl = &self.gl;
         let cache = &mut self.cache;
         let (width, height) = (target.width, target.height);
@@ -1065,9 +1084,14 @@ impl CanvasItemsExecutor {
             set_blend(gl, cache, blend, stats);
             let premultiply = blend != Blend::PremulAlpha;
             if cache.premultiply != Some(premultiply) {
+                // Textures stored premultiplied (the premultiplied-upload sabotage) are sampled
+                // as premultiplied: only the vertex colour is premultiplied in the shader.
+                let texel = premultiply && sabotage != Some(Sabotage::PremultipliedUpload);
                 unsafe {
                     gl.c()
-                        .uniform_1_i32(objects.u_premultiply.as_ref(), premultiply as i32)
+                        .uniform_1_i32(objects.u_premultiply.as_ref(), premultiply as i32);
+                    gl.c()
+                        .uniform_1_i32(objects.u_texel_premultiply.as_ref(), texel as i32);
                 };
                 cache.premultiply = Some(premultiply);
             }

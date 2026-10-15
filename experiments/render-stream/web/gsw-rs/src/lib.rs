@@ -22,11 +22,14 @@ use godot_scene_web_rust_prototype::canvas_items::{
 };
 use gsw_canvas_draw_list::Format;
 use render_stream_core::apply::geom;
-use render_stream_core::apply::payloads::{needed, PayloadStore};
-use render_stream_core::apply::{Applier, Viewport};
-use render_stream_core::state::Hash;
+use render_stream_core::apply::payloads::PayloadStore;
+use render_stream_core::apply::residency::TextureAccount;
+use render_stream_core::apply::{Applier, ApplySabotage, Viewport};
+use render_stream_core::canon;
+use render_stream_core::state::{Hash, Id};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, RecordSpan};
+use std::collections::HashSet;
 use wasm_bindgen::prelude::*;
 
 pub const ACCEPT_TRANSACTION: i32 = 0;
@@ -71,7 +74,24 @@ struct Opts {
     digest_skip: bool,
     format_rgba8: bool,
     exec: ExecOptions,
+    apply: ApplySabotage,
+    /// Native `ignore-presentation`: the session's stretch is not adopted (identity transform at
+    /// the presentation size).
+    ignore_presentation: bool,
 }
+
+/// `RS_RECEIVER_SABOTAGE` values the TypeScript shell, not this module, acts on, or that have no
+/// effect on a file-mode GSW receiver (gate7-design.md Q5; each is typed in the leg's evidence).
+const SHELL_SABOTAGES: &[&str] = &[
+    "css-opacity",
+    "ack-on-receipt",
+    "ack-while-hidden",
+    "leak-gl-textures",
+    "no-evict",
+    "stale-param",
+    "ignore-cache",
+    "wrong-http-token",
+];
 
 fn parse_options(json: &str) -> Result<Opts, String> {
     // A flat, caller-written object: {"digest":"inline"|"deferred","sabotage":[...],"format":...}.
@@ -91,6 +111,16 @@ fn parse_options(json: &str) -> Result<Opts, String> {
             match name {
                 "skip-payload-hash" => o.skip_payload_hash = true,
                 "digest-skip" => o.digest_skip = true,
+                "ignore-clip" => o.apply.ignore_clip = true,
+                "clip-before-clear" => o.apply.clip_before_clear = true,
+                "reupload" => o.apply.reupload = true,
+                "stale-texture" => o.apply.stale_texture = true,
+                "ignore-material" => o.apply.ignore_material = true,
+                "ignore-canvas-modulate" => o.apply.ignore_canvas_modulate = true,
+                "ignore-canvas-stacking" => o.apply.ignore_canvas_stacking = true,
+                "ignore-z" => o.apply.ignore_z = true,
+                "ignore-presentation" => o.ignore_presentation = true,
+                shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
                     if let Some(s) = Sabotage::parse(other)? {
                         o.exec.sabotage = Some(s);
@@ -210,6 +240,74 @@ pub struct GswRs {
     totals: Totals,
     shot_buf: Vec<u8>,
     error: String,
+    /// Kind per needed hash (0 texture GRT1, 1 mesh GRM1, 2 shader GRP1), parallel to `needed`.
+    needed_kinds: Vec<u8>,
+    /// The accepted-record index of the last accepted transaction (its digest slot).
+    last_tx_record: usize,
+    /// applied.json evidence, accumulated per applied transaction and serialized off the frame
+    /// path (`applied_json_parts`).
+    evidence: Vec<TxEvidence>,
+    unsupported_out: Vec<UnsupportedOut>,
+    prev_unsupported: HashSet<(Box<str>, Option<Id>, &'static str)>,
+    /// Receiver-typed reasons already reported (each once, at its first transaction).
+    typed_seen: HashSet<&'static str>,
+}
+
+/// The receiver-typed `unsupported` reason of a GSW shortcut (gate7-design.md Q5, Q7, D22), or
+/// `None` for one the wire already types (an unsupported op, texture, mesh or material, a tie) or
+/// whose pixels Q7 already classes `undecided` (`slice-mipmaps-level0`: a mipmapped texture drawn
+/// minified samples level 0; G7a measured max delta 1 against gate 2's reference, inside its mask).
+pub fn typed_reason(shortcut: &str) -> Option<&'static str> {
+    Some(match shortcut {
+        "slice-shader-builtin" => "gsw-shader-builtin",
+        "slice-msdf-as-plain" => "gsw-msdf",
+        "slice-hairline-as-quads" => "gsw-hairline",
+        "slice-aa-feather-omitted" => "gsw-aa-feather",
+        "slice-ninepatch-tile-as-stretch" => "gsw-nine-patch-tile",
+        "slice-mesh-primitive-skipped" => "gsw-mesh-primitive",
+        "texture-not-resident-skipped" => "gsw-texture-not-resident",
+        _ => return None,
+    })
+}
+
+/// One applied transaction's applied.json facts (the TypeScript shell adds the fetch fields).
+struct TxEvidence {
+    seq: i64,
+    frame: i64,
+    encoding: &'static str,
+    record: usize,
+    created: u32,
+    freed: u32,
+    commands_replayed: u32,
+    msdf_commands: u32,
+    mesh_commands: u32,
+    canvases_created: u32,
+    tex: TextureAccount,
+}
+
+/// An `unsupported[]` entry: emitted when its (op, item, reason) was not in the previous applied
+/// transaction's set (`receiver.gd` `_note_applied`).
+struct UnsupportedOut {
+    seq: i64,
+    item: Option<Id>,
+    name: Box<str>,
+    reason: &'static str,
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn fail(e: impl std::fmt::Display) -> String {
@@ -243,6 +341,12 @@ impl GswRs {
             totals: Totals::default(),
             shot_buf: Vec::new(),
             error: String::new(),
+            needed_kinds: Vec::new(),
+            last_tx_record: 0,
+            evidence: Vec::new(),
+            unsupported_out: Vec::new(),
+            prev_unsupported: HashSet::new(),
+            typed_seen: HashSet::new(),
         })
     }
 
@@ -257,7 +361,7 @@ impl GswRs {
     pub fn load(&mut self, len: usize) -> i32 {
         self.data.truncate(len);
         let Some(version) = wire::version_of_magic(&self.data) else {
-            self.error = "bad-magic: not a render-stream/2..6 recording".into();
+            self.error = "bad-magic: not a render-stream/2..7 recording".into();
             return -1;
         };
         self.version = version;
@@ -284,6 +388,10 @@ impl GswRs {
         self.first_tx = true;
         self.totals = Totals::default();
         self.stats = Stats::default();
+        self.evidence.clear();
+        self.unsupported_out.clear();
+        self.prev_unsupported.clear();
+        self.typed_seen.clear();
         0
     }
 
@@ -313,7 +421,7 @@ impl GswRs {
         let s = v.session();
         let vp = &s.viewport;
         let size = vp.presentation_size.unwrap_or(vp.logical_size);
-        let global = if size == vp.logical_size {
+        let global = if size == vp.logical_size || self.opts.ignore_presentation {
             geom::IDENTITY
         } else {
             s.host_final_xform
@@ -338,7 +446,9 @@ impl GswRs {
                 self.opts.exec,
             )?);
         }
-        self.applier = Some(Applier::new(viewport));
+        let mut applier = Applier::new(viewport);
+        applier.sabotage = self.opts.apply;
+        self.applier = Some(applier);
         self.validator = Some(v);
         self.accepted.push(0);
         self.stats.accepted_records = 1;
@@ -377,24 +487,39 @@ impl GswRs {
             }
             Accepted::End => ACCEPT_END,
             Accepted::Transaction => {
+                self.last_tx_record = self.accepted.len() - 1;
                 let st = v.state();
                 self.stats.seq = st.seq as u32;
                 self.stats.frame = st.frame as u32;
-                needed(
-                    st,
-                    v.delta(),
-                    self.first_tx,
-                    &self.payloads,
-                    &mut self.needed,
-                );
+                let Some(a) = self.applier.as_mut() else {
+                    self.error = "accept before start".into();
+                    return -1;
+                };
+                a.prepare(st, v.delta());
+                a.needed(st, v.delta(), &self.payloads, &mut self.needed);
                 self.provide_cursor = 0;
                 self.stats.needed = self.needed.len() as u32;
                 if self.needed.is_empty() {
                     ACCEPT_TRANSACTION
                 } else {
                     self.needed_bytes.clear();
+                    self.needed_kinds.clear();
+                    let mesh: HashSet<Hash> = st
+                        .meshes
+                        .values()
+                        .flat_map(|m| m.surfaces.iter().map(|s| s.hash))
+                        .collect();
+                    let shader: HashSet<Hash> =
+                        st.shaders.values().filter_map(|s| s.hash).collect();
                     for h in &self.needed {
                         self.needed_bytes.extend_from_slice(&h.0);
+                        self.needed_kinds.push(if shader.contains(h) {
+                            2
+                        } else if mesh.contains(h) {
+                            1
+                        } else {
+                            0
+                        });
                     }
                     ACCEPT_NEEDS_PAYLOADS
                 }
@@ -408,6 +533,12 @@ impl GswRs {
 
     pub fn needed_ptr(&self) -> *const u8 {
         self.needed_bytes.as_ptr()
+    }
+
+    /// One byte per needed hash: 0 a texture (GRT1, `.grt`), 1 a mesh surface (GRM1, `.grm`),
+    /// 2 shader code (GRP1, `.grp`); the store's file extension.
+    pub fn needed_kinds_ptr(&self) -> *const u8 {
+        self.needed_kinds.as_ptr()
     }
 
     /// Reserve room for the next needed payload; the caller writes it through a view.
@@ -455,7 +586,52 @@ impl GswRs {
             self.error = "apply before start".into();
             return -1;
         };
-        let st = a.apply(v.state(), v.delta(), &self.payloads);
+        let st = a.apply(v.state(), v.delta(), &self.payloads).clone();
+        // applied.json evidence (no serialization here: `applied_json_parts` does it later).
+        let state = v.state();
+        self.evidence.push(TxEvidence {
+            seq: state.seq,
+            frame: state.frame,
+            encoding: state.encoding.as_str(),
+            record: self.last_tx_record,
+            created: st.created,
+            freed: st.freed,
+            commands_replayed: st.commands_replayed,
+            msdf_commands: st.msdf_commands,
+            mesh_commands: st.mesh_commands,
+            canvases_created: st.canvases_created,
+            tex: std::mem::take(&mut a.account),
+        });
+        let mut now = HashSet::with_capacity(state.unsupported.len());
+        for u in &state.unsupported {
+            let key = (u.op.clone(), u.item, u.reason);
+            if !self.prev_unsupported.contains(&key) && !now.contains(&key) {
+                self.unsupported_out.push(UnsupportedOut {
+                    seq: state.seq,
+                    item: u.item,
+                    name: u.op.clone(),
+                    reason: u.reason,
+                });
+            }
+            now.insert(key);
+        }
+        self.prev_unsupported = now;
+        // Receiver-typed refusals: a shortcut that fired for the first time this transaction.
+        for (k, n) in &a.shortcut_totals {
+            if *n == 0 {
+                continue;
+            }
+            if let Some(reason) = typed_reason(k) {
+                if self.typed_seen.insert(reason) {
+                    self.unsupported_out.push(UnsupportedOut {
+                        seq: state.seq,
+                        item: None,
+                        name: (*k).into(),
+                        reason,
+                    });
+                }
+            }
+        }
         self.first_tx = false;
         self.totals.transactions += 1;
         self.totals.structural += u64::from(st.structural);
@@ -590,6 +766,110 @@ impl GswRs {
 
     pub fn error(&self) -> String {
         self.error.clone()
+    }
+
+    /// The session record's meta, as the wire carries it (the shell reads the viewport, stream and
+    /// resources blocks from it once, at start).
+    pub fn session_meta(&self) -> String {
+        let Some(span) = self.spans.first() else {
+            return String::new();
+        };
+        wire::frame(span.bytes(&self.data), span.offset)
+            .map(|f| String::from_utf8_lossy(f.meta).into_owned())
+            .unwrap_or_default()
+    }
+
+    /// The current resolved state as the native receiver dumps it (`state/seq-<n>.json`, Godot's
+    /// float spelling): evidence, called only for the seqs `RS_RECEIVER_STATE_SEQS` names.
+    pub fn state_dump(&self) -> String {
+        let Some(v) = self.validator.as_ref() else {
+            return String::new();
+        };
+        let mut out = Vec::with_capacity(8192);
+        canon::write_state_godot(&mut out, v.state());
+        out.push(b'\n');
+        String::from_utf8(out).unwrap_or_default()
+    }
+
+    /// The canonical resolved state (`self-test-rs-core.ts`'s form) of the current transaction.
+    pub fn state_canonical(&self) -> String {
+        self.validator
+            .as_ref()
+            .map(|v| canon::transaction_json(v.state()))
+            .unwrap_or_default()
+    }
+
+    /// applied.json's receiver-side parts (off the frame path, after `digest()`): every applied
+    /// transaction (`seq`, `frame`, `encoding`, `record_sha256`, `created`, `freed`, the command
+    /// counts and the texture accounting of `resources`), `uploads[]` and `unsupported[]`, in the
+    /// native receiver's shapes. The shell adds its own fields (fetches, timings, frames).
+    pub fn applied_json_parts(&self) -> String {
+        let digests = self.validator.as_ref().map(|v| v.record_digests());
+        let mut out = String::from("{\"transactions\":[");
+        for (i, e) in self.evidence.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let sha = digests
+                .and_then(|d| d.get(e.record).copied().flatten())
+                .map(|h| format!("\"{}\"", h.to_hex()))
+                .unwrap_or_else(|| "null".into());
+            out.push_str(&format!(
+                "{{\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{}}}}}",
+                e.seq,
+                e.frame,
+                e.encoding,
+                sha,
+                e.created,
+                e.freed,
+                e.commands_replayed,
+                e.msdf_commands,
+                e.mesh_commands,
+                e.tex.created,
+                e.tex.updated,
+                e.tex.replaced,
+                e.tex.freed,
+                e.tex.upload_bytes,
+                e.canvases_created
+            ));
+        }
+        out.push_str("],\"uploads\":[");
+        let mut first = true;
+        for e in &self.evidence {
+            for u in &e.tex.uploads {
+                if !first {
+                    out.push(',');
+                }
+                first = false;
+                out.push_str(&format!(
+                    "{{\"id\":{},\"hash\":{},\"op\":\"{}\",\"data_bytes\":{},\"stream\":1,\"seq\":{}}}",
+                    u.id,
+                    u.hash
+                        .map(|h| format!("\"{}\"", h.to_hex()))
+                        .unwrap_or_else(|| "null".into()),
+                    u.op,
+                    u.data_bytes,
+                    e.seq
+                ));
+            }
+        }
+        out.push_str("],\"unsupported\":[");
+        for (i, u) in self.unsupported_out.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"seq\":{},\"item\":{},\"name\":{},\"reason\":{}}}",
+                u.seq,
+                u.item
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "null".into()),
+                json_str(&u.name),
+                json_str(u.reason)
+            ));
+        }
+        out.push_str("]}");
+        out
     }
 
     /// The run's evidence (off the frame path): totals, the typed shortcuts, the wire's unsupported

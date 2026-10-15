@@ -5,13 +5,14 @@
 //
 //   gate7-bench.ts --arm native --inputs <inputs.json> --out <dir> --binary <template> \
 //       --receiver-dir <receiver/>                                   # desktop native, headless
-//   gate7-bench.ts --arm gsw --inputs <inputs.json> --out <dir>      # desktop Chromium (D9)
-//   gate7-bench.ts --arm gsw --env device --device g31 --inputs <inputs.json> --out <dir> [--probes]
+//   gate7-bench.ts --arm gsw-ts --inputs <inputs.json> --out <dir>      # desktop Chromium (D9)
+//   gate7-bench.ts --arm gsw-ts --env device --device g31 --inputs <inputs.json> --out <dir> [--probes]
 //   gate7-bench.ts --arm web --inputs <inputs.json> --out <dir>        # desktop Chromium, web export
 //   gate7-bench.ts --arm web --env device --device g31 --inputs <inputs.json> --out <dir>
 //   gate7-bench.ts --arm gsw-rs|gsw-rs-inline [--rs-build <dir>] ...  # G7x: rs-gsw-wasm (Q14c)
 //   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
-// `gsw-ts` is the TypeScript arm (G7x renamed it); `gsw` stays its alias until G7a.
+// `gsw-ts` is the TypeScript arm (G7x renamed it; G7a retired its `gsw` alias: since G7a the GSW
+// receiver is the Rust core, so `gsw` alone no longer names this arm).
 //
 // Every arm replays each input of inputs.json (render-stream-gate7-bench-inputs/1) once as a warmup
 // and then `--repeats` (5) times, one record per frame:
@@ -106,7 +107,7 @@ export interface BenchInput {
 }
 
 interface Args {
-  arm: "native" | "gsw" | "gsw-ts" | "gsw-rs" | "gsw-rs-inline" | "web";
+  arm: "native" | "gsw-ts" | "gsw-rs" | "gsw-rs-inline" | "web";
   /** G7x: the arms of the interleaved rounds (empty: the single `arm`). */
   interleave: Arm7x[];
   rounds: number;
@@ -136,7 +137,7 @@ interface Args {
 
 function parseArgs(argv: string[]): Args {
   const a: Args = {
-    arm: "gsw",
+    arm: "gsw-ts",
     interleave: [],
     rounds: 5,
     rsBuild: join(
@@ -180,14 +181,13 @@ function parseArgs(argv: string[]): Args {
         const arm = v();
         if (
           arm !== "native" &&
-          arm !== "gsw" &&
           arm !== "gsw-ts" &&
           arm !== "gsw-rs" &&
           arm !== "gsw-rs-inline" &&
           arm !== "web"
         )
           throw new HarnessUsageError(
-            `--arm must be native, gsw-ts (alias gsw), gsw-rs, gsw-rs-inline or web (got ${arm})`,
+            `--arm must be native, gsw-ts, gsw-rs, gsw-rs-inline or web (got ${arm}; G7a retired the gsw alias)`,
           );
         a.arm = arm;
         break;
@@ -297,8 +297,8 @@ export function benchLegName(
   input: string,
   device: string | null,
 ): string {
-  // G7x renamed the TypeScript arm gsw-ts; `gsw` is its alias and keeps G7d's leg names.
-  const arm = armIn === "gsw-ts" ? "gsw" : armIn;
+  // G7a: the TypeScript arm's legs are named `-gsw-ts` (G7d's `-gsw` names retired with the alias).
+  const arm = armIn;
   if (arm === "native") return `native-bench-${input}`;
   return env === "device"
     ? `dev-bench-${input}-${arm}-${device}`
@@ -538,9 +538,7 @@ async function runRustProtocol(
   envLabel: string,
 ): Promise<void> {
   const arms: Arm7x[] =
-    args.interleave.length > 0
-      ? args.interleave
-      : [args.arm === "gsw" ? "gsw-ts" : (args.arm as Arm7x)];
+    args.interleave.length > 0 ? args.interleave : [args.arm as Arm7x];
   const plan =
     args.interleave.length > 0
       ? planInterleaved(
@@ -885,7 +883,7 @@ async function runGswArm(
     for (const input of usesRustArm(args) || args.interleave.length > 0
       ? []
       : inputs) {
-      const leg = benchLegName("gsw", sel.env, input.name, sel.id);
+      const leg = benchLegName("gsw-ts", sel.env, input.name, sel.id);
       const legDir = join(args.out, leg);
       let summary: BenchInputSummary | null = null;
       const attempts: BenchInputSummary[] = [];
