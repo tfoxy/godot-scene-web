@@ -6,7 +6,8 @@
 #     [--env desktop|device] [--device g31|g86] [--receiver native|gsw|web] \
 #     [--bench-inputs <inputs.json>] [--repeats N] [--hold-seconds S] [--plan-only] \
 #     [--extension X.gdextension] [--calibration record.json] [--binary template] \
-#     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest]
+#     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest] \
+#     [--bundle /abs/web-receiver/<sha>/bundle]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -39,8 +40,18 @@
 # G7h's browser-harness self-test (scripts/test/self-test-browser-harness.ts) runs first into
 # <out>/g7h-probes/ unless --plan-only, --env device or --skip-harness-selftest.
 #
-# `--source <gate>=<dir>` / `--make-sources` (D21) are recorded in <out>/sources.json; no landed
-# group needs a source yet.
+# Group landed (G7e):
+#   g7-0      gate 0's receiver legs in the web export (the gsw half is G7a's). Sources (D21):
+#             `--source gate0=<dir>` names a native gate 0 run, or `--make-sources` makes one by
+#             running run-gate0.sh (with --extension/--calibration) into <out>/sources-made/gate0/
+#             and records the build's provenance there (gate7-source.json: git commit, the build
+#             paths' dirty digest, capture library and template sha256); check-gate7.ts's
+#             source-run-valid refuses a source from another build or one whose native receiver
+#             legs did not pass. build-web-receiver.sh (or `--bundle`, an existing build) exports
+#             the web receiver; gate7-tool.ts web-legs replays every gate 0 receiver leg, the
+#             css-opacity sabotage and the render-time probe through lib/browser-harness.ts into
+#             <out>/gate0/web/<leg>/; check-gate7.ts judges them with gate 0's own checker
+#             (lib/gate7-adapters.ts). Sources are recorded in <out>/sources.json.
 #
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
@@ -59,7 +70,7 @@ RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
 KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
-LANDED_GROUPS=(g7-dev g7-bench)
+LANDED_GROUPS=(g7-0 g7-dev g7-bench)
 
 OUT=""
 LEGS_ARG=""
@@ -73,6 +84,7 @@ REPEATS=5
 HOLD_SECONDS=30
 PLAN_ONLY=0
 SKIP_HARNESS_SELFTEST=0
+BUNDLE=""
 EXTENSION="$EXPERIMENT_DIR/capture/build/render_stream_capture.gdextension"
 CALIBRATION="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
@@ -134,6 +146,10 @@ while [ $# -gt 0 ]; do
 	--skip-harness-selftest)
 		SKIP_HARNESS_SELFTEST=1
 		shift
+		;;
+	--bundle)
+		BUNDLE="${2:-}"
+		shift 2
 		;;
 	--extension)
 		EXTENSION="${2:-}"
@@ -221,10 +237,14 @@ mkdir -p "$OUT"
 OUT="$(realpath "$OUT")"
 echo "run-gate7: evidence directory: $OUT (groups: ${GROUPS_RUN[*]:-none}; env: $HARNESS_ENV${DEVICE:+ device $DEVICE})"
 
-{
-	printf '{"source": "%s", "make_sources": %s, "note": "D21 source-run validation is not implemented yet -- no landed leg group needs one"}\n' \
-		"$SOURCE_ARG" "$([ "$MAKE_SOURCES" = 1 ] && echo true || echo false)"
-} >"$OUT/sources.json"
+# D21 sources (G7e): --source gate0=<dir>, or --make-sources below.
+declare -A SOURCES=()
+if [ -n "$SOURCE_ARG" ]; then
+	IFS=',' read -r -a pairs <<<"$SOURCE_ARG"
+	for pair in "${pairs[@]}"; do
+		SOURCES["${pair%%=*}"]="$(realpath "${pair#*=}")"
+	done
+fi
 printf '{"env": "%s", "device": %s, "receiver": %s, "groups": "%s", "plan_only": %s}\n' "$HARNESS_ENV" \
 	"$([ -n "$DEVICE" ] && echo "\"$DEVICE\"" || echo null)" "$([ -n "$RECEIVER" ] && echo "\"$RECEIVER\"" || echo null)" \
 	"${GROUPS_RUN[*]:-}" "$([ "$PLAN_ONLY" = 1 ] && echo true || echo false)" >"$OUT/run.json"
@@ -248,6 +268,49 @@ if [ "$PLAN_ONLY" = "1" ]; then
 	echo "run-gate7: --plan-only: plans written, nothing launched"
 	exit 0
 fi
+
+g7tool() {
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-tool.ts" "$@")
+}
+
+# --- g7-0 (G7e): the gate 0 source run, before anything else touches the machine. -----------
+CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG")
+if has_group g7-0; then
+	if [ "$HARNESS_ENV" != "desktop" ]; then
+		echo "run-gate7: g7-0 runs on the desktop only (drop --env device)" >&2
+		exit 2
+	fi
+	if [ ! -f "$EXTENSION" ]; then
+		echo "run-gate7: g7-0 needs the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
+		exit 1
+	fi
+	EXTENSION="$(realpath "$EXTENSION")"
+	if [ -z "${SOURCES[gate0]:-}" ]; then
+		if [ "$MAKE_SOURCES" = 0 ]; then
+			echo "run-gate7: g7-0 needs --source gate0=<run dir> or --make-sources" >&2
+			exit 2
+		fi
+		echo "run-gate7: making the gate 0 source run (run-gate0.sh)" >&2
+		set +e
+		bash "$SCRIPT_DIR/run-gate0.sh" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
+			--out "$OUT/sources-made/gate0"
+		gate0_exit=$?
+		set -e
+		echo "run-gate7: run-gate0.sh exit=$gate0_exit (source-run-valid judges it)" >&2
+		SOURCES[gate0]="$OUT/sources-made/gate0"
+		g7tool source-provenance --extension "$EXTENSION" --out "${SOURCES[gate0]}/gate7-source.json"
+	fi
+fi
+{
+	printf '{"sources": {'
+	first=1
+	for key in "${!SOURCES[@]}"; do
+		[ "$first" = 1 ] || printf ', '
+		first=0
+		printf '"%s": "%s"' "$key" "${SOURCES[$key]}"
+	done
+	printf '}, "make_sources": %s, "bundle": "%s"}\n' "$([ "$MAKE_SOURCES" = 1 ] && echo true || echo false)" "$BUNDLE"
+} >"$OUT/sources.json"
 
 # --- G7h's browser-harness self-test (desktop Chromium). ------------------------------------
 if [ "$HARNESS_ENV" = "desktop" ] && [ "$SKIP_HARNESS_SELFTEST" = "0" ]; then
@@ -412,6 +475,15 @@ run_g7_bench() {
 	fi
 }
 
+if has_group g7-0; then
+	if [ -z "$BUNDLE" ]; then
+		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
+	fi
+	BUNDLE="$(realpath "$BUNDLE")"
+	echo "run-gate7: g7-0 web legs (bundle $BUNDLE)" >&2
+	g7tool web-legs --group g7-0 --source "${SOURCES[gate0]}" --bundle "$BUNDLE" --out "$OUT"
+	CHECK_ARGS+=(--source "gate0=${SOURCES[gate0]}" --bundle "$BUNDLE" --extension "$EXTENSION")
+fi
 if has_group g7-dev; then
 	if [ "$HARNESS_ENV" = "desktop" ]; then run_g7_dev_desktop; else run_g7_dev_device; fi
 fi
@@ -421,4 +493,4 @@ fi
 
 echo "run-gate7: running check-gate7.ts" >&2
 (cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
-	"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG")
+	"$SCRIPT_DIR/check-gate7.ts" "${CHECK_ARGS[@]}")

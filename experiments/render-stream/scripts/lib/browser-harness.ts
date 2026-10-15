@@ -25,6 +25,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  statSync,
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import {
@@ -346,6 +347,13 @@ export interface HarnessServerOptions {
    * Chrome's 100 µs (the bench times phases of tens of microseconds). `http://127.0.0.1` is a
    * secure context, on the phone too (adb reverse keeps the origin byte-identical). */
   crossOriginIsolated?: boolean;
+  /** G7e: per-nonce evidence directories. A nonce listed here writes into its own directory
+   * (a leg's directory, D10) instead of `<evidenceRoot>/<nonce>`; the same `..` guard applies. */
+  evidenceDirs?: Readonly<Record<string, string>>;
+  /** G7e: awaited after a PUT's body is written and before it is answered, so the page's next
+   * step (the web-export receiver quits only after its last PUT is answered) waits for it -- the
+   * compositor screenshot of `compositor-equals-readback` is taken here. */
+  onPut?: (nonce: string, relativePath: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -502,7 +510,26 @@ export class HarnessServer {
     { body: Buffer; contentType: string }
   >();
 
-  constructor(private readonly options: HarnessServerOptions) {}
+  private readonly nonces: Set<string>;
+  private readonly evidenceDirs: Map<string, string>;
+
+  constructor(private readonly options: HarnessServerOptions) {
+    this.nonces = new Set(options.allowedLegNonces);
+    this.evidenceDirs = new Map(Object.entries(options.evidenceDirs ?? {}));
+  }
+
+  /** G7e: admits one more leg nonce (optionally with its own evidence directory) on a running
+   * server, so one server can serve a run's legs one after another. */
+  addLeg(nonce: string, evidenceDir?: string): void {
+    this.nonces.add(nonce);
+    if (evidenceDir) this.evidenceDirs.set(nonce, evidenceDir);
+  }
+
+  /** G7e: retires a leg nonce; later PUTs under it are 403 like any unknown nonce. */
+  removeLeg(nonce: string): void {
+    this.nonces.delete(nonce);
+    this.evidenceDirs.delete(nonce);
+  }
 
   /** `resource` role only: registers a GET body served at `path` with `Cache-Control: private,
    * max-age=31536000, immutable` and a stable `ETag` (the same policy `capture/src/rs_ws.cpp`
@@ -672,6 +699,22 @@ export class HarnessServer {
       res.end("not found");
       return;
     }
+    if (statSync(target).isDirectory()) {
+      // G7e: `GET <dir>/?list` answers the directory's files, recursively, as a JSON array of
+      // paths relative to it (sorted) -- how the web-export receiver learns a store's contents.
+      if (!url.searchParams.has("list")) {
+        res.writeHead(403);
+        res.end("directory");
+        return;
+      }
+      const body = Buffer.from(JSON.stringify(listFiles(target)));
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": String(body.length),
+      });
+      res.end(body);
+      return;
+    }
     const isolation: Record<string, string> = this.options.crossOriginIsolated
       ? {
           "Cross-Origin-Opener-Policy": "same-origin",
@@ -701,16 +744,14 @@ export class HarnessServer {
     const parts = url.pathname.split("/").filter(Boolean); // ["evidence", "<nonce>", ...rest]
     const nonce = parts[1];
     const restParts = parts.slice(2);
-    if (
-      !nonce ||
-      !this.options.allowedLegNonces.includes(nonce) ||
-      restParts.length === 0
-    ) {
+    if (!nonce || !this.nonces.has(nonce) || restParts.length === 0) {
       res.writeHead(403, { "Content-Type": "text/plain" });
       res.end("rejected: unknown leg nonce");
       return;
     }
-    const legRoot = normalize(join(this.options.evidenceRoot, nonce));
+    const legRoot = normalize(
+      this.evidenceDirs.get(nonce) ?? join(this.options.evidenceRoot, nonce),
+    );
     const target = normalize(join(legRoot, ...restParts));
     if (!target.startsWith(`${legRoot}/`) && target !== legRoot) {
       res.writeHead(403, { "Content-Type": "text/plain" });
@@ -722,6 +763,9 @@ export class HarnessServer {
     const body = Buffer.concat(chunks);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, body);
+    if (this.options.onPut) {
+      await this.options.onPut(nonce, target.slice(legRoot.length + 1));
+    }
     res.writeHead(200);
     res.end("ok");
   }
@@ -745,6 +789,22 @@ function startTicker(ws: ServerWebSocket, hz: number): void {
     setTimeout(tick, Math.max(0, t0 + k * periodMs - performance.now()));
   };
   setTimeout(tick, periodMs);
+}
+
+/** Every file under `root`, recursively, as sorted `/`-joined paths relative to it. */
+function listFiles(root: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(join(root, prefix), {
+    withFileTypes: true,
+  })) {
+    const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    const isDir =
+      entry.isDirectory() ||
+      (entry.isSymbolicLink() && statSync(join(root, rel)).isDirectory());
+    if (isDir) out.push(...listFiles(root, rel));
+    else out.push(rel);
+  }
+  return out.sort();
 }
 
 function contentTypeFor(path: string): string {

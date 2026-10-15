@@ -652,8 +652,15 @@ export interface AppliedResources {
   skipped_commands?: number;
 }
 
-/** The applied.json schema the receiver writes since G2b2. */
-export const APPLIED_SCHEMA = "render-stream-receiver-applied/6";
+/** The applied.json schema the receivers write: /7 since G7e (gate7-design.md Q5: /6's shape
+ * plus the top-level `receiver` block). */
+export const APPLIED_SCHEMA = "render-stream-receiver-applied/7";
+/** The applied.json schemas every checker accepts (gate7-design.md Q5: /6 and /7, so evidence
+ * written before G7e and fixtures still on /6 keep checking). */
+export const APPLIED_SCHEMAS: readonly string[] = [
+  "render-stream-receiver-applied/6",
+  APPLIED_SCHEMA,
+];
 
 export interface StepLine {
   step: number;
@@ -1934,9 +1941,9 @@ export function checkReceiverConsumedStream(
   if (!applied) {
     problems.push("applied.json missing or unparseable");
   } else {
-    if (applied.schema !== APPLIED_SCHEMA)
+    if (!APPLIED_SCHEMAS.includes(applied.schema ?? ""))
       problems.push(
-        `schema=${JSON.stringify(applied.schema)}, expected ${APPLIED_SCHEMA}`,
+        `schema=${JSON.stringify(applied.schema)}, expected one of ${APPLIED_SCHEMAS.join(", ")}`,
       );
     if (applied.status !== "ok")
       problems.push(`status=${JSON.stringify(applied.status)}`);

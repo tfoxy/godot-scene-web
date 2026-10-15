@@ -174,6 +174,10 @@ func render_time(viewport_rid: RID, headless: bool, gpu: bool) -> Dictionary:
 		return {"status": "skipped-headless", "value": null}
 	var ms: float = (RenderingServer.viewport_get_measured_render_time_gpu(viewport_rid) if gpu
 		else RenderingServer.viewport_get_measured_render_time_cpu(viewport_rid))
+	# G7e (gate7-design.md Q4 "rs_perf.gd on the web"): WebGL 2 reports whatever the engine
+	# measures there; a nonzero value is `measured`, zero is `unavailable`, never a guessed 0 ms.
+	if RsConfig.is_web() and ms <= 0.0:
+		return {"status": "unavailable", "value": null}
 	return {"status": "measured", "value": ms}
 
 
@@ -210,7 +214,9 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 		"t_us": Time.get_ticks_usec(),
 		# G6c: frames drawn so far (D9's receiver frame rate counts frame_post_draw).
 		"frames": Engine.get_frames_drawn(),
-		"rss_bytes": read_rss_bytes(),
+		# G7e: /proc is absent on the web (gate7-design.md Q1a "Files"), so RSS is null there and
+		# D16 measures the browser's processes from outside instead.
+		"rss_bytes": null if RsConfig.is_web() else read_rss_bytes(),
 		"texture_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED),
 		"buffer_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED),
 		"video_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED),

@@ -173,6 +173,17 @@ extends Node
 ## and canvas_stacking_sets; `unsupported` gains the receiver's own typed session entries
 ## (presentation-mismatch, oversampling-mismatch, stretch-mode: seq null, item null, name
 ## "viewport"); state dumps of a /6 stream carry each canvas's `layer` and `sublayer`.
+## render-stream-receiver-applied/7 since G7e (gate7-design.md Q5): /6's shape plus a top-level
+## `receiver` block {kind: native | web-export, build_sha256 (RS_RECEIVER_BUILD_SHA256, else
+## null), manifest_sha256 (RS_RECEIVER_MANIFEST_SHA256, else null), protocol, credit_window (1 in
+## live mode, null in file mode)}. On a web export `cache` is {dir: null, mode: "http-cache"}: the
+## browser's HTTP cache stands in for RS_RECEIVER_CACHE_DIR, which is native only (Q4), and a
+## disk budget there is typed `cache-budget-unsupported` (seq null, item null, name "cache").
+##
+## Configuration and I/O (G7e, gate7-design.md Q4): every RS_RECEIVER_* value is read through
+## RsConfig.get_env() (the environment, else `--rs-env=NAME=VALUE` after `--`), and RsIo carries
+## the web export's sources (fetched into memory before the session is applied) and sinks (PUT to
+## RS_RECEIVER_EVIDENCE_URL before the exit). Natively both are what they always were.
 ##
 ## Stretch (G6b, Q5): at the session, before any item exists, a `canvas_items` session makes the
 ## receiver's root window adopt the session's stretch (content_scale_mode, _aspect, _stretch,
@@ -186,7 +197,7 @@ extends Node
 ## whatever the session says and skips (3), so it presents the top-left of the logical frame at
 ## scale 1 (it exists only to fail pixel checks).
 
-const SCHEMA: String = "render-stream-receiver-applied/6"
+const SCHEMA: String = "render-stream-receiver-applied/7"
 const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
@@ -268,6 +279,8 @@ var _fetcher: RsResourceFetcher = null
 var _pending_apply: Dictionary = {}
 var _delivery: String = ""
 var _sabotage: String = ""
+## G7e: the web export's sources and sinks (no-ops natively).
+var _io := RsIo.new()
 
 # Live mode.
 var _live: bool = false
@@ -319,7 +332,7 @@ var _awaiting_full: bool = false
 
 func _ready() -> void:
 	set_process(false)
-	var mode: String = OS.get_environment("RS_RECEIVER_MODE").strip_edges()
+	var mode: String = RsConfig.get_env("RS_RECEIVER_MODE").strip_edges()
 	if mode == "live":
 		_ready_live()
 		return
@@ -327,8 +340,8 @@ func _ready() -> void:
 		_log("error: RS_RECEIVER_MODE must be file or live (got %s)" % JSON.stringify(mode))
 		_quit(EXIT_USAGE)
 		return
-	_recording_path = OS.get_environment("RS_RECEIVER_RECORDING")
-	_out_path = OS.get_environment("RS_RECEIVER_OUT")
+	_recording_path = RsConfig.get_env("RS_RECEIVER_RECORDING")
+	_out_path = RsConfig.get_env("RS_RECEIVER_OUT")
 	if _out_path == "" or not _out_path.is_absolute_path():
 		_log("error: RS_RECEIVER_OUT must be an absolute applied.json path (got %s)" % JSON.stringify(_out_path))
 		_quit(EXIT_USAGE)
@@ -347,6 +360,8 @@ func _ready() -> void:
 
 	var display_server: String = _init_report("file")
 	if not _open_cache():
+		return
+	if not await _prepare_sources():
 		return
 	_log("mode file, recording %s, out %s, shot seqs %s, state seqs %s, display %s" % [_recording_path, _out_path, str(_shot_seqs), str(_state_seqs), display_server])
 
@@ -412,6 +427,13 @@ func _init_report(mode: String) -> String:
 	}
 	_report = {
 		"schema": SCHEMA,
+		"receiver": {
+			"kind": "web-export" if RsConfig.is_web() else "native",
+			"build_sha256": _env_or_null("RS_RECEIVER_BUILD_SHA256"),
+			"manifest_sha256": _env_or_null("RS_RECEIVER_MANIFEST_SHA256"),
+			"protocol": "render-stream/6",
+			"credit_window": 1 if mode == "live" else null,
+		},
 		"mode": mode,
 		"recording": null if mode == "live" else {"path": _recording_path, "sha256": null, "bytes": null},
 		"session_id": null,
@@ -445,34 +467,34 @@ func _init_report(mode: String) -> String:
 ## _SABOTAGE. Logs and returns false when one is malformed (a usage error). The store directory
 ## is a file-mode variable.
 func _parse_resource_env(live: bool) -> bool:
-	var cache_dir: String = OS.get_environment("RS_RECEIVER_CACHE_DIR").strip_edges()
+	var cache_dir: String = RsConfig.get_env("RS_RECEIVER_CACHE_DIR").strip_edges()
 	if cache_dir != "" and not cache_dir.is_absolute_path():
 		_log("error: RS_RECEIVER_CACHE_DIR must be absolute (got %s)" % JSON.stringify(cache_dir))
 		return false
-	var cache_mode: String = OS.get_environment("RS_RECEIVER_CACHE_MODE").strip_edges()
+	var cache_mode: String = RsConfig.get_env("RS_RECEIVER_CACHE_MODE").strip_edges()
 	if cache_mode == "":
 		cache_mode = "fresh"
 	if cache_mode != "fresh" and cache_mode != "warm":
 		_log("error: RS_RECEIVER_CACHE_MODE must be fresh or warm (got %s)" % JSON.stringify(cache_mode))
 		return false
-	var store_dir: String = OS.get_environment("RS_RECEIVER_STORE_DIR").strip_edges()
+	var store_dir: String = RsConfig.get_env("RS_RECEIVER_STORE_DIR").strip_edges()
 	if store_dir != "" and (live or not store_dir.is_absolute_path()):
 		_log("error: RS_RECEIVER_STORE_DIR must be an absolute directory, and is file-mode only (got %s)" % JSON.stringify(store_dir))
 		return false
 	_fetch_timeout_ms = _positive_env("RS_RECEIVER_FETCH_TIMEOUT_MS", 10000)
 	if _fetch_timeout_ms < 0:
 		return false
-	var delay_text: String = OS.get_environment("RS_RECEIVER_FETCH_DELAY_MS").strip_edges()
+	var delay_text: String = RsConfig.get_env("RS_RECEIVER_FETCH_DELAY_MS").strip_edges()
 	if delay_text != "":
 		if not delay_text.is_valid_int() or delay_text.to_int() < 0:
 			_log("error: RS_RECEIVER_FETCH_DELAY_MS must be an integer >= 0 (got %s)" % JSON.stringify(delay_text))
 			return false
 		_fetch_delay_ms = delay_text.to_int()
-	var sabotage: String = OS.get_environment("RS_RECEIVER_SABOTAGE").strip_edges()
+	var sabotage: String = RsConfig.get_env("RS_RECEIVER_SABOTAGE").strip_edges()
 	if sabotage != "" and not SABOTAGES.has(sabotage):
 		_log("error: RS_RECEIVER_SABOTAGE must be one of %s (got %s)" % [str(SABOTAGES), JSON.stringify(sabotage)])
 		return false
-	var library_dir: String = OS.get_environment("RS_RECEIVER_SHADER_LIBRARY").strip_edges()
+	var library_dir: String = RsConfig.get_env("RS_RECEIVER_SHADER_LIBRARY").strip_edges()
 	if library_dir != "" and not library_dir.is_absolute_path():
 		_log("error: RS_RECEIVER_SHADER_LIBRARY must be an absolute directory (got %s)" % JSON.stringify(library_dir))
 		return false
@@ -480,7 +502,7 @@ func _parse_resource_env(live: bool) -> bool:
 	# own "no budget" sentinel; 0 is RS_RECEIVER_CACHE_BUDGET_BYTES's literal "unlimited" instead,
 	# so it goes through the shared non-negative parser), so every other gate's receiver -- none of
 	# which sets either variable -- keeps budgets off and its existing behaviour unchanged.
-	var memory_budget_text: String = OS.get_environment("RS_RECEIVER_MEMORY_BUDGET_BYTES").strip_edges()
+	var memory_budget_text: String = RsConfig.get_env("RS_RECEIVER_MEMORY_BUDGET_BYTES").strip_edges()
 	var memory_budget: int = -1
 	if memory_budget_text != "":
 		if not memory_budget_text.is_valid_int() or memory_budget_text.to_int() < 0:
@@ -490,6 +512,16 @@ func _parse_resource_env(live: bool) -> bool:
 	var cache_budget: int = _non_negative_env("RS_RECEIVER_CACHE_BUDGET_BYTES", 0)
 	if cache_budget < 0:
 		return false
+	if RsConfig.is_web():
+		# gate7-design.md Q4: the cache directory is native only; the browser's HTTP cache is the
+		# web export's "disk cache", and it cannot be evicted from, so a disk budget is typed.
+		if cache_dir != "":
+			_log("error: RS_RECEIVER_CACHE_DIR is native only; on the web the cache is the browser's HTTP cache (got %s)" % JSON.stringify(cache_dir))
+			return false
+		cache_mode = "http-cache"
+		if RsConfig.get_env("RS_RECEIVER_CACHE_BUDGET_BYTES").strip_edges() != "":
+			_unsupported.append({"seq": null, "item": null, "name": "cache", "reason": "cache-budget-unsupported"})
+			cache_budget = 0
 	_cache.dir = cache_dir
 	_cache.mode = cache_mode
 	_cache.store_dir = store_dir
@@ -505,7 +537,7 @@ func _parse_resource_env(live: bool) -> bool:
 ## A non-negative integer environment value, or `fallback` when unset; -1 (after logging) when
 ## malformed. Unlike _positive_env, 0 is accepted (RS_RECEIVER_CACHE_BUDGET_BYTES's "unlimited").
 func _non_negative_env(variable: String, fallback: int) -> int:
-	var text: String = OS.get_environment(variable).strip_edges()
+	var text: String = RsConfig.get_env(variable).strip_edges()
 	if text == "":
 		return fallback
 	if not text.is_valid_int() or text.to_int() < 0:
@@ -516,11 +548,11 @@ func _non_negative_env(variable: String, fallback: int) -> int:
 
 ## RS_RECEIVER_PERF_OUT / RS_RECEIVER_LOG (G6r, Q5 "Perf"). Logs and returns false when malformed.
 func _parse_perf_env() -> bool:
-	_perf_out_path = OS.get_environment("RS_RECEIVER_PERF_OUT").strip_edges()
+	_perf_out_path = RsConfig.get_env("RS_RECEIVER_PERF_OUT").strip_edges()
 	if _perf_out_path != "" and not _perf_out_path.is_absolute_path():
 		_log("error: RS_RECEIVER_PERF_OUT must be an absolute path (got %s)" % JSON.stringify(_perf_out_path))
 		return false
-	_log_mode = OS.get_environment("RS_RECEIVER_LOG").strip_edges()
+	_log_mode = RsConfig.get_env("RS_RECEIVER_LOG").strip_edges()
 	if _log_mode == "":
 		_log_mode = "full"
 	if _log_mode != "full" and _log_mode != "summary":
@@ -534,6 +566,10 @@ func _parse_perf_env() -> bool:
 
 ## Opens the cache (after the report exists, so a cache-not-fresh failure is reported).
 func _open_cache() -> bool:
+	if _cache.mode == "http-cache":
+		_cache_report = {"dir": null, "mode": "http-cache", "entries_before": null, "entries_after": null, "bytes_after": null}
+		_report["cache"] = _cache_report
+		return true
 	if _cache.dir == "":
 		return true
 	var error: String = _cache.open(_cache.dir, _cache.mode, _cache.store_dir)
@@ -582,7 +618,7 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 		var hash: String = value
 		if _cache.has_in_memory(hash):
 			continue
-		if _cache.dir == "" and _delivery != "inline":
+		if not _has_cache() and _delivery != "inline":
 			return Rs2Decoder.err("resource-unavailable", "payload %s is needed, and RS_RECEIVER_CACHE_DIR is unset (delivery %s)" % [hash, _delivery])
 		var mesh: bool = mesh_hashes.has(hash)
 		var shader: bool = shader_hashes.has(hash)
@@ -744,7 +780,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	var resources_meta: Dictionary = meta["resources"]
 	_delivery = resources_meta["delivery"]
 	var fetch: String = resources_meta["fetch"]
-	if _delivery != "inline" and _cache.dir == "":
+	if _delivery != "inline" and not _has_cache():
 		_fail(null, "resource-unavailable", "the session's delivery is %s (fetch %s) and RS_RECEIVER_CACHE_DIR is unset" % [_delivery, fetch])
 		return false
 	_fetch_kind = fetch
@@ -914,7 +950,7 @@ func _process(_delta: float) -> void:
 
 ## Parses a CSV of seqs >= 1 from `variable` into `out`. Logs and returns false when malformed.
 func _parse_seqs(variable: String, out: Array[int]) -> bool:
-	var text: String = OS.get_environment(variable).strip_edges()
+	var text: String = RsConfig.get_env(variable).strip_edges()
 	if text == "":
 		return true
 	for part: String in text.split(","):
@@ -1438,17 +1474,17 @@ func _finish() -> void:
 func _ready_live() -> void:
 	_live = true
 	_data_received_bytes = 0
-	_out_path = OS.get_environment("RS_RECEIVER_OUT")
+	_out_path = RsConfig.get_env("RS_RECEIVER_OUT")
 	if _out_path == "" or not _out_path.is_absolute_path():
 		_log("error: RS_RECEIVER_OUT must be an absolute applied.json path (got %s)" % JSON.stringify(_out_path))
 		_quit(EXIT_USAGE)
 		return
 	for variable: String in ["RS_RECEIVER_RECORDING", "RS_RECEIVER_SHOT_SEQS", "RS_RECEIVER_STATE_SEQS"]:
-		if OS.get_environment(variable) != "":
+		if RsConfig.get_env(variable) != "":
 			_log("error: %s is a file-mode variable; live mode uses RS_RECEIVER_URL and RS_RECEIVER_SHOT_WINDOWS" % variable)
 			_quit(EXIT_USAGE)
 			return
-	_url = OS.get_environment("RS_RECEIVER_URL").strip_edges()
+	_url = RsConfig.get_env("RS_RECEIVER_URL").strip_edges()
 	if not (_url.begins_with("ws://127.0.0.1:") or _url.begins_with("ws://[::1]:")):
 		_log("error: RS_RECEIVER_URL must be ws://127.0.0.1:<port>/... or ws://[::1]:<port>/... (loopback only; got %s)" % JSON.stringify(_url))
 		_quit(EXIT_USAGE)
@@ -1458,13 +1494,13 @@ func _ready_live() -> void:
 	if not _parse_windows() or not _parse_g1d_options():
 		_quit(EXIT_USAGE)
 		return
-	var shot_final: String = OS.get_environment("RS_RECEIVER_SHOT_FINAL").strip_edges()
+	var shot_final: String = RsConfig.get_env("RS_RECEIVER_SHOT_FINAL").strip_edges()
 	if shot_final != "" and shot_final != "1":
 		_log("error: RS_RECEIVER_SHOT_FINAL must be 1 or unset (got %s)" % JSON.stringify(shot_final))
 		_quit(EXIT_USAGE)
 		return
 	_shot_final = shot_final == "1"
-	_received_path = OS.get_environment("RS_RECEIVER_RECEIVED_OUT")
+	_received_path = RsConfig.get_env("RS_RECEIVER_RECEIVED_OUT")
 	if _received_path == "":
 		_received_path = _out_path.get_base_dir().path_join("received.rs2")
 	elif not _received_path.is_absolute_path():
@@ -1472,7 +1508,7 @@ func _ready_live() -> void:
 		_quit(EXIT_USAGE)
 		return
 	_received_base = _received_path
-	var token_file: String = OS.get_environment("RS_RECEIVER_TOKEN_FILE").strip_edges()
+	var token_file: String = RsConfig.get_env("RS_RECEIVER_TOKEN_FILE").strip_edges()
 	if token_file != "":
 		if not token_file.is_absolute_path() or not FileAccess.file_exists(token_file):
 			_log("error: RS_RECEIVER_TOKEN_FILE is not an absolute path to an existing file (got %s)" % JSON.stringify(token_file))
@@ -1490,7 +1526,7 @@ func _ready_live() -> void:
 		return
 	_inbound_bytes = inbound
 	_connect_timeout_ms = timeout_ms
-	var stage: String = OS.get_environment("RS_RECEIVER_CREDIT_STAGE").strip_edges()
+	var stage: String = RsConfig.get_env("RS_RECEIVER_CREDIT_STAGE").strip_edges()
 	if stage == "":
 		stage = "submitted"
 	if not RsLiveClient.CREDIT_STAGES.has(stage):
@@ -1505,6 +1541,8 @@ func _ready_live() -> void:
 		return
 	var display_server: String = _init_report("live")
 	if not _open_cache():
+		return
+	if not await _prepare_sources():
 		return
 	if display_server == "headless" and stage == "submitted":
 		# frame_post_draw never fires under --headless (main/main.cpp:4814-4839).
@@ -1559,7 +1597,7 @@ func _ready_live() -> void:
 ## A positive integer environment value, or `fallback` when unset; -1 (after logging) when
 ## malformed.
 func _positive_env(variable: String, fallback: int) -> int:
-	var text: String = OS.get_environment(variable).strip_edges()
+	var text: String = RsConfig.get_env(variable).strip_edges()
 	if text == "":
 		return fallback
 	if not text.is_valid_int() or text.to_int() < 1:
@@ -1570,7 +1608,7 @@ func _positive_env(variable: String, fallback: int) -> int:
 
 ## RS_RECEIVER_SHOT_WINDOWS: CSV of <step>:<from>-<to>, from <= to, each step once.
 func _parse_windows() -> bool:
-	var text: String = OS.get_environment("RS_RECEIVER_SHOT_WINDOWS").strip_edges()
+	var text: String = RsConfig.get_env("RS_RECEIVER_SHOT_WINDOWS").strip_edges()
 	if text == "":
 		return true
 	var steps: Dictionary[int, bool] = {}
@@ -1596,7 +1634,7 @@ func _parse_windows() -> bool:
 ## RS_RECEIVER_STALL (<step>:<ms>), RS_RECEIVER_RECONNECT (<step>) and RS_RECEIVER_RESYNC
 ## (<step>), each optional; every step must have a shot window (gate1-design.md Q5, G1d).
 func _parse_g1d_options() -> bool:
-	var stall: String = OS.get_environment("RS_RECEIVER_STALL").strip_edges()
+	var stall: String = RsConfig.get_env("RS_RECEIVER_STALL").strip_edges()
 	if stall != "":
 		var parts: PackedStringArray = stall.split(":")
 		if parts.size() != 2 or not parts[0].is_valid_int() or not parts[1].is_valid_int() or parts[0].to_int() < 0 or parts[1].to_int() < 1:
@@ -1605,7 +1643,7 @@ func _parse_g1d_options() -> bool:
 		_stall_step = parts[0].to_int()
 		_stall_ms = parts[1].to_int()
 	for variable: String in ["RS_RECEIVER_RECONNECT", "RS_RECEIVER_RESYNC"]:
-		var text: String = OS.get_environment(variable).strip_edges()
+		var text: String = RsConfig.get_env(variable).strip_edges()
 		if text == "":
 			continue
 		if not text.is_valid_int() or text.to_int() < 0:
@@ -1615,7 +1653,7 @@ func _parse_g1d_options() -> bool:
 			_reconnect_step = text.to_int()
 		else:
 			_resync_step = text.to_int()
-	var memory: String = OS.get_environment("RS_RECEIVER_RECONNECT_MEMORY").strip_edges()
+	var memory: String = RsConfig.get_env("RS_RECEIVER_RECONNECT_MEMORY").strip_edges()
 	if memory != "":
 		if memory != "drop" and memory != "keep":
 			_log("error: RS_RECEIVER_RECONNECT_MEMORY must be drop or keep (got %s)" % JSON.stringify(memory))
@@ -2257,10 +2295,49 @@ func _quit(code: int) -> void:
 		_received_file = null
 	if _client != null:
 		_client.close(1000, "receiver exit")
+	# G7e: natively the applier is disposed and the process quits at once, as before; on the web
+	# RsIo uploads the evidence first (over several frames, the last applied state still drawn),
+	# then disposes and quits.
+	_io.finish(get_tree(), _out_path, code, _dispose_applier)
+
+
+func _dispose_applier() -> void:
 	if _applier != null:
 		var freed: int = _applier.dispose()
 		_log("disposed: %d RIDs freed" % freed)
-	get_tree().quit(code)
+
+
+## G7e: whether payloads have somewhere to come from besides inline records -- a cache directory
+## natively, the browser's HTTP cache (`http-cache`) on the web.
+func _has_cache() -> bool:
+	return _cache.dir != "" or _cache.mode == "http-cache"
+
+
+## G7e: on the web, checks that every sink lies under RS_RECEIVER_OUT's directory and fetches the
+## configured sources into memory (RsIo.prepare_sources); natively returns true at once. Returns
+## false after failing the replay (a source that cannot be fetched) or quitting with a usage error.
+func _prepare_sources() -> bool:
+	if not RsConfig.is_web():
+		return true
+	var sinks: Array[String] = [_perf_out_path, _received_path]
+	var sink_error: String = _io.check_sink_paths(_out_path, sinks)
+	if sink_error != "":
+		_log("error: " + sink_error)
+		_quit(EXIT_USAGE)
+		return false
+	_log("web: --rs-env %s" % JSON.stringify(RsConfig.arg_names()))
+	var error: String = await _io.prepare_sources(get_tree())
+	if error != "":
+		_fail_with_error(null, error)
+		return false
+	_log("web: %d sources staged in memory (%d bytes, %d ms)" % [_io.source_files, _io.source_bytes, _io.source_ms])
+	return true
+
+
+## An RS_RECEIVER_* value, or null when unset.
+static func _env_or_null(variable: String) -> Variant:
+	var value: String = RsConfig.get_env(variable).strip_edges()
+	return null if value == "" else value
 
 
 func _log(text: String) -> void:

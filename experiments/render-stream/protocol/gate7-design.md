@@ -424,6 +424,20 @@ proves by re-running gates 0 to 6 natively.
   template sha256, the preset, the `.pck` sha256 and its file list. `no-source-scene` checks that the
   list has no path under `fixtures/` and no fixture script name.
 
+**As built (G7e, 2026-10-15; README "Gate 7e result").** P-W1 held on gate 0: 25/25 web shots
+byte-equal to native. The sources land in emscripten's in-memory filesystem at the same absolute
+paths, so `FileAccess` reads are unchanged. PUTs run only at exit, then dispose, then quit. Three
+findings:
+
+- The web readback path differs from native's. GLES does a shader copy into RGBA8 and then
+  `glReadPixels`; desktop GL does `glGetTexImage`; see `texture_storage.cpp:1117-1198`. It was not
+  listed under "at risk" above. It matched on gate 0's flat colours; G7b watches midpoint values.
+- `viewport_get_measured_render_time_gpu` is always 0 on WebGL 2, so it is `unavailable`, while
+  the CPU time is measured per frame.
+- Godot's print hooks must go in the `Engine` constructor's config.
+
+`RS_RECEIVER_PROTOCOL` and the /7 hello wait for G7w and G7n (G7l).
+
 ## Q5. The GSW canvas receiver
 
 `experiments/render-stream/web/gsw-receiver/`, bundled by esbuild with `conditions:["development"]`

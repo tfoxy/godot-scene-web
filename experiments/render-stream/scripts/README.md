@@ -2655,3 +2655,127 @@ passing case (including a phase-locked 60/60 leg at 30) and failing cases (a hos
 credits, a burst above the target, a slow receiver, a missing credit-blocked tick, B above its frame
 rate, two snapshots per frame), `limited_by` (host-frame, credit, transport), the separation
 classes, the transport bounds and the leg classes.
+
+## Gate 7 files (g7-0 web export, G7e)
+
+G7e ([../protocol/gate7-design.md](../protocol/gate7-design.md) "G7e", D5, Q4) exports the
+native receiver to the web and replays gate 0's receiver legs in it
+(`pnpm render-stream:gate7 -- --legs g7-0 …`).
+
+The build inputs live outside the repository and are pinned by sha256. Only these two are
+accepted:
+
+- **Template** (D5, fork F2): `~/.cache/godot-render-stream/templates/4.5.1-stable/web_nothreads_release.zip`,
+  sha256 `7f6c5efc9952f6f02509adfb92298161c0152a1f6a81c0bf9b9f4f913676e9c8`. It is the official
+  4.5.1-stable export templates' no-threads, no-dlink web build.
+- **Editor**: the non-mono 4.5.1 editor,
+  `~/.local/share/mise/installs/godot/4.5.1-stable/Godot_v4.5.1-stable_linux.x86_64`, sha256
+  `db07cae7de644278a1884d4552bdf2bca3f5d30131b18faf3a0c4d730080b199`. `mise exec -- godot` is the
+  mono build, which has no web template.
+
+The files:
+
+- `../receiver/export_presets.cfg` (committed). It holds D5's keys and the `@RS_WEB_TEMPLATE@`
+  placeholder. It sets `script_export_mode=0` (scripts as text) and `exclude_filter="tests/*"`.
+- `../receiver/web/shell.html`, Q4's shell. It does the following:
+  - removes the fragment token;
+  - turns `?env=<base64url JSON>` into `--rs-env=NAME=VALUE` words after `--`, and adds
+    `RS_RECEIVER_PAGE_ORIGIN`;
+  - places performance marks;
+  - exposes `__rsWasmHeap()`;
+  - on context loss, PUTs a stub, then reloads;
+  - sizes the canvas;
+  - applies the `css-opacity` sabotage;
+  - records `window.__rsShell` (the exit code and the engine's printed lines with their times).
+- `../receiver/rs_config.gd` and `../receiver/rs_io.gd`, Q4's shims (`../receiver/README.md`).
+- `build-web-receiver.sh [--out DIR] [--force]` builds the bundle in these steps:
+  - checks both digests;
+  - stages the receiver's git-visible files into
+    `artifacts/render-stream/web-receiver/<sha16>/project/`;
+  - fills in the placeholder;
+  - runs `--import` and `--export-release Web`;
+  - writes `bundle/build.json` (`render-stream-web-build/1`). It records the git commit, the
+    editor, the template, the preset's sha256 and options, every bundle file's size and sha256,
+    and the `.pck`'s file list (`lib/godot-pck.ts`).
+
+  A build of the same source is reused unless `--force`. The last line printed is the bundle
+  directory.
+- `lib/godot-pck.ts` reads the directory of a `.pck` (format 2 or 3, from
+  `core/io/file_access_pack.cpp`). `web-build-json.ts` writes `build.json`.
+- `lib/gate7-web-legs.ts` (`runWebLegs`, `mapNativeLeg`) derives each web leg from its native
+  leg's `env.txt` and `argv.txt`:
+  - the recording is copied into the web leg and named by its URL path;
+  - `RS_RECEIVER_OUT` moves to the web leg;
+  - `RS_RECEIVER_CACHE_DIR` is dropped;
+  - store and library paths become `/sources/<gate>/…`;
+  - every other value is passed verbatim;
+  - `--resolution` becomes the canvas size.
+
+  A leg runs as follows:
+  - one fresh browser through `browser-harness.ts`;
+  - `browser-provenance` on `about:blank`;
+  - the page `/web-bundle/receiver.html?env=…`, with evidence PUT to the leg's own directory (a
+    per-leg nonce);
+  - a CDP screenshot of the canvas while the `applied.json` PUT is held, for
+    `compositor-equals-readback`;
+  - `console.jsonl`, `stdout.log`, `exit-code.txt`, `timings.json`, `provenance.json`,
+    `page-config.json` and `env.txt`.
+- `lib/browser-harness.ts` (G7h's `HarnessServer`) gains these features:
+  - `GET <dir>/?list` (a JSON array of the relative paths under it);
+  - per-nonce evidence directories (`evidenceDirs`, `addLeg`, `removeLeg`);
+  - an awaited `onPut` hook.
+- `lib/gate7-adapters.ts` holds the gate 0 adapter (`checkGate0Web`). It builds a view of the
+  source run in which every receiver leg links to its web leg, runs `runGate0()` on it, and keeps
+  the receiver checks as `<id>@web`. It adds gate 7's checks and records the build's D21
+  provenance (`currentBuildProvenance`).
+- `gate7-tool.ts` provides the runner's helpers, `source-provenance` and `web-legs`.
+- `run-gate7.sh` / `check-gate7.ts` take g7-0 with these flags:
+  - `--source gate0=<run>` or `--make-sources` (the latter runs `run-gate0.sh` and writes
+    `gate7-source.json`);
+  - `--extension`, plus `--calibration` for `--make-sources`;
+  - `--bundle` (default: build it);
+  - `--skip-harness-selftest`.
+- `test/self-test-gate7e.ts` covers the pck reader, the leg mapping, the applied normalization and
+  the view.
+
+## Gate 7 legs and evidence under `--out` (g7-0 web)
+
+`sources-made/gate0/` is the native source run (with `--make-sources`), `sources/gate0` and
+`web-bundle` are symlinks the harness serves, and `gate0/web/<leg>/` holds each web leg, where
+`<leg>` is the native leg's own path. `gate0/web-view/` is the checker's view.
+
+| Web leg | Replays | Expected |
+| --- | --- | --- |
+| `receiver` (+ compositor screenshot) | `receiver` | `success` |
+| `preexisting-skip/receiver` | same | `partial-unknown-items` |
+| `sabotage-{freeze,omit,perturb}/receiver` | same | `pixel-mismatch` at their native steps |
+| `unsupported/receiver`, `corrupt` | the native headless legs, rendered (D11 note in README "Gate 7e result") | `unsupported`; `replay-failure` seq 3 `meta-json` |
+| `sabotage-css-opacity` | `receiver`, shell `opacity: 0.99` | fails exactly `compositor-equals-readback` |
+| `probe-render-time` | `receiver` + `RS_RECEIVER_PERF_OUT` | report only |
+
+## Gate 7 criteria (g7-0 web)
+
+- **gate 0's receiver checks, judged by gate 0's own checker on the view, `@web`:**
+  `expected-image-receiver`, `receiver-vs-reference`, `receiver-consumed-stream`,
+  `preexisting-skip-receiver`, `preexisting-skip-excluded-region`, and `leg-class-<leg>` for the
+  seven receiver legs.
+- **`source-run-valid`** (D21): the source run passed with every native receiver leg in its class,
+  and its `gate7-source.json` matches the current build. That means the same git commit, the same
+  dirty digest of `receiver/`, `capture/` and `fixtures/`, and the same capture library and
+  template sha256.
+- **`browser-provenance`** passes on every leg.
+- **`console-clean`**: no `SHADER ERROR`, no `WebGL: ` and no page error.
+- **`evidence-complete`**: every file a native leg wrote exists for its web leg. The exceptions are
+  the native runner's own files: `cache/`, `diff/`, display ownership, strace, the shot-seqs file,
+  the step join and the corrupt tool's log.
+- **`applied-equals-native`**: the documents are equal except for `*_us`, `process_frame`, the
+  paths, `receiver`, `cache` and `display_server`. On natively headless legs, `viewport` is
+  excluded as well.
+- **`no-source-scene`**: nothing in the `.pck` lies under `fixtures/`, and no `.pck` path carries
+  a fixture script's name.
+- **`compositor-equals-readback`**: exact on opaque frames. It applies only when the last shot's
+  resolved state equals the last applied one, which is checked from the recording.
+- **`sabotage-css-opacity`**: it fails exactly that check, its shots equal the honest leg's, and it
+  exits 0.
+- **Reported, not gating:** `probe-render-time` and `pw1-web-equals-native` (Q7 P-W1, every shot
+  byte-equal to native).
