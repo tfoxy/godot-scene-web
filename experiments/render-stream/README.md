@@ -101,6 +101,14 @@ snap-to-pixel stay typed. G6z (see "Gate 6z result") closed the gate with a comm
 checked supported-feature manifest; gate 6's own runner and checker
 (`pnpm render-stream:gate6 -- --legs g6a,g6h,g6b,g6l,g6s,g6c,g6z`) are 154/154.
 
+Gate 7 (browser receivers) is in progress under
+[protocol/gate7-design.md](protocol/gate7-design.md), with the moto g31 as the baseline phone
+(browser receivers must reach 60/60 on 2020-era phones). Landed so far: G7j (browser-loadable
+decoder), G7h (browser harness and probes), G7c (`packages/canvas` vertex colours, texture bindings
+and an RGB10_A2 target), G7d (device harness, pace fixture, decode bench) and G7m (the g31 decode
+bench: the GSW receiver misses its 8.5 ms half-frame budget on full snapshots and HD patches, with
+SHA-256 the largest cost, which triggers G7o). See each "Gate 7x result" section.
+
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
 
