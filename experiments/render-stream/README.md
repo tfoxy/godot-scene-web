@@ -89,14 +89,17 @@ classifies `pixel-mismatch` in exactly the regions the stall's swallowed steps t
 own runner and checker (`pnpm render-stream:gate55 -- --legs g55b,g55c,g55d,g55e,g55f`) are
 130/130.
 
-Gate 6 is in progress (see "Gate 6t result" onward). G6b (see "Gate 6b result") moved the capture,
-the receiver and every gate runner to [protocol/render-stream-6.md](protocol/render-stream-6.md).
-**Every gate, −1 through 6, now runs on render-stream/6.** The session declares the presentation
-size, font oversampling, snap settings and publication rate. `GRC_ROOT_SIZE=presentation:<W>x<H>`
-makes a headless host evaluate a `canvas_items` stretch at the presentation size. The receiver
-adopts the session's stretch. Root-viewport `CanvasLayer`s travel with their layer and sublayer and
-replay pixel-exact. Follow-viewport, parallax repeat, a changed global canvas transform, stacking
-ties and snap-to-pixel stay typed.
+Gate 6 passed on 2026-10-15 (see "Gate 6t result" onward and "Gate 6 summary" below). G6b (see
+"Gate 6b result") moved the capture, the receiver and every gate runner to
+[protocol/render-stream-6.md](protocol/render-stream-6.md). **Every gate, −1 through 6, now runs on
+render-stream/6.** The session declares the presentation size, font oversampling, snap settings and
+publication rate. `GRC_ROOT_SIZE=presentation:<W>x<H>` makes a headless host evaluate a
+`canvas_items` stretch at the presentation size. The receiver adopts the session's stretch.
+Root-viewport `CanvasLayer`s travel with their layer and sublayer and replay pixel-exact.
+Follow-viewport, parallax repeat, a changed global canvas transform, stacking ties and
+snap-to-pixel stay typed. G6z (see "Gate 6z result") closed the gate with a committed,
+checked supported-feature manifest; gate 6's own runner and checker
+(`pnpm render-stream:gate6 -- --legs g6a,g6h,g6b,g6l,g6s,g6c,g6z`) are 154/154.
 
 Gate −1 of [docs/handoff-headless-render-stream.md](../../docs/handoff-headless-render-stream.md).
 It answers one question before any protocol work starts:
@@ -6428,3 +6431,267 @@ pnpm render-stream:gate7 -- --legs g7-dev,g7-bench --env device --device g31 --r
 It proves nothing about live rates, cadence, soak or startup: every `dev-`/`ctl-` live leg needs
 G7a/G7e, G7n and G7l, plus G7q for window 2 and G7k for soak and startup. It does not provide G7m's
 five-repeat phone numbers, or any g86 measurement.
+
+## G6p report regenerated (2026-10-15)
+
+The G6p artifacts quoted above (`g6p-r1/`) were produced in a worktree that has since been removed
+(memory `worktree-removal-loses-artifacts`), so this increment re-ran the matrix once to restore a
+validated `render-stream-report/1` other sections can point at. Quiet machine (load average
+0.96/1.23/1.26 just before the run, 1.70/1.58/1.57 just after; no other gate run on the box for
+the run's first ~65 of its 73 minutes -- one other agent's lightweight `--plan-only` gate 7 run
+started in the last few minutes), same box as the original (Ryzen 5 5500, RTX 2060, gamescope
+3.16.19 headless). `pnpm render-stream:gate6 -- --legs g6p` is **6/6 on g6p's own checks** again
+(`clean-exit`, `after-window-shots`, `deltas-input`, `report-valid`, `report-complete`,
+`repeat-stability`), and `pnpm render-stream:report -- validate --repeats 5` confirms the rebuilt
+`render-stream-report/1`: `artifacts/render-stream/gate6/20261015T061914Z/`.
+
+**Agreement with the original run, within repeat noise:** bytes per transaction (19 744 B median
+gate6-scene, 173 715 B gate6-hd native and half -- matches to the byte); cold-cache fetch counts
+and bytes (gate6-scene 128 fetches / 1 525 360 B, identical; gate6-hd native 949 fetches /
+5 264 867 B against the original 932 / 5 256 316, a ~2 % difference, plausible repeat variance);
+receiver decode/apply/GPU costs (gate6-scene ≈2.0/1.3/0.37 ms, gate6-hd ≈16.1-16.2/12.9-13.0/1.8-2.5
+ms, both inside the original's ranges); memory slopes (host 1.2-5.5 MB/min, receiver 49.7-86.1
+MB/min, both inside the original's ranges); and D15's deltas/param-bytes analysis, which matches
+exactly on three of four kinds (`image` 8 resources/51 ops/2 superseded/147 681 B delta 2 614 287 B;
+`shader` 3/8/2/0 B delta 1 158 B; `material` 2/436/13/0 B delta 0 B; `param_bytes_per_frame` 419
+frames/429 elements/1.0239 mean) and is off by one version-creating op on the fourth (`mesh`:
+1676 ops / 214 144 B delta this run against the original's 1675 / 214 016 B, a 128 B difference) --
+`scene-rate-60-hooklog` runs the realtime `rate` timeline (D6), not the deterministic `steps` one,
+and `MS` updates its mesh surface every captured host frame, so a ~30 s measured window can
+legitimately land one host frame short or long between two runs. Everything else above is
+genuinely deterministic content (the fixture's per-step values), which is why it matches exactly.
+
+**Genuine drift, not noise:** gate6-hd native's published-rate ceiling measured **15.0-15.7/s this
+run against the original's 13.0-13.3/s** -- consistently higher across every one of rate-15,
+rate-30, rate-60, rate-uncapped-host60 and rate-uncapped (each with CoV 2.5-4.6% over 5 repeats, so
+not repeat noise within either run), and gate6-scene's uncapped-both-ends ceiling likewise rose
+from 105.7/s to 136.0/s. Both point the same way -- a faster or less contended machine state on
+this run than the original's -- rather than a behaviour change; nothing in this increment touches
+the capture, the receiver or the fixtures. The hook-log cost pair moved too (`scene-rate-60-
+hooklog` − `scene-rate-60`: +0.11 s/30 s this run against the original's +0.39 s/30 s), but both
+scenarios' own `cpu.host_process_s` CoV is ≈9%, with overlapping min/max ranges across the two
+scenarios in this run -- that one is noise, not drift, at five repeats.
+
+## Gate 6z result (2026-10-15)
+
+G6z ([protocol/gate6-design.md](protocol/gate6-design.md) "G6z", Q8) closes gate 6: the committed,
+generated, checked supported-feature manifest. `scripts/make-features.ts` builds
+[protocol/features/render-stream-6.json](protocol/features/render-stream-6.json) (schema
+`render-stream-features/1`) from two sources -- the render-stream/6 wire lists `capture/src/
+rs_publish.cpp`'s `gate2_features()` actually emits (copied in literally, with a line-range
+citation, and cross-checked against the hand-maintained map so the two cannot drift apart
+silently) and `scripts/lib/feature-evidence.ts`'s editorial content (status, reason, owner, notes
+and evidence per entry). Four checks in `scripts/lib/gate6z-checks.ts` (group `g6z`, which runs
+last against whichever earlier groups' recordings this run produced -- no capture of its own).
+
+`pnpm render-stream:gate6 -- --legs g6a,g6h,g6b,g6l,g6s,g6c,g6z` is **154/154**
+(`artifacts/render-stream/gate6/20261015T050313Z/`; load average 3.78/3.46/3.21 just before the
+run started -- other agents' short benchmarks, paused for this run per the orchestrator -- and
+0.41/1.16/1.24 just after). Gate 5 (`g5b,g5c,g5d,g5e,g5f,g5g`) is 116/116 and gate 5.5
+(`g55b,g55c,g55d,g55e,g55f`) is 130/130 on the same build
+(`artifacts/render-stream/gate5/20261015T073315Z/`, `artifacts/render-stream/gate55/
+20261015T074834Z/`); gates −1, 0, 1 and 2 were last reconfirmed green on this lineage in "Gate 6c
+result" (main `f4720922`/`9b125e1d`) and this increment touches no capture, receiver or fixture
+code, so they were not re-run.
+
+**The one real failure, fixed in one iteration.** The first run was 153/154: `manifest-evidence`
+named four "delivery"-kind entries that cited a check id copied from gate6-design.md's prose
+(`rate-achieved`, `dual-independent`, `host-unperturbed`, `cache-budget-respected`) rather than the
+real, leg-suffixed id a run actually writes (`rate-achieved-rate-60`, `dual-independent-dual-60-
+15`, `host-unperturbed-constrained`, `g6s-cache-budget-respected-soak-scene`). Fixed in
+`feature-evidence.ts`; every other evidence entry matched a real check id on the first try (memory
+`rs-g6z-manifest-check-id-suffix`). Re-running just `check-gate6.ts --out <the same run dir>`
+(g6z has no capture of its own, so no need to redo the ~70-minute capture) confirmed the fix:
+154/154.
+
+**The four checks, this run:**
+
+| Check | Result |
+| --- | --- |
+| `manifest-check` | pass -- `make-features.ts --check` regenerates the committed JSON byte-for-byte |
+| `manifest-matches-session` | pass -- 4 sessions checked (`scene/capture`, `scene/capture-inline`, `animate/capture`, `hd/capture-native`), all matched the manifest's `ops`/`item_state`/`canvas_state`/`resources` lists exactly |
+| `manifest-evidence` | pass -- every `supported` entry's gate-6-cited check appears as `pass` in this run's own report |
+| `manifest-refused` | pass -- every reason `refused/capture` and `snap/capture` produced on the wire (`canvas-light`, `canvas-follow-viewport`, `unsupported-op`, `unsupported-material`, `snap-2d`) is a `typed-unsupported` manifest entry |
+
+## Gate 6 summary
+
+Gate 6 ([protocol/gate6-design.md](protocol/gate6-design.md), "What gate 6 proves") is complete:
+twelve increments (G6a, G6w, G6k, G6r, G6t, G6h, G6b, G6l, G6s, G6c, G6p, G6z), one commit each on
+`main`:
+
+| Increment | Commit | Subject |
+| --- | --- | --- |
+| G6a | `7ff9cd77` | test(render-stream): add gate 6a combined scene and its file legs |
+| G6w | `b85fd28c` | feat(render-stream): add render-stream/6 codecs and golden-6 |
+| G6k | `ea3e9954` | feat(render-stream): add calibrator 9 CanvasLayer hooks and hook log |
+| G6r | `aa181ac6` | feat(render-stream): add live rate control and perf instrumentation |
+| G6t | `ca027eed` | feat(render-stream): add gate 6 report, proxy, sampler and deltas tools |
+| G6h | `fd247708` | test(render-stream): add gate 6h HD canvas_items fixture and its legs |
+| G6b | `02e6f4dc` | feat(render-stream): switch capture and receivers to render-stream/6 |
+| G6l | `d0df9b8e` | test(render-stream): add gate 6l live motion, stall, reconnect and warm |
+| G6s | `f4720922` | feat(render-stream): add receiver cache budgets, eviction and soak gate |
+| G6c | `9b125e1d` | test(render-stream): add gate 6c rates, mismatch, dual and transport |
+| G6p | `de39ff81` | test(render-stream): add gate 6p measurement matrix and report |
+| G6z | *(this commit)* | test(render-stream): add gate 6 feature manifest and summary |
+
+(`91eba6b6`, "docs(render-stream): add the gate 6 design contract", is the contract itself, not an
+increment.)
+
+### Run directories and images, per group
+
+| Group | Run directory | Reference/receiver images |
+| --- | --- | --- |
+| g6a | `artifacts/render-stream/gate6/20261015T050313Z/scene/` | `reference*/shots/step-*.png`, `receiver*/shots/seq-*.png` |
+| g6h | `.../hd/` | `reference-native*/shots/`, `reference-half*/shots/`, `receiver-native*/shots/` |
+| g6b | `.../hd/` (half captures), `.../snap/` | `receiver-half*/shots/`, presentation-hazard diff images under `hd/sabotage-receiver-ignore-presentation/` |
+| g6l | `.../live/` | `reference-live-frames/shots/`, `live-*/receiver/shots/` |
+| g6s | `.../g6s/` | `reference-step11/shots/step-11.png`, `<leg>/receiver/shots/seq-*.png` |
+| g6c | `.../rates/` | `<leg>/reference/shots/`, `<leg>/receiver/shots/` |
+| g6p | `artifacts/render-stream/gate6/20261015T061914Z/matrix/` | one shot after each repeat's measured window |
+| g6z | (reads the above; writes nothing of its own) | — |
+
+### Per-leg classes
+
+Every g6a and g6h leg classifies `success` since G6b (the HUD `CanvasLayer` travels with its
+stacking); the four g6a host sabotages classify `pixel-mismatch` at their predicted region sets
+except `perturb-shader`, which classifies `success` (both fixture shaders are builtin, never
+re-coded after frame 1); the two g6a receiver sabotages (`ignore-clip`, `stale-texture`) and the
+two g6b receiver sabotages (`ignore-canvas-stacking`, `ignore-presentation`) classify
+`pixel-mismatch` at their predicted sets; `refused` classifies `unsupported` with exactly
+`canvas-light`, `canvas-follow-viewport`, `unsupported-op` (the multimesh and LCD commands) and
+`unsupported-material` (the TIME shader). Every g6l live leg classifies `success` except
+`sabotage-live-stale-coalesce` (`pixel-mismatch` at the stale-coalesce region set). Every g6s soak
+leg classifies `success`; both g6s sabotages classify `success` too (G6s's checks judge residency
+bounds, not pixel class) but fail exactly their predicted `residency-bounded` metric. Every g6c
+rate/mismatch/separation/constrained leg classifies `success` except
+`sabotage-constrained-ignore-credit`, which classifies `delivery-violation` and fails exactly
+`pending-bounded` and `queue-bounded`. Full detail, per leg, is each group's own "Gate 6* result"
+section above.
+
+### Budgets, per region (Q6g)
+
+- **Receiver against reference**: 0 in every pixel of every shot, whole frame, on every honest leg
+  of every group -- reconfirmed this run (`reference-repeat budget: max delta 0 over 3 456 000
+  pixel-shots` on gate6-scene; `max delta 0` over 31 104 000 / 7 776 000 / 31 104 000 pixel-shots on
+  gate6-hd native/half/armed-native).
+- **Reference against the hand model**: `exact` regions 0; `delta1` regions (antialiased
+  `StyleBoxFlat` panels, scrollbars and buttons, off the 0.2 colour grid and translucent) max
+  channel delta 1, 80 388 pixels on gate6-scene (gate6-design.md "As built (G6a)" 10); `undecided`
+  regions (text glyphs, LineEdit content, the HUD label) are compared only receiver against
+  reference, never against the hand model.
+- No budget was ever relaxed to make a leg pass; every mismatch not already a predicted sabotage
+  set was explained from source and folded into the model (each group's "As built" / "Findings").
+
+### Supported-feature manifest
+
+[`protocol/features/render-stream-6.json`](protocol/features/render-stream-6.json), schema
+`render-stream-features/1`: **115 entries** -- 60 `supported`, 20 `typed-unsupported`, 30
+`unobserved`, 5 `declared-unverified` -- generated by `scripts/make-features.ts`, checked by
+`--check` against a hand-maintained evidence map (`scripts/lib/feature-evidence.ts`) and, every
+gate 6 run, against the real wire (`manifest-matches-session`) and the real refusal reasons
+(`manifest-refused`).
+
+**Supported** (60; one evidence entry each, at minimum): all 15 render-stream/4+ draw ops
+(`add_rect`, `add_circle`, `add_mesh`, `add_set_transform`, ...); all 18 item-state fields
+(`transform`, `material`, `instance_params`, `visibility_layer`, ...); all 3 canvas-state fields
+(`layer`, `modulate`, `transform` -- CanvasLayer stacking, gate6-design.md D3); 5 resource kinds
+(`texture_2d`, `mesh`, `shader`, `material`, `texture_2d_placeholder`); the three shader delivery
+policies (`source`/`params`/`exclude`) and their `shader-withheld`/`shader-excluded` typed outcomes
+on the receiver; presentation declaration and snap-to-pixel declaration (viewport); and six
+higher-level control/delivery/text/payload capabilities: ScrollContainer offset, ProgressBar
+per-frame fill, LineEdit focus/selection/caret, AnimationPlayer/Tween deterministic sampling,
+reference repeatability, StyleBoxFlat antialiasing under stretch, publication rate control with
+coalescing, multiple live connections, constrained transport, receiver resource budgets, the
+content-addressed store/HTTP/inline delivery mechanism, and payload size/format limits.
+
+**Typed-unsupported** (20, reason and owner each):
+
+| Reason | Fires on | Owner |
+| --- | --- | --- |
+| `unsupported-op` | `canvas_item_add_animation_slice`, `_lcd_texture_rect_region`, `_multimesh`, `_particles` | post-gate-6 capabilities (shader TIME/particles/multimesh/LCD text), unscheduled |
+| `unsupported-state` | `canvas_item_attach_skeleton` | unscheduled (gate5-design.md Deferred: skeletons, skinning) |
+| `canvas-light` | `canvas_light_attach_to_canvas` | post-gate-6 capabilities (Light2D), unscheduled |
+| `canvas-repeat` | `canvas_set_item_mirroring`, `canvas_set_item_repeat` | gate 8 (follow_viewport layers and parallax repeat census) |
+| `canvas-follow-viewport` | `canvas_set_parent` | gate 8 (same census) |
+| `canvas-texture-headless` | the `canvas_texture` resource kind | gate 8 (headless CanvasTexture shim) |
+| `unsupported-material`, `unknown-material`, `unknown-shader`, `param-type`, `param-range` | an item's effective material/shader/instance parameter | post-gate-6 (shader TIME) or unscheduled |
+| `degenerate-host-size` | `root_size_policy: observe` | gate 8 (STS2's host size policy) |
+| `non-root-viewport` | any call on a non-root Viewport | gate 8 (census, typed since gate 0) |
+| `presentation-mismatch`, `oversampling-mismatch` | a receiver at a different presentation size/oversampling | gate 7 (several presentation sizes, size negotiation) |
+| `snap-2d` | snap-to-pixel settings declared but not replayed | gate 8 (snap-to-pixel replay census) |
+
+**Unobserved** (30) and **declared-unverified** (5): mostly hooked RenderingServer slots no
+committed fixture ever calls (`global_shader_parameter_*`, `material_set_next_pass`,
+`canvas_set_disable_scale`, the two snap-to-pixel runtime setters, ...), plus whole capabilities
+gate 6 does not implement at all (non-loopback serving, presentation timing, payload deltas, late-
+join adoption, browser receivers, arm-on-subscribe, Light2D rendering, Windows/macOS) and five wire
+enum values no committed fixture exercises (`canvas-stacking-tie`, `global-canvas-transform`,
+`stretch.mode: viewport`, `stretch.aspect` other than `keep`, `stretch.scale_mode: integer`). Full
+list and owners: the manifest file itself.
+
+### Measured costs
+
+From G6p's regenerated `render-stream-report/1` (2026-10-15; see "G6p report regenerated" above
+for the full agreement-and-drift comparison against the original run),
+`artifacts/render-stream/gate6/20261015T061914Z/render-stream-report.json` (20 scenarios, one
+warmup plus five repeats each):
+
+- **Capture and publication overhead** (`cpu.host_process_s`, cumulative over the fixed ~30 s
+  `rate`-timeline lifetime): gate6-scene unarmed 0.56 s, armed-idle 1.02 s (capture overhead
+  +0.46 s/30 s), streaming-60 1.24 s (publish overhead +0.22 s/30 s); gate6-hd native unarmed
+  1.15 s, armed-idle 2.76 s (+1.61 s/30 s), streaming-60 3.51 s (+0.75 s/30 s).
+- **Bytes per published transaction** (median): gate6-scene 19 744 B; gate6-hd (native and half
+  alike) 173 715 B -- driven by scene content, not presentation pixel count.
+- **Maximum sustained published rate and its limit**: gate6-hd native lands at 15.0-15.7/s on every
+  one of rate-15 through rate-uncapped (`limited_by` the receiver's own decode+apply+credit-RTT
+  budget, not the request); gate6-hd half reaches 15.9/s; gate6-scene's ceiling is far higher,
+  136.0/s uncapped-both-ends (`limited_by credit`, 9 ms RTT -- nothing on the host side is the
+  limit).
+- **Cold against warm**: every warm-cache repeat fetches nothing (`bytes.fetches: 0`); cold repeats
+  refetch everything (gate6-scene 128 fetches / 1.53 MB; gate6-hd native 949 fetches / 5.26 MB).
+- **Receiver apply, upload and GPU cost** (median): gate6-scene ≈2.0 ms decode, 1.3 ms apply,
+  0.37 ms GPU; gate6-hd (native/half) ≈16.1-16.2 ms decode, 12.9-13.0 ms apply, 1.8-2.5 ms GPU --
+  an 8-10x jump tracking the ≈9x bytes-per-transaction increase.
+- **Staleness and stability**: `repeat-stability` flags any metric above 10% CoV without failing
+  the gate (by design); every densely-sampled field (published rate, decode/apply medians, RSS
+  start/end) stays well under 10% everywhere it is measured, and the flagged ones are exactly the
+  small-integer-count or bursty fields expected to be noisy over five repeats (zero-or-few fetch
+  counts, I/O-thread CPU).
+- **D15 optimizations** (`scripts/analyze-deltas.ts`, from `scene-rate-60-hooklog`): image textures
+  8 resources / 51 version-creating ops / 2 superseded / 147 681 B superseded payload / 2 614 287 B
+  delta bytes total; mesh 1/1676/2/0 B/214 144 B; shader 3/8/2/0 B/1 158 B; material 2/436/13/0 B/0
+  B; every `savings_bytes` is `null` because the hook log never carries a whole-version byte size to
+  diff against (memory `g6t-report-tooling-facts`) -- these are the real numbers available, not a
+  fabricated estimate. `param_bytes_per_frame`: 419 frames, 429 elements, mean 1.02/frame -- little
+  to save on this fixture's content specifically.
+
+### What gate 6 does not prove
+
+- Several presentation sizes or receiver-advertised size negotiation for one capture session
+  (gate 7); the typed `presentation-mismatch`/`oversampling-mismatch` hazard is measured, not
+  fixed.
+- Compressed or float texture payloads, non-loopback serving, late-join adoption of anything
+  (items, canvases, textures, meshes, materials, shaders), or the target game's own host-size
+  policy (all gate 8).
+- Browser receivers of any kind, or presentation timing for them (gate 7) or for native (no engine
+  hook exists).
+- Payload deltas, atlas/mesh-region deltas, parameter deltas, hash-at-publish, lazy hashing,
+  spill-to-disk or parallel fetches -- measured offline (D15, above), not implemented.
+- Shader `TIME`, screen texture, `CanvasGroup`/clip-children, `Light2D` rendering, GPU/CPU
+  particles, multimesh, global shader uniforms, RichTextLabel effects, `TextEdit`/IME, or
+  Windows/macOS hosts -- every one is typed or deferred with an owner (the manifest and "Deferred,
+  with owners" in gate6-design.md).
+- Stability over a connection longer than G6s's ~370 s soak, or with more than the two connections
+  G6c measured.
+- Rates or costs on a real (non-loopback) network, or with more than one machine.
+- `recv_gpu_render_ms`'s classification depends on a provenance heuristic
+  (`isRenderedDesktopGlReceiver`), unchanged since G6c.
+
+### Next bounded capability
+
+Gate 7: browser receivers (web export and the GSW canvas receiver), with their own pacing,
+suspension, startup and memory gates and their own `render-stream-features/2` manifests, measured
+against gate 6's fixtures, expectations and `render-stream-report/1` as the conformance and cost
+baseline (gate7-design.md, already under way in parallel on several of this repository's disjoint
+files per its D23). The first gate-8-bound items gate 6 leaves fully specified but unimplemented
+are late-join adoption and compressed texture formats.

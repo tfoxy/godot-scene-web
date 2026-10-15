@@ -64,6 +64,7 @@ import { selfTestGate6h } from "./self-test-gate6h";
 import { selfTestG6l } from "./self-test-gate6l";
 import { selfTestGate6p } from "./self-test-gate6p";
 import { selfTestG6s } from "./self-test-gate6s";
+import { selfTestG6z } from "./self-test-gate6z";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -918,6 +919,9 @@ async function main(): Promise<void> {
 
   // 13. Group g6p (self-test-gate6p.ts).
   await selfTestGate6p({ assert, passes, fails });
+
+  // 14. Group g6z (self-test-gate6z.ts).
+  selfTestG6z({ assert, passes, fails });
 
   console.log(
     `\nself-test-gate6: ${assertions - failures}/${assertions} assertions passed`,
