@@ -37,11 +37,16 @@ const MAGIC_V5_HEX: String = "475253350d0a1a0a"
 ## "publication" session key, canvas layer/sublayer and five new session-level unsupported
 ## reasons.
 const MAGIC_V6_HEX: String = "475253360d0a1a0a"
+## render-stream-7.md (G7w): the GRS7 magic, selected by `version == 7` (golden-7/ only; /7 is a
+## live-transport-only delta -- G7n keeps the capture and receiver speaking /6 by default): the
+## hello gains nine keys and the top-level "publication" key gains "credit_window".
+const MAGIC_V7_HEX: String = "475253370d0a1a0a"
 const PROTOCOL: String = "render-stream/2"
 const PROTOCOL_V3: String = "render-stream/3"
 const PROTOCOL_V4: String = "render-stream/4"
 const PROTOCOL_V5: String = "render-stream/5"
 const PROTOCOL_V6: String = "render-stream/6"
+const PROTOCOL_V7: String = "render-stream/7"
 const MAX_SAFE_INT: float = 9007199254740991.0
 const U32_MAX: float = 4294967295.0
 const ITEM_FLOATS: int = 18
@@ -85,6 +90,9 @@ const SNAP_2D_KEYS: Array = ["transforms", "vertices"]
 ## render-stream-6.md "Publication": a new top-level session key, distinct from
 ## features.publication.
 const PUBLICATION_KEYS: Array = ["mode", "target_fps"]
+## render-stream-7.md "Session": publication gains "credit_window", right after "target_fps"
+## (gate7-design.md D2/D4).
+const PUBLICATION_KEYS_V7: Array = ["mode", "target_fps", "credit_window"]
 const PUBLICATION_MODES: Array = ["every-frame", "rate"]
 const STRETCH_KEYS: Array = ["mode", "aspect", "scale_mode"]
 const STRETCH_MODES: Array = ["disabled", "canvas_items", "viewport"]
@@ -491,7 +499,9 @@ static func split_records(data: PackedByteArray, version: int = 6) -> Dictionary
 	var records: Array[Dictionary] = []
 	var errors := PackedStringArray()
 	var expected_magic: String = MAGIC_HEX
-	if version == 6:
+	if version == 7:
+		expected_magic = MAGIC_V7_HEX
+	elif version == 6:
 		expected_magic = MAGIC_V6_HEX
 	elif version == 5:
 		expected_magic = MAGIC_V5_HEX
@@ -674,7 +684,7 @@ class Schema:
 			integer(entry.get("count"), path + ".count", 0, Rs2Decoder.U32_MAX)
 
 	func resources(meta: Dictionary, version: int) -> void:
-		var is_v4_or_later: bool = version == 4 or version == 5 or version == 6
+		var is_v4_or_later: bool = version == 4 or version == 5 or version == 6 or version == 7
 		var keys: Array = Rs2Decoder.RESOURCES_KEYS_V4 if is_v4_or_later else Rs2Decoder.RESOURCES_KEYS
 		var resources_dict: Dictionary = object(meta.get("resources"), keys, "meta.resources")
 		exact(resources_dict.get("hash"), "sha256", "meta.resources.hash")
@@ -704,10 +714,16 @@ class Schema:
 				fail("meta.resources.fetch must be \"none\" exactly when delivery is \"inline\"")
 
 	func session(meta: Dictionary, version: int) -> void:
-		var is_v6: bool = version == 6
+		var is_v7: bool = version == 7
+		# is_v6 means "V6 or later": /7 is a delta on /6 that keeps everything /6 added
+		# (presentation stretch declarations, the top-level publication key, canvas
+		# layer/sublayer) unless render-stream-7.md says otherwise.
+		var is_v6: bool = is_v7 or version == 6
 		# is_v5 means "V5 or later": /6 is a delta on /5 that keeps everything /5 added unless
 		# render-stream-6.md says otherwise.
 		var is_v5: bool = is_v6 or version == 5
+		# /7 adds no new top-level session key (only publication's own shape changes), so
+		# SESSION_KEYS_V6 covers /6 and /7 alike.
 		var session_keys: Array = Rs2Decoder.SESSION_KEYS_V6 if is_v6 else (Rs2Decoder.SESSION_KEYS_V5 if is_v5 else Rs2Decoder.SESSION_KEYS)
 		# protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and later.
 		var skip_declared: bool = version >= 4 and meta.has(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
@@ -717,7 +733,9 @@ class Schema:
 		if skip_declared:
 			exact(meta.get(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY), "skip", "meta.unknown_item_policy")
 		var expected_protocol: String = Rs2Decoder.PROTOCOL
-		if is_v6:
+		if is_v7:
+			expected_protocol = Rs2Decoder.PROTOCOL_V7
+		elif is_v6:
 			expected_protocol = Rs2Decoder.PROTOCOL_V6
 		elif is_v5:
 			expected_protocol = Rs2Decoder.PROTOCOL_V5
@@ -798,8 +816,9 @@ class Schema:
 		exact(features.get("publication"), Rs2Decoder.PUBLICATION, "meta.features.publication")
 		if is_v6 and ok:
 			# render-stream-6.md "Publication": a new top-level session key, distinct from
-			# features.publication above.
-			var publication: Dictionary = object(meta.get("publication"), Rs2Decoder.PUBLICATION_KEYS, "meta.publication")
+			# features.publication above. render-stream-7.md adds "credit_window", checked only
+			# at /7.
+			var publication: Dictionary = object(meta.get("publication"), Rs2Decoder.PUBLICATION_KEYS_V7 if is_v7 else Rs2Decoder.PUBLICATION_KEYS, "meta.publication")
 			var pub_mode: String = one_of(publication.get("mode"), Rs2Decoder.PUBLICATION_MODES, "meta.publication.mode")
 			var target_fps: Variant = publication.get("target_fps")
 			if ok and target_fps != null:
@@ -810,6 +829,16 @@ class Schema:
 				fail("meta.publication: \"rate\"'s target_fps must be in 1..240", "publication-entry")
 			if ok and pub_mode == "rate" and stream.get("transport") == "file":
 				fail("meta.publication: a \"file\" stream must not declare publication \"rate\"", "publication-entry")
+			if is_v7 and ok:
+				# render-stream-7.md "Session": credit_window is 1..2, and a "file" stream is
+				# always 1 (gate7-design.md D2/D4). integer() takes the wide MAX_SAFE_INT range
+				# (a non-integer is "meta-schema", like target_fps above); the narrower 1..2
+				# bound is this gate's own semantic rule, reported as "publication-entry".
+				var credit_window: int = integer(publication.get("credit_window"), "meta.publication.credit_window", 0, Rs2Decoder.MAX_SAFE_INT)
+				if ok and (credit_window < 1 or credit_window > 2):
+					fail("meta.publication.credit_window is %d, out of range 1..2" % credit_window, "publication-entry")
+				if ok and stream.get("transport") == "file" and credit_window != 1:
+					fail("meta.publication: stream.transport is \"file\" but publication.credit_window is %d, not 1" % credit_window, "publication-entry")
 		var sabotage: Variant = meta.get("sabotage")
 		if ok and sabotage != null:
 			var spec: Dictionary = object(sabotage, Rs2Decoder.SABOTAGE_KEYS, "meta.sabotage")
@@ -982,7 +1011,7 @@ class Schema:
 			last_name = name
 
 	func transaction(meta: Dictionary, version: int) -> void:
-		var is_v6: bool = version == 6
+		var is_v6: bool = version == 6 or version == 7
 		# is_v5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
 		var is_v5: bool = is_v6 or version == 5
 		var is_v4: bool = is_v5 or version == 4
@@ -1896,7 +1925,7 @@ class Stream:
 				var resources_meta: Dictionary = meta["resources"]
 				inline_max_bytes = Rs2Decoder.as_int(resources_meta["inline_max_bytes"])
 				unknown_item_skip = meta.has(Rs2Decoder.UNKNOWN_ITEM_POLICY_KEY)
-				if version == 6:
+				if version == 6 or version == 7:
 					var viewport_meta_for_snap: Dictionary = meta["viewport"]
 					var snap2d_meta: Variant = viewport_meta_for_snap.get("snap_2d")
 					if snap2d_meta is Dictionary:
@@ -1942,8 +1971,8 @@ class Stream:
 				# render-stream-4.md "Resources": mesh (GRM1), shader (GRP1, new at /5) and texture
 				# (GRT1) payloads share one hash namespace and one resource record shape; tell
 				# them apart by their own 8-byte magic.
-				var is_v4_or_later: bool = version == 4 or version == 5 or version == 6
-				var is_shader_payload: bool = (version == 5 or version == 6) and payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsShaderPayload.GRP1_MAGIC_HEX
+				var is_v4_or_later: bool = version == 4 or version == 5 or version == 6 or version == 7
+				var is_shader_payload: bool = (version == 5 or version == 6 or version == 7) and payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsShaderPayload.GRP1_MAGIC_HEX
 				var is_mesh_payload: bool = is_v4_or_later and payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsMeshPayload.GRM1_MAGIC_HEX
 				if is_shader_payload:
 					var shader_decoded: Dictionary = RsShaderPayload.decode(payload)
@@ -2025,7 +2054,7 @@ class Stream:
 
 	func _accept_transaction(meta: Dictionary, offset: int, blocks: Array) -> PackedStringArray:
 		var errors := PackedStringArray()
-		var is_v6: bool = version == 6
+		var is_v6: bool = version == 6 or version == 7
 		# is_v5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
 		var is_v5: bool = is_v6 or version == 5
 		var is_v4: bool = is_v5 or version == 4
@@ -2658,7 +2687,7 @@ class Stream:
 
 	func _check_resolved_invariants(seq: int, unsupported_meta: Array, is_v4: bool, is_v5: bool) -> String:
 		var where: String = "transaction seq %d" % seq
-		var is_v6: bool = version == 6
+		var is_v6: bool = version == 6 or version == 7
 		var canvas_ids: Dictionary[int, bool] = {}
 		for id: int in canvases:
 			canvas_ids[id] = true

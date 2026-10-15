@@ -88,7 +88,18 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV6 = {0x47, 0x52, 0x53, 0x36,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV6 = "render-stream/6";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6 };
+// render-stream/7 (G7w, render-stream-7.md): a live-transport delta on /6 (gate7-design.md D2):
+// the hello gains receiver_kind/credit_window/token/manifest_sha256/presentation geometry, the
+// session's new top-level `publication` key gains `credit_window`, `error.reason` gains
+// `unauthorized`, and HTTP gains CORS. Records, transactions, payloads and HTTP routes are
+// byte-identical to /6 apart from the magic/protocol/subprotocol strings. As with /3 to /6
+// (memory: g4e1-rs3-version-switch-pattern), /7 is a protocol-version switch on Session, not a
+// fork: the capture and the receiver keep speaking /6 until G7n.
+inline constexpr std::array<std::uint8_t, 8> kMagicV7 = {0x47, 0x52, 0x53, 0x37,
+                                                          0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV7 = "render-stream/7";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7 };
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
@@ -768,6 +779,10 @@ struct PublicationInfo {
   PublicationMode mode = PublicationMode::EveryFrame;
   bool has_target_fps = false;  // false -> "target_fps": null
   std::int32_t target_fps = 0;
+  // render-stream-7.md "Session": the granted live credit window, 1 or 2 (gate7-design.md D4).
+  // Encoded only at /7; always 1 on a file stream. Defaults to 1 so every /6 caller that never
+  // sets this field is unaffected.
+  std::int32_t credit_window = 1;
 };
 
 // render-stream-2.md session "resources": the resource policy for this stream.

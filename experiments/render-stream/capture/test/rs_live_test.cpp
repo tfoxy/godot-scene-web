@@ -474,6 +474,80 @@ void test_v4_hub_and_control() {
   }
 }
 
+// G7w (render-stream-7.md "Hello", gate7-design.md Q2): parse_control(V7) takes golden-7/
+// control/, the hello's nine new keys and no Hub behaviour -- the Hub does not speak /7 yet
+// (G7n rebases it onto G6c).
+void test_v7_control_parser() {
+  const std::string root = std::string(GRC_GOLDEN7_DIR) + "/control";
+  const std::vector<std::string> valid = list_dir(root + "/valid");
+  const std::vector<std::string> invalid = list_dir(root + "/invalid");
+  check(valid.size() == 4, "4 valid golden-7 control vectors (got " +
+                               std::to_string(valid.size()) + ")");
+  check(invalid.size() == 6, "6 invalid golden-7 control vectors (got " +
+                                 std::to_string(invalid.size()) + ")");
+  for (const std::string &path : valid) {
+    ControlMessage m;
+    std::string error;
+    check(parse_control(read_file(path), &m, &error, ProtocolVersion::V7),
+          "valid golden-7 control parses as V7: " + path + " " + error);
+  }
+  for (const std::string &path : invalid) {
+    ControlMessage m;
+    std::string error;
+    check(!parse_control(read_file(path), &m, &error, ProtocolVersion::V7),
+          "invalid golden-7 control refused as V7: " + path);
+    check(!error.empty(), "invalid golden-7 control has an error text: " + path);
+  }
+  {
+    ControlMessage m;
+    check(parse_control(read_file(root + "/valid/hello-native-w1-token.json"), &m, nullptr,
+                         ProtocolVersion::V7) &&
+              m.type == ControlType::Hello && m.protocol == "render-stream/7" &&
+              m.receiver_kind == "native" && m.credit_window == 1 && m.has_token &&
+              m.token == std::string(64, 'a') && m.has_manifest_sha256 &&
+              m.presentation_backing_w == 640 && m.presentation_backing_h == 360 &&
+              m.dpr_milli == 1000,
+          "hello-native-w1-token fields");
+    check(parse_control(read_file(root + "/valid/hello-web-export-w2-notoken.json"), &m, nullptr,
+                         ProtocolVersion::V7) &&
+              m.receiver_kind == "web-export" && m.credit_window == 2 && !m.has_token &&
+              !m.has_manifest_sha256,
+          "hello-web-export-w2-notoken fields: null token/manifest_sha256");
+  }
+  // A /7 hello is refused by the V6 parser, and a /6 hello is refused by the V7 parser (as every
+  // earlier version pair: memory g4e1-rs3-version-switch-pattern).
+  {
+    ControlMessage m;
+    check(!parse_control(read_file(root + "/valid/hello-native-w1-token.json"), &m, nullptr,
+                          ProtocolVersion::V6),
+          "a /7 hello is refused by the V6 parser");
+    const std::string hello6 =
+        R"({"type":"hello","protocol":"render-stream/6","receiver":"t","credit_stage":"submitted","inbound_buffer_bytes":16777216})";
+    check(!parse_control(hello6, &m, nullptr, ProtocolVersion::V7),
+          "a /6 hello is refused by the V7 parser");
+  }
+  // A hand-written minimal hello (every key, token/manifest_sha256 both null) parses -- the
+  // null-literal path through the flat-object parser, exercised independently of the golden
+  // vectors above.
+  {
+    ControlMessage m;
+    std::string error;
+    check(parse_control(
+              R"({"type":"hello","protocol":"render-stream/7","receiver":"t","receiver_kind":"native","credit_stage":"submitted","credit_window":1,"inbound_buffer_bytes":1,"token":null,"manifest_sha256":null,"presentation_backing_w":1,"presentation_backing_h":1,"presentation_css_w":1,"presentation_css_h":1,"dpr_milli":1})",
+              &m, &error, ProtocolVersion::V7),
+          "a minimal /7 hello with null token/manifest_sha256 parses: " + error);
+    check(!m.has_token && !m.has_manifest_sha256, "and both decode as absent");
+  }
+  // An invalid literal (bad null spelling) is refused, not silently accepted as some other type.
+  {
+    ControlMessage m;
+    check(!parse_control(
+              R"({"type":"hello","protocol":"render-stream/7","receiver":"t","receiver_kind":"native","credit_stage":"submitted","credit_window":1,"inbound_buffer_bytes":1,"token":nul,"manifest_sha256":null,"presentation_backing_w":1,"presentation_backing_h":1,"presentation_css_w":1,"presentation_css_h":1,"dpr_milli":1})",
+              &m, nullptr, ProtocolVersion::V7),
+          "a bad null spelling (\"nul\") is refused");
+  }
+}
+
 void test_credit_stages() {
   Rig rig;
   rig.hub.on_event(opened(1), 0);
@@ -1463,6 +1537,7 @@ int main() {
   test_control_parser();
   test_v3_hub_and_control();
   test_v4_hub_and_control();
+  test_v7_control_parser();
   test_hello_and_first_transaction();
   test_credit_stages();
   test_resync();

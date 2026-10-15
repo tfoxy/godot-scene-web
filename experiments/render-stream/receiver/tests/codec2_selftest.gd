@@ -52,11 +52,13 @@ func _initialize() -> void:
 	var golden4: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-4").simplify_path()
 	var golden5: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-5").simplify_path()
 	var golden6: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-6").simplify_path()
+	var golden7: String = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-7").simplify_path()
 	_run_suite(_golden, 2)
 	_run_suite(golden3, 3)
 	_run_suite(golden4, 4)
 	_run_suite(golden5, 5)
 	_run_suite(golden6, 6)
+	_run_suite(golden7, 7)
 
 	# A /5 decode refuses a /4-magic stream and vice versa, and a /6 decode refuses a /5-magic
 	# stream and vice versa (render-stream-4.md/render-stream-5.md/render-stream-6.md: "Decoders
@@ -72,6 +74,15 @@ func _initialize() -> void:
 	_check(errors_6_as_5.size() > 0 and Rs2Decoder.code_of(errors_6_as_5[0]) == "bad-magic", "golden-6/full.rs6 decoded as version 5 should be rejected with bad-magic, got %s" % str(errors_6_as_5))
 	var errors_5_as_6: PackedStringArray = Rs2Decoder.validate_recording(full5, 6)
 	_check(errors_5_as_6.size() > 0 and Rs2Decoder.code_of(errors_5_as_6[0]) == "bad-magic", "golden-5/full.rs5 decoded as version 6 should be rejected with bad-magic, got %s" % str(errors_5_as_6))
+	# A /7 decode refuses a /6-magic stream and vice versa (render-stream-7.md, same rule).
+	var rate6: PackedByteArray = FileAccess.get_file_as_bytes(golden6.path_join("rate.rs6"))
+	var rate7: PackedByteArray = FileAccess.get_file_as_bytes(golden7.path_join("rate.rs7"))
+	var errors_7_as_6: PackedStringArray = Rs2Decoder.validate_recording(rate7, 6)
+	_check(errors_7_as_6.size() > 0 and Rs2Decoder.code_of(errors_7_as_6[0]) == "bad-magic", "golden-7/rate.rs7 decoded as version 6 should be rejected with bad-magic, got %s" % str(errors_7_as_6))
+	var errors_6_as_7: PackedStringArray = Rs2Decoder.validate_recording(rate6, 7)
+	_check(errors_6_as_7.size() > 0 and Rs2Decoder.code_of(errors_6_as_7[0]) == "bad-magic", "golden-6/rate.rs6 decoded as version 7 should be rejected with bad-magic, got %s" % str(errors_6_as_7))
+
+	_test_hello7(golden7)
 
 	_finish()
 
@@ -95,6 +106,7 @@ func _run_suite(golden_dir: String, version: int) -> void:
 	_test_independent_leg(index, version, "presentation_leg")
 	_test_independent_leg(index, version, "snap_leg")
 	_test_independent_leg(index, version, "rate_leg")
+	_test_window2_leg(index, version)
 
 
 func _finish() -> void:
@@ -183,6 +195,8 @@ func _decode_recording(data: PackedByteArray, version: int) -> Dictionary:
 		schema = "render-stream-5-decoded/1"
 	elif version == 6:
 		schema = "render-stream-6-decoded/1"
+	elif version == 7:
+		schema = "render-stream-7-decoded/1"
 	return {
 		"schema": schema,
 		"magic": data.slice(0, 8).hex_encode(),
@@ -224,7 +238,7 @@ func _snapshot_state(stream: Rs2Decoder.Stream, meta: Dictionary) -> Dictionary:
 		"items": items_out,
 		"textures": textures_out,
 	}
-	if stream.version == 4 or stream.version == 5 or stream.version == 6:
+	if stream.version == 4 or stream.version == 5 or stream.version == 6 or stream.version == 7:
 		var mesh_ids: Array[int] = []
 		for id: int in stream.meshes:
 			mesh_ids.append(id)
@@ -233,7 +247,7 @@ func _snapshot_state(stream: Rs2Decoder.Stream, meta: Dictionary) -> Dictionary:
 		for id: int in mesh_ids:
 			meshes_out.append(stream.meshes[id])
 		out["meshes"] = meshes_out
-	if stream.version == 5 or stream.version == 6:
+	if stream.version == 5 or stream.version == 6 or stream.version == 7:
 		var shader_ids: Array[int] = []
 		for id: int in stream.shaders:
 			shader_ids.append(id)
@@ -319,9 +333,9 @@ func _test_invalid(index: Dictionary, version: int) -> void:
 	var invalid: Array = index["invalid"]
 	# golden-2 has 12 invalid vectors (its full /2 rule set); golden-3 has exactly the 5 new
 	# failure modes /3 adds; golden-4 has the 11 new failure modes /4 adds; golden-5 has the 14
-	# new failure modes /5 adds; golden-6 has the 13 new failure modes /6 adds (each contract:
-	# every rule left unchanged is already covered by an earlier golden directory's own vectors,
-	# and is not re-derived there).
+	# new failure modes /5 adds; golden-6 has the 13 new failure modes /6 adds; golden-7 has the
+	# 3 new failure modes /7 adds (each contract: every rule left unchanged is already covered by
+	# an earlier golden directory's own vectors, and is not re-derived there).
 	var expected_count: int = 12
 	if version == 3:
 		expected_count = 5
@@ -331,6 +345,8 @@ func _test_invalid(index: Dictionary, version: int) -> void:
 		expected_count = 14
 	elif version == 6:
 		expected_count = 13
+	elif version == 7:
+		expected_count = 3
 	_check(invalid.size() == expected_count, "index.json lists %d invalid vectors, expected %d" % [invalid.size(), expected_count])
 	for value: Variant in invalid:
 		var vector: Dictionary = value
@@ -399,9 +415,14 @@ func _test_payload_invalid(index: Dictionary, version: int) -> void:
 
 func _test_payloads(index: Dictionary, version: int) -> void:
 	var payloads: Array = index["payloads"]
-	# golden-3, golden-4 and golden-5 have one more payload than golden-2: the 512x512 "page"
-	# (state 7).
-	var expected_count: int = 5 if (version == 3 or version == 4 or version == 5 or version == 6) else 4
+	# golden-3, golden-4, golden-5 and golden-6 have one more payload than golden-2: the 512x512
+	# "page" (state 7). golden-7 carries no full/patch/inline states at all (gate7-design.md D2:
+	# records/transactions/payloads are byte-identical to /6), so it lists none.
+	var expected_count: int = 4
+	if version == 3 or version == 4 or version == 5 or version == 6:
+		expected_count = 5
+	elif version == 7:
+		expected_count = 0
 	_check(payloads.size() == expected_count, "index.json lists %d payloads, expected %d" % [payloads.size(), expected_count])
 	for value: Variant in payloads:
 		var vector: Dictionary = value
@@ -515,6 +536,144 @@ func _test_independent_leg(index: Dictionary, version: int, key: String) -> void
 			resolved_index += 1
 	_check(resolved_index == expected_transactions.size(), "%s: saw %d transactions, %s has %d" % [file, resolved_index, resolved_file, expected_transactions.size()])
 	print("[rs2-selftest] %s -> independent leg ok" % file)
+
+
+## golden-7 only (render-stream-7.md "Golden vectors", gate7-design.md Q2; As built, G7w):
+## window2.rs7's credit_window-2 stream has THREE transactions (a full plus two chained no-op
+## patches) where resolved-rate.json has one -- nothing in the scene ever changes, so every
+## transaction's state (seq/frame/encoding aside) must equal that single expected state, unlike
+## _test_independent_leg()'s whole-document comparison.
+func _test_window2_leg(index: Dictionary, version: int) -> void:
+	if not index.has("window2_leg"):
+		return
+	var leg: Dictionary = index["window2_leg"]
+	var file: String = leg["file"]
+	var data: PackedByteArray = _read_bytes(file)
+	var decoded_file: String = leg["decoded"]
+	var expected_decoded: Dictionary = _read_json(decoded_file)
+	var actual_decoded: Dictionary = _decode_recording(data, version)
+	var diffs: Array[String] = []
+	_deep_equal(actual_decoded, expected_decoded, "$", diffs)
+	for diff: String in diffs.slice(0, 20):
+		_failures.append("%s decoded form: %s" % [file, diff])
+
+	var errors: PackedStringArray = Rs2Decoder.validate_recording(data, version)
+	_check(errors.is_empty(), "%s should validate, got %s" % [file, str(errors)])
+
+	var split: Dictionary = Rs2Decoder.split_records(data, version)
+	var records: Array[Dictionary] = split["records"]
+	var stream := Rs2Decoder.Stream.new(version)
+	var resolved_file: String = leg["resolved"]
+	var expected_resolved: Dictionary = _read_json(resolved_file)
+	var expected_transactions: Array = expected_resolved["transactions"]
+	var expected_first: Dictionary = expected_transactions[0]
+	var expected_state: Dictionary = expected_first["state"]
+	var resolved_index: int = 0
+	for i: int in records.size():
+		var raw: Dictionary = records[i]
+		var record: Dictionary = Rs2Decoder.decode_record(data, Rs2Decoder.as_int(raw["offset"]), version)
+		var accept_errors: PackedStringArray = stream.accept(data, record)
+		_check(accept_errors.is_empty(), "%s record %d accept errors: %s" % [file, i, str(accept_errors)])
+		var meta: Dictionary = record["meta"]
+		if meta.get("type") == "transaction":
+			var actual_state: Dictionary = _snapshot_state(stream, meta)
+			var state_diffs: Array[String] = []
+			_deep_equal(actual_state, expected_state, "$", state_diffs)
+			for diff: String in state_diffs.slice(0, 20):
+				_failures.append("%s seq %d resolved state: %s" % [file, resolved_index + 1, diff])
+			resolved_index += 1
+	_check(resolved_index == 3, "%s: saw %d transactions, expected 3" % [file, resolved_index])
+	print("[rs2-selftest] %s -> independent leg ok (3 transactions, 1 shared state)" % file)
+
+
+## render-stream-7.md "Hello" (gate7-design.md Q2): a minimal, self-contained hello checker for
+## the GDScript self-test (G7w's own scope -- hello is a live-wire control message, never part
+## of a recording, so Rs2Decoder never touches it; this mirrors rs_live.cpp's parse_control(V7)
+## independently, exercised against the SAME golden-7/control/ vectors that file's own self-test
+## checks).
+const _HELLO7_KEYS: Array = [
+	"type", "protocol", "receiver", "receiver_kind", "credit_stage", "credit_window",
+	"inbound_buffer_bytes", "token", "manifest_sha256", "presentation_backing_w",
+	"presentation_backing_h", "presentation_css_w", "presentation_css_h", "dpr_milli",
+]
+
+
+func _is_hex64(value: Variant) -> bool:
+	if typeof(value) != TYPE_STRING:
+		return false
+	var text: String = value
+	if text.length() != 64:
+		return false
+	for c: String in text:
+		if not ((c >= "0" and c <= "9") or (c >= "a" and c <= "f")):
+			return false
+	return true
+
+
+func _is_nonneg_int(value: Variant) -> bool:
+	if not Rs2Decoder.is_int(value):
+		return false
+	var number: float = value
+	return number >= 0
+
+
+func _check_hello7(value: Variant) -> String:
+	if typeof(value) != TYPE_DICTIONARY:
+		return "hello is not an object"
+	var obj: Dictionary = value
+	var keys: Array = obj.keys()
+	if keys.size() != _HELLO7_KEYS.size():
+		return "hello has %d keys, expected %d" % [keys.size(), _HELLO7_KEYS.size()]
+	for k: String in _HELLO7_KEYS:
+		if not obj.has(k):
+			return "hello is missing key \"%s\"" % k
+	if obj.get("type") != "hello":
+		return "\"type\" is not \"hello\""
+	if obj.get("protocol") != "render-stream/7":
+		return "\"protocol\" is not \"render-stream/7\""
+	if typeof(obj.get("receiver")) != TYPE_STRING:
+		return "\"receiver\" is not a string"
+	var receiver: String = obj.get("receiver")
+	if receiver.length() > 64:
+		return "\"receiver\" is not a string of at most 64 characters"
+	if not ["native", "web-export", "gsw-canvas"].has(obj.get("receiver_kind")):
+		return "\"receiver_kind\" is not native, web-export or gsw-canvas"
+	if obj.get("credit_stage") != "submitted" and obj.get("credit_stage") != "applied":
+		return "\"credit_stage\" is not submitted or applied"
+	if not Rs2Decoder.is_int(obj.get("credit_window")) or Rs2Decoder.as_int(obj.get("credit_window")) < 1 or Rs2Decoder.as_int(obj.get("credit_window")) > 2:
+		return "\"credit_window\" is not 1 or 2"
+	if not _is_nonneg_int(obj.get("inbound_buffer_bytes")):
+		return "\"inbound_buffer_bytes\" is not a non-negative integer"
+	if not (obj.get("token") == null or _is_hex64(obj.get("token"))):
+		return "\"token\" is neither null nor 64 lowercase hex"
+	if not (obj.get("manifest_sha256") == null or _is_hex64(obj.get("manifest_sha256"))):
+		return "\"manifest_sha256\" is neither null nor 64 lowercase hex"
+	for k: String in ["presentation_backing_w", "presentation_backing_h", "presentation_css_w", "presentation_css_h", "dpr_milli"]:
+		if not _is_nonneg_int(obj.get(k)):
+			return "\"%s\" is not a non-negative integer" % k
+	return ""
+
+
+func _test_hello7(golden7: String) -> void:
+	var valid_dir: String = golden7.path_join("control/valid")
+	var invalid_dir: String = golden7.path_join("control/invalid")
+	var valid_files := DirAccess.get_files_at(valid_dir)
+	var invalid_files := DirAccess.get_files_at(invalid_dir)
+	_check(valid_files.size() == 4, "golden-7/control/valid has 4 vectors (got %d)" % valid_files.size())
+	_check(invalid_files.size() == 6, "golden-7/control/invalid has 6 vectors (got %d)" % invalid_files.size())
+	for name: String in valid_files:
+		var json := JSON.new()
+		if json.parse(FileAccess.get_file_as_string(valid_dir.path_join(name))) != OK:
+			_failures.append("cannot parse %s" % name)
+			continue
+		var result: String = _check_hello7(json.data)
+		_check(result == "", "golden-7/control/valid/%s accepted (got %s)" % [name, result])
+	for name: String in invalid_files:
+		var json := JSON.new()
+		if json.parse(FileAccess.get_file_as_string(invalid_dir.path_join(name))) != OK:
+			continue
+		var result: String = _check_hello7(json.data)
+		_check(result != "", "golden-7/control/invalid/%s refused" % name)
 
 
 ## Deep equality after JSON parsing: any two numbers compare as floats.

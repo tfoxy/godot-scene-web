@@ -1,0 +1,40 @@
+{
+  "schema": "render-stream-7-golden-index/1",
+  "protocol": "render-stream/7",
+  "valid": [],
+  "resolved": "resolved-rate.json",
+  "rate_leg": {
+    "file": "rate.rs7",
+    "hex": "rate.hex",
+    "decoded": "rate.decoded.json",
+    "sha256": "134965bd9fe596e13600e00ae6166aee1e7b8dd56425278d75bd0a0d986d1af6",
+    "resolved": "resolved-rate.json"
+  },
+  "window2_leg": {
+    "file": "window2.rs7",
+    "hex": "window2.hex",
+    "decoded": "window2.decoded.json",
+    "sha256": "fbd3857d75e81151400e5f6a161aa10c506add911a84efefba1ebd306c9da82c",
+    "resolved": "resolved-rate.json"
+  },
+  "inline_resources": [],
+  "corrupt": [],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs7",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '6' (GRS6), not '7'"
+    },
+    {
+      "file": "invalid/publication-window.rs7",
+      "code": "publication-entry",
+      "description": "publication.credit_window is 3, out of range 1..2"
+    },
+    {
+      "file": "invalid/publication-file-window.rs7",
+      "code": "publication-entry",
+      "description": "stream.transport is \"file\" but publication.credit_window is 2, not 1"
+    }
+  ],
+  "payloads": []
+}

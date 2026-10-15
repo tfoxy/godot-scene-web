@@ -1,0 +1,16 @@
+{
+  "type": "hello",
+  "protocol": "render-stream/7",
+  "receiver": "gate7-native-w2",
+  "receiver_kind": "native",
+  "credit_stage": "applied",
+  "credit_window": 2,
+  "inbound_buffer_bytes": 16777216,
+  "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "manifest_sha256": null,
+  "presentation_backing_w": 640,
+  "presentation_backing_h": 360,
+  "presentation_css_w": 640,
+  "presentation_css_h": 360,
+  "dpr_milli": 1000
+}

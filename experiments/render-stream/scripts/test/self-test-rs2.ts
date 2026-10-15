@@ -50,7 +50,7 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -82,6 +82,7 @@ const GOLDEN3_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-3");
 const GOLDEN4_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-4");
 const GOLDEN5_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-5");
 const GOLDEN6_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-6");
+const GOLDEN7_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-7");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -130,6 +131,9 @@ interface GoldenIndex {
   presentation_leg?: IndependentLeg;
   snap_leg?: IndependentLeg;
   rate_leg?: IndependentLeg;
+  // golden-7 only (render-stream-7.md "Golden vectors", gate7-design.md Q2): window2.rs7, the
+  // credit_window-2 leg with two chained patches.
+  window2_leg?: IndependentLeg;
 }
 
 interface IndependentLeg {
@@ -181,17 +185,19 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-6")
-    ? "golden-6"
-    : goldenDir.endsWith("golden-5")
-      ? "golden-5"
-      : goldenDir.endsWith("golden-4")
-        ? "golden-4"
-        : goldenDir.endsWith("golden-3")
-          ? "golden-3"
-          : "golden-2";
+  const label = goldenDir.endsWith("golden-7")
+    ? "golden-7"
+    : goldenDir.endsWith("golden-6")
+      ? "golden-6"
+      : goldenDir.endsWith("golden-5")
+        ? "golden-5"
+        : goldenDir.endsWith("golden-4")
+          ? "golden-4"
+          : goldenDir.endsWith("golden-3")
+            ? "golden-3"
+            : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -375,14 +381,16 @@ async function runSuite(
     );
   }
 
-  // --- independent legs: golden-5's params.rs5 (gate5_5-design.md D4) and golden-6's
-  // presentation.rs6/snap.rs6/rate.rs6 (render-stream-6.md "Golden vectors") -- each a separate,
-  // independent small recording, not part of the shared full/patch/inline streams. ------------
+  // --- independent legs: golden-5's params.rs5 (gate5_5-design.md D4), golden-6's
+  // presentation.rs6/snap.rs6/rate.rs6 (render-stream-6.md "Golden vectors") and golden-7's
+  // rate.rs7/window2.rs7 (render-stream-7.md "Golden vectors") -- each a separate, independent
+  // small recording, not part of the shared full/patch/inline streams. ------------------------
   for (const legEntry of [
     index.params_leg,
     index.presentation_leg,
     index.snap_leg,
     index.rate_leg,
+    index.window2_leg,
   ]) {
     if (legEntry === undefined) continue;
     const bytes = await readBytes(goldenDir, legEntry.file);
@@ -400,14 +408,34 @@ async function runSuite(
       `${label}: validateRecording(${legEntry.file}) is [] (got ${JSON.stringify(errors)})`,
     );
     const resolved = resolveRecording(bytes, version);
-    const stripped = stripExcepted(resolved);
     const expectedResolved = JSON.parse(
       await readFile(join(goldenDir, legEntry.resolved), "utf8"),
     );
-    ok(
-      statesEqual(stripped, expectedResolved),
-      `${label}: resolveRecording(${legEntry.file}) deep-equals ${legEntry.resolved} (excepted fields aside)`,
-    );
+    if (legEntry === index.window2_leg) {
+      // render-stream-7.md "Golden vectors" (As built, G7w): window2.rs7's credit_window-2
+      // stream has THREE transactions (a full plus two chained no-op patches) where
+      // resolved-rate.json has one -- nothing in the scene ever changes, so every transaction's
+      // `state` (seq/frame/encoding aside) must equal that single expected state.
+      const expectedState = (
+        expectedResolved as { transactions: Array<{ state: unknown }> }
+      ).transactions[0].state;
+      ok(
+        resolved.transactions.length === 3,
+        `${label}: resolveRecording(${legEntry.file}) has 3 transactions (got ${resolved.transactions.length})`,
+      );
+      for (const txn of resolved.transactions) {
+        ok(
+          statesEqual(txn.state, expectedState),
+          `${label}: resolveRecording(${legEntry.file}) seq ${txn.seq}'s state deep-equals ${legEntry.resolved}'s sole transaction state`,
+        );
+      }
+    } else {
+      const stripped = stripExcepted(resolved);
+      ok(
+        statesEqual(stripped, expectedResolved),
+        `${label}: resolveRecording(${legEntry.file}) deep-equals ${legEntry.resolved} (excepted fields aside)`,
+      );
+    }
   }
 }
 
@@ -417,6 +445,7 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN4_DIR, 4);
   await runSuite(GOLDEN5_DIR, 5);
   await runSuite(GOLDEN6_DIR, 6);
+  await runSuite(GOLDEN7_DIR, 7);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
@@ -460,8 +489,20 @@ async function main(): Promise<void> {
     validateRecording(full5, 6)[0]?.startsWith("bad-magic: ") ?? false,
     "golden-5/full.rs5 decoded as version 6 is rejected with bad-magic",
   );
+  // a /7 decode refuses /6 and a /6 decode refuses /7 (same rule, render-stream-7.md).
+  const rate6 = await readBytes(GOLDEN6_DIR, "rate.rs6");
+  const rate7 = await readBytes(GOLDEN7_DIR, "rate.rs7");
+  ok(
+    validateRecording(rate7, 6)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-7/rate.rs7 decoded as version 6 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(rate6, 7)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-6/rate.rs6 decoded as version 7 is rejected with bad-magic",
+  );
 
   unknownItemCases();
+  await helloCases();
 
   console.log(
     `\nself-test-rs2: ${failures === 0 ? "all checks passed" : `${failures} check(s) FAILED`}`,
@@ -544,6 +585,166 @@ function unknownItemCases(): void {
     }),
     6,
     'unknown_item_policy "strict" (absent is the only spelling of strict)',
+  );
+}
+
+// --------------------------------------------------------------------------------------- hello (G7w)
+//
+// render-stream-7.md "Hello" (gate7-design.md Q2): a minimal, self-contained hello checker for
+// the TypeScript self-test (G7w's own scope -- hello is a live-wire control message, never part
+// of a recording, so render-stream-2.ts's decoder never touches it; this mirrors
+// rs_live.cpp's parse_control(V7) independently, exercised against the SAME golden-7/control/
+// vectors that file's own self-test checks).
+const HELLO7_KEYS = [
+  "type",
+  "protocol",
+  "receiver",
+  "receiver_kind",
+  "credit_stage",
+  "credit_window",
+  "inbound_buffer_bytes",
+  "token",
+  "manifest_sha256",
+  "presentation_backing_w",
+  "presentation_backing_h",
+  "presentation_css_w",
+  "presentation_css_h",
+  "dpr_milli",
+];
+const HEX64 = /^[0-9a-f]{64}$/;
+
+function isNonNegativeInt(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function checkHello7(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return ["hello is not an object"];
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (
+    keys.length !== HELLO7_KEYS.length ||
+    !HELLO7_KEYS.every((k) => keys.includes(k))
+  ) {
+    return [
+      `hello has keys ${JSON.stringify(keys)}, expected exactly ${JSON.stringify(HELLO7_KEYS)}`,
+    ];
+  }
+  if (obj.type !== "hello") return ['"type" is not "hello"'];
+  if (obj.protocol !== "render-stream/7")
+    return [
+      `"protocol" is ${JSON.stringify(obj.protocol)}, not "render-stream/7"`,
+    ];
+  if (typeof obj.receiver !== "string" || obj.receiver.length > 64)
+    return ['"receiver" is not a string of at most 64 characters'];
+  if (
+    !["native", "web-export", "gsw-canvas"].includes(
+      obj.receiver_kind as string,
+    )
+  )
+    return ['"receiver_kind" is not native, web-export or gsw-canvas'];
+  if (obj.credit_stage !== "submitted" && obj.credit_stage !== "applied")
+    return ['"credit_stage" is not submitted or applied'];
+  if (
+    typeof obj.credit_window !== "number" ||
+    !Number.isInteger(obj.credit_window) ||
+    obj.credit_window < 1 ||
+    obj.credit_window > 2
+  )
+    return [
+      `"credit_window" is ${JSON.stringify(obj.credit_window)}, not 1 or 2`,
+    ];
+  if (!isNonNegativeInt(obj.inbound_buffer_bytes))
+    return ['"inbound_buffer_bytes" is not a non-negative integer'];
+  if (
+    !(
+      obj.token === null ||
+      (typeof obj.token === "string" && HEX64.test(obj.token))
+    )
+  )
+    return ['"token" is neither null nor 64 lowercase hex'];
+  if (
+    !(
+      obj.manifest_sha256 === null ||
+      (typeof obj.manifest_sha256 === "string" &&
+        HEX64.test(obj.manifest_sha256))
+    )
+  )
+    return ['"manifest_sha256" is neither null nor 64 lowercase hex'];
+  for (const key of [
+    "presentation_backing_w",
+    "presentation_backing_h",
+    "presentation_css_w",
+    "presentation_css_h",
+    "dpr_milli",
+  ]) {
+    if (!isNonNegativeInt(obj[key])) {
+      return [`"${key}" is not a non-negative integer`];
+    }
+  }
+  return [];
+}
+
+async function helloCases(): Promise<void> {
+  const root = join(GOLDEN7_DIR, "control");
+  const validDir = join(root, "valid");
+  const invalidDir = join(root, "invalid");
+  const validFiles = (await readdir(validDir))
+    .filter((f) => f.endsWith(".json"))
+    .sort();
+  const invalidFiles = (await readdir(invalidDir))
+    .filter((f) => f.endsWith(".json"))
+    .sort();
+  ok(
+    validFiles.length === 4,
+    `golden-7/control/valid has 4 vectors (got ${validFiles.length})`,
+  );
+  ok(
+    invalidFiles.length === 6,
+    `golden-7/control/invalid has 6 vectors (got ${invalidFiles.length})`,
+  );
+  for (const file of validFiles) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(validDir, file), "utf8"),
+    );
+    const errors = checkHello7(parsed);
+    ok(
+      errors.length === 0,
+      `golden-7/control/valid/${file} accepted (got ${JSON.stringify(errors)})`,
+    );
+  }
+  for (const file of invalidFiles) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(invalidDir, file), "utf8"),
+    );
+    const errors = checkHello7(parsed);
+    ok(errors.length > 0, `golden-7/control/invalid/${file} refused`);
+  }
+  // A sanity round trip on a known-good vector's fields, independent of the golden file.
+  const sample = {
+    type: "hello",
+    protocol: "render-stream/7",
+    receiver: "x",
+    receiver_kind: "gsw-canvas",
+    credit_stage: "submitted",
+    credit_window: 1,
+    inbound_buffer_bytes: 1024,
+    token: null,
+    manifest_sha256: null,
+    presentation_backing_w: 1,
+    presentation_backing_h: 1,
+    presentation_css_w: 1,
+    presentation_css_h: 1,
+    dpr_milli: 1000,
+  };
+  ok(
+    checkHello7(sample).length === 0,
+    "a hand-built minimal /7 hello is accepted",
+  );
+  ok(
+    checkHello7({ ...sample, credit_window: 3 }).length > 0,
+    "credit_window 3 is refused",
   );
 }
 
