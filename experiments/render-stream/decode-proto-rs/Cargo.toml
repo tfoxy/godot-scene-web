@@ -1,0 +1,27 @@
+[package]
+name = "rs-decode-proto"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Receiver decode profile (2026-10-14): a Rust cost prototype of the render-stream/6 transaction decode, not a decoder"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "rs-decode-proto"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = { version = "0.10", default-features = false }
+
+[features]
+# The portable SHA-256 (no SHA-NI / ARMv8 crypto): what wasm gets, and an upper bound for a phone.
+soft-sha = ["sha2/force-soft"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
