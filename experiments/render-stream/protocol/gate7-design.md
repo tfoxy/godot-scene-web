@@ -3,9 +3,10 @@
 Status: contract for gate 7, written 2026-10-14. At that point gate 6 is complete through G6b and G6l
 on `main`. G6c (`rs/gate6-g6c`) and G6s (`rs/gate6-g6s`) are on branches, and G6p and G6z have not
 started. Nothing here is implemented yet. Hand it out piecewise. Each increment (G7w, G7j, G7h,
-G7c, G7f, G7d, G7e, G7a, G7n, G7m, G7b, G7t, G7s, G7l, G7o, G7g, G7u, G7r, G7k, G7q, G7v, G7p,
-G7z) is one verified commit on `main`, implemented by one agent in its own worktree. G7q is gated on
-fork F1 at the end of this document. G7f is conditional (D20), and so is G7o (D27).
+G7c, G7f, G7d, G7e, G7a, G7n, G7m, G7o1, G7x, G7b, G7t, G7s, G7l, G7xn, G7xw, G7g, G7u, G7r, G7k,
+G7q, G7v, G7p, G7z) is one verified commit on `main`, implemented by one agent in its own worktree.
+G7q is gated on fork F1 at the end of this document. G7f is conditional (D20). G7xn and G7xw are
+gated on fork F4. G7o lands nothing since D33 split it.
 
 **Amended 2026-10-14 with a phone acceptance target** (D24 to D28, Q13, increments G7d, G7m, G7o
 and G7v, fork F3). The user's requirement: the receiver must easily work at 60/60 on the user's
@@ -24,6 +25,15 @@ run unattended while it is attached. The g86's legs stay operator-attended (D28)
 decode core is allowed where measurement shows it pays (D27). Nothing was run on either phone for
 this amendment: the g31's facts in Q13a come from read-only `adb` queries (getprop, dumpsys,
 `pm list`, `/proc/cpuinfo`, cpufreq limits).
+
+**Amended 2026-10-15 (later): the shared Rust core** (D29 to D34, Q14, increments G7o1, G7x, G7xn
+and G7xw; G7a, G7o, G7t, G7s, G7l, G7u, G7k and G7v revised; fork F4). After G7m's g31 bench and
+the receiver decode profile, the user chose one Rust crate for render-stream decode, retained state
+and apply. The GSW receiver renders it through `packages/canvas/rust-prototype`, and thin adapters
+serve the native receiver and the web export. The TypeScript and GDScript decoders stay as golden
+cross-checks. Before anything adopts the core, the smallest end-to-end slice (G7x) must beat the
+TypeScript path's p95 on the g31. If it does not, the decision goes back to the user (D32). Nothing
+was built or run for this amendment. The numbers it cites are G7m's and the decode profile's.
 
 Gate 7 needs a new live-transport version, `render-stream/7`. It is specified here as a delta in Q2
 and finalized by G7w (D2). The documents this extends are [gate6-design.md](gate6-design.md),
@@ -73,7 +83,9 @@ rendered reference as the native receiver. Gate 7 adds:
    render-stream decoder and resolver from `scripts/lib/`, a canvas applier that reimplements
    Godot's canvas ordering, and `packages/canvas`'s WebGL 2 executor. Shaders go through
    `packages/effects`'s transpiler, and everything outside its supported subset is a typed refusal
-   (Q5).
+   (Q5). *Since D29, if G7x wins:* a TypeScript shell over the shared Rust core, which decodes,
+   applies and lowers to a packed draw list, drawn by the Rust renderer's WebGL 2 `canvas-items`
+   path (Q14). The scripts/lib decoder stays as the checkers' decoder and the cross-check.
 3. **The same recordings, references and checkers.** Both browsers replay every receiver leg of
    gates 0 to 6 from a native run of those gates on the same build. Each gate's own checker judges
    them, parameterized by receiver kind, under an explicit per-receiver pixel policy (Q7).
@@ -105,8 +117,9 @@ rendered reference as the native receiver. Gate 7 adds:
 What gate 7 does **not** do: non-loopback serving, TLS (`wss://`, `https://`) and the target game
 (gate 8). It does not negotiate several presentation sizes from one session (gate 8, D12). It adds
 no compressed texture formats (gate 8, D19), no threaded web export, and no GDExtension in the
-browser other than D27's conditional shared decode core. It does not cover browsers other than the
-pinned desktop Chromium (Firefox, WebKit) and each phone's own Chrome, devices other than the two
+browser other than the shared Rust core's dlink adapter (D29, D34, G7xw, fork F4). It does not
+cover browsers other than the pinned desktop Chromium (Firefox, WebKit) and each phone's own
+Chrome, devices other than the two
 phones (D24), or a phone on a real network: each phone reaches the desktop host through
 `adb reverse` over USB (gate 8 owns Wi-Fi). Presentation
 feedback stays `unavailable` under headless Chromium (D13), and on the phones too, where only the
@@ -123,8 +136,8 @@ All of these are typed or deferred, with owners, in "Deferred".
 | D3  | Browser authorization and origin | **The token travels in the /7 hello, never in a URL or an upgrade header. The host checks `Origin`, and its HTTP endpoint speaks CORS.** A browser's `WebSocket` has no header parameter (G2e finding), and Godot's web peer warns and drops custom headers (`emws.cpp:91-93`). /7's hello carries `token` (64 hex). On a `bearer` session the host sends nothing before a hello with the right token, compared in constant time as G2e does. A wrong or missing token gets `error` `unauthorized` and close 1008, so the reason repeats in the close (memory godot-websocketpeer-drops-msgs-with-close). Resource GETs keep `Authorization: Bearer`, which `fetch` can send (`hcw.cpp:82-106`). New host configuration `GRC_LIVE_ALLOWED_ORIGINS` (a comma list, default empty): an upgrade, GET or `OPTIONS` that carries an `Origin` not in the list gets 403. A request with no `Origin` is exactly as at /6, which keeps native receivers and every /6 gate unchanged. For an allowed origin, GETs answer `Access-Control-Allow-Origin: <origin>` and `Vary: Origin`, and `OPTIONS` on the resource route answers a preflight (Q3). The page receives the token in its URL **fragment** (`#token=…`), which is never sent to a server or in a `Referer`, and removes it with `history.replaceState` before anything else runs. The allowlist is the defence against any website in the operator's browser opening `ws://127.0.0.1:<port>`. |
 | D4  | Credit window and 60/60 | **Window 1 stays the default, and window 2 is opt-in, negotiated, and fork F1.** G6c measured that one transaction in flight, sent only at host frame callbacks, and credit returned at the receiver's draw cannot hold 60/60. The receiver's hold (arrival to next draw) is uniform over a frame, so in the bad relative phase of two 60 Hz clocks the round trip exceeds one host frame and the host publishes every other callback. No receiver-side change removes that, only one that shortens the hold. /7's hello carries `credit_window` (1 or 2). The host grants `min(requested, GRC_LIVE_CREDIT_WINDOW_MAX)`, default maximum 1, and declares the grant in `publication.credit_window`. Window 1 is the handoff's rule ("at most one frame transaction in flight per receiver") and stays the correctness baseline. G7r measures the phase lock on all three receivers at window 1, with the "ack closer to draw" variants (native `RS_RECEIVER_LATE_POLL`, browsers' credit in the rAF callback right after submit). Window 2 changes a handoff rule, so its host implementation (G7q) waits for the user (F1). Without it, gate 7 passes with the negative finding restated for browsers. The key and its 1..2 domain are in /7 from the start, so F1 never needs another version. |
 | D5  | Web export build | **The non-mono Godot 4.5.1 editor exports `receiver/` with a pinned `web_nothreads_release.zip` and a custom shell.** `mise exec -- godot` resolves to the **mono** 4.5.1 editor (`4.5.1.stable.mono.official.f62fdbde1`). Its template directory `~/.local/share/godot/export_templates/4.5.1.stable.mono/` has no web template, and official Godot 4 .NET builds have none. The non-mono editor is installed at `~/.local/share/mise/installs/godot/4.5.1-stable/Godot_v4.5.1-stable_linux.x86_64`. The template is a **prerequisite not present locally**. Only `4.6.2.stable/web_nothreads_release.zip` exists, and it is the wrong engine. G7e records the download of the official 4.5.1-stable `web_nothreads_release.zip` (from the official export templates archive, with operator approval) into `~/.cache/godot-render-stream/templates/4.5.1-stable/` beside the pinned `linux_release.x86_64`. The preset points at it with `custom_template/release` and pins its sha256. Preset (`receiver/export_presets.cfg`, committed): `variant/thread_support=false` and `variant/extensions_support=false` (both defaults, `wexp.cpp:369-370`; no COOP/COEP needed and no emscripten toolchain, and `emcc` is absent here); `html/canvas_resize_policy=0` (None; the default is 2, `wexp.cpp:377`); `progressive_web_app/enabled=false`; `html/custom_html_shell` set to `receiver/web/shell.html`. The export includes only `receiver/`, never `fixtures/`. The export output is a build product under ignored `artifacts/render-stream/web-receiver/<sha>/`. |
-| D6  | Where the GSW receiver lives | **`experiments/render-stream/web/gsw-receiver/` (TypeScript), consuming `@godot-scene-web/canvas` and `@godot-scene-web/effects` through the `development` condition.** Render-stream concepts (sessions, wire ids, credit, manifests) stay in the experiment. Capability gaps that are generic Godot `CanvasItem` drawing go into the packages as generic draw-list features, with their own package tests and a downstream consumer check (G7c, G7s): per-vertex colours, the `premul_alpha` blend, texture wrap modes, straight-alpha sampling, an RGB10_A2 stage target, and item-space shader programs. Nothing in `packages/` learns about render-stream. |
-| D7  | GSW render model | **The GSW receiver reimplements `RendererCanvasCull`'s ordering and composition, lowers to a `DrawList`, and renders into an RGB10_A2 target like Godot.** The executor has no item tree, no modulate and no z order (survey of `packages/canvas/src/draw-list.ts`, `executor-webgl.ts`). The applier walks canvases by `(layer, sublayer)` with the root in its declared place, and walks items by `rcc.cpp`'s rules: per-z lists from `CANVAS_ITEM_Z_MIN` concatenated in z order (`rcc.cpp:70-100`), children with `draw_behind_parent` before the parent and the rest after it (`rcc.cpp:468-480`), relative/absolute z, and `top_level` from the wire's canvas parenting. It composes `modulate` down the tree with `self_modulate` last (`rcc.cpp:316`) and multiplies in the canvas modulate. Clips come from `scripts/lib/clip-derive.ts` as Godot's integer scissor (rounded AABB of the transformed rect ∩ ancestor clip; memory godot-canvas-clear-resets-clip), never the executor's rounded-clip SDF. Godot's non-transparent render target is `GL_RGB10_A2` (`ts3.cpp:2144-2150`; memory rs-g55b-cim-facts: alpha has 2 bits). Blending at 10-bit colour precision cannot be reproduced in an 8-bit canvas, so GSW draws into an RGB10_A2 framebuffer and blits it to the canvas. Shots read back from that framebuffer with the same `RGBA`/`UNSIGNED_BYTE` conversion Godot's own readback uses (G7a cites the line). Textures are stored **straight-alpha**, as Godot uploads them, and are premultiplied after sampling, so linear filtering matches Godot's. |
+| D6  | Where the GSW receiver lives | **`experiments/render-stream/web/gsw-receiver/` (TypeScript), consuming `@godot-scene-web/canvas` and `@godot-scene-web/effects` through the `development` condition.** Render-stream concepts (sessions, wire ids, credit, manifests) stay in the experiment. Capability gaps that are generic Godot `CanvasItem` drawing go into the packages as generic draw-list features, with their own package tests and a downstream consumer check (G7c, G7s): per-vertex colours, the `premul_alpha` blend, texture wrap modes, straight-alpha sampling, an RGB10_A2 stage target, and item-space shader programs. Nothing in `packages/` learns about render-stream. *Amended 2026-10-15 (D29, D30):* the directory keeps the TypeScript shell (config, sources, live client, fetcher, evidence, perf, the rAF loop). Decode and apply move to the experiment's Rust crates. The generic parts (the packed draw list and its executor) go into `packages/canvas` as Rust, and they still know nothing about render-stream. |
+| D7  | GSW render model | **The GSW receiver reimplements `RendererCanvasCull`'s ordering and composition, lowers to a `DrawList`, and renders into an RGB10_A2 target like Godot.** The executor has no item tree, no modulate and no z order (survey of `packages/canvas/src/draw-list.ts`, `executor-webgl.ts`). The applier walks canvases by `(layer, sublayer)` with the root in its declared place, and walks items by `rcc.cpp`'s rules: per-z lists from `CANVAS_ITEM_Z_MIN` concatenated in z order (`rcc.cpp:70-100`), children with `draw_behind_parent` before the parent and the rest after it (`rcc.cpp:468-480`), relative/absolute z, and `top_level` from the wire's canvas parenting. It composes `modulate` down the tree with `self_modulate` last (`rcc.cpp:316`) and multiplies in the canvas modulate. Clips come from `scripts/lib/clip-derive.ts` as Godot's integer scissor (rounded AABB of the transformed rect ∩ ancestor clip; memory godot-canvas-clear-resets-clip), never the executor's rounded-clip SDF. Godot's non-transparent render target is `GL_RGB10_A2` (`ts3.cpp:2144-2150`; memory rs-g55b-cim-facts: alpha has 2 bits). Blending at 10-bit colour precision cannot be reproduced in an 8-bit canvas, so GSW draws into an RGB10_A2 framebuffer and blits it to the canvas. Shots read back from that framebuffer with the same `RGBA`/`UNSIGNED_BYTE` conversion Godot's own readback uses (G7a cites the line). Textures are stored **straight-alpha**, as Godot uploads them, and are premultiplied after sampling, so linear filtering matches Godot's. *Amended 2026-10-15 (D29):* the model is unchanged. Its implementation moves to `render-stream-core`'s applier, which lowers to Q14b's packed draw list, and the Rust renderer's `canvas-items` executor draws it. The `DrawList` and `executor-webgl.ts` are now the specification the Rust executor is checked against, not the receiver's path. |
 | D8  | Pixel policy | **Per receiver, against the rendered reference, with the native receiver as triangulation (Q7).** Web export: the native receiver's per-region budgets, which are 0 almost everywhere, and a prediction of zero difference from the native receiver on every shot. GSW: exact on every pixel a gate's independent hand model *decides*; a pre-registered `delta1` class for translucent blends; diffs confined to the hand model's *undecided* masks elsewhere; typed regions excluded. Every comparison uses the raw per-channel metric with an explicit limit, never pixelmatch alone (memory pixelmatch-hides-alpha-errors). Bands are pre-registered in a committed `gsw-tolerance.json` with their derivation. An amendment needs a source-cited cause recorded "As built", and widening a band to pass is forbidden. |
 | D9  | Browser harness | **Pinned Playwright Chromium `chromium-1223` (Chrome 148.0.7778.96), `--headless=new --enable-gpu --use-angle=vulkan`, with a provenance guard.** These flags give the real RTX 2060 through ANGLE/Vulkan with no window (memory xvfb-does-not-isolate-on-wayland). Never `--enable-features=Vulkan`, which breaks WebGL canvases here. Never headed, never Xvfb, and no gamescope for browsers. The guard refuses the leg (`browser-provenance`, a harness refusal, never a pass) unless `WEBGL_debug_renderer_info` names ANGLE, NVIDIA and Vulkan; no Chromium process holds a Wayland socket (count Wayland FDs, not X11); `DISPLAY` and `WAYLAND_DISPLAY` are unset in the launch environment; and the binary's sha256 matches the recorded one. Also: `--force-device-scale-factor=1`, `--force-color-profile=srgb`, a fresh `--user-data-dir` per cold leg, and the background-throttling switches (`--disable-background-timer-throttling`, `--disable-renderer-backgrounding`, `--disable-backgrounding-occluded-windows`) on every leg **except** suspension legs. Native references and receivers keep gamescope, as before. |
 | D10 | Inputs and evidence in a browser | **Over loopback HTTP, in the native receiver's formats.** A harness server (`scripts/lib/browser-harness.ts`) on `127.0.0.1` serves the receiver bundle and each leg's inputs read-only: recording, store, shader library and token-free configuration. It accepts `PUT /evidence/<leg-nonce>/<path>` into that leg's directory only. Both browser receivers write `applied.json`, `shots/seq-<n>.png`, `perf.json`, `perf-timeline.jsonl` and `received.rs7` by PUT. All writes and every PNG encode happen outside timed windows. The page origin (harness) differs from the live host's, which is what D3 is for. |
@@ -144,8 +157,14 @@ All of these are typed or deferred, with owners, in "Deferred".
 | D24 | Device targets and harness | **Two phones, driven by the perf harness's existing device plumbing, never a parallel one: the moto g31 (`g31`, the baseline) and the moto g86 5G (`g86`, the faster second device).** Their facts are in Q13a. g31: Android 12, Chrome 154.0.8037.127 on 2026-10-15, Mali-G52 MC2 over OpenGL ES 3.2 (driver `r26p0`), 1080×2400 at DPR 2.625, and one display mode, 60 Hz. g86: Android 15, Chrome 151 at its last measurement, `Mali-G615 MC2 (ANGLE)` over OpenGL ES 3.2 (not Vulkan), DPR 3.4876, a 790×316 CSS landscape viewport, and an adaptive panel that Chrome measured at 89–90 Hz on every committed phone table and at 59.5 Hz once. On either phone the panel rate is measured per repeat, never assumed. `browser-harness.ts` gains `env: "device"` and `--device <g31\|g86>`, built by importing `packages/perf-harness/src/device.ts` (`selectDevice`, `openDeviceBrowser`, `reverseServerPort`, `ensureResponsive`, `sampleConditions`, `readGpuDeviceMetrics`). `--device` resolves to the phone's serial through a committed device table (Q13b) and is passed as `selectDevice`'s `serial`, because `selectDevice` refuses to choose when more than one phone is attached. That gives adb reverse for the harness port and the live host's port, so every URL and the page origin are byte-identical to desktop and D3's allowlist is unchanged. It also gives the flattened CDP attach, the foreground and lock rules, and recorded `isolation` (docs/perf-harness.md "Measuring on a real phone"). The capture host and its gamescope stay on the desktop. Chrome on a phone is attached to, never launched, so D9's flags, binary sha256 and Wayland guard cannot apply. `device-provenance` replaces `browser-provenance` on device legs (Q13b). |
 | D25 | Phone acceptance target | **"Easily works at 60/60" means Q13d's decided checks, at a 60 Hz host, on every one of five repeats, for each browser receiver, on the g31, for the required workloads `pace` and `scene`.** The g31 is the acceptance floor. `hd` is a stretch target there: it is run, judged and recorded, but not required (Q13d). The g86 runs the same checks on all three workloads, and `hd` is required there. Its results are recorded per receiver. A g86 miss on a workload the g31 meets is a finding, explained from Q13c before G7z, not a separate gate condition. Every receiver budget is relative to T_p, the measured median rAF interval: 16.7 ms on the g31 (60 Hz, its only mode) and a predicted 11.1 ms on the g86 (90 Hz). The checks are: at least 57 new frames drawn per second; new-frame intervals within the panel's cadence for 60/s (one tick at 60 Hz, p95 ≤ T_p + 1 ms; the 3:2 cadence at 90 Hz, p95 ≤ 2·T_p + 1 ms; max ≤ 50 ms on both); receiver main-thread work per drawn frame p95 ≤ 0.5·T_p (8.3 ms on the g31, 5.6 ms on the g86); GPU time per drawn frame p95 ≤ 0.5·T_p where it can be measured, plus a draw-twice headroom leg for GSW; no thermal throttling over a 600-s soak; bounded memory; and warm startup ≤ 3 s. Window 1 and window 2 are judged separately, and the result names the window (F1 made window 2 opt-in). A miss is a finding, never a reason to move a budget. |
 | D26 | Rate model per phone | **Each phone is a 60 Hz host against its own panel, and Q13c's model predicts both.** **The g31 is G6c's 60/60 case on real hardware.** Its panel and the host's frame clock are both nominally 60 Hz, so at window 1 the arrivals of one run keep one rAF phase. The hold is nearly constant within a run and drifts only slowly between runs. A run holds 60/s only while up + hold + work + down fits inside one host frame at its phase; otherwise the host publishes every other callback, about 30/s. The hold ranges over [0, 16.7) ms, so no receiver-side speed-up makes every phase good. Predicted, as G6c measured on desktop: about half of the g31's window-1 repeats near 30/s on every receiver, because the round trip including the hold to rAF cannot stay reliably under one frame. So the g31 is predicted not to meet the target at window 1, where `dev-rate` needs all five repeats. Window 2 takes the hold off the critical path, and it is the predicted way the g31 meets the target. Its residual risk is the shared rate itself: a run whose arrivals sit inside the arrival jitter around the rAF deadline gets zero and two transactions in alternate ticks and draws only the newer one (Q13c). **The g86 is a 60 Hz host against a 90 Hz (or 120 Hz) rAF.** On a 90 Hz panel, 60 new frames per second can only be shown 3:2: intervals alternate 11.1 and 22.2 ms. That judder is intrinsic and is not a rate loss, so the checks admit it there. At window 1, 60/s holds at every phase only while work plus transport stays within about 5.6 ms (90 Hz) or 8.3 ms (120 Hz). A g86 panel that falls to 60 Hz is the g31's case. **The web export runs `--max-fps 0` on both phones.** On a 90 Hz rAF a 60 cap skips one tick in three (`wm.cpp:83-97`) and doubles the worst hold. On the g31's 60 Hz rAF, `--max-fps 0` already draws 60/s with no redundant frames, while a 60 cap still skips any tick whose callback fires before the accumulated `target_ticks` (which advance by the integer 16 666 µs), so its skips depend on rAF jitter and the panel's exact rate (report-only). GSW draws only in rAF callbacks that applied a transaction. |
-| D27 | Decode risk, measured first | **The web export's GDScript decode is the known risk, and it is worst on the g31. A microbench on both phones, g31 first, settles it before any increment depends on the answer.** On desktop (Ryzen 5 5500), the native receiver decodes at 6.2–6.5 ms mean per transaction (7.2–7.6 ms under load) and applies at about 0.9–1.0 ms. That is the 400-transaction gate 6 `animate` replay in G6c's README, "Gate 6c result". The live rate-60 leg measured decode p50 2.1 ms and apply 1.5 ms, and 15.8 s of receiver CPU over 30 s. The *whole-frame* budget is 0.5·T_p: 8.3 ms on the g31 and 5.6 ms on the g86. The g31's fastest cores are two Cortex-A75s at 2.0 GHz. Predicted for this branchy interpreter work: 4–5× slower than the desktop core (the g86's Cortex-A78 at 2.5 GHz: 2–3×), and wasm adds 1.3–2×, so the web export is 5–10× slower on the g31. That is 10–21 ms of live decode alone, 18–36 ms of live decode plus apply, and 31–65 ms of replay decode per transaction: a 2–4× miss on live transactions. To fit decode plus apply into about half the budget, G7o's GDScript candidates would need a 4–9× gain, and nothing here predicts that much. **So a native-speed decode core is predicted to be required for the web export on the g31** (Q13e). GSW decodes in V8 with no measured base yet. It passes on the g31 only if its desktop decode, validate and resolve p95 is under about 1.7–2 ms (8.3 ms over the 4–5× core factor; any JIT gap tightens it). These ratios are estimates. The decode-profile increment (branch `rs/decode-profile`, in progress) supplies the per-phase desktop breakdown for both decoders, and G7m measures the phones. G7d (unattended, wave 1) builds the bench, the minimal fixture and the device harness. G7m (wave 2) runs the bench on both phones, the g31 first, for both receivers, with GSW on G7j's browser-loadable decoder. A miss on either phone is the typed finding `device-decode-over-budget`, with per-phase numbers. It triggers G7o, which measures named candidates under unchanged goldens and budgets: the GDScript and TypeScript fixes first, then, where the profile shows they cannot close the gap, a shared Rust decode core. That is one crate built as a native GDExtension and as wasm for both browser receivers, allowed by the user's 2026-10-15 goal where measurement shows it pays, and kept only if it passes the same goldens and gates as what it replaces. If G7o cannot close the gap, the miss is recorded in that receiver's manifest. No budget is relaxed. G7o is void if G7m passes on both phones. |
+| D27 | Decode risk, measured first | **The web export's GDScript decode is the known risk, and it is worst on the g31. A microbench on both phones, g31 first, settles it before any increment depends on the answer.** On desktop (Ryzen 5 5500), the native receiver decodes at 6.2–6.5 ms mean per transaction (7.2–7.6 ms under load) and applies at about 0.9–1.0 ms. That is the 400-transaction gate 6 `animate` replay in G6c's README, "Gate 6c result". The live rate-60 leg measured decode p50 2.1 ms and apply 1.5 ms, and 15.8 s of receiver CPU over 30 s. The *whole-frame* budget is 0.5·T_p: 8.3 ms on the g31 and 5.6 ms on the g86. The g31's fastest cores are two Cortex-A75s at 2.0 GHz. Predicted for this branchy interpreter work: 4–5× slower than the desktop core (the g86's Cortex-A78 at 2.5 GHz: 2–3×), and wasm adds 1.3–2×, so the web export is 5–10× slower on the g31. That is 10–21 ms of live decode alone, 18–36 ms of live decode plus apply, and 31–65 ms of replay decode per transaction: a 2–4× miss on live transactions. To fit decode plus apply into about half the budget, G7o's GDScript candidates would need a 4–9× gain, and nothing here predicts that much. **So a native-speed decode core is predicted to be required for the web export on the g31** (Q13e). GSW decodes in V8 with no measured base yet. It passes on the g31 only if its desktop decode, validate and resolve p95 is under about 1.7–2 ms (8.3 ms over the 4–5× core factor; any JIT gap tightens it). These ratios are estimates. The decode-profile increment (branch `rs/decode-profile`, in progress) supplies the per-phase desktop breakdown for both decoders, and G7m measures the phones. G7d (unattended, wave 1) builds the bench, the minimal fixture and the device harness. G7m (wave 2) runs the bench on both phones, the g31 first, for both receivers, with GSW on G7j's browser-loadable decoder. A miss on either phone is the typed finding `device-decode-over-budget`, with per-phase numbers. It triggers G7o, which measures named candidates under unchanged goldens and budgets: the GDScript and TypeScript fixes first, then, where the profile shows they cannot close the gap, a shared Rust decode core. That is one crate built as a native GDExtension and as wasm for both browser receivers, allowed by the user's 2026-10-15 goal where measurement shows it pays, and kept only if it passes the same goldens and gates as what it replaces. If G7o cannot close the gap, the miss is recorded in that receiver's manifest. No budget is relaxed. G7o is void if G7m passes on both phones. *Amended 2026-10-15 by D29 to D34:* G7m missed on the g31, so G7o was triggered. Tier 2 is now the plan rather than the last resort, and D33 splits G7o. The budgets, `device-decode-over-budget`, "kept only if the goldens and gates pass" and "no budget is relaxed" are unchanged. |
 | D28 | Device attendance | **A device leg needs its phone attached. The g31 has the user's standing approval (2026-10-15), so its legs may run unattended. The g86's legs stay operator-attended.** g31: any increment may run its device legs, with no per-run go-ahead, whenever the g31 is attached (it is, as of 2026-10-15, serial `ZY22FD8XP3`). For a session the harness may set the g31's landscape lock and `svc power stayon usb`. It records every setting it changed and restores it afterwards, and it installs nothing on the phone. g86: it is the user's personal device. No agent runs adb against it, changes one of its settings (refresh mode, stay-awake, developer options) or launches anything on it without the user's go-ahead in that session. An increment whose verification includes a g86 leg stops before that leg and asks. On either phone, a leg whose phone is not attached, not authorized, locked or not in front reports the harness refusal `device-unavailable`. That is never a pass, and never a skip counted as green. Every device leg has a desktop control arm on D9's harness that runs unattended. Device results carry their build sha. Any later change to a receiver, `rs_ws` or `rs_live` marks them stale until a re-run: for the g31 at the next run with it attached, and for the g86 at the next attended session (Q11 `manifest-device-target`). Runs without `--env device` never select `g7-dev`'s device arms. |
+| D29 | The shared Rust core (2026-10-15) | **One Rust crate, `render-stream-core`, decodes, validates, resolves, keeps the retained state and applies. Receivers reach it through thin adapters. The TypeScript and GDScript decoders become golden cross-checks.** This was decided with the user on 2026-10-15 (memories rust-core-direction, render-stream-perf-goal-2020-phones). *Scope:* framing, meta and blocks for render-stream/2 to /7 behind one `version` parameter (memory g4e1-rs3-version-switch-pattern). Validation and resolve are **delta-driven from the start**: they cost O(changed), never the O(state) re-walks the decode profile measured. Those re-walks are 42–61 % of GDScript patch decode and 0.82 ms of TypeScript's hd-patch validation. The crate also covers resource-payload verification, the record digest (D31), the retained state, and two outputs: a per-item resolved delta for the Godot adapters, and D7's applier lowering to the packed CanvasItem draw list of Q14b for the GSW renderer. *Adapters:* the browser (wasm32-unknown-unknown, one module with the renderer; G7x, G7a), the native receiver (GDExtension, G7xn) and the web export (emscripten dlink side module, G7xw). GSW draws through `packages/canvas/rust-prototype`'s WebGL 2 `GlBackend`. Capture stays C++ and may share the Rust codec later (not scheduled). The parser, layout and every non-streaming package stay TypeScript. *Evidence:* (1) G7m: GSW's TypeScript decode misses on the g31 at p95, scene-full 12.99 ms and hd-patch 16.79 ms against 8.50 ms, and costs 5.6–14.5× desktop, the worst ratios on the smallest transactions. (2) The decode profile: the Rust cost prototype in V8 wasm decodes the same recordings 2.5–2.9× faster than GSW's TypeScript as shipped and 7–12× faster than GDScript. GDScript's tier 1 projects to 7–17 ms on the g31 for the live scene wire, still a miss. (3) The apply and lowering are not written yet in any language (G7a has not started), so writing them once in Rust costs no rewrite. *What the evidence does not show:* that Rust beats a *fixed* TypeScript decoder on the phone. The profile puts TypeScript after tier 1 within 1.1–1.4× of the Rust prototype on desktop. The remaining arguments are one implementation instead of three, and no GC on the frame path. The second is a hypothesis aimed at G7m's hd-patch validate spread of 3.55/7.22 ms at p50/p95. So D27's "measured first" rule stands: G7x proves it on the g31 before any receiver adopts the core (D32). Supersedes D27's order ("tier 2 only after tier 1 fails"). |
+| D30 | Crates and boundaries | **Four crates and no Cargo workspace. The draw list is the renderer's type, never render-stream's.** (1) `packages/canvas/rust-draw-list/` (`gsw-canvas-draw-list`) is the generic packed CanvasItem draw list (Q14b), with no dependency beyond `bytemuck` and no render-stream concept (D6). (2) `packages/canvas/rust-prototype/` gains the cargo feature `canvas-items`, an executor for that list on `GlBackend`. The feature is off in `build-web.sh`'s defaults, so `RustRenderer`'s exports, `scene/2`, `patch/1`, `RSR1`, `RIA1` and every consumer build stay byte-for-byte what they are (Q14f). (3) `experiments/render-stream/rs-core/` (`render-stream-core`) is D29's crate. It depends only on `gsw-canvas-draw-list`, `sha2` and a JSON parser, with no wasm-bindgen, web-sys, wgpu or Godot crate, so every adapter can link it. (4) The adapters: `experiments/render-stream/web/gsw-rs/` (`rs-gsw-wasm`, a cdylib on wasm-bindgen `=0.2.129` as the renderer pins it) links the core and the renderer into **one** wasm module, and `experiments/render-stream/rs-core-capi/` is a C ABI staticlib for G7xn and G7xw. Path dependencies only. Each binary crate keeps its own `Cargo.lock`, and a root workspace would move `rust-prototype`'s lockfile under its consumers. Every target uses stable Rust 1.95.0 except the web export's side module (F4). `decode-proto-rs/` stays as the profile's tool until `rs-core` lands, then joins the experiment-consolidation inventory (the user approves deletions). The per-transaction wasm boundary is Q14c: bytes in once, three calls, a fixed stats block out. The draw list never crosses into JavaScript. |
+| D31 | Record digest off the frame path | **The per-record SHA-256 is evidence, so browser receivers compute it after the frame. Resource payload hashes are still verified before use.** Its only consumers are render-stream-0.md "Decoded form", `applied.json`'s `record_sha256` and gate 0's `receiver-consumed-stream`, and nothing compares it at receive time (decode profile). A receiver computes it after the frame's submit or in idle time. It must hold a digest for every accepted record before it writes evidence (`record-digest-complete`). Timers report it as `evidence_hash_us`, outside `decode_us` and `total_us`. TypeScript adopts it in G7o1 and Rust in G7x. The GDScript receivers keep it inline, where it is 3–7 % of decode, until another change touches them. Skipping the digest is never a candidate. |
+| D32 | Slice first | **G7x, the smallest end-to-end slice, runs on the g31 before G7a, G7xn or G7xw depends on the core.** It replays the `pace` fixture and the gate 6 scene (plus `hd-patch` as the stretch) through `render-stream-core`, then `canvas-items`, then WebGL 2, using G7d/G7m's four bench recordings and G7d's bench `--env device --device g31`. Each input gets one warmup and five repeats, the arms are interleaved, cpufreq is sampled per repeat, and judgment is at p95 against 0.5·T_p from the *measured* panel (≈8.5 ms; G7m). It wins only on R1 to R4 (G7x). On a loss the numbers are recorded, the `packages/` part does not land, and D29 goes back to the user before G7a starts. The fallback then is Q5's TypeScript receiver with G7o's dropped TypeScript items reinstated (D33). |
+| D33 | G7o and the TypeScript path | **G7o is split. Its TypeScript tier 1 ships only the record-digest move (G7o1). The other tier-1 items, TypeScript and GDScript, leave the plan unless G7x or G7xw fails. Tier 2 becomes G7x, G7a, G7xn and G7xw. The TypeScript decode path stays the comparison baseline (bench arm `gsw-ts`) through gate 7, and it stays the checkers' decoder permanently.** G7o1 is small and evidence-only, and it helps every path. It also gives G7x a like-for-like baseline: without it, a Rust win on G7m's numbers would mostly be the digest (48–58 % of TypeScript's desktop time). `rs-core` builds delta-driven validation and resolve in from the start. Typed-array blocks and per-record object churn have no Rust equivalent. A decode Worker is deferred until G7v shows a main-thread miss after G7a, and then it hosts the Rust core. GDScript tier 1 (typed hot paths, packed lifts, delta apply) is dropped for the web export, because the profile projects it to 7–17 ms on the g31, a miss. It returns only if F4 is declined or G7xw's toolchain probe fails and the user picks GDScript. |
+| D34 | The Godot adapters adopt late | **G7b stays on the GDScript decoder and proves the web export's correctness. The native receiver keeps GDScript by default through gate 7.** G7xn builds the C ABI and a GDExtension adapter natively first, where it can be debugged, behind `RS_RECEIVER_CORE=gdscript\|rust` (default `gdscript`). It must reproduce every native receiver leg of gates 0–6 byte-identically. G7xw then loads the same adapter into the web export as an emscripten dlink side module, after a toolchain probe. Keeping the native default on GDScript keeps the native receiver an independent triangulation for both browser receivers (D8): a bug in a shared core would otherwise hit all three, and the checkers' TypeScript decoder would be the only independent reader left. The Godot adapters apply from native code: RenderingServer calls for changed items only. Apply costs 1.25 ms on desktop on the live scene wire, nearly all of it GDScript overhead (decode profile), and the web export cannot afford that on the g31. *Known risks (G7xw):* Rust's `wasm32-unknown-emscripten` target is not installed. A side module needs position-independent `std`, which godot-rust gets from nightly `-Zbuild-std` (unverified here; F4). `JavaScriptBridge` cannot pass a `PackedByteArray` (`_variant2js` takes only bool, int, float, String and JavaScriptObject), so the non-dlink fallback moves the transport into JavaScript and pays one copy back per message. The dlink template and emscripten 4.0.11 are already fetched (Q13e). |
 
 ## Q1. What the engine and the browser do
 
@@ -377,6 +396,10 @@ untouched, so gate −1 must still list 79 hooks and gates 0 to 6 must pass unch
 The same GDScript as native, with two shims and a shell. Native behaviour is unchanged, which G7e
 proves by re-running gates 0 to 6 natively.
 
+*Amended 2026-10-15 (D34):* this stays the web export through G7b. G7xw adds a second preset that
+swaps decode and apply for the Rust core's dlink adapter (Q14e). That preset must reproduce G7b's
+legs byte for byte, and the GDScript preset stays the oracle for it.
+
 - **`rs_config.gd`.** Every `RS_RECEIVER_*` value is read through one function, environment first,
   then `--rs-env=NAME=VALUE` from `OS.get_cmdline_user_args()`. On the web only the second exists.
   The 18 variables `receiver.gd` reads today are the list (`RS_RECEIVER_CACHE_DIR` …
@@ -442,6 +465,12 @@ findings:
 
 `experiments/render-stream/web/gsw-receiver/`, bundled by esbuild with `conditions:["development"]`
 (as `packages/perf-harness/src/serve.ts` does).
+
+*Amended 2026-10-15 (D29, D30):* if G7x wins, the decode, the applier, the lowering table, textures
+and the sabotages below are implemented in `render-stream-core` and the renderer's `canvas-items`
+executor (Q14). The TypeScript files keep config, sources, the live client, the fetcher, credit,
+evidence and perf. Every behaviour, check and prediction in this section is unchanged. Only where
+the code lives changes. If G7x loses (D32), this section stands as written.
 
 - **Decode** (G7j). `render-stream-2.ts`, `-mesh.ts` and `-shader.ts` take an injected synchronous
   `sha256` (`scripts/lib/sha256.ts`, pure TypeScript, checked against `node:crypto` on every
@@ -1256,12 +1285,156 @@ byte-identical.
   threads in the web build (out of scope), and moving a budget.
 - If G7o's best result still misses, that receiver's `device_targets` are `not-met` on that phone,
   with the numbers and an owner. F3 then decides what that means for gate 7.
+- *Amended 2026-10-15 (D33):* G7m triggered G7o for GSW on the g31. Tier 1 now ships only the
+  record-digest move (G7o1). Tier 2 is the plan: G7x, then G7a, G7xn and G7xw (Q14). The
+  tier-1 lists above are the fallback if G7x or G7xw fails.
+
+## Q14. The shared Rust core (D29 to D34)
+
+Nothing in this section was built or run. Sizes and layouts are decisions that G7x may refine. Any
+change is recorded "As built" with its measured reason.
+
+### Q14a. Crates
+
+| Crate | Path | Depends on | Built for | First landed by |
+| ----- | ---- | ---------- | --------- | --------------- |
+| `gsw-canvas-draw-list` | `packages/canvas/rust-draw-list/` | `bytemuck` | every target | G7x (win) |
+| `godot-scene-web-rust-prototype` + feature `canvas-items` | `packages/canvas/rust-prototype/` | the above, plus today's deps | wasm32-unknown-unknown (WebGL 2 `GlBackend` only) | G7x (win) |
+| `render-stream-core` | `experiments/render-stream/rs-core/` | `gsw-canvas-draw-list`, `sha2`, a JSON parser | native, wasm32-unknown-unknown, wasm32-unknown-emscripten (PIC) | G7x (win or loss) |
+| `rs-gsw-wasm` | `experiments/render-stream/web/gsw-rs/` | the core and the renderer; wasm-bindgen `=0.2.129` | wasm32-unknown-unknown, one module | G7x (win) |
+| `rs-core-capi` | `experiments/render-stream/rs-core-capi/` | the core | native and emscripten staticlib, linked by a C++ GDExtension shim | G7xn |
+
+The core carries a CLI, `rs-core-check` (native): `goldens`, `diff --inputs <inputs.json>` (a
+canonical resolved state per transaction, for Q14d) and `dump-pdl <rec> <seq>`.
+`scripts/build-rs-core.sh` builds the native CLI, the wasm module and its wasm-bindgen glue into
+ignored `artifacts/render-stream/rs-core/<sha>/`.
+
+### Q14b. The packed draw list (`gsw-canvas-draw-list`)
+
+This is generic Godot CanvasItem drawing with no wire ids, sessions or other render-stream concept.
+The producer owns it as little-endian POD arrays (struct of arrays). The executor borrows it for
+one `execute` call.
+
+- **Target**: width and height in pixels, format `rgb10a2` (D7, the default) or `rgba8`, and the
+  clear colour as f32 RGBA. The executor draws into an offscreen target of that format, blits it
+  to the canvas, and reads shots back with D7's conversion (G7c's semantics).
+- **Items** (`[Item]`, 48 B each): the final transform as 2×3 f32 (canvas × item, D7), the composed
+  modulate as f32 RGBA (down the tree, `self_modulate` last, times the canvas modulate), and flags.
+  The executor keeps them in an RGBA32F data texture, three texels per item, and the vertex shader
+  fetches its item's row.
+- **Vertices** (`[Vertex]`, 36 B each): item-local position f32×2, uv f32×2, straight colour f32×4,
+  and the item index as u32. **Indices** are u32.
+- **Draws** (`[Draw]`, in final paint order): first index, index count, texture id (0 is the white
+  texel), sampler bits (nearest or linear, repeat), blend (`mix`, `add`, `sub`, `mul`,
+  `premul_alpha`, `disabled`), program id (0 is the builtin; G7s adds item-space programs), and an
+  integer scissor `[x, y, w, h]` or none. The scissor is D7's rounded AABB intersected with the
+  ancestors' (from `clip-derive.ts`, ported), never the renderer's SDF clip. The executor merges
+  only *adjacent* draws whose texture, sampler, blend, program and scissor are equal, so paint
+  order is preserved.
+- **Dirty ranges**: changed item rows, changed vertex and index ranges, and a `draws_changed` flag.
+  The executor uploads only those ranges (`bufferSubData`, and `texSubImage2D` for item rows). A
+  transform-only patch therefore moves one item row and zero vertex bytes, and the core re-lowers
+  an item's vertices only when its `content_version` changes (Q5's content cache).
+- **Texture ops**, beside the list rather than in it: `upload {id, w, h, straight RGBA8 bytes}` and
+  `free {id}`. The bytes are a slice of wasm memory handed to `texImage2D` with no extra copy.
+  Storage is straight alpha, premultiplied after sampling (D7).
+- **`PDL1`**: a byte dump of one frame's list (a header plus the arrays) for tests and evidence.
+  It is never on the frame path.
+
+The spec of record for the executor is G7c's TypeScript executor and its package tests. The Rust
+executor's own tests draw a fixed set of lists through both, headless (D9), and require
+byte-identical readback. Only the GL backend gets `canvas-items`. A wgpu/WebGPU path is deferred.
+
+### Q14c. The wasm/TypeScript boundary (browser)
+
+Per transaction:
+
+1. **Bytes in.** File mode loads the whole recording into wasm memory once, outside every timer.
+   Live mode copies each WebSocket message once into a wasm-owned receive buffer (`rx(len)` returns
+   a pointer), and `total_us` counts that copy.
+2. **`accept(len)`** decodes, validates, resolves and checks payload references. The needed hashes
+   are read from a view (32 B each). The TypeScript fetcher copies each payload once into wasm
+   (`payload(len)`), and `provide(len)` verifies its SHA-256 before use.
+3. **`apply()`** takes the queued transactions to the retained state and the draw list's dirty
+   ranges.
+4. **`draw()`** runs the texture ops, the dirty uploads, the GL draws and the blit. Rust issues GL
+   through `glow` on the context the renderer owns.
+5. **Out**: a fixed `#[repr(C)]` stats block (status, seq, ack fields, counters), read through
+   `Uint32Array`/`Float64Array` views. The views are re-derived whenever `memory.buffer` changed,
+   because growth detaches them.
+
+Off the frame path: `digest()` (D31), `evidence_json()` (the `applied.json` body and `unsupported`),
+and `shot(seq)`. **Never across**: decoded meta, per-command objects, the draw list, or per-frame
+JSON. The expectation is one copy in per message and per payload, and zero copies of decoded data.
+GLSL from `packages/effects`' transpiler (TypeScript) crosses once per shader resource (G7s).
+TypeScript times `accept`, `apply` and `draw` separately with `performance.now()`, and one wall
+timer around steps 1 to 4 is `total_us`, which includes the boundary.
+
+### Q14d. Cross-checks
+
+- **Goldens.** `rs-core-check goldens` decodes every valid vector of golden-2 to golden-7 to the
+  canonical decoded form, which must equal `*.decoded.json`. It resolves each to `resolved*.json`,
+  with memory rs1-resolved-json-excepted-fields' exceptions implemented identically. Every
+  invalid vector must fail with its index's code, using per-check codes (memory
+  rs-schema-self-coded-errors).
+  The same run executes under the wasm build in Node. G7x needs golden-6, G7a adds golden-2 to
+  golden-5, and golden-7 follows from G7w on.
+- **Real recordings.** `scripts/test/self-test-rs-core.ts --inputs <inputs.json>` feeds every record
+  through Rust (native) and `render-stream-2.ts`. After each transaction it compares the canonical
+  resolved state and the `unsupported` set, and it compares `record_sha256` per record. It covers
+  the four bench recordings from G7x, and every gate's source-run recording from G7a on. GDScript
+  stays in the loop through its own goldens and the native receiver legs (D34).
+- **Lowering.** The Rust ports of `clip-derive.ts` and `geometry-raster.ts` are differential-tested
+  against the TypeScript: scissors equal for every gate 3 item and step, and f32 vertex arrays
+  bit-equal for every gate 5 case (G7a, G7t).
+- **Verification cannot be bought.** The sabotage `skip-payload-hash` must fail golden
+  `resource-hash`.
+- No TypeScript or GDScript decoder is deleted while a checker or a golden test uses it.
+
+### Q14e. Adapters
+
+- **Browser** (G7x, G7a): the TypeScript shell in `web/gsw-receiver/` plus `rs-gsw-wasm`, as Q14c.
+- **Native receiver** (G7xn): `rs-core-capi` exposes new/free, accept, needed, provide and
+  per-changed-item delta views (packed f32, i32 and colour arrays). A C++ shim over raw
+  `gdextension_interface.h` registers `RsCore`, with no godot-cpp, as the capture extension does. It
+  hands `PackedByteArray`s in and issues RenderingServer ptrcalls for changed items. GDScript keeps
+  config, IO, evidence and shots.
+- **Web export** (G7xw): the same shim and staticlib built by emcc 4.0.11 as a `SIDE_MODULE`, loaded
+  by `web_dlink_nothreads_release.zip` (sha256 `68162ae9…`). The Rust side is built with the pinned
+  nightly of F4, `-Zbuild-std` and `-C relocation-model=pic`. The nothreads dlink template needs
+  no cross-origin isolation (`platform/web/js/engine/features.js:94-101`). Its `EXPORT_ALL` main
+  module's startup is measured under D15.
+
+### Q14f. Consumers (sequencing only; nothing in gate 7 acts on them)
+
+`../sts2-couch-coop` aliases `@godot-scene-web/canvas` (including `/rust-prototype`) to TypeScript
+source. It builds `rust-prototype` itself (`scripts/build-rust-prototype.sh` runs `build-web.sh`)
+and drives `RustRenderer` (`createRustDrawListExecutor.ts`). `../spirectl` imports the packages as
+peer dependencies from source. `packages/core`'s scene-state shape is mirrored by spirectl's C#
+DTOs.
+
+1. **Through gate 7, consumers see no change.** `canvas-items` is off by default, and the
+   `RustRenderer` exports, its wire contracts, and every TypeScript export of
+   `@godot-scene-web/canvas` (the export-surface tests) stay as they are. Every landing that
+   touches `packages/canvas/rust-*` runs the downstream consumer check. That includes
+   sts2-couch-coop's `build-rust-prototype.sh` and its Rust parity specs against the worktree,
+   through a scratch vite config, with that checkout left on clean `main`.
+2. **After gate 7**, `packages/canvas`'s TypeScript `DrawList` executor may gain the packed-list
+   Rust backend behind its existing API, as an opt-in. Consumers switch by an option, never by an
+   import change. Rust grows behind the public TypeScript API, with no big-bang rewrite.
+3. **`packages/core`'s scene state is untouched** by this plan, because render-stream does not use
+   it. Any later move into Rust changes the spirectl DTOs in the same sequence: a field on one side
+   only is a silent renderer gap.
+4. **Each repo's legacy inventory** (memory rust-core-direction) is approved by the user per repo.
+   Deletions follow the API move here, never in the middle of a migration.
 
 ## Increments
 
 Each increment is one commit on `main`, squashed from its branch. The type is `feat(render-stream): …`
 or `test(render-stream): …` with `Changelog: none`, except G7c and G7s's package parts, which are
-`feat(canvas): …` / `feat(effects): …` with a real `Changelog:` line (published packages).
+`feat(canvas): …` / `feat(effects): …` with a real `Changelog:` line (published packages). G7x on a
+win is also `feat(canvas): …` with a real `Changelog:` line, and the same goes for G7a, G7t and G7s
+when they extend `canvas-items`. Docs-only amendments are `docs(render-stream): …`.
 A fresh worktree needs `scripts/install-agent-config.sh`, `mise trust`,
 `pnpm install --frozen-lockfile` and the receiver's `--import` (memories gate0-wp1-engine-facts,
 worktree-needs-pnpm-install, receiver-needs-import-before-script). Run biome only on touched files
@@ -1274,7 +1447,8 @@ from G7w on, and every `self-test-*.ts`. In addition:
 | Change | Also re-run |
 | ------ | ----------- |
 | capture or `rs_ws` (G7n, G7q) | `build-capture.sh` (all ctests), gate −1 (79 hooks), gates 1, 2, 6 (`--legs g6l,g6c`) natively on /6 |
-| `receiver/` (G7e, G7f, G7l, G7o, G7r) | gates 0 to 6 natively (every receiver leg; this is what proves native behaviour unchanged) |
+| `receiver/` (G7e, G7f, G7l, G7r, G7xn, G7xw) | gates 0 to 6 natively (every receiver leg; this is what proves native behaviour unchanged); from G7xn on, under both `RS_RECEIVER_CORE` values |
+| Rust crates (G7x, G7a, G7t, G7s, G7xn, G7xw) | `cargo test` in each touched crate; `rs-core-check goldens`, natively and as wasm in Node; `self-test-rs-core.ts` on the four bench inputs (Q14d). For `packages/canvas/rust-*`, also: the rust-prototype README's pixel and integration suites on both backends, headless; `build-web.sh`'s default exports unchanged; and the downstream consumer check, including sts2-couch-coop's `scripts/build-rust-prototype.sh` and its Rust parity specs (Q14f) |
 | `packages/` (G7c, G7s) | `pnpm test`, `pnpm build`, the canvas pixel suites headless (`canvasPixelXvfb`, `canvasGlyphPixelXvfb` under `--headless=new` Vulkan), the export-surface tests, and the downstream consumer check of AGENTS.md (a scratch vite config in `../sts2-couch-coop/frontend` pointed at the worktree; that checkout stays on clean `main`) |
 | a `g7-*` group | that group and every earlier `g7-*` group landed |
 | a receiver, `rs_ws` or `rs_live`, after G7v | `g7-dev`'s desktop control arms, unattended, and the g31's device arms if the g31 is attached (`device-unavailable` otherwise, never a pass). The g86's device arms are marked stale (D28) and re-run only at its next attended session |
@@ -1295,14 +1469,20 @@ flowchart LR
     G7f[G7f bounded live decode buffer, conditional] --> G7l
     G7h --> G7d[G7d device harness, pace fixture, decode bench]
     G7j --> G7d
-    DP((decode profile)) -.-> G7o
+    DP((decode profile)) -.-> G7x
     G7d --> G7m{{G7m phone microbench - g31 first, g86 attended}}
-    G7m -. if over budget .-> G7o[G7o decode/apply optimization, conditional]
-    G7e --> G7o
-    G7a --> G7o
-    G7o -. if triggered .-> G7v
+    G7m --> G7o1[G7o1 record digest off the frame path, TS]
+    G7m --> G7x{{G7x Rust slice: core to canvas-items, judged on the g31}}
+    G7o1 --> G7x
+    G7c --> G7x
+    G7x -- win --> G7a
+    G7x --> G7xn[G7xn native GDExtension adapter - F4]
+    G7xn --> G7xw{{G7xw web-export dlink adapter - F4}}
+    G7b --> G7xw
+    G7x --> G7v
+    G7xw -. if landed .-> G7v
     G7e[G7e web export build, shims, gate 0] --> G7b[G7b web export: gates 0-6 file legs]
-    G7a[G7a GSW core: gates 0-3 file legs] --> G7t[G7t GSW text, geometry, meshes: gates 4-5]
+    G7a[G7a GSW on the Rust core: gates 0-3 file legs] --> G7t[G7t GSW text, geometry, meshes: gates 4-5]
     G7a --> G7s[G7s GSW materials and shaders: gate 5.5]
     G7n[G7n capture: /7 listener, hello token, origin, CORS] --> G7l
     G7e --> G7l[G7l live in browsers: gates 1, 2, 5f, 55f]
@@ -1336,27 +1516,35 @@ flowchart LR
 | G7f | sonnet | 1 | **yes**, if G6s left D20 open; lands after G6s | G6s (land) |
 | G7d | opus | 1 | **yes** (harness, fixture and bench; unattended) | G7h, G7j (both landed); template (F2, resolved) |
 | G7e | opus | 2 | yes | G7h; prerequisite template (D5) |
-| G7a | opus (gsw-renderer agent) | 2 | yes | G7h, G7j, G7c |
 | G7n | opus | 2 | yes; rebases `rs_live.cpp` onto G6c | G7w |
 | G7m | sonnet | 2 | yes. **g31 first**, unattended while it is attached (attached as of 2026-10-15); the g86 arm operator-attended | G7d; the g31 attached; for the g86 arm, the user's go-ahead and the g86 attached (D28); G7e only if Q13e's apply fallback applies |
+| G7o1 | sonnet | 2 | **yes** (a TypeScript decoder option and the bench; its g31 run unattended) | G7m (landed) |
+| G7x | opus (gsw-renderer agent) | 2 | **yes** (new crates, a feature-gated renderer path and a bench arm; its g31 run unattended) | G7c, G7d, G7m (all landed); G7o1 landed before its g31 run (R3's baseline) |
+| G7a | opus (gsw-renderer agent) | 3 | yes | **G7x's win** (D32); G7h, G7j, G7c |
 | G7b | opus | 3 | yes | G7e |
-| G7t | opus (gsw-renderer agent) | 3 | yes | G7a |
-| G7s | opus (gsw-renderer agent) | 3 | yes | G7a |
-| G7l | opus | 3 | yes | G7n, G7e, G7a, G7f (if needed) |
-| G7o | opus | 3 | yes; conditional on G7m's finding (D27), void otherwise | G7m; the decode profile (`rs/decode-profile`); G7e for the web part, G7a for the GSW part; its closing bench on the g31 (unattended) and the g86 (attended); tier 2's web prerequisites only with the operator's approval |
-| G7g | opus | 4 | no | G7b, G7t, G7s, G7l; gate 6 complete through G6s |
-| G7u | sonnet | 4 | no | G7l |
-| G7r | opus | 5 | no | G7g, G6c |
-| G7k | sonnet | 5 | no | G7g, G7u, G6s |
-| G7q | opus | 6 | no; F1 approved 2026-10-14 (opt-in) | G7r |
-| G7v | opus | 7 | no. g31 device arms unattended while it is attached; **g86 device arms operator-attended**; control arms unattended | G7r, G7k, G7q, G7d, G7o (if triggered) |
-| G7p | sonnet | 8 | no | G7r, G7k, G7v, G6p (G7q if approved) |
-| G7z | sonnet | 9 | no | G7p, G6z (and everything before) |
+| G7xn | opus | 3 | yes; the native receiver's first GDExtension, default off (D34) | `rs-core` landed by G7x (win or loss); F4 answered yes |
+| G7t | opus (gsw-renderer agent) | 4 | yes | G7a |
+| G7s | opus (gsw-renderer agent) | 4 | yes | G7a |
+| G7l | opus | 4 | yes | G7n, G7e, G7a, G7f (if needed) |
+| G7xw | opus | 4 | yes | G7xn, G7b; F4 (a pinned nightly); the dlink template and emscripten 4.0.11 (fetched, Q13e) |
+| G7o | — | — | restructured by D33 into G7o1 and tier 2 (G7x, G7a, G7xn, G7xw); lands nothing | — |
+| G7g | opus | 5 | no | G7b, G7t, G7s, G7l; gate 6 complete through G6s |
+| G7u | sonnet | 5 | no | G7l |
+| G7r | opus | 6 | no | G7g, G6c |
+| G7k | sonnet | 6 | no | G7g, G7u, G6s |
+| G7q | opus | 7 | no; F1 approved 2026-10-14 (opt-in) | G7r |
+| G7v | opus | 8 | no. g31 device arms unattended while it is attached; **g86 device arms operator-attended**; control arms unattended | G7r, G7k, G7q, G7d, G7x; G7xw if it landed (the web export's arms otherwise run GDScript) |
+| G7p | sonnet | 9 | no | G7r, G7k, G7v, G6p (G7q if approved) |
+| G7z | sonnet | 10 | no | G7p, G6z (and everything before) |
 
-G7t and G7s both touch `rs-canvas-applier.ts`. The second to land rebases. G7o touches
-`receiver/rs2_decoder.gd` and GSW's decode path, so it rebases onto whichever of G7b, G7l and G7t
-lands first. Gate 7 passes when every increment except G7q (and G7f and G7o if void) has landed,
-and `pnpm render-stream:gate7 -- --legs g7-0,g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6,g7-lc,g7-r,g7-k`
+G7t and G7s both touch `rs-core`'s applier and the `canvas-items` executor (or
+`rs-canvas-applier.ts` if G7x lost). The second to land rebases. G7xn and G7xw touch `receiver.gd`'s
+decode and apply call sites and `rs_config.gd`, so they rebase onto whichever of G7b and G7l lands
+first. G7o1 and G7x both touch `gate7-bench.ts` and `web/bench/`, and G7x rebases onto G7o1. Gate 7
+passes when two things hold. First, every increment has landed except G7q, G7o (restructured,
+D33), G7f if void, and G7xn and G7xw if F4 is declined or G7xw's toolchain probe fails. In that last
+case the web export is judged on GDScript and its result is recorded. Second,
+`pnpm render-stream:gate7 -- --legs g7-0,g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6,g7-lc,g7-r,g7-k`
 is green on one build. Its source runs must be from the same build, G7p's report must validate,
 and G7z's checks must pass. The phone criterion must also hold: `--env device --device g31 --legs
 g7-dev` on that build meets Q13d's acceptance on the g31, as F3 settles it. The g86's run on the
@@ -1531,20 +1719,41 @@ Void if gate 6 fixed D20. Otherwise:
 - **Sabotages**: `RS_RECEIVER_SABOTAGE` through `--rs-env` (gate 0's receiver sabotages must
   classify exactly as natively); `css-opacity` fails exactly `compositor-equals-readback`.
 
-### G7a — GSW receiver core: gates 0 to 3 file legs (opus)
+### G7a — GSW receiver on the Rust core: gates 0 to 3 file legs (opus, gsw-renderer agent)
 
-- **Files**: `experiments/render-stream/web/gsw-receiver/` (`main.ts`, `config.ts`, `source.ts`,
-  `rs-canvas-applier.ts`, `textures.ts`, `evidence.ts`, `perf.ts`); `scripts/lib/gsw-tolerance.ts`
-  and `fixtures/gsw-tolerance.json` (gates 0 to 3 first); the gate 0 to 3 adapters; the
-  `g7-0..g7-3` gsw legs (file only).
-- **Checks**: each gate's receiver checks `@gsw` under Q7; `ordering-model`, a unit test of the
-  applier's walk against gate 1's z, behind-parent, `top_level` and visibility steps from the
-  resolved states (no GPU); `clip-parity` (scissors equal `clip-derive.ts` for every gate 3 item
-  and step); `transform-only-no-upload` (gate 2: zero texture uploads on transform-only steps).
+*Revised 2026-10-15 (D29, D32).* G7a starts only after G7x's win. It turns the slice into the
+receiver.
+
+- **Files**:
+  - `experiments/render-stream/web/gsw-receiver/` (`main.ts`, `config.ts`, `source.ts`,
+    `evidence.ts`, `perf.ts`), a TypeScript shell over `rs-gsw-wasm` (Q14c).
+  - `render-stream-core`: versions 2 to 7 (golden-2 to golden-6, and golden-7 once G7w lands;
+    Q14d); D7's applier in full for gates 0 to 3 (per-z lists, `draw_behind_parent`,
+    `z_as_relative`, `top_level`, `visible`, `clip_ignore`, `set_transform`, canvases by
+    `(layer, sublayer)`); the textures; Q5's sabotages in the applier, selected by
+    `RS_RECEIVER_SABOTAGE` through the config.
+  - `canvas-items` executor features gates 0 to 3 need beyond the slice.
+  - `scripts/lib/gsw-tolerance.ts` and `fixtures/gsw-tolerance.json` (gates 0 to 3 first).
+  - The gate 0 to 3 adapters and the `g7-0..g7-3` gsw legs (file only).
+  - `self-test-rs-core.ts` extended to every gate 0 to 3 source recording.
+- **Checks**:
+  - each gate's receiver checks `@gsw` under Q7;
+  - `ordering-model`, a `cargo test` of the applier's walk against gate 1's z, behind-parent,
+    `top_level` and visibility steps, from the resolved states (no GPU);
+  - `clip-parity`: the Rust scissors equal `clip-derive.ts`'s for every gate 3 item and step
+    (Q14d);
+  - `transform-only-no-upload`: on gate 2's transform-only steps, zero texture uploads and zero
+    vertex bytes, with only item rows uploaded;
+  - golden-2 to golden-6 through the core, natively and as wasm.
 - **Sabotages**: the native receiver sabotages with their native predicted sets; `ignore-z` must
   fail exactly gate 1's z steps; `premultiplied-upload` must fail exactly gate 2's
   translucent-filtered regions with channel delta > 1 (pixelmatch alone must be shown not to catch
   it, as the memory says).
+- **Commit**: `feat(canvas): …` with a real `Changelog:` line if `canvas-items` changed, otherwise
+  `test(render-stream): …`.
+- **Fallback (G7x lost and the user keeps TypeScript, D32)**: the original spec. That is
+  `rs-canvas-applier.ts` and `textures.ts` in TypeScript over `executor-webgl.ts` and G7j's
+  decoder, with the same checks (`ordering-model` as a TypeScript unit test) and the same sabotages.
 
 ### G7n — capture: /7 listener, hello token, origin, CORS (opus)
 
@@ -1596,6 +1805,127 @@ Void if gate 6 fixed D20. Otherwise:
   where G7d's single repeat saw the A75 capped at 1.354 GHz. The cap is not a fixed device property
   and must be sampled per run, not assumed from one prior probe.
 
+### G7o1 — record digest off the frame path, TypeScript (sonnet; g31 run unattended)
+
+What is left of G7o's TypeScript tier 1 (D31, D33).
+
+- **Files**:
+  - `scripts/lib/render-stream-2.ts`: `recordDigest: "inline" | "deferred"` on the incremental
+    validator, with `digestPending()` and `digest()`. The default is `inline`, so every checker and
+    golden test runs unchanged.
+  - `web/bench/bench.ts`: deferred, with `evidence_hash_us` measured after the frame's timed window.
+    Resource payload hashes stay inside `decode_us` and `hash_us`.
+  - `gate7-bench.ts`: `--record-digest inline|deferred`, and the summary keys.
+- **Checks**:
+  - golden-2 to golden-6 unchanged;
+  - `record-digest-equal`: the deferred digest equals the inline one for every record of the four
+    bench inputs;
+  - `record-digest-complete`: every accepted record has its digest before evidence is written.
+- **Runs**: the desktop `gsw` arm, then the g31 arm (D28, unattended), deferred, with one warmup and
+  five repeats. Inputs are G7x's, verbatim. README "Gate 7o1 result" carries G7m's table beside the
+  new one, with cpufreq per repeat.
+- **Predicted** (decode profile): scene-full drops to about 5 ms p50 and passes on the g31.
+  hd-patch is still about 9–10 ms at p95, a miss driven by validate's spread.
+- **Sabotage**: `digest-skip` must fail exactly `record-digest-complete`.
+- **Commit**: `perf(render-stream): …` with `Changelog: none` (experiment code).
+
+### G7x — the Rust slice: core to `canvas-items` on the g31 (opus, gsw-renderer agent)
+
+D32's proof. It is the smallest end-to-end path that a decision can rest on: real recordings,
+through `render-stream-core`, to a packed draw list, drawn by the Rust renderer on the phone, and
+timed per phase against the TypeScript path.
+
+- **Inputs**, verbatim and never regenerated: G7d's final desktop run's bench recordings, which G7m
+  reused.
+  - Location: the G7d worktree `.claude/worktrees/agent-afcc2e9f03924d8ff`, under
+    `artifacts/render-stream/gate7/g7d-r1/g7-bench/inputs/`, with a copy in the G7m worktree
+    `agent-ae96a73e819b37908` under `artifacts/render-stream/gate7/g7m-inputs/inputs/`.
+  - Copy them into this worktree's ignored artifacts first, then rewrite `inputs.json`'s absolute
+    paths, and verify the sha256s (memory worktree-removal-loses-artifacts):
+
+  | Input | Recording | Tx | sha256 |
+  | ----- | --------- | -- | ------ |
+  | `scene-full` | `scene/capture/recording.rs2` | 400 | `3a1a08752d99c33dac1e567203141259fc08b6fe03a68f774eff6b9b4722831c` |
+  | `scene-patch` | `scene/capture/recording-patch.rs2` | 400 | `0a7daa1cb5ebaf2070e84134492713165c6f844ec4eb800484d629d0b7c429df` |
+  | `hd-patch` | `hd/capture/recording-patch.rs2` | 122 | `c9aaaccaddc82e2825dbeb2d94ff1c1c8b9bd63989d9e900b26fd14c9e6b967b` |
+  | `pace-patch` | `pace/capture/recording-patch.rs2` | 400 | `6b26220e1a642f5064e61d780c2b1c6f9c410b3c648476fe8ec49f9eb679a006` |
+
+  Each input's `store/` sits beside its recording. Desktop correctness also uses
+  `fixtures/gate7-pace/` and its `expected.json`.
+- **Scope**, the smallest honest one:
+  - The core: /6 framing, meta and blocks; validate and resolve, delta-driven; payload
+    verification; the digest (D31, with an `inline` switch for R2); the retained state.
+  - The applier: canvases by layer; D7's ordering (z, behind-parent, `top_level`, visibility);
+    modulate; transforms; scissors.
+  - Lowering for **every op class the four inputs contain**. The first step is an op census of the
+    four recordings from the TypeScript decoder, recorded in "As built".
+  - Lowering may be approximate where exactness belongs to a later increment. Lines and polylines
+    become triangles with the vertex count of Godot's lowering, but not its exact joint geometry
+    (G7t owns that). Custom `ShaderMaterial`s draw with
+    the builtin program and are typed `slice-shader-builtin`. Every shortcut is listed, and none
+    drops a draw. golden-2 to golden-5, /7 and every sabotage of Q5 wait for G7a.
+- **Files**: the crates of Q14a marked "G7x"; `scripts/build-rs-core.sh`;
+  `scripts/test/self-test-rs-core.ts`; `web/bench/` gains the `gsw-rs` page path;
+  `gate7-bench.ts --arm gsw-rs` (and `gsw-rs-inline`); the TypeScript arm is renamed `gsw-ts`,
+  with `gsw` kept as an alias until G7a.
+- **Bench protocol**:
+  - One transaction per rAF, as G7d's bench does. For each input: a warmup per arm, then five
+    rounds of (`gsw-ts` deferred, `gsw-rs` deferred, `gsw-rs-inline`), each arm on a fresh page
+    load. Interleaving gives every arm the same thermal and frequency state.
+  - The desktop control arms run first on D9's harness, then `--env device --device g31`, which
+    may run unattended (D28).
+  - Per transaction: `decode_us` (`accept`: framing, meta, validation, resolve, payload checks;
+    for `-inline`, also the record digest), `apply_us`, `draw_us` (the CPU time until `draw()`
+    returns), `total_us` (one wall timer over Q14c's steps 1 to 4, boundary included), and
+    `evidence_hash_us` (deferred, outside every timer).
+  - Report-only: `gpu_complete_ms` from a `fenceSync` polled on later frames (the g31 has no
+    timer query, memory g31-device-probe-facts).
+  - Per repeat: the wasm heap; T_p as the measured rAF median; cpufreq through `DeviceSampler`
+    (`scaling_max_khz`, `scaling_cur_khz` per cluster, `derated`); thermal status.
+- **Pass rule**, all on the g31:
+  - **R1, correctness.** This is a prerequisite, not a measurement. golden-6 passes through the core
+    natively and as wasm. `self-test-rs-core.ts` matches on all four inputs after every
+    transaction. `draw-count-parity` holds: each frame's executed draws equal its visible lowered
+    draws minus the listed typed skips, with merges accounted. The pace fixture's desktop shots
+    are exact at its `expected.json` seqs (`gate7d-checks.ts`, 0-pixel budget). The gate 6 scene's
+    desktop shots against the native receiver's are reported per region, report-only, because
+    G7a and G7g own those pixels.
+  - **R2, the user's rule, against G7m's recorded TypeScript p95 under the same digest policy.**
+    `gsw-rs-inline`'s `decode_us` p95 must be below 12.990 ms (scene-full), 7.395 (scene-patch),
+    16.790 (hd-patch) and 2.160 (pace-patch).
+  - **R3, like for like in the same session.** `gsw-rs`'s `decode_us` p95 must be below `gsw-ts`'s
+    decode, validate and resolve p95 (both deferred, G7o1) on every input. That holds pooled over
+    the five rounds, and in at least 4 of the 5 paired rounds.
+  - **R4, the budget (D25).** `gsw-rs`'s `total_us` p95 must be ≤ 0.5·T_p, with T_p measured in
+    that session (≈8.5 ms, G7m), in each of the five repeats, on `pace-patch`, `scene-patch` and
+    `scene-full`. `hd-patch` is judged and recorded as the stretch target (D25).
+  - **Win** is R1 to R4. The desktop arms are only the early signal.
+- **On a win**: one commit, `feat(canvas): …` with a real `Changelog:` line. The integrator-visible
+  part is `canvas-items`, which is off by default. The commit carries every crate, the bench arms,
+  `self-test-rs-core.ts`, README "Gate 7x result" (the per-phase table for all three arms against
+  G7m's, cpufreq and T_p per repeat, the op census, the shortcut list) and "As built (G7x)" here.
+  Q14f's downstream consumer check passes first.
+- **On a loss** (R1 holds, but R2, R3 or R4 fails):
+  - One commit, `test(render-stream): …` with `Changelog: none`. It carries `rs-core` and its CLI,
+    `self-test-rs-core.ts` and the numbers, because G7xn and G7xw still need the core for the
+    separate Rust-against-GDScript question (D34).
+  - `rust-draw-list`, `canvas-items`, `rs-gsw-wasm` and the `gsw-rs` arm stay on the branch
+    `rs/gate7-g7x`, which is kept, with its sha in "As built".
+  - D29 goes back to the user before G7a starts.
+- **If R1 fails**, there is no result. Fix it, or stop and report. Numbers from an incorrect
+  pipeline never land.
+- **Sabotages**:
+  - `skip-payload-hash` must fail golden `resource-hash`.
+  - `drop-draws` (the executor skips every second merged draw) must fail `draw-count-parity` and
+    the pace shots.
+  - `stale-item-row` (the dirty item-row upload is skipped) must fail the pace shot at every step
+    after the first. This proves the transform-only path is real.
+  - `digest-skip` must fail `record-digest-complete`.
+- **Agent notes**: use the gsw-wgpu-renderer skill for `rust-prototype`, and gsw-perf only for
+  harness conventions. Run `rustup target add wasm32-unknown-unknown` if it is missing; it is
+  installed here, with wasm-bindgen 0.2.129. Never launch headed Chromium. The g31 has standing
+  approval (D28).
+
 ### G7b — web export: every gate's file legs (opus)
 
 - **Files**: the gate 1 to 6 adapters (web side); the `g7-1..g7-6` web file legs; HD presentation
@@ -1617,6 +1947,9 @@ Void if gate 6 fixed D20. Otherwise:
   triangle fan) must fail exactly gate 5b's polygon regions.
 - **As built** must record whether hairlines meet gate 5b's decided set. If they do not, they are
   `gsw-hairline` and the legs that draw them classify `unsupported`.
+- *Amended 2026-10-15 (D29):* the lowering table is written in `render-stream-core`'s applier,
+  and executor features go into `canvas-items`. The Rust ports of `geometry-raster.ts`'s lowering
+  must be bit-equal to the TypeScript on every gate 5 case (Q14d). Hairlines stay as specified.
 
 ### G7s — GSW materials and shaders: gate 5.5 (opus)
 
@@ -1634,6 +1967,10 @@ Void if gate 6 fixed D20. Otherwise:
   frame equal the wire's resolved values); package tests and the downstream consumer check.
 - **Sabotages**: native `ignore-material`, `stale-param`, `ignore-canvas-modulate` with native sets;
   a GSW `blend-swap` (`sub`↔`add`) must fail exactly gate 5.5b's sub/add regions.
+- *Amended 2026-10-15 (D29):* the item-space program path goes into `canvas-items` (GLSL ES 3.00),
+  not `executor-webgl.ts`. `packages/effects`' transpiler stays TypeScript, and its GLSL crosses
+  into wasm once per shader resource (Q14c). Uniforms and instance uniforms are set from the core's
+  resolved parameters, and `shader-param-parity` reads them through `evidence_json()`.
 
 ### G7l — live in browsers: gates 1, 2, 5f, 5.5f (opus)
 
@@ -1645,31 +1982,79 @@ Void if gate 6 fixed D20. Otherwise:
   `credit-from-paced-loop`; `token-not-logged`; the auth and origin legs of `g7-2`.
 - **Sabotages**: the native live sabotages (`stale-coalesce` and others) with their native sets;
   `no-cors`, `no-token` and `bad-http-token` as `g7-2` states.
+- *Amended 2026-10-15 (D29):* GSW's live client and fetcher stay TypeScript (WebSocket, `fetch`,
+  credit). They feed the core through Q14c's single copy. The web export's live legs run on
+  whichever core its build uses (GDScript until G7xw).
 
-### G7o — decode/apply optimization, conditional (opus)
+### G7xn — native GDExtension adapter for the core (opus)
 
-Void unless G7m recorded `device-decode-over-budget` on either phone. Otherwise:
+D34's first adapter, proven natively, where it is easiest to debug, before the web export loads
+it. Void if F4 is declined, because G7xn has no other consumer in gate 7.
 
-- **Change**: Q13e's tier-1 candidates for the receiver or receivers that missed, one at a time,
-  ranked by the decode profile (`rs/decode-profile`), each kept only if the bench measures a gain.
-  Web: `receiver/rs2_decoder.gd` and the apply path. GSW: the decode path and, if chosen, a decode
-  Worker.
-- **Tier 2** (Q13e's shared Rust decode core) is reached only if tier 1's best still misses on the
-  g31 and the profile shows tier 1 cannot close the gap. It is then its own increment, named when
-  it is reached, with the same checks below. Its web-export prerequisites (the dlink template and
-  emscripten) were approved and fetched on 2026-10-15 (see Q13e).
+- **Files**:
+  - `experiments/render-stream/rs-core-capi/` (Q14e's C ABI).
+  - `receiver/ext/`: the C++ shim over raw `gdextension_interface.h`, its `.gdextension` file and
+    `scripts/build-rs-core-ext.sh` (native).
+  - `RS_RECEIVER_CORE=gdscript|rust` in `rs_config.gd`, default `gdscript`.
+  - `receiver.gd`'s decode and apply call sites routed through the core. Apply for changed items
+    runs from native code as RenderingServer ptrcalls, while GDScript keeps config, IO, evidence
+    and shots.
+  - The native bench arm for both cores.
 - **Checks**:
-  - golden-2 to golden-7 identical in all three languages;
-  - gates 0 to 6 natively unchanged;
-  - every `g7-*` group already landed still green;
-  - the bench's desktop arms improved;
-  - then G7m's phone bench re-run, which must meet Q13e's rule: on the g31 first (unattended
-    while it is attached), then on the g86 (attended).
-- If the best result still misses, the increment lands what it gained. It records
-  `device-decode-over-budget` with the new numbers as that receiver's standing finding, and the
-  budget is unchanged.
-- **Sabotage**: a variant that skips a payload hash check must fail golden `resource-hash`, which
-  shows that the optimization did not buy its speed by dropping verification.
+  - every native receiver leg of gates 0 to 6 under `rust`, with the same classes and shots
+    byte-identical to the `gdscript` legs of the same source run;
+  - `applied.json` equal except timings and `receiver`;
+  - the default path unchanged (gates 0 to 6 natively);
+  - the native bench on desktop for both cores, with the per-phase table in "Gate 7xn result".
+- **Sabotages**: each gate's receiver sabotages under `rust`, with their native sets.
+
+### G7xw — web-export dlink adapter for the core (opus; g31 run unattended)
+
+- **Prerequisite**: F4, a pinned nightly with `rust-src`. If it is not approved, the increment is
+  void (D33, D34).
+- **Step 0, the toolchain probe.** Build a Rust staticlib for `wasm32-unknown-emscripten` with
+  `-Zbuild-std` and `-C relocation-model=pic`. Link it with the shim into a `SIDE_MODULE` using
+  emcc 4.0.11, load it in the dlink template, and make one call that returns a constant. If that
+  fails, stop and report the error. The fallback choice goes to the user: the JavaScriptBridge
+  split of D34, or GDScript with G7o's GDScript tier 1.
+- **Files**:
+  - a second preset, `Web (rust core)`, with `variant/extensions_support=true` and the dlink
+    template, its sha256 pinned;
+  - `build-web-receiver.sh --core rust`;
+  - the side-module build;
+  - `build.json` recording the nightly's version, emcc's version and each artifact's sha256.
+- **Checks**:
+  - `g7-0..g7-6` web file legs under `rust`, with classes equal and shots byte-identical to G7b's
+    GDScript web legs;
+  - G7m's web bench arm on desktop and then the g31, under Q13e's rule against the D25 budget;
+  - startup (D15) of the dlink build against the nothreads build, reported.
+- **Sabotages**: the gate 0 receiver sabotages through `--rs-env` under `rust`, with their native
+  sets.
+
+### G7o — decode/apply optimization (restructured 2026-10-15; lands nothing)
+
+G7m recorded `device-decode-over-budget` for GSW on the g31 (scene-full and hd-patch), so G7o was
+triggered. D33 splits it:
+
+- **TypeScript tier 1**:
+  - Item 1, the record SHA-256 off the decode path, is **G7o1**.
+  - Delta-driven validation and resolve are built into `render-stream-core` (D29).
+  - Typed-array blocks, the native ASCII check and a wasm SHA-256 are dropped, because Rust has no
+    equivalent cost.
+  - A decode Worker is deferred until G7v shows a main-thread miss after G7a. It would then host
+    the Rust core.
+  - If G7x loses (D32), items 2 to 4 of Q13e's GSW list come back as the TypeScript plan, with the
+    checks below.
+- **GDScript tier 1** is dropped for the web export, because the decode profile projects it to
+  miss on the g31. It comes back only by D33's condition.
+- **Tier 2** is the plan: G7x, G7a, G7xn and G7xw.
+- **The closing bench** belongs to G7x (GSW) and G7xw (the web export). For each, D27's rule still
+  applies: a remaining miss is recorded as that receiver's standing `device-decode-over-budget`,
+  with numbers, and the budget is unchanged.
+- **Checks that carry over** to every increment that changes a decode path: golden-2 to golden-7
+  identical in all three languages; gates 0 to 6 natively unchanged; every `g7-*` group already
+  landed still green. The sabotage that skips a payload hash check must fail golden
+  `resource-hash`.
 
 ### G7g — gate 6 scene and HD on both browsers (opus)
 
@@ -1685,6 +2070,9 @@ Void unless G7m recorded `device-decode-over-budget` on either phone. Otherwise:
 - **Files**: `g7-lc` legs and checks (Q10), using G7h's controller.
 - **Checks**: Q10's lifecycle checks.
 - **Sabotages**: `ack-while-hidden` and `css-opacity` with exact failure sets.
+- *Amended 2026-10-15 (D29):* GSW's context restore is the renderer's in-place GL restore. The
+  core re-uploads every live texture from its payload cache in wasm memory, refetching evicted
+  hashes, and draws with no transaction.
 
 ### G7r — pacing, rates, phase study, dual (opus)
 
@@ -1700,6 +2088,9 @@ Void unless G7m recorded `device-decode-over-budget` on either phone. Otherwise:
 - **Files**: the `g7-k` legs, the samplers' wiring and the soak checks (Q10).
 - **Checks**: Q10's startup and soak checks.
 - **Sabotages**: `no-evict` and `leak-gl-textures` with exact failure sets.
+- *Amended 2026-10-15 (D29):* GSW reports its wasm heap (`rs-gsw-wasm`'s `memory.buffer`, which
+  never shrinks) beside the JS heap. `RS_RECEIVER_MEMORY_BUDGET_BYTES` counts the core's payload
+  cache in wasm memory and the GL textures.
 
 ### G7q — credit window 2 (opus; fork F1, only with the user's go-ahead)
 
@@ -1751,6 +2142,13 @@ Void unless G7m recorded `device-decode-over-budget` on either phone. Otherwise:
   - `RS_RECEIVER_DRAW_REPEAT=8` on the g31's `scene` and the g86's `hd` must fail
     `dev-gpu-headroom` and `dev-rate`, which shows that the headroom leg can fail on each phone;
   - a soak with `leak-gl-textures` must fail exactly `dev-soak`'s GPU-memory clause.
+- *Amended 2026-10-15 (D29, D33):*
+  - From G7a on, `gsw` is the Rust path, so apply and draw are measured, not only decode. The
+    `gsw-ts` bench arm runs beside it as a control and judges nothing.
+  - The web export's `dev-` arms run on the Rust core if G7xw landed, and on GDScript otherwise.
+    The result names the core.
+  - Main-thread work per drawn frame counts the wasm calls and the boundary copies (Q14c's
+    `total_us`).
 
 ### G7p — measurement matrix, report/2 (sonnet)
 
@@ -1804,8 +2202,13 @@ Void unless G7m recorded `device-decode-over-budget` on either phone. Otherwise:
   game's census needs them.
 - **GSW shader `TIME`, screen texture, lights**: with the native capability, unchanged from
   gate5_5-design.md.
-- **Threaded web export, GDExtension in the browser beyond D27's conditional decode core, other
-  browsers (Firefox, WebKit), real displays and presentation feedback**: not scheduled. Each is a
+- **Threaded web export, GDExtension in the browser beyond the core's dlink adapter (D34), other
+  browsers (Firefox, WebKit), real displays and presentation feedback**: not scheduled.
+- **The Rust core beyond gate 7** (D29, Q14f): switching the native receiver's default to `rust`;
+  the capture sharing the Rust codec; `canvas-items` on wgpu/WebGPU; a Rust backend for
+  `packages/canvas`'s TypeScript `DrawList` executor; a decode Worker hosting the core (D33); and
+  the experiment-consolidation inventory, whose deletions the user approves per repo. Each is
+  sequenced after gate 7, and none is scheduled. Each is a
   separate measurement experiment. The two phones of D24 are the exception, measured through
   compositor activation, never through presentation feedback.
 - **Rendering at the viewer's own size on a phone**: the g31's `hd` stretch result (Q13a) is input
@@ -1819,7 +2222,7 @@ Void unless G7m recorded `device-decode-over-budget` on either phone. Otherwise:
 
 Known before this contract, and still true: render-stream/6 carries everything both browser
 receivers need, and the native receiver's GDScript is platform-neutral except configuration, files
-and `/proc`. Seven things were not known, and they change the design:
+and `/proc`. Eight things were not known, and they change the design:
 
 1. A browser cannot send the upgrade header G2e's authorization requires, and Godot's web peer
    silently drops it, so /7 is required (D2, D3).
@@ -1841,6 +2244,10 @@ and `/proc`. Seven things were not known, and they change the design:
    wasm on cores predicted 4–5× slower than the desktop's. That adds a device harness for two
    phones, an early microbench on both, and a conditional optimization increment that may reach a
    shared Rust decode core (D24 to D28, Q13).
+8. Measured on 2026-10-15, GSW's TypeScript decode misses the g31's half-frame budget at p95 on
+   full snapshots and HD patches (G7m). The profile also projects that GDScript cannot reach that
+   budget even after its own fixes. The user chose one shared Rust core rendered by the existing
+   Rust renderer, proven first by a g31 slice against the TypeScript path (D29 to D34, Q14).
 
 ## Open forks for the user
 
@@ -1882,3 +2289,18 @@ Everything else above follows from the handoff, engine source or recorded findin
   labelled as such. That follows from F1's opt-in approval, so it is not part of this fork. On the
   g31 it is the predicted outcome (D26), which makes F1's eventual window-2 default more pressing,
   though G7q's measurements still decide it.
+- **F4. A pinned nightly Rust toolchain for the web export's side module** (added 2026-10-15; D34,
+  G7xn, G7xw). An emscripten `SIDE_MODULE` needs position-independent code throughout, including
+  Rust's `std`. The prebuilt `std` is not built that way, so the Rust core can join the dlink web
+  export only through nightly `-Zbuild-std` with `rust-src` (godot-rust documents the same for web
+  builds). That is a download and a nightly compiler in the build, which earlier downloads (F2, the
+  dlink template, emsdk) needed the user's approval for.
+  - **(a)** Approve. G7xw installs one dated nightly (`nightly-YYYY-MM-DD`, chosen by its toolchain
+    probe and recorded in `build.json`) with `rust-src`, used only for the side-module build. Stable
+    1.95.0 stays the toolchain for everything else.
+  - **(b)** Decline. G7xn and G7xw are void. The web export stays on GDScript, and its g31 result is
+    recorded as measured (`not-met` if it misses). F3 (a) already lets GSW carry the phone
+    criterion.
+  The default until the user answers: G7xn and G7xw do not start. Nothing before them depends on
+  the answer, and G7x, G7a and the GSW track proceed either way. If G7xw's probe fails even with
+  (a), the choice between the JavaScriptBridge split and GDScript goes back to the user (D34).
