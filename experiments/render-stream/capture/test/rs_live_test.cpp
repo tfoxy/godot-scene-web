@@ -475,8 +475,8 @@ void test_v4_hub_and_control() {
 }
 
 // G7w (render-stream-7.md "Hello", gate7-design.md Q2): parse_control(V7) takes golden-7/
-// control/, the hello's nine new keys and no Hub behaviour -- the Hub does not speak /7 yet
-// (G7n rebases it onto G6c).
+// control/ and the hello's nine new keys (the Hub speaks /7 per connection since G7n:
+// test_v6_and_v7_on_one_hub, test_v7_hello_token).
 void test_v7_control_parser() {
   const std::string root = std::string(GRC_GOLDEN7_DIR) + "/control";
   const std::vector<std::string> valid = list_dir(root + "/valid");
@@ -1532,8 +1532,248 @@ void test_served_resources() {
   }
 }
 
+// ----------------------------------------------------------------- G7n: /6 and /7 per connection
+
+const std::string kToken = std::string(64, 'c');
+
+// A /7 hello (render-stream-7.md "Hello"); `token` is the JSON literal (a quoted string or null).
+std::string hello7(const std::string &token, int window = 1, const char *kind = "gsw-canvas") {
+  return std::string(R"({"type":"hello","protocol":"render-stream/7","receiver":"browser","receiver_kind":")") +
+         kind + R"(","credit_stage":"submitted","credit_window":)" + std::to_string(window) +
+         R"(,"inbound_buffer_bytes":16777216,"token":)" + token +
+         R"(,"manifest_sha256":")" + std::string(64, 'e') +
+         R"(","presentation_backing_w":640,"presentation_backing_h":360,"presentation_css_w":640,"presentation_css_h":360,"dpr_milli":1000})";
+}
+const std::string kHello6 =
+    R"({"type":"hello","protocol":"render-stream/6","receiver":"native","credit_stage":"submitted","inbound_buffer_bytes":16777216})";
+
+LiveEvent opened_with(std::uint32_t conn, const std::string &subprotocol,
+                      const std::string &origin = std::string()) {
+  LiveEvent e = opened(conn);
+  e.subprotocol = subprotocol;
+  e.origin = origin;
+  return e;
+}
+
+Session template_v6() {
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V6;
+  return tmpl;
+}
+
+Captured captured_v6() {
+  Captured c = captured_state(1);
+  c.state.version = ProtocolVersion::V6;
+  return c;
+}
+
+void frame_once(Hub &hub, std::uint64_t frame) {
+  const Captured snapshot = captured_v6();
+  const std::uint64_t now = frame * 16000000ULL;
+  hub.on_frame(frame, now, hub.wants_snapshot(frame, now) ? &snapshot : nullptr, 1, 1000);
+}
+
+std::vector<Sent> of_conn(const FakeTransport &t, Sent::Kind kind, std::uint32_t conn) {
+  std::vector<Sent> out;
+  for (const Sent &s : t.of(kind)) {
+    if (s.conn == conn) {
+      out.push_back(s);
+    }
+  }
+  return out;
+}
+
+// gate7-design.md Q3 "Two subprotocols on one listener": a /6 and a /7 connection on one hub,
+// served from one snapshot; each gets its own magic, protocol string and hello shape; a /7
+// connection's publication declares the grant, capped at 1 before G7q.
+void test_v6_and_v7_on_one_hub() {
+  FakeTransport transport;
+  LiveConfig config;
+  config.credit_window_max = 2;  // the env allows 2; the host still grants 1 (kHostCreditWindow)
+  Hub hub(&transport, config, template_v6());
+  hub.on_event(opened_with(1, "render-stream.6"), 0);
+  hub.on_event(opened_with(2, "render-stream.7", "http://127.0.0.1:5173"), 0);
+  hub.on_event(text(1, kHello6), 0);
+  hub.on_event(text(2, hello7("null", 2)), 0);
+  frame_once(hub, 1);
+  const std::vector<Sent> b6 = of_conn(transport, Sent::Binary, 1);
+  const std::vector<Sent> b7 = of_conn(transport, Sent::Binary, 2);
+  check(b6.size() == 2 && b7.size() == 2, "both connections got the session and seq 1");
+  if (b6.size() == 2 && b7.size() == 2) {
+    const std::vector<std::uint8_t> m6 = magic(ProtocolVersion::V6);
+    const std::vector<std::uint8_t> m7 = magic(ProtocolVersion::V7);
+    check(std::equal(m6.begin(), m6.end(), b6[0].bytes.begin()), "the /6 connection starts GRS6");
+    check(std::equal(m7.begin(), m7.end(), b7[0].bytes.begin()), "the /7 connection starts GRS7");
+    const std::string s6 = meta_at(b6[0].bytes, 8);
+    const std::string s7 = meta_at(b7[0].bytes, 8);
+    check(has(s6, "\"protocol\":\"render-stream/6\"") && !has(s6, "credit_window"),
+          "the /6 session is /6's, with no credit_window: " + s6.substr(0, 60));
+    check(has(s7, "\"protocol\":\"render-stream/7\"") &&
+              has(s7, "\"publication\":{\"mode\":\"every-frame\",\"target_fps\":null,\"credit_window\":1}"),
+          "the /7 session declares publication.credit_window 1 (asked 2, max 2, host 1)");
+    check(b6[1].bytes == b7[1].bytes,
+          "seq 1 is byte-identical on /6 and /7 (render-stream-7.md: records are /6's)");
+  }
+  const std::vector<ConnectionSummary> sums = hub.summaries();
+  check(sums.size() == 2 && sums[0].version == 6 && sums[1].version == 7, "versions 6 and 7");
+  if (sums.size() == 2) {
+    check(!sums[0].has_hello7 && sums[0].receiver_kind.empty() && sums[0].credit_window == 1 &&
+              sums[0].origin.empty() && !sums[0].token_checked,
+          "the /6 summary has no /7 hello, window 1, no origin, token not checked");
+    check(sums[1].has_hello7 && sums[1].receiver_kind == "gsw-canvas" &&
+              sums[1].credit_window_requested == 2 && sums[1].credit_window == 1 &&
+              sums[1].manifest_sha256 == std::string(64, 'e') &&
+              sums[1].presentation_backing_w == 640 && sums[1].dpr_milli == 1000 &&
+              sums[1].origin == "http://127.0.0.1:5173" && !sums[1].token_checked,
+          "the /7 summary records the hello, the grant and the origin");
+  }
+  const std::string json = hub.summary_json();
+  check(has(json, "\"version\": 7") && has(json, "\"receiver_kind\": \"gsw-canvas\"") &&
+            has(json, "\"credit_window_requested\": 2") &&
+            has(json, "\"origin\": \"http://127.0.0.1:5173\"") && has(json, "\"token_ok\": null") &&
+            has(json, "\"preflights\": 0") && has(json, "\"presentation_css_w\": 640"),
+        "live-summary.json carries the G7n per-connection fields");
+  // Each connection still wants its own hello: the other version's is a protocol error.
+  {
+    FakeTransport t2;
+    Hub h2(&t2, LiveConfig(), template_v6());
+    h2.on_event(opened_with(1, "render-stream.7"), 0);
+    h2.on_event(text(1, kHello6), 0);
+    h2.on_event(opened_with(2, "render-stream.6"), 0);
+    h2.on_event(text(2, hello7("null")), 0);
+    const std::vector<Sent> closes = t2.of(Sent::Close);
+    check(closes.size() == 2 && closes[0].code == 1002 && closes[1].code == 1002,
+          "a /6 hello on a /7 connection and a /7 hello on a /6 connection close 1002");
+    check(t2.of(Sent::Binary).empty(), "and nothing was streamed to either");
+  }
+  // A /7 hello asking for window 3 is a protocol error (parse_control's 1..2 range).
+  {
+    FakeTransport t3;
+    Hub h3(&t3, LiveConfig(), template_v6());
+    h3.on_event(opened_with(1, "render-stream.7"), 0);
+    h3.on_event(text(1, hello7("null", 3)), 0);
+    const std::vector<Sent> texts = t3.of(Sent::Text);
+    check(texts.size() == 1 && has(texts[0].text, "\"reason\":\"protocol\"") &&
+              t3.of(Sent::Close).size() == 1 && t3.of(Sent::Close)[0].code == 1002,
+          "credit_window 3 -> error protocol, close 1002");
+  }
+}
+
+// gate7-design.md D3, Q2 "Host behaviour on the hello": on a bearer session a /7 hello whose
+// token is null or wrong is `error` unauthorized + close 1008 "unauthorized", with nothing sent
+// before or after; the right token streams. token-ignored lets the wrong one through but still
+// records token_ok false. A /6 connection on a bearer session passed the upgrade check.
+void test_v7_hello_token() {
+  for (const char *token : {"null", "\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\""}) {
+    FakeTransport transport;
+    LiveConfig config;
+    config.auth_token = kToken;
+    Hub hub(&transport, config, template_v6());
+    hub.on_event(opened_with(4, "render-stream.7"), 0);
+    frame_once(hub, 1);
+    check(transport.sent.empty(), "a bearer /7 connection is sent nothing before its hello");
+    hub.on_event(text(4, hello7(token)), 0);
+    frame_once(hub, 2);
+    frame_once(hub, 3);
+    const std::vector<Sent> texts = transport.of(Sent::Text);
+    const std::vector<Sent> closes = transport.of(Sent::Close);
+    check(texts.size() == 1 && has(texts[0].text, "\"type\":\"error\"") &&
+              has(texts[0].text, "\"reason\":\"unauthorized\""),
+          std::string("token ") + token + " -> one error unauthorized");
+    check(closes.size() == 1 && closes[0].code == 1008 && closes[0].text == "unauthorized",
+          std::string("token ") + token + " -> close 1008 with reason unauthorized");
+    check(transport.of(Sent::Binary).empty(), "nothing binary is ever sent after a refusal");
+    const ConnectionSummary s = hub.summaries().at(0);
+    check(s.token_checked && !s.token_ok && s.error_sent == "unauthorized" && s.close_code == 1008,
+          "the summary records token_ok false, error unauthorized, close 1008");
+    check(has(hub.summary_json(), "\"token_ok\": false"), "live-summary.json token_ok false");
+    check(!has(hub.summary_json(), kToken), "the token never reaches the summary");
+  }
+  {
+    FakeTransport transport;
+    LiveConfig config;
+    config.auth_token = kToken;
+    config.tap_dir = std::string(GRC_TEST_TMP_DIR) + "/g7n-token";
+    Hub hub(&transport, config, template_v6());
+    hub.on_event(opened_with(4, "render-stream.7"), 0);
+    hub.on_event(text(4, hello7("\"" + kToken + "\"")), 0);
+    frame_once(hub, 1);
+    check(transport.of(Sent::Binary).size() == 2 && transport.of(Sent::Close).empty(),
+          "the right token streams the session and seq 1");
+    check(hub.summaries().at(0).token_checked && hub.summaries().at(0).token_ok, "token_ok true");
+    hub.finish(EndReason::Shutdown, 2, 32000000ULL);
+    hub.close_open(2);
+    const std::string log = read_file(config.tap_dir + "/live-1.jsonl");
+    check(has(log, "\"token_ok\":true") && has(log, "\"receiver_kind\":\"gsw-canvas\"") &&
+              has(log, "\"credit_window_granted\":1") && !has(log, kToken),
+          "the hello line records every key but the token, plus token_ok");
+  }
+  {
+    FakeTransport transport;
+    LiveConfig config;
+    config.auth_token = kToken;
+    config.token_ignored = true;
+    Hub hub(&transport, config, template_v6());
+    hub.on_event(opened_with(4, "render-stream.7"), 0);
+    hub.on_event(text(4, hello7("null")), 0);
+    frame_once(hub, 1);
+    check(transport.of(Sent::Binary).size() == 2 && transport.of(Sent::Close).empty(),
+          "token-ignored: a null token streams anyway");
+    check(hub.summaries().at(0).token_checked && !hub.summaries().at(0).token_ok,
+          "token-ignored still records token_ok false");
+  }
+  {
+    FakeTransport transport;
+    LiveConfig config;
+    config.auth_token = kToken;
+    Hub hub(&transport, config, template_v6());
+    hub.on_event(opened_with(4, "render-stream.6"), 0);
+    hub.on_event(text(4, kHello6), 0);
+    frame_once(hub, 1);
+    check(transport.of(Sent::Binary).size() == 2, "a /6 connection on a bearer session streams");
+    check(hub.summaries().at(0).token_checked && hub.summaries().at(0).token_ok,
+          "a /6 connection's token_ok is the upgrade check it passed");
+  }
+  {
+    // No session auth: a /7 token is not checked at all (token_ok null), whatever it holds.
+    FakeTransport transport;
+    Hub hub(&transport, LiveConfig(), template_v6());
+    hub.on_event(opened_with(4, "render-stream.7"), 0);
+    hub.on_event(text(4, hello7("\"" + std::string(64, '1') + "\"")), 0);
+    frame_once(hub, 1);
+    check(transport.of(Sent::Binary).size() == 2 && !hub.summaries().at(0).token_checked,
+          "no session auth: the /7 token is not checked");
+  }
+}
+
+// gate7-design.md Q3 "Evidence": a preflight is counted in `preflights`, never `http_gets`.
+void test_preflight_attribution() {
+  FakeTransport transport;
+  LiveConfig config;
+  config.tap_dir = std::string(GRC_TEST_TMP_DIR) + "/g7n-preflight";
+  Hub hub(&transport, config, template_v6());
+  hub.on_event(opened_with(1, "render-stream.7", "http://127.0.0.1:5173"), 0);
+  hub.on_event(text(1, hello7("null")), 0);
+  frame_once(hub, 1);
+  const std::string hash(64, 'a');
+  check(hub.on_http_get(hash, 204, 0, 5000, 1, /*preflight=*/true) == 1, "attributed to conn 1");
+  hub.on_http_get(hash, 200, 10, 6000, 1);
+  const ConnectionSummary s = hub.summaries().at(0);
+  check(s.preflights == 1 && s.http_gets == 1 && s.http_bytes == 10 && s.http_errors == 0,
+        "one preflight and one GET, counted apart");
+  hub.finish(EndReason::Shutdown, 2, 32000000ULL);
+  hub.close_open(2);
+  const std::string log = read_file(config.tap_dir + "/live-1.jsonl");
+  check(has(log, "\"event\":\"preflight\"") && has(log, "\"event\":\"http-get\"") &&
+            has(log, "\"version\":7") && has(log, "\"origin\":\"http://127.0.0.1:5173\""),
+        "the live log has a preflight line, an http-get line and the open line's version/origin");
+}
+
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
+  test_v6_and_v7_on_one_hub();
+  test_v7_hello_token();
+  test_preflight_attribution();
   test_control_parser();
   test_v3_hub_and_control();
   test_v4_hub_and_control();

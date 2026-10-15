@@ -188,6 +188,8 @@ GS_STRIP_VARS=(
 	RS_FIXTURE_MATERIAL_LOG GRC_SHADER_POLICY RS_RECEIVER_SHADER_LIBRARY
 	# gate 6 (protocol/gate6-design.md Q3c, Q3d, Q5; G6r): rate control, admission and perf
 	GRC_PUBLISH_FPS GRC_LIVE_MAX_CONNECTIONS GRC_HOOK_LOG RS_RECEIVER_PERF_OUT RS_RECEIVER_LOG
+	# gate 7 (protocol/gate7-design.md Q3, G7n): the /7 listener's Origin allowlist and window cap
+	GRC_LIVE_ALLOWED_ORIGINS GRC_LIVE_CREDIT_WINDOW_MAX
 )
 
 # Sets GS_STRIP_ARGS to `-u NAME` words for `env`: GS_STRIP_VARS plus every inherited GRC_* and

@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -281,6 +282,71 @@ bool constant_time_equals(std::string_view a, std::string_view b) {
 
 namespace {
 
+// One `scheme://host:port` origin, exactly as parse_allowed_origins documents (rs_ws.h).
+bool valid_origin(const std::string &entry) {
+  const std::size_t sep = entry.find("://");
+  if (sep == std::string::npos || sep == 0) return false;
+  const std::string scheme = entry.substr(0, sep);
+  if (!(scheme[0] >= 'a' && scheme[0] <= 'z')) return false;
+  for (char ch : scheme) {
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '+' || ch == '.' || ch == '-')) return false;
+  }
+  const std::string rest = entry.substr(sep + 3);
+  std::size_t port_colon = 0;
+  if (!rest.empty() && rest[0] == '[') {
+    const std::size_t close = rest.find(']');
+    if (close == std::string::npos || close < 2) return false;
+    for (std::size_t i = 1; i < close; ++i) {
+      const char ch = rest[i];
+      if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == ':' || ch == '.')) return false;
+    }
+    if (close + 1 >= rest.size() || rest[close + 1] != ':') return false;
+    port_colon = close + 1;
+  } else {
+    port_colon = rest.find(':');
+    if (port_colon == std::string::npos || port_colon == 0) return false;
+    for (std::size_t i = 0; i < port_colon; ++i) {
+      const char ch = rest[i];
+      if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '-')) return false;
+    }
+  }
+  const std::string port = rest.substr(port_colon + 1);
+  if (port.empty() || port.size() > 5 || port[0] == '0') return false;
+  for (char ch : port) {
+    if (ch < '0' || ch > '9') return false;
+  }
+  const unsigned long value = std::strtoul(port.c_str(), nullptr, 10);
+  return value >= 1 && value <= 65535;
+}
+
+}  // namespace
+
+bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out, std::string *error) {
+  out->clear();
+  const std::string all(text);
+  if (trim(all).empty()) return true;
+  std::vector<std::string> parsed;
+  std::size_t start = 0;
+  for (;;) {
+    const std::size_t comma = all.find(',', start);
+    const std::string entry =
+        trim(all.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+    if (!valid_origin(entry)) {
+      if (error != nullptr) {
+        *error = "\"" + entry + "\" is not an exact scheme://host:port origin";
+      }
+      return false;
+    }
+    parsed.push_back(entry);
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  *out = std::move(parsed);
+  return true;
+}
+
+namespace {
+
 // True iff `req`'s Authorization header is "Bearer <expected>" (gate2-design.md D13). Always
 // true when `expected` is empty (auth disabled). The "Bearer " prefix is a public constant (RFC
 // 6750), so checking it is allowed to short-circuit; only the secret itself is compared in
@@ -305,17 +371,30 @@ struct UpgradeHeaders {
   bool version13 = false;
   std::string key;
   bool protocol_ok = false;
+  std::string subprotocol;  // the chosen one (the server's spelling) when protocol_ok
 };
 
-UpgradeHeaders check_upgrade_headers(const ParsedRequest &req, const std::string &expected_subprotocol) {
+// G7n: `accepted` is the server's list, most preferred first; the first one the client offered
+// wins, whatever order the client listed them in.
+UpgradeHeaders check_upgrade_headers(const ParsedRequest &req, const std::vector<std::string> &accepted) {
   UpgradeHeaders out;
   out.has_upgrade_websocket = token_list_contains(header_value(req, "upgrade"), "websocket");
   out.has_connection_upgrade = token_list_contains(header_value(req, "connection"), "upgrade");
   out.version13 = trim(header_value(req, "sec-websocket-version")) == "13";
   out.key = trim(header_value(req, "sec-websocket-key"));
-  out.protocol_ok =
-      token_list_contains(header_value(req, "sec-websocket-protocol"), to_lower(expected_subprotocol));
+  const std::string offered = header_value(req, "sec-websocket-protocol");
+  for (const std::string &candidate : accepted) {
+    if (token_list_contains(offered, to_lower(candidate))) {
+      out.protocol_ok = true;
+      out.subprotocol = candidate;
+      break;
+    }
+  }
   return out;
+}
+
+bool contains(const std::vector<std::string> &list, const std::string &value) {
+  return std::find(list.begin(), list.end(), value) != list.end();
 }
 
 void set_nonblocking(int fd) {
@@ -325,12 +404,16 @@ void set_nonblocking(int fd) {
 
 const char *http_status_text(int status) {
   switch (status) {
+    case 204:
+      return "No Content";
     case 304:
       return "Not Modified";
     case 400:
       return "Bad Request";
     case 401:
       return "Unauthorized";
+    case 403:
+      return "Forbidden";
     case 404:
       return "Not Found";
     case 405:
@@ -350,10 +433,12 @@ std::vector<std::uint8_t> to_bytes(const std::string &s) {
 // (rs_ws.h). Event now has more fields than any one Kind uses, so positional aggregate
 // initialization at each call site would either miss some (-Wmissing-field-initializers) or
 // force every call site to spell out fields it does not care about; these centralize that once.
-Event make_opened_event(std::uint32_t conn) {
+Event make_opened_event(std::uint32_t conn, std::string subprotocol, std::string origin) {
   Event e;
   e.kind = Event::Opened;
   e.conn = conn;
+  e.subprotocol = std::move(subprotocol);
+  e.origin = std::move(origin);
   return e;
 }
 
@@ -375,13 +460,30 @@ Event make_closed_event(std::uint32_t conn, std::uint16_t code, std::string reas
   return e;
 }
 
-Event make_http_get_event(std::uint32_t conn, std::string hash, std::uint16_t status, std::uint64_t bytes) {
+Event make_http_get_event(std::uint32_t conn, std::string hash, std::uint16_t status, std::uint64_t bytes,
+                          const ParsedRequest &req) {
   Event e;
   e.kind = Event::HttpGet;
   e.conn = conn;
   e.hash = std::move(hash);
   e.http_status = status;
   e.bytes = bytes;
+  e.method = req.method;
+  e.origin = header_value(req, "origin");
+  return e;
+}
+
+// G7n: a request refused for its Origin (403), on either route.
+Event make_origin_rejected_event(std::uint32_t conn, const ParsedRequest &req, std::string route,
+                                 std::string hash) {
+  Event e;
+  e.kind = Event::OriginRejected;
+  e.conn = conn;
+  e.http_status = 403;
+  e.method = req.method;
+  e.origin = header_value(req, "origin");
+  e.route = std::move(route);
+  e.hash = std::move(hash);
   return e;
 }
 
@@ -561,7 +663,8 @@ struct Server::Impl {
                          bool keep_alive) {
     std::string resp = "HTTP/1.1 " + std::to_string(status) + " " + http_status_text(status) + "\r\n";
     for (const auto &h : headers) resp += h.first + ": " + h.second + "\r\n";
-    resp += "Content-Length: 0\r\n";
+    // RFC 9110 8.6: never a Content-Length on a 204 (G7n's preflight, the only 204 sent).
+    if (status != 204) resp += "Content-Length: 0\r\n";
     resp += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     resp += "\r\n";
     enqueue_raw(c, to_bytes(resp), /*bypass_limit=*/true);
@@ -572,12 +675,14 @@ struct Server::Impl {
   }
 
   // 200 OK with a body (render-stream-2.md "HTTP (live)").
-  void send_http_ok(Conn &c, const std::string &hash, const std::vector<std::uint8_t> &body, bool keep_alive) {
+  void send_http_ok(Conn &c, const std::string &hash, const std::vector<std::uint8_t> &body, bool keep_alive,
+                    const std::vector<std::pair<std::string, std::string>> &cors) {
     std::string resp = "HTTP/1.1 200 OK\r\n";
     resp += "Content-Type: application/octet-stream\r\n";
     resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     resp += "Cache-Control: private, max-age=31536000, immutable\r\n";
     resp += "ETag: \"" + hash + "\"\r\n";
+    for (const auto &h : cors) resp += h.first + ": " + h.second + "\r\n";
     resp += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     resp += "\r\n";
     std::vector<std::uint8_t> out = to_bytes(resp);
@@ -590,10 +695,33 @@ struct Server::Impl {
   }
 
   // 304 Not Modified: the same cache headers as 200, no body (render-stream-2.md).
-  void send_http_not_modified(Conn &c, const std::string &hash, bool keep_alive) {
+  void send_http_not_modified(Conn &c, const std::string &hash, bool keep_alive,
+                              const std::vector<std::pair<std::string, std::string>> &cors) {
     send_http_status(c, 304,
-                      {{"Cache-Control", "private, max-age=31536000, immutable"}, {"ETag", "\"" + hash + "\""}},
+                      with(cors, {{"Cache-Control", "private, max-age=31536000, immutable"},
+                                  {"ETag", "\"" + hash + "\""}}),
                       keep_alive);
+  }
+
+  // `extra` followed by `cors` (G7n: the CORS headers go last on every response).
+  static std::vector<std::pair<std::string, std::string>> with(
+      const std::vector<std::pair<std::string, std::string>> &cors,
+      std::vector<std::pair<std::string, std::string>> extra) {
+    extra.insert(extra.end(), cors.begin(), cors.end());
+    return extra;
+  }
+
+  // G7n (gate7-design.md D3): true when `origin` (non-empty) may use this listener.
+  bool origin_allowed(const std::string &origin) const {
+    return !config.enforce_origins || contains(config.allowed_origins, origin);
+  }
+
+  // G7n: the headers every resource-route response to an allowed `origin` adds (none without an
+  // Origin; under no-cors, only Vary).
+  std::vector<std::pair<std::string, std::string>> cors_headers(const std::string &origin) const {
+    if (origin.empty()) return {};
+    if (!config.cors_headers) return {{"Vary", "Origin"}};
+    return {{"Access-Control-Allow-Origin", origin}, {"Vary", "Origin"}};
   }
 
   // Handles one resource GET (gate2-design.md D6, Q4; render-stream-2.md "HTTP (live)"). The
@@ -603,28 +731,52 @@ struct Server::Impl {
     // Extracted before the method check so even a non-GET request's HttpGet event (below) names
     // the hash it attempted -- useful evidence (Q3's hook log) for a misbehaving client.
     const std::string hash = req.path.substr(config.resource_prefix.size());
+    const std::string origin = header_value(req, "origin");
+
+    // G7n (gate7-design.md D3): a foreign Origin is refused before anything else is looked at.
+    if (!origin.empty() && !origin_allowed(origin)) {
+      send_http_status(c, 403, {}, keep_alive);
+      push_event_locked(make_origin_rejected_event(c.id, req, "resource", hash));
+      return;
+    }
+    const std::vector<std::pair<std::string, std::string>> cors = cors_headers(origin);
+    // G7n: a CORS preflight. Answered for any hash (servable, unknown or malformed alike) and
+    // never bearer-checked: a browser sends no credentials on a preflight.
+    if (req.method == "OPTIONS" && !origin.empty()) {
+      std::vector<std::pair<std::string, std::string>> headers;
+      if (config.cors_headers) {
+        headers = {{"Access-Control-Allow-Origin", origin},
+                   {"Access-Control-Allow-Methods", "GET"},
+                   {"Access-Control-Allow-Headers", "authorization"},
+                   {"Access-Control-Max-Age", "7200"}};
+      }
+      headers.emplace_back("Vary", "Origin");
+      send_http_status(c, 204, headers, keep_alive);
+      push_event_locked(make_http_get_event(c.id, hash, 204, 0, req));
+      return;
+    }
 
     if (req.method != "GET") {
-      send_http_status(c, 405, {{"Allow", "GET"}}, /*keep_alive=*/false);
-      push_event_locked(make_http_get_event(c.id, hash, 405, 0));
+      send_http_status(c, 405, with(cors, {{"Allow", "GET"}}), /*keep_alive=*/false);
+      push_event_locked(make_http_get_event(c.id, hash, 405, 0, req));
       return;
     }
     if (!is_sha256_hex(hash)) {
-      send_http_status(c, 400, {}, /*keep_alive=*/false);
-      push_event_locked(make_http_get_event(c.id, hash, 400, 0));
+      send_http_status(c, 400, cors, /*keep_alive=*/false);
+      push_event_locked(make_http_get_event(c.id, hash, 400, 0, req));
       return;
     }
     if (!bearer_ok(req, config.auth_token)) {
       // G2e: a well-formed request, just not an authorized one. Honours keep_alive like the 404
       // case below (an identity failure, not a broken connection) -- never the token itself.
-      send_http_status(c, 401, {}, keep_alive);
-      push_event_locked(make_http_get_event(c.id, hash, 401, 0));
+      send_http_status(c, 401, cors, keep_alive);
+      push_event_locked(make_http_get_event(c.id, hash, 401, 0, req));
       return;
     }
     if (!c.http_slot_held) {
       if (count_http_slots(c) >= config.max_http_clients) {
-        send_http_status(c, 503, {}, /*keep_alive=*/false);
-        push_event_locked(make_http_get_event(c.id, hash, 503, 0));
+        send_http_status(c, 503, cors, /*keep_alive=*/false);
+        push_event_locked(make_http_get_event(c.id, hash, 503, 0, req));
         return;
       }
       c.http_slot_held = true;
@@ -633,26 +785,35 @@ struct Server::Impl {
     const std::shared_ptr<const std::vector<std::uint8_t>> payload =
         resource_source != nullptr ? resource_source->lookup(hash) : nullptr;
     if (payload == nullptr) {
-      send_http_status(c, 404, {}, keep_alive);
-      push_event_locked(make_http_get_event(c.id, hash, 404, 0));
+      send_http_status(c, 404, cors, keep_alive);
+      push_event_locked(make_http_get_event(c.id, hash, 404, 0, req));
       return;
     }
     const std::string if_none_match = unquote(trim(header_value(req, "if-none-match")));
     if (if_none_match == hash) {
-      send_http_not_modified(c, hash, keep_alive);
-      push_event_locked(make_http_get_event(c.id, hash, 304, 0));
+      send_http_not_modified(c, hash, keep_alive, cors);
+      push_event_locked(make_http_get_event(c.id, hash, 304, 0, req));
       return;
     }
-    send_http_ok(c, hash, *payload, keep_alive);
-    push_event_locked(make_http_get_event(c.id, hash, 200, payload->size()));
+    send_http_ok(c, hash, *payload, keep_alive, cors);
+    push_event_locked(make_http_get_event(c.id, hash, 200, payload->size(), req));
   }
 
   void dispatch_ws_upgrade(Conn &c, const ParsedRequest &req) {
+    const std::string origin = header_value(req, "origin");
+    // G7n (gate7-design.md D3): a foreign Origin is refused before anything else is looked at --
+    // the allowlist is the defence against any web page in the operator's browser opening this
+    // socket. An allowed origin's upgrade is otherwise unchanged.
+    if (!origin.empty() && !origin_allowed(origin)) {
+      push_event_locked(make_origin_rejected_event(c.id, req, "upgrade", std::string()));
+      reject(c, 403, "origin not allowed");
+      return;
+    }
     if (req.method != "GET") {
       reject(c, 400, "expected GET");
       return;
     }
-    const UpgradeHeaders up = check_upgrade_headers(req, config.subprotocol);
+    const UpgradeHeaders up = check_upgrade_headers(req, config.subprotocols);
     if (!up.has_upgrade_websocket || !up.has_connection_upgrade || !up.version13 || up.key.empty()) {
       reject(c, 400, "malformed upgrade request");
       return;
@@ -661,7 +822,9 @@ struct Server::Impl {
       reject(c, 400, "missing subprotocol");
       return;
     }
-    if (!bearer_ok(req, config.auth_token)) {
+    // G7n: a subprotocol whose token travels in its hello (render-stream/7) is not bearer-checked
+    // here; the layer above checks the hello.
+    if (!contains(config.hello_token_subprotocols, up.subprotocol) && !bearer_ok(req, config.auth_token)) {
       // G2e: 401, never a close code (render-stream-2.md "Live transport"). reject() always
       // closes the TCP connection after flushing, which is fine here: an upgrade attempt is not a
       // request stream a client needs to keep open across a retry.
@@ -679,11 +842,11 @@ struct Server::Impl {
                               "Upgrade: websocket\r\n"
                               "Connection: Upgrade\r\n"
                               "Sec-WebSocket-Accept: " +
-                              accept_key + "\r\n" + "Sec-WebSocket-Protocol: " + config.subprotocol + "\r\n\r\n";
+                              accept_key + "\r\n" + "Sec-WebSocket-Protocol: " + up.subprotocol + "\r\n\r\n";
     c.send_buf.insert(c.send_buf.end(), resp.begin(), resp.end());
     c.phase = Conn::Phase::Open;
     c.opened = true;
-    push_event_locked(make_opened_event(c.id));
+    push_event_locked(make_opened_event(c.id, up.subprotocol, origin));
     if (!c.recv_buf.empty()) process_frames(c);
   }
 

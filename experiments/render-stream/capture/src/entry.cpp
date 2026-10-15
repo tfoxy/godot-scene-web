@@ -111,6 +111,23 @@
 // (rs_ws.h ServerConfig::auth_token). A rejected upgrade is logged (never the token itself) as an
 // AuthRejected event; a rejected GET is an ordinary HttpGet event with http_status 401, already
 // covered by the existing hook-log path.
+//
+// render-stream/7 (G7n, gate7-design.md D2, D3, D4, Q2, Q3): the listener accepts both
+// subprotocols, render-stream.7 preferred, and each connection speaks the one it chose
+// (rs_live.h); file sinks stay on /6. On a /7 connection the token travels in the hello, never
+// in an upgrade header (rs_ws.h hello_token_subprotocols; rs_live.h checks it).
+// GRC_LIVE_ALLOWED_ORIGINS (a comma list of exact scheme://host:port origins, default empty;
+// anything else refuses the listener as `origin-config-invalid`) is the Origin allowlist: a
+// request carrying any other Origin gets 403 on every route, logged to stdout.log as
+// `live: 403 origin <origin> ...` (an OriginRejected event), and an allowed origin's resource
+// GETs and preflights speak CORS. A preflight is an http-get hook-log line with
+// "method":"OPTIONS". GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 1) caps the hello's window; the
+// host itself grants at most 1 until G7q. Listener sabotages (GRC_SABOTAGE, all need
+// GRC_LIVE_LISTEN): no-cors (no Access-Control-* header at all), accept-any-origin (the
+// allowlist is ignored) and token-ignored (a wrong /7 hello token is not refused; needs
+// GRC_LIVE_AUTH=token). They act on the listener only, never on a record, so the wire declares
+// no sabotage for them (the session's `sabotage` stays null): evidence/live.json carries
+// `listener_sabotage` instead.
 
 #include <sys/random.h>
 #include <sys/stat.h>
@@ -248,7 +265,21 @@ struct Live {
   bool ending = false;
   bool stopped = false;
   uint64_t linger_deadline_ns = 0;
+  // G7n (live.json): GRC_LIVE_ALLOWED_ORIGINS as parsed, GRC_LIVE_CREDIT_WINDOW_MAX, and the
+  // listener sabotage (no-cors | accept-any-origin | token-ignored; empty when none).
+  std::vector<std::string> allowed_origins;
+  uint64_t credit_window_max = 1;
+  std::string listener_sabotage;
 };
+
+// G7n: the GRC_SABOTAGE kinds that act on the listener only (see the header comment).
+bool is_listener_sabotage(const char *kind) {
+  if (kind == nullptr) {
+    return false;
+  }
+  const std::string text(kind);
+  return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored";
+}
 
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
 constexpr uint64_t kLiveLingerNs = 1500ull * 1000ull * 1000ull;
@@ -1063,6 +1094,14 @@ std::string live_json() {
     json.field("port", g_live.port);
   }
   json.field_or_null("reason", g_live.reason);
+  // G7n (gate7-design.md Q3).
+  json.key("allowed_origins").array_begin();
+  for (const std::string &origin : g_live.allowed_origins) {
+    json.string(origin);
+  }
+  json.array_end();
+  json.field("credit_window_max", static_cast<int64_t>(g_live.credit_window_max));
+  json.field_or_null("listener_sabotage", g_live.listener_sabotage);
   json.object_end();
   return json.take();
 }
@@ -1089,6 +1128,11 @@ void stream_start() {
   const char *sabotage_kind = std::getenv("GRC_SABOTAGE");
   const char *sabotage_frame = std::getenv("GRC_SABOTAGE_FRAME");
   const char *sabotage_op = std::getenv("GRC_SABOTAGE_OP");
+  // G7n: a listener sabotage never reaches the stream's sabotage parser (nor the wire).
+  if (is_listener_sabotage(sabotage_kind)) {
+    g_live.listener_sabotage = sabotage_kind;
+    sabotage_kind = nullptr;
+  }
   // GRC_SABOTAGE_FRAME and GRC_SABOTAGE_OP are read only when GRC_SABOTAGE is set.
   const rs2::ParseResult sabotage =
       rs2::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr,
@@ -1257,7 +1301,20 @@ void stream_start() {
     } else if (!auth_mode.empty() && auth_mode != "none" && auth_mode != "token") {
       live_ok = false;
       why = "GRC_LIVE_AUTH must be none or token (got " + auth_mode + ")";
+    } else if (!live::parse_allowed_origins(env_string("GRC_LIVE_ALLOWED_ORIGINS"),
+                                            &g_live.allowed_origins, &why)) {
+      // G7n (gate7-design.md Q3): an allowlist entry that is not an exact origin refuses.
+      live_ok = false;
+      why = "origin-config-invalid: GRC_LIVE_ALLOWED_ORIGINS " + why;
+    } else if (!env_positive("GRC_LIVE_CREDIT_WINDOW_MAX", 1, &live_config.credit_window_max) ||
+               live_config.credit_window_max > 2) {
+      live_ok = false;
+      why = "invalid GRC_LIVE_CREDIT_WINDOW_MAX (1 or 2)";
+    } else if (g_live.listener_sabotage == "token-ignored" && auth_mode != "token") {
+      live_ok = false;
+      why = "sabotage token-ignored needs GRC_LIVE_AUTH=token";
     }
+    g_live.credit_window_max = live_config.credit_window_max;
     // G2e: generated only once every other live setting is known good, so a usage error never
     // burns a token or writes evidence/live-token for a listener that will not actually start.
     if (live_ok && auth_mode == "token") {
@@ -1274,12 +1331,27 @@ void stream_start() {
         } else {
           ::chmod(token_path.c_str(), 0600);
           live_auth = rs2::Auth::Bearer;
+          live_config.auth_token = live_auth_token;  // G7n: checked against a /7 hello's token
+          live_config.token_ignored = g_live.listener_sabotage == "token-ignored";
         }
       }
     }
     if (!live_ok) {
       live_decided("refused", why);
     }
+  }
+  if (sabotage.ok && !g_live.listener_sabotage.empty() && !live_ok) {
+    // G7n: a listener sabotage with no listener to act on refuses to publish, as a live
+    // sabotage without GRC_LIVE_LISTEN does.
+    const std::string why =
+        g_live.listen.empty()
+            ? g_live.listener_sabotage + " needs GRC_LIVE_LISTEN"
+            : g_live.listener_sabotage + " needs the live listener, which refused (" +
+                  g_live.reason + ")";
+    log_line("stream: refused sabotage (" + why + ")");
+    g_stream.status = "refused";
+    g_stream.reason = why;
+    return;
   }
   if (sabotage.ok && !files && !live_ok) {
     g_stream.status = "refused";
@@ -1565,8 +1637,14 @@ void stream_start() {
     // D5 default 1 (one receiver at a time, a second gets 503); GRC_LIVE_MAX_CONNECTIONS (D13,
     // G6r) raises it up to 4.
     server_config.max_clients = static_cast<std::size_t>(live_max_connections);
-    server_config.subprotocol = "render-stream.6";  // render-stream-6.md "Live transport"
+    // G7n (gate7-design.md D2, Q3): /7 preferred when both are offered; the /7 token travels in
+    // the hello (rs_live.h), so its upgrade is not bearer-checked.
+    server_config.subprotocols = {rs2::kSubprotocolV7, "render-stream.6"};
+    server_config.hello_token_subprotocols = {rs2::kSubprotocolV7};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
+    server_config.allowed_origins = g_live.allowed_origins;  // G7n
+    server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";
+    server_config.cors_headers = g_live.listener_sabotage != "no-cors";
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();
     std::string error;
@@ -1619,6 +1697,9 @@ void stream_start() {
            (g_live.hub != nullptr ? g_live.address + ":" + std::to_string(g_live.port)
                                   : std::string("<off>")) +
            " auth=" + (live_auth == rs2::Auth::Bearer ? std::string("bearer") : std::string("none")) +
+           " origins=" + std::to_string(g_live.allowed_origins.size()) +
+           (g_live.listener_sabotage.empty() ? std::string()
+                                             : " listener_sabotage=" + g_live.listener_sabotage) +
            " sabotage=" + sabotage_text(sabotage.config) + " resources=" +
            (g_stream.resources_file != nullptr ? g_stream.resources_path : std::string("<off>")));
 }
@@ -1629,6 +1710,28 @@ void live_drain(uint64_t frame) {
     return;
   }
   for (const live::Event &event : g_live.server->take_events()) {
+    if (event.kind == live::Event::HttpGet && event.method == "OPTIONS") {
+      // G7n: a CORS preflight the server answered (204), counted per host (and, with one
+      // connection open, per connection) apart from GETs, and logged as an http-get hook-log line
+      // with method OPTIONS.
+      ++g_live.serving.preflights;
+      const uint32_t conn = g_live.hub->on_http_get(event.hash, event.http_status, 0, event.t_ns,
+                                                    frame, /*preflight=*/true);
+      rs::TapContext ctx;
+      ctx.frame = frame;
+      ctx.t_ns = event.t_ns;
+      ctx.main_thread = false;
+      rs::resource_log().serve_event(ctx, "http-get", is_lower_hex64(event.hash) ? event.hash : "",
+                                     0, nullptr, conn, event.http_status, false, "OPTIONS");
+      continue;
+    }
+    if (event.kind == live::Event::OriginRejected) {
+      // G7n: a 403 for a foreign Origin, on any route. Like AuthRejected, it never reached a
+      // connection the hub tracks; the log line is the host-side evidence.
+      ++g_live.serving.origin_rejected;
+      log_line("live: 403 origin " + event.origin + " " + event.method + " " + event.route);
+      continue;
+    }
     if (event.kind == live::Event::HttpGet) {
       // G2c2: one resource GET the server answered on its I/O thread, attributed to the
       // connection streaming at the time and logged (http-get) with the I/O thread's time.

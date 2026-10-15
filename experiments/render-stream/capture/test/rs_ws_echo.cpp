@@ -171,6 +171,9 @@ int main(int argc, char **argv) {
         case grc::live::Event::AuthRejected:
           std::printf("[rs-ws-echo] conn=%u auth-rejected\n", event.conn);
           break;
+        case grc::live::Event::OriginRejected:  // G7n; this binary configures no allowlist
+          std::printf("[rs-ws-echo] conn=%u origin-rejected origin=%s\n", event.conn, event.origin.c_str());
+          break;
       }
       std::fflush(stdout);
     }

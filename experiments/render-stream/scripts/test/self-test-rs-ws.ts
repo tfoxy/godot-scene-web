@@ -41,6 +41,19 @@
 // correct token does upgrade. The same three cases over `fetch` for a
 // resource GET: 401, 401, 200 byte-exact.
 //
+// Also (gate7-design.md G7n "Checks", render-stream/7; test/rs-ws-g7n.ts has the details), against
+// capture/build/rs_live_host (the production rs_ws listener and rs_live hub around a fixed scene;
+// RS_LIVE_HOST_BINARY overrides): /6 and /7 on one listener at once, each stream validating as its
+// own version; then, on a bearer host with an Origin allowlist, the /7 hello token (`unauthorized`
+// close 1008 with its reason), 403 for a foreign origin on the upgrade, GET and OPTIONS, CORS on
+// GET, the exact preflight, and the host's evidence. Every listener sabotage (token-ignored,
+// accept-any-origin, no-cors) must fail exactly its predicted checks.
+//
+//   ... self-test-rs-ws.ts --capture
+//
+// runs only those G7n checks, against the real capture library in a headless release template on
+// fixtures/gate1 (which must have been imported once; gate 1's runner does it).
+//
 // Exits non-zero if any assertion fails or the server never starts.
 
 import { type ChildProcessByStdio, spawn } from "node:child_process";
@@ -49,13 +62,20 @@ import { request as httpRequest } from "node:http";
 import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { defaultCapturePaths, testG7n } from "./rs-ws-g7n";
 
 type EchoProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BINARY = resolve(SCRIPT_DIR, "../../capture/build/rs_ws_echo");
-const BINARY =
-  process.argv[2] ?? process.env.RS_WS_ECHO_BINARY ?? DEFAULT_BINARY;
+const POSITIONAL = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+// --capture: run only the G7n checks, against the real capture in a headless release template
+// (rs-ws-g7n.ts; RS_G7N_BINARY / _EXTENSION / _CALIBRATION / _OUT override the defaults).
+const CAPTURE_MODE = process.argv.slice(2).includes("--capture");
+const BINARY = POSITIONAL[0] ?? process.env.RS_WS_ECHO_BINARY ?? DEFAULT_BINARY;
+const LIVE_HOST_BINARY =
+  process.env.RS_LIVE_HOST_BINARY ??
+  resolve(SCRIPT_DIR, "../../capture/build/rs_live_host");
 
 // capture/test/rs_ws_echo.cpp's fixed test resources and the default resource_prefix
 // (capture/src/rs_ws.h ServerConfig::resource_prefix). Test fixtures, not real content hashes.
@@ -238,6 +258,20 @@ async function testBearerAuth(binary: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (CAPTURE_MODE) {
+    await testG7n(
+      {
+        kind: "capture",
+        paths: defaultCapturePaths(resolve(SCRIPT_DIR, "../..")),
+      },
+      ok,
+    );
+    console.log(
+      `\nself-test-rs-ws --capture: ${failures === 0 ? "all checks passed" : `${failures} check(s) FAILED`}`,
+    );
+    if (failures > 0) process.exitCode = 1;
+    return;
+  }
   if (!existsSync(BINARY)) {
     console.error(
       `self-test-rs-ws: ${BINARY} does not exist. Run experiments/render-stream/scripts/build-capture.sh first.`,
@@ -372,6 +406,8 @@ async function main(): Promise<void> {
   }
 
   await testBearerAuth(BINARY);
+
+  await testG7n({ kind: "live-host", binary: LIVE_HOST_BINARY }, ok);
 
   console.log(
     `\nself-test-rs-ws: ${failures === 0 ? "all checks passed" : `${failures} check(s) FAILED`}`,

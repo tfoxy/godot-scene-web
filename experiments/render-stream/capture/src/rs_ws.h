@@ -36,7 +36,7 @@
 //   - Handshake: GET <path> HTTP/1.1 with Upgrade: websocket, a Connection
 //     header containing the token "upgrade", Sec-WebSocket-Version: 13, a
 //     Sec-WebSocket-Key, and a Sec-WebSocket-Protocol listing
-//     ServerConfig::subprotocol. Headers over 8 KiB, a wrong path, a missing
+//     one of ServerConfig::subprotocols (G7n). Headers over 8 KiB, a wrong path, a missing
 //     subprotocol, a client beyond max_clients, or anything else malformed
 //     is answered with 404/400/503 and the TCP connection is closed; none of
 //     that reaches take_events().
@@ -96,6 +96,32 @@
 // differ or whether their lengths match. auth_token empty (the default)
 // disables the check entirely: every request is treated as authorized,
 // exactly as before G2e.
+//
+// Two subprotocols, origin and CORS (gate7-design.md D2, D3, Q2, Q3; G7n):
+//   - ServerConfig::subprotocols lists every subprotocol the upgrade accepts, most preferred
+//     first; the upgrade chooses the first one of them the client offered (render-stream.7 over
+//     render-stream.6 when both are), echoes it, and reports it on the Opened event. A client
+//     offering none of them -> 400, as before.
+//   - ServerConfig::hello_token_subprotocols: an upgrade that chose one of these skips the bearer
+//     check above -- render-stream/7 carries its token in the hello (a browser WebSocket cannot
+//     set an Authorization header), which the layer above checks. Every other subprotocol keeps
+//     the G2e upgrade check. Resource GETs keep `Authorization: Bearer` whatever the subprotocol.
+//   - Origin: a request with no `Origin` header is exactly as before G7n. A request whose
+//     `Origin` is not one of ServerConfig::allowed_origins (exact string match; the list is empty
+//     by default) gets 403 on the WebSocket path and on the resource route, whatever its method,
+//     before any other check; it is reported as one OriginRejected event (never HttpGet, Opened
+//     or AuthRejected). `enforce_origins = false` (the accept-any-origin sabotage) treats every
+//     origin as allowed.
+//   - CORS, for a resource-route request with an allowed `Origin`: every response adds
+//     `Access-Control-Allow-Origin: <origin>` and `Vary: Origin`; `OPTIONS` answers a 204
+//     preflight (`Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: GET`,
+//     `Access-Control-Allow-Headers: authorization`, `Access-Control-Max-Age: 7200`,
+//     `Vary: Origin`, no Content-Length -- RFC 9110 8.6 forbids it on a 204) whether or not the
+//     hash is servable or even well formed, with no bearer check (a browser sends no credentials
+//     on a preflight); it is reported as an HttpGet event with method "OPTIONS" and status 204.
+//     `OPTIONS` without `Origin` is still 405. `cors_headers = false` (the no-cors sabotage)
+//     omits every Access-Control-* header and changes nothing else. A WebSocket upgrade from an
+//     allowed origin is unchanged.
 #ifndef GRC_RS_WS_H
 #define GRC_RS_WS_H
 
@@ -115,11 +141,19 @@ struct ServerConfig {
   std::size_t max_clients = 1;
   std::size_t max_inbound_text = 4096;
   std::string path = "/render-stream";
-  std::string subprotocol = "render-stream.1";
+  // Every accepted subprotocol, most preferred first (G7n; was one `subprotocol` before).
+  std::vector<std::string> subprotocols = {"render-stream.1"};
   std::size_t max_queued_bytes = 64u << 20;  // safety net, closes 1008.
   std::string resource_prefix = "/resources/sha256/";
   std::size_t max_http_clients = 8;  // concurrent HTTP (non-WebSocket) connections.
   std::string auth_token;            // empty (default): no bearer-token check (G2e).
+  // G7n: subprotocols whose upgrade skips the bearer check (the token travels in the hello).
+  std::vector<std::string> hello_token_subprotocols;
+  // G7n (gate7-design.md D3): exact `Origin` values allowed; a request with any other Origin gets
+  // 403. Empty (default): every request carrying an Origin is refused; one without is unaffected.
+  std::vector<std::string> allowed_origins;
+  bool enforce_origins = true;  // false: accept-any-origin sabotage (the allowlist is ignored).
+  bool cors_headers = true;     // false: no-cors sabotage (no Access-Control-* header at all).
 };
 
 // True iff `a` and `b` hold the same bytes, compared in time that depends only on
@@ -127,6 +161,14 @@ struct ServerConfig {
 // match (gate2-design.md D13). Exposed for its own unit test and used by the bearer-token check
 // on both the WebSocket upgrade and the resource GET.
 bool constant_time_equals(std::string_view a, std::string_view b);
+
+// G7n (gate7-design.md Q3): parses GRC_LIVE_ALLOWED_ORIGINS, a comma list (spaces around an entry
+// are ignored; empty text is the empty list). Every entry must be exactly `scheme://host:port` as
+// a browser serializes an Origin: a lowercase scheme ([a-z][a-z0-9+.-]*), a lowercase host
+// ([a-z0-9.-]+, or a bracketed IPv6 literal of [0-9a-f:.]) and a decimal port 1..65535 without a
+// leading zero -- no path, query, fragment, userinfo or trailing slash. Returns false with
+// *error naming the first bad entry (and leaves *out empty) on anything else.
+bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out, std::string *error);
 
 // What the server asks for the bytes behind a resource hash. Implemented by
 // G2c2's rs_resource_store; rs_ws knows nothing about where the bytes come
@@ -150,15 +192,26 @@ struct Event {
   // (opened stays false, exactly as a rejected handshake for any other reason; conn is the id
   // that was about to open). A resource GET's own 401 is reported as an ordinary HttpGet event
   // with http_status 401, not this kind.
-  enum Kind { Opened, Text, Closed, HttpGet, AuthRejected } kind;
+  // OriginRejected (G7n): a request whose Origin is not allowed was answered 403 (`origin`,
+  // `method`, `route`; `hash` too on the resource route). Like AuthRejected it never reaches
+  // Opened or Closed, and the resource route reports it instead of an HttpGet event.
+  enum Kind { Opened, Text, Closed, HttpGet, AuthRejected, OriginRejected } kind;
   std::uint32_t conn = 0;
   std::string text;          // Kind::Text: the message. Kind::Closed: the reason, if any.
   std::uint16_t code = 0;    // Kind::Closed only.
   std::string reason;        // Kind::Closed only (duplicates text for readability at call sites).
   std::string hash;          // Kind::HttpGet only: the hash from the request path (as received;
                              // may be malformed -- that is part of what the 400/405 cases report).
-  std::uint16_t http_status = 0;  // Kind::HttpGet only: the status sent (200, 304, 400, 401, 404, 405, 503).
+  // Kind::HttpGet: the status sent (200, 204, 304, 400, 401, 404, 405, 503); OriginRejected: 403.
+  std::uint16_t http_status = 0;
   std::uint64_t bytes = 0;        // Kind::HttpGet only: the response body size (0 unless 200).
+  // G7n. Kind::Opened: the subprotocol the upgrade chose. Opened, HttpGet and OriginRejected: the
+  // request's Origin header ("" when absent). HttpGet and OriginRejected: the request method
+  // ("GET", "OPTIONS", ...). OriginRejected: the route, "upgrade" or "resource".
+  std::string subprotocol;
+  std::string origin;
+  std::string method;
+  std::string route;
   // steady_clock nanoseconds when the I/O thread observed the event (set by the server; G1c2
   // measures credit round trips from it, independently of when the main thread drains events).
   std::uint64_t t_ns = 0;
@@ -190,7 +243,8 @@ class Server {
   // event per request and never an Opened or Closed event -- Closed is
   // reserved for a connection that reached Opened. A WebSocket upgrade
   // refused for a bad bearer token (G2e) produces one AuthRejected event and
-  // never an Opened or Closed event either.
+  // never an Opened or Closed event either. A request refused for its Origin
+  // (G7n, 403) produces one OriginRejected event and nothing else.
   std::vector<Event> take_events();
 
   // Queues one complete message for conn. Returns false, enqueuing nothing,

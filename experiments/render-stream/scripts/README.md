@@ -534,6 +534,21 @@ the same shapes from the engine's own client: with `inbound_buffer_size` raised 
 `connect_to_url`, an 8 MiB push arrives byte-exact; with the engine's 65535-byte default left in
 place, a 1 MiB push closes the connection with 1009 (`modules/websocket/wsl_peer.cpp:405-410`).
 
+**G7n (render-stream/7's listener).** `self-test-rs-ws.ts` also drives `test/rs-ws-g7n.ts`
+against `capture/build/rs_live_host`, a test-only host that wires the production `rs_ws` server
+and `rs_live` hub around a fixed one-item scene and reads `GRC_LIVE_ALLOWED_ORIGINS`,
+`GRC_LIVE_CREDIT_WINDOW_MAX` and the listener sabotages from `GRC_SABOTAGE` as `entry.cpp` does.
+It checks /6 and /7 on one listener at once (each stream validates as its own version with
+`validateRecording`), the /7 hello token (`error` `unauthorized`, close 1008 with that reason),
+403 for a foreign `Origin` on the upgrade, a GET and an `OPTIONS`, CORS headers on GET, the exact
+preflight, and the host's evidence. Each listener sabotage must fail exactly its predicted
+checks: `token-ignored` the wrong-token and null-token cases, `accept-any-origin` the 403 cases,
+`no-cors` the two CORS-header cases. `self-test-rs-ws.ts --capture` runs the same checks against
+the real capture library in a headless release template on `../fixtures/gate1/` (imported once;
+gate 1's runner does it), which also covers `entry.cpp`'s wiring, `evidence/live.json`, the
+`live: 403 origin …` lines and the hook log's preflight line. `RS_G7N_OUT=<dir>` keeps each
+host's evidence.
+
 # Gate 2
 
 Drives `../fixtures/gate2/` through the leg groups of

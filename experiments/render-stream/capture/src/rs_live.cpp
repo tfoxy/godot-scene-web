@@ -340,6 +340,20 @@ bool stage_from(const std::string &text, AckStage *out) {
 
 std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage); }
 
+// The hello `protocol` string of a version (render-stream-N.md "Live transport").
+const char *protocol_string(ProtocolVersion version) {
+  return version == ProtocolVersion::V7   ? kProtocolV7
+         : version == ProtocolVersion::V6 ? kProtocolV6
+         : version == ProtocolVersion::V5 ? kProtocolV5
+         : version == ProtocolVersion::V4 ? kProtocolV4
+         : version == ProtocolVersion::V3 ? kProtocolV3
+                                          : kProtocol;
+}
+
+std::uint32_t version_number(ProtocolVersion version) {
+  return 2u + static_cast<std::uint32_t>(version);  // V2 is the enum's first value
+}
+
 }  // namespace
 
 const char *to_wire(AckStage stage) {
@@ -356,12 +370,7 @@ const char *to_wire(AckStage stage) {
 
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
                    ProtocolVersion version) {
-  const char *const protocol = version == ProtocolVersion::V7   ? kProtocolV7
-                               : version == ProtocolVersion::V6 ? kProtocolV6
-                               : version == ProtocolVersion::V5 ? kProtocolV5
-                               : version == ProtocolVersion::V4 ? kProtocolV4
-                               : version == ProtocolVersion::V3 ? kProtocolV3
-                                                                : kProtocol;
+  const char *const protocol = protocol_string(version);
   std::vector<std::pair<std::string, Value>> fields;
   Parser parser(text);
   if (!parser.parse(&fields, error)) {
@@ -591,8 +600,14 @@ LiveEvent to_live_event(const live::Event &event) {
       // never got an Opened event either); entry.cpp's live_drain() logs it directly and never
       // forwards one here. This case exists only so the switch stays exhaustive under -Wswitch.
       break;
+    case live::Event::OriginRejected:
+      // G7n: the same as AuthRejected -- a 403 never reaches a tracked connection; live_drain()
+      // logs it and never forwards one here.
+      break;
   }
   out.conn = event.conn;
+  out.subprotocol = event.subprotocol;
+  out.origin = event.origin;
   out.text = event.text;
   out.code = event.code;
   out.reason = event.reason;
@@ -623,6 +638,8 @@ LatencyStats latency_stats(std::vector<std::uint64_t> samples) {
 struct Hub::Conn {
   std::uint32_t id = 0;
   ConnectionSummary s;
+  // G7n: the protocol this connection speaks, from its subprotocol (the template's otherwise).
+  ProtocolVersion version = ProtocolVersion::V2;
   State state = State::AwaitHello;
   std::uint64_t opened_ns = 0;
   bool hello_received = false;
@@ -722,16 +739,23 @@ void Hub::host_close(Conn &c, std::uint16_t code, const std::string &reason) {
 
 void Hub::protocol_error(Conn &c, const std::string &detail, std::uint64_t frame,
                          std::uint64_t t_ns) {
-  transport_->send_text(c.id, encode_error("protocol", detail));
-  c.s.error_sent = "protocol";
+  error_close(c, "protocol", detail, 1002, frame, t_ns);
+}
+
+void Hub::error_close(Conn &c, const std::string &reason, const std::string &detail,
+                      std::uint16_t code, std::uint64_t frame, std::uint64_t t_ns) {
+  transport_->send_text(c.id, encode_error(reason, detail));
+  c.s.error_sent = reason;
   log_line(c, Line()
                   .num("frame", frame)
                   .num("t_us", t_ns / 1000)
                   .str("event", "error")
-                  .str("reason", "protocol")
+                  .str("reason", reason)
                   .str("detail", detail)
                   .take());
-  host_close(c, 1002, "protocol");
+  // The close reason repeats the error's reason: a Godot client may never read a text message
+  // that arrives together with the close frame (memory godot-websocketpeer-drops-msgs-with-close).
+  host_close(c, code, reason);
 }
 
 void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
@@ -750,19 +774,35 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       c.s.connection = next_connection_++;
       c.s.stream_id = generate_id();
       c.opened_ns = event.t_ns;
+      // G7n: the subprotocol decides the connection's version (render-stream.7 -> /7).
+      c.version = event.subprotocol == kSubprotocolV7 ? ProtocolVersion::V7 : template_.version;
+      c.s.version = version_number(c.version);
+      c.s.origin = event.origin;
+      if (!config_.auth_token.empty() && c.version != ProtocolVersion::V7) {
+        // Below /7 the token is the upgrade's bearer header, checked by the transport before the
+        // connection ever opened (rs_ws.h); an open connection passed it.
+        c.s.token_checked = true;
+        c.s.token_ok = true;
+      }
       if (!config_.tap_dir.empty() && make_directories(config_.tap_dir)) {
         const std::string n = std::to_string(c.s.connection);
         c.tap = std::fopen(path_join(config_.tap_dir, "stream-" + n + ".rs2").c_str(), "wb");
         c.log = std::fopen(path_join(config_.tap_dir, "live-" + n + ".jsonl").c_str(), "wb");
       }
       conns_[event.conn] = std::move(conn);
-      log_line(c, Line()
-                      .num("frame", frame)
-                      .num("t_us", event.t_ns / 1000)
-                      .str("event", "open")
-                      .num("connection", c.s.connection)
-                      .str("stream_id", c.s.stream_id)
-                      .take());
+      Line open;
+      open.num("frame", frame)
+          .num("t_us", event.t_ns / 1000)
+          .str("event", "open")
+          .num("connection", c.s.connection)
+          .str("stream_id", c.s.stream_id)
+          .num("version", c.s.version);
+      if (event.origin.empty()) {
+        open.null("origin");
+      } else {
+        open.str("origin", event.origin);
+      }
+      log_line(c, open.take());
       return;
     }
     case LiveEvent::Text: {
@@ -799,7 +839,7 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
 void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
   ControlMessage message;
   std::string error;
-  if (!parse_control(event.text, &message, &error, template_.version)) {
+  if (!parse_control(event.text, &message, &error, c.version)) {
     protocol_error(c, "bad control message: " + error, frame, event.t_ns);
     return;
   }
@@ -812,32 +852,76 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         protocol_error(c, "second hello", frame, event.t_ns);
         return;
       }
-      const char *const protocol = template_.version == ProtocolVersion::V6   ? kProtocolV6
-                                   : template_.version == ProtocolVersion::V5 ? kProtocolV5
-                                   : template_.version == ProtocolVersion::V4 ? kProtocolV4
-                                   : template_.version == ProtocolVersion::V3 ? kProtocolV3
-                                                                              : kProtocol;
+      const char *const protocol = protocol_string(c.version);
       if (message.protocol != protocol) {
         protocol_error(c, "hello.protocol \"" + message.protocol + "\" is not " + protocol,
                        frame, event.t_ns);
         return;
       }
-      c.hello_received = true;
-      c.credit = true;  // the hello is the credit for the session and seq 1
       c.credit_stage = message.credit_stage;
       c.s.receiver = message.receiver;
       c.s.credit_stage = to_wire(message.credit_stage);
       c.s.inbound_buffer_bytes = message.inbound_buffer_bytes;
       c.s.max_message_bytes = std::min(message.inbound_buffer_bytes, config_.max_message_bytes);
-      log_line(c, Line()
-                      .num("frame", frame)
-                      .num("t_us", event.t_ns / 1000)
-                      .str("event", "hello")
-                      .str("receiver", message.receiver)
-                      .str("credit_stage", c.s.credit_stage)
-                      .num("inbound_buffer_bytes", message.inbound_buffer_bytes)
-                      .num("max_message_bytes", c.s.max_message_bytes)
-                      .take());
+      Line hello;
+      hello.num("frame", frame)
+          .num("t_us", event.t_ns / 1000)
+          .str("event", "hello")
+          .str("receiver", message.receiver)
+          .str("credit_stage", c.s.credit_stage)
+          .num("inbound_buffer_bytes", message.inbound_buffer_bytes)
+          .num("max_message_bytes", c.s.max_message_bytes);
+      bool refuse = false;
+      if (c.version == ProtocolVersion::V7) {
+        // render-stream-7.md "Hello" (gate7-design.md Q2, Q3): record every key but `token`.
+        c.s.has_hello7 = true;
+        c.s.receiver_kind = message.receiver_kind;
+        c.s.credit_window_requested = message.credit_window;
+        c.s.credit_window =
+            std::min({message.credit_window, config_.credit_window_max, kHostCreditWindow});
+        c.s.manifest_sha256 = message.has_manifest_sha256 ? message.manifest_sha256 : "";
+        c.s.presentation_backing_w = message.presentation_backing_w;
+        c.s.presentation_backing_h = message.presentation_backing_h;
+        c.s.presentation_css_w = message.presentation_css_w;
+        c.s.presentation_css_h = message.presentation_css_h;
+        c.s.dpr_milli = message.dpr_milli;
+        if (!config_.auth_token.empty()) {
+          // D3: compared in constant time, as the G2e upgrade check is.
+          c.s.token_checked = true;
+          c.s.token_ok =
+              message.has_token && live::constant_time_equals(message.token, config_.auth_token);
+          refuse = !c.s.token_ok && !config_.token_ignored;
+        }
+        hello.str("protocol", message.protocol)
+            .str("receiver_kind", message.receiver_kind)
+            .num("credit_window", message.credit_window)
+            .num("credit_window_granted", c.s.credit_window);
+        if (message.has_manifest_sha256) {
+          hello.str("manifest_sha256", message.manifest_sha256);
+        } else {
+          hello.null("manifest_sha256");
+        }
+        hello.num("presentation_backing_w", message.presentation_backing_w)
+            .num("presentation_backing_h", message.presentation_backing_h)
+            .num("presentation_css_w", message.presentation_css_w)
+            .num("presentation_css_h", message.presentation_css_h)
+            .num("dpr_milli", message.dpr_milli);
+        if (c.s.token_checked) {
+          hello.boolean("token_ok", c.s.token_ok);
+        } else {
+          hello.null("token_ok");
+        }
+      }
+      log_line(c, hello.take());
+      if (refuse) {
+        // D3: nothing was sent before the hello, and nothing is sent after the refusal.
+        error_close(c, "unauthorized",
+                    message.has_token ? "the hello's token is wrong" : "the hello has no token",
+                    1008, frame, event.t_ns);
+        return;
+      }
+      c.hello_received = true;
+      c.credit = true;  // the hello is the credit for the session and seq 1
       return;
     }
     case ControlType::Ack:
@@ -1072,6 +1156,9 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
                     .take());
   }
   Snapshot cur = snapshot.state;
+  if (c.version == ProtocolVersion::V7) {
+    cur.version = ProtocolVersion::V7;  // byte-identical to /6 (render-stream-7.md), but faithful
+  }
   cur.seq = c.next_seq;
   cur.frame = frame;
   const bool full = !c.has_base || c.resync;
@@ -1218,6 +1305,10 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
           continue;  // the caller did not provide one; try at the next callback
         }
         c.session = template_;
+        // G7n: the connection's own version (render-stream.7 -> /7: the GRS7 magic, the /7
+        // protocol string and publication.credit_window, the grant).
+        c.session.version = c.version;
+        c.session.publication.credit_window = static_cast<std::int32_t>(c.s.credit_window);
         c.session.stream.stream_id = c.s.stream_id;
         c.session.stream.has_connection = true;
         c.session.stream.connection = c.s.connection;
@@ -1479,7 +1570,7 @@ std::vector<const rs::PayloadMap *> Hub::held_payloads() const {
 }
 
 std::uint32_t Hub::on_http_get(const std::string &hash, std::uint16_t status, std::uint64_t bytes,
-                               std::uint64_t t_ns, std::uint64_t frame) {
+                               std::uint64_t t_ns, std::uint64_t frame, bool preflight) {
   // With one receiver, the GET is its own (max_clients 1, today's default). With more than one
   // open connection (GRC_LIVE_MAX_CONNECTIONS > 1, G6r/D13), which receiver asked for it is
   // ambiguous, so it is counted at the host level only (the caller's ServingSummary) and no
@@ -1499,16 +1590,20 @@ std::uint32_t Hub::on_http_get(const std::string &hash, std::uint16_t status, st
     return 0;
   }
   Conn &c = *streaming;
-  ++c.s.http_gets;
-  if (status == 200) {
-    c.s.http_bytes += bytes;
+  if (preflight) {
+    ++c.s.preflights;
   } else {
-    ++c.s.http_errors;
+    ++c.s.http_gets;
+    if (status == 200) {
+      c.s.http_bytes += bytes;
+    } else {
+      ++c.s.http_errors;
+    }
   }
   log_line(c, Line()
                   .num("frame", frame)
                   .num("t_us", t_ns / 1000)
-                  .str("event", "http-get")
+                  .str("event", preflight ? "preflight" : "http-get")
                   .str("hash", hash)
                   .num("status", status)
                   .num("bytes", bytes)
@@ -1527,6 +1622,36 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.field_or_null("stream_id", s.stream_id);
     json.field_or_null("receiver", s.receiver);
     json.field_or_null("credit_stage", s.credit_stage);
+    // G7n (gate7-design.md Q3 "Evidence"): the connection's version and its /7 hello.
+    json.field("version", static_cast<int64_t>(s.version));
+    json.field_or_null("receiver_kind", s.receiver_kind);
+    json.field("credit_window", static_cast<int64_t>(s.credit_window));
+    if (s.has_hello7) {
+      json.field("credit_window_requested", static_cast<int64_t>(s.credit_window_requested));
+    } else {
+      json.field_null("credit_window_requested");
+    }
+    json.field_or_null("manifest_sha256", s.manifest_sha256);
+    const char *const presentation_keys[] = {"presentation_backing_w", "presentation_backing_h",
+                                             "presentation_css_w", "presentation_css_h",
+                                             "dpr_milli"};
+    const std::uint64_t presentation_values[] = {s.presentation_backing_w,
+                                                 s.presentation_backing_h, s.presentation_css_w,
+                                                 s.presentation_css_h, s.dpr_milli};
+    for (std::size_t i = 0; i < 5; ++i) {
+      if (s.has_hello7) {
+        json.field(presentation_keys[i], static_cast<int64_t>(presentation_values[i]));
+      } else {
+        json.field_null(presentation_keys[i]);
+      }
+    }
+    json.field_or_null("origin", s.origin);
+    if (s.token_checked) {
+      json.field("token_ok", s.token_ok);
+    } else {
+      json.field_null("token_ok");
+    }
+    json.field("preflights", static_cast<int64_t>(s.preflights));
     json.field("inbound_buffer_bytes", static_cast<int64_t>(s.inbound_buffer_bytes));
     json.field("max_message_bytes", static_cast<int64_t>(s.max_message_bytes));
     json.field("frames_offered", static_cast<int64_t>(s.frames_offered));
@@ -1599,6 +1724,8 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.field("http_gets", static_cast<int64_t>(resources->http_gets));
     json.field("http_bytes", static_cast<int64_t>(resources->http_bytes));
     json.field("http_errors", static_cast<int64_t>(resources->http_errors));
+    json.field("preflights", static_cast<int64_t>(resources->preflights));
+    json.field("origin_rejected", static_cast<int64_t>(resources->origin_rejected));
     json.field("pinned", static_cast<int64_t>(resources->pinned));
     json.field("retired", static_cast<int64_t>(resources->retired));
     json.field("retired_unpinned", static_cast<int64_t>(resources->retired_unpinned));

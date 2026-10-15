@@ -1768,6 +1768,10 @@ receiver.
   gates 1, 2 and 6 (`g6l`, `g6c`) natively on /6 unchanged.
 - **Sabotages**: `token-ignored` must make the interop test's wrong-token case connect (and its
   check fail); `accept-any-origin` must fail the 403 case.
+- *As built (2026-10-15):* landed. The decisions the text left open (subprotocol order, the 403
+  before every other check, CORS on every resource response, a 204 preflight with no
+  `Content-Length`, listener sabotages kept off the wire) are in render-stream-7.md "As built
+  (G7n)", and the runs in the README's "Gate 7n result".
 
 ### G7m — decode/apply microbench on both phones, g31 first (sonnet; g86 arm operator-attended)
 
