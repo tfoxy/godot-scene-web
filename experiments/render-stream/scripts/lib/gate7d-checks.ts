@@ -10,10 +10,11 @@
 // g7-dev (device): that device's plan; the device session: device-provenance, the D28 session
 //   settings restored, the adb and page probes written.
 // g7-bench: the inputs; bench-matches-g6c (native, scene-full: decode and apply means within
-//   +-15 % of G6c's unloaded replay means); each arm complete for every input with five valid
-//   repeats; desktop browser-provenance and a cross-origin-isolated timer; the web arm recorded
-//   `unavailable` (G7e); on a device, device-provenance and the watchdog. Q13e's decision per
-//   receiver and input is recorded (a `device-decode-over-budget` is a finding, not a failure).
+//   +-15 % of G6c's unloaded replay means); each arm (native, gsw and, since G7e/G7m, web) complete
+//   for every input with five valid repeats; desktop browser-provenance (gsw and web) and a
+//   cross-origin-isolated timer (gsw); on a device, device-provenance and the watchdog. Q13e's
+//   decision per receiver and input is recorded (a `device-decode-over-budget` is a finding, not a
+//   failure).
 
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
@@ -535,16 +536,6 @@ export async function runGate7BenchChecks(
   });
   for (const p of wanted) {
     const leg = byName.get(p.name);
-    if (p.kind === "web") {
-      checks.push({
-        id: `${p.name}-unavailable-recorded`,
-        ok:
-          leg?.status === "unavailable" &&
-          leg.reason === "web-export-not-built",
-        detail: leg ? `${leg.status}: ${leg.reason}` : "no summary",
-      });
-      continue;
-    }
     const s = leg?.summary;
     const valid = s?.repeats.filter((r) => r.valid).length ?? 0;
     checks.push({
@@ -596,6 +587,20 @@ export async function runGate7BenchChecks(
             ),
         ),
       detail: "every gsw page crossOriginIsolated (5-us performance.now)",
+    });
+  }
+  if (!receiver || receiver === "web") {
+    const web = legs.filter(
+      (l) => /-web/.test(l.leg) && l.status === "success",
+    );
+    const prov = web[0]?.provenance;
+    checks.push({
+      id:
+        device === null
+          ? "bench-web-browser-provenance"
+          : "bench-web-device-provenance",
+      ok: web.length > 0 && web.every((l) => l.provenance?.ok === true),
+      detail: prov ? `${prov.kind}: ${prov.renderer}` : "no web leg",
     });
   }
   const table: BenchTableRow[] = legs

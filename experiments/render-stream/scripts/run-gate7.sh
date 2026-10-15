@@ -31,8 +31,10 @@
 #             <out>/g7-bench/inputs/ (gate6-scene `animate` 400 frames, gate6-hd native, the pace
 #             fixture; headless captures, both sinks). Arms (scripts/gate7-bench.ts):
 #               desktop: native-bench-<input> (receiver.gd file mode, headless), ctl-bench-<input>-gsw
-#                        (headless Chromium, D9), ctl-bench-<input>-web (unavailable until G7e)
-#               device:  dev-bench-<input>-gsw-<id> and -web-<id>, plus the device probes
+#                        (headless Chromium, D9), ctl-bench-<input>-web (G7e web export, same desktop
+#                        Chromium, since G7m)
+#               device:  dev-bench-<input>-gsw-<id> and -web-<id> (both since G7m), plus the device
+#                        probes (run once, by g7-dev's device session check, whichever --receiver)
 #             --receiver limits the run to one receiver: one command per phone and per receiver,
 #               pnpm render-stream:gate7 -- --legs g7-bench --env device --device g31 --receiver gsw \
 #                 --bench-inputs <a desktop run>/g7-bench/inputs/inputs.json

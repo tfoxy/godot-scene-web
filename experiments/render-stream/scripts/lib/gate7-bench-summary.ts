@@ -243,7 +243,13 @@ function nativeHist(
   return json.histograms?.[key] ?? json[key] ?? null;
 }
 
-/** Native repeats (warmup excluded by the caller): decode (= decode + validate + resolve) and apply. */
+/**
+ * GDScript-receiver repeats (warmup excluded by the caller): decode (= decode + validate +
+ * resolve) and apply, from rs_perf.gd's histograms. `receiver` defaults to "native"; the
+ * web-export arm (G7m) is the same GDScript and the same perf.json shape (receiver.gd runs
+ * unchanged on the web, gate7-design.md Q4), so it passes "web" here rather than a second copy
+ * of this function.
+ */
 export function summarizeNativeBench(
   input: string,
   perRepeat: {
@@ -251,6 +257,7 @@ export function summarizeNativeBench(
     perf: NativePerfJson | null;
     exit: number | null;
   }[],
+  receiver: "native" | "web" = "native",
 ): BenchInputSummary {
   const repeats: BenchRepeatSummary[] = [];
   const decodes: PerfHistogram[] = [];
@@ -280,7 +287,7 @@ export function summarizeNativeBench(
   const decode = mergeHistograms(decodes);
   const apply = mergeHistograms(applies);
   return {
-    receiver: "native",
+    receiver,
     input,
     transactions: decodes[0]?.count ?? 0,
     repeats,
