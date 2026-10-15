@@ -7200,3 +7200,177 @@ All 34 `scripts/test/self-test-*.ts` pass, including G7d's `self-test-device-har
 It does not prove gates 1 to 6 on the web (G7b), live mode or any WebSocket in a browser (G7l), the
 web export's payload paths (gate 0 draws no texture: the store fetch and the `http-cache` mode
 ran, the upload paths did not), warm startup or memory over time (G7k), or anything on a phone.
+
+## Gate 7o1 result (2026-10-15)
+
+G7o1 ([protocol/gate7-design.md](protocol/gate7-design.md) "G7o1", D31/D33) moved the GSW bench's
+per-record whole-record SHA-256 off the frame path. It is evidence only (render-stream-0.md
+"Decoded form", `applied.json`'s `record_sha256`, gate 0's `receiver-consumed-stream`), and nothing
+compares it at receive time, so a browser receiver may compute it after the frame instead of during
+decode. Resource payload hashes (texture/mesh/shader verification against the declared hash) are
+unaffected: they still happen inline, before use, exactly as before.
+
+**Changes**, all additive and defaulting to the pre-G7o1 behaviour:
+
+- `scripts/lib/render-stream-2.ts`: `decodeRecord` takes an optional `{ recordDigest: "inline" |
+  "deferred" }`; "deferred" skips the whole-record `hashBytes(raw.bytes)` call and leaves
+  `DecodedRecord.sha256` as `""`. `createRecordingValidator` takes the same option (default
+  `"inline"`, byte-identical to before) and gained `digestPending()` (accepted record indices with
+  no digest yet) and `digest(i)` (computes and caches one, lazily). The new exported
+  `checkRecordDigestComplete(validator)` is D31's `record-digest-complete` check.
+- `web/bench/bench.ts`: a `record-digest=inline|deferred` URL param (default `inline`). In
+  "deferred" mode, `evidence_hash_us` times `digest(i)` separately, right after `accept(i)`'s timed
+  window — "after the frame", once per accepted record, never inside `decode_us`/`hash_us`/
+  `total_us`. `checkRecordDigestComplete` runs before each repeat's evidence is uploaded.
+- `scripts/gate7-bench.ts` / `scripts/lib/gate7-bench-summary.ts`: `--record-digest inline|deferred`
+  (default `inline`), threaded into the bench URL and the arm/leg JSON; a new `evidence_hash` phase
+  and `record_digest` field on `BenchInputSummary` (`null` for `native`/`web`, which stay inline —
+  D31: GDScript keeps the digest inline "until another change touches them").
+- `scripts/test/self-test-record-digest.ts` (new): `record-digest-equal` and `record-digest-complete`
+  against the four G7x bench inputs (below).
+
+**A measurement bug found and fixed during this increment**: the first deferred bench run showed
+`hash_us` barely changing from the inline baseline, with `evidence_hash_us` reading roughly the same
+size — `digest()`'s hash call reused the same injected `hashImpl` as `accept()`'s resource-payload
+hashing, and both added to one shared `hashUs` accumulator read *after* `digest()` ran, so the
+deferred digest's cost was counted twice (once folded into `hash_us`, once as `evidence_hash_us`).
+Fixed by snapshotting `hashUs` right after `accept()` returns, before the digest call. The numbers
+below are all from the fixed build; the four bench inputs carry no separate resource-record payload
+in their transaction stream, so `hash_us` is correctly `0.000`/`0.000` throughout the deferred
+column — every prior "hash" cost on these specific inputs was the whole-record digest itself.
+
+### Checks
+
+- `self-test-rs2.ts` (golden-2 through golden-6, the full decoder/validator/resolver suite):
+  unchanged, all checks pass.
+- `self-test-browser-decoder.ts` (G7j): unchanged, all checks pass, including the
+  `node:crypto`-vs-pure-TypeScript cross-check and the `brokenSha256NoLengthPadding` sabotage.
+- `self-test-device-harness.ts`: unchanged, 57/57 (exercises `summarizeGswBench`/
+  `summarizeNativeBench`/`decide`, which gained the `evidence_hash` phase and `record_digest`
+  field — old-shaped JSON without them still summarizes correctly, read as `0`/`"inline"`).
+- `self-test-record-digest.ts` (new, D31's two named checks, against the four G7x bench inputs,
+  copied into this worktree's ignored `artifacts/render-stream/gate7/g7o1-inputs/` and sha256-
+  verified against gate7-design.md's G7x table before use): **`record-digest-equal`** — for every
+  accepted record of all four inputs (401, 401, 123 and 401 records), the deferred validator's
+  `digest(i)` equals the inline validator's. **`record-digest-complete`** (the `digest-skip`
+  sabotage) — before any `digest()` call, `digestPending()` lists every accepted record and
+  `checkRecordDigestComplete` fails with exactly that reason; once every index is digested, both
+  are clean. All checks pass on all four inputs.
+- `run-gate7.sh --legs g7-bench --receiver gsw --bench-inputs <g7o1 inputs>` (desktop, default
+  `inline`, the regression arm): `check-gate7.ts` 7/7 group checks, `gate_passed=true` — proves the
+  `gate7-bench-summary.ts`/`gate7-bench.ts` changes did not disturb the existing desktop leg.
+- `run-gate7.sh --legs g7-0 --make-sources` (desktop, full native gate 0 source run plus the web
+  export's receiver legs — unaffected by this increment, run because it is the other landed desktop
+  group that exercises a GSW-adjacent decode path): `check-gate7.ts` 29/29 checks, `gate_passed=true`.
+
+### Desktop numbers (ms, p50/p95), Ryzen 5 5500, pinned chromium-1223 (Chrome 148.0.7778.96)
+
+Inline (unchanged baseline) vs. deferred (this increment), same build, same recordings:
+
+| Input | phase | inline | deferred |
+| --- | --- | --- | --- |
+| scene-full | decode (incl. hash, inline) | 1.450 / 2.895 | 0.640 / 0.860 |
+| scene-full | hash | 0.780 / 1.415 | 0.000 / 0.000 |
+| scene-full | evidence_hash | n/a | 0.720 / 1.040 |
+| scene-full | validate | 0.180 / 0.335 | 0.170 / 0.250 |
+| scene-full | resolve | 0.115 / 0.220 | 0.110 / 0.190 |
+| scene-full | **total** | **1.740 / 3.825** | **0.930 / 1.275** |
+| scene-patch | decode (incl. hash, inline) | 0.080 / 0.465 | 0.055 / 0.205 |
+| scene-patch | hash | 0.025 / 0.255 | 0.000 / 0.000 |
+| scene-patch | evidence_hash | n/a | 0.025 / 0.225 |
+| scene-patch | **total** | **0.260 / 0.735** | **0.235 / 0.440** |
+| hd-patch | decode (incl. hash, inline) | 1.145 / 2.320 | 0.380 / 0.720 |
+| hd-patch | hash | 0.725 / 1.360 | 0.000 / 0.000 |
+| hd-patch | evidence_hash | n/a | 0.675 / 1.375 |
+| hd-patch | **total** | **2.110 / 3.880** | **1.305 / 1.980** |
+| pace-patch | decode (incl. hash, inline) | 0.080 / 0.130 | 0.060 / 0.095 |
+| pace-patch | hash | 0.025 / 0.035 | 0.000 / 0.000 |
+| pace-patch | evidence_hash | n/a | 0.025 / 0.040 |
+| pace-patch | **total** | **0.135 / 0.240** | **0.130 / 0.195** |
+
+`total_us` (the frame-path budget quantity, decode+validate+resolve) roughly halves on the two
+inputs that carry a large record (scene-full, hd-patch); `evidence_hash_us` absorbs almost exactly
+the difference, confirming the work moved rather than disappeared.
+
+### g31 five-repeat bench (GSW), ms p50/p95 — "Gate 7m result"'s inline numbers beside this
+### increment's deferred re-run
+
+Command (reusing G7x's/G7m's inputs, copied verbatim into this worktree and sha256-verified
+against gate7-design.md's G7x table):
+
+```bash
+pnpm exec tsx --conditions=development experiments/render-stream/scripts/gate7-bench.ts \
+  --arm gsw --env device --device g31 --record-digest deferred \
+  --inputs artifacts/render-stream/gate7/g7o1-inputs/inputs.json \
+  --out artifacts/render-stream/gate7/g7o1-g31-deferred
+```
+
+rAF `tp_ms` measured 17.01 to 17.02 ms this run (matches G7d's and G7m's 17.00 to 17.03 ms), so
+0.5·T_p is about 8.503 to 8.507 ms — the same measured budget G7m used.
+
+| Input | phase | g31 inline (G7m) | g31 deferred (G7o1) |
+| --- | --- | --- | --- |
+| scene-full | decode (incl. hash, inline) | 9.935 / 10.985 | 3.285 / 4.475 |
+| scene-full | hash | 6.525 / 7.260 | 0.000 / 0.000 |
+| scene-full | evidence_hash | n/a | 6.240 / 7.170 |
+| scene-full | validate | 0.990 / 1.250 | 0.920 / 1.365 |
+| scene-full | resolve | 0.830 / 0.995 | 0.805 / 1.095 |
+| scene-full | **total** | **11.790 / 12.990** | **5.065 / 6.850** |
+| scene-full | **verdict** | **device-decode-over-budget (+53 %)** | **pass** |
+| scene-patch | decode (incl. hash, inline) | 0.750 / 4.715 | 0.425 / 1.770 |
+| scene-patch | hash | 0.290 / 2.920 | 0.000 / 0.000 |
+| scene-patch | evidence_hash | n/a | 0.325 / 2.860 |
+| scene-patch | validate | 2.015 / 2.630 | 1.415 / 2.435 |
+| scene-patch | resolve | 0.130 / 0.920 | 0.130 / 0.890 |
+| scene-patch | **total** | **3.040 / 7.395** | **2.310 / 4.360** |
+| scene-patch | **verdict** | **pass** | **pass** |
+| hd-patch | decode (incl. hash, inline) | 6.130 / 10.785 | 1.665 / 3.870 |
+| hd-patch | hash | 4.375 / 7.260 | 0.000 / 0.000 |
+| hd-patch | evidence_hash | n/a | 4.515 / 6.745 |
+| hd-patch | validate | 3.550 / 7.220 | 3.620 / 7.335 |
+| hd-patch | resolve | 0.875 / 1.530 | 0.915 / 1.595 |
+| hd-patch | **total** | **10.565 / 16.790** | **6.345 / 11.200** |
+| hd-patch | **verdict** | **device-decode-over-budget (+97 %)** | **device-decode-over-budget (+32 %)** |
+| pace-patch | decode (incl. hash, inline) | 0.975 / 1.310 | 0.570 / 0.760 |
+| pace-patch | hash | 0.365 / 0.585 | 0.000 / 0.000 |
+| pace-patch | evidence_hash | n/a | 0.340 / 0.540 |
+| pace-patch | validate | 0.425 / 0.790 | 0.420 / 0.805 |
+| pace-patch | resolve | 0.125 / 0.205 | 0.120 / 0.235 |
+| pace-patch | **total** | **1.575 / 2.160** | **1.120 / 1.655** |
+| pace-patch | **verdict** | **pass** | **pass** |
+
+**`scene-full` flips from a miss to a pass** (12.990 ms vs. 8.505 ms budget → 6.850 ms vs. 8.504 ms,
+headroom 1.65 ms). **`hd-patch` is still a miss**, but the margin shrinks from +97 % to +32 %
+(16.790 → 11.200 ms against the same ≈8.505 ms budget), driven exactly as the design doc predicted
+("validate's spread," gate7-design.md "G7o1"): `validate` barely moved (3.550/7.220 → 3.620/7.335,
+still a ≈2x p50/p95 spread) and is now the largest single phase once the digest is off the path.
+`scene-patch` and `pace-patch` stay comfortable passes. The predicted scene-full p50 (gate7-design.md
+"G7o1": "about 5 ms p50 and passes") matches the measured 5.065 ms almost exactly.
+
+**CPU frequency and thermal**, sampled at session start plus six 30-s samples over the ≈152 s run:
+both clusters stayed **uncapped** (`derated: false`) through all four bench legs — A55
+`scaling_max_khz` 1 800 000 of `cpuinfo_max_khz` 1 800 000, A75 2 000 000 of 2 000 000, matching
+G7m's finding and not G7d's one-repeat smoke. The final sample, taken after the last leg finished
+(session teardown, not inside any timed window), shows both clusters stepped down to roughly half
+max (`derated: true`) — ordinary idle governor behaviour, not a mid-run throttle. Thermal status
+stayed `none` (code 0) throughout; battery held at 100 % (27.5 → 27.6 °C). Session settings
+(`stay_on_while_plugged_in`, `accelerometer_rotation`, `user_rotation`) were applied and fully
+restored; no `adb forward`/`reverse` was left behind.
+
+### Deviations
+
+- Only the GSW receiver ran (`native` and `web` stay inline by design — D31 — and were not
+  re-benchmarked; their numbers are unchanged from prior gates).
+- The g86 arm did not run: it is operator-attended and out of this increment's scope.
+- The desktop "inline" column is a fresh same-build re-run (not literally reusing G7d's numbers),
+  to compare against the new "deferred" column on identical evidence; it reproduces G7d's "Gate 7d
+  result" magnitudes.
+
+### What G7o1 does not prove
+
+It does not change validate's or resolve's cost (delta-driven validate/resolve is `render-stream-
+core`'s job, D29) and does not close `hd-patch`'s remaining miss — that is Q13e's unchanged
+`device-decode-over-budget` finding, now with a smaller margin, carried into G7x. It does not touch
+the native or web-export receivers (D31: they keep the digest inline). The baseline arm G7x's R3
+compares against is this increment's `gsw` arm with `--record-digest deferred` (to be renamed
+`gsw-ts` when G7x lands, D30/D33) — exactly the command above, on the same four inputs.

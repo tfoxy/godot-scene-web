@@ -4,12 +4,18 @@
 // validate and resolve per record, exactly what validateRecording does per record) with the pure
 // TypeScript SHA-256.
 //
-// ?mode=bench&input=<url>&name=<input>&nonce=<leg nonce>&warmup=1&repeats=5
+// ?mode=bench&input=<url>&name=<input>&nonce=<leg nonce>&warmup=1&repeats=5&record-digest=inline|deferred
 //   Each repeat replays the whole recording, ONE RECORD PER rAF, as a live receiver applies them.
 //   Timers wrap only accept(): decode_us (decodeRecord, hashing included), hash_us (every SHA-256,
 //   through the injected hash), resolve_us (applyTransaction), and validate_us = total - decode -
 //   resolve. The applier does not exist before G7a, so nothing is drawn but one clear per frame
 //   (outside the timers) that keeps the page producing real frames.
+//   record-digest (gate7-design.md D31/G7o1, default "inline"): "deferred" moves the per-record
+//   whole-record SHA-256 off decode_us/hash_us/total_us. Its cost is measured right after, as
+//   evidence_hash_us, by timing createRecordingValidator's digest(i) -- still once per frame, just
+//   outside the frame's timed window. Resource payload hashes (texture/mesh/shader verification)
+//   are unaffected: they stay inside decode_us/hash_us either way. checkRecordDigestComplete
+//   guards that every accepted record got a digest before this repeat's evidence is uploaded.
 // ?mode=probe&nonce=<leg nonce>&hold=<seconds>
 //   WebGL facts, timer-query exposure, RGB10_A2 renderable/readable, rAF T_p, the viewport, timer
 //   resolution, WebSocket echo RTT (100 B, 813 KB) and throughput against the harness's /echo, and
@@ -18,6 +24,7 @@
 // the results are PUT to /evidence/<nonce>/ (D10).
 
 import {
+  checkRecordDigestComplete,
   createRecordingValidator,
   decodeRecord,
   MAGIC,
@@ -154,6 +161,8 @@ interface RecordSample {
   hash_us: number;
   resolve_us: number;
   validate_us: number;
+  /** D31/G7o1: outside total_us/decode_us; 0 when record_digest is "inline". */
+  evidence_hash_us: number;
 }
 
 async function runBench(): Promise<void> {
@@ -162,6 +171,12 @@ async function runBench(): Promise<void> {
   const nonce = params.get("nonce") ?? "";
   const warmup = Number(params.get("warmup") ?? "1");
   const repeats = Number(params.get("repeats") ?? "5");
+  const recordDigestParam = params.get("record-digest") ?? "inline";
+  if (recordDigestParam !== "inline" && recordDigestParam !== "deferred")
+    throw new Error(
+      `record-digest must be inline or deferred (got ${recordDigestParam})`,
+    );
+  const recordDigest: "inline" | "deferred" = recordDigestParam;
   if (!input || !nonce) throw new Error("bench needs ?input= and ?nonce=");
   setState({ state: "running", detail: `fetching ${input}` });
   const res = await fetch(input);
@@ -208,7 +223,9 @@ async function runBench(): Promise<void> {
     const watchdog = makeWatchdog();
     const t0 = performance.now();
     const sessionT0 = nowUs();
-    const validator = createRecordingValidator(records, version);
+    const validator = createRecordingValidator(records, version, {
+      recordDigest,
+    });
     const sessionUs = nowUs() - sessionT0;
     if (validator.errors) throw new Error(validator.errors[0]);
     const samples: RecordSample[] = [];
@@ -234,6 +251,16 @@ async function runBench(): Promise<void> {
         error = `record ${i}: ${errors[0]}`;
         break;
       }
+      // hash_us is accept()'s hashing only (resource payload verification, D31: stays inline).
+      // Snapshot it here, before the deferred digest call below reuses the same injected hashImpl
+      // and keeps adding to `hashUs` -- otherwise hash_us would double-count the deferred digest.
+      const hashUsAtAccept = hashUs;
+      // D31/G7o1: the deferred digest, timed separately, outside total_us/decode_us/hash_us --
+      // "after the frame's timed window", still once per accepted record.
+      const digestT0 = nowUs();
+      if (recordDigest === "deferred") validator.digest(i);
+      const evidenceHashUs =
+        recordDigest === "deferred" ? nowUs() - digestT0 : 0;
       const raw = records[i];
       samples.push({
         index: i,
@@ -242,9 +269,10 @@ async function runBench(): Promise<void> {
         bytes: raw.byte_length,
         total_us: total,
         decode_us: timer.decode_us,
-        hash_us: hashUs,
+        hash_us: hashUsAtAccept,
         resolve_us: timer.resolve_us,
         validate_us: total - timer.decode_us - timer.resolve_us,
+        evidence_hash_us: evidenceHashUs,
       });
       clearFrame(i);
       prevWorkMs = performance.now() - cbStart;
@@ -252,6 +280,12 @@ async function runBench(): Promise<void> {
     if (!error) {
       const fin = validator.finish();
       if (fin.length > 0) error = fin[0];
+    }
+    // D31 record-digest-complete: every accepted record must be digested before this repeat's
+    // evidence is uploaded (the sabotage `digest-skip` fails exactly this check).
+    if (!error) {
+      const incomplete = checkRecordDigestComplete(validator);
+      if (incomplete.length > 0) error = incomplete[0];
     }
     const vis = watchdog.stop();
     repeatResults.push({
@@ -298,6 +332,7 @@ async function runBench(): Promise<void> {
     },
     warmup,
     repeats,
+    record_digest: recordDigest,
     results: repeatResults,
   });
   setState({ state: "done", detail: `${name}: ${repeatResults.length} runs` });

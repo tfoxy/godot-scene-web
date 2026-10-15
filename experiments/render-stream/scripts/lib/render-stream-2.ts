@@ -2747,14 +2747,28 @@ export type DecodedBlock = number[] | { u8_bytes: number; sha256: string };
 export interface DecodedRecord {
   offset: number;
   byte_length: number;
+  /** "" when `opts.recordDigest` is "deferred" and nothing has computed it yet (D31). */
   sha256: string;
   meta: Rs2Meta;
   blocks: DecodedBlock[];
 }
 
+/**
+ * gate7-design.md D31/G7o1: the whole-record SHA-256 (`DecodedRecord.sha256`) is evidence only --
+ * nothing compares it at receive time. "inline" (the default, byte-identical to before G7o1)
+ * computes it eagerly, here. "deferred" skips that hash and leaves `sha256` as ""; the caller
+ * (`createRecordingValidator`'s `digest()`) computes it later, off the frame path. Resource
+ * payload hashes (the block loop above) are unaffected either way -- they are still verified
+ * before use.
+ */
+export interface DecodeRecordOptions {
+  recordDigest?: "inline" | "deferred";
+}
+
 export function decodeRecord(
   raw: RawRecord,
   version: 2 | 3 | 4 | 5 | 6 = 6,
+  opts?: DecodeRecordOptions,
 ): {
   record?: DecodedRecord;
   errors: string[];
@@ -2899,7 +2913,7 @@ export function decodeRecord(
     record: {
       offset: raw.offset,
       byte_length: raw.byte_length,
-      sha256: hashBytes(raw.bytes),
+      sha256: opts?.recordDigest === "deferred" ? "" : hashBytes(raw.bytes),
       meta: meta as Rs2Meta,
       blocks,
     },
@@ -4728,11 +4742,36 @@ function checkResolvedInvariants(
  * index; `records` may grow between calls (a live caller appends each message's record). `finish()`
  * is the end-of-stream verdict. `errors` is set when the session record itself is invalid, and then
  * both methods return it. `validateRecording` is exactly this over a whole file.
+ *
+ * D31/G7o1: `digestPending()` lists accepted record indices with no whole-record SHA-256 yet
+ * ("inline" mode: always `[]`, the digest is already known from `accept`'s own decode). `digest(i)`
+ * returns record `i`'s digest, computing and caching it first if needed (both modes; cheap in
+ * "inline", the deferred hash in "deferred"). Call `digest` for every accepted index, then
+ * `checkRecordDigestComplete` (below), before writing evidence.
  */
 export interface RecordingValidator {
   errors: string[] | null;
   accept(index: number): string[] | undefined;
   finish(): string[];
+  digestPending(): number[];
+  digest(index: number): string;
+}
+
+/**
+ * D31 "record-digest-complete": every record a `RecordingValidator` accepted must have a digest
+ * before evidence is written. Returns `[]` when that holds, else one `record-digest-complete`
+ * error naming the still-pending indices. The sabotage `digest-skip` (never calling `digest()` for
+ * one accepted record) must fail exactly this check.
+ */
+export function checkRecordDigestComplete(
+  validator: RecordingValidator,
+): string[] {
+  const pending = validator.digestPending();
+  return pending.length === 0
+    ? []
+    : [
+        `record-digest-complete: ${pending.length} accepted record(s) have no digest yet (indices ${pending.join(", ")})`,
+      ];
 }
 
 /**
@@ -4759,11 +4798,15 @@ export function setValidatorPhaseTimer(
 export function createRecordingValidator(
   records: RawRecord[],
   version: 2 | 3 | 4 | 5 | 6 = 6,
+  options?: DecodeRecordOptions,
 ): RecordingValidator {
+  const recordDigest = options?.recordDigest ?? "inline";
   const rejected = (errors: string[]): RecordingValidator => ({
     errors,
     accept: () => errors,
     finish: () => errors,
+    digestPending: () => [],
+    digest: (i: number) => hashBytes(records[i].bytes),
   });
   const isV6 = version === 6;
   // isV5 means "V5 or later" (render-stream-6.md: transactions/items/commands are byte-identical
@@ -4861,14 +4904,19 @@ export function createRecordingValidator(
   const lastSeenShader = new Map<number, ResolvedShader>();
   const lastSeenMaterial = new Map<number, ResolvedMaterial>();
   let endSeen = false;
+  // D31/G7o1: the whole-record digest, off the frame path in "deferred" mode.
+  const digests = new Map<number, string>();
+  const pendingDigest = new Set<number>();
 
   const accept = (i: number): string[] | undefined => {
     const timer = validatorPhaseTimer;
     const decodeT0 = timer ? timer.now() : 0;
-    const decoded = decodeRecord(records[i], version);
+    const decoded = decodeRecord(records[i], version, { recordDigest });
     if (timer) timer.decode_us += timer.now() - decodeT0;
     if (decoded.errors.length > 0 || decoded.record === undefined)
       return [decoded.errors[0]];
+    if (recordDigest === "deferred") pendingDigest.add(i);
+    else digests.set(i, decoded.record.sha256);
     const meta = decoded.record.meta;
     const offset = records[i].offset;
 
@@ -5394,6 +5442,16 @@ export function createRecordingValidator(
       endSeen
         ? []
         : ["recording-incomplete: the recording ends without an end record"],
+    digestPending: () => Array.from(pendingDigest).sort((a, b) => a - b),
+    digest: (i: number): string => {
+      let d = digests.get(i);
+      if (d === undefined) {
+        d = hashBytes(records[i].bytes);
+        digests.set(i, d);
+      }
+      pendingDigest.delete(i);
+      return d;
+    },
   };
 }
 

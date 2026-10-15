@@ -88,6 +88,8 @@ interface Args {
   holdSeconds: number;
   adbBin: string | undefined;
   only: string[];
+  /** gate7-design.md D31/G7o1; `gsw` only, ignored by `native` and `web` (GDScript stays inline). */
+  recordDigest: "inline" | "deferred";
 }
 
 function parseArgs(argv: string[]): Args {
@@ -105,6 +107,7 @@ function parseArgs(argv: string[]): Args {
     holdSeconds: 30,
     adbBin: undefined,
     only: [],
+    recordDigest: "inline",
   };
   for (let i = 0; i < argv.length; i++) {
     const v = () => {
@@ -170,6 +173,15 @@ function parseArgs(argv: string[]): Args {
           .map((s) => s.trim())
           .filter(Boolean);
         break;
+      case "--record-digest": {
+        const rd = v();
+        if (rd !== "inline" && rd !== "deferred")
+          throw new HarnessUsageError(
+            `--record-digest must be inline or deferred (got ${rd})`,
+          );
+        a.recordDigest = rd;
+        break;
+      }
       default:
         throw new HarnessUsageError(`unknown argument ${argv[i]}`);
     }
@@ -403,7 +415,15 @@ async function writeLegSummary(
   const p = summary.phases;
   console.log(
     `gate7-bench: ${leg}: ${(
-      ["decode", "hash", "validate", "resolve", "apply", "total"] as const
+      [
+        "decode",
+        "hash",
+        "validate",
+        "resolve",
+        "apply",
+        "total",
+        "evidence_hash",
+      ] as const
     )
       .filter((k) => p[k])
       .map((k) => `${k} p50/p95 ${fmt(p[k]?.p50_us)}/${fmt(p[k]?.p95_us)} ms`)
@@ -591,7 +611,7 @@ async function runGswArm(
       let summary: BenchInputSummary | null = null;
       const attempts: BenchInputSummary[] = [];
       for (let attempt = 0; attempt < 2; attempt++) {
-        const url = `${origin}/index.html?mode=bench&input=inputs/${input.name}.rs2&name=${input.name}&nonce=${nonce}&warmup=${args.warmup}&repeats=${args.repeats}`;
+        const url = `${origin}/index.html?mode=bench&input=inputs/${input.name}.rs2&name=${input.name}&nonce=${nonce}&warmup=${args.warmup}&repeats=${args.repeats}&record-digest=${args.recordDigest}`;
         const page = await openPage(url);
         try {
           await waitBench(
@@ -667,6 +687,8 @@ async function main(): Promise<void> {
     inputs: inputs.map((i) => i.name),
     warmup: args.warmup,
     repeats: args.repeats,
+    // D31/G7o1; meaningful for `gsw` only -- native and web stay inline (D31).
+    record_digest: args.recordDigest,
     started_at: new Date().toISOString(),
   };
   try {
