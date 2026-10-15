@@ -9,9 +9,10 @@
 //     experiments/render-stream/scripts/check-gate7.ts --out <evidence dir>
 //
 // `ALL_GROUPS` below is the FINAL vocabulary gate 7 passes against (protocol/gate7-design.md's
-// closing paragraph) plus G7d's phone groups. Landed: g7-dev and g7-bench (G7d), and g7-0's web
+// closing paragraph) plus G7d's phone groups. Landed: g7-dev and g7-bench (G7d), g7-0's web
 // half (G7e: `--source gate0=<run> --bundle <web bundle> --extension <.gdextension>`,
-// lib/gate7-adapters.ts checkGate0Web, reported in `results`). G7h's harness checks are folded
+// lib/gate7-adapters.ts checkGate0Web, reported in `results`), and the web half of g7-1 to g7-6
+// and g7-55 (G7b: `--source gate<N>=<run>` each, lib/gate7b-adapters.ts checkGateWeb). G7h's harness checks are folded
 // into `report.harness` when present. Requesting a group before its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
 
@@ -41,6 +42,7 @@ import {
 } from "./lib/gate7-gsw";
 import { gswExtraChecks } from "./lib/gate7-gsw-checks";
 
+import { checkGateWeb, GATE7B_GATES } from "./lib/gate7b-adapters";
 import {
   type BenchTableRow,
   type Gate7Check,
@@ -82,10 +84,15 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-1",
   "g7-2",
   "g7-3",
+  "g7-4",
+  "g7-5",
+  "g7-55",
+  "g7-6",
   "g7-dev",
   "g7-bench",
 ];
-/** G7a: the groups with gsw legs (g7-1..g7-3 have no web half yet, G7b). */
+/** G7a: the groups with gsw legs (G7b adds the web half of g7-1..g7-6 and g7-55; G7t and G7s
+ * the gsw half of g7-4, g7-5 and g7-55). */
 const GSW_GATES: Record<string, GswGate> = {
   "g7-0": "gate0",
   "g7-1": "gate1",
@@ -352,6 +359,30 @@ async function main(): Promise<void> {
       };
       results.push(await checkGswGroup(input));
     }
+  }
+  // G7b: gates 1 to 6, web half (lib/gate7b-adapters.ts). Each needs `--source <gate>=<run>`.
+  for (const def of GATE7B_GATES) {
+    if (!wantWeb || !legs.includes(def.group)) continue;
+    const source = sources[def.gate];
+    if (!source || !bundle || !extension) {
+      throw new Error(
+        `check-gate7: ${def.group} needs --source ${def.gate}=<run>, --bundle <web bundle> and --extension <.gdextension>`,
+      );
+    }
+    console.log(`check-gate7: judging ${def.group} (${def.gate}) on the web`);
+    const r = await checkGateWeb({
+      def,
+      sourceDir: source,
+      gateOut: join(out, def.gate),
+      bundleDir: bundle,
+      current: currentBuildProvenance(
+        REPO_ROOT,
+        extension,
+        PINNED_LINUX_TEMPLATE,
+      ),
+    });
+    const { classification: _c, ...rest } = r;
+    results.push(rest);
   }
   // `gate_passed` here means "every group this run requested passed": gate 7 as a whole needs every
   // increment (D23, "Gate 7 passes when…"), which the summary (G7z) judges, not this run.

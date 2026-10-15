@@ -257,6 +257,13 @@ async function runOne(
     await mkdir(dirname(to), { recursive: true });
     copyFileSync(from, to);
   }
+  // G7b: the runner's record of the seqs it asked to be shot is an input, not receiver evidence
+  // (gate 5.5d's checker reads it from the leg directory).
+  if (existsSync(join(spec.nativeDir, "shot-seqs.txt")))
+    copyFileSync(
+      join(spec.nativeDir, "shot-seqs.txt"),
+      join(spec.webDir, "shot-seqs.txt"),
+    );
   const nonce = randomBytes(8).toString("hex");
   server.addLeg(nonce, spec.webDir);
   const extra: Record<string, string> = {};

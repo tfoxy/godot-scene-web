@@ -1004,6 +1004,11 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 	var unsupported_commands: Array[Dictionary] = stats["unsupported_commands"]
 	for command: Dictionary in unsupported_commands:
 		_log("seq %d item %d: unsupported command %s (%s) logged, not drawn" % [seq, command["item"], command["name"], command["reason"]])
+	# G7b: web-only typed refusals (rs_applier.gd "Meshes"); always empty natively.
+	var web_refused: Array[Dictionary] = stats["mesh_web_refused"]
+	for refused: Dictionary in web_refused:
+		_unsupported.append({"seq": seq, "item": null, "name": "mesh_surface_update_index_region", "reason": refused["reason"], "mesh": refused["mesh"], "surface": refused["surface"]})
+		_log("seq %d: mesh %d surface %d: mesh_surface_update_index_region refused (%s)" % [seq, refused["mesh"], refused["surface"], refused["reason"]])
 	var current: Dictionary[String, bool] = {}
 	for value: Variant in meta["unsupported"]:
 		var unsupported_entry: Dictionary = value

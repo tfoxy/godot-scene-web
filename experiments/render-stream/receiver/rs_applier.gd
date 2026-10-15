@@ -45,6 +45,12 @@ extends RefCounted
 ## custom AABB is set whenever it changes (a non-zero one wins in mesh_get_aabb). A command naming
 ## a `freed`, `unsupported` or absent mesh is skipped and recorded (the engine would draw nothing
 ## for a freed one, Q1d), never drawn with a substitute.
+## On the web (G7b) an index-buffer change is refused, typed and never called: Godot 4.5.1's GLES3
+## mesh_surface_update_index_region binds the index buffer to GL_ARRAY_BUFFER
+## (drivers/gles3/storage/mesh_storage.cpp:591-593), which WebGL 2 forbids for a buffer first bound
+## as an element array buffer (INVALID_OPERATION; the update is dropped). Each refusal is returned
+## in `web_refused` ({mesh, surface, reason "web-index-region-update"}) and receiver.gd reports it
+## in applied.json `unsupported`. Natively the list is always empty.
 ##
 ## Shaders and materials (gate5_5-design.md Q5, D5, D6, D8, D9, G55d): apply order is textures,
 ## meshes, shaders, materials, then items. Residency is lazy: a material is resident while an
@@ -1065,6 +1071,7 @@ func apply_state(stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionar
 			"skipped_mesh_commands": skipped_mesh,
 		},
 		"mesh_uploads": mesh_stats["uploads"],
+		"mesh_web_refused": mesh_stats["web_refused"],
 		"material_resources": material_stats,
 		"skipped_shaders": skipped_shaders,
 		"param_calls": param_calls,
@@ -1123,6 +1130,8 @@ func _apply_meshes(items: Dictionary, meshes: Dictionary, cache: RsResourceCache
 	var updates: int = 0
 	var upload_bytes: int = 0
 	var uploads: Array[Dictionary] = []
+	var web_refused: Array[Dictionary] = []
+	var web: bool = RsConfig.is_web()
 	var resident: Array[int] = []
 	resident.assign(_meshes.keys())
 	resident.sort()
@@ -1213,6 +1222,9 @@ func _apply_meshes(items: Dictionary, meshes: Dictionary, cache: RsResourceCache
 				var new_bytes: PackedByteArray = after[key]
 				if old_bytes == new_bytes:
 					continue
+				if web and buffer == "index":
+					web_refused.append({"mesh": id, "surface": k, "reason": "web-index-region-update"})
+					continue
 				match buffer:
 					"vertex":
 						RenderingServer.mesh_surface_update_vertex_region(current.rid, k, 0, new_bytes)
@@ -1237,6 +1249,7 @@ func _apply_meshes(items: Dictionary, meshes: Dictionary, cache: RsResourceCache
 	return {
 		"meshes_created": created, "meshes_rebuilt": rebuilt, "meshes_freed": mesh_freed,
 		"surface_updates": updates, "mesh_upload_bytes": upload_bytes, "uploads": uploads,
+		"web_refused": web_refused,
 	}
 
 

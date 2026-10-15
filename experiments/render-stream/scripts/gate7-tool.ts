@@ -3,7 +3,10 @@
 //
 //   gate7-tool.ts source-provenance --extension E --out <source run>/gate7-source.json
 //     writes the current build's D21 provenance next to a source run it just made
-//   gate7-tool.ts web-legs --group g7-0 --source <gate 0 run> --bundle <bundle dir> --out <gate 7 run>
+//   gate7-tool.ts discover --source <gate N run>
+//     lists the source run's file receiver legs and which are replayed (lib/gate7b-adapters.ts)
+//   gate7-tool.ts web-legs --group g7-<N> --source <gate N run> --bundle <bundle dir> --out <gate 7 run>
+//     [--only a,b] [--repeat-differing]
 //     replays the group's native receiver legs in the web-export receiver (lib/gate7-web-legs.ts)
 //   gate7-tool.ts source-inputs --source gate0=<run>,gate1=<run>,... --out <inputs.json>
 //     (G7a) every capture recording of the source runs (`*/capture*/recording*.rs2` and the live
@@ -30,6 +33,12 @@ import { fileURLToPath } from "node:url";
 import { currentBuildProvenance, gate0WebLegSpecs } from "./lib/gate7-adapters";
 import { type GswGate, gswLegSpecs } from "./lib/gate7-gsw";
 import { runWebLegs } from "./lib/gate7-web-legs";
+import {
+  classifyLegShots,
+  discoverFileReceiverLegs,
+  gateDefForGroup,
+  webLegSpecs,
+} from "./lib/gate7b-adapters";
 import { buildGswBundle, DEFAULT_RS_BUILD } from "./lib/gsw-bundle";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -64,31 +73,80 @@ async function main(): Promise<void> {
     );
     return;
   }
+  if (command === "discover") {
+    for (const d of discoverFileReceiverLegs(resolve(flag(argv, "--source"))))
+      console.log(
+        `${d.excluded ? `[${d.excluded}]` : "[replay]"} ${d.leg}${d.headless ? " headless" : ""}${d.resolution ? ` ${d.resolution}` : ""}${d.sabotage ? ` sabotage=${d.sabotage}` : ""}`,
+      );
+    return;
+  }
   if (command === "web-legs") {
     const group = flag(argv, "--group");
-    if (group !== "g7-0")
-      throw new Error(`gate7-tool: no web legs for ${group} yet (G7b)`);
+    const def = gateDefForGroup(group);
+    if (group !== "g7-0" && !def)
+      throw new Error(`gate7-tool: no web legs for ${group}`);
     const out = resolve(flag(argv, "--out"));
     const source = resolve(flag(argv, "--source"));
     const bundle = resolve(flag(argv, "--bundle"));
+    // --only <substring,...> (development): replay only the legs whose id contains one of them.
+    const onlyAt = argv.indexOf("--only");
+    const only = onlyAt >= 0 ? (argv[onlyAt + 1] ?? "").split(",") : [];
     const build = JSON.parse(
       readFileSync(join(bundle, "build.json"), "utf8"),
     ) as { pck: { sha256: string } };
+    const gate = def ? def.gate : "gate0";
+    let specs = def
+      ? webLegSpecs(source, join(out, gate, "web")).specs
+      : gate0WebLegSpecs(source, join(out, "gate0", "web"));
+    if (only.length > 0)
+      specs = specs.filter((s) => only.some((o) => s.leg.includes(o)));
     const results = await runWebLegs(
       {
         out,
-        gate: "gate0",
+        gate,
         sourceDir: source,
         bundleDir: bundle,
         buildSha256: build.pck.sha256,
       },
-      gate0WebLegSpecs(source, join(out, "gate0", "web")),
+      specs,
     );
     const refused = results.filter((r) => !r.provenanceOk);
     if (refused.length > 0) {
       console.error(
         `gate7-tool: harness-refused (browser-provenance) on ${refused.map((r) => r.leg).join(", ")}`,
       );
+    }
+    // Q7 (G7b): a band needs a same-build repeat. --repeat-differing replays every leg with a shot
+    // that differs from its native shot once more, into <out>/<gate>/web-repeat/<leg>.
+    if (def && argv.includes("--repeat-differing")) {
+      const again: typeof specs = [];
+      for (const s of specs) {
+        const shots = await classifyLegShots(s.leg, s.nativeDir, s.webDir);
+        if (
+          shots.some(
+            (x) => !x.classes || x.classes.identical !== x.classes.pixels,
+          )
+        )
+          again.push({
+            ...s,
+            webDir: join(out, gate, "web-repeat", s.leg),
+            compositor: false,
+          });
+      }
+      console.log(
+        `gate7-tool: repeating ${again.length} legs whose shots differ from native`,
+      );
+      if (again.length > 0)
+        await runWebLegs(
+          {
+            out,
+            gate,
+            sourceDir: source,
+            bundleDir: bundle,
+            buildSha256: build.pck.sha256,
+          },
+          again,
+        );
     }
     return;
   }
