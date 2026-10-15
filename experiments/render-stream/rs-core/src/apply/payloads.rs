@@ -1,0 +1,341 @@
+//! Verified payloads in the shapes the applier draws from: textures as straight RGBA8 level-0
+//! pixels (Godot's GLES3 swizzles, `texture_storage.cpp` `_get_gl_image_and_format`), mesh surfaces
+//! as flat 2D geometry (`rendering_server.cpp` `_surface_set_data` layout: 2D positions, then per
+//! vertex `color` RGBA8 unorm and `tex_uv` f32×2 interleaved in the attribute buffer, then 16- or
+//! 32-bit indices).
+//!
+//! The bytes reach this store only after their SHA-256 was checked against the hash the wire
+//! names (the adapter's `provide`, or the validator's inline resource records): verification
+//! cannot be skipped by drawing from here.
+
+use crate::state::{Hash, Primitive};
+use std::collections::HashMap;
+
+/// A texture's level 0 as straight RGBA8.
+#[derive(Clone, Debug)]
+pub struct TexturePixels {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// One mesh surface's 2D geometry.
+#[derive(Clone, Debug)]
+pub struct MeshGeometry {
+    pub primitive: Primitive,
+    pub positions: Vec<[f32; 2]>,
+    /// Straight RGBA from the unorm8 attribute (`v / 255`), when the format has `ARRAY_FORMAT_COLOR`.
+    pub colors: Option<Vec<[f32; 4]>>,
+    /// When the format has `ARRAY_FORMAT_TEX_UV` (uncompressed).
+    pub uvs: Option<Vec<[f32; 2]>>,
+    /// When the format has `ARRAY_FORMAT_INDEX`.
+    pub indices: Option<Vec<u32>>,
+    /// The GRM1 geometry block's AABB: position xyz, size xyz.
+    pub aabb: [f32; 6],
+}
+
+pub const ARRAY_FORMAT_COLOR: i64 = 1 << 3;
+pub const ARRAY_FORMAT_TEX_UV: i64 = 1 << 4;
+pub const ARRAY_FORMAT_TEX_UV2: i64 = 1 << 5;
+pub const ARRAY_FORMAT_CUSTOM0: i64 = 1 << 6;
+pub const ARRAY_FORMAT_INDEX: i64 = 1 << 12;
+pub const ARRAY_FLAG_COMPRESS_ATTRIBUTES: i64 = 1 << 29;
+
+/// Straight RGBA8 from an uncompressed permitted format's level 0 (render-stream-2.md "Texture
+/// payload"): L8 → (l,l,l,1), LA8 → (l,l,l,a), R8 → (r,0,0,1), RG8 → (r,g,0,1), RGB8 → (r,g,b,1).
+pub fn texture_rgba8(
+    format: &str,
+    width: u32,
+    height: u32,
+    data: &[u8],
+) -> Result<TexturePixels, String> {
+    let n = width as usize * height as usize;
+    let px = match format {
+        "L8" | "R8" => 1,
+        "LA8" | "RG8" => 2,
+        "RGB8" => 3,
+        "RGBA8" => 4,
+        other => return Err(format!("texture format {other} has no RGBA8 conversion")),
+    };
+    if data.len() < n * px {
+        return Err(format!(
+            "texture data {} bytes < {}×{}×{px}",
+            data.len(),
+            width,
+            height
+        ));
+    }
+    let mut rgba = Vec::with_capacity(4 * n);
+    let src = &data[..n * px];
+    match format {
+        "RGBA8" => rgba.extend_from_slice(src),
+        "RGB8" => {
+            for c in src.chunks_exact(3) {
+                rgba.extend_from_slice(&[c[0], c[1], c[2], 255]);
+            }
+        }
+        "LA8" => {
+            for c in src.chunks_exact(2) {
+                rgba.extend_from_slice(&[c[0], c[0], c[0], c[1]]);
+            }
+        }
+        "L8" => {
+            for &l in src {
+                rgba.extend_from_slice(&[l, l, l, 255]);
+            }
+        }
+        "RG8" => {
+            for c in src.chunks_exact(2) {
+                rgba.extend_from_slice(&[c[0], c[1], 0, 255]);
+            }
+        }
+        _ => {
+            for &r in src {
+                rgba.extend_from_slice(&[r, 0, 0, 255]);
+            }
+        }
+    }
+    Ok(TexturePixels {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Mesh geometry from a GRM1 surface's decoded buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn mesh_geometry(
+    primitive: Primitive,
+    format: i64,
+    aabb: [f32; 6],
+    vertex_count: usize,
+    index_count: usize,
+    vertex_data: &[u8],
+    attribute_data: &[u8],
+    index_data: &[u8],
+) -> Result<MeshGeometry, String> {
+    if format & ARRAY_FLAG_COMPRESS_ATTRIBUTES != 0 {
+        return Err("compressed attributes".into());
+    }
+    let f32_at = |b: &[u8], o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    if vertex_data.len() < vertex_count * 8 {
+        return Err("short vertex buffer".into());
+    }
+    let positions: Vec<[f32; 2]> = (0..vertex_count)
+        .map(|i| [f32_at(vertex_data, 8 * i), f32_at(vertex_data, 8 * i + 4)])
+        .collect();
+    let has_color = format & ARRAY_FORMAT_COLOR != 0;
+    let has_uv = format & ARRAY_FORMAT_TEX_UV != 0;
+    let stride = attribute_data.len().checked_div(vertex_count).unwrap_or(0);
+    let needed = (if has_color { 4 } else { 0 }) + (if has_uv { 8 } else { 0 });
+    if vertex_count > 0 && stride < needed {
+        return Err("short attribute buffer".into());
+    }
+    let colors = has_color.then(|| {
+        (0..vertex_count)
+            .map(|i| {
+                let o = i * stride;
+                let c = &attribute_data[o..o + 4];
+                [
+                    c[0] as f32 / 255.0,
+                    c[1] as f32 / 255.0,
+                    c[2] as f32 / 255.0,
+                    c[3] as f32 / 255.0,
+                ]
+            })
+            .collect()
+    });
+    let uv_offset = if has_color { 4 } else { 0 };
+    let uvs = has_uv.then(|| {
+        (0..vertex_count)
+            .map(|i| {
+                let o = i * stride + uv_offset;
+                [f32_at(attribute_data, o), f32_at(attribute_data, o + 4)]
+            })
+            .collect()
+    });
+    let indices = if index_count > 0 {
+        let wide = vertex_count > 65536;
+        let size = if wide { 4 } else { 2 };
+        if index_data.len() < index_count * size {
+            return Err("short index buffer".into());
+        }
+        Some(
+            (0..index_count)
+                .map(|i| {
+                    if wide {
+                        u32::from_le_bytes([
+                            index_data[4 * i],
+                            index_data[4 * i + 1],
+                            index_data[4 * i + 2],
+                            index_data[4 * i + 3],
+                        ])
+                    } else {
+                        u16::from_le_bytes([index_data[2 * i], index_data[2 * i + 1]]) as u32
+                    }
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+    Ok(MeshGeometry {
+        primitive,
+        positions,
+        colors,
+        uvs,
+        indices,
+        aabb,
+    })
+}
+
+/// Verified, decoded payloads by content hash.
+#[derive(Default)]
+pub struct PayloadStore {
+    pub textures: HashMap<Hash, TexturePixels>,
+    pub meshes: HashMap<Hash, MeshGeometry>,
+    /// Shader code (GRP1), kept for G7s; the slice draws custom shaders with the builtin program.
+    pub shaders: HashMap<Hash, String>,
+}
+
+impl PayloadStore {
+    pub fn has(&self, hash: &Hash) -> bool {
+        self.textures.contains_key(hash)
+            || self.meshes.contains_key(hash)
+            || self.shaders.contains_key(hash)
+    }
+
+    pub fn clear(&mut self) {
+        self.textures.clear();
+        self.meshes.clear();
+        self.shaders.clear();
+    }
+
+    /// Verify and ingest one payload (Q14c `provide`): its SHA-256 must equal `expected` (the hash
+    /// the wire named; `verify == false` is the `skip-payload-hash` sabotage only), then it is
+    /// decoded by its own magic with the decoder's checks (`payload-*` codes) and converted.
+    pub fn provide(
+        &mut self,
+        bytes: &[u8],
+        expected: &Hash,
+        version: u8,
+        verify: bool,
+    ) -> Result<(), crate::wire::Error> {
+        use crate::payload::{
+            decode_mesh, decode_shader, decode_texture, payload_kind, PayloadKind,
+        };
+        if verify {
+            let actual = crate::wire::sha256(bytes);
+            if actual != *expected {
+                return Err(crate::wire::Error::new(
+                    "resource-hash",
+                    format!(
+                        "payload sha256 {} disagrees with the wire's {}",
+                        actual.to_hex(),
+                        expected.to_hex()
+                    ),
+                ));
+            }
+        }
+        let bad = |e: String| crate::wire::Error::new("resource-payload", e);
+        match payload_kind(bytes, version) {
+            PayloadKind::Texture => {
+                let t = decode_texture(bytes)?;
+                let px = texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data)
+                    .map_err(bad)?;
+                self.textures.insert(*expected, px);
+            }
+            PayloadKind::Mesh => {
+                let m = decode_mesh(bytes)?;
+                let g = mesh_geometry(
+                    m.primitive,
+                    m.format,
+                    m.aabb,
+                    m.vertex_count as usize,
+                    m.index_count as usize,
+                    m.vertex_data,
+                    m.attribute_data,
+                    m.index_data,
+                )
+                .map_err(bad)?;
+                self.meshes.insert(*expected, g);
+            }
+            PayloadKind::Shader => {
+                let s = decode_shader(bytes)?;
+                self.shaders.insert(*expected, s.code.to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The payload hashes the last accepted transaction needs before it can be applied and that the
+/// store does not hold yet (Q14c's needed set): `ok` image textures, `ok` mesh surfaces and shaders
+/// whose code travels as a payload. `all` (a fresh receiver, or after a reset) looks at the whole
+/// state, otherwise only at the delta's upserts.
+pub fn needed(
+    state: &crate::state::ResolvedState,
+    delta: &crate::state::TxDelta,
+    all: bool,
+    store: &PayloadStore,
+    out: &mut Vec<Hash>,
+) {
+    use crate::state::{EntryStatus, ShaderSource, TextureKind};
+    out.clear();
+    let mut push = |h: Hash, out: &mut Vec<Hash>| {
+        if !store.has(&h) && !out.contains(&h) {
+            out.push(h);
+        }
+    };
+    let texture =
+        |id: &crate::state::Id, out: &mut Vec<Hash>, push: &mut dyn FnMut(Hash, &mut Vec<Hash>)| {
+            if let Some(t) = state.textures.get(id) {
+                if t.kind == TextureKind::Image && t.status == EntryStatus::Ok {
+                    if let Some(h) = t.hash {
+                        push(h, out);
+                    }
+                }
+            }
+        };
+    let mesh =
+        |id: &crate::state::Id, out: &mut Vec<Hash>, push: &mut dyn FnMut(Hash, &mut Vec<Hash>)| {
+            if let Some(m) = state.meshes.get(id) {
+                if m.status == EntryStatus::Ok {
+                    for s in &m.surfaces {
+                        push(s.hash, out);
+                    }
+                }
+            }
+        };
+    let shader =
+        |id: &crate::state::Id, out: &mut Vec<Hash>, push: &mut dyn FnMut(Hash, &mut Vec<Hash>)| {
+            if let Some(s) = state.shaders.get(id) {
+                if s.status == EntryStatus::Ok && s.source == Some(ShaderSource::Payload) {
+                    if let Some(h) = s.hash {
+                        push(h, out);
+                    }
+                }
+            }
+        };
+    if all {
+        for id in state.textures.keys() {
+            texture(id, out, &mut push);
+        }
+        for id in state.meshes.keys() {
+            mesh(id, out, &mut push);
+        }
+        for id in state.shaders.keys() {
+            shader(id, out, &mut push);
+        }
+    } else {
+        for id in &delta.textures_upserted {
+            texture(id, out, &mut push);
+        }
+        for id in &delta.meshes_upserted {
+            mesh(id, out, &mut push);
+        }
+        for id in &delta.shaders_upserted {
+            shader(id, out, &mut push);
+        }
+    }
+}

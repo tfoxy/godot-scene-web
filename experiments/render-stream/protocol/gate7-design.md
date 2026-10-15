@@ -1936,6 +1936,42 @@ timed per phase against the TypeScript path.
   installed here, with wasm-bindgen 0.2.129. Never launch headed Chromium. The g31 has standing
   approval (D28).
 
+- **As built (G7x, 2026-10-15)**, details in the README's "Gate 7x result": **win**, R1 to R4,
+  on the g31's third run (Chrome 154, T_p 17.01 ms, 0.5·T_p 8.505 ms, thermal `none`).
+  - R2: `gsw-rs-inline` decode p95 6.130 / 2.220 / 4.550 / 0.745 ms (`scene-full`,
+    `scene-patch`, `hd-patch`, `pace-patch`) against 12.990 / 7.395 / 16.790 / 2.160.
+  - R3: `gsw-rs` decode p95 2.820 / 1.330 / 2.465 / 0.660 against `gsw-ts`'s 6.110 / 5.450 /
+    11.095 / 1.880, every input 5/5 paired.
+  - R4: `gsw-rs` total p95 at most 5.930 (`scene-full`), 5.240 (`scene-patch`) and 1.575
+    (`pace-patch`) in every round. `hd-patch`, the stretch target, misses: 10.545 to 12.870 ms,
+    because 111 of its 122 transactions take the applier's structural path (`apply` 3.2/5.7 ms).
+    An incremental structural apply is G7a's first optimization.
+  - Runs 1 and 2 used the first core build, whose general JSON parser only tied V8's native
+    `JSON.parse` on `scene-full`'s 98 KB full transactions; run 2 failed R3 there (6.175 against
+    6.070 ms, 2/5 paired). On the g31, wasm runs about 11x slower than on the desktop and V8's
+    JavaScript about 5x, so the desktop arms (Rust 2.8x faster) were not a usable signal for full
+    snapshots. A schema-directed fast path for canonical transaction metas, with the general
+    parser as fallback, and in-place full-transaction apply fixed it (native `scene-full` accept
+    p50 120 to 34 µs); R1 was re-run on that build before run 3.
+  - Op census: `add_rect`, `add_texture_rect`, `add_texture_rect_region`, `add_set_transform`,
+    `add_triangle_array`, `add_nine_patch` (stretch), `add_polygon`, `add_polyline`, `add_line`
+    (no AA), `add_circle`, `add_mesh` (untextured triangles); CanvasItemMaterial add/sub and one
+    custom ShaderMaterial; no unsupported op.
+  - The only shortcut that fired is `slice-shader-builtin`. Thirteen others are typed and
+    unreached; the untyped approximations (CPU-baked `add_set_transform`, f32 primitive colours,
+    no viewport culling, untested stretch, untested receiver context loss) are listed in the
+    README for G7a and G7t.
+  - Q14a's crates are as specified; the core parses meta with its own strict arena reader
+    (`serde_json` only for dumps and goldens). Not built here: the core's
+    wasm32-unknown-emscripten target and `rs-core-capi` (G7xw, G7xn). In
+    `rust-prototype`, the existing `RustRenderer` exports are gated on the existing `webgl`
+    feature, not on a new default-on `renderer` feature, because enabling any additional feature
+    changed the default wasm bytes. The default build is byte-identical to `main`'s, and the
+    couch-coop consumer check (Q14f) passed.
+  - Scene shots against the native receiver (report-only) are within max delta 1 except `SM`
+    (the builtin-shader shortcut), `LE` (max 7) and, from seq 108, `BG` (max 255). `LE` and `BG`
+    are not root-caused and go to G7a/G7t.
+
 ### G7b — web export: every gate's file legs (opus)
 
 - **Files**: the gate 1 to 6 adapters (web side); the `g7-1..g7-6` web file legs; HD presentation

@@ -9,6 +9,9 @@
 //   gate7-bench.ts --arm gsw --env device --device g31 --inputs <inputs.json> --out <dir> [--probes]
 //   gate7-bench.ts --arm web --inputs <inputs.json> --out <dir>        # desktop Chromium, web export
 //   gate7-bench.ts --arm web --env device --device g31 --inputs <inputs.json> --out <dir>
+//   gate7-bench.ts --arm gsw-rs|gsw-rs-inline [--rs-build <dir>] ...  # G7x: rs-gsw-wasm (Q14c)
+//   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
+// `gsw-ts` is the TypeScript arm (G7x renamed it); `gsw` stays its alias until G7a.
 //
 // Every arm replays each input of inputs.json (render-stream-gate7-bench-inputs/1) once as a warmup
 // and then `--repeats` (5) times, one record per frame:
@@ -40,6 +43,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -78,6 +82,17 @@ import {
   summarizeNativeBench,
 } from "./lib/gate7-bench-summary";
 import { base64url } from "./lib/gate7-web-legs";
+import {
+  ARMS_7X,
+  type Arm7x,
+  judge,
+  planInterleaved,
+  type RoundResult,
+  type RsBenchJson,
+  summarizeRsPage,
+  summarizeTsPage,
+  tableRows,
+} from "./lib/gate7x-bench";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const BENCH_DIR = join(SCRIPT_DIR, "..", "web", "bench");
@@ -91,7 +106,18 @@ export interface BenchInput {
 }
 
 interface Args {
-  arm: "native" | "gsw" | "web";
+  arm: "native" | "gsw" | "gsw-ts" | "gsw-rs" | "gsw-rs-inline" | "web";
+  /** G7x: the arms of the interleaved rounds (empty: the single `arm`). */
+  interleave: Arm7x[];
+  rounds: number;
+  /** G7x: the built rs-core output (scripts/build-rs-core.sh), for the Rust arms. */
+  rsBuild: string;
+  /** G7x: Rust-arm sabotages (drop-draws, stale-item-row, digest-skip, skip-payload-hash). */
+  rsSabotage: string[];
+  /** G7x: host frames whose RGB10_A2 target the Rust arm reads back (pace checks). */
+  shotFrames: number[];
+  /** G7x: transaction seqs to shoot likewise (the scene's settle seqs). */
+  shotSeqs: number[];
   env: HarnessEnv;
   device: string | undefined;
   inputs: string;
@@ -111,6 +137,21 @@ interface Args {
 function parseArgs(argv: string[]): Args {
   const a: Args = {
     arm: "gsw",
+    interleave: [],
+    rounds: 5,
+    rsBuild: join(
+      SCRIPT_DIR,
+      "..",
+      "..",
+      "..",
+      "artifacts",
+      "render-stream",
+      "rs-core",
+      "latest",
+    ),
+    rsSabotage: [],
+    shotFrames: [],
+    shotSeqs: [],
     env: "desktop",
     device: undefined,
     inputs: "",
@@ -137,13 +178,52 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--arm": {
         const arm = v();
-        if (arm !== "native" && arm !== "gsw" && arm !== "web")
+        if (
+          arm !== "native" &&
+          arm !== "gsw" &&
+          arm !== "gsw-ts" &&
+          arm !== "gsw-rs" &&
+          arm !== "gsw-rs-inline" &&
+          arm !== "web"
+        )
           throw new HarnessUsageError(
-            `--arm must be native, gsw or web (got ${arm})`,
+            `--arm must be native, gsw-ts (alias gsw), gsw-rs, gsw-rs-inline or web (got ${arm})`,
           );
         a.arm = arm;
         break;
       }
+      case "--interleave": {
+        const list = v()
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+        for (const x of list)
+          if (!(ARMS_7X as readonly string[]).includes(x))
+            throw new HarnessUsageError(
+              `--interleave takes ${ARMS_7X.join(",")} (got ${x})`,
+            );
+        a.interleave = list as Arm7x[];
+        a.arm = "gsw-ts";
+        break;
+      }
+      case "--rounds":
+        a.rounds = Number(v());
+        break;
+      case "--rs-build":
+        a.rsBuild = resolve(v());
+        break;
+      case "--rs-sabotage":
+        a.rsSabotage = v()
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+        break;
+      case "--shot-frames":
+        a.shotFrames = v().split(",").filter(Boolean).map(Number);
+        break;
+      case "--shot-seqs":
+        a.shotSeqs = v().split(",").filter(Boolean).map(Number);
+        break;
       case "--env": {
         const env = v();
         if (env !== "desktop" && env !== "device")
@@ -212,11 +292,13 @@ function parseArgs(argv: string[]): Args {
 }
 
 export function benchLegName(
-  arm: Args["arm"],
+  armIn: Args["arm"] | Arm7x,
   env: HarnessEnv,
   input: string,
   device: string | null,
 ): string {
+  // G7x renamed the TypeScript arm gsw-ts; `gsw` is its alias and keeps G7d's leg names.
+  const arm = armIn === "gsw-ts" ? "gsw" : armIn;
   if (arm === "native") return `native-bench-${input}`;
   return env === "device"
     ? `dev-bench-${input}-${arm}-${device}`
@@ -376,7 +458,175 @@ async function buildSite(args: Args, inputs: BenchInput[]): Promise<string> {
     );
   for (const input of inputs)
     copyFileSync(input.recording, join(site, "inputs", `${input.name}.rs2`));
+  if (usesRustArm(args)) {
+    // G7x: the Rust arm's page, its rs-gsw-wasm build, and each input's payload store (the
+    // page prefetches it before its timed loop; Q14c's fetcher then copies each payload once).
+    copyFileSync(join(BENCH_DIR, "rs.html"), join(site, "rs.html"));
+    await build({
+      entryPoints: [join(BENCH_DIR, "bench-rs.ts")],
+      bundle: true,
+      platform: "browser",
+      format: "esm",
+      target: "es2022",
+      outfile: join(site, "bench-rs.js"),
+      logLevel: "warning",
+    });
+    const wasmDir = join(args.rsBuild, "gsw-rs");
+    if (!existsSync(join(wasmDir, "rs_gsw_wasm_bg.wasm")))
+      throw new HarnessUsageError(
+        `no rs-gsw-wasm build at ${wasmDir} (run scripts/build-rs-core.sh)`,
+      );
+    cpSync(wasmDir, join(site, "gsw-rs"), { recursive: true });
+    for (const input of inputs)
+      if (input.store)
+        cpSync(input.store, join(site, "inputs", `${input.name}-store`), {
+          recursive: true,
+        });
+  }
   return site;
+}
+
+function usesRustArm(args: Args): boolean {
+  return (
+    args.arm === "gsw-rs" ||
+    args.arm === "gsw-rs-inline" ||
+    args.interleave.some((a) => a !== "gsw-ts")
+  );
+}
+
+/** G7x: the TypeScript (gsw-ts) or Rust (gsw-rs, gsw-rs-inline) page URL for one input. */
+function pageUrl(
+  args: Args,
+  origin: string,
+  nonce: string,
+  input: BenchInput,
+  arm: Arm7x,
+  warmup: number,
+  repeats: number,
+): string {
+  if (arm === "gsw-ts")
+    return `${origin}/index.html?mode=bench&input=inputs/${input.name}.rs2&name=${input.name}&nonce=${nonce}&warmup=${warmup}&repeats=${repeats}&record-digest=${args.recordDigest}`;
+  const q = new URLSearchParams({
+    mode: "bench",
+    arm,
+    input: `inputs/${input.name}.rs2`,
+    store: `inputs/${input.name}-store`,
+    name: input.name,
+    nonce,
+    warmup: String(warmup),
+    repeats: String(repeats),
+  });
+  if (args.rsSabotage.length) q.set("sabotage", args.rsSabotage.join(","));
+  if (args.shotFrames.length) q.set("shot-frames", args.shotFrames.join(","));
+  if (args.shotSeqs.length) q.set("shot-seqs", args.shotSeqs.join(","));
+  return `${origin}/rs.html?${q.toString()}`;
+}
+
+/**
+ * G7x's bench protocol (gate7-design.md "G7x"): per input, a warmup page per arm, then
+ * `rounds` rounds of every arm, each on a fresh page (each page runs one in-page warmup pass,
+ * then one measured pass). A single `--arm gsw-rs`/`gsw-rs-inline` run is one page with
+ * `--warmup`/`--repeats`. Writes `<out>/g7x-bench.json` (every measured round and R2-R4).
+ */
+async function runRustProtocol(
+  args: Args,
+  inputs: BenchInput[],
+  openPage: (url: string) => Promise<BenchPage>,
+  origin: string,
+  nonce: string,
+  evidence: string,
+  envLabel: string,
+): Promise<void> {
+  const arms: Arm7x[] =
+    args.interleave.length > 0
+      ? args.interleave
+      : [args.arm === "gsw" ? "gsw-ts" : (args.arm as Arm7x)];
+  const plan =
+    args.interleave.length > 0
+      ? planInterleaved(
+          inputs.map((i) => i.name),
+          arms,
+          args.rounds,
+        )
+      : inputs.map((i) => ({ input: i.name, arm: arms[0], round: 1 }));
+  const results: RoundResult[] = [];
+  const pagesDir = join(args.out, "g7x-pages");
+  await mkdir(pagesDir, { recursive: true });
+  for (const step of plan) {
+    const input = inputs.find((i) => i.name === step.input) as BenchInput;
+    const single = args.interleave.length === 0;
+    const warmup = single ? args.warmup : 1;
+    const repeats = single ? args.repeats : step.round === 0 ? 0 : 1;
+    let got: RoundResult[] = [];
+    let t0 = Date.now();
+    // The watchdog (Q13b): a measured page with an invalid repeat (hidden, throttled) is re-run
+    // once, never read as slow; both attempts are kept.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const label = `${step.input} ${step.arm} ${step.round === 0 ? "warmup" : `round ${step.round}`}${attempt ? " (re-run)" : ""}`;
+      t0 = Date.now();
+      const page = await openPage(
+        pageUrl(args, origin, nonce, input, step.arm, warmup, repeats),
+      );
+      try {
+        await waitBench(page, 30 * 60_000, label);
+      } finally {
+        await page.close().catch(() => {});
+      }
+      const file =
+        step.arm === "gsw-ts"
+          ? `bench-${input.name}.json`
+          : `bench-${input.name}-${step.arm}.json`;
+      const raw = JSON.parse(
+        await readFile(join(evidence, nonce, file), "utf8"),
+      );
+      await writeFile(
+        join(
+          pagesDir,
+          `${input.name}-${step.arm}-r${step.round}${attempt ? "-rerun" : ""}.json`,
+        ),
+        JSON.stringify(raw),
+      );
+      got =
+        step.arm === "gsw-ts"
+          ? summarizeTsPage(raw, step.round)
+          : summarizeRsPage(raw as RsBenchJson, step.round);
+      if (step.round === 0 || got.every((g) => g.valid)) break;
+      console.log(
+        `gate7-bench: ${label}: invalid (${got.flatMap((g) => g.reasons).join("; ")}), re-running once`,
+      );
+    }
+    const label = `${step.input} ${step.arm} ${step.round === 0 ? "warmup" : `round ${step.round}`}`;
+    if (step.round === 0) continue;
+    if (single) for (const [k, g] of got.entries()) g.round = k + 1;
+    results.push(...got);
+    for (const g of got)
+      console.log(
+        `gate7-bench: ${label}: ${g.valid ? "valid" : `INVALID (${g.reasons.join("; ")})`} T_p ${g.tp_ms?.toFixed(2)} ms; ${Object.entries(
+          g.phases,
+        )
+          .map(
+            ([k, v]) =>
+              `${k.replace("_us", "")} ${(v.p50_us / 1000).toFixed(3)}/${(v.p95_us / 1000).toFixed(3)}`,
+          )
+          .join(" ")} (${((Date.now() - t0) / 1000).toFixed(1)} s)`,
+      );
+  }
+  const rounds = args.interleave.length > 0 ? args.rounds : args.repeats;
+  const judgements = args.interleave.length > 0 ? judge(results, rounds) : [];
+  const slim = results.map(({ values: _values, ...rest }) => rest);
+  await writeFile(
+    join(args.out, `g7x-bench-${envLabel}.json`),
+    `${JSON.stringify({ schema: "render-stream-gate7x-bench/1", env: envLabel, arms, rounds, results: slim, judgements, table: tableRows(results) }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(args.out, `g7x-bench-${envLabel}-values.json`),
+    JSON.stringify(results),
+  );
+  for (const row of tableRows(results)) console.log(`gate7-bench: ${row}`);
+  for (const j of judgements)
+    console.log(
+      `gate7-bench: ${j.rule} ${j.input}: ${j.pass ? "PASS" : "FAIL"}${j.required ? "" : " (stretch)"}: ${j.detail}`,
+    );
 }
 
 interface BenchPage {
@@ -621,7 +871,20 @@ async function runGswArm(
       );
       await page.close();
     }
-    for (const input of inputs) {
+    if (usesRustArm(args) || args.interleave.length > 0) {
+      await runRustProtocol(
+        args,
+        inputs,
+        openPage,
+        origin,
+        nonce,
+        evidence,
+        `${sel.env}${sel.id ? `-${sel.id}` : ""}`,
+      );
+    }
+    for (const input of usesRustArm(args) || args.interleave.length > 0
+      ? []
+      : inputs) {
       const leg = benchLegName("gsw", sel.env, input.name, sel.id);
       const legDir = join(args.out, leg);
       let summary: BenchInputSummary | null = null;
@@ -1065,9 +1328,9 @@ async function main(): Promise<void> {
     const summaries =
       args.arm === "native"
         ? await runNativeArm(args, inputs)
-        : args.arm === "gsw"
-          ? await runGswArm(args, inputs)
-          : await runWebArm(args, inputs);
+        : args.arm === "web"
+          ? await runWebArm(args, inputs)
+          : await runGswArm(args, inputs);
     arm.status = "success";
     arm.legs = summaries.map((s) =>
       benchLegName(args.arm, args.env, s.input, args.device ?? null),

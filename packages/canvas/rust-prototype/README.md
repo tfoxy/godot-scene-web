@@ -201,6 +201,59 @@ blended in linear light (sRGB textures and an encoding present) and reads
 `undefined`. The resource formats `srgb` and `linear` remain on the wire (a
 glyph atlas must be uploaded as `linear`), but both are stored as `RGBA8`.
 
+## Canvas items (`canvas-items`, off by default)
+
+The cargo feature `canvas-items` adds `canvas_items::CanvasItemsExecutor`, an
+executor for `gsw-canvas-draw-list`'s packed CanvasItem `DrawList`
+(`../rust-draw-list`, gate7-design.md Q14b) on WebGL2 through `glow`, with no
+wgpu. `CanvasItemsExecutor::new(canvas, ExecOptions)` creates the canvas's
+WebGL2 context with the stage's attributes (`antialias`, `depth`, `stencil`
+and `preserveDrawingBuffer` off, `premultipliedAlpha` on). One frame is
+`execute(&list)` and then the caller's `list.consumed()`. A frame runs these
+steps:
+
+1. It runs the texture ops (`texImage2D` of straight RGBA8, or a delete).
+2. It uploads only the dirty item rows, vertex ranges and index ranges,
+   straight from views of the list's memory. Items go into an RGBA32F data
+   texture, three texels each, 512 items per row. The vertex shader
+   `texelFetch`es its item's row and applies its transform, so a
+   transform-only frame moves item rows and no vertex.
+3. It clears the RGB10_A2 or RGBA8 target to the premultiplied clear colour.
+4. It draws every draw in order, merging only adjacent `mergeable` draws.
+5. It blits with G7c's `StageTarget` semantics: the rounding `texelFetch`
+   draw for RGB10_A2, `blitFramebuffer` for RGBA8.
+6. It issues a fence, which `poll_fence()` reads without blocking.
+
+The fragment colour is G7c's TypeScript textured-mesh path exactly.
+`read_target` is the shot (`readPixels`, rows top-down). `ExecStats` is a
+`#[repr(C)]` block of u32 counters, including `gl_calls`.
+`context_state()` follows the canvas's loss and restore events. After a
+restore the executor re-creates its objects, and `execute` refuses with
+`NeedsFullUpload` until the caller sends `dirty.all` and re-queues every
+texture. `ExecOptions.sabotage` takes `drop-draws` or `stale-item-row`; these
+are test-only.
+
+The feature leaves the default build alone. `build-web.sh` (`webgl,gl-backend`)
+produces the same `.wasm` and JS glue byte for byte. On wasm32 the wgpu
+renderer and `RustRenderer`'s exports compile only with `webgl` (wgpu's browser
+backend), so a consumer that depends with `default-features = false, features =
+["canvas-items"]` gets the executor alone. A default-on `renderer` feature was
+rejected: enabling any extra feature changes the crate's symbol hashes and so
+the default output's bytes.
+
+`canvas-items-test` adds the test-only `CanvasItemsTestHarness` exports. It
+takes `PDL1` dumps and texture uploads, and returns shots and stats. Never
+enable it in a shipping module, because a dependency's wasm-bindgen exports
+land in the final module. `scripts/build-canvas-items-test.sh` builds that
+module into ignored `artifacts/canvas-items-pixel/wasm/`. The pixel suite
+`GSW_CANVAS_ITEMS_PIXEL=1 mise exec -- pnpm vitest run
+packages/test-harness/test/canvasItemsRustPixel.test.ts` (run with `DISPLAY`
+and `WAYLAND_DISPLAY` unset) builds that module, then draws every case of
+`packages/test-harness/src/canvas-pixel/canvas-items-cases.ts` through both
+executors in headless Chromium on the real GPU. It requires byte-identical
+shots and canvases, and checks that each sabotage fails exactly its predicted
+cases.
+
 ## Browser build
 
 `cargo` and a matching `wasm-bindgen` CLI (0.2.129) are required. Run

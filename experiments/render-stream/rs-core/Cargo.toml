@@ -1,0 +1,29 @@
+[package]
+name = "render-stream-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "render-stream decode, validation, resolve and D7's applier to a packed CanvasItem draw list (gate7-design.md D29, Q14)"
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "rs-core-check"
+path = "src/bin/rs-core-check.rs"
+
+[dependencies]
+gsw-canvas-draw-list = { path = "../../../packages/canvas/rust-draw-list" }
+sha2 = { version = "0.10", default-features = false }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[features]
+# The portable SHA-256 (what wasm32 gets anyway): a phone-like upper bound for native runs.
+soft-sha = ["sha2/force-soft"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = 1
