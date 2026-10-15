@@ -89,6 +89,24 @@
 //   live-<connection>.jsonl   one line per frame callback while the connection exists, plus
 //                             event lines (open, hello, ack, resync, close, error, resource and,
 //                             since G2c2, http-get).
+// render-stream/7 (gate7-design.md D2, D3, D4, Q2, Q3; G7n): every connection speaks the version
+// its WebSocket subprotocol chose (LiveEvent::subprotocol): `render-stream.7` makes it a /7
+// connection, anything else the template's version (/6 in production). Its version drives its
+// session record (magic, protocol string, `publication.credit_window`), the protocol its hello must
+// announce, and the hello's shape (parse_control). One published snapshot per frame still serves
+// every connection; records past the session are byte-identical between /6 and /7. On a /7
+// connection:
+//   - token: when LiveConfig::auth_token is set (a `resources.auth: "bearer"` session; the
+//     upgrade itself is not bearer-checked at /7, rs_ws.h), a hello whose `token` is null or
+//     differs (constant time) is the error `unauthorized` and close 1008 with reason
+//     `unauthorized`; nothing was sent before it and nothing is after. The hello line of the live
+//     log carries every hello key except `token`, plus `token_ok`. The token-ignored sabotage
+//     (LiveConfig::token_ignored) skips the refusal; `token_ok` still records the comparison.
+//   - window: the host grants min(credit_window, LiveConfig::credit_window_max,
+//     kHostCreditWindow) and declares it as the session's `publication.credit_window`.
+//     kHostCreditWindow is 1 until G7q implements window 2 (fork F1), so a hello asking for 2 is
+//     accepted and granted 1, whatever GRC_LIVE_CREDIT_WINDOW_MAX says.
+// A /6 connection is byte for byte what it was before G7n.
 #ifndef GRC_RS_LIVE_H
 #define GRC_RS_LIVE_H
 
@@ -204,6 +222,13 @@ class ServerTransport : public LiveTransport {
 
 // ----------------------------------------------------------------------------- hub
 
+// The largest credit window the host implements (render-stream-7.md "Publication"): window 2 is
+// G7q's work (fork F1), so every grant is capped at 1 until then.
+inline constexpr std::uint64_t kHostCreditWindow = 1;
+
+// The subprotocol that makes a connection /7 (render-stream-7.md "Live transport").
+inline constexpr const char *kSubprotocolV7 = "render-stream.7";
+
 struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES
   std::uint64_t hello_timeout_ms = 5000;        // GRC_LIVE_HELLO_TIMEOUT_MS
@@ -217,6 +242,13 @@ struct LiveConfig {
   std::uint64_t drop_message_frame = 0;
   std::uint64_t ignore_credit_frame = 0;   // G1d
   std::uint64_t stale_coalesce_frame = 0;  // G1d
+  // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 1); every grant is also capped at
+  // kHostCreditWindow.
+  std::uint64_t credit_window_max = 1;
+  // G7n: the session's bearer token (GRC_LIVE_AUTH=token), checked against a /7 hello's `token`;
+  // empty: no session auth, a /7 hello's token is not checked (`token_ok` null).
+  std::string auth_token;
+  bool token_ignored = false;  // G7n sabotage token-ignored: a wrong /7 token is not refused.
 };
 
 // One connection's transport-level event, as the caller drains it from the server. `t_ns` is
@@ -228,6 +260,10 @@ struct LiveEvent {
   std::uint16_t code = 0;
   std::string reason;
   std::uint64_t t_ns = 0;
+  // Opened only (G7n): the subprotocol the upgrade chose ("" in tests that predate G7n: the
+  // template's version) and the upgrade's Origin ("" when it carried none).
+  std::string subprotocol;
+  std::string origin;
 };
 LiveEvent to_live_event(const live::Event &event);
 
@@ -249,6 +285,30 @@ struct ConnectionSummary {
   std::string receiver;
   std::string credit_stage;  // "" until the hello
   std::uint64_t inbound_buffer_bytes = 0;
+  // G7n (gate7-design.md Q3 "Evidence"). `version`: the connection's protocol (2..7, from its
+  // subprotocol). The rest come from a /7 hello and stay unset ("" / has_hello7 false) on a /6
+  // connection or before the hello: receiver_kind, the requested and granted credit window,
+  // manifest_sha256 ("" for null), the five presentation integers. `credit_window` is the grant
+  // (1 on every /6 connection: one transaction in flight). `origin` is the upgrade's Origin ("" =
+  // none). `token_checked`/`token_ok`: whether a token was checked (a bearer session) and the
+  // result; a /6 connection on a bearer session passed the upgrade's bearer check, so it is
+  // checked and ok. `preflights`: CORS preflights answered while this connection was the only
+  // one open (attributed as GETs are, on_http_get).
+  std::uint32_t version = 0;
+  bool has_hello7 = false;
+  std::string receiver_kind;
+  std::uint64_t credit_window_requested = 0;
+  std::uint64_t credit_window = 1;
+  std::string manifest_sha256;
+  std::uint64_t presentation_backing_w = 0;
+  std::uint64_t presentation_backing_h = 0;
+  std::uint64_t presentation_css_w = 0;
+  std::uint64_t presentation_css_h = 0;
+  std::uint64_t dpr_milli = 0;
+  std::string origin;
+  bool token_checked = false;
+  bool token_ok = false;
+  std::uint64_t preflights = 0;
   std::uint64_t max_message_bytes = 0;
   std::uint64_t frames_offered = 0;  // frame callbacks while streaming (each offers a target)
   std::uint64_t transactions = 0;    // formed: sent + dropped
@@ -316,6 +376,8 @@ struct ServingSummary {
   std::uint64_t http_gets = 0;
   std::uint64_t http_bytes = 0;
   std::uint64_t http_errors = 0;
+  std::uint64_t preflights = 0;       // G7n: OPTIONS answered 204 (not counted in http_gets)
+  std::uint64_t origin_rejected = 0;  // G7n: 403s for a foreign Origin, every route
   std::uint64_t pinned = 0;
   std::uint64_t retired = 0;
   std::uint64_t retired_unpinned = 0;
@@ -394,8 +456,10 @@ class Hub {
   // G2c2: one resource GET the server answered. It is attributed to the connection streaming at
   // the time (one receiver at a time), counted in its summary and logged as an `http-get` event
   // line in its live log. Returns that connection's number, or 0 when none was streaming.
+  // `preflight` (G7n): an OPTIONS preflight instead, counted in `preflights` (never `http_gets`)
+  // and logged as a `preflight` event line.
   std::uint32_t on_http_get(const std::string &hash, std::uint16_t status, std::uint64_t bytes,
-                            std::uint64_t t_ns, std::uint64_t frame);
+                            std::uint64_t t_ns, std::uint64_t frame, bool preflight = false);
 
  private:
   enum class State : std::uint8_t { AwaitHello, Streaming, Closed };
@@ -404,6 +468,9 @@ class Hub {
   Conn *find(std::uint32_t conn_id);
   void handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame);
   void protocol_error(Conn &c, const std::string &detail, std::uint64_t frame, std::uint64_t t_ns);
+  // G7n: error `reason` with `detail`, logged, then close `code` with `reason` as its reason.
+  void error_close(Conn &c, const std::string &reason, const std::string &detail,
+                   std::uint16_t code, std::uint64_t frame, std::uint64_t t_ns);
   void host_close(Conn &c, std::uint16_t code, const std::string &reason);
   bool deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send);
   // Forms, encodes and sends (or, under drop-message, only taps) the next transaction. Returns

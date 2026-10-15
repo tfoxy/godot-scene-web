@@ -242,6 +242,15 @@ int main() {
          has(lines[0], "\"format\":null,") && has(lines[0], "\"payload_bytes\":1135,\"hash\":\"abcd\"") &&
          has(lines[0], "\"conn\":null,"));
   EXPECT(has(lines[1], "\"op\":\"inline\"") && has(lines[1], "\"conn\":3,"));
+  // G7n (gate7-design.md Q3): a GET's http-get line is unchanged; a preflight's ends with
+  // "method":"OPTIONS", the only line carrying `method`.
+  log.serve_event(main_ctx, "http-get", "abcd", 10, nullptr, 2, 200, false);
+  log.serve_event(main_ctx, "http-get", "abcd", 0, nullptr, 2, 204, false, "OPTIONS");
+  lines = split_lines(log.take_lines());
+  EXPECT(lines.size() == 2);
+  EXPECT(has(lines[0], "\"http_status\":200,") && !has(lines[0], "method") &&
+         lines[0].back() == '}' && lines[0].find("\"repeat\":null}") != std::string::npos);
+  EXPECT(has(lines[1], "\"http_status\":204,") && has(lines[1], "\"repeat\":null,\"method\":\"OPTIONS\"}"));
 
   // G5a (gate5-design.md Q3d): meshes have their own id counter, independent of textures'.
   using grc::rs::MeshSurfaceCopy;

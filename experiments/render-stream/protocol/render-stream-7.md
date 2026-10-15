@@ -1,8 +1,9 @@
 # render-stream/7 wire format
 
-Status: specified and golden-tested at G7w (2026-10-14). The capture and the receiver still speak
-render-stream/6 by default (gate7-design.md D23: G7n rebases `rs_live.cpp` onto /7 and the
-listener's hello/token/origin/CORS behaviour; G7q is fork F1, credit window 2). Written with
+Status: specified and golden-tested at G7w (2026-10-14). Served by the capture's live listener
+since G7n (2026-10-15): it accepts `render-stream.6` and `render-stream.7` side by side, and each
+connection speaks the one it chose ("As built (G7n)" below). File sinks and the receivers still
+speak /6 (the receivers' /7 hello is G7l; G7q is fork F1, credit window 2). Written with
 [gate7-design.md](gate7-design.md) Q2, which this document implements. Codecs (G7w): C++
 encoder (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`), TypeScript
 decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit `version`
@@ -208,3 +209,37 @@ format is a new version.
   capture actually serves. Those land with G7n (`rs_live.cpp`'s Hub, rebased onto G6c) and are
   specified above only because they are part of /7's *wire* contract, which this document owns in
   full regardless of which increment implements the runtime behaviour.
+
+## As built (G7n)
+
+The capture's listener (`capture/src/rs_ws.*`, `rs_live.*`, `entry.cpp`) implements the live
+contract above. Where the text above left room, G7n decided:
+
+- **Subprotocol choice.** The upgrade takes the first of `render-stream.7`, `render-stream.6`
+  that the client offered, whatever the client's order. A connection's version comes from that
+  choice alone. A /7 hello on a /6 connection, or the reverse, is `error` `protocol`, close 1002.
+- **Bearer at /7.** The /7 upgrade is never bearer-checked: its token is the hello's. A /6
+  upgrade on a bearer session still needs `Authorization: Bearer` (401 otherwise, as at /6).
+  Resource GETs keep the bearer header at both versions. A /7 hello on a session without auth is
+  not token-checked, whatever it carries (`token_ok` null in the evidence).
+- **Order of the HTTP checks.** A foreign `Origin` is refused (403) before anything else is
+  looked at, on the WebSocket path and on the resource route, whatever the method. A 403 is
+  reported as one `OriginRejected` event, never as an `http-get` hook-log line.
+- **CORS on every resource response.** For an allowed origin, every response on the resource
+  route carries `Access-Control-Allow-Origin` and `Vary: Origin`, not only 200: 304, 400, 401,
+  404, 405 and 503 too, so a page can read the status (a browser hides a response without ACAO).
+- **The preflight.** `OPTIONS` under the resource prefix from an allowed origin answers 204 for
+  any hash, servable, unknown or malformed alike, with exactly `Access-Control-Allow-Origin`,
+  `-Allow-Methods: GET`, `-Allow-Headers: authorization`, `-Max-Age: 7200`, `Vary: Origin` and
+  `Connection`. It carries **no `Content-Length`**: RFC 9110 8.6 forbids one on a 204, and only
+  browsers send preflights (Godot's `HTTPClient`, which needs an explicit length, never does).
+  `OPTIONS` without `Origin` is still 405, exactly as at /6.
+- **Window.** The grant is `min(credit_window, GRC_LIVE_CREDIT_WINDOW_MAX, 1)` until G7q: the
+  host implements window 1 only, so a hello asking 2 under `GRC_LIVE_CREDIT_WINDOW_MAX=2` is still
+  granted 1.
+- **Listener sabotages are not on the wire.** `no-cors`, `accept-any-origin` and `token-ignored`
+  act on the listener, never on a record. The session's `sabotage` key enumerates record-level
+  kinds, and their spelling is part of the version, so adding three there would have changed
+  /6's wire. The session therefore declares `sabotage: null` under them, and
+  `evidence/live.json` carries `listener_sabotage` instead. `token-ignored` needs
+  `GRC_LIVE_AUTH=token`, and all three need `GRC_LIVE_LISTEN`; otherwise they refuse.

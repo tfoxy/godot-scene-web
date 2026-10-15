@@ -66,6 +66,7 @@ struct ResourceLog::Line {
   bool omitted = false;
   std::uint64_t conn = 0;  // 0 = null
   std::int64_t http_status = -1;  // -1 = null (G2c2: http-get lines)
+  std::string method;  // G7n: "OPTIONS" on a preflight's http-get line only (trailing key)
   // G5a (gate5-design.md Q3d): mesh fields, present only on a kind:"mesh" line. `format` and
   // `hash`/`copy_ns`/`hash_ns` share the texture columns above (never both present on one line);
   // everything below is new, trailing columns.
@@ -334,6 +335,10 @@ void ResourceLog::emit(const Line &l) {
   }
   if (l.omitted) {
     o += ",\"omitted\":true";
+  }
+  if (!l.method.empty()) {
+    o += ",\"method\":";
+    append_string(&o, l.method);
   }
   o += "}\n";
 }
@@ -731,7 +736,7 @@ void ResourceLog::resource_event(const TapContext &ctx, const char *op, const st
 
 void ResourceLog::serve_event(const TapContext &ctx, const char *op, const std::string &hash,
                               std::uint64_t payload_bytes, const char *reason, std::uint64_t conn,
-                              std::int64_t http_status, bool sabotage) {
+                              std::int64_t http_status, bool sabotage, const char *method) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -745,6 +750,7 @@ void ResourceLog::serve_event(const TapContext &ctx, const char *op, const std::
   line.conn = conn;
   line.http_status = http_status;
   line.sabotage = sabotage;
+  line.method = method != nullptr ? method : "";
   emit(line);
 }
 

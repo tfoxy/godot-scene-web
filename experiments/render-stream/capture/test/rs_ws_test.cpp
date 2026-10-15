@@ -26,6 +26,11 @@
 //     upgrade and on a resource GET both -> 401 (an AuthRejected event for the former, an
 //     HttpGet 401 event for the latter), a correct token succeeds on both, and no auth_token
 //     configured leaves every request unauthenticated-but-accepted as before G2e.
+//   - G7n (gate7-design.md D2, D3, Q3): the subprotocol choice (render-stream.7 preferred), the
+//     /7 upgrade without a bearer header while /6 keeps it, the Origin allowlist (403 and one
+//     OriginRejected event on the upgrade, GET and OPTIONS; exact matching), CORS headers on an
+//     allowed GET (200, 404, 401), the exact 204 preflight for any hash, the accept-any-origin and
+//     no-cors switches, and parse_allowed_origins.
 //
 // The raw-socket client below is a second, independent implementation of
 // the wire format (client side): it is deliberately not shared code with
@@ -1120,6 +1125,277 @@ void test_no_mmap_mprotect_imports() {
   check(!found_mprotect, "the test binary imports no mprotect symbol");
 }
 
+// ---------------------------------------------------------------------------
+// G7n (gate7-design.md D2, D3, Q2, Q3): two subprotocols, the /7 upgrade without a bearer
+// header, the Origin allowlist (403 on every route), CORS on GET, the preflight, and the
+// no-cors / accept-any-origin sabotage switches.
+
+const char *const kOrigin = "http://127.0.0.1:5173";
+const char *const kForeign = "http://evil.example:80";
+
+grc::live::ServerConfig g7n_config() {
+  grc::live::ServerConfig config;
+  config.subprotocols = {"render-stream.7", "render-stream.6"};
+  config.hello_token_subprotocols = {"render-stream.7"};
+  config.allowed_origins = {kOrigin};
+  config.max_clients = 4;
+  return config;
+}
+
+// Sends one request on a fresh connection and reads one response.
+HttpResponse one_request(std::uint16_t port, const std::string &method, const std::string &path,
+                         const std::vector<std::pair<std::string, std::string>> &headers) {
+  const int fd = connect_loopback(port);
+  const std::string req = plain_http_request(method, path, headers);
+  ::send(fd, req.data(), req.size(), 0);
+  HttpResponse resp = read_http_response(fd);
+  ::close(fd);
+  return resp;
+}
+
+std::string header_or(const HttpResponse &r, const std::string &name) {
+  const auto it = r.headers.find(name);
+  return it == r.headers.end() ? std::string("<absent>") : it->second;
+}
+
+void test_g7n_subprotocol_choice() {
+  grc::live::Server server;
+  grc::live::ServerConfig config = g7n_config();
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+  struct Case {
+    const char *offered;
+    int status;
+    const char *chosen;
+  };
+  const Case cases[] = {
+      {"render-stream.6, render-stream.7", 101, "render-stream.7"},
+      {"render-stream.7", 101, "render-stream.7"},
+      {"render-stream.6", 401, ""},  // /6 keeps the bearer check on its upgrade
+      {"render-stream.5", 400, ""},
+  };
+  for (const Case &k : cases) {
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", k.offered);
+    check(hs.status == k.status, std::string("offered '") + k.offered + "' -> " + std::to_string(k.status) +
+                                     ", got " + std::to_string(hs.status));
+    // The previous case's connection closing pushes a Closed event: drop those.
+    std::vector<grc::live::Event> events;
+    if (k.status != 400) {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+      while (events.empty() && std::chrono::steady_clock::now() < deadline) {
+        for (auto &e : server.take_events()) {
+          if (e.kind != grc::live::Event::Closed) events.push_back(std::move(e));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+    }
+    if (k.status == 101) {
+      check(hs.raw.find(std::string("Sec-WebSocket-Protocol: ") + k.chosen + "\r\n") != std::string::npos,
+            std::string("offered '") + k.offered + "' echoes " + k.chosen);
+      check(events.size() == 1 && events[0].kind == grc::live::Event::Opened &&
+                events[0].subprotocol == k.chosen && events[0].origin.empty(),
+            std::string("Opened reports subprotocol ") + k.chosen + " and no origin");
+    } else if (k.status == 401) {
+      check(events.size() == 1 && events[0].kind == grc::live::Event::AuthRejected,
+            "the /6 401 is an AuthRejected event");
+    }
+    ::close(fd);
+  }
+  {
+    // /6 with the right bearer header still upgrades, and is reported as /6.
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.6",
+                                       {{"Authorization", "Bearer s3cr3t-token"}});
+    check(hs.status == 101, "/6 with the right bearer header -> 101");
+    bool reported = false;
+    for (const auto &e : wait_events(server, 1, 2000)) {
+      reported = reported || (e.kind == grc::live::Event::Opened && e.subprotocol == "render-stream.6");
+    }
+    check(reported, "reported as render-stream.6");
+    ::close(fd);
+  }
+  server.stop(1000);
+}
+
+void test_g7n_origin_on_upgrade() {
+  grc::live::Server server;
+  std::string error;
+  check(server.start(g7n_config(), nullptr, &error), "server starts: " + error);
+  {
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
+                                       {{"Origin", kForeign}});
+    check(hs.status == 403, "a foreign Origin's upgrade -> 403, got " + std::to_string(hs.status));
+    const auto events = wait_events(server, 1, 2000);
+    check(events.size() == 1 && events[0].kind == grc::live::Event::OriginRejected &&
+              events[0].origin == kForeign && events[0].route == "upgrade" && events[0].method == "GET" &&
+              events[0].http_status == 403,
+          "one OriginRejected event (route upgrade), no Opened");
+    ::close(fd);
+  }
+  {
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
+                                       {{"Origin", kOrigin}});
+    check(hs.status == 101, "an allowed Origin's upgrade -> 101");
+    check(hs.raw.find("Access-Control") == std::string::npos, "the 101 is unchanged (no CORS header)");
+    const auto events = wait_events(server, 1, 2000);
+    check(events.size() == 1 && events[0].kind == grc::live::Event::Opened && events[0].origin == kOrigin,
+          "Opened carries the allowed origin");
+    ::close(fd);
+  }
+  {
+    // Origin is compared exactly: a trailing slash or another port is foreign.
+    for (const char *near : {"http://127.0.0.1:5173/", "http://127.0.0.1:5174", "HTTP://127.0.0.1:5173", "null"}) {
+      const int fd = connect_loopback(server.port());
+      const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
+                                         {{"Origin", near}});
+      check(hs.status == 403, std::string("near-miss origin '") + near + "' -> 403");
+      wait_events(server, 1, 1000);
+      ::close(fd);
+    }
+  }
+  server.stop(1000);
+}
+
+void test_g7n_origin_and_cors_on_resources() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('7');
+  source.set(hash, pattern_bytes(32, 9));
+  grc::live::Server server;
+  grc::live::ServerConfig config = g7n_config();
+  config.auth_token = "s3cr3t-token";
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+  const std::string path = config.resource_prefix + hash;
+  const std::pair<std::string, std::string> bearer{"Authorization", "Bearer s3cr3t-token"};
+
+  // No Origin: exactly /6 -- no CORS header, OPTIONS is 405.
+  {
+    const HttpResponse r = one_request(server.port(), "GET", path, {bearer});
+    check(r.ok && r.status == 200 && r.headers.count("access-control-allow-origin") == 0 &&
+              r.headers.count("vary") == 0,
+          "GET without Origin: 200 and no CORS header");
+    const HttpResponse o = one_request(server.port(), "OPTIONS", path, {});
+    check(o.ok && o.status == 405, "OPTIONS without Origin: 405 as before");
+    wait_events(server, 2, 2000);
+  }
+  // A foreign Origin: 403 on GET and OPTIONS, an OriginRejected event each, never HttpGet.
+  for (const char *method : {"GET", "OPTIONS"}) {
+    const HttpResponse r = one_request(server.port(), method, path, {bearer, {"Origin", kForeign}});
+    check(r.ok && r.status == 403 && r.headers.count("access-control-allow-origin") == 0,
+          std::string(method) + " from a foreign Origin -> 403 without CORS");
+    const auto events = wait_events(server, 1, 2000);
+    check(events.size() == 1 && events[0].kind == grc::live::Event::OriginRejected &&
+              events[0].route == "resource" && events[0].method == method && events[0].hash == hash,
+          std::string(method) + " 403 is one OriginRejected event (route resource)");
+  }
+  // An allowed Origin: GET 200 / 404 / 401 add ACAO + Vary.
+  {
+    const HttpResponse r = one_request(server.port(), "GET", path, {bearer, {"Origin", kOrigin}});
+    check(r.ok && r.status == 200 && header_or(r, "access-control-allow-origin") == kOrigin &&
+              header_or(r, "vary") == "Origin" && r.body == pattern_bytes(32, 9),
+          "allowed GET: 200, ACAO <origin>, Vary: Origin, body intact");
+    const HttpResponse missing =
+        one_request(server.port(), "GET", config.resource_prefix + make_hash('8'), {bearer, {"Origin", kOrigin}});
+    check(missing.ok && missing.status == 404 && header_or(missing, "access-control-allow-origin") == kOrigin,
+          "allowed GET of an unknown hash: 404 a page can read (ACAO present)");
+    const HttpResponse unauth = one_request(server.port(), "GET", path, {{"Origin", kOrigin}});
+    check(unauth.ok && unauth.status == 401 && header_or(unauth, "access-control-allow-origin") == kOrigin,
+          "allowed GET without the bearer header: 401 with ACAO");
+    const auto events = wait_events(server, 3, 2000);
+    check(events.size() == 3 && events[0].kind == grc::live::Event::HttpGet && events[0].method == "GET" &&
+              events[0].origin == kOrigin && events[0].http_status == 200,
+          "allowed GETs are HttpGet events with method GET and the origin");
+  }
+  // An allowed Origin's preflight: 204 with exactly the preflight headers, for any hash, with no
+  // bearer header, and no Content-Length (RFC 9110 8.6).
+  for (const std::string &target : {path, config.resource_prefix + make_hash('8'), config.resource_prefix + "nothex"}) {
+    const HttpResponse r = one_request(server.port(), "OPTIONS", target,
+                                       {{"Origin", kOrigin},
+                                        {"Access-Control-Request-Method", "GET"},
+                                        {"Access-Control-Request-Headers", "authorization"}});
+    std::map<std::string, std::string> expected = {
+        {"access-control-allow-origin", kOrigin}, {"access-control-allow-methods", "GET"},
+        {"access-control-allow-headers", "authorization"}, {"access-control-max-age", "7200"},
+        {"vary", "Origin"}, {"connection", "keep-alive"}};
+    check(r.ok && r.status == 204 && r.headers == expected,
+          "preflight of " + target.substr(target.size() - 6) + ": 204 with exactly the preflight headers");
+    const auto events = wait_events(server, 1, 2000);
+    check(events.size() == 1 && events[0].kind == grc::live::Event::HttpGet && events[0].method == "OPTIONS" &&
+              events[0].http_status == 204,
+          "a preflight is an HttpGet event with method OPTIONS, status 204");
+  }
+  server.stop(1000);
+}
+
+void test_g7n_sabotage_switches() {
+  FakeResourceSource source;
+  const std::string hash = make_hash('9');
+  source.set(hash, pattern_bytes(8, 1));
+  {
+    // accept-any-origin: the allowlist is ignored; a foreign origin is answered as allowed.
+    grc::live::Server server;
+    grc::live::ServerConfig config = g7n_config();
+    config.enforce_origins = false;
+    std::string error;
+    check(server.start(config, &source, &error), "server starts: " + error);
+    const HttpResponse r = one_request(server.port(), "GET", config.resource_prefix + hash, {{"Origin", kForeign}});
+    check(r.ok && r.status == 200 && header_or(r, "access-control-allow-origin") == kForeign,
+          "accept-any-origin: a foreign GET is 200 with ACAO <foreign>");
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
+                                       {{"Origin", kForeign}});
+    check(hs.status == 101, "accept-any-origin: a foreign upgrade is 101");
+    ::close(fd);
+    server.stop(1000);
+  }
+  {
+    // no-cors: the allowlist still holds, but no Access-Control-* header is ever sent.
+    grc::live::Server server;
+    grc::live::ServerConfig config = g7n_config();
+    config.cors_headers = false;
+    std::string error;
+    check(server.start(config, &source, &error), "server starts: " + error);
+    const HttpResponse r = one_request(server.port(), "GET", config.resource_prefix + hash, {{"Origin", kOrigin}});
+    check(r.ok && r.status == 200 && r.headers.count("access-control-allow-origin") == 0 &&
+              header_or(r, "vary") == "Origin",
+          "no-cors: an allowed GET is 200 without ACAO");
+    const HttpResponse o = one_request(server.port(), "OPTIONS", config.resource_prefix + hash, {{"Origin", kOrigin}});
+    bool any_acao = false;
+    for (const auto &h : o.headers) any_acao = any_acao || h.first.rfind("access-control-", 0) == 0;
+    check(o.ok && o.status == 204 && !any_acao, "no-cors: the preflight is 204 with no Access-Control-* header");
+    const HttpResponse f = one_request(server.port(), "GET", config.resource_prefix + hash, {{"Origin", kForeign}});
+    check(f.ok && f.status == 403, "no-cors: a foreign origin is still 403");
+    server.stop(1000);
+  }
+}
+
+void test_g7n_parse_allowed_origins() {
+  std::vector<std::string> out;
+  std::string error;
+  check(grc::live::parse_allowed_origins("", &out, &error) && out.empty(), "empty -> empty list");
+  check(grc::live::parse_allowed_origins("http://127.0.0.1:5173", &out, &error) && out.size() == 1 &&
+            out[0] == "http://127.0.0.1:5173",
+        "one origin");
+  check(grc::live::parse_allowed_origins(" http://127.0.0.1:5173 , https://localhost:8443,http://[::1]:80", &out,
+                                         &error) &&
+            out.size() == 3 && out[1] == "https://localhost:8443" && out[2] == "http://[::1]:80",
+        "a comma list, spaces trimmed, an IPv6 literal");
+  for (const char *bad : {"http://127.0.0.1", "http://127.0.0.1:5173/", "http://127.0.0.1:5173/x",
+                          "127.0.0.1:5173", "http://:5173", "HTTP://127.0.0.1:5173", "http://Host:1",
+                          "http://127.0.0.1:0", "http://127.0.0.1:65536", "http://127.0.0.1:05173",
+                          "http://a@b:1", "http://127.0.0.1:5173,", "http://[::1:80", "*", "null",
+                          "http://127.0.0.1:5173?q"}) {
+    out = {"stale"};
+    error.clear();
+    check(!grc::live::parse_allowed_origins(bad, &out, &error) && out.empty() && !error.empty(),
+          std::string("refused: '") + bad + "'");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1160,6 +1436,11 @@ int main() {
   test_http_get_auth_wrong_token_401();
   test_http_get_auth_correct_token_200();
   test_no_mmap_mprotect_imports();
+  test_g7n_subprotocol_choice();
+  test_g7n_origin_on_upgrade();
+  test_g7n_origin_and_cors_on_resources();
+  test_g7n_sabotage_switches();
+  test_g7n_parse_allowed_origins();
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_ws_test: %d of %d checks failed\n", g_failures, g_checks);

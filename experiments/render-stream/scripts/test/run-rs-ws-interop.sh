@@ -14,7 +14,9 @@
 # Equivalent to running each piece by hand:
 #   mise exec -- pnpm exec tsx --conditions=development \
 #     experiments/render-stream/scripts/test/self-test-rs-ws.ts
-#     # (spawns and kills its own plain and auth-enabled rs_ws_echo; covers WS, HTTP GET and G2e)
+#     # (spawns and kills its own plain and auth-enabled rs_ws_echo; covers WS, HTTP GET and G2e;
+#     # and its own capture/build/rs_live_host instances for G7n's /6 + /7, hello token, Origin
+#     # and CORS checks and their sabotages -- test/rs-ws-g7n.ts)
 #
 #   experiments/render-stream/capture/build/rs_ws_echo --port=0
 #   experiments/render-stream/capture/build/rs_ws_echo --port=0 --token=<value>

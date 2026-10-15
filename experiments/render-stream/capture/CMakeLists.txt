@@ -154,6 +154,25 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 
+# G7n: test-only live host (rs_ws + the hub around a fixed scene) for the Node interop
+# self-test's /6 + /7, hello token, Origin and CORS checks (scripts/test/self-test-rs-ws.ts).
+# Not linked into render_stream_capture.
+add_executable(rs_live_host
+  test/rs_live_host.cpp
+  src/rs2_codec.cpp
+  src/rs2_diff.cpp
+  src/rs_canvas_texture_shim.cpp
+  src/rs_histogram.cpp
+  src/rs_live.cpp
+  src/rs_publish.cpp
+  src/rs_resource_store.cpp
+  src/report.cpp
+  src/rs_sha1.cpp
+  src/rs_ws.cpp
+)
+target_include_directories(rs_live_host PRIVATE src test)
+target_link_libraries(rs_live_host PRIVATE grc_warnings Threads::Threads)
+
 # Gate 2 (G2b1): the /2 codec is byte-identical to protocol/golden-2/{full,patch,inline}.rs2.
 # Linked into render_stream_capture since G2b2 (rs_publish, rs_live).
 add_executable(rs2_codec_test test/rs2_codec_test.cpp src/rs2_codec.cpp)

@@ -285,6 +285,22 @@ function pureCases(): void {
     "validateResourceLine: unknown op",
     validateResourceLine({ ...good, op: "texture_3d_create" }) !== null,
   );
+  // G7n (gate7-design.md Q3): a preflight's http-get line ends with "method":"OPTIONS".
+  const preflight = {
+    ...good,
+    op: "http-get",
+    http_status: 204,
+    method: "OPTIONS",
+  };
+  assert(
+    "validateResourceLine: a preflight's http-get line with a trailing method OPTIONS",
+    validateResourceLine(preflight) === null,
+  );
+  assert(
+    "validateResourceLine: method on another op, or another method, is refused",
+    validateResourceLine({ ...preflight, op: "pin" }) !== null &&
+      validateResourceLine({ ...preflight, method: "GET" }) !== null,
+  );
   assert(
     "parseJsonl: a broken line stops parsing",
     parseJsonl<ResourceLine>(`${JSON.stringify(good)}\n{`, validateResourceLine)
