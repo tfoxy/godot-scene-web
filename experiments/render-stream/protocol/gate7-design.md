@@ -1816,8 +1816,9 @@ Everything else above follows from the handoff, engine source or recorded findin
   release's `SHA512-SUMS.txt`; only `web_nothreads_release.zip` was kept, at
   `~/.cache/godot-render-stream/templates/4.5.1-stable/web_nothreads_release.zip`, sha256
   `7f6c5efc9952f6f02509adfb92298161c0152a1f6a81c0bf9b9f4f913676e9c8`.
-- **F3. What the phone criterion requires of gate 7** (open, added 2026-10-14; amended
-  2026-10-15 for the g31 baseline). D1 judges each browser receiver on its own, and a game picks
+- **F3. What the phone criterion requires of gate 7** (**resolved 2026-10-15: (a)** — the user:
+  "one browser receiver is enough to pass gate 7"; added 2026-10-14; amended 2026-10-15 for the
+  g31 baseline). D1 judges each browser receiver on its own, and a game picks
   one by manifest. The user's words are "the receiver must easily work at 60/60" on the phone, and
   the floor is now the g31 (D25). If one receiver meets Q13d on the g31 and the other does not (the
   predicted case is the web export missing on decode, D27, even after G7o's tier 1), gate 7 can do
