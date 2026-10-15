@@ -13,13 +13,15 @@ extends RefCounted
 ## `skipped-headless` under --headless, matching receiver.gd's own existing headless-detection
 ## vocabulary at _viewport_report.size_check); and a one-line-per-second timeline carrying RSS
 ## (read directly from /proc/self/statm through FileAccess, D9: process RSS, never an engine
-## counter), RenderingServer.get_rendering_info's texture/buffer/video memory, and the disk
-## cache's entry count and bytes (RsResourceCache.entries()/bytes(), the only cache totals
-## receiver.gd exposes without reaching into RsResourceCache's own fields).
+## counter), RenderingServer.get_rendering_info's texture/buffer/video memory, the disk cache's
+## entry count and bytes (RsResourceCache.entries()/bytes()) and, since G6s (gate6-design.md Q7e
+## "residency-bounded"), the memory cache's entry count and bytes (RsResourceCache.
+## memory_entries()/memory_bytes()) and live RIDs per kind (RsApplier.resident_items()/
+## resident_textures()/resident_meshes()/resident_shaders()/resident_materials(), all pre-existing
+## read accessors no increment needed to add).
 ##
-## Memory-cache (in-process) entries/bytes, pipeline compilation counts and live RIDs per kind are
-## declared `unavailable` rather than guessed: they would need new accessors on RsResourceCache or
-## RsApplier, both out of this increment's file list (receiver.gd and rs_perf.gd only).
+## Pipeline compilation counts stay declared `unavailable` rather than guessed: nothing here
+## measures them yet.
 
 const SCHEMA: String = "render-stream-receiver-perf/1"
 
@@ -168,7 +170,13 @@ static func read_rss_bytes() -> int:
 
 
 ## Appends one timeline entry at most once per whole second since this RsPerf was created.
-func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int) -> void:
+## `cache_entries_memory`/`cache_bytes_memory` (G6s, RsResourceCache.memory_entries()/
+## memory_bytes()) default to -1 (recorded as null) for a caller that does not pass them, so an
+## older call site keeps today's "unavailable" shape rather than silently reporting 0.
+## `live_rids` (G6s, RsApplier.resident_items()/resident_textures()/resident_meshes()/
+## resident_shaders()/resident_materials(), gate6-design.md Q7e "residency-bounded"): null for a
+## caller with no applier yet (before the session record).
+func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entries_memory: int = -1, cache_bytes_memory: int = -1, live_rids: Variant = null) -> void:
 	var elapsed_s: int = (Time.get_ticks_msec() - _start_ms) / 1000
 	if elapsed_s <= _last_timeline_second:
 		return
@@ -181,12 +189,12 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int) -> void:
 		"video_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED),
 		"cache_entries_disk": cache_entries_disk,
 		"cache_bytes_disk": cache_bytes_disk,
-		# Declared, not guessed (D9): pipeline compilations and live RIDs per kind would need new
-		# RsApplier/RsResourceCache accessors, out of this increment's file list.
+		"cache_entries_memory": null if cache_entries_memory < 0 else cache_entries_memory,
+		"cache_bytes_memory": null if cache_bytes_memory < 0 else cache_bytes_memory,
+		"live_rids": live_rids,
+		# Declared, not guessed (D9): pipeline compilations would need a new RenderingServer/
+		# RsApplier accessor this increment's file list does not add.
 		"pipeline_compilations": null,
-		"live_rids": null,
-		"cache_entries_memory": null,
-		"cache_bytes_memory": null,
 	})
 
 

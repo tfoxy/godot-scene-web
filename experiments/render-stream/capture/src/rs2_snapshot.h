@@ -224,6 +224,8 @@ enum class SabotageKind : std::uint8_t {
   PerturbGlyph,            // new at /3 (G4e1/G4e2, render-stream-3.md)
   PerturbVertex,           // new at /4 (G5w, render-stream-4.md)
   PerturbShader,           // new at /5 (G55w, render-stream-5.md; gate5_5-design.md Q3c)
+  RetainSuperseded,        // G6s (gate6-design.md Q5, Q6h): ServedResources.retire() never retires
+                           // a superseded hash, so the host's retained set grows unboundedly
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -406,6 +408,7 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::PerturbGlyph: return "perturb-glyph";
   case SabotageKind::PerturbVertex: return "perturb-vertex";
   case SabotageKind::PerturbShader: return "perturb-shader";
+  case SabotageKind::RetainSuperseded: return "retain-superseded";
   }
   return "";
 }

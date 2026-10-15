@@ -37,8 +37,11 @@
 // The bytes are the shared payload pointers the mirror copied at the hook, never copied again
 // (wrong-hash's corrupted copy excepted). Sabotages: `unpin` (from its frame on, retire() ignores
 // the bases), `drop-resource` (the first hash first pinned at or after its frame answers 404
-// while retained) and `wrong-hash` (corrupt(): that hash is served with its first data byte
-// flipped, the same bytes the store directory holds). lookup() runs on the server's I/O thread
+// while retained), `wrong-hash` (corrupt(): that hash is served with its first data byte
+// flipped, the same bytes the store directory holds) and (G6s) `retain-superseded` (from its
+// frame on, retire() retires nothing at all: every pinned hash stays servable forever, so a long
+// soak's retained set and bytes grow without bound -- the sabotage residency-bounded must catch).
+// lookup() runs on the server's I/O thread
 // and only takes this object's own mutex; everything else runs on the main thread.
 #ifndef GRC_RS_RESOURCE_STORE_H
 #define GRC_RS_RESOURCE_STORE_H
@@ -130,6 +133,11 @@ class ServedResources : public live::ResourceSource {
   // Sabotage frames (0: off).
   void set_unpin_frame(std::uint64_t frame) { unpin_frame_ = frame; }
   void set_drop_frame(std::uint64_t frame) { drop_frame_ = frame; }
+  // retain-superseded (G6s, gate6-design.md Q5, Q6h): from `frame` on, retire() stops retiring
+  // superseded hashes (every hash it ever pinned stays servable, including `unpin`'s own
+  // candidates), so the retained set and its bytes grow for as long as content keeps changing --
+  // the host-side half of the soak's residency-bounded check.
+  void set_retain_superseded_frame(std::uint64_t frame) { retain_superseded_frame_ = frame; }
   // wrong-hash: from now on `hash` is served with its first data byte flipped.
   void corrupt(const std::string &hash);
 
@@ -171,6 +179,7 @@ class ServedResources : public live::ResourceSource {
   std::uint64_t bytes_ = 0;
   std::uint64_t unpin_frame_ = 0;
   std::uint64_t drop_frame_ = 0;
+  std::uint64_t retain_superseded_frame_ = 0;
   std::string dropped_;
   std::string corrupt_;
   Totals totals_;

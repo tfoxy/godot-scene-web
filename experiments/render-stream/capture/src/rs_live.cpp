@@ -1343,6 +1343,7 @@ std::vector<ConnectionSummary> Hub::summaries() const {
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
     ConnectionSummary s = c.s;
+    s.carried_size = c.carried.size();
     for (std::size_t i = 0; i < 3; ++i) {
       s.ack_latency_us[i] = latency_stats(c.latency[i]);
     }

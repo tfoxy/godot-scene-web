@@ -1804,6 +1804,11 @@ func owned_rids() -> int:
 	return count
 
 
+## How many canvas items are resident (G6s: receiver live RIDs per kind, gate6-design.md Q7e).
+func resident_items() -> int:
+	return _items.size()
+
+
 ## How many textures are resident.
 func resident_textures() -> int:
 	return _textures.size()

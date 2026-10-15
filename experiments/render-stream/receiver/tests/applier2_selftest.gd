@@ -129,6 +129,7 @@ func _initialize() -> void:
 			_payloads6[hash6] = _read_bytes_in(_golden6, file6)
 	_test_control_messages()
 	_test_cache(index)
+	_test_cache_budgets(index)
 	# The root canvas is attached to the root viewport only from the first frame on (SceneTree
 	# calls MainLoop::initialize before root->_set_tree); the applier tests need it.
 	process_frame.connect(_run_applier_tests, CONNECT_ONE_SHOT)
@@ -905,6 +906,115 @@ func _test_cache(index: Dictionary) -> void:
 	_check(_code(no_store.obtain(good)) == "resource-unavailable", "no store directory: resource-unavailable")
 	_clean(_tmp)
 	print("[applier2-selftest] cache: fresh/warm/ignore-cache/hash-mismatch/unavailable/invalid as specified")
+
+
+## G6s (gate6-design.md Q5 "Resource budgets", Q7e): LRU eviction at both layers, needed-set
+## protection (never drops a needed hash), no-evict and refetch_after_evict. Texture (GRT1)
+## hashes only, named straight from `index["payloads"]` -- `_payloads` also mixes in G5e's GRM1
+## mesh surfaces by the same combined dict, which this test's plain RsTexturePayload.decode()
+## path (mesh/shader both false) cannot decode.
+func _test_cache_budgets(index: Dictionary) -> void:
+	_clean(_tmp)
+	var store: String = _tmp.path_join("budget-store")
+	var texture_entries: Array = index["payloads"]
+	var hashes: Array[String] = []
+	for value: Variant in texture_entries:
+		var entry: Dictionary = value
+		hashes.append(entry["hash"])
+	hashes.sort()
+	_check(hashes.size() >= 4, "the golden texture payload set has at least 4 distinct hashes (got %d)" % hashes.size())
+	var h1: String = hashes[0]
+	var h2: String = hashes[1]
+	var h3: String = hashes[2]
+	var h4: String = hashes[3]
+	var max_size: int = 0
+	for hash: String in [h1, h2, h3, h4]:
+		_write(store.path_join("sha256").path_join(hash + ".grt"), _payloads[hash])
+		max_size = max(max_size, _payloads[hash].size())
+	# Room for exactly one of these four payloads (whichever is largest) plus a little slack, but
+	# never two: every assertion below relies on that to predict exactly which hash survives.
+	var one_payload_budget: int = max_size + 8
+
+	# Memory: a budget just over one payload's size evicts an older, non-needed hash to make
+	# room for a new one, and never a hash the caller just protected with set_needed().
+	var cache := RsResourceCache.new()
+	cache.open(_tmp.path_join("budget-cache"), "fresh", store)
+	cache.obtain(h1)
+	cache.memory_budget_bytes = one_payload_budget
+	cache.obtain(h2)
+	_check(cache.evictions_memory == 1 and not cache.has_in_memory(h1) and cache.has_in_memory(h2),
+		"a tight memory budget evicts the older hash (h1), not the one just added (h2)")
+	# Needed protection: h2 is needed, so adding h3 (which alone would evict h2 next) must not.
+	cache.set_needed([h2])
+	cache.obtain(h3)
+	_check(cache.evictions_memory == 2 and cache.has_in_memory(h2) and not cache.has_in_memory(h3),
+		"set_needed([h2]) protects h2 even past budget: h3 (not needed) is evicted instead")
+
+	# refetch_after_evict counts a genuine re-fetch from the origin, which needs h1 gone from
+	# BOTH layers (an eviction from memory alone is just a free disk-cache hit next time).
+	var both := RsResourceCache.new()
+	both.open(_tmp.path_join("budget-cache-both"), "fresh", store)
+	both.memory_budget_bytes = one_payload_budget
+	both.cache_budget_bytes = one_payload_budget
+	both.obtain(h1)
+	both.obtain(h2)  # evicts h1 from memory AND disk: the budget fits only one of each.
+	_check(not both.has_in_memory(h1) and not FileAccess.file_exists(_tmp.path_join("budget-cache-both").path_join("sha256").path_join(h1 + ".grt")),
+		"h1 is gone from memory and disk alike")
+	_check(both.refetch_after_evict == 0, "no refetch yet: h1 has not been asked for again")
+	both.obtain(h1)
+	_check(both.refetch_after_evict == 1 and both.has_in_memory(h1),
+		"obtaining h1 again, with it gone from both layers, counts refetch_after_evict")
+
+	# no-evict (RS_RECEIVER_SABOTAGE=no-evict): the same tight budget, nothing is ever dropped.
+	var kept := RsResourceCache.new()
+	kept.open(_tmp.path_join("budget-cache-kept"), "fresh", store)
+	kept.no_evict = true
+	kept.memory_budget_bytes = one_payload_budget
+	kept.obtain(h1)
+	kept.obtain(h2)
+	kept.obtain(h3)
+	_check(kept.evictions_memory == 0 and kept.has_in_memory(h1) and kept.has_in_memory(h2) and kept.has_in_memory(h3),
+		"no-evict keeps every payload although the budget is exceeded")
+
+	# Disk: a tight cache_budget_bytes (memory budget generous) evicts the oldest file on disk,
+	# by access order, once a new one is written past it; set_needed() protects it there too.
+	var disk := RsResourceCache.new()
+	disk.open(_tmp.path_join("budget-disk"), "fresh", store)
+	disk.memory_budget_bytes = 1 << 30
+	disk.obtain(h1)
+	disk.cache_budget_bytes = one_payload_budget
+	disk.obtain(h2)
+	var cache_sha: String = _tmp.path_join("budget-disk").path_join("sha256")
+	_check(disk.evictions_disk == 1 and not FileAccess.file_exists(cache_sha.path_join(h1 + ".grt")) and
+			FileAccess.file_exists(cache_sha.path_join(h2 + ".grt")),
+		"a tight disk budget evicts the older file (h1) from the cache directory")
+	disk.set_needed([h2])
+	disk.obtain(h3)
+	_check(disk.evictions_disk == 2 and FileAccess.file_exists(cache_sha.path_join(h2 + ".grt")) and
+			not FileAccess.file_exists(cache_sha.path_join(h3 + ".grt")),
+		"set_needed([h2]) protects h2's disk file too: h3's is evicted instead")
+
+	# A warm cache's pre-existing files are ordered by mtime for eviction, oldest first.
+	var warm_dir: String = _tmp.path_join("budget-warm")
+	_write(warm_dir.path_join("sha256").path_join(h1 + ".grt"), _payloads[h1])
+	# get_modified_time()'s resolution is whole seconds on common filesystems (ext4 included), so
+	# less than that would leave h1 and h2 tied and the eviction order undetermined.
+	OS.delay_msec(1100)
+	_write(warm_dir.path_join("sha256").path_join(h2 + ".grt"), _payloads[h2])
+	var warm := RsResourceCache.new()
+	warm.open(warm_dir, "warm", store)
+	warm.memory_budget_bytes = 1 << 30
+	# Room for exactly two of these payloads: h1, h2 and the newly fetched h4 are three, so
+	# exactly one of h1/h2 is evicted -- the older one (h1) by mtime, if the seeding worked.
+	warm.cache_budget_bytes = 2 * max_size + 8
+	warm.obtain(h4)
+	_check(warm.evictions_disk == 1 and not FileAccess.file_exists(warm_dir.path_join("sha256").path_join(h1 + ".grt")) and
+			FileAccess.file_exists(warm_dir.path_join("sha256").path_join(h2 + ".grt")) and
+			FileAccess.file_exists(warm_dir.path_join("sha256").path_join(h4 + ".grt")),
+		"a warm cache evicts its oldest-by-mtime file (h1) first, keeping h2 and the new h4")
+
+	_clean(_tmp)
+	print("[applier2-selftest] cache budgets: LRU eviction, needed-set protection, no-evict, refetch_after_evict as specified")
 
 
 # --------------------------------------------------------------------------- control messages

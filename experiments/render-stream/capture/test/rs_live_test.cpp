@@ -1248,6 +1248,65 @@ void test_inline_resources() {
         "an oversize resource record closes 1009 (message-too-large)");
 }
 
+// G6s (gate6-design.md Q7e "soak-inline"): `carried` is never pruned, even once a hash leaves the
+// connection's base -- render-stream-2.md's resource-duplicate rule ("each hash at most once" per
+// stream) makes a returning hash a correctness hazard, not a cache-efficiency question. Measured
+// the hard way: an earlier draft pruned `carried` to the base and re-sent a returning hash, which
+// broke the first real soak-inline run with resource-duplicate (MS's mesh surface recurs every 90
+// frames under its sine-wave motion). A single texture id (1) cycles between two hashes with no
+// second id keeping either one alive (unlike the golden states' "atwin", which is why
+// test_inline_resources() above never exercises this: kHashA1 stays reachable through id 2 the
+// whole time there).
+void test_carried_bounded() {
+  const std::string hash_a(64, 'a');
+  const std::string hash_b(64, 'b');
+  FakeTransport transport;
+  Hub hub(&transport, LiveConfig(), make_template(Delivery::Inline));
+  hub.on_event(opened(1), 0);
+  hub.on_event(text(1, kHelloApplied), 0);
+  std::uint64_t frame = 0;
+  const auto step = [&](const std::string &hash) {
+    ++frame;
+    Captured c;
+    c.state.canvases = {golden::root_canvas({})};
+    c.state.textures = {golden::texture_a(1, hash)};
+    c.payloads[hash] = std::make_shared<grc::rs::PayloadBytes>(std::vector<std::uint8_t>(16, 7));
+    hub.on_frame(frame, frame * 1000000ULL,
+                 hub.wants_snapshot(frame, frame * 1000000ULL) ? &c : nullptr, frame, 0);
+  };
+  const auto resource_records = [&transport]() {
+    int count = 0;
+    for (const Sent &s : transport.of(Sent::Binary)) {
+      // A magic-prefixed message (the session) carries no record at offset 0 the way a plain
+      // resource/transaction message does -- skip it, as kinds() in test_inline_resources() does.
+      if (s.bytes.size() > 8 && s.bytes[0] == 'G') {
+        continue;
+      }
+      if (has(meta_at(s.bytes, 0), "\"type\":\"resource\"")) {
+        ++count;
+      }
+    }
+    return count;
+  };
+  const auto ack_latest = [&]() {
+    hub.on_event(text(1, ack(hub.summaries().at(0).stream_id, hub.summaries().at(0).sent,
+                             "applied")),
+                 frame);
+  };
+  step(hash_a);  // seq 1 names A: one resource record, then the transaction.
+  check(resource_records() == 1, "A is carried once: " + std::to_string(resource_records()));
+  ack_latest();
+  step(hash_b);  // seq 2 names B only: A leaves the base (nothing else names it).
+  check(resource_records() == 2, "B is newly carried: " + std::to_string(resource_records()));
+  ack_latest();
+  step(hash_a);  // seq 3 names A again, having left the base at seq 2: NOT re-carried (G6s).
+  check(resource_records() == 2,
+        "A, having left and returned, is not re-carried (resource-duplicate): " +
+            std::to_string(resource_records()));
+  ack_latest();
+  step(hash_a);  // seq 4 still names A: still nothing new.
+  check(resource_records() == 2, "an unchanged A carries nothing new: " + std::to_string(resource_records()));
+}
 
 // ----------------------------------------------------------------- G2c2: serving and pins
 
@@ -1368,6 +1427,25 @@ void test_served_resources() {
           "drop-resource drops exactly one hash");
   }
   {
+    // retain-superseded from frame 2 (G6s): nothing is ever retired again, so H1 (superseded by
+    // H2 at frame 2, named by no base) stays servable instead of being retired, and the retained
+    // set keeps growing as content keeps changing.
+    ServeRig rig;
+    rig.served.set_retain_superseded_frame(2);
+    rig.step({{kH1, p1}});
+    rig.applied(1);
+    std::vector<grc::rs::ServeEvent> e = rig.step({{kH2, p2}});
+    check(ops(e) == "pin:2:current ", "retain-superseded still pins the new hash: " + ops(e));
+    check(rig.served.lookup(kH1) == p1,
+          "retain-superseded: H1 answers even though nothing names it any more");
+    check(rig.served.retained() == 2, "retained grows: H1 and H2 both still servable");
+    rig.applied(2);
+    e = rig.step({{kH3, p3}});
+    check(ops(e) == "pin:3:current ", "retain-superseded pins a third hash: " + ops(e));
+    check(rig.served.retained() == 3 && rig.served.lookup(kH1) == p1 && rig.served.lookup(kH2) == p2,
+          "retain-superseded never retires: three hashes now servable at once");
+  }
+  {
     // wrong-hash: the corrupted hash is served with its first data byte flipped.
     ServeRig rig;
     rig.served.corrupt(kH1);
@@ -1397,6 +1475,7 @@ int main() {
   test_ignore_credit();
   test_stale_coalesce();
   test_inline_resources();
+  test_carried_bounded();
   test_served_resources();
   test_rate_uncapped_unchanged();
   test_rate_targets();
