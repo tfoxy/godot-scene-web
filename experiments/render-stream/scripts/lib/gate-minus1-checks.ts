@@ -5,7 +5,7 @@
 // which decode PNGs); nothing here launches a process or mutates anything.
 //
 // The capture library's evidence shapes (result.json, counters.json, fingerprint.json,
-// disarm.json, armed.marker) are documented in ../../README.md "Runtime contract" and read here
+// disarm.json, armed.marker) are documented in ../../results/runtime-contract.md and read here
 // field for field. "unavailable" is reserved for evidence the HOST could not produce (strace not
 // installed); a missing or malformed capture-library field is a "fail".
 

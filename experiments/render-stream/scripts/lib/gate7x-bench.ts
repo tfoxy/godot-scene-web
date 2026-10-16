@@ -13,7 +13,7 @@ import { watchdogVerdict } from "./browser-harness";
 export type Arm7x = "gsw-ts" | "gsw-rs" | "gsw-rs-inline";
 export const ARMS_7X: readonly Arm7x[] = ["gsw-ts", "gsw-rs", "gsw-rs-inline"];
 
-/** G7m's recorded TypeScript p95 (README "Gate 7m result"), under the same (inline) digest policy:
+/** G7m's recorded TypeScript p95 (results/gate7/g7m.md), under the same (inline) digest policy:
  * R2's thresholds, ms. */
 export const R2_THRESHOLDS_MS: Record<string, number> = {
   "scene-full": 12.99,

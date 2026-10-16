@@ -480,7 +480,7 @@ export interface Gate7bClassification {
   shots: LegShotClasses[];
 }
 
-// --- P-W1's mismatch classes (G7b finding; README "Gate 7b result") ----------------------------
+// --- P-W1's mismatch classes (G7b finding; results/gate7/g7b.md) ----------------------------
 //
 // The root viewport's render target is RGB10_A2 on both platforms (texture_storage.cpp:2144-2149),
 // but `texture_2d_get` reads it back two different ways (texture_storage.cpp:1104-1198):
