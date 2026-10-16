@@ -2764,7 +2764,7 @@ The files:
 | `receiver` (+ compositor screenshot) | `receiver` | `success` |
 | `preexisting-skip/receiver` | same | `partial-unknown-items` |
 | `sabotage-{freeze,omit,perturb}/receiver` | same | `pixel-mismatch` at their native steps |
-| `unsupported/receiver`, `corrupt` | the native headless legs, rendered (D11 note in README "Gate 7e result") | `unsupported`; `replay-failure` seq 3 `meta-json` |
+| `unsupported/receiver`, `corrupt` | the native headless legs, rendered (D11 note in [results/gate7/g7e.md](../results/gate7/g7e.md)) | `unsupported`; `replay-failure` seq 3 `meta-json` |
 | `sabotage-css-opacity` | `receiver`, shell `opacity: 0.99` | fails exactly `compositor-equals-readback` |
 | `probe-render-time` | `receiver` + `RS_RECEIVER_PERF_OUT` | report only |
 

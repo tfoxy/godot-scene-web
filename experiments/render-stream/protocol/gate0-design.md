@@ -1,14 +1,16 @@
 # Gate 0 design: independent reference and one rectangle
 
-Status: contract for gate 0, which passed on 2026-10-09 (see "Gate 0 result" in
-[../README.md](../README.md)). This document is self-contained: an agent
+Status: contract for gate 0, which passed on 2026-10-09 (see
+[../results/gate0.md](../results/gate0.md)). This document is self-contained: an agent
 implementing any work package below should need only this file,
 [render-stream-0.md](render-stream-0.md) (the bytes),
 [`capture/src/rs0_snapshot.h`](../capture/src/rs0_snapshot.h) (the C++ model) and the golden
 vectors in [`golden/`](golden/). Background is in
 [docs/handoff-headless-render-stream.md](../../../docs/handoff-headless-render-stream.md):
 "Capture and receiver contract", the gate 0 row, and "Validation and measurement". Gate −1's
-library, its runtime contract and its safety model are described in [../README.md](../README.md).
+library is described in [../results/gate-minus1.md](../results/gate-minus1.md); its runtime
+contract and its safety model are in [../results/runtime-contract.md](../results/runtime-contract.md)
+and [../results/safety-model.md](../results/safety-model.md).
 
 Source citations are `path:line` in the pinned `../godot-4.5.1-stable` checkout (commit
 `f62fdbde15035c5576dad93e586201f4d41ef0cb`), relative to its root. Every line cited here was
@@ -781,7 +783,7 @@ tests/codec_selftest.gd, README.md}`.
 
 ### WP6: integration and end-to-end
 
-- **Files:** `capture/src/entry.cpp` and `README.md` (a gate 0 result section).
+- **Files:** `capture/src/entry.cpp` and `results/gate0.md` (a gate 0 result section).
 - **Wiring:**
   - `GRC_STREAM_OUT` → enable the mirror, run the root query, and write the session after arm.
   - `on_frame` while armed: snapshot, encode, write.
