@@ -256,6 +256,19 @@ uniforms, integer arithmetic, uniform arrays, samplers with filter hints,
 instance uniforms, `COLOR`/`TEXTURE` input, the canvas modulate, the opaque
 target's blends and a compile failure.
 
+`ExecOptions::godot_orientation` (G7t, off by default) draws the target the
+way Godot's GLES3 renderer draws a 2D render target: y up, through Godot's
+`screen_transform` as a `mat4` (`translate_local(-w/2, -h/2)`, then
+`scale(2/w, 2/h)`, in float32). GL's fill rule then gives an edge that lies
+exactly on a pixel centre to the same row the engine gives it. Scissors are
+design rows. `read_target` returns rows top-down with no swap, and the present
+draw and the RGBA8 blit flip the target onto the canvas. The builtin program
+and every item-space program share the one vertex stage, so both follow the
+option, and the opaque target's blends are orientation-free. The program suite
+runs every case in both orientations against the same expectations. The
+default keeps `executor-webgl.ts`'s y-down orientation, which the
+byte-identity suite checks.
+
 The feature leaves the default build alone. `build-web.sh` (`webgl,gl-backend`)
 produces the same `.wasm` and JS glue byte for byte. On wasm32 the wgpu
 renderer and `RustRenderer`'s exports compile only with `webgl` (wgpu's browser

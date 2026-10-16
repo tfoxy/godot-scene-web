@@ -32,11 +32,18 @@ import { loadRecording } from "./gate0-checks";
 import type { Gate2Expected } from "./gate2-expected";
 import { stepWindow, TRANSFORM_ONLY_STEPS } from "./gate2b-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
-import { synthesizeGate3x } from "./gate3x-expected";
 import type { Gate7Check } from "./gate7-adapters";
-import { compositorProblems, GSW_LEGS, type GswGate, mk } from "./gate7-gsw";
+import {
+  compositorProblems,
+  GSW_LEGS,
+  type GswGate,
+  mk,
+  q7Plan,
+} from "./gate7-gsw";
 import { GATE55_Q7_LEGS, gate55Checks } from "./gate7-gsw-55-checks";
-import { judgeQ7, readTolerance } from "./gsw-tolerance";
+import { earlySteps } from "./gate7-gsw-g45";
+import { g45ExtraChecks } from "./gate7-gsw-g45-checks";
+import { classMask, judgeQ7Classes, readTolerance } from "./gsw-tolerance";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(HERE, "..", "..");
@@ -802,6 +809,30 @@ const Q7_LEGS: Record<GswGate, [string, string, string][]> = {
     ["receiver-clip-ignore", "reference-clip-ignore", "gate3"],
   ],
   gate55: GATE55_Q7_LEGS,
+  // G7t: the honest legs of gates 4 and 5; key and reference from q7Plan (with gate 4's early
+  // shots). gate 4e's MSDF legs count their typed regions as excluded.
+  gate4: [
+    "receiver",
+    "receiver-patch",
+    "layout/receiver",
+    "layout/receiver-patch",
+    "rich-receiver",
+    "rich-receiver-patch",
+    "rich-underline/receiver",
+    "i18n/receiver",
+    "i18n/receiver-patch",
+    "msdf/receiver",
+    "msdf/receiver-patch",
+  ].map((l) => [l, "", ""]),
+  gate5: [
+    "receiver",
+    "receiver-patch",
+    "mesh/receiver",
+    "mesh/receiver-patch",
+    "mesh/receiver-inline",
+    "style/receiver",
+    "style/receiver-patch",
+  ].map((l) => [l, "", ""]),
 };
 
 /** Q7 (D8): each rendered success leg's shots against the rendered reference, decided pixels
@@ -815,48 +846,58 @@ async function q7Policy(gate: GswGate, ctx: Ctx): Promise<Gate7Check> {
   let shots = 0;
   let delta1 = 0;
   let undecided = 0;
-  for (const [leg, refDir, key] of Q7_LEGS[gate]) {
-    const seqs = shotSeqs(join(ctx.sourceDir, leg));
-    const masks = tol.gates[key]?.steps;
-    if (!masks) {
+  let excluded = 0;
+  for (const [leg, fixedRef, fixedKey] of Q7_LEGS[gate]) {
+    // G7t: gates 4 and 5 take the key, the reference and gate 4's early shots from q7Plan.
+    const plan = fixedKey ? null : q7Plan(gate, leg, ctx.sourceDir);
+    const key = fixedKey || plan?.key || "";
+    const refDir = fixedRef || plan?.reference || "";
+    const seqs = new Map(
+      shotSeqs(join(ctx.sourceDir, leg)).map((seq, k) => [seq, k] as const),
+    );
+    if (plan?.refs)
+      for (const [seq, k] of earlySteps(plan.refs)) seqs.set(seq, k);
+    if (!tol.gates[key]) {
       problems.push(`${leg}: no ${key} masks in gsw-tolerance.json`);
       continue;
     }
-    for (const [k, seq] of seqs.entries()) {
+    for (const [seq, k] of seqs) {
       const ref = await decodePngRgba(
-        join(ctx.sourceDir, refDir, "shots", `step-${k}.png`),
+        join(
+          ctx.sourceDir,
+          refDir,
+          "shots",
+          plan?.refs?.get(seq) ?? `step-${k}.png`,
+        ),
       );
       const got = await decodePngRgba(
         join(gswDir(ctx.out, gate, leg), "shots", `seq-${seq}.png`),
       );
       if (!ref || !got) {
-        problems.push(`${leg} step ${k}: shot or reference missing`);
+        problems.push(`${leg} seq ${seq}: shot or reference missing`);
         continue;
       }
-      const band =
-        key === "gate3-xform" && xform
-          ? synthesizeGate3x(xform, k).band
-          : undefined;
-      const v = judgeQ7(
-        ref,
-        got,
-        masks[k] ?? { step: k, delta1: [], undecided: [] },
-        band,
-      );
+      const cls = classMask(key, k, got.width, got.height, tol, xform);
+      if (!cls) {
+        problems.push(`${leg} step ${k}: no ${key} masks for the step`);
+        continue;
+      }
+      const v = judgeQ7Classes(ref, got, cls);
       shots++;
       delta1 += v.delta1_px;
       undecided += v.undecided_px;
+      excluded += v.excluded_px ?? 0;
       if (!v.ok)
         problems.push(
-          `${leg} step ${k}: ${v.decided_px} decided px differ (max ${v.decided_max}), delta1 max ${v.delta1_max}`,
+          `${leg} step ${k} (seq ${seq}): ${v.decided_px} decided px differ (max ${v.decided_max}), delta1 max ${v.delta1_max}`,
         );
     }
   }
   return mk(
     "q7-pixel-policy@gsw",
-    "Q7/D8: every rendered gsw success leg's shot against the rendered reference: decided pixels exact (P-G1), the delta1 class within channel 1 (P-G3), undecided masks counted (P-G4); masks from fixtures/gsw-tolerance.json",
+    "Q7/D8: every rendered gsw success leg's shot against the rendered reference: decided pixels exact (P-G1), the delta1 class within channel 1 (P-G3), undecided masks counted (P-G4), typed regions excluded and counted; masks from fixtures/gsw-tolerance.json",
     problems,
-    `${shots} shots: decided exact; ${delta1} px in delta1 masks, ${undecided} px in undecided masks`,
+    `${shots} shots: decided exact; ${delta1} px in delta1 masks, ${undecided} px in undecided masks${excluded ? `, ${excluded} px in typed (excluded) regions` : ""}`,
   );
 }
 
@@ -874,5 +915,13 @@ export async function gswExtraChecks(
   if (gate === "gate2") out.push(...(await gate2Checks(ctx)));
   if (gate === "gate3") out.push(...(await gate3Checks(ctx)));
   if (gate === "gate55") out.push(...(await gate55Checks(ctx)));
+  if (gate === "gate4" || gate === "gate5")
+    out.push(
+      ...(await g45ExtraChecks(gate, {
+        ...ctx,
+        experimentDir: EXPERIMENT_DIR,
+        rsCoreCheck: RS_CORE_CHECK,
+      })),
+    );
   return out;
 }

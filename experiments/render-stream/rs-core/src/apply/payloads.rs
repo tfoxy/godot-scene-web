@@ -37,6 +37,40 @@ pub struct MeshGeometry {
     pub indices: Option<Vec<u32>>,
     /// The GRM1 geometry block's AABB: position xyz, size xyz.
     pub aabb: [f32; 6],
+    /// What the native receiver's mesh residency compares (`rs_applier.gd` `_layout_key`): a
+    /// surface whose layout changes is rebuilt, one whose layout holds is updated in place.
+    pub layout: MeshLayout,
+    /// The raw vertex, attribute, skin and index buffers, as `mesh_surface_update_*_region` would
+    /// send them (an in-place update lists exactly the buffers whose bytes differ).
+    pub buffers: [Vec<u8>; 4],
+}
+
+/// `rs_applier.gd` `_layout_key`: primitive, format, counts, buffer sizes, AABB and uv_scale.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshLayout {
+    pub primitive: Primitive,
+    pub format: i64,
+    pub vertex_count: usize,
+    pub index_count: usize,
+    pub buffer_bytes: [usize; 4],
+    pub aabb_bits: [u32; 6],
+    pub uv_scale_bits: [u32; 4],
+}
+
+impl MeshGeometry {
+    /// `_data_bytes`: the four buffers' sizes summed.
+    pub fn data_bytes(&self) -> u64 {
+        self.layout.buffer_bytes.iter().map(|b| *b as u64).sum()
+    }
+}
+
+/// The raw GRM1 buffers of one surface (`mesh_geometry`'s input).
+pub struct MeshBuffers<'a> {
+    pub vertex: &'a [u8],
+    pub attribute: &'a [u8],
+    pub skin: &'a [u8],
+    pub index: &'a [u8],
+    pub uv_scale: [f32; 4],
 }
 
 pub const ARRAY_FORMAT_COLOR: i64 = 1 << 3;
@@ -111,17 +145,15 @@ pub fn texture_rgba8(
 }
 
 /// Mesh geometry from a GRM1 surface's decoded buffers.
-#[allow(clippy::too_many_arguments)]
 pub fn mesh_geometry(
     primitive: Primitive,
     format: i64,
     aabb: [f32; 6],
     vertex_count: usize,
     index_count: usize,
-    vertex_data: &[u8],
-    attribute_data: &[u8],
-    index_data: &[u8],
+    raw: MeshBuffers<'_>,
 ) -> Result<MeshGeometry, String> {
+    let (vertex_data, attribute_data, index_data) = (raw.vertex, raw.attribute, raw.index);
     if format & ARRAY_FLAG_COMPRESS_ATTRIBUTES != 0 {
         return Err("compressed attributes".into());
     }
@@ -194,6 +226,26 @@ pub fn mesh_geometry(
         uvs,
         indices,
         aabb,
+        layout: MeshLayout {
+            primitive,
+            format,
+            vertex_count,
+            index_count,
+            buffer_bytes: [
+                raw.vertex.len(),
+                raw.attribute.len(),
+                raw.skin.len(),
+                raw.index.len(),
+            ],
+            aabb_bits: aabb.map(f32::to_bits),
+            uv_scale_bits: raw.uv_scale.map(f32::to_bits),
+        },
+        buffers: [
+            raw.vertex.to_vec(),
+            raw.attribute.to_vec(),
+            raw.skin.to_vec(),
+            raw.index.to_vec(),
+        ],
     })
 }
 
@@ -263,9 +315,13 @@ impl PayloadStore {
                     m.aabb,
                     m.vertex_count as usize,
                     m.index_count as usize,
-                    m.vertex_data,
-                    m.attribute_data,
-                    m.index_data,
+                    MeshBuffers {
+                        vertex: m.vertex_data,
+                        attribute: m.attribute_data,
+                        skin: m.skin_data,
+                        index: m.index_data,
+                        uv_scale: m.uv_scale,
+                    },
                 )
                 .map_err(bad)?;
                 self.meshes.insert(*expected, g);

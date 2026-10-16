@@ -21,6 +21,7 @@
 pub mod geom;
 pub mod lower;
 pub mod material_residency;
+pub mod meshes;
 pub mod payloads;
 pub mod programs;
 pub mod residency;
@@ -82,6 +83,11 @@ pub struct ApplySabotage {
     /// GSW-only `blend-swap` (G7s): every effective `add` blend draws `sub` and every `sub` draws
     /// `add`.
     pub blend_swap: bool,
+    /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
+    /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
+    pub lower: lower::LowerSabotage,
+    /// The sabotages that act on mesh residency (G7t: native `drop-mesh-surface`, `stale-mesh`).
+    pub mesh: meshes::MeshSabotage,
 }
 
 /// A shader the applier draws without its code this transaction, first time per (shader, hash):
@@ -361,12 +367,15 @@ pub struct Applier {
     /// The native receiver's shader/material residency, for applied.json's /5 counters.
     material_residency: material_residency::MaterialResidency,
     pub material_counts: material_residency::MaterialCounts,
+    /// Mesh residency (G7t), and this transaction's `mesh_uploads` rows in `meshes.uploads`.
+    pub meshes: meshes::MeshResidency,
 }
 
 /// The texture and mesh tables as the lowering sees them.
 struct TableView<'a> {
     state: &'a ResolvedState,
     payloads: &'a PayloadStore,
+    meshes: &'a meshes::MeshResidency,
 }
 
 impl TableView<'_> {
@@ -416,10 +425,10 @@ impl lower::Tables for TableView<'_> {
         if m.status != EntryStatus::Ok {
             return None;
         }
-        let mut surfaces = Vec::with_capacity(m.surfaces.len());
+        // The resident surfaces (G7t: native residency, so the mesh sabotages act on pixels).
+        let (surfaces, custom) = self.meshes.drawn(id, self.payloads)?;
         let mut aabb: Option<[f32; 6]> = None;
-        for s in &m.surfaces {
-            let g = self.payloads.meshes.get(&s.hash)?;
+        for g in &surfaces {
             // MeshStorage::mesh_get_aabb: the surfaces' AABBs merged (AABB::merge).
             aabb = Some(match aabb {
                 None => g.aabb,
@@ -444,9 +453,8 @@ impl lower::Tables for TableView<'_> {
                     ]
                 }
             });
-            surfaces.push(g);
         }
-        let c = m.custom_aabb;
+        let c = custom;
         let rect = if c.iter().any(|v| *v != 0.0) {
             [c[0], c[1], c[3], c[4]]
         } else {
@@ -535,6 +543,7 @@ impl Applier {
             bindings_changed: Vec::new(),
             material_residency: Default::default(),
             material_counts: Default::default(),
+            meshes: meshes::MeshResidency::default(),
         }
     }
 
@@ -594,6 +603,15 @@ impl Applier {
                 Some((a.item, row.xform, row.modulate))
             })
             .collect()
+    }
+
+    /// Every item's current lowering (G7t's `lowering-parity`: the vertex arrays compared with
+    /// make_expected.py's hand lowering), by id.
+    pub fn lowered_items(&self) -> Vec<(Id, &Lowered)> {
+        let mut out: Vec<(Id, &Lowered)> =
+            self.items.iter().map(|(id, r)| (*id, &r.lowered)).collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
     }
 
     /// Each visited item's scissor (`clip-parity`): `Some(rect)` as `[x0, y0, x1, y1)` when it or
@@ -717,7 +735,7 @@ impl Applier {
         it: &Item,
         tables: &TableView<'_>,
     ) -> (Lowered, TexSizes, Vec<(Id, i64)>) {
-        let lowered = lower::lower(&it.commands, tables);
+        let lowered = lower::lower_with(&it.commands, tables, self.sabotage.lower);
         for (s, n) in &lowered.shortcuts {
             *self.shortcut_totals.entry(s.as_str()).or_insert(0) += u64::from(*n);
         }
@@ -995,7 +1013,23 @@ impl Applier {
             self.prepare(state, delta);
         }
         self.prepared = false;
-        let tables = TableView { state, payloads };
+        // Mesh residency first (the lowering draws the resident surfaces): the native receiver
+        // applies meshes before it replays commands (`rs_applier.gd` step 3b).
+        let mut mesh_res = std::mem::take(&mut self.meshes);
+        mesh_res.sabotage = self.sabotage.mesh;
+        {
+            let items: Vec<Id> = if self.first {
+                state.items.keys().copied().collect()
+            } else {
+                delta.items_upserted.clone()
+            };
+            mesh_res.sync(state, &items, &delta.items_removed, self.first, payloads);
+        }
+        let tables = TableView {
+            state,
+            payloads,
+            meshes: &mesh_res,
+        };
         let mut why = if self.first { Why::FIRST } else { 0 };
         if delta.defaults_changed {
             why |= Why::DEFAULTS;
@@ -1234,22 +1268,25 @@ impl Applier {
             }
         }
 
-        // Dependencies: texture sizes and mesh versions an existing lowering used.
-        let dep_mesh_changed =
-            !delta.meshes_upserted.is_empty() || !delta.meshes_removed.is_empty();
+        // Dependencies: texture sizes and mesh versions an existing lowering used, and the meshes
+        // whose resident geometry changed.
+        let dep_mesh_changed = !delta.meshes_upserted.is_empty()
+            || !delta.meshes_removed.is_empty()
+            || !mesh_res.changed.is_empty();
         if !resized.is_empty() || dep_mesh_changed {
-            let stale: Vec<Id> =
-                self.items
-                    .iter()
-                    .filter(|(_, rec)| {
-                        rec.tex_sizes.iter().any(|(t, s)| {
-                            resized.contains(t) || lower::Tables::texture_size(&tables, *t) != *s
-                        }) || rec.mesh_versions.iter().any(|(m, v)| {
-                            state.meshes.get(m).map(|e| e.version).unwrap_or(-1) != *v
-                        })
+            let stale: Vec<Id> = self
+                .items
+                .iter()
+                .filter(|(_, rec)| {
+                    rec.tex_sizes.iter().any(|(t, s)| {
+                        resized.contains(t) || lower::Tables::texture_size(&tables, *t) != *s
+                    }) || rec.mesh_versions.iter().any(|(m, v)| {
+                        state.meshes.get(m).map(|e| e.version).unwrap_or(-1) != *v
+                            || mesh_res.changed.contains(m)
                     })
-                    .map(|(id, _)| *id)
-                    .collect();
+                })
+                .map(|(id, _)| *id)
+                .collect();
             for id in stale {
                 let Some(it) = state.items.get(&id) else {
                     continue;
@@ -1349,6 +1386,7 @@ impl Applier {
         }
         self.refresh_bindings(state);
         self.first = false;
+        self.meshes = mesh_res;
         self.stats.vertex_count = self.list.vertices.len() as u32;
         self.stats.index_count = self.list.indices.len() as u32;
         self.stats.emitted_draws = self.list.draws.len() as u32;
@@ -2035,6 +2073,8 @@ impl Applier {
     }
 }
 
+#[cfg(test)]
+mod g7t_tests;
 #[cfg(test)]
 mod ordering_model;
 #[cfg(test)]

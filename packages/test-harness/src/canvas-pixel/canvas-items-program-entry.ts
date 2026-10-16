@@ -27,10 +27,13 @@ interface RustHarness {
 }
 interface RustModule {
   default(options: { module_or_path: string }): Promise<unknown>;
-  CanvasItemsTestHarness: new (
-    canvas: HTMLCanvasElement,
-    sabotage: string,
-  ) => RustHarness;
+  CanvasItemsTestHarness: {
+    with_options(
+      canvas: HTMLCanvasElement,
+      sabotage: string,
+      godotOrientation: boolean,
+    ): RustHarness;
+  };
 }
 
 export interface ProgramCaseResult {
@@ -55,14 +58,16 @@ async function rustModule(): Promise<RustModule> {
   return loaded;
 }
 
-async function run(name: string): Promise<ProgramCaseResult> {
+/** `godot`: draw in Godot's orientation (`ExecOptions::godot_orientation`, G7t); the target is
+ * read back in design rows either way, so a case's expectations hold in both. */
+async function run(name: string, godot = false): Promise<ProgramCaseResult> {
   const spec = programCaseByName(name);
   const module = await rustModule();
   const canvas = document.createElement("canvas");
   canvas.width = spec.items.width;
   canvas.height = spec.items.height;
   document.body.append(canvas);
-  const harness = new module.CanvasItemsTestHarness(canvas, "");
+  const harness = module.CanvasItemsTestHarness.with_options(canvas, "", godot);
   try {
     for (const t of spec.items.textures)
       harness.upload_texture(t.id, t.width, t.height, t.rgba);
@@ -105,7 +110,9 @@ async function run(name: string): Promise<ProgramCaseResult> {
 
 declare global {
   interface Window {
-    __gswCanvasItemsPrograms: { run(name: string): Promise<ProgramCaseResult> };
+    __gswCanvasItemsPrograms: {
+      run(name: string, godot?: boolean): Promise<ProgramCaseResult>;
+    };
   }
 }
 

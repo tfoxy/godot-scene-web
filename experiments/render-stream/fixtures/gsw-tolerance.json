@@ -1300,6 +1300,2485 @@
           "undecided": []
         }
       ]
+    },
+    "gate4": {
+      "expected": "fixtures/gate4/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [
+            {
+              "region": "L1",
+              "rect": [16, 24, 296, 40],
+              "why": "L1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L2",
+              "rect": [336, 24, 232, 40],
+              "why": "L2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "L3",
+              "rect": [16, 80, 296, 48],
+              "why": "L3's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LA",
+              "rect": [336, 80, 232, 40],
+              "why": "LA's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD",
+              "rect": [16, 144, 296, 40],
+              "why": "LD's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LH",
+              "rect": [336, 144, 232, 40],
+              "why": "LH's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LT",
+              "rect": [16, 200, 296, 40],
+              "why": "LT's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        }
+      ]
+    },
+    "gate4-layout": {
+      "expected": "fixtures/gate4-layout/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [
+            {
+              "region": "AC",
+              "rect": [440, 8, 136, 80],
+              "why": "AC's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AF",
+              "rect": [440, 88, 136, 80],
+              "why": "AF's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AL",
+              "rect": [304, 8, 136, 80],
+              "why": "AL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "AR",
+              "rect": [304, 88, 136, 80],
+              "why": "AR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LK",
+              "rect": [8, 128, 88, 60],
+              "why": "LK's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LL",
+              "rect": [304, 168, 136, 80],
+              "why": "LL's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LO",
+              "rect": [152, 128, 144, 60],
+              "why": "LO's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LP",
+              "rect": [8, 252, 608, 108],
+              "why": "LP's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LR",
+              "rect": [152, 68, 144, 60],
+              "why": "LR's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LS",
+              "rect": [152, 8, 144, 60],
+              "why": "LS's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LSh",
+              "rect": [8, 188, 144, 60],
+              "why": "LSh's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LW",
+              "rect": [8, 68, 144, 60],
+              "why": "LW's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [152, 188, 144, 60],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LZ",
+              "rect": [8, 8, 144, 60],
+              "why": "LZ's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        }
+      ]
+    },
+    "gate4-rich": {
+      "expected": "fixtures/gate4-rich/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [
+            {
+              "region": "RTL",
+              "rect": [24, 32, 400, 190],
+              "why": "RTL's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [
+            {
+              "region": "RTL",
+              "rect": [24, 32, 400, 190],
+              "why": "RTL's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [
+            {
+              "region": "RTL",
+              "rect": [24, 32, 400, 190],
+              "why": "RTL's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [
+            {
+              "region": "RTL",
+              "rect": [24, 32, 400, 190],
+              "why": "RTL's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [
+            {
+              "region": "RTL",
+              "rect": [24, 32, 400, 190],
+              "why": "RTL's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [
+            {
+              "region": "RTL",
+              "rect": [24, 32, 400, 190],
+              "why": "RTL's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        }
+      ]
+    },
+    "gate4-i18n": {
+      "expected": "fixtures/gate4-i18n/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [
+            {
+              "region": "LAr",
+              "rect": [200, 64, 192, 48],
+              "why": "LAr's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LBi",
+              "rect": [8, 120, 192, 48],
+              "why": "LBi's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LCy",
+              "rect": [200, 8, 192, 48],
+              "why": "LCy's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD1",
+              "rect": [408, 16, 168, 48],
+              "why": "LD1's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LD2",
+              "rect": [408, 64, 168, 48],
+              "why": "LD2's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LFa",
+              "rect": [408, 160, 168, 48],
+              "why": "LFa's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LG",
+              "rect": [8, 8, 192, 48],
+              "why": "LG's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LHe",
+              "rect": [408, 112, 168, 48],
+              "why": "LHe's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LV",
+              "rect": [8, 64, 192, 48],
+              "why": "LV's glyph coverage (partial alpha) blends over what is below"
+            },
+            {
+              "region": "LX",
+              "rect": [200, 120, 192, 48],
+              "why": "LX's glyph coverage (partial alpha) blends over what is below"
+            }
+          ],
+          "undecided": []
+        }
+      ]
+    },
+    "gate4-msdf": {
+      "expected": "fixtures/gate4-msdf/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "excluded": [
+            {
+              "region": "M16",
+              "rect": [16, 16, 224, 36],
+              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M24",
+              "rect": [16, 56, 320, 92],
+              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "M40",
+              "rect": [16, 152, 320, 80],
+              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MR",
+              "rect": [352, 96, 216, 104],
+              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            },
+            {
+              "region": "MT",
+              "rect": [352, 32, 216, 48],
+              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
+              "reason": "gsw-msdf"
+            }
+          ]
+        }
+      ]
+    },
+    "gate5": {
+      "expected": "fixtures/gate5/expected.json",
+      "raster": "gate5",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 5365,
+            "undecided": 548
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 4835,
+            "undecided": 564
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 4835,
+            "undecided": 564
+          }
+        }
+      ]
+    },
+    "gate5-mesh": {
+      "expected": "fixtures/gate5-mesh/expected.json",
+      "raster": "gate5-mesh",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16014
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16014
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16014
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16014
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16020
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16020
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16020
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16024
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16040
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 0,
+            "undecided": 16040
+          }
+        }
+      ]
+    },
+    "gate5-style": {
+      "expected": "fixtures/gate5-style/expected.json",
+      "raster": "gate5-style",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 9132,
+            "undecided": 128
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 9132,
+            "undecided": 128
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 9132,
+            "undecided": 192
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 9132,
+            "undecided": 192
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 7964,
+            "undecided": 192
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 7964,
+            "undecided": 192
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 7932,
+            "undecided": 192
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 7932,
+            "undecided": 192
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 8764,
+            "undecided": 192
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 8764,
+            "undecided": 192
+          }
+        }
+      ]
     }
   }
 }

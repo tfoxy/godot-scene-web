@@ -7,6 +7,7 @@
 //!   rs-core-check validate <recording>... [--version 2..7] [--recover]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
 //!   rs-core-check scissors <recording> [--store <dir>]
+//!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!
 //! `goldens` runs golden-2 ... golden-7 (exits non-zero on any failing check). `diff` feeds every
@@ -92,6 +93,7 @@ fn main() -> ExitCode {
         "bench" => cmd_bench(&args),
         "apply-bench" => cmd_apply_bench(&args),
         "scissors" => cmd_scissors(&args),
+        "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
         "validate" => cmd_validate(&args),
         _ => usage(),
@@ -760,6 +762,98 @@ fn cmd_scissors(args: &Args) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("rs-core-check scissors: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `lowered <recording> --seqs a,b,... [--store <dir>]` (gate7-design.md G7t, Q14d "Lowering"):
+/// replays every transaction through the applier (natively, no GL) and, after each listed seq,
+/// prints one JSON line `{"seq":n,"items":[{"id":i,"pos":[x,y,...],"col":[r,g,b,a,...],
+/// "idx":[...]},...]}`: every item's lowered vertices (item-local, its draw transforms applied, f32
+/// values), straight vertex colours and indices. `scripts/lib/gate7-gsw-g45.ts`'s
+/// `lowering-parity` finds every hand-lowered shape of gate 5's expected.json in them bit for bit.
+fn cmd_lowered(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::{Applier, Viewport};
+    let (Some(path), Some(seqs)) = (args.positional.first(), args.get("seqs")) else {
+        return usage();
+    };
+    let seqs: Vec<i64> = seqs
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let store = args.get("store").map(PathBuf::from);
+    let run = || -> Result<(), wire::Error> {
+        let data = std::fs::read(path)
+            .map_err(|e| wire::Error::new("recording-unreadable", e.to_string()))?;
+        let version = wire::version_of_magic(&data)
+            .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+        let spans = wire::split_records(&data, version)?;
+        let mut v = Validator::new(
+            spans[0].bytes(&data),
+            spans[0].offset,
+            Options::new(version),
+        )?;
+        let s = v.session();
+        let mut a = Applier::new(Viewport {
+            width: s.viewport.logical_size[0].max(1) as u32,
+            height: s.viewport.logical_size[1].max(1) as u32,
+            clear: s.clear_color,
+            global_xform: geom::IDENTITY,
+            cull_mask: s.viewport.canvas_cull_mask as u32,
+            format: gsw_canvas_draw_list::Format::Rgb10A2,
+        });
+        let mut payloads = PayloadStore::default();
+        let mut need = Vec::new();
+        let mut out = std::io::stdout().lock();
+        for span in &spans[1..] {
+            match v.accept(span.bytes(&data), span.offset)? {
+                Accepted::Resource { hash } => {
+                    if let Some(b) = v.inline_payload(&hash) {
+                        payloads.provide(b, &hash, version, true)?;
+                    }
+                }
+                Accepted::End => {}
+                Accepted::Transaction => {
+                    a.prepare(v.state(), v.delta());
+                    a.needed(v.state(), v.delta(), &payloads, &mut need);
+                    for h in &need {
+                        let Some(dir) = store.as_ref() else { break };
+                        for ext in ["grt", "grm", "grp"] {
+                            let p = dir.join("sha256").join(format!("{}.{ext}", h.to_hex()));
+                            if let Ok(b) = std::fs::read(&p) {
+                                payloads.provide(&b, h, version, true)?;
+                                break;
+                            }
+                        }
+                    }
+                    a.apply(v.state(), v.delta(), &payloads);
+                    a.list.consumed();
+                    if !seqs.contains(&v.state().seq) {
+                        continue;
+                    }
+                    let items: Vec<J> = a
+                        .lowered_items()
+                        .into_iter()
+                        .map(|(id, l)| {
+                            let pos: Vec<f32> = l.verts.iter().flat_map(|x| x.pos).collect();
+                            let col: Vec<f32> = l.verts.iter().flat_map(|x| x.color).collect();
+                            json!({"id": id, "pos": pos, "col": col, "idx": l.idx})
+                        })
+                        .collect();
+                    let line = json!({"seq": v.state().seq, "items": items});
+                    let _ = writeln!(out, "{line}");
+                }
+            }
+        }
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rs-core-check lowered: {e}");
             ExitCode::FAILURE
         }
     }

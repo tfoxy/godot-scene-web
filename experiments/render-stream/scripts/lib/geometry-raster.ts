@@ -91,6 +91,9 @@ export interface Gate5Raster {
   delta: Uint8Array;
   /** 1 where the pixel is band class */
   band: Uint8Array;
+  /** 1 where the band pixel is a thin GL line's (width < 0), not an antialiased shape's feather
+   * (gate 7's Q7 classes the two differently: hairlines `undecided`, feathers `delta1`) */
+  thin: Uint8Array;
   shapes: ShapeCoverage[];
 }
 
@@ -325,6 +328,7 @@ class Canvas {
   readonly exact: Uint8Array;
   readonly delta: Uint8Array;
   readonly band: Uint8Array;
+  readonly thin: Uint8Array;
   readonly shapes: ShapeCoverage[] = [];
 
   constructor(
@@ -337,6 +341,7 @@ class Canvas {
     this.exact = new Uint8Array(width * height).fill(1);
     this.delta = new Uint8Array(width * height);
     this.band = new Uint8Array(width * height);
+    this.thin = new Uint8Array(width * height);
     for (let i = 0; i < width * height; i++) this.rgba.set(clear, i * 4);
   }
 
@@ -356,6 +361,7 @@ class Canvas {
       this.rgba[o + 3] = 255;
       this.exact[i] = 1;
       this.band[i] = 0;
+      this.thin[i] = 0;
       this.delta[i] = tol;
       return;
     }
@@ -375,6 +381,7 @@ class Canvas {
       this.rgba[o + 3] = to8(Math.round(a * levels) / levels);
       this.exact[i] = 1;
       this.band[i] = 0;
+      this.thin[i] = 0;
       this.delta[i] = tol;
       return;
     }
@@ -398,9 +405,10 @@ class Canvas {
     this.exact[i] = 0;
   }
 
-  markBand(i: number): void {
+  markBand(i: number, thin = false): void {
     this.exact[i] = 0;
     this.band[i] = 1;
+    this.thin[i] = thin ? 1 : 0;
   }
 }
 
@@ -760,7 +768,8 @@ export function rasterizeItems(scene: RasterScene): Gate5Raster {
         );
       for (const a of r.actions) {
         if (a.kind === "paint") canvas.paint(a.i, a.c, a.tol, a.blend);
-        else if (a.kind === "band") canvas.markBand(a.i);
+        else if (a.kind === "band")
+          canvas.markBand(a.i, op.kind === "thin_line");
         else canvas.undecided(a.i);
       }
       canvas.shapes.push({
@@ -784,6 +793,7 @@ export function rasterizeItems(scene: RasterScene): Gate5Raster {
     exact: canvas.exact,
     delta: canvas.delta,
     band: canvas.band,
+    thin: canvas.thin,
     shapes: canvas.shapes,
   };
 }

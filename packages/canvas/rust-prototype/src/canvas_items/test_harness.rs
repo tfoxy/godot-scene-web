@@ -25,8 +25,25 @@ impl CanvasItemsTestHarness {
         canvas: web_sys::HtmlCanvasElement,
         sabotage: &str,
     ) -> Result<CanvasItemsTestHarness, JsValue> {
+        Self::with_options(canvas, sabotage, false)
+    }
+
+    /// [`CanvasItemsTestHarness::new`] with [`ExecOptions::godot_orientation`] set as given (G7t:
+    /// the item-space program cases run in both orientations, read back in design rows).
+    pub fn with_options(
+        canvas: web_sys::HtmlCanvasElement,
+        sabotage: &str,
+        godot_orientation: bool,
+    ) -> Result<CanvasItemsTestHarness, JsValue> {
         let sabotage = Sabotage::parse(sabotage).map_err(js)?;
-        let executor = CanvasItemsExecutor::new(canvas, ExecOptions { sabotage }).map_err(js)?;
+        let executor = CanvasItemsExecutor::new(
+            canvas,
+            ExecOptions {
+                sabotage,
+                godot_orientation,
+            },
+        )
+        .map_err(js)?;
         Ok(CanvasItemsTestHarness {
             executor,
             list: DrawList::default(),

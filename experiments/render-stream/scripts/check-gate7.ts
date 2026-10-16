@@ -11,9 +11,11 @@
 // `ALL_GROUPS` below is the FINAL vocabulary gate 7 passes against (protocol/gate7-design.md's
 // closing paragraph) plus G7d's phone groups. Landed: g7-dev and g7-bench (G7d), g7-0's web
 // half (G7e: `--source gate0=<run> --bundle <web bundle> --extension <.gdextension>`,
-// lib/gate7-adapters.ts checkGate0Web, reported in `results`), and the web half of g7-1 to g7-6
-// and g7-55 (G7b: `--source gate<N>=<run>` each, lib/gate7b-adapters.ts checkGateWeb). G7h's harness checks are folded
-// into `report.harness` when present. Requesting a group before its increment lands is refused,
+// lib/gate7-adapters.ts checkGate0Web, reported in `results`), the web half of g7-1 to g7-6
+// and g7-55 (G7b: `--source gate<N>=<run>` each, lib/gate7b-adapters.ts checkGateWeb), and the
+// gsw half of g7-0 to g7-3 (G7a) and g7-4 and g7-5 (G7t; lib/gate7-gsw.ts, lib/gate7-gsw-g45.ts).
+// G7h's harness checks are folded into `report.harness` when present. Requesting a group before
+// its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
 
 import { readFile } from "node:fs/promises";
@@ -21,6 +23,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildGate4Report } from "./check-gate4";
+import { buildGate5Report } from "./check-gate5";
 import { type Gate0Expected, runGate0 } from "./lib/gate0-checks";
 import { runGate1 } from "./lib/gate1-checks";
 import type { Gate1Expected } from "./lib/gate1-expected";
@@ -102,6 +106,8 @@ const GSW_GATES: Record<string, GswGate> = {
   "g7-2": "gate2",
   "g7-3": "gate3",
   "g7-55": "gate55",
+  "g7-4": "gate4",
+  "g7-5": "gate5",
 };
 
 interface HarnessCheck {
@@ -277,6 +283,11 @@ async function gateChecker(
         } as never;
       };
     }
+    // G7t: gates 4 and 5 through their CLIs' own report builders (every group that ran).
+    case "gate4":
+      return (dir) => buildGate4Report(dir) as never;
+    case "gate5":
+      return (dir) => buildGate5Report(dir) as never;
   }
 }
 

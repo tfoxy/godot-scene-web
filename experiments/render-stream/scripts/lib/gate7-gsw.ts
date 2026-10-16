@@ -40,16 +40,33 @@ import {
   gate55LegKey,
   gate55Q7Plan,
 } from "./gate7-gsw-55";
+import {
+  earlySteps,
+  G45_LEGS,
+  G45_NOT_APPLICABLE,
+  G45_RECEIVER_CHECKS,
+  type G45Gate,
+  g45Q7Plan,
+  type TypedCheck,
+} from "./gate7-gsw-g45";
 import { buildQ7View, stepsOf } from "./gate7-q7";
 import type { WebLegSpec } from "./gate7-web-legs";
 
-export type GswGate = "gate0" | "gate1" | "gate2" | "gate3" | "gate55";
+export type GswGate =
+  | "gate0"
+  | "gate1"
+  | "gate2"
+  | "gate3"
+  | "gate55"
+  | G45Gate;
 export const GSW_GROUP_OF: Record<GswGate, string> = {
   gate0: "g7-0",
   gate1: "g7-1",
   gate2: "g7-2",
   gate3: "g7-3",
   gate55: "g7-55",
+  gate4: "g7-4",
+  gate5: "g7-5",
 };
 
 /** One gsw leg: a native receiver leg replayed, or a GSW-only sabotage derived from one. */
@@ -163,6 +180,8 @@ export const GSW_LEGS: Record<GswGate, GswLegDef[]> = {
     { leg: "receiver-clip-ignore", replaces: true },
   ],
   gate55: GATE55_LEGS,
+  // G7t: gates 4 and 5 (lib/gate7-gsw-g45.ts).
+  ...G45_LEGS,
 };
 
 export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
@@ -178,12 +197,18 @@ export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
   ],
   gate3: [TRACE_NA],
   gate55: GATE55_NOT_APPLICABLE,
+  ...G45_NOT_APPLICABLE,
 };
 
 /** Each gate's checks that judge receiver legs (kept `@gsw`), and those not applicable. */
 export const GSW_RECEIVER_CHECKS: Record<
   GswGate,
-  { judged: string[]; notApplicable: Record<string, string> }
+  {
+    judged: string[];
+    notApplicable: Record<string, string>;
+    /** G7t: checks the gate's checker fails only because GSW types an op (Q7's last row). */
+    typed?: Record<string, TypedCheck>;
+  }
 > = {
   gate0: {
     judged: [
@@ -308,6 +333,7 @@ export const GSW_RECEIVER_CHECKS: Record<
     },
   },
   gate55: GATE55_RECEIVER_CHECKS,
+  ...G45_RECEIVER_CHECKS,
 };
 
 /** The leg specs of a gate for runWebLegs (`kind: "gsw"`). */
@@ -418,11 +444,23 @@ function nativeOnly(rel: string): boolean {
   );
 }
 
-/** Which gsw legs are judged under Q7 masks, against which reference (gsw-tolerance.json key). */
+/** Which gsw legs are judged under Q7 masks, against which reference (gsw-tolerance.json key);
+ * `refs` names a shot's reference file when it is not `step-<k>.png` (G7t: gate 4's early shots). */
 export function q7Plan(
   gate: GswGate,
   leg: string,
-): { key: string; reference: string; live: boolean } | null {
+  sourceDir = "",
+): {
+  key: string;
+  reference: string;
+  live: boolean;
+  refs?: Map<number, string>;
+  pair?: string;
+} | null {
+  if (gate === "gate4" || gate === "gate5") {
+    const plan = g45Q7Plan(gate, leg, sourceDir);
+    return plan ? { ...plan, live: false } : null;
+  }
   if (gate === "gate2")
     return {
       key: "gate2",
@@ -491,7 +529,7 @@ export async function checkGswGroup(
   // a Q7 view of their shots.
   const q7: Record<string, unknown> = {};
   for (const d of defs.filter((x) => x.replaces)) {
-    const plan = q7Plan(gate, d.leg);
+    const plan = q7Plan(gate, d.leg, input.sourceDir);
     if (!plan) continue;
     const viewDir = join(input.gswRoot, "..", "gsw-q7", d.leg);
     const steps = await stepsOf(
@@ -500,6 +538,8 @@ export async function checkGswGroup(
         ? join(input.sourceDir, "live", "receiver", "applied.json")
         : undefined,
     );
+    if (plan.refs)
+      for (const [seq, k] of earlySteps(plan.refs)) steps.set(seq, k);
     q7[d.leg] = await buildQ7View(
       {
         gswDir: join(input.gswRoot, d.leg),
@@ -507,6 +547,13 @@ export async function checkGswGroup(
         key: plan.key,
         steps,
         referenceDir: join(input.sourceDir, plan.reference, "shots"),
+        refs: plan.refs,
+        pair: plan.pair
+          ? {
+              gswDir: join(input.gswRoot, plan.pair),
+              viewDir: join(input.gswRoot, "..", "gsw-q7", plan.pair),
+            }
+          : undefined,
       },
       plan.key === "gate3-xform"
         ? (JSON.parse(
@@ -558,6 +605,47 @@ export async function checkGswGroup(
             detail: "the gate's checker did not report it",
           },
     );
+  }
+  // G7t: checks failed only by a typed refusal (gate 4e's MSDF legs): the gate's checker must
+  // class each leg `unsupported`, and its applied.json must type exactly the expected reasons.
+  for (const [id, t] of Object.entries(spec.typed ?? {})) {
+    const problems: string[] = [];
+    for (const [i, leg] of t.legs.entries()) {
+      const cls = report.legs[leg]?.result_class ?? null;
+      if (cls !== "unsupported")
+        problems.push(`${leg}: class ${cls}, expected unsupported`);
+      const applied = await readJson<{
+        unsupported?: { item?: number | null; reason?: string }[];
+      }>(join(input.gswRoot, t.dirs[i], "applied.json"));
+      const typed = [
+        ...new Set(
+          (applied?.unsupported ?? [])
+            .filter((u) => u.item === null && u.reason?.startsWith("gsw-"))
+            .map((u) => u.reason as string),
+        ),
+      ].sort();
+      const others = (applied?.unsupported ?? []).filter(
+        (u) => !(u.item === null && u.reason?.startsWith("gsw-")),
+      );
+      if (JSON.stringify(typed) !== JSON.stringify([...t.reasons].sort()))
+        problems.push(
+          `${t.dirs[i]}: receiver-typed {${typed.join(", ")}}, expected {${t.reasons.join(", ")}}`,
+        );
+      if (others.length > 0)
+        problems.push(
+          `${t.dirs[i]}: ${others.length} other unsupported entries (${others[0].reason})`,
+        );
+    }
+    checks.push({
+      id: `${id}@gsw`,
+      criterion: `Q7/Q8: the gate's leg-class check, typed: ${t.legs.join(", ")} class unsupported with exactly the receiver-typed reasons {${t.reasons.join(", ")}}`,
+      passed: problems.length === 0,
+      gating: true,
+      detail:
+        problems.length === 0
+          ? `unsupported, typed exactly {${t.reasons.join(", ")}}`
+          : problems.join("; "),
+    });
   }
   const notApplicable = [
     ...Object.entries(spec.notApplicable).map(([id, reason]) => ({
