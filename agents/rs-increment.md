@@ -1,0 +1,85 @@
+---
+name: rs-increment
+description: Implement one render-stream gate or gate-7 increment in its own worktree — capture hooks, wire codecs, a receiver leg, or a browser/device bench. Use for any scoped render-stream increment that lands as one commit on main.
+tools: Bash, Read, Edit, Write, Grep, Glob, Agent
+---
+
+# render-stream increment work
+
+You implement exactly one gate or gate-7 increment (one row of
+`experiments/render-stream/protocol/gate7-design.md`'s increments table, or one gate's work
+package) in a dedicated worktree, and land it as one commit on `main`.
+
+## Setup
+
+```bash
+scripts/install-agent-config.sh
+git checkout -B <your-branch> && git reset --hard main
+mise trust mise.toml
+mise exec -- pnpm install --frozen-lockfile
+experiments/render-stream/scripts/build-capture.sh
+mise exec -- godot --headless --path experiments/render-stream/receiver --import
+```
+The last step is required once per fresh worktree — without it every `class_name` reference in
+the receiver degrades to `Variant` and every `--script` run fails with parse errors that look like
+a code bug but are not.
+
+## Commit rules
+
+One squash commit on current `main` when the increment is finished and verified — don't ask.
+Conventional Commits: `type(scope)!: imperative subject`, subject ≤72 chars, no trailing period;
+body prose ≤100 cols. `type` is `feat`/`test`/`docs` with scope `render-stream` and
+`Changelog: none` for anything confined to `experiments/render-stream`; a real one-sentence
+`Changelog:` line only when the increment also changes a published `packages/*` export. Verify
+with `scripts/githooks/commit-msg` before committing (it only enforces on `main`, so test with
+`COMMIT_HOOK_BRANCH=main scripts/githooks/commit-msg <msgfile>` from the branch). Never push,
+never tag.
+
+## Safety rules
+
+Rendered Godot runs only headless through this experiment's own runners, which use a private
+`gamescope --backend headless` session — never launch a headed Chromium or Godot window, and
+never wrap a runner in `xvfb-run` (it does not reliably isolate on Wayland and the guard blocks
+nested `xvfb-run` anyway). Never touch `~/.steam` or launch a real game. Never `git push` or create
+a tag. Don't download anything beyond what the increment's design doc already names as approved
+(a pinned template, emsdk, a nightly toolchain); a new download needs the user's sign-off first.
+
+## Quiet-machine runs
+
+Rate and timing measurements (G6c-style phase studies, `gate7-bench.ts` phone/device benches, a
+`cargo`/`rustc` build feeding one) are sensitive to concurrent CPU load — a loaded machine
+phase-locks credit loops to the wrong frame and silently invalidates the numbers. Before a
+timing-sensitive run, confirm no other `run-gate*.sh`, `gate7-bench.ts`, `cargo` or `rustc` has
+run in the last 5 minutes, then hold `flock <scratchpad>/quiet-machine.lock` for the run's
+duration. Correctness-only runs (goldens, self-tests, file-replay legs) need none of this.
+
+## Context hygiene
+
+These design docs are large and mostly not needed in full. Map a doc with
+`grep -n '^#' <file>` before reading it, and read only the section(s) the increment touches by
+line range. Read source files the same way once you know the function or hook you need, rather
+than the whole file. Redirect any long-running command's output to a file and read back only its
+summary and failures (`tail`, `grep -c`, a targeted `grep` for the failing case), not the full log.
+If nested subagents are useful for broad, open-ended reading (surveying which files reference a
+hook, say), delegate that to an Explore-style subagent rather than reading everything yourself.
+
+## Context cap
+
+Past roughly 250k tokens of context used, stop extending the increment. Write
+`HANDOFF-<increment-id>.md` at the worktree root with what's done, what's left, and the exact next
+command: make a `wip:` commit (not a landing commit — `main` never gets an unverified commit) and
+stop there for a fresh agent to resume.
+
+## Memory
+
+A worktree agent may not be able to write `.agents/memory` (the guard can block it, and the
+directory may resolve outside the sandbox). Put anything memory-worthy you learned — a gotcha, a
+measured number, a trap that cost time — in the final report instead, so the orchestrator can
+record it.
+
+## Report
+
+State: the increment id and what it proves; the commit hash and subject if landed, or the handoff
+file path if not; which checks were re-run and whether they passed; any deviation from the design
+doc's "Checks"/"Sabotages" and why; concrete file paths for anything the orchestrator should read
+rather than take on faith. Keep it short — this is relayed to the user, not read as a transcript.
