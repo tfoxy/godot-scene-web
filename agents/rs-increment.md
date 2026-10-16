@@ -51,7 +51,12 @@ Rate and timing measurements (G6c-style phase studies, `gate7-bench.ts` phone/de
 phase-locks credit loops to the wrong frame and silently invalidates the numbers. Before a
 timing-sensitive run, confirm no other `run-gate*.sh`, `gate7-bench.ts`, `cargo` or `rustc` has
 run in the last 5 minutes, then hold `flock <scratchpad>/quiet-machine.lock` for the run's
-duration. Correctness-only runs (goldens, self-tests, file-replay legs) need none of this.
+duration. Correctness-only runs (goldens, self-tests, file-replay legs) need none of this, but
+must respect someone else's window: before starting any heavy desktop work (gate runs, Chromium
+legs, cargo builds, pnpm suites), check `flock -n <scratchpad>/quiet-machine.lock true`; if it
+fails, another agent is measuring — wait (background `sleep 120`) and retry. The orchestrator
+gives the scratchpad path in the brief. Load-sensitive groups: full gate 6 (g6l, g6c, g6s),
+g1d, g5f, g55f, gate 2 live-animate pins, g7-bench, live browser legs.
 
 ## Context hygiene
 
