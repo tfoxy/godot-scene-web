@@ -302,6 +302,22 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 fi
 mkdir -p "$OUT"
 OUT="$(realpath "$OUT")"
+
+# Measurement isolation (lib/quiet.sh, results/measurement-isolation.md): the machine-wide quiet
+# lock is taken per leg, never around this run. The runners this one calls lock their own legs
+# (gate 7's live legs exclusive: lib/legs.sh); the web and gsw file legs hold it shared, one leg
+# at a time (lib/gate7-web-legs.ts); gate7-bench.ts holds it exclusive per arm, after its builds;
+# the build scripts, the harness self-test and the checker hold it shared.
+# shellcheck source=lib/quiet.sh
+source "$SCRIPT_DIR/lib/quiet.sh"
+QUIET_LOG="$OUT/quiet-lock.jsonl"
+QUIET_T0="$EPOCHREALTIME"
+gate7_checker() {
+	local rc=0
+	quiet_run shared run-gate7:checker -- "$@" || rc=$?
+	quiet_summary "$OUT" "$(quiet__secs "$QUIET_T0" "$EPOCHREALTIME")" | sed 's/^/run-gate7: /' >&2
+	return "$rc"
+}
 echo "run-gate7: evidence directory: $OUT (groups: ${GROUPS_RUN[*]:-none}; env: $HARNESS_ENV${DEVICE:+ device $DEVICE})"
 
 # D21 sources (G7e): --source gate0=<dir>, or --make-sources below.
@@ -408,8 +424,10 @@ if [ "$LIVE" = "1" ]; then
 		done
 	done
 	echo "run-gate7: running check-gate7.ts --live" >&2
-	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
-		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live ${RECEIVER:+--receiver "$RECEIVER"})
+	cd "$REPO_ROOT"
+	set +e
+	gate7_checker mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live ${RECEIVER:+--receiver "$RECEIVER"}
 	exit $?
 fi
 
@@ -506,8 +524,11 @@ done
 # --- G7h's browser-harness self-test (desktop Chromium). ------------------------------------
 if [ "$HARNESS_ENV" = "desktop" ] && [ "$SKIP_HARNESS_SELFTEST" = "0" ]; then
 	echo "run-gate7: running the G7h browser-harness self-test into $OUT/g7h-probes" >&2
-	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
-		"$SCRIPT_DIR/test/self-test-browser-harness.ts" --out "$OUT/g7h-probes")
+	g7h_selftest() {
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+			"$SCRIPT_DIR/test/self-test-browser-harness.ts" --out "$OUT/g7h-probes")
+	}
+	quiet_run shared run-gate7:g7h-selftest -- g7h_selftest
 fi
 
 # --- Godot plumbing (desktop captures and rendered legs only). ------------------------------
@@ -749,5 +770,6 @@ if has_group g7-bench; then
 fi
 
 echo "run-gate7: running check-gate7.ts" >&2
-(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
-	"$SCRIPT_DIR/check-gate7.ts" "${CHECK_ARGS[@]}")
+cd "$REPO_ROOT"
+gate7_checker mise exec -- pnpm exec tsx --conditions=development \
+	"$SCRIPT_DIR/check-gate7.ts" "${CHECK_ARGS[@]}"

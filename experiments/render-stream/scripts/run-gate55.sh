@@ -753,11 +753,17 @@ for group in "${GROUPS_RUN[@]}"; do
 	g55c) run_g55c ;;
 	g55d) run_g55d ;;
 	g55e) run_g55e ;;
-	g55f) run_g55f ;;
+	g55f)
+		LEGS_TIMING_GROUP=g55f
+		run_g55f
+		LEGS_TIMING_GROUP=""
+		;;
 	esac
 done
 
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate55: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate55.ts" --out "$OUT"
+# The checker only reads files, but it is heavy: it holds the shared quiet lock (lib/legs.sh),
+# then the run's lock summary is written.
+legs_run_checker mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate55.ts" --out "$OUT"

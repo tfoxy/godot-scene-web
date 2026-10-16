@@ -30,6 +30,122 @@ CURRENT_CHILD_PID=""
 
 LEG_ENV=()
 
+# --------------------------------------------------------------------------------------------
+# Measurement isolation (lib/quiet.sh; results/measurement-isolation.md): the machine-wide quiet
+# lock, taken here per leg, never around a whole run.
+#   - Every launch below (run_headless, run_rendered, start_headless_bg ... finish_bg) holds the
+#     SHARED lock while it runs; a live leg's background host and its receivers share one hold,
+#     released once the last of them has finished. Correctness legs never block each other, but
+#     pause while a timing leg holds or waits for the lock.
+#   - A TIMING leg holds the EXCLUSIVE lock from its host's start to its host's finish_bg:
+#     every start_headless_bg while LEGS_TIMING_GROUP is set (the runner sets it around a timing
+#     group: g1d, g5f, g55f, g6l, g6s, g6c, g6p, ...), and every live host (GRC_LIVE_LISTEN)
+#     under GATE7_LIVE_KIND (gate 7's live legs, whose cadence and rate are checked), opens one.
+#     timing_leg <label> <command...> brackets anything else (a realtime reference render).
+#     Inside a timing leg nothing else is taken.
+#   - legs_run_checker runs the checker under the shared lock, then writes the run's lock summary
+#     (<out>/quiet-lock-summary.json; the per-event log is <out>/quiet-lock.jsonl).
+# shellcheck source=lib/quiet.sh
+source "$(dirname "${BASH_SOURCE[0]}")/quiet.sh"
+QUIET_LOG="$OUT/quiet-lock.jsonl"
+LEGS_QUIET_T0="$EPOCHREALTIME"
+LEGS_TIMING_GROUP="${LEGS_TIMING_GROUP:-}"
+LEGS_TIMING_LABEL=""
+LEGS_TIMING_OPENER=""
+LEGS_LOCK_MODE=""
+LEGS_LOCK_FG=0
+LEGS_LOCK_BG=()
+
+legs__rel() {
+	local rel="${1#"$OUT"/}"
+	printf '%s' "${rel%/host}"
+}
+
+# legs__lock_prune: forgets tracked background pids that have exited (zombies included).
+legs__lock_prune() {
+	local -a keep=()
+	local pid
+	for pid in ${LEGS_LOCK_BG[@]+"${LEGS_LOCK_BG[@]}"}; do
+		quiet__stat "$pid" && keep+=("$pid")
+	done
+	LEGS_LOCK_BG=(${keep[@]+"${keep[@]}"})
+}
+
+# legs_lock_enter <dir>: the shared hold for a launch (no-op inside a timing leg or a hold).
+legs_lock_enter() {
+	[ -z "$LEGS_TIMING_LABEL" ] || return 0
+	legs__lock_prune
+	[ -z "$LEGS_LOCK_MODE" ] || return 0
+	quiet_acquire shared "$LEGS_LOG:$(legs__rel "$1")"
+	LEGS_LOCK_MODE=shared
+}
+
+# legs_lock_leave: releases the shared hold once no launch of this runner is running.
+legs_lock_leave() {
+	[ -z "$LEGS_TIMING_LABEL" ] || return 0
+	[ -n "$LEGS_LOCK_MODE" ] || return 0
+	legs__lock_prune
+	[ "$LEGS_LOCK_FG" -le 0 ] || return 0
+	[ "${#LEGS_LOCK_BG[@]}" = 0 ] || return 0
+	quiet_release
+	LEGS_LOCK_MODE=""
+}
+
+# timing_leg_begin <label> / timing_leg_end: one timing leg's exclusive hold. A shared hold this
+# runner still has (a background process of an earlier leg) is dropped first.
+timing_leg_begin() {
+	[ -z "$LEGS_TIMING_LABEL" ] || return 0
+	if [ -n "$LEGS_LOCK_MODE" ]; then
+		quiet_release
+		LEGS_LOCK_MODE=""
+		LEGS_LOCK_BG=()
+	fi
+	LEGS_TIMING_LABEL="$1"
+	quiet_acquire exclusive "$LEGS_LOG:$1"
+}
+
+timing_leg_end() {
+	[ -n "$LEGS_TIMING_LABEL" ] || return 0
+	quiet_release
+	LEGS_TIMING_LABEL=""
+	LEGS_TIMING_OPENER=""
+}
+
+# timing_leg <label> <command...>: the command as one timing leg.
+timing_leg() {
+	local label="$1"
+	shift
+	timing_leg_begin "$label"
+	"$@"
+	local rc=$?
+	timing_leg_end
+	return "$rc"
+}
+
+# legs__timing_opens: true when the background launch about to start opens a timing leg.
+legs__timing_opens() {
+	if [ -n "$LEGS_TIMING_OPENER" ] && ! quiet__stat "$LEGS_TIMING_OPENER"; then
+		# its opener exited without a finish_bg: that leg is over
+		timing_leg_end
+	fi
+	[ -z "$LEGS_TIMING_LABEL" ] || return 1
+	[ -n "$LEGS_TIMING_GROUP" ] && return 0
+	[ -n "$GATE7_LIVE_KIND" ] && leg_env_value GRC_LIVE_LISTEN >/dev/null && return 0
+	return 1
+}
+
+# legs_run_checker <command...>: the run's checker under the shared lock, then the lock summary.
+legs_run_checker() {
+	local rc=0
+	quiet_run shared "$LEGS_LOG:checker" -- "$@" || rc=$?
+	legs_quiet_summary
+	return "$rc"
+}
+
+legs_quiet_summary() {
+	quiet_summary "$OUT" "$(quiet__secs "$LEGS_QUIET_T0" "$EPOCHREALTIME")" | sed "s/^/$LEGS_LOG: /"
+}
+
 gate0_tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate0-tool.ts" "$@")
 }
@@ -253,7 +369,7 @@ wait_owned() {
 #   capture: strace -f -tt -e trace=mprotect,openat, plus a /proc maps/fd sample of the traced
 #            process once <dir>/evidence/armed.marker exists (as gate -1's headless-armed leg).
 #   openat:  strace -f -tt -e trace=openat.
-run_headless() {
+legs__run_headless() {
 	local dir="$1" mode="$2"
 	shift 3
 	if gate7_browser_leg "$@"; then
@@ -309,7 +425,7 @@ run_headless() {
 # start_headless_bg <dir> -- <command...>: as run_headless with no strace, but returns at once with
 # the child's pid in BG_PID (gate 1 live hosts run while their receiver does). finish_bg waits.
 BG_PID=""
-start_headless_bg() {
+legs__start_headless_bg() {
 	local dir="$1"
 	shift 2
 	if gate7_browser_leg "$@"; then
@@ -330,7 +446,7 @@ start_headless_bg() {
 }
 
 # finish_bg <dir> <pid> <timeout s>: waits for a start_headless_bg child, writes exit-code.txt.
-finish_bg() {
+legs__finish_bg() {
 	local dir="$1" pid="$2" timeout_s="$3"
 	wait_owned "$pid" "$timeout_s"
 	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
@@ -424,7 +540,7 @@ settle_seqs() {
 # RENDERED_EXTRA_ARGS (reset after the call) are appended to the command line, e.g. --max-fps 60
 # for a live receiver (gate1-design.md Q5: live legs pass --max-fps 60 to the receiver).
 RENDERED_EXTRA_ARGS=()
-run_rendered() {
+legs__run_rendered() {
 	local dir="$1" project="$2"
 	local -a extra=()
 	if [ "${#RENDERED_EXTRA_ARGS[@]}" -gt 0 ]; then
@@ -512,4 +628,51 @@ run_rendered_receiver() {
 		LEG_ENV+=("${extra_env[@]}")
 	fi
 	run_rendered "$dir" "$RECEIVER_DIR"
+}
+
+# The launch functions, each under the quiet lock (header above).
+run_headless() {
+	legs_lock_enter "$1"
+	LEGS_LOCK_FG=$((LEGS_LOCK_FG + 1))
+	legs__run_headless "$@"
+	local rc=$?
+	LEGS_LOCK_FG=$((LEGS_LOCK_FG - 1))
+	legs_lock_leave
+	return "$rc"
+}
+
+run_rendered() {
+	legs_lock_enter "$1"
+	LEGS_LOCK_FG=$((LEGS_LOCK_FG + 1))
+	legs__run_rendered "$@"
+	local rc=$?
+	LEGS_LOCK_FG=$((LEGS_LOCK_FG - 1))
+	legs_lock_leave
+	return "$rc"
+}
+
+start_headless_bg() {
+	local opens=0
+	if legs__timing_opens; then
+		opens=1
+		timing_leg_begin "${LEGS_TIMING_GROUP:-gate7-live}:$(legs__rel "$1")"
+	else
+		legs_lock_enter "$1"
+	fi
+	legs__start_headless_bg "$@"
+	if [ "$opens" = 1 ]; then
+		LEGS_TIMING_OPENER="$BG_PID"
+	elif [ -z "$LEGS_TIMING_LABEL" ] && [ -n "$BG_PID" ]; then
+		LEGS_LOCK_BG+=("$BG_PID")
+	fi
+}
+
+finish_bg() {
+	legs__finish_bg "$@"
+	local rc=$? pid="$2"
+	if [ -n "$LEGS_TIMING_OPENER" ] && [ "$pid" = "$LEGS_TIMING_OPENER" ]; then
+		timing_leg_end
+	fi
+	legs_lock_leave
+	return "$rc"
 }

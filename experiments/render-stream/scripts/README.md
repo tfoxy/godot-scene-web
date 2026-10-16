@@ -1,3 +1,43 @@
+# Measurement isolation: the quiet lock
+
+Every runner here takes one machine-wide lock **per leg**, so timing checks are not disturbed by
+other agents' work, without a lock held for a whole multi-gate run (`lib/quiet.sh`, TS twin
+`lib/quiet-lock.ts`; result and measurements in `../results/measurement-isolation.md`).
+
+- **Path**: `${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web/quiet.lock`, the same for every worktree
+  (`GSW_QUIET_LOCK` or `GSW_QUIET_DIR` override it). `<lock>.events.log` logs every hold on the
+  machine.
+- **Exclusive, per timing leg**: a leg's host, receiver(s), proxy and samplers hold it from the
+  host's start to its `finish_bg`, and nothing else heavy runs meanwhile. Timing legs: g1d, g1c's
+  `live-rate-30`, g2c's `live-animate` and `sabotage-unpin` (the live-animate pins), g5f, g55f,
+  g6l, g6s (and its realtime `reference-step11`), g6c (calibration rounds included), g6p, every
+  live host under `GATE7_LIVE_KIND` (gate 7's live legs: cadence and rate checks), and each
+  `gate7-bench.ts` arm, after its builds. A runner marks a timing group with `LEGS_TIMING_GROUP`
+  (or brackets one leg with `timing_leg`, `lib/legs.sh`).
+- **Shared, per correctness leg**: every other `run_headless`, `run_rendered` and
+  `start_headless_bg ... finish_bg` launch, each gate 7 web/gsw file leg, the build scripts
+  (`build-capture.sh`, `build-rs-core.sh`, `build-rs-core-ext.sh`, `build-web-receiver.sh`) and
+  each runner's checker. Shared holders run together, but wait while a timing leg holds the lock
+  or waits for it (a waiter marker in `<lock>.waiters/`, so a stream of shared holders cannot
+  starve it; a marker whose process is gone, or older than `GSW_QUIET_MARKER_MAX_S`, default
+  3600 s, is ignored).
+- **Heavy work outside a runner** (a cargo build, a `pnpm test` suite, a wasm build): run it as
+  `experiments/render-stream/scripts/lib/quiet.sh shared -- <command...>`. Never wrap a runner in
+  `quiet.sh` or `flock` (its own legs lock themselves; an exclusive leg inside an outer shared
+  hold cannot be isolated and is logged `nested-unisolated`).
+- **Nesting** is safe: a hold taken by a process whose ancestor already holds the lock (a runner
+  calling a runner, a build script inside a leg) is a logged no-op.
+- **Crashes** free it: a holder process (`quiet.sh hold`) owns each hold, and exits within 0.25 s
+  of its owner dying; if the holder itself dies, the kernel drops the lock.
+- **Core pinning** (off by default): `RS_TIMING_CPUSET=8-11` pins a timing leg's whole process tree
+  (the runner, gamescope and its XWayland, hosts, receivers, browsers) for the leg;
+  `RS_BACKGROUND_CPUSET=0-7` does the same for shared holds.
+- **Evidence**: each run writes `<out>/quiet-lock.jsonl` (one line per acquire, release and
+  nested event, with `wait_s` and `hold_s`) and `<out>/quiet-lock-summary.json`, and the runner
+  prints one summary line (holds, exclusive total against wall time).
+- `bash experiments/render-stream/scripts/lib/quiet.sh status` shows the current holders and
+  waiters; `test/self-test-quiet.sh` is the lock's self-test (a private lock, ~40 s).
+
 # Gate −1 runner
 
 Drives `../fixtures/spike/` through every leg of the capture library's runtime contract

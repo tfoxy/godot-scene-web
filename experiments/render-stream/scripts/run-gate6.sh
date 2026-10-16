@@ -845,7 +845,8 @@ run_g6s() {
 		RS_FIXTURE_SHOT_DIR="$G6S/reference-step11/shots" RS_FIXTURE_STEP_LOG="$G6S/reference-step11/steps.jsonl"
 	)
 	RENDERED_EXTRA_ARGS=(--max-fps 60)
-	run_rendered "$G6S/reference-step11" "$SCENE_FIXTURE_DIR"
+	# Realtime-paced (its freeze frame depends on the achieved rate): a timing leg of its own.
+	timing_leg g6s:reference-step11 run_rendered "$G6S/reference-step11" "$SCENE_FIXTURE_DIR"
 
 	echo "run-gate6: g6s: soak-scene (fresh cache, memory 1 MiB / disk 4 MiB)"
 	g6s_leg soak-scene -- RS_RECEIVER_CACHE_DIR="$G6S/soak-scene/receiver/cache" \
@@ -885,6 +886,13 @@ for group in g6a g6h g6l g6b g6s g6c g6p; do
 	*" $group "*) ;;
 	*) continue ;;
 	esac
+	# g6l, g6s, g6c and g6p are timing groups (lib/legs.sh): each live leg (and g6p's unarmed and
+	# armed-idle repeats) holds the exclusive quiet lock from its host's start to its finish_bg;
+	# their imports and reference renders stay shared.
+	case "$group" in
+	g6l | g6s | g6c | g6p) LEGS_TIMING_GROUP="$group" ;;
+	*) LEGS_TIMING_GROUP="" ;;
+	esac
 	case "$group" in
 	g6a) run_g6a ;;
 	g6h) run_g6h ;;
@@ -894,9 +902,12 @@ for group in g6a g6h g6l g6b g6s g6c g6p; do
 	g6c) run_g6c ;;
 	g6p) run_g6p ;;
 	esac
+	LEGS_TIMING_GROUP=""
 done
 
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate6: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate6.ts" --out "$OUT"
+# The checker only reads files, but it is heavy: it holds the shared quiet lock (lib/legs.sh),
+# then the run's lock summary is written.
+legs_run_checker mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate6.ts" --out "$OUT"

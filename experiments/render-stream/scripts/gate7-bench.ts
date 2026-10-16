@@ -96,6 +96,7 @@ import {
   summarizeTsPage,
   tableRows,
 } from "./lib/gate7x-bench";
+import { type QuietHold, quietAcquire } from "./lib/quiet-lock";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const BENCH_DIR = join(SCRIPT_DIR, "..", "web", "bench");
@@ -348,6 +349,16 @@ function loadInputs(path: string, only: string[]): BenchInput[] {
 }
 
 // ------------------------------------------------------------------------------------------ native
+
+/** One bench arm's exclusive quiet hold (lib/quiet-lock.ts; results/measurement-isolation.md):
+ * nested, and so free, when run-gate7.sh or `quiet.sh exclusive --` already holds it. */
+function benchQuietHold(args: Args): Promise<QuietHold> {
+  return quietAcquire(
+    "exclusive",
+    `g7-bench:${args.arm}-${args.env}${args.device ? `-${args.device}` : ""}`,
+    { log: join(args.out, "quiet-lock.jsonl") },
+  );
+}
 
 function strippedEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
@@ -757,6 +768,8 @@ async function runGswArm(
   server.enableWebSocketEcho("/echo");
   server.enableTicker("/tick");
   const { port, origin } = await server.start();
+  // Measurement isolation: the timed part holds the exclusive quiet lock (after the builds).
+  const hold = await benchQuietHold(args);
   const summaries: BenchInputSummary[] = [];
   let closeDriver: () => Promise<unknown> = async () => {};
   try {
@@ -989,6 +1002,7 @@ async function runGswArm(
   } finally {
     await closeDriver().catch((e) => console.error(`gate7-bench: close: ${e}`));
     await server.stop();
+    await hold.release();
   }
   return summaries;
 }
@@ -1132,6 +1146,8 @@ async function runWebArm(
   server.enableWebSocketEcho("/echo");
   server.enableTicker("/tick");
   const { port, origin } = await server.start();
+  // Measurement isolation: the timed part holds the exclusive quiet lock (after the builds).
+  const hold = await benchQuietHold(args);
   const summaries: BenchInputSummary[] = [];
   let closeDriver: () => Promise<unknown> = async () => {};
   try {
@@ -1343,6 +1359,7 @@ async function runWebArm(
   } finally {
     await closeDriver().catch((e) => console.error(`gate7-bench: close: ${e}`));
     await server.stop();
+    await hold.release();
   }
   return summaries;
 }
@@ -1369,7 +1386,13 @@ async function main(): Promise<void> {
   try {
     const summaries =
       args.arm === "native"
-        ? await runNativeArm(args, inputs)
+        ? await benchQuietHold(args).then(async (hold) => {
+            try {
+              return await runNativeArm(args, inputs);
+            } finally {
+              await hold.release();
+            }
+          })
         : args.arm === "web"
           ? await runWebArm(args, inputs)
           : await runGswArm(args, inputs);

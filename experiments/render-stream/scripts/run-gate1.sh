@@ -545,10 +545,13 @@ run_g1c() {
 	# transaction per frame exactly as every other g1c leg's, unaffected by the live connection's
 	# own pacing. check-gate1.ts's checkLiveRate30 verifies the published rate lands near 30 fps
 	# and that the file sink is untouched.
+	# A rate check: a timing leg (exclusive quiet lock, lib/legs.sh).
 	echo "run-gate1: live-rate-30 (GRC_PUBLISH_FPS=30; G6r self-test)"
+	LEGS_TIMING_GROUP=g1c-rate
 	start_live_host "$OUT/live-rate-30/host" GRC_PUBLISH_FPS=30
 	live_receiver "$OUT/live-rate-30" rendered
 	finish_live_host "$OUT/live-rate-30/host"
+	LEGS_TIMING_GROUP=""
 
 	gs_teardown "$OUT/gamescope-g1c"
 	GS_RUN_DIR=""
@@ -663,11 +666,17 @@ for group in "${GROUPS_RUN[@]}"; do
 	g1a) run_g1a ;;
 	g1b) run_g1b ;;
 	g1c) run_g1c ;;
-	g1d) run_g1d ;;
+	g1d)
+		LEGS_TIMING_GROUP=g1d
+		run_g1d
+		LEGS_TIMING_GROUP=""
+		;;
 	esac
 done
 
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate1: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate1.ts" --out "$OUT"
+# The checker only reads files, but it is heavy: it holds the shared quiet lock (lib/legs.sh),
+# then the run's lock summary is written.
+legs_run_checker mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate1.ts" --out "$OUT"

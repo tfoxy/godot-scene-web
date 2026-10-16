@@ -46,19 +46,22 @@ a tag. Don't download anything beyond what the increment's design doc already na
 
 ## Quiet-machine runs
 
-Rate and timing measurements (G6c-style phase studies, `gate7-bench.ts` phone/device benches, a
-`cargo`/`rustc` build feeding one) are sensitive to concurrent CPU load — a loaded machine
-phase-locks credit loops to the wrong frame and silently invalidates the numbers. Before a
-timing-sensitive run, confirm no other `run-gate*.sh`, `gate7-bench.ts`, `cargo` or `rustc` has
-run in the last 5 minutes, then hold `flock <scratchpad>/quiet-machine.lock` for the run's
-duration. Correctness-only runs (goldens, self-tests, file-replay legs) need none of this, but
-must respect someone else's window: before starting any heavy desktop work (gate runs, Chromium
-legs, cargo builds, pnpm suites), check `flock -n <scratchpad>/quiet-machine.lock true`; if it
-fails, another agent is measuring — wait (background `sleep 120`) and retry. The orchestrator
-gives the scratchpad path in the brief. Load-sensitive groups: full gate 6 (g6l, g6c, g6s),
-g1d, g5f, g55f, gate 2 live-animate pins, g7-bench, live browser legs' cadence/rate checks.
-Hold the lock only around those groups, never a whole multi-gate source run; correctness checks
-(pixels, state, resync, refusals) are load-tolerant and run unlocked.
+Rate and timing measurements are sensitive to concurrent CPU load — a loaded machine phase-locks
+credit loops to the wrong frame and silently invalidates the numbers. The runners handle this
+themselves with one machine-wide lock taken **per leg** (`experiments/render-stream/scripts/lib/quiet.sh`,
+section "Measurement isolation" of `scripts/README.md`): each timing leg (g1d, g2c's live-animate
+pins, g5f, g55f, g6l, g6s, g6c, g6p, gate 7's live legs, each `gate7-bench.ts` arm) holds it
+exclusively for just that leg, and every correctness leg, build script and checker holds it
+shared, pausing while a timing leg runs or waits. So:
+
+- Run runners plainly. Never wrap a runner (or a multi-gate run) in `flock` or `quiet.sh` yourself.
+- Run heavy work that is not a runner leg — a `cargo` build, a `pnpm test` suite, a wasm build —
+  as `experiments/render-stream/scripts/lib/quiet.sh shared -- <command...>`.
+- A new timing leg goes in a timing group (`LEGS_TIMING_GROUP`, or `timing_leg` in `lib/legs.sh`;
+  `quiet-lock.ts` in TS), never under an outer lock.
+- `bash experiments/render-stream/scripts/lib/quiet.sh status` shows who holds or waits; each run's
+  `<out>/quiet-lock-summary.json` shows its holds. A timing check that failed while the summary
+  shows a `nested-unisolated` hold, or that ran beside work outside the lock, may be rerun once.
 
 ## Context hygiene
 

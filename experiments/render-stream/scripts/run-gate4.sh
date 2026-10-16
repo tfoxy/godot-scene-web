@@ -805,4 +805,6 @@ done
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate4: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate4.ts" --out "$OUT"
+# The checker only reads files, but it is heavy: it holds the shared quiet lock (lib/legs.sh),
+# then the run's lock summary is written.
+legs_run_checker mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate4.ts" --out "$OUT"

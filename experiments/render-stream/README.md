@@ -81,6 +81,8 @@ result under `results/gate7/`; the rest link to their design section under `prot
 - `fixtures/` — scene fixtures used by gate runners and goldens.
 - `scripts/` — gate runners (`run-gate*.sh`), `check-gate*.ts`, `analyze-*.ts`; see
   `scripts/README.md`.
+- Measurement isolation (the per-leg quiet lock every runner takes):
+  [results/measurement-isolation.md](results/measurement-isolation.md).
 - `results/` — this experiment's result write-ups, one file per gate (−1…6, 5.5) and one per
   gate-7 increment under `results/gate7/`, plus topical write-ups that aren't a single gate's
   result (e.g. `results/receiver-decode-profile.md`).

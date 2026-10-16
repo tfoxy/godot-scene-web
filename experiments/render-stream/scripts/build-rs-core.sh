@@ -9,6 +9,13 @@
 # Usage: experiments/render-stream/scripts/build-rs-core.sh [--native-only|--wasm-only]
 set -euo pipefail
 
+# Measurement isolation: the build holds the machine-wide quiet lock SHARED (lib/quiet.sh), so it
+# pauses while a timing leg runs (and inside a runner's hold it nests as a no-op).
+if [ -z "${RS_QUIET_BUILD_WRAPPED:-}" ]; then
+	RS_QUIET_BUILD_WRAPPED=1 exec bash "$(dirname "${BASH_SOURCE[0]}")/lib/quiet.sh" shared \
+		--label "$(basename "${BASH_SOURCE[0]}")" -- bash "${BASH_SOURCE[0]}" "$@"
+fi
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RS="$(cd "${HERE}/.." && pwd)"
 ROOT="$(cd "${RS}/../.." && pwd)"
