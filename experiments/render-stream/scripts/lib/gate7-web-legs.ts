@@ -39,6 +39,7 @@ import {
   HarnessServer,
   launchHarnessBrowser,
 } from "./browser-harness";
+import { quietAcquire } from "./quiet-lock";
 
 export interface WebLegSpec {
   /** The leg's id, e.g. "receiver" or "sabotage-freeze/receiver" (the native leg's own path). */
@@ -223,11 +224,21 @@ export async function runWebLegs(
   const results: WebLegResult[] = [];
   try {
     for (const spec of legs) {
-      results.push(
-        await runOne(ctx, spec, server, origin, (hook) => {
-          onApplied = hook;
-        }),
+      // Measurement isolation: one file leg, one shared quiet hold (lib/quiet-lock.ts).
+      const hold = await quietAcquire(
+        "shared",
+        `gate7-${ctx.kind ?? "web"}:${ctx.gate}/${spec.leg}`,
+        { log: join(ctx.out, "quiet-lock.jsonl") },
       );
+      try {
+        results.push(
+          await runOne(ctx, spec, server, origin, (hook) => {
+            onApplied = hook;
+          }),
+        );
+      } finally {
+        await hold.release();
+      }
       log(
         `gate7-${ctx.kind ?? "web"}: ${spec.leg} exit=${results[results.length - 1].exitCode}`,
       );

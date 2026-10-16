@@ -285,4 +285,6 @@ GS_RUN_DIR=""
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate0.ts" --out "$OUT"
+# The checker only reads files, but it is heavy: it holds the shared quiet lock (lib/legs.sh),
+# then the run's lock summary is written.
+legs_run_checker mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate0.ts" --out "$OUT"

@@ -323,8 +323,13 @@ g6c_reference() {
 		RS_FIXTURE_FREEZE_STATE="$freeze" RS_FIXTURE_SHOT_DIR="$D/reference/shots"
 		RS_FIXTURE_STEP_LOG="$D/reference/steps.jsonl" "$@"
 	)
+	# A correctness leg launched outside lib/legs.sh's run_rendered: its shared quiet hold here.
+	legs_lock_enter "$D/reference"
+	LEGS_LOCK_FG=$((LEGS_LOCK_FG + 1))
 	g6c_launch_rendered "$D/reference" "$fixture" ${args[@]+"${args[@]}"}
 	g6c_wait_receiver "$D/reference" "$G6C_LAUNCHED_PID"
+	LEGS_LOCK_FG=$((LEGS_LOCK_FG - 1))
+	legs_lock_leave
 }
 
 # g6c_gpu_p50 <perf.json>: the receiver's gpu_render_us and frame_interval_us medians, in ms, as

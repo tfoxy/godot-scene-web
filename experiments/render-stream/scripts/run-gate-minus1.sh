@@ -96,6 +96,13 @@ fi
 mkdir -p "$OUT"
 echo "run-gate-minus1: evidence directory: $OUT"
 
+# Measurement isolation (lib/quiet.sh, results/measurement-isolation.md): every leg below holds
+# the machine-wide quiet lock SHARED (gate -1 has no timing leg), and the checker too.
+# shellcheck source=lib/quiet.sh
+source "$SCRIPT_DIR/lib/quiet.sh"
+QUIET_LOG="$OUT/quiet-lock.jsonl"
+QUIET_T0="$EPOCHREALTIME"
+
 # Whatever ends this script -- success, a failed step under `set -e`, or gs_die because the
 # private compositor vanished -- stops the Godot process it owns and tears its own compositor
 # down. Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
@@ -166,6 +173,7 @@ run_headless_leg() {
 	local leg_dir="$OUT/$leg_name"
 	local evidence_dir="$leg_dir/evidence"
 	mkdir -p "$evidence_dir"
+	quiet_acquire shared "run-gate-minus1:$leg_name"
 
 	# Inherited GRC_* values are stripped so, e.g., an exported GRC_CALIBRATION cannot leak into
 	# refuse-nocal.
@@ -238,6 +246,7 @@ run_headless_leg() {
 	exit_code=$?
 	set -e
 	CURRENT_CHILD_PID=""
+	quiet_release
 	echo "$exit_code" >"$leg_dir/exit-code.txt"
 	echo "run-gate-minus1: $leg_name exit=$exit_code"
 }
@@ -292,6 +301,7 @@ run_rendered_leg() {
 	local leg_name="$1" grc_mode="$2" screenshot_name="$3"
 	local leg_dir="$OUT/$leg_name"
 	local evidence_dir="$leg_dir/evidence"
+	quiet_acquire shared "run-gate-minus1:$leg_name"
 	mkdir -p "$evidence_dir"
 
 	gs_require_live
@@ -333,6 +343,7 @@ run_rendered_leg() {
 	local exit_code=$?
 	set -e
 	CURRENT_CHILD_PID=""
+	quiet_release
 	echo "$exit_code" >"$leg_dir/exit-code.txt"
 	echo "run-gate-minus1: $leg_name exit=$exit_code"
 }
@@ -354,4 +365,9 @@ GS_RUN_DIR=""
 # ---------------------------------------------------------------------------------------------
 echo "run-gate-minus1: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate-minus1.ts" --out "$OUT"
+CHECK_EXIT=0
+quiet_run shared run-gate-minus1:checker -- \
+	mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate-minus1.ts" --out "$OUT" ||
+	CHECK_EXIT=$?
+quiet_summary "$OUT" "$(quiet__secs "$QUIET_T0" "$EPOCHREALTIME")" | sed 's/^/run-gate-minus1: /'
+exit "$CHECK_EXIT"

@@ -612,12 +612,16 @@ run_g2c() {
 	g2c_leg live-stall rendered -- RS_RECEIVER_STALL="$G2C_STALL_SPEC"
 	echo "run-gate2: live-reconnect (RS_RECEIVER_RECONNECT=$G2C_RECONNECT_STEP)"
 	g2c_leg live-reconnect rendered -- RS_RECEIVER_RECONNECT="$G2C_RECONNECT_STEP"
+	# The live-animate pins (live-animate, sabotage-unpin) are timing legs: each holds the
+	# exclusive quiet lock from its host's start to its finish (lib/legs.sh).
+	LEGS_TIMING_GROUP=g2c-pins
 	echo "run-gate2: live-animate (RS_FIXTURE_VARIANT=animate, RS_RECEIVER_FETCH_DELAY_MS=$G2C_FETCH_DELAY_MS)"
 	g2c_leg live-animate rendered RS_FIXTURE_VARIANT=animate -- \
 		RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
 	echo "run-gate2: sabotage-unpin (as live-animate, unpin @$G2C_UNPIN_FRAME)"
 	g2c_leg sabotage-unpin rendered RS_FIXTURE_VARIANT=animate GRC_SABOTAGE=unpin \
 		GRC_SABOTAGE_FRAME="$G2C_UNPIN_FRAME" -- RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
+	LEGS_TIMING_GROUP=""
 
 	gs_teardown "$OUT/gamescope-g2c"
 	GS_RUN_DIR=""
@@ -841,4 +845,6 @@ done
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate2: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate2.ts" --out "$OUT"
+# The checker only reads files, but it is heavy: it holds the shared quiet lock (lib/legs.sh),
+# then the run's lock summary is written.
+legs_run_checker mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate2.ts" --out "$OUT"

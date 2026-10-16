@@ -4,6 +4,13 @@
 # Usage: experiments/render-stream/scripts/build-capture.sh [cmake build type]
 set -euo pipefail
 
+# Measurement isolation: the build holds the machine-wide quiet lock SHARED (lib/quiet.sh), so it
+# pauses while a timing leg runs (and inside a runner's hold it nests as a no-op).
+if [ -z "${RS_QUIET_BUILD_WRAPPED:-}" ]; then
+	RS_QUIET_BUILD_WRAPPED=1 exec bash "$(dirname "${BASH_SOURCE[0]}")/lib/quiet.sh" shared \
+		--label "$(basename "${BASH_SOURCE[0]}")" -- bash "${BASH_SOURCE[0]}" "$@"
+fi
+
 BUILD_TYPE="${1:-RelWithDebInfo}"
 CMAKE="${CMAKE:-/snap/bin/cmake}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

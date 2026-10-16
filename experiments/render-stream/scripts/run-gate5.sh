@@ -695,7 +695,13 @@ for group in "${GROUPS_RUN[@]}"; do
 	g5c) run_g5c ;;
 	g5d) run_g5d ;;
 	g5e) run_g5e ;;
-	g5f) run_g5f ;;
+	g5f)
+		# A timing group (lib/legs.sh): each of its legs holds the exclusive quiet lock from its host's
+		# start to its finish_bg; its references and imports stay shared.
+		LEGS_TIMING_GROUP=g5f
+		run_g5f
+		LEGS_TIMING_GROUP=""
+		;;
 	g5g) run_g5g ;;
 	esac
 done
@@ -703,4 +709,6 @@ done
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate5: running checker"
 cd "$REPO_ROOT"
-mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate5.ts" --out "$OUT"
+# The checker only reads files, but it is heavy: it holds the shared quiet lock (lib/legs.sh),
+# then the run's lock summary is written.
+legs_run_checker mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/check-gate5.ts" --out "$OUT"
