@@ -34,6 +34,156 @@ gate0_tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate0-tool.ts" "$@")
 }
 
+# --------------------------------------------------------------------------------------------
+# G7l (gate7-design.md Q4 "Live client", Q8): browser receivers inside the gate's own runner.
+# With GATE7_LIVE_KIND=web|gsw in the runner's environment (never an RS_/GRC_ name: those are
+# stripped from launched processes):
+#   - a capture HOST launch (start_headless_bg with GRC_LIVE_LISTEN= in LEG_ENV) gets
+#     GRC_LIVE_ALLOWED_ORIGINS=http://127.0.0.1:$GATE7_HARNESS_PORT appended (unless the leg sets
+#     one);
+#   - a RECEIVER launch (run_headless, run_rendered, start_headless_bg of --path $RECEIVER_DIR)
+#     whose LEG_ENV has RS_RECEIVER_MODE=live, or whose RS_RECEIVER_RECORDING is a GRS7 recording
+#     (a live-replay of received.rs7), goes to run_browser_receiver instead: a browser receiver of
+#     that kind (scripts/lib/gate7-live-legs.ts), always rendered, with the leg's own words. Every
+#     other launch is unchanged.
+# Legs run in one browser daemon per runner (gate7-tool.ts browser-daemon, started here; it keeps
+# the next leg's fresh browser launched and checked, and exits when the runner does), each leg
+# through one `curl` (SIGTERM to it SIGKILLs the leg's browser: the gate-1 killed leg). Its files
+# are under $OUT/gate7-browser/. run-gate7.sh's own sourcing of this file never substitutes.
+# GATE7_HARNESS_PORT and GATE7_HOST_PORT (the page's and every live host's port; default: free
+# ports picked here, fixed for the run; see gate7_host_env), GATE7_BUNDLE_DIR
+# (required: build-web-receiver.sh's bundle/ or the GSW bundle), GATE7_STATIC_ROOT (default $OUT),
+# GATE7_BUILD_SHA256 and GATE7_MANIFEST_SHA256 (optional), GATE7_PAGE_PORT (one leg's page port,
+# e.g. origin-refused's non-allowed one; reset after the call).
+# LIVE_RECEIVED_NAME is the live receiver's received tap: received.rs2 (/6, native) or
+# received.rs7 (/7, a browser receiver).
+GATE7_LIVE_KIND="${GATE7_LIVE_KIND:-}"
+[ "$LEGS_LOG" = "run-gate7" ] && GATE7_LIVE_KIND=""
+LIVE_RECEIVED_NAME="received.rs2"
+GATE7_PAGE_PORT=""
+GATE7_DAEMON_PORT=""
+if [ -n "$GATE7_LIVE_KIND" ]; then
+	case "$GATE7_LIVE_KIND" in
+	web | gsw) ;;
+	*)
+		echo "$LEGS_LOG: GATE7_LIVE_KIND must be web or gsw (got $GATE7_LIVE_KIND)" >&2
+		exit 2
+		;;
+	esac
+	if [ -z "${GATE7_BUNDLE_DIR:-}" ] || [ ! -f "$GATE7_BUNDLE_DIR/receiver.html" ]; then
+		echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND needs GATE7_BUNDLE_DIR (a bundle with receiver.html; got ${GATE7_BUNDLE_DIR:-<unset>})" >&2
+		exit 2
+	fi
+	GATE7_BUNDLE_DIR="$(realpath "$GATE7_BUNDLE_DIR")"
+	if [ -z "${GATE7_HARNESS_PORT:-}" ]; then
+		GATE7_HARNESS_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+	fi
+	if [ -z "${GATE7_HOST_PORT:-}" ]; then
+		GATE7_HOST_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+	fi
+	LIVE_RECEIVED_NAME="received.rs7"
+	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
+	gate7_daemon_dir="$OUT/gate7-browser"
+	mkdir -p "$gate7_daemon_dir"
+	rm -f "$gate7_daemon_dir/daemon.json"
+	gs_strip_env_args
+	env -C "$REPO_ROOT" -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" \
+		mise exec -- node --conditions=development --import tsx "$SCRIPT_DIR/gate7-tool.ts" browser-daemon \
+		--ready-file "$gate7_daemon_dir/daemon.json" --parent "$$" --kind "$GATE7_LIVE_KIND" \
+		--bundle "$GATE7_BUNDLE_DIR" --static-root "${GATE7_STATIC_ROOT:-$OUT}" \
+		>"$gate7_daemon_dir/daemon.log" 2>&1 &
+	gate7_waited=0
+	while [ "$gate7_waited" -lt 1200 ] && [ ! -s "$gate7_daemon_dir/daemon.json" ]; do
+		sleep 0.1
+		gate7_waited=$((gate7_waited + 1))
+	done
+	GATE7_DAEMON_PORT="$(sed -n 's/^{"port":\([0-9][0-9]*\),.*$/\1/p' "$gate7_daemon_dir/daemon.json" 2>/dev/null || true)"
+	if [ -z "$GATE7_DAEMON_PORT" ]; then
+		echo "$LEGS_LOG: the gate 7 browser daemon did not start (see $gate7_daemon_dir/daemon.log)" >&2
+		exit 1
+	fi
+	echo "$LEGS_LOG: gate 7 browser daemon on 127.0.0.1:$GATE7_DAEMON_PORT"
+fi
+
+# leg_env_value <NAME>: prints NAME's value in LEG_ENV (the last one); fails when absent.
+leg_env_value() {
+	local name="$1" word value="" found=1
+	for word in ${LEG_ENV[@]+"${LEG_ENV[@]}"}; do
+		case "$word" in
+		"$name="*)
+			value="${word#*=}"
+			found=0
+			;;
+		esac
+	done
+	[ "$found" = 0 ] && printf '%s\n' "$value"
+	return "$found"
+}
+
+# gate7_browser_leg <command...>: true when GATE7 mode is on and the command launches the receiver
+# project as a live receiver, or as a file-mode replay of a GRS7 recording.
+gate7_browser_leg() {
+	[ -n "$GATE7_LIVE_KIND" ] || return 1
+	local prev="" word on_receiver=0 recording
+	for word in "$@"; do
+		if [ "$prev" = "--path" ] && [ "$word" = "$RECEIVER_DIR" ]; then
+			on_receiver=1
+		fi
+		prev="$word"
+	done
+	[ "$on_receiver" = 1 ] || return 1
+	[ "$(leg_env_value RS_RECEIVER_MODE || true)" = "live" ] && return 0
+	recording="$(leg_env_value RS_RECEIVER_RECORDING || true)"
+	[ -n "$recording" ] && [ -f "$recording" ] && [ "$(head -c 4 "$recording")" = "GRS7" ] && return 0
+	return 1
+}
+
+# gate7_host_env: GATE7 mode only. Appends the page origin to a live host's LEG_ENV, and moves a
+# host listening on 127.0.0.1:0 to the run's fixed GATE7_HOST_PORT: a browser's HTTP cache is
+# keyed by the resource URL, host port included, so a warm leg's new host must serve the cold
+# leg's payload URLs (hosts run one at a time, and rs_ws binds with SO_REUSEADDR).
+gate7_host_env() {
+	[ -n "$GATE7_LIVE_KIND" ] || return 0
+	leg_env_value GRC_LIVE_LISTEN >/dev/null || return 0
+	local i
+	for i in "${!LEG_ENV[@]}"; do
+		if [ "${LEG_ENV[$i]}" = "GRC_LIVE_LISTEN=127.0.0.1:0" ]; then
+			LEG_ENV[i]="GRC_LIVE_LISTEN=127.0.0.1:$GATE7_HOST_PORT"
+		fi
+	done
+	leg_env_value GRC_LIVE_ALLOWED_ORIGINS >/dev/null && return 0
+	LEG_ENV+=(GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$GATE7_HARNESS_PORT")
+}
+
+# run_browser_receiver <dir> <fg|bg> -- <native command...>: the browser receiver for a native
+# receiver launch (header above). Writes <dir>/native-env.txt (LEG_ENV) and native-argv.txt (the
+# native command) for the daemon, which writes env.txt, argv.txt, page-config.json,
+# provenance.json, console.jsonl, stdout.log, timings.json and exit-code.txt; the request's own
+# output goes to <dir>/launcher.log. fg waits (RENDERED_TIMEOUT_S plus start-up slack); bg returns
+# at once with the request's pid in BG_PID (SIGTERM to it SIGKILLs the leg's browser at once).
+run_browser_receiver() {
+	local dir="$1" how="$2"
+	shift 3
+	mkdir -p "$dir"
+	printf '%s\n' ${LEG_ENV[@]+"${LEG_ENV[@]}"} >"$dir/native-env.txt"
+	printf '%s\n' "$@" >"$dir/native-argv.txt"
+	local -a cmd=(curl -sS -N --get --max-time $((RENDERED_TIMEOUT_S + 120))
+		--data-urlencode "dir=$dir" --data-urlencode "port=${GATE7_PAGE_PORT:-$GATE7_HARNESS_PORT}"
+		--data-urlencode "timeout_s=$RENDERED_TIMEOUT_S" "http://127.0.0.1:$GATE7_DAEMON_PORT/run")
+	GATE7_PAGE_PORT=""
+	"${cmd[@]}" >"$dir/launcher.log" 2>&1 &
+	local pid=$!
+	if [ "$how" = "bg" ]; then
+		BG_PID="$pid"
+		return 0
+	fi
+	CURRENT_CHILD_PID="$pid"
+	wait_owned "$pid" $((RENDERED_TIMEOUT_S + 60))
+	CURRENT_CHILD_PID=""
+	[ -s "$dir/exit-code.txt" ] || echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$(cat "$dir/exit-code.txt") ($GATE7_LIVE_KIND browser receiver)"
+}
+
 # G7xn (gate7-design.md "G7xn", D34): the runner's own RS_RECEIVER_CORE (gdscript, the default, or
 # rust) and RS_RECEIVER_CORE_EXT pick the native receiver's core for every receiver launch of the
 # run. Every launch strips inherited RS_* variables, so receiver_core_env adds them back as
@@ -106,6 +256,10 @@ wait_owned() {
 run_headless() {
 	local dir="$1" mode="$2"
 	shift 3
+	if gate7_browser_leg "$@"; then
+		run_browser_receiver "$dir" fg -- "$@"
+		return 0
+	fi
 	mkdir -p "$dir"
 	gs_strip_env_args
 	receiver_core_env "$@"
@@ -158,6 +312,11 @@ BG_PID=""
 start_headless_bg() {
 	local dir="$1"
 	shift 2
+	if gate7_browser_leg "$@"; then
+		run_browser_receiver "$dir" bg -- "$@"
+		return 0
+	fi
+	gate7_host_env
 	mkdir -p "$dir"
 	gs_strip_env_args
 	receiver_core_env "$@"
@@ -272,6 +431,10 @@ run_rendered() {
 		extra=("${RENDERED_EXTRA_ARGS[@]}")
 	fi
 	RENDERED_EXTRA_ARGS=()
+	if gate7_browser_leg "$BINARY" --path "$project" "${extra[@]}"; then
+		run_browser_receiver "$dir" fg -- "$BINARY" --path "$project" "${extra[@]}"
+		return 0
+	fi
 	mkdir -p "$dir"
 	gs_require_live
 	write_invocation "$dir" "$BINARY" --path "$project" --rendering-driver opengl3 --display-driver x11 "${extra[@]}"

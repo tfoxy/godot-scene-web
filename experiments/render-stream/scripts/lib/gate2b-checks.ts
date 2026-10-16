@@ -64,6 +64,7 @@ import {
   statesEqual,
   type TransactionTexture,
   validateRecording,
+  wireVersionOf,
 } from "./render-stream-2";
 
 // ---------------------------------------------------------------------------------------------
@@ -236,17 +237,19 @@ export async function loadResolved(path: string): Promise<Resolved> {
   }
   const { createHash } = await import("node:crypto");
   const sha256 = createHash("sha256").update(data).digest("hex");
-  const errors = validateRecording(data);
+  // G7l: a /7 live stream reads as /7 (wireVersionOf), every other magic as /6, as before.
+  const version = wireVersionOf(data);
+  const errors = validateRecording(data, version);
   let recording: ResolvedRecording | null = null;
   try {
-    recording = resolveRecording(data);
+    recording = resolveRecording(data, version);
   } catch (e) {
     errors.push(`resolveRecording: ${(e as Error).message}`);
   }
   const metas: Array<Record<string, unknown>> = [];
   const resources = new Map<string, Uint8Array>();
-  for (const raw of splitRecords(data).records) {
-    const { record } = decodeRecord(raw);
+  for (const raw of splitRecords(data, version).records) {
+    const { record } = decodeRecord(raw, version);
     if (!record) break;
     const meta = record.meta as unknown as Record<string, unknown>;
     metas.push(meta);
@@ -1075,9 +1078,13 @@ export function receiverResourceViolations(
         `warm-cache-fetch: seq ${f.seq} fetched ${f.hash.slice(0, 12)} from ${f.source} although the warm cache holds it`,
       );
   }
-  for (const [h, n] of fetched)
-    if (n > 1)
-      out.push(`redundant-fetch: ${h.slice(0, 12)} fetched ${n} times`);
+  // G7l: a browser receiver (cache mode `http-cache`, gate7-design.md Q4) fetches through its
+  // browser's HTTP cache, which answers a repeat itself; that the host served each hash at most
+  // once is gate 2c's http-gets-match-fetches (getsVsFetches), judged from the host's GET log.
+  if (r.applied?.cache?.mode !== "http-cache")
+    for (const [h, n] of fetched)
+      if (n > 1)
+        out.push(`redundant-fetch: ${h.slice(0, 12)} fetched ${n} times`);
   const last = new Map<string, string | null>();
   for (const u of r.applied?.uploads ?? []) {
     const key = `${u.stream ?? 1}:${u.id}`;

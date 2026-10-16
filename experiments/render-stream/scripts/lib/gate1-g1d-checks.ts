@@ -66,6 +66,7 @@ import {
   loadLiveHost,
   processArtifacts,
   RECEIVED_NAME,
+  receivedFileName,
   reclassify,
   spread,
   stateKey,
@@ -418,7 +419,9 @@ export async function evaluateG1dLeg(
   );
   const received: RecordingSummary[] = [];
   for (let n = 1; n <= streamCount; n++)
-    received.push(await loadRecording(join(receiverDir, receivedName(n))));
+    received.push(
+      await loadRecording(join(receiverDir, receivedFileName(receiverDir, n))),
+    );
   const env = parseEnvTxt(
     await readTextOrUndefined(join(receiverDir, "env.txt")),
   );

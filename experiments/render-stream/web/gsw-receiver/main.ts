@@ -10,16 +10,38 @@
 // requested seq, its state is dumped and its shot read back from the RGB10_A2 target. A clean end
 // record writes applied.json with status `ok` and exits 0; a failure writes it with status
 // `replay-failure` and exits 3; a usage error writes nothing and exits 2. Live mode (/7, credit,
-// G7l) is refused here as a usage error.
+// G7l) is live.ts's.
+//
+// The page's fragment (`#token=<hex>`, G7l) is read and removed before anything else runs, so the
+// bearer token never reaches the address bar, a log line or any evidence.
 //
 // The harness reads `window.__rsShell` (the web export shell's contract, gate7-web-legs.ts): the
 // printed lines, the exit, a page error, and whether the WebGL context was lost.
 
 import {
+  ACCEPT_END,
+  ACCEPT_NEEDS_PAYLOADS,
+  ACCEPT_RESOURCE,
+  ACCEPT_TRANSACTION,
+  failWith,
+  finish,
+  type GswRs,
+  hex,
+  loadModule,
+  log,
+  nextFrame,
+  nowUs,
+  ReplayFailure,
+  type SessionMeta,
+  setUpCanvas,
+  shell,
+  statsReader,
+  viewportReport,
+} from "./common";
+import {
   type ReceiverConfig,
   readConfig,
   relativeToOut,
-  UsageError,
   underOut,
 } from "./config";
 import {
@@ -30,174 +52,36 @@ import {
   type RustParts,
   type ShellTx,
 } from "./evidence";
+import { runLive, takeToken } from "./live";
 import { type FrameSample, Perf } from "./perf";
 import { ProgramError, resolvePrograms } from "./programs";
 import { readRecording, SourceError, StoreFetcher } from "./source";
 
-/** The wasm-bindgen surface of `rs-gsw-wasm` (web/gsw-rs/src/lib.rs). */
-interface GswRs {
-  alloc_recording(len: number): number;
-  load(len: number): number;
-  start(): number;
-  accept(index: number): number;
-  needed_count(): number;
-  needed_ptr(): number;
-  needed_kinds_ptr(): number;
-  alloc_payload(len: number): number;
-  provide(len: number): number;
-  apply(): number;
-  draw(): number;
-  stats_ptr(): number;
-  digest(): number;
-  poll_fence(): number;
-  shot(): number;
-  target_width(): number;
-  target_height(): number;
-  error(): string;
-  session_meta(): string;
-  state_dump(): string;
-  applied_json_parts(): string;
-  evidence_json(): string;
-  shader_params_jsonl(): string;
-  pending_shaders(): number;
-  pending_hash(i: number): string;
-  pending_shader_id(i: number): bigint;
-  pending_withheld(i: number): boolean;
-  pending_code(i: number): string | undefined;
-  provide_library(i: number, len: number): number;
-  define_program(i: number, glsl: string, meta: string): number;
-  refuse_program(i: number, reason: string, detail: string): number;
-  free(): void;
-}
-
-interface GswRsModule {
-  default(init: {
-    module_or_path: BufferSource;
-  }): Promise<{ memory: WebAssembly.Memory }>;
-  GswRs: { new (canvas: HTMLCanvasElement, options: string): GswRs };
-}
-
-const ACCEPT_TRANSACTION = 0;
-const ACCEPT_RESOURCE = 1;
-const ACCEPT_END = 2;
-const ACCEPT_NEEDS_PAYLOADS = 3;
-
-/** lib.rs `Stats`, `#[repr(C)]`, all u32, in this order. */
-const STAT_FIELDS = [
-  "status",
-  "seq",
-  "frame",
-  "needed",
-  "structural",
-  "relowered",
-  "rows_written",
-  "lowered_draws",
-  "assembly_skips",
-  "emitted_draws",
-  "expected_calls",
-  "executed_calls",
-  "merged_draws",
-  "texture_uploads",
-  "texture_upload_bytes",
-  "item_bytes",
-  "vertex_bytes",
-  "index_bytes",
-  "parity_violations",
-  "accepted_records",
-  "digests_pending",
-  "vertices",
-  "indices",
-  "draws",
-] as const;
-type StatName = (typeof STAT_FIELDS)[number];
-
-interface ShellState {
-  exit: { code: number; t: number } | null;
-  error: string | null;
-  contextLost: boolean;
-  lines: { t: number; stream: string; line: string }[];
-}
-
-declare global {
-  interface Window {
-    __rsShell?: ShellState;
-    __rsWasmHeap?: () => number | null;
-  }
-}
-
-const shell: ShellState = {
-  exit: null,
-  error: null,
-  contextLost: false,
-  lines: [],
-};
-window.__rsShell = shell;
-
-function log(text: string): void {
-  const line = `[receiver] ${text}`;
-  shell.lines.push({ t: performance.now(), stream: "out", line });
-  console.log(line);
-}
-
-const nextFrame = (): Promise<number> =>
-  new Promise((res) => requestAnimationFrame(res));
-const nowUs = (): number => performance.now() * 1000;
-const hex = (bytes: Uint8Array): string =>
-  Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-
-class ReplayFailure extends Error {
-  constructor(
-    readonly seq: number | null,
-    readonly reason: string,
-    detail: string,
-  ) {
-    super(detail);
-  }
-}
-
-/** A wasm error string `code: detail` as a failure (receiver.gd `_fail_with_error`). */
-function failWith(seq: number | null, error: string): ReplayFailure {
-  const at = error.indexOf(": ");
-  return at < 0
-    ? new ReplayFailure(seq, error, "")
-    : new ReplayFailure(seq, error.slice(0, at), error.slice(at + 2));
-}
-
-function finish(code: number): void {
-  shell.exit = { code, t: performance.now() };
-}
+// Before anything else: the fragment's token, then the fragment is gone (G7l, token-not-logged).
+const token = takeToken();
 
 async function run(): Promise<void> {
   let cfg: ReceiverConfig;
   try {
-    cfg = readConfig(location.search);
-    if (cfg.mode === "live")
-      throw new UsageError(
-        "RS_RECEIVER_MODE=live: the GSW receiver's live client is G7l's (file mode only here)",
-      );
+    cfg = readConfig(location.search, token);
   } catch (e) {
     log(`error: ${e instanceof Error ? e.message : String(e)}`);
     finish(2);
     return;
   }
 
-  const canvas = document.getElementById("frame") as HTMLCanvasElement;
-  if (cfg.shellSabotage === "css-opacity") canvas.style.opacity = "0.99";
-  canvas.addEventListener("webglcontextlost", (e) => {
-    // Q5 "Context loss": keep the context restorable; draw() re-creates every GL object.
-    e.preventDefault();
-    shell.contextLost = true;
-    log("webgl context lost");
-  });
-  canvas.addEventListener("webglcontextrestored", () =>
-    log("webgl context restored"),
-  );
+  const canvas = setUpCanvas(cfg);
+  if (cfg.mode === "live") {
+    await runLive(cfg, canvas);
+    return;
+  }
 
   const report: Report = {
     cfg,
     recording: { path: cfg.recording, sha256: null, bytes: null },
+    mode: "file",
     sessionId: null,
-    stream: null,
+    streams: [],
     status: "replay-failure",
     failure: null,
     endSeen: false,
@@ -214,12 +98,18 @@ async function run(): Promise<void> {
       stretch_applied: false,
     },
     shots: [],
+    shotsMissed: [],
     sessionUnsupported: [],
     rust: null,
-    shell: new Map<number, ShellTx>(),
+    shell: new Map<string, ShellTx>(),
     fetches: [],
     distinctFetched: 0,
+    live: null,
+    entries: null,
+    protocol: "render-stream/6",
+    creditWindow: null,
   };
+  let fileStream: Record<string, unknown> | null = null;
   if (cfg.cacheBudgetBytes !== null && cfg.cacheBudgetBytes > 0)
     report.sessionUnsupported.push({
       seq: null,
@@ -293,17 +183,10 @@ async function run(): Promise<void> {
 
   try {
     // Step 1 (Q14c): the module, then the recording into wasm memory once, outside every timer.
-    const base = new URL(".", location.href).href;
-    const mod = (await import(
-      /* @vite-ignore */ `${base}gsw-rs/rs_gsw_wasm.js`
-    )) as GswRsModule;
-    const wasmBytes = await (
-      await fetch(`${base}gsw-rs/rs_gsw_wasm_bg.wasm`)
-    ).arrayBuffer();
-    memory = (await mod.default({ module_or_path: wasmBytes })).memory;
+    const loaded = await loadModule();
+    const mod = loaded.mod;
+    memory = loaded.memory;
     const mem = memory;
-    window.__rsWasmHeap = () => mem.buffer.byteLength;
-    performance.mark("rs-gsw-wasm-ready");
 
     const data = await readRecording(cfg.recording).catch((e: unknown) => {
       if (e instanceof SourceError)
@@ -318,7 +201,7 @@ async function run(): Promise<void> {
       sha256: hex(digest),
       bytes: data.length,
     };
-    report.stream = {
+    fileStream = {
       stream_id: null,
       connection: null,
       received_path: cfg.recording,
@@ -328,6 +211,7 @@ async function run(): Promise<void> {
       closed_by: null,
       close_code: null,
     };
+    report.streams.push(fileStream);
 
     try {
       gs = new mod.GswRs(
@@ -360,71 +244,21 @@ async function run(): Promise<void> {
     canvas.style.height = `${canvas.height}px`;
 
     // The session (receiver.gd `_begin_session`): ids, viewport, presentation.
-    const session = JSON.parse(g.session_meta()) as {
-      session_id?: string;
-      stream?: { stream_id?: string; connection?: unknown };
-      viewport?: {
-        logical_size?: [number, number];
-        presentation_size?: [number, number] | null;
-        stretch?: { mode?: string } | null;
-      };
-    };
+    const session = JSON.parse(g.session_meta()) as SessionMeta;
     report.sessionId = session.session_id ?? null;
-    if (report.stream) {
-      report.stream.stream_id = session.stream?.stream_id ?? null;
-      report.stream.connection = session.stream?.connection ?? null;
-    }
-    const vp = session.viewport ?? {};
-    const logical = vp.logical_size ?? [canvas.width, canvas.height];
-    const presentation = vp.presentation_size ?? null;
-    const ignorePresentation = cfg.sabotage.includes("ignore-presentation");
-    const stretchMode = vp.stretch?.mode ?? "disabled";
-    if (stretchMode === "viewport")
-      report.sessionUnsupported.push({
-        seq: null,
-        item: null,
-        name: "viewport",
-        reason: "stretch-mode",
-      });
-    report.viewport = {
-      display_server: "web",
-      size: [canvas.width, canvas.height],
-      size_check: ignorePresentation ? "ignored" : "ok",
-      logical_size: logical,
-      canvas_transform: [],
-      presentation_size: presentation,
-      window_size: [canvas.width, canvas.height],
-      oversampling: 1.0,
-      presentation_check: presentation === null ? null : "ok",
-      stretch_applied:
-        presentation !== null &&
-        !ignorePresentation &&
-        stretchMode === "canvas_items" &&
-        (presentation[0] !== logical[0] || presentation[1] !== logical[1]),
-    };
+    fileStream.stream_id = session.stream?.stream_id ?? null;
+    fileStream.connection = session.stream?.connection ?? null;
+    const vr = viewportReport(cfg, canvas, session);
+    const logical = vr.logical;
+    report.sessionUnsupported.push(...vr.unsupported);
+    report.viewport = vr.viewport;
     log(
-      `session ${report.sessionId} stream ${report.stream?.stream_id} (${logical[0]}x${logical[1]}, target ${canvas.width}x${canvas.height}) applied`,
+      `session ${report.sessionId} stream ${fileStream.stream_id} (${logical[0]}x${logical[1]}, target ${canvas.width}x${canvas.height}) applied`,
     );
     performance.mark("rs-session-applied");
 
     // Stats view, re-derived whenever memory grew (Q14c step 5).
-    let statsView: Uint32Array | null = null;
-    let statsBuffer: ArrayBuffer | null = null;
-    const stats = (): Record<StatName, number> => {
-      if (statsBuffer !== mem.buffer || !statsView) {
-        statsBuffer = mem.buffer;
-        statsView = new Uint32Array(
-          mem.buffer,
-          g.stats_ptr(),
-          STAT_FIELDS.length,
-        );
-      }
-      const out = {} as Record<StatName, number>;
-      STAT_FIELDS.forEach((k, i) => {
-        out[k] = (statsView as Uint32Array)[i];
-      });
-      return out;
-    };
+    const stats = statsReader(g, mem);
 
     const shotSeqs = new Set(cfg.shotSeqs);
     const stateSeqs = new Set(cfg.stateSeqs);
@@ -570,7 +404,7 @@ async function run(): Promise<void> {
         vertex_bytes: st.vertex_bytes,
       } satisfies FrameSample);
       decodeUs = 0;
-      report.shell.set(seq, shellTx);
+      report.shell.set(`1:${seq}`, shellTx);
       lastAppliedSeq = seq;
 
       // Evidence for this seq, after its frame (receiver.gd `_record_transaction`).
@@ -609,7 +443,7 @@ async function run(): Promise<void> {
         "the recording ended before its end record",
       );
     report.endSeen = true;
-    if (report.stream) report.stream.end_seen = true;
+    fileStream.end_seen = true;
     for (const seq of cfg.shotSeqs)
       if (!report.shots.some((s) => s.seq === seq))
         throw new ReplayFailure(

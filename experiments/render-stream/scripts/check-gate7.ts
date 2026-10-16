@@ -14,10 +14,13 @@
 // lib/gate7-adapters.ts checkGate0Web, reported in `results`), the web half of g7-1 to g7-6
 // and g7-55 (G7b: `--source gate<N>=<run>` each, lib/gate7b-adapters.ts checkGateWeb), and the
 // gsw half of g7-0 to g7-3 (G7a) and g7-4 and g7-5 (G7t; lib/gate7-gsw.ts, lib/gate7-gsw-g45.ts).
+// G7l: `--live` judges the live runs of g7-1, g7-2, g7-5 and g7-55 instead (run-gate7.sh --live;
+// lib/gate7-live.ts checkGateLive), one result per group and receiver kind.
 // G7h's harness checks are folded into `report.harness` when present. Requesting a group before
 // its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -46,6 +49,11 @@ import {
 } from "./lib/gate7-gsw";
 import { gswExtraChecks } from "./lib/gate7-gsw-checks";
 
+import {
+  checkGateLive,
+  GATE7L_GATES,
+  type LiveGroupResult,
+} from "./lib/gate7-live";
 import { checkGateWeb, GATE7B_GATES } from "./lib/gate7b-adapters";
 import {
   type BenchTableRow,
@@ -145,7 +153,7 @@ export interface Gate7Report {
   /** G7d: the bench's per-receiver, per-input, per-phase table (g7-bench). */
   bench_table: BenchTableRow[];
   /** G7e: one entry per requested group and receiver kind (g7-0 web; G7a: g7-0..g7-3 gsw). */
-  results: (Gate7GroupResult | GswGroupResult)[];
+  results: (Gate7GroupResult | GswGroupResult | LiveGroupResult)[];
 }
 
 interface Args {
@@ -157,6 +165,8 @@ interface Args {
   extension: string | undefined;
   /** web, gsw, or both (unset). */
   receiver: string | undefined;
+  /** G7l: judge only the live runs (`<out>/<gate>/live-<kind>/`) of the requested groups. */
+  live: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -167,6 +177,7 @@ function parseArgs(argv: string[]): Args {
   let gswBundle: string | undefined;
   let extension: string | undefined;
   let receiver: string | undefined;
+  let live = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") {
       out = argv[++i];
@@ -185,6 +196,8 @@ function parseArgs(argv: string[]): Args {
       gswBundle = resolve(argv[++i] ?? "");
     } else if (argv[i] === "--receiver") {
       receiver = argv[++i] || undefined;
+    } else if (argv[i] === "--live") {
+      live = true;
     }
   }
   if (!out) throw new Error("check-gate7: --out <evidence dir> is required");
@@ -200,6 +213,7 @@ function parseArgs(argv: string[]): Args {
     gswBundle,
     extension,
     receiver,
+    live,
   };
 }
 
@@ -292,7 +306,7 @@ async function gateChecker(
 }
 
 async function main(): Promise<void> {
-  const { out, legs, sources, bundle, gswBundle, extension, receiver } =
+  const { out, legs, sources, bundle, gswBundle, extension, receiver, live } =
     parseArgs(process.argv.slice(2));
 
   for (const g of legs) {
@@ -335,9 +349,39 @@ async function main(): Promise<void> {
     groupChecks["g7-bench"] = bench.checks;
     benchTable = bench.table;
   }
-  const results: (Gate7GroupResult | GswGroupResult)[] = [];
-  const wantWeb = receiver === "web" || (!receiver && bundle !== undefined);
-  const wantGsw = receiver === "gsw" || (!receiver && gswBundle !== undefined);
+  const results: (Gate7GroupResult | GswGroupResult | LiveGroupResult)[] = [];
+  // G7l: `--live` judges only the live runs (lib/gate7-live.ts), never the file legs' sources.
+  const wantWeb =
+    !live && (receiver === "web" || (!receiver && bundle !== undefined));
+  const wantGsw =
+    !live && (receiver === "gsw" || (!receiver && gswBundle !== undefined));
+  if (live) {
+    for (const def of GATE7L_GATES) {
+      if (!legs.includes(def.group)) continue;
+      for (const kind of ["web", "gsw"] as const) {
+        if (receiver && receiver !== kind) continue;
+        const runDir = join(out, def.gate, `live-${kind}`);
+        if (!existsSync(runDir)) {
+          if (receiver === kind)
+            throw new Error(
+              `check-gate7: --live ${def.group}@${kind}: no ${runDir}`,
+            );
+          continue;
+        }
+        console.log(
+          `check-gate7: judging ${def.group} live (${def.gate}) @${kind}`,
+        );
+        results.push(
+          await checkGateLive({
+            def,
+            kind,
+            runDir,
+            viewsDir: join(out, def.gate, `live-${kind}-views`),
+          }),
+        );
+      }
+    }
+  }
   if (legs.includes("g7-0") && wantWeb) {
     const source = sources.gate0;
     if (!source || !bundle || !extension) {
@@ -472,6 +516,11 @@ async function main(): Promise<void> {
     if ("not_applicable" in r)
       for (const n of r.not_applicable)
         console.log(`N/A   ${r.group}  ${n.id}  ${n.reason}`);
+    if ("cadence" in r)
+      for (const c of r.cadence)
+        console.log(
+          `cadence  ${r.group}@${r.kind}  ${c.leg}#${c.connection}  sent ${c.sent}/${c.frames_offered} offered, coalesced ${c.coalesced}, credit RTT frames p50 ${c.credit_rtt_frames_median} p95 ${c.credit_rtt_frames_p95}, submitted ack us p50 ${c.submitted_ack_us_median} p95 ${c.submitted_ack_us_p95}`,
+        );
   }
   const ms = (x: number | undefined) =>
     x === undefined ? "-" : (x / 1000).toFixed(3);

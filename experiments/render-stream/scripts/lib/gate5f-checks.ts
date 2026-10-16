@@ -61,6 +61,7 @@ import {
   deliveryReasons,
   deliveryReport,
   type LiveHostEvidence,
+  receivedFileName,
 } from "./gate1-live-checks";
 import {
   G2B_PRECEDENCE,
@@ -71,8 +72,9 @@ import {
   loadResolved,
 } from "./gate2b-checks";
 import {
-  type ConnTimeline,
+  coldFetchedHashes,
   connTimelines,
+  connTimelinesAtCallback,
   fetchesAfterApplied,
   type G2cHost,
   getsVsFetches,
@@ -254,7 +256,7 @@ export async function loadG5fLeg(
   // loadHost (gate2c-checks.ts) loads the host's own evidence only; the receiver's copy of each
   // connection's stream (received.rs2, received-<n>.rs2) is this leg's, not the host's.
   for (const c of host.connections) {
-    const name = c.n === 1 ? "received.rs2" : `received-${c.n}.rs2`;
+    const name = receivedFileName(receiverDir, c.n);
     const r = await loadResolved(join(receiverDir, name));
     c.received = r.present ? r : null;
   }
@@ -659,7 +661,10 @@ export function checkLiveTapEqualsReceivedMesh(evals: Evals): G2bCheck {
     problems,
     notes.join(", "),
     G5F_LEGS.map((l) =>
-      join(evals.get(l.leg)?.e.receiverDir ?? l.leg, "received.rs2"),
+      join(
+        evals.get(l.leg)?.e.receiverDir ?? l.leg,
+        receivedFileName(evals.get(l.leg)?.e.receiverDir ?? l.leg),
+      ),
     ),
   );
 }
@@ -697,26 +702,9 @@ export function checkLiveResolvesToRecordingMesh(evals: Evals): G2bCheck {
   );
 }
 
-/** connTimelines, except that a connection whose close line follows its close frame's own
- * callback `state` line counts as open through that callback. The host retires to
- * `current ∪ bases` inside the callback, so at the quit frame (851) the previous send is still a
- * base when retirement runs and the end/close come after. Whether that matters is load-dependent:
- * when the credit loop phase-locks to every other frame (memory rs-g55d-rs5-switch-facts) and 851
- * is a pending frame rather than a send, the last send's DF surface stays rightly pinned, and the
- * plain close frame (base null from 851) called it "servable, named by nothing". */
-export function connTimelinesAtCallback(host: G2cHost): ConnTimeline[] {
-  return connTimelines(host).map((c, i) => {
-    if (c.closed === null) return c;
-    const log = host.connections[i]?.host.log ?? [];
-    const closeAt = log.findIndex((l) => l.event === "close");
-    const callbackAt = log.findIndex(
-      (l) => l.frame === c.closed && typeof l.state === "string",
-    );
-    return callbackAt >= 0 && callbackAt < closeAt
-      ? { ...c, closed: c.closed + 1 }
-      : c;
-  });
-}
+// connTimelinesAtCallback moved to gate2c-checks.ts (G7l: g2c's pins checks need the same rule,
+// because a browser receiver closes in the quit frame itself); re-exported for its importers.
+export { connTimelinesAtCallback };
 
 export function pinsOfMesh(host: G2cHost): PinsReport {
   return pinsReport(
@@ -796,7 +784,17 @@ export function checkHttpGetsMatchFetchesMesh(evals: Evals): G2bCheck {
       continue;
     }
     const gets = httpGets(host.hook.lines);
-    for (const p of getsVsFetches(gets, ev.e.applied.fetches ?? []))
+    for (const p of getsVsFetches(
+      gets,
+      ev.e.applied.fetches ?? [],
+      ev.e.applied.cache?.mode,
+      coldFetchedHashes(
+        ev.e.applied.cache?.mode,
+        leg === "live-mesh-warm"
+          ? evals.get("live-mesh")?.e.applied?.fetches
+          : null,
+      ),
+    ))
       problems.push(`${leg}: ${p}`);
     const summaryGets = host.serving?.http_gets;
     if (summaryGets !== gets.length)
@@ -1088,24 +1086,51 @@ export async function checkWarmHostNoGetsMesh(evals: Evals): Promise<G2bCheck> {
   else {
     const w = warmCacheReport(live, warm);
     detail = `${w.gets} GETs, ${w.hits} cache hits = ${w.cachedNamed} payloads its wire named that live-mesh's cache holds${w.uncachedNamed.length > 0 ? ` (${w.uncachedNamed.length} named, not cached: ${w.uncachedNamed.map((h) => h.slice(0, 12)).join(",")})` : ""}, shots equal reference-live's`;
-    if (
-      w.gets !== w.fetched.length ||
-      (host.serving?.http_gets ?? -1) !== w.gets
-    )
-      problems.push(
-        `the warm host logged ${w.gets} GETs (summary ${host.serving?.http_gets}), the warm receiver fetched ${w.fetched.length}`,
+    if (warm.e.applied?.cache?.mode === "http-cache") {
+      // G7l: a browser receiver's cache is the cold leg's profile's HTTP cache (gate7-design.md
+      // Q4), which it fetches through: it fetches every payload its wire names, and the host
+      // must have answered a GET for exactly the ones live-mesh never fetched.
+      const served = new Set(
+        httpGets(host.hook.lines)
+          .map((l) => l.hash)
+          .filter((h): h is string => typeof h === "string" && h !== ""),
       );
-    for (const h of w.fetched)
-      if (!w.uncachedNamed.includes(h))
+      detail = `browser HTTP cache: ${w.fetched.length} payloads fetched, ${served.size} reached the host (${w.uncachedNamed.length} named, not cached), shots equal reference-live's`;
+      for (const h of served)
+        if (w.liveCache.has(h))
+          problems.push(
+            `the host served ${h.slice(0, 12)}, which live-mesh's browser profile already cached`,
+          );
+      for (const h of w.fetched)
+        if (!w.liveCache.has(h) && !served.has(h))
+          problems.push(
+            `the warm receiver fetched ${h.slice(0, 12)}, which live-mesh never fetched, yet the host served no GET for it`,
+          );
+      for (const h of w.fetched)
+        if (!w.liveCache.has(h) && !w.uncachedNamed.includes(h))
+          problems.push(
+            `the warm receiver fetched ${h.slice(0, 12)}, which its own wire never named`,
+          );
+    } else {
+      if (
+        w.gets !== w.fetched.length ||
+        (host.serving?.http_gets ?? -1) !== w.gets
+      )
         problems.push(
-          `the warm receiver fetched ${h.slice(0, 12)}, which ${w.liveCache.has(h) ? "live-mesh's cache already holds" : "its own wire never named"}`,
+          `the warm host logged ${w.gets} GETs (summary ${host.serving?.http_gets}), the warm receiver fetched ${w.fetched.length}`,
         );
-    if (w.hits !== w.cachedNamed)
-      problems.push(
-        `${w.hits} cache hits, but its wire named ${w.cachedNamed} payloads live-mesh's cache holds (live-mesh fetched ${w.liveCache.size})`,
-      );
-    if (warm.e.applied?.cache?.mode !== "warm")
-      problems.push("the receiver's cache mode is not warm");
+      for (const h of w.fetched)
+        if (!w.uncachedNamed.includes(h))
+          problems.push(
+            `the warm receiver fetched ${h.slice(0, 12)}, which ${w.liveCache.has(h) ? "live-mesh's cache already holds" : "its own wire never named"}`,
+          );
+      if (w.hits !== w.cachedNamed)
+        problems.push(
+          `${w.hits} cache hits, but its wire named ${w.cachedNamed} payloads live-mesh's cache holds (live-mesh fetched ${w.liveCache.size})`,
+        );
+      if (warm.e.applied?.cache?.mode !== "warm")
+        problems.push("the receiver's cache mode is not warm");
+    }
     // Neither leg stalls, so every checkpoint against reference-live must be a full match or a
     // benign DF-only one (the same round-trip jitter g5fCheckpoints already judges: comparing
     // live-mesh's and live-mesh-warm's shots against each other, rather than against

@@ -57,6 +57,11 @@ pub struct MeshResidency {
 }
 
 impl MeshResidency {
+    /// G7l: how many meshes are resident.
+    pub fn resident_count(&self) -> usize {
+        self.resident.len()
+    }
+
     fn named(&self) -> BTreeSet<Id> {
         self.named_by.values().flatten().copied().collect()
     }

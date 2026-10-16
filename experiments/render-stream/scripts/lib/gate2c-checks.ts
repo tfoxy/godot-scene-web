@@ -40,6 +40,7 @@ import {
   type LiveHostEvidence,
   type LiveLogLine,
   loadLiveHost,
+  receivedFileName,
   tapErrors,
 } from "./gate1-live-checks";
 import {
@@ -361,7 +362,7 @@ export async function loadG2cLeg(
     replayed = await loadResolved(join(receiverDir, "recording.rs2"));
   } else {
     for (const c of host.connections) {
-      const name = c.n === 1 ? "received.rs2" : `received-${c.n}.rs2`;
+      const name = receivedFileName(receiverDir, c.n);
       const r = await loadResolved(join(receiverDir, name));
       c.received = r.present ? r : null;
     }
@@ -623,15 +624,49 @@ export function unadvertisedGets(
   return out;
 }
 
+/** G7l: the hashes a cold leg's receiver fetched (200), which a warm browser leg's profile copy
+ * already holds; empty unless that warm receiver's cache mode is `http-cache`. */
+export function coldFetchedHashes(
+  warmCacheMode: string | null | undefined,
+  coldFetches: readonly G2cFetch[] | null | undefined,
+): Set<string> {
+  if (warmCacheMode !== "http-cache") return new Set();
+  return new Set(
+    (coldFetches ?? [])
+      .filter((f) => f.status === 200 && typeof f.hash === "string")
+      .map((f) => f.hash as string),
+  );
+}
+
 /** http-gets-match-fetches (pure): the host's GETs and the receiver's http fetches, in order. */
 export function getsVsFetches(
   gets: readonly HookLine[],
   fetches: readonly G2cFetch[],
+  /** G7l: the receiver's applied.json cache.mode. `http-cache` (a browser receiver, gate7-design.md
+   * Q4) fetches through its browser's HTTP cache, which answers a repeated fetch itself: the
+   * host's GETs are then the receiver's fetches with every repeat of a hash dropped, and ETag,
+   * which CORS hides from a cross-origin page (the host sends no Access-Control-Expose-Headers),
+   * must be absent rather than right. Every other mode is unchanged. */
+  cacheMode?: string | null,
+  /** G7l, `http-cache` only: hashes the browser's profile already held when the receiver started
+   * (a warm leg's cold leg's fetches, coldFetchedHashes): their fetches never reach the host. */
+  preCached?: ReadonlySet<string>,
 ): string[] {
   const out: string[] = [];
-  const http = fetches.filter((f) => f.source === "http");
+  const httpCache = cacheMode === "http-cache";
+  const firstOfHash = new Set<string>(httpCache ? (preCached ?? []) : []);
+  const http = fetches.filter((f) => {
+    if (f.source !== "http") return false;
+    if (!httpCache) return true;
+    const h = f.hash ?? "";
+    if (firstOfHash.has(h)) return false;
+    firstOfHash.add(h);
+    return true;
+  });
   if (gets.length !== http.length)
-    out.push(`${gets.length} GETs on the host, ${http.length} http fetches`);
+    out.push(
+      `${gets.length} GETs on the host, ${http.length} http fetches${httpCache ? " (first per hash; the rest are the browser's HTTP cache)" : ""}`,
+    );
   for (let i = 0; i < Math.min(gets.length, http.length); i++) {
     const g = gets[i];
     const f = http[i];
@@ -660,7 +695,7 @@ export function getsVsFetches(
       out.push(`${f.hash?.slice(0, 12)}: Content-Type ${h["Content-Type"]}`);
     if (h["Cache-Control"] !== CACHE_CONTROL)
       out.push(`${f.hash?.slice(0, 12)}: Cache-Control ${h["Cache-Control"]}`);
-    if (h.ETag !== `"${f.hash}"`)
+    if (httpCache ? h.ETag !== undefined : h.ETag !== `"${f.hash}"`)
       out.push(`${f.hash?.slice(0, 12)}: ETag ${h.ETag}`);
     if (h["Content-Length"] !== String(f.bytes))
       out.push(
@@ -1160,7 +1195,10 @@ export function checkLiveTapEqualsReceived(evals: Evals): G2bCheck {
     "on every g2c live leg that must succeed, each connection's received stream is byte for byte the host's tap of that connection (a byte prefix only for a connection the receiver itself closed before the end record: the reconnect)",
     problems,
     notes.join(", "),
-    G2C_GOOD.map((l) => join(evals.get(l)?.e.receiverDir ?? l, "received.rs2")),
+    G2C_GOOD.map((l) => {
+      const d = evals.get(l)?.e.receiverDir ?? l;
+      return join(d, receivedFileName(d));
+    }),
   );
 }
 
@@ -1399,7 +1437,15 @@ export function checkHttpGetsMatchFetches(evals: Evals): G2bCheck {
       continue;
     }
     const gets = httpGets(host.hook.lines);
-    for (const p of getsVsFetches(gets, ev.e.applied.fetches ?? []))
+    for (const p of getsVsFetches(
+      gets,
+      ev.e.applied.fetches ?? [],
+      ev.e.applied.cache?.mode,
+      coldFetchedHashes(
+        ev.e.applied.cache?.mode,
+        leg === "live-warm" ? evals.get("live")?.e.applied?.fetches : null,
+      ),
+    ))
       problems.push(`${leg}: ${p}`);
     const summaryGets = host.serving?.http_gets;
     if (summaryGets !== gets.length)
@@ -1490,13 +1536,37 @@ export function checkFetchBeforeApplied(evals: Evals): G2bCheck {
   );
 }
 
+/** connTimelines, except that a connection whose close line follows its close frame's own
+ * callback `state` line counts as open through that callback. The host retires to
+ * `current ∪ bases` inside the callback, so at the quit frame (851) the previous send is still a
+ * base when retirement runs and the end/close come after. Whether that matters is load-dependent:
+ * when the credit loop phase-locks to every other frame (memory rs-g55d-rs5-switch-facts) and 851
+ * is a pending frame rather than a send, the last send's DF surface stays rightly pinned, and the
+ * plain close frame (base null from 851) called it "servable, named by nothing". G7l: the same
+ * race on gate 2's live-animate at its quit frame 971, where a browser receiver closes within
+ * that frame (the native one a frame later), so g2c's pins checks use this rule too (moved
+ * here from gate5f-checks.ts, which re-exports it). */
+export function connTimelinesAtCallback(host: G2cHost): ConnTimeline[] {
+  return connTimelines(host).map((c, i) => {
+    if (c.closed === null) return c;
+    const log = host.connections[i]?.host.log ?? [];
+    const closeAt = log.findIndex((l) => l.event === "close");
+    const callbackAt = log.findIndex(
+      (l) => l.frame === c.closed && typeof l.state === "string",
+    );
+    return callbackAt >= 0 && callbackAt < closeAt
+      ? { ...c, closed: c.closed + 1 }
+      : c;
+  });
+}
+
 export function pinsOf(host: G2cHost): PinsReport {
   const budgetText = host.env.get("GRC_RESOURCE_BUDGET_BYTES");
   const budget = budgetText ? Number(budgetText) : DEFAULT_BUDGET_BYTES;
   return pinsReport(
     host.hook.lines,
     host.full.recording?.transactions ?? [],
-    connTimelines(host),
+    connTimelinesAtCallback(host),
     budget,
   );
 }
@@ -1710,7 +1780,10 @@ export function checkReconnectNoRefetch(evals: Evals): G2bCheck {
         `connection 2 starts with ${first?.encoding ?? "nothing"}, not full`,
       );
     const res = first?.resources ?? {};
-    if ((res.fetched ?? -1) !== 0)
+    // G7l: a browser receiver's disk cache is its browser's HTTP cache (`http-cache`, Q4), which
+    // it fetches through: its connection-2 "cache hits" are fetches that never reach the host.
+    const httpCache = a.cache?.mode === "http-cache";
+    if (!httpCache && (res.fetched ?? -1) !== 0)
       problems.push(`connection 2's first transaction fetched ${res.fetched}`);
     const state = tap2.find((t) => t.seq === first?.seq);
     const named = new Set<number>();
@@ -1728,7 +1801,12 @@ export function checkReconnectNoRefetch(evals: Evals): G2bCheck {
             if (t.kind === "image" && t.hash) neededHashes.add(t.hash);
           }
         }
-    if ((res.cache_hits ?? -1) !== neededHashes.size)
+    if (httpCache) {
+      if ((res.fetched ?? -1) !== neededHashes.size)
+        problems.push(
+          `connection 2's first transaction fetched ${res.fetched} through the browser's HTTP cache, ${neededHashes.size} distinct payloads needed`,
+        );
+    } else if ((res.cache_hits ?? -1) !== neededHashes.size)
       problems.push(
         `connection 2's first transaction: ${res.cache_hits} cache hits, ${neededHashes.size} distinct payloads needed`,
       );
@@ -1743,9 +1821,20 @@ export function checkReconnectNoRefetch(evals: Evals): G2bCheck {
       (a.fetches ?? []).filter((f) => (f.stream ?? 1) === 1).map((f) => f.hash),
     );
     const f2 = (a.fetches ?? []).filter((f) => f.stream === 2);
-    for (const f of f2)
-      if (f1.has(f.hash))
-        problems.push(`${f.hash?.slice(0, 12)} fetched on both connections`);
+    if (httpCache) {
+      // What reached the host: each hash at most once, whichever connection fetched it.
+      const served = new Map<string, number>();
+      for (const g of httpGets(host.hook.lines))
+        served.set(g.hash ?? "", (served.get(g.hash ?? "") ?? 0) + 1);
+      for (const f of f2)
+        if (f1.has(f.hash) && (served.get(f.hash ?? "") ?? 0) !== 1)
+          problems.push(
+            `${f.hash?.slice(0, 12)} fetched on both connections and served by the host ${served.get(f.hash ?? "") ?? 0} times, not once`,
+          );
+    } else
+      for (const f of f2)
+        if (f1.has(f.hash))
+          problems.push(`${f.hash?.slice(0, 12)} fetched on both connections`);
     for (const name of ["C", "D"]) {
       const h = fixtureHash(host, name, "texture_2d_create");
       const n = f2.filter((f) => f.hash === h).length;
@@ -1756,7 +1845,7 @@ export function checkReconnectNoRefetch(evals: Evals): G2bCheck {
   }
   return check(
     "reconnect-no-refetch",
-    "live-reconnect: connection 2 starts with a full transaction that fetches nothing (every payload it needs is a disk-cache hit) and uploads exactly its resident textures; step 8's new payloads (C, D) are then fetched once each on connection 2, and nothing fetched on connection 1 is fetched again",
+    "live-reconnect: connection 2 starts with a full transaction that fetches nothing (every payload it needs is a disk-cache hit) and uploads exactly its resident textures; step 8's new payloads (C, D) are then fetched once each on connection 2, and nothing fetched on connection 1 is fetched again (G7l, a browser receiver: its disk cache is its browser's HTTP cache, so connection 2's first transaction fetches exactly its needed payloads through it, and every payload connection 1 fetched reached the host exactly once)",
     problems,
     detail,
     [join(ev?.e.receiverDir ?? "live-reconnect", "applied.json")],
@@ -1788,6 +1877,48 @@ export function checkLiveTransformOnly(evals: Evals): G2bCheck {
   );
 }
 
+/** A warm receiver's own side of "the host served nothing": natively (cache mode `warm`) it
+ * fetched nothing and hit its cache once per payload the cold leg fetched. G7l: a browser
+ * receiver's cache is its profile's HTTP cache (`http-cache`, gate7-design.md Q4), which it cannot
+ * see into: it fetches every payload the cold leg fetched, each answered 200 by that cache, and the
+ * host's empty GET log (checked by the caller) is what proves the cache answered. */
+export function warmCacheProblems(
+  applied:
+    | {
+        cache?: { mode?: string } | null;
+        resources_summary?: {
+          distinct_fetched?: number;
+          cache_hits?: number;
+        } | null;
+        fetches?: Array<{ status?: number | null }> | null;
+      }
+    | null
+    | undefined,
+  coldFetched: number,
+): string[] {
+  const problems: string[] = [];
+  const s = applied?.resources_summary;
+  if (applied?.cache?.mode === "http-cache") {
+    if ((s?.distinct_fetched ?? -1) !== coldFetched)
+      problems.push(
+        `the warm browser receiver fetched ${s?.distinct_fetched} distinct payloads through its HTTP cache, the cold leg ${coldFetched}`,
+      );
+    const bad = (applied.fetches ?? []).filter((f) => f.status !== 200);
+    if (bad.length > 0)
+      problems.push(
+        `${bad.length} of the warm browser receiver's fetches did not answer 200`,
+      );
+    return problems;
+  }
+  if ((s?.distinct_fetched ?? -1) !== 0)
+    problems.push(`the warm receiver fetched ${s?.distinct_fetched}`);
+  if ((s?.cache_hits ?? -1) !== coldFetched)
+    problems.push(`${s?.cache_hits} cache hits, live fetched ${coldFetched}`);
+  if (applied?.cache?.mode !== "warm")
+    problems.push("the receiver's cache mode is not warm");
+  return problems;
+}
+
 export async function checkWarmHostNoGets(evals: Evals): Promise<G2bCheck> {
   const problems: string[] = [];
   const warm = evals.get("live-warm");
@@ -1800,15 +1931,9 @@ export async function checkWarmHostNoGets(evals: Evals): Promise<G2bCheck> {
       problems.push(
         `the warm host logged ${gets} GETs (summary ${host.serving?.http_gets})`,
       );
-    const s = warm.e.applied?.resources_summary;
     const liveFetched =
       live.e.applied?.resources_summary?.distinct_fetched ?? -1;
-    if ((s?.distinct_fetched ?? -1) !== 0)
-      problems.push(`the warm receiver fetched ${s?.distinct_fetched}`);
-    if ((s?.cache_hits ?? -1) !== liveFetched)
-      problems.push(`${s?.cache_hits} cache hits, live fetched ${liveFetched}`);
-    if (warm.e.applied?.cache?.mode !== "warm")
-      problems.push("the receiver's cache mode is not warm");
+    problems.push(...warmCacheProblems(warm.e.applied, liveFetched));
     for (const [step, b] of stepShots(warm.e.applied)) {
       const at = stepShots(live.e.applied).get(step);
       if (!at) continue;
@@ -1828,9 +1953,11 @@ export async function checkWarmHostNoGets(evals: Evals): Promise<G2bCheck> {
   }
   return check(
     "warm-host-no-gets",
-    "live-warm (a new host and a new receiver on live's cache, mode warm): the host answers no GET at all, the receiver fetches nothing and hits its cache once per payload live fetched, and its shot per step equals live's",
+    "live-warm (a new host and a new receiver on live's cache, mode warm): the host answers no GET at all, the receiver fetches nothing and hits its cache once per payload live fetched, and its shot per step equals live's (G7l, a browser receiver: its cache is the cold leg's browser profile's HTTP cache, so it fetches exactly the payloads live fetched, each answered 200 while the host serves none)",
     problems,
-    `0 GETs, ${warm?.e.applied?.resources_summary?.cache_hits ?? 0} cache hits, shots equal live's`,
+    warm?.e.applied?.cache?.mode === "http-cache"
+      ? `0 GETs; ${warm.e.applied?.resources_summary?.distinct_fetched ?? 0} payloads answered by the browser's HTTP cache; shots equal live's`
+      : `0 GETs, ${warm?.e.applied?.resources_summary?.cache_hits ?? 0} cache hits, shots equal live's`,
     [join(host?.dir ?? "live-warm", "evidence", "resources.jsonl")],
   );
 }

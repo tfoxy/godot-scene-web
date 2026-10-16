@@ -16,6 +16,7 @@ import {
   resolveRecording,
   type SessionMeta,
   type TransactionMeta,
+  wireVersionOf,
 } from "./render-stream-2";
 
 /** One transaction: its wire meta and its resolved state (resolveRecording's `state`). */
@@ -66,8 +67,9 @@ export function wire5FromBytes(
   }
   try {
     // render-stream/6 since G6b (/5 from G55d): gate 5.5's tables are /5's, unchanged at /6.
-    const decoded = decodeRecording(data, 6);
-    const resolved = resolveRecording(data, 6);
+    // G7l: a /7 live stream (received.rs7, a /7 host tap) reads as /7.
+    const decoded = decodeRecording(data, wireVersionOf(data));
+    const resolved = resolveRecording(data, wireVersionOf(data));
     let k = 0;
     const pending: Wire5Resource[] = [];
     for (const record of decoded.records) {

@@ -719,6 +719,15 @@ export const MAGIC_V6: Uint8Array = new Uint8Array([
 export const MAGIC_V7: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x37, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+/** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
+ * received.rs7, or a /7 connection's host tap), else 6 -- so every other magic still meets the
+ * /6 decoder's own refusal, exactly as before. */
+export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 {
+  if (!data || data.length < MAGIC_V7.length) return 6;
+  for (let i = 0; i < MAGIC_V7.length; i++)
+    if (data[i] !== MAGIC_V7[i]) return 6;
+  return 7;
+}
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);

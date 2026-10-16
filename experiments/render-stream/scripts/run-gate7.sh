@@ -8,7 +8,7 @@
 #     [--extension X.gdextension] [--calibration record.json] [--binary template] \
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
-#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>]
+#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -93,6 +93,18 @@
 #             G7t's checks (lib/gate7-gsw-g45-checks.ts; g7-5's lowering-parity runs
 #             `rs-core-check lowered` over the gate 5 source recordings). g5f's live legs are G7l's.
 #
+# Live halves (G7l, gate7-design.md "G7l", Q8; `--live`, which runs ONLY these):
+#   g7-1 g7-2 g7-5 g7-55  the live groups of gates 1 (g1c, g1d), 2 (g2c, g2e, plus G7l's
+#             origin-refused and sabotage-no-cors), 5 (g5f) and 5.5 (g55f), delivered to a browser
+#             receiver over render-stream/7. A live leg cannot replay a source: per gate and receiver
+#             kind (`--receiver web|gsw`, else both) the gate's OWN runner runs again with
+#             GATE7_LIVE_KIND set (lib/legs.sh substitutes the browser for every live receiver and
+#             every received.rs7 replay; lib/gate7-live-legs.ts launches it) into
+#             <out>/<gate>/live-<kind>/ with --legs g1a,g1c,g1d / g2a,g2c,g2e / g5c,g5f (check-gate5.ts judges g5f only beside g5c) / g55f, and its
+#             checker judges it there. check-gate7.ts --live then reports the checks that read a
+#             browser leg as `<id>@<kind>` plus gate 7's live checks (lib/gate7-live.ts). Timing-
+#             sensitive: run it on a quiet machine.
+#
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
 # and rendered Godot legs share ONE private `gamescope --backend headless` (lib/gamescope.sh).
@@ -127,6 +139,7 @@ SKIP_HARNESS_SELFTEST=0
 BUNDLE=""
 GSW_BUNDLE=""
 RS_BUILD=""
+LIVE=0
 EXTENSION="$EXPERIMENT_DIR/capture/build/render_stream_capture.gdextension"
 CALIBRATION="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
@@ -183,6 +196,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--plan-only)
 		PLAN_ONLY=1
+		shift
+		;;
+	--live)
+		LIVE=1
 		shift
 		;;
 	--skip-harness-selftest)
@@ -322,6 +339,79 @@ fi
 g7tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-tool.ts" "$@")
 }
+
+# --- G7l: --live runs only the live halves of g7-1, g7-2, g7-5 and g7-55, then judges them. -----
+if [ "$LIVE" = "1" ]; then
+	if [ "$HARNESS_ENV" != "desktop" ]; then
+		echo "run-gate7: --live runs on the desktop only (drop --env device)" >&2
+		exit 2
+	fi
+	LIVE_RUNS=()
+	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f; do
+		group="${pair%%:*}"
+		rest="${pair#*:}"
+		has_group "$group" || continue
+		LIVE_RUNS+=("$group:$rest")
+	done
+	if [ "${#LIVE_RUNS[@]}" -eq 0 ]; then
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55 in --legs" >&2
+		exit 2
+	fi
+	if [ ! -f "$EXTENSION" ]; then
+		echo "run-gate7: --live needs the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
+		exit 1
+	fi
+	EXTENSION="$(realpath "$EXTENSION")"
+	LIVE_KINDS=()
+	want_web_live() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; }
+	want_gsw_live() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
+	if want_web_live; then
+		if [ -z "$BUNDLE" ]; then
+			echo "run-gate7: building the web receiver (build-web-receiver.sh)" >&2
+			BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
+		fi
+		BUNDLE="$(realpath "$BUNDLE")"
+		LIVE_KINDS+=("web:$BUNDLE")
+	fi
+	if want_gsw_live; then
+		if [ -z "$GSW_BUNDLE" ]; then
+			if [ -z "$RS_BUILD" ]; then
+				bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/build-rs-core.log" 2>&1 || {
+					echo "run-gate7: build-rs-core.sh failed, see $OUT/build-rs-core.log" >&2
+					exit 1
+				}
+				RS_BUILD="$REPO_ROOT/artifacts/render-stream/rs-core/$(sed -n 's/^sha=//p' "$OUT/build-rs-core.log" | tail -1)"
+			fi
+			GSW_BUNDLE="$(g7tool gsw-bundle --out "$OUT/gsw-bundle-build" --rs-build "$(realpath "$RS_BUILD")" | tail -1)"
+		fi
+		GSW_BUNDLE="$(realpath "$GSW_BUNDLE")"
+		LIVE_KINDS+=("gsw:$GSW_BUNDLE")
+	fi
+	for run in "${LIVE_RUNS[@]}"; do
+		group="${run%%:*}"
+		rest="${run#*:}"
+		g="${rest%%:*}"
+		runner_legs="${rest#*:}"
+		for kb in "${LIVE_KINDS[@]}"; do
+			kind="${kb%%:*}"
+			bundle_dir="${kb#*:}"
+			run_dir="$OUT/gate$g/live-$kind"
+			mkdir -p "$OUT/gate$g"
+			echo "run-gate7: $group live @$kind: run-gate$g.sh --legs $runner_legs into $run_dir" >&2
+			set +e
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
+				bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+				--binary "$BINARY" --out "$run_dir" --legs "$runner_legs" >"$OUT/gate$g/live-$kind.log" 2>&1
+			live_exit=$?
+			set -e
+			echo "run-gate7: run-gate$g.sh @$kind exit=$live_exit (check-gate7.ts --live judges it)" >&2
+		done
+	done
+	echo "run-gate7: running check-gate7.ts --live" >&2
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live ${RECEIVER:+--receiver "$RECEIVER"})
+	exit $?
+fi
 
 # --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----
 CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG")

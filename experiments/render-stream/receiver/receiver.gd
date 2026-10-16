@@ -138,6 +138,28 @@ extends Node
 ##                               WebSocket upgrade and on every resource GET. Unset: no token sent
 ##                               (the session must then declare resources.auth "none" or the host
 ##                               refuses the upgrade with 401 -> replay-failure live-connect-failed)
+##                               Native only. At /7 the token goes in the hello instead of the
+##                               upgrade header (resource GETs keep the header).
+##   RS_RECEIVER_PROTOCOL        G7l (gate7-design.md Q4 "Live client"): 6 or 7, the wire version
+##                               spoken. Natively the default is 6, so every /6 gate is unchanged;
+##                               on the web only 7 is allowed, and it is the default. At /7 the
+##                               receiver offers subprotocol render-stream.7, sends the /7 hello
+##                               (render-stream-7.md "Hello"), and its received tap defaults to
+##                               received.rs7 (received-2.rs7 after a reconnect). A close 1008 (or
+##                               an `error`) with reason `unauthorized` before any session is
+##                               replay-failure live-connect-failed: the /7 analogue of /6's 401
+##                               upgrade (gate7-design.md Q8).
+##   RS_RECEIVER_TOKEN           G7l, web only: the bearer token itself (the shell takes it from
+##                               the page's fragment; a browser has no token file). /7 only.
+##   RS_RECEIVER_CREDIT_WINDOW   G7l: 1 (default) or 2, the hello's credit_window (/7 only; the
+##                               host grants min(window, its max); applied.json
+##                               receiver.credit_window records the grant from the session)
+##   RS_RECEIVER_MANIFEST_SHA256 G7e/G7l: 64 lowercase hex, sent as the /7 hello's manifest_sha256
+##                               (null when unset) and recorded in applied.json `receiver`
+## The /7 hello's presentation integers are the window's backing size and the display scale
+## (dpr_milli = round(scale * 1000)); a headless receiver sends the project's viewport size and 1000.
+## File mode replays a GRS7 recording (a live receiver's received.rs7) with the /7 decoder; every
+## other magic goes to the /6 decoder exactly as before.
 ## The three G1d options need a shot window for their step.
 ## On open it sends `hello`. Each binary message is appended to the received file, framed (the
 ## first is the magic and the session, every later one exactly one record), decoded and accepted
@@ -330,8 +352,14 @@ var _acks_sent: Dictionary = {"received": 0, "applied": 0, "submitted": 0}
 var _closing_by_receiver: bool = false
 var _received_base: String = ""  # stream 1's received path; stream n inserts "-<n>"
 var _connect_timeout_ms: int = DEFAULT_CONNECT_TIMEOUT_MS
-## G2e: the bearer token read from RS_RECEIVER_TOKEN_FILE, or "" when unset (no auth).
+## G2e: the bearer token read from RS_RECEIVER_TOKEN_FILE, or "" when unset (no auth). G7l: on
+## the web, RS_RECEIVER_TOKEN.
 var _token: String = ""
+## G7l: the wire version (RS_RECEIVER_PROTOCOL in live mode; the recording's magic in file mode),
+## the hello's credit window and manifest sha256 ("" for null).
+var _wire_version: int = 6
+var _credit_window: int = 1
+var _manifest_sha256: String = ""
 ## The live connection being read: 1, then 2 after a reconnect. Transactions, shots and state
 ## dumps name it as their stream.
 var _conn_index: int = 1
@@ -390,6 +418,13 @@ func _ready() -> void:
 	if _data.is_empty() and FileAccess.get_open_error() != OK:
 		_fail(null, "recording-unreadable", "cannot read %s: %s" % [_recording_path, error_string(FileAccess.get_open_error())])
 		return
+	# G7l: a GRS7 recording (a /7 live receiver's received.rs7) replays with the /7 decoder; any
+	# other magic keeps the /6 decoder, which refuses everything but GRS6 exactly as before.
+	if _data.size() >= 8 and _data.slice(0, 8).hex_encode() == Rs2Decoder.MAGIC_V7_HEX:
+		_wire_version = 7
+		_stream = Rs2Decoder.Stream.new(7)
+		var receiver_block: Dictionary = _report["receiver"]
+		receiver_block["protocol"] = Rs2Decoder.PROTOCOL_V7
 	var sha256: String = Rs2Decoder.sha256_hex(_data)
 	_report["recording"] = {"path": _recording_path, "sha256": sha256, "bytes": _data.size()}
 	_stream_report = {
@@ -405,7 +440,7 @@ func _ready() -> void:
 	_streams.append(_stream_report)
 
 	# Framing first, over the whole file: a framing error stops everything before any RS call.
-	var split: Dictionary = Rs2Decoder.split_records(_data)
+	var split: Dictionary = Rs2Decoder.split_records(_data, _wire_version)
 	var split_errors: PackedStringArray = split["errors"]
 	if split_errors.size() > 0:
 		_fail_with_error(null, split_errors[0])
@@ -449,7 +484,8 @@ func _init_report(mode: String) -> String:
 			"kind": "web-export" if RsConfig.is_web() else "native",
 			"build_sha256": _env_or_null("RS_RECEIVER_BUILD_SHA256"),
 			"manifest_sha256": _env_or_null("RS_RECEIVER_MANIFEST_SHA256"),
-			"protocol": "render-stream/6",
+			"protocol": "render-stream/%d" % _wire_version,
+			# G7l: at /7 replaced by the session's granted publication.credit_window.
 			"credit_window": 1 if mode == "live" else null,
 			# G7xn: which core decoded and applied (RS_RECEIVER_CORE).
 			"core": _core_kind,
@@ -788,6 +824,11 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_stream_id = stream_meta["stream_id"]
 	_stream_report["stream_id"] = stream_meta["stream_id"]
 	_stream_report["connection"] = stream_meta["connection"]
+	if _live and _wire_version == 7:
+		# G7l: the window the host granted (render-stream-7.md "Session": publication.credit_window).
+		var publication: Dictionary = meta["publication"]
+		var receiver_block: Dictionary = _report["receiver"]
+		receiver_block["credit_window"] = Rs2Decoder.as_int(publication["credit_window"])
 	var session_viewport: Dictionary = meta["viewport"]
 	var logical: Array = session_viewport["logical_size"]
 	var logical_size := Vector2(Rs2Decoder.as_int(logical[0]), Rs2Decoder.as_int(logical[1]))
@@ -1534,15 +1575,33 @@ func _ready_live() -> void:
 		_quit(EXIT_USAGE)
 		return
 	_shot_final = shot_final == "1"
+	if not _parse_wire_env():
+		_quit(EXIT_USAGE)
+		return
 	_received_path = RsConfig.get_env("RS_RECEIVER_RECEIVED_OUT")
 	if _received_path == "":
-		_received_path = _out_path.get_base_dir().path_join("received.rs2")
+		_received_path = _out_path.get_base_dir().path_join("received.rs7" if _wire_version == 7 else "received.rs2")
 	elif not _received_path.is_absolute_path():
 		_log("error: RS_RECEIVER_RECEIVED_OUT must be absolute (got %s)" % JSON.stringify(_received_path))
 		_quit(EXIT_USAGE)
 		return
 	_received_base = _received_path
 	var token_file: String = RsConfig.get_env("RS_RECEIVER_TOKEN_FILE").strip_edges()
+	var token_text: String = RsConfig.get_env("RS_RECEIVER_TOKEN").strip_edges()
+	if RsConfig.is_web() and token_file != "":
+		_log("error: RS_RECEIVER_TOKEN_FILE is native only; on the web the token is RS_RECEIVER_TOKEN (the page's fragment)")
+		_quit(EXIT_USAGE)
+		return
+	if token_text != "":
+		if not RsConfig.is_web():
+			_log("error: RS_RECEIVER_TOKEN is web only; a native receiver reads RS_RECEIVER_TOKEN_FILE")
+			_quit(EXIT_USAGE)
+			return
+		if _wire_version != 7 or not RsLiveClient.is_hex64(token_text):
+			_log("error: RS_RECEIVER_TOKEN must be 64 lowercase hex on a render-stream/7 connection")
+			_quit(EXIT_USAGE)
+			return
+		_token = token_text
 	if token_file != "":
 		if not token_file.is_absolute_path() or not FileAccess.file_exists(token_file):
 			_log("error: RS_RECEIVER_TOKEN_FILE is not an absolute path to an existing file (got %s)" % JSON.stringify(token_file))
@@ -1551,6 +1610,10 @@ func _ready_live() -> void:
 		_token = FileAccess.get_file_as_string(token_file).strip_edges()
 		if _token == "":
 			_log("error: RS_RECEIVER_TOKEN_FILE %s is empty" % JSON.stringify(token_file))
+			_quit(EXIT_USAGE)
+			return
+		if _wire_version == 7 and not RsLiveClient.is_hex64(_token):
+			_log("error: RS_RECEIVER_TOKEN_FILE %s does not hold 64 lowercase hex (a /7 hello token)" % JSON.stringify(token_file))
 			_quit(EXIT_USAGE)
 			return
 	var inbound: int = _positive_env("RS_RECEIVER_INBOUND_BYTES", DEFAULT_INBOUND_BYTES)
@@ -1606,6 +1669,9 @@ func _ready_live() -> void:
 	}
 	_streams.append(_stream_report)
 	_log("mode live, url %s, out %s, received %s, credit %s, inbound %d, windows %s, stall %s, reconnect %s, resync %s, display %s" % [_url, _out_path, _received_path, _credit_stage, _inbound_bytes, JSON.stringify(_windows), "%d:%d" % [_stall_step, _stall_ms] if _stall_step >= 0 else "off", str(_reconnect_step) if _reconnect_step >= 0 else "off", str(_resync_step) if _resync_step >= 0 else "off", display_server])
+	if _wire_version == 7:
+		# Never the token itself (token-not-logged): only whether one is held.
+		_log("protocol %s, credit window %d asked, token %s, manifest %s" % [Rs2Decoder.PROTOCOL_V7, _credit_window, "held" if _token != "" else "none", _manifest_sha256 if _manifest_sha256 != "" else "none"])
 	if display_server == "headless" and (not _windows.is_empty() or _shot_final):
 		_fail(null, "shot-unavailable", "shot windows were requested, but the display server is headless")
 		return
@@ -1619,13 +1685,64 @@ func _ready_live() -> void:
 	if _perf != null:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
 	_client = RsLiveClient.new()
-	var opened: Error = _client.open(_url, _inbound_bytes, _token)
+	var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
 	if opened != OK:
 		_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 		return
 	_live_phase = "connecting"
 	_deadline_msec = Time.get_ticks_msec() + timeout_ms
 	set_process(true)
+
+
+## G7l: RS_RECEIVER_PROTOCOL (6 natively by default, 7 on the web, where it is the only one),
+## RS_RECEIVER_CREDIT_WINDOW (1 or 2, /7 only) and RS_RECEIVER_MANIFEST_SHA256 (64 lowercase hex,
+## checked at /7). Logs and returns false when one is malformed (a usage error).
+func _parse_wire_env() -> bool:
+	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
+	if protocol_text == "":
+		protocol_text = "7" if RsConfig.is_web() else "6"
+	if protocol_text != "6" and protocol_text != "7":
+		_log("error: RS_RECEIVER_PROTOCOL must be 6 or 7 (got %s)" % JSON.stringify(protocol_text))
+		return false
+	if RsConfig.is_web() and protocol_text != "7":
+		_log("error: a web receiver speaks only render-stream/7 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
+		return false
+	_wire_version = protocol_text.to_int()
+	_stream = Rs2Decoder.Stream.new(_wire_version)
+	var window_text: String = RsConfig.get_env("RS_RECEIVER_CREDIT_WINDOW").strip_edges()
+	if window_text != "":
+		if window_text != "1" and window_text != "2":
+			_log("error: RS_RECEIVER_CREDIT_WINDOW must be 1 or 2 (got %s)" % JSON.stringify(window_text))
+			return false
+		if _wire_version != 7 and window_text != "1":
+			_log("error: RS_RECEIVER_CREDIT_WINDOW %s needs RS_RECEIVER_PROTOCOL=7 (render-stream/6 has no window)" % window_text)
+			return false
+		_credit_window = window_text.to_int()
+	_manifest_sha256 = RsConfig.get_env("RS_RECEIVER_MANIFEST_SHA256").strip_edges()
+	if _wire_version == 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
+		_log("error: RS_RECEIVER_MANIFEST_SHA256 must be 64 lowercase hex (got %s)" % JSON.stringify(_manifest_sha256))
+		return false
+	return true
+
+
+## G7l: the /7 hello for this receiver: kind, window, token, manifest and the presentation
+## integers (the window's backing size and the display scale; headless: the project's viewport
+## size and 1000, gate7-design.md Q2).
+func _hello_v7() -> Dictionary:
+	var kind: String = "web-export" if RsConfig.is_web() else "native"
+	var backing := Vector2i(0, 0)
+	var dpr_milli: int = 1000
+	if DisplayServer.get_name() == "headless":
+		var width: int = ProjectSettings.get_setting("display/window/size/viewport_width", 0)
+		var height: int = ProjectSettings.get_setting("display/window/size/viewport_height", 0)
+		backing = Vector2i(width, height)
+	else:
+		backing = DisplayServer.window_get_size()
+		var scale: float = DisplayServer.screen_get_scale()
+		if scale > 0.0:
+			dpr_milli = roundi(scale * 1000.0)
+	var css := Vector2i(backing.x * 1000 / dpr_milli, backing.y * 1000 / dpr_milli)
+	return RsLiveClient.hello_v7("gate1-receiver-%s" % DisplayServer.get_name(), kind, _credit_stage, _credit_window, _inbound_bytes, _token, _manifest_sha256, backing, css, dpr_milli)
 
 
 ## A positive integer environment value, or `fallback` when unset; -1 (after logging) when
@@ -1721,7 +1838,10 @@ func _process_live() -> void:
 		"connecting":
 			if state == WebSocketPeer.STATE_OPEN:
 				_live_phase = "streaming"
-				_send(RsLiveClient.hello("gate1-receiver-%s" % DisplayServer.get_name(), _credit_stage, _inbound_bytes))
+				if _wire_version == 7:
+					_send(_hello_v7())
+				else:
+					_send(RsLiveClient.hello("gate1-receiver-%s" % DisplayServer.get_name(), _credit_stage, _inbound_bytes))
 				_log("connected to %s as connection %d (subprotocol %s); hello sent" % [_url, _conn_index, _client.peer.get_selected_protocol()])
 			elif Time.get_ticks_msec() > _deadline_msec:
 				_fail(null, "live-connect-failed", "no open connection to %s (state %d, close code %d)" % [_url, state, _client.close_code()])
@@ -1733,7 +1853,7 @@ func _process_live() -> void:
 				# second gets 503), so it retries until the connect timeout.
 				var reconnect: Dictionary = _live_report["reconnect"]
 				reconnect["connect_attempts"] = Rs2Decoder.as_int(reconnect["connect_attempts"]) + 1
-				var opened: Error = _client.open(_url, _inbound_bytes, _token)
+				var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
 				if opened != OK:
 					_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 			return
@@ -1787,7 +1907,11 @@ func _process_live() -> void:
 		_stream_report["close_code"] = code
 		# The host's error text and its close arrive together, so the close reason (which repeats
 		# the error's reason) is what a Godot client can rely on.
-		if code == 1002 or code == 1008 or code == 1009:
+		if code == 1008 and reason == "unauthorized" and not _session_seen:
+			# G7l: the /7 host checks the hello's token after the upgrade; its refusal before any
+			# session is the /7 analogue of /6's 401 upgrade (gate7-design.md Q8).
+			_fail(null, "live-connect-failed", "unauthorized: the host closed with %d before any session" % code)
+		elif code == 1002 or code == 1008 or code == 1009:
 			_fail(_last_seq_or_null(), "host-error", "%s: the host closed with %d" % [reason, code])
 		else:
 			_fail(_last_seq_or_null(), "live-disconnected", "the connection closed (code %d %s) without an end record" % [code, JSON.stringify(reason)])
@@ -1839,7 +1963,7 @@ func _start_next_connection() -> void:
 		return
 	_data = PackedByteArray()
 	_data_received_bytes = 0
-	_stream = Rs2Decoder.Stream.new()
+	_stream = Rs2Decoder.Stream.new(_wire_version)
 	_inline_since_applied = 0
 	# G2c2: connection 2 owes nothing to connection 1: payloads come from its own inline records,
 	# the cache directory or a fetch, never from this process's memory. G6l (keep): the memory
@@ -1869,7 +1993,7 @@ func _start_next_connection() -> void:
 	_streams.append(_stream_report)
 	_closing_by_receiver = false
 	_reconnecting = true
-	var opened: Error = _client.open(_url, _inbound_bytes, _token)
+	var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
 	if opened != OK:
 		_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 		return
@@ -1884,6 +2008,10 @@ func _drain_packets() -> void:
 		if not packet["binary"]:
 			var parsed: Dictionary = RsLiveClient.parse_host_text(data.get_string_from_utf8())
 			var detail: String = "%s: %s" % [parsed["reason"], parsed["detail"]] if parsed["ok"] else "unexpected text message %s" % JSON.stringify(data.get_string_from_utf8())
+			if parsed["ok"] and parsed["reason"] == "unauthorized" and not _session_seen:
+				# G7l: as the close 1008 `unauthorized` below (a browser may deliver both).
+				_fail(null, "live-connect-failed", detail)
+				return
 			_fail(_last_seq_or_null(), "host-error", detail)
 			return
 		_receive_binary(data)
@@ -1901,7 +2029,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 	_stream_report["received_bytes"] = _data_received_bytes
 	if not _session_seen:
 		# The first message is the magic followed by exactly the session record.
-		var split: Dictionary = Rs2Decoder.split_records(message)
+		var split: Dictionary = Rs2Decoder.split_records(message, _wire_version)
 		var split_errors: PackedStringArray = split["errors"]
 		if split_errors.size() > 0:
 			_fail_with_error(null, split_errors[0])
@@ -2125,6 +2253,12 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 		_log("stall: blocked %d us after the step %d shot (seq %d), injected" % [end_us - start_us, step, seq])
 	var now_us: int = Time.get_ticks_usec()
 	entry["submitted_us"] = now_us
+	if RsConfig.is_web():
+		# G7l (gate7-design.md Q9 `credit-from-paced-loop`): the main-loop iteration of this
+		# submitted ack. Equal to the entry's process_frame when the transaction was applied and
+		# drawn in one iteration (the web runs one per rAF callback). Web only, so native
+		# applied.json stays byte-for-byte what it was.
+		entry["submitted_process_frame"] = Engine.get_process_frames()
 	_send(RsLiveClient.ack(_stream_id, seq, "submitted", now_us))
 	_acks_sent["submitted"] = Rs2Decoder.as_int(_acks_sent["submitted"]) + 1
 	_submit_pending = false

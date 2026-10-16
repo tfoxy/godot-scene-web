@@ -3,7 +3,11 @@ extends RefCounted
 ## The receiver's side of render-stream/6 live transport (render-stream-6.md, since G6b;
 ## render-stream-5.md from G55d; render-stream-4.md "Live transport" from G5d; render-stream-3.md "Live transport" from G4e2;
 ## render-stream-2.md "Live transport"; gate1-design.md "Q2f", "Q5. Receiver", "G1c2"): a WebSocketPeer client, the control messages it
-## sends (hello, ack, resync) and the one the host may send (error).
+## sends (hello, ack, resync) and the one the host may send (error). Since G7l it also speaks
+## render-stream/7 (render-stream-7.md, gate7-design.md Q2/Q4): `open(..., wire_version = 7)` offers
+## subprotocol render-stream.7 and hello_v7 carries the token, the credit window, the manifest and
+## the presentation integers. The receiver picks the version (RS_RECEIVER_PROTOCOL; a web export
+## speaks only /7); every /6 byte is unchanged.
 ##
 ## Two engine facts this class exists to get right:
 ## - The inbound buffer is allocated at handshake time and is also wslay's maximum message length
@@ -17,12 +21,19 @@ extends RefCounted
 
 const SUBPROTOCOL: String = "render-stream.6"
 const PROTOCOL: String = "render-stream/6"
+## render-stream/7 (G7l, gate7-design.md Q2/Q4 "Live client"): the subprotocol and the hello of a
+## /7 connection. A /7 client offers only "render-stream.7" and carries its token in the hello,
+## never in an Authorization header on the upgrade (a browser's WebSocket cannot set one).
+const SUBPROTOCOL_V7: String = "render-stream.7"
+const PROTOCOL_V7: String = "render-stream/7"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
 const ACK_STAGES: Array[String] = ["received", "applied", "submitted"]
 
 var peer: WebSocketPeer = null
 var url: String = ""
 var inbound_buffer_bytes: int = 0
+## 6 or 7: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
+var version: int = 6
 
 
 ## Starts connecting. `token` (G2e, gate2-design.md D13), when non-empty, is sent as
@@ -32,15 +43,23 @@ var inbound_buffer_bytes: int = 0
 ## this peer surfaces only as never reaching STATE_OPEN (Godot's WebSocketPeer exposes no HTTP
 ## status for a failed handshake); the caller's existing connect-timeout handling already covers
 ## that as replay-failure live-connect-failed. Returns connect_to_url()'s error.
-func open(target_url: String, inbound_bytes: int, token: String = "") -> Error:
+##
+## `wire_version` 7 (G7l) offers only "render-stream.7" and never sends the header: the /7 token
+## travels in the hello (hello_v7), and a null or wrong one is answered with error `unauthorized`
+## and close 1008 after the upgrade (render-stream-7.md, G7n).
+func open(target_url: String, inbound_bytes: int, token: String = "", wire_version: int = 6) -> Error:
 	url = target_url
 	inbound_buffer_bytes = inbound_bytes
+	version = wire_version
 	peer = WebSocketPeer.new()
 	# Before connect_to_url: the buffer (and wslay's message cap) is fixed at handshake time.
 	peer.inbound_buffer_size = inbound_bytes
-	peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
-	if token != "":
-		peer.handshake_headers = PackedStringArray(["Authorization: Bearer " + token])
+	if version == 7:
+		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V7])
+	else:
+		peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
+		if token != "":
+			peer.handshake_headers = PackedStringArray(["Authorization: Bearer " + token])
 	return peer.connect_to_url(target_url)
 
 
@@ -100,6 +119,38 @@ static func hello(receiver: String, credit_stage: String, inbound_bytes: int) ->
 		"credit_stage": credit_stage,
 		"inbound_buffer_bytes": inbound_bytes,
 	}
+
+
+## The /7 hello (render-stream-7.md "Hello", gate7-design.md Q2), in the documented key order.
+## `token` and `manifest_sha256` are "" for JSON null.
+static func hello_v7(receiver: String, receiver_kind: String, credit_stage: String, credit_window: int, inbound_bytes: int, token: String, manifest_sha256: String, backing: Vector2i, css: Vector2i, dpr_milli: int) -> Dictionary:
+	return {
+		"type": "hello",
+		"protocol": PROTOCOL_V7,
+		"receiver": receiver,
+		"receiver_kind": receiver_kind,
+		"credit_stage": credit_stage,
+		"credit_window": credit_window,
+		"inbound_buffer_bytes": inbound_bytes,
+		"token": null if token == "" else token,
+		"manifest_sha256": null if manifest_sha256 == "" else manifest_sha256,
+		"presentation_backing_w": backing.x,
+		"presentation_backing_h": backing.y,
+		"presentation_css_w": css.x,
+		"presentation_css_h": css.y,
+		"dpr_milli": dpr_milli,
+	}
+
+
+## Whether `text` is exactly 64 lowercase hex digits (a /7 token or a manifest sha256).
+static func is_hex64(text: String) -> bool:
+	if text.length() != 64:
+		return false
+	for i: int in text.length():
+		var c: String = text[i]
+		if not ((c >= "0" and c <= "9") or (c >= "a" and c <= "f")):
+			return false
+	return true
 
 
 static func ack(stream_id: String, seq: int, stage: String, t_us: int) -> Dictionary:

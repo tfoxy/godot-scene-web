@@ -69,6 +69,7 @@ import {
   splitRecords,
   type UnknownItemsMeta,
   validateRecording,
+  wireVersionOf,
 } from "./render-stream-2";
 
 /** WP3's `render-stream-gate0-expected/1` type, whatever it is named there. */
@@ -741,18 +742,21 @@ export function summarizeRecording(
       transactions: [],
     };
   }
+  // G7l: a /7 live stream (a browser receiver's received.rs7, its host tap or a replay copy) is
+  // read as /7; every other magic as /6, which refuses all but GRS6 exactly as before.
+  const version = wireVersionOf(data);
   const summary: RecordingSummary = {
     path,
     present: true,
     sha256: sha256Hex(data),
     bytes: data.length,
-    errors: validateRecording(data),
+    errors: validateRecording(data, version),
     transactions: [],
   };
-  const split = splitRecords(data);
+  const split = splitRecords(data, version);
   let state: ResolvedState = emptyResolvedState();
   for (const raw of split.records) {
-    const { record } = decodeRecord(raw);
+    const { record } = decodeRecord(raw, version);
     if (!record) break;
     const meta = record.meta;
     if (meta.type === "session" && !summary.session) {

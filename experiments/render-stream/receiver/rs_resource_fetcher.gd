@@ -206,10 +206,19 @@ func _poll_once() -> bool:
 func _headers_ready() -> void:
 	_current["status"] = _client.get_response_code()
 	var all: Dictionary = _client.get_response_headers_as_dictionary()
+	# Header names are case-insensitive: the web's HTTPClient (fetch()) reports them lowercased
+	# (G7l), so each kept header is found by name in any case and recorded under KEPT_HEADERS'
+	# spelling, which is what rs_ws sends natively.
+	var by_lower: Dictionary = {}
+	for key: Variant in all:
+		var text: String = str(key)
+		by_lower[text.to_lower()] = all[key]
 	var kept: Dictionary = {}
 	for name: String in KEPT_HEADERS:
 		if all.has(name):
 			kept[name] = all[name]
+		elif by_lower.has(name.to_lower()):
+			kept[name] = by_lower[name.to_lower()]
 	_current["headers"] = kept
 
 

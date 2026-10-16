@@ -44,6 +44,11 @@ pub struct MaterialResidency {
 }
 
 impl MaterialResidency {
+    /// G7l: how many shaders and materials are resident.
+    pub fn resident_counts(&self) -> (usize, usize) {
+        (self.shaders.len(), self.materials.len())
+    }
+
     /// One transaction. `named_materials`/`named_shaders`: the `ok` entries items name (and their
     /// materials name), ascending; `skipped(id, hash)`: a `withheld` shader without library code.
     #[allow(clippy::too_many_arguments)]

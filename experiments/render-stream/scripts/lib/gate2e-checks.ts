@@ -176,6 +176,26 @@ export function checkG2eLegClass(
 interface HostAuthEvidence {
   wsAuthRejected401s: number;
   httpGet401s: number;
+  /** G7l: connection 1 of the host's live-summary.json (null when absent) */
+  connection: HostConnection | null;
+}
+
+/** The live-summary.json fields G7l's /7 auth reading needs (render-stream-7.md, G7n). */
+interface HostConnection {
+  version?: number;
+  token_ok?: boolean | null;
+  close_code?: number | null;
+  close_reason?: string | null;
+  closed_by?: string | null;
+  origin?: string | null;
+  http_gets?: number;
+}
+
+/** G7l: whether a leg's connection spoke render-stream/7 (a browser receiver; the token then
+ * travels in the hello, so a missing or wrong one is an `unauthorized` hello rejection, close 1008,
+ * instead of a 401 upgrade). A native /6 run never has one, so its checks are unchanged. */
+function isV7(e: HostAuthEvidence): boolean {
+  return e.connection?.version === 7;
 }
 
 /** Counts, for one leg's host: "401 unauthorized upgrade" lines in stdout.log (entry.cpp's
@@ -205,7 +225,46 @@ async function hostAuthEvidence(
       // A malformed hook-log line is recordings-decode's problem, not this check's.
     }
   }
-  return { wsAuthRejected401s, httpGet401s };
+  const summaryText = await readTextOrUndefined(
+    join(hostDir, "evidence", "live-summary.json"),
+  );
+  let connection: HostConnection | null = null;
+  try {
+    const summary = JSON.parse(summaryText ?? "null") as {
+      connections?: Array<HostConnection & { connection?: number }>;
+    } | null;
+    connection = summary?.connections?.find((c) => c.connection === 1) ?? null;
+  } catch {
+    connection = null;
+  }
+  return { wsAuthRejected401s, httpGet401s, connection };
+}
+
+/** G7l: the /7 reading of one leg's hello outcome: a rejection is token_ok false with error
+ * `unauthorized` and close 1008 by the host; an accepted hello is token_ok true. */
+function v7HelloProblems(
+  leg: string,
+  e: HostAuthEvidence,
+  rejected: boolean,
+): string[] {
+  const c = e.connection;
+  const problems: string[] = [];
+  if (rejected) {
+    if (
+      c?.token_ok !== false ||
+      c.close_code !== 1008 ||
+      c.close_reason !== "unauthorized" ||
+      c.closed_by !== "host"
+    )
+      problems.push(
+        `${leg}: expected the /7 hello rejected (token_ok false, closed by the host 1008 unauthorized), host summary has token_ok ${c?.token_ok} close ${c?.closed_by} ${c?.close_code} ${c?.close_reason}`,
+      );
+  } else if (c?.token_ok !== true) {
+    problems.push(
+      `${leg}: expected the /7 hello's token accepted (token_ok true), host summary has ${c?.token_ok}`,
+    );
+  }
+  return problems;
 }
 
 /** D12/G2e "Checks": the host log shows 401s exactly for the sabotage requests -- an upgrade
@@ -226,14 +285,30 @@ export async function checkAuthRequired(outDir: string): Promise<G2bCheck> {
   };
   for (const { leg } of G2E_LEGS) {
     const e = await hostAuthEvidence(outDir, leg);
-    notes.push(
-      `${leg}: upgrade-401 ${e.wsAuthRejected401s}, GET-401 ${e.httpGet401s}`,
-    );
-    if (expectUpgrade401[leg] && e.wsAuthRejected401s < 1)
+    if (isV7(e)) {
+      // G7l: at /7 the upgrade never carries the token, so no leg may show a 401 upgrade;
+      // sabotage-no-token's refusal is the hello's (`unauthorized`, close 1008), and the GET
+      // rule is /6's.
+      notes.push(
+        `${leg} (/7): hello token_ok ${e.connection?.token_ok}, close ${e.connection?.close_code} ${e.connection?.close_reason ?? ""}, upgrade-401 ${e.wsAuthRejected401s}, GET-401 ${e.httpGet401s}`,
+      );
+      problems.push(...v7HelloProblems(leg, e, expectUpgrade401[leg]));
+      if (e.wsAuthRejected401s > 0)
+        problems.push(
+          `${leg}: a /7 connection never sends the token on the upgrade, yet the host log shows ${e.wsAuthRejected401s} 401 upgrade rejection(s)`,
+        );
+    } else {
+      notes.push(
+        `${leg}: upgrade-401 ${e.wsAuthRejected401s}, GET-401 ${e.httpGet401s}`,
+      );
+    }
+    if (isV7(e)) {
+      // the upgrade rules above replace /6's
+    } else if (expectUpgrade401[leg] && e.wsAuthRejected401s < 1)
       problems.push(
         `${leg}: expected a 401 upgrade rejection in the host log, found none`,
       );
-    if (!expectUpgrade401[leg] && e.wsAuthRejected401s > 0)
+    if (!isV7(e) && !expectUpgrade401[leg] && e.wsAuthRejected401s > 0)
       problems.push(
         `${leg}: expected no 401 upgrade rejection, host log shows ${e.wsAuthRejected401s}`,
       );
@@ -248,7 +323,7 @@ export async function checkAuthRequired(outDir: string): Promise<G2bCheck> {
   }
   return check(
     "auth-required",
-    "the host log shows 401s exactly for the sabotage requests (an upgrade rejection for sabotage-no-token, a resource GET rejection for sabotage-bad-http-token) and none for live-auth",
+    "the host log shows 401s exactly for the sabotage requests (an upgrade rejection for sabotage-no-token, a resource GET rejection for sabotage-bad-http-token) and none for live-auth; on a render-stream/7 connection (G7l, a browser receiver) sabotage-no-token's rejection is instead the hello's (token_ok false, error and close 1008 `unauthorized`), live-auth's and sabotage-bad-http-token's hellos have token_ok true, and no upgrade is ever 401",
     problems,
     notes.join("; "),
     G2E_LEGS.map((l) => join(outDir, l.leg, "host", "stdout.log")),
@@ -329,13 +404,156 @@ export interface G2eLegReport {
   artifacts: string[];
 }
 
+/** G7l (gate7-design.md Q8 g7-2): the two legs only a browser receiver runs (run-gate2.sh under
+ * GATE7_LIVE_KIND). Judged only when live-auth's connection spoke /7, so a native /6 run of gate 2
+ * is unchanged. */
+export const G2E_V7_LEGS: readonly G2eLegExpectation[] = [
+  {
+    leg: "origin-refused",
+    expected_class: "replay-failure",
+    reason: "live-connect-failed",
+  },
+  {
+    leg: "sabotage-no-cors",
+    expected_class: "replay-failure",
+    reason: "resource-unavailable",
+  },
+];
+
+interface HookGet {
+  hash?: string;
+  http_status?: number;
+  method?: string;
+}
+
+async function hookGets(hostDir: string): Promise<HookGet[]> {
+  const text = await readTextOrUndefined(
+    join(hostDir, "evidence", "resources.jsonl"),
+  );
+  const out: HookGet[] = [];
+  for (const line of (text ?? "").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      const parsed = JSON.parse(line) as HookGet & { op?: string };
+      if (parsed.op === "http-get") out.push(parsed);
+    } catch {
+      // recordings-decode's problem
+    }
+  }
+  return out;
+}
+
+/** origin-refused: the page's origin (page-config.json) is not in the host's allowlist
+ * (live.json), the host logged `live: 403 origin <that origin>` (OriginRejected) and counted it,
+ * no connection ever opened, and the receiver failed live-connect-failed. */
+export async function checkOriginRefused(outDir: string): Promise<G2bCheck> {
+  const problems: string[] = [];
+  const hostDir = join(outDir, "origin-refused", "host");
+  const receiverDir = join(outDir, "origin-refused", "receiver");
+  const page = JSON.parse(
+    (await readTextOrUndefined(join(receiverDir, "page-config.json"))) ??
+      "null",
+  ) as { origin?: string } | null;
+  const live = JSON.parse(
+    (await readTextOrUndefined(join(hostDir, "evidence", "live.json"))) ??
+      "null",
+  ) as { allowed_origins?: string[] } | null;
+  const summary = JSON.parse(
+    (await readTextOrUndefined(
+      join(hostDir, "evidence", "live-summary.json"),
+    )) ?? "null",
+  ) as {
+    connections?: unknown[];
+    resources?: { origin_rejected?: number };
+  } | null;
+  const stdoutLog =
+    (await readTextOrUndefined(join(hostDir, "stdout.log"))) ?? "";
+  const origin = page?.origin;
+  if (!origin) problems.push("the receiver's page-config.json names no origin");
+  else if ((live?.allowed_origins ?? []).includes(origin))
+    problems.push(`the page origin ${origin} is in the host's allowlist`);
+  const rejected = origin
+    ? stdoutLog
+        .split("\n")
+        .filter((l) => l.includes(`live: 403 origin ${origin}`))
+    : [];
+  if (rejected.length < 1)
+    problems.push(
+      `no "live: 403 origin ${origin}" line in the host's stdout.log`,
+    );
+  const counted = summary?.resources?.origin_rejected ?? 0;
+  if (counted < 1)
+    problems.push(
+      `live-summary.json resources.origin_rejected is ${counted}, expected >= 1`,
+    );
+  if ((summary?.connections ?? []).length > 0)
+    problems.push(
+      `the host opened ${(summary?.connections ?? []).length} connection(s) for a refused origin`,
+    );
+  return check(
+    "origin-refused",
+    "origin-refused (G7l): a page served from an origin the host does not allow is refused on the WebSocket upgrade with 403 (OriginRejected logged as `live: 403 origin <origin>` and counted in live-summary.json), no connection opens, and the receiver fails live-connect-failed",
+    problems,
+    `${rejected.length} rejection line(s) for ${origin} (allowed: ${(live?.allowed_origins ?? []).join(", ")}), origin_rejected ${counted}, 0 connections`,
+    [
+      join(hostDir, "stdout.log"),
+      join(hostDir, "evidence", "live-summary.json"),
+      join(receiverDir, "page-config.json"),
+    ],
+  );
+}
+
+/** sabotage-no-cors: the host served the receiver's first GET (hook-log http-get 200, an Origin
+ * request) without any Access-Control-* header, and the receiver failed resource-unavailable at
+ * seq 1 (the browser withheld the response). */
+export async function checkNoCors(outDir: string): Promise<G2bCheck> {
+  const problems: string[] = [];
+  const hostDir = join(outDir, "sabotage-no-cors", "host");
+  const receiverDir = join(outDir, "sabotage-no-cors", "receiver");
+  const live = JSON.parse(
+    (await readTextOrUndefined(join(hostDir, "evidence", "live.json"))) ??
+      "null",
+  ) as { listener_sabotage?: string | null } | null;
+  const applied = JSON.parse(
+    (await readTextOrUndefined(join(receiverDir, "applied.json"))) ?? "null",
+  ) as { failure?: { seq?: number | null; reason?: string } | null } | null;
+  const gets = (await hookGets(hostDir)).filter(
+    (g) => (g.method ?? "GET") === "GET",
+  );
+  const served = gets.filter((g) => g.http_status === 200);
+  if (live?.listener_sabotage !== "no-cors")
+    problems.push(
+      `live.json listener_sabotage is ${live?.listener_sabotage}, expected no-cors`,
+    );
+  if (served.length < 1)
+    problems.push("the host's hook log shows no GET it served (http-get 200)");
+  if (
+    applied?.failure?.reason !== "resource-unavailable" ||
+    applied.failure.seq !== 1
+  )
+    problems.push(
+      `the receiver's failure is ${JSON.stringify(applied?.failure ?? null)}, expected resource-unavailable at seq 1`,
+    );
+  return check(
+    "no-cors-withheld",
+    "sabotage-no-cors (G7l): with every Access-Control-* header omitted, the host still served the receiver's GET (http-get 200 in its hook log), and the browser withheld it: the receiver fails resource-unavailable at seq 1",
+    problems,
+    `${served.length} GET(s) served (${gets.length} logged); receiver ${applied?.failure?.reason} at seq ${applied?.failure?.seq}`,
+    [
+      join(hostDir, "evidence", "resources.jsonl"),
+      join(receiverDir, "applied.json"),
+    ],
+  );
+}
+
 export async function runG2e(
   outDir: string,
   expected: Gate2Expected,
 ): Promise<{ checks: G2bCheck[]; legs: Record<string, G2eLegReport> }> {
   const checks: G2bCheck[] = [];
   const legs: Record<string, G2eLegReport> = {};
-  for (const e of G2E_LEGS) {
+  const v7 = isV7(await hostAuthEvidence(outDir, "live-auth"));
+  for (const e of v7 ? [...G2E_LEGS, ...G2E_V7_LEGS] : G2E_LEGS) {
     const host = await loadCapture(
       outDir,
       e.leg,
@@ -368,5 +586,9 @@ export async function runG2e(
   }
   checks.push(await checkAuthRequired(outDir));
   checks.push(await checkTokenNotLogged(outDir));
+  if (v7) {
+    checks.push(await checkOriginRefused(outDir));
+    checks.push(await checkNoCors(outDir));
+  }
   return { checks, legs };
 }

@@ -1,5 +1,6 @@
 // GSW receiver evidence (gate7-design.md Q5 "Evidence", D10, G7a): applied.json in the native
-// receiver's file-mode shape (`render-stream-receiver-applied/7`, receiver.gd `_init_report`),
+// receiver's file-mode shape (`render-stream-receiver-applied/7`, receiver.gd `_init_report`) and,
+// since G7l, its live-mode shape (`_ready_live`, `_live_report`, per-transaction receipt entries),
 // shots as 8-bit RGBA PNGs read back from the RGB10_A2 target, state dumps as the native receiver
 // writes them (the wasm module spells them, Godot's floats included), every file PUT to the
 // harness. Every encode and PUT happens after the frame that produced it, outside the timers.
@@ -99,6 +100,8 @@ export async function encodePng(
 /** The wasm module's applied.json parts (`GswRs::applied_json_parts`). */
 export interface RustParts {
   transactions: {
+    /** G7l: the connection (1 in file mode). */
+    stream?: number;
     seq: number;
     frame: number;
     encoding: string;
@@ -165,91 +168,177 @@ export interface ShellTx {
   inline_received: number;
   shader_payload_fetches: number;
   process_frame: number;
+  /** G7l live: payloads taken from the page's payload cache (the cache directory's stand-in). */
+  cache_hits?: number;
 }
 
 export interface Shot {
   stream: number;
   seq: number;
-  step: null;
+  step: number | null;
+  /** RS_RECEIVER_SHOT_FINAL's shot (live). */
+  final?: true;
+  /** Live: the wire frame of the shot's transaction (G6s). */
+  frame?: number;
   path: string;
   state_path: string | null;
   process_frame: number;
   applied_through: number;
 }
 
+/** G7l: one received transaction (live), in receipt order, as receiver.gd's `_transaction_entry`
+ * keeps it: the applier's facts are merged in from the wasm parts by (stream, seq) when written. */
+export interface LiveEntry {
+  stream: number;
+  seq: number;
+  frame: number;
+  encoding: string;
+  record_sha256: string;
+  received_us: number;
+  applied_us: number | null;
+  submitted_us: number | null;
+  skipped: string | null;
+  /** Q9 `credit-from-paced-loop` evidence (GSW only): the rAF callback that applied and drew
+   * this transaction (its index and timestamp), and when its `submitted` ack was sent and from
+   * where (`raf`, or `onmessage` under the `ack-on-receipt` sabotage). */
+  paced: {
+    received_ms: number;
+    applied_raf: number | null;
+    applied_raf_ts_ms: number | null;
+    applied_ms: number | null;
+    drawn_raf: number | null;
+    drawn_ms: number | null;
+    submitted_ack_ms: number | null;
+    submitted_from: "raf" | "onmessage" | null;
+  };
+}
+
 export interface Report {
   cfg: ReceiverConfig;
+  mode: "file" | "live";
   recording: { path: string; sha256: string | null; bytes: number | null };
   sessionId: string | null;
-  stream: Record<string, unknown> | null;
+  /** One per connection (file mode: the recording). */
+  streams: Record<string, unknown>[];
   status: "ok" | "replay-failure";
   failure: { seq: number | null; reason: string; detail: string } | null;
   endSeen: boolean;
   viewport: Record<string, unknown>;
   shots: Shot[];
+  shotsMissed: number[];
   /** Session-level typed entries (seq null), before the per-transaction ones. */
   sessionUnsupported: RustParts["unsupported"];
   rust: RustParts | null;
-  shell: Map<number, ShellTx>;
-  fetches: FetchEntry[];
+  /** Keyed `<stream>:<seq>`. */
+  shell: Map<string, ShellTx>;
+  /** File mode's store reads (source.ts) or live mode's HTTP fetches (live.ts). */
+  fetches: (FetchEntry | Record<string, unknown>)[];
   distinctFetched: number;
+  /** Live: the `live` block (receiver.gd `_live_report`), the protocol and the granted window. */
+  live: Record<string, unknown> | null;
+  entries: LiveEntry[] | null;
+  protocol: "render-stream/6" | "render-stream/7";
+  creditWindow: number | null;
+  /** Live: the page payload cache's block (null: file mode's `http-cache`). */
+  cache?: Record<string, unknown> | null;
+}
+
+type RustTx = RustParts["transactions"][number];
+
+function resourcesOf(t: RustTx | undefined, s: ShellTx | undefined) {
+  return {
+    fetched: s?.fetched ?? 0,
+    fetched_bytes: s?.fetched_bytes ?? 0,
+    cache_hits: s?.cache_hits ?? 0,
+    inline_received: s?.inline_received ?? 0,
+    created: t?.resources.created ?? 0,
+    updated: t?.resources.updated ?? 0,
+    replaced: t?.resources.replaced ?? 0,
+    freed: t?.resources.freed ?? 0,
+    upload_bytes: t?.resources.upload_bytes ?? 0,
+    fetch_us: Math.round(s?.fetch_us ?? 0),
+    skipped_commands: null,
+    meshes_created: t?.resources.meshes_created ?? null,
+    meshes_rebuilt: t?.resources.meshes_rebuilt ?? null,
+    surface_updates: t?.resources.surface_updates ?? null,
+    mesh_upload_bytes: t?.resources.mesh_upload_bytes ?? null,
+    skipped_mesh_commands: null,
+    shaders_created: t?.resources.shaders_created ?? 0,
+    shader_code_sets: t?.resources.shader_code_sets ?? 0,
+    shader_payload_fetches: s?.shader_payload_fetches ?? 0,
+    materials_created: t?.resources.materials_created ?? 0,
+    param_sets: t?.resources.param_sets ?? 0,
+    instance_param_sets: t?.resources.instance_param_sets ?? 0,
+    canvases_created: t?.resources.canvases_created ?? 0,
+    canvas_attach: null,
+    canvas_stacking_sets: null,
+  };
 }
 
 /** applied.json, keys in receiver.gd's order (`_init_report`, `_write_report`). */
 export function appliedJson(r: Report): Record<string, unknown> {
   const full = r.cfg.log === "full";
   const rust = r.rust ?? { transactions: [], uploads: [], unsupported: [] };
-  const transactions = rust.transactions.map((t) => {
-    const s = r.shell.get(t.seq);
-    return {
-      stream: 1,
-      seq: t.seq,
-      frame: t.frame,
-      encoding: t.encoding,
-      record_sha256: t.record_sha256,
-      process_frame: s?.process_frame ?? null,
-      created: t.created,
-      freed: t.freed,
-      reparented: null,
-      commands_replayed: t.commands_replayed,
-      msdf_commands: t.msdf_commands,
-      mesh_commands: t.mesh_commands,
-      rs_calls: null,
-      received_us: null,
-      applied_us: null,
-      submitted_us: null,
-      skipped: null,
-      resources: {
-        fetched: s?.fetched ?? 0,
-        fetched_bytes: s?.fetched_bytes ?? 0,
-        cache_hits: 0,
-        inline_received: s?.inline_received ?? 0,
-        created: t.resources.created,
-        updated: t.resources.updated,
-        replaced: t.resources.replaced,
-        freed: t.resources.freed,
-        upload_bytes: t.resources.upload_bytes,
-        fetch_us: Math.round(s?.fetch_us ?? 0),
-        skipped_commands: null,
-        meshes_created: t.resources.meshes_created ?? null,
-        meshes_rebuilt: t.resources.meshes_rebuilt ?? null,
-        surface_updates: t.resources.surface_updates ?? null,
-        mesh_upload_bytes: t.resources.mesh_upload_bytes ?? null,
-        skipped_mesh_commands: null,
-        shaders_created: t.resources.shaders_created,
-        shader_code_sets: t.resources.shader_code_sets,
-        shader_payload_fetches: s?.shader_payload_fetches ?? 0,
-        materials_created: t.resources.materials_created,
-        param_sets: t.resources.param_sets,
-        instance_param_sets: t.resources.instance_param_sets,
-        canvases_created: t.resources.canvases_created,
-        canvas_attach: null,
-        canvas_stacking_sets: null,
-      },
-    };
+  const byKey = new Map<string, RustTx>();
+  for (const t of rust.transactions) byKey.set(`${t.stream ?? 1}:${t.seq}`, t);
+  const appliedEntry = (t: RustTx | undefined, s: ShellTx | undefined) => ({
+    process_frame: s?.process_frame ?? null,
+    created: t ? t.created : null,
+    freed: t ? t.freed : null,
+    reparented: null,
+    commands_replayed: t ? t.commands_replayed : null,
+    msdf_commands: t ? t.msdf_commands : null,
+    mesh_commands: t ? t.mesh_commands : null,
+    rs_calls: null,
   });
-  const sum = (f: (t: (typeof transactions)[number]) => number) =>
-    transactions.reduce((n, t) => n + f(t), 0);
+  const transactions =
+    r.entries === null
+      ? rust.transactions.map((t) => {
+          const s = r.shell.get(`${t.stream ?? 1}:${t.seq}`);
+          return {
+            stream: t.stream ?? 1,
+            seq: t.seq,
+            frame: t.frame,
+            encoding: t.encoding,
+            record_sha256: t.record_sha256,
+            ...appliedEntry(t, s),
+            received_us: null,
+            applied_us: null,
+            submitted_us: null,
+            skipped: null,
+            resources: resourcesOf(t, s) as ReturnType<
+              typeof resourcesOf
+            > | null,
+          };
+        })
+      : r.entries.map((e) => {
+          const key = `${e.stream}:${e.seq}`;
+          const t = e.applied_us === null ? undefined : byKey.get(key);
+          const s = e.applied_us === null ? undefined : r.shell.get(key);
+          const applied = t !== undefined;
+          return {
+            stream: e.stream,
+            seq: e.seq,
+            frame: e.frame,
+            encoding: e.encoding,
+            record_sha256: e.record_sha256,
+            ...appliedEntry(t, s),
+            received_us: e.received_us,
+            applied_us: e.applied_us,
+            submitted_us: e.submitted_us,
+            skipped: e.skipped,
+            resources: applied ? resourcesOf(t, s) : null,
+            paced: e.paced,
+          };
+        });
+  const applied = transactions.filter((t) => t.resources !== null);
+  const sum = (
+    f: (t: ReturnType<typeof resourcesOf>) => number | null,
+  ): number =>
+    applied.reduce(
+      (n, t) => n + (f(t.resources as ReturnType<typeof resourcesOf>) ?? 0),
+      0,
+    );
   const counted = rust.uploads.filter((u) => u.op !== "placeholder");
   return {
     schema: APPLIED_SCHEMA,
@@ -257,23 +346,23 @@ export function appliedJson(r: Report): Record<string, unknown> {
       kind: "gsw-canvas",
       build_sha256: r.cfg.buildSha256,
       manifest_sha256: r.cfg.manifestSha256,
-      protocol: "render-stream/6",
-      credit_window: null,
+      protocol: r.protocol,
+      credit_window: r.creditWindow,
     },
-    mode: "file",
+    mode: r.mode,
     recording: r.recording,
     session_id: r.sessionId,
-    streams: r.stream ? [r.stream] : [],
+    streams: r.streams,
     status: r.status,
     failure: r.failure,
     end_seen: r.endSeen,
     viewport: r.viewport,
     transactions: full ? transactions : null,
     shots: r.shots,
-    shots_missed: [],
+    shots_missed: r.shotsMissed,
     unsupported: [...r.sessionUnsupported, ...rust.unsupported],
-    live: null,
-    cache: {
+    live: r.live,
+    cache: r.cache ?? {
       dir: null,
       mode: "http-cache",
       entries_before: null,
@@ -285,21 +374,21 @@ export function appliedJson(r: Report): Record<string, unknown> {
     mesh_uploads: full ? (rust.mesh_uploads ?? []) : null,
     resources_summary: {
       distinct_fetched: r.distinctFetched,
-      fetched_bytes: sum((t) => t.resources.fetched_bytes),
-      cache_hits: 0,
+      fetched_bytes: sum((t) => t.fetched_bytes),
+      cache_hits: sum((t) => t.cache_hits),
       uploads: counted.length,
       upload_bytes: counted.reduce((n, u) => n + u.data_bytes, 0),
-      meshes_created: sum((t) => t.resources.meshes_created ?? 0),
-      meshes_rebuilt: sum((t) => t.resources.meshes_rebuilt ?? 0),
-      surface_updates: sum((t) => t.resources.surface_updates ?? 0),
-      mesh_upload_bytes: sum((t) => t.resources.mesh_upload_bytes ?? 0),
-      shaders_created: sum((t) => t.resources.shaders_created),
-      shader_code_sets: sum((t) => t.resources.shader_code_sets),
-      shader_payload_fetches: sum((t) => t.resources.shader_payload_fetches),
-      materials_created: sum((t) => t.resources.materials_created),
-      param_sets: sum((t) => t.resources.param_sets),
-      instance_param_sets: sum((t) => t.resources.instance_param_sets),
-      canvases_created: sum((t) => t.resources.canvases_created ?? 0),
+      meshes_created: sum((t) => t.meshes_created),
+      meshes_rebuilt: sum((t) => t.meshes_rebuilt),
+      surface_updates: sum((t) => t.surface_updates),
+      mesh_upload_bytes: sum((t) => t.mesh_upload_bytes),
+      shaders_created: sum((t) => t.shaders_created),
+      shader_code_sets: sum((t) => t.shader_code_sets),
+      shader_payload_fetches: sum((t) => t.shader_payload_fetches),
+      materials_created: sum((t) => t.materials_created),
+      param_sets: sum((t) => t.param_sets),
+      instance_param_sets: sum((t) => t.instance_param_sets),
+      canvases_created: sum((t) => t.canvases_created),
       canvas_attach: null,
       canvas_stacking_sets: null,
       evictions_memory: 0,
