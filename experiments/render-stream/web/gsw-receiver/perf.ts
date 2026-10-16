@@ -28,6 +28,15 @@ export interface FrameSample {
   texture_upload_bytes: number;
   item_bytes: number;
   vertex_bytes: number;
+  /** G7l live (Q9 `credit-from-paced-loop`): the connection, the rAF callback that applied and
+   * drew this transaction (its index and timestamp), and when its acks were sent (ms,
+   * performance.now(); `submitted_ack_ms` null when no submitted ack was sent from this callback). */
+  stream?: number;
+  raf?: number;
+  raf_ts_ms?: number;
+  applied_ack_ms?: number;
+  submitted_ack_ms?: number | null;
+  submitted_from?: "raf" | "onmessage" | null;
 }
 
 function hist(values: number[]): Record<string, number> {

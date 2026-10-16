@@ -68,6 +68,10 @@ pub struct Stats {
     pub vertices: u32,
     pub indices: u32,
     pub draws: u32,
+    /// G7l: the accepted transaction's encoding (0 full, 1 patch).
+    pub encoding: u32,
+    /// G7l: the connection (stream) the accepted record arrived on, 1 in file mode.
+    pub stream: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -271,6 +275,16 @@ pub struct GswRs {
     next_program: u32,
     /// `shader-param-parity` evidence: every binding's values whenever they changed.
     param_log: Vec<ParamLogEntry>,
+    /// G7l live mode: the wasm-owned receive buffer one WebSocket message is copied into (Q14c
+    /// step 1), the bytes this connection has received so far (a record's offset in the
+    /// connection's `received.rs7`), and the last accepted record's digest.
+    rx: Vec<u8>,
+    rx_offset: usize,
+    live: bool,
+    stream_index: u32,
+    last_digest: [u8; 32],
+    /// The session viewport, kept so a resync can rebuild the applier (`live_rebuild`).
+    viewport: Option<Viewport>,
 }
 
 /// One binding's values as of transaction `seq` (they hold until its next entry).
@@ -301,6 +315,8 @@ pub fn typed_reason(shortcut: &str) -> Option<&'static str> {
 
 /// One applied transaction's applied.json facts (the TypeScript shell adds the fetch fields).
 struct TxEvidence {
+    /// G7l: the connection it arrived on (1 in file mode; 2 after a reconnect).
+    stream: u32,
     seq: i64,
     frame: i64,
     encoding: &'static str,
@@ -386,6 +402,12 @@ impl GswRs {
             pending: Vec::new(),
             next_program: 1,
             param_log: Vec::new(),
+            rx: Vec::new(),
+            rx_offset: 0,
+            live: false,
+            stream_index: 1,
+            last_digest: [0; 32],
+            viewport: None,
         })
     }
 
@@ -581,7 +603,9 @@ impl GswRs {
         let span = *self.spans.first().ok_or("missing-session: no records")?;
         let opts = Options {
             version: self.version,
-            digest: if self.opts.digest_inline {
+            // Live mode digests inline: a message is not kept after `live_accept`, and D31's
+            // deferred digest needs the bytes, which only file mode holds.
+            digest: if self.opts.digest_inline || self.live {
                 DigestPolicy::Inline
             } else {
                 DigestPolicy::Deferred
@@ -620,6 +644,8 @@ impl GswRs {
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
         self.applier = Some(applier);
+        self.viewport = Some(viewport);
+        self.stats.stream = self.stream_index;
         self.validator = Some(v);
         self.accepted.push(0);
         self.stats.accepted_records = 1;
@@ -628,21 +654,41 @@ impl GswRs {
 
     /// Step 2: decode, validate and resolve record `index`. Returns `ACCEPT_*`, or -1 (`error`).
     pub fn accept(&mut self, index: usize) -> i32 {
-        let Some(v) = self.validator.as_mut() else {
-            self.error = "accept before start".into();
-            return -1;
-        };
         let Some(span) = self.spans.get(index).copied() else {
             self.error = format!("no record {index}");
             return -1;
         };
-        let accepted = match v.accept(span.bytes(&self.data), span.offset) {
+        self.accept_bytes(
+            false,
+            span.offset,
+            span.offset + span.byte_length,
+            span.offset,
+            index,
+        )
+    }
+
+    /// Decode, validate and resolve one record held in `rx` (`live`) or `data` at `[a, b)`;
+    /// `offset` is its place in the stream (messages only), `index` its record index.
+    fn accept_bytes(&mut self, live: bool, a: usize, b: usize, offset: usize, index: usize) -> i32 {
+        let Some(v) = self.validator.as_mut() else {
+            self.error = "accept before start".into();
+            return -1;
+        };
+        let bytes = if live {
+            &self.rx[a..b]
+        } else {
+            &self.data[a..b]
+        };
+        let accepted = match v.accept(bytes, offset) {
             Ok(a) => a,
             Err(e) => {
                 self.error = fail(e);
                 return -1;
             }
         };
+        if let Some(Some(d)) = v.record_digests().last() {
+            self.last_digest = d.0;
+        }
         self.accepted.push(index);
         self.stats.accepted_records = self.accepted.len() as u32;
         match accepted {
@@ -662,40 +708,233 @@ impl GswRs {
                 let st = v.state();
                 self.stats.seq = st.seq as u32;
                 self.stats.frame = st.frame as u32;
+                self.stats.encoding = u32::from(st.encoding.as_str() != "full");
                 let Some(a) = self.applier.as_mut() else {
                     self.error = "accept before start".into();
                     return -1;
                 };
                 a.prepare(st, v.delta());
-                a.needed(st, v.delta(), &self.payloads, &mut self.needed);
-                self.provide_cursor = 0;
-                self.stats.needed = self.needed.len() as u32;
-                if self.needed.is_empty() {
-                    ACCEPT_TRANSACTION
-                } else {
-                    self.needed_bytes.clear();
-                    self.needed_kinds.clear();
-                    let mesh: HashSet<Hash> = st
-                        .meshes
-                        .values()
-                        .flat_map(|m| m.surfaces.iter().map(|s| s.hash))
-                        .collect();
-                    let shader: HashSet<Hash> =
-                        st.shaders.values().filter_map(|s| s.hash).collect();
-                    for h in &self.needed {
-                        self.needed_bytes.extend_from_slice(&h.0);
-                        self.needed_kinds.push(if shader.contains(h) {
-                            2
-                        } else if mesh.contains(h) {
-                            1
-                        } else {
-                            0
-                        });
-                    }
-                    ACCEPT_NEEDS_PAYLOADS
-                }
+                self.compute_needed()
             }
         }
+    }
+
+    /// The accepted transaction's needed set (after `Applier::prepare`): `ACCEPT_TRANSACTION`
+    /// when nothing is missing, else `ACCEPT_NEEDS_PAYLOADS` with `needed_*` filled.
+    fn compute_needed(&mut self) -> i32 {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            self.error = "accept before start".into();
+            return -1;
+        };
+        let st = v.state();
+        a.needed(st, v.delta(), &self.payloads, &mut self.needed);
+        self.provide_cursor = 0;
+        self.stats.needed = self.needed.len() as u32;
+        if self.needed.is_empty() {
+            return ACCEPT_TRANSACTION;
+        }
+        self.needed_bytes.clear();
+        self.needed_kinds.clear();
+        let mesh: HashSet<Hash> = st
+            .meshes
+            .values()
+            .flat_map(|m| m.surfaces.iter().map(|s| s.hash))
+            .collect();
+        let shader: HashSet<Hash> = st.shaders.values().filter_map(|s| s.hash).collect();
+        for h in &self.needed {
+            self.needed_bytes.extend_from_slice(&h.0);
+            self.needed_kinds.push(if shader.contains(h) {
+                2
+            } else if mesh.contains(h) {
+                1
+            } else {
+                0
+            });
+        }
+        ACCEPT_NEEDS_PAYLOADS
+    }
+
+    // ------------------------------------------------------------------------ G7l: live mode
+
+    /// Live step 1 (Q14c): room for one WebSocket message of `len` bytes, which the caller copies
+    /// in once through a view of the returned pointer (taken after this call: it may grow memory).
+    pub fn rx(&mut self, len: usize) -> *mut u8 {
+        if self.rx.len() < len {
+            self.rx.resize(len, 0);
+        }
+        self.rx.as_mut_ptr()
+    }
+
+    /// A connection's first message, `len` bytes in `rx`: the /7 magic followed by exactly the
+    /// session record (render-stream-2.md "Live transport"). Starts the session as `start` does.
+    /// 0, or -1 (`error`: `bad-magic`, `truncated`, `live-framing`, or the session's own codes).
+    pub fn live_session(&mut self, len: usize) -> i32 {
+        self.live = true;
+        let msg = &self.rx[..len];
+        if wire::version_of_magic(msg) != Some(7) {
+            self.error = format!(
+                "bad-magic: expected {}, got {}",
+                wire::hex(&wire::magic(7)),
+                wire::hex(&msg[..len.min(wire::MAGIC_LEN)])
+            );
+            return -1;
+        }
+        let spans = match wire::split_records(msg, 7) {
+            Ok(s) => s,
+            Err(e) => {
+                self.error = fail(e);
+                return -1;
+            }
+        };
+        if spans.len() != 1 {
+            self.error = format!(
+                "live-framing: the first message holds {} records, expected exactly the session",
+                spans.len()
+            );
+            return -1;
+        }
+        self.data = msg.to_vec();
+        self.spans = spans;
+        self.version = 7;
+        self.rx_offset = len;
+        self.start()
+    }
+
+    /// Every later message, `len` bytes in `rx`: exactly one record, accepted as `accept` does
+    /// (resource, transaction or end). Returns `ACCEPT_*`, or -1 (`error`; `live-framing` when the
+    /// message is not exactly one record, after the record itself was accepted, as natively).
+    pub fn live_accept(&mut self, len: usize) -> i32 {
+        let offset = self.rx_offset;
+        if len < 4 {
+            self.error = format!(
+                "truncated: record_len prefix at offset {offset} runs past the end of the input"
+            );
+            return -1;
+        }
+        let byte_length = 4 + wire::le_u32(&self.rx, 0) as usize;
+        if byte_length > len {
+            self.error = format!(
+                "truncated: record at offset {offset} declares {byte_length} bytes but only {len} remain"
+            );
+            return -1;
+        }
+        let index = self.accepted.len();
+        let code = self.accept_bytes(true, 0, byte_length, offset, index);
+        if code < 0 {
+            return code;
+        }
+        self.rx_offset += len;
+        if byte_length != len {
+            self.error = format!(
+                "live-framing: a message of {len} bytes holds a {byte_length}-byte record; every message after the first is exactly one record"
+            );
+            return -1;
+        }
+        code
+    }
+
+    /// The last accepted record's SHA-256 (live mode digests inline): 32 bytes.
+    pub fn last_digest_ptr(&self) -> *const u8 {
+        self.last_digest.as_ptr()
+    }
+
+    /// A resync (`RS_RECEIVER_RESYNC`) skipped transactions the applier never saw, and the
+    /// applier is delta-driven, so the full transaction that ends it is applied by a fresh
+    /// applier that walks the whole resolved state, as the native receiver's reconcile does.
+    /// Payloads stay (content-addressed). Returns `ACCEPT_TRANSACTION` or `ACCEPT_NEEDS_PAYLOADS`.
+    pub fn live_rebuild(&mut self) -> i32 {
+        let (Some(v), Some(viewport)) = (self.validator.as_ref(), self.viewport) else {
+            self.error = "live_rebuild before start".into();
+            return -1;
+        };
+        let mut applier = Applier::new(viewport);
+        applier.sabotage = self.opts.apply;
+        applier.prepare(v.state(), v.delta());
+        self.applier = Some(applier);
+        self.compute_needed()
+    }
+
+    /// RS_RECEIVER_RECONNECT's dispose evidence (off the frame path), in the native receiver's
+    /// RID terms with the applier's retained objects as the RIDs (items, non-root canvases,
+    /// resident textures, meshes, shaders and materials): `{"created":..,"freed_by_apply":..,
+    /// "owned":..}` over this connection, `created` and `freed_by_apply` summed from its applied
+    /// transactions' counters and `owned` counted from the applier's own tables.
+    pub fn dispose_json(&self) -> String {
+        let (mut created, mut freed) = (0u64, 0u64);
+        for e in self
+            .evidence
+            .iter()
+            .filter(|e| e.stream == self.stream_index)
+        {
+            created += u64::from(e.created)
+                + u64::from(e.tex.created)
+                + u64::from(e.mat.shaders_created)
+                + u64::from(e.mat.materials_created)
+                + e.meshes.iter().filter(|m| m.op == "create").count() as u64;
+            freed += u64::from(e.freed)
+                + u64::from(e.tex.freed)
+                + u64::from(e.mat.shaders_freed)
+                + u64::from(e.mat.materials_freed)
+                + e.meshes.iter().filter(|m| m.op == "free").count() as u64;
+        }
+        let owned = self
+            .applier
+            .as_ref()
+            .map(|a| a.retained())
+            .unwrap_or_default();
+        format!(
+            "{{\"created\":{created},\"freed_by_apply\":{freed},\"owned\":{},\"items\":{},\"canvases\":{},\"textures\":{},\"meshes\":{},\"shaders\":{},\"materials\":{}}}",
+            owned.iter().sum::<usize>(),
+            owned[0],
+            owned[1],
+            owned[2],
+            owned[3],
+            owned[4],
+            owned[5]
+        )
+    }
+
+    /// RS_RECEIVER_RECONNECT: drop the connection's session (validator, applier, needed set) and
+    /// keep the GL context, the evidence and, with `keep_payloads`
+    /// (RS_RECEIVER_RECONNECT_MEMORY=keep), the verified payloads. The next message is a fresh
+    /// session on stream `stream_index + 1`.
+    pub fn live_reset(&mut self, keep_payloads: bool) -> i32 {
+        self.validator = None;
+        self.applier = None;
+        if !keep_payloads {
+            self.payloads.clear();
+        }
+        self.needed.clear();
+        self.provide_cursor = 0;
+        self.accepted.clear();
+        self.digested = 0;
+        self.first_tx = true;
+        self.prev_unsupported.clear();
+        self.pending.clear();
+        self.spans.clear();
+        self.data.clear();
+        self.rx_offset = 0;
+        self.stream_index += 1;
+        self.stats = Stats {
+            stream: self.stream_index,
+            ..Stats::default()
+        };
+        0
+    }
+
+    /// The payload hashes held in memory, sorted hex, comma-separated (`live.reconnect`'s
+    /// `memory_hashes`).
+    pub fn memory_hashes(&self) -> String {
+        let mut out: Vec<String> = self
+            .payloads
+            .textures
+            .keys()
+            .chain(self.payloads.meshes.keys())
+            .chain(self.payloads.shaders.keys())
+            .map(|h| h.to_hex())
+            .collect();
+        out.sort();
+        out.join(",")
     }
 
     pub fn needed_count(&self) -> u32 {
@@ -761,6 +1000,7 @@ impl GswRs {
         // applied.json evidence (no serialization here: `applied_json_parts` does it later).
         let state = v.state();
         self.evidence.push(TxEvidence {
+            stream: self.stream_index,
             seq: state.seq,
             frame: state.frame,
             encoding: state.encoding.as_str(),
@@ -1012,7 +1252,8 @@ impl GswRs {
                 .map(|h| format!("\"{}\"", h.to_hex()))
                 .unwrap_or_else(|| "null".into());
             out.push_str(&format!(
-                "{{\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{},\"shaders_created\":{},\"shader_code_sets\":{},\"materials_created\":{},\"param_sets\":{},\"instance_param_sets\":{},\"meshes_created\":{},\"meshes_rebuilt\":{},\"surface_updates\":{},\"mesh_upload_bytes\":{}}}}}",
+                "{{\"stream\":{},\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{},\"shaders_created\":{},\"shader_code_sets\":{},\"materials_created\":{},\"param_sets\":{},\"instance_param_sets\":{},\"meshes_created\":{},\"meshes_rebuilt\":{},\"surface_updates\":{},\"mesh_upload_bytes\":{}}}}}",
+                e.stream,
                 e.seq,
                 e.frame,
                 e.encoding,
@@ -1048,13 +1289,14 @@ impl GswRs {
                 }
                 first = false;
                 out.push_str(&format!(
-                    "{{\"id\":{},\"hash\":{},\"op\":\"{}\",\"data_bytes\":{},\"stream\":1,\"seq\":{}}}",
+                    "{{\"id\":{},\"hash\":{},\"op\":\"{}\",\"data_bytes\":{},\"stream\":{},\"seq\":{}}}",
                     u.id,
                     u.hash
                         .map(|h| format!("\"{}\"", h.to_hex()))
                         .unwrap_or_else(|| "null".into()),
                     u.op,
                     u.data_bytes,
+                    e.stream,
                     e.seq
                 ));
             }
@@ -1070,12 +1312,13 @@ impl GswRs {
                 let surfaces: Vec<String> = m.surfaces.iter().map(|k| k.to_string()).collect();
                 let buffers: Vec<String> = m.buffers.iter().map(|b| format!("\"{b}\"")).collect();
                 out.push_str(&format!(
-                    "{{\"id\":{},\"op\":\"{}\",\"surfaces\":[{}],\"buffers\":[{}],\"bytes\":{},\"stream\":1,\"seq\":{}}}",
+                    "{{\"id\":{},\"op\":\"{}\",\"surfaces\":[{}],\"buffers\":[{}],\"bytes\":{},\"stream\":{},\"seq\":{}}}",
                     m.id,
                     m.op,
                     surfaces.join(","),
                     buffers.join(","),
                     m.bytes,
+                    e.stream,
                     e.seq
                 ));
             }

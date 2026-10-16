@@ -2864,3 +2864,44 @@ Gate 7's own checks for each gate, all suffixed `@web`:
 | `pw1-classes` | yes | no `other` pixel, except on a leg with a `web-*` refusal |
 | `web-repeat-identical` | yes | each differing leg's repeat is byte-identical to its first run |
 | `raw-web-checks`, `pw1-web-equals-native`, `web-refusals`, `legs-not-replayed`, `fresh-cache`, `warm-cache` | no | reported only |
+
+### Gate 7l: live legs in both browsers
+
+G7l ([../protocol/gate7/g7l.md](../protocol/gate7/g7l.md)) runs the **live** groups of gates 1, 2,
+5 and 5.5 (g1c, g1d, g2c, g2e, g5f, g55f) in the web export and the GSW receiver over
+render-stream/7:
+
+```bash
+bash experiments/render-stream/scripts/run-gate7.sh --live --legs g7-1,g7-2,g7-5,g7-55 \
+  [--receiver web|gsw] [--bundle <web bundle>] [--gsw-bundle <dir>] --out <dir>
+```
+
+A live leg has no source run. Its host paces against the receiver it serves, so `--live` runs each
+gate's own runner again, with `GATE7_LIVE_KIND=web|gsw` and `GATE7_BUNDLE_DIR`, into
+`<out>/<gate>/live-<kind>/`. A gate runner can also be called that way by hand. Optional variables:
+`GATE7_HARNESS_PORT`, `GATE7_HOST_PORT`, `GATE7_BUILD_SHA256`, `GATE7_MANIFEST_SHA256`.
+
+- `lib/legs.sh` makes the GATE7-mode substitutions:
+  - Every live host gets `GRC_LIVE_ALLOWED_ORIGINS=http://127.0.0.1:<harness port>` and the fixed
+    host port.
+  - Every receiver launch with `RS_RECEIVER_MODE=live`, and every file replay of a GRS7
+    recording, goes to the browser daemon. Each leg is one `curl` to it. `native-env.txt` and
+    `native-argv.txt` record what the native leg would have run.
+- `lib/gate7-live-legs.ts` is the daemon (`gate7-tool.ts browser-daemon`). It keeps a spare
+  Chromium, already provenance-checked, and runs one fresh profile per cold leg. A warm leg starts
+  on a copy of its cold leg's profile. It maps env words to URL paths, passes the token in the
+  fragment only, and writes the per-leg files. `gate7-tool.ts browser-receiver` is the one-shot
+  form.
+- `lib/gate7-live.ts` (`check-gate7.ts --live`) judges the run through views:
+  - Full, blank and banded views of the run tell which checks read a browser leg; those are
+    reported `<id>@<kind>`, and every other check counts toward `native-legs@<kind>`.
+  - The banded view is Q7's delta1/readback band, snapped per pixel against the nearest native
+    image.
+  - `LIVE_KNOWN_FAILURES` names a failure an earlier typed refusal explains, such as web g5f's
+    `web-index-region-update`. Those checks still fail.
+  - Gate 7's own checks: `browser-provenance`, `console-clean`, `hello-recorded`,
+    `credit-from-paced-loop`, `token-not-logged`, `live-vs-replay`.
+  - Per-connection cadence lines report sent/offered, the credit RTT in frames, and the
+    `submitted` ack latency.
+- `test/self-test-gate7l.ts` covers the browser leg mapping, the `.rs7` tap discovery and /7
+  decoding, the http-cache fetch and warm rules, `credit-from-paced-loop` and the known-failure rule.

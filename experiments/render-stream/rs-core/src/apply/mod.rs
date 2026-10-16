@@ -640,6 +640,21 @@ impl Applier {
     }
 
     /// After a lost and restored context: re-send every array and every resident texture.
+    /// G7l: the objects this applier retains, `[items, non-root canvases, resident textures,
+    /// resident meshes, resident shaders, resident materials]` (the GSW receiver's analogue of
+    /// the RIDs a native applier owns, for a reconnect's dispose evidence).
+    pub fn retained(&self) -> [usize; 6] {
+        let (shaders, materials) = self.material_residency.resident_counts();
+        [
+            self.items.len(),
+            self.canvases.values().filter(|c| !c.root).count(),
+            self.resident.len(),
+            self.meshes.resident_count(),
+            shaders,
+            materials,
+        ]
+    }
+
     pub fn context_restored(&mut self, payloads: &PayloadStore) {
         self.list.dirty.all = true;
         self.list.dirty.draws = true;

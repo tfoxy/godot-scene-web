@@ -573,7 +573,7 @@ G2C_RECONNECT_STEP=7
 G2C_FETCH_DELAY_MS=100
 G2C_UNPIN_FRAME=1
 run_g2c() {
-	local f6 seqs
+	local f6 seqs live_store
 	f6=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 6))
 
 	echo "run-gate2: live-headless (host + headless live receiver, fresh cache)"
@@ -588,15 +588,20 @@ run_g2c() {
 
 	echo "run-gate2: live (host + rendered live receiver, fresh cache, shot windows $(live_windows))"
 	g2c_leg live rendered
-	echo "run-gate2: live-replay (rendered file-mode receiver on live/receiver/received.rs2, store = live's cache)"
-	if prepare_recording "$OUT/live/receiver/received.rs2" "$OUT/live-replay" &&
+	echo "run-gate2: live-replay (rendered file-mode receiver on live/receiver/$LIVE_RECEIVED_NAME, store = live's cache)"
+	if prepare_recording "$OUT/live/receiver/$LIVE_RECEIVED_NAME" "$OUT/live-replay" &&
 		seqs="$(gate0_tool live-shot-seqs "$OUT/live/receiver/applied.json")"; then
 		mkdir -p "$OUT/live-replay/shots"
+		# A browser receiver has no cache directory (its cache is the browser's HTTP cache), so
+		# under GATE7_LIVE_KIND the replay's store is the live host's own store, which holds every
+		# payload that host served.
+		live_store="$OUT/live/receiver/cache"
+		[ -n "$GATE7_LIVE_KIND" ] && live_store="$OUT/live/host/store"
 		LEG_ENV=(
 			RS_RECEIVER_RECORDING="$OUT/live-replay/$RECORDING_NAME"
 			RS_RECEIVER_OUT="$OUT/live-replay/applied.json" RS_RECEIVER_SHOT_SEQS="$seqs"
 			RS_RECEIVER_STATE_SEQS="$seqs" RS_RECEIVER_CACHE_DIR="$OUT/live-replay/cache"
-			RS_RECEIVER_STORE_DIR="$OUT/live/receiver/cache"
+			RS_RECEIVER_STORE_DIR="$live_store"
 		)
 		run_rendered "$OUT/live-replay" "$RECEIVER_DIR"
 	fi
@@ -640,6 +645,28 @@ run_g2e() {
 		RS_RECEIVER_SABOTAGE=wrong-http-token
 	finish_bg "$OUT/sabotage-bad-http-token/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
 	LIVE_HOST_PID=""
+
+	# G7l (gate7-design.md Q8 g7-2): two legs only a browser receiver can run, under
+	# GATE7_LIVE_KIND only. origin-refused: the page is served from a second harness port that no
+	# host allows, so the WebSocket upgrade gets 403 (OriginRejected, `live: 403 origin` in the
+	# host's stdout.log) and the receiver fails live-connect-failed. sabotage-no-cors: the host
+	# omits every Access-Control-* header (GRC_SABOTAGE=no-cors), so the browser withholds the
+	# first payload the host served: resource-unavailable at seq 1.
+	if [ -n "$GATE7_LIVE_KIND" ]; then
+		echo "run-gate2: origin-refused (the page from a non-allowed origin)"
+		start_live_host "$OUT/origin-refused/host"
+		GATE7_PAGE_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+		echo "run-gate2: origin-refused page origin http://127.0.0.1:$GATE7_PAGE_PORT (allowed: http://127.0.0.1:$GATE7_HARNESS_PORT)"
+		g2c_receiver "$OUT/origin-refused" headless
+		finish_bg "$OUT/origin-refused/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+		LIVE_HOST_PID=""
+
+		echo "run-gate2: sabotage-no-cors (the host omits every Access-Control-* header)"
+		start_live_host "$OUT/sabotage-no-cors/host" GRC_SABOTAGE=no-cors
+		g2c_receiver "$OUT/sabotage-no-cors" headless
+		finish_bg "$OUT/sabotage-no-cors/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+		LIVE_HOST_PID=""
+	fi
 
 	echo "run-gate2: bringing up private gamescope for the g2e rendered leg"
 	gs_start 640 360 "$OUT/gamescope-g2e"

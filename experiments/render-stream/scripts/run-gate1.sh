@@ -521,9 +521,10 @@ run_g1c() {
 	live_receiver "$OUT/live" rendered
 	finish_live_host "$OUT/live/host"
 
-	# received.rs2 names no texture a command draws: no store, a fresh cache.
-	echo "run-gate1: live-replay (rendered file-mode receiver on live/receiver/received.rs2)"
-	if prepare_recording "$OUT/live/receiver/received.rs2" "$OUT/live-replay" &&
+	# received.rs2 (received.rs7 under GATE7_LIVE_KIND) names no texture a command draws: no store, a
+	# fresh cache.
+	echo "run-gate1: live-replay (rendered file-mode receiver on live/receiver/$LIVE_RECEIVED_NAME)"
+	if prepare_recording "$OUT/live/receiver/$LIVE_RECEIVED_NAME" "$OUT/live-replay" &&
 		seqs="$(gate0_tool live-shot-seqs "$OUT/live/receiver/applied.json")"; then
 		mkdir -p "$OUT/live-replay/shots"
 		LEG_ENV=(
@@ -591,11 +592,22 @@ killed_receiver() {
 		waited=$((waited + 1))
 	done
 	kill -0 "$KILL_RECEIVER_PID" 2>/dev/null && alive=1
-	if [ "$alive" = "1" ]; then
-		kill -9 "$KILL_RECEIVER_PID" 2>/dev/null || true
+	if [ -n "$GATE7_LIVE_KIND" ]; then
+		# G7l: the receiver is a browser behind its launcher. SIGTERM makes the launcher SIGKILL
+		# every Chromium process of the leg at once (lib/gate7-live-legs.ts), the browser
+		# analogue of a SIGKILLed native receiver: the host sees an abnormal close.
+		if [ "$alive" = "1" ]; then
+			kill -TERM "$KILL_RECEIVER_PID" 2>/dev/null || true
+		fi
+		printf '{"pid": %s, "target_frame": %s, "host_frame_seen": %s, "killed": %s, "signal": "SIGKILL", "browser": "%s", "launcher_signal": "SIGTERM"}\n' \
+			"$KILL_RECEIVER_PID" "$frame" "$seen" "$([ "$alive" = "1" ] && echo true || echo false)" "$GATE7_LIVE_KIND" >"$dir/killed.json"
+	else
+		if [ "$alive" = "1" ]; then
+			kill -9 "$KILL_RECEIVER_PID" 2>/dev/null || true
+		fi
+		printf '{"pid": %s, "target_frame": %s, "host_frame_seen": %s, "killed": %s, "signal": "SIGKILL"}\n' \
+			"$KILL_RECEIVER_PID" "$frame" "$seen" "$([ "$alive" = "1" ] && echo true || echo false)" >"$dir/killed.json"
 	fi
-	printf '{"pid": %s, "target_frame": %s, "host_frame_seen": %s, "killed": %s, "signal": "SIGKILL"}\n' \
-		"$KILL_RECEIVER_PID" "$frame" "$seen" "$([ "$alive" = "1" ] && echo true || echo false)" >"$dir/killed.json"
 	finish_bg "$dir" "$KILL_RECEIVER_PID" 10
 	KILL_RECEIVER_PID=""
 	echo "run-gate1: ${dir#"$OUT"/} SIGKILLed at host frame $seen (target $frame)"

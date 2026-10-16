@@ -17,6 +17,16 @@
 //   gate7-tool.ts gsw-legs --group g7-<0..5> --source <gate run> --bundle <gsw bundle> --out <gate 7 run>
 //     (G7a) replays the group's native receiver legs, and its GSW-only sabotages, in the GSW canvas
 //     receiver into <out>/<gate>/gsw/ (lib/gate7-gsw.ts)
+//   gate7-tool.ts browser-receiver --dir <leg dir> [--kind web|gsw] [--port N] [--bundle <dir>]
+//     [--static-root <dir>] [--timeout-s S]
+//     (G7l) one browser receiver leg of a gate's own runner, in one process (lib/gate7-live-legs.ts).
+//     Options default to the runner's GATE7_* environment; exits with the receiver's exit code
+//     (124 timeout, 143 SIGTERM)
+//   gate7-tool.ts browser-daemon --ready-file <json> --parent <pid> [--kind …] [--bundle …]
+//     [--static-root …]
+//     (G7l) what lib/legs.sh uses under GATE7_LIVE_KIND: serves browser receiver legs (GET
+//     /run?dir=…&port=…&timeout_s=…) with the next leg's fresh browser already launched and
+//     checked; exits when <pid> is gone
 
 import { createHash } from "node:crypto";
 import {
@@ -32,6 +42,11 @@ import { fileURLToPath } from "node:url";
 
 import { currentBuildProvenance, gate0WebLegSpecs } from "./lib/gate7-adapters";
 import { type GswGate, gswLegSpecs } from "./lib/gate7-gsw";
+import {
+  bundleBuildSha256,
+  runBrowserReceiver,
+  serveBrowserDaemon,
+} from "./lib/gate7-live-legs";
 import { runWebLegs } from "./lib/gate7-web-legs";
 import {
   classifyLegShots,
@@ -249,6 +264,54 @@ async function main(): Promise<void> {
         `gate7-tool: harness-refused (browser-provenance) on ${refused.map((r) => r.leg).join(", ")}`,
       );
     return;
+  }
+  if (command === "browser-receiver" || command === "browser-daemon") {
+    // G7l: one browser receiver leg inside a gate's own runner (lib/legs.sh, GATE7_LIVE_KIND).
+    // Every option defaults to the runner's GATE7_* environment.
+    const opt = (name: string, envName: string): string | undefined => {
+      const i = argv.indexOf(name);
+      return (i >= 0 ? argv[i + 1] : undefined) ?? process.env[envName];
+    };
+    const kind = opt("--kind", "GATE7_LIVE_KIND");
+    if (kind !== "web" && kind !== "gsw")
+      throw new Error(
+        `gate7-tool: browser-receiver needs --kind or GATE7_LIVE_KIND web|gsw (got ${kind})`,
+      );
+    const bundle = opt("--bundle", "GATE7_BUNDLE_DIR");
+    const staticRoot = opt("--static-root", "GATE7_STATIC_ROOT");
+    if (!bundle || !staticRoot)
+      throw new Error(
+        "gate7-tool: browser-receiver needs --bundle/GATE7_BUNDLE_DIR and --static-root/GATE7_STATIC_ROOT",
+      );
+    const ctx = {
+      kind,
+      bundleDir: resolve(bundle),
+      staticRoot: resolve(staticRoot),
+      buildSha256:
+        process.env.GATE7_BUILD_SHA256 ||
+        bundleBuildSha256(resolve(bundle), kind),
+      manifestSha256: process.env.GATE7_MANIFEST_SHA256 || undefined,
+    } as const;
+    if (command === "browser-daemon") {
+      await serveBrowserDaemon(
+        ctx,
+        resolve(flag(argv, "--ready-file")),
+        Number(flag(argv, "--parent")),
+      );
+      return;
+    }
+    const port = Number(opt("--port", "GATE7_HARNESS_PORT"));
+    if (!Number.isInteger(port) || port <= 0 || port > 65535)
+      throw new Error(
+        "gate7-tool: browser-receiver needs --port or GATE7_HARNESS_PORT",
+      );
+    const timeoutS = Number(opt("--timeout-s", "GATE7_TIMEOUT_S") ?? "180");
+    const code = await runBrowserReceiver(ctx, {
+      dir: resolve(flag(argv, "--dir")),
+      port,
+      timeoutMs: timeoutS * 1000,
+    });
+    process.exit(code);
   }
   throw new Error(`gate7-tool: unknown command ${command ?? "<none>"}`);
 }

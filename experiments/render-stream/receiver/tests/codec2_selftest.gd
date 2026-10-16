@@ -674,6 +674,18 @@ func _test_hello7(golden7: String) -> void:
 			continue
 		var result: String = _check_hello7(json.data)
 		_check(result != "", "golden-7/control/invalid/%s refused" % name)
+	# G7l: the receiver's own /7 hello (RsLiveClient.hello_v7) passes the same checker, with the
+	# documented key order, as compact JSON and parsed back; with and without a token.
+	var token: String = "0123456789abcdef".repeat(4)
+	for held: String in ["", token]:
+		var hello: Dictionary = RsLiveClient.hello_v7("gate1-receiver-Web", "web-export", "submitted", 1, 16777216, held, "", Vector2i(640, 360), Vector2i(640, 360), 1000)
+		var keys: Array = hello.keys()
+		_check(keys == _HELLO7_KEYS, "RsLiveClient.hello_v7 key order is render-stream-7.md's (got %s)" % str(keys))
+		var parsed := JSON.new()
+		_check(parsed.parse(RsLiveClient.encode(hello)) == OK, "RsLiveClient.hello_v7 encodes to JSON")
+		var hello_result: String = _check_hello7(parsed.data)
+		_check(hello_result == "", "RsLiveClient.hello_v7 (token %s) accepted (got %s)" % ["held" if held != "" else "null", hello_result])
+	_check(RsLiveClient.is_hex64(token) and not RsLiveClient.is_hex64(token.to_upper()) and not RsLiveClient.is_hex64("abc"), "RsLiveClient.is_hex64 accepts exactly 64 lowercase hex")
 
 
 ## Deep equality after JSON parsing: any two numbers compare as floats.

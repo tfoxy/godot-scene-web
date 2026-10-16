@@ -1,0 +1,770 @@
+// Gate 7 browser receivers inside the gates' OWN runners (G7l, gate7-design.md Q4 "Live client",
+// Q6, Q8; protocol/gate7/g7l.md). `lib/legs.sh` substitutes a browser for the
+// native receiver when the runner's environment has `GATE7_LIVE_KIND=web|gsw`: it writes the
+// native leg's words to `<dir>/native-env.txt` and `<dir>/native-argv.txt` and asks this module to
+// run the leg. Every live leg of gates 1, 2, 5 and 5.5 (host words, windows, stall, reconnect,
+// resync, sabotages) is reused verbatim, and each gate's own checker judges the leg directory as
+// it judges a native one.
+//
+// The page contract (both receivers; the web export's receiver/web/shell.html and the GSW
+// receiver's): `<origin>/<web-bundle|gsw-bundle>/receiver.html?env=<base64url JSON>#token=<hex>`.
+// `?env=` is `{env, engine_args, canvas, sabotage}` as in G7e's file legs. The env is the native
+// leg's RS_RECEIVER_* words, mapped:
+//   - RS_RECEIVER_OUT, _RECORDING, _STORE_DIR, _SHADER_LIBRARY, _PERF_OUT, _RECEIVED_OUT (any
+//     absolute path): its URL path under the static root (the runner's evidence directory, so the
+//     page's origin serves the leg's inputs and the receiver's in-memory filesystem uses the same
+//     paths); a path outside the static root is a refusal, never silently passed through;
+//   - RS_RECEIVER_CACHE_DIR: dropped (native only; the web's cache is the HTTP cache, Q4);
+//   - RS_RECEIVER_TOKEN_FILE: dropped; the file is read here and the token goes in the URL's
+//     fragment only, which the shell removes before anything runs (D3). It never appears in
+//     env.txt, argv.txt, page-config.json, console.jsonl or any log written here
+//     (`token-not-logged`);
+//   - added: RS_RECEIVER_EVIDENCE_URL (/evidence/<nonce>; PUTs land in RS_RECEIVER_OUT's
+//     directory), RS_RECEIVER_BUILD_SHA256, RS_RECEIVER_PROTOCOL=7 on a live leg, and
+//     RS_RECEIVER_MANIFEST_SHA256 (GATE7_MANIFEST_SHA256) on a live leg when set;
+//   - a native `--headless` leg: a browser always renders, so the leg runs rendered, with the
+//     credit stage its native receiver used (`applied`, forced under --headless) unless the leg
+//     names one.
+// engine_args are the native argv's engine words after `--path/--rendering-driver/
+// --display-driver/--headless` (`--max-fps 60` for a live receiver); `--resolution WxH` becomes the
+// canvas size (default 640x360).
+//
+// The harness server listens on the FIXED page port (GATE7_HARNESS_PORT, or one leg's
+// GATE7_PAGE_PORT), so the page's origin is `http://127.0.0.1:<port>`, which the runner passed to
+// every host as GRC_LIVE_ALLOWED_ORIGINS. Its static root is the runner's evidence directory (or
+// GATE7_STATIC_ROOT), with the bundle linked in as `/web-bundle` or `/gsw-bundle`. One fresh
+// browser and profile per leg (D9): each browser runs on its own new profile directory (the
+// daemon's `profiles/<n>`, outside every leg directory), kept after the leg. A warm leg
+// (RS_RECEIVER_CACHE_MODE=warm on a cold leg's RS_RECEIVER_CACHE_DIR) instead starts on a copy of
+// that cold leg's profile, so its "disk cache" is the cold leg's HTTP cache (Q4); the runner keeps
+// every live host on one fixed port (GATE7_HOST_PORT), because that cache is keyed by the payload
+// URL, port included. Per leg, as gate7-web-legs.ts's runOne: provenance.json
+// (`browser-provenance`, checked on about:blank of that browser), console.jsonl, stdout.log (the
+// engine's printed lines), exit-code.txt (124 on timeout), timings.json, env.txt, argv.txt and
+// page-config.json.
+//
+// Two ways to run a leg:
+//   - `browser-receiver` (one process per leg, runBrowserReceiver): launches, checks and runs.
+//     SIGTERM SIGKILLs every Chromium process of the leg.
+//   - `browser-daemon` (serveBrowserDaemon; what legs.sh uses): one process per runner that keeps
+//     the NEXT leg's fresh browser launched and its provenance checked while the current leg runs,
+//     so a leg costs only its page load and engine start (measured 2026-10-16 under load: the
+//     one-shot launcher's node start-up, Chromium launch and provenance took about 7 s, which
+//     made the receiver join a live host after its S = 300 frame budget). A leg is one HTTP GET
+//     `/run?dir=…&port=…&timeout_s=…` from `curl` that streams `exit=<code>` at the end. When that
+//     client goes away before the leg ends (the gate-1 `killed` leg SIGTERMs curl), every
+//     Chromium process of the leg is SIGKILLed at once, the browser analogue of a SIGKILLed native
+//     receiver (the host sees an abnormal close, 1006), and the leg's files are written with what
+//     was seen so far (exit code 143). The daemon exits when its parent (the runner) is gone.
+
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, symlinkSync } from "node:fs";
+import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
+
+import { type BrowserContext, chromium } from "@playwright/test";
+
+import {
+  BACKGROUND_THROTTLING_ARGS,
+  BROWSER_LAUNCH_ARGS,
+  type BrowserProvenance,
+  checkBrowserProvenance,
+  collectChromiumProcesses,
+  HarnessServer,
+  type LaunchedBrowser,
+} from "./browser-harness";
+import { base64url, parseEnvTxt } from "./gate7-web-legs";
+
+export type BrowserReceiverKind = "web" | "gsw";
+
+export interface BrowserRunContext {
+  kind: BrowserReceiverKind;
+  bundleDir: string;
+  staticRoot: string;
+  buildSha256: string;
+  manifestSha256?: string;
+  log?: (line: string) => void;
+}
+
+export interface BrowserLegRequest {
+  /** The receiver leg directory: holds native-env.txt / native-argv.txt, receives the evidence. */
+  dir: string;
+  /** The page's port (GATE7_HARNESS_PORT; origin-refused uses a second, non-allowed one). */
+  port: number;
+  timeoutMs: number;
+}
+
+export interface MappedBrowserLeg {
+  env: Record<string, string>;
+  engineArgs: string[];
+  canvas: [number, number];
+  /** The bearer token for the fragment ("" when the native leg had none). Never logged. */
+  token: string;
+  live: boolean;
+  headless: boolean;
+  dropped: string[];
+  /** A warm leg: the cold leg's receiver directory (its page-config.json names its profile). */
+  warmFrom: string | null;
+}
+
+const DEFAULT_CANVAS: [number, number] = [640, 360];
+const FIXED_ARGS_WITH_VALUE = new Set([
+  "--path",
+  "--rendering-driver",
+  "--display-driver",
+]);
+const LAUNCH_ARGS = [...BROWSER_LAUNCH_ARGS, ...BACKGROUND_THROTTLING_ARGS];
+
+/** A host path as a URL path under the static root (refuses one outside it). */
+export function urlPathUnder(staticRoot: string, hostPath: string): string {
+  const rel = relative(resolve(staticRoot), resolve(hostPath));
+  if (rel === "" || rel.startsWith("..") || rel.startsWith("/"))
+    throw new Error(
+      `${hostPath} is outside the harness static root ${staticRoot}`,
+    );
+  return `/${rel.split("\\").join("/")}`;
+}
+
+/** Maps a native leg's words to the page configuration (header). */
+export function mapBrowserLeg(
+  staticRoot: string,
+  nativeEnv: Array<[string, string]>,
+  nativeArgv: string[],
+  readToken: (path: string) => string = (p) => readFileSync(p, "utf8").trim(),
+): MappedBrowserLeg {
+  const env: Record<string, string> = {};
+  const dropped: string[] = [];
+  let token = "";
+  let cacheDir = "";
+  for (const [name, value] of nativeEnv) {
+    if (!name.startsWith("RS_RECEIVER_")) {
+      dropped.push(name);
+      continue;
+    }
+    if (name === "RS_RECEIVER_CACHE_DIR") {
+      dropped.push(name);
+      cacheDir = value;
+      continue;
+    }
+    if (name === "RS_RECEIVER_TOKEN_FILE") {
+      dropped.push(name);
+      token = readToken(value);
+      continue;
+    }
+    env[name] = value.startsWith("/") ? urlPathUnder(staticRoot, value) : value;
+  }
+  const live = env.RS_RECEIVER_MODE === "live";
+  const engineArgs: string[] = [];
+  let canvas: [number, number] = [...DEFAULT_CANVAS];
+  let headless = false;
+  // nativeArgv[0] is the binary.
+  for (let i = 1; i < nativeArgv.length; i++) {
+    const a = nativeArgv[i];
+    if (a === "--headless") {
+      headless = true;
+      continue;
+    }
+    if (FIXED_ARGS_WITH_VALUE.has(a)) {
+      i++;
+      continue;
+    }
+    if (a === "--resolution") {
+      const m = /^(\d+)x(\d+)$/.exec(nativeArgv[i + 1] ?? "");
+      if (!m) throw new Error(`bad --resolution ${nativeArgv[i + 1]}`);
+      canvas = [Number(m[1]), Number(m[2])];
+      i++;
+      continue;
+    }
+    engineArgs.push(a);
+  }
+  if (live) {
+    if (
+      env.RS_RECEIVER_PROTOCOL !== undefined &&
+      env.RS_RECEIVER_PROTOCOL !== "7"
+    )
+      throw new Error(
+        `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7`,
+      );
+    env.RS_RECEIVER_PROTOCOL = "7";
+    // The native receiver forces `applied` under --headless (frame_post_draw never fires there);
+    // the browser renders, so the leg keeps the stage its native receiver actually used.
+    if (headless && env.RS_RECEIVER_CREDIT_STAGE === undefined)
+      env.RS_RECEIVER_CREDIT_STAGE = "applied";
+  }
+  // A warm leg (RS_RECEIVER_CACHE_MODE=warm on another leg's cache directory): its browser starts
+  // on a copy of that leg's browser profile, whose HTTP cache is the web's "disk cache" (Q4).
+  const warmFrom =
+    env.RS_RECEIVER_CACHE_MODE === "warm" && cacheDir !== ""
+      ? dirname(cacheDir)
+      : null;
+  return { env, engineArgs, canvas, token, live, headless, dropped, warmFrom };
+}
+
+function ensureLink(target: string, link: string): void {
+  if (existsSync(link)) return;
+  symlinkSync(target, link);
+}
+
+/** Reads a bundle's build.json digest: the web export's .pck sha256, or the GSW bundle's sha256. */
+export function bundleBuildSha256(
+  bundleDir: string,
+  kind: BrowserReceiverKind,
+): string {
+  const build = JSON.parse(
+    readFileSync(join(bundleDir, "build.json"), "utf8"),
+  ) as { pck?: { sha256?: string }; sha256?: string };
+  const sha = kind === "web" ? build.pck?.sha256 : build.sha256;
+  if (!sha) throw new Error(`${bundleDir}/build.json names no build sha256`);
+  return sha;
+}
+
+/** A launched browser on its own profile directory, not yet used by a leg. */
+export interface PreparedBrowser {
+  context: BrowserContext;
+  launched: LaunchedBrowser;
+  /** Checked on about:blank before the leg; null when it is checked after the leg instead (a
+   * warm leg, whose browser cannot be launched ahead: it needs the cold leg's profile). */
+  provenance: BrowserProvenance | null;
+  profileDir: string;
+  preparedMs: number;
+}
+
+function launchEnvOf(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined || k === "DISPLAY" || k === "WAYLAND_DISPLAY") continue;
+    env[k] = v;
+  }
+  return env;
+}
+
+/** D9's launch (browser-harness.ts launchHarnessBrowser's args, executable and stripped
+ * environment) on a persistent profile directory: a fresh empty one for a cold leg (D9), or a copy
+ * of a cold leg's for a warm one, whose HTTP cache is then the "disk cache" it starts warm on
+ * (gate7-design.md Q4). Playwright refuses `--user-data-dir` in `launch()`'s args, so a profile
+ * needs launchPersistentContext; its context.browser() is the Browser provenance reads. */
+async function launchOnProfile(profileDir: string): Promise<{
+  context: BrowserContext;
+  launched: LaunchedBrowser;
+}> {
+  await mkdir(profileDir, { recursive: true });
+  const executablePath = chromium.executablePath();
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless: false,
+    executablePath,
+    args: [...LAUNCH_ARGS],
+    env: launchEnvOf(),
+    viewport: { width: DEFAULT_CANVAS[0], height: DEFAULT_CANVAS[1] },
+    deviceScaleFactor: 1,
+  });
+  const browser = context.browser();
+  if (!browser) {
+    await context.close().catch(() => {});
+    throw new Error("launchPersistentContext gave no Browser");
+  }
+  return { context, launched: { browser, executablePath } };
+}
+
+/** `browser-provenance` on about:blank of `prepared`'s own browser. */
+async function checkProvenanceOf(
+  prepared: Pick<PreparedBrowser, "context" | "launched">,
+): Promise<BrowserProvenance> {
+  const page = await prepared.context.newPage();
+  try {
+    await page.goto("about:blank");
+    const launchEnv: Record<string, string | undefined> = launchEnvOf();
+    return await checkBrowserProvenance(
+      page,
+      prepared.launched,
+      LAUNCH_ARGS,
+      launchEnv,
+    );
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+/** Launches one browser on `profileDir` (fresh unless `copyFrom` names a closed cold leg's
+ * profile to copy first) and, unless `checkAfter`, checks its provenance now. */
+export async function prepareBrowser(
+  profileDir: string,
+  copyFrom?: string,
+  checkAfter = false,
+): Promise<PreparedBrowser> {
+  const t0 = Date.now();
+  if (copyFrom) await cp(copyFrom, profileDir, { recursive: true });
+  const { context, launched } = await launchOnProfile(profileDir);
+  try {
+    const provenance = checkAfter
+      ? null
+      : await checkProvenanceOf({ context, launched });
+    return {
+      context,
+      launched,
+      provenance,
+      profileDir,
+      preparedMs: Date.now() - t0,
+    };
+  } catch (err) {
+    await context.close().catch(() => {});
+    throw err;
+  }
+}
+
+interface PageState {
+  lines: { t: number; stream: string; line: string }[];
+  error: string | null;
+  exit: { code: number; t: number } | null;
+  contextLost: boolean;
+  wasmHeapBytes: number | null;
+  marks: { name: string; t: number }[];
+  navigation: unknown[];
+  resources: unknown[];
+}
+
+/** A running leg's handle: abort() SIGKILLs its Chromium processes and writes its files. */
+export interface LegHandle {
+  done: Promise<number>;
+  abort: () => Promise<number>;
+}
+
+/** Runs one leg in `prepared` (header). The browser is closed when the leg ends. */
+export function runBrowserLeg(
+  ctx: BrowserRunContext,
+  req: BrowserLegRequest,
+  prepared: PreparedBrowser,
+): LegHandle {
+  const log = ctx.log ?? ((line: string) => console.error(line));
+  const started = Date.now();
+  const dir = resolve(req.dir);
+  const staticRoot = resolve(ctx.staticRoot);
+  const { launched } = prepared;
+  let provenance = prepared.provenance;
+  const consoleLines: string[] = [];
+  let exitCode = 124;
+  let state: PageState | null = null;
+  let aborted = false;
+  let finished = false;
+  let server: HarnessServer | undefined;
+  let token = "";
+
+  const writeEvidence = async (): Promise<void> => {
+    await writeFile(
+      join(dir, "console.jsonl"),
+      consoleLines.join("\n") + (consoleLines.length ? "\n" : ""),
+    );
+    await writeFile(
+      join(dir, "stdout.log"),
+      `${(state?.lines ?? [])
+        .map((l) => (l.stream === "err" ? `[stderr] ${l.line}` : l.line))
+        .join("\n")}\n`,
+    );
+    await writeFile(
+      join(dir, "timings.json"),
+      `${scrub(JSON.stringify({ schema: "render-stream-web-timings/1", wall_ms: Date.now() - started, browser_prepared_ms: prepared.preparedMs, exit: state?.exit ?? null, error: state?.error ?? null, context_lost: state?.contextLost ?? false, wasm_heap_bytes: state?.wasmHeapBytes ?? null, marks: state?.marks ?? [], navigation: state?.navigation ?? [], resources: state?.resources ?? [], aborted, lines: (state?.lines ?? []).slice(0, 400).map((l) => ({ t: l.t, line: l.line })) }, null, 2))}\n`,
+    );
+    await writeFile(join(dir, "exit-code.txt"), `${exitCode}\n`);
+  };
+  const scrub = (text: string): string =>
+    token !== "" ? text.split(token).join("<token>") : text;
+
+  const run = async (): Promise<number> => {
+    const nativeEnv = parseEnvTxt(
+      readFileSync(join(dir, "native-env.txt"), "utf8"),
+    );
+    const nativeArgv = readFileSync(join(dir, "native-argv.txt"), "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
+    const mapped = mapBrowserLeg(staticRoot, nativeEnv, nativeArgv);
+    token = mapped.token;
+    const outPath = nativeEnv.find(([n]) => n === "RS_RECEIVER_OUT")?.[1];
+    if (!outPath) throw new Error(`${dir}: the leg has no RS_RECEIVER_OUT`);
+    const evidenceDir = dirname(outPath);
+    await mkdir(evidenceDir, { recursive: true });
+
+    const bundleName = ctx.kind === "gsw" ? "gsw-bundle" : "web-bundle";
+    ensureLink(resolve(ctx.bundleDir), join(staticRoot, bundleName));
+    server = new HarnessServer({
+      staticRoot,
+      evidenceRoot: join(staticRoot, ".evidence"),
+      allowedLegNonces: [],
+    });
+    const { origin } = await server.start(req.port);
+    const nonce = randomBytes(8).toString("hex");
+    server.addLeg(nonce, evidenceDir);
+    const env: Record<string, string> = {
+      ...mapped.env,
+      RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
+      RS_RECEIVER_BUILD_SHA256: ctx.buildSha256,
+      ...(ctx.manifestSha256 && mapped.live
+        ? { RS_RECEIVER_MANIFEST_SHA256: ctx.manifestSha256 }
+        : {}),
+    };
+    const pageConfig = {
+      env,
+      engine_args: mapped.engineArgs,
+      canvas: mapped.canvas,
+      sabotage: null,
+    };
+    // The URL as written down: never with the fragment.
+    const url = `${origin}/${bundleName}/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
+    const navigateTo =
+      mapped.token !== "" ? `${url}#token=${mapped.token}` : url;
+    await writeFile(
+      join(dir, "page-config.json"),
+      `${JSON.stringify(
+        {
+          url,
+          kind: ctx.kind,
+          origin,
+          token: mapped.token !== "" ? "fragment" : null,
+          headless_native: mapped.headless,
+          profile: prepared.profileDir,
+          warm_from: mapped.warmFrom,
+          provenance_checked: provenance ? "before" : "after",
+          ...pageConfig,
+          dropped: mapped.dropped,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(
+      join(dir, "env.txt"),
+      `${Object.entries(env)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n")}\n`,
+    );
+    await writeFile(
+      join(dir, "argv.txt"),
+      `${[url, ...mapped.engineArgs].join("\n")}\n`,
+    );
+    const writeProvenance = async (p: BrowserProvenance): Promise<boolean> => {
+      await writeFile(
+        join(dir, "provenance.json"),
+        `${JSON.stringify(p, null, 2)}\n`,
+      );
+      if (!p.ok)
+        await writeFile(
+          join(dir, "harness-refused.txt"),
+          `browser-provenance: ${p.reasons.join("; ")}\n`,
+        );
+      return p.ok;
+    };
+    if (provenance && !(await writeProvenance(provenance))) return exitCode;
+    const page = await prepared.context.newPage();
+    await page.setViewportSize({
+      width: mapped.canvas[0],
+      height: mapped.canvas[1],
+    });
+    page.on("console", (m) => {
+      consoleLines.push(
+        JSON.stringify({
+          t: Date.now(),
+          type: m.type(),
+          text: scrub(m.text()),
+        }),
+      );
+    });
+    page.on("pageerror", (e) => {
+      consoleLines.push(
+        JSON.stringify({
+          t: Date.now(),
+          type: "pageerror",
+          text: scrub(String(e)),
+        }),
+      );
+    });
+    page.on("dialog", (d) => {
+      consoleLines.push(
+        JSON.stringify({
+          t: Date.now(),
+          type: "dialog",
+          text: scrub(d.message()),
+        }),
+      );
+      d.dismiss().catch(() => {});
+    });
+    await page.goto(navigateTo);
+    const deadline = Date.now() + req.timeoutMs;
+    while (Date.now() < deadline && !aborted) {
+      const exit = await page
+        .evaluate(() => window.__rsShell?.exit ?? null)
+        .catch(() => null);
+      if (exit) {
+        exitCode = exit.code;
+        break;
+      }
+      const failed = await page
+        .evaluate(() => window.__rsShell?.error ?? null)
+        .catch(() => null);
+      if (failed) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (aborted) return exitCode;
+    state = await page
+      .evaluate(() => ({
+        lines: window.__rsShell?.lines ?? [],
+        error: window.__rsShell?.error ?? null,
+        exit: window.__rsShell?.exit ?? null,
+        contextLost: window.__rsShell?.contextLost ?? false,
+        wasmHeapBytes: window.__rsWasmHeap?.() ?? null,
+        marks: performance
+          .getEntriesByType("mark")
+          .map((m) => ({ name: m.name, t: m.startTime })),
+        navigation: performance
+          .getEntriesByType("navigation")
+          .map((n) => n.toJSON()),
+        resources: performance.getEntriesByType("resource").map((r) => {
+          const e = r as PerformanceResourceTiming;
+          return {
+            name: e.name,
+            start: e.startTime,
+            end: e.responseEnd,
+            transfer: e.transferSize,
+            decoded: e.decodedBodySize,
+          };
+        }),
+      }))
+      .catch(() => null);
+    if (state && token !== "") {
+      // Defence in depth: the receiver never prints the token, but nothing written here may.
+      state.lines = state.lines.map((l) => ({ ...l, line: scrub(l.line) }));
+    }
+    await page.close().catch(() => {});
+    if (!provenance) {
+      // A warm leg's browser (launched on the cold leg's profile when the leg was asked for):
+      // the same check, on the same browser, after the leg.
+      provenance = await checkProvenanceOf(prepared);
+      await writeProvenance(provenance);
+    }
+    return exitCode;
+  };
+
+  const finish = async (): Promise<void> => {
+    if (finished) return;
+    finished = true;
+    await writeEvidence().catch((err) =>
+      log(`browser-receiver: writing evidence failed: ${String(err)}`),
+    );
+    await prepared.context.close().catch(() => {});
+    await server?.stop().catch(() => {});
+  };
+
+  const done = run()
+    .catch(async (err: unknown) => {
+      log(`browser-receiver: ${relative(staticRoot, dir)}: ${String(err)}`);
+      await writeFile(
+        join(dir, "launcher-error.txt"),
+        `${String(err)}\n`,
+      ).catch(() => {});
+      return exitCode;
+    })
+    .then(async (code) => {
+      if (!aborted) {
+        await finish();
+        log(
+          `browser-receiver: ${relative(staticRoot, dir)} exit=${code} (${Date.now() - started} ms)`,
+        );
+      }
+      return code;
+    });
+
+  const abort = async (): Promise<number> => {
+    if (aborted || finished) return exitCode;
+    aborted = true;
+    exitCode = 143;
+    const fresh = await Promise.race([
+      collectChromiumProcesses(launched.browser)
+        .then((ps) => ps.map((p) => p.pid))
+        .catch(() => [] as number[]),
+      new Promise<number[]>((r) => setTimeout(() => r([]), 500)),
+    ]);
+    const pids = [
+      ...new Set([
+        ...fresh,
+        ...(provenance?.processes ?? []).map((p) => p.pid),
+      ]),
+    ];
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    log(
+      `browser-receiver: ${relative(staticRoot, dir)} aborted: SIGKILLed ${pids.length} Chromium processes`,
+    );
+    await finish();
+    return exitCode;
+  };
+  return { done, abort };
+}
+
+/** The cold leg's profile a warm leg starts on (its page-config.json `profile`), or null for a
+ * cold leg. Throws when a warm leg's cold leg ran no browser. */
+export function warmProfileOf(dir: string, staticRoot: string): string | null {
+  const nativeEnv = parseEnvTxt(
+    readFileSync(join(dir, "native-env.txt"), "utf8"),
+  );
+  const nativeArgv = readFileSync(join(dir, "native-argv.txt"), "utf8")
+    .split("\n")
+    .filter((l) => l !== "");
+  const { warmFrom } = mapBrowserLeg(
+    staticRoot,
+    nativeEnv,
+    nativeArgv,
+    () => "",
+  );
+  if (!warmFrom) return null;
+  const page = join(warmFrom, "page-config.json");
+  if (!existsSync(page))
+    throw new Error(
+      `warm leg ${dir}: its cold leg ${warmFrom} ran no browser (no page-config.json)`,
+    );
+  const profile = (
+    JSON.parse(readFileSync(page, "utf8")) as { profile?: string }
+  ).profile;
+  if (!profile || !existsSync(profile))
+    throw new Error(
+      `warm leg ${dir}: the cold leg's profile ${profile} is gone`,
+    );
+  return profile;
+}
+
+/** The one-shot launcher (`gate7-tool.ts browser-receiver`): prepare, run, SIGTERM aborts. Its
+ * profile is a fresh directory under the system temp directory (kept, like the daemon's). */
+export async function runBrowserReceiver(
+  ctx: BrowserRunContext,
+  req: BrowserLegRequest,
+): Promise<number> {
+  const warm = warmProfileOf(resolve(req.dir), resolve(ctx.staticRoot));
+  const profile = await mkdtemp(join(tmpdir(), "gate7-live-profile-"));
+  const prepared = await prepareBrowser(
+    join(profile, "p"),
+    warm ?? undefined,
+    warm !== null,
+  );
+  const leg = runBrowserLeg(ctx, req, prepared);
+  const onTerm = (): void => {
+    leg.abort().finally(() => process.exit(143));
+  };
+  process.on("SIGTERM", onTerm);
+  const code = await leg.done;
+  process.off("SIGTERM", onTerm);
+  return code;
+}
+
+/** `gate7-tool.ts browser-daemon` (header): serves legs one at a time on 127.0.0.1:<port 0>,
+ * writes `{port, pid}` to `readyFile`, keeps one prepared browser spare, and exits when
+ * `parentPid` is gone. */
+export async function serveBrowserDaemon(
+  ctx: BrowserRunContext,
+  readyFile: string,
+  parentPid: number,
+): Promise<void> {
+  const log = ctx.log ?? ((line: string) => console.error(line));
+  // One profile directory per browser, never reused by a cold leg (D9), kept for warm legs; under
+  // the daemon's own directory, outside every leg directory (a profile's history may hold URLs).
+  const profiles = join(dirname(readyFile), "profiles");
+  let profileCount = 0;
+  const nextProfile = (): string => join(profiles, String(++profileCount));
+  const prepareSpare = (): Promise<PreparedBrowser> => {
+    const p = prepareBrowser(nextProfile());
+    p.catch((err) => log(`browser-daemon: preparing failed: ${String(err)}`));
+    return p;
+  };
+  let spare: Promise<PreparedBrowser> | null = prepareSpare();
+  let busy = false;
+  const takeSpare = async (): Promise<PreparedBrowser> => {
+    const p = spare ?? prepareSpare();
+    spare = null;
+    try {
+      return await p;
+    } catch {
+      return prepareBrowser(nextProfile());
+    }
+  };
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (url.pathname !== "/run") {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    if (busy) {
+      response.writeHead(409);
+      response.end("busy\n");
+      return;
+    }
+    const dir = url.searchParams.get("dir") ?? "";
+    const port = Number(url.searchParams.get("port"));
+    const timeoutS = Number(url.searchParams.get("timeout_s") ?? "180");
+    if (!dir.startsWith("/") || !Number.isInteger(port) || port <= 0) {
+      response.writeHead(400);
+      response.end("dir (absolute) and port are required\n");
+      return;
+    }
+    busy = true;
+    response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    void (async () => {
+      let leg: LegHandle | undefined;
+      let gone = false;
+      response.on("close", () => {
+        if (!response.writableEnded) {
+          gone = true;
+          void leg?.abort();
+        }
+      });
+      try {
+        const warm = warmProfileOf(dir, resolve(ctx.staticRoot));
+        // A warm leg starts on a copy of its cold leg's profile, launched now (its provenance is
+        // checked after the leg); the spare stays for the next cold leg.
+        const prepared = warm
+          ? await prepareBrowser(nextProfile(), warm, true)
+          : await takeSpare();
+        // The next leg's browser launches and is checked while this one runs.
+        if (!spare) spare = prepareSpare();
+        response.write(
+          `started ${dir} (browser prepared in ${prepared.preparedMs} ms)\n`,
+        );
+        leg = runBrowserLeg(
+          ctx,
+          { dir, port, timeoutMs: timeoutS * 1000 },
+          prepared,
+        );
+        if (gone) await leg.abort();
+        const code = await leg.done;
+        response.end(`exit=${code}\n`);
+      } catch (err) {
+        response.end(`error ${String(err)}\nexit=124\n`);
+      } finally {
+        busy = false;
+      }
+    })();
+  });
+  await new Promise<void>((res) => server.listen(0, "127.0.0.1", () => res()));
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  await writeFile(readyFile, `${JSON.stringify({ port, pid: process.pid })}\n`);
+  log(`browser-daemon: listening on 127.0.0.1:${port} (kind ${ctx.kind})`);
+  const shutdown = async (): Promise<void> => {
+    server.close();
+    const s = spare;
+    spare = null;
+    if (s) await s.then((p) => p.context.close()).catch(() => {});
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown());
+  setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      if (!busy) void shutdown();
+    }
+  }, 1000).unref();
+  await new Promise<never>(() => {});
+}

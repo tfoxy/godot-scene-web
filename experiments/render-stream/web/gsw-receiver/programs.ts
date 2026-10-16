@@ -55,12 +55,94 @@ export async function resolvePrograms(
   log: (line: string) => void = () => {},
 ): Promise<ProgramCounts> {
   const out: ProgramCounts = { defined: 0, refused: 0, library_reads: 0 };
+  await provideLibrary(g, mem, library, out);
+  definePrograms(g, out, log);
+  return out;
+}
+
+/** Whether any pending shader still needs its code from the library (an async read): live mode
+ * (G7l) does those reads before the rAF callback that applies the transaction. */
+export function needsLibrary(g: ProgramHost, library: string | null): boolean {
+  if (library === null) return false;
   const n = g.pending_shaders();
+  for (let i = 0; i < n; i++)
+    if (g.pending_code(i) === undefined && g.pending_withheld(i)) return true;
+  return false;
+}
+
+/** Step 1: every pending `withheld` shader's code from RS_RECEIVER_SHADER_LIBRARY (verified in
+ * wasm against its name), or its refusal `shader-withheld`. */
+export async function provideLibrary(
+  g: ProgramHost,
+  mem: WebAssembly.Memory,
+  library: string | null,
+  out: ProgramCounts,
+): Promise<void> {
+  const n = g.pending_shaders();
+  const reads: { hash: string; bytes: Uint8Array | null; why: string }[] = [];
   for (let i = 0; i < n; i++) {
+    if (g.pending_code(i) !== undefined || !g.pending_withheld(i)) continue;
+    const hash = g.pending_hash(i);
+    if (library === null) {
+      reads.push({
+        hash,
+        bytes: null,
+        why: "RS_RECEIVER_SHADER_LIBRARY is unset",
+      });
+      continue;
+    }
+    const url = `${library}/sha256/${hash}.grp`;
+    const res = await fetch(url).catch(() => null);
+    if (!res?.ok) {
+      reads.push({ hash, bytes: null, why: `the library has no ${url}` });
+      continue;
+    }
+    reads.push({
+      hash,
+      bytes: new Uint8Array(await res.arrayBuffer()),
+      why: "",
+    });
+    out.library_reads++;
+  }
+  // Pending indices change as shaders are refused, so each read is matched by hash.
+  for (const r of reads) {
+    const i = pendingIndex(g, r.hash);
+    if (i < 0) continue;
+    if (r.bytes === null) {
+      g.refuse_program(i, "shader-withheld", r.why);
+      out.refused++;
+      continue;
+    }
+    const p = g.alloc_payload(r.bytes.length);
+    new Uint8Array(mem.buffer, p, r.bytes.length).set(r.bytes);
+    if (g.provide_library(i, r.bytes.length) < 0) {
+      g.refuse_program(i, "shader-withheld", g.error());
+      out.refused++;
+    }
+  }
+}
+
+function pendingIndex(g: ProgramHost, hash: string): number {
+  const n = g.pending_shaders();
+  for (let i = 0; i < n; i++) if (g.pending_hash(i) === hash) return i;
+  return -1;
+}
+
+/** Step 2 (synchronous): transpile and define every pending shader whose code is held, in
+ * order; a `withheld` one with no code left is refused `shader-withheld`. */
+export function definePrograms(
+  g: ProgramHost,
+  out: ProgramCounts,
+  log: (line: string) => void = () => {},
+): void {
+  for (let guard = 2 * g.pending_shaders() + 1; guard > 0; guard--) {
+    const n = g.pending_shaders();
+    if (n === 0) return;
+    const i = 0;
     const label = `shader ${g.pending_shader_id(i)} (${g.pending_hash(i)})`;
-    let code = g.pending_code(i);
-    if (code === undefined && g.pending_withheld(i)) {
-      if (library === null) {
+    const code = g.pending_code(i);
+    if (code === undefined) {
+      if (g.pending_withheld(i)) {
         g.refuse_program(
           i,
           "shader-withheld",
@@ -69,29 +151,11 @@ export async function resolvePrograms(
         out.refused++;
         continue;
       }
-      const url = `${library}/sha256/${g.pending_hash(i)}.grp`;
-      const res = await fetch(url).catch(() => null);
-      if (!res?.ok) {
-        g.refuse_program(i, "shader-withheld", `the library has no ${url}`);
-        out.refused++;
-        continue;
-      }
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      out.library_reads++;
-      const p = g.alloc_payload(bytes.length);
-      new Uint8Array(mem.buffer, p, bytes.length).set(bytes);
-      if (g.provide_library(i, bytes.length) < 0) {
-        g.refuse_program(i, "shader-withheld", g.error());
-        out.refused++;
-        continue;
-      }
-      code = g.pending_code(i);
-    }
-    if (code === undefined)
       throw new ProgramError(
         "resource-unavailable",
         `${label}: its code is not held`,
       );
+    }
     let transpiled: ReturnType<typeof transpileGodotItemShader>;
     try {
       transpiled = transpileGodotItemShader(code);
@@ -110,5 +174,4 @@ export async function resolvePrograms(
       out.refused++;
     } else out.defined++;
   }
-  return out;
 }

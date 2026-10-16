@@ -64,6 +64,7 @@ import {
   deliveryReasons,
   deliveryReport,
   type LiveHostEvidence,
+  receivedFileName,
 } from "./gate1-live-checks";
 import {
   G2B_PRECEDENCE,
@@ -74,6 +75,7 @@ import {
   loadResolved,
 } from "./gate2b-checks";
 import {
+  coldFetchedHashes,
   connTimelines,
   fetchesAfterApplied,
   type G2cHost,
@@ -88,6 +90,7 @@ import {
   shaderTableHashes,
   tableHashes,
   unadvertisedGets,
+  warmCacheProblems,
 } from "./gate2c-checks";
 import type { Gate55ShaderStep } from "./gate55c-checks";
 import type { ResolvedTransaction } from "./render-stream-2";
@@ -258,7 +261,7 @@ export async function loadG55fLeg(
   // connection's stream (received.rs2, received-<n>.rs2) is this leg's, not the host's (memory
   // rs-g5f-live-mesh-facts fact 4).
   for (const c of host.connections) {
-    const name = c.n === 1 ? "received.rs2" : `received-${c.n}.rs2`;
+    const name = receivedFileName(receiverDir, c.n);
     const r = await loadResolved(join(receiverDir, name));
     c.received = r.present ? r : null;
   }
@@ -664,7 +667,10 @@ export function checkLiveTapEqualsReceivedShader(evals: Evals): G2bCheck {
     problems,
     notes.join(", "),
     G55F_LEGS.map((l) =>
-      join(evals.get(l.leg)?.e.receiverDir ?? l.leg, "received.rs2"),
+      join(
+        evals.get(l.leg)?.e.receiverDir ?? l.leg,
+        receivedFileName(evals.get(l.leg)?.e.receiverDir ?? l.leg),
+      ),
     ),
   );
 }
@@ -779,7 +785,17 @@ export function checkHttpGetsMatchFetchesShader(evals: Evals): G2bCheck {
       continue;
     }
     const gets = httpGets(host.hook.lines);
-    for (const p of getsVsFetches(gets, ev.e.applied.fetches ?? []))
+    for (const p of getsVsFetches(
+      gets,
+      ev.e.applied.fetches ?? [],
+      ev.e.applied.cache?.mode,
+      coldFetchedHashes(
+        ev.e.applied.cache?.mode,
+        leg === "live-shader-warm"
+          ? evals.get("live-shader")?.e.applied?.fetches
+          : null,
+      ),
+    ))
       problems.push(`${leg}: ${p}`);
     const summaryGets = host.serving?.http_gets;
     if (summaryGets !== gets.length)
@@ -1053,17 +1069,10 @@ export async function checkWarmHostNoGetsShader(
       problems.push(
         `the warm host logged ${gets} GETs (summary ${host.serving?.http_gets})`,
       );
-    const s = warm.e.applied?.resources_summary;
     const liveFetched =
       live.e.applied?.resources_summary?.distinct_fetched ?? -1;
-    if ((s?.distinct_fetched ?? -1) !== 0)
-      problems.push(`the warm receiver fetched ${s?.distinct_fetched}`);
-    if ((s?.cache_hits ?? -1) !== liveFetched)
-      problems.push(
-        `${s?.cache_hits} cache hits, live-shader fetched ${liveFetched}`,
-      );
-    if (warm.e.applied?.cache?.mode !== "warm")
-      problems.push("the receiver's cache mode is not warm");
+    // G7l: a browser receiver's cache is the cold leg's profile's HTTP cache (warmCacheProblems).
+    problems.push(...warmCacheProblems(warm.e.applied, liveFetched));
     // Neither leg stalls, so every checkpoint against reference-live must be a full match or a
     // benign PH-only one (the same round-trip jitter g55fCheckpoints already judges: comparing
     // live-shader's and live-shader-warm's shots against each other, rather than against
@@ -1077,7 +1086,7 @@ export async function checkWarmHostNoGetsShader(
   }
   return check(
     "warm-host-no-gets",
-    "live-shader-warm (a new host and a new receiver on live-shader's cache, mode warm): the host answers no GET at all, the receiver fetches nothing and hits its cache once per payload live-shader fetched, and its shot per step equals reference-live exactly (as live-shader's does)",
+    "live-shader-warm (a new host and a new receiver on live-shader's cache, mode warm): the host answers no GET at all, the receiver fetches nothing and hits its cache once per payload live-shader fetched, and its shot per step equals reference-live exactly (as live-shader's does); G7l, a browser receiver: its cache is the cold leg's profile's HTTP cache, so it fetches exactly what live-shader fetched, each answered 200 while the host serves none",
     problems,
     `0 GETs, ${warm?.e.applied?.resources_summary?.cache_hits ?? 0} cache hits, shots equal reference-live's`,
     [join(host?.dir ?? "live-shader-warm", "evidence", "resources.jsonl")],

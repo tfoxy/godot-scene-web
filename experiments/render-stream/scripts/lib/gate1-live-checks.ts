@@ -36,6 +36,7 @@
 //                       state differs from the full recording at its frame (stale-state)
 //   pixel-mismatch      a step shot that differs from the reference
 
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -74,7 +75,7 @@ import {
   resolvedStateOf,
 } from "./gate1-checks";
 import type { Gate1Expected } from "./gate1-expected";
-import { decodeRecord, splitRecords } from "./render-stream-2";
+import { decodeRecord, splitRecords, wireVersionOf } from "./render-stream-2";
 
 async function readBytes(path: string): Promise<Uint8Array | undefined> {
   try {
@@ -132,9 +133,19 @@ export const LIVE_LOG_NAME = "live-1.jsonl";
 export const tapName = (n: number): string => `stream-${n}.rs2`;
 export const liveLogName = (n: number): string => `live-${n}.jsonl`;
 export const RECEIVED_NAME = "received.rs2";
+
+/** G7l: connection n's received tap in `dir`: received(-n).rs7 when a /7 (browser) receiver wrote
+ * one there, else the /6 name received(-n).rs2 -- a native leg's evidence reads exactly as before. */
+export function receivedFileName(dir: string, n = 1): string {
+  const v7 = n === 1 ? "received.rs7" : `received-${n}.rs7`;
+  if (existsSync(join(dir, v7))) return v7;
+  return n === 1 ? RECEIVED_NAME : `received-${n}.rs2`;
+}
 /** The WebSocket subprotocol a receiver negotiates (render-stream-6.md "Live transport", since
  * G6b; render-stream.5 from G55d, render-stream.4 from G5d, render-stream.3 from G4e2). */
 export const SUBPROTOCOL = "render-stream.6";
+/** G7l: a browser receiver's subprotocol (render-stream-7.md). */
+export const SUBPROTOCOL_V7 = "render-stream.7";
 /** Queued bytes may exceed the largest credit window by this much (gate1-design.md Q7 class 4). */
 export const QUEUED_SLACK_BYTES = 4096;
 
@@ -163,6 +174,8 @@ export interface LatencySummary {
 export interface LiveConnectionSummary {
   connection?: number;
   stream_id?: string | null;
+  /** G7n: the connection's wire version (6 or 7) */
+  version?: number;
   receiver?: string | null;
   credit_stage?: string | null;
   inbound_buffer_bytes?: number;
@@ -443,7 +456,7 @@ export function largestMessage(
   tapBytes: Uint8Array | undefined,
 ): number | null {
   if (!tapBytes) return null;
-  const { records } = splitRecords(tapBytes);
+  const { records } = splitRecords(tapBytes, wireVersionOf(tapBytes));
   if (records.length === 0) return null;
   return Math.max(
     8 + records[0].byte_length,
@@ -461,13 +474,13 @@ export function largestCreditWindow(
   tapBytes: Uint8Array | undefined,
 ): number | null {
   if (!tapBytes) return null;
-  const { records } = splitRecords(tapBytes);
+  const { records } = splitRecords(tapBytes, wireVersionOf(tapBytes));
   if (records.length === 0) return null;
   let largest = 0;
   let window = 8;
   for (const raw of records) {
     window += raw.byte_length;
-    const type = decodeRecord(raw).record?.meta.type;
+    const type = decodeRecord(raw, wireVersionOf(tapBytes)).record?.meta.type;
     if (type === "transaction" || type === "end") {
       largest = Math.max(largest, window);
       window = 0;
@@ -680,7 +693,7 @@ export function processArtifacts(dirs: string[]): string[] {
     join(dir, "tap", TAP_NAME),
     join(dir, "tap", LIVE_LOG_NAME),
     join(dir, "applied.json"),
-    join(dir, RECEIVED_NAME),
+    join(dir, receivedFileName(dir)),
     join(dir, "strace.txt"),
   ]);
 }
@@ -798,7 +811,10 @@ export async function evaluateLiveLeg(
   const appliedOk =
     applied !== undefined && applied !== null && typeof applied === "object";
   const received = await loadRecording(
-    join(receiverDir, leg === "live-replay" ? RECORDING_NAME : RECEIVED_NAME),
+    join(
+      receiverDir,
+      leg === "live-replay" ? RECORDING_NAME : receivedFileName(receiverDir),
+    ),
   );
   const frames = new Map(
     received.transactions.map((t) => [t.meta.seq, t.meta.frame]),
@@ -1013,11 +1029,13 @@ export async function checkLiveHandshake(evals: Evals): Promise<Gate1Check> {
     const log = join(e.receiverDir, "stdout.log");
     evidence.push(log, join(e.host.dir, "evidence", "live-summary.json"));
     const text = (await readTextOrUndefined(log)) ?? "";
-    if (!text.includes(`(subprotocol ${SUBPROTOCOL})`))
-      problems.push(
-        `${leg}: the receiver did not report subprotocol ${SUBPROTOCOL}`,
-      );
     const conns = e.host.summary?.connections ?? [];
+    // G7l: a browser receiver speaks render-stream/7 (the host's summary records the version).
+    const subprotocol = conns[0]?.version === 7 ? SUBPROTOCOL_V7 : SUBPROTOCOL;
+    if (!text.includes(`(subprotocol ${subprotocol})`))
+      problems.push(
+        `${leg}: the receiver did not report subprotocol ${subprotocol}`,
+      );
     if (conns.length !== 1) {
       problems.push(
         `${leg}: ${conns.length} connections in live-summary.json, expected 1`,
@@ -1470,6 +1488,67 @@ export function checkLiveReceiverLate(evals: Evals): Gate1Check {
   );
 }
 
+/** G7l: receiver-never-loaded-fixture-live for a BROWSER receiver (lib/gate7-live-legs.ts), which
+ * has no process to strace. Its analogue: every URL the page fetched (timings.json's resource
+ * timing) is the bundle's own (/web-bundle/ or /gsw-bundle/) or an evidence PUT, the harness's
+ * static root is the run directory (never fixtures/), the leg substitutes a native receiver
+ * launch on --path <abs receiver> (native-argv.txt), it wrote its received tap, and no live
+ * receiver log has a [fixture] line. What the bundle itself contains is gate 7's
+ * `no-source-scene`. */
+async function browserNeverLoadedFixture(
+  outDir: string,
+  evals: Evals,
+  legDir: string,
+  paths: { receiverProjectDir: string; fixtureProjectDir: string },
+): Promise<Gate1Check> {
+  const problems: string[] = [];
+  const timings = JSON.parse(
+    (await readTextOrUndefined(join(legDir, "timings.json"))) ?? "null",
+  ) as { resources?: { name?: string }[] } | null;
+  const urls = (timings?.resources ?? []).map((r) => String(r.name ?? ""));
+  if (!timings) problems.push("live-headless/receiver/timings.json missing");
+  const foreign = urls.filter((u) => {
+    let path: string;
+    try {
+      path = new URL(u).pathname;
+    } catch {
+      return true;
+    }
+    return !/^\/(web-bundle|gsw-bundle|evidence)\//.test(path);
+  });
+  if (foreign.length > 0)
+    problems.push(
+      `the page fetched ${foreign.length} URL(s) outside its bundle and evidence: ${foreign[0]}`,
+    );
+  const argv =
+    (await readTextOrUndefined(join(legDir, "native-argv.txt")))
+      ?.split("\n")
+      .map((l) => l.trim()) ?? [];
+  const i = argv.indexOf("--path");
+  if (i < 0 || argv[i + 1] !== paths.receiverProjectDir)
+    problems.push(
+      `live-headless native-argv.txt does not pass --path ${paths.receiverProjectDir}`,
+    );
+  if (!(await fileExists(join(legDir, receivedFileName(legDir)))))
+    problems.push(`no ${receivedFileName(legDir)} in ${legDir}`);
+  const logs = [...G1C_CLASSIFIED_LEGS].map((l) =>
+    join(evals.get(l)?.receiverDir ?? join(outDir, l), "stdout.log"),
+  );
+  for (const log of logs) {
+    const text = await readTextOrUndefined(log);
+    if (text === undefined) problems.push(`${log} missing`);
+    const line = text?.split("\n").find((l) => l.includes("[fixture]"));
+    if (line) problems.push(`${log} has a [fixture] line: ${line}`);
+  }
+  return check(
+    "receiver-never-loaded-fixture-live",
+    "the headless live receiver's trace opens nothing under fixtures/ and does open (writes) its received.rs2; argv passes --path <abs receiver>; no live receiver log has a [fixture] line (G7l, a browser receiver: every URL its page fetched is its bundle's or an evidence PUT, it substitutes a --path <abs receiver> launch, and it wrote its received tap)",
+    problems,
+    `browser receiver: ${urls.length} fetched URL(s), all bundle or evidence; ${logs.length} live receiver logs clean`,
+    [join(legDir, "timings.json"), join(legDir, "native-argv.txt"), ...logs],
+  );
+}
+
 export async function checkLiveReceiverNeverLoadedFixture(
   outDir: string,
   evals: Evals,
@@ -1479,6 +1558,8 @@ export async function checkLiveReceiverNeverLoadedFixture(
   const stracePath = join(legDir, "strace.txt");
   const fixturesRoot = join(paths.fixtureProjectDir, "..");
   const problems: string[] = [];
+  if (await fileExists(join(legDir, "page-config.json")))
+    return browserNeverLoadedFixture(outDir, evals, legDir, paths);
   if (await fileExists(join(legDir, "strace-status.txt")))
     problems.push("strace was not installed when live-headless ran");
   const strace = await readTextOrUndefined(stracePath);
