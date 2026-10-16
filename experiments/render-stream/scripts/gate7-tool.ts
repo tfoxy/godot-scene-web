@@ -6,8 +6,10 @@
 //   gate7-tool.ts discover --source <gate N run>
 //     lists the source run's file receiver legs and which are replayed (lib/gate7b-adapters.ts)
 //   gate7-tool.ts web-legs --group g7-<N> --source <gate N run> --bundle <bundle dir> --out <gate 7 run>
-//     [--only a,b] [--repeat-differing]
-//     replays the group's native receiver legs in the web-export receiver (lib/gate7-web-legs.ts)
+//     [--only a,b] [--repeat-differing] [--core gdscript|rust]
+//     replays the group's native receiver legs in the web-export receiver (lib/gate7-web-legs.ts);
+//     --core rust (G7xw) runs them on the shared Rust core (RS_RECEIVER_CORE=rust) and needs a
+//     build-web-receiver.sh --core rust bundle
 //   gate7-tool.ts source-inputs --source gate0=<run>,gate1=<run>,... --out <inputs.json>
 //     (G7a) every capture recording of the source runs (`*/capture*/recording*.rs2` and the live
 //     receivers' `received.rs2`), each once by sha256, as render-stream-gate7-bench-inputs/1 for
@@ -108,7 +110,15 @@ async function main(): Promise<void> {
     const only = onlyAt >= 0 ? (argv[onlyAt + 1] ?? "").split(",") : [];
     const build = JSON.parse(
       readFileSync(join(bundle, "build.json"), "utf8"),
-    ) as { pck: { sha256: string } };
+    ) as { pck: { sha256: string }; core?: string };
+    const coreAt = argv.indexOf("--core");
+    const core = coreAt >= 0 ? argv[coreAt + 1] : "gdscript";
+    if (core !== "gdscript" && core !== "rust")
+      throw new Error(`gate7-tool: --core is gdscript or rust, not ${core}`);
+    if (core === "rust" && build.core !== "rust")
+      throw new Error(
+        `gate7-tool: --core rust needs a build-web-receiver.sh --core rust bundle; ${bundle} is ${build.core ?? "gdscript"}`,
+      );
     const gate = def ? def.gate : "gate0";
     let specs = def
       ? webLegSpecs(source, join(out, gate, "web")).specs
@@ -122,6 +132,7 @@ async function main(): Promise<void> {
         sourceDir: source,
         bundleDir: bundle,
         buildSha256: build.pck.sha256,
+        core,
       },
       specs,
     );
@@ -159,6 +170,7 @@ async function main(): Promise<void> {
             sourceDir: source,
             bundleDir: bundle,
             buildSha256: build.pck.sha256,
+            core,
           },
           again,
         );

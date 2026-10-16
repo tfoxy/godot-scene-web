@@ -23,6 +23,10 @@
 #include "gdextension_interface.h"
 #include "rs_core_capi.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/em_js.h>
+#endif
+
 namespace {
 
 // ------------------------------------------------------------------------------ interface
@@ -359,6 +363,64 @@ bool engine_ready() {
 inline void rs_call(Rs which, std::initializer_list<const void *> args, void *ret = nullptr) {
   gd.ptrcall(engine.binds[which], engine.rs, args.size() ? args.begin() : nullptr, ret);
 }
+
+#ifdef __EMSCRIPTEN__
+// The web export's index-region guard (G7xw; results/gate7/g7b.md Finding 2). Godot 4.5.1's
+// mesh_surface_update_index_region binds the index buffer to GL_ARRAY_BUFFER
+// (drivers/gles3/storage/mesh_storage.cpp:591-593), which WebGL 2 forbids for a buffer first bound
+// as an element array buffer, so the engine's own update is dropped there. While the guard is
+// installed (around that one RenderingServer call, which the nothreads web build runs
+// synchronously), the engine's `glBindBuffer(GL_ARRAY_BUFFER, b)` binds `b` to
+// GL_ELEMENT_ARRAY_BUFFER with no vertex array bound, its `glBufferSubData(GL_ARRAY_BUFFER, ...)`
+// uploads there, and its closing `glBindBuffer(GL_ARRAY_BUFFER, 0)` unbinds the element array
+// buffer, restores the vertex array that was bound and unbinds GL_ARRAY_BUFFER as the engine
+// meant to. `GLctx` is the main module's WebGL 2 context: libdylink evaluates a side module's
+// EM_JS bodies inside the main module's scope. `GLctx.rsIndexRegionUploads` counts the
+// redirected uploads (a page-side diagnostic; gate 5's mesh legs are the evidence).
+EM_JS(void, index_region_guard_begin, (), {
+  var gl = GLctx;
+  if (!gl || gl.rsIndexRegionGuard) return;
+  var st = { bind: gl.bindBuffer, sub: gl.bufferSubData, buffer: null, vao: null };
+  gl.rsIndexRegionGuard = st;
+  gl.bindBuffer = function(target, buffer) {
+    if (target !== gl.ARRAY_BUFFER) return st.bind.call(gl, target, buffer);
+    if (buffer) {
+      st.vao = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+      gl.bindVertexArray(null);
+      st.buffer = buffer;
+      st.bind.call(gl, gl.ELEMENT_ARRAY_BUFFER, buffer);
+      return;
+    }
+    if (st.buffer) {
+      st.bind.call(gl, gl.ELEMENT_ARRAY_BUFFER, null);
+      gl.bindVertexArray(st.vao);
+      st.buffer = null;
+    }
+    st.bind.call(gl, gl.ARRAY_BUFFER, null);
+  };
+  gl.bufferSubData = function(target) {
+    var args = Array.prototype.slice.call(arguments);
+    if (target === gl.ARRAY_BUFFER && st.buffer) {
+      args[0] = gl.ELEMENT_ARRAY_BUFFER;
+      gl.rsIndexRegionUploads = (gl.rsIndexRegionUploads || 0) + 1;
+    }
+    return st.sub.apply(gl, args);
+  };
+});
+
+EM_JS(void, index_region_guard_end, (), {
+  var gl = GLctx;
+  var st = gl && gl.rsIndexRegionGuard;
+  if (!st) return;
+  if (st.buffer) {
+    st.bind.call(gl, gl.ELEMENT_ARRAY_BUFFER, null);
+    gl.bindVertexArray(st.vao);
+  }
+  gl.bindBuffer = st.bind;
+  gl.bufferSubData = st.sub;
+  delete gl.rsIndexRegionGuard;
+});
+#endif
 
 // ------------------------------------------------------------------------------ the instance
 
@@ -904,6 +966,15 @@ int64_t execute(Instance *inst) {
                 : which == 1 ? RS_MESH_SURFACE_UPDATE_ATTRIBUTE_REGION
                 : which == 2 ? RS_MESH_SURFACE_UPDATE_SKIN_REGION
                              : RS_MESH_SURFACE_UPDATE_INDEX_REGION;
+#ifdef __EMSCRIPTEN__
+        // Web export (G7xw): see index_region_guard_begin().
+        if (fn == RS_MESH_SURFACE_UPDATE_INDEX_REGION) {
+          index_region_guard_begin();
+          rs_call(fn, {&mesh, &surface, &offset, &data.p});
+          index_region_guard_end();
+          break;
+        }
+#endif
         rs_call(fn, {&mesh, &surface, &offset, &data.p});
         break;
       }
@@ -1305,6 +1376,7 @@ enum Method : int {
   M_STATE_JSON,
   M_COUNTERS,
   M_SET_FULL_SCAN,
+  M_OP_COUNT,
   M_COUNT,
 };
 
@@ -1326,6 +1398,7 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"state_json", 0},       // () -> String
     {"counters", 0},         // () -> Dictionary
     {"set_full_scan", 1},    // (on: bool) -> void
+    {"op_count", 0},         // () -> int (the core's opcode count, a constant: G7xw's probe call)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1430,6 +1503,9 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       return;
     case M_SET_FULL_SCAN:
       rsc_set_full_scan(inst->core, arg_bool(args[0]) ? 1 : 0);
+      return;
+    case M_OP_COUNT:
+      ret_int(ret, rsc_op_count());
       return;
     case M_COUNT:
       return;

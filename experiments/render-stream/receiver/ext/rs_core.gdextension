@@ -1,7 +1,10 @@
-; The native receiver's adapter over the shared Rust core (gate7-design.md G7xn, Q14e), loaded at run
-; time by RsRustApplier.load_core() only when RS_RECEIVER_CORE=rust. receiver/ext/ carries a
-; .gdignore, so the editor never registers this file and the default (gdscript) path never loads
-; it. The library is a build output: experiments/render-stream/scripts/build-rs-core-ext.sh.
+; The receiver's adapter over the shared Rust core (gate7-design.md G7xn, G7xw, Q14e), loaded only
+; when RS_RECEIVER_CORE=rust. Natively, RsRustApplier.load_core() loads it at run time:
+; receiver/ext/ carries a .gdignore, so the editor never registers this file and the default
+; (gdscript) path never loads it. The `Web (rust core)` export (build-web-receiver.sh --core rust)
+; stages receiver/ext/ without its .gdignore, so the editor lists this file and exports the
+; web.wasm32 side module beside the engine, whose dlink loader preloads it. Both libraries are
+; build outputs: scripts/build-rs-core-ext.sh (native) and scripts/build-rs-core-web.sh (web).
 
 [configuration]
 entry_symbol = "rs_core_ext_init"
@@ -10,3 +13,4 @@ reloadable = false
 
 [libraries]
 linux.x86_64 = "build/librs_core_ext.so"
+web.wasm32 = "build/web/librs_core_ext.wasm"

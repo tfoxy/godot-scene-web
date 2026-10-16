@@ -44,6 +44,8 @@ import { fileURLToPath } from "node:url";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { diffRgba } from "./gate0-checks";
 import {
+  appliedCore,
+  dropCrossCoreDetail,
   filesUnder,
   type Gate7Check,
   type Gate7GroupResult,
@@ -965,10 +967,13 @@ export async function checkGateWeb(
         .join(`/${relative(dirname(dirname(webRoot)), spec.webDir)}`)
         .split(resolve(sourceDir))
         .join(`/sources/${def.gate}`);
+      const crossCore = appliedCore(nApplied) !== appliedCore(wApplied);
       const strip = (doc: unknown): unknown => {
         const n = normalizeApplied(doc) as Record<string, unknown>;
         // D11: a --headless native leg has a headless viewport block; a browser always renders.
         if (leg?.headless) delete n.viewport;
+        // G7xw: a rust web leg against its gdscript native leg compares failure seq and reason.
+        if (crossCore) dropCrossCoreDetail(n);
         return n;
       };
       const diffs = jsonDiffPaths(
