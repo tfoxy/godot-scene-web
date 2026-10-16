@@ -48,7 +48,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7s | GSW materials and shaders: gate 5.5 — landed | [results/gate7/g7s.md](results/gate7/g7s.md) |
 | G7l | live in browsers: gates 1, 2, 5f, 5.5f over /7 — landed | [results/gate7/g7l.md](results/gate7/g7l.md) |
 | G7xn | native GDExtension adapter for the core, `RS_RECEIVER_CORE=rust`, off by default — landed | [results/gate7/g7xn.md](results/gate7/g7xn.md) |
-| G7xw | web-export dlink adapter for the core | [protocol/gate7/g7xw.md](protocol/gate7/g7xw.md) |
+| G7xw | web-export dlink adapter for the core, `Web (rust core)`; g7-5 passes on the web; g31 misses scene-full and hd-patch — landed | [results/gate7/g7xw.md](results/gate7/g7xw.md) |
 | G7o | decode/apply optimization — restructured into G7o1 and tier 2; lands nothing | [protocol/gate7/g7o.md](protocol/gate7/g7o.md) |
 | G7g | gate 6 scene and HD on both browsers | [protocol/gate7/g7g.md](protocol/gate7/g7g.md) |
 | G7u | suspension and lifecycle | [protocol/gate7/g7u.md](protocol/gate7/g7u.md) |

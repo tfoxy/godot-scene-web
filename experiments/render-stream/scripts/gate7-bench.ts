@@ -11,6 +11,8 @@
 //   gate7-bench.ts --arm gsw-ts --env device --device g31 --inputs <inputs.json> --out <dir> [--probes]
 //   gate7-bench.ts --arm web --inputs <inputs.json> --out <dir>        # desktop Chromium, web export
 //   gate7-bench.ts --arm web --env device --device g31 --inputs <inputs.json> --out <dir>
+//       [--core gdscript|rust]   # G7xw: the web export's core; `rust` builds and loads the
+//                                # `Web (rust core)` bundle and names its legs `-web-rs`
 //   gate7-bench.ts --arm gsw-rs|gsw-rs-inline [--rs-build <dir>] ...  # G7x: rs-gsw-wasm (Q14c)
 //   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
 // `gsw-ts` is the TypeScript arm (G7x renamed it; G7a retired its `gsw` alias: since G7a the GSW
@@ -136,7 +138,8 @@ interface Args {
   only: string[];
   /** gate7-design.md D31/G7o1; `gsw` only, ignored by `native` and `web` (GDScript stays inline). */
   recordDigest: "inline" | "deferred";
-  /** G7xn: the native arm's receiver core (RS_RECEIVER_CORE); `rust` legs are `native-rs-bench-*`. */
+  /** G7xn: the native arm's receiver core (RS_RECEIVER_CORE); `rust` legs are `native-rs-bench-*`.
+   * G7xw: also the web arm's (build-web-receiver.sh --core rust); its legs are `*-web-rs[-<id>]`. */
   core: "gdscript" | "rust";
   /** G7xn: RS_RECEIVER_CORE_EXT for `--core rust` (default: the receiver's own). */
   coreExt: string | undefined;
@@ -315,13 +318,15 @@ function parseArgs(argv: string[]): Args {
     throw new HarnessUsageError(
       "the native arm runs on the desktop only (--env desktop)",
     );
-  if (a.arm !== "native" && (a.core !== "gdscript" || a.taskset))
-    throw new HarnessUsageError("--core and --taskset are native-arm options");
+  if (a.arm !== "native" && a.taskset)
+    throw new HarnessUsageError("--taskset is a native-arm option");
+  if (a.arm !== "native" && a.arm !== "web" && a.core !== "gdscript")
+    throw new HarnessUsageError("--core is a native- and web-arm option");
   return a;
 }
 
 export function benchLegName(
-  armIn: Args["arm"] | Arm7x,
+  armIn: Args["arm"] | Arm7x | "web-rs",
   env: HarnessEnv,
   input: string,
   device: string | null,
@@ -1021,10 +1026,14 @@ const DEFAULT_WEB_CANVAS: [number, number] = [640, 360];
 const WEB_REPLAY_TIMEOUT_MS = 180_000;
 
 /** build-web-receiver.sh (G7e, D5): reuses a cached bundle by the receiver/ source sha256, or
- * builds one (8 to 10 s). Called once per gate7-bench.ts invocation, not per repeat. */
-function buildWebBundle(): { bundleDir: string; buildSha256: string } {
+ * builds one (8 to 10 s). Called once per gate7-bench.ts invocation, not per repeat. G7xw:
+ * `rust` builds the `Web (rust core)` bundle (--core rust). */
+function buildWebBundle(core: Args["core"]): {
+  bundleDir: string;
+  buildSha256: string;
+} {
   const script = join(SCRIPT_DIR, "build-web-receiver.sh");
-  const result = spawnSync("bash", [script], {
+  const result = spawnSync("bash", [script, "--core", core], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"],
     maxBuffer: 64 * 1024 * 1024,
@@ -1124,7 +1133,8 @@ async function runWebArm(
   args: Args,
   inputs: BenchInput[],
 ): Promise<BenchInputSummary[]> {
-  const { bundleDir, buildSha256 } = buildWebBundle();
+  const { bundleDir, buildSha256 } = buildWebBundle(args.core);
+  const webArm = args.core === "rust" ? "web-rs" : "web";
   const table = loadDeviceTable();
   const sel = resolveDeviceSelection(args.env, args.device, table);
   await mkdir(args.out, { recursive: true });
@@ -1142,6 +1152,10 @@ async function runWebArm(
     staticRoot: args.out,
     evidenceRoot: evidence,
     allowedLegNonces: [],
+    // G7xw: cross-origin isolated like the gsw arm, so the engine's Time.get_ticks_usec()
+    // (performance.now()) resolves to 5 us instead of Chrome's coarsened 100 us; G7m's web numbers
+    // (tens of ms) were taken without it. Every bundle file is same-origin.
+    crossOriginIsolated: true,
   });
   server.enableWebSocketEcho("/echo");
   server.enableTicker("/tick");
@@ -1279,7 +1293,7 @@ async function runWebArm(
         ? await probeTpMs(origin, openPage, server, evidence)
         : null;
     for (const input of inputs) {
-      const leg = benchLegName("web", sel.env, input.name, sel.id);
+      const leg = benchLegName(webArm, sel.env, input.name, sel.id);
       const legDir = join(args.out, leg);
       const [w, h] = WEB_CANVAS_SIZE[input.name] ?? DEFAULT_WEB_CANVAS;
       const perRepeat: {
@@ -1302,6 +1316,7 @@ async function runWebArm(
           RS_RECEIVER_LOG: "summary",
           RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
           RS_RECEIVER_BUILD_SHA256: buildSha256,
+          ...(args.core === "rust" ? { RS_RECEIVER_CORE: "rust" } : {}),
           ...(input.store
             ? { RS_RECEIVER_STORE_DIR: `/web-assets/${input.name}/store` }
             : {}),
@@ -1352,7 +1367,7 @@ async function runWebArm(
     if (sampler) {
       const timeline = await sampler.stop();
       await writeFile(
-        join(args.out, `device-samples-${sel.id}-web.json`),
+        join(args.out, `device-samples-${sel.id}-${webArm}.json`),
         `${JSON.stringify(timeline, null, 2)}\n`,
       );
     }
@@ -1370,10 +1385,13 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   await mkdir(args.out, { recursive: true });
   const inputs = loadInputs(args.inputs, args.only);
-  const armLabel = `${args.arm}-${args.env}${args.device ? `-${args.device}` : ""}`;
+  const armName =
+    args.arm === "web" && args.core === "rust" ? "web-rs" : args.arm;
+  const armLabel = `${armName}-${args.env}${args.device ? `-${args.device}` : ""}`;
   const arm: Record<string, unknown> = {
     schema: "render-stream-gate7-bench-arm/1",
     arm: args.arm,
+    core: args.arm === "native" || args.arm === "web" ? args.core : null,
     env: args.env,
     device: args.device ?? null,
     inputs: inputs.map((i) => i.name),
@@ -1398,7 +1416,9 @@ async function main(): Promise<void> {
           : await runGswArm(args, inputs);
     arm.status = "success";
     arm.legs = summaries.map((s) =>
-      benchLegName(args.arm, args.env, s.input, args.device ?? null),
+      args.arm === "native" && args.core === "rust"
+        ? `native-rs-bench-${s.input}`
+        : benchLegName(armName, args.env, s.input, args.device ?? null),
     );
   } catch (error) {
     if (error instanceof HarnessUsageError) throw error;

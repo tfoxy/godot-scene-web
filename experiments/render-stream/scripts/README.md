@@ -16,7 +16,8 @@ other agents' work, without a lock held for a whole multi-gate run (`lib/quiet.s
   (or brackets one leg with `timing_leg`, `lib/legs.sh`).
 - **Shared, per correctness leg**: every other `run_headless`, `run_rendered` and
   `start_headless_bg ... finish_bg` launch, each gate 7 web/gsw file leg, the build scripts
-  (`build-capture.sh`, `build-rs-core.sh`, `build-rs-core-ext.sh`, `build-web-receiver.sh`) and
+  (`build-capture.sh`, `build-rs-core.sh`, `build-rs-core-ext.sh`, `build-rs-core-web.sh`,
+  `build-web-receiver.sh`) and
   each runner's checker. Shared holders run together, but wait while a timing leg holds the lock
   or waits for it (a waiter marker in `<lock>.waiters/`, so a stream of shared holders cannot
   starve it; a marker whose process is gone, or older than `GSW_QUIET_MARKER_MAX_S`, default
@@ -2755,6 +2756,18 @@ The files:
 
   A build of the same source is reused unless `--force`. The last line printed is the bundle
   directory.
+
+  `--core rust` (G7xw) exports `Web (rust core)` (`preset.1`) instead, as follows:
+  - it runs `build-rs-core-web.sh`, which builds `rs-core-capi` with the pinned F4 nightly
+    (`-Zbuild-std`, PIC, `panic=abort`, hidden default visibility) and links it with the shim by
+    emcc 4.0.11 into the side module `../receiver/ext/build/web/librs_core_ext.wasm`;
+  - it stages `ext/` without its `.gdignore` and uses the dlink template;
+  - it checks that the export copied the module beside the engine;
+  - it records `core`, the preset index and the module's own `build.json` (`rs_core_web`).
+
+  `run-gate7.sh --web-core rust`, `gate7-tool.ts web-legs --core rust` (RS_RECEIVER_CORE=rust on
+  every leg) and `gate7-bench.ts --arm web --core rust` (legs `*-web-rs*`) run on that bundle.
+  `lib/wasm-side-module-info.mjs` lists a side module's dylink info, exports and imports.
 - `lib/godot-pck.ts` reads the directory of a `.pck` (format 2 or 3, from
   `core/io/file_access_pack.cpp`). `web-build-json.ts` writes `build.json`.
 - `lib/gate7-web-legs.ts` (`runWebLegs`, `mapNativeLeg`) derives each web leg from its native

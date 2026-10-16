@@ -8,7 +8,7 @@
 #     [--extension X.gdextension] [--calibration record.json] [--binary template] \
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
-#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live]
+#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core gdscript|rust]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -55,6 +55,11 @@
 #             css-opacity sabotage and the render-time probe through lib/browser-harness.ts into
 #             <out>/gate0/web/<leg>/; check-gate7.ts judges them with gate 0's own checker
 #             (lib/gate7-adapters.ts). Sources are recorded in <out>/sources.json.
+#
+# --web-core rust (G7xw, gate7-design.md "G7xw", Q14e): every web-export leg and the web bench arm
+# run on the shared Rust core through its dlink side module: build-web-receiver.sh --core rust
+# (or `--bundle`, such a build), gate7-tool.ts web-legs --core rust (RS_RECEIVER_CORE=rust on
+# every leg) and gate7-bench.ts --arm web --core rust. The default (gdscript) is G7e's/G7b's.
 #
 # Groups landed (G7a, the GSW canvas receiver on the shared Rust core, gate7-design.md "G7a"):
 #   g7-0..g7-3  gates 0 to 3's file-mode receiver legs in the GSW canvas receiver (`gsw`), and
@@ -137,6 +142,7 @@ HOLD_SECONDS=30
 PLAN_ONLY=0
 SKIP_HARNESS_SELFTEST=0
 BUNDLE=""
+WEB_CORE="gdscript"
 GSW_BUNDLE=""
 RS_BUILD=""
 LIVE=0
@@ -214,6 +220,10 @@ while [ $# -gt 0 ]; do
 		GSW_BUNDLE="${2:-}"
 		shift 2
 		;;
+	--web-core)
+		WEB_CORE="${2:-}"
+		shift 2
+		;;
 	--rs-build)
 		RS_BUILD="${2:-}"
 		shift 2
@@ -257,6 +267,18 @@ selection_exit=$?
 set -e
 if [ "$selection_exit" != "0" ]; then
 	echo "run-gate7: refusing (see above)" >&2
+	exit 2
+fi
+case "$WEB_CORE" in
+gdscript | rust) ;;
+*)
+	echo "run-gate7: --web-core must be gdscript or rust (got $WEB_CORE)" >&2
+	exit 2
+	;;
+esac
+if [ "$WEB_CORE" = rust ] && [ "$LIVE" = 1 ]; then
+	# G7xw: the core decodes render-stream/6 file streams (G7xn); the web's live legs speak /7.
+	echo "run-gate7: --web-core rust covers the file legs and the bench, not --live" >&2
 	exit 2
 fi
 case "$RECEIVER" in
@@ -674,7 +696,7 @@ run_g7_bench() {
 			bench --arm gsw-ts "${common[@]}" --out "$B"
 		fi
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; then
-			bench --arm web "${common[@]}" --out "$B"
+			bench --arm web --core "$WEB_CORE" "${common[@]}" --out "$B"
 		fi
 	else
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; then
@@ -682,18 +704,18 @@ run_g7_bench() {
 			bench --arm gsw-ts --env device --device "$DEVICE" "${common[@]}" --out "$B" --probes --hold-seconds "$HOLD_SECONDS"
 		fi
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; then
-			bench --arm web --env device --device "$DEVICE" "${common[@]}" --out "$B"
+			bench --arm web --core "$WEB_CORE" --env device --device "$DEVICE" "${common[@]}" --out "$B"
 		fi
 	fi
 }
 
 if has_group g7-0 && want_web; then
 	if [ -z "$BUNDLE" ]; then
-		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
+		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" --core "$WEB_CORE" | tail -1)"
 	fi
 	BUNDLE="$(realpath "$BUNDLE")"
 	echo "run-gate7: g7-0 web legs (bundle $BUNDLE)" >&2
-	g7tool web-legs --group g7-0 --source "${SOURCES[gate0]}" --bundle "$BUNDLE" --out "$OUT"
+	g7tool web-legs --group g7-0 --source "${SOURCES[gate0]}" --bundle "$BUNDLE" --out "$OUT" --core "$WEB_CORE"
 	CHECK_ARGS+=(--bundle "$BUNDLE")
 fi
 if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
@@ -745,7 +767,7 @@ if [ "${#SOURCE_GATES[@]}" -gt 0 ] && want_gsw; then
 fi
 if [ "${#G7B_RUN[@]}" -gt 0 ]; then
 	if [ -z "$BUNDLE" ]; then
-		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
+		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" --core "$WEB_CORE" | tail -1)"
 	fi
 	BUNDLE="$(realpath "$BUNDLE")"
 	EXTENSION="$(realpath "$EXTENSION")"
@@ -754,7 +776,7 @@ if [ "${#G7B_RUN[@]}" -gt 0 ]; then
 		gate="${pair#*:}"
 		echo "run-gate7: $group web legs ($gate, bundle $BUNDLE)" >&2
 		g7tool web-legs --group "$group" --source "${SOURCES[$gate]}" --bundle "$BUNDLE" --out "$OUT" \
-			--repeat-differing
+			--repeat-differing --core "$WEB_CORE"
 		CHECK_ARGS+=(--source "$gate=${SOURCES[$gate]}")
 	done
 	case " ${CHECK_ARGS[*]} " in

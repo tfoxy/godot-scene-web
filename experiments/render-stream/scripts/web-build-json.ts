@@ -3,9 +3,19 @@
 // G7e): the editor's and the template's paths and sha256, the committed preset's sha256 and the
 // options the export used, the source digest, every bundle file's size and sha256, and the .pck's
 // file list (lib/godot-pck.ts), which no-source-scene checks.
+//
+// G7xw: `--core rust --preset-index 1` records the `Web (rust core)` preset's options, the core,
+// and the side module's own build record (rs-core-web-build.json in the bundle: the nightly,
+// emcc and every artifact's sha256) as `rs_core_web`. Both default to the G7e preset (gdscript, 0).
 
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,14 +35,14 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** The `[preset.0.options]` keys of an export_presets.cfg, as raw strings. */
-function presetOptions(text: string): Record<string, string> {
+/** The `[preset.<index>.options]` keys of an export_presets.cfg, as raw strings. */
+function presetOptions(text: string, index: number): Record<string, string> {
   const out: Record<string, string> = {};
   let inOptions = false;
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.startsWith("[")) {
-      inOptions = trimmed === "[preset.0.options]";
+      inOptions = trimmed === `[preset.${index}.options]`;
       continue;
     }
     if (!inOptions || trimmed === "" || trimmed.startsWith(";")) continue;
@@ -46,9 +56,14 @@ function main(): void {
   const argv = process.argv.slice(2);
   const bundle = arg(argv, "--bundle");
   const project = arg(argv, "--project");
+  const coreAt = argv.indexOf("--core");
+  const core = coreAt >= 0 ? argv[coreAt + 1] : "gdscript";
+  const presetAt = argv.indexOf("--preset-index");
+  const presetIndex = presetAt >= 0 ? Number(argv[presetAt + 1]) : 0;
+  const sideBuild = join(bundle, "rs-core-web-build.json");
   const files: Record<string, { bytes: number; sha256: string }> = {};
   for (const name of readdirSync(bundle).sort()) {
-    if (name === "build.json") continue;
+    if (name === "build.json" || name === "rs-core-web-build.json") continue;
     const path = join(bundle, name);
     if (!statSync(path).isFile()) continue;
     const bytes = readFileSync(path);
@@ -87,8 +102,14 @@ function main(): void {
     },
     preset: {
       committed_sha256: sha256(committedPreset),
-      options: presetOptions(stagedPreset),
+      index: presetIndex,
+      options: presetOptions(stagedPreset, presetIndex),
     },
+    core,
+    rs_core_web:
+      core === "rust" && existsSync(sideBuild)
+        ? JSON.parse(readFileSync(sideBuild, "utf8"))
+        : null,
     build_ms: Number(arg(argv, "--build-ms")),
     total_bytes: totalBytes,
     files,

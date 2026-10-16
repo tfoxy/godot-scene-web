@@ -70,11 +70,26 @@ $GODOT_HEAD_INCLUDE
 		}
 		return result;
 	};
+	// G7xw: the dlink main module (`Web (rust core)`) imports its memory (env.memory, shared with
+	// the side modules) instead of exporting it.
+	const imported = (imports) => {
+		const env = imports && imports.env;
+		const memory = env && env.memory;
+		if (!wasmMemory && memory instanceof WebAssembly.Memory) {
+			wasmMemory = memory;
+		}
+	};
 	const instantiate = WebAssembly.instantiate.bind(WebAssembly);
-	WebAssembly.instantiate = (...a) => instantiate(...a).then(keep);
+	WebAssembly.instantiate = (...a) => {
+		imported(a[1]);
+		return instantiate(...a).then(keep);
+	};
 	if (WebAssembly.instantiateStreaming) {
 		const streaming = WebAssembly.instantiateStreaming.bind(WebAssembly);
-		WebAssembly.instantiateStreaming = (...a) => streaming(...a).then(keep);
+		WebAssembly.instantiateStreaming = (...a) => {
+			imported(a[1]);
+			return streaming(...a).then(keep);
+		};
 	}
 	window.__rsWasmHeap = () => (wasmMemory ? wasmMemory.buffer.byteLength : null);
 	// 6. Presentation size, DPR 1.

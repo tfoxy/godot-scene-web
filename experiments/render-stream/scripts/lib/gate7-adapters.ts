@@ -195,6 +195,23 @@ export function normalizeApplied(value: unknown): unknown {
   return value;
 }
 
+/** G7xw: the core that wrote an applied.json (`receiver.core`; absent before G7xn = gdscript). */
+export function appliedCore(doc: unknown): string {
+  const receiver = (doc as { receiver?: { core?: unknown } } | null)?.receiver;
+  return typeof receiver?.core === "string" ? receiver.core : "gdscript";
+}
+
+/** G7xw: across cores (a `rust` web leg against its `gdscript` native leg), a failure's prose
+ * `detail` is each decoder's own wording (results/gate7/g7xn.md "Same-source replay": gate 0's
+ * `corrupt`), so only its `seq` and `reason` are compared. Mutates the normalized document. */
+export function dropCrossCoreDetail(normalized: Record<string, unknown>): void {
+  const failure = normalized.failure as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (failure && typeof failure === "object") delete failure.detail;
+}
+
 /** The first differing JSON paths between two normalized documents (at most `limit`). */
 export function jsonDiffPaths(
   a: unknown,
@@ -490,9 +507,11 @@ export async function checkGate0Web(
         const headless = readFileSync(join(spec.nativeDir, "argv.txt"), "utf8")
           .split("\n")
           .includes("--headless");
+        const crossCore = appliedCore(native) !== appliedCore(web);
         const strip = (doc: unknown): unknown => {
           const n = normalizeApplied(doc) as Record<string, unknown>;
           if (headless) delete n.viewport;
+          if (crossCore) dropCrossCoreDetail(n);
           return n;
         };
         const diffs = jsonDiffPaths(strip(native), strip(web));
