@@ -33,15 +33,23 @@ import { decodePngRgba } from "./gate-minus1-checks";
 import { loadRecording, RECORDING_NAME } from "./gate0-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
 import type { Gate7Check, SourceProvenance } from "./gate7-adapters";
+import {
+  GATE55_LEGS,
+  GATE55_NOT_APPLICABLE,
+  GATE55_RECEIVER_CHECKS,
+  gate55LegKey,
+  gate55Q7Plan,
+} from "./gate7-gsw-55";
 import { buildQ7View, stepsOf } from "./gate7-q7";
 import type { WebLegSpec } from "./gate7-web-legs";
 
-export type GswGate = "gate0" | "gate1" | "gate2" | "gate3";
+export type GswGate = "gate0" | "gate1" | "gate2" | "gate3" | "gate55";
 export const GSW_GROUP_OF: Record<GswGate, string> = {
   gate0: "g7-0",
   gate1: "g7-1",
   gate2: "g7-2",
   gate3: "g7-3",
+  gate55: "g7-55",
 };
 
 /** One gsw leg: a native receiver leg replayed, or a GSW-only sabotage derived from one. */
@@ -154,6 +162,7 @@ export const GSW_LEGS: Record<GswGate, GswLegDef[]> = {
     { leg: "sabotage-xform-receiver-ignore-clip", replaces: true },
     { leg: "receiver-clip-ignore", replaces: true },
   ],
+  gate55: GATE55_LEGS,
 };
 
 export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
@@ -168,6 +177,7 @@ export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
     },
   ],
   gate3: [TRACE_NA],
+  gate55: GATE55_NOT_APPLICABLE,
 };
 
 /** Each gate's checks that judge receiver legs (kept `@gsw`), and those not applicable. */
@@ -297,6 +307,7 @@ export const GSW_RECEIVER_CHECKS: Record<
       "receiver-typed-clean": "GDScript script-error markers in native logs",
     },
   },
+  gate55: GATE55_RECEIVER_CHECKS,
 };
 
 /** The leg specs of a gate for runWebLegs (`kind: "gsw"`). */
@@ -423,6 +434,7 @@ export function q7Plan(
     };
   if (gate === "gate3" && /xform/.test(leg))
     return { key: "gate3-xform", reference: "reference-xform", live: false };
+  if (gate === "gate55") return gate55Q7Plan(leg);
   return null;
 }
 
@@ -561,12 +573,24 @@ export async function checkGswGroup(
   // D21 source-run-valid: the source passed and was made on this build.
   {
     const problems: string[] = [];
-    const result = await readJson<{ gate_passed?: boolean }>(
-      join(input.sourceDir, "result.json"),
+    const result = await readJson<{
+      gate_passed?: boolean;
+      checks?: { id: string; passed?: boolean; status?: string }[];
+    }>(join(input.sourceDir, "result.json"));
+    // G7s: a source made with only some leg groups (G7b's file-leg sources, gate 5.5 without its
+    // live g55f) is valid when every check of the groups it ran passed: only `not-run` group
+    // checks may fail.
+    const failing = (result?.checks ?? []).filter(
+      (c) => c.passed !== true && c.status !== "not-run",
     );
     if (!result) problems.push("source result.json missing");
-    else if (result.gate_passed !== true)
-      problems.push("source gate_passed is not true");
+    else if (result.gate_passed !== true && failing.length > 0)
+      problems.push(
+        `source gate_passed is not true: ${failing
+          .slice(0, 4)
+          .map((c) => c.id)
+          .join(", ")}`,
+      );
     const src = await readJson<SourceProvenance>(
       join(input.sourceDir, "gate7-source.json"),
     );
@@ -642,8 +666,11 @@ export async function checkGswGroup(
 
   const legs: GswGroupResult["legs"] = {};
   for (const d of defs.filter((x) => x.replaces)) {
+    const key55 = gate === "gate55" ? gate55LegKey(d.leg) : undefined;
     const e =
-      report.legs[d.leg] ?? report.legs[d.leg.replace(/\/receiver$/, "")];
+      (key55 !== undefined ? report.legs[key55] : undefined) ??
+      report.legs[d.leg] ??
+      report.legs[d.leg.replace(/\/receiver$/, "")];
     legs[d.leg] = {
       result_class: e?.result_class ?? null,
       expected_class: e?.expected_class ?? null,

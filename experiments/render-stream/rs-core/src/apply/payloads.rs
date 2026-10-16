@@ -202,7 +202,8 @@ pub fn mesh_geometry(
 pub struct PayloadStore {
     pub textures: HashMap<Hash, TexturePixels>,
     pub meshes: HashMap<Hash, MeshGeometry>,
-    /// Shader code (GRP1), kept for G7s; the slice draws custom shaders with the builtin program.
+    /// Shader code (GRP1): a payload's, or a `withheld` shader's from the adapter's library. The
+    /// adapter transpiles it once per hash ([`super::Applier::pending_shaders`], G7s).
     pub shaders: HashMap<Hash, String>,
 }
 

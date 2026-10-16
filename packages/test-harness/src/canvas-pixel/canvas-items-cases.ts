@@ -50,6 +50,8 @@ export interface MeshSpec {
   blend: Blend;
   /** Top-left `[x, y, w, h]` in target pixels. */
   scissor?: readonly [number, number, number, number];
+  /** `Draw::program`: 0 (absent) the builtin, else a binding slot + 1 (G7s item-space programs). */
+  program?: number;
   vertices: readonly VertexSpec[];
   /** Triangle list into `vertices`. */
   indices: readonly number[];
@@ -70,6 +72,8 @@ export interface ItemsCase {
   format: TargetFormat;
   /** STRAIGHT clear colour. */
   clear: Rgba;
+  /** `Target::opaque` (G7s): Godot's non-transparent render target's blend arithmetic. */
+  opaque?: boolean;
   textures: readonly TextureSpec[];
   meshes: readonly MeshSpec[];
   /** One entry per frame: the items of that frame. Frames after the first change ONLY items. */
@@ -113,6 +117,7 @@ function stateKey(mesh: MeshSpec): string {
     mesh.texture,
     samplerBits(mesh),
     BLEND_CODES[mesh.blend],
+    mesh.program ?? 0,
     mesh.scissor ? mesh.scissor.join(",") : "-",
   ].join("|");
 }
@@ -164,7 +169,8 @@ export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
   u32(1);
   u32(spec.width);
   u32(spec.height);
-  u32(spec.format === "rgb10a2" ? 0 : 1);
+  // The format word's bit 8 is `Target::opaque`.
+  u32((spec.format === "rgb10a2" ? 0 : 1) | (spec.opaque ? 0x100 : 0));
   for (const c of spec.clear) fl(c);
   u32(items.length);
   u32(vertexCount);
@@ -198,7 +204,7 @@ export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
     u32(mesh.texture);
     u32(samplerBits(mesh));
     u32(BLEND_CODES[mesh.blend]);
-    u32(0);
+    u32(mesh.program ?? 0);
     const scissor = mesh.scissor ?? [0, 0, 0, 0];
     for (const v of scissor) i32(v);
     u32(mesh.scissor ? 1 : 0);
@@ -210,7 +216,7 @@ export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
 
 // ---- builders -------------------------------------------------------------
 
-interface QuadOptions {
+export interface QuadOptions {
   item?: number;
   texture?: number;
   filter?: Filter;
@@ -221,10 +227,11 @@ interface QuadOptions {
   colors?: readonly [Rgba, Rgba, Rgba, Rgba];
   /** `[u0, v0, u1, v1]`. */
   uv?: readonly [number, number, number, number];
+  program?: number;
 }
 
 /** An axis-aligned quad in item-local space, two triangles. */
-function quad(
+export function quad(
   x: number,
   y: number,
   w: number,
@@ -240,6 +247,7 @@ function quad(
     wrap: options.wrap ?? "clamp",
     blend: options.blend ?? "mix",
     scissor: options.scissor,
+    ...(options.program ? { program: options.program } : {}),
     vertices: [
       { pos: [x, y], uv: [u0, v0], color: c[0] },
       { pos: [x + w, y], uv: [u1, v0], color: c[1] },
@@ -257,7 +265,7 @@ const solid = (color: Rgba): QuadOptions["colors"] => [
   color,
 ];
 
-function texture(
+export function texture(
   id: number,
   width: number,
   height: number,

@@ -74,6 +74,69 @@ impl CanvasItemsTestHarness {
         self.list.free_texture(id);
     }
 
+    /// G7s: register item-space program `id` from an `@godot-scene-web/effects`
+    /// `transpileGodotItemShader` module; a compile failure is the error (GL's log).
+    pub fn define_program(&mut self, id: u32, module: &str) -> Result<(), JsValue> {
+        self.executor.define_program(id, module).map_err(js)
+    }
+
+    /// G7s: binding slot `slot` of the held list (draws name it `slot + 1`) from JSON
+    /// `{"program": n, "post_modulate": [r, g, b, a], "uniforms": [{"name": s, "float": [..]} |
+    /// {"name": s, "int": [..]}], "samplers": [{"name": s, "texture": n, "sampler": bits}]}`.
+    pub fn set_binding(&mut self, slot: u32, json: &str) -> Result<(), JsValue> {
+        use gsw_canvas_draw_list::{Binding, SamplerUniform, Uniform, UniformValue};
+        let v: serde_json::Value = serde_json::from_str(json).map_err(js)?;
+        let nums = |x: &serde_json::Value| -> Vec<f64> {
+            x.as_array()
+                .map(|a| a.iter().filter_map(|n| n.as_f64()).collect())
+                .unwrap_or_default()
+        };
+        let pm = nums(&v["post_modulate"]);
+        let mut post_modulate = [1.0f32; 4];
+        for (i, c) in pm.iter().take(4).enumerate() {
+            post_modulate[i] = *c as f32;
+        }
+        let uniforms = v["uniforms"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|u| Uniform {
+                        name: u["name"].as_str().unwrap_or_default().into(),
+                        value: if u.get("int").is_some() {
+                            UniformValue::Int(nums(&u["int"]).iter().map(|x| *x as i32).collect())
+                        } else {
+                            UniformValue::Float(
+                                nums(&u["float"]).iter().map(|x| *x as f32).collect(),
+                            )
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let samplers = v["samplers"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|s| SamplerUniform {
+                        name: s["name"].as_str().unwrap_or_default().into(),
+                        texture: s["texture"].as_u64().unwrap_or(0) as u32,
+                        sampler: s["sampler"].as_u64().unwrap_or(0) as u32,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.list.set_binding(
+            slot,
+            Binding {
+                program: v["program"].as_u64().unwrap_or(0) as u32,
+                post_modulate,
+                uniforms,
+                samplers,
+            },
+        );
+        Ok(())
+    }
+
     /// `"ready"`, `"lost"` or `"restored"` (see `CanvasItemsExecutor::context_state`).
     pub fn context_state(&mut self) -> String {
         format!("{:?}", self.executor.context_state()).to_lowercase()

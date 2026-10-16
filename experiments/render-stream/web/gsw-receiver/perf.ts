@@ -12,6 +12,9 @@ export interface FrameSample {
   t_ms: number;
   decode_us: number;
   provide_us: number;
+  /** G7s: transpiling and compiling the custom shaders this transaction named first (once per
+   * code hash), library reads included */
+  program_us: number;
   apply_us: number;
   draw_us: number;
   total_us: number;
@@ -50,6 +53,8 @@ export class Perf {
   readonly rafIntervals: number[] = [];
   readonly gpuComplete: number[] = [];
   readonly fetchUs: number[] = [];
+  /** G7s: item-space programs defined, shaders refused, library reads. */
+  readonly programs = { defined: 0, refused: 0, library_reads: 0 };
   private lastRaf = -1;
 
   raf(ts: number): void {
@@ -66,6 +71,7 @@ export class Perf {
       histograms: {
         decode_us: hist(pick("decode_us")),
         provide_us: hist(pick("provide_us")),
+        program_us: hist(pick("program_us")),
         apply_us: hist(pick("apply_us")),
         draw_us: hist(pick("draw_us")),
         total_us: hist(pick("total_us")),
@@ -90,7 +96,7 @@ export class Perf {
         cpu_render_ms: { status: "unavailable", value: null },
         gpu_render_ms: { status: "unavailable", value: null },
       },
-      counts: { drawn_frames: this.samples.length },
+      counts: { drawn_frames: this.samples.length, programs: this.programs },
       ...extra,
     };
   }

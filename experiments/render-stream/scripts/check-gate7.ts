@@ -49,6 +49,9 @@ import {
   runGate7BenchChecks,
   runGate7DevChecks,
 } from "./lib/gate7d-checks";
+import type { Gate55Expected as Gate55CimExpected } from "./lib/gate55b-expected";
+import { runGate55d } from "./lib/gate55d-checks";
+import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -98,6 +101,7 @@ const GSW_GATES: Record<string, GswGate> = {
   "g7-1": "gate1",
   "g7-2": "gate2",
   "g7-3": "gate3",
+  "g7-55": "gate55",
 };
 
 interface HarnessCheck {
@@ -252,6 +256,26 @@ async function gateChecker(
           receiverProjectDir,
           fixtureProjectDir: join(fixtures, "gate3"),
         }) as never;
+    }
+    case "gate55": {
+      // Gate 5.5's receiver legs are judged by its g55d (CanvasItemMaterial) and g55e
+      // (ShaderMaterial) checks; g55b/g55c judge captures and references only (D21).
+      const cim = await json<Gate55CimExpected>(
+        join(fixtures, "gate55-cim", "expected.json"),
+      );
+      const shader = await json<Gate55eExpected>(
+        join(fixtures, "gate55-shader", "expected.json"),
+      );
+      return async (dir) => {
+        const d = await runGate55d(dir, cim);
+        const e = await runGate55e(dir, shader);
+        const checks = [...d.checks, ...e.checks];
+        return {
+          checks,
+          legs: { ...d.legs, ...e.legs },
+          gate_passed: checks.every((c) => c.passed),
+        } as never;
+      };
     }
   }
 }

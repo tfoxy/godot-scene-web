@@ -425,6 +425,881 @@
           "band_pixels": 240
         }
       ]
+    },
+    "gate55-cim": {
+      "expected": "fixtures/gate55-cim/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [132, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [132, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [48, 64, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [140, 64, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [224, 64, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [312, 36, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [312, 64, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [400, 64, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [488, 64, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        }
+      ]
+    },
+    "gate55-cim-modulate": {
+      "expected": "fixtures/gate55-cim/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [128, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [132, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [40, 60, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [132, 60, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [216, 60, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 32, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [304, 60, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [392, 60, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [480, 60, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [
+            {
+              "region": "BM",
+              "rect": [48, 64, 48, 16],
+              "why": "O_BM draws mix at alpha 0.600"
+            },
+            {
+              "region": "BA",
+              "rect": [140, 64, 48, 16],
+              "why": "O_BA draws add at alpha 0.600"
+            },
+            {
+              "region": "BS",
+              "rect": [224, 64, 48, 16],
+              "why": "O_BS draws sub at alpha 0.600"
+            },
+            {
+              "region": "BU",
+              "rect": [312, 36, 48, 24],
+              "why": "O_BU draws mul at alpha 1.000"
+            },
+            {
+              "region": "BU",
+              "rect": [312, 64, 48, 16],
+              "why": "O_BU draws mul at alpha 0.600"
+            },
+            {
+              "region": "BP",
+              "rect": [400, 64, 48, 16],
+              "why": "O_BP draws premul_alpha at alpha 0.600"
+            },
+            {
+              "region": "BD",
+              "rect": [488, 64, 48, 16],
+              "why": "O_BD draws mix at alpha 0.600"
+            }
+          ],
+          "undecided": []
+        }
+      ]
+    },
+    "gate55-shader": {
+      "expected": "fixtures/gate55-shader/expected.json",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": []
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": []
+        }
+      ]
     }
   }
 }

@@ -11,6 +11,8 @@
 //               digest too for gsw-rs-inline, D31);
 //   provide_us  each payload the transaction needs, copied once into wasm and SHA-256-verified
 //               (`provide`): the fetcher's work, prefetched bytes so no I/O is timed;
+//   program_us  G7s: custom shaders the transaction names first, transpiled and compiled once per
+//               code hash (web/gsw-receiver/programs.ts, as the receiver page does);
 //   apply_us    apply(): the retained state to the packed list's dirty ranges;
 //   draw_us     draw(): texture ops, dirty uploads, the GL draws and the blit, until it returns;
 //   total_us    one wall timer over all of the above (the JS↔wasm boundary included);
@@ -21,7 +23,7 @@
 // RGB10_A2 target back (RGBA/UNSIGNED_BYTE) after the transaction of each listed host frame and
 // PUTs the raw bytes (`shot-<name>-f<frame>.rgba`, W×H×4, rows top-down) for the pace checks.
 
-export {};
+import { type ProgramHost, resolvePrograms } from "../gsw-receiver/programs";
 
 interface BenchState {
   state: "running" | "done" | "error";
@@ -36,7 +38,7 @@ declare global {
 }
 
 /** The wasm-bindgen surface of `rs-gsw-wasm` (experiments/render-stream/web/gsw-rs/src/lib.rs). */
-interface GswRs {
+interface GswRs extends ProgramHost {
   alloc_recording(len: number): number;
   load(len: number): number;
   reset(): number;
@@ -54,7 +56,6 @@ interface GswRs {
   shot(): number;
   target_width(): number;
   target_height(): number;
-  error(): string;
   evidence_json(): string;
   free(): void;
 }
@@ -205,6 +206,7 @@ interface Sample {
   total_us: number;
   decode_us: number;
   provide_us: number;
+  program_us: number;
   apply_us: number;
   draw_us: number;
   evidence_hash_us: number;
@@ -360,7 +362,18 @@ async function runBench(): Promise<void> {
       }
       let applyUs = 0;
       let drawUs = 0;
+      let programUs = 0;
       if (code === ACCEPT_TRANSACTION) {
+        // G7s: custom shaders this transaction names first, transpiled and compiled once per code
+        // hash (inside the frame's total, as in the receiver page).
+        const q0 = nowUs();
+        try {
+          await resolvePrograms(gs, memory, null);
+        } catch (e) {
+          error = `record ${i}: programs: ${e instanceof Error ? e.message : String(e)}`;
+          break;
+        }
+        programUs = nowUs() - q0;
         const b = nowUs();
         if (gs.apply() < 0) {
           error = `record ${i}: apply: ${gs.error()}`;
@@ -421,6 +434,7 @@ async function runBench(): Promise<void> {
         total_us: total,
         decode_us: decodeUs,
         provide_us: provideUs,
+        program_us: programUs,
         apply_us: applyUs,
         draw_us: drawUs,
         evidence_hash_us: evidenceUs,

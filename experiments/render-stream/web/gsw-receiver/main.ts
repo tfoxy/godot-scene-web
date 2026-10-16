@@ -31,6 +31,7 @@ import {
   type ShellTx,
 } from "./evidence";
 import { type FrameSample, Perf } from "./perf";
+import { ProgramError, resolvePrograms } from "./programs";
 import { readRecording, SourceError, StoreFetcher } from "./source";
 
 /** The wasm-bindgen surface of `rs-gsw-wasm` (web/gsw-rs/src/lib.rs). */
@@ -57,6 +58,15 @@ interface GswRs {
   state_dump(): string;
   applied_json_parts(): string;
   evidence_json(): string;
+  shader_params_jsonl(): string;
+  pending_shaders(): number;
+  pending_hash(i: number): string;
+  pending_shader_id(i: number): bigint;
+  pending_withheld(i: number): boolean;
+  pending_code(i: number): string | undefined;
+  provide_library(i: number, len: number): number;
+  define_program(i: number, glsl: string, meta: string): number;
+  refuse_program(i: number, reason: string, detail: string): number;
   free(): void;
 }
 
@@ -265,6 +275,12 @@ async function run(): Promise<void> {
         perfRel.replace(/[^/]*$/, "perf-timeline.jsonl"),
         perf.timeline(),
       );
+    }
+    // G7s `shader-param-parity` evidence: every item-space binding's uniform values whenever they
+    // changed (written whenever any binding existed).
+    if (gs) {
+      const params = gs.shader_params_jsonl();
+      if (params !== "") await put(cfg, "gsw/shader-params.jsonl", params);
     }
     // applied.json last: the harness takes its compositor screenshot while this PUT is held, and
     // the canvas still shows the last drawn frame.
@@ -506,13 +522,29 @@ async function run(): Promise<void> {
         provideUs = nowUs() - p0;
         code = ACCEPT_TRANSACTION;
       }
+      // G7s: programs for custom shaders this transaction names (once per code hash).
+      const q0 = nowUs();
+      const programs = await resolvePrograms(
+        g,
+        mem,
+        cfg.shaderLibrary,
+        (line) => log(`seq ${seq}: ${line}`),
+      ).catch((e: unknown) => {
+        if (e instanceof ProgramError)
+          throw new ReplayFailure(seq, e.reason, e.message);
+        throw e;
+      });
+      const programUs = nowUs() - q0;
+      perf.programs.defined += programs.defined;
+      perf.programs.refused += programs.refused;
+      perf.programs.library_reads += programs.library_reads;
       const b = nowUs();
       if (g.apply() < 0) throw failWith(seq, g.error());
       const c = nowUs();
       if (g.draw() < 0) throw failWith(seq, g.error());
       const d = nowUs();
       fenceDrawEnd = performance.now();
-      const totalUs = decodeUs + provideUs + (d - b);
+      const totalUs = decodeUs + provideUs + programUs + (d - b);
       // D31: the deferred record digest, after the frame's timed window.
       const e0 = nowUs();
       g.digest();
@@ -524,6 +556,7 @@ async function run(): Promise<void> {
         t_ms: performance.now(),
         decode_us: decodeUs,
         provide_us: provideUs,
+        program_us: programUs,
         apply_us: c - b,
         draw_us: d - c,
         total_us: totalUs,

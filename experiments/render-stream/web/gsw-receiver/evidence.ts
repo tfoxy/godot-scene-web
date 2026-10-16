@@ -113,6 +113,12 @@ export interface RustParts {
       freed: number;
       upload_bytes: number;
       canvases_created: number;
+      /** G7s: the native receiver's /5 shader and material counters. */
+      shaders_created: number;
+      shader_code_sets: number;
+      materials_created: number;
+      param_sets: number;
+      instance_param_sets: number;
     };
   }[];
   uploads: {
@@ -128,6 +134,9 @@ export interface RustParts {
     item: number | null;
     name: string;
     reason: string;
+    /** G7s: a shader drawn without its code (`shader-withheld`, `gsw-shader-transpile`). */
+    shader?: number;
+    detail?: string;
   }[];
 }
 
@@ -210,12 +219,12 @@ export function appliedJson(r: Report): Record<string, unknown> {
         surface_updates: null,
         mesh_upload_bytes: null,
         skipped_mesh_commands: null,
-        shaders_created: null,
-        shader_code_sets: null,
+        shaders_created: t.resources.shaders_created,
+        shader_code_sets: t.resources.shader_code_sets,
         shader_payload_fetches: s?.shader_payload_fetches ?? 0,
-        materials_created: null,
-        param_sets: null,
-        instance_param_sets: null,
+        materials_created: t.resources.materials_created,
+        param_sets: t.resources.param_sets,
+        instance_param_sets: t.resources.instance_param_sets,
         canvases_created: t.resources.canvases_created,
         canvas_attach: null,
         canvas_stacking_sets: null,
@@ -267,12 +276,12 @@ export function appliedJson(r: Report): Record<string, unknown> {
       meshes_rebuilt: null,
       surface_updates: null,
       mesh_upload_bytes: null,
-      shaders_created: null,
-      shader_code_sets: null,
+      shaders_created: sum((t) => t.resources.shaders_created),
+      shader_code_sets: sum((t) => t.resources.shader_code_sets),
       shader_payload_fetches: sum((t) => t.resources.shader_payload_fetches),
-      materials_created: null,
-      param_sets: null,
-      instance_param_sets: null,
+      materials_created: sum((t) => t.resources.materials_created),
+      param_sets: sum((t) => t.resources.param_sets),
+      instance_param_sets: sum((t) => t.resources.instance_param_sets),
       canvases_created: sum((t) => t.resources.canvases_created ?? 0),
       canvas_attach: null,
       canvas_stacking_sets: null,

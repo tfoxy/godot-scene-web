@@ -35,6 +35,7 @@ import type { Gate3xExpected } from "./gate3x-expected";
 import { synthesizeGate3x } from "./gate3x-expected";
 import type { Gate7Check } from "./gate7-adapters";
 import { compositorProblems, GSW_LEGS, type GswGate, mk } from "./gate7-gsw";
+import { GATE55_Q7_LEGS, gate55Checks } from "./gate7-gsw-55-checks";
 import { judgeQ7, readTolerance } from "./gsw-tolerance";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -800,6 +801,7 @@ const Q7_LEGS: Record<GswGate, [string, string, string][]> = {
     ["receiver-xform-patch", "reference-xform", "gate3-xform"],
     ["receiver-clip-ignore", "reference-clip-ignore", "gate3"],
   ],
+  gate55: GATE55_Q7_LEGS,
 };
 
 /** Q7 (D8): each rendered success leg's shots against the rendered reference, decided pixels
@@ -871,5 +873,6 @@ export async function gswExtraChecks(
   if (gate === "gate1") out.push(...(await gate1Checks(ctx)));
   if (gate === "gate2") out.push(...(await gate2Checks(ctx)));
   if (gate === "gate3") out.push(...(await gate3Checks(ctx)));
+  if (gate === "gate55") out.push(...(await gate55Checks(ctx)));
   return out;
 }

@@ -20,20 +20,24 @@
 
 pub mod geom;
 pub mod lower;
+pub mod material_residency;
 pub mod payloads;
+pub mod programs;
 pub mod residency;
 
 use crate::state::{
-    BlendMode, Canvas, EntryStatus, Filter, Id, Item, LightMode, Repeat, ResolvedState,
-    TextureKind, TxDelta,
+    BlendMode, Canvas, EntryStatus, Filter, Hash, Id, Item, LightMode, Param, Repeat,
+    ResolvedState, ShaderSource, TextureKind, TxDelta,
 };
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
-    Blend, Draw, DrawList, Format, Item as Row, Sampler, Target, DRAW_SCISSOR, WHITE_TEXTURE,
+    Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, Target, Uniform,
+    DRAW_SCISSOR, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
 use payloads::{MeshGeometry, PayloadStore};
-use std::collections::{BTreeMap, HashMap};
+use programs::{ProgramEntry, ProgramInfo};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The root viewport as the applier draws it.
 #[derive(Clone, Copy, Debug)]
@@ -72,6 +76,32 @@ pub struct ApplySabotage {
     pub ignore_canvas_stacking: bool,
     /// GSW-only `ignore-z`: each canvas draws in `draw_index` walk order, never per z.
     pub ignore_z: bool,
+    /// Native `stale-param` (G55e): a material's parameters are the ones it had when it became
+    /// resident (named by an item); later changes never reach its uniforms.
+    pub stale_param: bool,
+    /// GSW-only `blend-swap` (G7s): every effective `add` blend draws `sub` and every `sub` draws
+    /// `add`.
+    pub blend_swap: bool,
+}
+
+/// A shader the applier draws without its code this transaction, first time per (shader, hash):
+/// `applied.json` `unsupported[]` `{seq, item: null, name: "shader_set_code", reason, shader}`.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ShaderRefusal {
+    pub shader: Id,
+    pub hash: Hash,
+    pub reason: &'static str,
+    pub detail: Box<str>,
+}
+
+/// What one binding slot draws: the effective material, the canvas whose modulate it takes after
+/// the program, the item when the program has instance uniforms, and the code's hash.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BindingKey {
+    pub material: Id,
+    pub canvas: Id,
+    pub item: Option<Id>,
+    pub hash: Hash,
 }
 
 /// Applier-level typed shortcuts beyond the lowering's (G7x "Scope").
@@ -170,6 +200,9 @@ pub struct ApplyStats {
     pub mesh_commands: u32,
     pub vertex_count: u32,
     pub index_count: u32,
+    /// Item-space program bindings live after this transaction, and how many changed.
+    pub bindings: u32,
+    pub bindings_changed: u32,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -214,7 +247,25 @@ impl StructKey {
 }
 
 type MaterialKey = (EntryStatus, Option<Id>);
-type ShaderKey = (EntryStatus, Option<crate::state::Builtin>);
+/// A custom shader's hash decides its program (blend, light mode, binding), so code changes walk.
+type ShaderKey = (EntryStatus, Option<crate::state::Builtin>, Option<Hash>);
+
+/// The effective material of an item as the walk sees it (gate5_5-design.md D7, G7s).
+#[derive(Clone, Copy, Debug)]
+struct MaterialEff {
+    blend: Blend,
+    unshaded: bool,
+    light_only: bool,
+    /// A custom shader drawn as an item-space program: (material, code hash).
+    program: Option<(Id, Hash)>,
+}
+
+const NO_MATERIAL: MaterialEff = MaterialEff {
+    blend: Blend::Mix,
+    unshaded: false,
+    light_only: false,
+    program: None,
+};
 
 /// The texture sizes a lowering read (id, drawable size and mipmaps).
 type TexSizes = Vec<(Id, Option<(u32, u32, bool)>)>;
@@ -242,6 +293,8 @@ struct ItemRec {
     /// The canvas the item was walked under, and whether its material is unshaded.
     canvas: Id,
     unshaded: bool,
+    /// Drawn with an item-space program: the canvas modulate is the binding's, not the row's.
+    program_bound: bool,
     /// `clip-before-clear` sabotage: the clip the native receiver last sent, and the one in effect.
     clip_shadow: bool,
     clip_eff: bool,
@@ -257,6 +310,8 @@ struct Attach {
     z: i32,
     scissor: Option<[i32; 4]>,
     blend: Blend,
+    /// `Draw::program`: 0, or a binding slot + 1.
+    program: u32,
 }
 
 /// The applier: owns the packed list it fills.
@@ -287,6 +342,25 @@ pub struct Applier {
     pub shortcut_totals: BTreeMap<&'static str, u64>,
     pub stats: ApplyStats,
     first: bool,
+    /// G7s: the adapter's program (or refusal) per custom shader code hash.
+    programs: HashMap<Hash, ProgramEntry>,
+    programs_dirty: bool,
+    /// Live binding slots by key, each slot's key, and the free slots.
+    binding_slots: HashMap<BindingKey, u32>,
+    binding_keys: Vec<Option<BindingKey>>,
+    free_slots: Vec<u32>,
+    /// Keys the last walk attached (the rest are released after it).
+    walk_keys: HashSet<BindingKey>,
+    /// This transaction's new shader refusals (the adapter drains them into `unsupported[]`).
+    pub shader_refusals: Vec<ShaderRefusal>,
+    refusals_reported: HashSet<(Id, Hash)>,
+    /// `stale-param`: each resident material's parameters as they were when it became resident.
+    stale_params: HashMap<Id, Vec<Param>>,
+    /// Binding slots whose values changed in this transaction (`shader-param-parity` evidence).
+    pub bindings_changed: Vec<u32>,
+    /// The native receiver's shader/material residency, for applied.json's /5 counters.
+    material_residency: material_residency::MaterialResidency,
+    pub material_counts: material_residency::MaterialCounts,
 }
 
 /// The texture and mesh tables as the lowering sees them.
@@ -425,6 +499,9 @@ impl Applier {
             height: viewport.height,
             format: viewport.format,
             clear: viewport.clear,
+            // The root viewport is Godot's non-transparent render target (D7; G7s: blends keep
+            // its alpha, mul and disabled draw straight colour, rasterizer_canvas_gles3.cpp:742-798).
+            opaque: true,
         };
         Applier {
             list: DrawList::new(target),
@@ -446,7 +523,60 @@ impl Applier {
             shortcut_totals: BTreeMap::new(),
             stats: ApplyStats::default(),
             first: true,
+            programs: HashMap::new(),
+            programs_dirty: false,
+            binding_slots: HashMap::new(),
+            binding_keys: Vec::new(),
+            free_slots: Vec::new(),
+            walk_keys: HashSet::new(),
+            shader_refusals: Vec::new(),
+            refusals_reported: HashSet::new(),
+            stale_params: HashMap::new(),
+            bindings_changed: Vec::new(),
+            material_residency: Default::default(),
+            material_counts: Default::default(),
         }
+    }
+
+    /// G7s: register what draws custom shader code `hash` (its item-space program, or a typed
+    /// refusal). Takes effect at the next `apply`.
+    pub fn set_program(&mut self, hash: Hash, entry: ProgramEntry) {
+        if self.programs.get(&hash) != Some(&entry) {
+            self.programs.insert(hash, entry);
+            self.programs_dirty = true;
+        }
+    }
+
+    pub fn program_entry(&self, hash: &Hash) -> Option<&ProgramEntry> {
+        self.programs.get(hash)
+    }
+
+    /// The custom shaders the named materials name that have no program entry yet: (shader id,
+    /// code hash, source), ascending by id (`_named_shader_ids`). Call after [`Applier::prepare`];
+    /// the adapter transpiles each (payload code from the store, `withheld` code from its
+    /// library) and calls [`Applier::set_program`] before `apply`.
+    pub fn pending_shaders(&self, state: &ResolvedState) -> Vec<(Id, Hash, ShaderSource)> {
+        let mut out = Vec::new();
+        for sid in self.names.named_shaders(state) {
+            let Some(s) = state.shaders.get(&sid) else {
+                continue;
+            };
+            if s.builtin.is_some() {
+                continue;
+            }
+            let (Some(hash), Some(source)) = (s.hash, s.source) else {
+                continue;
+            };
+            if !self.programs.contains_key(&hash) {
+                out.push((sid, hash, source));
+            }
+        }
+        out
+    }
+
+    /// The key binding slot `slot` draws (None: free).
+    pub fn binding_key(&self, slot: u32) -> Option<BindingKey> {
+        self.binding_keys.get(slot as usize).copied().flatten()
     }
 
     pub fn viewport(&self) -> &Viewport {
@@ -859,6 +989,8 @@ impl Applier {
     ) -> &ApplyStats {
         self.stats = ApplyStats::default();
         self.account = Default::default();
+        self.shader_refusals.clear();
+        self.bindings_changed.clear();
         if !self.prepared {
             self.prepare(state, delta);
         }
@@ -905,7 +1037,7 @@ impl Applier {
         };
         for id in shs {
             if let Some(sh) = state.shaders.get(&id) {
-                let key = (sh.status, sh.builtin.clone());
+                let key = (sh.status, sh.builtin.clone(), sh.hash);
                 if self.shaders.get(&id) != Some(&key) {
                     self.shaders.insert(id, key);
                     why |= Why::MATERIAL;
@@ -928,6 +1060,44 @@ impl Applier {
         let resized = self.sync_textures(state, delta, payloads);
         if !resized.is_empty() {
             why |= Why::TEXTURE_SIZE;
+        }
+        // G7s: a program registered or replaced decides blends, light modes and bindings.
+        if std::mem::take(&mut self.programs_dirty) {
+            why |= Why::MATERIAL;
+        }
+        self.note_shader_refusals(state);
+        {
+            let named_materials = self.names.named_materials(state);
+            let named_shaders = self.names.named_shaders(state);
+            let programs = &self.programs;
+            self.material_counts = self.material_residency.apply(
+                state,
+                delta,
+                self.first,
+                &named_materials,
+                &named_shaders,
+                |_, hash| {
+                    matches!(
+                        programs.get(&hash),
+                        Some(ProgramEntry::Refused {
+                            reason: "shader-withheld",
+                            ..
+                        })
+                    )
+                },
+                self.sabotage.stale_param,
+            );
+        }
+        if self.sabotage.stale_param {
+            let named = self.names.named_materials(state);
+            self.stale_params.retain(|mid, _| named.contains(mid));
+            for mid in named {
+                if let Some(m) = state.materials.get(&mid) {
+                    self.stale_params
+                        .entry(mid)
+                        .or_insert_with(|| m.params.clone());
+                }
+            }
         }
 
         // Removed items.
@@ -989,6 +1159,7 @@ impl Applier {
                         canvas_modulate: WHITE,
                         canvas: 0,
                         unshaded: false,
+                        program_bound: false,
                         clip_shadow: it.clip,
                         clip_eff: it.clip,
                         scissor: None,
@@ -1176,6 +1347,7 @@ impl Applier {
                 self.stats.assemble_us = t1.elapsed().as_secs_f64() * 1e6;
             }
         }
+        self.refresh_bindings(state);
         self.first = false;
         self.stats.vertex_count = self.list.vertices.len() as u32;
         self.stats.index_count = self.list.indices.len() as u32;
@@ -1189,6 +1361,7 @@ impl Applier {
     fn walk(&mut self, state: &ResolvedState) {
         self.stats.structural = true;
         self.attach.clear();
+        self.walk_keys.clear();
         for rec in self.items.values_mut() {
             rec.visited = false;
         }
@@ -1226,6 +1399,164 @@ impl Applier {
             .collect();
         for id in ids {
             self.write_row(state, id);
+        }
+        // Binding slots no attached item uses any more are released.
+        let gone: Vec<BindingKey> = self
+            .binding_slots
+            .keys()
+            .filter(|k| !self.walk_keys.contains(k))
+            .copied()
+            .collect();
+        for key in gone {
+            if let Some(slot) = self.binding_slots.remove(&key) {
+                self.binding_keys[slot as usize] = None;
+                self.list.set_binding(slot, Binding::default());
+                self.free_slots.push(slot);
+                // A released slot is logged too (program 0): its values no longer draw.
+                self.bindings_changed.push(slot);
+            }
+        }
+    }
+
+    /// The binding slot of `key`, allocated on first use (a walk-time call).
+    fn binding_slot(&mut self, key: BindingKey) -> u32 {
+        self.walk_keys.insert(key);
+        if let Some(slot) = self.binding_slots.get(&key) {
+            return *slot;
+        }
+        let slot = self.free_slots.pop().unwrap_or_else(|| {
+            self.binding_keys.push(None);
+            self.binding_keys.len() as u32 - 1
+        });
+        self.binding_keys[slot as usize] = Some(key);
+        self.binding_slots.insert(key, slot);
+        slot
+    }
+
+    /// Typed refusals: the first time each named custom shader (id, hash) is drawn without its
+    /// code (receiver.gd `_withheld_reported`, once per shader and hash).
+    fn note_shader_refusals(&mut self, state: &ResolvedState) {
+        for sid in self.names.named_shaders(state) {
+            let Some(hash) = state.shaders.get(&sid).and_then(|s| s.hash) else {
+                continue;
+            };
+            if let Some(ProgramEntry::Refused { reason, detail }) = self.programs.get(&hash) {
+                if self.refusals_reported.insert((sid, hash)) {
+                    self.shader_refusals.push(ShaderRefusal {
+                        shader: sid,
+                        hash,
+                        reason,
+                        detail: detail.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Every live binding's values from the current state (`Binding`'s contract): the program's
+    /// uniforms from the material's parameters (its instance uniforms from the item's), its
+    /// samplers from a texture parameter, else the shader's default texture, else white, and the
+    /// canvas modulate unless the code is unshaded. Only slots whose values differ are dirtied.
+    fn refresh_bindings(&mut self, state: &ResolvedState) {
+        let mut live = 0u32;
+        for slot in 0..self.binding_keys.len() as u32 {
+            let Some(key) = self.binding_keys[slot as usize] else {
+                continue;
+            };
+            live += 1;
+            let Some(ProgramEntry::Ready(info)) = self.programs.get(&key.hash) else {
+                continue;
+            };
+            let binding = self.binding_of(state, &key, info);
+            if self.list.set_binding(slot, binding) {
+                self.bindings_changed.push(slot);
+            }
+        }
+        self.stats.bindings = live;
+        self.stats.bindings_changed = self.bindings_changed.len() as u32;
+    }
+
+    fn binding_of(&self, state: &ResolvedState, key: &BindingKey, info: &ProgramInfo) -> Binding {
+        let material = state.materials.get(&key.material);
+        let params: &[Param] = if self.sabotage.stale_param {
+            self.stale_params
+                .get(&key.material)
+                .map(|p| p.as_slice())
+                .unwrap_or(&[])
+        } else {
+            material.map(|m| m.params.as_slice()).unwrap_or(&[])
+        };
+        let instance: &[Param] = key
+            .item
+            .and_then(|i| state.items.get(&i))
+            .map(|it| it.instance_params.as_slice())
+            .unwrap_or(&[]);
+        let uniforms = info
+            .uniforms
+            .iter()
+            .map(|d| Uniform {
+                name: d.name.clone(),
+                value: programs::uniform_value(
+                    d,
+                    programs::param(if d.instance { instance } else { params }, &d.name),
+                ),
+            })
+            .collect();
+        let shader = material
+            .and_then(|m| m.shader)
+            .and_then(|s| state.shaders.get(&s));
+        let samplers = info
+            .samplers
+            .iter()
+            .map(|s| {
+                let wire = match programs::param(params, &s.name).map(|p| &p.value) {
+                    Some(crate::state::ParamValue::Tex(t)) => Some(*t),
+                    _ => shader.and_then(|sh| {
+                        sh.default_textures
+                            .iter()
+                            .find(|d| *d.name == *s.name && d.index == 0)
+                            .map(|d| d.tex)
+                    }),
+                };
+                // A canvas texture samples its diffuse; anything not resident is Godot's
+                // default (white, the only default the transpiler admits).
+                let gpu = wire
+                    .map(|t| match state.textures.get(&t) {
+                        Some(e) if e.kind == TextureKind::Canvas => {
+                            e.canvas.as_ref().and_then(|c| c.diffuse).unwrap_or(0)
+                        }
+                        _ => t,
+                    })
+                    .filter(|g| {
+                        self.resident.get(g).is_some_and(|r| {
+                            matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
+                        })
+                    })
+                    .unwrap_or(WHITE_TEXTURE);
+                let linear = s.linear.unwrap_or(true);
+                let repeat = s.repeat.unwrap_or(false);
+                SamplerUniform {
+                    name: s.name.clone(),
+                    texture: gpu,
+                    sampler: (if linear { Sampler::LINEAR } else { 0 })
+                        | if repeat {
+                            Sampler::REPEAT
+                        } else {
+                            Sampler::CLAMP
+                        },
+                }
+            })
+            .collect();
+        let post_modulate = if info.light == LightMode::Unshaded {
+            WHITE
+        } else {
+            canvas_modulate(state, key.canvas, self.sabotage.ignore_canvas_modulate)
+        };
+        Binding {
+            program: info.program,
+            post_modulate,
+            uniforms,
+            samplers,
         }
     }
 
@@ -1329,13 +1660,40 @@ impl Applier {
         } else {
             Some(id)
         };
-        let (blend, unshaded, light_only) = self.material_of(state, owner.unwrap_or(id));
+        let eff = self.material_of(state, owner.unwrap_or(id));
+        let MaterialEff {
+            blend,
+            unshaded,
+            light_only,
+            ..
+        } = eff;
         let children = self.sorted_children(state, &it.children);
         for &c in children.iter() {
             if state.items.get(&c).is_some_and(|ci| ci.behind) {
                 self.cull(state, c, &final_xf, own_clip, modulate, z, owner, canvas);
             }
         }
+        // An item-space program takes the canvas modulate after its code (the binding's
+        // `post_modulate`), so its row carries none.
+        let draws_something = self
+            .items
+            .get(&id)
+            .is_some_and(|r| !r.lowered.draws.is_empty());
+        let program = match eff.program {
+            Some((material, hash)) if draws_something && !light_only => {
+                let instanced = matches!(
+                    self.programs.get(&hash),
+                    Some(ProgramEntry::Ready(info)) if info.has_instance_uniforms()
+                );
+                1 + self.binding_slot(BindingKey {
+                    material,
+                    canvas,
+                    item: instanced.then_some(id),
+                    hash,
+                })
+            }
+            _ => 0,
+        };
         if let Some(rec) = self.items.get_mut(&id) {
             rec.visited = true;
             rec.scissor = own_clip;
@@ -1343,7 +1701,8 @@ impl Applier {
             rec.child_modulate = modulate;
             rec.canvas = canvas;
             rec.unshaded = unshaded;
-            rec.canvas_modulate = if unshaded {
+            rec.program_bound = eff.program.is_some();
+            rec.canvas_modulate = if unshaded || rec.program_bound {
                 WHITE
             } else {
                 canvas_modulate(state, canvas, self.sabotage.ignore_canvas_modulate)
@@ -1371,6 +1730,7 @@ impl Applier {
                     z: z as i32,
                     scissor,
                     blend,
+                    program,
                 });
             }
         }
@@ -1383,49 +1743,73 @@ impl Applier {
 
     /// The effective material's blend, and whether it is unshaded or light-only (gate5_5-design.md
     /// D7; no lights reach the wire, so `normal` draws unlit and `light_only` draws nothing).
-    fn material_of(&mut self, state: &ResolvedState, owner: Id) -> (Blend, bool, bool) {
+    fn material_of(&mut self, state: &ResolvedState, owner: Id) -> MaterialEff {
+        let mut eff = self.material_unswapped(state, owner);
+        if self.sabotage.blend_swap {
+            eff.blend = match eff.blend {
+                Blend::Add => Blend::Sub,
+                Blend::Sub => Blend::Add,
+                other => other,
+            };
+        }
+        eff
+    }
+
+    fn material_unswapped(&mut self, state: &ResolvedState, owner: Id) -> MaterialEff {
         if self.sabotage.ignore_material {
-            return (Blend::Mix, false, false);
+            return NO_MATERIAL;
         }
         let Some(mid) = state.items.get(&owner).and_then(|it| it.material) else {
-            return (Blend::Mix, false, false);
+            return NO_MATERIAL;
         };
         let Some(m) = state.materials.get(&mid) else {
-            return (Blend::Mix, false, false);
+            return NO_MATERIAL;
         };
         if m.status != EntryStatus::Ok {
             self.note(ApplyShortcut::MaterialUnsupportedDefault.as_str(), 1);
-            return (Blend::Mix, false, false);
+            return NO_MATERIAL;
         }
         let Some(sid) = m.shader else {
-            return (Blend::Mix, false, false);
+            return NO_MATERIAL;
         };
         let Some(s) = state.shaders.get(&sid) else {
-            return (Blend::Mix, false, false);
+            return NO_MATERIAL;
         };
         if s.status != EntryStatus::Ok {
             self.note(ApplyShortcut::MaterialUnsupportedDefault.as_str(), 1);
-            return (Blend::Mix, false, false);
+            return NO_MATERIAL;
         }
-        match &s.builtin {
-            Some(b) => {
-                let blend = match b.blend_mode {
-                    BlendMode::Mix => Blend::Mix,
-                    BlendMode::Add => Blend::Add,
-                    BlendMode::Sub => Blend::Sub,
-                    BlendMode::Mul => Blend::Mul,
-                    BlendMode::PremulAlpha => Blend::PremulAlpha,
-                    BlendMode::Disabled => Blend::Disabled,
-                };
-                (
-                    blend,
-                    b.light_mode == LightMode::Unshaded,
-                    b.light_mode == LightMode::LightOnly,
-                )
-            }
+        let blend_of = |b: BlendMode| match b {
+            BlendMode::Mix => Blend::Mix,
+            BlendMode::Add => Blend::Add,
+            BlendMode::Sub => Blend::Sub,
+            BlendMode::Mul => Blend::Mul,
+            BlendMode::PremulAlpha => Blend::PremulAlpha,
+            BlendMode::Disabled => Blend::Disabled,
+        };
+        if let Some(b) = &s.builtin {
+            return MaterialEff {
+                blend: blend_of(b.blend_mode),
+                unshaded: b.light_mode == LightMode::Unshaded,
+                light_only: b.light_mode == LightMode::LightOnly,
+                program: None,
+            };
+        }
+        // G7s: a custom shader draws as its item-space program; a refused one (transpile,
+        // compile, or withheld code without a library) as no material, like the native
+        // receiver's shaderless material; one the adapter never registered with the builtin
+        // program (`slice-shader-builtin`, typed `gsw-shader-builtin`).
+        match s.hash.and_then(|h| self.programs.get(&h).map(|e| (h, e))) {
+            Some((hash, ProgramEntry::Ready(info))) => MaterialEff {
+                blend: blend_of(info.blend),
+                unshaded: info.light == LightMode::Unshaded,
+                light_only: info.light == LightMode::LightOnly,
+                program: Some((mid, hash)),
+            },
+            Some((_, ProgramEntry::Refused { .. })) => NO_MATERIAL,
             None => {
                 self.note(ApplyShortcut::ShaderBuiltin.as_str(), 1);
-                (Blend::Mix, false, false)
+                NO_MATERIAL
             }
         }
     }
@@ -1538,7 +1922,7 @@ impl Applier {
                     texture,
                     sampler: sampler_bits(filter, repeat, force_repeat),
                     blend: a.blend as u32,
-                    program: 0,
+                    program: a.program,
                     scissor: scissor.unwrap_or([0; 4]),
                     flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 },
                 });
@@ -1635,7 +2019,7 @@ impl Applier {
         if let Some(rec) = self.items.get_mut(&id) {
             rec.final_xform = final_xf;
             rec.child_modulate = modulate;
-            rec.canvas_modulate = if rec.unshaded {
+            rec.canvas_modulate = if rec.unshaded || rec.program_bound {
                 WHITE
             } else {
                 canvas_modulate(state, rec.canvas, ignore_canvas_modulate)

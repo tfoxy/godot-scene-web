@@ -16,6 +16,8 @@
 // Gates 0, 1 and 3 (main) draw opaque axis-aligned rects only: every pixel is decided. Gate 2's
 // masks come from its expected.json: each draw's sampled texture content (alpha uniform or not,
 // partial or not) and the filter in force (the `default_filter` and per-item `filter` invariants).
+// Gate 5.5's (G7s) come from gate55-cim's op lists: each op whose blend multiplies source and
+// destination in the blend unit (`gate55cim`); gate55-shader draws opaque fills only.
 //
 //   tsx --conditions=development experiments/render-stream/scripts/lib/gsw-tolerance.ts --write
 //   tsx --conditions=development experiments/render-stream/scripts/lib/gsw-tolerance.ts --check
@@ -150,6 +152,69 @@ function gate3x(): GateTolerance {
   };
 }
 
+interface CimOp {
+  vertices: [number, number][];
+  colors: [number, number, number, number][];
+  blend?: string;
+}
+
+/** Gate 5.5's CanvasItemMaterial scene (G7s): `delta1` is every op whose blend multiplies in the
+ * blend unit, from the fixture's own op lists (the effective blend of each item at each step):
+ * a translucent mix, add, sub or premul_alpha, and mul at any alpha. The rendered reference
+ * blends in the native GL driver; ANGLE/Vulkan converts the source to the target's levels before
+ * the blend (memory g7c-gpu-blend-conversion-facts), so a product of source and destination may
+ * round one level apart. An opaque mix, add or sub (a replace or a sum of whole levels) and
+ * `disabled` (no blend) stay decided. */
+function gate55cim(variant: "base" | "modulate"): GateTolerance {
+  const e = json<{
+    viewport: [number, number];
+    op_lists: Record<string, CimOp[]>;
+    variants: Record<
+      string,
+      {
+        steps: {
+          step: number;
+          items: {
+            name: string;
+            region: string;
+            xform: number[];
+            ops: string;
+          }[];
+        }[];
+      }
+    >;
+  }>("gate55-cim/expected.json");
+  const steps: StepMasks[] = [];
+  for (const s of e.variants[variant].steps) {
+    const delta1: StepMasks["delta1"] = [];
+    for (const it of s.items) {
+      // `xform` is the item's final translation, the step's canvas transform included.
+      for (const op of e.op_lists[it.ops] ?? []) {
+        const blend = op.blend ?? "mix";
+        const alpha = Math.min(...op.colors.map((c) => c[3]));
+        // Alpha 0 (light_only without lights) leaves the destination as it is in both.
+        const multiplies =
+          alpha > 0 && (blend === "mul" || (alpha < 1 && blend !== "disabled"));
+        if (!multiplies) continue;
+        const xs = op.vertices.map((v) => v[0] + it.xform[4]);
+        const ys = op.vertices.map((v) => v[1] + it.xform[5]);
+        const x0 = Math.max(Math.min(...xs), 0);
+        const y0 = Math.max(Math.min(...ys), 0);
+        const x1 = Math.min(Math.max(...xs), e.viewport[0]);
+        const y1 = Math.min(Math.max(...ys), e.viewport[1]);
+        if (x1 <= x0 || y1 <= y0) continue;
+        delta1.push({
+          region: it.region,
+          rect: [x0, y0, x1 - x0, y1 - y0],
+          why: `${it.name} draws ${blend} at alpha ${alpha.toFixed(3)}`,
+        });
+      }
+    }
+    steps.push({ step: s.step, delta1, undecided: [] });
+  }
+  return { expected: "fixtures/gate55-cim/expected.json", steps };
+}
+
 export function deriveTolerance(): ToleranceDoc {
   const g0 = json<{ steps: unknown[] }>("gate0/expected.json");
   const g1 = json<{ steps: unknown[] }>("gate1/expected.json");
@@ -168,6 +233,13 @@ export function deriveTolerance(): ToleranceDoc {
       gate2: gate2(),
       gate3: opaque("fixtures/gate3/expected.json", g3.steps.length),
       "gate3-xform": gate3x(),
+      "gate55-cim": gate55cim("base"),
+      "gate55-cim-modulate": gate55cim("modulate"),
+      // G7s: every gate 5.5c shader writes an opaque fill (make_expected.py: every region exact).
+      "gate55-shader": opaque(
+        "fixtures/gate55-shader/expected.json",
+        json<{ steps: unknown[] }>("gate55-shader/expected.json").steps.length,
+      ),
     },
   };
 }

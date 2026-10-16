@@ -21,12 +21,15 @@ use godot_scene_web_rust_prototype::canvas_items::{
     CanvasItemsExecutor, ContextState, ExecError, ExecOptions, ExecStats, FenceState, Sabotage,
 };
 use gsw_canvas_draw_list::Format;
+use gsw_canvas_draw_list::{Binding, UniformValue};
 use render_stream_core::apply::geom;
+use render_stream_core::apply::material_residency::MaterialCounts;
 use render_stream_core::apply::payloads::PayloadStore;
+use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
-use render_stream_core::apply::{Applier, ApplySabotage, Viewport};
+use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
-use render_stream_core::state::{Hash, Id};
+use render_stream_core::state::{Hash, Id, ShaderSource};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, RecordSpan};
 use std::collections::HashSet;
@@ -88,7 +91,6 @@ const SHELL_SABOTAGES: &[&str] = &[
     "ack-while-hidden",
     "leak-gl-textures",
     "no-evict",
-    "stale-param",
     "ignore-cache",
     "wrong-http-token",
 ];
@@ -119,6 +121,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-canvas-modulate" => o.apply.ignore_canvas_modulate = true,
                 "ignore-canvas-stacking" => o.apply.ignore_canvas_stacking = true,
                 "ignore-z" => o.apply.ignore_z = true,
+                "stale-param" => o.apply.stale_param = true,
+                "blend-swap" => o.apply.blend_swap = true,
                 "ignore-presentation" => o.ignore_presentation = true,
                 shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
@@ -251,6 +255,20 @@ pub struct GswRs {
     prev_unsupported: HashSet<(Box<str>, Option<Id>, &'static str)>,
     /// Receiver-typed reasons already reported (each once, at its first transaction).
     typed_seen: HashSet<&'static str>,
+    /// G7s: the custom shaders the accepted transaction names that have no program yet.
+    pending: Vec<(Id, Hash, ShaderSource)>,
+    /// The next executor program id (one per transpiled shader code hash).
+    next_program: u32,
+    /// `shader-param-parity` evidence: every binding's values whenever they changed.
+    param_log: Vec<ParamLogEntry>,
+}
+
+/// One binding's values as of transaction `seq` (they hold until its next entry).
+struct ParamLogEntry {
+    seq: i64,
+    slot: u32,
+    key: Option<BindingKey>,
+    binding: Binding,
 }
 
 /// The receiver-typed `unsupported` reason of a GSW shortcut (gate7-design.md Q5, Q7, D22), or
@@ -283,6 +301,8 @@ struct TxEvidence {
     mesh_commands: u32,
     canvases_created: u32,
     tex: TextureAccount,
+    /// The native receiver's /5 shader and material counters (G7s).
+    mat: MaterialCounts,
 }
 
 /// An `unsupported[]` entry: emitted when its (op, item, reason) was not in the previous applied
@@ -292,6 +312,9 @@ struct UnsupportedOut {
     item: Option<Id>,
     name: Box<str>,
     reason: &'static str,
+    /// A shader refusal's shader id and (receiver-typed ones) why.
+    shader: Option<Id>,
+    detail: Option<Box<str>>,
 }
 
 fn json_str(s: &str) -> String {
@@ -347,7 +370,140 @@ impl GswRs {
             unsupported_out: Vec::new(),
             prev_unsupported: HashSet::new(),
             typed_seen: HashSet::new(),
+            pending: Vec::new(),
+            next_program: 1,
+            param_log: Vec::new(),
         })
+    }
+
+    // ------------------------------------------------------------------ G7s: shader programs
+
+    /// After `accept` (and every `provide`): the custom shaders the transaction's named materials
+    /// name that have no program yet (`Applier::pending_shaders`). Each must be answered with
+    /// `define_program` or `refuse_program` before `apply`. Returns their count.
+    pub fn pending_shaders(&mut self) -> u32 {
+        self.pending = match (self.validator.as_ref(), self.applier.as_ref()) {
+            (Some(v), Some(a)) => a.pending_shaders(v.state()),
+            _ => Vec::new(),
+        };
+        self.pending.len() as u32
+    }
+
+    pub fn pending_hash(&self, i: u32) -> String {
+        self.pending
+            .get(i as usize)
+            .map(|p| p.1.to_hex())
+            .unwrap_or_default()
+    }
+
+    pub fn pending_shader_id(&self, i: u32) -> i64 {
+        self.pending
+            .get(i as usize)
+            .map(|p| i64::from(p.0))
+            .unwrap_or(-1)
+    }
+
+    /// Whether pending shader `i`'s code is `withheld` (it comes from the operator's library).
+    pub fn pending_withheld(&self, i: u32) -> bool {
+        self.pending
+            .get(i as usize)
+            .is_some_and(|p| p.2 == ShaderSource::Withheld)
+    }
+
+    /// Pending shader `i`'s code, once it is held (a payload's, or a library's after
+    /// `provide_library`): crosses the boundary once per shader code hash (Q14c).
+    pub fn pending_code(&self, i: u32) -> Option<String> {
+        let (_, hash, _) = self.pending.get(i as usize)?;
+        self.payloads.shaders.get(hash).cloned()
+    }
+
+    /// A `withheld` shader's GRP1 from the operator's library, written by the caller at
+    /// `alloc_payload`: verified against pending shader `i`'s hash (its name in the library) and
+    /// decoded, as `RsResourceCache.library_code()` does. A library read is never a fetch.
+    pub fn provide_library(&mut self, i: u32, len: usize) -> i32 {
+        let Some((_, hash, _)) = self.pending.get(i as usize).copied() else {
+            self.error = format!("provide_library: no pending shader {i}");
+            return -1;
+        };
+        match self
+            .payloads
+            .provide(&self.payload_buf[..len], &hash, self.version, true)
+        {
+            Ok(()) => 0,
+            Err(e) => {
+                self.error = fail(e);
+                -1
+            }
+        }
+    }
+
+    /// Pending shader `i` transpiled: compile `glsl` (the effects transpiler's item-space module)
+    /// in the executor and register it with its metadata (the transpiler's result without
+    /// `glsl`, JSON). Returns 0 when registered, 1 when GL refused it (registered as the typed
+    /// refusal `gsw-shader-transpile` with the compile log), -1 on a usage error.
+    pub fn define_program(&mut self, i: u32, glsl: &str, meta: &str) -> i32 {
+        let Some((_, hash, _)) = self.pending.get(i as usize).copied() else {
+            self.error = format!("define_program: no pending shader {i}");
+            return -1;
+        };
+        let (Some(a), Some(x)) = (self.applier.as_mut(), self.executor.as_mut()) else {
+            self.error = "define_program before start".into();
+            return -1;
+        };
+        let id = self.next_program;
+        let info = match ProgramInfo::from_meta_json(id, meta) {
+            Ok(info) => info,
+            Err(e) => {
+                self.error = e;
+                return -1;
+            }
+        };
+        match x.define_program(id, glsl) {
+            Ok(()) => {
+                self.next_program += 1;
+                a.set_program(hash, ProgramEntry::Ready(info));
+                0
+            }
+            Err(log) => {
+                a.set_program(
+                    hash,
+                    ProgramEntry::Refused {
+                        reason: "gsw-shader-transpile",
+                        detail: format!("compile: {log}").into(),
+                    },
+                );
+                1
+            }
+        }
+    }
+
+    /// Pending shader `i` is not drawn with its code: `reason` `gsw-shader-transpile` (the
+    /// transpiler refused it; `detail` is its message) or `shader-withheld` (no library code).
+    pub fn refuse_program(&mut self, i: u32, reason: &str, detail: &str) -> i32 {
+        let Some((_, hash, _)) = self.pending.get(i as usize).copied() else {
+            self.error = format!("refuse_program: no pending shader {i}");
+            return -1;
+        };
+        let reason: &'static str = match reason {
+            "gsw-shader-transpile" => "gsw-shader-transpile",
+            "shader-withheld" => "shader-withheld",
+            other => {
+                self.error = format!("refuse_program: unknown reason {other:?}");
+                return -1;
+            }
+        };
+        let Some(a) = self.applier.as_mut() else {
+            self.error = "refuse_program before start".into();
+            return -1;
+        };
+        a.set_program(
+            hash,
+            ProgramEntry::Refused {
+                reason,
+                detail: detail.into(),
+            },
+        );
+        0
     }
 
     /// Step 1, file mode: reserve `len` bytes for the recording; the caller writes them through a
@@ -392,6 +548,8 @@ impl GswRs {
         self.unsupported_out.clear();
         self.prev_unsupported.clear();
         self.typed_seen.clear();
+        self.pending.clear();
+        self.param_log.clear();
         0
     }
 
@@ -601,6 +759,7 @@ impl GswRs {
             mesh_commands: st.mesh_commands,
             canvases_created: st.canvases_created,
             tex: std::mem::take(&mut a.account),
+            mat: a.material_counts,
         });
         let mut now = HashSet::with_capacity(state.unsupported.len());
         for u in &state.unsupported {
@@ -611,11 +770,33 @@ impl GswRs {
                     item: u.item,
                     name: u.op.clone(),
                     reason: u.reason,
+                    shader: None,
+                    detail: None,
                 });
             }
             now.insert(key);
         }
         self.prev_unsupported = now;
+        // G7s: shaders drawn without their code, once per (shader, hash), in the native
+        // receiver's shape (`shader_set_code` / `shader-withheld`, plus `gsw-shader-transpile`).
+        for r in a.shader_refusals.drain(..) {
+            self.unsupported_out.push(UnsupportedOut {
+                seq: state.seq,
+                item: None,
+                name: "shader_set_code".into(),
+                reason: r.reason,
+                shader: Some(r.shader),
+                detail: (r.reason != "shader-withheld").then_some(r.detail),
+            });
+        }
+        for &slot in &a.bindings_changed {
+            self.param_log.push(ParamLogEntry {
+                seq: state.seq,
+                slot,
+                key: a.binding_key(slot),
+                binding: a.list.bindings[slot as usize].clone(),
+            });
+        }
         // Receiver-typed refusals: a shortcut that fired for the first time this transaction.
         for (k, n) in &a.shortcut_totals {
             if *n == 0 {
@@ -628,6 +809,8 @@ impl GswRs {
                         item: None,
                         name: (*k).into(),
                         reason,
+                        shader: None,
+                        detail: None,
                     });
                 }
             }
@@ -815,7 +998,7 @@ impl GswRs {
                 .map(|h| format!("\"{}\"", h.to_hex()))
                 .unwrap_or_else(|| "null".into());
             out.push_str(&format!(
-                "{{\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{}}}}}",
+                "{{\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{},\"shaders_created\":{},\"shader_code_sets\":{},\"materials_created\":{},\"param_sets\":{},\"instance_param_sets\":{}}}}}",
                 e.seq,
                 e.frame,
                 e.encoding,
@@ -830,7 +1013,12 @@ impl GswRs {
                 e.tex.replaced,
                 e.tex.freed,
                 e.tex.upload_bytes,
-                e.canvases_created
+                e.canvases_created,
+                e.mat.shaders_created,
+                e.mat.shader_code_sets,
+                e.mat.materials_created,
+                e.mat.param_sets,
+                e.mat.instance_param_sets
             ));
         }
         out.push_str("],\"uploads\":[");
@@ -859,7 +1047,7 @@ impl GswRs {
                 out.push(',');
             }
             out.push_str(&format!(
-                "{{\"seq\":{},\"item\":{},\"name\":{},\"reason\":{}}}",
+                "{{\"seq\":{},\"item\":{},\"name\":{},\"reason\":{}",
                 u.seq,
                 u.item
                     .map(|i| i.to_string())
@@ -867,8 +1055,69 @@ impl GswRs {
                 json_str(&u.name),
                 json_str(u.reason)
             ));
+            if let Some(s) = u.shader {
+                out.push_str(&format!(",\"shader\":{s}"));
+            }
+            if let Some(d) = &u.detail {
+                out.push_str(&format!(",\"detail\":{}", json_str(d)));
+            }
+            out.push('}');
         }
         out.push_str("]}");
+        out
+    }
+
+    /// `shader-param-parity` evidence (off the frame path): every item-space binding's values each
+    /// time they changed, `{seq, slot, material, canvas, item, program, post_modulate, uniforms:
+    /// {name: [..]}, samplers: {name: texture}}`, one JSON object per line.
+    pub fn shader_params_jsonl(&self) -> String {
+        let mut out = String::new();
+        // The f32 GL value, written exactly (as its f64 widening).
+        let num = |x: f32| {
+            if x.is_finite() {
+                format!("{}", f64::from(x))
+            } else {
+                "null".to_string()
+            }
+        };
+        for e in &self.param_log {
+            let (material, canvas, item) = match e.key {
+                Some(k) => (
+                    k.material.to_string(),
+                    k.canvas.to_string(),
+                    k.item.map(|i| i.to_string()).unwrap_or("null".into()),
+                ),
+                None => ("null".into(), "null".into(), "null".into()),
+            };
+            let uniforms: Vec<String> = e
+                .binding
+                .uniforms
+                .iter()
+                .map(|u| {
+                    let values: Vec<String> = match &u.value {
+                        UniformValue::Float(v) => v.iter().map(|x| num(*x)).collect(),
+                        UniformValue::Int(v) => v.iter().map(|x| x.to_string()).collect(),
+                    };
+                    format!("{}:[{}]", json_str(&u.name), values.join(","))
+                })
+                .collect();
+            let samplers: Vec<String> = e
+                .binding
+                .samplers
+                .iter()
+                .map(|s| format!("{}:{}", json_str(&s.name), s.texture))
+                .collect();
+            let pm: Vec<String> = e.binding.post_modulate.iter().map(|x| num(*x)).collect();
+            out.push_str(&format!(
+                "{{\"seq\":{},\"slot\":{},\"material\":{material},\"canvas\":{canvas},\"item\":{item},\"program\":{},\"post_modulate\":[{}],\"uniforms\":{{{}}},\"samplers\":{{{}}}}}\n",
+                e.seq,
+                e.slot,
+                e.binding.program,
+                pm.join(","),
+                uniforms.join(","),
+                samplers.join(",")
+            ));
+        }
         out
     }
 

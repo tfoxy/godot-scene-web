@@ -81,6 +81,11 @@
 #             differ from native once more into <out>/gate<N>/web-repeat/<leg> (Q7's same-build
 #             repeat). check-gate7.ts judges each gate with the gate's own checker through views of
 #             the source (native, blank, web, banded; lib/gate7b-adapters.ts header).
+#   g7-55 gsw (G7s) gate 5.5's file-mode receiver legs (g55d CanvasItemMaterial, g55e ShaderMaterial)
+#             in the GSW canvas receiver, plus the GSW-only blend-swap sabotage, judged by
+#             check-gate55.ts's g55d/g55e checks plus G7s's (lib/gate7-gsw-55-checks.ts). Its
+#             source is the same shape as the web half's (run-gate55.sh --legs g55b-g55e; g55f's
+#             live legs are G7l's), and source-run-valid@gsw accepts its not-run g55f.
 #
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
@@ -318,8 +323,10 @@ CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG")
 want_gsw() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
 want_web() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; }
 SOURCE_GATES=()
-for g in 0 1 2 3; do
+for g in 0 1 2 3 55; do
 	has_group "g7-$g" || continue
+	# G7s: gate 5.5's gsw half takes this path; its web half is G7b's (below).
+	if [ "$g" = 55 ] && ! want_gsw; then continue; fi
 	if [ "$HARNESS_ENV" != "desktop" ]; then
 		echo "run-gate7: g7-$g runs on the desktop only (drop --env device)" >&2
 		exit 2
@@ -328,7 +335,7 @@ for g in 0 1 2 3; do
 done
 if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
 	if [ ! -f "$EXTENSION" ]; then
-		echo "run-gate7: g7-0..g7-3 need the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
+		echo "run-gate7: g7-0..g7-3 and g7-55 need the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
 		exit 1
 	fi
 	EXTENSION="$(realpath "$EXTENSION")"
@@ -340,9 +347,12 @@ for g in "${SOURCE_GATES[@]}"; do
 			exit 2
 		fi
 		echo "run-gate7: making the gate $g source run (run-gate$g.sh)" >&2
+		# Gate 5.5: its file-leg groups only, the same source as G7b's web half (g55f is live, G7l).
+		source_legs=()
+		[ "$g" = 55 ] && source_legs=(--legs g55b,g55c,g55d,g55e)
 		set +e
 		bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
-			--out "$OUT/sources-made/gate$g"
+			--out "$OUT/sources-made/gate$g" "${source_legs[@]}"
 		gate_exit=$?
 		set -e
 		echo "run-gate7: run-gate$g.sh exit=$gate_exit (source-run-valid judges it)" >&2
