@@ -34,9 +34,39 @@ gate0_tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate0-tool.ts" "$@")
 }
 
+# G7xn (gate7-design.md "G7xn", D34): the runner's own RS_RECEIVER_CORE (gdscript, the default, or
+# rust) and RS_RECEIVER_CORE_EXT pick the native receiver's core for every receiver launch of the
+# run. Every launch strips inherited RS_* variables, so receiver_core_env adds them back as
+# NAME=value words, to receiver launches only (`--path "$RECEIVER_DIR"`), and only when they are
+# not the default: a default run's env.txt files are what they were.
+RECEIVER_CORE="${RS_RECEIVER_CORE:-gdscript}"
+RECEIVER_CORE_EXT="${RS_RECEIVER_CORE_EXT:-}"
+
+receiver_core_env() {
+	[ "$RECEIVER_CORE" != "gdscript" ] || return 0
+	local previous="" arg
+	for arg in "${LEG_ENV[@]}"; do
+		[ "${arg%%=*}" != "RS_RECEIVER_CORE" ] || return 0
+	done
+	for arg in "$@"; do
+		if [ "$previous" = "--path" ] && [ "$arg" = "${RECEIVER_DIR:-}" ]; then
+			LEG_ENV+=(RS_RECEIVER_CORE="$RECEIVER_CORE")
+			if [ -n "$RECEIVER_CORE_EXT" ]; then
+				LEG_ENV+=(RS_RECEIVER_CORE_EXT="$RECEIVER_CORE_EXT")
+			fi
+			return 0
+		fi
+		previous="$arg"
+	done
+}
+
+# write_invocation <dir> <argv...>: records argv.txt and env.txt. Every launch calls it right
+# before it starts the process, so it is also where receiver_core_env adds the core's words to
+# LEG_ENV.
 write_invocation() {
 	local dir="$1"
 	shift
+	receiver_core_env "$@"
 	printf '%s\n' "$@" >"$dir/argv.txt"
 	{
 		echo "# unset: DISPLAY WAYLAND_DISPLAY (headless) / WAYLAND_DISPLAY (rendered), ${GS_STRIP_VARS[*]} and every inherited GRC_* and RS_*"
@@ -78,6 +108,7 @@ run_headless() {
 	shift 3
 	mkdir -p "$dir"
 	gs_strip_env_args
+	receiver_core_env "$@"
 	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}")
 	if [ "${#LEG_ENV[@]}" -gt 0 ]; then
 		cmd+=("${LEG_ENV[@]}")
@@ -129,6 +160,7 @@ start_headless_bg() {
 	shift 2
 	mkdir -p "$dir"
 	gs_strip_env_args
+	receiver_core_env "$@"
 	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}")
 	if [ "${#LEG_ENV[@]}" -gt 0 ]; then
 		cmd+=("${LEG_ENV[@]}")
