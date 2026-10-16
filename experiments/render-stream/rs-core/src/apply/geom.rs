@@ -173,13 +173,107 @@ pub fn line_points(from: [f32; 2], to: [f32; 2], width: f32) -> ([[f32; 2]; 4], 
     }
 }
 
-/// One feather quad: its 4 points and their straight colours.
+/// `RendererCanvasCull`'s `FEATHER_SIZE` (renderer_canvas_cull.h).
+pub const FEATHER_SIZE: f32 = 1.25;
+
+/// One feather quad (a 4-point `CommandPrimitive`): its points and their straight colours.
 pub type Feather = ([[f32; 2]; 4], [[f32; 4]; 4]);
 
-/// The two feather quads `canvas_item_add_line` adds when antialiased (`left_border`,
-/// `right_border`), each `(points, colours)` with the transparent edge in alpha 0.
-pub fn line_feathers(from: [f32; 2], to: [f32; 2], width: f32, color: [f32; 4]) -> [Feather; 2] {
-    const FEATHER_SIZE: f32 = 1.25;
+/// The eight feather quads of an antialiased line or rect, in the engine's command order
+/// (`left_border`, `right_border`, `top_border`, `bottom_border`, then the four corners), from the
+/// four corners and the two border vectors, exactly as `canvas_item_add_line` and
+/// `canvas_item_add_rect` build them (renderer_canvas_cull.cpp:760-881, 1266-1419).
+fn feather_quads(
+    begin_left: [f32; 2],
+    begin_right: [f32; 2],
+    end_left: [f32; 2],
+    end_right: [f32; 2],
+    border: [f32; 2],
+    border2: [f32; 2],
+    color: [f32; 4],
+) -> [Feather; 8] {
+    let t = [color[0], color[1], color[2], 0.0];
+    let edge = [color, t, t, color];
+    let corner = [color, t, t, t];
+    [
+        (
+            [
+                begin_left,
+                add(begin_left, border),
+                add(end_left, border),
+                end_left,
+            ],
+            edge,
+        ),
+        (
+            [
+                begin_right,
+                sub(begin_right, border),
+                sub(end_right, border),
+                end_right,
+            ],
+            edge,
+        ),
+        (
+            [
+                begin_left,
+                add(begin_left, border2),
+                add(begin_right, border2),
+                begin_right,
+            ],
+            edge,
+        ),
+        (
+            [
+                end_left,
+                sub(end_left, border2),
+                sub(end_right, border2),
+                end_right,
+            ],
+            edge,
+        ),
+        (
+            [
+                begin_left,
+                add(begin_left, border2),
+                add(add(begin_left, border), border2),
+                add(begin_left, border),
+            ],
+            corner,
+        ),
+        (
+            [
+                begin_right,
+                add(begin_right, border2),
+                add(sub(begin_right, border), border2),
+                sub(begin_right, border),
+            ],
+            corner,
+        ),
+        (
+            [
+                end_left,
+                sub(end_left, border2),
+                sub(add(end_left, border), border2),
+                add(end_left, border),
+            ],
+            corner,
+        ),
+        (
+            [
+                end_right,
+                sub(end_right, border2),
+                sub(sub(end_right, border), border2),
+                sub(end_right, border),
+            ],
+            corner,
+        ),
+    ]
+}
+
+/// The eight feather quads `canvas_item_add_line` adds when antialiased (renderer_canvas_cull.cpp:
+/// 759-881): `border` along the line's normal, `border2` along `from - to`.
+pub fn line_feathers(from: [f32; 2], to: [f32; 2], width: f32, color: [f32; 4]) -> [Feather; 8] {
     let diff = sub(from, to);
     let dir = normalized(orthogonal(diff));
     let t = scale(scale(dir, width), 0.5);
@@ -192,28 +286,233 @@ pub fn line_feathers(from: [f32; 2], to: [f32; 2], width: f32, color: [f32; 4]) 
     if (0.0..1.0).contains(&width) {
         border_size *= width;
     }
-    let border = scale(dir, border_size);
+    let dir2 = normalized(diff);
+    feather_quads(
+        begin_left,
+        begin_right,
+        end_left,
+        end_right,
+        scale(dir, border_size),
+        scale(dir2, border_size),
+        color,
+    )
+}
+
+/// The eight feather quads `canvas_item_add_rect` adds when antialiased (renderer_canvas_cull.cpp:
+/// 1266-1419): the corners from the rect as given (no size normalization), `dir` = (0, -1) and
+/// `dir2` = (-1, 0).
+pub fn rect_feathers(rect: Rect, color: [f32; 4]) -> [Feather; 8] {
+    let mut border_size = FEATHER_SIZE;
+    let size = rect[2].min(rect[3]);
+    if (0.0..1.0).contains(&size) {
+        border_size *= size;
+    }
+    let pos = [rect[0], rect[1]];
+    let begin_left = pos;
+    let begin_right = add(pos, [0.0, rect[3]]);
+    let end_left = add(pos, [rect[2], 0.0]);
+    let end_right = add(pos, [rect[2], rect[3]]);
+    feather_quads(
+        begin_left,
+        begin_right,
+        end_left,
+        end_right,
+        scale([0.0, -1.0], border_size),
+        scale([-1.0, 0.0], border_size),
+        color,
+    )
+}
+
+/// `canvas_item_add_circle`'s antialiased feather (renderer_canvas_cull.cpp:1466-1510): a triangle
+/// strip of `2·64 + 2` points alternating the rim (opaque) and the rim pushed out by the border
+/// (transparent).
+pub fn circle_feather(
+    position: [f32; 2],
+    radius: f32,
+    color: [f32; 4],
+) -> (Vec<[f32; 2]>, Vec<[f32; 4]>) {
+    const SEGMENTS: usize = 64;
+    let mut border_size = FEATHER_SIZE;
+    let diameter = radius * 2.0;
+    if (0.0..1.0).contains(&diameter) {
+        border_size *= radius;
+    }
+    let step: f32 = std::f32::consts::TAU / SEGMENTS as f32;
     let transparent = [color[0], color[1], color[2], 0.0];
+    let mut points = Vec::with_capacity(2 * SEGMENTS + 2);
+    let mut colors = Vec::with_capacity(2 * SEGMENTS + 2);
+    let outer = radius + border_size;
+    for i in 0..=SEGMENTS {
+        let angle = i as f32 * step;
+        let (c, s) = (angle.cos(), angle.sin());
+        points.push(add([c * radius, s * radius], position));
+        points.push(add([c * outer, s * outer], position));
+        colors.push(color);
+        colors.push(transparent);
+    }
+    (points, colors)
+}
+
+/// `Math::make_half_float` then `unpackHalf2x16` (math_funcs.h:748-794, canvas.glsl): how GLES3's
+/// `TYPE_PRIMITIVE` carries its vertex colours. The mantissa is truncated, and values below the
+/// half's normal range (`|v| < 2^-14`) become zero.
+pub fn godot_half(v: f32) -> f32 {
+    let x = v.to_bits();
+    let sign = x >> 31;
+    let mantissa = x & ((1 << 23) - 1);
+    let exponent = x & (0xFF << 23);
+    let hf: u32 = if exponent >= 0x4780_0000 {
+        let m = if mantissa != 0 && exponent == (0xFF << 23) {
+            (1 << 23) - 1
+        } else {
+            0
+        };
+        (sign << 15) | (0x1F << 10) | (m >> 13)
+    } else if exponent <= 0x3800_0000 {
+        0
+    } else {
+        (sign << 15) | ((exponent - 0x3800_0000) >> 13) | (mantissa >> 13)
+    };
+    // binary16 to binary32 (exact).
+    let s = (hf >> 15) & 1;
+    let e = (hf >> 10) & 0x1F;
+    let m = hf & 0x3FF;
+    let bits = if e == 0 {
+        s << 31
+    } else if e == 0x1F {
+        (s << 31) | (0xFF << 23) | (m << 13)
+    } else {
+        (s << 31) | ((e + 112) << 23) | (m << 13)
+    };
+    f32::from_bits(bits)
+}
+
+/// A colour through [`godot_half`].
+pub fn godot_half4(c: [f32; 4]) -> [f32; 4] {
     [
-        (
-            [
-                begin_left,
-                add(begin_left, border),
-                add(end_left, border),
-                end_left,
-            ],
-            [color, transparent, transparent, color],
-        ),
-        (
-            [
-                begin_right,
-                sub(begin_right, border),
-                sub(end_right, border),
-                end_right,
-            ],
-            [color, transparent, transparent, color],
-        ),
+        godot_half(c[0]),
+        godot_half(c[1]),
+        godot_half(c[2]),
+        godot_half(c[3]),
     ]
+}
+
+/// `canvas_item_add_polyline` with `width >= 0` and antialiasing (renderer_canvas_cull.cpp:
+/// 1006-1162): the middle strip (with 2 + 2 extra feather points at the open ends), and the left
+/// and right feather strips (`2·n`, plus 5 at the open ends). Each is `(points, colours)`.
+pub type Strip = (Vec<[f32; 2]>, Vec<[f32; 4]>);
+
+pub fn polyline_aa(points: &[[f32; 2]], colors: &[[f32; 4]], width: f32) -> [Strip; 3] {
+    let n = points.len();
+    let pc = 2 * n;
+    let empty = || (Vec::new(), Vec::new());
+    if n < 2 {
+        return [empty(), empty(), empty()];
+    }
+    let loop_ = is_equal_approx(points[0], points[n - 1]);
+    let mut first_segment_dir = [0.0; 2];
+    for i in 1..n {
+        first_segment_dir = normalized(sub(points[i], points[i - 1]));
+        if !is_zero_approx(first_segment_dir) {
+            break;
+        }
+    }
+    let mut last_segment_dir = [0.0; 2];
+    for i in (1..n).rev() {
+        last_segment_dir = normalized(sub(points[i], points[i - 1]));
+        if !is_zero_approx(last_segment_dir) {
+            break;
+        }
+    }
+    let extra = if loop_ { 0 } else { 4 };
+    let side_extra = if loop_ { 0 } else { 5 };
+    let mut mp = vec![[0.0f32; 2]; pc + extra];
+    let mut mc = vec![[0.0f32; 4]; pc + extra];
+    let mut lp = vec![[0.0f32; 2]; pc + side_extra];
+    let mut lc = vec![[0.0f32; 4]; pc + side_extra];
+    let mut rp = vec![[0.0f32; 2]; pc + side_extra];
+    let mut rc = vec![[0.0f32; 4]; pc + side_extra];
+    let mut border_size = FEATHER_SIZE;
+    if width < 1.0 {
+        border_size *= width;
+    }
+    let mut color = [1.0f32; 4];
+    let mut color2 = [1.0f32, 1.0, 1.0, 0.0];
+    let mut prev_segment_dir = [0.0f32; 2];
+    for i in 0..n {
+        let is_first = i == 0;
+        let is_last = i == n - 1;
+        let segment_dir = compute_polyline_segment_dir(points, i, prev_segment_dir);
+        if is_first && loop_ {
+            prev_segment_dir = last_segment_dir;
+        } else if is_last && loop_ {
+            prev_segment_dir = first_segment_dir;
+        }
+        let base_edge_offset = if is_first && !loop_ {
+            orthogonal(first_segment_dir)
+        } else if is_last && !loop_ {
+            orthogonal(last_segment_dir)
+        } else {
+            compute_polyline_edge_offset_clamped(segment_dir, prev_segment_dir)
+        };
+        let edge_offset = scale(base_edge_offset, width * 0.5);
+        let border = scale(base_edge_offset, border_size);
+        let pos = points[i];
+        let j = i * 2 + if loop_ { 0 } else { 2 };
+        mp[j] = add(pos, edge_offset);
+        mp[j + 1] = sub(pos, edge_offset);
+        lp[j] = add(pos, edge_offset);
+        lp[j + 1] = add(add(pos, edge_offset), border);
+        rp[j] = sub(pos, edge_offset);
+        rp[j + 1] = sub(sub(pos, edge_offset), border);
+        if i < colors.len() {
+            color = colors[i];
+            color2 = [color[0], color[1], color[2], 0.0];
+        }
+        mc[j] = color;
+        mc[j + 1] = color;
+        lc[j] = color;
+        lc[j + 1] = color2;
+        rc[j] = color;
+        rc[j + 1] = color2;
+        if is_first && !loop_ {
+            let begin_border = scale(scale(segment_dir, -1.0), border_size);
+            mp[0] = add(add(pos, edge_offset), begin_border);
+            mp[1] = add(sub(pos, edge_offset), begin_border);
+            mc[0] = color2;
+            mc[1] = color2;
+            lp[0] = add(add(pos, edge_offset), begin_border);
+            lp[1] = add(add(add(pos, edge_offset), begin_border), border);
+            lc[0] = color2;
+            lc[1] = color2;
+            rp[0] = add(sub(pos, edge_offset), begin_border);
+            rp[1] = sub(add(sub(pos, edge_offset), begin_border), border);
+            rc[0] = color2;
+            rc[1] = color2;
+        }
+        if is_last && !loop_ {
+            let end_border = scale(prev_segment_dir, border_size);
+            let e = pc + 2;
+            mp[e] = add(add(pos, edge_offset), end_border);
+            mp[e + 1] = add(sub(pos, edge_offset), end_border);
+            mc[e] = color2;
+            mc[e + 1] = color2;
+            lp[e] = add(pos, edge_offset);
+            lp[e + 1] = add(add(add(pos, edge_offset), end_border), border);
+            lp[e + 2] = add(add(pos, edge_offset), end_border);
+            lc[e] = color;
+            lc[e + 1] = color2;
+            lc[e + 2] = color2;
+            rp[e] = sub(pos, edge_offset);
+            rp[e + 1] = sub(add(sub(pos, edge_offset), end_border), border);
+            rp[e + 2] = add(sub(pos, edge_offset), end_border);
+            rc[e] = color;
+            rc[e + 1] = color2;
+            rc[e + 2] = color2;
+        }
+        prev_segment_dir = segment_dir;
+    }
+    [(mp, mc), (lp, lc), (rp, rc)]
 }
 
 fn compute_polyline_segment_dir(points: &[[f32; 2]], index: usize, prev: [f32; 2]) -> [f32; 2] {

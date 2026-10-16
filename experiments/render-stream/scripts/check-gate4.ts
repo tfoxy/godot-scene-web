@@ -33,8 +33,11 @@ function parseArgs(argv: string[]): { out: string } {
   return { out: resolve(out) };
 }
 
-async function main(): Promise<void> {
-  const { out } = parseArgs(process.argv.slice(2));
+/** Gate 4's report for the evidence in `out` (every group that ran), unprinted: the CLI below and
+ * gate 7's adapter (lib/gate7-gsw-g45.ts, judging a gsw view of a gate 4 run) both call it. */
+export async function buildGate4Report(
+  out: string,
+): Promise<Awaited<ReturnType<typeof runGate4>>> {
   const fixture = join(EXPERIMENT_DIR, "fixtures", "gate4");
   const expected = JSON.parse(
     await readFile(join(fixture, "expected.json"), "utf8"),
@@ -74,6 +77,12 @@ async function main(): Promise<void> {
     report.gate_passed =
       report.gate_passed && rich.checks.every((c) => c.status === "pass");
   }
+  return report;
+}
+
+async function main(): Promise<void> {
+  const { out } = parseArgs(process.argv.slice(2));
+  const report = await buildGate4Report(out);
 
   await writeFile(
     join(out, "result.json"),
@@ -174,7 +183,11 @@ async function main(): Promise<void> {
   if (!report.gate_passed) process.exitCode = 1;
 }
 
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+)
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

@@ -87,6 +87,12 @@
 #             source is the same shape as the web half's (run-gate55.sh --legs g55b-g55e; g55f's
 #             live legs are G7l's), and source-run-valid@gsw accepts its not-run g55f.
 #
+# Groups landed (G7t, gates 4 and 5 in the GSW canvas receiver, gate7-design.md "G7t"):
+#   g7-4, g7-5  gates 4 and 5's file-mode receiver legs (text, geometry, meshes, styleboxes) in the
+#             GSW receiver, sourced and judged exactly as g7-0..g7-3 (lib/gate7-gsw-g45.ts), plus
+#             G7t's checks (lib/gate7-gsw-g45-checks.ts; g7-5's lowering-parity runs
+#             `rs-core-check lowered` over the gate 5 source recordings). g5f's live legs are G7l's.
+#
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
 # and rendered Godot legs share ONE private `gamescope --backend headless` (lib/gamescope.sh).
@@ -323,7 +329,7 @@ CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG")
 want_gsw() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
 want_web() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; }
 SOURCE_GATES=()
-for g in 0 1 2 3 55; do
+for g in 0 1 2 3 4 5 55; do
 	has_group "g7-$g" || continue
 	# G7s: gate 5.5's gsw half takes this path; its web half is G7b's (below).
 	if [ "$g" = 55 ] && ! want_gsw; then continue; fi
@@ -335,7 +341,7 @@ for g in 0 1 2 3 55; do
 done
 if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
 	if [ ! -f "$EXTENSION" ]; then
-		echo "run-gate7: g7-0..g7-3 and g7-55 need the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
+		echo "run-gate7: g7-0..g7-5 and g7-55 need the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
 		exit 1
 	fi
 	EXTENSION="$(realpath "$EXTENSION")"

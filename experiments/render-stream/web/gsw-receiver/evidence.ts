@@ -5,9 +5,11 @@
 // harness. Every encode and PUT happens after the frame that produced it, outside the timers.
 //
 // Fields the native receiver fills from RenderingServer counters (rs_calls, reparented,
-// meshes_rebuilt, surface_updates, shader_code_sets, param_sets, canvas_attach,
+// shader_code_sets, param_sets, canvas_attach,
 // canvas_stacking_sets, ...) have no GSW meaning and are `null` here; window_size and oversampling
-// are the canvas's. Everything a gate checker reads is filled by the same rule as natively.
+// are the canvas's. Everything a gate checker reads is filled by the same rule as natively; G7t adds
+// the mesh residency's `mesh_uploads` rows and counters (meshes_created, meshes_rebuilt,
+// surface_updates, mesh_upload_bytes).
 
 import type { ReceiverConfig } from "./config";
 import type { FetchEntry } from "./source";
@@ -119,7 +121,22 @@ export interface RustParts {
       materials_created: number;
       param_sets: number;
       instance_param_sets: number;
+      /** G7t: native mesh residency's counters (applied.json `resources`). */
+      meshes_created?: number;
+      meshes_rebuilt?: number;
+      surface_updates?: number;
+      mesh_upload_bytes?: number;
     };
+  }[];
+  /** G7t: native mesh residency's rows (`rs_applier.gd` `_apply_meshes`). */
+  mesh_uploads?: {
+    id: number;
+    op: string;
+    surfaces: number[];
+    buffers: string[];
+    bytes: number;
+    stream: number;
+    seq: number;
   }[];
   uploads: {
     id: number;
@@ -214,10 +231,10 @@ export function appliedJson(r: Report): Record<string, unknown> {
         upload_bytes: t.resources.upload_bytes,
         fetch_us: Math.round(s?.fetch_us ?? 0),
         skipped_commands: null,
-        meshes_created: null,
-        meshes_rebuilt: null,
-        surface_updates: null,
-        mesh_upload_bytes: null,
+        meshes_created: t.resources.meshes_created ?? null,
+        meshes_rebuilt: t.resources.meshes_rebuilt ?? null,
+        surface_updates: t.resources.surface_updates ?? null,
+        mesh_upload_bytes: t.resources.mesh_upload_bytes ?? null,
         skipped_mesh_commands: null,
         shaders_created: t.resources.shaders_created,
         shader_code_sets: t.resources.shader_code_sets,
@@ -265,17 +282,17 @@ export function appliedJson(r: Report): Record<string, unknown> {
     },
     fetches: full ? r.fetches : null,
     uploads: full ? rust.uploads : null,
-    mesh_uploads: full ? [] : null,
+    mesh_uploads: full ? (rust.mesh_uploads ?? []) : null,
     resources_summary: {
       distinct_fetched: r.distinctFetched,
       fetched_bytes: sum((t) => t.resources.fetched_bytes),
       cache_hits: 0,
       uploads: counted.length,
       upload_bytes: counted.reduce((n, u) => n + u.data_bytes, 0),
-      meshes_created: null,
-      meshes_rebuilt: null,
-      surface_updates: null,
-      mesh_upload_bytes: null,
+      meshes_created: sum((t) => t.resources.meshes_created ?? 0),
+      meshes_rebuilt: sum((t) => t.resources.meshes_rebuilt ?? 0),
+      surface_updates: sum((t) => t.resources.surface_updates ?? 0),
+      mesh_upload_bytes: sum((t) => t.resources.mesh_upload_bytes ?? 0),
       shaders_created: sum((t) => t.resources.shaders_created),
       shader_code_sets: sum((t) => t.resources.shader_code_sets),
       shader_payload_fetches: sum((t) => t.resources.shader_payload_fetches),

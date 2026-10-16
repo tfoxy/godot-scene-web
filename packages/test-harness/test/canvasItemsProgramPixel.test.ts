@@ -15,7 +15,10 @@
 // and WAYLAND_DISPLAY removed, never headed, never Xvfb. Opt in with GSW_CANVAS_ITEMS_PIXEL=1; the
 // wasm is the same `canvas-items-test` build.
 //
-// Artifacts (never committed): `artifacts/canvas-items-pixel/program-<case>.png`.
+// G7t: every case runs twice, in `executor-webgl.ts`'s y-down orientation and in Godot's
+// (`ExecOptions::godot_orientation`, the GSW receiver's), against the same expectations.
+//
+// Artifacts (never committed): `artifacts/canvas-items-pixel/program-<case>[-godot].png`.
 
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
@@ -126,52 +129,64 @@ describe.skipIf(!ENABLED)(
       await browser?.close();
     });
 
+    // G7t: every case also in Godot's orientation (`ExecOptions::godot_orientation`, as the GSW
+    // receiver draws): the same expectations, read back in design rows.
     it.each(
-      CASES.map((c) => c.name),
-    )("%s: every expected pixel within its delta", async (name) => {
-      const spec = CASES.find((c) => c.name === name);
-      if (!spec) throw new Error(name);
-      const result: ProgramCaseResult = await page.evaluate(
-        (n) => window.__gswCanvasItemsPrograms.run(n),
-        name,
-      );
-      await sharp(Buffer.from(Uint8Array.from(result.target)), {
-        raw: { width: result.width, height: result.height, channels: 4 },
-      })
-        .png()
-        .toFile(join(ARTIFACTS, `program-${name}.png`));
-      expect(result.renderer).toMatch(/ANGLE/);
-      expect(result.renderer).not.toMatch(/swiftshader|llvmpipe/i);
-      expect(result.glError, `${name}: gl.getError()`).toBe(0);
-      expect(Object.keys(result.defineErrors).map(Number).sort()).toEqual(
-        [...(spec.failing ?? [])].sort(),
-      );
-      for (const id of spec.failing ?? [])
-        expect(result.defineErrors[id]).toMatch(/link failed|ERROR/);
-      expect(result.stats.drawsSkipped).toBe(spec.skipped ?? 0);
-      const problems: string[] = [];
-      for (const e of spec.expect) {
-        const [x0, y0, w, h] = e.rect;
-        let worst = 0;
-        let at = "";
-        for (let y = y0; y < y0 + h; y++)
-          for (let x = x0; x < x0 + w; x++) {
-            const i = (y * result.width + x) * 4;
-            for (let c = 0; c < 4; c++) {
-              const d = Math.abs(result.target[i + c] - e.rgba[c]);
-              if (d > worst) {
-                worst = d;
-                at = `(${x},${y}) got ${result.target.slice(i, i + 4).join(",")} expected ${e.rgba.join(",")}`;
+      CASES.flatMap((c) => [
+        [c.name, "y-down"],
+        [c.name, "godot"],
+      ]),
+    )(
+      "%s (%s): every expected pixel within its delta",
+      async (name, orientation) => {
+        const spec = CASES.find((c) => c.name === name);
+        if (!spec) throw new Error(name);
+        const godot = orientation === "godot";
+        const result: ProgramCaseResult = await page.evaluate(
+          ([n, g]) => window.__gswCanvasItemsPrograms.run(n, g),
+          [name, godot] as const,
+        );
+        await sharp(Buffer.from(Uint8Array.from(result.target)), {
+          raw: { width: result.width, height: result.height, channels: 4 },
+        })
+          .png()
+          .toFile(
+            join(ARTIFACTS, `program-${name}${godot ? "-godot" : ""}.png`),
+          );
+        expect(result.renderer).toMatch(/ANGLE/);
+        expect(result.renderer).not.toMatch(/swiftshader|llvmpipe/i);
+        expect(result.glError, `${name}: gl.getError()`).toBe(0);
+        expect(Object.keys(result.defineErrors).map(Number).sort()).toEqual(
+          [...(spec.failing ?? [])].sort(),
+        );
+        for (const id of spec.failing ?? [])
+          expect(result.defineErrors[id]).toMatch(/link failed|ERROR/);
+        expect(result.stats.drawsSkipped).toBe(spec.skipped ?? 0);
+        const problems: string[] = [];
+        for (const e of spec.expect) {
+          const [x0, y0, w, h] = e.rect;
+          let worst = 0;
+          let at = "";
+          for (let y = y0; y < y0 + h; y++)
+            for (let x = x0; x < x0 + w; x++) {
+              const i = (y * result.width + x) * 4;
+              for (let c = 0; c < 4; c++) {
+                const d = Math.abs(result.target[i + c] - e.rgba[c]);
+                if (d > worst) {
+                  worst = d;
+                  at = `(${x},${y}) got ${result.target.slice(i, i + 4).join(",")} expected ${e.rgba.join(",")}`;
+                }
               }
             }
-          }
-        console.log(
-          `canvas-items program ${name}: ${e.why}: max delta ${worst}${at ? ` ${at}` : ""}`,
-        );
-        if (worst > e.maxDelta)
-          problems.push(`${e.why}: max delta ${worst} > ${e.maxDelta} ${at}`);
-      }
-      expect(problems).toEqual([]);
-    }, 120000);
+          console.log(
+            `canvas-items program ${name} (${orientation}): ${e.why}: max delta ${worst}${at ? ` ${at}` : ""}`,
+          );
+          if (worst > e.maxDelta)
+            problems.push(`${e.why}: max delta ${worst} > ${e.maxDelta} ${at}`);
+        }
+        expect(problems).toEqual([]);
+      },
+      120000,
+    );
   },
 );

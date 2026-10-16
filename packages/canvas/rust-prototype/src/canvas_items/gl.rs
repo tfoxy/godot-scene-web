@@ -17,8 +17,8 @@
 //! `dirty.all` and every texture re-queued.
 use super::{
     Call, ExecOptions, ExecStats, FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW,
-    MAX_PROGRAM_SAMPLERS, Sabotage, gl_scissor, item_program_fragment, item_rows_for,
-    item_upload_rects, plan_calls,
+    MAX_PROGRAM_SAMPLERS, Sabotage, gl_scissor, gl_scissor_y_up, godot_screen_transform,
+    item_program_fragment, item_rows_for, item_upload_rects, plan_calls,
 };
 use crate::present::{
     ContextAttributes,
@@ -52,6 +52,9 @@ layout(location = 2) in vec4 a_color;  // STRAIGHT
 layout(location = 3) in uint a_item;
 uniform sampler2D u_items;
 uniform vec4 u_projection;
+// ExecOptions::godot_orientation: Godot's screen_transform as canvas.glsl applies it.
+uniform bool u_godot_screen;
+uniform mat4 u_screen;
 uniform bool u_premultiply;
 out vec2 v_uv;
 out vec4 v_color;
@@ -64,7 +67,8 @@ void main() {
   vec4 t2 = texelFetch(u_items, at + ivec2(2, 0), 0);
   vec2 design = vec2(t0.x * a_position.x + t0.z * a_position.y + t1.x,
                      t0.y * a_position.x + t0.w * a_position.y + t1.y);
-  gl_Position = vec4(design * u_projection.xy + u_projection.zw, 0.0, 1.0);
+  gl_Position = u_godot_screen ? u_screen * vec4(design, 0.0, 1.0)
+                               : vec4(design * u_projection.xy + u_projection.zw, 0.0, 1.0);
   v_uv = a_uv;
   // Interpolated STRAIGHT, as Godot's color_interp is; premultiplied per fragment.
   v_color = a_color;
@@ -106,9 +110,13 @@ precision highp float;
 precision highp int;
 precision highp sampler2D;
 uniform sampler2D u_frame;
+// ExecOptions::godot_orientation: the target's height (its rows are design rows), else 0.
+uniform int u_flip_rows;
 out vec4 fragColor;
 void main() {
-  vec4 c = texelFetch(u_frame, ivec2(gl_FragCoord.xy), 0);
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  if (u_flip_rows > 0) p.y = u_flip_rows - 1 - p.y;
+  vec4 c = texelFetch(u_frame, p, 0);
   fragColor = floor(c * 255.0 + 0.5) / 255.0;
 }"#;
 
@@ -206,7 +214,9 @@ struct Cache {
     /// The BUILTIN program's premultiply uniforms and projection (item-space programs keep
     /// their own in [`CompiledItem`]).
     premultiply: Option<bool>,
-    projection: Option<(u32, u32)>,
+    projection: Option<(u32, u32, bool)>,
+    /// The present program's `u_flip_rows` (G7t: Godot's orientation).
+    flip_rows: Option<i32>,
     /// Texture and sampler object on each item-space sampler unit.
     units: [Option<(glow::Texture, glow::Sampler)>; 16],
 }
@@ -215,13 +225,16 @@ struct Cache {
 struct CompiledItem {
     program: glow::Program,
     u_projection: Option<glow::UniformLocation>,
+    u_godot_screen: Option<glow::UniformLocation>,
+    u_screen: Option<glow::UniformLocation>,
     u_post_modulate: Option<glow::UniformLocation>,
     u_premultiply_out: Option<glow::UniformLocation>,
     /// Active non-sampler uniforms by declared name: location, GL type, array size.
     uniforms: HashMap<String, (glow::UniformLocation, u32, i32)>,
     /// Active `sampler2D` uniforms (beyond `TEXTURE`) and the unit each samples.
     sampler_units: Vec<(String, u32)>,
-    projection: Option<(u32, u32)>,
+    /// Target size and [`ExecOptions::godot_orientation`] the vertex uniforms were set for.
+    projection: Option<(u32, u32, bool)>,
     premultiply_out: Option<bool>,
     /// The (binding slot, version) whose values GL holds.
     applied: Option<(u32, u64)>,
@@ -245,9 +258,12 @@ struct TargetObjects {
 struct Objects {
     program: glow::Program,
     u_projection: Option<glow::UniformLocation>,
+    u_godot_screen: Option<glow::UniformLocation>,
+    u_screen: Option<glow::UniformLocation>,
     u_premultiply: Option<glow::UniformLocation>,
     u_texel_premultiply: Option<glow::UniformLocation>,
     present_program: glow::Program,
+    u_flip_rows: Option<glow::UniformLocation>,
     present_vertex_array: glow::VertexArray,
     vertex_array: glow::VertexArray,
     vertex_buffer: glow::Buffer,
@@ -354,6 +370,8 @@ fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String
         let compiled = CompiledItem {
             program,
             u_projection: gl.get_uniform_location(program, "u_projection"),
+            u_godot_screen: gl.get_uniform_location(program, "u_godot_screen"),
+            u_screen: gl.get_uniform_location(program, "u_screen"),
             u_post_modulate: gl.get_uniform_location(program, "gsw_post_modulate"),
             u_premultiply_out: gl.get_uniform_location(program, "gsw_premultiply_out"),
             uniforms,
@@ -440,6 +458,8 @@ impl Objects {
             let program = compile(gl, VERT, FRAG)?;
             gl.use_program(Some(program));
             let u_projection = gl.get_uniform_location(program, "u_projection");
+            let u_godot_screen = gl.get_uniform_location(program, "u_godot_screen");
+            let u_screen = gl.get_uniform_location(program, "u_screen");
             let u_premultiply = gl.get_uniform_location(program, "u_premultiply");
             let u_texel_premultiply = gl.get_uniform_location(program, "u_texel_premultiply");
             gl.uniform_1_i32(
@@ -541,12 +561,16 @@ impl Objects {
             let samplers: [glow::Sampler; 6] =
                 samplers.try_into().map_err(|_| "samplers".to_string())?;
 
+            let u_flip_rows = gl.get_uniform_location(present_program, "u_flip_rows");
             Ok(Objects {
                 program,
                 u_projection,
+                u_godot_screen,
+                u_screen,
                 u_premultiply,
                 u_texel_premultiply,
                 present_program,
+                u_flip_rows,
                 present_vertex_array,
                 vertex_array,
                 vertex_buffer,
@@ -847,7 +871,9 @@ impl CanvasItemsExecutor {
             ));
         };
         let (framebuffer, width, height) = (target.framebuffer, target.width, target.height);
-        self.read(Some(framebuffer), width, height, out)
+        // In Godot's orientation GL row 0 is design row 0: no swap.
+        let swap = !self.options.godot_orientation;
+        self.read(Some(framebuffer), width, height, out, swap)
     }
 
     /// The canvas's drawing buffer after the blit, rows top-down (same task only: the canvas does
@@ -857,7 +883,7 @@ impl CanvasItemsExecutor {
             return Err(ExecError::Lost);
         }
         let (width, height) = (self.canvas.width(), self.canvas.height());
-        self.read(None, width, height, out)
+        self.read(None, width, height, out, true)
     }
 
     /// `gl.getError()`, for tests (never on the frame path).
@@ -871,6 +897,7 @@ impl CanvasItemsExecutor {
         width: u32,
         height: u32,
         out: &mut [u8],
+        swap_rows: bool,
     ) -> Result<(), ExecError> {
         let stride = width as usize * 4;
         let length = stride * height as usize;
@@ -891,6 +918,9 @@ impl CanvasItemsExecutor {
                 glow::UNSIGNED_BYTE,
                 glow::PixelPackData::Slice(Some(&mut out[..length])),
             );
+        }
+        if !swap_rows {
+            return Ok(());
         }
         // GL rows come back bottom-up.
         let (mut top, mut bottom) = (0usize, height as usize);
@@ -1298,6 +1328,9 @@ impl CanvasItemsExecutor {
             -1.0,
             1.0,
         ];
+        // ExecOptions::godot_orientation: Godot's screen_transform instead (G7t).
+        let godot = self.options.godot_orientation;
+        let screen = godot_screen_transform(width, height);
         bind_vertex_array(gl, cache, objects.vertex_array);
 
         for call in calls.iter() {
@@ -1315,13 +1348,19 @@ impl CanvasItemsExecutor {
                     unsafe { gl.c().use_program(Some(objects.program)) };
                     cache.program = Some(objects.program);
                 }
-                if cache.projection != Some((width, height)) {
-                    let [a, b, c, d] = projection;
-                    unsafe {
-                        gl.c()
-                            .uniform_4_f32(objects.u_projection.as_ref(), a, b, c, d)
-                    };
-                    cache.projection = Some((width, height));
+                if cache.projection != Some((width, height, godot)) {
+                    set_vertex_projection(
+                        gl,
+                        [
+                            &objects.u_projection,
+                            &objects.u_godot_screen,
+                            &objects.u_screen,
+                        ],
+                        projection,
+                        godot,
+                        &screen,
+                    );
+                    cache.projection = Some((width, height, godot));
                 }
             } else {
                 // An item-space program (plan_calls admitted only a compiled one).
@@ -1339,10 +1378,15 @@ impl CanvasItemsExecutor {
                     cache.program = Some(item.program);
                     stats.program_binds += 1;
                 }
-                if item.projection != Some((width, height)) {
-                    let [a, b, c, d] = projection;
-                    unsafe { gl.c().uniform_4_f32(item.u_projection.as_ref(), a, b, c, d) };
-                    item.projection = Some((width, height));
+                if item.projection != Some((width, height, godot)) {
+                    set_vertex_projection(
+                        gl,
+                        [&item.u_projection, &item.u_godot_screen, &item.u_screen],
+                        projection,
+                        godot,
+                        &screen,
+                    );
+                    item.projection = Some((width, height, godot));
                 }
                 let premultiply_out = premultiplies(blend, list.target.opaque);
                 if item.premultiply_out != Some(premultiply_out) {
@@ -1397,7 +1441,11 @@ impl CanvasItemsExecutor {
             }
             if draw.flags & DRAW_SCISSOR != 0 {
                 set_scissor_enabled(gl, cache, true);
-                let scissor = gl_scissor(draw.scissor, height);
+                let scissor = if godot {
+                    gl_scissor_y_up(draw.scissor)
+                } else {
+                    gl_scissor(draw.scissor, height)
+                };
                 if cache.scissor != Some(scissor) {
                     unsafe {
                         gl.c()
@@ -1471,6 +1519,15 @@ impl CanvasItemsExecutor {
                     unsafe { gl.c().use_program(Some(objects.present_program)) };
                     cache.program = Some(objects.present_program);
                 }
+                let flip = if self.options.godot_orientation {
+                    target.height as i32
+                } else {
+                    0
+                };
+                if cache.flip_rows != Some(flip) {
+                    unsafe { gl.c().uniform_1_i32(objects.u_flip_rows.as_ref(), flip) };
+                    cache.flip_rows = Some(flip);
+                }
                 bind_vertex_array(gl, cache, objects.present_vertex_array);
                 unsafe { gl.c().draw_arrays(glow::TRIANGLES, 0, 3) };
             }
@@ -1478,6 +1535,12 @@ impl CanvasItemsExecutor {
                 bind_draw_framebuffer(gl, cache, None);
                 bind_read(gl, cache, Some(target.framebuffer));
                 let (w, h) = (target.width as i32, target.height as i32);
+                // Godot's orientation: the target's row 0 is the canvas's top row.
+                let (dy0, dy1) = if self.options.godot_orientation {
+                    (h, 0)
+                } else {
+                    (0, h)
+                };
                 unsafe {
                     gl.c().blit_framebuffer(
                         0,
@@ -1485,9 +1548,9 @@ impl CanvasItemsExecutor {
                         w,
                         h,
                         0,
-                        0,
+                        dy0,
                         w,
-                        h,
+                        dy1,
                         glow::COLOR_BUFFER_BIT,
                         glow::NEAREST,
                     )
@@ -1611,6 +1674,25 @@ fn set_scissor_enabled(gl: &Gl, cache: &mut Cache, enabled: bool) {
             }
         };
         cache.scissor_enabled = Some(enabled);
+    }
+}
+
+/// The vertex stage's projection uniforms (`u_projection`, `u_godot_screen`, `u_screen`), for the
+/// builtin program and every item-space program alike (they share [`VERT`]): `executor-webgl.ts`'s
+/// projection, or Godot's `screen_transform` under [`ExecOptions::godot_orientation`].
+fn set_vertex_projection(
+    gl: &Gl,
+    [u_projection, u_godot_screen, u_screen]: [&Option<glow::UniformLocation>; 3],
+    [a, b, c, d]: [f32; 4],
+    godot: bool,
+    screen: &[f32; 16],
+) {
+    unsafe {
+        gl.c().uniform_4_f32(u_projection.as_ref(), a, b, c, d);
+        gl.c()
+            .uniform_1_i32(u_godot_screen.as_ref(), i32::from(godot));
+        gl.c()
+            .uniform_matrix_4_f32_slice(u_screen.as_ref(), false, screen);
     }
 }
 

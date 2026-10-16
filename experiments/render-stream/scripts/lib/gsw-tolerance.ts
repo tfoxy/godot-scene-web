@@ -11,7 +11,18 @@
 //              for gate 3c, the rotated-edge band of gate3x-expected.ts (`band_px` around every
 //              non-axis-aligned edge, where the rasterizer's own edge rule decides). Diffs are
 //              allowed only inside, counted and reported.
+//   excluded   (G7t) the regions of an op GSW types (Q7's last row): gate 4e's MSDF text,
+//              `gsw-msdf`. Any difference, counted; the typed reason is judged by its own check.
 //   decided    every other pixel: channel 0, pixels 0 (P-G1).
+//
+// G7t adds gates 4 and 5. Gate 4's glyph boxes (each step's `text_regions`) are `delta1`: glyph
+// coverage is partial alpha blended over what is below (P-G2 predicts exact, and gate7-gsw-g45.ts
+// reports it per glyph box). Gate 5's masks are per pixel, from the gate's own rasterizer
+// (geometry-raster.ts over make_expected.py's lowering, D13): pixels it decides within 1
+// (interpolated colours, blends, off-grid texels) and antialiased shapes' feather bands are
+// `delta1`; thin GL lines' bands, gate 5e's band region and every pixel it leaves undecided (edges
+// within 1/16 px) are `undecided`. Those masks are synthesized when used; the committed document
+// records their pixel counts per step, so --check pins the derivation.
 //
 // Gates 0, 1 and 3 (main) draw opaque axis-aligned rects only: every pixel is decided. Gate 2's
 // masks come from its expected.json: each draw's sampled texture content (alpha uniform or not,
@@ -30,6 +41,11 @@ import { fileURLToPath } from "node:url";
 
 import type { Gate3xExpected } from "./gate3x-expected";
 import { synthesizeGate3x } from "./gate3x-expected";
+import type { Gate4Expected } from "./gate4-expected";
+import { rastersOf } from "./gate5-checks";
+import type { Gate5Expected } from "./gate5-expected";
+import { type Gate5MeshExpected, meshRasters } from "./gate5c-checks";
+import type { Gate5Raster } from "./geometry-raster";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(HERE, "..", "..", "fixtures");
@@ -43,10 +59,19 @@ export interface StepMasks {
   undecided: { region: string; rect: Rect; why: string }[];
   /** gate 3c: the band's pixel count (gate3x-expected.ts synthesizeGate3x, `band_px`). */
   band_pixels?: number;
+  /** G7t: regions of an op GSW types (Q7's last row), with the typed reason. */
+  excluded?: { region: string; rect: Rect; why: string; reason: string }[];
+  /** G7t: the synthesized per-pixel masks' sizes (gate 5's rasterizer; `raster` below). */
+  raster_pixels?: { delta1: number; undecided: number };
 }
+
+/** A gate whose masks are synthesized per pixel by its own rasterizer (G7t). */
+export type RasterKey = "gate5" | "gate5-mesh" | "gate5-style";
 
 export interface GateTolerance {
   expected: string;
+  /** G7t: the per-pixel masks come from this gate's rasterizer (`classMask`). */
+  raster?: RasterKey;
   steps: StepMasks[];
 }
 
@@ -136,6 +161,68 @@ function opaque(rel: string, count: number): GateTolerance {
       delta1: [],
       undecided: [],
     })),
+  };
+}
+
+/** G7t: gate 4's glyph boxes. Each step's `text_regions` hold the glyphs a Label draws (gate
+ * 4's own synthesis leaves them to the glyph oracle): `delta1`, or for gate 4e's MSDF fixture
+ * `excluded` with the receiver-typed reason `gsw-msdf`. */
+function gate4(rel: string, msdf = false): GateTolerance {
+  const expected = json<Gate4Expected>(rel);
+  return {
+    expected: `fixtures/${rel}`,
+    steps: expected.steps.map((s) => {
+      const boxes = Object.entries(s.text_regions)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([region, b]) => ({
+          region,
+          rect: [b[0], b[1], b[2] - b[0], b[3] - b[1]] as Rect,
+        }));
+      return msdf
+        ? {
+            step: s.step,
+            delta1: [],
+            undecided: [],
+            excluded: boxes.map((b) => ({
+              ...b,
+              why: `${b.region} draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types`,
+              reason: "gsw-msdf",
+            })),
+          }
+        : {
+            step: s.step,
+            delta1: boxes.map((b) => ({
+              ...b,
+              why: `${b.region}'s glyph coverage (partial alpha) blends over what is below`,
+            })),
+            undecided: [],
+          };
+    }),
+  };
+}
+
+/** G7t: gate 5's per-pixel masks for one fixture, counted per step. */
+function gate5(rel: string, raster: RasterKey): GateTolerance {
+  const masks = rasterMasks(raster);
+  return {
+    expected: `fixtures/${rel}`,
+    raster,
+    steps: [...masks.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([step, cls]) => {
+        let d1 = 0;
+        let und = 0;
+        for (const c of cls) {
+          if (c === CLASS_DELTA1) d1++;
+          else if (c === CLASS_UNDECIDED) und++;
+        }
+        return {
+          step,
+          delta1: [],
+          undecided: [],
+          raster_pixels: { delta1: d1, undecided: und },
+        };
+      }),
   };
 }
 
@@ -240,8 +327,101 @@ export function deriveTolerance(): ToleranceDoc {
         "fixtures/gate55-shader/expected.json",
         json<{ steps: unknown[] }>("gate55-shader/expected.json").steps.length,
       ),
+      gate4: gate4("gate4/expected.json"),
+      "gate4-layout": gate4("gate4-layout/expected.json"),
+      "gate4-rich": gate4("gate4-rich/expected.json"),
+      "gate4-i18n": gate4("gate4-i18n/expected.json"),
+      "gate4-msdf": gate4("gate4-msdf/expected.json", true),
+      gate5: gate5("gate5/expected.json", "gate5"),
+      "gate5-mesh": gate5("gate5-mesh/expected.json", "gate5-mesh"),
+      "gate5-style": gate5("gate5-style/expected.json", "gate5-style"),
     },
   };
+}
+
+// ------------------------------------------------------------------------- per-pixel classes
+
+export const CLASS_DECIDED = 0;
+export const CLASS_DELTA1 = 1;
+export const CLASS_UNDECIDED = 2;
+export const CLASS_EXCLUDED = 3;
+
+/** Gate 5's raster to Q7 classes: decided within 1 or an antialiased shape's feather band ->
+ * delta1; a thin line's band, a band region, or undecided -> undecided; else decided. */
+function rasterClasses(r: Gate5Raster): Uint8Array {
+  const out = new Uint8Array(r.width * r.height);
+  for (let i = 0; i < out.length; i++) {
+    if (r.exact[i]) out[i] = r.delta[i] > 0 ? CLASS_DELTA1 : CLASS_DECIDED;
+    else if (r.band[i] && !r.thin[i]) out[i] = CLASS_DELTA1;
+    else out[i] = CLASS_UNDECIDED;
+  }
+  return out;
+}
+
+const rasterCache = new Map<RasterKey, Map<number, Uint8Array>>();
+
+/** Per step, the Q7 class of every pixel of a gate 5 fixture (cached per process). */
+export function rasterMasks(key: RasterKey): Map<number, Uint8Array> {
+  const hit = rasterCache.get(key);
+  if (hit) return hit;
+  let rasters: Map<number, Gate5Raster>;
+  if (key === "gate5-mesh") {
+    const e = json<Gate5MeshExpected>("gate5-mesh/expected.json");
+    rasters = meshRasters(e);
+    // The band region (DF: a texture under a non-affine mapping) is never synthesized.
+    const [W] = e.viewport;
+    for (const r of rasters.values())
+      for (const name of e.band_regions) {
+        const b = e.regions[name];
+        for (let y = b[1]; y < b[3]; y++)
+          for (let x = b[0]; x < b[2]; x++) r.thin[y * W + x] = 1;
+      }
+  } else {
+    rasters = rastersOf(
+      json<Gate5Expected>(
+        key === "gate5" ? "gate5/expected.json" : "gate5-style/expected.json",
+      ),
+    );
+  }
+  const out = new Map<number, Uint8Array>();
+  for (const [step, r] of rasters) out.set(step, rasterClasses(r));
+  rasterCache.set(key, out);
+  return out;
+}
+
+/** The Q7 class of every pixel of one step (`width`x`height`, row-major): rect masks, gate 3c's
+ * band and gate 5's rasters folded into one array. Where masks overlap the larger class wins
+ * (excluded over undecided over delta1). */
+export function classMask(
+  key: string,
+  step: number,
+  width: number,
+  height: number,
+  tol: ToleranceDoc = readTolerance(),
+  xform?: Gate3xExpected,
+): Uint8Array | null {
+  const gate = tol.gates[key];
+  const masks = gate?.steps.find((s) => s.step === step);
+  if (!gate || !masks) return null;
+  const out = gate.raster
+    ? new Uint8Array(rasterMasks(gate.raster).get(step) ?? [])
+    : new Uint8Array(width * height);
+  if (out.length !== width * height) return null;
+  const fill = (rects: { rect: Rect }[], c: number) => {
+    for (const { rect: r } of rects)
+      for (let y = Math.max(0, r[1]); y < Math.min(height, r[1] + r[3]); y++)
+        for (let x = Math.max(0, r[0]); x < Math.min(width, r[0] + r[2]); x++)
+          out[y * width + x] = Math.max(out[y * width + x], c);
+  };
+  fill(masks.delta1, CLASS_DELTA1);
+  fill(masks.undecided, CLASS_UNDECIDED);
+  if (key === "gate3-xform" && xform) {
+    const band = synthesizeGate3x(xform, step).band;
+    for (let i = 0; i < out.length; i++)
+      if (band[i]) out[i] = Math.max(out[i], CLASS_UNDECIDED);
+  }
+  fill(masks.excluded ?? [], CLASS_EXCLUDED);
+  return out;
 }
 
 export function readTolerance(): ToleranceDoc {
@@ -255,6 +435,44 @@ export interface Q7Verdict {
   delta1_px: number;
   delta1_max: number;
   undecided_px: number;
+  /** G7t: differing pixels in typed (excluded) regions. */
+  excluded_px?: number;
+}
+
+/** Judges `got` against the reference `ref` under one step's per-pixel classes (`classMask`). */
+export function judgeQ7Classes(
+  ref: { width: number; height: number; data: Uint8Array },
+  got: { width: number; height: number; data: Uint8Array },
+  cls: Uint8Array,
+): Q7Verdict {
+  const v: Q7Verdict = {
+    ok: true,
+    decided_px: 0,
+    decided_max: 0,
+    delta1_px: 0,
+    delta1_max: 0,
+    undecided_px: 0,
+    excluded_px: 0,
+  };
+  for (let i = 0; i < ref.width * ref.height; i++) {
+    const o = i * 4;
+    let d = 0;
+    for (let c = 0; c < 4; c++)
+      d = Math.max(d, Math.abs(ref.data[o + c] - got.data[o + c]));
+    if (d === 0) continue;
+    const c = cls[i];
+    if (c === CLASS_EXCLUDED) v.excluded_px = (v.excluded_px ?? 0) + 1;
+    else if (c === CLASS_UNDECIDED) v.undecided_px++;
+    else if (c === CLASS_DELTA1) {
+      v.delta1_px++;
+      v.delta1_max = Math.max(v.delta1_max, d);
+    } else {
+      v.decided_px++;
+      v.decided_max = Math.max(v.decided_max, d);
+    }
+  }
+  v.ok = v.decided_px === 0 && v.delta1_max <= 1;
+  return v;
 }
 
 /** Judges `got` against the reference `ref` under one step's masks (`band`: gate 3c's mask). */

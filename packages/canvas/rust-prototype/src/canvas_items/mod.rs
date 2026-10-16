@@ -75,6 +75,14 @@ impl Sabotage {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecOptions {
     pub sabotage: Option<Sabotage>,
+    /// Draw the target the way Godot's GLES3 renderer draws a 2D render target: design y up the
+    /// GL window (row 0 at the bottom is design row 0), through `screen_transform` exactly as
+    /// `canvas_render_items` builds it (`translate_local(-w/2, -h/2)` then `scale(2/w, 2/h)`, in
+    /// float32) and applied as a `mat4` product (canvas.glsl). GL's fill rule then breaks ties of
+    /// edges exactly on pixel centres the way the engine does (G7t: gate 4's hex box, the gate 6
+    /// LineEdit's StyleBoxFlat). Shots read the target without a row swap and the present draw
+    /// flips it onto the canvas. Off by default, which keeps `executor-webgl.ts`'s orientation.
+    pub godot_orientation: bool,
 }
 
 /// One `execute`'s counters: a fixed `#[repr(C)]` block of u32s, so a wasm caller can read it
@@ -361,6 +369,29 @@ pub fn gl_scissor(scissor: [i32; 4], height: u32) -> [i32; 4] {
     [x, height as i32 - (y + h), w, h]
 }
 
+/// [`gl_scissor`] for a target drawn in Godot's orientation ([`ExecOptions::godot_orientation`]):
+/// design rows are GL rows, so only the size is clamped.
+pub fn gl_scissor_y_up(scissor: [i32; 4]) -> [i32; 4] {
+    let [x, y, w, h] = scissor;
+    [x, y, w.max(0), h.max(0)]
+}
+
+/// Godot's `screen_transform` for a `width`×`height` target as `canvas_render_items` builds it
+/// (rasterizer_canvas_gles3.cpp:331-334: `translate_local(-(w / 2.0f), -(h / 2.0f), 0)` then
+/// `scale(Vector3(2.0f / w, 2.0f / h, 1))`, real_t = float), as the column-major `mat4`
+/// `_update_transform_to_mat4` uploads.
+pub fn godot_screen_transform(width: u32, height: u32) -> [f32; 16] {
+    let (w, h) = (width as f32, height as f32);
+    let (sx, sy) = (2.0f32 / w, 2.0f32 / h);
+    let (ox, oy) = (-(w / 2.0f32) * sx, -(h / 2.0f32) * sy);
+    [
+        sx, 0.0, 0.0, 0.0, //
+        0.0, sy, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        ox, oy, 0.0, 1.0,
+    ]
+}
+
 /// Replace `held`'s arrays with `next`'s, marking dirty only the elements that differ (or
 /// everything for an array whose length changed) and keeping `held`'s queued texture ops: how a
 /// test turns two `PDL1` dumps into one frame's dirty ranges. The target is replaced too (a target
@@ -583,6 +614,22 @@ mod tests {
             }]
         );
         assert_eq!(l.merged_draw_count(), 1);
+    }
+
+    #[test]
+    fn godot_orientation_keeps_design_rows_and_godots_screen_transform() {
+        // Scissors are design rows: nothing is flipped, sizes are clamped.
+        assert_eq!(gl_scissor_y_up([2, 3, 10, 5]), [2, 3, 10, 5]);
+        assert_eq!(gl_scissor_y_up([0, 0, -4, 5]), [0, 0, 0, 5]);
+        // translate_local(-w/2, -h/2) then scale(2/w, 2/h), float32: column-major mat4.
+        let m = godot_screen_transform(640, 360);
+        assert_eq!(m[0], 2.0f32 / 640.0);
+        assert_eq!(m[5], 2.0f32 / 360.0);
+        assert_eq!(m[12], -320.0f32 * (2.0f32 / 640.0));
+        assert_eq!(m[13], -180.0f32 * (2.0f32 / 360.0));
+        assert_eq!((m[10], m[15]), (1.0, 1.0));
+        // An odd size keeps its half-pixel centre.
+        assert_eq!(godot_screen_transform(5, 3)[12], -2.5f32 * (2.0f32 / 5.0));
     }
 
     #[test]

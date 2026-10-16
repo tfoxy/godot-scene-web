@@ -19,8 +19,14 @@ import { join } from "node:path";
 
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { decodePngRgba } from "./gate-minus1-checks";
-import { type Gate3xExpected, synthesizeGate3x } from "./gate3x-expected";
-import { readTolerance, type StepMasks } from "./gsw-tolerance";
+import type { Gate3xExpected } from "./gate3x-expected";
+import {
+  CLASS_DELTA1,
+  CLASS_EXCLUDED,
+  CLASS_UNDECIDED,
+  classMask,
+  readTolerance,
+} from "./gsw-tolerance";
 
 export interface Q7Leg {
   /** the gsw leg directory (raw evidence) */
@@ -33,6 +39,14 @@ export interface Q7Leg {
   steps: Map<number, number>;
   /** the reference shots directory (`step-<k>.png`) */
   referenceDir: string;
+  /** G7t: shot seq -> the reference file to compare it with, when not `step-<k>.png` (gate 4's
+   * early shots compare with `early-<k>.png` under step k's masks). */
+  refs?: Map<number, string>;
+  /** G7t: a sabotage leg's honest gsw leg (raw shots, and its already built Q7 view). A pixel the
+   * sabotage left equal to the honest leg's takes the honest view's value; every pixel the
+   * sabotage changed stays as drawn, so a mask (gate 5e's DF band region, say) never hides the
+   * sabotage's own effect from the gate's predicted (step, region) sets. */
+  pair?: { gswDir: string; viewDir: string };
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {
@@ -43,25 +57,25 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   }
 }
 
-const inside = (list: { rect: number[] }[], x: number, y: number) =>
-  list.some(
-    ({ rect: r }) =>
-      x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3],
-  );
-
 /** Builds one leg's Q7 view; returns how many pixels were replaced per shot. */
 export async function buildQ7View(
   leg: Q7Leg,
   xform?: Gate3xExpected,
-): Promise<Record<string, { delta1: number; undecided: number }>> {
-  const tol = readTolerance().gates[leg.key];
+): Promise<
+  Record<string, { delta1: number; undecided: number; excluded?: number }>
+> {
+  const doc = readTolerance();
+  const tol = doc.gates[leg.key];
   await mkdir(join(leg.viewDir, "shots"), { recursive: true });
   for (const entry of readdirSync(leg.gswDir)) {
     if (entry === "shots") continue;
     const at = join(leg.viewDir, entry);
     if (!existsSync(at)) symlinkSync(join(leg.gswDir, entry), at);
   }
-  const replaced: Record<string, { delta1: number; undecided: number }> = {};
+  const replaced: Record<
+    string,
+    { delta1: number; undecided: number; excluded?: number }
+  > = {};
   const shots = existsSync(join(leg.gswDir, "shots"))
     ? readdirSync(join(leg.gswDir, "shots"))
     : [];
@@ -70,15 +84,19 @@ export async function buildQ7View(
     const dst = join(leg.viewDir, "shots", f);
     const seq = Number(/^seq-(\d+)\.png$/.exec(f)?.[1] ?? Number.NaN);
     const step = leg.steps.get(seq);
-    const masks: StepMasks | undefined =
-      step === undefined ? undefined : tol?.steps[step];
     const ref =
-      step === undefined
+      step === undefined || !tol
         ? null
-        : await decodePngRgba(join(leg.referenceDir, `step-${step}.png`));
+        : await decodePngRgba(
+            join(leg.referenceDir, leg.refs?.get(seq) ?? `step-${step}.png`),
+          );
     const got = await decodePngRgba(src);
+    const cls =
+      ref && got && step !== undefined
+        ? classMask(leg.key, step, got.width, got.height, doc, xform)
+        : null;
     if (
-      !masks ||
+      !cls ||
       !ref ||
       !got ||
       ref.width !== got.width ||
@@ -87,31 +105,70 @@ export async function buildQ7View(
       if (!existsSync(dst)) symlinkSync(src, dst);
       continue;
     }
-    const band =
-      leg.key === "gate3-xform" && xform && step !== undefined
-        ? synthesizeGate3x(xform, step).band
-        : undefined;
     const out = Buffer.from(got.data);
     let d1 = 0;
     let und = 0;
-    for (let y = 0; y < got.height; y++)
-      for (let x = 0; x < got.width; x++) {
-        const i = (y * got.width + x) * 4;
-        let d = 0;
-        for (let c = 0; c < 4; c++)
-          d = Math.max(d, Math.abs(ref.data[i + c] - got.data[i + c]));
-        if (d === 0) continue;
-        if (band?.[y * got.width + x] || inside(masks.undecided, x, y)) und++;
-        else if (d <= 1 && inside(masks.delta1, x, y)) d1++;
-        else continue;
-        for (let c = 0; c < 4; c++) out[i + c] = ref.data[i + c];
+    let exc = 0;
+    if (leg.pair) {
+      const honest = await decodePngRgba(join(leg.pair.gswDir, "shots", f));
+      const honestView = await decodePngRgba(
+        join(leg.pair.viewDir, "shots", f),
+      );
+      if (
+        honest &&
+        honestView &&
+        honest.width === got.width &&
+        honest.height === got.height
+      ) {
+        for (let p = 0; p < got.width * got.height; p++) {
+          const i = p * 4;
+          let same = true;
+          for (let c = 0; c < 4; c++)
+            if (honest.data[i + c] !== got.data[i + c]) same = false;
+          if (!same) continue;
+          let d = 0;
+          for (let c = 0; c < 4; c++) {
+            d = Math.max(d, Math.abs(honestView.data[i + c] - got.data[i + c]));
+            out[i + c] = honestView.data[i + c];
+          }
+          if (d === 0) continue;
+          if (cls[p] === CLASS_EXCLUDED) exc++;
+          else if (cls[p] === CLASS_UNDECIDED) und++;
+          else d1++;
+        }
+        await sharp(out, {
+          raw: { width: got.width, height: got.height, channels: 4 },
+        })
+          .png()
+          .toFile(dst);
+        replaced[f] =
+          exc > 0
+            ? { delta1: d1, undecided: und, excluded: exc }
+            : { delta1: d1, undecided: und };
+        continue;
       }
+    }
+    for (let p = 0; p < got.width * got.height; p++) {
+      const i = p * 4;
+      let d = 0;
+      for (let c = 0; c < 4; c++)
+        d = Math.max(d, Math.abs(ref.data[i + c] - got.data[i + c]));
+      if (d === 0) continue;
+      if (cls[p] === CLASS_EXCLUDED) exc++;
+      else if (cls[p] === CLASS_UNDECIDED) und++;
+      else if (d <= 1 && cls[p] === CLASS_DELTA1) d1++;
+      else continue;
+      for (let c = 0; c < 4; c++) out[i + c] = ref.data[i + c];
+    }
     await sharp(out, {
       raw: { width: got.width, height: got.height, channels: 4 },
     })
       .png()
       .toFile(dst);
-    replaced[f] = { delta1: d1, undecided: und };
+    replaced[f] =
+      exc > 0
+        ? { delta1: d1, undecided: und, excluded: exc }
+        : { delta1: d1, undecided: und };
   }
   await writeFile(
     join(leg.viewDir, "q7-view.json"),

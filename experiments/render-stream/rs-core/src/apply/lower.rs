@@ -39,14 +39,21 @@ pub struct LDraw {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub enum Shortcut {
     /// Antialiased rect/line/polyline/circle: the base geometry is drawn, the feather fringe is not.
+    /// G7t lowers every feather as the engine builds it; this never fires since.
     AaFeatherOmitted,
-    /// width < 0 lines and polylines: 1-px quads, not GL line rasterization (`gsw-hairline`, G7t).
+    /// GL lines and points (width < 0 lines, polylines and multilines, 2-point primitives, mesh
+    /// `lines`/`line_strip`/`points` surfaces) drawn as 1-px quads. G7t measured them inside gate
+    /// 5b's thin-line band (D13) with every decided pixel exact, so this is counted, not typed.
     HairlineAsQuads,
-    /// Nine-patch `tile`/`tile_fit` axes drawn as `stretch`.
+    /// Nine-patch `tile`/`tile_fit` axes drawn as `stretch`: only past [`MAX_NINE_PATCH_CELLS`]
+    /// tiles (G7t lowers the tile modes as repeated quads).
     NinePatchTileAsStretch,
-    /// `add_msdf_texture_rect_region`: drawn as a plain texture region (`gsw-msdf`, G7t).
-    MsdfAsPlain,
-    /// A mesh surface whose primitive is not triangles/triangle strip: not drawn (typed).
+    /// `add_msdf_texture_rect_region`: not drawn, typed `gsw-msdf` (Q7's last row: its regions are
+    /// excluded). G7x drew it as a plain region, which spills the distance field's padding
+    /// outside the glyphs (G7t measured 194 px per gate 4e shot outside the text regions).
+    MsdfSkipped,
+    /// A mesh surface whose primitive is not triangles/triangle strip: not drawn (typed). G7t
+    /// lowers lines and points as hairline quads; this never fires since.
     MeshPrimitiveSkipped,
     /// A texture with mipmaps: level 0 only.
     MipmapsLevel0,
@@ -65,7 +72,7 @@ impl Shortcut {
             Shortcut::AaFeatherOmitted => "slice-aa-feather-omitted",
             Shortcut::HairlineAsQuads => "slice-hairline-as-quads",
             Shortcut::NinePatchTileAsStretch => "slice-ninepatch-tile-as-stretch",
-            Shortcut::MsdfAsPlain => "slice-msdf-as-plain",
+            Shortcut::MsdfSkipped => "slice-msdf-skipped",
             Shortcut::MeshPrimitiveSkipped => "slice-mesh-primitive-skipped",
             Shortcut::MipmapsLevel0 => "slice-mipmaps-level0",
             Shortcut::TextureUnavailableSkipped => "texture-unavailable-skipped",
@@ -79,11 +86,35 @@ impl Shortcut {
         matches!(
             self,
             Shortcut::MeshPrimitiveSkipped
+                | Shortcut::MsdfSkipped
                 | Shortcut::TextureUnavailableSkipped
                 | Shortcut::UnsupportedCommand
                 | Shortcut::MeshUnavailableSkipped
         )
     }
+}
+
+/// The largest number of nine-patch cells (tiles per axis multiplied) lowered as quads; a tiling
+/// past it draws its middle as `stretch` and counts [`Shortcut::NinePatchTileAsStretch`].
+pub const MAX_NINE_PATCH_CELLS: usize = 16384;
+
+/// Receiver sabotages that act on the lowering (gate7-design.md Q5 "Sabotages"): the native
+/// receiver's, defined as `rs_applier.gd` defines them, plus G7t's GSW-only `polygon-winding`.
+/// Each exists only to fail a check.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LowerSabotage {
+    /// Native `drop-msdf` (G4e2): every `add_msdf_texture_rect_region` is skipped, untyped.
+    pub drop_msdf: bool,
+    /// Native `ignore-set-transform` (G5d): every `add_set_transform` is skipped.
+    pub ignore_set_transform: bool,
+    /// Native `ignore-clip-ignore` (G5d): every `add_clip_ignore` is skipped.
+    pub ignore_clip_ignore: bool,
+    /// Native `ignore-nine-patch-axis` (G5g): every nine-patch axis draws as `stretch`.
+    pub ignore_nine_patch_axis: bool,
+    /// GSW-only `polygon-winding` (G7t): `add_polygon` is lowered as a triangle fan over the
+    /// reversed contour instead of the engine's ear clipping, which covers the wrong area of any
+    /// concave polygon.
+    pub polygon_winding: bool,
 }
 
 /// One item's lowered content: valid until its `content_version` or a dependency changes.
@@ -370,7 +401,28 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// A width-1 quad along a hairline segment (Q5: hairlines are 1-px quads, typed `gsw-hairline`).
+    /// Feather quads, each one 4-point `CommandPrimitive` of its own (colours through binary16,
+    /// [`geom::godot_half4`]), each counted in `Item::get_rect` as the engine's separate command.
+    fn feathers(&mut self, quads: &[geom::Feather]) {
+        for (points, colors) in quads {
+            let c = colors.map(geom::godot_half4);
+            self.primitive(points, &c, &[]);
+        }
+    }
+
+    /// A GL point of size 1 (`RS::PRIMITIVE_POINTS`): the unit square centred on it.
+    fn point_quad(&mut self, p: [f32; 2], c: [f32; 4]) {
+        let first = self.out.verts.len() as u32;
+        for d in [[-0.5f32, -0.5], [-0.5, 0.5], [0.5, 0.5], [0.5, -0.5]] {
+            self.vertex([p[0] + d[0], p[1] + d[1]], [0.0, 0.0], c);
+        }
+        self.out
+            .idx
+            .extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
+    }
+
+    /// A width-1 quad along a hairline segment: GL line rasterization stands in as the 1-px quad
+    /// centred on the segment (Q5; G7t measured it inside gate 5b's thin-line band).
     fn hairline(&mut self, a: [f32; 2], b: [f32; 2], ca: [f32; 4], cb: [f32; 4]) {
         let d = geom::normalized([b[0] - a[0], b[1] - a[1]]);
         let t = [d[1] * 0.5, -d[0] * 0.5];
@@ -500,40 +552,117 @@ fn region(b: &mut Builder<'_>, r: Region) {
     b.end(d);
 }
 
-/// The three regions of one nine-patch axis in `map_ninepatch_axis`'s `stretch` mode
-/// (canvas.glsl): `(start, end, frac_start, frac_end, is_middle)` in draw pixels and source
-/// fractions, empty regions omitted. `pixel < margin_begin` is the begin region, `pixel >=
-/// draw_size - margin_end` the end region, the rest the middle.
+/// One nine-patch axis region: `(start, end, frac_start, frac_end, is_middle)`.
+type NpRegion = (f32, f32, f32, f32, bool);
+
+/// The regions of one nine-patch axis as `map_ninepatch_axis` maps it (canvas.glsl:521-558):
+/// `(start, end, frac_start, frac_end, is_middle)` in draw pixels and source fractions, empty
+/// regions omitted. `pixel < margin_begin` is the begin region, `pixel >= draw_size - margin_end`
+/// the end region, the rest the middle. The map is linear inside each region except where a tile
+/// mode wraps, so a `tile` or `tile_fit` middle is cut into one region per period (the period
+/// `tex_size - margins` texels for `tile`; `src_area / scale` pixels for `tile_fit`), each with the
+/// unwrapped linear map of its own period. `None` when the tiling needs more than `max_tiles`
+/// regions (the caller then draws `stretch` and counts it).
 fn ninepatch_regions(
     draw_size: f32,
     tex_pixel_size: f32,
     margin_begin: f32,
     margin_end: f32,
-) -> Vec<(f32, f32, f32, f32, bool)> {
+    axis: Axis,
+    max_tiles: usize,
+) -> Option<Vec<NpRegion>> {
     let tex_size = 1.0 / tex_pixel_size;
     let b1 = margin_begin.min(draw_size);
     let b2 = b1.max(draw_size - margin_end);
     let left = |p: f32| p * tex_pixel_size;
     let right = |p: f32| (tex_size - (draw_size - p)) * tex_pixel_size;
-    let middle = |p: f32| {
-        let ratio = (p - margin_begin) / (draw_size - margin_begin - margin_end);
-        (margin_begin + ratio * (tex_size - margin_begin - margin_end)) * tex_pixel_size
-    };
     let mut out = Vec::with_capacity(3);
     if b1 > 0.0 {
         out.push((0.0, b1, left(0.0), left(b1), false));
     }
     if b2 > b1 {
-        out.push((b1, b2, middle(b1), middle(b2), true));
+        let src_area = draw_size - margin_begin - margin_end;
+        let dst_area = tex_size - margin_begin - margin_end;
+        match axis {
+            Axis::Stretch => {
+                let middle = |p: f32| {
+                    let ratio = (p - margin_begin) / src_area;
+                    (margin_begin + ratio * dst_area) * tex_pixel_size
+                };
+                out.push((b1, b2, middle(b1), middle(b2), true));
+            }
+            Axis::Tile => {
+                // ofs = mod(pixel - margin_begin, dst_area): period `dst_area` pixels.
+                if dst_area > 0.0 {
+                    let n = ((b2 - b1) / dst_area).ceil().max(1.0) as usize;
+                    if n > max_tiles {
+                        return None;
+                    }
+                    for k in 0..n {
+                        let base = margin_begin + k as f32 * dst_area;
+                        let s = base.max(b1);
+                        let e = (base + dst_area).min(b2);
+                        if e <= s {
+                            continue;
+                        }
+                        let map = |p: f32| (margin_begin + (p - base)) * tex_pixel_size;
+                        out.push((s, e, map(s), map(e), true));
+                    }
+                }
+            }
+            Axis::TileFit => {
+                let scale = (src_area / dst_area.max(0.000_000_1) + 0.5)
+                    .floor()
+                    .max(1.0);
+                if scale as usize > max_tiles {
+                    return None;
+                }
+                let n = scale as usize;
+                for k in 0..n {
+                    // ratio = mod((pixel - margin_begin) / src_area * scale, 1): tile k covers
+                    // ratio·scale in [k, k + 1).
+                    let s = (margin_begin + k as f32 * src_area / scale).max(b1);
+                    let e = if k + 1 == n {
+                        b2
+                    } else {
+                        (margin_begin + (k + 1) as f32 * src_area / scale).min(b2)
+                    };
+                    if e <= s {
+                        continue;
+                    }
+                    let map = |p: f32| {
+                        let r = (p - margin_begin) / src_area * scale - k as f32;
+                        (margin_begin + r * dst_area) * tex_pixel_size
+                    };
+                    out.push((s, e, map(s), map(e), true));
+                }
+            }
+        }
     }
     if draw_size > b2 {
         out.push((b2, draw_size, right(b2), right(draw_size), false));
     }
-    out
+    Some(out)
 }
 
 /// Lower one item's commands.
 pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
+    lower_with(commands, tables, LowerSabotage::default())
+}
+
+/// The triangle fan of `polygon-winding` (G7t's lowering sabotage): the reversed contour fanned
+/// from its first point.
+fn reversed_fan(n: usize) -> Vec<u32> {
+    let order: Vec<u32> = (0..n as u32).rev().collect();
+    let mut out = Vec::with_capacity(3 * n.saturating_sub(2));
+    for k in 1..n.saturating_sub(1) {
+        out.extend_from_slice(&[order[0], order[k], order[k + 1]]);
+    }
+    out
+}
+
+/// [`lower`] under the lowering sabotages.
+pub fn lower_with(commands: &Commands, tables: &dyn Tables, sab: LowerSabotage) -> Lowered {
     let mut b = Builder {
         out: Lowered::default(),
         xf: None,
@@ -545,9 +674,15 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
         match cmd {
             Command::SetTransform { transform } => {
                 // TYPE_TRANSFORM replaces (never composes) the draw transform for later commands.
-                b.xf = Some(*transform);
+                if !sab.ignore_set_transform {
+                    b.xf = Some(*transform);
+                }
             }
-            Command::ClipIgnore { ignore } => b.ignoring = *ignore,
+            Command::ClipIgnore { ignore } => {
+                if !sab.ignore_clip_ignore {
+                    b.ignoring = *ignore
+                }
+            }
             Command::Unsupported { .. } => b.out.note(Shortcut::UnsupportedCommand),
             Command::Rect { aa, rect, color } => {
                 // TYPE_RECT untextured: dst normalized to a positive size, src (0,0,1,1).
@@ -562,11 +697,12 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 }
                 let d = b.begin(TexRef::White, false);
                 b.quad(dst, [0.0, 0.0, 1.0, 1.0], false, *color);
-                b.end(d);
                 b.add_rect_bounds(dst);
                 if *aa {
-                    b.out.note(Shortcut::AaFeatherOmitted);
+                    // canvas_item_add_rect's eight feather primitives, from the rect as given.
+                    b.feathers(&geom::rect_feathers(*rect, *color));
                 }
+                b.end(d);
             }
             Command::TextureRect {
                 tex,
@@ -635,25 +771,19 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     },
                 );
             }
-            Command::MsdfTextureRectRegion {
-                tex,
-                rect,
-                src,
-                modulate,
-                ..
-            } => {
-                b.out.note(Shortcut::MsdfAsPlain);
-                region(
-                    &mut b,
-                    Region {
-                        tex: *tex,
-                        transpose: false,
-                        clip_uv: false,
-                        rect: *rect,
-                        src: *src,
-                        modulate: *modulate,
-                    },
-                );
+            Command::MsdfTextureRectRegion { tex, rect, .. } => {
+                // Item::get_rect still counts the command's rect, and the texture stays a
+                // dependency (it is named, so it is resident: the native census).
+                b.add_rect_bounds([rect[0], rect[1], rect[2].abs(), rect[3].abs()]);
+                if let Some(id) = tex {
+                    if !b.out.texture_deps.contains(id) {
+                        b.out.texture_deps.push(*id);
+                    }
+                }
+                // The native `drop-msdf` sabotage skips it silently; GSW types it.
+                if !sab.drop_msdf {
+                    b.out.note(Shortcut::MsdfSkipped);
+                }
             }
             Command::NinePatch {
                 tex,
@@ -670,9 +800,11 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     b.out.note(Shortcut::TextureUnavailableSkipped);
                     continue;
                 };
-                if *x_axis != Axis::Stretch || *y_axis != Axis::Stretch {
-                    b.out.note(Shortcut::NinePatchTileAsStretch);
-                }
+                let (x_axis, y_axis) = if sab.ignore_nine_patch_axis {
+                    (Axis::Stretch, Axis::Stretch)
+                } else {
+                    (*x_axis, *y_axis)
+                };
                 b.add_rect_bounds(*rect);
                 // TYPE_NINEPATCH: src normalized by texpixel_size and the mapping's pixel size
                 // 1/source.size when a source is given, else the whole texture (white: 1×1).
@@ -693,8 +825,18 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 };
                 let w = rect[2].abs();
                 let h = rect[3].abs();
-                let xs = ninepatch_regions(w, tps[0], margins[0], margins[2]);
-                let ys = ninepatch_regions(h, tps[1], margins[1], margins[3]);
+                let axes = |axis_x: Axis, axis_y: Axis, cap: usize| {
+                    let xs = ninepatch_regions(w, tps[0], margins[0], margins[2], axis_x, cap)?;
+                    let ys = ninepatch_regions(h, tps[1], margins[1], margins[3], axis_y, cap)?;
+                    (xs.len() * ys.len() <= MAX_NINE_PATCH_CELLS).then_some((xs, ys))
+                };
+                let (xs, ys) = match axes(x_axis, y_axis, MAX_NINE_PATCH_CELLS) {
+                    Some(r) => r,
+                    None => {
+                        b.out.note(Shortcut::NinePatchTileAsStretch);
+                        axes(Axis::Stretch, Axis::Stretch, 1).unwrap_or_default()
+                    }
+                };
                 let d = b.begin(texref, false);
                 for &(y0, y1, v0, v1, ym) in &ys {
                     for &(x0, x1, u0, u1, xm) in &xs {
@@ -732,19 +874,22 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 colour,
                 width,
             } => {
+                // canvas_item_add_line: one CommandPrimitive (colours through binary16), then
+                // eight feather primitives when antialiased.
                 let (pts, n) = geom::line_points(*from, *to, *width);
+                let c = geom::godot_half4(*colour);
                 let d = b.begin(TexRef::White, false);
                 if n == 4 {
-                    b.primitive(&pts, &[*colour; 4], &[]);
+                    b.primitive(&pts, &[c; 4], &[]);
                 } else {
                     b.out.note(Shortcut::HairlineAsQuads);
-                    b.hairline(*from, *to, *colour, *colour);
+                    b.hairline(*from, *to, c, c);
                     b.add_rect_bounds(geom::points_box([*from, *to]));
                 }
-                b.end(d);
                 if *aa {
-                    b.out.note(Shortcut::AaFeatherOmitted);
+                    b.feathers(&geom::line_feathers(*from, *to, *width, *colour));
                 }
+                b.end(d);
             }
             Command::Polyline {
                 aa,
@@ -758,7 +903,14 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     continue;
                 }
                 let d = b.begin(TexRef::White, false);
-                if *width >= 0.0 {
+                if *width >= 0.0 && *aa {
+                    // The middle strip with its open-end feathers, then the left and right
+                    // feather strips (three CommandPolygons, in allocation order).
+                    for (strip, strip_colors) in geom::polyline_aa(&pts, &cols, *width) {
+                        b.polygon(&strip, &strip_colors, &[], &[], true);
+                        b.add_rect_bounds(geom::points_box(strip.iter().copied()));
+                    }
+                } else if *width >= 0.0 {
                     let (strip, strip_colors) = geom::polyline_strip(&pts, &cols, *width);
                     b.polygon(&strip, &strip_colors, &[], &[], true);
                     b.add_rect_bounds(geom::points_box(strip.iter().copied()));
@@ -782,9 +934,6 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                 }
                 b.end(d);
-                if *aa {
-                    b.out.note(Shortcut::AaFeatherOmitted);
-                }
             }
             Command::Multiline {
                 aa,
@@ -805,7 +954,10 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     if *width >= 0.0 {
                         // canvas_item_add_multiline with width >= 0 is one add_line per segment.
                         let (q, _) = geom::line_points(from, to, *width);
-                        b.primitive(&q, &[c; 4], &[]);
+                        b.primitive(&q, &[geom::godot_half4(c); 4], &[]);
+                        if *aa {
+                            b.feathers(&geom::line_feathers(from, to, *width, c));
+                        }
                     } else {
                         b.out.note(Shortcut::HairlineAsQuads);
                         b.hairline(from, to, c, c);
@@ -815,9 +967,6 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                     b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                 }
                 b.end(d);
-                if *aa {
-                    b.out.note(Shortcut::AaFeatherOmitted);
-                }
             }
             Command::Circle {
                 aa,
@@ -828,11 +977,14 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 let (pts, idx) = geom::circle(*position, *radius);
                 let d = b.begin(TexRef::White, false);
                 b.polygon(&pts, &[*colour], &[], &idx, false);
-                b.end(d);
                 b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                 if *aa {
-                    b.out.note(Shortcut::AaFeatherOmitted);
+                    // The feather: a triangle strip CommandPolygon with per-vertex colours.
+                    let (fp, fc) = geom::circle_feather(*position, *radius, *colour);
+                    b.polygon(&fp, &fc, &[], &[], true);
+                    b.add_rect_bounds(geom::points_box(fp.iter().copied()));
                 }
+                b.end(d);
             }
             Command::Primitive {
                 tex,
@@ -851,9 +1003,12 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 };
                 let cols = quads(commands, *colors);
                 let uv = pairs(commands, *uvs);
-                // canvas_item_add_primitive: a missing colour is colors[0] (white when none).
+                // canvas_item_add_primitive: a missing colour is colors[0] (white when none);
+                // TYPE_PRIMITIVE carries it as binary16.
                 let held: Vec<[f32; 4]> = (0..pts.len())
-                    .map(|i| cols.get(i).or(cols.first()).copied().unwrap_or([1.0; 4]))
+                    .map(|i| {
+                        geom::godot_half4(cols.get(i).or(cols.first()).copied().unwrap_or([1.0; 4]))
+                    })
                     .collect();
                 let held_uv: Vec<[f32; 2]> = (0..pts.len())
                     .map(|i| uv.get(i).copied().unwrap_or([0.0, 0.0]))
@@ -861,10 +1016,13 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                 let d = b.begin(texref, false);
                 if pts.len() >= 3 {
                     b.primitive(&pts, &held, &held_uv);
+                } else if pts.len() == 2 {
+                    b.out.note(Shortcut::HairlineAsQuads);
+                    b.hairline(pts[0], pts[1], held[0], held[1]);
+                    b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                 } else {
                     b.out.note(Shortcut::HairlineAsQuads);
-                    let last = pts.len() - 1;
-                    b.hairline(pts[0], pts[last], held[0], held[last]);
+                    b.point_quad(pts[0], held[0]);
                     b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                 }
                 b.end(d);
@@ -877,9 +1035,12 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
             } => {
                 let pts = pairs(commands, *points);
                 // canvas_item_add_polygon: Geometry2D::triangulate_polygon; a failure adds nothing.
-                let Some(idx) = geom::triangulate_polygon(&pts) else {
+                let Some(mut idx) = geom::triangulate_polygon(&pts) else {
                     continue;
                 };
+                if sab.polygon_winding {
+                    idx = reversed_fan(pts.len());
+                }
                 let Some((texref, _)) = b.uv_scale(*tex) else {
                     b.add_rect_bounds(geom::points_box(pts.iter().copied()));
                     b.out.note(Shortcut::TextureUnavailableSkipped);
@@ -976,7 +1137,36 @@ pub fn lower(commands: &Commands, tables: &dyn Tables) -> Lowered {
                         Primitive::TriangleStrip => {
                             b.polygon(&s.positions, &cols, &uvs, &idx, true)
                         }
-                        _ => b.out.note(Shortcut::MeshPrimitiveSkipped),
+                        // GL_LINES, GL_LINE_STRIP and GL_POINTS (size 1): the hairline quads.
+                        Primitive::Lines | Primitive::LineStrip | Primitive::Points => {
+                            b.out.note(Shortcut::HairlineAsQuads);
+                            let order: Vec<usize> = if idx.is_empty() {
+                                (0..n).collect()
+                            } else {
+                                idx.iter().map(|&i| i as usize).filter(|&i| i < n).collect()
+                            };
+                            let at = |i: usize| (s.positions[i], cols[i]);
+                            match s.primitive {
+                                Primitive::Points => {
+                                    for &i in &order {
+                                        let (p, c) = at(i);
+                                        b.point_quad(p, c);
+                                    }
+                                }
+                                Primitive::Lines => {
+                                    for pair in order.chunks_exact(2) {
+                                        let ((p0, c0), (p1, c1)) = (at(pair[0]), at(pair[1]));
+                                        b.hairline(p0, p1, c0, c1);
+                                    }
+                                }
+                                _ => {
+                                    for w in order.windows(2) {
+                                        let ((p0, c0), (p1, c1)) = (at(w[0]), at(w[1]));
+                                        b.hairline(p0, p1, c0, c1);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 b.end(d);

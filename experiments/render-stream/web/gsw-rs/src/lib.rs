@@ -101,6 +101,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         digest_inline: json.contains("\"digest\":\"inline\""),
         ..Opts::default()
     };
+    // G7t: draw the target in Godot's orientation and screen transform, so pixel-centre ties
+    // break as the engine's (gate 4's hex box, gate 6's LineEdit).
+    o.exec.godot_orientation = true;
     o.format_rgba8 = json.contains("\"format\":\"rgba8\"");
     if let Some(start) = json.find("\"sabotage\":[") {
         let rest = &json[start + 12..];
@@ -123,6 +126,13 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-z" => o.apply.ignore_z = true,
                 "stale-param" => o.apply.stale_param = true,
                 "blend-swap" => o.apply.blend_swap = true,
+                "drop-msdf" => o.apply.lower.drop_msdf = true,
+                "ignore-set-transform" => o.apply.lower.ignore_set_transform = true,
+                "ignore-clip-ignore" => o.apply.lower.ignore_clip_ignore = true,
+                "ignore-nine-patch-axis" => o.apply.lower.ignore_nine_patch_axis = true,
+                "polygon-winding" => o.apply.lower.polygon_winding = true,
+                "drop-mesh-surface" => o.apply.mesh.drop_surface = true,
+                "stale-mesh" => o.apply.mesh.stale = true,
                 "ignore-presentation" => o.ignore_presentation = true,
                 shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
@@ -274,12 +284,13 @@ struct ParamLogEntry {
 /// The receiver-typed `unsupported` reason of a GSW shortcut (gate7-design.md Q5, Q7, D22), or
 /// `None` for one the wire already types (an unsupported op, texture, mesh or material, a tie) or
 /// whose pixels Q7 already classes `undecided` (`slice-mipmaps-level0`: a mipmapped texture drawn
-/// minified samples level 0; G7a measured max delta 1 against gate 2's reference, inside its mask).
+/// minified samples level 0; G7a measured max delta 1 against gate 2's reference, inside its mask;
+/// `slice-hairline-as-quads`: GL lines and points as 1-px quads, which G7t measured inside gate
+/// 5b's thin-line band with every decided pixel exact, so `gsw-hairline` is not typed).
 pub fn typed_reason(shortcut: &str) -> Option<&'static str> {
     Some(match shortcut {
         "slice-shader-builtin" => "gsw-shader-builtin",
-        "slice-msdf-as-plain" => "gsw-msdf",
-        "slice-hairline-as-quads" => "gsw-hairline",
+        "slice-msdf-skipped" => "gsw-msdf",
         "slice-aa-feather-omitted" => "gsw-aa-feather",
         "slice-ninepatch-tile-as-stretch" => "gsw-nine-patch-tile",
         "slice-mesh-primitive-skipped" => "gsw-mesh-primitive",
@@ -303,6 +314,8 @@ struct TxEvidence {
     tex: TextureAccount,
     /// The native receiver's /5 shader and material counters (G7s).
     mat: MaterialCounts,
+    /// The transaction's `mesh_uploads` rows (G7t: native mesh residency).
+    meshes: Vec<render_stream_core::apply::meshes::MeshUpload>,
 }
 
 /// An `unsupported[]` entry: emitted when its (op, item, reason) was not in the previous applied
@@ -760,6 +773,7 @@ impl GswRs {
             canvases_created: st.canvases_created,
             tex: std::mem::take(&mut a.account),
             mat: a.material_counts,
+            meshes: std::mem::take(&mut a.meshes.uploads),
         });
         let mut now = HashSet::with_capacity(state.unsupported.len());
         for u in &state.unsupported {
@@ -998,7 +1012,7 @@ impl GswRs {
                 .map(|h| format!("\"{}\"", h.to_hex()))
                 .unwrap_or_else(|| "null".into());
             out.push_str(&format!(
-                "{{\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{},\"shaders_created\":{},\"shader_code_sets\":{},\"materials_created\":{},\"param_sets\":{},\"instance_param_sets\":{}}}}}",
+                "{{\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{},\"shaders_created\":{},\"shader_code_sets\":{},\"materials_created\":{},\"param_sets\":{},\"instance_param_sets\":{},\"meshes_created\":{},\"meshes_rebuilt\":{},\"surface_updates\":{},\"mesh_upload_bytes\":{}}}}}",
                 e.seq,
                 e.frame,
                 e.encoding,
@@ -1018,7 +1032,11 @@ impl GswRs {
                 e.mat.shader_code_sets,
                 e.mat.materials_created,
                 e.mat.param_sets,
-                e.mat.instance_param_sets
+                e.mat.instance_param_sets,
+                e.meshes.iter().filter(|m| m.op == "create").count(),
+                e.meshes.iter().filter(|m| m.op == "rebuild").count(),
+                e.meshes.iter().filter(|m| m.op == "update").count(),
+                e.meshes.iter().map(|m| m.bytes).sum::<u64>()
             ));
         }
         out.push_str("],\"uploads\":[");
@@ -1037,6 +1055,27 @@ impl GswRs {
                         .unwrap_or_else(|| "null".into()),
                     u.op,
                     u.data_bytes,
+                    e.seq
+                ));
+            }
+        }
+        out.push_str("],\"mesh_uploads\":[");
+        let mut first = true;
+        for e in &self.evidence {
+            for m in &e.meshes {
+                if !first {
+                    out.push(',');
+                }
+                first = false;
+                let surfaces: Vec<String> = m.surfaces.iter().map(|k| k.to_string()).collect();
+                let buffers: Vec<String> = m.buffers.iter().map(|b| format!("\"{b}\"")).collect();
+                out.push_str(&format!(
+                    "{{\"id\":{},\"op\":\"{}\",\"surfaces\":[{}],\"buffers\":[{}],\"bytes\":{},\"stream\":1,\"seq\":{}}}",
+                    m.id,
+                    m.op,
+                    surfaces.join(","),
+                    buffers.join(","),
+                    m.bytes,
                     e.seq
                 ));
             }
