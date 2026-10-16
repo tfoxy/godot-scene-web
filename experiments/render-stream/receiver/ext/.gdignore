@@ -1,0 +1,2 @@
+# G7xn: the rs_core adapter (C++ shim, C header, build/): loaded by path under RS_RECEIVER_CORE=rust,
+# never imported. Non-empty so no receiver file is byte-identical to a fixture's empty .gdignore.

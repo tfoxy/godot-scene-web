@@ -62,6 +62,11 @@ var memory_budget_bytes: int = -1
 var cache_budget_bytes: int = 0
 ## RS_RECEIVER_SABOTAGE=no-evict (G6s): both budgets above are ignored.
 var no_evict: bool = false
+## RS_RECEIVER_CORE=rust (G7xn): memory keeps each payload's raw bytes ({"raw": bytes}, read with
+## raw()) instead of its GDScript decode, because the Rust core verifies and decodes payloads
+## itself. Every payload is still verified and decoded here first, so a failure is reported
+## exactly as before.
+var keep_raw: bool = false
 var entries_before: int = 0
 ## G6s counters (Q5 "Resource budgets"): how many LRU evictions each layer made, and how many
 ## obtain() calls had to re-fetch from the origin a hash this process had and evicted before.
@@ -270,7 +275,7 @@ func add_inline(hash: String, payload: PackedByteArray) -> String:
 	var decoded: Dictionary = decode_payload(payload)
 	if not decoded["ok"]:
 		return Rs2Decoder.err("resource-invalid", "inline payload %s: %s" % [hash, decoded["detail"]])
-	_memory[hash] = decoded
+	_memory[hash] = _kept(decoded, payload)
 	_lengths[hash] = payload.size()
 	_touch(_memory_order, hash)
 	_evict_memory_over_budget()
@@ -385,7 +390,7 @@ func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> Stri
 		_evict_disk_over_budget()
 	if _ever_evicted.has(hash):
 		refetch_after_evict += 1
-	_memory[hash] = fetched_decoded
+	_memory[hash] = _kept(fetched_decoded, payload)
 	_lengths[hash] = payload.size()
 	_touch(_memory_order, hash)
 	_evict_memory_over_budget()
@@ -395,6 +400,20 @@ func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> Stri
 ## The decoded payload for `hash` (in memory: has_in_memory() was true, or obtain() succeeded).
 func decoded(hash: String) -> Dictionary:
 	return _memory[hash]
+
+
+## The raw payload for `hash` under keep_raw (G7xn), as decoded() otherwise requires.
+func raw(hash: String) -> PackedByteArray:
+	var entry: Dictionary = _memory[hash]
+	var bytes: PackedByteArray = entry["raw"]
+	return bytes
+
+
+## What memory keeps for a verified, decoded payload: the decode, or under keep_raw the raw bytes.
+func _kept(decoded_payload: Dictionary, payload: PackedByteArray) -> Dictionary:
+	if keep_raw:
+		return {"ok": true, "raw": payload}
+	return decoded_payload
 
 
 ## Makes `hash` available in memory. Returns {error: "" or "<code>: <detail>", source:
@@ -422,7 +441,7 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 			out["error"] = Rs2Decoder.err("resource-invalid", "cached %s: %s" % [cached, cache_decoded["detail"]])
 			return out
 		_touch(_disk_order, hash)
-		_memory[hash] = cache_decoded
+		_memory[hash] = _kept(cache_decoded, cache_bytes)
 		_lengths[hash] = cache_bytes.size()
 		_touch(_memory_order, hash)
 		_evict_memory_over_budget()
@@ -461,7 +480,7 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 		_evict_disk_over_budget()
 	if _ever_evicted.has(hash):
 		refetch_after_evict += 1
-	_memory[hash] = fetched_decoded
+	_memory[hash] = _kept(fetched_decoded, fetched)
 	_lengths[hash] = fetched.size()
 	_touch(_memory_order, hash)
 	_evict_memory_over_budget()

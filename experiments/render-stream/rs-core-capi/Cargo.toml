@@ -1,0 +1,27 @@
+[package]
+name = "rs-core-capi"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "C ABI over render-stream-core for the Godot receiver's GDExtension adapter (gate7-design.md Q14e, G7xn)"
+
+[lib]
+# staticlib: linked by the C++ shim (receiver/ext/) into the native GDExtension (and, in G7xw, an
+# emscripten side module); rlib: this crate's own tests and the rs-core-capi-check CLI.
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "rs-core-capi-check"
+path = "src/bin/rs-core-capi-check.rs"
+
+[dependencies]
+render-stream-core = { path = "../rs-core" }
+# Already in rs-core's dependency graph (same lockfile versions); used only by the check CLI to
+# read applied.json and by the session/transaction meta helpers.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = 1

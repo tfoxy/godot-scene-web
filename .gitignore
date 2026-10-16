@@ -23,7 +23,10 @@ artifacts/
 packages/canvas/rust-prototype/target/
 packages/canvas/rust-draw-list/target/
 experiments/render-stream/rs-core/target/
+experiments/render-stream/rs-core-capi/target/
 experiments/render-stream/web/gsw-rs/target/
+# The native receiver's GDExtension adapter (G7xn), built by scripts/build-rs-core-ext.sh.
+experiments/render-stream/receiver/ext/build/
 # Explicit (already covered by artifacts/): perf-harness traces, screenshots, chrome profiles and the
 # multi-MB generated atlas page. Never commit any of it.
 artifacts/perf/

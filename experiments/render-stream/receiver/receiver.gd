@@ -180,6 +180,21 @@ extends Node
 ## browser's HTTP cache stands in for RS_RECEIVER_CACHE_DIR, which is native only (Q4), and a
 ## disk budget there is typed `cache-budget-unsupported` (seq null, item null, name "cache").
 ##
+## Core (G7xn, gate7-design.md D34, Q14e; both modes):
+##   RS_RECEIVER_CORE       gdscript (default: Rs2Decoder decodes, validates and resolves, RsApplier
+##                          applies) or rust (RsRustApplier: the shared Rust core,
+##                          experiments/render-stream/rs-core, through the GDExtension adapter
+##                          receiver/ext/ -- decode, validation, resolve and apply in native
+##                          code, apply as RenderingServer ptrcalls for what changed; this script
+##                          keeps configuration, I/O, evidence and shots). applied.json's
+##                          `receiver` block records it as `core`.
+##   RS_RECEIVER_CORE_EXT   rust only: the adapter's .gdextension (default
+##                          res://ext/rs_core.gdextension, built by
+##                          scripts/build-rs-core-ext.sh); a missing or unloadable adapter is a
+##                          usage error
+## Under rust, state dumps are the core's resolved `state` in render-stream-2.ts's form (the same
+## keys; numbers as JavaScript prints them), which statesEqual() compares as before.
+##
 ## Configuration and I/O (G7e, gate7-design.md Q4): every RS_RECEIVER_* value is read through
 ## RsConfig.get_env() (the environment, else `--rs-env=NAME=VALUE` after `--`), and RsIo carries
 ## the web export's sources (fetched into memory before the session is applied) and sinks (PUT to
@@ -281,6 +296,9 @@ var _delivery: String = ""
 var _sabotage: String = ""
 ## G7e: the web export's sources and sinks (no-ops natively).
 var _io := RsIo.new()
+## G7xn: RS_RECEIVER_CORE (gdscript | rust); under rust, _rust is _applier and stands in for _stream.
+var _core_kind: String = "gdscript"
+var _rust: RsRustApplier = null
 
 # Live mode.
 var _live: bool = false
@@ -354,7 +372,7 @@ func _ready() -> void:
 	if not _parse_resource_env(false):
 		_quit(EXIT_USAGE)
 		return
-	if not _parse_perf_env():
+	if not _parse_perf_env() or not _parse_core_env():
 		_quit(EXIT_USAGE)
 		return
 
@@ -397,12 +415,12 @@ func _ready() -> void:
 		_fail_with_error(null, Rs2Decoder.err("missing-session", "the recording has no records"))
 		return
 
-	_applier = RsApplier.new(get_viewport().get_viewport_rid(), get_viewport().find_world_2d().canvas)
+	_new_applier()
 	if _perf != null:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
 	var raw: Dictionary = _records[_next_record]
 	_next_record += 1
-	if not _begin_session(RsApplier.accept_record(_data, Rs2Decoder.as_int(raw["offset"]), _stream)):
+	if not _begin_session(_accept_session(_data, Rs2Decoder.as_int(raw["offset"]))):
 		return
 	set_process(true)
 
@@ -433,6 +451,8 @@ func _init_report(mode: String) -> String:
 			"manifest_sha256": _env_or_null("RS_RECEIVER_MANIFEST_SHA256"),
 			"protocol": "render-stream/6",
 			"credit_window": 1 if mode == "live" else null,
+			# G7xn: which core decoded and applied (RS_RECEIVER_CORE).
+			"core": _core_kind,
 		},
 		"mode": mode,
 		"recording": null if mode == "live" else {"path": _recording_path, "sha256": null, "bytes": null},
@@ -593,7 +613,8 @@ func _open_cache() -> bool:
 func _receive_resource(record: Dictionary, data: PackedByteArray) -> bool:
 	var meta: Dictionary = record["meta"]
 	var hash: String = meta["hash"]
-	var error: String = _cache.add_inline(hash, Rs2Decoder.raw_resource_payload(data, record))
+	var payload: PackedByteArray = _rust.resource_payload() if _rust != null else Rs2Decoder.raw_resource_payload(data, record)
+	var error: String = _cache.add_inline(hash, payload)
 	if error != "":
 		_fail_with_error(_last_seq_or_null(), error)
 		return false
@@ -691,6 +712,11 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	var stats: Dictionary = _applier.apply_state(_stream, _cache)
 	if _perf != null:
 		_perf.apply_us.add(Time.get_ticks_usec() - apply_t0)
+	if stats.has("error"):
+		# G7xn: only RsRustApplier reports one (a payload the core refuses).
+		var apply_error: String = stats["error"]
+		_fail_with_error(seq, apply_error)
+		return {"ok": false, "stats": {}}
 	var applied: Dictionary = stats["resources"]
 	for key: String in ["created", "updated", "replaced", "freed", "upload_bytes", "skipped_commands"]:
 		resources[key] = applied[key]
@@ -915,14 +941,14 @@ func _process(_delta: float) -> void:
 	if _next_record >= _records.size():
 		_fail(null, "recording-incomplete", "the recording ends after %d records without an end record" % _records.size())
 		return
-	var expected_seq: int = _stream.last_seq + 1
+	var expected_seq: int = _last_seq() + 1
 	var raw: Dictionary = _records[_next_record]
 	_next_record += 1
 	# The only place transaction RS calls happen: _fetch_and_apply touches the RenderingServer
 	# only after the record decoded, the stream accepted (and resolved) it and every payload it
 	# needs is available.
 	var decode_t0: int = Time.get_ticks_usec() if _perf != null else 0
-	var result: Dictionary = RsApplier.accept_record(_data, Rs2Decoder.as_int(raw["offset"]), _stream)
+	var result: Dictionary = _accept_record(_data, Rs2Decoder.as_int(raw["offset"]))
 	if _perf != null:
 		_perf.decode_us.add(Time.get_ticks_usec() - decode_t0)
 	var errors: PackedStringArray = result["errors"]
@@ -1051,7 +1077,10 @@ func _dump_state(seq: int, meta: Dictionary) -> bool:
 	if file == null:
 		_fail(seq, "state-failed", "cannot write %s: %s" % [path, error_string(FileAccess.get_open_error())])
 		return false
-	file.store_string(JSON.stringify(_state_json(meta), "", false, true) + "\n")
+	if _rust != null:
+		file.store_string(_rust.state_json() + "\n")
+	else:
+		file.store_string(JSON.stringify(_state_json(meta), "", false, true) + "\n")
 	file.close()
 	_state_paths[_seq_name(seq)] = path
 	_log("state seq %d -> %s" % [seq, path])
@@ -1541,7 +1570,7 @@ func _ready_live() -> void:
 	if not _parse_resource_env(true):
 		_quit(EXIT_USAGE)
 		return
-	if not _parse_perf_env():
+	if not _parse_perf_env() or not _parse_core_env():
 		_quit(EXIT_USAGE)
 		return
 	var display_server: String = _init_report("live")
@@ -1586,7 +1615,7 @@ func _ready_live() -> void:
 	if _received_file == null:
 		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
 		return
-	_applier = RsApplier.new(get_viewport().get_viewport_rid(), get_viewport().find_world_2d().canvas)
+	_new_applier()
 	if _perf != null:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
 	_client = RsLiveClient.new()
@@ -1882,15 +1911,15 @@ func _receive_binary(message: PackedByteArray) -> void:
 			_fail(null, "live-framing", "the first message holds %d records, expected exactly the session" % records.size())
 			return
 		_session_seen = true
-		_begin_session(RsApplier.accept_record(_data, 8, _stream))
+		_begin_session(_accept_session(_data, 8))
 		# G6s (live-buffer trim): the session record is the whole of this message; nothing of
 		# it is needed once applied, so `_data` goes back to empty rather than growing for the
 		# rest of the connection.
 		_data = PackedByteArray()
 		return
-	var expected_seq: int = _stream.last_seq + 1
+	var expected_seq: int = _last_seq() + 1
 	var decode_t0: int = Time.get_ticks_usec() if _perf != null else 0
-	var accepted: Dictionary = RsApplier.accept_record(_data, offset, _stream)
+	var accepted: Dictionary = _accept_record(_data, offset)
 	if _perf != null:
 		_perf.decode_us.add(Time.get_ticks_usec() - decode_t0)
 	var errors: PackedStringArray = accepted["errors"]
@@ -1926,7 +1955,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 			_end_seen = true
 			_stream_report["end_seen"] = true
 			_report["end_seen"] = true
-			_log("end record after %d transactions" % _stream.transactions)
+			_log("end record after %d transactions" % (_rust.transactions if _rust != null else _stream.transactions))
 		_:
 			_fail(null, "live-framing", "unexpected %s record" % kind)
 	# G6s (live-buffer trim): every message after the first is exactly one record (enforced
@@ -2193,9 +2222,66 @@ static func _url_origin(url: String) -> Dictionary:
 
 ## The last accepted seq, or null before the first transaction (a failure's `seq`).
 func _last_seq_or_null() -> Variant:
-	if _stream.last_seq > 0:
-		return _stream.last_seq
+	if _last_seq() > 0:
+		return _last_seq()
 	return null
+
+
+## The seq of the last accepted transaction (Rs2Decoder.Stream.last_seq, or the Rust core's).
+func _last_seq() -> int:
+	if _rust != null:
+		return _rust.last_seq
+	return _stream.last_seq
+
+
+## G7xn: RS_RECEIVER_CORE and RS_RECEIVER_CORE_EXT. Loads the adapter under rust. Logs and returns
+## false (a usage error) when the value is unknown or the adapter does not load.
+func _parse_core_env() -> bool:
+	var kind: String = RsConfig.get_env("RS_RECEIVER_CORE").strip_edges()
+	if kind == "":
+		kind = "gdscript"
+	if kind != "gdscript" and kind != "rust":
+		_log("error: RS_RECEIVER_CORE must be gdscript or rust (got %s)" % JSON.stringify(kind))
+		return false
+	_core_kind = kind
+	if kind == "gdscript":
+		return true
+	var path: String = RsConfig.get_env("RS_RECEIVER_CORE_EXT").strip_edges()
+	if path == "":
+		path = RsRustApplier.DEFAULT_EXTENSION
+	var problem: String = RsRustApplier.load_core(path)
+	if problem != "":
+		_log("error: RS_RECEIVER_CORE=rust, but the adapter is unavailable: %s" % problem)
+		return false
+	# The core verifies and decodes each payload itself, from its raw bytes.
+	_cache.keep_raw = true
+	_log("core rust (%s)" % path)
+	return true
+
+
+## The applier for RS_RECEIVER_CORE.
+func _new_applier() -> void:
+	var viewport: RID = get_viewport().get_viewport_rid()
+	var canvas: RID = get_viewport().find_world_2d().canvas
+	if _core_kind == "rust":
+		_rust = RsRustApplier.new(viewport, canvas)
+		_applier = _rust
+	else:
+		_applier = RsApplier.new(viewport, canvas)
+
+
+## A stream's first record (a session), through the configured core.
+func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
+	if _rust != null:
+		return _rust.accept_session(data, offset)
+	return RsApplier.accept_record(data, offset, _stream)
+
+
+## Any later record, through the configured core.
+func _accept_record(data: PackedByteArray, offset: int) -> Dictionary:
+	if _rust != null:
+		return _rust.accept(data, offset)
+	return RsApplier.accept_record(data, offset, _stream)
 
 
 func _send(message: Dictionary) -> void:

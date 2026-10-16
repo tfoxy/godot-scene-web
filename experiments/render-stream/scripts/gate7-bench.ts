@@ -5,6 +5,8 @@
 //
 //   gate7-bench.ts --arm native --inputs <inputs.json> --out <dir> --binary <template> \
 //       --receiver-dir <receiver/>                                   # desktop native, headless
+//       [--core gdscript|rust] [--core-ext <rs_core.gdextension>] [--taskset <cpus>]
+//                                            # G7xn: the native receiver's core (RS_RECEIVER_CORE)
 //   gate7-bench.ts --arm gsw-ts --inputs <inputs.json> --out <dir>      # desktop Chromium (D9)
 //   gate7-bench.ts --arm gsw-ts --env device --device g31 --inputs <inputs.json> --out <dir> [--probes]
 //   gate7-bench.ts --arm web --inputs <inputs.json> --out <dir>        # desktop Chromium, web export
@@ -133,6 +135,12 @@ interface Args {
   only: string[];
   /** gate7-design.md D31/G7o1; `gsw` only, ignored by `native` and `web` (GDScript stays inline). */
   recordDigest: "inline" | "deferred";
+  /** G7xn: the native arm's receiver core (RS_RECEIVER_CORE); `rust` legs are `native-rs-bench-*`. */
+  core: "gdscript" | "rust";
+  /** G7xn: RS_RECEIVER_CORE_EXT for `--core rust` (default: the receiver's own). */
+  coreExt: string | undefined;
+  /** G7xn: run each native receiver under `taskset -c <cpus>` (a quieter, comparable core). */
+  taskset: string | undefined;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -166,6 +174,9 @@ function parseArgs(argv: string[]): Args {
     adbBin: undefined,
     only: [],
     recordDigest: "inline",
+    core: "gdscript",
+    coreExt: undefined,
+    taskset: undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     const v = () => {
@@ -278,6 +289,21 @@ function parseArgs(argv: string[]): Args {
         a.recordDigest = rd;
         break;
       }
+      case "--core": {
+        const core = v();
+        if (core !== "gdscript" && core !== "rust")
+          throw new HarnessUsageError(
+            `--core must be gdscript or rust (got ${core})`,
+          );
+        a.core = core;
+        break;
+      }
+      case "--core-ext":
+        a.coreExt = resolve(v());
+        break;
+      case "--taskset":
+        a.taskset = v();
+        break;
       default:
         throw new HarnessUsageError(`unknown argument ${argv[i]}`);
     }
@@ -288,6 +314,8 @@ function parseArgs(argv: string[]): Args {
     throw new HarnessUsageError(
       "the native arm runs on the desktop only (--env desktop)",
     );
+  if (a.arm !== "native" && (a.core !== "gdscript" || a.taskset))
+    throw new HarnessUsageError("--core and --taskset are native-arm options");
   return a;
 }
 
@@ -369,7 +397,10 @@ async function runNativeArm(
   const receiverDir = args.receiverDir;
   const summaries: BenchInputSummary[] = [];
   for (const input of inputs) {
-    const leg = benchLegName("native", "desktop", input.name, null);
+    const leg =
+      args.core === "rust"
+        ? `native-rs-bench-${input.name}`
+        : benchLegName("native", "desktop", input.name, null);
     const legDir = join(args.out, leg);
     const cache = join(legDir, "cache");
     await rm(cache, { recursive: true, force: true });
@@ -391,8 +422,19 @@ async function runNativeArm(
         RS_RECEIVER_PERF_OUT: join(dir, "perf.json"),
         RS_RECEIVER_LOG: "summary",
         ...(input.store ? { RS_RECEIVER_STORE_DIR: input.store } : {}),
+        // G7xn: the default core adds nothing, so a gdscript leg's env is what it always was.
+        ...(args.core === "rust" ? { RS_RECEIVER_CORE: "rust" } : {}),
+        ...(args.core === "rust" && args.coreExt
+          ? { RS_RECEIVER_CORE_EXT: args.coreExt }
+          : {}),
       });
-      const argv = [binary, "--headless", "--path", receiverDir];
+      const argv = [
+        ...(args.taskset ? ["taskset", "-c", args.taskset] : []),
+        binary,
+        "--headless",
+        "--path",
+        receiverDir,
+      ];
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "argv.txt"), `${argv.join("\n")}\n`);
       await writeFile(
@@ -426,6 +468,8 @@ async function runNativeArm(
       {
         kind: "native",
         binary,
+        core: args.core,
+        taskset: args.taskset ?? null,
       },
     );
     summaries.push(summary);

@@ -1,0 +1,12 @@
+; The native receiver's adapter over the shared Rust core (gate7-design.md G7xn, Q14e), loaded at run
+; time by RsRustApplier.load_core() only when RS_RECEIVER_CORE=rust. receiver/ext/ carries a
+; .gdignore, so the editor never registers this file and the default (gdscript) path never loads
+; it. The library is a build output: experiments/render-stream/scripts/build-rs-core-ext.sh.
+
+[configuration]
+entry_symbol = "rs_core_ext_init"
+compatibility_minimum = "4.5"
+reloadable = false
+
+[libraries]
+linux.x86_64 = "build/librs_core_ext.so"
