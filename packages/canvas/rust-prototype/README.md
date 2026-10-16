@@ -233,6 +233,29 @@ restore the executor re-creates its objects, and `execute` refuses with
 texture. `ExecOptions.sabotage` takes `drop-draws` or `stale-item-row`; these
 are test-only.
 
+Item-space programs (G7s) draw Godot custom `canvas_item` shaders.
+`define_program(id, module)` compiles a module from `@godot-scene-web/effects`'
+`transpileGodotItemShader` inside the executor's fragment stage, which keeps
+Godot's `canvas.glsl` order. `COLOR` enters as vertex colour × item modulate ×
+the item's straight texel. The module's `godot_item_fragment(COLOR, UV)` runs
+next, and the canvas modulate (`Binding::post_modulate`) is applied after it.
+A compile failure is returned with GL's log and registers nothing. A draw whose
+`program` is non-zero names a `DrawList::bindings` slot: the program, its
+uniform values and its sampler textures. A program re-sends its uniforms only
+when the slot or its version changes. Programs are recompiled after a restored
+context.
+
+`Target::opaque` is Godot's non-transparent render target (the root viewport).
+In it, every blend keeps the destination alpha (`GL_ZERO, GL_ONE`), and `mul`
+and `disabled` take the straight source colour, as Godot's GLES3 renderer does
+there. The default (`false`) keeps the transparent premultiplied contract of
+`executor-webgl.ts`, which the byte-identity suite checks. The suite
+`canvasItemsProgramPixel.test.ts` (same opt-in) runs Godot shader code through
+the transpiler and the executor, and checks every pixel against a hand model:
+uniforms, integer arithmetic, uniform arrays, samplers with filter hints,
+instance uniforms, `COLOR`/`TEXTURE` input, the canvas modulate, the opaque
+target's blends and a compile failure.
+
 The feature leaves the default build alone. `build-web.sh` (`webgl,gl-backend`)
 produces the same `.wasm` and JS glue byte for byte. On wasm32 the wgpu
 renderer and `RustRenderer`'s exports compile only with `webgl` (wgpu's browser

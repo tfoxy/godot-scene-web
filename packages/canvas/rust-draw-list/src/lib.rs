@@ -15,6 +15,8 @@
 //!   Draws are in final paint order. An executor may merge ADJACENT draws whose state is equal and
 //!   whose index ranges touch, never reorder them.
 //! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels and frees.
+//! - [`Binding`]s: item-space programs (Godot's custom `canvas_item` shaders, registered with the
+//!   executor beside the list) with their uniform values, named by a draw's `program`.
 //!
 //! The colour contract (G7c's TypeScript executor, `packages/canvas/src/executor-webgl.ts`, is the
 //! specification of record): textures are stored straight and premultiplied after filtering;
@@ -68,7 +70,8 @@ pub struct Draw {
     pub sampler: u32,
     /// [`Blend`] as u32.
     pub blend: u32,
-    /// Program id; [`BUILTIN_PROGRAM`] is the only one so far.
+    /// [`BUILTIN_PROGRAM`], or a 1-based index into [`DrawList::bindings`]: an item-space program
+    /// with its uniform values (Godot's `ShaderMaterial`).
     pub program: u32,
     /// Integer scissor `[x, y, w, h]` in target pixels, top-left origin; meaningful only when
     /// `flags & DRAW_SCISSOR`.
@@ -137,6 +140,13 @@ pub struct Target {
     pub format: Format,
     /// Straight RGBA clear colour.
     pub clear: [f32; 4],
+    /// Draw as Godot's GLES3 canvas renderer draws into a NON-transparent render target (the root
+    /// viewport, `transparent_render_target == false`; rasterizer_canvas_gles3.cpp:742-798):
+    /// every blend keeps the destination's alpha (`GL_ZERO, GL_ONE`), [`Blend::Mul`] multiplies
+    /// the destination by the STRAIGHT source colour, and [`Blend::Disabled`] writes the straight
+    /// source. `false` (the default) is the premultiplied transparent-canvas contract of
+    /// `executor-webgl.ts`.
+    pub opaque: bool,
 }
 
 impl Default for Target {
@@ -146,8 +156,71 @@ impl Default for Target {
             height: 1,
             format: Format::Rgb10A2,
             clear: [0.0, 0.0, 0.0, 1.0],
+            opaque: false,
         }
     }
+}
+
+/// Whether a draw with `blend` into a target premultiplies its colour in the shader (the blend
+/// unit then takes it with `GL_ONE`). Godot's arithmetic is straight colour with `GL_SRC_ALPHA`
+/// for mix/add/sub, which is equal; `premul_alpha` is premultiplied by the content itself; on an
+/// [`Target::opaque`] target `mul` and `disabled` take the straight colour as Godot does.
+pub fn premultiplies(blend: Blend, opaque: bool) -> bool {
+    match blend {
+        Blend::PremulAlpha => false,
+        Blend::Mul | Blend::Disabled => !opaque,
+        Blend::Mix | Blend::Add | Blend::Sub => true,
+    }
+}
+
+/// One uniform's value for an item-space program: `components × count` numbers, flattened
+/// (matrices column-major). Booleans are `Int` 0/1.
+#[derive(Clone, PartialEq, Debug)]
+pub enum UniformValue {
+    Float(Vec<f32>),
+    Int(Vec<i32>),
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Uniform {
+    pub name: Box<str>,
+    pub value: UniformValue,
+}
+
+/// A `sampler2D` uniform of an item-space program: which list texture it samples, how.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SamplerUniform {
+    pub name: Box<str>,
+    /// Texture id ([`WHITE_TEXTURE`] for the white texel).
+    pub texture: u32,
+    /// [`Sampler`] bits.
+    pub sampler: u32,
+}
+
+/// What a draw with `program != BUILTIN_PROGRAM` draws with: an item-space program (Godot's
+/// custom `canvas_item` shader) and its values (Godot's `ShaderMaterial` parameters and instance
+/// parameters). The executor's fragment stage computes Godot's `canvas.glsl` order around the
+/// program's function:
+///
+/// ```text
+/// COLOR = vertex colour × item modulate × texel   (all straight)
+/// program(COLOR, UV)                              (the program may overwrite COLOR)
+/// COLOR *= post_modulate                          (Godot's canvas modulate; white when unshaded)
+/// ```
+///
+/// then premultiplies for every blend but [`Blend::PremulAlpha`], as the builtin program does. An
+/// item drawn with a binding therefore carries the modulate WITHOUT the canvas modulate in its
+/// [`Item`] row.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Binding {
+    /// The executor's program id (registered with the executor beside the list, like a texture);
+    /// 0 marks an unused slot.
+    pub program: u32,
+    /// Straight RGBA multiplied in after the program.
+    pub post_modulate: [f32; 4],
+    /// Every uniform the program declares (an executor leaves an omitted one as GL last had it).
+    pub uniforms: Vec<Uniform>,
+    pub samplers: Vec<SamplerUniform>,
 }
 
 /// A texture operation to run before the frame's draws, in order.
@@ -212,6 +285,8 @@ pub struct Dirty {
     pub indices: Ranges,
     /// The draw table changed (order, ranges or state).
     pub draws: bool,
+    /// Changed [`DrawList::bindings`] slots (0-based slot indices).
+    pub bindings: Ranges,
 }
 
 impl Dirty {
@@ -221,6 +296,7 @@ impl Dirty {
         self.vertices.clear();
         self.indices.clear();
         self.draws = false;
+        self.bindings.clear();
     }
     pub fn is_clean(&self) -> bool {
         !self.all
@@ -228,6 +304,7 @@ impl Dirty {
             && self.vertices.is_empty()
             && self.indices.is_empty()
             && !self.draws
+            && self.bindings.is_empty()
     }
 }
 
@@ -239,6 +316,8 @@ pub struct DrawList {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub draws: Vec<Draw>,
+    /// Item-space program bindings; [`Draw::program`] `n > 0` is slot `n - 1`.
+    pub bindings: Vec<Binding>,
     pub dirty: Dirty,
     pub texture_ops: Vec<TextureOp>,
     pub texture_bytes: Vec<u8>,
@@ -287,6 +366,21 @@ impl DrawList {
         self.texture_ops.push(TextureOp::Free { id });
     }
 
+    /// Set binding slot `slot` (0-based; draws name it as `slot + 1`), growing the table, and mark
+    /// it dirty only when it changed. Returns whether it changed.
+    pub fn set_binding(&mut self, slot: u32, binding: Binding) -> bool {
+        let i = slot as usize;
+        if self.bindings.len() <= i {
+            self.bindings.resize_with(i + 1, Binding::default);
+        }
+        if self.bindings[i] == binding {
+            return false;
+        }
+        self.bindings[i] = binding;
+        self.dirty.bindings.add(slot, slot + 1);
+        true
+    }
+
     /// After an executor consumed the list: forget the dirty ranges and the texture operations.
     pub fn consumed(&mut self) {
         self.dirty.clear();
@@ -323,7 +417,8 @@ pub fn mergeable(prev: &Draw, next: &Draw) -> bool {
         && (prev.flags & DRAW_SCISSOR == 0 || prev.scissor == next.scissor)
 }
 
-/// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path.
+/// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path. It
+/// holds the POD arrays only: [`DrawList::bindings`] (G7s) are not in version 1.
 ///
 /// ```text
 /// "PDL1" u32 version(1) u32 width u32 height u32 format f32×4 clear
@@ -334,6 +429,8 @@ pub mod pdl1 {
     use super::*;
 
     pub const MAGIC: &[u8; 4] = b"PDL1";
+    /// The header's format word carries [`Target::opaque`] in this bit.
+    pub const OPAQUE_BIT: u32 = 1 << 8;
 
     pub fn encode(list: &DrawList) -> Vec<u8> {
         let mut out = Vec::with_capacity(
@@ -343,11 +440,12 @@ pub mod pdl1 {
                 + list.draws.len() * 44,
         );
         out.extend_from_slice(MAGIC);
+        // The format word's bit 8 is `Target::opaque` (version-1 dumps never set it).
         for v in [
             1u32,
             list.target.width,
             list.target.height,
-            list.target.format as u32,
+            list.target.format as u32 | if list.target.opaque { OPAQUE_BIT } else { 0 },
         ] {
             out.extend_from_slice(&v.to_le_bytes());
         }
@@ -382,7 +480,8 @@ pub mod pdl1 {
         if u32_at(4)? != 1 {
             return Err("PDL1: unknown version".into());
         }
-        let format = match u32_at(16)? {
+        let word = u32_at(16)?;
+        let format = match word & !OPAQUE_BIT {
             0 => Format::Rgb10A2,
             1 => Format::Rgba8,
             f => return Err(format!("PDL1: unknown format {f}")),
@@ -418,11 +517,13 @@ pub mod pdl1 {
                 height: u32_at(12)?,
                 format,
                 clear,
+                opaque: word & OPAQUE_BIT != 0,
             },
             items,
             vertices,
             indices,
             draws,
+            bindings: Vec::new(),
             dirty: Dirty {
                 all: true,
                 ..Dirty::default()
@@ -504,6 +605,7 @@ mod tests {
             height: 32,
             format: Format::Rgb10A2,
             clear: [0.2, 0.2, 0.4, 1.0],
+            opaque: true,
         });
         list.items.push(Item {
             xform: [1.0, 0.0, 0.0, 1.0, 3.0, 4.0],

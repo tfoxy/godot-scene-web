@@ -115,6 +115,10 @@ pub struct ExecStats {
     pub restored: u32,
     /// 1 when this call issued a fence (none is issued while one is still pending).
     pub fence_issued: u32,
+    /// Item-space program switches (`useProgram` of a program other than the builtin).
+    pub program_binds: u32,
+    /// Bindings whose uniform values were (re)sent to their program.
+    pub binding_uploads: u32,
 }
 
 impl ExecStats {
@@ -134,7 +138,7 @@ impl ExecStats {
                 "\"textureFrees\":{},\"itemRows\":{},\"itemBytes\":{},\"vertexBytes\":{},",
                 "\"indexBytes\":{},\"uploadCalls\":{},\"scissorChanges\":{},\"blendChanges\":{},",
                 "\"textureBinds\":{},\"samplerBinds\":{},\"glCalls\":{},\"restored\":{},",
-                "\"fenceIssued\":{}}}"
+                "\"fenceIssued\":{},\"programBinds\":{},\"bindingUploads\":{}}}"
             ),
             self.draws,
             self.draw_calls,
@@ -156,9 +160,55 @@ impl ExecStats {
             self.gl_calls,
             self.restored,
             self.fence_issued,
+            self.program_binds,
+            self.binding_uploads,
         )
     }
 }
+
+/// The fragment stage of an item-space program (G7s): `canvas.glsl`'s order (Godot 4.5.1,
+/// drivers/gles3/shaders/canvas.glsl:566-717) around the program module, which declares its
+/// uniforms and samplers, its helpers, and `void godot_item_fragment(inout vec4 COLOR, in vec2 UV)`
+/// (`@godot-scene-web/effects`'s `transpileGodotItemShader`):
+///
+/// ```text
+/// color = color_interp * texture(color_texture, uv)   (straight: vertex colour × item modulate)
+/// fragment(COLOR = color, UV = uv)
+/// color *= canvas_modulation                           (gsw_post_modulate; white when unshaded)
+/// ```
+///
+/// The output is premultiplied for every blend but `premul_alpha` (`gsw_premultiply_out`), as the
+/// builtin program's is, so the blend states are the builtin's.
+pub fn item_program_fragment(module: &str) -> String {
+    format!(
+        r#"#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D TEXTURE;
+uniform vec4 gsw_post_modulate;
+uniform bool gsw_premultiply_out;
+in vec2 v_uv;
+in vec4 v_color;
+flat in vec4 v_tint;
+out vec4 gsw_frag_color;
+{module}
+void main() {{
+  vec4 gsw_color = v_color * v_tint;
+  gsw_color *= texture(TEXTURE, v_uv);
+  godot_item_fragment(gsw_color, v_uv);
+  gsw_color *= gsw_post_modulate;
+  gsw_frag_color = gsw_premultiply_out ? vec4(gsw_color.rgb * gsw_color.a, gsw_color.a) : gsw_color;
+}}
+"#
+    )
+}
+
+/// Texture units: 0 the draw's texture, 1 the item rows, 2 the target (present only); an item-space
+/// program's own samplers take units [`FIRST_SAMPLER_UNIT`] and up, at most
+/// [`MAX_PROGRAM_SAMPLERS`] (WebGL 2 guarantees 16 fragment units).
+pub const FIRST_SAMPLER_UNIT: u32 = 3;
+pub const MAX_PROGRAM_SAMPLERS: usize = 13;
 
 /// One `drawElements` call: the state of draw `draw` over a merged index range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,10 +227,16 @@ pub struct PlanCounts {
 }
 
 /// Whether the executor can draw `draw` at all: a known texture (`known_texture`), a known blend,
-/// the builtin program and an index range inside `index_len`.
-pub fn drawable(draw: &Draw, index_len: usize, known_texture: impl Fn(u32) -> bool) -> bool {
+/// the builtin program or a binding slot whose program compiled (`known_binding`, given the
+/// draw's `program`), and an index range inside `index_len`.
+pub fn drawable(
+    draw: &Draw,
+    index_len: usize,
+    known_texture: impl Fn(u32) -> bool,
+    known_binding: impl Fn(u32) -> bool,
+) -> bool {
     Blend::from_u32(draw.blend).is_some()
-        && draw.program == BUILTIN_PROGRAM
+        && (draw.program == BUILTIN_PROGRAM || known_binding(draw.program))
         && (draw.texture == WHITE_TEXTURE || known_texture(draw.texture))
         && u64::from(draw.first_index) + u64::from(draw.index_count) <= index_len as u64
 }
@@ -191,6 +247,7 @@ pub fn drawable(draw: &Draw, index_len: usize, known_texture: impl Fn(u32) -> bo
 pub fn plan_calls(
     list: &DrawList,
     known_texture: impl Fn(u32) -> bool,
+    known_binding: impl Fn(u32) -> bool,
     out: &mut Vec<Call>,
 ) -> PlanCounts {
     out.clear();
@@ -200,7 +257,7 @@ pub fn plan_calls(
         if draw.index_count == 0 {
             continue;
         }
-        if !drawable(draw, list.indices.len(), &known_texture) {
+        if !drawable(draw, list.indices.len(), &known_texture, &known_binding) {
             counts.skipped += 1;
             prev = None;
             continue;
@@ -381,7 +438,7 @@ mod tests {
         let e = draw(18, 6); // white again: a new call, never merged back into `a`'s
         let l = list(vec![a, b, c, d, e], 24);
         let mut out = Vec::new();
-        let counts = plan_calls(&l, |_| true, &mut out);
+        let counts = plan_calls(&l, |_| true, |_| false, &mut out);
         assert_eq!(out.len(), l.merged_draw_count());
         assert_eq!(
             out,
@@ -442,7 +499,7 @@ mod tests {
         };
         let l = list(vec![a, gap, sampler, blend, s1, s2, s3], 24);
         let mut out = Vec::new();
-        let counts = plan_calls(&l, |_| true, &mut out);
+        let counts = plan_calls(&l, |_| true, |_| false, &mut out);
         assert_eq!(out.len(), 6);
         assert_eq!(out.len(), l.merged_draw_count());
         assert_eq!(counts.merged, 1);
@@ -487,7 +544,7 @@ mod tests {
             15,
         );
         let mut out = Vec::new();
-        let counts = plan_calls(&l, |id| id == 2, &mut out);
+        let counts = plan_calls(&l, |id| id == 2, |_| false, &mut out);
         assert_eq!(
             counts,
             PlanCounts {
@@ -516,7 +573,7 @@ mod tests {
     fn an_empty_draw_does_not_end_a_run() {
         let l = list(vec![draw(0, 3), draw(3, 0), draw(3, 3)], 6);
         let mut out = Vec::new();
-        plan_calls(&l, |_| true, &mut out);
+        plan_calls(&l, |_| true, |_| false, &mut out);
         assert_eq!(
             out,
             vec![Call {
@@ -572,11 +629,13 @@ mod tests {
         let stats = ExecStats {
             draws: 3,
             fence_issued: 1,
+            binding_uploads: 5,
             ..ExecStats::default()
         };
-        assert_eq!(ExecStats::WORDS, 20);
+        assert_eq!(ExecStats::WORDS, 22);
         assert_eq!(stats.as_words()[0], 3);
-        assert_eq!(stats.as_words()[ExecStats::WORDS - 1], 1);
+        assert_eq!(stats.as_words()[ExecStats::WORDS - 3], 1);
+        assert_eq!(stats.as_words()[ExecStats::WORDS - 1], 5);
         assert!(stats.to_json().starts_with("{\"draws\":3,"));
     }
 

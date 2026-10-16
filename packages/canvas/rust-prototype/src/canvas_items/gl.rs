@@ -16,7 +16,8 @@
 //! `execute` refuses with [`ExecError::NeedsFullUpload`] until the caller sends a list with
 //! `dirty.all` and every texture re-queued.
 use super::{
-    Call, ExecOptions, ExecStats, ITEM_TEXELS, ITEMS_PER_ROW, Sabotage, gl_scissor, item_rows_for,
+    Call, ExecOptions, ExecStats, FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW,
+    MAX_PROGRAM_SAMPLERS, Sabotage, gl_scissor, item_program_fragment, item_rows_for,
     item_upload_rects, plan_calls,
 };
 use crate::present::{
@@ -25,7 +26,8 @@ use crate::present::{
 };
 use glow::HasContext;
 use gsw_canvas_draw_list::{
-    Blend, DRAW_SCISSOR, DrawList, Format, Sampler, Target, TextureOp, Vertex, WHITE_TEXTURE,
+    BUILTIN_PROGRAM, Binding, Blend, DRAW_SCISSOR, DrawList, Format, Sampler, Target, TextureOp,
+    UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -195,14 +197,40 @@ struct Cache {
     draw_texture: Option<glow::Texture>,
     draw_sampler: Option<glow::Sampler>,
     blend_enabled: Option<bool>,
-    /// 0 MIX (and PREMUL_ALPHA), 1 ADD, 2 SUB, 3 MUL.
+    /// 0 MIX (and PREMUL_ALPHA), 1 ADD, 2 SUB, 3 MUL; bit 4 an opaque target's alpha factors.
     blend_func: Option<u8>,
     scissor_enabled: Option<bool>,
     scissor: Option<[i32; 4]>,
     viewport: Option<[i32; 4]>,
     clear_color: Option<[u32; 4]>,
+    /// The BUILTIN program's premultiply uniforms and projection (item-space programs keep
+    /// their own in [`CompiledItem`]).
     premultiply: Option<bool>,
     projection: Option<(u32, u32)>,
+    /// Texture and sampler object on each item-space sampler unit.
+    units: [Option<(glow::Texture, glow::Sampler)>; 16],
+}
+
+/// An item-space program as GL holds it.
+struct CompiledItem {
+    program: glow::Program,
+    u_projection: Option<glow::UniformLocation>,
+    u_post_modulate: Option<glow::UniformLocation>,
+    u_premultiply_out: Option<glow::UniformLocation>,
+    /// Active non-sampler uniforms by declared name: location, GL type, array size.
+    uniforms: HashMap<String, (glow::UniformLocation, u32, i32)>,
+    /// Active `sampler2D` uniforms (beyond `TEXTURE`) and the unit each samples.
+    sampler_units: Vec<(String, u32)>,
+    projection: Option<(u32, u32)>,
+    premultiply_out: Option<bool>,
+    /// The (binding slot, version) whose values GL holds.
+    applied: Option<(u32, u64)>,
+}
+
+/// A registered item-space program: its module (kept to recompile after a restored context).
+struct ItemProgram {
+    module: String,
+    compiled: Option<CompiledItem>,
 }
 
 struct TargetObjects {
@@ -274,6 +302,134 @@ fn sampler_index(bits: u32) -> usize {
         _ => 0,
     };
     wrap * 2 + (bits & Sampler::LINEAR) as usize
+}
+
+/// Compile an item-space program: the builtin vertex stage (its modulate passed straight) and
+/// [`item_program_fragment`] around `module`. Leaves no program bound.
+fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String> {
+    let program = compile(gl, VERT, &item_program_fragment(module))?;
+    unsafe {
+        gl.use_program(Some(program));
+        // The vertex stage's tint stays straight: the fragment stage owns the order.
+        gl.uniform_1_i32(
+            gl.get_uniform_location(program, "u_premultiply").as_ref(),
+            0,
+        );
+        gl.uniform_1_i32(
+            gl.get_uniform_location(program, "u_items").as_ref(),
+            UNIT_ITEMS as i32,
+        );
+        gl.uniform_1_i32(
+            gl.get_uniform_location(program, "TEXTURE").as_ref(),
+            UNIT_DRAW as i32,
+        );
+        let mut uniforms = HashMap::new();
+        let mut sampler_units = Vec::new();
+        for index in 0..gl.get_active_uniforms(program) {
+            let Some(active) = gl.get_active_uniform(program, index) else {
+                continue;
+            };
+            let name = active.name.trim_end_matches("[0]").to_string();
+            if name == "TEXTURE" || name.starts_with("gsw_") || name.starts_with("u_") {
+                continue;
+            }
+            let Some(location) = gl.get_uniform_location(program, &name) else {
+                continue;
+            };
+            if active.utype == glow::SAMPLER_2D {
+                if sampler_units.len() >= MAX_PROGRAM_SAMPLERS || active.size != 1 {
+                    gl.use_program(None);
+                    gl.delete_program(program);
+                    return Err(format!(
+                        "sampler {name}: more than {MAX_PROGRAM_SAMPLERS} samplers or a sampler array"
+                    ));
+                }
+                let unit = FIRST_SAMPLER_UNIT + sampler_units.len() as u32;
+                gl.uniform_1_i32(Some(&location), unit as i32);
+                sampler_units.push((name, unit));
+            } else {
+                uniforms.insert(name, (location, active.utype, active.size));
+            }
+        }
+        let compiled = CompiledItem {
+            program,
+            u_projection: gl.get_uniform_location(program, "u_projection"),
+            u_post_modulate: gl.get_uniform_location(program, "gsw_post_modulate"),
+            u_premultiply_out: gl.get_uniform_location(program, "gsw_premultiply_out"),
+            uniforms,
+            sampler_units,
+            projection: None,
+            premultiply_out: None,
+            applied: None,
+        };
+        gl.use_program(None);
+        Ok(compiled)
+    }
+}
+
+/// Send one uniform's value as its GL type takes it (a value of the other number kind is
+/// converted; at most `size` elements; nothing for a value shorter than one element).
+fn set_uniform(
+    gl: &Gl,
+    location: &glow::UniformLocation,
+    utype: u32,
+    size: i32,
+    value: &UniformValue,
+) {
+    let (components, float) = match utype {
+        glow::FLOAT => (1, true),
+        glow::FLOAT_VEC2 => (2, true),
+        glow::FLOAT_VEC3 => (3, true),
+        glow::FLOAT_VEC4 => (4, true),
+        glow::FLOAT_MAT2 => (4, true),
+        glow::FLOAT_MAT3 => (9, true),
+        glow::FLOAT_MAT4 => (16, true),
+        glow::INT | glow::BOOL => (1, false),
+        glow::INT_VEC2 | glow::BOOL_VEC2 => (2, false),
+        glow::INT_VEC3 | glow::BOOL_VEC3 => (3, false),
+        glow::INT_VEC4 | glow::BOOL_VEC4 => (4, false),
+        _ => return,
+    };
+    let max = components * size.max(1) as usize;
+    let loc = Some(location);
+    unsafe {
+        if float {
+            let floats: Vec<f32> = match value {
+                UniformValue::Float(v) => v.clone(),
+                UniformValue::Int(v) => v.iter().map(|x| *x as f32).collect(),
+            };
+            let n = floats.len().min(max) / components * components;
+            if n == 0 {
+                return;
+            }
+            let v = &floats[..n];
+            match utype {
+                glow::FLOAT => gl.c().uniform_1_f32_slice(loc, v),
+                glow::FLOAT_VEC2 => gl.c().uniform_2_f32_slice(loc, v),
+                glow::FLOAT_VEC3 => gl.c().uniform_3_f32_slice(loc, v),
+                glow::FLOAT_VEC4 => gl.c().uniform_4_f32_slice(loc, v),
+                glow::FLOAT_MAT2 => gl.c().uniform_matrix_2_f32_slice(loc, false, v),
+                glow::FLOAT_MAT3 => gl.c().uniform_matrix_3_f32_slice(loc, false, v),
+                _ => gl.c().uniform_matrix_4_f32_slice(loc, false, v),
+            }
+        } else {
+            let ints: Vec<i32> = match value {
+                UniformValue::Int(v) => v.clone(),
+                UniformValue::Float(v) => v.iter().map(|x| *x as i32).collect(),
+            };
+            let n = ints.len().min(max) / components * components;
+            if n == 0 {
+                return;
+            }
+            let v = &ints[..n];
+            match components {
+                1 => gl.c().uniform_1_i32_slice(loc, v),
+                2 => gl.c().uniform_2_i32_slice(loc, v),
+                3 => gl.c().uniform_3_i32_slice(loc, v),
+                _ => gl.c().uniform_4_i32_slice(loc, v),
+            }
+        }
+    }
 }
 
 impl Objects {
@@ -442,6 +598,12 @@ pub struct CanvasItemsExecutor {
     /// Merged calls planned since creation: [`Sabotage::DropDraws`] skips the odd ones, counted
     /// across frames, so a list of one call per frame loses every second frame's draw.
     planned_calls: u64,
+    /// Item-space programs by id ([`CanvasItemsExecutor::define_program`]).
+    programs: HashMap<u32, ItemProgram>,
+    /// A version per binding slot, bumped whenever the list marks it dirty: a program re-sends
+    /// its uniforms when the (slot, version) it holds differs.
+    binding_versions: Vec<u64>,
+    version_counter: u64,
 }
 
 /// The stage context's attributes (`present.ts`'s `CONTEXT_ATTRIBUTES`).
@@ -479,7 +641,55 @@ impl CanvasItemsExecutor {
             fence: None,
             frames: 0,
             planned_calls: 0,
+            programs: HashMap::new(),
+            binding_versions: Vec::new(),
+            version_counter: 0,
         })
+    }
+
+    /// Register item-space program `id` (> 0): the module `@godot-scene-web/effects`'s
+    /// `transpileGodotItemShader` emits, compiled at once around [`item_program_fragment`]. A
+    /// compile or link failure is returned with GL's log and registers nothing. Redefining an id
+    /// replaces its program. Programs survive a restored context (recompiled from the module).
+    pub fn define_program(&mut self, id: u32, module: &str) -> Result<(), String> {
+        if id == BUILTIN_PROGRAM {
+            return Err("program id 0 is the builtin".into());
+        }
+        if self.context_state() == ContextState::Lost {
+            return Err(ExecError::Lost.to_string());
+        }
+        let compiled = compile_item(&self.gl.raw, module);
+        self.cache.program = None;
+        let compiled = compiled?;
+        if let Some(old) = self.programs.insert(
+            id,
+            ItemProgram {
+                module: module.to_string(),
+                compiled: Some(compiled),
+            },
+        ) && let Some(c) = old.compiled
+        {
+            unsafe { self.gl.raw.delete_program(c.program) };
+        }
+        Ok(())
+    }
+
+    /// Forget item-space program `id`; draws naming a binding of it are skipped from now on.
+    pub fn free_program(&mut self, id: u32) {
+        if let Some(p) = self.programs.remove(&id)
+            && let Some(c) = p.compiled
+            && !self.loss.lost()
+        {
+            unsafe { self.gl.raw.delete_program(c.program) };
+            if self.cache.program == Some(c.program) {
+                self.cache.program = None;
+            }
+        }
+    }
+
+    /// Whether item-space program `id` is registered and compiled.
+    pub fn has_program(&self, id: u32) -> bool {
+        self.programs.get(&id).is_some_and(|p| p.compiled.is_some())
     }
 
     pub fn options(&self) -> ExecOptions {
@@ -526,6 +736,10 @@ impl CanvasItemsExecutor {
                 Ok(objects) => {
                     self.objects = Some(objects);
                     self.needs_full = true;
+                    // Item-space programs come back from their modules (they compiled before).
+                    for p in self.programs.values_mut() {
+                        p.compiled = compile_item(&self.gl.raw, &p.module).ok();
+                    }
                     ContextState::Restored
                 }
                 Err(_) => {
@@ -562,10 +776,27 @@ impl CanvasItemsExecutor {
         self.texture_ops(list, &mut stats);
         self.ensure_target(&list.target)?;
         self.upload(list, &mut stats);
+        self.version_bindings(list);
         let mut calls = std::mem::take(&mut self.calls);
         let counts = {
             let textures = &self.textures;
-            plan_calls(list, |id| textures.contains_key(&id), &mut calls)
+            let programs = &self.programs;
+            let known_texture = |id: u32| id == WHITE_TEXTURE || textures.contains_key(&id);
+            plan_calls(
+                list,
+                known_texture,
+                |program: u32| {
+                    list.bindings
+                        .get(program as usize - 1)
+                        .is_some_and(|b: &Binding| {
+                            programs
+                                .get(&b.program)
+                                .is_some_and(|p| p.compiled.is_some())
+                                && b.samplers.iter().all(|s| known_texture(s.texture))
+                        })
+                },
+                &mut calls,
+            )
         };
         stats.draws_merged = counts.merged;
         stats.draws_skipped = counts.skipped;
@@ -728,6 +959,28 @@ impl CanvasItemsExecutor {
             }
         }
         Ok(())
+    }
+
+    /// Bump the version of every binding slot the list marks dirty (every slot on a full upload).
+    fn version_bindings(&mut self, list: &DrawList) {
+        let n = list.bindings.len();
+        let all = list.dirty.all || self.binding_versions.len() != n;
+        self.binding_versions.resize(n, 0);
+        let mut bump = |slot: usize, versions: &mut Vec<u64>| {
+            self.version_counter += 1;
+            versions[slot] = self.version_counter;
+        };
+        if all {
+            for slot in 0..n {
+                bump(slot, &mut self.binding_versions);
+            }
+        } else {
+            for &(start, end) in list.dirty.bindings.as_slice() {
+                for slot in start as usize..(end as usize).min(n) {
+                    bump(slot, &mut self.binding_versions);
+                }
+            }
+        }
     }
 
     fn texture_ops(&mut self, list: &DrawList, stats: &mut ExecStats) {
@@ -1038,23 +1291,13 @@ impl CanvasItemsExecutor {
             return;
         }
 
-        if cache.program != Some(objects.program) {
-            unsafe { gl.c().use_program(Some(objects.program)) };
-            cache.program = Some(objects.program);
-        }
-        if cache.projection != Some((width, height)) {
-            unsafe {
-                gl.c().uniform_4_f32(
-                    objects.u_projection.as_ref(),
-                    // `present.ts`'s `toClip`: the f64 quotient stored as f32.
-                    (2.0 / f64::from(width)) as f32,
-                    (-2.0 / f64::from(height)) as f32,
-                    -1.0,
-                    1.0,
-                )
-            };
-            cache.projection = Some((width, height));
-        }
+        // `present.ts`'s `toClip`: the f64 quotient stored as f32.
+        let projection = [
+            (2.0 / f64::from(width)) as f32,
+            (-2.0 / f64::from(height)) as f32,
+            -1.0,
+            1.0,
+        ];
         bind_vertex_array(gl, cache, objects.vertex_array);
 
         for call in calls.iter() {
@@ -1067,6 +1310,91 @@ impl CanvasItemsExecutor {
             let draw = &list.draws[call.draw as usize];
             // `plan_calls` admitted only known blends.
             let blend = Blend::from_u32(draw.blend).unwrap_or(Blend::Mix);
+            if draw.program == BUILTIN_PROGRAM {
+                if cache.program != Some(objects.program) {
+                    unsafe { gl.c().use_program(Some(objects.program)) };
+                    cache.program = Some(objects.program);
+                }
+                if cache.projection != Some((width, height)) {
+                    let [a, b, c, d] = projection;
+                    unsafe {
+                        gl.c()
+                            .uniform_4_f32(objects.u_projection.as_ref(), a, b, c, d)
+                    };
+                    cache.projection = Some((width, height));
+                }
+            } else {
+                // An item-space program (plan_calls admitted only a compiled one).
+                let slot = draw.program - 1;
+                let binding = &list.bindings[slot as usize];
+                let Some(item) = self
+                    .programs
+                    .get_mut(&binding.program)
+                    .and_then(|p| p.compiled.as_mut())
+                else {
+                    continue;
+                };
+                if cache.program != Some(item.program) {
+                    unsafe { gl.c().use_program(Some(item.program)) };
+                    cache.program = Some(item.program);
+                    stats.program_binds += 1;
+                }
+                if item.projection != Some((width, height)) {
+                    let [a, b, c, d] = projection;
+                    unsafe { gl.c().uniform_4_f32(item.u_projection.as_ref(), a, b, c, d) };
+                    item.projection = Some((width, height));
+                }
+                let premultiply_out = premultiplies(blend, list.target.opaque);
+                if item.premultiply_out != Some(premultiply_out) {
+                    unsafe {
+                        gl.c()
+                            .uniform_1_i32(item.u_premultiply_out.as_ref(), premultiply_out as i32)
+                    };
+                    item.premultiply_out = Some(premultiply_out);
+                }
+                let version = self
+                    .binding_versions
+                    .get(slot as usize)
+                    .copied()
+                    .unwrap_or(0);
+                if item.applied != Some((slot, version)) {
+                    let [r, g, b, a] = binding.post_modulate;
+                    unsafe {
+                        gl.c()
+                            .uniform_4_f32(item.u_post_modulate.as_ref(), r, g, b, a)
+                    };
+                    for u in &binding.uniforms {
+                        if let Some((location, utype, size)) = item.uniforms.get(&*u.name) {
+                            set_uniform(gl, location, *utype, *size, &u.value);
+                        }
+                    }
+                    item.applied = Some((slot, version));
+                    stats.binding_uploads += 1;
+                }
+                for (name, unit) in &item.sampler_units {
+                    let bound = binding.samplers.iter().find(|s| &*s.name == name.as_str());
+                    let (texture, bits) = match bound {
+                        Some(s) if s.texture != WHITE_TEXTURE => {
+                            match self.textures.get(&s.texture) {
+                                Some(t) => (*t, s.sampler),
+                                None => (objects.white, 0),
+                            }
+                        }
+                        _ => (objects.white, 0),
+                    };
+                    let sampler = objects.samplers[sampler_index(bits)];
+                    let at = *unit as usize;
+                    if cache.units[at] != Some((texture, sampler)) {
+                        set_active_unit(gl, cache, *unit);
+                        unsafe {
+                            gl.c().bind_texture(glow::TEXTURE_2D, Some(texture));
+                            gl.c().bind_sampler(*unit, Some(sampler));
+                        }
+                        cache.units[at] = Some((texture, sampler));
+                        stats.texture_binds += 1;
+                    }
+                }
+            }
             if draw.flags & DRAW_SCISSOR != 0 {
                 set_scissor_enabled(gl, cache, true);
                 let scissor = gl_scissor(draw.scissor, height);
@@ -1081,9 +1409,9 @@ impl CanvasItemsExecutor {
             } else {
                 set_scissor_enabled(gl, cache, false);
             }
-            set_blend(gl, cache, blend, stats);
-            let premultiply = blend != Blend::PremulAlpha;
-            if cache.premultiply != Some(premultiply) {
+            set_blend(gl, cache, blend, list.target.opaque, stats);
+            let premultiply = premultiplies(blend, list.target.opaque);
+            if draw.program == BUILTIN_PROGRAM && cache.premultiply != Some(premultiply) {
                 // Textures stored premultiplied (the premultiplied-upload sabotage) are sampled
                 // as premultiplied: only the vertex colour is premultiplied in the shader.
                 let texel = premultiply && sabotage != Some(Sabotage::PremultipliedUpload);
@@ -1190,6 +1518,11 @@ impl Drop for CanvasItemsExecutor {
             for (_, texture) in self.textures.drain() {
                 gl.delete_texture(texture);
             }
+            for (_, p) in self.programs.drain() {
+                if let Some(c) = p.compiled {
+                    gl.delete_program(c.program);
+                }
+            }
             if let Some(o) = self.objects.take() {
                 gl.delete_program(o.program);
                 gl.delete_program(o.present_program);
@@ -1282,7 +1615,10 @@ fn set_scissor_enabled(gl: &Gl, cache: &mut Cache, enabled: bool) {
 }
 
 /// `executor-webgl.ts`'s `BLEND_STATES`; `PremulAlpha` is MIX's GL state, `Disabled` no blending.
-fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, stats: &mut ExecStats) {
+/// On an `opaque` target (Godot's non-transparent render target) every blend keeps the
+/// destination's alpha, `GL_ZERO, GL_ONE`, as Godot's GLES3 canvas renderer sets it there
+/// (rasterizer_canvas_gles3.cpp:755-798).
+fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, opaque: bool, stats: &mut ExecStats) {
     let enabled = blend != Blend::Disabled;
     if cache.blend_enabled != Some(enabled) {
         unsafe {
@@ -1297,7 +1633,7 @@ fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, stats: &mut ExecStats) {
     if !enabled {
         return;
     }
-    let (func, equation_rgb, src_rgb, dst_rgb, src_alpha, dst_alpha) = match blend {
+    let (mut func, equation_rgb, src_rgb, dst_rgb, mut src_alpha, mut dst_alpha) = match blend {
         Blend::Add => (
             1u8,
             glow::FUNC_ADD,
@@ -1331,6 +1667,11 @@ fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, stats: &mut ExecStats) {
             glow::ONE_MINUS_SRC_ALPHA,
         ),
     };
+    if opaque {
+        src_alpha = glow::ZERO;
+        dst_alpha = glow::ONE;
+        func |= 0x10;
+    }
     if cache.blend_func != Some(func) {
         unsafe {
             gl.c().blend_equation_separate(equation_rgb, glow::FUNC_ADD);

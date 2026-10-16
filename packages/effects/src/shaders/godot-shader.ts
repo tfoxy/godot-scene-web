@@ -42,6 +42,16 @@ export interface ShaderSampler {
   repeat: boolean;
 }
 
+/** What a uniform declaration says beyond its type, name and default (`ParsedShader.declarations`). */
+export interface ShaderUniformDeclaration {
+  /** `instance uniform` (a per-item value) or `global uniform` (a project-wide one), else null. */
+  qualifier: "instance" | "global" | null;
+  /** The `: hint, …` tokens as written (`source_color`, `filter_nearest`, `hint_range(0, 1)`, …). */
+  hints: string[];
+  /** The `= …` default exactly as written, or null. */
+  defaultText: string | null;
+}
+
 export interface ShaderVarying {
   /** GLSL type as declared (`vec4`, `float`, …) — Godot's spelling, not an emitter's. */
   type: string;
@@ -146,6 +156,8 @@ export interface ParsedShader {
    *  `SCREEN_TEXTURE`). Excluded from `samplers` — they bind the runtime's
    *  screen capture, not a user texture. */
   screenTextureNames: string[];
+  /** Every uniform and sampler declaration's qualifier, hints and default text, by name. */
+  declarations: Map<string, ShaderUniformDeclaration>;
   varyings: ShaderVarying[];
   vertexBody: string | null;
   fragmentBody: string;
@@ -482,7 +494,8 @@ export function parseShader(src: string): ParsedShader {
   }
 
   const blend = parseBlendMode(src);
-  const { uniforms, samplers, screenTextureNames } = parseUniforms(src);
+  const { uniforms, samplers, screenTextureNames, declarations } =
+    parseUniforms(src);
   const varyings = parseVaryings(src);
 
   const fragment = extractFunction(src, "fragment");
@@ -496,7 +509,9 @@ export function parseShader(src: string): ParsedShader {
   let helpers = src
     .replace(/shader_type\s+[a-z_]+\s*;/g, "")
     .replace(/render_mode[^;]*;/g, "")
-    .replace(/uniform[^;]*;/g, "")
+    .replace(/\bgroup_uniforms\b[^;]*;/g, "")
+    // `instance uniform` / `global uniform` leave with their declaration, qualifier included.
+    .replace(/(?:\b(?:instance|global)\s+)?uniform[^;]*;/g, "")
     .replace(/varying[^;]*;/g, "");
   helpers = removeFunction(helpers, "fragment");
   helpers = removeFunction(helpers, "vertex");
@@ -523,6 +538,7 @@ export function parseShader(src: string): ParsedShader {
     uniforms,
     samplers,
     screenTextureNames,
+    declarations,
     varyings,
     vertexBody: vertex,
     fragmentBody: fragment,
@@ -552,16 +568,25 @@ function parseUniforms(src: string): {
   uniforms: ShaderUniform[];
   samplers: ShaderSampler[];
   screenTextureNames: string[];
+  declarations: Map<string, ShaderUniformDeclaration>;
 } {
   const uniforms: ShaderUniform[] = [];
   const samplers: ShaderSampler[] = [];
   const screenTextureNames: string[] = [];
-  const re = /uniform\s+([a-zA-Z0-9_]+)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*([^;]*);/g;
+  const declarations = new Map<string, ShaderUniformDeclaration>();
+  const re =
+    /(?:\b(instance|global)\s+)?uniform\s+([a-zA-Z0-9_]+)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*([^;]*);/g;
   for (const match of src.matchAll(re)) {
-    const type = match[1];
-    const name = match[2];
-    const rest = match[3].trim(); // array length, hints, and/or `= default`
+    const type = match[2];
+    const name = match[3];
+    const rest = match[4].trim(); // array length, hints, and/or `= default`
     const arrayLength = parseArrayLength(rest, src);
+    const eq = rest.indexOf("=");
+    declarations.set(name, {
+      qualifier: (match[1] as "instance" | "global" | undefined) ?? null,
+      hints: parseHints(rest),
+      defaultText: eq < 0 ? null : rest.slice(eq + 1).trim(),
+    });
     if (GLSL_SAMPLER_TYPES.has(type)) {
       // A `hint_screen_texture` sampler is Godot 4's SCREEN_TEXTURE built-in, not a
       // user texture: it must NOT land in `samplers` (the runtime would try to resolve
@@ -587,7 +612,18 @@ function parseUniforms(src: string): {
       default: parseUniformDefault(rest),
     });
   }
-  return { uniforms, samplers, screenTextureNames };
+  return { uniforms, samplers, screenTextureNames, declarations };
+}
+
+/** The hint tokens of a uniform declaration's tail (`: a, b(1, 2) = …` -> `["a", "b(1, 2)"]`). */
+function parseHints(rest: string): string[] {
+  const colon = rest.indexOf(":");
+  if (colon < 0) return [];
+  const eq = rest.indexOf("=", colon);
+  const segment = rest.slice(colon + 1, eq < 0 ? undefined : eq);
+  return [...segment.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?/g)].map(
+    (m) => m[0].replace(/\s+/g, " "),
+  );
 }
 
 function parseArrayLength(rest: string, src: string): number | undefined {
@@ -689,10 +725,16 @@ export function rejectUnsupported(logic: string, parsed: ParsedShader): void {
       "unsigned integer variables are not supported",
     );
   }
-  // Reject unknown ALL-CAPS built-in-looking tokens that aren't supported and
-  // aren't a known mixed-case user identifier (defensive; GLSL compile is the
-  // ultimate backstop).
-  void parsed;
+  // A per-item (`instance`) or project-wide (`global`) uniform has no value a fullscreen
+  // effect runtime binds (it reads material `shader_parameter`s only): refuse rather than
+  // draw it as zero. The item-space emitter (item-shader.ts) supplies instance values.
+  for (const [name, d] of parsed.declarations) {
+    if (d.qualifier !== null) {
+      throw new UnsupportedShaderError(
+        `${d.qualifier} uniform "${name}" is not supported`,
+      );
+    }
+  }
 }
 
 // ---- Godot resource containers ---------------------------------------------
@@ -825,6 +867,12 @@ export function matchBrace(src: string, openIndex: number): number {
 export function promoteIntLiterals(
   src: string,
   intIdentifiers: Iterable<string> = [],
+  options: {
+    /** Also keep a literal that is an ARITHMETIC operand (`+ - * / %`) of an int identifier
+     *  (`phase % 6`, `5 - p`, `iv.y * 2`), not only a comparison one. Godot converts an int
+     *  literal only where a float is expected, so these stay int in Godot too. */
+    arithmetic?: boolean;
+  } = {},
 ): string {
   const ranges = skipRanges(src);
   const intNames = [...intIdentifiers];
@@ -834,7 +882,7 @@ export function promoteIntLiterals(
     }
     if (
       intNames.length > 0 &&
-      isIntegerComparisonLiteral(src, offset, intNames)
+      isIntegerComparisonLiteral(src, offset, intNames, options.arithmetic)
     ) {
       return match;
     }
@@ -861,7 +909,11 @@ function isIntegerComparisonLiteral(
   src: string,
   offset: number,
   tokens: string[],
+  arithmetic = false,
 ): boolean {
+  if (arithmetic && isIntegerArithmeticLiteral(src, offset, tokens)) {
+    return true;
+  }
   let start = offset;
   while (start > 0 && !";{}\n".includes(src[start - 1])) start -= 1;
   let end = offset;
@@ -880,6 +932,35 @@ function isIntegerComparisonLiteral(
       new RegExp(`^\\s*${comparison}\\s*\\b${escaped}\\b`).test(after)
     );
   });
+}
+
+/** Whether the int literal at `offset` is the direct operand of a binary arithmetic or
+ *  comparison operator whose other operand is an int identifier (optionally swizzled, `iv.y`):
+ *  `phase % 6`, `5 - p`, `k == 3`. Only the immediate neighbour is looked at, which is the
+ *  binding operand for `* / %` and for a left-to-right `+ -` chain of ints. */
+function isIntegerArithmeticLiteral(
+  src: string,
+  offset: number,
+  tokens: string[],
+): boolean {
+  const literal = /^\d+/.exec(src.slice(offset))?.[0] ?? "";
+  const names = new Set(tokens);
+  const op = "(?:==|!=|<=|>=|<|>|\\+|-|\\*|/|%)";
+  const before = src.slice(Math.max(0, offset - 96), offset);
+  const after = src.slice(
+    offset + literal.length,
+    offset + literal.length + 96,
+  );
+  const left = new RegExp(
+    `([A-Za-z_][A-Za-z0-9_]*)(?:\\.[xyzwrgba]{1,4})?\\s*${op}\\s*$`,
+  ).exec(before);
+  if (left && names.has(left[1])) {
+    return true;
+  }
+  const right = new RegExp(
+    `^\\s*${op}\\s*([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_(])`,
+  ).exec(after);
+  return right !== null && names.has(right[1]);
 }
 
 /** Whole-identifier match: `TIME` must not fire on `LIFETIME`, `COLOR` not on

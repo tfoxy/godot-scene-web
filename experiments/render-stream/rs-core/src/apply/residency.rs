@@ -210,21 +210,42 @@ impl Names {
 
     /// The `ok` shaders whose code is a payload, of the named materials (`_named_shader_ids`).
     pub fn named_payload_shaders(&self, state: &ResolvedState) -> BTreeSet<Id> {
+        self.named_shaders(state)
+            .into_iter()
+            .filter(|sid| {
+                state
+                    .shaders
+                    .get(sid)
+                    .is_some_and(|s| s.source == Some(ShaderSource::Payload))
+            })
+            .collect()
+    }
+
+    /// The `ok` materials some item names (`_named_material_ids`), ascending.
+    pub fn named_materials(&self, state: &ResolvedState) -> BTreeSet<Id> {
+        self.material_refs
+            .iter()
+            .filter(|(mid, n)| {
+                **n > 0
+                    && state
+                        .materials
+                        .get(mid)
+                        .is_some_and(|m| m.status == EntryStatus::Ok)
+            })
+            .map(|(mid, _)| *mid)
+            .collect()
+    }
+
+    /// The `ok` shaders of the named materials, whatever their code's source (`_named_shader_ids`).
+    pub fn named_shaders(&self, state: &ResolvedState) -> BTreeSet<Id> {
         let mut out = BTreeSet::new();
-        for (mid, n) in &self.material_refs {
-            if *n == 0 {
-                continue;
-            }
-            let Some(m) = state.materials.get(mid) else {
-                continue;
-            };
-            if m.status != EntryStatus::Ok {
-                continue;
-            }
-            if let Some(sid) = m.shader {
-                if state.shaders.get(&sid).is_some_and(|s| {
-                    s.status == EntryStatus::Ok && s.source == Some(ShaderSource::Payload)
-                }) {
+        for mid in self.named_materials(state) {
+            if let Some(sid) = state.materials.get(&mid).and_then(|m| m.shader) {
+                if state
+                    .shaders
+                    .get(&sid)
+                    .is_some_and(|s| s.status == EntryStatus::Ok)
+                {
                     out.insert(sid);
                 }
             }
