@@ -56,7 +56,9 @@ must respect someone else's window: before starting any heavy desktop work (gate
 legs, cargo builds, pnpm suites), check `flock -n <scratchpad>/quiet-machine.lock true`; if it
 fails, another agent is measuring — wait (background `sleep 120`) and retry. The orchestrator
 gives the scratchpad path in the brief. Load-sensitive groups: full gate 6 (g6l, g6c, g6s),
-g1d, g5f, g55f, gate 2 live-animate pins, g7-bench, live browser legs.
+g1d, g5f, g55f, gate 2 live-animate pins, g7-bench, live browser legs' cadence/rate checks.
+Hold the lock only around those groups, never a whole multi-gate source run; correctness checks
+(pixels, state, resync, refusals) are load-tolerant and run unlocked.
 
 ## Context hygiene
 
