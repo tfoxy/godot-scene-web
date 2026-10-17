@@ -33,7 +33,7 @@ use crate::state::{
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
     Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, Target, Uniform,
-    DRAW_SCISSOR, WHITE_TEXTURE,
+    DRAW_MSDF, DRAW_SCISSOR, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
 use payloads::{MeshGeometry, PayloadStore};
@@ -1931,6 +1931,7 @@ impl Applier {
                     tex,
                     force_repeat,
                     clip_ignored,
+                    msdf,
                 } = *ld;
                 let (texture, filter, repeat) = match tex {
                     TexRef::White => (WHITE_TEXTURE, item_filter, item_repeat),
@@ -1977,7 +1978,9 @@ impl Applier {
                     blend: a.blend as u32,
                     program: a.program,
                     scissor: scissor.unwrap_or([0; 4]),
-                    flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 },
+                    flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 }
+                        | if msdf.is_some() { DRAW_MSDF } else { 0 },
+                    msdf: msdf.unwrap_or([0.0; 2]),
                 });
             }
         }

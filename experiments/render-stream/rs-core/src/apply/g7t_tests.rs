@@ -225,26 +225,73 @@ fn nine_patch_tile_repeats_the_middle_per_period() {
 }
 
 #[test]
-fn msdf_is_typed_and_not_drawn_and_drop_msdf_is_silent() {
+fn msdf_draws_as_a_flagged_region_and_drop_msdf_skips_it() {
+    // G7tm: canvas_item_add_msdf_texture_rect_region is a region rect (renderer_canvas_cull.cpp
+    // 1544-1576) whose draw carries [px_range, outline / scale / 4] (rasterizer_canvas_gles3.cpp
+    // 999-1004). A flipped destination flips the quad as a plain region does.
     let mut t = HashMap::new();
-    t.insert(3, (64, 64));
+    t.insert(3, (64, 32));
     let tables = Tables { textures: t };
+    let msdf = |outline: i64, rect: [f32; 4], scale: f32| Command::MsdfTextureRectRegion {
+        tex: Some(3),
+        outline,
+        rect,
+        src: [8.0, 4.0, 16.0, 8.0],
+        modulate: [1.0, 0.5, 0.25, 1.0],
+        px_range: 24.0,
+        scale,
+    };
     let cmds = commands(
-        vec![Command::MsdfTextureRectRegion {
-            tex: Some(3),
-            outline: 0,
-            rect: [4.0, 4.0, 10.0, 12.0],
-            src: [0.0, 0.0, 10.0, 12.0],
-            modulate: [1.0; 4],
-            px_range: 4.0,
-            scale: 1.0,
-        }],
+        vec![
+            msdf(0, [4.0, 4.0, 10.0, 12.0], 0.5),
+            msdf(4, [-2.0, 6.0, -10.0, 12.0], 1.5),
+        ],
         vec![],
     );
     let l = lower::lower(&cmds, &tables);
-    assert!(l.draws.is_empty());
-    assert_eq!(shortcut(&l, Shortcut::MsdfSkipped), 1);
-    assert_eq!(l.rect, [4.0, 4.0, 10.0, 12.0]);
+    assert!(l.shortcuts.is_empty(), "{:?}", l.shortcuts);
+    assert_eq!(l.draws.len(), 2);
+    assert_eq!(l.draws[0].msdf, Some([24.0, 0.0]));
+    // (float)4 / 1.5f / 4.0, in f32.
+    assert_eq!(l.draws[1].msdf, Some([24.0, 4.0f32 / 1.5f32 / 4.0]));
+    assert_eq!(l.draws[0].tex, lower::TexRef::Wire(3));
+    assert_eq!(l.texture_deps, vec![3]);
+    // The plain region's quad: src scaled by 1/size, vertex order (0,0) (0,1) (1,1) (1,0).
+    let uv: Vec<[f32; 2]> = l.verts[..4].iter().map(|v| v.uv).collect();
+    assert_eq!(
+        uv,
+        vec![
+            [0.125, 0.125],
+            [0.125, 0.375],
+            [0.375, 0.375],
+            [0.375, 0.125]
+        ]
+    );
+    let pos: Vec<[f32; 2]> = l.verts[..4].iter().map(|v| v.pos).collect();
+    assert_eq!(
+        pos,
+        vec![[4.0, 4.0], [4.0, 16.0], [14.0, 16.0], [14.0, 4.0]]
+    );
+    assert_eq!(l.verts[0].color, [1.0, 0.5, 0.25, 1.0]);
+    // The negative width flips H and is made positive with the position kept (as
+    // canvas_item_add_msdf_texture_rect_region does): (-2, 6, 10, 12), the vertices mirrored.
+    let pos: Vec<[f32; 2]> = l.verts[4..8].iter().map(|v| v.pos).collect();
+    assert_eq!(
+        pos,
+        vec![[8.0, 6.0], [8.0, 18.0], [-2.0, 18.0], [-2.0, 6.0]]
+    );
+    assert_eq!(l.rect, [-2.0, 4.0, 16.0, 14.0]);
+
+    let half = lower::lower_with(
+        &cmds,
+        &tables,
+        LowerSabotage {
+            msdf_px_range: true,
+            ..LowerSabotage::default()
+        },
+    );
+    assert_eq!(half.draws[0].msdf, Some([12.0, 0.0]));
+
     let dropped = lower::lower_with(
         &cmds,
         &tables,
@@ -254,7 +301,9 @@ fn msdf_is_typed_and_not_drawn_and_drop_msdf_is_silent() {
         },
     );
     assert!(dropped.draws.is_empty());
-    assert_eq!(shortcut(&dropped, Shortcut::MsdfSkipped), 0);
+    assert!(dropped.shortcuts.is_empty());
+    assert_eq!(dropped.rect, [-2.0, 4.0, 16.0, 14.0]);
+    assert_eq!(dropped.texture_deps, vec![3]);
 }
 
 #[test]

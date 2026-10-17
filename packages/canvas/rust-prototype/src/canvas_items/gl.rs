@@ -18,7 +18,7 @@
 use super::{
     Call, ExecOptions, ExecStats, FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW,
     MAX_PROGRAM_SAMPLERS, Sabotage, gl_scissor, gl_scissor_y_up, godot_screen_transform,
-    item_program_fragment, item_rows_for, item_upload_rects, plan_calls,
+    item_program_fragment, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
 };
 use crate::present::{
     ContextAttributes,
@@ -26,8 +26,8 @@ use crate::present::{
 };
 use glow::HasContext;
 use gsw_canvas_draw_list::{
-    BUILTIN_PROGRAM, Binding, Blend, DRAW_SCISSOR, DrawList, Format, Sampler, Target, TextureOp,
-    UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
+    BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, Draw, DrawList, Format, Sampler,
+    Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -217,6 +217,9 @@ struct Cache {
     projection: Option<(u32, u32, bool)>,
     /// The present program's `u_flip_rows` (G7t: Godot's orientation).
     flip_rows: Option<i32>,
+    /// The builtin MSDF program's projection and [`MsdfState`] (G7tm).
+    msdf_projection: Option<(u32, u32, bool)>,
+    msdf_state: Option<MsdfState>,
     /// Texture and sampler object on each item-space sampler unit.
     units: [Option<(glow::Texture, glow::Sampler)>; 16],
 }
@@ -238,6 +241,41 @@ struct CompiledItem {
     premultiply_out: Option<bool>,
     /// The (binding slot, version) whose values GL holds.
     applied: Option<(u32, u64)>,
+    /// `gsw_msdf_on`, `gsw_msdf`, `gsw_msdf_no_median` (G7tm).
+    u_msdf_on: Option<glow::UniformLocation>,
+    u_msdf: Option<glow::UniformLocation>,
+    u_msdf_no_median: Option<glow::UniformLocation>,
+    msdf_state: Option<(bool, MsdfState)>,
+}
+
+/// An MSDF draw's fragment uniforms as GL holds them: `[px_range, outline]` as bits, and whether
+/// [`Sabotage::MsdfNoMedian`] is on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct MsdfState {
+    params: [u32; 2],
+    no_median: bool,
+}
+
+impl MsdfState {
+    fn of(draw: &Draw, sabotage: Option<Sabotage>) -> MsdfState {
+        MsdfState {
+            params: draw.msdf.map(f32::to_bits),
+            no_median: sabotage == Some(Sabotage::MsdfNoMedian),
+        }
+    }
+}
+
+/// The builtin program's MSDF variant: [`VERT`] with [`msdf_fragment`] (G7tm).
+struct MsdfProgram {
+    program: glow::Program,
+    u_projection: Option<glow::UniformLocation>,
+    u_godot_screen: Option<glow::UniformLocation>,
+    u_screen: Option<glow::UniformLocation>,
+    u_premultiply_out: Option<glow::UniformLocation>,
+    u_msdf: Option<glow::UniformLocation>,
+    u_msdf_no_median: Option<glow::UniformLocation>,
+    /// `u_premultiply_out` as GL holds it.
+    premultiply_out: Option<bool>,
 }
 
 /// A registered item-space program: its module (kept to recompile after a restored context).
@@ -257,6 +295,7 @@ struct TargetObjects {
 /// Every GL object besides the list's textures (re-created on restore).
 struct Objects {
     program: glow::Program,
+    msdf: MsdfProgram,
     u_projection: Option<glow::UniformLocation>,
     u_godot_screen: Option<glow::UniformLocation>,
     u_screen: Option<glow::UniformLocation>,
@@ -379,6 +418,10 @@ fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String
             projection: None,
             premultiply_out: None,
             applied: None,
+            u_msdf_on: gl.get_uniform_location(program, "gsw_msdf_on"),
+            u_msdf: gl.get_uniform_location(program, "gsw_msdf"),
+            u_msdf_no_median: gl.get_uniform_location(program, "gsw_msdf_no_median"),
+            msdf_state: None,
         };
         gl.use_program(None);
         Ok(compiled)
@@ -470,6 +513,33 @@ impl Objects {
                 gl.get_uniform_location(program, "u_items").as_ref(),
                 UNIT_ITEMS as i32,
             );
+            // G7tm: the MSDF variant. Its vertex stage passes the modulate straight; the fragment
+            // stage premultiplies last.
+            let msdf_program = compile(gl, VERT, &msdf_fragment())?;
+            gl.use_program(Some(msdf_program));
+            gl.uniform_1_i32(
+                gl.get_uniform_location(msdf_program, "u_premultiply")
+                    .as_ref(),
+                0,
+            );
+            gl.uniform_1_i32(
+                gl.get_uniform_location(msdf_program, "u_texture").as_ref(),
+                UNIT_DRAW as i32,
+            );
+            gl.uniform_1_i32(
+                gl.get_uniform_location(msdf_program, "u_items").as_ref(),
+                UNIT_ITEMS as i32,
+            );
+            let msdf = MsdfProgram {
+                program: msdf_program,
+                u_projection: gl.get_uniform_location(msdf_program, "u_projection"),
+                u_godot_screen: gl.get_uniform_location(msdf_program, "u_godot_screen"),
+                u_screen: gl.get_uniform_location(msdf_program, "u_screen"),
+                u_premultiply_out: gl.get_uniform_location(msdf_program, "u_premultiply_out"),
+                u_msdf: gl.get_uniform_location(msdf_program, "u_msdf"),
+                u_msdf_no_median: gl.get_uniform_location(msdf_program, "u_msdf_no_median"),
+                premultiply_out: None,
+            };
             let present_program = compile(gl, PRESENT_VERT, PRESENT_FRAG)?;
             gl.use_program(Some(present_program));
             gl.uniform_1_i32(
@@ -564,6 +634,7 @@ impl Objects {
             let u_flip_rows = gl.get_uniform_location(present_program, "u_flip_rows");
             Ok(Objects {
                 program,
+                msdf,
                 u_projection,
                 u_godot_screen,
                 u_screen,
@@ -1332,6 +1403,9 @@ impl CanvasItemsExecutor {
         let godot = self.options.godot_orientation;
         let screen = godot_screen_transform(width, height);
         bind_vertex_array(gl, cache, objects.vertex_array);
+        let Some(objects) = self.objects.as_mut() else {
+            return;
+        };
 
         for call in calls.iter() {
             let n = self.planned_calls;
@@ -1343,7 +1417,38 @@ impl CanvasItemsExecutor {
             let draw = &list.draws[call.draw as usize];
             // `plan_calls` admitted only known blends.
             let blend = Blend::from_u32(draw.blend).unwrap_or(Blend::Mix);
-            if draw.program == BUILTIN_PROGRAM {
+            let msdf = draw.flags & DRAW_MSDF != 0;
+            if draw.program == BUILTIN_PROGRAM && msdf {
+                // G7tm: the builtin's MSDF variant.
+                let m = &mut objects.msdf;
+                if cache.program != Some(m.program) {
+                    unsafe { gl.c().use_program(Some(m.program)) };
+                    cache.program = Some(m.program);
+                }
+                if cache.msdf_projection != Some((width, height, godot)) {
+                    set_vertex_projection(
+                        gl,
+                        [&m.u_projection, &m.u_godot_screen, &m.u_screen],
+                        projection,
+                        godot,
+                        &screen,
+                    );
+                    cache.msdf_projection = Some((width, height, godot));
+                }
+                let premultiply_out = premultiplies(blend, list.target.opaque);
+                if m.premultiply_out != Some(premultiply_out) {
+                    unsafe {
+                        gl.c()
+                            .uniform_1_i32(m.u_premultiply_out.as_ref(), premultiply_out as i32)
+                    };
+                    m.premultiply_out = Some(premultiply_out);
+                }
+                let state = MsdfState::of(draw, sabotage);
+                if cache.msdf_state != Some(state) {
+                    set_msdf(gl, [&m.u_msdf, &m.u_msdf_no_median], draw.msdf, state);
+                    cache.msdf_state = Some(state);
+                }
+            } else if draw.program == BUILTIN_PROGRAM {
                 if cache.program != Some(objects.program) {
                     unsafe { gl.c().use_program(Some(objects.program)) };
                     cache.program = Some(objects.program);
@@ -1395,6 +1500,17 @@ impl CanvasItemsExecutor {
                             .uniform_1_i32(item.u_premultiply_out.as_ref(), premultiply_out as i32)
                     };
                     item.premultiply_out = Some(premultiply_out);
+                }
+                // G7tm: an MSDF draw through an item-space program (canvas.glsl's MSDF branch
+                // runs before the shader's fragment code).
+                let state = MsdfState::of(draw, sabotage);
+                if msdf && item.msdf_state != Some((true, state)) {
+                    unsafe { gl.c().uniform_1_i32(item.u_msdf_on.as_ref(), 1) };
+                    set_msdf(gl, [&item.u_msdf, &item.u_msdf_no_median], draw.msdf, state);
+                    item.msdf_state = Some((true, state));
+                } else if !msdf && item.msdf_state.map(|(on, _)| on) != Some(false) {
+                    unsafe { gl.c().uniform_1_i32(item.u_msdf_on.as_ref(), 0) };
+                    item.msdf_state = Some((false, state));
                 }
                 let version = self
                     .binding_versions
@@ -1459,7 +1575,8 @@ impl CanvasItemsExecutor {
             }
             set_blend(gl, cache, blend, list.target.opaque, stats);
             let premultiply = premultiplies(blend, list.target.opaque);
-            if draw.program == BUILTIN_PROGRAM && cache.premultiply != Some(premultiply) {
+            // (The MSDF variant holds its own `u_premultiply_out`, set above.)
+            if draw.program == BUILTIN_PROGRAM && !msdf && cache.premultiply != Some(premultiply) {
                 // Textures stored premultiplied (the premultiplied-upload sabotage) are sampled
                 // as premultiplied: only the vertex colour is premultiplied in the shader.
                 let texel = premultiply && sabotage != Some(Sabotage::PremultipliedUpload);
@@ -1588,6 +1705,7 @@ impl Drop for CanvasItemsExecutor {
             }
             if let Some(o) = self.objects.take() {
                 gl.delete_program(o.program);
+                gl.delete_program(o.msdf.program);
                 gl.delete_program(o.present_program);
                 gl.delete_vertex_array(o.present_vertex_array);
                 gl.delete_vertex_array(o.vertex_array);
@@ -1680,6 +1798,20 @@ fn set_scissor_enabled(gl: &Gl, cache: &mut Cache, enabled: bool) {
 /// The vertex stage's projection uniforms (`u_projection`, `u_godot_screen`, `u_screen`), for the
 /// builtin program and every item-space program alike (they share [`VERT`]): `executor-webgl.ts`'s
 /// projection, or Godot's `screen_transform` under [`ExecOptions::godot_orientation`].
+/// An MSDF draw's fragment uniforms: `[px_range, outline]` and the `msdf-no-median` switch.
+fn set_msdf(
+    gl: &Gl,
+    [u_msdf, u_no_median]: [&Option<glow::UniformLocation>; 2],
+    [px_range, outline]: [f32; 2],
+    state: MsdfState,
+) {
+    unsafe {
+        gl.c().uniform_2_f32(u_msdf.as_ref(), px_range, outline);
+        gl.c()
+            .uniform_1_i32(u_no_median.as_ref(), i32::from(state.no_median));
+    }
+}
+
 fn set_vertex_projection(
     gl: &Gl,
     [u_projection, u_godot_screen, u_screen]: [&Option<glow::UniformLocation>; 3],

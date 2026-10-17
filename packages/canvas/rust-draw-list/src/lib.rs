@@ -11,8 +11,8 @@
 //!   item's row, so a transform-only change moves one 48-byte row and no vertex.
 //! - [`Vertex`]: an item-local position, a normalized uv, a STRAIGHT colour and the item index.
 //! - indices: `u32`, in final paint order.
-//! - [`Draw`]: an index range plus the state it needs (texture, sampler, blend, program, scissor).
-//!   Draws are in final paint order. An executor may merge ADJACENT draws whose state is equal and
+//! - [`Draw`]: an index range plus the state it needs (texture, sampler, blend, program, scissor,
+//!   and a multi-channel signed distance field's parameters). Draws are in final paint order. An executor may merge ADJACENT draws whose state is equal and
 //!   whose index ranges touch, never reorder them.
 //! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels and frees.
 //! - [`Binding`]s: item-space programs (Godot's custom `canvas_item` shaders, registered with the
@@ -58,9 +58,9 @@ pub struct Vertex {
     pub item: u32,
 }
 
-/// One draw: an index range in paint order and its state. 44 bytes.
+/// One draw: an index range in paint order and its state. 52 bytes.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, Pod, Zeroable)]
 pub struct Draw {
     pub first_index: u32,
     pub index_count: u32,
@@ -77,12 +77,25 @@ pub struct Draw {
     /// `flags & DRAW_SCISSOR`.
     pub scissor: [i32; 4],
     pub flags: u32,
+    /// `[px_range, outline]` of a [`DRAW_MSDF`] draw, as Godot's GLES3 renderer stores them per
+    /// instance (rasterizer_canvas_gles3.cpp:999-1004): the field's distance range in texels and
+    /// the outline thickness in texels (`outline_size / scale / 4`, renderer_canvas_cull.cpp:1574).
+    /// Zero, and ignored, without the flag.
+    pub msdf: [f32; 2],
 }
 
 pub const WHITE_TEXTURE: u32 = 0;
 pub const BUILTIN_PROGRAM: u32 = 0;
 /// [`Draw::flags`]: the draw is scissored.
 pub const DRAW_SCISSOR: u32 = 1;
+/// [`Draw::flags`]: the texture is a multi-channel signed distance field and the draw computes
+/// its coverage the way Godot 4.5.1's `canvas.glsl` does for `INSTANCE_FLAGS_USE_MSDF`
+/// (drivers/gles3/shaders/canvas.glsl:562-618): the median of the RGB distances (the alpha
+/// channel's true distance bounds an outline), scaled to screen pixels by `px_range` over the
+/// texture size times `1 / fwidth(uv)`. The texel is not multiplied in: the colour is the vertex
+/// colour and the modulate, with the coverage multiplied into alpha. [`Draw::msdf`] holds the
+/// parameters.
+pub const DRAW_MSDF: u32 = 2;
 
 /// Sampler bits.
 pub struct Sampler;
@@ -415,16 +428,21 @@ pub fn mergeable(prev: &Draw, next: &Draw) -> bool {
         && prev.program == next.program
         && prev.flags == next.flags
         && (prev.flags & DRAW_SCISSOR == 0 || prev.scissor == next.scissor)
+        && (prev.flags & DRAW_MSDF == 0 || prev.msdf == next.msdf)
 }
 
 /// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path. It
-/// holds the POD arrays only: [`DrawList::bindings`] (G7s) are not in version 1.
+/// holds the POD arrays only: [`DrawList::bindings`] (G7s) are not in it.
 ///
 /// ```text
-/// "PDL1" u32 version(1) u32 width u32 height u32 format f32×4 clear
+/// "PDL1" u32 version u32 width u32 height u32 format f32×4 clear
 /// u32 items u32 vertices u32 indices u32 draws
 /// Item×items Vertex×vertices u32×indices Draw×draws      (all little-endian, packed)
 /// ```
+///
+/// Version 1 draws are 44 bytes ([`Draw`] without [`Draw::msdf`]); version 2 draws are the whole
+/// 52-byte [`Draw`]. [`encode`] writes version 1 unless a draw has [`DRAW_MSDF`], so a list with no
+/// MSDF draw dumps exactly as before; [`decode`] reads both.
 pub mod pdl1 {
     use super::*;
 
@@ -432,17 +450,31 @@ pub mod pdl1 {
     /// The header's format word carries [`Target::opaque`] in this bit.
     pub const OPAQUE_BIT: u32 = 1 << 8;
 
+    /// Bytes of one version-1 draw: [`Draw`] up to [`Draw::msdf`].
+    pub const DRAW_V1_BYTES: usize = 44;
+    pub const DRAW_V2_BYTES: usize = std::mem::size_of::<Draw>();
+
     pub fn encode(list: &DrawList) -> Vec<u8> {
+        let version = if list.draws.iter().any(|d| d.flags & DRAW_MSDF != 0) {
+            2u32
+        } else {
+            1
+        };
+        let draw_bytes = if version == 1 {
+            DRAW_V1_BYTES
+        } else {
+            DRAW_V2_BYTES
+        };
         let mut out = Vec::with_capacity(
             48 + list.items.len() * 48
                 + list.vertices.len() * 36
                 + list.indices.len() * 4
-                + list.draws.len() * 44,
+                + list.draws.len() * draw_bytes,
         );
         out.extend_from_slice(MAGIC);
-        // The format word's bit 8 is `Target::opaque` (version-1 dumps never set it).
+        // The format word's bit 8 is `Target::opaque` (the earliest dumps never set it).
         for v in [
-            1u32,
+            version,
             list.target.width,
             list.target.height,
             list.target.format as u32 | if list.target.opaque { OPAQUE_BIT } else { 0 },
@@ -463,7 +495,9 @@ pub mod pdl1 {
         out.extend_from_slice(bytemuck::cast_slice(&list.items));
         out.extend_from_slice(bytemuck::cast_slice(&list.vertices));
         out.extend_from_slice(bytemuck::cast_slice(&list.indices));
-        out.extend_from_slice(bytemuck::cast_slice(&list.draws));
+        for d in &list.draws {
+            out.extend_from_slice(&bytemuck::bytes_of(d)[..draw_bytes]);
+        }
         out
     }
 
@@ -477,9 +511,11 @@ pub mod pdl1 {
         if bytes.get(0..4) != Some(MAGIC.as_slice()) {
             return Err("PDL1: bad magic".into());
         }
-        if u32_at(4)? != 1 {
-            return Err("PDL1: unknown version".into());
-        }
+        let draw_bytes = match u32_at(4)? {
+            1 => DRAW_V1_BYTES,
+            2 => DRAW_V2_BYTES,
+            _ => return Err("PDL1: unknown version".into()),
+        };
         let word = u32_at(16)?;
         let format = match word & !OPAQUE_BIT {
             0 => Format::Rgb10A2,
@@ -507,7 +543,14 @@ pub mod pdl1 {
         let items: Vec<Item> = bytemuck::pod_collect_to_vec(take(counts[0] * 48)?);
         let vertices: Vec<Vertex> = bytemuck::pod_collect_to_vec(take(counts[1] * 36)?);
         let indices: Vec<u32> = bytemuck::pod_collect_to_vec(take(counts[2] * 4)?);
-        let draws: Vec<Draw> = bytemuck::pod_collect_to_vec(take(counts[3] * 44)?);
+        let draws: Vec<Draw> = take(counts[3] * draw_bytes)?
+            .chunks_exact(draw_bytes)
+            .map(|b| {
+                let mut d = Draw::default();
+                bytemuck::bytes_of_mut(&mut d)[..draw_bytes].copy_from_slice(b);
+                d
+            })
+            .collect();
         if o != bytes.len() {
             return Err("PDL1: trailing bytes".into());
         }
@@ -542,7 +585,8 @@ mod tests {
     fn sizes_are_the_contract() {
         assert_eq!(std::mem::size_of::<Item>(), 48);
         assert_eq!(std::mem::size_of::<Vertex>(), 36);
-        assert_eq!(std::mem::size_of::<Draw>(), 44);
+        assert_eq!(std::mem::size_of::<Draw>(), 52);
+        assert_eq!(std::mem::offset_of!(Draw, msdf), pdl1::DRAW_V1_BYTES);
     }
 
     #[test]
@@ -624,11 +668,65 @@ mod tests {
             ..Draw::default()
         });
         let bytes = pdl1::encode(&list);
+        // No MSDF draw: version 1, 44-byte draws.
+        assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
+        assert_eq!(bytes.len(), 52 + 48 + 36 + 12 + 44);
         let back = pdl1::decode(&bytes).unwrap();
         assert_eq!(back.target, list.target);
         assert_eq!(back.items, list.items);
         assert_eq!(back.vertices, list.vertices);
         assert_eq!(back.indices, list.indices);
         assert_eq!(back.draws, list.draws);
+
+        list.draws.push(Draw {
+            first_index: 0,
+            index_count: 3,
+            texture: 7,
+            flags: DRAW_MSDF,
+            msdf: [24.0, 0.375],
+            ..Draw::default()
+        });
+        let bytes = pdl1::encode(&list);
+        assert_eq!(&bytes[4..8], &2u32.to_le_bytes());
+        assert_eq!(bytes.len(), 52 + 48 + 36 + 12 + 2 * 52);
+        let back = pdl1::decode(&bytes).unwrap();
+        assert_eq!(back.draws, list.draws);
+    }
+
+    #[test]
+    fn msdf_draws_merge_only_with_equal_parameters() {
+        let a = Draw {
+            first_index: 0,
+            index_count: 6,
+            texture: 3,
+            flags: DRAW_MSDF,
+            msdf: [24.0, 0.0],
+            ..Draw::default()
+        };
+        let same = Draw {
+            first_index: 6,
+            ..a
+        };
+        let outline = Draw {
+            first_index: 12,
+            msdf: [24.0, 1.0],
+            ..a
+        };
+        let plain = Draw {
+            first_index: 18,
+            flags: 0,
+            msdf: [0.0; 2],
+            ..a
+        };
+        assert!(mergeable(&a, &same));
+        assert!(!mergeable(&same, &outline));
+        assert!(!mergeable(&outline, &plain));
+        // Without the flag the parameters are ignored.
+        let plain2 = Draw {
+            first_index: 24,
+            msdf: [9.0, 9.0],
+            ..plain
+        };
+        assert!(mergeable(&plain, &plain2));
     }
 }

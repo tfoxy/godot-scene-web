@@ -7,11 +7,11 @@
 // receiver leg of a source run and seeing which checks change, scripts/test/probe-receiver-checks
 // .ts), the Q7 plans, and the checks G7t adds (lib/gate7-gsw-checks.ts calls `g45ExtraChecks`).
 //
-// Typed refusals (Q7's last row, Q8 "`gsw` g4e: `unsupported` with exactly `gsw-msdf`"): gate 4e's
-// MSDF legs draw MSDF glyphs, which GSW does not render as MSDF. Their leg-class checks are judged
-// as typed: the gate's checker must class the leg `unsupported`, and the leg's applied.json
-// receiver-typed reasons must be exactly {gsw-msdf}. Their MSDF regions are `excluded` in the Q7
-// view; the checks that judge only those regions are not applicable, with that reason.
+// Typed refusals (Q7's last row): a leg whose op GSW types is judged as typed: the gate's checker
+// must class the leg `unsupported`, and the leg's applied.json receiver-typed reasons must be
+// exactly the listed ones. G7t typed gate 4e's MSDF legs `gsw-msdf`; G7tm draws MSDF text with
+// canvas.glsl's MSDF branch, so every gate 4e check is a receiver check again and no gate 4 or 5
+// leg is typed.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -44,12 +44,26 @@ export const G45_LEGS: Record<G45Gate, GswLegDef[]> = {
     { leg: "rich-receiver", replaces: true, compositor: true },
     { leg: "rich-receiver-patch", replaces: true },
     { leg: "rich-underline/receiver", replaces: true },
-    // g4e: fixtures/gate4-msdf (typed gsw-msdf) and the grayscale perturb-glyph sabotage.
+    // g4e: fixtures/gate4-msdf (MSDF text, G7tm) and the grayscale perturb-glyph sabotage.
     { leg: "msdf/receiver", replaces: true },
     { leg: "msdf/receiver-patch", replaces: true },
     { leg: "msdf/sabotage-perturb-glyph/receiver", replaces: true },
     { leg: "msdf/sabotage-receiver-drop/receiver", replaces: true },
     { leg: "msdf/sabotage-gray-perturb-glyph/receiver", replaces: true },
+    // G7tm's MSDF sabotages (protocol/gate7/g7tm.md "Sabotages"): each must change exactly the
+    // MSDF text regions drawn at each settle step, against the honest gsw leg.
+    {
+      leg: "msdf/sabotage-gsw-msdf-no-median",
+      from: "msdf/receiver",
+      env: { RS_RECEIVER_SABOTAGE: "msdf-no-median" },
+      replaces: false,
+    },
+    {
+      leg: "msdf/sabotage-gsw-msdf-px-range",
+      from: "msdf/receiver",
+      env: { RS_RECEIVER_SABOTAGE: "msdf-px-range" },
+      replaces: false,
+    },
     // g4f: fixtures/gate4-i18n (scripts, fallbacks, bidi).
     { leg: "i18n/receiver", replaces: true, compositor: true },
     { leg: "i18n/receiver-patch", replaces: true },
@@ -133,8 +147,6 @@ export interface G45ReceiverChecks {
 const NEVER_LOADED =
   "strace of a --headless native leg; replaced by no-source-scene@gsw (Q8)";
 const TYPED_CLEAN = "GDScript script-error markers in native logs";
-const MSDF_EXCLUDED =
-  "judges only gate 4e's MSDF glyph regions, which Q7 excludes for GSW (typed gsw-msdf, judged by the typed leg-class checks)";
 
 export const G45_RECEIVER_CHECKS: Record<G45Gate, G45ReceiverChecks> = {
   gate4: {
@@ -163,7 +175,12 @@ export const G45_RECEIVER_CHECKS: Record<G45Gate, G45ReceiverChecks> = {
       "sabotage-layout-omit-atlas-regions",
       "leg-class-receiver-lcd",
       "receiver-consumed-stream-layout",
-      // g4e
+      // g4e (G7tm: drawn, no longer typed gsw-msdf)
+      "leg-class-receiver-msdf",
+      "leg-class-receiver-msdf-patch",
+      "leg-class-sabotage-msdf-perturb-glyph",
+      "ink-presence-receiver-msdf",
+      "sabotage-msdf-perturb-glyph-regions",
       "receiver-vs-reference-msdf",
       "expected-image-receiver-msdf",
       "receiver-msdf-commands",
@@ -203,26 +220,8 @@ export const G45_RECEIVER_CHECKS: Record<G45Gate, G45ReceiverChecks> = {
       "receiver-typed-clean-layout": TYPED_CLEAN,
       "receiver-typed-clean-msdf": TYPED_CLEAN,
       "receiver-typed-clean-i18n": TYPED_CLEAN,
-      "ink-presence-receiver-msdf": MSDF_EXCLUDED,
-      "sabotage-msdf-perturb-glyph-regions": MSDF_EXCLUDED,
     },
-    typed: {
-      "leg-class-receiver-msdf": {
-        legs: ["receiver-msdf"],
-        dirs: ["msdf/receiver"],
-        reasons: ["gsw-msdf"],
-      },
-      "leg-class-receiver-msdf-patch": {
-        legs: ["receiver-msdf-patch"],
-        dirs: ["msdf/receiver-patch"],
-        reasons: ["gsw-msdf"],
-      },
-      "leg-class-sabotage-msdf-perturb-glyph": {
-        legs: ["sabotage-msdf-perturb-glyph"],
-        dirs: ["msdf/sabotage-perturb-glyph/receiver"],
-        reasons: ["gsw-msdf"],
-      },
-    },
+    typed: {},
   },
   gate5: {
     judged: [
