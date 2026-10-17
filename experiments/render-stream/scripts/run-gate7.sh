@@ -101,7 +101,8 @@
 #             G7t's checks (lib/gate7-gsw-g45-checks.ts; g7-5's lowering-parity runs
 #             `rs-core-check lowered` over the gate 5 source recordings). g5f's live legs are G7l's.
 #
-# Live halves (G7l, gate7-design.md "G7l", Q8; `--live`, which runs ONLY these):
+# Live halves (G7l, gate7-design.md "G7l", Q8; `--live`, which runs ONLY these; G7g adds g7-6's
+# g6l):
 #   g7-1 g7-2 g7-5 g7-55  the live groups of gates 1 (g1c, g1d), 2 (g2c, g2e, plus G7l's
 #             origin-refused and sabotage-no-cors), 5 (g5f) and 5.5 (g55f), delivered to a browser
 #             receiver over render-stream/7. A live leg cannot replay a source: per gate and receiver
@@ -112,6 +113,15 @@
 #             checker judges it there. check-gate7.ts --live then reports the checks that read a
 #             browser leg as `<id>@<kind>` plus gate 7's live checks (lib/gate7-live.ts). Timing-
 #             sensitive: run it on a quiet machine.
+#
+# Group landed (G7g, protocol/gate7/g7g.md): the gsw half of
+#   g7-6      gate 6's file receiver legs (g6a's scene, patch, inline, animate, refused and receiver
+#             sabotages; g6h's HD native at a 1920x1080 backing store; g6b's HD half at 960x540, the
+#             presentation hazard, ignore-presentation and ignore-canvas-stacking) in the GSW
+#             receiver, sourced (`--make-sources`: run-gate6.sh --legs g6a,g6h,g6b) and judged as
+#             g7-4/g7-5 (lib/gate7-gsw-g6.ts, check-gate6.ts buildGate6Report), plus
+#             presentation-check (the page's canvas backing store equals presentation_size; the web
+#             half gets it too, lib/gate7-g6-checks.ts). `--live` with g7-6 runs g6l in both browsers.
 #
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
@@ -383,14 +393,14 @@ if [ "$LIVE" = "1" ]; then
 		exit 2
 	fi
 	LIVE_RUNS=()
-	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f; do
+	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f g7-6:6:g6l; do
 		group="${pair%%:*}"
 		rest="${pair#*:}"
 		has_group "$group" || continue
 		LIVE_RUNS+=("$group:$rest")
 	done
 	if [ "${#LIVE_RUNS[@]}" -eq 0 ]; then
-		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55 in --legs" >&2
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6 in --legs" >&2
 		exit 2
 	fi
 	if [ ! -f "$EXTENSION" ]; then
@@ -464,10 +474,12 @@ CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG")
 want_gsw() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
 want_web() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; }
 SOURCE_GATES=()
-for g in 0 1 2 3 4 5 55; do
+for g in 0 1 2 3 4 5 55 6; do
 	has_group "g7-$g" || continue
 	# G7s: gate 5.5's gsw half takes this path; its web half is G7b's (below).
 	if [ "$g" = 55 ] && ! want_gsw; then continue; fi
+	# G7g: so does gate 6's (its web half is G7b's).
+	if [ "$g" = 6 ] && ! want_gsw; then continue; fi
 	if [ "$HARNESS_ENV" != "desktop" ]; then
 		echo "run-gate7: g7-$g runs on the desktop only (drop --env device)" >&2
 		exit 2
@@ -476,7 +488,7 @@ for g in 0 1 2 3 4 5 55; do
 done
 if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
 	if [ ! -f "$EXTENSION" ]; then
-		echo "run-gate7: g7-0..g7-5 and g7-55 need the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
+		echo "run-gate7: g7-0..g7-6 and g7-55 need the capture extension ($EXTENSION; build-capture.sh or --extension)" >&2
 		exit 1
 	fi
 	EXTENSION="$(realpath "$EXTENSION")"
@@ -491,6 +503,8 @@ for g in "${SOURCE_GATES[@]}"; do
 		# Gate 5.5: its file-leg groups only, the same source as G7b's web half (g55f is live, G7l).
 		source_legs=()
 		[ "$g" = 55 ] && source_legs=(--legs g55b,g55c,g55d,g55e)
+		# Gate 6: g6a, g6h and g6b only (g6l is live, G7g's --live; g6s/g6c are timing groups).
+		[ "$g" = 6 ] && source_legs=(--legs g6a,g6h,g6b)
 		set +e
 		bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
 			--out "$OUT/sources-made/gate$g" "${source_legs[@]}"

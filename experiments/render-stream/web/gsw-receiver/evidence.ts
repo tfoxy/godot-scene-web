@@ -5,12 +5,12 @@
 // writes them (the wasm module spells them, Godot's floats included), every file PUT to the
 // harness. Every encode and PUT happens after the frame that produced it, outside the timers.
 //
-// Fields the native receiver fills from RenderingServer counters (rs_calls, reparented,
-// shader_code_sets, param_sets, canvas_attach,
-// canvas_stacking_sets, ...) have no GSW meaning and are `null` here; window_size and oversampling
-// are the canvas's. Everything a gate checker reads is filled by the same rule as natively; G7t adds
-// the mesh residency's `mesh_uploads` rows and counters (meshes_created, meshes_rebuilt,
-// surface_updates, mesh_upload_bytes).
+// Fields the native receiver fills from RenderingServer counters (rs_calls, reparented, ...) have
+// no GSW meaning and are `null` here; window_size and oversampling are the canvas's. Everything a
+// gate checker reads is filled by the same rule as natively; G7t adds the mesh residency's
+// `mesh_uploads` rows and counters (meshes_created, meshes_rebuilt, surface_updates,
+// mesh_upload_bytes), G7s the shader and material counters, and G7g canvas_attach and
+// canvas_stacking_sets (the applier's count of rs_applier.gd `_apply_canvas`'s calls).
 
 import type { ReceiverConfig } from "./config";
 import type { FetchEntry } from "./source";
@@ -118,6 +118,9 @@ export interface RustParts {
       freed: number;
       upload_bytes: number;
       canvases_created: number;
+      /** G7g: rs_applier.gd `_apply_canvas`'s attach/remove and stacking calls. */
+      canvas_attach: number;
+      canvas_stacking_sets: number;
       /** G7s: the native receiver's /5 shader and material counters. */
       shaders_created: number;
       shader_code_sets: number;
@@ -270,8 +273,8 @@ function resourcesOf(t: RustTx | undefined, s: ShellTx | undefined) {
     param_sets: t?.resources.param_sets ?? 0,
     instance_param_sets: t?.resources.instance_param_sets ?? 0,
     canvases_created: t?.resources.canvases_created ?? 0,
-    canvas_attach: null,
-    canvas_stacking_sets: null,
+    canvas_attach: t?.resources.canvas_attach ?? 0,
+    canvas_stacking_sets: t?.resources.canvas_stacking_sets ?? 0,
   };
 }
 
@@ -389,8 +392,8 @@ export function appliedJson(r: Report): Record<string, unknown> {
       param_sets: sum((t) => t.param_sets),
       instance_param_sets: sum((t) => t.instance_param_sets),
       canvases_created: sum((t) => t.canvases_created),
-      canvas_attach: null,
-      canvas_stacking_sets: null,
+      canvas_attach: sum((t) => t.canvas_attach),
+      canvas_stacking_sets: sum((t) => t.canvas_stacking_sets),
       evictions_memory: 0,
       evictions_disk: 0,
       refetch_after_evict: 0,

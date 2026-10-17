@@ -76,7 +76,7 @@ import {
   HarnessServer,
   type LaunchedBrowser,
 } from "./browser-harness";
-import { base64url, parseEnvTxt } from "./gate7-web-legs";
+import { type BackingStore, base64url, parseEnvTxt } from "./gate7-web-legs";
 
 export type BrowserReceiverKind = "web" | "gsw";
 
@@ -382,6 +382,7 @@ interface PageState {
   exit: { code: number; t: number } | null;
   contextLost: boolean;
   wasmHeapBytes: number | null;
+  backingStore: BackingStore;
   marks: { name: string; t: number }[];
   navigation: unknown[];
   resources: unknown[];
@@ -426,7 +427,7 @@ export function runBrowserLeg(
     );
     await writeFile(
       join(dir, "timings.json"),
-      `${scrub(JSON.stringify({ schema: "render-stream-web-timings/1", wall_ms: Date.now() - started, browser_prepared_ms: prepared.preparedMs, exit: state?.exit ?? null, error: state?.error ?? null, context_lost: state?.contextLost ?? false, wasm_heap_bytes: state?.wasmHeapBytes ?? null, marks: state?.marks ?? [], navigation: state?.navigation ?? [], resources: state?.resources ?? [], aborted, lines: (state?.lines ?? []).slice(0, 400).map((l) => ({ t: l.t, line: l.line })) }, null, 2))}\n`,
+      `${scrub(JSON.stringify({ schema: "render-stream-web-timings/1", wall_ms: Date.now() - started, browser_prepared_ms: prepared.preparedMs, exit: state?.exit ?? null, error: state?.error ?? null, context_lost: state?.contextLost ?? false, wasm_heap_bytes: state?.wasmHeapBytes ?? null, backing_store: state?.backingStore ?? null, marks: state?.marks ?? [], navigation: state?.navigation ?? [], resources: state?.resources ?? [], aborted, lines: (state?.lines ?? []).slice(0, 400).map((l) => ({ t: l.t, line: l.line })) }, null, 2))}\n`,
     );
     await writeFile(join(dir, "exit-code.txt"), `${exitCode}\n`);
   };
@@ -581,6 +582,17 @@ export function runBrowserLeg(
         exit: window.__rsShell?.exit ?? null,
         contextLost: window.__rsShell?.contextLost ?? false,
         wasmHeapBytes: window.__rsWasmHeap?.() ?? null,
+        // G7g presentation-check: every canvas's backing store at exit, and the page's DPR.
+        backingStore: {
+          device_pixel_ratio: window.devicePixelRatio,
+          inner: [window.innerWidth, window.innerHeight] as [number, number],
+          canvases: [...document.querySelectorAll("canvas")].map((c) => ({
+            width: c.width,
+            height: c.height,
+            client_width: c.clientWidth,
+            client_height: c.clientHeight,
+          })),
+        },
         marks: performance
           .getEntriesByType("mark")
           .map((m) => ({ name: m.name, t: m.startTime })),

@@ -419,6 +419,17 @@ async function runOne(
         exit: window.__rsShell?.exit ?? null,
         contextLost: window.__rsShell?.contextLost ?? false,
         wasmHeapBytes: window.__rsWasmHeap?.() ?? null,
+        // G7g presentation-check: every canvas's backing store at exit, and the page's DPR.
+        backingStore: {
+          device_pixel_ratio: window.devicePixelRatio,
+          inner: [window.innerWidth, window.innerHeight] as [number, number],
+          canvases: [...document.querySelectorAll("canvas")].map((c) => ({
+            width: c.width,
+            height: c.height,
+            client_width: c.clientWidth,
+            client_height: c.clientHeight,
+          })),
+        },
         marks: performance
           .getEntriesByType("mark")
           .map((m) => ({ name: m.name, t: m.startTime })),
@@ -445,7 +456,7 @@ async function runOne(
     );
     await writeFile(
       join(spec.webDir, "timings.json"),
-      `${JSON.stringify({ schema: "render-stream-web-timings/1", wall_ms: Date.now() - started, exit: state?.exit ?? null, error: state?.error ?? null, context_lost: state?.contextLost ?? false, wasm_heap_bytes: state?.wasmHeapBytes ?? null, marks: state?.marks ?? [], navigation: state?.navigation ?? [], resources: state?.resources ?? [], lines: (state?.lines ?? []).slice(0, 400).map((l) => ({ t: l.t, line: l.line })) }, null, 2)}\n`,
+      `${JSON.stringify({ schema: "render-stream-web-timings/1", wall_ms: Date.now() - started, exit: state?.exit ?? null, error: state?.error ?? null, context_lost: state?.contextLost ?? false, wasm_heap_bytes: state?.wasmHeapBytes ?? null, backing_store: state?.backingStore ?? null, marks: state?.marks ?? [], navigation: state?.navigation ?? [], resources: state?.resources ?? [], lines: (state?.lines ?? []).slice(0, 400).map((l) => ({ t: l.t, line: l.line })) }, null, 2)}\n`,
     );
     setHook(undefined);
     await session.detach().catch(() => {});
@@ -467,6 +478,18 @@ async function runOne(
     provenanceOk,
     wallMs: Date.now() - started,
   };
+}
+
+/** G7g: the page's canvases at exit (timings.json `backing_store`, presentation-check). */
+export interface BackingStore {
+  device_pixel_ratio: number;
+  inner: [number, number];
+  canvases: {
+    width: number;
+    height: number;
+    client_width: number;
+    client_height: number;
+  }[];
 }
 
 declare global {

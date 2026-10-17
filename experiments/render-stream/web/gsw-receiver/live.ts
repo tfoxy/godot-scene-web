@@ -298,6 +298,8 @@ class LiveReceiver {
       if (this.cfg.canvas) {
         this.canvas.width = this.cfg.canvas[0];
         this.canvas.height = this.cfg.canvas[1];
+        // G7g: the window every session of this process presents into.
+        this.g.set_window(this.cfg.canvas[0], this.cfg.canvas[1]);
       }
       this.canvas.style.width = `${this.canvas.width}px`;
       this.canvas.style.height = `${this.canvas.height}px`;
@@ -554,7 +556,12 @@ class LiveReceiver {
     if (!this.sessionViewportDone) {
       // receiver.gd `_adopt_presentation`: once per process.
       this.sessionViewportDone = true;
-      const vr = viewportReport(this.cfg, this.canvas, session);
+      const vr = viewportReport(
+        this.cfg,
+        this.canvas,
+        session,
+        g.presentation_json(),
+      );
       this.report.viewport = vr.viewport;
       this.report.sessionUnsupported.push(...vr.unsupported);
     }

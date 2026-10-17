@@ -233,6 +233,8 @@ async function run(): Promise<void> {
     new Uint8Array(mem.buffer, ptr, data.length).set(data);
     const recordCount = g.load(data.length);
     if (recordCount < 0) throw failWith(null, g.error());
+    // G7g: the window the leg presents into (the native leg's --resolution, else 640x360).
+    if (cfg.canvas) g.set_window(cfg.canvas[0], cfg.canvas[1]);
     if (g.start() < 0) {
       const err = g.error();
       throw failWith(
@@ -248,7 +250,7 @@ async function run(): Promise<void> {
     report.sessionId = session.session_id ?? null;
     fileStream.stream_id = session.stream?.stream_id ?? null;
     fileStream.connection = session.stream?.connection ?? null;
-    const vr = viewportReport(cfg, canvas, session);
+    const vr = viewportReport(cfg, canvas, session, g.presentation_json());
     const logical = vr.logical;
     report.sessionUnsupported.push(...vr.unsupported);
     report.viewport = vr.viewport;

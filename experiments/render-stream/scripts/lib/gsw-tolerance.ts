@@ -26,6 +26,13 @@
 // within 1/16 px) are `undecided`. Those masks are synthesized when used; the committed document
 // records their pixel counts per step, so --check pins the derivation.
 //
+// G7g adds gate 6 the same way, one raster of the gate's own model per SHOT rather than per step
+// (`gate6`, `gate6-refused`: gate6-expected.ts rasterOfShot over the scene's default and refused
+// variants; `gate6-hd-native`, `gate6-hd-half`: gate6h-checks.ts rasterOfShotHd at each
+// presentation's scale and half op lists): the AN sprite, the MS mesh and the PB bar move between
+// a settle shot and the mid shots. Gate 6's undecided boxes (text, the RichTextLabel, RF) are
+// `undecided`; its feathers (HB's radius panel, the StyleBoxFlat AA bands) are `delta1`.
+//
 // Gates 0, 1 and 3 (main) draw opaque axis-aligned rects only: every pixel is decided. Gate 2's
 // masks come from its expected.json: each draw's sampled texture content (alpha uniform or not,
 // partial or not) and the filter in force (the `default_filter` and per-item `filter` invariants).
@@ -47,6 +54,12 @@ import type { Gate4Expected } from "./gate4-expected";
 import { rastersOf } from "./gate5-checks";
 import type { Gate5Expected } from "./gate5-expected";
 import { type Gate5MeshExpected, meshRasters } from "./gate5c-checks";
+import {
+  type Gate6Expected,
+  rasterOfShot,
+  refusedView,
+} from "./gate6-expected";
+import { type Gate6HdExpected, rasterOfShotHd } from "./gate6h-checks";
 import type { Gate5Raster } from "./geometry-raster";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -68,7 +81,15 @@ export interface StepMasks {
 }
 
 /** A gate whose masks are synthesized per pixel by its own rasterizer (G7t). */
-export type RasterKey = "gate5" | "gate5-mesh" | "gate5-style";
+export type RasterKey = "gate5" | "gate5-mesh" | "gate5-style" | Gate6RasterKey;
+
+/** G7g: gate 6's per-shot rasters. Their `step` is the shot's index in the fixture's
+ * expected.json `shots` (settle and mid shots alike: AN, MS and PB move between them). */
+export type Gate6RasterKey =
+  | "gate6"
+  | "gate6-refused"
+  | "gate6-hd-native"
+  | "gate6-hd-half";
 
 export interface GateTolerance {
   expected: string;
@@ -219,6 +240,33 @@ function gate5(rel: string, raster: RasterKey): GateTolerance {
   };
 }
 
+/** G7g: gate 6's `animate` variant (gate6-design.md Q6d) on the default scene's per-shot model.
+ * Its continuous writes move or redraw five regions the default shots do not model: SC (the
+ * v_scroll triangle wave), LB (the frame counter), CD (`k = ⌊f/15⌋ mod 4`), TR and RT (TEXA's
+ * in-place updates). There every pixel the default model decides is `delta1` instead (what is
+ * drawn there is decided only up to the blend's rounding, which animate does not change); its
+ * undecided pixels stay undecided. Everything else is the default model's, shot for shot. */
+const GATE6_ANIMATE_REGIONS = ["SC", "LB", "CD", "TR", "RT"] as const;
+
+function gate6animate(): GateTolerance {
+  const e = json<Gate6Expected>("gate6-scene/expected.json");
+  const base = gate5("gate6-scene/expected.json", "gate6");
+  return {
+    ...base,
+    steps: base.steps.map((s) => ({
+      ...s,
+      delta1: GATE6_ANIMATE_REGIONS.map((region) => {
+        const b = (e.shots[s.step]?.regions ?? e.regions)[region];
+        return {
+          region,
+          rect: [b[0], b[1], b[2] - b[0], b[3] - b[1]] as Rect,
+          why: "animate (Q6d) moves or redraws this region beyond the default model's shots",
+        };
+      }),
+    })),
+  };
+}
+
 function gate3x(): GateTolerance {
   const expected = json<Gate3xExpected>("gate3-xform/expected.json");
   return {
@@ -328,6 +376,12 @@ export function deriveTolerance(): ToleranceDoc {
       gate5: gate5("gate5/expected.json", "gate5"),
       "gate5-mesh": gate5("gate5-mesh/expected.json", "gate5-mesh"),
       "gate5-style": gate5("gate5-style/expected.json", "gate5-style"),
+      // G7g: gate 6's scene (default and refused variants) and HD fixture at both presentations.
+      gate6: gate5("gate6-scene/expected.json", "gate6"),
+      "gate6-animate": gate6animate(),
+      "gate6-refused": gate5("gate6-scene/expected.json", "gate6-refused"),
+      "gate6-hd-native": gate5("gate6-hd/expected.json", "gate6-hd-native"),
+      "gate6-hd-half": gate5("gate6-hd/expected.json", "gate6-hd-half"),
     },
   };
 }
@@ -358,7 +412,18 @@ export function rasterMasks(key: RasterKey): Map<number, Uint8Array> {
   const hit = rasterCache.get(key);
   if (hit) return hit;
   let rasters: Map<number, Gate5Raster>;
-  if (key === "gate5-mesh") {
+  if (key === "gate6" || key === "gate6-refused") {
+    // G7g: one raster per shot of gate 6's own model (gate6-expected.ts), indexed by shot.
+    const all = json<Gate6Expected>("gate6-scene/expected.json");
+    const e = key === "gate6" ? all : refusedView(all);
+    rasters = new Map(e.shots.map((shot, i) => [i, rasterOfShot(e, shot)]));
+  } else if (key === "gate6-hd-native" || key === "gate6-hd-half") {
+    const e = json<Gate6HdExpected>("gate6-hd/expected.json");
+    const pres = key === "gate6-hd-native" ? "native" : "half";
+    rasters = new Map(
+      e.shots.map((shot, i) => [i, rasterOfShotHd(e, shot, pres)]),
+    );
+  } else if (key === "gate5-mesh") {
     const e = json<Gate5MeshExpected>("gate5-mesh/expected.json");
     rasters = meshRasters(e);
     // The band region (DF: a texture under a non-affine mapping) is never synthesized.

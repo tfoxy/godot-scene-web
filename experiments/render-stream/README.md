@@ -52,7 +52,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7tm | GSW MSDF text (gate 4e): canvas.glsl's MSDF branch in `canvas-items`; `gsw-msdf` retired — landed | [results/gate7/g7tm.md](results/gate7/g7tm.md) |
 | G7xwl | the web export's live legs (/7) on the Rust core, `--live --web-core rust`; `receiver-core@web` — landed | [results/gate7/g7xwl.md](results/gate7/g7xwl.md) |
 | G7o | decode/apply optimization — restructured into G7o1 and tier 2; lands nothing | [protocol/gate7/g7o.md](protocol/gate7/g7o.md) |
-| G7g | gate 6 scene and HD on both browsers | [protocol/gate7/g7g.md](protocol/gate7/g7g.md) |
+| G7g | gate 6 scene and HD on both browsers, both web cores — landed | [results/gate7/g7g.md](results/gate7/g7g.md) |
 | G7u | suspension and lifecycle | [protocol/gate7/g7u.md](protocol/gate7/g7u.md) |
 | G7r | pacing, rates, phase study, dual | [protocol/gate7/g7r.md](protocol/gate7/g7r.md) |
 | G7k | startup, memory, soak | [protocol/gate7/g7k.md](protocol/gate7/g7k.md) |

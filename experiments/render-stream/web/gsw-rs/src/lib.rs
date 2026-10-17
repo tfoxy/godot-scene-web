@@ -22,13 +22,14 @@ use godot_scene_web_rust_prototype::canvas_items::{
 };
 use gsw_canvas_draw_list::Format;
 use gsw_canvas_draw_list::{Binding, UniformValue};
-use render_stream_core::apply::geom;
+use render_stream_core::apply::geom::{self, Xform};
 use render_stream_core::apply::material_residency::MaterialCounts;
 use render_stream_core::apply::payloads::PayloadStore;
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
+use render_stream_core::meta::Stretch;
 use render_stream_core::state::{Hash, Id, ShaderSource};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, RecordSpan};
@@ -286,6 +287,78 @@ pub struct GswRs {
     last_digest: [u8; 32],
     /// The session viewport, kept so a resync can rebuild the applier (`live_rebuild`).
     viewport: Option<Viewport>,
+    /// G7g: the window `set_window` named (else the session's presentation size).
+    window: Option<[u32; 2]>,
+    /// G7g: the adopted presentation (`presentation_json`).
+    presentation: Presentation,
+}
+
+/// G7g: the session's presentation as this receiver adopted it (receiver.gd
+/// `_adopt_presentation`, protocol/gate6-design.md Q5).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Presentation {
+    window: [u32; 2],
+    /// The render target (the canvas backing store): the window, as natively.
+    target: [u32; 2],
+    oversampling: f64,
+    stretch_applied: bool,
+    /// The session declares a presentation size (/6 and later): the check runs.
+    declares: bool,
+    /// Receiver-typed session entries: `presentation-mismatch` (the window is not the session's
+    /// presentation size), `oversampling-mismatch` (the stretch's scale is not the declared
+    /// `font_oversampling`).
+    typed: Vec<&'static str>,
+}
+
+/// Godot 4.5.1's `canvas_items` stretch of a `logical` content size into a `window`
+/// (`Window::_update_viewport_size`, scene/main/window.cpp:1190-1307): the aspect rule picks the
+/// viewport (`size_2d_override`) and screen sizes, both floored; `integer` scales by a whole
+/// factor; the margin centres the screen rect. The canvas receives
+/// `translate(margin) * scale(screen / viewport)` (Viewport's stretch transform, attached at the
+/// margin), and the root's oversampling is the smaller scale.
+fn canvas_items_stretch(stretch: &Stretch, logical: [i64; 2], window: [u32; 2]) -> (Xform, f64) {
+    let (vw, vh) = (window[0] as f32, window[1] as f32);
+    let (dw, dh) = (logical[0] as f32, logical[1] as f32);
+    let viewport_aspect = dw / dh;
+    let video_aspect = vw / vh;
+    let approx = (viewport_aspect - video_aspect).abs()
+        <= 0.00001_f32.max(viewport_aspect.abs().max(video_aspect.abs()) * 0.00001);
+    let (mut viewport, mut screen);
+    if stretch.aspect == "ignore" || approx {
+        viewport = (dw, dh);
+        screen = (vw, vh);
+    } else if viewport_aspect < video_aspect {
+        if stretch.aspect == "keep_height" || stretch.aspect == "expand" {
+            viewport = (dh * video_aspect, dh);
+            screen = (vw, vh);
+        } else {
+            viewport = (dw, dh);
+            screen = (vh * viewport_aspect, vh);
+        }
+    } else if stretch.aspect == "keep_width" || stretch.aspect == "expand" {
+        viewport = (dw, dw / video_aspect);
+        screen = (vw, vh);
+    } else {
+        viewport = (dw, dh);
+        screen = (vw, vw / viewport_aspect);
+    }
+    screen = (screen.0.floor(), screen.1.floor());
+    viewport = (viewport.0.floor(), viewport.1.floor());
+    if stretch.scale_mode == "integer" {
+        let f = ((screen.0 / viewport.0).floor())
+            .min((screen.1 / viewport.1).floor())
+            .max(1.0);
+        screen = (viewport.0 * f, viewport.1 * f);
+    }
+    let mut margin = (0.0_f32, 0.0_f32);
+    if screen.0 < vw {
+        margin.0 = ((vw - screen.0) / 2.0).round();
+    }
+    if screen.1 < vh {
+        margin.1 = ((vh - screen.1) / 2.0).round();
+    }
+    let (sx, sy) = (screen.0 / viewport.0, screen.1 / viewport.1);
+    ([sx, 0.0, 0.0, sy, margin.0, margin.1], sx.min(sy) as f64)
 }
 
 /// One binding's values as of transaction `seq` (they hold until its next entry).
@@ -327,6 +400,8 @@ struct TxEvidence {
     msdf_commands: u32,
     mesh_commands: u32,
     canvases_created: u32,
+    canvas_attach: u32,
+    canvas_stacking_sets: u32,
     tex: TextureAccount,
     /// The native receiver's /5 shader and material counters (G7s).
     mat: MaterialCounts,
@@ -408,7 +483,43 @@ impl GswRs {
             stream_index: 1,
             last_digest: [0; 32],
             viewport: None,
+            window: None,
+            presentation: Presentation::default(),
         })
+    }
+
+    /// G7g: the window this receiver presents into (receiver.gd's root window: the native leg's
+    /// `--resolution`), set before `start`. Unset, the window is the session's presentation size.
+    pub fn set_window(&mut self, width: u32, height: u32) {
+        self.window = Some([width.max(1), height.max(1)]);
+    }
+
+    /// G7g: how the session's presentation was adopted (receiver.gd `_adopt_presentation`):
+    /// `{"window":[w,h],"target":[w,h],"oversampling":x,"stretch_applied":b,
+    /// "presentation_check":"ok"|"mismatch","typed":[reason...]}`; empty before `start`.
+    pub fn presentation_json(&self) -> String {
+        let p = &self.presentation;
+        if p.target == [0, 0] {
+            return String::new();
+        }
+        let typed: Vec<String> = p.typed.iter().map(|r| format!("\"{r}\"")).collect();
+        format!(
+            "{{\"window\":[{},{}],\"target\":[{},{}],\"oversampling\":{},\"stretch_applied\":{},\"presentation_check\":{},\"typed\":[{}]}}",
+            p.window[0],
+            p.window[1],
+            p.target[0],
+            p.target[1],
+            p.oversampling,
+            p.stretch_applied,
+            if !p.declares {
+                "null"
+            } else if p.typed.is_empty() {
+                "\"ok\""
+            } else {
+                "\"mismatch\""
+            },
+            typed.join(",")
+        )
     }
 
     // ------------------------------------------------------------------ G7s: shader programs
@@ -616,14 +727,50 @@ impl GswRs {
         let s = v.session();
         let vp = &s.viewport;
         let size = vp.presentation_size.unwrap_or(vp.logical_size);
-        let global = if size == vp.logical_size || self.opts.ignore_presentation {
-            geom::IDENTITY
+        let pres = [size[0].max(1) as u32, size[1].max(1) as u32];
+        // G7g (receiver.gd `_adopt_presentation`): the receiver draws into its window. In the
+        // session's own presentation it adopts the host's final transform bit for bit; in another
+        // window (the presentation hazard) it computes the engine's canvas_items stretch for that
+        // window; `ignore-presentation` keeps stretch disabled whatever the session says.
+        let window = self.window.unwrap_or(pres);
+        let canvas_items = vp.stretch.mode == "canvas_items" && !self.opts.ignore_presentation;
+        let (global, oversampling) = if !canvas_items {
+            (geom::IDENTITY, 1.0)
+        } else if window == pres {
+            let o = canvas_items_stretch(&vp.stretch, vp.logical_size, window).1;
+            if size == vp.logical_size {
+                (geom::IDENTITY, o)
+            } else {
+                (s.host_final_xform, o)
+            }
         } else {
-            s.host_final_xform
+            canvas_items_stretch(&vp.stretch, vp.logical_size, window)
+        };
+        let mut typed = Vec::new();
+        // receiver.gd checks only a session that declares its presentation (/6 and later).
+        let declares = vp.presentation_size.is_some();
+        if declares && window != pres {
+            typed.push("presentation-mismatch");
+        }
+        // Compared as float32, the wire's own precision (receiver.gd).
+        if declares
+            && vp
+                .font_oversampling
+            .is_some_and(|declared| declared as f32 != oversampling as f32)
+        {
+            typed.push("oversampling-mismatch");
+        }
+        self.presentation = Presentation {
+            window,
+            target: window,
+            oversampling,
+            stretch_applied: canvas_items,
+            declares,
+            typed,
         };
         let viewport = Viewport {
-            width: size[0].max(1) as u32,
-            height: size[1].max(1) as u32,
+            width: window[0],
+            height: window[1],
             clear: s.clear_color,
             global_xform: global,
             cull_mask: vp.canvas_cull_mask as u32,
@@ -1011,6 +1158,8 @@ impl GswRs {
             msdf_commands: st.msdf_commands,
             mesh_commands: st.mesh_commands,
             canvases_created: st.canvases_created,
+            canvas_attach: st.canvas_attach,
+            canvas_stacking_sets: st.canvas_stacking_sets,
             tex: std::mem::take(&mut a.account),
             mat: a.material_counts,
             meshes: std::mem::take(&mut a.meshes.uploads),
@@ -1252,7 +1401,7 @@ impl GswRs {
                 .map(|h| format!("\"{}\"", h.to_hex()))
                 .unwrap_or_else(|| "null".into());
             out.push_str(&format!(
-                "{{\"stream\":{},\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{},\"shaders_created\":{},\"shader_code_sets\":{},\"materials_created\":{},\"param_sets\":{},\"instance_param_sets\":{},\"meshes_created\":{},\"meshes_rebuilt\":{},\"surface_updates\":{},\"mesh_upload_bytes\":{}}}}}",
+                "{{\"stream\":{},\"seq\":{},\"frame\":{},\"encoding\":\"{}\",\"record_sha256\":{},\"created\":{},\"freed\":{},\"commands_replayed\":{},\"msdf_commands\":{},\"mesh_commands\":{},\"resources\":{{\"created\":{},\"updated\":{},\"replaced\":{},\"freed\":{},\"upload_bytes\":{},\"canvases_created\":{},\"canvas_attach\":{},\"canvas_stacking_sets\":{},\"shaders_created\":{},\"shader_code_sets\":{},\"materials_created\":{},\"param_sets\":{},\"instance_param_sets\":{},\"meshes_created\":{},\"meshes_rebuilt\":{},\"surface_updates\":{},\"mesh_upload_bytes\":{}}}}}",
                 e.stream,
                 e.seq,
                 e.frame,
@@ -1269,6 +1418,8 @@ impl GswRs {
                 e.tex.freed,
                 e.tex.upload_bytes,
                 e.canvases_created,
+                e.canvas_attach,
+                e.canvas_stacking_sets,
                 e.mat.shaders_created,
                 e.mat.shader_code_sets,
                 e.mat.materials_created,

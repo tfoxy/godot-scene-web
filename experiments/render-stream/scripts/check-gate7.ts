@@ -16,7 +16,8 @@
 // gsw half of g7-0 to g7-3 (G7a) and g7-4 and g7-5 (G7t; lib/gate7-gsw.ts, lib/gate7-gsw-g45.ts).
 // G7l: `--live` judges the live runs of g7-1, g7-2, g7-5 and g7-55 instead (run-gate7.sh --live;
 // lib/gate7-live.ts checkGateLive), one result per group and receiver kind; `--web-core rust`
-// (G7xwl) judges a web run on the Rust core (receiver-core@web).
+// (G7xwl) judges a web run on the Rust core (receiver-core@web). G7g: the gsw half of g7-6
+// (lib/gate7-gsw-g6.ts), presentation-check on both halves, and g7-6's live g6l.
 // G7h's harness checks are folded into `report.harness` when present. Requesting a group before
 // its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
@@ -29,6 +30,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildGate4Report } from "./check-gate4";
 import { buildGate5Report } from "./check-gate5";
+import { buildGate6Report } from "./check-gate6";
 import { type Gate0Expected, runGate0 } from "./lib/gate0-checks";
 import { runGate1 } from "./lib/gate1-checks";
 import type { Gate1Expected } from "./lib/gate1-expected";
@@ -42,6 +44,7 @@ import {
   currentBuildProvenance,
   type Gate7GroupResult,
 } from "./lib/gate7-adapters";
+import { presentationCheck } from "./lib/gate7-g6-checks";
 import {
   checkGswGroup,
   type GswGate,
@@ -49,6 +52,7 @@ import {
   type GswGroupResult,
 } from "./lib/gate7-gsw";
 import { gswExtraChecks } from "./lib/gate7-gsw-checks";
+import { GATE6_LEGS } from "./lib/gate7-gsw-g6";
 
 import {
   checkGateLive,
@@ -117,6 +121,7 @@ const GSW_GATES: Record<string, GswGate> = {
   "g7-55": "gate55",
   "g7-4": "gate4",
   "g7-5": "gate5",
+  "g7-6": "gate6",
 };
 
 interface HarnessCheck {
@@ -314,6 +319,9 @@ async function gateChecker(
       return (dir) => buildGate4Report(dir) as never;
     case "gate5":
       return (dir) => buildGate5Report(dir) as never;
+    // G7g: gate 6 through its CLI's report builder.
+    case "gate6":
+      return (dir) => buildGate6Report(dir) as never;
   }
 }
 
@@ -483,6 +491,21 @@ async function main(): Promise<void> {
       ),
     });
     const { classification: _c, ...rest } = r;
+    // G7g: the web export's backing store at gate 6's three presentation sizes.
+    if (def.gate === "gate6") {
+      rest.checks.push(
+        await presentationCheck(
+          "web",
+          new Map(
+            GATE6_LEGS.filter((d) => d.replaces).map((d) => [
+              d.leg,
+              join(out, def.gate, "web", d.leg),
+            ]),
+          ),
+        ),
+      );
+      rest.passed = rest.checks.every((c) => c.passed || !c.gating);
+    }
     results.push(rest);
   }
   // `gate_passed` here means "every group this run requested passed": gate 7 as a whole needs every

@@ -199,6 +199,11 @@ pub struct ApplyStats {
     pub freed: u32,
     /// Non-root canvases created (`resources.canvases_created`).
     pub canvases_created: u32,
+    /// G7g: the native receiver's canvas calls (`rs_applier.gd _apply_canvas`): attach and
+    /// remove (`resources.canvas_attach`) and stacking sets (`resources.canvas_stacking_sets`,
+    /// none under the `ignore-canvas-stacking` sabotage).
+    pub canvas_attach: u32,
+    pub canvas_stacking_sets: u32,
     /// Commands of the items whose content was (re)lowered (`commands_replayed`), and of those the
     /// MSDF and mesh ones (`msdf_commands`, `mesh_commands`).
     pub commands_replayed: u32,
@@ -1334,6 +1339,26 @@ impl Applier {
             let Some(c) = state.canvases.get(&id) else {
                 continue;
             };
+            if !c.root {
+                // rs_applier.gd `_apply_canvas`: an attach or a remove is one call; an attached
+                // canvas whose (layer, sublayer) differs from what was last set (a fresh attach
+                // starts at (0, 0), rv.cpp:1264-1266) is one stacking set.
+                let old = self.canvases.get(&id);
+                let was = old.is_some_and(|o| o.attached);
+                if c.attached != was {
+                    self.stats.canvas_attach += 1;
+                }
+                let prior = match old {
+                    Some(o) if was => (o.layer, o.sublayer),
+                    _ => (0, 0),
+                };
+                if c.attached
+                    && (c.layer, c.sublayer) != prior
+                    && !self.sabotage.ignore_canvas_stacking
+                {
+                    self.stats.canvas_stacking_sets += 1;
+                }
+            }
             match self.canvases.get(&id) {
                 Some(old) if old == c => {}
                 Some(old)

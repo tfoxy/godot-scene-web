@@ -129,8 +129,9 @@ function parseArgs(argv: string[]): { out: string } {
   return { out: resolve(out) };
 }
 
-async function main(): Promise<void> {
-  const { out } = parseArgs(process.argv.slice(2));
+/** Gate 6's report for the evidence in `out` (every group that ran), unprinted: the CLI below and
+ * gate 7's adapter (lib/gate7-gsw-g6.ts, judging a gsw view of a gate 6 run, G7g) both call it. */
+export async function buildGate6Report(out: string): Promise<Gate6Report> {
   const legsJson = await readJson<{ groups_run?: string[] }>(
     join(out, "legs.json"),
   );
@@ -282,6 +283,13 @@ async function main(): Promise<void> {
     });
   report.gate_passed =
     run.length > 0 && report.checks.every((c) => c.status === "pass");
+  return report;
+}
+
+async function main(): Promise<void> {
+  const { out } = parseArgs(process.argv.slice(2));
+  const report = await buildGate6Report(out);
+  const run = report.groups.run;
   await writeFile(
     join(out, "result.json"),
     `${JSON.stringify(report, null, 2)}\n`,
@@ -345,7 +353,11 @@ async function main(): Promise<void> {
   if (!report.gate_passed) process.exitCode = 1;
 }
 
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+)
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

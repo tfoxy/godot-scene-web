@@ -47,6 +47,10 @@ export interface Q7Leg {
    * sabotage changed stays as drawn, so a mask (gate 5e's DF band region, say) never hides the
    * sabotage's own effect from the gate's predicted (step, region) sets. */
   pair?: { gswDir: string; viewDir: string };
+  /** G7g: substitute only differences within 1 (the delta1 class's allowance), in undecided
+   * masks too; larger undecided differences stay as drawn, so a check that needs them to differ
+   * (gate 6's presentation hazard: text rasterized at oversampling 1) still sees them. */
+  keepUndecided?: boolean;
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {
@@ -155,7 +159,8 @@ export async function buildQ7View(
         d = Math.max(d, Math.abs(ref.data[i + c] - got.data[i + c]));
       if (d === 0) continue;
       if (cls[p] === CLASS_EXCLUDED) exc++;
-      else if (cls[p] === CLASS_UNDECIDED) und++;
+      else if (cls[p] === CLASS_UNDECIDED && (!leg.keepUndecided || d <= 1))
+        und++;
       else if (d <= 1 && cls[p] === CLASS_DELTA1) d1++;
       else continue;
       for (let c = 0; c < 4; c++) out[i + c] = ref.data[i + c];

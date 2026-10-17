@@ -51,6 +51,7 @@ import {
   deliveryReport,
   type LiveConnectionSummary,
   type LiveLogLine,
+  receivedFileName,
 } from "./gate1-live-checks";
 import {
   G2B_PRECEDENCE,
@@ -59,6 +60,7 @@ import {
   loadResolved,
 } from "./gate2b-checks";
 import {
+  coldFetchedHashes,
   fetchesAfterApplied,
   type G2cApplied,
   type G2cHost,
@@ -307,7 +309,8 @@ export async function loadG6lLeg(
   // loadHost reads the host's own evidence only; each connection's received copy is the
   // receiver's (memory rs-g5f-live-mesh-facts fact 4).
   for (const c of host.connections) {
-    const name = c.n === 1 ? "received.rs2" : `received-${c.n}.rs2`;
+    // G7l/G7g: a browser (/7) receiver writes received(-n).rs7.
+    const name = receivedFileName(receiverDir, c.n);
     const r = await loadResolved(join(receiverDir, name));
     c.received = r.present ? r : null;
   }
@@ -1112,6 +1115,8 @@ export interface G6lDigest {
     gets_vs_fetches: string[];
     summary_gets: number | undefined;
     gets: number;
+    /** G7g: the hashes the host served (a warm browser leg's warm-fetch) */
+    served: string[];
     statuses: string;
     unadvertised: string[];
     fetches_after_applied: string[];
@@ -1121,6 +1126,8 @@ export interface G6lDigest {
 export function digestLeg(
   e: Pick<Gate6Expected, "texture_hashes">,
   ev: G6lEvaluation,
+  /** G7g: the cold leg's fetches, for a warm browser leg (`http-cache`, coldFetchedHashes). */
+  coldFetches?: Parameters<typeof coldFetchedHashes>[1],
 ): G6lDigest | null {
   const host = ev.ev.host;
   if (!host) return null;
@@ -1178,9 +1185,19 @@ export function digestLeg(
         512 * 1024 * 1024,
         hashUnion,
       ),
-      gets_vs_fetches: getsVsFetches(gets, ev.ev.applied?.fetches ?? []),
+      // G7l/G7g: a browser receiver fetches through its HTTP cache (`http-cache`); the warm
+      // leg's profile already holds what live-scene fetched.
+      gets_vs_fetches: getsVsFetches(
+        gets,
+        ev.ev.applied?.fetches ?? [],
+        ev.ev.applied?.cache?.mode,
+        coldFetchedHashes(ev.ev.applied?.cache?.mode, coldFetches),
+      ),
       summary_gets: host.serving?.http_gets,
       gets: gets.length,
+      served: gets
+        .map((g) => g.hash)
+        .filter((h): h is string => typeof h === "string" && h !== ""),
       statuses: [...statuses].map(([s, n]) => `${n}x${s}`).join(" "),
       unadvertised: unadvertisedGets(gets, timelines, tableUnion),
       fetches_after_applied: fetchesAfterApplied(ev.ev.applied),
@@ -1632,7 +1649,36 @@ export function checkWarmFetch(
   const wa = warm?.ev.applied;
   if (!warm || !cold || !wa || !cold.ev.applied)
     problems.push("live-scene-warm or live-scene not evaluated");
-  else {
+  else if (wa.cache?.mode === "http-cache") {
+    // G7g (G7l's rule for g2c/g5f/g55f): a browser receiver's cache is the cold leg's profile's
+    // HTTP cache (gate7-design.md Q4), which it fetches through. So the warm receiver fetches what
+    // its wire names, and the host must serve exactly the ones live-scene never fetched: none it
+    // cached, and none of the static payloads.
+    const statics = new Set([
+      e.texture_hashes.TEXN,
+      e.texture_hashes.TEXB,
+      e.texture_hashes.TEXA0,
+      ...(warm.digest?.early_atlas_pages ?? []),
+    ]);
+    const cache = coldFetchedHashes(wa.cache.mode, cold.ev.applied.fetches);
+    const served = new Set(warm.digest?.resources?.served ?? []);
+    if (!warm.digest?.resources) problems.push("live-scene-warm: no host GETs");
+    const fetched = (wa.fetches ?? []).filter((f) => f.source === "http");
+    for (const h of served) {
+      if (cache.has(h))
+        problems.push(
+          `the host served ${h.slice(0, 12)}, which live-scene's browser profile already cached`,
+        );
+      if (statics.has(h))
+        problems.push(`the host served static payload ${h.slice(0, 12)}`);
+    }
+    for (const f of fetched)
+      if (f.hash && !cache.has(f.hash) && !served.has(f.hash))
+        problems.push(
+          `the warm receiver fetched ${f.hash.slice(0, 12)}, which live-scene never fetched, yet the host served no GET for it`,
+        );
+    detail = `browser HTTP cache: ${fetched.length} payloads fetched, ${served.size} reached the host, none live-scene cached and none of the ${statics.size} static payloads`;
+  } else {
     if (wa.cache?.mode !== "warm")
       problems.push(`cache mode ${wa.cache?.mode}, expected warm`);
     const statics = new Set([
@@ -1658,7 +1704,7 @@ export function checkWarmFetch(
   }
   return check(
     "warm-fetch",
-    "live-scene-warm (a new host and receiver on live-scene's cache, mode warm): no payload live-scene cached is fetched again, the static payloads (TEXN, TEXB, TEXA(0), the atlas pages of steps 0 to 2) are fetched zero times, and every fetch is of a payload absent from the cold cache (Q7c)",
+    "live-scene-warm (a new host and receiver on live-scene's cache, mode warm): no payload live-scene cached is fetched again, the static payloads (TEXN, TEXB, TEXA(0), the atlas pages of steps 0 to 2) are fetched zero times, and every fetch is of a payload absent from the cold cache (Q7c); G7g, a browser receiver: its cache is the cold leg's profile's HTTP cache, so the host serves only payloads live-scene never fetched, and no static payload",
     problems,
     detail,
     [join(warm?.ev.receiverDir ?? "live-scene-warm", "applied.json")],
@@ -2041,7 +2087,14 @@ export async function runGate6l(
     const loaded = await loadG6lLeg(liveDir, l.leg);
     const ev = await classifyG6lLeg(e, loaded, l, liveDir);
     steps.push({ leg: l.leg, steps: loaded.host?.connections[0]?.host.steps });
-    ev.digest = digestLeg(e, ev) ?? undefined;
+    ev.digest =
+      digestLeg(
+        e,
+        ev,
+        l.leg === "live-scene-warm"
+          ? evals.get("live-scene")?.ev.applied?.fetches
+          : undefined,
+      ) ?? undefined;
     // Release the decoded recordings, taps and hook log: five legs of them do not fit the heap.
     loaded.host = null;
     evals.set(l.leg, ev);

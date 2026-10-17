@@ -2964,3 +2964,26 @@ gate's own runner again, with `GATE7_LIVE_KIND=web|gsw` and `GATE7_BUNDLE_DIR`, 
     `submitted` ack latency.
 - `test/self-test-gate7l.ts` covers the browser leg mapping, the `.rs7` tap discovery and /7
   decoding, the http-cache fetch and warm rules, `credit-from-paced-loop` and the known-failure rule.
+
+### G7g: gate 6 on both browsers
+
+G7g ([../protocol/gate7/g7g.md](../protocol/gate7/g7g.md)) extends the GSW canvas receiver and the
+web export to gate 6 (the scene, the HD fixture at both presentations, the presentation hazard):
+
+```bash
+bash experiments/render-stream/scripts/run-gate7.sh --legs g7-6 --receiver gsw --make-sources --out <dir>
+bash experiments/render-stream/scripts/run-gate7.sh --live --legs g7-6 --receiver web --web-core rust --out <dir>
+```
+
+- `lib/gate7-gsw-g6.ts`: the gsw receiver's 19 legs of g6a/g6h/g6b, the 23 of gate 6's own checks
+  kept `@gsw`, and the Q7 plans (the model's per-shot raster, the native leg's `applied.json`
+  mapping a receiver shot seq to its model shot index, and the sabotage/honest-leg pairing).
+- `lib/gate7-g6-checks.ts`: `presentationCheck` (each browser leg's canvas backing store, read
+  from the page at exit, equals the session's `presentation_size`; the hazard's is its window
+  instead) and `q7RegionsReport` (`q7-regions-g6@gsw`, a report-only per-size, per-region pixel
+  count against the rendered reference). Both are shared by file legs (`gate7-web-legs.ts`,
+  `gate7-gsw-checks.ts`) and live legs (`gate7-live-legs.ts`, `gate7-live.ts`), and by both
+  browsers.
+- `web/gsw-rs`'s presentation adoption (`set_window`, `presentation_json`) and `rs-core`'s
+  `canvas_attach`/`canvas_stacking_sets` counters are gate 6 specific; see
+  [../results/gate7/g7g.md](../results/gate7/g7g.md) "What was built" for both.
