@@ -16,7 +16,7 @@
 //     self-test-rs-core.ts (Q14d "Real recordings")
 //   gate7-tool.ts gsw-bundle --out <dir> [--rs-build <artifacts/render-stream/rs-core/<sha>>]
 //     (G7a) bundles the GSW canvas receiver (lib/gsw-bundle.ts); prints the directory
-//   gate7-tool.ts gsw-legs --group g7-<0..5> --source <gate run> --bundle <gsw bundle> --out <gate 7 run>
+//   gate7-tool.ts gsw-legs --group g7-<0..6> --source <gate run> --bundle <gsw bundle> --out <gate 7 run>
 //     (G7a) replays the group's native receiver legs, and its GSW-only sabotages, in the GSW canvas
 //     receiver into <out>/<gate>/gsw/ (lib/gate7-gsw.ts)
 //   gate7-tool.ts browser-receiver --dir <leg dir> [--kind web|gsw] [--port N] [--bundle <dir>]
@@ -247,11 +247,12 @@ async function main(): Promise<void> {
         "g7-55": "gate55",
         "g7-4": "gate4",
         "g7-5": "gate5",
+        "g7-6": "gate6",
       } as Record<string, GswGate>
     )[group];
     if (!gate)
       throw new Error(
-        `gate7-tool: no gsw legs for ${group} (G7a lands g7-0..g7-3, G7t g7-4 and g7-5, G7s g7-55)`,
+        `gate7-tool: no gsw legs for ${group} (G7a lands g7-0..g7-3, G7t g7-4 and g7-5, G7s g7-55, G7g g7-6)`,
       );
     const out = resolve(flag(argv, "--out"));
     const source = resolve(flag(argv, "--source"));

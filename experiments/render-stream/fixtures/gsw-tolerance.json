@@ -3719,6 +3719,1101 @@
           }
         }
       ]
+    },
+    "gate6": {
+      "expected": "fixtures/gate6-scene/expected.json",
+      "raster": "gate6",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13494,
+            "undecided": 47812
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 47560
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 47560
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13482,
+            "undecided": 47568
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 47552
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 47804
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13488,
+            "undecided": 47808
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13828,
+            "undecided": 47722
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 46672
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 46672
+          }
+        },
+        {
+          "step": 10,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 47728
+          }
+        },
+        {
+          "step": 11,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13830,
+            "undecided": 47720
+          }
+        },
+        {
+          "step": 12,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 47552
+          }
+        },
+        {
+          "step": 13,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 47812
+          }
+        },
+        {
+          "step": 14,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13830,
+            "undecided": 46664
+          }
+        }
+      ]
+    },
+    "gate6-animate": {
+      "expected": "fixtures/gate6-scene/expected.json",
+      "raster": "gate6",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13494,
+            "undecided": 47812
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 47560
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 47560
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13482,
+            "undecided": 47568
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 47552
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 47804
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13488,
+            "undecided": 47808
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13828,
+            "undecided": 47722
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 46672
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 46672
+          }
+        },
+        {
+          "step": 10,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [16, 12, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [16, 308, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [192, 132, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [400, 12, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [192, 12, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 47728
+          }
+        },
+        {
+          "step": 11,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [16, 12, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [16, 308, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [192, 132, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [400, 12, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [192, 12, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13830,
+            "undecided": 47720
+          }
+        },
+        {
+          "step": 12,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 47552
+          }
+        },
+        {
+          "step": 13,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 47812
+          }
+        },
+        {
+          "step": 14,
+          "delta1": [
+            {
+              "region": "SC",
+              "rect": [8, 8, 168, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "LB",
+              "rect": [8, 304, 320, 32],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "CD",
+              "rect": [184, 128, 120, 104],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "TR",
+              "rect": [392, 8, 64, 64],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            },
+            {
+              "region": "RT",
+              "rect": [184, 8, 200, 112],
+              "why": "animate (Q6d) moves or redraws this region beyond the default model's shots"
+            }
+          ],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13830,
+            "undecided": 46664
+          }
+        }
+      ]
+    },
+    "gate6-refused": {
+      "expected": "fixtures/gate6-scene/expected.json",
+      "raster": "gate6-refused",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13494,
+            "undecided": 59332
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 59080
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 59080
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13482,
+            "undecided": 59088
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 59072
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 59324
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13488,
+            "undecided": 59328
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13828,
+            "undecided": 59242
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 58192
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 58192
+          }
+        },
+        {
+          "step": 10,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13826,
+            "undecided": 59248
+          }
+        },
+        {
+          "step": 11,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13830,
+            "undecided": 59240
+          }
+        },
+        {
+          "step": 12,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13490,
+            "undecided": 59072
+          }
+        },
+        {
+          "step": 13,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13486,
+            "undecided": 59332
+          }
+        },
+        {
+          "step": 14,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 13830,
+            "undecided": 58184
+          }
+        }
+      ]
+    },
+    "gate6-hd-native": {
+      "expected": "fixtures/gate6-hd/expected.json",
+      "raster": "gate6-hd-native",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 114608,
+            "undecided": 430288
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 114660,
+            "undecided": 427958
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 114754,
+            "undecided": 427874
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 114890,
+            "undecided": 427730
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 115010,
+            "undecided": 427614
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 115124,
+            "undecided": 429760
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 115244,
+            "undecided": 429646
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 117654,
+            "undecided": 429542
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 117664,
+            "undecided": 420020
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 117660,
+            "undecided": 420028
+          }
+        },
+        {
+          "step": 10,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 117662,
+            "undecided": 429528
+          }
+        },
+        {
+          "step": 11,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 117686,
+            "undecided": 429480
+          }
+        },
+        {
+          "step": 12,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 114604,
+            "undecided": 428012
+          }
+        },
+        {
+          "step": 13,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 115078,
+            "undecided": 429810
+          }
+        },
+        {
+          "step": 14,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 117656,
+            "undecided": 420036
+          }
+        }
+      ]
+    },
+    "gate6-hd-half": {
+      "expected": "fixtures/gate6-hd/expected.json",
+      "raster": "gate6-hd-half",
+      "steps": [
+        {
+          "step": 0,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38574,
+            "undecided": 104868
+          }
+        },
+        {
+          "step": 1,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38589,
+            "undecided": 104288
+          }
+        },
+        {
+          "step": 2,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38632,
+            "undecided": 104250
+          }
+        },
+        {
+          "step": 3,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38686,
+            "undecided": 104190
+          }
+        },
+        {
+          "step": 4,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38712,
+            "undecided": 104168
+          }
+        },
+        {
+          "step": 5,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38742,
+            "undecided": 104692
+          }
+        },
+        {
+          "step": 6,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38793,
+            "undecided": 104644
+          }
+        },
+        {
+          "step": 7,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 39990,
+            "undecided": 104600
+          }
+        },
+        {
+          "step": 8,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 39988,
+            "undecided": 102224
+          }
+        },
+        {
+          "step": 9,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 39980,
+            "undecided": 102234
+          }
+        },
+        {
+          "step": 10,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 39989,
+            "undecided": 104598
+          }
+        },
+        {
+          "step": 11,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 40019,
+            "undecided": 104562
+          }
+        },
+        {
+          "step": 12,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38582,
+            "undecided": 104294
+          }
+        },
+        {
+          "step": 13,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 38746,
+            "undecided": 104692
+          }
+        },
+        {
+          "step": 14,
+          "delta1": [],
+          "undecided": [],
+          "raster_pixels": {
+            "delta1": 39992,
+            "undecided": 102222
+          }
+        }
+      ]
     }
   }
 }

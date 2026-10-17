@@ -33,6 +33,7 @@ import type { Gate2Expected } from "./gate2-expected";
 import { stepWindow, TRANSFORM_ONLY_STEPS } from "./gate2b-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
 import type { Gate7Check } from "./gate7-adapters";
+import { presentationCheck, q7RegionsReport } from "./gate7-g6-checks";
 import {
   compositorProblems,
   GSW_LEGS,
@@ -833,6 +834,19 @@ const Q7_LEGS: Record<GswGate, [string, string, string][]> = {
     "style/receiver",
     "style/receiver-patch",
   ].map((l) => [l, "", ""]),
+  // G7g: gate 6's honest legs at all three sizes; per-shot model masks from q7Plan.
+  gate6: [
+    "scene/receiver",
+    "scene/receiver-patch",
+    "scene/receiver-inline",
+    "animate/receiver",
+    "refused/receiver",
+    "hd/receiver-native",
+    "hd/receiver-native-patch",
+    "hd/receiver-half",
+    "hd/receiver-half-patch",
+    "hd/receiver-half-inline",
+  ].map((l) => [l, "", ""]),
 };
 
 /** Q7 (D8): each rendered success leg's shots against the rendered reference, decided pixels
@@ -852,10 +866,12 @@ async function q7Policy(gate: GswGate, ctx: Ctx): Promise<Gate7Check> {
     const plan = fixedKey ? null : q7Plan(gate, leg, ctx.sourceDir);
     const key = fixedKey || plan?.key || "";
     const refDir = fixedRef || plan?.reference || "";
-    const seqs = new Map(
-      shotSeqs(join(ctx.sourceDir, leg)).map((seq, k) => [seq, k] as const),
-    );
-    if (plan?.refs)
+    const seqs =
+      plan?.steps ??
+      new Map(
+        shotSeqs(join(ctx.sourceDir, leg)).map((seq, k) => [seq, k] as const),
+      );
+    if (plan?.refs && !plan.steps)
       for (const [seq, k] of earlySteps(plan.refs)) seqs.set(seq, k);
     if (!tol.gates[key]) {
       problems.push(`${leg}: no ${key} masks in gsw-tolerance.json`);
@@ -915,6 +931,75 @@ export async function gswExtraChecks(
   if (gate === "gate2") out.push(...(await gate2Checks(ctx)));
   if (gate === "gate3") out.push(...(await gate3Checks(ctx)));
   if (gate === "gate55") out.push(...(await gate55Checks(ctx)));
+  // G7g: gate 6's backing stores at 640x360, 1920x1080 and 960x540, and the compositor at each.
+  if (gate === "gate6") {
+    out.push(
+      await presentationCheck(
+        "gsw",
+        new Map(
+          GSW_LEGS.gate6
+            .filter((d) => d.replaces)
+            .map((d) => [d.leg, gswDir(ctx.out, gate, d.leg)]),
+        ),
+      ),
+    );
+    const tol = readTolerance();
+    const scene = await readJson<{
+      shots: { regions: Record<string, number[]> }[];
+      variants: { refused: { shots: { regions: Record<string, number[]> }[] } };
+    }>(join(EXPERIMENT_DIR, "fixtures", "gate6-scene", "expected.json"));
+    const hd = await readJson<{
+      shots: { regions: Record<string, number[]> }[];
+      presentations: Record<string, { scale: number }>;
+    }>(join(EXPERIMENT_DIR, "fixtures", "gate6-hd", "expected.json"));
+    const regionLegs = Q7_LEGS.gate6.flatMap(([leg]) => {
+      const plan = q7Plan(gate, leg, ctx.sourceDir);
+      return plan?.steps && plan.refs
+        ? [
+            {
+              leg,
+              dir: gswDir(ctx.out, gate, leg),
+              key: plan.key,
+              referenceDir: join(ctx.sourceDir, plan.reference, "shots"),
+              steps: plan.steps,
+              refs: plan.refs,
+            },
+          ]
+        : [];
+    });
+    out.push(
+      await q7RegionsReport(
+        regionLegs,
+        (key, step) => {
+          if (key.startsWith("gate6-hd")) {
+            const s =
+              hd?.presentations[key === "gate6-hd-half" ? "half" : "native"]
+                ?.scale ?? 1;
+            const r = hd?.shots[step]?.regions;
+            return r
+              ? Object.fromEntries(
+                  Object.entries(r).map(([n, b]) => [n, b.map((v) => v * s)]),
+                )
+              : null;
+          }
+          return (
+            (key === "gate6-refused"
+              ? scene?.variants.refused.shots[step]
+              : scene?.shots[step]
+            )?.regions ?? null
+          );
+        },
+        (key, step, w, h) => classMask(key, step, w, h, tol),
+      ),
+    );
+    for (const d of GSW_LEGS.gate6.filter((x) => x.compositor))
+      out.push(
+        await compositorCheck(
+          `compositor-equals-readback-g6-${d.leg.replace(/\/receiver/, "").replace(/\//g, "-")}@gsw`,
+          gswDir(ctx.out, gate, d.leg),
+        ),
+      );
+  }
   if (gate === "gate4" || gate === "gate5")
     out.push(
       ...(await g45ExtraChecks(gate, {

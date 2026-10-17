@@ -41,6 +41,12 @@ import {
   gate55Q7Plan,
 } from "./gate7-gsw-55";
 import {
+  GATE6_LEGS,
+  GATE6_NOT_APPLICABLE,
+  GATE6_RECEIVER_CHECKS,
+  gate6Q7Plan,
+} from "./gate7-gsw-g6";
+import {
   earlySteps,
   G45_LEGS,
   G45_NOT_APPLICABLE,
@@ -58,6 +64,7 @@ export type GswGate =
   | "gate2"
   | "gate3"
   | "gate55"
+  | "gate6"
   | G45Gate;
 export const GSW_GROUP_OF: Record<GswGate, string> = {
   gate0: "g7-0",
@@ -67,6 +74,7 @@ export const GSW_GROUP_OF: Record<GswGate, string> = {
   gate55: "g7-55",
   gate4: "g7-4",
   gate5: "g7-5",
+  gate6: "g7-6",
 };
 
 /** One gsw leg: a native receiver leg replayed, or a GSW-only sabotage derived from one. */
@@ -182,6 +190,8 @@ export const GSW_LEGS: Record<GswGate, GswLegDef[]> = {
   gate55: GATE55_LEGS,
   // G7t: gates 4 and 5 (lib/gate7-gsw-g45.ts).
   ...G45_LEGS,
+  // G7g: gate 6 (lib/gate7-gsw-g6.ts).
+  gate6: GATE6_LEGS,
 };
 
 export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
@@ -198,6 +208,7 @@ export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
   gate3: [TRACE_NA],
   gate55: GATE55_NOT_APPLICABLE,
   ...G45_NOT_APPLICABLE,
+  gate6: GATE6_NOT_APPLICABLE,
 };
 
 /** Each gate's checks that judge receiver legs (kept `@gsw`), and those not applicable. */
@@ -334,6 +345,7 @@ export const GSW_RECEIVER_CHECKS: Record<
   },
   gate55: GATE55_RECEIVER_CHECKS,
   ...G45_RECEIVER_CHECKS,
+  gate6: GATE6_RECEIVER_CHECKS,
 };
 
 /** The leg specs of a gate for runWebLegs (`kind: "gsw"`). */
@@ -455,8 +467,20 @@ export function q7Plan(
   reference: string;
   live: boolean;
   refs?: Map<number, string>;
+  /** G7g: shot seq -> the tolerance doc's step (gate 6: the model shot's index). */
+  steps?: Map<number, number>;
   pair?: string;
+  /** G7g: leave undecided pixels as drawn (gate 6's presentation hazard). */
+  keepUndecided?: boolean;
 } | null {
+  if (gate === "gate6") {
+    const plan = gate6Q7Plan(
+      leg,
+      sourceDir,
+      join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures"),
+    );
+    return plan ? { ...plan, live: false } : null;
+  }
   if (gate === "gate4" || gate === "gate5") {
     const plan = g45Q7Plan(gate, leg, sourceDir);
     return plan ? { ...plan, live: false } : null;
@@ -532,13 +556,15 @@ export async function checkGswGroup(
     const plan = q7Plan(gate, d.leg, input.sourceDir);
     if (!plan) continue;
     const viewDir = join(input.gswRoot, "..", "gsw-q7", d.leg);
-    const steps = await stepsOf(
-      join(input.sourceDir, d.leg),
-      plan.live
-        ? join(input.sourceDir, "live", "receiver", "applied.json")
-        : undefined,
-    );
-    if (plan.refs)
+    const steps =
+      plan.steps ??
+      (await stepsOf(
+        join(input.sourceDir, d.leg),
+        plan.live
+          ? join(input.sourceDir, "live", "receiver", "applied.json")
+          : undefined,
+      ));
+    if (plan.refs && !plan.steps)
       for (const [seq, k] of earlySteps(plan.refs)) steps.set(seq, k);
     q7[d.leg] = await buildQ7View(
       {
@@ -548,6 +574,7 @@ export async function checkGswGroup(
         steps,
         referenceDir: join(input.sourceDir, plan.reference, "shots"),
         refs: plan.refs,
+        keepUndecided: plan.keepUndecided,
         pair: plan.pair
           ? {
               gswDir: join(input.gswRoot, plan.pair),

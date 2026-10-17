@@ -26,6 +26,9 @@ export interface GswRs {
   target_height(): number;
   error(): string;
   session_meta(): string;
+  // G7g: the window this receiver presents into, and how it adopted the session's presentation.
+  set_window(width: number, height: number): void;
+  presentation_json(): string;
   state_dump(): string;
   applied_json_parts(): string;
   evidence_json(): string;
@@ -226,6 +229,7 @@ export function viewportReport(
   cfg: ReceiverConfig,
   canvas: HTMLCanvasElement,
   session: SessionMeta,
+  presentationJson = "",
 ): {
   viewport: Record<string, unknown>;
   unsupported: { seq: null; item: null; name: string; reason: string }[];
@@ -245,6 +249,13 @@ export function viewportReport(
       name: "viewport",
       reason: "stretch-mode",
     });
+  // G7g: the presentation as the wasm module adopted it (`set_window`, `presentation_json`): the
+  // window it draws into, the stretch's own oversampling, and the receiver-typed mismatches.
+  const adopted = (
+    presentationJson ? JSON.parse(presentationJson) : null
+  ) as PresentationAdopted | null;
+  for (const reason of adopted?.typed ?? [])
+    unsupported.push({ seq: null, item: null, name: "viewport", reason });
   return {
     viewport: {
       display_server: "web",
@@ -253,16 +264,28 @@ export function viewportReport(
       logical_size: logical,
       canvas_transform: [],
       presentation_size: presentation,
-      window_size: [canvas.width, canvas.height],
-      oversampling: 1.0,
-      presentation_check: presentation === null ? null : "ok",
+      window_size: adopted?.window ?? [canvas.width, canvas.height],
+      oversampling: adopted?.oversampling ?? 1.0,
+      presentation_check: adopted
+        ? adopted.presentation_check
+        : presentation === null
+          ? null
+          : "ok",
       stretch_applied:
-        presentation !== null &&
-        !ignorePresentation &&
-        stretchMode === "canvas_items" &&
-        (presentation[0] !== logical[0] || presentation[1] !== logical[1]),
+        adopted?.stretch_applied ??
+        (!ignorePresentation && stretchMode === "canvas_items"),
     },
     unsupported,
     logical,
   };
+}
+
+/** G7g: `GswRs.presentation_json()`. */
+export interface PresentationAdopted {
+  window: [number, number];
+  target: [number, number];
+  oversampling: number;
+  stretch_applied: boolean;
+  presentation_check: "ok" | "mismatch" | null;
+  typed: string[];
 }

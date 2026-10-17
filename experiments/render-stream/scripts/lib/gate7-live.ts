@@ -1,5 +1,6 @@
 // Gate 7 live groups (G7l; gate7-design.md "G7l", Q2, Q3, Q8, Q9): the live legs of gates 1, 2,
-// 5 (g5f) and 5.5 (g55f) delivered to a browser receiver over render-stream/7.
+// 5 (g5f) and 5.5 (g55f) delivered to a browser receiver over render-stream/7; G7g adds gate 6's
+// g6l (and its presentation-check, lib/gate7-g6-checks.ts).
 //
 // A live leg cannot replay a source run: its host paces against the receiver it serves. So the
 // gate's OWN runner runs again with `GATE7_LIVE_KIND=web|gsw` (lib/legs.sh): every live host gets
@@ -39,6 +40,7 @@ import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/inde
 
 import { decodePngRgba } from "./gate-minus1-checks";
 import { filesUnder, type Gate7Check, mk, readJson } from "./gate7-adapters";
+import { presentationCheck } from "./gate7-g6-checks";
 import {
   buildMirrorView,
   type CheckerCheck,
@@ -91,6 +93,16 @@ export const GATE7L_GATES: readonly LiveGateDef[] = [
     runner: "run-gate55.sh",
     runnerLegs: "g55f",
     liveGroups: ["g55f"],
+  },
+  // G7g: gate 6's live motion, warm, stall, reconnect and stale-coalesce legs (g6l); its
+  // reference-live-frames and reference-file legs are native and run in the same runner.
+  {
+    gate: "gate6",
+    group: "g7-6",
+    checker: "check-gate6.ts",
+    runner: "run-gate6.sh",
+    runnerLegs: "g6l",
+    liveGroups: ["g6l"],
   },
 ];
 
@@ -888,6 +900,14 @@ export async function checkGateLive(
         : `${tokens.length} tokens, none logged`,
     ),
   );
+  // G7g: gate 6's live receivers present at the scene's 640x360 presentation_size.
+  if (def.gate === "gate6")
+    checks.push(
+      await presentationCheck(
+        kind,
+        new Map(browserLegs.map((l) => [l, join(runDir, l)])),
+      ),
+    );
 
   return {
     group: def.group,
