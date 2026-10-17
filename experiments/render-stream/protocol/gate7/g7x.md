@@ -6,9 +6,9 @@ timed per phase against the TypeScript path.
 
 - **Inputs**, verbatim and never regenerated: G7d's final desktop run's bench recordings, which G7m
   reused.
-  - Location: the G7d worktree `.claude/worktrees/agent-afcc2e9f03924d8ff`, under
-    `artifacts/render-stream/gate7/g7d-r1/g7-bench/inputs/`, with a copy in the G7m worktree
-    `agent-ae96a73e819b37908` under `artifacts/render-stream/gate7/g7m-inputs/inputs/`.
+  - Location: the main checkout's ignored
+    `artifacts/render-stream/gate7/g7d-r1/g7-bench/inputs/`, retained from G7d with checksums in
+    [`docs/worktree-evidence-2026-10-17.json`](../../../../docs/worktree-evidence-2026-10-17.json).
   - Copy them into this worktree's ignored artifacts first, then rewrite `inputs.json`'s absolute
     paths, and verify the sha256s (memory worktree-removal-loses-artifacts):
 
@@ -130,4 +130,3 @@ timed per phase against the TypeScript path.
   - Scene shots against the native receiver (report-only) are within max delta 1 except `SM`
     (the builtin-shader shortcut), `LE` (max 7) and, from seq 108, `BG` (max 255). `LE` and `BG`
     are not root-caused and go to G7a/G7t.
-

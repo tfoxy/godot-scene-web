@@ -131,3 +131,12 @@ nested `xvfb-run` and warns on a `tsx` call missing `--conditions=development` (
 
 Project memory is `.agents/memory/MEMORY.md` (in a worktree, a symlink to the main checkout's store). Read
 that index before non-trivial work; record what you learn with the `project-memory` skill.
+
+## Worktrees
+
+Create linked worktrees with `scripts/create-worktree.sh <name>`. They live directly under the ignored
+`.worktrees/` directory, where shared links keep `../godot-4.5.1-stable`, `../godot-docs-4.5`,
+`../spirectl`, and `../sts2-couch-coop` valid. Do not use an agent's default `.claude/worktrees/`
+location or create sibling checkouts. `scripts/worktree-admin.py inventory` shows the registered
+checkouts; `migrate` and `prune` preview by default and require `--apply`. See
+[`docs/worktrees.md`](docs/worktrees.md) before removing a checkout with ignored evidence.

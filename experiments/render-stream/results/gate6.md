@@ -1341,6 +1341,11 @@ increment.)
 | g6p | `artifacts/render-stream/gate6/20261015T061914Z/matrix/` | one shot after each repeat's measured window |
 | g6z | (reads the above; writes nothing of its own) | — |
 
+After the 2026-10-17 worktree consolidation, the main checkout retains the complete `g6a`
+scene images and Gate 6p's final per-repeat images, reports, and compact logs. The large repeated
+recordings and most intermediate images from the other groups were discarded. The exact retained
+files and checksums are in [`docs/worktree-evidence-2026-10-17.json`](../../../docs/worktree-evidence-2026-10-17.json).
+
 ### Per-leg classes
 
 Every g6a and g6h leg classifies `success` since G6b (the HUD `CanvasLayer` travels with its

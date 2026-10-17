@@ -87,6 +87,10 @@ build_sha256, manifest_sha256, protocol, credit_window}`. The checkers accept /6
 on the changed receiver with the capture rebuilt (19/19 ctests), were run one after another in
 `artifacts/render-stream/g7e-native/r1/`, and none needed a rerun:
 
+The main checkout retains this native rerun's verdict JSON and logs after the 2026-10-17
+worktree consolidation; large repeated recordings were discarded. See the
+[evidence index](../../../../docs/worktree-evidence-2026-10-17.md).
+
 | Gate | Checks | Result |
 | --- | --- | --- |
 | −1 | 29/29 | PASS |
@@ -154,4 +158,3 @@ All 34 `scripts/test/self-test-*.ts` pass, including G7d's `self-test-device-har
 It does not prove gates 1 to 6 on the web (G7b), live mode or any WebSocket in a browser (G7l), the
 web export's payload paths (gate 0 draws no texture: the store fetch and the `http-cache` mode
 ran, the upload paths did not), warm startup or memory over time (G7k), or anything on a phone.
-

@@ -1,4 +1,5 @@
 .agents/
+.worktrees/
 .ai/
 .claude/
 # Generated Codex CLI config. No trailing slash: an older tool can leave a stray `.codex` FILE,

@@ -13,10 +13,10 @@ package) in a dedicated worktree, and land it as one commit on `main`.
 ## Setup
 
 ```bash
-scripts/install-agent-config.sh
-git checkout -B <your-branch> && git reset --hard main
+# From the main checkout, create and enter an isolated worktree.
+scripts/create-worktree.sh <increment-name>
+cd .worktrees/<increment-name>
 mise trust mise.toml
-mise exec -- pnpm install --frozen-lockfile
 experiments/render-stream/scripts/build-capture.sh
 mise exec -- godot --headless --path experiments/render-stream/receiver --import
 ```

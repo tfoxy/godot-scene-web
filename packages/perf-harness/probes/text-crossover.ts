@@ -170,9 +170,9 @@ async function resolveFace(override?: string): Promise<ProbeFace> {
       source: "override",
     });
   }
-  // Up the tree from the repo root: the primary checkout has `spirectl` as a sibling, and a git
-  // worktree under `.claude/worktrees/<name>` has it four levels further up. Walking is one rule
-  // that covers both instead of two paths that each work in exactly one place.
+  // Up the tree from the repo root: the primary checkout has `spirectl` as a sibling, while a
+  // worktree under `.worktrees/<name>` reaches it through the shared relative link. Walking also
+  // covers older nested checkouts.
   let dir = REPO_ROOT;
   for (let level = 0; level < 6; level += 1) {
     candidates.push({
