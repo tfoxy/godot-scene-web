@@ -114,6 +114,34 @@ pub unsafe extern "C" fn rsc_session(
     guard(h, 0, |c| c.session(data, offset, version))
 }
 
+/// G7o2 (D31): whether the next session defers the per-record digest (receiver.gd: the web
+/// export's file mode).
+#[no_mangle]
+pub extern "C" fn rsc_set_digest_deferred(h: *mut RsCore, on: i32) {
+    guard(h, (), |c| c.digest_deferred = on != 0);
+}
+
+/// G7o2 (D31): the record at `offset`'s SHA-256 hex into text: 1, or 0 with the error in text.
+///
+/// # Safety
+/// `data` points to `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_record_digest(
+    h: *mut RsCore,
+    data: *const u8,
+    len: usize,
+    offset: usize,
+) -> i32 {
+    let data = bytes(data, len);
+    guard(h, 0, |c| match c.record_digest(data, offset) {
+        Ok(()) => 1,
+        Err(e) => {
+            c.text = e.into_bytes();
+            0
+        }
+    })
+}
+
 /// The session's RenderingServer calls (ops).
 #[no_mangle]
 pub extern "C" fn rsc_begin_session(h: *mut RsCore) {

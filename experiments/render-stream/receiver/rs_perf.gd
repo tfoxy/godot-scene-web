@@ -118,6 +118,9 @@ var frame_interval_us := Histogram.new()
 ## value is still 0 (nothing measured yet) skipped.
 var gpu_render_us := Histogram.new()
 var cpu_render_us := Histogram.new()
+## G7o2 (D31): the web export's deferred record digests, once per frame after its draw; written
+## only when any were taken (the native receiver digests inline, inside decode_us).
+var evidence_hash_us := Histogram.new()
 
 var _last_frame_us: int = -1
 var _start_ms: int = 0
@@ -235,16 +238,19 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 ## {"received", "applied", "submitted"} (receiver.gd's _acks_sent, not duplicated here), or null
 ## in file mode, which has no acks (D9: declared, not guessed, rather than a misleading all-zero).
 func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
+	var histograms: Dictionary = {
+		"decode_us": decode_us.to_dict(),
+		"apply_us": apply_us.to_dict(),
+		"fetch_us": fetch_us.to_dict(),
+		"frame_interval_us": frame_interval_us.to_dict(),
+		"gpu_render_us": gpu_render_us.to_dict(),
+		"cpu_render_us": cpu_render_us.to_dict(),
+	}
+	if evidence_hash_us.count > 0:
+		histograms["evidence_hash_us"] = evidence_hash_us.to_dict()
 	return {
 		"schema": SCHEMA,
-		"histograms": {
-			"decode_us": decode_us.to_dict(),
-			"apply_us": apply_us.to_dict(),
-			"fetch_us": fetch_us.to_dict(),
-			"frame_interval_us": frame_interval_us.to_dict(),
-			"gpu_render_us": gpu_render_us.to_dict(),
-			"cpu_render_us": cpu_render_us.to_dict(),
-		},
+		"histograms": histograms,
 		"unavailable_stages": [
 			{"stage": "resolve_us", "reason": "combined with decode_us inside RsApplier.accept_record, which G6r does not split"},
 			{"stage": "upload_us", "reason": "combined with apply_us inside RsApplier.apply_state, which G6r does not split (upload bytes are in resources_summary)"},

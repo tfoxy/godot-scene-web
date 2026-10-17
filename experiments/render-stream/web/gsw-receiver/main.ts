@@ -53,7 +53,7 @@ import {
   type ShellTx,
 } from "./evidence";
 import { runLive, takeToken } from "./live";
-import { type FrameSample, Perf } from "./perf";
+import { type FrameSample, type PayloadVerify, Perf } from "./perf";
 import { ProgramError, resolvePrograms } from "./programs";
 import { readRecording, SourceError, StoreFetcher } from "./source";
 
@@ -307,6 +307,7 @@ async function run(): Promise<void> {
       };
       inlinePending = 0;
       let provideUs = 0;
+      let verifyUs = 0;
       if (code === ACCEPT_NEEDS_PAYLOADS) {
         // Q5 "Fetch": one at a time; the transaction waits, unapplied, across frames.
         const n = g.needed_count();
@@ -320,7 +321,7 @@ async function run(): Promise<void> {
           g.needed_kinds_ptr(),
           n,
         ).slice();
-        const fetched: { hash: string; bytes: Uint8Array }[] = [];
+        const staged: { hash: string; error: string | null }[] = [];
         for (let k = 0; k < n; k++) {
           const hash = hex(hashes.subarray(32 * k, 32 * k + 32));
           let got: { bytes: Uint8Array; us: number };
@@ -336,18 +337,24 @@ async function run(): Promise<void> {
           shellTx.fetch_us += got.us;
           if (kinds[k] === 2) shellTx.shader_payload_fetches++;
           perf.fetchUs.push(got.us);
-          fetched.push({ hash, bytes: got.bytes });
+          // G7o2: verified (SHA-256 against the hash it was fetched for) and decoded in the
+          // fetch's completion, between frames; a mismatch stages nothing, so nothing can use it.
+          // Its failure is raised where `provide` raised it before (same evidence).
+          const v0 = nowUs();
+          const pp = g.alloc_payload(got.bytes.length);
+          new Uint8Array(mem.buffer, pp, got.bytes.length).set(got.bytes);
+          const refused = g.stage_payload(got.bytes.length, hash) < 0;
+          verifyUs += nowUs() - v0;
+          staged.push({ hash, error: refused ? g.error() : null });
         }
         await nextFrame();
         rafCount++;
         shellTx.process_frame = rafCount;
         const p0 = nowUs();
-        for (const { hash, bytes } of fetched) {
-          const pp = g.alloc_payload(bytes.length);
-          new Uint8Array(mem.buffer, pp, bytes.length).set(bytes);
-          if (g.provide(bytes.length) < 0) {
+        for (const { hash, error } of staged) {
+          if (error !== null || g.provide_staged() < 0) {
             // The native cache's codes for a store payload (rs_resource_cache.gd obtain).
-            const err = g.error();
+            const err = error ?? g.error();
             const reason = err.startsWith("resource-hash")
               ? "resource-hash-mismatch"
               : "resource-invalid";
@@ -397,6 +404,7 @@ async function run(): Promise<void> {
         draw_us: d - c,
         total_us: totalUs,
         evidence_hash_us: evidenceUs,
+        payload_verify_us: verifyUs,
         structural: st.structural,
         relowered: st.relowered,
         rows_written: st.rows_written,
@@ -468,6 +476,17 @@ async function run(): Promise<void> {
         null,
         "record-digest-incomplete",
         `${pending} accepted record(s) without a digest`,
+      );
+    // G7o2 payload-verified-before-use: every payload a transaction used was verified when it
+    // arrived (staged), none in the frame and none unverified.
+    const pv = JSON.parse(g.payload_verify_json()) as PayloadVerify;
+    log(`payload-verify: ${JSON.stringify(pv)}`);
+    perf.payloadVerify = pv;
+    if (pv.unverified_used > 0 || pv.provided_in_frame > 0)
+      throw new ReplayFailure(
+        null,
+        "payload-unverified",
+        `payload-verified-before-use: ${pv.unverified_used} used unverified, ${pv.provided_in_frame} verified inside the frame`,
       );
     report.status = "ok";
     exitCode = 0;

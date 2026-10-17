@@ -26,6 +26,7 @@ pub mod payloads;
 pub mod programs;
 pub mod residency;
 
+use crate::prof;
 use crate::state::{
     BlendMode, Canvas, EntryStatus, Filter, Hash, Id, Item, LightMode, Param, Repeat,
     ResolvedState, ShaderSource, TextureKind, TxDelta,
@@ -33,12 +34,17 @@ use crate::state::{
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
     Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, Target, Uniform,
-    DRAW_MSDF, DRAW_SCISSOR, WHITE_TEXTURE,
+    BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
 use payloads::{MeshGeometry, PayloadStore};
 use programs::{ProgramEntry, ProgramInfo};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::BuildHasherDefault;
+
+/// G7o2: the applier's id-keyed maps hash with the validator's [`IdHasher`] (SipHash was a few
+/// per cent of a walk); nothing depends on their iteration order.
+type IdMap<V> = HashMap<Id, V, BuildHasherDefault<crate::validate::IdHasher>>;
 
 /// The root viewport as the applier draws it.
 #[derive(Clone, Copy, Debug)]
@@ -236,6 +242,25 @@ struct StructKey {
 }
 
 impl StructKey {
+    /// Whether `it` still has this key (no clone of its children).
+    fn matches(&self, it: &Item) -> bool {
+        self.parent == it.parent
+            && self.children == it.children
+            && self.visible == it.visible
+            && self.draw_index == it.draw_index
+            && self.z_index == it.z_index
+            && self.z_relative == it.z_relative
+            && self.behind == it.behind
+            && self.clip == it.clip
+            && self.custom_rect == it.custom_rect
+            && self.custom_rect_rect == it.custom_rect_rect
+            && self.visibility_layer == it.visibility_layer
+            && self.texture_filter == it.texture_filter
+            && self.texture_repeat == it.texture_repeat
+            && self.material == it.material
+            && self.use_parent_material == it.use_parent_material
+    }
+
     fn of(it: &Item) -> Self {
         StructKey {
             parent: it.parent,
@@ -313,6 +338,8 @@ struct ItemRec {
     scissor: Option<Rect>,
     /// The last walk found its global rect touching the viewport (attached when it draws).
     on_screen: bool,
+    /// The [`Applier`] apply serial that last lowered this item's content.
+    lowered_at: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -325,14 +352,20 @@ struct Attach {
     program: u32,
 }
 
+/// G7o2: the largest gap (in elements) [`Applier`] merges between two dirty ranges: 16 item rows
+/// (768 bytes), 64 vertices (2.3 KB), 256 indices (1 KB).
+const DIRTY_GAP_ROWS: u32 = 16;
+const DIRTY_GAP_VERTICES: u32 = 64;
+const DIRTY_GAP_INDICES: u32 = 256;
+
 /// The applier: owns the packed list it fills.
 pub struct Applier {
     pub list: DrawList,
     viewport: Viewport,
-    items: HashMap<Id, ItemRec>,
+    items: IdMap<ItemRec>,
     free_rows: Vec<u32>,
     /// Resident textures, native semantics (`residency`); the GPU holds the `ok` images.
-    resident: HashMap<Id, residency::Resident>,
+    resident: IdMap<residency::Resident>,
     names: residency::Names,
     /// The texture ids `prepare` chose for this transaction.
     pending: std::collections::BTreeSet<Id>,
@@ -344,12 +377,12 @@ pub struct Applier {
     vertex_holes: u32,
     /// The canvas, material, shader and canvas-texture entries the last walk used: a full
     /// transaction re-lists every entry, so changes are found by comparison, not by presence.
-    canvases: HashMap<Id, Canvas>,
+    canvases: IdMap<Canvas>,
     /// Only what the walk reads (status and shader; status and builtin): a parameter or code
     /// change re-walks nothing (G7a: hd-patch animates a material parameter every frame).
-    materials: HashMap<Id, MaterialKey>,
-    shaders: HashMap<Id, ShaderKey>,
-    canvas_textures: HashMap<Id, crate::state::Texture>,
+    materials: IdMap<MaterialKey>,
+    shaders: IdMap<ShaderKey>,
+    canvas_textures: IdMap<crate::state::Texture>,
     pub shortcut_totals: BTreeMap<&'static str, u64>,
     pub stats: ApplyStats,
     first: bool,
@@ -374,6 +407,14 @@ pub struct Applier {
     pub material_counts: material_residency::MaterialCounts,
     /// Mesh residency (G7t), and this transaction's `mesh_uploads` rows in `meshes.uploads`.
     pub meshes: meshes::MeshResidency,
+    /// G7o2: the apply count; an item's `lowered_at` names the apply that last lowered it.
+    serial: u64,
+    /// G7o2: the previous assembly's buffers, reused (and compared) by the next.
+    spare_indices: Vec<u32>,
+    spare_draws: Vec<Draw>,
+    /// G7o2 diagnostics (`rs-core-check walk-diff`): walk and re-assemble at every apply, the
+    /// oracle the incremental paths are compared against.
+    pub always_walk: bool,
 }
 
 /// The texture and mesh tables as the lowering sees them.
@@ -519,9 +560,9 @@ impl Applier {
         Applier {
             list: DrawList::new(target),
             viewport,
-            items: HashMap::new(),
+            items: IdMap::default(),
             free_rows: Vec::new(),
-            resident: HashMap::new(),
+            resident: IdMap::default(),
             names: residency::Names::default(),
             pending: Default::default(),
             prepared: false,
@@ -529,10 +570,10 @@ impl Applier {
             sabotage: ApplySabotage::default(),
             attach: Vec::new(),
             vertex_holes: 0,
-            canvases: HashMap::new(),
-            materials: HashMap::new(),
-            shaders: HashMap::new(),
-            canvas_textures: HashMap::new(),
+            canvases: IdMap::default(),
+            materials: IdMap::default(),
+            shaders: IdMap::default(),
+            canvas_textures: IdMap::default(),
             shortcut_totals: BTreeMap::new(),
             stats: ApplyStats::default(),
             first: true,
@@ -549,6 +590,10 @@ impl Applier {
             material_residency: Default::default(),
             material_counts: Default::default(),
             meshes: meshes::MeshResidency::default(),
+            serial: 0,
+            spare_indices: Vec::new(),
+            spare_draws: Vec::new(),
+            always_walk: false,
         }
     }
 
@@ -660,6 +705,38 @@ impl Applier {
         ]
     }
 
+    /// G7o2 diagnostics (`rs-core-check walk-diff`): a digest of what the packed list paints, in
+    /// paint order and independent of where vertices, rows and indices sit in their buffers: per
+    /// draw its state (binding values for an item-space program, the scissor only when it
+    /// scissors) and every index's vertex with its item row.
+    pub fn paint_digest(&self) -> crate::state::Hash {
+        use sha2::{Digest, Sha256};
+        let l = &self.list;
+        let mut h = Sha256::new();
+        for d in &l.draws {
+            let scissor = if d.flags & DRAW_SCISSOR != 0 {
+                d.scissor
+            } else {
+                [0; 4]
+            };
+            h.update(format!(
+                "draw {} {} {} {} {:?} {} {:?}\n",
+                d.texture, d.sampler, d.blend, d.flags, scissor, d.index_count, d.msdf
+            ));
+            if d.program != BUILTIN_PROGRAM {
+                h.update(format!("{:?}\n", l.bindings.get(d.program as usize - 1)));
+            }
+            for &i in &l.indices[d.first_index as usize..(d.first_index + d.index_count) as usize] {
+                let v = &l.vertices[i as usize];
+                let row = l.items.get(v.item as usize);
+                h.update(format!("{:?} {:?} {:?} {:?}\n", v.pos, v.uv, v.color, row));
+            }
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h.finalize());
+        crate::state::Hash(out)
+    }
+
     pub fn context_restored(&mut self, payloads: &PayloadStore) {
         self.list.dirty.all = true;
         self.list.dirty.draws = true;
@@ -750,12 +827,40 @@ impl Applier {
         self.list.dirty.all = true;
     }
 
+    /// Whether re-lowering `rec`'s content to `new` without a walk would leave the walk's results
+    /// stale. The walk reads an item's content only for whether it draws at all, its clip rect (a
+    /// clipping item without a custom rect), and the rect of Godot's attach test: a walked item
+    /// without a custom rect whose new rect moves it on or off screen.
+    fn content_needs_walk(&self, it: &Item, rec: &ItemRec, new: &Lowered) -> bool {
+        let old = &rec.lowered;
+        if new.draws.is_empty() != old.draws.is_empty() {
+            return true;
+        }
+        if it.custom_rect || new.rect == old.rect {
+            return false;
+        }
+        if it.clip {
+            return true;
+        }
+        let vp = [
+            0.0,
+            0.0,
+            self.viewport.width as f32,
+            self.viewport.height as f32,
+        ];
+        rec.visited
+            && geom::intersects_inclusive(&vp, &geom::xform_rect(&rec.final_xform, &new.rect))
+                != rec.on_screen
+    }
+
     fn lower_item(
         &mut self,
         it: &Item,
         tables: &TableView<'_>,
     ) -> (Lowered, TexSizes, Vec<(Id, i64)>) {
+        let t = prof::start();
         let lowered = lower::lower_with(&it.commands, tables, self.sabotage.lower);
+        prof::add(prof::LOWER, t);
         for (s, n) in &lowered.shortcuts {
             *self.shortcut_totals.entry(s.as_str()).or_insert(0) += u64::from(*n);
         }
@@ -781,6 +886,7 @@ impl Applier {
     /// transaction and choose which textures this transaction looks at. Must run once between
     /// `accept` and `apply` (`apply` runs it itself when the adapter did not).
     pub fn prepare(&mut self, state: &ResolvedState, delta: &TxDelta) {
+        let t = prof::start();
         self.names.update(state, delta, self.first);
         self.pending = residency::candidates(
             &mut self.names,
@@ -790,6 +896,7 @@ impl Applier {
             self.sabotage.reupload,
         );
         self.prepared = true;
+        prof::add(prof::PREPARE, t);
     }
 
     /// The payload hashes this transaction needs that `store` does not hold, in the native
@@ -1027,6 +1134,7 @@ impl Applier {
     ) -> &ApplyStats {
         self.stats = ApplyStats::default();
         self.account = Default::default();
+        self.serial += 1;
         self.shader_refusals.clear();
         self.bindings_changed.clear();
         if !self.prepared {
@@ -1035,6 +1143,7 @@ impl Applier {
         self.prepared = false;
         // Mesh residency first (the lowering draws the resident surfaces): the native receiver
         // applies meshes before it replays commands (`rs_applier.gd` step 3b).
+        let t = prof::start();
         let mut mesh_res = std::mem::take(&mut self.meshes);
         mesh_res.sabotage = self.sabotage.mesh;
         {
@@ -1045,6 +1154,8 @@ impl Applier {
             };
             mesh_res.sync(state, &items, &delta.items_removed, self.first, payloads);
         }
+        prof::add(prof::MESH_SYNC, t);
+        let t = prof::start();
         let tables = TableView {
             state,
             payloads,
@@ -1119,6 +1230,8 @@ impl Applier {
         if std::mem::take(&mut self.programs_dirty) {
             why |= Why::MATERIAL;
         }
+        prof::add(prof::TEXTURE_SYNC, t);
+        let t = prof::start();
         self.note_shader_refusals(state);
         {
             let named_materials = self.names.named_materials(state);
@@ -1154,6 +1267,9 @@ impl Applier {
             }
         }
 
+        prof::add(prof::MATERIALS, t);
+        let t = prof::start();
+        let lower0 = prof::get(prof::LOWER);
         // Removed items.
         for id in &delta.items_removed {
             if let Some(rec) = self.items.remove(id) {
@@ -1189,7 +1305,6 @@ impl Applier {
             let Some(it) = state.items.get(&id) else {
                 continue;
             };
-            let key = StructKey::of(it);
             match self.items.contains_key(&id) {
                 false => {
                     let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
@@ -1201,7 +1316,7 @@ impl Applier {
                         lowered,
                         vstart: 0,
                         vcap: 0,
-                        key,
+                        key: StructKey::of(it),
                         xform: it.xform,
                         modulate: it.modulate,
                         self_modulate: it.self_modulate,
@@ -1218,6 +1333,7 @@ impl Applier {
                         clip_eff: it.clip,
                         scissor: None,
                         on_screen: false,
+                        lowered_at: self.serial,
                     };
                     Self::place_vertices(&mut self.list, &mut rec, &mut self.vertex_holes);
                     self.items.insert(id, rec);
@@ -1247,17 +1363,14 @@ impl Applier {
                         self.count_commands(it);
                         let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
                         self.stats.relowered += 1;
-                        let rec = self.items.get_mut(&id).unwrap();
-                        let same =
-                            lowered.same_shape(&rec.lowered) && lowered.rect == rec.lowered.rect;
-                        // The walk reads an item's content only for its clip rect (a clipping
-                        // item without a custom rect) and whether it draws at all; any other
-                        // change of shape needs only the index buffer and draw table re-assembled.
-                        if (it.clip && !it.custom_rect && lowered.rect != rec.lowered.rect)
-                            || lowered.draws.is_empty() != rec.lowered.draws.is_empty()
-                        {
+                        if self.content_needs_walk(it, &self.items[&id], &lowered) {
                             content_walk = true;
                         }
+                        let rec = self.items.get_mut(&id).unwrap();
+                        // Any other change of shape needs only the index buffer and draw table
+                        // re-assembled; the same shape is rewritten in place.
+                        let same = lowered.same_shape(&rec.lowered);
+                        rec.lowered_at = self.serial;
                         rec.lowered = lowered;
                         rec.tex_sizes = tex_sizes;
                         rec.mesh_versions = mesh_versions;
@@ -1271,8 +1384,8 @@ impl Applier {
                         }
                     }
                     let rec = self.items.get_mut(&id).unwrap();
-                    if rec.key != key {
-                        rec.key = key;
+                    if !rec.key.matches(it) {
+                        rec.key = StructKey::of(it);
                         why |= Why::ORDER_KEY;
                     }
                     if rec.xform != it.xform
@@ -1288,15 +1401,21 @@ impl Applier {
             }
         }
 
+        prof::add(prof::CLASSIFY, t);
+        prof::sub(prof::CLASSIFY, prof::get(prof::LOWER) - lower0);
+        let t = prof::start();
+        let lower0 = prof::get(prof::LOWER);
         // Dependencies: texture sizes and mesh versions an existing lowering used, and the meshes
         // whose resident geometry changed.
         let dep_mesh_changed = !delta.meshes_upserted.is_empty()
             || !delta.meshes_removed.is_empty()
             || !mesh_res.changed.is_empty();
         if !resized.is_empty() || dep_mesh_changed {
+            let serial = self.serial;
             let stale: Vec<Id> = self
                 .items
                 .iter()
+                .filter(|(_, rec)| rec.lowered_at != serial)
                 .filter(|(_, rec)| {
                     rec.tex_sizes.iter().any(|(t, s)| {
                         resized.contains(t) || lower::Tables::texture_size(&tables, *t) != *s
@@ -1313,15 +1432,31 @@ impl Applier {
                 };
                 let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
                 self.stats.relowered += 1;
+                // G7o2: a dependency's new geometry or texel size re-lowers like a content change
+                // (in place when the shape holds, else re-assembled); only what the walk reads
+                // of the content re-walks (`content_needs_walk`).
+                if self.content_needs_walk(it, &self.items[&id], &lowered) {
+                    content_walk = true;
+                    why |= Why::DEPENDENCY;
+                }
                 let rec = self.items.get_mut(&id).unwrap();
+                let same = lowered.same_shape(&rec.lowered);
+                rec.lowered_at = self.serial;
                 rec.lowered = lowered;
                 rec.tex_sizes = tex_sizes;
                 rec.mesh_versions = mesh_versions;
-                Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
-                why |= Why::DEPENDENCY;
+                let moved_range = Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
+                if same && !moved_range {
+                    self.stats.relowered_in_place += 1;
+                } else {
+                    why |= Why::CONTENT_SHAPE;
+                }
             }
         }
 
+        prof::add(prof::DEPENDENCY, t);
+        prof::sub(prof::DEPENDENCY, prof::get(prof::LOWER) - lower0);
+        let t = prof::start();
         // Canvases: order facts re-walk; a transform or modulate change moves the canvas's rows.
         let mut moved_canvases: Vec<Id> = Vec::new();
         for id in &delta.canvases_removed {
@@ -1386,7 +1521,10 @@ impl Applier {
             why |= Why::COMPACT;
         }
 
-        if why == 0 {
+        // Content changes of shape alone keep the walk's results (attach list, rows): only the
+        // index buffer and the draw table are re-assembled (G7a's incremental structural apply).
+        let mut walk = why & !Why::CONTENT_SHAPE != 0 || content_walk || self.always_walk;
+        if !walk {
             // Rows only: a moved canvas moves its top-level items' subtrees.
             let mut roots: Vec<Id> = Vec::new();
             for c in &moved_canvases {
@@ -1399,34 +1537,40 @@ impl Applier {
                 if !self.move_subtree(state, id) {
                     // A clip or the alpha cut changed with the move: fall back to the walk.
                     why |= Why::MOVE_FALLBACK;
+                    walk = true;
                     break;
                 }
             }
         }
+        prof::add(prof::CLASSIFY, t);
         self.stats.why = why;
-        // Content changes of shape alone keep the walk's results (attach list, rows): only the
-        // index buffer and the draw table are re-assembled (G7a's incremental structural apply).
-        let walk = why & !Why::CONTENT_SHAPE != 0 || content_walk;
-        if why != 0 {
+        if walk || why != 0 {
             #[cfg(not(target_arch = "wasm32"))]
             let t0 = std::time::Instant::now();
+            let t = prof::start();
             if walk {
                 self.walk(state);
             } else {
                 self.stats.reassembled = true;
             }
+            prof::add(prof::WALK, t);
             #[cfg(not(target_arch = "wasm32"))]
             let t1 = std::time::Instant::now();
+            let t = prof::start();
             self.assemble(state);
+            prof::add(prof::ASSEMBLE, t);
             #[cfg(not(target_arch = "wasm32"))]
             {
                 self.stats.walk_us = (t1 - t0).as_secs_f64() * 1e6;
                 self.stats.assemble_us = t1.elapsed().as_secs_f64() * 1e6;
             }
         }
+        let t = prof::start();
         self.refresh_bindings(state);
+        prof::add(prof::BINDINGS, t);
         self.first = false;
         self.meshes = mesh_res;
+        self.coalesce_dirty();
         self.stats.vertex_count = self.list.vertices.len() as u32;
         self.stats.index_count = self.list.indices.len() as u32;
         self.stats.emitted_draws = self.list.draws.len() as u32;
@@ -1461,22 +1605,16 @@ impl Applier {
             let canvas_xf = geom::mul(&vp.global_xform, &canvas.xform);
             let order = self.sorted_children(state, &canvas.items);
             for &child in order.iter() {
-                self.cull(state, child, &canvas_xf, None, WHITE, 0, None, canvas.id);
+                if let Some(it) = state.items.get(&child) {
+                    self.cull(
+                        state, child, it, &canvas_xf, None, WHITE, 0, None, canvas.id,
+                    );
+                }
             }
             // Per-z lists concatenated in z order; within a z, attach order (a stable sort).
             if !self.sabotage.ignore_z {
                 self.attach[start..].sort_by_key(|a| a.z);
             }
-        }
-        // Rows of every visited item.
-        let ids: Vec<Id> = self
-            .items
-            .iter()
-            .filter(|(_, r)| r.visited)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            self.write_row(state, id);
         }
         // Binding slots no attached item uses any more are released.
         let gone: Vec<BindingKey> = self
@@ -1675,6 +1813,7 @@ impl Applier {
         &mut self,
         state: &ResolvedState,
         id: Id,
+        it: &Item,
         parent_xf: &Xform,
         clip: Option<Rect>,
         parent_modulate: [f32; 4],
@@ -1682,9 +1821,6 @@ impl Applier {
         material_owner: Option<Id>,
         canvas: Id,
     ) {
-        let Some(it) = state.items.get(&id) else {
-            return;
-        };
         if !it.visible || it.visibility_layer & self.viewport.cull_mask == 0 {
             return;
         }
@@ -1747,8 +1883,10 @@ impl Applier {
         } = eff;
         let children = self.sorted_children(state, &it.children);
         for &c in children.iter() {
-            if state.items.get(&c).is_some_and(|ci| ci.behind) {
-                self.cull(state, c, &final_xf, own_clip, modulate, z, owner, canvas);
+            if let Some(ci) = state.items.get(&c).filter(|ci| ci.behind) {
+                self.cull(
+                    state, c, ci, &final_xf, own_clip, modulate, z, owner, canvas,
+                );
             }
         }
         // An item-space program takes the canvas modulate after its code (the binding's
@@ -1800,6 +1938,22 @@ impl Applier {
                 self.viewport.height as f32,
             ];
             rec.on_screen = geom::intersects_inclusive(&vp, &geom::xform_rect(&final_xf, &rect));
+            // The item's row (write_row's), now that its walk results are set.
+            let row = Row {
+                xform: rec.final_xform,
+                modulate: mul4(
+                    mul4(rec.child_modulate, it.self_modulate),
+                    rec.canvas_modulate,
+                ),
+                flags: 0,
+                reserved: 0,
+            };
+            let r = rec.row;
+            if self.list.items[r as usize] != row {
+                self.list.items[r as usize] = row;
+                self.list.dirty.items.add(r, r + 1);
+                self.stats.rows_written += 1;
+            }
             if !rec.lowered.draws.is_empty() && !light_only && rec.on_screen {
                 let scissor =
                     own_clip.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]);
@@ -1813,8 +1967,10 @@ impl Applier {
             }
         }
         for &c in children.iter() {
-            if !state.items.get(&c).is_some_and(|ci| ci.behind) {
-                self.cull(state, c, &final_xf, own_clip, modulate, z, owner, canvas);
+            if let Some(ci) = state.items.get(&c).filter(|ci| !ci.behind) {
+                self.cull(
+                    state, c, ci, &final_xf, own_clip, modulate, z, owner, canvas,
+                );
             }
         }
     }
@@ -1923,6 +2079,11 @@ impl Applier {
     // ------------------------------------------------------------------------------- assembly
 
     fn assemble(&mut self, state: &ResolvedState) {
+        // G7o2: the previous index buffer and draw table, to mark only what changed.
+        let old_indices = std::mem::take(&mut self.list.indices);
+        let old_draws = std::mem::take(&mut self.list.draws);
+        self.list.indices = std::mem::take(&mut self.spare_indices);
+        self.list.draws = std::mem::take(&mut self.spare_draws);
         self.list.indices.clear();
         self.list.draws.clear();
         let default_filter = state.default_texture_filter;
@@ -2015,12 +2176,56 @@ impl Applier {
         self.stats.lowered_draws = lowered_draws;
         self.stats.assembly_skips = skips;
         self.stats.attached_items = attached;
-        self.list.dirty.indices.clear();
-        let n = self.list.indices.len() as u32;
-        if n > 0 {
-            self.list.dirty.indices.add(0, n);
+        // The changed span: from the first index that differs to the last one that does (to the
+        // end when the length changed). Pending ranges of an unconsumed list are kept.
+        let new = &self.list.indices;
+        let n = new.len();
+        let common = n.min(old_indices.len());
+        let first = (0..common)
+            .find(|&i| new[i] != old_indices[i])
+            .unwrap_or(common);
+        let end = if n == old_indices.len() {
+            (first..n)
+                .rev()
+                .find(|&i| new[i] != old_indices[i])
+                .map_or(first, |i| i + 1)
+        } else {
+            n
+        };
+        if first < end {
+            self.list.dirty.indices.add(first as u32, end as u32);
         }
-        self.list.dirty.draws = true;
+        if self.list.draws != old_draws {
+            self.list.dirty.draws = true;
+        }
+        self.spare_indices = old_indices;
+        self.spare_draws = old_draws;
+    }
+
+    /// G7o2: the dirty ranges sorted and merged across small gaps, so an executor uploads a few
+    /// spans instead of one call per item (re-sending unchanged elements in a gap is harmless).
+    fn coalesce_dirty(&mut self) {
+        fn merge(r: &mut gsw_canvas_draw_list::Ranges, gap: u32) {
+            if r.as_slice().len() < 2 {
+                return;
+            }
+            let mut v = r.as_slice().to_vec();
+            v.sort_unstable();
+            r.clear();
+            let mut cur = v[0];
+            for &(a, b) in &v[1..] {
+                if a <= cur.1.saturating_add(gap) {
+                    cur.1 = cur.1.max(b);
+                } else {
+                    r.add(cur.0, cur.1);
+                    cur = (a, b);
+                }
+            }
+            r.add(cur.0, cur.1);
+        }
+        merge(&mut self.list.dirty.items, DIRTY_GAP_ROWS);
+        merge(&mut self.list.dirty.vertices, DIRTY_GAP_VERTICES);
+        merge(&mut self.list.dirty.indices, DIRTY_GAP_INDICES);
     }
 
     // ------------------------------------------------------------------------------- rows-only

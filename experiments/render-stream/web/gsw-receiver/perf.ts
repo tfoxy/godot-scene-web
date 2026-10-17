@@ -1,7 +1,8 @@
 // GSW receiver perf (gate7-design.md Q5 "Evidence", Q12, D13, G7a): per drawn frame, the Q14c
 // timers (`decode_us` = accept, `provide_us`, `apply_us`, `draw_us`, `total_us` one wall timer
 // over all of them, the boundary included) and, after the frame, `evidence_hash_us` (D31's
-// deferred record digest). GPU completion is a fence polled on later frames (`gpu_complete_ms`,
+// deferred record digest) and `payload_verify_us` (G7o2: the needed payloads' SHA-256 and decode
+// in their fetch completion, between frames). GPU completion is a fence polled on later frames (`gpu_complete_ms`,
 // measured, report-only); presentation is `unavailable` (D13). Written as
 // `render-stream-receiver-perf/1`'s shape plus the browser keys when RS_RECEIVER_PERF_OUT is set,
 // and `perf-timeline.jsonl` (one line per drawn frame) beside it.
@@ -19,6 +20,9 @@ export interface FrameSample {
   draw_us: number;
   total_us: number;
   evidence_hash_us: number;
+  /** G7o2: verifying and decoding this transaction's payloads as they arrived (`stage_payload`),
+   * outside total_us */
+  payload_verify_us: number;
   structural: number;
   /** items whose content was lowered again (their commands changed) */
   relowered: number;
@@ -57,6 +61,16 @@ function hist(values: number[]): Record<string, number> {
   };
 }
 
+/** G7o2: lib.rs `payload_verify_json` (`payload-verified-before-use`). */
+export interface PayloadVerify {
+  staged: number;
+  refused: number;
+  provided_staged: number;
+  provided_in_frame: number;
+  unverified_used: number;
+  still_staged: number;
+}
+
 export class Perf {
   readonly samples: FrameSample[] = [];
   readonly rafIntervals: number[] = [];
@@ -64,6 +78,8 @@ export class Perf {
   readonly fetchUs: number[] = [];
   /** G7s: item-space programs defined, shaders refused, library reads. */
   readonly programs = { defined: 0, refused: 0, library_reads: 0 };
+  /** G7o2: set before the evidence is written. */
+  payloadVerify: PayloadVerify | null = null;
   private lastRaf = -1;
 
   raf(ts: number): void {
@@ -85,6 +101,7 @@ export class Perf {
         draw_us: hist(pick("draw_us")),
         total_us: hist(pick("total_us")),
         evidence_hash_us: hist(pick("evidence_hash_us")),
+        payload_verify_us: hist(pick("payload_verify_us")),
         fetch_us: hist(this.fetchUs),
         frame_interval_us: hist(this.rafIntervals),
         gpu_complete_us: hist(this.gpuComplete.map((ms) => ms * 1000)),
@@ -106,6 +123,7 @@ export class Perf {
         gpu_render_ms: { status: "unavailable", value: null },
       },
       counts: { drawn_frames: this.samples.length, programs: this.programs },
+      payload_verify: this.payloadVerify,
       ...extra,
     };
   }

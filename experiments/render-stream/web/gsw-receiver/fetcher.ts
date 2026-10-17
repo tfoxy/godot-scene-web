@@ -2,8 +2,9 @@
 // RsResourceFetcher with the browser's `fetch`. `GET <origin><http_path><hash>` on the WebSocket's
 // own loopback host and port, ONE at a time, polled from the rAF loop: `poll()` starts the next
 // request when none is in flight (after the injected RS_RECEIVER_FETCH_DELAY_MS, a timed wait,
-// never a blocked loop) and hands back each completed one. The caller copies the body into wasm,
-// where `provide` verifies its SHA-256 before anything uses it (Q14c); this file never inspects a
+// never a blocked loop) and hands back each completed one. G7o2: `onBody` runs in the fetch's own
+// completion (between frames), where the caller copies a 200 body into wasm and `stage_payload`
+// verifies its SHA-256 and decodes it before anything uses it (Q14c); this file never inspects a
 // payload. The transaction that needs them stays unapplied meanwhile, and the canvas keeps the
 // previous frame.
 //
@@ -31,6 +32,9 @@ export interface FetchResult {
   headers: Record<string, string>;
   /** `resource-unavailable: ...`, or "" */
   error: string;
+  /** G7o2: set by `onBody` (the verify and decode on arrival, and its refusal if any). */
+  verify_us?: number;
+  stage_error?: string | null;
 }
 
 const KEPT_HEADERS = [
@@ -59,6 +63,8 @@ export class LiveFetcher {
     /** Sabotage `ignore-cache`: every GET bypasses the HTTP cache (the native "fetch even on a
      * cache hit"). */
     private readonly bypassCache = false,
+    /** G7o2: called with each 200 result in its completion, before `poll` hands it back. */
+    private readonly onBody: ((r: FetchResult) => void) | null = null,
   ) {}
 
   /** Queues one transaction's misses, in the order wasm needs them. */
@@ -123,7 +129,7 @@ export class LiveFetcher {
       if (error !== "") {
         this.failed = true;
         this.queue = [];
-      }
+      } else if (this.onBody) this.onBody(r);
       this.done.push(r);
     };
     fetch(`${this.origin}${path}`, {

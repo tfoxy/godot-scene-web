@@ -79,7 +79,7 @@ import {
   type ShellTx,
 } from "./evidence";
 import { type FetchResult, LiveFetcher } from "./fetcher";
-import { Perf } from "./perf";
+import { type PayloadVerify, Perf } from "./perf";
 import {
   definePrograms,
   needsLibrary,
@@ -115,7 +115,10 @@ interface Pending {
   tx: ShellTx;
   stage: "fetch" | "library" | "ready";
   /** Fetched bodies by hash (verified when provided, in wasm's needed order). */
-  bodies: Map<string, { bytes: Uint8Array; fetchIndex: number | null }>;
+  bodies: Map<
+    string,
+    { bytes: Uint8Array; fetchIndex: number | null; stageError: string | null }
+  >;
   /** The transaction's own fetch-log entries, by hash (`verified` set at provide). */
   logged: Map<string, Record<string, unknown>>;
   /** Operator-library shader code (async reads, before the applying callback). */
@@ -595,6 +598,7 @@ class LiveReceiver {
         this.cfg.fetchDelayMs,
         token,
         this.sabotage.has("ignore-cache"),
+        (r) => this.stageFetched(r),
       );
     }
     log(
@@ -837,14 +841,14 @@ class LiveReceiver {
         const stillOut = p.item.needed.some((n) => !p.bodies.has(n.hash));
         if (stillOut) return;
       }
-      // Every payload is in: provide them to wasm in its order (it verifies each hash).
+      // Every payload is in, each verified and decoded in its fetch completion (G7o2,
+      // `stageFetched`): move them to wasm's store in its order. A refused one fails here, where
+      // `provide` failed it before.
       const t0 = performance.now();
       for (const n of p.item.needed) {
-        const bytes = (p.bodies.get(n.hash) as { bytes: Uint8Array }).bytes;
-        const ptr = g.alloc_payload(bytes.length);
-        new Uint8Array(mem.buffer, ptr, bytes.length).set(bytes);
-        if (g.provide(bytes.length) < 0) {
-          const err = g.error();
+        const body = p.bodies.get(n.hash) as { stageError: string | null };
+        if (body.stageError !== null || g.provide_staged() < 0) {
+          const err = body.stageError ?? g.error();
           throw new ReplayFailure(
             seq,
             err.startsWith("resource-hash")
@@ -879,6 +883,23 @@ class LiveReceiver {
   }
 
   private provideUs = 0;
+  /** G7o2: the pending transaction's payloads' verify and decode, in their fetch completions. */
+  private verifyUs = 0;
+
+  /** G7o2: a 200 body in its fetch completion (between frames): into wasm, verified against the
+   * hash it was fetched for and decoded (`stage_payload`). A refusal is kept on the result and
+   * raised when the transaction is provided. */
+  private stageFetched(r: FetchResult): void {
+    const g = this.g;
+    const mem = this.mem;
+    if (!g || !mem || !r.data) return;
+    const t0 = performance.now();
+    const ptr = g.alloc_payload(r.data.length);
+    new Uint8Array(mem.buffer, ptr, r.data.length).set(r.data);
+    r.stage_error =
+      g.stage_payload(r.data.length, r.hash) < 0 ? g.error() : null;
+    r.verify_us = (performance.now() - t0) * 1000;
+  }
 
   /** One completed GET, logged as receiver.gd `_poll_fetches` logs it. */
   private noteFetch(p: Pending, r: FetchResult): void {
@@ -907,7 +928,12 @@ class LiveReceiver {
     const kind = p.item.needed.find((n) => n.hash === r.hash)?.kind ?? 0;
     logged.kind = KIND_NAME[kind] ?? "texture";
     p.logged.set(r.hash, logged);
-    p.bodies.set(r.hash, { bytes: r.data as Uint8Array, fetchIndex: null });
+    p.bodies.set(r.hash, {
+      bytes: r.data as Uint8Array,
+      fetchIndex: null,
+      stageError: r.stage_error ?? null,
+    });
+    this.verifyUs += r.verify_us ?? 0;
     p.tx.fetched++;
     p.tx.fetched_bytes += r.bytes;
     this.fetchedHashes.add(r.hash);
@@ -977,6 +1003,8 @@ class LiveReceiver {
     this.perfDecode.length = 0;
     const provideUs = this.provideUs;
     this.provideUs = 0;
+    const verifyUs = this.verifyUs;
+    this.verifyUs = 0;
     if (step >= 0) {
       const sp = g.shot();
       if (sp === 0) throw new ReplayFailure(seq, "shot-failed", g.error());
@@ -1055,6 +1083,7 @@ class LiveReceiver {
       total_us:
         decodeUs + provideUs + programUs + (c - b) * 1000 + (d1 - d0) * 1000,
       evidence_hash_us: 0,
+      payload_verify_us: verifyUs,
       structural: st.structural,
       relowered: st.relowered,
       rows_written: st.rows_written,
@@ -1232,6 +1261,23 @@ class LiveReceiver {
     this.report.shotsMissed = this.L.windows
       .filter((w) => !w.shot)
       .map((w) => w.step);
+    // G7o2 payload-verified-before-use: every payload a transaction used was verified in its
+    // fetch completion (staged), none inside the frame and none unverified.
+    if (this.g) {
+      const pv = JSON.parse(this.g.payload_verify_json()) as PayloadVerify;
+      log(`payload-verify: ${JSON.stringify(pv)}`);
+      this.perf.payloadVerify = pv;
+      if (pv.unverified_used > 0 || pv.provided_in_frame > 0) {
+        await this.fail(
+          new ReplayFailure(
+            null,
+            "payload-unverified",
+            `payload-verified-before-use: ${pv.unverified_used} used unverified, ${pv.provided_in_frame} verified inside the frame`,
+          ),
+        );
+        return;
+      }
+    }
     this.report.status = "ok";
     const code = await this.writeReport(0);
     log(

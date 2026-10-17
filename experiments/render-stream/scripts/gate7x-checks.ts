@@ -11,9 +11,11 @@
 // and 0 px against the native rendered reference when `--reference` names G7d's pace reference
 // shots. Also, per page: `draw-count-parity` (no frame whose executed draw calls differ from its
 // lowered draws minus typed skips minus merges) and `record-digest-complete` (no accepted record
-// left without its digest before evidence was written).
+// left without its digest before evidence was written), and G7o2's `payload-verified-before-use`
+// (every payload a transaction used was SHA-256-verified before its first use: none unverified, none
+// refused, and on a build that stages payloads none verified inside the frame).
 // Exit 0 when every check passes; with --expect-fail (a sabotage run), exit 0 when at least one
-// fails and print which. `--scene-native` (report-only: G7a and G7g own those pixels) compares the
+// fails and print which; `--expect-failing <suffix>` also requires a failing check id ending so. `--scene-native` (report-only: G7a and G7g own those pixels) compares the
 // Rust arm's scene-patch shots with the native rendered receiver's shots of the same seqs
 // (scripts/run-g7x-scene-native.sh), per region of fixtures/gate6-scene/expected.json, and writes
 // `<run>/scene-vs-native.json`; it never changes the exit code.
@@ -34,6 +36,7 @@ interface Args {
   run: string;
   reference: string | null;
   expectFail: boolean;
+  expectFailing: string | null;
   sceneNative: string | null;
 }
 
@@ -42,6 +45,7 @@ function parseArgs(argv: string[]): Args {
     run: "",
     reference: null,
     expectFail: false,
+    expectFailing: null,
     sceneNative: null,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -49,7 +53,10 @@ function parseArgs(argv: string[]): Args {
     if (argv[i] === "--run") a.run = v();
     else if (argv[i] === "--reference") a.reference = v();
     else if (argv[i] === "--expect-fail") a.expectFail = true;
-    else if (argv[i] === "--scene-native") a.sceneNative = v();
+    else if (argv[i] === "--expect-failing") {
+      a.expectFail = true;
+      a.expectFailing = v();
+    } else if (argv[i] === "--scene-native") a.sceneNative = v();
     else if (argv[i] !== "--") throw new Error(`unknown argument ${argv[i]}`);
   }
   if (!a.run) throw new Error("--run is required");
@@ -61,6 +68,16 @@ interface RsRepeat {
   error: string | null;
   parity_violations: number;
   digest_pending: number;
+  /** G7o2 (absent on earlier builds): bench-rs.ts `staging` and lib.rs `payload_verify_json`. */
+  staging?: boolean;
+  staging_build?: boolean;
+  payload_verify?: {
+    staged: number;
+    refused: number;
+    provided_staged: number;
+    provided_in_frame: number;
+    unverified_used: number;
+  } | null;
   shots: { frame: number; seq: number; path: string }[];
   samples: { kind: string }[];
 }
@@ -104,6 +121,31 @@ async function main(): Promise<void> {
             !r.error?.startsWith("record-digest-complete"),
         ),
         detail: measured.map((r) => `${r.digest_pending} pending`).join("; "),
+      });
+      // G7o2: every used payload verified before its first use, and off the frame path when the
+      // build stages payloads.
+      checks.push({
+        id: `${label}-payload-verified-before-use`,
+        ok: measured.every((r) => {
+          const v = r.payload_verify;
+          if (r.error?.includes("resource-hash")) return false;
+          const build = r.staging_build ?? r.staging;
+          if (!v) return build !== true;
+          return (
+            v.unverified_used === 0 &&
+            v.refused === 0 &&
+            (build !== true || v.provided_in_frame === 0)
+          );
+        }),
+        detail: measured
+          .map((r) =>
+            r.error?.includes("resource-hash")
+              ? `refused before use: ${r.error}`
+              : r.payload_verify
+                ? `${r.staging ? "staged" : "in-frame"} ${JSON.stringify(r.payload_verify)}`
+                : "no payload_verify (a build before G7o2)",
+          )
+          .join("; "),
       });
       if (raw.input.name !== "pace-patch") continue;
       for (const r of measured) {
@@ -153,12 +195,16 @@ async function main(): Promise<void> {
     console.log("gate7x-checks: no Rust-arm page found");
     process.exitCode = 1;
   } else if (args.expectFail) {
+    const want = args.expectFailing;
+    const caught = want
+      ? failed.some((c) => c.id.endsWith(want))
+      : failed.length > 0;
     console.log(
-      failed.length > 0
+      caught
         ? `gate7x-checks: sabotage caught by ${failed.map((c) => c.id).join(", ")}`
-        : "gate7x-checks: sabotage NOT caught",
+        : `gate7x-checks: sabotage NOT caught${want ? ` by *${want}` : ""}`,
     );
-    process.exitCode = failed.length > 0 ? 0 : 1;
+    process.exitCode = caught ? 0 : 1;
   } else {
     process.exitCode = failed.length > 0 ? 1 : 0;
   }

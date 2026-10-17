@@ -321,6 +321,14 @@ var _io := RsIo.new()
 ## G7xn: RS_RECEIVER_CORE (gdscript | rust); under rust, _rust is _applier and stands in for _stream.
 var _core_kind: String = "gdscript"
 var _rust: RsRustApplier = null
+## G7o2 (D31): the web export's file mode on the Rust core takes each record's digest after the
+## frame (RenderingServer.frame_post_draw), not inside decode_us: the offsets of accepted records
+## not digested yet, every digest taken (offset -> sha256 hex), and the [entry, record offset]
+## pairs of logged transactions still without their record_sha256.
+var _digest_deferred: bool = false
+var _digest_offsets: Array[int] = []
+var _digest_hex: Dictionary = {}
+var _digest_entries: Array[Array] = []
 
 # Live mode.
 var _live: bool = false
@@ -453,10 +461,18 @@ func _ready() -> void:
 	_new_applier()
 	if _perf != null:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
+	# G7o2 (D31): a browser receiver computes the record digest after the frame. The native
+	# receiver and live mode keep it inline.
+	if _rust != null and RsConfig.is_web():
+		_digest_deferred = true
+		_rust.set_digest_deferred(true)
+		RenderingServer.frame_post_draw.connect(_flush_digests)
 	var raw: Dictionary = _records[_next_record]
 	_next_record += 1
 	if not _begin_session(_accept_session(_data, Rs2Decoder.as_int(raw["offset"]))):
 		return
+	if _digest_deferred:
+		_digest_offsets.append(Rs2Decoder.as_int(raw["offset"]))
 	set_process(true)
 
 
@@ -996,6 +1012,9 @@ func _process(_delta: float) -> void:
 	var record: Dictionary = result["record"]
 	var meta: Dictionary = record["meta"]
 	var kind: String = result["kind"]
+	if _digest_deferred and errors.size() == 0:
+		# D31: every accepted record gets its digest after the frame (summary log mode included).
+		_digest_offsets.append(Rs2Decoder.as_int(raw["offset"]))
 	if errors.size() > 0:
 		var seq: Variant = null
 		if kind == "transaction" or kind == "":
@@ -1092,6 +1111,8 @@ func _record_transaction(meta: Dictionary, record: Dictionary, stats: Dictionary
 	var entry: Dictionary = _transaction_entry(FILE_STREAM, meta, record)
 	if _log_mode != "summary":
 		_transactions.append(entry)
+		if _digest_deferred:
+			_digest_entries.append([entry, Rs2Decoder.as_int(record["offset"])])
 	_note_applied(entry, meta, stats)
 	var seq: int = entry["seq"]
 
@@ -1536,6 +1557,16 @@ func _finish() -> void:
 	for seq: int in _state_seqs:
 		if not _state_paths.has(_seq_name(seq)):
 			_fail(seq, "state-unavailable", "a state dump of seq %d was requested, but the recording has no such transaction" % seq)
+			return
+	# D31 record-digest-complete: every accepted record has its digest, and every applied
+	# transaction carries it, before the evidence is written.
+	_flush_digests()
+	if _digest_deferred and _digest_hex.size() != _accepted_records():
+		_fail(null, "record-digest-incomplete", "%d accepted record(s), %d digests" % [_accepted_records(), _digest_hex.size()])
+		return
+	for entry: Dictionary in _transactions:
+		if entry["record_sha256"] == "":
+			_fail(entry["seq"], "record-digest-incomplete", "transaction seq %d has no record digest" % entry["seq"])
 			return
 	_report["status"] = "ok"
 	_write_report()
@@ -2393,6 +2424,36 @@ func _parse_core_env() -> bool:
 	return true
 
 
+## G7o2 (D31): the deferred record digests of the transactions applied since the last call, after
+## the frame's draw; timed as evidence_hash_us, outside decode_us.
+func _flush_digests() -> void:
+	if _digest_offsets.is_empty() and _digest_entries.is_empty():
+		return
+	var t0: int = Time.get_ticks_usec()
+	for offset: int in _digest_offsets:
+		var hex: String = _rust.record_digest(_data, offset)
+		if hex != "":
+			_digest_hex[offset] = hex
+	_digest_offsets.clear()
+	var waiting: Array[Array] = []
+	for pair: Array in _digest_entries:
+		var entry: Dictionary = pair[0]
+		var offset: int = pair[1]
+		if _digest_hex.has(offset):
+			entry["record_sha256"] = _digest_hex[offset]
+		else:
+			waiting.append(pair)
+	_digest_entries = waiting
+	if _perf != null:
+		_perf.evidence_hash_us.add(Time.get_ticks_usec() - t0)
+
+
+## The records accepted so far in file mode, the session included: what D31's deferred digest
+## covers.
+func _accepted_records() -> int:
+	return _next_record
+
+
 ## The applier for RS_RECEIVER_CORE.
 func _new_applier() -> void:
 	var viewport: RID = get_viewport().get_viewport_rid()
@@ -2461,6 +2522,7 @@ func _fail(seq: Variant, reason: String, detail: String) -> void:
 
 
 func _write_report() -> void:
+	_flush_digests()
 	if _cache_report != null and _cache.dir != "":
 		var cache_report: Dictionary = _cache_report
 		cache_report["entries_after"] = _cache.entries()

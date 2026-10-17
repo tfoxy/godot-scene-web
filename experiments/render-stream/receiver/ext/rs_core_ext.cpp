@@ -1377,6 +1377,8 @@ enum Method : int {
   M_COUNTERS,
   M_SET_FULL_SCAN,
   M_OP_COUNT,
+  M_SET_DIGEST_DEFERRED,
+  M_RECORD_DIGEST,
   M_COUNT,
 };
 
@@ -1399,6 +1401,8 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"counters", 0},         // () -> Dictionary
     {"set_full_scan", 1},    // (on: bool) -> void
     {"op_count", 0},         // () -> int (the core's opcode count, a constant: G7xw's probe call)
+    {"set_digest_deferred", 1}, // (on: bool) -> void (G7o2: the next session defers record digests)
+    {"record_digest", 2},    // (data: PackedByteArray, offset: int) -> String (sha256 hex, "" on error)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1511,6 +1515,26 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
     case M_OP_COUNT:
       ret_int(ret, rsc_op_count());
       return;
+    case M_SET_DIGEST_DEFERRED:
+      rsc_set_digest_deferred(inst->core, arg_bool(args[0]) ? 1 : 0);
+      return;
+    case M_RECORD_DIGEST: {
+      if (!arg_is(args[0], GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)) {
+        error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+        error->argument = 0;
+        error->expected = GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY;
+        return;
+      }
+      BytesArg data(args[0]);
+      int64_t offset = arg_int(args[1]);
+      if (offset < 0) offset = static_cast<int64_t>(data.size) + 1;
+      if (rsc_record_digest(inst->core, data.data, data.size, static_cast<size_t>(offset)) == 1) {
+        text_string(inst, static_cast<Variant *>(ret));
+      } else {
+        ret_string(ret, "");
+      }
+      return;
+    }
     case M_COUNT:
       return;
   }

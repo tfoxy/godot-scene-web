@@ -242,3 +242,45 @@ fn op_table_matches_the_shim() {
     // receiver/ext/rs_core_capi.h's OP_COUNT.
     assert_eq!(rs_core_capi::ops::OP_COUNT, 66);
 }
+
+/// G7o2 (D31): a deferred-digest session answers every record without its sha256, and
+/// `record_digest` afterwards gives exactly the digest an inline session answered.
+#[test]
+fn deferred_record_digest_equals_inline() {
+    let path = golden().join("rate.rs6");
+    let data = std::fs::read(&path).unwrap();
+    let spans = wire::split_records(&data, 6).unwrap();
+    let mut inline = Core::new();
+    let mut deferred = Core::new();
+    deferred.digest_deferred = true;
+    let mut checked = 0;
+    for (i, s) in spans.iter().enumerate() {
+        let (a, b) = if i == 0 {
+            (
+                inline.session(&data, s.offset, 6),
+                deferred.session(&data, s.offset, 6),
+            )
+        } else {
+            (
+                inline.accept(&data, s.offset),
+                deferred.accept(&data, s.offset),
+            )
+        };
+        assert_eq!(a, b, "record {i}");
+        assert_ne!(a, KIND_ERROR, "record {i}");
+        deferred.record_digest(&data, s.offset).unwrap();
+        let hex = String::from_utf8(deferred.text.clone()).unwrap();
+        assert_eq!(hex.len(), 64);
+        assert!(
+            mentions(&inline.vt.out, &hex),
+            "record {i}: inline answer has {hex}"
+        );
+        assert!(
+            !mentions(&deferred.vt.out, &hex),
+            "record {i}: deferred answer has no digest"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, spans.len());
+    assert!(deferred.record_digest(&data, data.len() + 1).is_err());
+}
