@@ -60,6 +60,9 @@
 # run on the shared Rust core through its dlink side module: build-web-receiver.sh --core rust
 # (or `--bundle`, such a build), gate7-tool.ts web-legs --core rust (RS_RECEIVER_CORE=rust on
 # every leg) and gate7-bench.ts --arm web --core rust. The default (gdscript) is G7e's/G7b's.
+# With --live (G7xwl), the web live legs and their received.rs7 replays run on it too
+# (GATE7_WEB_CORE=rust to the gate runners' browser daemon; check-gate7.ts --live --web-core rust
+# adds receiver-core@web, which fails a leg that did not decode and apply through the core).
 #
 # Groups landed (G7a, the GSW canvas receiver on the shared Rust core, gate7-design.md "G7a"):
 #   g7-0..g7-3  gates 0 to 3's file-mode receiver legs in the GSW canvas receiver (`gsw`), and
@@ -276,11 +279,6 @@ gdscript | rust) ;;
 	exit 2
 	;;
 esac
-if [ "$WEB_CORE" = rust ] && [ "$LIVE" = 1 ]; then
-	# G7xw: the core decodes render-stream/6 file streams (G7xn); the web's live legs speak /7.
-	echo "run-gate7: --web-core rust covers the file legs and the bench, not --live" >&2
-	exit 2
-fi
 case "$RECEIVER" in
 "" | native | gsw | web) ;;
 *)
@@ -405,10 +403,16 @@ if [ "$LIVE" = "1" ]; then
 	want_gsw_live() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
 	if want_web_live; then
 		if [ -z "$BUNDLE" ]; then
-			echo "run-gate7: building the web receiver (build-web-receiver.sh)" >&2
-			BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
+			echo "run-gate7: building the web receiver (build-web-receiver.sh --core $WEB_CORE)" >&2
+			BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" --core "$WEB_CORE" | tail -1)"
 		fi
 		BUNDLE="$(realpath "$BUNDLE")"
+		# G7xwl: the browser daemon refuses it too (webCoreOf); refused here before any host runs.
+		bundle_core="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("core") or "gdscript")' "$BUNDLE/build.json")"
+		if [ "$WEB_CORE" = rust ] && [ "$bundle_core" != rust ]; then
+			echo "run-gate7: --live --web-core rust needs a build-web-receiver.sh --core rust bundle; $BUNDLE is $bundle_core" >&2
+			exit 2
+		fi
 		LIVE_KINDS+=("web:$BUNDLE")
 	fi
 	if want_gsw_live; then
@@ -437,7 +441,7 @@ if [ "$LIVE" = "1" ]; then
 			mkdir -p "$OUT/gate$g"
 			echo "run-gate7: $group live @$kind: run-gate$g.sh --legs $runner_legs into $run_dir" >&2
 			set +e
-			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
 				bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 				--binary "$BINARY" --out "$run_dir" --legs "$runner_legs" >"$OUT/gate$g/live-$kind.log" 2>&1
 			live_exit=$?
@@ -449,7 +453,8 @@ if [ "$LIVE" = "1" ]; then
 	cd "$REPO_ROOT"
 	set +e
 	gate7_checker mise exec -- pnpm exec tsx --conditions=development \
-		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live ${RECEIVER:+--receiver "$RECEIVER"}
+		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live --web-core "$WEB_CORE" \
+		${RECEIVER:+--receiver "$RECEIVER"}
 	exit $?
 fi
 

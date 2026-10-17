@@ -269,7 +269,12 @@ fn replay(
             out.ops
                 .push((core.ops.words.clone(), core.ops.arena.clone()));
         }
-        let spans = match wire::split_records(data, 6) {
+        // G7xwl: a /7 live receiver's received.rs7 replays at /7; everything else at /6.
+        let version = match wire::version_of_magic(data) {
+            Some(7) => 7,
+            _ => 6,
+        };
+        let spans = match wire::split_records(data, version) {
             Ok(s) => s,
             Err(e) => {
                 out.error = Some(format!("split: {e}"));
@@ -280,7 +285,7 @@ fn replay(
         let want = applied_seqs.get(stream).unwrap_or(&empty);
         for (ri, span) in spans.iter().enumerate() {
             if ri == 0 {
-                if core.session(data, span.offset) == KIND_ERROR {
+                if core.session(data, span.offset, version) == KIND_ERROR {
                     out.error = Some(format!("session: {}", vt(&core)["errors"]));
                     return out;
                 }

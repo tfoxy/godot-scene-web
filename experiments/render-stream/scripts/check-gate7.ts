@@ -15,7 +15,8 @@
 // and g7-55 (G7b: `--source gate<N>=<run>` each, lib/gate7b-adapters.ts checkGateWeb), and the
 // gsw half of g7-0 to g7-3 (G7a) and g7-4 and g7-5 (G7t; lib/gate7-gsw.ts, lib/gate7-gsw-g45.ts).
 // G7l: `--live` judges the live runs of g7-1, g7-2, g7-5 and g7-55 instead (run-gate7.sh --live;
-// lib/gate7-live.ts checkGateLive), one result per group and receiver kind.
+// lib/gate7-live.ts checkGateLive), one result per group and receiver kind; `--web-core rust`
+// (G7xwl) judges a web run on the Rust core (receiver-core@web).
 // G7h's harness checks are folded into `report.harness` when present. Requesting a group before
 // its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
@@ -167,6 +168,8 @@ interface Args {
   receiver: string | undefined;
   /** G7l: judge only the live runs (`<out>/<gate>/live-<kind>/`) of the requested groups. */
   live: boolean;
+  /** G7xwl: the web export's expected core on a live run (`--web-core`, default gdscript). */
+  webCore: "gdscript" | "rust";
 }
 
 function parseArgs(argv: string[]): Args {
@@ -178,6 +181,7 @@ function parseArgs(argv: string[]): Args {
   let extension: string | undefined;
   let receiver: string | undefined;
   let live = false;
+  let webCore: "gdscript" | "rust" = "gdscript";
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") {
       out = argv[++i];
@@ -198,6 +202,13 @@ function parseArgs(argv: string[]): Args {
       receiver = argv[++i] || undefined;
     } else if (argv[i] === "--live") {
       live = true;
+    } else if (argv[i] === "--web-core") {
+      const v = argv[++i];
+      if (v !== "gdscript" && v !== "rust")
+        throw new Error(
+          `check-gate7: --web-core is gdscript or rust, not ${v}`,
+        );
+      webCore = v;
     }
   }
   if (!out) throw new Error("check-gate7: --out <evidence dir> is required");
@@ -214,6 +225,7 @@ function parseArgs(argv: string[]): Args {
     extension,
     receiver,
     live,
+    webCore,
   };
 }
 
@@ -306,8 +318,17 @@ async function gateChecker(
 }
 
 async function main(): Promise<void> {
-  const { out, legs, sources, bundle, gswBundle, extension, receiver, live } =
-    parseArgs(process.argv.slice(2));
+  const {
+    out,
+    legs,
+    sources,
+    bundle,
+    gswBundle,
+    extension,
+    receiver,
+    live,
+    webCore,
+  } = parseArgs(process.argv.slice(2));
 
   for (const g of legs) {
     if (!(ALL_GROUPS as readonly string[]).includes(g)) {
@@ -377,6 +398,7 @@ async function main(): Promise<void> {
             kind,
             runDir,
             viewsDir: join(out, def.gate, `live-${kind}-views`),
+            core: webCore,
           }),
         );
       }

@@ -1386,7 +1386,7 @@ struct MethodSpec {
 };
 constexpr MethodSpec METHODS[M_COUNT] = {
     {"open", 3},             // (viewport: RID, root_canvas: RID, sabotage: String) -> String ("" ok)
-    {"session", 2},          // (data: PackedByteArray, offset: int) -> Dictionary
+    {"session", 3},          // (data: PackedByteArray, offset: int, version: int 6|7) -> Dictionary
     {"begin_session", 0},    // () -> int (ops executed)
     {"accept", 2},           // (data: PackedByteArray, offset: int) -> Dictionary
     {"resource_payload", 0}, // () -> PackedByteArray
@@ -1441,7 +1441,11 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       int64_t offset = arg_int(args[1]);
       if (offset < 0) offset = static_cast<int64_t>(data.size) + 1;
       if (m == M_SESSION) {
-        rsc_session(inst->core, data.data, data.size, static_cast<size_t>(offset));
+        // G7xwl: the stream's wire version (receiver.gd's _wire_version); the core refuses
+        // anything but 6 and 7, so an out-of-range int is clamped to 0 rather than truncated.
+        int64_t version = arg_int(args[2]);
+        uint32_t v = version >= 0 && version <= 255 ? static_cast<uint32_t>(version) : 0;
+        rsc_session(inst->core, data.data, data.size, static_cast<size_t>(offset), v);
       } else {
         rsc_accept(inst->core, data.data, data.size, static_cast<size_t>(offset));
       }

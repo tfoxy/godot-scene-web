@@ -19,8 +19,9 @@ void rsc_free(RsCore *h);
 uint32_t rsc_op_count();
 void rsc_set_sabotage(RsCore *h, const uint8_t *name, size_t len);
 void rsc_set_full_scan(RsCore *h, int32_t on);
-// 4 (session) or 0 (error); vt: {record, errors, kind}.
-int32_t rsc_session(RsCore *h, const uint8_t *data, size_t len, size_t offset);
+// 4 (session) or 0 (error); vt: {record, errors, kind}. `version` is the stream's wire version,
+// 6 or 7 (G7xwl).
+int32_t rsc_session(RsCore *h, const uint8_t *data, size_t len, size_t offset, uint32_t version);
 // ops.
 void rsc_begin_session(RsCore *h);
 // 1 resource, 2 transaction, 3 end, 0 error; vt: {record, errors, kind}.

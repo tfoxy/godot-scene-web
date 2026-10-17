@@ -5,7 +5,8 @@ since G7n (2026-10-15): it accepts `render-stream.6` and `render-stream.7` side 
 connection speaks the one it chose ("As built (G7n)" below). File sinks still speak /6. Since G7l
 (2026-10-16) both browser receivers speak /7 live, with the token in the hello, and the native
 receiver speaks it under `RS_RECEIVER_PROTOCOL=7` (default 6; protocol/gate7/g7l.md "As
-built"). G7q is fork F1, credit window 2. Written with
+built"). Since G7xwl both Godot receivers speak it on either core: `rs-core-capi` takes the
+stream's version (protocol/gate7/g7xwl.md). G7q is fork F1, credit window 2. Written with
 [gate7-design.md](gate7-design.md) Q2, which this document implements. Codecs (G7w): C++
 encoder (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`), TypeScript
 decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit `version`

@@ -17,8 +17,14 @@ use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, Error};
 use std::collections::HashMap;
 
-/// The only protocol the native receiver speaks (render-stream/6).
+/// The receiver's file protocol (render-stream/6): the version a `Core` starts at.
 pub const VERSION: u8 = 6;
+
+/// The versions a receiver stream may be at (G7xwl): render-stream/6 (files, and native live by
+/// default) and render-stream/7 (live-transport-only). A /7 stream's records are /6's byte for
+/// byte; only the magic, the protocol string and `publication.credit_window` differ
+/// (render-stream-7.md), and rs-core's validator already gates all three on `version`.
+pub const VERSIONS: [u8; 2] = [6, 7];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -40,6 +46,8 @@ pub struct Core {
     pub text: Vec<u8>,
     session_meta: Vec<u8>,
     last_resource: Option<Hash>,
+    /// The current stream's wire version (the last `session()`'s; VERSION before any).
+    version: u8,
 }
 
 /// `_frame()`'s two `truncated` checks: the record at `offset` as a slice, its length prefix
@@ -71,6 +79,7 @@ impl Core {
     pub fn new() -> Core {
         Core {
             planner: Planner::new(),
+            version: VERSION,
             ..Core::default()
         }
     }
@@ -91,7 +100,7 @@ impl Core {
         let decode_failed = {
             let mut bufs = DecodeBufs::default();
             let mut tx = TxMeta::default();
-            meta::decode_record(record, offset, VERSION, &mut bufs, &mut tx).is_err()
+            meta::decode_record(record, offset, self.version, &mut bufs, &mut tx).is_err()
         };
         let parsed: Option<serde_json::Value> = wire::frame(record, offset)
             .ok()
@@ -129,10 +138,21 @@ impl Core {
         v.str(&kind);
     }
 
-    /// The session record at `offset` of `data` (a new stream: the validator restarts). Writes
+    /// The session record at `offset` of `data` (a new stream: the validator restarts), of a
+    /// render-stream/`version` stream: one of VERSIONS, whose magic the caller has checked
+    /// (receiver.gd's `split_records`). Writes
     /// `{record: {offset, byte_length, sha256, meta_json, blocks}, errors, kind}`.
-    pub fn session(&mut self, data: &[u8], offset: usize) -> i32 {
+    pub fn session(&mut self, data: &[u8], offset: usize, version: u8) -> i32 {
         self.validator = None;
+        if !VERSIONS.contains(&version) {
+            let e = Error::new(
+                "bad-magic",
+                format!("the receiver core speaks render-stream/6 and /7, not /{version}"),
+            );
+            self.write_failure(&[], offset, &e);
+            return KIND_ERROR;
+        }
+        self.version = version;
         self.provided.clear();
         self.library.clear();
         self.planner.touched.clear();
@@ -144,7 +164,7 @@ impl Core {
             }
         };
         let opts = Options {
-            version: VERSION,
+            version,
             digest: DigestPolicy::Inline,
             verify_payload_hashes: true,
         };
@@ -201,7 +221,7 @@ impl Core {
         let s = v.session();
         self.planner.begin_session(
             &mut self.ops,
-            VERSION,
+            self.version,
             s.clear_color,
             s.root_canvas_xform,
             s.viewport.canvas_cull_mask,
@@ -384,7 +404,7 @@ impl Core {
                 bytes.len()
             ));
         }
-        let decoded = match payload::payload_kind(bytes, VERSION) {
+        let decoded = match payload::payload_kind(bytes, self.version) {
             PayloadKind::Texture => payload::decode_texture(bytes).map(|_| ()),
             PayloadKind::Mesh => payload::decode_mesh(bytes).map(|_| ()),
             PayloadKind::Shader => payload::decode_shader(bytes).map(|_| ()),
