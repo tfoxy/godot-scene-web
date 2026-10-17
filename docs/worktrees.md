@@ -5,7 +5,9 @@ Run `scripts/create-worktree.sh <name>` from the clean main checkout. It creates
 dependencies. The name must be unique and cannot replace one of the four shared dependency links.
 The links in `.worktrees/` preserve `../godot-4.5.1-stable`, `../godot-docs-4.5`, `../spirectl`,
 and `../sts2-couch-coop` from a flat worktree. Use this script instead of an agent's default
-`.claude/worktrees/` checkout location.
+`.claude/worktrees/` checkout location. `install-agent-config.sh` also links Claude's automatic
+`.claude/worktrees/` location into the main `.worktrees/` directory once any older live checkouts
+there have finished; rerun it after clearing those checkouts.
 
 From main, use `python3 scripts/worktree-admin.py inventory` to see every registered checkout.
 `migrate <path> [--name <name>]` moves a checkout into `.worktrees/`, preserving tracked,

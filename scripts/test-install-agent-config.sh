@@ -110,6 +110,8 @@ printf '# user rules\n' > "$FAKEHOME_RO/.claude/CLAUDE.md"
 env HOME="$FAKEHOME_RO" bash "$WT/scripts/install-agent-config.sh" > "$INSTALL_LOG" 2>&1
 eq "installer exits 0" 0 "$?"
 ok "no home-dir writes without --user" test ! -e "$FAKEHOME_RO/.codex"
+ok "Claude worktrees link into the main .worktrees" test -L "$WT/.claude/worktrees"
+eq "Claude worktrees target" "$MAIN/.worktrees" "$(realpath "$WT/.claude/worktrees")"
 
 echo "== Claude Code layout =="
 for f in "$WT"/agents/*.md; do
@@ -413,6 +415,19 @@ ok "http server added with --url" \
   grep -qxF 'mcp add remote-thing --url https://example.invalid/mcp' "$STUB_LOG"
 ok "a server already in ~/.codex/config.toml is not re-added" \
   bash -c '! grep -q "already-there" "$1"' _ "$STUB_LOG"
+
+echo "== live Claude worktree directory =="
+rm "$WT/.claude/worktrees"
+mkdir "$WT/.claude/worktrees"
+printf 'keep\n' > "$WT/.claude/worktrees/active-agent"
+env HOME="$FAKEHOME_RO" bash "$WT/scripts/install-agent-config.sh" > "$TMP/deferred.log" 2>&1
+eq "installer leaves a nonempty worktree directory alone" 0 "$?"
+ok "active checkout marker survives" test -f "$WT/.claude/worktrees/active-agent"
+ok "active worktree directory is not replaced by a link" test ! -L "$WT/.claude/worktrees"
+rm "$WT/.claude/worktrees/active-agent"
+env HOME="$FAKEHOME_RO" bash "$WT/scripts/install-agent-config.sh" > "$TMP/linked.log" 2>&1
+eq "installer links after the directory empties" 0 "$?"
+ok "empty directory becomes central worktree link" test -L "$WT/.claude/worktrees"
 
 echo
 if [ "$fail" -eq 0 ]; then
