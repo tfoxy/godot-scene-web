@@ -1450,11 +1450,22 @@ from G7w on, and every `self-test-*.ts`. In addition:
 | Change | Also re-run |
 | ------ | ----------- |
 | capture or `rs_ws` (G7n, G7q) | `build-capture.sh` (all ctests), gate −1 (79 hooks), gates 1, 2, 6 (`--legs g6l,g6c`) natively on /6 |
-| `receiver/` (G7e, G7f, G7l, G7r, G7xn, G7xw) | gates 0 to 6 natively (every receiver leg; this is what proves native behaviour unchanged); from G7xn on, under both `RS_RECEIVER_CORE` values |
+| `receiver/` (G7e, G7f, G7l, G7r, G7xn, G7xw) | gates 0 to 6 natively (every receiver leg; this is what proves native behaviour unchanged), under each `RS_RECEIVER_CORE` value whose code the change touches (GDScript decode/apply → `gdscript`; `rs-core-capi`/adapter → `rust`; the shared shell, transport or session code → both) |
 | Rust crates (G7x, G7a, G7t, G7tm, G7s, G7xn, G7xw) | `cargo test` in each touched crate; `rs-core-check goldens`, natively and as wasm in Node; `self-test-rs-core.ts` on the four bench inputs (Q14d). For `packages/canvas/rust-*`, also: the rust-prototype README's pixel and integration suites on both backends, headless; `build-web.sh`'s default exports unchanged; and the downstream consumer check, including sts2-couch-coop's `scripts/build-rust-prototype.sh` and its Rust parity specs (Q14f) |
 | `packages/` (G7c, G7s) | `pnpm test`, `pnpm build`, the canvas pixel suites headless (`canvasPixelXvfb`, `canvasGlyphPixelXvfb` under `--headless=new` Vulkan), the export-surface tests, and the downstream consumer check of AGENTS.md (a scratch vite config in `../sts2-couch-coop/frontend` pointed at the worktree; that checkout stays on clean `main`) |
-| a `g7-*` group | that group and every earlier `g7-*` group landed |
+| a `g7-*` group | that group, plus every earlier landed `g7-*` group on each receiver (and web-export core) whose code path the change touches |
 | a receiver, `rs_ws` or `rs_live`, after G7v | `g7-dev`'s desktop control arms, unattended, and the g31's device arms if the g31 is attached (`device-unavailable` otherwise, never a pass). The g86's device arms are marked stale (D28) and re-run only at its next attended session |
+
+**Scoped re-runs and milestone sweeps (amended 2026-10-17, user-approved).** An increment re-runs only
+the receivers, web-export cores and groups whose code its diff can reach, and its result doc lists what
+it ran and why the rest was out of scope. A shared-core change (`rs-core`) reaches every receiver that
+links it, and a wire or capture change reaches every receiver. G7xwl's full sweep took about 10 h of
+wall time. 4.0 h of that was the web export's GDScript core, which the change never touched and which
+reproduced G7b byte for byte, and its legs waited about 2.2 h on the quiet lock behind parallel
+agents. **Full sweeps** (every landed group on every receiver and core, plus native gates 0–6 under
+both cores) run at milestones only: before G7v, before G7z, and before anything adopts a new
+receiver default. The orchestrator runs them, and a regression a sweep finds is assigned to the
+increment that introduced it. At most two increments run validation at once.
 
 ### Waves
 

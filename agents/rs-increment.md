@@ -44,6 +44,14 @@ nested `xvfb-run` anyway). Never touch `~/.steam` or launch a real game. Never `
 a tag. Don't download anything beyond what the increment's design doc already names as approved
 (a pinned template, emsdk, a nightly toolchain); a new download needs the user's sign-off first.
 
+## Scoped re-runs
+
+Re-run only what your diff can reach (gate7-design.md, "Scoped re-runs and milestone sweeps"): the
+receivers, web-export cores (`gdscript` / `rust`) and `g7-*` groups whose code you changed, plus the
+pure self-tests and the touched crates' tests. Don't sweep every receiver × core × group: the
+orchestrator runs full sweeps at milestones. Your result doc says what you ran and why the rest was
+out of scope.
+
 ## Quiet-machine runs
 
 Rate and timing measurements are sensitive to concurrent CPU load — a loaded machine phase-locks
