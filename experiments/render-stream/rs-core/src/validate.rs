@@ -36,6 +36,7 @@
 
 use crate::meta::{self, CmdMeta, DecodeBufs, Decoded, EndMeta, Op, ResourceMeta, Session, TxMeta};
 use crate::payload::{self, PayloadKind};
+use crate::prof;
 use crate::state::*;
 use crate::wire::{self, F32s, F64s, I32s, MAGIC_LEN};
 use std::collections::{BTreeSet, HashMap};
@@ -1387,13 +1388,16 @@ impl Validator {
                 format!("data follows the end record (record at offset {offset})"),
             ));
         }
+        let t = prof::start();
         let decoded = meta::decode_record(
             record,
             offset,
             self.opts.version,
             &mut self.bufs,
             &mut self.tx,
-        )?;
+        );
+        prof::add(prof::META, t);
+        let decoded = decoded?;
         let accepted = match decoded {
             Decoded::Session(_) => {
                 return Err(Error::new(
@@ -1405,10 +1409,12 @@ impl Validator {
             Decoded::Transaction => self.accept_transaction(record, offset)?,
             Decoded::End(e) => self.accept_end(e)?,
         };
+        let t = prof::start();
         let digest = match self.opts.digest {
             DigestPolicy::Inline => Some(wire::record_sha256(record)),
             DigestPolicy::Deferred => None,
         };
+        prof::add(prof::RECORD_DIGEST, t);
         self.digests.push(digest);
         Ok(accepted)
     }
@@ -1512,7 +1518,11 @@ impl Validator {
     // --------------------------------------------------------------------------------- transaction
 
     fn accept_transaction(&mut self, record: &[u8], offset: usize) -> Result<Accepted, Error> {
-        self.pre_checks(offset)?;
+        let t = prof::start();
+        let pre = self.pre_checks(offset);
+        prof::add(prof::PRE_CHECKS, t);
+        pre?;
+        let t = prof::start();
         let blocks = &self.bufs.blocks;
         let blk = |i: usize| -> &[u8] {
             blocks
@@ -1523,12 +1533,15 @@ impl Validator {
         let bl = [blk(0), blk(1), blk(2), blk(3), blk(4), blk(5)];
         self.apply(bl);
         self.reindex_dirty();
+        prof::add(prof::RESOLVE, t);
+        let t = prof::start();
         let result = self.post_checks(offset);
         if let Err(e) = result {
             self.rollback();
             return Err(e);
         }
         self.commit();
+        prof::add(prof::POST_CHECKS, t);
         self.bytes_total += record.len() as u64;
         self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
         Ok(Accepted::Transaction)

@@ -143,6 +143,13 @@ export interface SamplerTimeline {
   cpu_freq: { t_ms: number; samples: CpuFreqSample[] }[];
   meminfo: { t_ms: number; samples: MeminfoSample[] }[];
   gpu_memory: { t_ms: number; bytes: number | null }[];
+  /** G7o2: [`DeviceSampler.mark`]'s samples, around every page of a bench. */
+  page_marks: {
+    t_ms: number;
+    label: string;
+    conditions: DeviceConditions;
+    cpu_freq: CpuFreqSample[];
+  }[];
   derated: boolean;
 }
 
@@ -165,6 +172,7 @@ export class DeviceSampler {
     cpu_freq: [],
     meminfo: [],
     gpu_memory: [],
+    page_marks: [],
     derated: false,
   };
   private readonly t0 = Date.now();
@@ -198,6 +206,22 @@ export class DeviceSampler {
       t_ms: t,
       bytes: await readGpuMemoryBytes(this.adb, this.options.chromePackage),
     });
+  }
+
+  /** G7o2: one cpufreq and conditions sample tagged with a page label, taken between pages (the
+   * per-repeat sample: `before` as a page opens, `after` once it closed). */
+  async mark(label: string): Promise<void> {
+    const t = Date.now() - this.t0;
+    const mark: SamplerTimeline["page_marks"][number] = {
+      t_ms: t,
+      label,
+      conditions: await sampleConditions(this.adb),
+      cpu_freq: this.options.clusters
+        ? await readCpuFreqs(this.adb, this.options.clusters)
+        : [],
+    };
+    if (mark.cpu_freq.some((s) => s.derated)) this.timeline.derated = true;
+    this.timeline.page_marks.push(mark);
   }
 
   async sampleMemory(): Promise<void> {

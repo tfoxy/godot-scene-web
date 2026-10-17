@@ -48,6 +48,9 @@ pub struct Core {
     last_resource: Option<Hash>,
     /// The current stream's wire version (the last `session()`'s; VERSION before any).
     version: u8,
+    /// G7o2 (D31): the next `session()` defers the per-record digest (`record.sha256` is "" in
+    /// every answer; the caller fills it after the frame with `record_digest`).
+    pub digest_deferred: bool,
 }
 
 /// `_frame()`'s two `truncated` checks: the record at `offset` as a slice, its length prefix
@@ -165,7 +168,11 @@ impl Core {
         };
         let opts = Options {
             version,
-            digest: DigestPolicy::Inline,
+            digest: if self.digest_deferred {
+                DigestPolicy::Deferred
+            } else {
+                DigestPolicy::Inline
+            },
             verify_payload_hashes: true,
         };
         let validator = match Validator::new(record, offset, opts) {
@@ -212,6 +219,14 @@ impl Core {
         v.str("session");
         self.validator = Some(validator);
         KIND_SESSION
+    }
+
+    /// G7o2 (D31's deferred digest): the record at `offset` of `data`'s SHA-256 (hex, what an
+    /// inline `record.sha256` would have been), into text. Err when there is no record there.
+    pub fn record_digest(&mut self, data: &[u8], offset: usize) -> Result<(), String> {
+        let record = frame_at(data, offset).map_err(|e| e.to_string())?;
+        self.text = wire::record_sha256(record).to_hex().into_bytes();
+        Ok(())
     }
 
     /// RsApplier.begin_session(): the session's RenderingServer calls.

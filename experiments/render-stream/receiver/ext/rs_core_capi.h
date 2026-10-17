@@ -19,6 +19,10 @@ void rsc_free(RsCore *h);
 uint32_t rsc_op_count();
 void rsc_set_sabotage(RsCore *h, const uint8_t *name, size_t len);
 void rsc_set_full_scan(RsCore *h, int32_t on);
+// G7o2 (D31): the next session defers the record digest; rsc_record_digest fills it later
+// (text: the record at `offset`'s sha256 hex; 1, or 0 with the error in text).
+void rsc_set_digest_deferred(RsCore *h, int32_t on);
+int32_t rsc_record_digest(RsCore *h, const uint8_t *data, size_t len, size_t offset);
 // 4 (session) or 0 (error); vt: {record, errors, kind}. `version` is the stream's wire version,
 // 6 or 7 (G7xwl).
 int32_t rsc_session(RsCore *h, const uint8_t *data, size_t len, size_t offset, uint32_t version);

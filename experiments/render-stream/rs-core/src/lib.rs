@@ -16,5 +16,6 @@ pub mod goldens;
 pub mod json;
 pub mod meta;
 pub mod payload;
+pub mod prof;
 pub mod validate;
 pub mod wire;

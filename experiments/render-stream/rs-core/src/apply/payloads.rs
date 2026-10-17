@@ -282,34 +282,76 @@ impl PayloadStore {
         version: u8,
         verify: bool,
     ) -> Result<(), crate::wire::Error> {
-        use crate::payload::{
-            decode_mesh, decode_shader, decode_texture, payload_kind, PayloadKind,
-        };
-        if verify {
-            let actual = crate::wire::sha256(bytes);
-            if actual != *expected {
-                return Err(crate::wire::Error::new(
-                    "resource-hash",
-                    format!(
-                        "payload sha256 {} disagrees with the wire's {}",
-                        actual.to_hex(),
-                        expected.to_hex()
-                    ),
-                ));
+        let d = verify_decode(bytes, expected, version, verify)?;
+        self.insert(*expected, d);
+        Ok(())
+    }
+
+    /// A payload [`verify_decode`] already checked against `hash` (G7o2: a staged payload moving
+    /// into the store when its transaction is applied).
+    pub fn insert(&mut self, hash: Hash, d: Decoded) {
+        match d {
+            Decoded::Texture(px) => {
+                self.textures.insert(hash, px);
+            }
+            Decoded::Mesh(g) => {
+                self.meshes.insert(hash, g);
+            }
+            Decoded::Shader(code) => {
+                self.shaders.insert(hash, code);
             }
         }
-        let bad = |e: String| crate::wire::Error::new("resource-payload", e);
-        match payload_kind(bytes, version) {
-            PayloadKind::Texture => {
-                let t = decode_texture(bytes)?;
-                let mut px = texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data)
-                    .map_err(bad)?;
-                px.mipmaps = t.mipmaps;
-                self.textures.insert(*expected, px);
-            }
-            PayloadKind::Mesh => {
-                let m = decode_mesh(bytes)?;
-                let g = mesh_geometry(
+    }
+}
+
+/// One verified, decoded payload, not yet in a [`PayloadStore`].
+#[derive(Clone, Debug)]
+pub enum Decoded {
+    Texture(TexturePixels),
+    Mesh(MeshGeometry),
+    Shader(String),
+}
+
+/// The SHA-256 check against `expected` (skipped only by `verify == false`, the
+/// `skip-payload-hash` sabotage) and the decode by magic: [`PayloadStore::provide`]'s work, with
+/// nothing stored. Timed as the `payload_hash` and `payload_decode` phases.
+pub fn verify_decode(
+    bytes: &[u8],
+    expected: &Hash,
+    version: u8,
+    verify: bool,
+) -> Result<Decoded, crate::wire::Error> {
+    use crate::payload::{decode_mesh, decode_shader, decode_texture, payload_kind, PayloadKind};
+    use crate::prof;
+    let t = prof::start();
+    if verify {
+        let actual = crate::wire::sha256(bytes);
+        if actual != *expected {
+            return Err(crate::wire::Error::new(
+                "resource-hash",
+                format!(
+                    "payload sha256 {} disagrees with the wire's {}",
+                    actual.to_hex(),
+                    expected.to_hex()
+                ),
+            ));
+        }
+    }
+    prof::add(prof::PAYLOAD_HASH, t);
+    let t = prof::start();
+    let bad = |e: String| crate::wire::Error::new("resource-payload", e);
+    let d = match payload_kind(bytes, version) {
+        PayloadKind::Texture => {
+            let t = decode_texture(bytes)?;
+            let mut px =
+                texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data).map_err(bad)?;
+            px.mipmaps = t.mipmaps;
+            Decoded::Texture(px)
+        }
+        PayloadKind::Mesh => {
+            let m = decode_mesh(bytes)?;
+            Decoded::Mesh(
+                mesh_geometry(
                     m.primitive,
                     m.format,
                     m.aabb,
@@ -323,15 +365,86 @@ impl PayloadStore {
                         uv_scale: m.uv_scale,
                     },
                 )
-                .map_err(bad)?;
-                self.meshes.insert(*expected, g);
+                .map_err(bad)?,
+            )
+        }
+        PayloadKind::Shader => Decoded::Shader(decode_shader(bytes)?.code.to_string()),
+    };
+    prof::add(prof::PAYLOAD_DECODE, t);
+    Ok(d)
+}
+
+/// G7o2: payloads verified and decoded when they arrive (a fetch completion, between frames),
+/// ahead of the transaction that uses them. Nothing draws from here: [`PayloadStage::take`] hands
+/// a staged payload to the store when its transaction is provided, and only a payload whose
+/// SHA-256 matched the hash it was staged under ever enters (a mismatch is refused at
+/// [`PayloadStage::stage`] and stages nothing). `verified` is false only under the
+/// `skip-payload-hash` sabotage, which the `payload-verified-before-use` check counts.
+#[derive(Default)]
+pub struct PayloadStage {
+    staged: HashMap<Hash, Staged>,
+    /// Payloads staged (verified) / refused, since the last `clear`.
+    pub staged_count: u64,
+    pub refused_count: u64,
+}
+
+pub struct Staged {
+    pub decoded: Decoded,
+    pub bytes: usize,
+    pub verified: bool,
+}
+
+impl PayloadStage {
+    /// Verify `bytes` against `expected` and decode them; on success hold the result until
+    /// `take`. A refused payload leaves nothing staged under `expected`.
+    pub fn stage(
+        &mut self,
+        bytes: &[u8],
+        expected: &Hash,
+        version: u8,
+        verify: bool,
+    ) -> Result<(), crate::wire::Error> {
+        match verify_decode(bytes, expected, version, verify) {
+            Ok(decoded) => {
+                self.staged.insert(
+                    *expected,
+                    Staged {
+                        decoded,
+                        bytes: bytes.len(),
+                        verified: verify,
+                    },
+                );
+                self.staged_count += 1;
+                Ok(())
             }
-            PayloadKind::Shader => {
-                let s = decode_shader(bytes)?;
-                self.shaders.insert(*expected, s.code.to_string());
+            Err(e) => {
+                self.staged.remove(expected);
+                self.refused_count += 1;
+                Err(e)
             }
         }
-        Ok(())
+    }
+
+    pub fn has(&self, hash: &Hash) -> bool {
+        self.staged.contains_key(hash)
+    }
+
+    pub fn take(&mut self, hash: &Hash) -> Option<Staged> {
+        self.staged.remove(hash)
+    }
+
+    pub fn len(&self) -> usize {
+        self.staged.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.staged.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.staged.clear();
+        self.staged_count = 0;
+        self.refused_count = 0;
     }
 }
 
@@ -403,5 +516,61 @@ pub fn needed(
         for id in &delta.shaders_upserted {
             shader(id, out, &mut push);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2×1 RGBA8 GRT1 payload.
+    fn grt1(px: [u8; 8]) -> Vec<u8> {
+        let meta = br#"{"type":"texture-2d","format":"RGBA8","width":2,"height":1,"mipmaps":false,"data_bytes":8}"#;
+        let mut b = crate::payload::GRT1_MAGIC.to_vec();
+        b.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        b.extend_from_slice(meta);
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&px);
+        b
+    }
+
+    #[test]
+    fn staged_payload_is_verified_before_it_reaches_the_store() {
+        let bytes = grt1([1, 2, 3, 4, 5, 6, 7, 8]);
+        let hash = crate::wire::sha256(&bytes);
+        let mut stage = PayloadStage::default();
+        stage.stage(&bytes, &hash, 2, true).unwrap();
+        assert!(stage.has(&hash));
+        let mut store = PayloadStore::default();
+        assert!(!store.has(&hash));
+        let s = stage.take(&hash).unwrap();
+        assert!(s.verified);
+        assert_eq!(s.bytes, bytes.len());
+        store.insert(hash, s.decoded);
+        assert_eq!(store.textures[&hash].rgba, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(stage.is_empty());
+    }
+
+    /// Sabotage: one corrupted byte is refused at staging, so nothing can be provided under the
+    /// wire's hash (the transaction waits or fails exactly as for a missing payload).
+    #[test]
+    fn corrupted_payload_byte_is_refused_before_use() {
+        let bytes = grt1([1, 2, 3, 4, 5, 6, 7, 8]);
+        let hash = crate::wire::sha256(&bytes);
+        let mut bad = bytes.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x01;
+        let mut stage = PayloadStage::default();
+        let e = stage.stage(&bad, &hash, 2, true).unwrap_err();
+        assert_eq!(e.code, "resource-hash");
+        assert!(!stage.has(&hash));
+        assert_eq!((stage.staged_count, stage.refused_count), (0, 1));
+        // A good copy staged earlier is dropped by a later refused one under the same hash.
+        stage.stage(&bytes, &hash, 2, true).unwrap();
+        assert!(stage.stage(&bad, &hash, 2, true).is_err());
+        assert!(stage.take(&hash).is_none());
+        // The skip-payload-hash sabotage stages it, marked unverified.
+        stage.stage(&bad, &hash, 2, false).unwrap();
+        assert!(!stage.take(&hash).unwrap().verified);
     }
 }

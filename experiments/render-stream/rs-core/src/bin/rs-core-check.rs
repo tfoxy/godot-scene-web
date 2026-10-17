@@ -6,6 +6,8 @@
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]
 //!   rs-core-check validate <recording>... [--version 2..7] [--recover]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
+//!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred]
+//!   rs-core-check walk-diff <recording>... [--store <dir>]
 //!   rs-core-check scissors <recording> [--store <dir>]
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
@@ -92,6 +94,8 @@ fn main() -> ExitCode {
         "diff" => cmd_diff(&args),
         "bench" => cmd_bench(&args),
         "apply-bench" => cmd_apply_bench(&args),
+        "profile" => cmd_profile(&args),
+        "walk-diff" => cmd_walk_diff(&args),
         "scissors" => cmd_scissors(&args),
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
@@ -685,6 +689,194 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// `profile <recording> --store <dir> [--repeats N] [--digest inline|deferred]` (G7o2): the GSW
+/// page's per-transaction pipeline natively (`render_stream_core::prof::replay`: accept, prepare +
+/// needed, provide from the store, apply, then the deferred digest), one JSON line per
+/// transaction with each timer's and each phase's minimum over the repeats (µs) and the
+/// transaction's counts. Store files are read once, before the clock.
+fn cmd_profile(args: &Args) -> ExitCode {
+    use render_stream_core::prof;
+    use render_stream_core::state::Hash;
+    use std::collections::HashMap;
+    let Some(path) = args.positional.first() else {
+        return usage();
+    };
+    let store = args.get("store").map(PathBuf::from);
+    let repeats = args
+        .get("repeats")
+        .and_then(|r| r.parse::<usize>().ok())
+        .unwrap_or(5)
+        .max(1);
+    let inline = args.get("digest") == Some("inline");
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("rs-core-check profile: {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    fn clock() -> f64 {
+        static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        T0.get_or_init(Instant::now).elapsed().as_secs_f64() * 1e6
+    }
+    prof::set_clock(Some(clock));
+    let mut files: HashMap<Hash, Option<Vec<u8>>> = HashMap::new();
+    let mut read = |h: &Hash| -> Option<Vec<u8>> {
+        files
+            .entry(*h)
+            .or_insert_with(|| {
+                let dir = store.as_ref()?;
+                ["grt", "grm", "grp"].iter().find_map(|ext| {
+                    std::fs::read(dir.join("sha256").join(format!("{}.{ext}", h.to_hex()))).ok()
+                })
+            })
+            .clone()
+    };
+    let mut runs = Vec::new();
+    for _ in 0..repeats {
+        match prof::replay(&data, inline, &mut read) {
+            Ok(rows) => runs.push(rows),
+            Err(e) => {
+                eprintln!("rs-core-check profile: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let out = std::io::stdout();
+    let mut w = out.lock();
+    for row in prof::min_over(runs) {
+        let _ = writeln!(w, "{}", row.to_json());
+    }
+    ExitCode::SUCCESS
+}
+
+/// `walk-diff <recording>... [--store <dir>]` (G7o2): replays each recording through two
+/// appliers in lockstep, the incremental one and one that walks and re-assembles at every apply
+/// (`Applier::always_walk`), and compares what their packed lists paint after every transaction
+/// (`Applier::paint_digest`). Prints one line per recording (transactions, how many took the
+/// walk, the rows-only and re-assembly paths, mismatching seqs); exits non-zero on any mismatch.
+fn cmd_walk_diff(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::{Applier, Viewport};
+    if args.positional.is_empty() {
+        return usage();
+    }
+    let store = args.get("store").map(PathBuf::from);
+    let mut failed = false;
+    for path in &args.positional {
+        let run = || -> Result<(usize, usize, usize, Vec<i64>), wire::Error> {
+            let data =
+                std::fs::read(path).map_err(|e| wire::Error::new("io", format!("{path}: {e}")))?;
+            let version = wire::version_of_magic(&data)
+                .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+            let spans = wire::split_records(&data, version)?;
+            let mut v = Validator::new(
+                spans[0].bytes(&data),
+                spans[0].offset,
+                Options::new(version),
+            )?;
+            let s = v.session();
+            let size = s
+                .viewport
+                .presentation_size
+                .unwrap_or(s.viewport.logical_size);
+            let vp = Viewport {
+                width: size[0].max(1) as u32,
+                height: size[1].max(1) as u32,
+                clear: s.clear_color,
+                global_xform: geom::IDENTITY,
+                cull_mask: s.viewport.canvas_cull_mask as u32,
+                format: gsw_canvas_draw_list::Format::Rgb10A2,
+            };
+            let mut inc = Applier::new(vp);
+            let mut oracle = Applier::new(vp);
+            oracle.always_walk = true;
+            let mut payloads = PayloadStore::default();
+            let mut need = Vec::new();
+            let (mut n, mut walks, mut rows_only) = (0, 0, 0);
+            let mut bad = Vec::new();
+            for span in &spans[1..] {
+                match v.accept(span.bytes(&data), span.offset)? {
+                    Accepted::Resource { hash } => {
+                        if let Some(b) = v.inline_payload(&hash) {
+                            payloads.provide(b, &hash, version, true)?;
+                        }
+                    }
+                    Accepted::End => {}
+                    Accepted::Transaction => {
+                        inc.prepare(v.state(), v.delta());
+                        oracle.prepare(v.state(), v.delta());
+                        inc.needed(v.state(), v.delta(), &payloads, &mut need);
+                        let mut more = Vec::new();
+                        oracle.needed(v.state(), v.delta(), &payloads, &mut more);
+                        for h in more {
+                            if !need.contains(&h) {
+                                need.push(h);
+                            }
+                        }
+                        for h in &need {
+                            let dir = store.as_ref().ok_or_else(|| {
+                                wire::Error::new("resource-unavailable", "no --store")
+                            })?;
+                            let b = ["grt", "grm", "grp"]
+                                .iter()
+                                .find_map(|ext| {
+                                    std::fs::read(
+                                        dir.join("sha256").join(format!("{}.{ext}", h.to_hex())),
+                                    )
+                                    .ok()
+                                })
+                                .ok_or_else(|| {
+                                    wire::Error::new("resource-unavailable", h.to_hex())
+                                })?;
+                            payloads.provide(&b, h, version, true)?;
+                        }
+                        let st = inc.apply(v.state(), v.delta(), &payloads).clone();
+                        oracle.apply(v.state(), v.delta(), &payloads);
+                        n += 1;
+                        if st.structural {
+                            walks += 1;
+                        } else if !st.reassembled && st.why == 0 {
+                            rows_only += 1;
+                        }
+                        if inc.paint_digest() != oracle.paint_digest() {
+                            bad.push(v.state().seq);
+                        }
+                        inc.list.consumed();
+                        oracle.list.consumed();
+                    }
+                }
+            }
+            Ok((n, walks, rows_only, bad))
+        };
+        match run() {
+            Ok((n, walks, rows_only, bad)) => {
+                println!(
+                    "{path}: {n} transactions, {walks} walked, {rows_only} rows-only, {} re-assembled; {} mismatching{}",
+                    n - walks - rows_only,
+                    bad.len(),
+                    if bad.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (seqs {:?})", &bad[..bad.len().min(20)])
+                    }
+                );
+                failed |= !bad.is_empty();
+            }
+            Err(e) => {
+                println!("{path}: error {e}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `scissors <recording> [--store <dir>]` (gate7-design.md G7a `clip-parity`, Q14d "Lowering"):

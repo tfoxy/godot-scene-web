@@ -3,14 +3,22 @@
 // render-stream core and the canvas-items executor in ONE wasm module), one transaction per rAF,
 // exactly as web/bench/bench.ts replays it through the TypeScript decoder (`gsw-ts`).
 //
-// ?mode=bench&arm=gsw-rs|gsw-rs-inline&input=<url>&store=<dir url>&name=<input>&nonce=<leg nonce>
-//   &warmup=1&repeats=1[&shot-frames=10,60,...][&sabotage=drop-draws,...]
+// ?mode=bench&arm=gsw-rs|gsw-rs-inline|gsw-rs-base&input=<url>&store=<dir url>&name=<input>
+//   &nonce=<leg nonce>&warmup=1&repeats=1[&shot-frames=10,60,...][&sabotage=drop-draws,...][&prof=1]
+// `gsw-rs-base` (G7o2) is `gsw-rs` on a second build (gate7-bench.ts --rs-build-base, served at
+// /gsw-rs-base/): the before arm of a before/after comparison. `prof=1` (G7o2) turns the core's
+// phase timers on (`prof_enable`) and adds each sample's `phases` (µs per core phase, `prof_take`);
+// a profiled page is diagnostics, never a budget arm.
 // Per transaction (Q14c): the whole recording is in wasm memory before the loop (step 1, outside
 // every timer); then
 //   decode_us   accept(i): framing, meta, validation, resolve, payload references (the record
 //               digest too for gsw-rs-inline, D31);
-//   provide_us  each payload the transaction needs, copied once into wasm and SHA-256-verified
-//               (`provide`): the fetcher's work, prefetched bytes so no I/O is timed;
+//   provide_us  each payload the transaction needs into the store. On a build with G7o2's
+//               staging, the payload was verified (SHA-256 against the needed hash) and decoded
+//               when it arrived (`stage_payload`, timed as payload_verify_us, outside total_us),
+//               and this is the move from the stage (`provide_staged`); on an earlier build (the
+//               `gsw-rs-base` arm) it is the in-frame copy, verify and decode (`provide`).
+//               Prefetched bytes either way, so no I/O is timed;
 //   program_us  G7s: custom shaders the transaction names first, transpiled and compiled once per
 //               code hash (web/gsw-receiver/programs.ts, as the receiver page does);
 //   apply_us    apply(): the retained state to the packed list's dirty ranges;
@@ -18,6 +26,14 @@
 //   total_us    one wall timer over all of the above (the JS↔wasm boundary included);
 //   evidence_hash_us  gsw-rs only: the deferred record digest (D31), right after the frame's timed
 //               window, outside total_us.
+//   payload_verify_us G7o2: the fetch completion's verify and decode of the transaction's needed
+//               payloads (`stage_payload`), outside total_us. The bench's fetcher holds every
+//               payload already, so its completion runs synchronously between accept and provide;
+//               the receiver page runs it in the fetch's own completion, between frames.
+// Each repeat records `payload_verify` (lib.rs `payload_verify_json`), which
+// `payload-verified-before-use` judges. Shell sabotages: `corrupt-payload` flips one byte of
+// every payload copy before staging (must be refused before use), `verify-in-frame` provides
+// through the in-frame path on a staging build.
 // Report-only: gpu_complete_ms, a fenceSync after the blit polled on later frames (no timer query
 // on the g31). Per repeat: T_p (rAF median), the wasm heap, the watchdog. shot-frames reads the
 // RGB10_A2 target back (RGBA/UNSIGNED_BYTE) after the transaction of each listed host frame and
@@ -48,6 +64,10 @@ interface GswRs extends ProgramHost {
   needed_ptr(): number;
   alloc_payload(len: number): number;
   provide(len: number): number;
+  /** G7o2 (absent from builds before it). */
+  stage_payload?(len: number, hash: string): number;
+  provide_staged?(): number;
+  payload_verify_json?(): string;
   apply(): number;
   draw(): number;
   stats_ptr(): number;
@@ -64,7 +84,14 @@ interface GswRsModule {
   default(init: {
     module_or_path: BufferSource;
   }): Promise<{ memory: WebAssembly.Memory }>;
-  GswRs: { new (canvas: HTMLCanvasElement, options: string): GswRs };
+  /** G7o2 diagnostics (absent from builds before it). */
+  prof_enable?(on: boolean): void;
+  prof_take?(): Float64Array;
+  prof_names?(): string;
+  GswRs: {
+    new (canvas: HTMLCanvasElement, options: string): GswRs;
+    prototype: GswRs;
+  };
 }
 
 /** accept() codes (lib.rs `ACCEPT_*`). */
@@ -210,6 +237,12 @@ interface Sample {
   apply_us: number;
   draw_us: number;
   evidence_hash_us: number;
+  /** G7o2: the payloads' verify and decode on arrival, outside total_us. */
+  payload_verify_us: number;
+  /** G7o2 `prof=1` only: µs per core phase (`prof_names()`). */
+  phases?: Record<string, number>;
+  /** G7o2 `prof=1` only: the phases of payload_verify_us. */
+  verify_phases?: Record<string, number>;
   provided: number;
   structural: number;
   executed_calls: number;
@@ -225,8 +258,13 @@ interface Sample {
 
 async function runBench(): Promise<void> {
   const arm = params.get("arm") ?? "gsw-rs";
-  if (arm !== "gsw-rs" && arm !== "gsw-rs-inline")
-    throw new Error(`arm must be gsw-rs or gsw-rs-inline (got ${arm})`);
+  if (arm !== "gsw-rs" && arm !== "gsw-rs-inline" && arm !== "gsw-rs-base")
+    throw new Error(
+      `arm must be gsw-rs, gsw-rs-inline or gsw-rs-base (got ${arm})`,
+    );
+  const wasmDir = arm === "gsw-rs-base" ? "gsw-rs-base" : "gsw-rs";
+  // A build without timers (an earlier base) runs unprofiled.
+  let profile = params.get("prof") === "1";
   const input = params.get("input");
   const store = params.get("store");
   const name = params.get("name") ?? "input";
@@ -241,21 +279,36 @@ async function runBench(): Promise<void> {
     (params.get("shot-seqs") ?? "").split(",").filter(Boolean).map(Number),
   );
   if (!input || !nonce) throw new Error("bench needs ?input= and ?nonce=");
+  const corrupt = sabotage.includes("corrupt-payload");
 
   setState({ state: "running", detail: "loading rs-gsw-wasm" });
   const mod = (await import(
-    /* @vite-ignore */ `${location.origin}/gsw-rs/rs_gsw_wasm.js`
+    /* @vite-ignore */ `${location.origin}/${wasmDir}/rs_gsw_wasm.js`
   )) as GswRsModule;
   const wasmBytes = await (
-    await fetch("/gsw-rs/rs_gsw_wasm_bg.wasm")
+    await fetch(`/${wasmDir}/rs_gsw_wasm_bg.wasm`)
   ).arrayBuffer();
   const exports = await mod.default({ module_or_path: wasmBytes });
+  if (!mod.prof_enable) profile = false;
+  const profNames = profile ? (mod.prof_names?.() ?? "").split(",") : [];
+  mod.prof_enable?.(profile);
   const memory = exports.memory;
+  const takePhases = (): Record<string, number> => {
+    const v = mod.prof_take?.() ?? new Float64Array();
+    const out: Record<string, number> = {};
+    profNames.forEach((k, j) => {
+      out[k] = v[j];
+    });
+    return out;
+  };
 
   setState({ state: "running", detail: `fetching ${input}` });
   const data = new Uint8Array(await (await fetch(input)).arrayBuffer());
   const payloads = store ? await prefetchStore(store) : new Map();
 
+  // G7o2: verify payloads on arrival when the build can (`gsw-rs-base` on an earlier build cannot).
+  const stagingBuild = typeof mod.GswRs.prototype.stage_payload === "function";
+  const staging = stagingBuild && !sabotage.includes("verify-in-frame");
   const gs = new mod.GswRs(
     canvas,
     JSON.stringify({
@@ -328,27 +381,72 @@ async function runBench(): Promise<void> {
       let code = gs.accept(i);
       const decodeUs = nowUs() - a;
       let provideUs = 0;
+      let verifyUs = 0;
+      let verifyPhases: Record<string, number> | undefined;
       let provided = 0;
       if (code === ACCEPT_NEEDS_PAYLOADS) {
-        const p0 = nowUs();
         const n = gs.needed_count();
         const hashes = new Uint8Array(
           memory.buffer,
           gs.needed_ptr(),
           32 * n,
         ).slice();
-        for (let k = 0; k < n; k++) {
-          const h = hex(hashes.subarray(32 * k, 32 * k + 32));
-          const bytes = payloads.get(h);
-          if (!bytes) {
-            error = `record ${i}: payload ${h} not in the store`;
-            break;
+        const names: string[] = [];
+        for (let k = 0; k < n; k++)
+          names.push(hex(hashes.subarray(32 * k, 32 * k + 32)));
+        // G7o2: the fetch completion verifies and decodes each payload as it arrives, ahead of
+        // the frame that applies it (outside total_us).
+        const v0 = nowUs();
+        if (staging) {
+          for (const h of names) {
+            let bytes = payloads.get(h);
+            if (!bytes) {
+              error = `record ${i}: payload ${h} not in the store`;
+              break;
+            }
+            if (corrupt) {
+              bytes = bytes.slice();
+              bytes[bytes.length - 1] ^= 0x01;
+            }
+            const pp = gs.alloc_payload(bytes.length);
+            new Uint8Array(memory.buffer, pp, bytes.length).set(bytes);
+            if (
+              (gs.stage_payload as (l: number, h: string) => number)(
+                bytes.length,
+                h,
+              ) < 0
+            ) {
+              error = `record ${i}: stage ${h}: ${gs.error()}`;
+              break;
+            }
           }
-          const pp = gs.alloc_payload(bytes.length);
-          new Uint8Array(memory.buffer, pp, bytes.length).set(bytes);
-          if (gs.provide(bytes.length) < 0) {
-            error = `record ${i}: provide ${h}: ${gs.error()}`;
-            break;
+        }
+        verifyUs = nowUs() - v0;
+        if (profile && staging) verifyPhases = takePhases();
+        if (error) break;
+        const p0 = nowUs();
+        for (const h of names) {
+          if (staging) {
+            if ((gs.provide_staged as () => number)() < 0) {
+              error = `record ${i}: provide ${h}: ${gs.error()}`;
+              break;
+            }
+          } else {
+            let bytes = payloads.get(h);
+            if (!bytes) {
+              error = `record ${i}: payload ${h} not in the store`;
+              break;
+            }
+            if (corrupt) {
+              bytes = bytes.slice();
+              bytes[bytes.length - 1] ^= 0x01;
+            }
+            const pp = gs.alloc_payload(bytes.length);
+            new Uint8Array(memory.buffer, pp, bytes.length).set(bytes);
+            if (gs.provide(bytes.length) < 0) {
+              error = `record ${i}: provide ${h}: ${gs.error()}`;
+              break;
+            }
           }
           provided++;
         }
@@ -389,10 +487,11 @@ async function runBench(): Promise<void> {
         drawUs = d - c;
         fenceDrawEnd = performance.now();
       }
-      const total = nowUs() - a;
+      const total = nowUs() - a - verifyUs;
+      const phases = profile ? takePhases() : undefined;
       // D31: the deferred record digest, after the frame's timed window, once per frame.
       let evidenceUs = 0;
-      if (arm === "gsw-rs") {
+      if (arm !== "gsw-rs-inline") {
         const e0 = nowUs();
         gs.digest();
         evidenceUs = nowUs() - e0;
@@ -438,6 +537,9 @@ async function runBench(): Promise<void> {
         apply_us: applyUs,
         draw_us: drawUs,
         evidence_hash_us: evidenceUs,
+        payload_verify_us: verifyUs,
+        ...(phases ? { phases } : {}),
+        ...(verifyPhases ? { verify_phases: verifyPhases } : {}),
         provided,
         structural: st.structural,
         executed_calls: st.executed_calls,
@@ -469,6 +571,11 @@ async function runBench(): Promise<void> {
       heap_bytes: memory.buffer.byteLength,
       parity_violations: parityViolations,
       digest_pending: digestPending,
+      staging,
+      staging_build: stagingBuild,
+      payload_verify: gs.payload_verify_json
+        ? JSON.parse(gs.payload_verify_json())
+        : null,
       raf: {
         tp_ms: median(rafTimes),
         p95_ms: percentile(rafTimes, 0.95),

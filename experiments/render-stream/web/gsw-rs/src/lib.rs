@@ -24,12 +24,13 @@ use gsw_canvas_draw_list::Format;
 use gsw_canvas_draw_list::{Binding, UniformValue};
 use render_stream_core::apply::geom::{self, Xform};
 use render_stream_core::apply::material_residency::MaterialCounts;
-use render_stream_core::apply::payloads::PayloadStore;
+use render_stream_core::apply::payloads::{PayloadStage, PayloadStore};
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
 use render_stream_core::meta::Stretch;
+use render_stream_core::prof;
 use render_stream_core::state::{Hash, Id, ShaderSource};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, RecordSpan};
@@ -98,6 +99,9 @@ const SHELL_SABOTAGES: &[&str] = &[
     "no-evict",
     "ignore-cache",
     "wrong-http-token",
+    // G7o2: the page corrupts a fetched payload byte / provides in the frame (bench-rs.ts).
+    "corrupt-payload",
+    "verify-in-frame",
 ];
 
 fn parse_options(json: &str) -> Result<Opts, String> {
@@ -164,6 +168,20 @@ struct Totals {
     provided: u64,
     provided_bytes: u64,
     restores: u64,
+}
+
+/// G7o2 `payload-verified-before-use`: how each payload a transaction used reached the store.
+#[derive(Default)]
+struct VerifyCounts {
+    /// Staged by `stage_payload` (SHA-256 matched, decoded) / refused there.
+    staged: u64,
+    refused: u64,
+    /// Provided from the stage (verified when it arrived, off the frame path).
+    provided_staged: u64,
+    /// Provided by `provide` (verified inside the frame, the pre-G7o2 path).
+    provided_in_frame: u64,
+    /// Provided without a SHA-256 check (the `skip-payload-hash` sabotage only).
+    unverified_used: u64,
 }
 
 /// Q14d "Goldens" under the wasm build: `rs-core-check goldens`'s very function, run in this module
@@ -236,6 +254,73 @@ pub fn core_bench(data: &[u8], digest_inline: bool) -> Result<Vec<f64>, JsValue>
     Ok(out)
 }
 
+fn performance_now_us() -> f64 {
+    performance_now() * 1000.0
+}
+
+/// G7o2 diagnostics: turn the core's phase timers (`render_stream_core::prof`) on or off, on
+/// `performance.now()`. Off (the default) they cost one thread-local read per mark.
+#[wasm_bindgen]
+pub fn prof_enable(on: bool) {
+    prof::set_clock(on.then_some(performance_now_us as fn() -> f64));
+}
+
+/// G7o2: the phase times (µs, `prof_names()` order) accumulated since the last call, zeroed.
+#[wasm_bindgen]
+pub fn prof_take() -> Vec<f64> {
+    prof::take().to_vec()
+}
+
+#[wasm_bindgen]
+pub fn prof_names() -> String {
+    prof::NAMES.join(",")
+}
+
+/// G7o2 diagnostics (never on the frame path): `rs-core-check profile` in this module, with no GL:
+/// `repeats` replays of `data` (`read(hash_hex)` returns a payload's bytes, or undefined), one
+/// JSON line per transaction with each timer's minimum over the replays.
+#[wasm_bindgen]
+pub fn core_profile(
+    data: &[u8],
+    read: &js_sys::Function,
+    inline_digest: bool,
+    repeats: u32,
+) -> Result<String, JsValue> {
+    let was = prof::enabled();
+    prof_enable(true);
+    let mut cache: std::collections::HashMap<Hash, Option<Vec<u8>>> = Default::default();
+    let mut get = |h: &Hash| -> Option<Vec<u8>> {
+        cache
+            .entry(*h)
+            .or_insert_with(|| {
+                let v = read
+                    .call1(&JsValue::NULL, &JsValue::from_str(&h.to_hex()))
+                    .ok()?;
+                if v.is_undefined() || v.is_null() {
+                    return None;
+                }
+                Some(js_sys::Uint8Array::new(&v).to_vec())
+            })
+            .clone()
+    };
+    let mut runs = Vec::new();
+    for _ in 0..repeats.max(1) {
+        match prof::replay(data, inline_digest, &mut get) {
+            Ok(r) => runs.push(r),
+            Err(e) => {
+                prof_enable(was);
+                return Err(JsValue::from_str(&e.to_string()));
+            }
+        }
+    }
+    prof_enable(was);
+    Ok(prof::min_over(runs)
+        .iter()
+        .map(|r| r.to_json().to_string())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 #[wasm_bindgen]
 pub struct GswRs {
     canvas: web_sys::HtmlCanvasElement,
@@ -247,6 +332,9 @@ pub struct GswRs {
     applier: Option<Applier>,
     executor: Option<CanvasItemsExecutor>,
     payloads: PayloadStore,
+    /// G7o2: payloads verified and decoded when they arrived, not yet provided.
+    stage: PayloadStage,
+    verify: VerifyCounts,
     needed: Vec<Hash>,
     needed_bytes: Vec<u8>,
     provide_cursor: usize,
@@ -456,6 +544,8 @@ impl GswRs {
             applier: None,
             executor: None,
             payloads: PayloadStore::default(),
+            stage: PayloadStage::default(),
+            verify: VerifyCounts::default(),
             needed: Vec::new(),
             needed_bytes: Vec::new(),
             provide_cursor: 0,
@@ -684,6 +774,8 @@ impl GswRs {
         self.validator = None;
         self.applier = None;
         self.payloads.clear();
+        self.stage.clear();
+        self.verify = VerifyCounts::default();
         self.needed.clear();
         self.accepted.clear();
         self.digested = 0;
@@ -873,11 +965,13 @@ impl GswRs {
             self.error = "accept before start".into();
             return -1;
         };
+        let t = prof::start();
         let st = v.state();
         a.needed(st, v.delta(), &self.payloads, &mut self.needed);
         self.provide_cursor = 0;
         self.stats.needed = self.needed.len() as u32;
         if self.needed.is_empty() {
+            prof::add(prof::NEEDED, t);
             return ACCEPT_TRANSACTION;
         }
         self.needed_bytes.clear();
@@ -898,6 +992,7 @@ impl GswRs {
                 0
             });
         }
+        prof::add(prof::NEEDED, t);
         ACCEPT_NEEDS_PAYLOADS
     }
 
@@ -1051,6 +1146,7 @@ impl GswRs {
         if !keep_payloads {
             self.payloads.clear();
         }
+        self.stage.clear();
         self.needed.clear();
         self.provide_cursor = 0;
         self.accepted.clear();
@@ -1121,6 +1217,10 @@ impl GswRs {
                 self.provide_cursor += 1;
                 self.totals.provided += 1;
                 self.totals.provided_bytes += len as u64;
+                self.verify.provided_in_frame += 1;
+                if self.opts.skip_payload_hash {
+                    self.verify.unverified_used += 1;
+                }
                 0
             }
             Err(e) => {
@@ -1128,6 +1228,76 @@ impl GswRs {
                 -1
             }
         }
+    }
+
+    /// G7o2: verify (SHA-256 against `hash_hex`, the needed hash the payload was fetched for) and
+    /// decode the payload just written through `alloc_payload`, when it arrives (a fetch
+    /// completion, between frames) rather than inside the frame that applies it. A mismatch is
+    /// refused here (`resource-hash`, nothing staged), so the transaction can never use it.
+    pub fn stage_payload(&mut self, len: usize, hash_hex: &str) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        let bytes = &self.payload_buf[..len];
+        match self
+            .stage
+            .stage(bytes, &hash, self.version, !self.opts.skip_payload_hash)
+        {
+            Ok(()) => {
+                self.verify.staged += 1;
+                0
+            }
+            Err(e) => {
+                self.verify.refused += 1;
+                self.error = fail(e);
+                -1
+            }
+        }
+    }
+
+    /// Whether `hash_hex` is staged (verified, not yet provided).
+    pub fn is_staged(&self, hash_hex: &str) -> bool {
+        Hash::from_hex(hash_hex).is_some_and(|h| self.stage.has(&h))
+    }
+
+    /// G7o2: provide the next needed payload from the stage (verified when it arrived). Fails when
+    /// it was never staged, i.e. never verified: the caller must not apply.
+    pub fn provide_staged(&mut self) -> i32 {
+        let Some(hash) = self.needed.get(self.provide_cursor).copied() else {
+            self.error = "provide: nothing is needed".into();
+            return -1;
+        };
+        let Some(s) = self.stage.take(&hash) else {
+            self.error = format!(
+                "resource-unverified: payload {} was not verified before use",
+                hash.to_hex()
+            );
+            return -1;
+        };
+        self.payloads.insert(hash, s.decoded);
+        self.provide_cursor += 1;
+        self.totals.provided += 1;
+        self.totals.provided_bytes += s.bytes as u64;
+        self.verify.provided_staged += 1;
+        if !s.verified {
+            self.verify.unverified_used += 1;
+        }
+        0
+    }
+
+    /// G7o2 `payload-verified-before-use` counts, one JSON object.
+    pub fn payload_verify_json(&self) -> String {
+        let v = &self.verify;
+        format!(
+            "{{\"staged\":{},\"refused\":{},\"provided_staged\":{},\"provided_in_frame\":{},\"unverified_used\":{},\"still_staged\":{}}}",
+            v.staged,
+            v.refused,
+            v.provided_staged,
+            v.provided_in_frame,
+            v.unverified_used,
+            self.stage.len()
+        )
     }
 
     /// Step 3: the accepted transaction to the packed list.
@@ -1144,6 +1314,7 @@ impl GswRs {
             return -1;
         };
         let st = a.apply(v.state(), v.delta(), &self.payloads).clone();
+        let t = prof::start();
         // applied.json evidence (no serialization here: `applied_json_parts` does it later).
         let state = v.state();
         self.evidence.push(TxEvidence {
@@ -1233,6 +1404,7 @@ impl GswRs {
         self.stats.vertices = st.vertex_count;
         self.stats.indices = st.index_count;
         self.stats.draws = st.emitted_draws;
+        prof::add(prof::ADAPTER, t);
         0
     }
 
@@ -1242,6 +1414,7 @@ impl GswRs {
             self.error = "draw before start".into();
             return -1;
         };
+        let t = prof::start();
         let mut result = x.execute(&a.list);
         if matches!(result, Err(ExecError::NeedsFullUpload))
             || x.context_state() == ContextState::Restored
@@ -1268,6 +1441,7 @@ impl GswRs {
                     self.stats.parity_violations += 1;
                     self.totals.parity_violations += 1;
                 }
+                prof::add(prof::EXECUTE, t);
                 0
             }
             Err(e) => {

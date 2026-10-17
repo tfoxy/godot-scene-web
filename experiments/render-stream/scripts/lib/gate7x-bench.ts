@@ -10,8 +10,15 @@
 import type { WatchdogSample } from "./browser-harness";
 import { watchdogVerdict } from "./browser-harness";
 
-export type Arm7x = "gsw-ts" | "gsw-rs" | "gsw-rs-inline";
-export const ARMS_7X: readonly Arm7x[] = ["gsw-ts", "gsw-rs", "gsw-rs-inline"];
+/** `gsw-rs-base` (G7o2): `gsw-rs` on a second, earlier build (`--rs-build-base`), the before arm
+ * of a before/after comparison. */
+export type Arm7x = "gsw-ts" | "gsw-rs" | "gsw-rs-inline" | "gsw-rs-base";
+export const ARMS_7X: readonly Arm7x[] = [
+  "gsw-ts",
+  "gsw-rs",
+  "gsw-rs-inline",
+  "gsw-rs-base",
+];
 
 /** G7m's recorded TypeScript p95 (results/gate7/g7m.md), under the same (inline) digest policy:
  * R2's thresholds, ms. */
@@ -219,7 +226,7 @@ export function summarizeTsPage(
 }
 
 export interface Judgement {
-  rule: "R2" | "R3" | "R4";
+  rule: "R2" | "R3" | "R4" | "R4-base";
   input: string;
   pass: boolean;
   required: boolean;
@@ -247,7 +254,7 @@ export function judge(results: RoundResult[], rounds: number): Judgement[] {
     // R2: gsw-rs-inline decode_us p95 below G7m's recorded TypeScript p95.
     const r2 = pooled(inl, "decode_us");
     const line = R2_THRESHOLDS_MS[input];
-    if (line !== undefined)
+    if (line !== undefined && inl.length > 0)
       out.push({
         rule: "R2",
         input,
@@ -274,38 +281,45 @@ export function judge(results: RoundResult[], rounds: number): Judgement[] {
         `r${k}:${(a.phases.decode_us.p95_us / 1000).toFixed(3)}<${(b.phases.total_us.p95_us / 1000).toFixed(3)}${win ? "" : "!"}`,
       );
     }
-    out.push({
-      rule: "R3",
-      input,
-      required: true,
-      pass:
-        rsP.count > 0 &&
-        tsP.count > 0 &&
-        rsP.p95_us < tsP.p95_us &&
-        pairedWins >= Math.min(4, rounds),
-      detail: `pooled gsw-rs decode p95 ${(rsP.p95_us / 1000).toFixed(3)} ms vs gsw-ts ${(tsP.p95_us / 1000).toFixed(3)} ms; paired ${pairedWins}/${rounds} (${pairs.join(" ")})`,
-    });
-    // R4: gsw-rs total_us p95 <= 0.5 T_p in EACH round (T_p measured in that round).
-    let ok = 0;
-    const per: string[] = [];
-    for (let k = 1; k <= rounds; k++) {
-      const a = rs.find((r) => r.round === k);
-      if (!a?.valid || a.tp_ms === null) {
-        per.push(`r${k}:invalid`);
-        continue;
+    if (rs.length > 0 && ts.length > 0)
+      out.push({
+        rule: "R3",
+        input,
+        required: true,
+        pass:
+          rsP.count > 0 &&
+          tsP.count > 0 &&
+          rsP.p95_us < tsP.p95_us &&
+          pairedWins >= Math.min(4, rounds),
+        detail: `pooled gsw-rs decode p95 ${(rsP.p95_us / 1000).toFixed(3)} ms vs gsw-ts ${(tsP.p95_us / 1000).toFixed(3)} ms; paired ${pairedWins}/${rounds} (${pairs.join(" ")})`,
+      });
+    // R4: gsw-rs total_us p95 <= 0.5 T_p in EACH round (T_p measured in that round); G7o2's
+    // R4-base is the same rule on the before arm.
+    const r4 = (rule: "R4" | "R4-base", arm: Arm7x, rows: RoundResult[]) => {
+      let ok = 0;
+      const per: string[] = [];
+      for (let k = 1; k <= rounds; k++) {
+        const a = rows.find((r) => r.round === k);
+        if (!a?.valid || a.tp_ms === null) {
+          per.push(`r${k}:invalid`);
+          continue;
+        }
+        const budget = 0.5 * a.tp_ms;
+        const p95 = a.phases.total_us.p95_us / 1000;
+        if (p95 <= budget) ok++;
+        per.push(`r${k}:${p95.toFixed(3)}/${budget.toFixed(3)}`);
       }
-      const budget = 0.5 * a.tp_ms;
-      const p95 = a.phases.total_us.p95_us / 1000;
-      if (p95 <= budget) ok++;
-      per.push(`r${k}:${p95.toFixed(3)}/${budget.toFixed(3)}`);
-    }
-    out.push({
-      rule: "R4",
-      input,
-      required: R4_REQUIRED.includes(input),
-      pass: ok === rounds,
-      detail: `gsw-rs total p95 / 0.5·T_p per round: ${per.join(" ")}${R4_REQUIRED.includes(input) ? "" : " (stretch, D25)"}`,
-    });
+      out.push({
+        rule,
+        input,
+        required: R4_REQUIRED.includes(input),
+        pass: ok === rounds,
+        detail: `${arm} total p95 / 0.5·T_p per round: ${per.join(" ")}${R4_REQUIRED.includes(input) ? "" : " (stretch, D25)"}`,
+      });
+    };
+    if (rs.length > 0) r4("R4", "gsw-rs", rs);
+    const base = of("gsw-rs-base");
+    if (base.length > 0) r4("R4-base", "gsw-rs-base", base);
   }
   return out;
 }

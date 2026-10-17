@@ -16,6 +16,10 @@ export interface GswRs {
   needed_kinds_ptr(): number;
   alloc_payload(len: number): number;
   provide(len: number): number;
+  /** G7o2: verify and decode a payload on arrival / provide the next needed one from there. */
+  stage_payload(len: number, hash: string): number;
+  provide_staged(): number;
+  payload_verify_json(): string;
   apply(): number;
   draw(): number;
   stats_ptr(): number;

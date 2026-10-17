@@ -79,6 +79,19 @@ func accept_session(data: PackedByteArray, offset: int, version: int) -> Diction
 	return out
 
 
+## G7o2 (D31): whether the next session defers the per-record digest (record.sha256 is "" in every
+## answer until record_digest fills it, after the frame).
+func set_digest_deferred(on: bool) -> void:
+	_core.call("set_digest_deferred", on)
+
+
+## G7o2 (D31): the record at `offset` of `data`'s sha256 hex, what an inline record.sha256 would
+## have been ("" when there is no record there).
+func record_digest(data: PackedByteArray, offset: int) -> String:
+	var hex: String = _core.call("record_digest", data, offset)
+	return hex
+
+
 ## One record after the session (RsApplier.accept_record()'s shape).
 func accept(data: PackedByteArray, offset: int) -> Dictionary:
 	var out: Dictionary = _core.call("accept", data, offset)

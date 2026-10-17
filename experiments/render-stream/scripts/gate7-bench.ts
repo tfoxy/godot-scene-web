@@ -15,6 +15,8 @@
 //                                # `Web (rust core)` bundle and names its legs `-web-rs`
 //   gate7-bench.ts --arm gsw-rs|gsw-rs-inline [--rs-build <dir>] ...  # G7x: rs-gsw-wasm (Q14c)
 //   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
+//   gate7-bench.ts --interleave gsw-rs-base,gsw-rs --rs-build-base <dir> ...  # G7o2: before/after
+//       [--profile]   # G7o2: the core's phase timers on in every Rust page (diagnostics only)
 // `gsw-ts` is the TypeScript arm (G7x renamed it; G7a retired its `gsw` alias: since G7a the GSW
 // receiver is the Rust core, so `gsw` alone no longer names this arm).
 //
@@ -118,6 +120,10 @@ interface Args {
   rounds: number;
   /** G7x: the built rs-core output (scripts/build-rs-core.sh), for the Rust arms. */
   rsBuild: string;
+  /** G7o2: a second (earlier) rs-core build, the `gsw-rs-base` arm's. */
+  rsBuildBase: string | undefined;
+  /** G7o2: `prof=1` on every Rust page (per-sample core phases; never a budget run). */
+  profile: boolean;
   /** G7x: Rust-arm sabotages (drop-draws, stale-item-row, digest-skip, skip-payload-hash). */
   rsSabotage: string[];
   /** G7x: host frames whose RGB10_A2 target the Rust arm reads back (pace checks). */
@@ -145,6 +151,9 @@ interface Args {
   coreExt: string | undefined;
   /** G7xn: run each native receiver under `taskset -c <cpus>` (a quieter, comparable core). */
   taskset: string | undefined;
+  /** G7o2: a second (earlier) web bundle; each warmup/repeat then runs it and the current one
+   * back to back (legs `*-web-rs-base`), the web export's before/after arms. */
+  webBundleBase: string | undefined;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -152,6 +161,9 @@ function parseArgs(argv: string[]): Args {
     arm: "gsw-ts",
     interleave: [],
     rounds: 5,
+    rsBuildBase: undefined,
+    profile: false,
+    webBundleBase: undefined,
     rsBuild: join(
       SCRIPT_DIR,
       "..",
@@ -226,6 +238,15 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--rs-build":
         a.rsBuild = resolve(v());
+        break;
+      case "--rs-build-base":
+        a.rsBuildBase = resolve(v());
+        break;
+      case "--profile":
+        a.profile = true;
+        break;
+      case "--web-bundle-base":
+        a.webBundleBase = resolve(v());
         break;
       case "--rs-sabotage":
         a.rsSabotage = v()
@@ -326,7 +347,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 export function benchLegName(
-  armIn: Args["arm"] | Arm7x | "web-rs",
+  armIn: Args["arm"] | Arm7x | "web-rs" | "web-rs-base" | "web-base",
   env: HarnessEnv,
   input: string,
   device: string | null,
@@ -537,6 +558,17 @@ async function buildSite(args: Args, inputs: BenchInput[]): Promise<string> {
         `no rs-gsw-wasm build at ${wasmDir} (run scripts/build-rs-core.sh)`,
       );
     cpSync(wasmDir, join(site, "gsw-rs"), { recursive: true });
+    if (args.interleave.includes("gsw-rs-base")) {
+      const baseDir = join(args.rsBuildBase ?? "", "gsw-rs");
+      if (
+        !args.rsBuildBase ||
+        !existsSync(join(baseDir, "rs_gsw_wasm_bg.wasm"))
+      )
+        throw new HarnessUsageError(
+          `the gsw-rs-base arm needs --rs-build-base <an rs-core build> (got ${args.rsBuildBase ?? "none"})`,
+        );
+      cpSync(baseDir, join(site, "gsw-rs-base"), { recursive: true });
+    }
     for (const input of inputs)
       if (input.store)
         cpSync(input.store, join(site, "inputs", `${input.name}-store`), {
@@ -577,6 +609,7 @@ function pageUrl(
     repeats: String(repeats),
   });
   if (args.rsSabotage.length) q.set("sabotage", args.rsSabotage.join(","));
+  if (args.profile) q.set("prof", "1");
   if (args.shotFrames.length) q.set("shot-frames", args.shotFrames.join(","));
   if (args.shotSeqs.length) q.set("shot-seqs", args.shotSeqs.join(","));
   return `${origin}/rs.html?${q.toString()}`;
@@ -596,6 +629,8 @@ async function runRustProtocol(
   nonce: string,
   evidence: string,
   envLabel: string,
+  /** G7o2: the device sampler's per-page mark (cpufreq and conditions between pages). */
+  mark: (label: string) => Promise<void> = async () => {},
 ): Promise<void> {
   const arms: Arm7x[] =
     args.interleave.length > 0 ? args.interleave : [args.arm as Arm7x];
@@ -621,6 +656,7 @@ async function runRustProtocol(
     // once, never read as slow; both attempts are kept.
     for (let attempt = 0; attempt < 2; attempt++) {
       const label = `${step.input} ${step.arm} ${step.round === 0 ? "warmup" : `round ${step.round}`}${attempt ? " (re-run)" : ""}`;
+      await mark(`${label} before`);
       t0 = Date.now();
       const page = await openPage(
         pageUrl(args, origin, nonce, input, step.arm, warmup, repeats),
@@ -630,6 +666,7 @@ async function runRustProtocol(
       } finally {
         await page.close().catch(() => {});
       }
+      await mark(`${label} after`);
       const file =
         step.arm === "gsw-ts"
           ? `bench-${input.name}.json`
@@ -940,6 +977,9 @@ async function runGswArm(
         nonce,
         evidence,
         `${sel.env}${sel.id ? `-${sel.id}` : ""}`,
+        async (label) => {
+          await sampler?.mark(label).catch(() => {});
+        },
       );
     }
     for (const input of usesRustArm(args) || args.interleave.length > 0
@@ -1135,10 +1175,29 @@ async function runWebArm(
 ): Promise<BenchInputSummary[]> {
   const { bundleDir, buildSha256 } = buildWebBundle(args.core);
   const webArm = args.core === "rust" ? "web-rs" : "web";
+  // G7o2: the before bundle, run beside the current one in every warmup/repeat slot.
+  const bundles: {
+    arm: "web" | "web-rs" | "web-base" | "web-rs-base";
+    link: string;
+    sha256: string;
+  }[] = [];
+  if (args.webBundleBase) {
+    const manifest = JSON.parse(
+      readFileSync(join(args.webBundleBase, "build.json"), "utf8"),
+    ) as { pck: { sha256: string } };
+    bundles.push({
+      arm: webArm === "web-rs" ? "web-rs-base" : "web-base",
+      link: "web-bundle-base",
+      sha256: manifest.pck.sha256,
+    });
+  }
+  bundles.push({ arm: webArm, link: "web-bundle", sha256: buildSha256 });
   const table = loadDeviceTable();
   const sel = resolveDeviceSelection(args.env, args.device, table);
   await mkdir(args.out, { recursive: true });
   ensureStaticLink(bundleDir, join(args.out, "web-bundle"));
+  if (args.webBundleBase)
+    ensureStaticLink(args.webBundleBase, join(args.out, "web-bundle-base"));
   const assets = join(args.out, "web-assets");
   for (const input of inputs) {
     const dir = join(assets, input.name);
@@ -1293,76 +1352,87 @@ async function runWebArm(
         ? await probeTpMs(origin, openPage, server, evidence)
         : null;
     for (const input of inputs) {
-      const leg = benchLegName(webArm, sel.env, input.name, sel.id);
-      const legDir = join(args.out, leg);
       const [w, h] = WEB_CANVAS_SIZE[input.name] ?? DEFAULT_WEB_CANVAS;
-      const perRepeat: {
-        repeat: number;
-        perf: NativePerfJson | null;
-        exit: number | null;
-      }[] = [];
-      for (let r = 0; r < args.warmup + args.repeats; r++) {
-        const dir = join(
-          legDir,
-          r < args.warmup ? `warmup-${r}` : `repeat-${r - args.warmup}`,
-        );
-        await mkdir(dir, { recursive: true });
-        const nonce = randomBytes(8).toString("hex");
-        server.addLeg(nonce, dir);
-        const env: Record<string, string> = {
-          RS_RECEIVER_RECORDING: `/web-assets/${input.name}/recording.rs2`,
-          RS_RECEIVER_OUT: "/out/applied.json",
-          RS_RECEIVER_PERF_OUT: "/out/perf.json",
-          RS_RECEIVER_LOG: "summary",
-          RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
-          RS_RECEIVER_BUILD_SHA256: buildSha256,
-          ...(args.core === "rust" ? { RS_RECEIVER_CORE: "rust" } : {}),
-          ...(input.store
-            ? { RS_RECEIVER_STORE_DIR: `/web-assets/${input.name}/store` }
-            : {}),
-        };
-        const pageConfig = {
-          env,
-          engine_args: [] as string[],
-          canvas: [w, h] as [number, number],
-          sabotage: null as string | null,
-        };
-        await writeFile(
-          join(dir, "page-config.json"),
-          `${JSON.stringify(pageConfig, null, 2)}\n`,
-        );
-        const url = `${origin}/web-bundle/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
-        const t0 = Date.now();
-        const page = await openPage(url);
-        let result: { exit: number | null; error: string | null };
-        try {
-          result = await waitWebExit(page, WEB_REPLAY_TIMEOUT_MS);
-        } finally {
-          await page.close().catch(() => {});
+      const perBundle = bundles.map((b) => ({
+        ...b,
+        leg: benchLegName(b.arm, sel.env, input.name, sel.id),
+        perRepeat: [] as {
+          repeat: number;
+          perf: NativePerfJson | null;
+          exit: number | null;
+        }[],
+      }));
+      for (let r = 0; r < args.warmup + args.repeats; r++)
+        for (const b of perBundle) {
+          const { leg, perRepeat } = b;
+          const legDir = join(args.out, leg);
+          const buildSha256 = b.sha256;
+          const dir = join(
+            legDir,
+            r < args.warmup ? `warmup-${r}` : `repeat-${r - args.warmup}`,
+          );
+          await mkdir(dir, { recursive: true });
+          const nonce = randomBytes(8).toString("hex");
+          server.addLeg(nonce, dir);
+          const env: Record<string, string> = {
+            RS_RECEIVER_RECORDING: `/web-assets/${input.name}/recording.rs2`,
+            RS_RECEIVER_OUT: "/out/applied.json",
+            RS_RECEIVER_PERF_OUT: "/out/perf.json",
+            RS_RECEIVER_LOG: "summary",
+            RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
+            RS_RECEIVER_BUILD_SHA256: buildSha256,
+            ...(args.core === "rust" ? { RS_RECEIVER_CORE: "rust" } : {}),
+            ...(input.store
+              ? { RS_RECEIVER_STORE_DIR: `/web-assets/${input.name}/store` }
+              : {}),
+          };
+          const pageConfig = {
+            env,
+            engine_args: [] as string[],
+            canvas: [w, h] as [number, number],
+            sabotage: null as string | null,
+          };
+          await writeFile(
+            join(dir, "page-config.json"),
+            `${JSON.stringify(pageConfig, null, 2)}\n`,
+          );
+          const url = `${origin}/${b.link}/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
+          const repeatLabel = `${leg} ${r < args.warmup ? "warmup" : `repeat ${r - args.warmup}`}`;
+          await sampler?.mark(`${repeatLabel} before`).catch(() => {});
+          const t0 = Date.now();
+          const page = await openPage(url);
+          let result: { exit: number | null; error: string | null };
+          try {
+            result = await waitWebExit(page, WEB_REPLAY_TIMEOUT_MS);
+          } finally {
+            await page.close().catch(() => {});
+          }
+          server.removeLeg(nonce);
+          await sampler?.mark(`${repeatLabel} after`).catch(() => {});
+          console.log(
+            `gate7-bench: ${leg} ${r < args.warmup ? "warmup" : `repeat ${r - args.warmup}`} exit=${result.exit} ${result.error ? `error=${result.error} ` : ""}${Date.now() - t0} ms`,
+          );
+          if (r < args.warmup) continue;
+          const perfPath = join(dir, "perf.json");
+          perRepeat.push({
+            repeat: r - args.warmup,
+            perf: existsSync(perfPath)
+              ? (JSON.parse(await readFile(perfPath, "utf8")) as NativePerfJson)
+              : null,
+            exit: result.exit,
+          });
         }
-        server.removeLeg(nonce);
-        console.log(
-          `gate7-bench: ${leg} ${r < args.warmup ? "warmup" : `repeat ${r - args.warmup}`} exit=${result.exit} ${result.error ? `error=${result.error} ` : ""}${Date.now() - t0} ms`,
+      for (const { leg, perRepeat } of perBundle) {
+        const summary = summarizeNativeBench(input.name, perRepeat, "web");
+        await writeLegSummary(
+          join(args.out, leg),
+          leg,
+          summary,
+          decide(summary, sel.env, tpMs),
+          provenance,
         );
-        if (r < args.warmup) continue;
-        const perfPath = join(dir, "perf.json");
-        perRepeat.push({
-          repeat: r - args.warmup,
-          perf: existsSync(perfPath)
-            ? (JSON.parse(await readFile(perfPath, "utf8")) as NativePerfJson)
-            : null,
-          exit: result.exit,
-        });
+        summaries.push(summary);
       }
-      const summary = summarizeNativeBench(input.name, perRepeat, "web");
-      await writeLegSummary(
-        legDir,
-        leg,
-        summary,
-        decide(summary, sel.env, tpMs),
-        provenance,
-      );
-      summaries.push(summary);
     }
     if (sampler) {
       const timeline = await sampler.stop();
