@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-test for scripts/install-agent-config.sh (and scripts/gen-codex-config.py).
 #
-# Everything happens in a THROWAWAY detached worktree under mktemp -d, so the checkout you run this
+# Everything happens in a THROWAWAY detached worktree under .worktrees/, so the checkout you run this
 # from is never modified. The working-tree copies of scripts/, agents/ and skills/ are copied into
 # it, so this gates uncommitted work rather than HEAD.
 #
@@ -38,9 +38,11 @@ tomlq() { # tomlq <file> <python expr over `d`>
 }
 
 TMP="$(mktemp -d)" || die "mktemp"
-WT="$TMP/wt"
-WT2="$TMP/wt2"
-WT3="$TMP/wt3"
+WTBASE="$REPO/.worktrees/test-install-agent-config-$$"
+mkdir -p "$WTBASE"
+WT="$WTBASE/wt"
+WT2="$WTBASE/wt2"
+WT3="$WTBASE/wt3"
 
 # The installer now writes git config, and a linked worktree SHARES .git/config with the checkout
 # it was made from — so these keys are saved here and put back on exit. Without that, running this
@@ -64,6 +66,7 @@ cleanup() {
     fi
   done
   rm -rf "$TMP"
+  rm -rf "$WTBASE"
 }
 trap cleanup EXIT
 
@@ -131,13 +134,13 @@ eq ".agents/skills holds exactly this repo's skills" \
   "$(ls "$WT/.agents/skills" | LC_ALL=C sort | tr '\n' ' ')"
 
 # The loop body itself, driven by a patched COPY of the installer and a fake sibling repo next to
-# the worktree ($WT/../sibling-repo is $TMP/sibling-repo). This is what a repo with a non-empty
+# the worktree ($WT/../sibling-repo is $WTBASE/sibling-repo). This is what a repo with a non-empty
 # EXTRA_SKILLS gets, and it proves a locally installed skill (a REAL directory) is never replaced.
-mkdir -p "$TMP/sibling-repo/skills/fake-sibling" "$TMP/sibling-repo/skills/locally-installed"
+mkdir -p "$WTBASE/sibling-repo/skills/fake-sibling" "$WTBASE/sibling-repo/skills/locally-installed"
 printf -- '---\nname: fake-sibling\ndescription: stub\n---\n' \
-  > "$TMP/sibling-repo/skills/fake-sibling/SKILL.md"
+  > "$WTBASE/sibling-repo/skills/fake-sibling/SKILL.md"
 printf -- '---\nname: locally-installed\ndescription: stub\n---\n' \
-  > "$TMP/sibling-repo/skills/locally-installed/SKILL.md"
+  > "$WTBASE/sibling-repo/skills/locally-installed/SKILL.md"
 mkdir -p "$WT/.claude/skills/locally-installed"
 printf 'local\n' > "$WT/.claude/skills/locally-installed/MARKER"
 sed 's|^EXTRA_SKILLS=()$|EXTRA_SKILLS=(../sibling-repo/skills/fake-sibling ../sibling-repo/skills/locally-installed ../nope/skills/absent)|' \
