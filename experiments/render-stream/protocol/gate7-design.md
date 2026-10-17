@@ -3,8 +3,9 @@
 Status: contract for gate 7, written 2026-10-14. At that point gate 6 is complete through G6b and G6l
 on `main`. G6c (`rs/gate6-g6c`) and G6s (`rs/gate6-g6s`) are on branches, and G6p and G6z have not
 started. Nothing here is implemented yet. Hand it out piecewise. Each increment (G7w, G7j, G7h,
-G7c, G7f, G7d, G7e, G7a, G7n, G7m, G7o1, G7x, G7b, G7t, G7s, G7l, G7xn, G7xw, G7g, G7u, G7r, G7k,
-G7q, G7v, G7p, G7z) is one verified commit on `main`, implemented by one agent in its own worktree.
+G7c, G7f, G7d, G7e, G7a, G7n, G7m, G7o1, G7x, G7b, G7t, G7s, G7l, G7xn, G7xw, G7xwl, G7g, G7u,
+G7r, G7k, G7q, G7v, G7p, G7z) is one verified commit on `main`, implemented by one agent in its own
+worktree.
 G7q is gated on fork F1 at the end of this document. G7f is conditional (D20). G7xn and G7xw were
 gated on fork F4 (approved 2026-10-15). G7o lands nothing since D33 split it.
 
@@ -1534,6 +1535,7 @@ Each increment's design detail and "As built" notes live in its own `gate7/<id>.
 | [G7l](gate7/g7l.md) | opus | 4 | yes | G7n, G7e, G7a, G7f (if needed) |
 | [G7xw](gate7/g7xw.md) | opus | 4 | yes | G7xn, G7b; F4 (a pinned nightly); the dlink template and emscripten 4.0.11 (fetched, Q13e) |
 | [G7tm](gate7/g7tm.md) | opus (rs-increment agent) | 4 | yes (a `canvas-items` program and a draw-list field) | G7t |
+| [G7xwl](gate7/g7xwl.md) | opus | 4 | yes | G7xw, G7l |
 | [G7o](gate7/g7o.md) | — | — | restructured by D33 into G7o1 and tier 2 (G7x, G7a, G7xn, G7xw); lands nothing | — |
 | [G7g](gate7/g7g.md) | opus | 5 | no | G7b, G7t, G7tm, G7s, G7l; gate 6 complete through G6s |
 | [G7u](gate7/g7u.md) | sonnet | 5 | no | G7l |

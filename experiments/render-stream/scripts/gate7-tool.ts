@@ -25,10 +25,11 @@
 //     Options default to the runner's GATE7_* environment; exits with the receiver's exit code
 //     (124 timeout, 143 SIGTERM)
 //   gate7-tool.ts browser-daemon --ready-file <json> --parent <pid> [--kind …] [--bundle …]
-//     [--static-root …]
+//     [--static-root …] [--core gdscript|rust]
 //     (G7l) what lib/legs.sh uses under GATE7_LIVE_KIND: serves browser receiver legs (GET
 //     /run?dir=…&port=…&timeout_s=…) with the next leg's fresh browser already launched and
-//     checked; exits when <pid> is gone
+//     checked; exits when <pid> is gone. `--core` (default GATE7_WEB_CORE, else gdscript; G7xwl)
+//     is the web export's core, and GATE7_WEB_CORE_SABOTAGE=drop-env is its harness sabotage
 
 import { createHash } from "node:crypto";
 import {
@@ -48,6 +49,7 @@ import {
   bundleBuildSha256,
   runBrowserReceiver,
   serveBrowserDaemon,
+  webCoreOf,
 } from "./lib/gate7-live-legs";
 import { runWebLegs } from "./lib/gate7-web-legs";
 import {
@@ -303,6 +305,13 @@ async function main(): Promise<void> {
         process.env.GATE7_BUILD_SHA256 ||
         bundleBuildSha256(resolve(bundle), kind),
       manifestSha256: process.env.GATE7_MANIFEST_SHA256 || undefined,
+      // G7xwl: --core / GATE7_WEB_CORE (run-gate7.sh --live --web-core).
+      ...webCoreOf(
+        kind,
+        resolve(bundle),
+        opt("--core", "GATE7_WEB_CORE"),
+        process.env.GATE7_WEB_CORE_SABOTAGE,
+      ),
     } as const;
     if (command === "browser-daemon") {
       await serveBrowserDaemon(

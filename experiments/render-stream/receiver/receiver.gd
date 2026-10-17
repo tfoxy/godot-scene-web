@@ -2404,10 +2404,11 @@ func _new_applier() -> void:
 		_applier = RsApplier.new(viewport, canvas)
 
 
-## A stream's first record (a session), through the configured core.
+## A stream's first record (a session), through the configured core, at the stream's wire
+## version (G7xwl: the Rust core speaks /7 as _stream does).
 func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
 	if _rust != null:
-		return _rust.accept_session(data, offset)
+		return _rust.accept_session(data, offset, _wire_version)
 	return RsApplier.accept_record(data, offset, _stream)
 
 

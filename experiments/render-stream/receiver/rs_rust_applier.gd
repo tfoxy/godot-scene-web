@@ -63,12 +63,14 @@ func _init(viewport: RID, root_canvas: RID) -> void:
 ## The first record of a stream (file mode: the recording's first record; live: the first
 ## message): a fresh core stream. RsApplier.accept_record()'s shape, record.meta parsed from the
 ## session's own meta JSON (as Rs2Decoder.decode_record() parses it) and record.blocks the
-## session's float blocks.
-func accept_session(data: PackedByteArray, offset: int) -> Dictionary:
+## session's float blocks. `version` is the stream's wire version (receiver.gd's _wire_version:
+## 6, or 7 on a /7 live connection and its received.rs7 replay, G7xwl); the core validates the
+## session, and every record after it, at that version.
+func accept_session(data: PackedByteArray, offset: int, version: int) -> Dictionary:
 	last_seq = 0
 	transactions = 0
 	_need = {}
-	var out: Dictionary = _core.call("session", data, offset)
+	var out: Dictionary = _core.call("session", data, offset, version)
 	var record: Dictionary = out["record"]
 	if out["kind"] == "session":
 		var text: String = record["meta_json"]

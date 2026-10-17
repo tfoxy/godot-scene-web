@@ -21,7 +21,8 @@
 //     (`token-not-logged`);
 //   - added: RS_RECEIVER_EVIDENCE_URL (/evidence/<nonce>; PUTs land in RS_RECEIVER_OUT's
 //     directory), RS_RECEIVER_BUILD_SHA256, RS_RECEIVER_PROTOCOL=7 on a live leg, and
-//     RS_RECEIVER_MANIFEST_SHA256 (GATE7_MANIFEST_SHA256) on a live leg when set;
+//     RS_RECEIVER_MANIFEST_SHA256 (GATE7_MANIFEST_SHA256) on a live leg when set, and (G7xwl)
+//     RS_RECEIVER_CORE=rust on every web leg under GATE7_WEB_CORE=rust (webCoreOf);
 //   - a native `--headless` leg: a browser always renders, so the leg runs rendered, with the
 //     credit stage its native receiver used (`applied`, forced under --headless) unless the leg
 //     names one.
@@ -79,13 +80,75 @@ import { base64url, parseEnvTxt } from "./gate7-web-legs";
 
 export type BrowserReceiverKind = "web" | "gsw";
 
+/** G7xwl: the web export's core on a live run (GATE7_WEB_CORE; run-gate7.sh --live --web-core).
+ * `rust` adds RS_RECEIVER_CORE=rust to every web leg (live and its received.rs7 replays) and needs
+ * a build-web-receiver.sh --core rust bundle. The GSW receiver always runs the Rust core. */
+export type WebCore = "gdscript" | "rust";
+
 export interface BrowserRunContext {
   kind: BrowserReceiverKind;
   bundleDir: string;
   staticRoot: string;
   buildSha256: string;
   manifestSha256?: string;
+  /** G7xwl (web only; default gdscript). */
+  core?: WebCore;
+  /** G7xwl's harness sabotage (GATE7_WEB_CORE_SABOTAGE=drop-env): a `rust` run that leaves
+   * RS_RECEIVER_CORE out, so the rust bundle silently runs GDScript; `receiver-core@web` must
+   * fail it. */
+  coreSabotage?: "drop-env";
   log?: (line: string) => void;
+}
+
+/** G7xwl: the web context's core from GATE7_WEB_CORE / GATE7_WEB_CORE_SABOTAGE, refusing a
+ * `rust` run on a bundle that is not `build-web-receiver.sh --core rust` (as gate7-tool.ts
+ * web-legs --core rust does). */
+export function webCoreOf(
+  kind: BrowserReceiverKind,
+  bundleDir: string,
+  coreText: string | undefined,
+  sabotageText: string | undefined,
+): Pick<BrowserRunContext, "core" | "coreSabotage"> {
+  const core =
+    coreText === undefined || coreText === "" ? "gdscript" : coreText;
+  if (core !== "gdscript" && core !== "rust")
+    throw new Error(`GATE7_WEB_CORE must be gdscript or rust (got ${core})`);
+  if (
+    sabotageText !== undefined &&
+    sabotageText !== "" &&
+    sabotageText !== "drop-env"
+  )
+    throw new Error(
+      `GATE7_WEB_CORE_SABOTAGE must be drop-env (got ${sabotageText})`,
+    );
+  if (kind !== "web") return {};
+  if (core === "rust") {
+    const build = JSON.parse(
+      readFileSync(join(bundleDir, "build.json"), "utf8"),
+    ) as { core?: string };
+    if (build.core !== "rust")
+      throw new Error(
+        `GATE7_WEB_CORE=rust needs a build-web-receiver.sh --core rust bundle; ${bundleDir} is ${build.core ?? "gdscript"}`,
+      );
+  }
+  return {
+    core,
+    ...(sabotageText === "drop-env"
+      ? { coreSabotage: "drop-env" as const }
+      : {}),
+  };
+}
+
+/** G7xwl: the env words the run's web core adds to every web leg (live and file replays alike):
+ * RS_RECEIVER_CORE=rust on a `rust` run, nothing otherwise or under the drop-env sabotage. */
+export function coreEnv(
+  ctx: Pick<BrowserRunContext, "kind" | "core" | "coreSabotage">,
+): Record<string, string> {
+  return ctx.kind === "web" &&
+    ctx.core === "rust" &&
+    ctx.coreSabotage !== "drop-env"
+    ? { RS_RECEIVER_CORE: "rust" }
+    : {};
 }
 
 export interface BrowserLegRequest {
@@ -401,6 +464,7 @@ export function runBrowserLeg(
       ...(ctx.manifestSha256 && mapped.live
         ? { RS_RECEIVER_MANIFEST_SHA256: ctx.manifestSha256 }
         : {}),
+      ...coreEnv(ctx),
     };
     const pageConfig = {
       env,
@@ -418,6 +482,12 @@ export function runBrowserLeg(
         {
           url,
           kind: ctx.kind,
+          ...(ctx.kind === "web"
+            ? {
+                core: ctx.core ?? "gdscript",
+                core_sabotage: ctx.coreSabotage ?? null,
+              }
+            : {}),
           origin,
           token: mapped.token !== "" ? "fragment" : null,
           headless_native: mapped.headless,

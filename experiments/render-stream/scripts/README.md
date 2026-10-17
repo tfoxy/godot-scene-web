@@ -2767,6 +2767,12 @@ The files:
 
   `run-gate7.sh --web-core rust`, `gate7-tool.ts web-legs --core rust` (RS_RECEIVER_CORE=rust on
   every leg) and `gate7-bench.ts --arm web --core rust` (legs `*-web-rs*`) run on that bundle.
+  So does `run-gate7.sh --live --web-core rust` (G7xwl, protocol/gate7/g7xwl.md). It passes
+  `GATE7_WEB_CORE=rust` to each gate runner's browser daemon (`gate7-tool.ts browser-daemon
+  --core`), which adds RS_RECEIVER_CORE=rust to every web leg, live and `received.rs7` replay
+  alike. `check-gate7.ts --live --web-core rust` adds `receiver-core@web`: each leg's
+  `core rust` log line, applied.json `receiver.core`, and the side module in its resource timing.
+  `GATE7_WEB_CORE_SABOTAGE=drop-env` leaves the env word out, and that check must fail.
   `lib/wasm-side-module-info.mjs` lists a side module's dylink info, exports and imports.
 - `lib/godot-pck.ts` reads the directory of a `.pck` (format 2 or 3, from
   `core/io/file_access_pack.cpp`). `web-build-json.ts` writes `build.json`.

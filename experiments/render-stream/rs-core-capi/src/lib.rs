@@ -96,8 +96,8 @@ pub extern "C" fn rsc_set_full_scan(h: *mut RsCore, on: i32) {
     guard(h, (), |c| c.planner.full_scan = on != 0);
 }
 
-/// The session record at `offset` of `data`: returns 4 (session) or 0 (error); vt holds the
-/// accept_record()-shaped Dictionary either way.
+/// The session record at `offset` of `data`, a render-stream/`version` stream (6 or 7, G7xwl):
+/// returns 4 (session) or 0 (error); vt holds the accept_record()-shaped Dictionary either way.
 ///
 /// # Safety
 /// `data` points to `len` bytes.
@@ -107,9 +107,11 @@ pub unsafe extern "C" fn rsc_session(
     data: *const u8,
     len: usize,
     offset: usize,
+    version: u32,
 ) -> i32 {
     let data = bytes(data, len);
-    guard(h, 0, |c| c.session(data, offset))
+    let version = u8::try_from(version).unwrap_or(0);
+    guard(h, 0, |c| c.session(data, offset, version))
 }
 
 /// The session's RenderingServer calls (ops).
