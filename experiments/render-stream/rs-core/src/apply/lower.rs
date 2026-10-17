@@ -32,6 +32,10 @@ pub struct LDraw {
     pub force_repeat: bool,
     /// Drawn between `add_clip_ignore(true)` and `(false)`: the item's scissor is dropped (D10).
     pub clip_ignored: bool,
+    /// `add_msdf_texture_rect_region` (G7tm): `[px_range, outline]` as Godot's GLES3 renderer
+    /// stores them per instance (rasterizer_canvas_gles3.cpp:999-1004), drawn with
+    /// `gsw_canvas_draw_list::DRAW_MSDF`.
+    pub msdf: Option<[f32; 2]>,
 }
 
 /// The slice's typed approximations and skips (G7x "Scope": every shortcut is listed). Each
@@ -48,10 +52,6 @@ pub enum Shortcut {
     /// Nine-patch `tile`/`tile_fit` axes drawn as `stretch`: only past [`MAX_NINE_PATCH_CELLS`]
     /// tiles (G7t lowers the tile modes as repeated quads).
     NinePatchTileAsStretch,
-    /// `add_msdf_texture_rect_region`: not drawn, typed `gsw-msdf` (Q7's last row: its regions are
-    /// excluded). G7x drew it as a plain region, which spills the distance field's padding
-    /// outside the glyphs (G7t measured 194 px per gate 4e shot outside the text regions).
-    MsdfSkipped,
     /// A mesh surface whose primitive is not triangles/triangle strip: not drawn (typed). G7t
     /// lowers lines and points as hairline quads; this never fires since.
     MeshPrimitiveSkipped,
@@ -72,7 +72,6 @@ impl Shortcut {
             Shortcut::AaFeatherOmitted => "slice-aa-feather-omitted",
             Shortcut::HairlineAsQuads => "slice-hairline-as-quads",
             Shortcut::NinePatchTileAsStretch => "slice-ninepatch-tile-as-stretch",
-            Shortcut::MsdfSkipped => "slice-msdf-skipped",
             Shortcut::MeshPrimitiveSkipped => "slice-mesh-primitive-skipped",
             Shortcut::MipmapsLevel0 => "slice-mipmaps-level0",
             Shortcut::TextureUnavailableSkipped => "texture-unavailable-skipped",
@@ -86,7 +85,6 @@ impl Shortcut {
         matches!(
             self,
             Shortcut::MeshPrimitiveSkipped
-                | Shortcut::MsdfSkipped
                 | Shortcut::TextureUnavailableSkipped
                 | Shortcut::UnsupportedCommand
                 | Shortcut::MeshUnavailableSkipped
@@ -115,6 +113,9 @@ pub struct LowerSabotage {
     /// reversed contour instead of the engine's ear clipping, which covers the wrong area of any
     /// concave polygon.
     pub polygon_winding: bool,
+    /// GSW-only `msdf-px-range` (G7tm): every MSDF draw takes half the wire's `px_range`, so its
+    /// coverage ramps over twice the screen distance (glyph edges blur, thin strokes fade).
+    pub msdf_px_range: bool,
 }
 
 /// One item's lowered content: valid until its `content_version` or a dependency changes.
@@ -216,6 +217,7 @@ impl<'a> Builder<'a> {
             tex,
             force_repeat,
             clip_ignored: self.ignoring,
+            msdf: None,
         });
         self.out.draws.len() - 1
     }
@@ -485,6 +487,8 @@ struct Region {
     rect: [f32; 4],
     src: [f32; 4],
     modulate: [f32; 4],
+    /// `[px_range, outline]` of an MSDF rect (G7tm), else `None`.
+    msdf: Option<[f32; 2]>,
 }
 
 /// `canvas_item_add_texture_rect_region` (renderer_canvas_cull.cpp:1610-1649) and its GLES3 rect
@@ -527,6 +531,9 @@ fn region(b: &mut Builder<'_>, r: Region) {
     }
     b.add_rect_bounds(dst);
     let d = b.begin(texref, false);
+    // An MSDF rect keeps the flag with Godot's default white texture too: the GLES3 renderer
+    // sets INSTANCE_FLAGS_USE_MSDF whatever the texture (rasterizer_canvas_gles3.cpp:999).
+    b.out.draws[d].msdf = r.msdf;
     if texref == TexRef::White {
         b.quad(dst, [0.0, 0.0, 1.0, 1.0], false, r.modulate);
     } else {
@@ -768,22 +775,54 @@ pub fn lower_with(commands: &Commands, tables: &dyn Tables, sab: LowerSabotage) 
                         rect: *rect,
                         src: *src,
                         modulate: *modulate,
+                        msdf: None,
                     },
                 );
             }
-            Command::MsdfTextureRectRegion { tex, rect, .. } => {
-                // Item::get_rect still counts the command's rect, and the texture stays a
-                // dependency (it is named, so it is resident: the native census).
-                b.add_rect_bounds([rect[0], rect[1], rect[2].abs(), rect[3].abs()]);
-                if let Some(id) = tex {
-                    if !b.out.texture_deps.contains(id) {
-                        b.out.texture_deps.push(*id);
+            Command::MsdfTextureRectRegion {
+                tex,
+                outline,
+                rect,
+                src,
+                modulate,
+                px_range,
+                scale,
+            } => {
+                if sab.drop_msdf {
+                    // The native `drop-msdf` sabotage skips it. Item::get_rect still counts the
+                    // command's rect, and the texture stays a dependency (it is named, so it is
+                    // resident: the native census).
+                    b.add_rect_bounds([rect[0], rect[1], rect[2].abs(), rect[3].abs()]);
+                    if let Some(id) = tex {
+                        if !b.out.texture_deps.contains(id) {
+                            b.out.texture_deps.push(*id);
+                        }
                     }
+                    continue;
                 }
-                // The native `drop-msdf` sabotage skips it silently; GSW types it.
-                if !sab.drop_msdf {
-                    b.out.note(Shortcut::MsdfSkipped);
-                }
+                // canvas_item_add_msdf_texture_rect_region (renderer_canvas_cull.cpp:1544-1576):
+                // a TYPE_RECT with CANVAS_RECT_REGION | CANVAS_RECT_MSDF, the flips of a region,
+                // no transpose and no clip-uv, `outline = (float)outline_size / scale / 4.0` and
+                // `px_range` as sent. The f32 quotient by `scale` is rounded once; the quotient
+                // by 4.0 is in double and exact, so it is the f32 quotient too.
+                let outline_f = (*outline as f32) / *scale / 4.0;
+                let px = if sab.msdf_px_range {
+                    *px_range * 0.5
+                } else {
+                    *px_range
+                };
+                region(
+                    &mut b,
+                    Region {
+                        tex: *tex,
+                        transpose: false,
+                        clip_uv: false,
+                        rect: *rect,
+                        src: *src,
+                        modulate: *modulate,
+                        msdf: Some([px, outline_f]),
+                    },
+                );
             }
             Command::NinePatch {
                 tex,

@@ -135,6 +135,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-clip-ignore" => o.apply.lower.ignore_clip_ignore = true,
                 "ignore-nine-patch-axis" => o.apply.lower.ignore_nine_patch_axis = true,
                 "polygon-winding" => o.apply.lower.polygon_winding = true,
+                "msdf-px-range" => o.apply.lower.msdf_px_range = true,
                 "drop-mesh-surface" => o.apply.mesh.drop_surface = true,
                 "stale-mesh" => o.apply.mesh.stale = true,
                 "ignore-presentation" => o.ignore_presentation = true,
@@ -304,7 +305,6 @@ struct ParamLogEntry {
 pub fn typed_reason(shortcut: &str) -> Option<&'static str> {
     Some(match shortcut {
         "slice-shader-builtin" => "gsw-shader-builtin",
-        "slice-msdf-skipped" => "gsw-msdf",
         "slice-aa-feather-omitted" => "gsw-aa-feather",
         "slice-ninepatch-tile-as-stretch" => "gsw-nine-patch-tile",
         "slice-mesh-primitive-skipped" => "gsw-mesh-primitive",

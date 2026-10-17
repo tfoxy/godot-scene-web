@@ -58,6 +58,9 @@ export interface ProgramCase {
   failing?: number[];
   /** Draws the executor must skip. */
   skipped?: number;
+  /** An executor sabotage (`Sabotage::parse`) the case runs under; its expectations are the
+   * sabotaged arithmetic, so the honest cases' values cannot pass it. */
+  sabotage?: string;
 }
 
 const server = (text: string): string => text.replace(/[ \t]+/g, " ");
@@ -149,6 +152,13 @@ void fragment() {
 	COLOR = vec4(COLOR.rgb * 0.25, 1.0);
 }
 `);
+/** Halves the incoming colour and keeps its alpha (G7tm: the MSDF coverage enters as COLOR.a). */
+const HALF_KEEP_ALPHA = server(`shader_type canvas_item;
+
+void fragment() {
+	COLOR = vec4(COLOR.rgb * 0.5, COLOR.a);
+}
+`);
 /** Samples the item's own texture. */
 const OWN_TEXTURE = server(`shader_type canvas_item;
 
@@ -228,8 +238,154 @@ function quadrants(
   ];
 }
 
+// ---- G7tm: the MSDF program (canvas.glsl:562-618) ------------------------------------------
+
+/** A uniform MSDF texel: every sample of it is exact under either filter, so the hand model is
+ * the shader's arithmetic on one texel. Distances r 0.6, g 0.45, b ~0.549 (median b, max r) and
+ * a ~0.502 (the true distance an outline uses). */
+const MSDF_TEXEL: Rgba = [153, 115, 140, 128];
+const msdfTexture = (id: number, side: number) =>
+  texture(
+    id,
+    side,
+    side,
+    Array.from({ length: side * side }, () => MSDF_TEXEL),
+  );
+const unit = (v: number) => f32(v / 255);
+/** canvas.glsl's coverage for an axis-aligned `quad`-px quad over a whole `side`-texel texture:
+ * `fwidth(uv) = (1/quad, 1/quad)` exactly, so `px_size = max(0.5·(pr/side·quad + pr/side·quad), 1)`. */
+function msdfCoverage(
+  pr: number,
+  outline: number,
+  side: number,
+  quadPx: number,
+  median = true,
+): number {
+  const [r, g, b, a] = MSDF_TEXEL.map(unit);
+  const dest = f32(1 / f32(1 / quadPx));
+  const per = f32(f32(pr) / side);
+  const pxSize = Math.max(f32(0.5 * f32(f32(per * dest) + f32(per * dest))), 1);
+  let d = median
+    ? Math.max(Math.min(r, g), Math.min(Math.max(r, g), b))
+    : Math.min(r, g, b);
+  if (outline > 0) {
+    const cr = f32(Math.min(Math.max(outline, 0), f32(pr / 2) - 1) / f32(pr));
+    d = Math.min(d, a);
+    return Math.min(Math.max(f32(f32(f32(d - 0.5) + cr) * pxSize), 0), 1);
+  }
+  return Math.min(Math.max(f32(f32(f32(d - 0.5) * pxSize) + 0.5), 0), 1);
+}
+/** A straight colour `c` at coverage-scaled alpha `a`, MIX-blended (premultiplied in the shader,
+ * `ONE, ONE_MINUS_SRC_ALPHA`) over the clear on the opaque target. */
+const over = (c: readonly number[], a: number): Rgba =>
+  px(
+    c[0] * a + CLEAR[0] * (1 - a),
+    c[1] * a + CLEAR[1] * (1 - a),
+    c[2] * a + CLEAR[2] * (1 - a),
+    1,
+  );
+
+function msdfCases(): ProgramCase[] {
+  const violet: Rgba = [0.4, 0.2, 0.6, 1];
+  const items = (name: string) =>
+    scene(
+      name,
+      [
+        // Vertex colour × modulate, the texel's colour NOT multiplied in.
+        at(4, 4, 16, 16, {
+          texture: 1,
+          filter: "linear",
+          colors: [violet, violet, violet, violet],
+          msdf: [1, 0],
+        }),
+        // An outline pass: min(median, a) with cr = clamp(1.5, 0, 8/2 - 1) / 8.
+        at(28, 4, 16, 16, { texture: 2, filter: "linear", msdf: [8, 1.5] }),
+        // px_size below 1 is held at 1.
+        at(4, 28, 16, 16, { texture: 1, filter: "linear", msdf: [0.0625, 0] }),
+        // Through an item-space program: canvas.glsl's MSDF branch runs before the fragment code.
+        at(28, 28, 16, 16, {
+          texture: 1,
+          filter: "linear",
+          msdf: [1, 0],
+          program: 1,
+          item: 1,
+        }),
+        // Twice the screen size: px_size follows 1 / fwidth(uv).
+        at(0, 48, 32, 16, {
+          texture: 1,
+          filter: "linear",
+          msdf: [1, 0],
+          uv: [0, 0, 1, 0.5],
+        }),
+      ],
+      [msdfTexture(1, 4), msdfTexture(2, 32)],
+      [WHITE, [1, 0.5, 1, 1]],
+    );
+  const expect = (no: boolean): Expectation[] => {
+    const cov = (pr: number, o: number, side: number, q: number) =>
+      msdfCoverage(pr, o, side, q, !no);
+    return [
+      {
+        rect: [4, 4, 16, 16],
+        rgba: over(violet, cov(1, 0, 4, 16)),
+        maxDelta: 1,
+        why: `plain: coverage ${cov(1, 0, 4, 16)} into alpha, vertex colour only`,
+      },
+      {
+        rect: [28, 4, 16, 16],
+        rgba: over([1, 1, 1], cov(8, 1.5, 32, 16)),
+        maxDelta: 1,
+        why: `outline: min(median, a), cr = 0.1875, coverage ${cov(8, 1.5, 32, 16)}`,
+      },
+      {
+        rect: [4, 28, 16, 16],
+        rgba: over([1, 1, 1], cov(0.0625, 0, 4, 16)),
+        maxDelta: 1,
+        why: `px_size held at 1: coverage ${cov(0.0625, 0, 4, 16)}`,
+      },
+      {
+        rect: [28, 28, 16, 16],
+        // Modulate (1, 0.5, 1), then the program halves the colour and keeps alpha.
+        rgba: over([0.5, 0.25, 0.5], cov(1, 0, 4, 16)),
+        maxDelta: 1,
+        why: `through a program: COLOR.a enters as coverage ${cov(1, 0, 4, 16)}`,
+      },
+      {
+        // The quad spans 32 px for 4 texels across and 16 px for 2 down: fwidth (1/32, 1/32).
+        rect: [0, 48, 32, 16],
+        rgba: over([1, 1, 1], cov(1, 0, 4, 32)),
+        maxDelta: 1,
+        why: `twice the screen size: coverage ${cov(1, 0, 4, 32)}`,
+      },
+    ];
+  };
+  const programs = [{ id: 1, code: HALF_KEEP_ALPHA }];
+  const bindings: BindingSpec[] = [
+    { slot: 0, program: 1, post_modulate: [1, 1, 1, 1] },
+  ];
+  return [
+    {
+      name: "msdfCoverage",
+      items: items("msdfCoverage"),
+      programs,
+      bindings,
+      expect: expect(false),
+    },
+    {
+      // The sabotage's own arithmetic (min of three): the honest median's values fail it.
+      name: "msdfNoMedianSabotage",
+      items: items("msdfNoMedianSabotage"),
+      programs,
+      bindings,
+      expect: expect(true),
+      sabotage: "msdf-no-median",
+    },
+  ];
+}
+
 export function buildProgramCases(): ProgramCase[] {
   return [
+    ...msdfCases(),
     {
       name: "programTint",
       items: scene("programTint", [

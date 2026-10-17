@@ -56,17 +56,22 @@ pub enum Sabotage {
     /// and sampled as premultiplied, so linear filtering mixes premultiplied texels where Godot
     /// filters straight ones and premultiplies after.
     PremultipliedUpload,
+    /// G7tm's `msdf-no-median`: an MSDF draw takes the smallest of the three distances instead of
+    /// their median. Wherever the channels disagree (every edge the field colours with two of the
+    /// three channels) coverage drops, and it never rises, so only drawn ink changes.
+    MsdfNoMedian,
 }
 
 impl Sabotage {
-    /// `"drop-draws"`, `"stale-item-row"` or `"premultiplied-upload"`; `""`/`"none"` is no
-    /// sabotage; anything else is refused.
+    /// `"drop-draws"`, `"stale-item-row"`, `"premultiplied-upload"` or `"msdf-no-median"`;
+    /// `""`/`"none"` is no sabotage; anything else is refused.
     pub fn parse(name: &str) -> Result<Option<Sabotage>, String> {
         match name {
             "" | "none" => Ok(None),
             "drop-draws" => Ok(Some(Sabotage::DropDraws)),
             "stale-item-row" => Ok(Some(Sabotage::StaleItemRow)),
             "premultiplied-upload" => Ok(Some(Sabotage::PremultipliedUpload)),
+            "msdf-no-median" => Ok(Some(Sabotage::MsdfNoMedian)),
             other => Err(format!("unknown canvas-items sabotage {other:?}")),
         }
     }
@@ -174,6 +179,64 @@ impl ExecStats {
     }
 }
 
+/// Godot 4.5.1's MSDF coverage, as `canvas.glsl` computes it for a rect with
+/// `INSTANCE_FLAGS_USE_MSDF` (drivers/gles3/shaders/canvas.glsl:562-564 `msdf_median`, 601-618),
+/// statement for statement. `msdf` is the draw's `[px_range, outline]`
+/// (`gsw_canvas_draw_list::Draw::msdf`, Godot's `read_draw_data_ninepatch_margins.xy`, which
+/// rasterizer_canvas_gles3.cpp:999-1004 fills from the rect's `px_range` and `outline`). The
+/// result is what Godot multiplies into `color.a`. `no_median` is [`Sabotage::MsdfNoMedian`].
+pub const MSDF_COVERAGE: &str = r#"
+float gsw_msdf_median(float r, float g, float b) {
+  return max(min(r, g), min(max(r, g), b));
+}
+float gsw_msdf_coverage(sampler2D color_texture, vec2 uv, vec2 msdf, bool no_median) {
+  float px_range = msdf.x;
+  float outline_thickness = msdf.y;
+  vec4 msdf_sample = texture(color_texture, uv);
+  vec2 msdf_size = vec2(textureSize(color_texture, 0));
+  vec2 dest_size = vec2(1.0) / fwidth(uv);
+  float px_size = max(0.5 * dot((vec2(px_range) / msdf_size), dest_size), 1.0);
+  float d = no_median ? min(msdf_sample.r, min(msdf_sample.g, msdf_sample.b))
+                      : gsw_msdf_median(msdf_sample.r, msdf_sample.g, msdf_sample.b);
+  if (outline_thickness > 0.0) {
+    float cr = clamp(outline_thickness, 0.0, (px_range / 2.0) - 1.0) / px_range;
+    d = min(d, msdf_sample.a);
+    return clamp((d - 0.5 + cr) * px_size, 0.0, 1.0);
+  }
+  return clamp((d - 0.5) * px_size + 0.5, 0.0, 1.0);
+}
+"#;
+
+/// The builtin program's fragment stage for a [`DRAW_MSDF`](gsw_canvas_draw_list::DRAW_MSDF) draw
+/// (G7tm). Godot's order (canvas.glsl:566-618, 716): `color = color_interp` (the vertex colour ×
+/// the modulate, straight), then `color.a = coverage · color.a`; the texel is not multiplied in.
+/// The vertex stage passes the modulate straight (`u_premultiply` 0) and the colour is
+/// premultiplied last, for every blend but `premul_alpha` (`u_premultiply_out`), so the blend
+/// states are the builtin's.
+pub fn msdf_fragment() -> String {
+    format!(
+        r#"#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D u_texture;
+uniform bool u_premultiply_out;
+uniform vec2 u_msdf;
+uniform bool u_msdf_no_median;
+in vec2 v_uv;
+in vec4 v_color;
+flat in vec4 v_tint;
+out vec4 fragColor;
+{MSDF_COVERAGE}
+void main() {{
+  vec4 color = v_color * v_tint;
+  color.a = gsw_msdf_coverage(u_texture, v_uv, u_msdf, u_msdf_no_median) * color.a;
+  fragColor = u_premultiply_out ? vec4(color.rgb * color.a, color.a) : color;
+}}
+"#
+    )
+}
+
 /// The fragment stage of an item-space program (G7s): `canvas.glsl`'s order (Godot 4.5.1,
 /// drivers/gles3/shaders/canvas.glsl:566-717) around the program module, which declares its
 /// uniforms and samplers, its helpers, and `void godot_item_fragment(inout vec4 COLOR, in vec2 UV)`
@@ -181,6 +244,7 @@ impl ExecStats {
 ///
 /// ```text
 /// color = color_interp * texture(color_texture, uv)   (straight: vertex colour × item modulate)
+///   or, for an MSDF draw (G7tm), color.a = coverage · color.a   (canvas.glsl:601-618)
 /// fragment(COLOR = color, UV = uv)
 /// color *= canvas_modulation                           (gsw_post_modulate; white when unshaded)
 /// ```
@@ -196,14 +260,22 @@ precision highp sampler2D;
 uniform sampler2D TEXTURE;
 uniform vec4 gsw_post_modulate;
 uniform bool gsw_premultiply_out;
+uniform bool gsw_msdf_on;
+uniform vec2 gsw_msdf;
+uniform bool gsw_msdf_no_median;
 in vec2 v_uv;
 in vec4 v_color;
 flat in vec4 v_tint;
 out vec4 gsw_frag_color;
+{MSDF_COVERAGE}
 {module}
 void main() {{
   vec4 gsw_color = v_color * v_tint;
-  gsw_color *= texture(TEXTURE, v_uv);
+  if (gsw_msdf_on) {{
+    gsw_color.a = gsw_msdf_coverage(TEXTURE, v_uv, gsw_msdf, gsw_msdf_no_median) * gsw_color.a;
+  }} else {{
+    gsw_color *= texture(TEXTURE, v_uv);
+  }}
   godot_item_fragment(gsw_color, v_uv);
   gsw_color *= gsw_post_modulate;
   gsw_frag_color = gsw_premultiply_out ? vec4(gsw_color.rgb * gsw_color.a, gsw_color.a) : gsw_color;
@@ -721,7 +793,34 @@ mod tests {
             Sabotage::parse("stale-item-row"),
             Ok(Some(Sabotage::StaleItemRow))
         );
+        assert_eq!(
+            Sabotage::parse("msdf-no-median"),
+            Ok(Some(Sabotage::MsdfNoMedian))
+        );
         assert_eq!(Sabotage::parse(""), Ok(None));
         assert!(Sabotage::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn msdf_glsl_is_canvas_glsl_statement_for_statement() {
+        // drivers/gles3/shaders/canvas.glsl:562-564, 605-617 (Godot 4.5.1), as written there.
+        for line in [
+            "return max(min(r, g), min(max(r, g), b));",
+            "float outline_thickness = msdf.y;",
+            "vec2 msdf_size = vec2(textureSize(color_texture, 0));",
+            "vec2 dest_size = vec2(1.0) / fwidth(uv);",
+            "float px_size = max(0.5 * dot((vec2(px_range) / msdf_size), dest_size), 1.0);",
+            "float cr = clamp(outline_thickness, 0.0, (px_range / 2.0) - 1.0) / px_range;",
+            "d = min(d, msdf_sample.a);",
+            "return clamp((d - 0.5 + cr) * px_size, 0.0, 1.0);",
+            "return clamp((d - 0.5) * px_size + 0.5, 0.0, 1.0);",
+        ] {
+            assert!(MSDF_COVERAGE.contains(line), "{line}");
+        }
+        assert!(msdf_fragment().contains(MSDF_COVERAGE));
+        assert!(
+            item_program_fragment("void godot_item_fragment(inout vec4 C, in vec2 U) {}")
+                .contains("if (gsw_msdf_on)")
+        );
     }
 }

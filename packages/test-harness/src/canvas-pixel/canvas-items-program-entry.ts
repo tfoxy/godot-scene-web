@@ -67,7 +67,11 @@ async function run(name: string, godot = false): Promise<ProgramCaseResult> {
   canvas.width = spec.items.width;
   canvas.height = spec.items.height;
   document.body.append(canvas);
-  const harness = module.CanvasItemsTestHarness.with_options(canvas, "", godot);
+  const harness = module.CanvasItemsTestHarness.with_options(
+    canvas,
+    spec.sabotage ?? "",
+    godot,
+  );
   try {
     for (const t of spec.items.textures)
       harness.upload_texture(t.id, t.width, t.height, t.rgba);

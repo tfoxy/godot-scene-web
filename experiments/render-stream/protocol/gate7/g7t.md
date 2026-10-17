@@ -44,3 +44,6 @@
   - **Sabotages:** the native gate 4/5 receiver sabotages pass with their native predicted sets;
     `polygon-winding` fails exactly `{PG}` at every settle step.
 
+- *Amended 2026-10-16 (G7tm):* `gsw-msdf` is retired. G7tm draws `add_msdf_texture_rect_region`
+  with canvas.glsl's MSDF branch, and gate 4e's three MSDF legs are judged by gate 4e's own checks
+  ([g7tm.md](g7tm.md)).

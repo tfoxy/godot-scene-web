@@ -3122,373 +3122,313 @@
       "steps": [
         {
           "step": 0,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 1,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 2,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 3,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 4,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 5,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 6,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 7,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 8,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         },
         {
           "step": 9,
-          "delta1": [],
-          "undecided": [],
-          "excluded": [
+          "delta1": [
             {
               "region": "M16",
               "rect": [16, 16, 224, 36],
-              "why": "M16 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M16's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M24",
               "rect": [16, 56, 320, 92],
-              "why": "M24 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M24's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "M40",
               "rect": [16, 152, 320, 80],
-              "why": "M40 draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "M40's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MR",
               "rect": [352, 96, 216, 104],
-              "why": "MR draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MR's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             },
             {
               "region": "MT",
               "rect": [352, 32, 216, 48],
-              "why": "MT draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types",
-              "reason": "gsw-msdf"
+              "why": "MT's MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below"
             }
-          ]
+          ],
+          "undecided": []
         }
       ]
     },

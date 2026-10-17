@@ -11,13 +11,15 @@
 //              for gate 3c, the rotated-edge band of gate3x-expected.ts (`band_px` around every
 //              non-axis-aligned edge, where the rasterizer's own edge rule decides). Diffs are
 //              allowed only inside, counted and reported.
-//   excluded   (G7t) the regions of an op GSW types (Q7's last row): gate 4e's MSDF text,
-//              `gsw-msdf`. Any difference, counted; the typed reason is judged by its own check.
+//   excluded   (G7t) the regions of an op GSW types (Q7's last row). Any difference, counted; the
+//              typed reason is judged by its own check. No region is excluded since G7tm drew
+//              gate 4e's MSDF text (`gsw-msdf` retired).
 //   decided    every other pixel: channel 0, pixels 0 (P-G1).
 //
 // G7t adds gates 4 and 5. Gate 4's glyph boxes (each step's `text_regions`) are `delta1`: glyph
 // coverage is partial alpha blended over what is below (P-G2 predicts exact, and gate7-gsw-g45.ts
-// reports it per glyph box). Gate 5's masks are per pixel, from the gate's own rasterizer
+// reports it per glyph box). G7tm puts gate 4e's MSDF glyph boxes in the same class: the MSDF
+// coverage is canvas.glsl's own arithmetic, multiplied into alpha and blended the same way. Gate 5's masks are per pixel, from the gate's own rasterizer
 // (geometry-raster.ts over make_expected.py's lowering, D13): pixels it decides within 1
 // (interpolated colours, blends, off-grid texels) and antialiased shapes' feather bands are
 // `delta1`; thin GL lines' bands, gate 5e's band region and every pixel it leaves undecided (edges
@@ -165,8 +167,8 @@ function opaque(rel: string, count: number): GateTolerance {
 }
 
 /** G7t: gate 4's glyph boxes. Each step's `text_regions` hold the glyphs a Label draws (gate
- * 4's own synthesis leaves them to the glyph oracle): `delta1`, or for gate 4e's MSDF fixture
- * `excluded` with the receiver-typed reason `gsw-msdf`. */
+ * 4's own synthesis leaves them to the glyph oracle): `delta1`. For gate 4e's MSDF fixture (G7tm)
+ * the coverage is the MSDF program's, in the same class. */
 function gate4(rel: string, msdf = false): GateTolerance {
   const expected = json<Gate4Expected>(rel);
   return {
@@ -178,25 +180,16 @@ function gate4(rel: string, msdf = false): GateTolerance {
           region,
           rect: [b[0], b[1], b[2] - b[0], b[3] - b[1]] as Rect,
         }));
-      return msdf
-        ? {
-            step: s.step,
-            delta1: [],
-            undecided: [],
-            excluded: boxes.map((b) => ({
-              ...b,
-              why: `${b.region} draws MSDF glyphs (add_msdf_texture_rect_region), which GSW types`,
-              reason: "gsw-msdf",
-            })),
-          }
-        : {
-            step: s.step,
-            delta1: boxes.map((b) => ({
-              ...b,
-              why: `${b.region}'s glyph coverage (partial alpha) blends over what is below`,
-            })),
-            undecided: [],
-          };
+      return {
+        step: s.step,
+        delta1: boxes.map((b) => ({
+          ...b,
+          why: msdf
+            ? `${b.region}'s MSDF glyph coverage (canvas.glsl's median and px-range arithmetic, multiplied into alpha) blends over what is below`
+            : `${b.region}'s glyph coverage (partial alpha) blends over what is below`,
+        })),
+        undecided: [],
+      };
     }),
   };
 }

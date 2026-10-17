@@ -52,6 +52,8 @@ export interface MeshSpec {
   scissor?: readonly [number, number, number, number];
   /** `Draw::program`: 0 (absent) the builtin, else a binding slot + 1 (G7s item-space programs). */
   program?: number;
+  /** G7tm: `DRAW_MSDF` with `Draw::msdf` `[px_range, outline]`; absent for a plain draw. */
+  msdf?: readonly [number, number];
   vertices: readonly VertexSpec[];
   /** Triangle list into `vertices`. */
   indices: readonly number[];
@@ -119,6 +121,7 @@ function stateKey(mesh: MeshSpec): string {
     BLEND_CODES[mesh.blend],
     mesh.program ?? 0,
     mesh.scissor ? mesh.scissor.join(",") : "-",
+    mesh.msdf ? mesh.msdf.join(",") : "-",
   ].join("|");
 }
 
@@ -136,17 +139,19 @@ export function expectedDrawCalls(spec: ItemsCase): number {
   return calls;
 }
 
-/** `PDL1` (see `gsw_canvas_draw_list::pdl1`) of `spec` with frame `frame`'s items. */
+/** `PDL1` (see `gsw_canvas_draw_list::pdl1`) of `spec` with frame `frame`'s items: version 1
+ * (44-byte draws) unless a mesh is an MSDF draw, then version 2 (52-byte draws, G7tm). */
 export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
   const items = spec.frames[frame];
   const vertexCount = spec.meshes.reduce((n, m) => n + m.vertices.length, 0);
   const indexCount = spec.meshes.reduce((n, m) => n + m.indices.length, 0);
+  const version = spec.meshes.some((m) => m.msdf) ? 2 : 1;
   const bytes = new ArrayBuffer(
     52 +
       items.length * 48 +
       vertexCount * 36 +
       indexCount * 4 +
-      spec.meshes.length * 44,
+      spec.meshes.length * (version === 2 ? 52 : 44),
   );
   const view = new DataView(bytes);
   let o = 0;
@@ -166,7 +171,7 @@ export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
     view.setUint8(o, c.charCodeAt(0));
     o += 1;
   }
-  u32(1);
+  u32(version);
   u32(spec.width);
   u32(spec.height);
   // The format word's bit 8 is `Target::opaque`.
@@ -207,7 +212,12 @@ export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
     u32(mesh.program ?? 0);
     const scissor = mesh.scissor ?? [0, 0, 0, 0];
     for (const v of scissor) i32(v);
-    u32(mesh.scissor ? 1 : 0);
+    // Draw::flags: DRAW_SCISSOR 1, DRAW_MSDF 2.
+    u32((mesh.scissor ? 1 : 0) | (mesh.msdf ? 2 : 0));
+    if (version === 2) {
+      fl(mesh.msdf?.[0] ?? 0);
+      fl(mesh.msdf?.[1] ?? 0);
+    }
     first += mesh.indices.length;
   }
   if (o !== bytes.byteLength) throw new Error("PDL1 size mismatch");
@@ -228,6 +238,8 @@ export interface QuadOptions {
   /** `[u0, v0, u1, v1]`. */
   uv?: readonly [number, number, number, number];
   program?: number;
+  /** G7tm: an MSDF draw's `[px_range, outline]`. */
+  msdf?: readonly [number, number];
 }
 
 /** An axis-aligned quad in item-local space, two triangles. */
@@ -248,6 +260,7 @@ export function quad(
     blend: options.blend ?? "mix",
     scissor: options.scissor,
     ...(options.program ? { program: options.program } : {}),
+    ...(options.msdf ? { msdf: options.msdf } : {}),
     vertices: [
       { pos: [x, y], uv: [u0, v0], color: c[0] },
       { pos: [x + w, y], uv: [u1, v0], color: c[1] },

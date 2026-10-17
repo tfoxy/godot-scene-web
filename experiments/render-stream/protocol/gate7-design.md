@@ -124,7 +124,8 @@ phones (D24), or a phone on a real network: each phone reaches the desktop host 
 `adb reverse` over USB (gate 8 owns Wi-Fi). Presentation
 feedback stays `unavailable` under headless Chromium (D13), and on the phones too, where only the
 compositor's activation rate is available (Q13a). Payload, atlas
-or parameter deltas are not added. GSW gets no MSDF text, no `TIME` and no screen-texture shaders.
+or parameter deltas are not added. GSW gets no `TIME` and no screen-texture shaders (MSDF text was
+excluded too until G7tm drew it, 2026-10-16).
 All of these are typed or deferred, with owners, in "Deferred".
 
 ## Decisions
@@ -494,7 +495,7 @@ the code lives changes. If G7x loses (D32), this section stands as written.
 | `add_line`/`add_polyline`/`add_multiline` with width > 0, `add_circle` | adapter lowers to triangles with Godot's own lowering as ported in `geometry-raster.ts` | decided px exact |
 | hairlines (width ≤ 0) | 1-px quads along the line | `band` (GL line rasterization is not quads); G7t measures, and an inexact result is typed `gsw-hairline` |
 | `add_mesh` (GRM1) | `DRAW_TEXTURED_MESH` with per-vertex colours | decided px exact |
-| `add_msdf_texture_rect_region` | none | typed `gsw-msdf` |
+| `add_msdf_texture_rect_region` | *G7tm:* a region rect with `DRAW_MSDF` and `[px_range, outline]`, drawn by canvas.glsl's MSDF branch (G7t typed it `gsw-msdf`) | glyph boxes `delta1` |
 | `add_lcd_texture_rect_region` | already a wire refusal | — |
 | `add_set_transform`, `add_clip_ignore` | applier state | exact |
 
@@ -587,7 +588,7 @@ colour (RGB10_A2's 2-bit alpha is quantized in every model; memory rs-g55b-cim-f
 | G | R | text glyph pixels | channel 0 | **P-G2**: exact, because glyph quads are integer-aligned with 1:1 texel mapping (gate 4: commands float32-exact against the oracle; at `half`, atlases are oversampled, so it is still 1:1 in physical pixels). At risk, see below |
 | G | R | `delta1`: translucent blends and AA-feather vertex-colour interpolation | channel ≤ 1, any count inside the class mask | **P-G3**: channel ≤ 1 |
 | G | R | `undecided` masks not covered above (hairlines, filtered scaled images) | diffs only inside the mask, counted and reported, channel ≤ 255 | **P-G4**: inside masks |
-| G | R | regions of an op or material GSW types | excluded, typed reasons must match exactly | `gsw-msdf` on gate 4e, `gsw-shader-transpile` on predicted shaders |
+| G | R | regions of an op or material GSW types | excluded, typed reasons must match exactly | `gsw-shader-transpile` on predicted shaders (gate 4e's `gsw-msdf` until G7tm) |
 
 - **Masks come from the gates' own `expected.json` and models, never from a GSW run.**
   `scripts/lib/gsw-tolerance.ts` derives each gate's `delta1` and `undecided` masks: blended and
@@ -633,7 +634,7 @@ Each gate's checker gains a `receiverKind` parameter and a leg-table mapper. G7a
 | `g7-1` | gate 1 file receiver legs (g1a, g1b, g1e incl. sabotages); live g1c (`live`, live-vs-replay equivalence), g1d (`stall`, `resync`, `reconnect`, `killed`) on /7 | gate 1's |
 | `g7-2` | gate 2 file legs (g2b, g2d); live g2c (`live`, `warm`, `stall`, `reconnect`, `animate`, sabotages `unpin`, `drop-resource`, `wrong-hash`); auth: `live-auth`, `sabotage-no-token` (→ `replay-failure` `live-connect-failed`, host logs `unauthorized`), `sabotage-bad-http-token`, new `origin-refused` (page from a non-allowed origin → 403, `OriginRejected` logged) and `sabotage-no-cors` (→ `resource-unavailable` at seq 1, host served the GET) | gate 2's; new legs as stated |
 | `g7-3` | gate 3 legs (g3a–g3d) | gate 3's |
-| `g7-4` | gate 4 legs (g4a–g4f) | gate 4's; `gsw` g4e: `unsupported` with exactly `gsw-msdf` |
+| `g7-4` | gate 4 legs (g4a–g4f) | gate 4's (G7t: `gsw` g4e `unsupported` with exactly `gsw-msdf`; G7tm: gate 4e's own checks, and its MSDF sabotages) |
 | `g7-5` | gate 5 file legs (g5b, g5d, g5e, g5g); live g5f | gate 5's (`gsw` hairline legs per G7t's finding) |
 | `g7-55` | gate 5.5 file legs (g55b, g55d, g55e incl. `params` policy); live g55f | gate 5.5's; `gsw` typed per G7s's measured set |
 | `g7-6` | g6a receiver legs (scene, patch, inline, animate, refused, receiver sabotages); g6h/g6b receiver legs at `native` and `half` (presentation 1920×1080 and 960×540 backing stores); g6l (`live-scene`, `-warm`, `-stall`, `-reconnect`, `sabotage-live-stale-coalesce`) | gate 6's |
@@ -765,7 +766,8 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
 - Every file has the same entry ids, the protocol's full entry list. The three files differ in
   `status`, `exactness`, `evidence` and `limits.receiver`.
 - `receiver-typed` is a feature the wire carries that this receiver refuses with a receiver-typed
-  reason (`gsw-msdf`, `gsw-shader-transpile`, `gsw-hairline`, `cache-budget-unsupported`). It needs
+  reason (`gsw-shader-transpile`, `cache-budget-unsupported`; `gsw-msdf` and `gsw-hairline` were
+  retired by G7tm and G7t). It needs
   the reason and an `owner`.
 - `band` needs a `tolerance` id present in `fixtures/gsw-tolerance.json`.
 - `device_targets` (D25) has one entry per device, workload and window, so twelve per browser
@@ -1433,8 +1435,8 @@ DTOs.
 Each increment is one commit on `main`, squashed from its branch. The type is `feat(render-stream): …`
 or `test(render-stream): …` with `Changelog: none`, except G7c and G7s's package parts, which are
 `feat(canvas): …` / `feat(effects): …` with a real `Changelog:` line (published packages). G7x on a
-win is also `feat(canvas): …` with a real `Changelog:` line, and the same goes for G7a, G7t and G7s
-when they extend `canvas-items`. Docs-only amendments are `docs(render-stream): …`.
+win is also `feat(canvas): …` with a real `Changelog:` line, and the same goes for G7a, G7t, G7tm
+and G7s when they extend `canvas-items`. Docs-only amendments are `docs(render-stream): …`.
 A fresh worktree needs `scripts/install-agent-config.sh`, `mise trust`,
 `pnpm install --frozen-lockfile` and the receiver's `--import` (memories gate0-wp1-engine-facts,
 worktree-needs-pnpm-install, receiver-needs-import-before-script). Run biome only on touched files
@@ -1448,7 +1450,7 @@ from G7w on, and every `self-test-*.ts`. In addition:
 | ------ | ----------- |
 | capture or `rs_ws` (G7n, G7q) | `build-capture.sh` (all ctests), gate −1 (79 hooks), gates 1, 2, 6 (`--legs g6l,g6c`) natively on /6 |
 | `receiver/` (G7e, G7f, G7l, G7r, G7xn, G7xw) | gates 0 to 6 natively (every receiver leg; this is what proves native behaviour unchanged); from G7xn on, under both `RS_RECEIVER_CORE` values |
-| Rust crates (G7x, G7a, G7t, G7s, G7xn, G7xw) | `cargo test` in each touched crate; `rs-core-check goldens`, natively and as wasm in Node; `self-test-rs-core.ts` on the four bench inputs (Q14d). For `packages/canvas/rust-*`, also: the rust-prototype README's pixel and integration suites on both backends, headless; `build-web.sh`'s default exports unchanged; and the downstream consumer check, including sts2-couch-coop's `scripts/build-rust-prototype.sh` and its Rust parity specs (Q14f) |
+| Rust crates (G7x, G7a, G7t, G7tm, G7s, G7xn, G7xw) | `cargo test` in each touched crate; `rs-core-check goldens`, natively and as wasm in Node; `self-test-rs-core.ts` on the four bench inputs (Q14d). For `packages/canvas/rust-*`, also: the rust-prototype README's pixel and integration suites on both backends, headless; `build-web.sh`'s default exports unchanged; and the downstream consumer check, including sts2-couch-coop's `scripts/build-rust-prototype.sh` and its Rust parity specs (Q14f) |
 | `packages/` (G7c, G7s) | `pnpm test`, `pnpm build`, the canvas pixel suites headless (`canvasPixelXvfb`, `canvasGlyphPixelXvfb` under `--headless=new` Vulkan), the export-surface tests, and the downstream consumer check of AGENTS.md (a scratch vite config in `../sts2-couch-coop/frontend` pointed at the worktree; that checkout stays on clean `main`) |
 | a `g7-*` group | that group and every earlier `g7-*` group landed |
 | a receiver, `rs_ws` or `rs_live`, after G7v | `g7-dev`'s desktop control arms, unattended, and the g31's device arms if the g31 is attached (`device-unavailable` otherwise, never a pass). The g86's device arms are marked stale (D28) and re-run only at its next attended session |
@@ -1489,6 +1491,8 @@ flowchart LR
     G7a --> G7l
     G7b --> G7g[G7g gate 6 scene and HD on both browsers, g6l live]
     G7t --> G7g
+    G7t --> G7tm[G7tm GSW MSDF text: gate 4e]
+    G7tm --> G7g
     G7s --> G7g
     G7l --> G7g
     G7l --> G7u[G7u suspension and lifecycle]
@@ -1529,8 +1533,9 @@ Each increment's design detail and "As built" notes live in its own `gate7/<id>.
 | [G7s](gate7/g7s.md) | opus (gsw-renderer agent) | 4 | yes | G7a |
 | [G7l](gate7/g7l.md) | opus | 4 | yes | G7n, G7e, G7a, G7f (if needed) |
 | [G7xw](gate7/g7xw.md) | opus | 4 | yes | G7xn, G7b; F4 (a pinned nightly); the dlink template and emscripten 4.0.11 (fetched, Q13e) |
+| [G7tm](gate7/g7tm.md) | opus (rs-increment agent) | 4 | yes (a `canvas-items` program and a draw-list field) | G7t |
 | [G7o](gate7/g7o.md) | — | — | restructured by D33 into G7o1 and tier 2 (G7x, G7a, G7xn, G7xw); lands nothing | — |
-| [G7g](gate7/g7g.md) | opus | 5 | no | G7b, G7t, G7s, G7l; gate 6 complete through G6s |
+| [G7g](gate7/g7g.md) | opus | 5 | no | G7b, G7t, G7tm, G7s, G7l; gate 6 complete through G6s |
 | [G7u](gate7/g7u.md) | sonnet | 5 | no | G7l |
 | [G7r](gate7/g7r.md) | opus | 6 | no | G7g, G6c |
 | [G7k](gate7/g7k.md) | sonnet | 6 | no | G7g, G7u, G6s |
@@ -1568,8 +1573,8 @@ the summary for all three receivers.
   preflight per hash): **gate 8**, with G7p's measured preflight cost as its input.
 - **Switching file sinks to /7**: a later cleanup increment. Nothing needs it, and doing it means
   a G6b-style switch of every runner.
-- **GSW MSDF text** (`gsw-msdf`) and **hairline exactness** if G7t types it: after gate 7, if a
-  game's census needs them.
+- ~~**GSW MSDF text** (`gsw-msdf`) and **hairline exactness** if G7t types it~~: both landed. G7t
+  met gate 5b's hairline set, and G7tm drew MSDF text (gate 6's Kreon needs it).
 - **GSW shader `TIME`, screen texture, lights**: with the native capability, unchanged from
   gate5_5-design.md.
 - **Threaded web export, GDExtension in the browser beyond the core's dlink adapter (D34), other

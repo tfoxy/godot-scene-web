@@ -230,8 +230,8 @@ The fragment colour is G7c's TypeScript textured-mesh path exactly.
 `context_state()` follows the canvas's loss and restore events. After a
 restore the executor re-creates its objects, and `execute` refuses with
 `NeedsFullUpload` until the caller sends `dirty.all` and re-queues every
-texture. `ExecOptions.sabotage` takes `drop-draws` or `stale-item-row`; these
-are test-only.
+texture. `ExecOptions.sabotage` takes `drop-draws`, `stale-item-row`,
+`premultiplied-upload` or `msdf-no-median`; these are test-only.
 
 Item-space programs (G7s) draw Godot custom `canvas_item` shaders.
 `define_program(id, module)` compiles a module from `@godot-scene-web/effects`'
@@ -244,6 +244,17 @@ A compile failure is returned with GL's log and registers nothing. A draw whose
 uniform values and its sampler textures. A program re-sends its uniforms only
 when the slot or its version changes. Programs are recompiled after a restored
 context.
+
+A draw with `DRAW_MSDF` (G7tm) samples its texture as a multi-channel signed
+distance field, as Godot 4.5.1's GLES3 `canvas.glsl` does for MSDF font
+glyphs (lines 562-618). The coverage is the median of the RGB distances, scaled
+to screen pixels by `Draw::msdf`'s `px_range` over the texture size and
+`1 / fwidth(uv)`. With an outline (`Draw::msdf`'s second value), the alpha
+channel's true distance bounds it. The coverage multiplies the colour's alpha,
+and the texel's colour is not multiplied in. The builtin program has an MSDF
+variant, and item-space programs run the same branch before their fragment
+code, as Godot does. The program suite checks both against a hand model, plus
+the `msdf-no-median` sabotage.
 
 `Target::opaque` is Godot's non-transparent render target (the root viewport).
 In it, every blend keeps the destination alpha (`GL_ZERO, GL_ONE`), and `mul`

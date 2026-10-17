@@ -6,6 +6,9 @@
 //         atlas version, as the native census does. glyph-boxes-exact (P-G2, report only): per
 //         glyph box (each step's text_regions) of every settle shot, whether it equals the
 //         reference byte for byte. gsw-never-shapes: the bundle's inputs hold no shaper or font.
+//         sabotage-msdf-no-median, sabotage-msdf-px-range (G7tm): each GSW-only MSDF sabotage
+//         differs from the honest gsw leg in exactly gate 4e's text regions at every settle step,
+//         and nowhere outside them.
 //   g7-5  mesh-upload-parity (gate 5e): every mesh leg's `mesh_uploads[]` equal the native
 //         receiver's row for row. lowering-parity (Q14d "Lowering"): every hand-lowered shape of
 //         gate 5's three fixtures (make_expected.py, the vertex arrays geometry-raster.ts
@@ -163,12 +166,18 @@ async function gate4Checks(ctx: G45Ctx): Promise<Gate7Check[]> {
       `${atlas.rows} upload rows on ${legs.length} legs equal the native census`,
     ),
   );
-  // P-G2, per glyph box.
+  // P-G2, per glyph box (G7tm: gate 4e's MSDF glyphs too).
   let boxes = 0;
   let exact = 0;
   const notes: string[] = [];
-  for (const [leg, ref, fix] of TEXT_LEGS) {
+  const perLeg: string[] = [];
+  for (const [leg, ref, fix] of [
+    ...TEXT_LEGS,
+    ["msdf/receiver", "msdf/reference", "gate4-msdf"] as const,
+  ]) {
     const e = fixture<Gate4Expected>(ctx, fix);
+    const [boxes0, exact0] = [boxes, exact];
+    let legMax = 0;
     for (const [k, seq] of settleSeqs(join(ctx.sourceDir, leg)).entries()) {
       const a = await decodePngRgba(
         join(ctx.sourceDir, ref, "shots", `step-${k}.png`),
@@ -191,11 +200,13 @@ async function gate4Checks(ctx: G45Ctx): Promise<Gate7Check[]> {
             if (d > 0) px++;
             max = Math.max(max, d);
           }
+        legMax = Math.max(legMax, max);
         if (px === 0) exact++;
         else if (notes.length < 12)
           notes.push(`${leg} step ${k} ${name}: ${px} px, max ${max}`);
       }
     }
+    perLeg.push(`${leg} ${exact - exact0}/${boxes - boxes0} (max ${legMax})`);
   }
   out.push({
     id: "glyph-boxes-exact@gsw",
@@ -203,7 +214,7 @@ async function gate4Checks(ctx: G45Ctx): Promise<Gate7Check[]> {
       "P-G2 (report only; Q7 judges the glyph boxes as delta1): each glyph box of every text leg's settle shots equals the rendered reference byte for byte",
     passed: exact === boxes,
     gating: false,
-    detail: `${exact}/${boxes} glyph boxes exact${notes.length ? `; ${notes.join("; ")}` : ""}`,
+    detail: `${exact}/${boxes} glyph boxes exact (${perLeg.join(", ")})${notes.length ? `; ${notes.join("; ")}` : ""}`,
   });
   // The GSW bundle never shapes: no shaper, no font among its inputs.
   {
@@ -225,6 +236,20 @@ async function gate4Checks(ctx: G45Ctx): Promise<Gate7Check[]> {
       ),
     );
   }
+  out.push(
+    await msdfSabotage(
+      ctx,
+      "msdf/sabotage-gsw-msdf-no-median",
+      "sabotage-msdf-no-median@gsw",
+      "the MSDF program takes the smallest of the three distances instead of their median",
+    ),
+    await msdfSabotage(
+      ctx,
+      "msdf/sabotage-gsw-msdf-px-range",
+      "sabotage-msdf-px-range@gsw",
+      "every MSDF draw takes half the wire's px_range",
+    ),
+  );
   for (const [leg] of TEXT_LEGS)
     out.push(
       await compositor(
@@ -233,6 +258,72 @@ async function gate4Checks(ctx: G45Ctx): Promise<Gate7Check[]> {
       ),
     );
   return out;
+}
+
+/** G7tm's MSDF sabotages: at every settle step the sabotage leg's shot differs from the honest
+ * gsw leg (`msdf/receiver`) in exactly the MSDF text regions that step draws (gate 4e's
+ * expected.json `text_regions`), and in no pixel outside them. */
+async function msdfSabotage(
+  ctx: G45Ctx,
+  leg: string,
+  id: string,
+  what: string,
+): Promise<Gate7Check> {
+  const problems: string[] = [];
+  const e = fixture<Gate4Expected>(ctx, "gate4-msdf");
+  const seqs = settleSeqs(join(ctx.sourceDir, "msdf/receiver"));
+  const honest = join(gswLeg(ctx, "gate4", "msdf/receiver"), "shots");
+  const sab = join(gswLeg(ctx, "gate4", leg), "shots");
+  let steps = 0;
+  let changed = 0;
+  for (const [k, seq] of seqs.entries()) {
+    const a = await decodePngRgba(join(honest, `seq-${seq}.png`));
+    const b = await decodePngRgba(join(sab, `seq-${seq}.png`));
+    const step = e.steps.find((s) => s.step === k);
+    if (!a || !b || !step) {
+      problems.push(`step ${k}: shot or step missing`);
+      continue;
+    }
+    steps++;
+    const regions = Object.entries(step.text_regions);
+    const failed = new Set<string>();
+    let outside = 0;
+    for (let y = 0; y < a.height; y++)
+      for (let x = 0; x < a.width; x++) {
+        const i = (y * a.width + x) * 4;
+        if (
+          a.data[i] === b.data[i] &&
+          a.data[i + 1] === b.data[i + 1] &&
+          a.data[i + 2] === b.data[i + 2] &&
+          a.data[i + 3] === b.data[i + 3]
+        )
+          continue;
+        changed++;
+        const inside = regions.filter(
+          ([, r]) => x >= r[0] && x < r[2] && y >= r[1] && y < r[3],
+        );
+        if (inside.length === 0) outside++;
+        for (const [name] of inside) failed.add(name);
+      }
+    const want = regions
+      .map(([n]) => n)
+      .sort()
+      .join(",");
+    const got = [...failed].sort().join(",");
+    if (want !== got)
+      problems.push(`step ${k}: differs in {${got}}, predicted {${want}}`);
+    if (outside > 0)
+      problems.push(
+        `step ${k}: ${outside} px differ outside every text region`,
+      );
+  }
+  if (steps === 0) problems.push("no shots compared");
+  return mk(
+    id,
+    `G7tm: ${what}; at every settle step the shot differs from the honest gsw leg in exactly the MSDF text regions gate 4e's expected.json lists for that step, and in no pixel outside them`,
+    problems,
+    `${steps} steps, ${changed} px changed, each step exactly in its text regions`,
+  );
 }
 
 // ------------------------------------------------------------------------------------------ g7-5
