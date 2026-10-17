@@ -78,6 +78,16 @@ def active_processes(path: Path) -> list[int]:
             args = (proc / "cmdline").read_bytes().split(b"\0")
         except (OSError, PermissionError):
             continue
+        # adb's long-lived fork server can inherit a worktree cwd for days. It opens no worktree
+        # files and uses no worktree arguments; moving that checkout does not interrupt the server.
+        if (Path(os.fsdecode(links[1])).name == "adb" and b"fork-server" in args
+            and b"server" in args and not any(prefix in item for item in args)):
+            try:
+                held = any(prefix in os.fsencode(os.readlink(fd)) for fd in (proc / "fd").iterdir())
+            except (OSError, PermissionError):
+                held = True
+            if not held:
+                continue
         if any(item == os.fsencode(str(path)) or item.startswith(prefix) for item in links) or any(
             prefix in item or item == os.fsencode(str(path)) for item in args
         ):

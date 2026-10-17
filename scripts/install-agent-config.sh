@@ -115,6 +115,32 @@ if [ "$pruned" -eq 0 ]; then echo "    (none)"; fi
 MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
 MEMORY="$MAIN/.agents/memory"
 
+# Claude's automatic isolation uses .claude/worktrees/. Keep its physical checkouts in the same
+# root as manually created worktrees. An existing nonempty directory may hold live agents; leave
+# it alone until they finish, then rerun this installer to replace the empty directory with a link.
+echo "==> worktree location"
+mkdir -p "$MAIN/.worktrees" "$REPO/.claude"
+WORKTREE_LINK="$REPO/.claude/worktrees"
+if [ -L "$WORKTREE_LINK" ]; then
+  if [ "$(realpath "$WORKTREE_LINK")" != "$(realpath "$MAIN/.worktrees")" ]; then
+    echo "error: $WORKTREE_LINK points away from $MAIN/.worktrees" >&2
+    exit 1
+  fi
+elif [ -d "$WORKTREE_LINK" ]; then
+  if [ -z "$(ls -A "$WORKTREE_LINK")" ]; then
+    rmdir "$WORKTREE_LINK"
+  else
+    echo "    (deferred: $WORKTREE_LINK contains active or unreviewed checkouts)"
+  fi
+elif [ -e "$WORKTREE_LINK" ]; then
+  echo "error: $WORKTREE_LINK is not a directory or link" >&2
+  exit 1
+fi
+if [ ! -e "$WORKTREE_LINK" ] && [ ! -L "$WORKTREE_LINK" ]; then
+  ln -s "$(realpath --relative-to="$REPO/.claude" "$MAIN/.worktrees")" "$WORKTREE_LINK"
+fi
+if [ -L "$WORKTREE_LINK" ]; then echo "    .claude/worktrees -> $MAIN/.worktrees"; fi
+
 if { [ -e "$REPO/.codex" ] || [ -L "$REPO/.codex" ]; } && [ ! -d "$REPO/.codex" ]; then
   echo "error: remove the stray file \`.codex\` first — this script needs .codex/ to be a directory" >&2
   exit 1
