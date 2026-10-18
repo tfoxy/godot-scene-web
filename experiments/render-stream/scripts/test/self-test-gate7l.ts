@@ -20,11 +20,13 @@
 //     acked from that rAF after the draw (an ack from onmessage, the ack-on-receipt sabotage, fails).
 //  7. knownFailure (lib/gate7-live.ts): web g5f's mesh pixel checks name the known
 //     web-index-region-update cause only when every region they name is RM or DF, and never on
-//     the rust web core.
-//  8. G7xwl: webCoreOf/coreEnv (lib/gate7-live-legs.ts) add RS_RECEIVER_CORE=rust to a web leg
-//     only on a rust run with a `--core rust` bundle (refused otherwise; drop-env omits it), and
-//     receiverCoreProblems (lib/gate7-live.ts, receiver-core@web) passes an honest leg, a killed
-//     one, and fails the drop-env sabotage, a missing module fetch and a core mismatch.
+//     the rust web core (knownFailure's own default since G7xd).
+//  8. G7xwl/G7xd: webCoreOf/coreEnv (lib/gate7-live-legs.ts) add RS_RECEIVER_CORE=gdscript to a
+//     web leg only on an explicit gdscript run (a `rust` run, default or explicit, needs a
+//     `--core rust` bundle but adds no word, since rust is now the bundle's own unset-env
+//     default too; drop-env on gdscript omits the word, so the leg silently runs rust instead),
+//     and receiverCoreProblems (lib/gate7-live.ts, receiver-core@web) passes an honest leg, a
+//     killed one, and fails the drop-env sabotage, a missing module fetch and a core mismatch.
 
 import {
   mkdirSync,
@@ -419,13 +421,14 @@ const mesh = (detail: string) => ({
   detail,
 });
 expect(
-  "known: web g5f RM/DF only is named",
+  "known: web g5f RM/DF only is named (gdscript core, explicit since G7xd flipped the default)",
   knownFailure(
     "web",
     "gate5",
     mesh(
       "live-mesh step 4 (seq 340): 936 px differ in RM; step 5: 2216 px differ in DF,RM",
     ),
+    "gdscript",
   ) !== undefined,
 );
 expect(
@@ -434,6 +437,7 @@ expect(
     "web",
     "gate5",
     mesh("step 4: 936 px differ in RM; step 6: 12 px differ in TX"),
+    "gdscript",
   ) === undefined,
 );
 expect(
@@ -442,8 +446,8 @@ expect(
     undefined,
 );
 expect(
-  "known: never on the rust web core (G7xwl: it issues the update)",
-  knownFailure("web", "gate5", mesh("step 4: 936 px differ in RM"), "rust") ===
+  "known: never on the rust web core (G7xwl: it issues the update; also knownFailure's own default since G7xd)",
+  knownFailure("web", "gate5", mesh("step 4: 936 px differ in RM")) ===
     undefined,
 );
 
@@ -462,23 +466,34 @@ const bundleOf = (core: string | undefined): string => {
   return dir;
 };
 expect(
-  "core: default gdscript, no env word",
+  "core: default rust (G7xd), no env word, on a rust-capable bundle",
   JSON.stringify(
     coreEnv({
       kind: "web",
-      ...webCoreOf("web", bundleOf(undefined), undefined, undefined),
+      ...webCoreOf("web", bundleOf("rust"), undefined, undefined),
     }),
   ) === "{}",
 );
 expect(
-  "core: rust on a rust bundle adds RS_RECEIVER_CORE=rust",
-  coreEnv({
-    kind: "web",
-    ...webCoreOf("web", bundleOf("rust"), "rust", undefined),
-  }).RS_RECEIVER_CORE === "rust",
+  "core: default rust on a gdscript-only bundle is refused",
+  throws(() => webCoreOf("web", bundleOf(undefined), undefined, undefined)),
 );
 expect(
-  "core: rust on a gdscript bundle is refused",
+  "core: gdscript on a rust-capable bundle adds RS_RECEIVER_CORE=gdscript",
+  coreEnv({
+    kind: "web",
+    ...webCoreOf("web", bundleOf("rust"), "gdscript", undefined),
+  }).RS_RECEIVER_CORE === "gdscript",
+);
+expect(
+  "core: gdscript on a gdscript-only bundle needs no validation (always available)",
+  coreEnv({
+    kind: "web",
+    ...webCoreOf("web", bundleOf(undefined), "gdscript", undefined),
+  }).RS_RECEIVER_CORE === "gdscript",
+);
+expect(
+  "core: rust (explicit or default) on a gdscript-only bundle is refused",
   throws(() => webCoreOf("web", bundleOf("gdscript"), "rust", undefined)) &&
     throws(() => webCoreOf("web", bundleOf(undefined), "rust", undefined)),
 );
@@ -488,11 +503,22 @@ expect(
     throws(() => webCoreOf("web", bundleOf("rust"), "rust", "skip")),
 );
 expect(
-  "core: drop-env keeps core rust but adds no env word",
+  "core: drop-env on an explicit rust selection is a no-op (rust already adds no word)",
   (() => {
     const c = webCoreOf("web", bundleOf("rust"), "rust", "drop-env");
     return (
       c.core === "rust" &&
+      c.coreSabotage === "drop-env" &&
+      coreEnv({ kind: "web", ...c }).RS_RECEIVER_CORE === undefined
+    );
+  })(),
+);
+expect(
+  "core: drop-env on gdscript omits RS_RECEIVER_CORE, so the rust-capable bundle silently runs its own default (rust) instead",
+  (() => {
+    const c = webCoreOf("web", bundleOf("rust"), "gdscript", "drop-env");
+    return (
+      c.core === "gdscript" &&
       c.coreSabotage === "drop-env" &&
       coreEnv({ kind: "web", ...c }).RS_RECEIVER_CORE === undefined
     );

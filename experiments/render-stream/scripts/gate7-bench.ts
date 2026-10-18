@@ -190,7 +190,7 @@ function parseArgs(argv: string[]): Args {
     adbBin: undefined,
     only: [],
     recordDigest: "inline",
-    core: "gdscript",
+    core: "rust",
     coreExt: undefined,
     taskset: undefined,
   };
@@ -341,7 +341,7 @@ function parseArgs(argv: string[]): Args {
     );
   if (a.arm !== "native" && a.taskset)
     throw new HarnessUsageError("--taskset is a native-arm option");
-  if (a.arm !== "native" && a.arm !== "web" && a.core !== "gdscript")
+  if (a.arm !== "native" && a.arm !== "web" && a.core !== "rust")
     throw new HarnessUsageError("--core is a native- and web-arm option");
   return a;
 }
@@ -459,8 +459,8 @@ async function runNativeArm(
         RS_RECEIVER_PERF_OUT: join(dir, "perf.json"),
         RS_RECEIVER_LOG: "summary",
         ...(input.store ? { RS_RECEIVER_STORE_DIR: input.store } : {}),
-        // G7xn: the default core adds nothing, so a gdscript leg's env is what it always was.
-        ...(args.core === "rust" ? { RS_RECEIVER_CORE: "rust" } : {}),
+        // G7xd: the default core (rust) adds nothing, so a rust leg's env is what it always was.
+        ...(args.core === "gdscript" ? { RS_RECEIVER_CORE: "gdscript" } : {}),
         ...(args.core === "rust" && args.coreExt
           ? { RS_RECEIVER_CORE_EXT: args.coreExt }
           : {}),
@@ -1381,7 +1381,7 @@ async function runWebArm(
             RS_RECEIVER_LOG: "summary",
             RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
             RS_RECEIVER_BUILD_SHA256: buildSha256,
-            ...(args.core === "rust" ? { RS_RECEIVER_CORE: "rust" } : {}),
+            ...(args.core === "gdscript" ? { RS_RECEIVER_CORE: "gdscript" } : {}),
             ...(input.store
               ? { RS_RECEIVER_STORE_DIR: `/web-assets/${input.name}/store` }
               : {}),

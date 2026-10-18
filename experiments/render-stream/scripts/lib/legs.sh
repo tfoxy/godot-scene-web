@@ -199,7 +199,7 @@ if [ -n "$GATE7_LIVE_KIND" ]; then
 		GATE7_HOST_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 	fi
 	LIVE_RECEIVED_NAME="received.rs7"
-	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, web core ${GATE7_WEB_CORE:-gdscript}, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
+	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, web core ${GATE7_WEB_CORE:-rust}, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
 	gate7_daemon_dir="$OUT/gate7-browser"
 	mkdir -p "$gate7_daemon_dir"
 	rm -f "$gate7_daemon_dir/daemon.json"
@@ -301,16 +301,18 @@ run_browser_receiver() {
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$(cat "$dir/exit-code.txt") ($GATE7_LIVE_KIND browser receiver)"
 }
 
-# G7xn (gate7-design.md "G7xn", D34): the runner's own RS_RECEIVER_CORE (gdscript, the default, or
-# rust) and RS_RECEIVER_CORE_EXT pick the native receiver's core for every receiver launch of the
-# run. Every launch strips inherited RS_* variables, so receiver_core_env adds them back as
-# NAME=value words, to receiver launches only (`--path "$RECEIVER_DIR"`), and only when they are
-# not the default: a default run's env.txt files are what they were.
-RECEIVER_CORE="${RS_RECEIVER_CORE:-gdscript}"
+# G7xn (gate7-design.md "G7xn", D34; G7xd flipped the default): the runner's own RS_RECEIVER_CORE
+# (rust, the default since G7xd, or gdscript, frozen at /7 and selectable for milestone sweeps)
+# and RS_RECEIVER_CORE_EXT pick the native receiver's core for every receiver launch of the run.
+# Every launch strips inherited RS_* variables, so receiver_core_env adds them back as NAME=value
+# words, to receiver launches only (`--path "$RECEIVER_DIR"`), and only when something is not the
+# default: a plain default run's env.txt files are what they were, even though RECEIVER_CORE
+# itself already reads "rust" (a non-empty RECEIVER_CORE_EXT still needs forwarding under it).
+RECEIVER_CORE="${RS_RECEIVER_CORE:-rust}"
 RECEIVER_CORE_EXT="${RS_RECEIVER_CORE_EXT:-}"
 
 receiver_core_env() {
-	[ "$RECEIVER_CORE" != "gdscript" ] || return 0
+	{ [ "$RECEIVER_CORE" != "rust" ] || [ -n "$RECEIVER_CORE_EXT" ]; } || return 0
 	local previous="" arg
 	for arg in "${LEG_ENV[@]}"; do
 		[ "${arg%%=*}" != "RS_RECEIVER_CORE" ] || return 0

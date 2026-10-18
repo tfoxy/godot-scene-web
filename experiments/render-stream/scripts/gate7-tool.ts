@@ -28,7 +28,7 @@
 //     [--static-root …] [--core gdscript|rust]
 //     (G7l) what lib/legs.sh uses under GATE7_LIVE_KIND: serves browser receiver legs (GET
 //     /run?dir=…&port=…&timeout_s=…) with the next leg's fresh browser already launched and
-//     checked; exits when <pid> is gone. `--core` (default GATE7_WEB_CORE, else gdscript; G7xwl)
+//     checked; exits when <pid> is gone. `--core` (default GATE7_WEB_CORE, else rust; G7xwl, G7xd)
 //     is the web export's core, and GATE7_WEB_CORE_SABOTAGE=drop-env is its harness sabotage.
 //     `--spare during|after` (default GATE7_BROWSER_SPARE, else during; G7r): when the next leg's
 //     browser is launched, while this leg runs (G7l) or once it has finished (timing legs)
@@ -116,7 +116,7 @@ async function main(): Promise<void> {
       readFileSync(join(bundle, "build.json"), "utf8"),
     ) as { pck: { sha256: string }; core?: string };
     const coreAt = argv.indexOf("--core");
-    const core = coreAt >= 0 ? argv[coreAt + 1] : "gdscript";
+    const core = coreAt >= 0 ? argv[coreAt + 1] : "rust";
     if (core !== "gdscript" && core !== "rust")
       throw new Error(`gate7-tool: --core is gdscript or rust, not ${core}`);
     if (core === "rust" && build.core !== "rust")

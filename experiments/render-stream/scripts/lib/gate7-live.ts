@@ -137,7 +137,7 @@ export function knownFailure(
   kind: string,
   gate: string,
   c: CheckerCheck,
-  core: "gdscript" | "rust" = "gdscript",
+  core: "gdscript" | "rust" = "rust",
 ): string | undefined {
   const key = kind === "web" ? `${kind}:${core}:${gate}` : `${kind}:${gate}`;
   for (const k of LIVE_KNOWN_FAILURES[key] ?? []) {
@@ -538,7 +538,7 @@ export interface LiveGroupInput {
   runDir: string;
   /** Where the views go (`<out>/<gate>/live-<kind>-views`). */
   viewsDir: string;
-  /** G7xwl: the web export's expected core (run-gate7.sh --web-core; default gdscript). */
+  /** G7xwl: the web export's expected core (run-gate7.sh --web-core; default rust since G7xd). */
   core?: "gdscript" | "rust";
 }
 
@@ -553,8 +553,9 @@ export const RS_CORE_SIDE_MODULE = "librs_core_ext.wasm";
  *   - applied.json's `receiver.core`, when the leg wrote one (a SIGKILLed leg does not);
  *   - under rust, the page's resource timing showing the side module fetched, unless the leg
  *     was aborted before its page state was read (timings.json `aborted` with no resources).
- * A rust bundle run without RS_RECEIVER_CORE (the drop-env sabotage) loads the module but logs no
- * `core rust` and says gdscript. */
+ * G7xd made rust the engine's own default (gdscript, frozen at /7, needs the env word to opt
+ * in): a gdscript run without RS_RECEIVER_CORE (the drop-env sabotage) still loads the
+ * rust-capable module, but logs `core rust` and says rust where gdscript was requested. */
 export async function receiverCoreProblems(
   dir: string,
   leg: string,
@@ -623,7 +624,7 @@ export async function checkGateLive(
   input: LiveGroupInput,
 ): Promise<LiveGroupResult> {
   const { def, kind, viewsDir } = input;
-  const core = input.core ?? "gdscript";
+  const core = input.core ?? "rust";
   // Real path: a native strace leg records the real one (buildMirrorView relocates by it).
   const runDir = realpathSync(input.runDir);
   const checks: Gate7Check[] = [];

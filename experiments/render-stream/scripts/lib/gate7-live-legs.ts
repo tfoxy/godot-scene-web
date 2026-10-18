@@ -82,7 +82,8 @@ export type BrowserReceiverKind = "web" | "gsw";
 
 /** G7xwl: the web export's core on a live run (GATE7_WEB_CORE; run-gate7.sh --live --web-core).
  * `rust` adds RS_RECEIVER_CORE=rust to every web leg (live and its received.rs7 replays) and needs
- * a build-web-receiver.sh --core rust bundle. The GSW receiver always runs the Rust core. */
+ * a build-web-receiver.sh --core rust bundle. The GSW receiver always runs the Rust core. G7xd
+ * made `rust` the default (gdscript is frozen at /7 and stays selectable, milestone-swept). */
 export type WebCore = "gdscript" | "rust";
 
 export interface BrowserRunContext {
@@ -91,26 +92,25 @@ export interface BrowserRunContext {
   staticRoot: string;
   buildSha256: string;
   manifestSha256?: string;
-  /** G7xwl (web only; default gdscript). */
+  /** G7xwl (web only; default rust since G7xd). */
   core?: WebCore;
-  /** G7xwl's harness sabotage (GATE7_WEB_CORE_SABOTAGE=drop-env): a `rust` run that leaves
-   * RS_RECEIVER_CORE out, so the rust bundle silently runs GDScript; `receiver-core@web` must
-   * fail it. */
+  /** G7xwl's harness sabotage (GATE7_WEB_CORE_SABOTAGE=drop-env): a `gdscript` run that leaves
+   * RS_RECEIVER_CORE out, so the rust-capable bundle silently runs the Rust core instead (G7xd:
+   * rust is the bundle's own unset-env default); `receiver-core@web` must fail it. */
   coreSabotage?: "drop-env";
   log?: (line: string) => void;
 }
 
 /** G7xwl: the web context's core from GATE7_WEB_CORE / GATE7_WEB_CORE_SABOTAGE, refusing a
  * `rust` run on a bundle that is not `build-web-receiver.sh --core rust` (as gate7-tool.ts
- * web-legs --core rust does). */
+ * web-legs --core rust does). G7xd: an unset GATE7_WEB_CORE resolves to `rust`. */
 export function webCoreOf(
   kind: BrowserReceiverKind,
   bundleDir: string,
   coreText: string | undefined,
   sabotageText: string | undefined,
 ): Pick<BrowserRunContext, "core" | "coreSabotage"> {
-  const core =
-    coreText === undefined || coreText === "" ? "gdscript" : coreText;
+  const core = coreText === undefined || coreText === "" ? "rust" : coreText;
   if (core !== "gdscript" && core !== "rust")
     throw new Error(`GATE7_WEB_CORE must be gdscript or rust (got ${core})`);
   if (
@@ -139,15 +139,18 @@ export function webCoreOf(
   };
 }
 
-/** G7xwl: the env words the run's web core adds to every web leg (live and file replays alike):
- * RS_RECEIVER_CORE=rust on a `rust` run, nothing otherwise or under the drop-env sabotage. */
+/** G7xwl: the env words the run's web core adds to every web leg (live and file replays alike).
+ * G7xd: rust is the default (the bundle's own unset-env behavior), so a `rust` run adds nothing;
+ * a `gdscript` run adds RS_RECEIVER_CORE=gdscript, or nothing under the drop-env sabotage (which
+ * only makes sense on a `gdscript` run now: dropping the word lets the rust-capable bundle fall
+ * back to its own default, rust, instead of the requested gdscript). */
 export function coreEnv(
   ctx: Pick<BrowserRunContext, "kind" | "core" | "coreSabotage">,
 ): Record<string, string> {
   return ctx.kind === "web" &&
-    ctx.core === "rust" &&
+    ctx.core === "gdscript" &&
     ctx.coreSabotage !== "drop-env"
-    ? { RS_RECEIVER_CORE: "rust" }
+    ? { RS_RECEIVER_CORE: "gdscript" }
     : {};
 }
 
@@ -485,7 +488,7 @@ export function runBrowserLeg(
           kind: ctx.kind,
           ...(ctx.kind === "web"
             ? {
-                core: ctx.core ?? "gdscript",
+                core: ctx.core ?? "rust",
                 core_sabotage: ctx.coreSabotage ?? null,
               }
             : {}),

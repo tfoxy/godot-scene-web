@@ -62,6 +62,7 @@ import {
   type StepLine,
 } from "./gate0-checks";
 import {
+  canonicalEqual,
   check,
   classifyGate1,
   compareWithSynth,
@@ -1289,19 +1290,22 @@ export async function checkLiveReplayEqualsLive(
       evidence.push(shotA, shotB);
       const p = await samePng(shotA, shotB);
       if (p) problems.push(p);
-      const sa = (
-        await readTextOrUndefined(
-          join(live.receiverDir, "state", `seq-${seq}.json`),
-        )
-      )?.trim();
-      const sb = (
-        await readTextOrUndefined(
-          join(replay.receiverDir, "state", `seq-${seq}.json`),
-        )
-      )?.trim();
+      // Parsed-and-canonicalized, not raw text (gate1-checks.ts checkPatchVsFullReceiverState's
+      // own convention): the native rust-core dump (RsRustApplier.state_json(), JS number
+      // spelling) and this replay's dump can legitimately differ in whole-float spelling ("1" vs
+      // "1.0") for the same value without differing in content (G7xd found this once the rust
+      // core's dump became the live ground truth by default; canonicalEqual, already used right
+      // beside this for the full-vs-patch comparison, absorbs both key order and that spelling).
+      const sa = await readJson<unknown>(
+        join(live.receiverDir, "state", `seq-${seq}.json`),
+      );
+      const sb = await readJson<unknown>(
+        join(replay.receiverDir, "state", `seq-${seq}.json`),
+      );
       if (sa === undefined || sb === undefined)
         problems.push(`seq ${seq}: a state dump is missing`);
-      else if (sa !== sb) problems.push(`seq ${seq}: state dumps differ`);
+      else if (!canonicalEqual(sa, sb))
+        problems.push(`seq ${seq}: state dumps differ`);
     }
     if (live.stepShots.size === 0) problems.push("the live leg took no shots");
   }

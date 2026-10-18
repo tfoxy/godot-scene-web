@@ -3,9 +3,11 @@
 # finished gate run under another receiver core, against the SAME source (the run's own
 # recordings, stores and libraries), so the two cores' legs compare byte for byte
 # (scripts/compare-receiver-cores.ts). Live legs need their host and are not replayed: they run
-# under the other core in a whole runner invocation instead (RS_RECEIVER_CORE=rust run-gateN.sh).
+# under the other core in a whole runner invocation instead (RS_RECEIVER_CORE=gdscript
+# run-gateN.sh; G7xd made rust the native default, so a milestone-sweep comparison now runs a
+# gdscript gate and replays it under --core rust, or the reverse).
 #
-#   bash replay-receiver-legs.sh --run <gate run dir> --out <dir> [--core rust] \
+#   bash replay-receiver-legs.sh --run <gate run dir> --out <dir> [--core rust|gdscript] \
 #     [--binary <template>] [--core-ext <rs_core.gdextension>]
 #
 # A leg is a directory with argv.txt, env.txt and applied.json whose argv runs a project at
@@ -64,7 +66,8 @@ fi
 
 LEGS_LOG="replay-receiver-legs"
 # The runner's core selection does not apply here: this script sets RS_RECEIVER_CORE per leg.
-RS_RECEIVER_CORE=gdscript
+# G7xd: pinned to lib/legs.sh's own default (rust) so its receiver_core_env no-ops here too.
+RS_RECEIVER_CORE=rust
 # shellcheck source=lib/legs.sh
 source "$SCRIPT_DIR/lib/legs.sh"
 
