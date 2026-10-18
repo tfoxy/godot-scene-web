@@ -452,7 +452,9 @@ function verdict(c: CheckerCheck | undefined, view: string): string {
 }
 
 /** Every file under `root` whose bytes contain `token`, except `exclude` and the Chromium
- * profiles (browser-internal storage, not evidence). */
+ * profiles (browser-internal storage, not evidence). G7hp moved every profile to a temp
+ * directory outside `root` entirely, so this `gate7-browser/profiles/` skip is now a defensive
+ * no-op kept for a run from before that change, or a reintroduced regression. */
 export async function grepTree(
   root: string,
   token: string,

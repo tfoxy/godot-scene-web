@@ -34,10 +34,12 @@
 // GATE7_PAGE_PORT), so the page's origin is `http://127.0.0.1:<port>`, which the runner passed to
 // every host as GRC_LIVE_ALLOWED_ORIGINS. Its static root is the runner's evidence directory (or
 // GATE7_STATIC_ROOT), with the bundle linked in as `/web-bundle` or `/gsw-bundle`. One fresh
-// browser and profile per leg (D9): each browser runs on its own new profile directory (the
-// daemon's `profiles/<n>`, outside every leg directory), kept after the leg. A warm leg
-// (RS_RECEIVER_CACHE_MODE=warm on a cold leg's RS_RECEIVER_CACHE_DIR) instead starts on a copy of
-// that cold leg's profile, so its "disk cache" is the cold leg's HTTP cache (Q4); the runner keeps
+// browser and profile per leg (D9): each browser runs on its own new profile directory (G7hp: a
+// `gsw-chromium-profile-*` directory `mkdtemp`'d under the system temp dir, never under `--out` --
+// GPUCache/ShaderCache/GraphiteDawnCache have no evidence value and ran ~250 MB per leg), kept
+// after the leg. A warm leg (RS_RECEIVER_CACHE_MODE=warm on a cold leg's RS_RECEIVER_CACHE_DIR)
+// instead starts on a copy of that cold leg's profile, so its "disk cache" is the cold leg's HTTP
+// cache (Q4); the runner keeps
 // every live host on one fixed port (GATE7_HOST_PORT), because that cache is keyed by the payload
 // URL, port included. Per leg, as gate7-web-legs.ts's runOne: provenance.json
 // (`browser-provenance`, checked on about:blank of that browser), console.jsonl, stdout.log (the
@@ -59,8 +61,8 @@
 //     was seen so far (exit code 143). The daemon exits when its parent (the runner) is gone.
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, symlinkSync } from "node:fs";
-import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -721,26 +723,39 @@ export function warmProfileOf(dir: string, staticRoot: string): string | null {
 }
 
 /** The one-shot launcher (`gate7-tool.ts browser-receiver`): prepare, run, SIGTERM aborts. Its
- * profile is a fresh directory under the system temp directory (kept, like the daemon's). */
+ * profile is a fresh directory under the system temp directory (G7hp), removed on every exit --
+ * normal return, a thrown error from `prepareBrowser`/`runBrowserLeg`, and SIGTERM (after
+ * `leg.abort()` has SIGKILLed the leg's Chromium processes, so nothing still holds the files). */
 export async function runBrowserReceiver(
   ctx: BrowserRunContext,
   req: BrowserLegRequest,
 ): Promise<number> {
   const warm = warmProfileOf(resolve(req.dir), resolve(ctx.staticRoot));
-  const profile = await mkdtemp(join(tmpdir(), "gate7-live-profile-"));
-  const prepared = await prepareBrowser(
-    join(profile, "p"),
-    warm ?? undefined,
-    warm !== null,
-  );
-  const leg = runBrowserLeg(ctx, req, prepared);
-  const onTerm = (): void => {
-    leg.abort().finally(() => process.exit(143));
-  };
-  process.on("SIGTERM", onTerm);
-  const code = await leg.done;
-  process.off("SIGTERM", onTerm);
-  return code;
+  const profileRoot = await mkdtemp(join(tmpdir(), "gsw-chromium-profile-"));
+  const cleanup = (): Promise<void> =>
+    rm(profileRoot, { recursive: true, force: true }).catch(() => {});
+  try {
+    const prepared = await prepareBrowser(
+      join(profileRoot, "p"),
+      warm ?? undefined,
+      warm !== null,
+    );
+    const leg = runBrowserLeg(ctx, req, prepared);
+    const onTerm = (): void => {
+      leg
+        .abort()
+        .finally(cleanup)
+        .finally(() => process.exit(143));
+    };
+    process.on("SIGTERM", onTerm);
+    try {
+      return await leg.done;
+    } finally {
+      process.off("SIGTERM", onTerm);
+    }
+  } finally {
+    await cleanup();
+  }
 }
 
 /** `gate7-tool.ts browser-daemon` (header): serves legs one at a time on 127.0.0.1:<port 0>,
@@ -757,11 +772,23 @@ export async function serveBrowserDaemon(
   // measured window; `during` (G7l's default) overlaps it with the leg to save wall time.
   const spareAfter = opts.spare === "after";
   const log = ctx.log ?? ((line: string) => console.error(line));
-  // One profile directory per browser, never reused by a cold leg (D9), kept for warm legs; under
-  // the daemon's own directory, outside every leg directory (a profile's history may hold URLs).
-  const profiles = join(dirname(readyFile), "profiles");
+  // One profile directory per browser, never reused by a cold leg (D9), kept for warm legs (a
+  // warm leg copies a sibling cold leg's profile, discovered lazily from that leg's
+  // page-config.json, so no single profile can be retired before this daemon itself shuts down).
+  // G7hp: the root is a `gsw-chromium-profile-*` directory `mkdtemp`'d under the system temp dir,
+  // never under the evidence tree (a profile's GPUCache/ShaderCache/GraphiteDawnCache run ~250 MB
+  // per leg and have no evidence value); `shutdown` below removes it whole, and the `process.on
+  // ("exit", ...)` handler is a synchronous last-resort net for a crash that skips `shutdown`.
+  const profileRoot = await mkdtemp(join(tmpdir(), "gsw-chromium-profile-"));
+  process.on("exit", () => {
+    try {
+      rmSync(profileRoot, { recursive: true, force: true });
+    } catch {
+      // best-effort net; the graceful `shutdown` path below already removed it
+    }
+  });
   let profileCount = 0;
-  const nextProfile = (): string => join(profiles, String(++profileCount));
+  const nextProfile = (): string => join(profileRoot, String(++profileCount));
   const prepareSpare = (): Promise<PreparedBrowser> => {
     const p = prepareBrowser(nextProfile());
     p.catch((err) => log(`browser-daemon: preparing failed: ${String(err)}`));
@@ -852,6 +879,7 @@ export async function serveBrowserDaemon(
     const s = spare;
     spare = null;
     if (s) await s.then((p) => p.context.close()).catch(() => {});
+    await rm(profileRoot, { recursive: true, force: true }).catch(() => {});
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown());

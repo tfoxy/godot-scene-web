@@ -2957,7 +2957,10 @@ gate's own runner again, with `GATE7_LIVE_KIND=web|gsw` and `GATE7_BUNDLE_DIR`, 
   Chromium, already provenance-checked, and runs one fresh profile per cold leg. A warm leg starts
   on a copy of its cold leg's profile. It maps env words to URL paths, passes the token in the
   fragment only, and writes the per-leg files. `gate7-tool.ts browser-receiver` is the one-shot
-  form.
+  form. **G7hp**: every profile lives in a `gsw-chromium-profile-*` directory under the system
+  temp dir, never under `--out` (its GPUCache/ShaderCache/GraphiteDawnCache have no evidence value
+  and ran ~250 MB per leg); the daemon removes its whole root at shutdown, and the one-shot form
+  removes its own after its one leg.
 - `lib/gate7-live.ts` (`check-gate7.ts --live`) judges the run through views:
   - Full, blank and banded views of the run tell which checks read a browser leg; those are
     reported `<id>@<kind>`, and every other check counts toward `native-legs@<kind>`.
@@ -3032,3 +3035,23 @@ bash experiments/render-stream/scripts/run-gate7.sh --live --legs g7-r --web-cor
 - `test/self-test-gate7r.ts` covers the leg lists against the runner, the phase classes, G6c's
   bound in both phases, the mismatch bounds and the sabotage rule, GSW's phase-free hold, the
   fetch-tail attribution and the proxy's HTTP observer.
+
+### G7hp: Chromium profiles out of gate 7 evidence
+
+G7hp ([../results/gate7/g7hp.md](../results/gate7/g7hp.md)) moves every gate 7 live leg's
+Chromium profile out of `--out` and into the system temp dir, since a profile's
+GPUCache/ShaderCache/GraphiteDawnCache have no evidence value and ran ~250 MB per leg.
+
+- `lib/gate7-live-legs.ts`'s `serveBrowserDaemon` (`gate7-tool.ts browser-daemon`) now
+  `mkdtemp`s one `gsw-chromium-profile-*` root per daemon under `os.tmpdir()` instead of
+  `<out>/gate7-browser/profiles/`; every leg's (and warm leg's copy-from) subdirectory lives
+  there, removed whole on `shutdown` (SIGTERM or the parent-gone poll), with a synchronous
+  `process.on("exit", …)` net for a crash that skips it. `runBrowserReceiver` (the one-shot
+  `browser-receiver` form) keeps its own already-temp-dir profile but now removes it after its
+  one leg on every path: normal return, a thrown error, and SIGTERM (after `leg.abort()`
+  SIGKILLs the leg's Chromium processes).
+- Nothing reads file content out of a profile for evidence: `checkBrowserProvenance` reads the
+  Chromium binary and CDP, never the profile directory; the existing `gate7-browser/profiles/`
+  skips in `lib/gate7-live.ts` (`grepTree`, `discoverBrowserLegs`, `bandSubstitutions`) are now
+  defensive no-ops, since no profile lands under `--out` any more.
+- No check or sabotage changed; see the result doc for what was re-run.

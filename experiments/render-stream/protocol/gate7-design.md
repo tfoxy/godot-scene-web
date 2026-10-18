@@ -1549,6 +1549,7 @@ Each increment's design detail and "As built" notes live in its own `gate7/<id>.
 | [G7xwl](gate7/g7xwl.md) | opus | 4 | yes | G7xw, G7l |
 | [G7o2](gate7/g7o2.md) | opus (rs-increment agent) | 4 | yes (rs-core, GSW, the capi and receiver.gd's web file mode; its g31 runs unattended) | G7xwl, G7tm |
 | [G7xd](gate7/g7xd.md) | sonnet (rs-increment agent) | 4 | yes (a default flip behind a full milestone sweep; no new code path) | G7xn, G7xw, G7xwl, G7o2 (all landed; D34 amended) |
+| [G7hp](gate7/g7hp.md) | sonnet (rs-increment agent) | — | **yes** (evidence hygiene only; no new code path) | G7l (its `gate7-live-legs.ts` daemon) |
 | [G7o](gate7/g7o.md) | — | — | restructured by D33 into G7o1 and tier 2 (G7x, G7a, G7xn, G7xw); lands nothing | — |
 | [G7g](gate7/g7g.md) | opus | 5 | no | G7b, G7t, G7tm, G7s, G7l; gate 6 complete through G6s |
 | [G7u](gate7/g7u.md) | sonnet | 5 | no | G7l |

@@ -34,6 +34,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7w | render-stream/7 delta, codecs, golden-7 — landed | [results/gate7/g7w.md](results/gate7/g7w.md) |
 | G7j | browser-loadable decoder — landed | [results/gate7/g7j.md](results/gate7/g7j.md) |
 | G7h | browser harness, provenance, probes — landed | [results/gate7/g7h.md](results/gate7/g7h.md) |
+| G7hp | live legs keep Chromium profiles in a removed temp dir, out of evidence — landed | [results/gate7/g7hp.md](results/gate7/g7hp.md) |
 | G7c | `packages/canvas`: vertex colours, premul_alpha, wrap, straight alpha, RGB10_A2 — landed | [results/gate7/g7c.md](results/gate7/g7c.md) |
 | G7f | bounded live decode buffer, conditional on G6s | [protocol/gate7/g7f.md](protocol/gate7/g7f.md) |
 | G7d | device harness, pace fixture, decode/apply bench — landed | [results/gate7/g7d.md](results/gate7/g7d.md) |
