@@ -29,7 +29,9 @@
 //     (G7l) what lib/legs.sh uses under GATE7_LIVE_KIND: serves browser receiver legs (GET
 //     /run?dir=…&port=…&timeout_s=…) with the next leg's fresh browser already launched and
 //     checked; exits when <pid> is gone. `--core` (default GATE7_WEB_CORE, else gdscript; G7xwl)
-//     is the web export's core, and GATE7_WEB_CORE_SABOTAGE=drop-env is its harness sabotage
+//     is the web export's core, and GATE7_WEB_CORE_SABOTAGE=drop-env is its harness sabotage.
+//     `--spare during|after` (default GATE7_BROWSER_SPARE, else during; G7r): when the next leg's
+//     browser is launched, while this leg runs (G7l) or once it has finished (timing legs)
 
 import { createHash } from "node:crypto";
 import {
@@ -315,10 +317,16 @@ async function main(): Promise<void> {
       ),
     } as const;
     if (command === "browser-daemon") {
+      const spare = opt("--spare", "GATE7_BROWSER_SPARE") || "during";
+      if (spare !== "during" && spare !== "after")
+        throw new Error(
+          `gate7-tool: browser-daemon --spare is during or after (got ${spare})`,
+        );
       await serveBrowserDaemon(
         ctx,
         resolve(flag(argv, "--ready-file")),
         Number(flag(argv, "--parent")),
+        { spare },
       );
       return;
     }

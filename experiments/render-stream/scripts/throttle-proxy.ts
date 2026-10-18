@@ -24,6 +24,16 @@
 // own self-test as a baseline and by anything that wants the stats.json bookkeeping without the
 // shaping.
 //
+// G7r (gate7-design.md Q9 `constrained-<kind>`: "plus preflight latency reported"): the proxy
+// also OBSERVES (never changes) each connection's HTTP/1.1 exchanges, because a browser's CORS
+// preflight is invisible to the page (resource timing folds it into the fetch) and the host's
+// timed legs log nothing. Per connection, a request is a client chunk that starts with a method
+// (`OPTIONS `, `GET `), a response a server chunk that starts with `HTTP/1.`; they pair FIFO, and
+// the latency is the response's first byte DELIVERED to the client minus the request's arrival
+// from it, so the link's delay both ways is in it: what the browser waits. A 101 ends the
+// observation of that connection (WebSocket frames follow). stats.json `http` reports the
+// preflights (OPTIONS answered 204) and the plain GETs, each count and p50/p95/mean/max ms.
+//
 // CLI:
 //   mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/throttle-proxy.ts \
 //     --target-host 127.0.0.1 --target-port <port> [--listen-port <port>] \
@@ -155,10 +165,16 @@ class DirectionShaper {
     private readonly bucket: TokenBucket,
     private readonly delayMs: number,
     private readonly queueLimitBytes = 0,
+    /** G7r: observes each chunk's arrival (before shaping) and its first byte's delivery. */
+    private readonly observer?: {
+      arrived?: (chunk: Buffer, atMs: number) => void;
+      delivered?: (chunk: Buffer, atMs: number) => void;
+    },
   ) {}
 
   push(chunk: Buffer): void {
     const arrivalMs = Date.now();
+    this.observer?.arrived?.(chunk, arrivalMs);
     this.pendingBytes += chunk.length;
     this.maxPendingBytes = Math.max(this.maxPendingBytes, this.pendingBytes);
     if (
@@ -197,6 +213,7 @@ class DirectionShaper {
       const piece = chunk.subarray(offset, offset + take);
       const sentAtMs = Date.now();
       record(this.latencyMs, sentAtMs - arrivalMs);
+      if (offset === 0) this.observer?.delivered?.(chunk, sentAtMs);
       if (!this.dst.write(piece)) {
         await new Promise<void>((resolve) => {
           this.dst.once("drain", resolve);
@@ -243,6 +260,59 @@ export interface ThrottleDirectionStats {
   pauses: number;
 }
 
+/** G7r: one kind of HTTP exchange the proxy saw (header comment). */
+export interface HttpExchangeStats {
+  count: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  mean_ms: number | null;
+  max_ms: number | null;
+}
+
+export function exchangeStats(values: readonly number[]): HttpExchangeStats {
+  const v = [...values].sort((a, b) => a - b);
+  const q = (p: number) =>
+    v.length === 0
+      ? null
+      : v[Math.min(v.length - 1, Math.max(0, Math.ceil(p * v.length) - 1))];
+  return {
+    count: v.length,
+    p50_ms: q(0.5),
+    p95_ms: q(0.95),
+    mean_ms: v.length ? v.reduce((a, b) => a + b, 0) / v.length : null,
+    max_ms: v.length ? v[v.length - 1] : null,
+  };
+}
+
+/** G7r: pairs one connection's requests with its responses (header comment). */
+export class HttpExchangeObserver {
+  private readonly requests: { method: string; atMs: number }[] = [];
+  private upgraded = false;
+  constructor(private readonly sink: { preflight: number[]; get: number[] }) {}
+
+  request(chunk: Buffer, atMs: number): void {
+    if (this.upgraded) return;
+    const head = chunk.subarray(0, 8).toString("latin1");
+    const method = /^(OPTIONS|GET|HEAD|POST|PUT) /.exec(head)?.[1];
+    if (method) this.requests.push({ method, atMs });
+  }
+
+  response(chunk: Buffer, atMs: number): void {
+    if (this.upgraded) return;
+    const head = chunk.subarray(0, 12).toString("latin1");
+    const m = /^HTTP\/1\.[01] (\d{3})/.exec(head);
+    if (!m) return;
+    const req = this.requests.shift();
+    if (m[1] === "101") {
+      this.upgraded = true;
+      return;
+    }
+    if (!req) return;
+    if (req.method === "OPTIONS") this.sink.preflight.push(atMs - req.atMs);
+    else if (req.method === "GET") this.sink.get.push(atMs - req.atMs);
+  }
+}
+
 export interface ThrottleProxyStats {
   schema: "render-stream-throttle-proxy-stats/1";
   rate_bytes_per_s: number;
@@ -254,6 +324,8 @@ export interface ThrottleProxyStats {
   connections: number;
   client_to_server: ThrottleDirectionStats;
   server_to_client: ThrottleDirectionStats;
+  /** G7r: the HTTP exchanges observed (header comment). */
+  http: { preflight: HttpExchangeStats; get: HttpExchangeStats };
 }
 
 export interface ThrottleProxyHandle {
@@ -329,6 +401,7 @@ export function startThrottleProxy(
   const toServerShapers: DirectionShaper[] = [];
   const toClientShapers: DirectionShaper[] = [];
   const openSockets = new Set<Socket>();
+  const httpSink = { preflight: [] as number[], get: [] as number[] };
 
   return new Promise((resolveStart, rejectStart) => {
     // allowHalfOpen (G6c): a FIN from one side must not end the other direction before what the
@@ -343,12 +416,14 @@ export function startThrottleProxy(
       });
       openSockets.add(upstream);
 
+      const http = new HttpExchangeObserver(httpSink);
       const toUpstream = new DirectionShaper(
         client,
         upstream,
         clientToServerBucket,
         profile.delayMs,
         limit,
+        { arrived: (chunk, at) => http.request(chunk, at) },
       );
       const toClient = new DirectionShaper(
         upstream,
@@ -356,6 +431,7 @@ export function startThrottleProxy(
         serverToClientBucket,
         profile.delayMs,
         limit,
+        { delivered: (chunk, at) => http.response(chunk, at) },
       );
       toServerShapers.push(toUpstream);
       toClientShapers.push(toClient);
@@ -417,6 +493,10 @@ export function startThrottleProxy(
                 connections,
                 client_to_server: directionStats(toServerShapers, durationS),
                 server_to_client: directionStats(toClientShapers, durationS),
+                http: {
+                  preflight: exchangeStats(httpSink.preflight),
+                  get: exchangeStats(httpSink.get),
+                },
               });
             });
           }),

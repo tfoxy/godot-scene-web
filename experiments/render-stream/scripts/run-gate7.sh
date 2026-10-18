@@ -123,6 +123,23 @@
 #             presentation-check (the page's canvas backing store equals presentation_size; the web
 #             half gets it too, lib/gate7-g6-checks.ts). `--live` with g7-6 runs g6l in both browsers.
 #
+# Group landed (G7r, protocol/gate7/g7r.md, gate7-design.md Q9; `--live` only): pacing, rates, the
+#   g7-r      60/60 phase study and dual receivers at credit window 1, on all three receivers. G6c's
+#             group is reused unforked (lib/gate6c-legs.sh with receiver kinds): run-gate6.sh
+#             --legs g6c runs once per receiver kind (`--receiver native|web|gsw`, else all three)
+#             with G6C_LEGS naming the kind's legs, into <out>/gate6/rates-<kind>/:
+#               native  rate-baseline, phase-60-r1..r5, phase-60-late-poll-r1..r5 (RS_RECEIVER_LATE_POLL)
+#               web     rate-baseline, rate-15/30/60, rate-uncapped-host60, rate-uncapped,
+#                       mismatch-60-recv30, phase-60-r1..r5, phase-60-late-poll-r1..r5,
+#                       dual-native, constrained
+#               gsw     web's legs without the late-poll runs, plus sabotage-ack-on-receipt
+#             The native receivers (and dual-native's /6 one) run on RS_RECEIVER_CORE (default rust
+#             here: D34 as amended demotes the GDScript decode/apply path); the web export on
+#             --web-core. G7R_LEGS (a CSV) replaces every kind's list (development). Each browser
+#             run's daemon launches its next spare browser only after a leg (GATE7_BROWSER_SPARE=
+#             after), so no Chromium start-up lands in a timed window. check-gate7.ts --live judges
+#             them (lib/gate7r-checks.ts). Timing legs: each holds the quiet lock exclusive.
+#
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
 # and rendered Godot legs share ONE private `gamescope --backend headless` (lib/gamescope.sh).
@@ -140,7 +157,16 @@ RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
 KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
-LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-dev g7-bench)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-r g7-dev g7-bench)
+
+# G7r: each receiver kind's g6c legs (lib/gate6c-legs.sh), and the native receivers' core.
+G7R_PHASE=phase-60-r1,phase-60-r2,phase-60-r3,phase-60-r4,phase-60-r5
+G7R_LATE=phase-60-late-poll-r1,phase-60-late-poll-r2,phase-60-late-poll-r3,phase-60-late-poll-r4,phase-60-late-poll-r5
+G7R_BROWSER_RATES=rate-baseline,rate-15,rate-30,rate-60,rate-uncapped-host60,rate-uncapped,mismatch-60-recv30
+G7R_LEGS_native="rate-baseline,$G7R_PHASE,$G7R_LATE"
+G7R_LEGS_web="$G7R_BROWSER_RATES,$G7R_PHASE,$G7R_LATE,dual-native,constrained"
+G7R_LEGS_gsw="$G7R_BROWSER_RATES,$G7R_PHASE,dual-native,constrained,sabotage-ack-on-receipt"
+G7R_NATIVE_CORE="${RS_RECEIVER_CORE:-rust}"
 
 OUT=""
 LEGS_ARG=""
@@ -399,8 +425,12 @@ if [ "$LIVE" = "1" ]; then
 		has_group "$group" || continue
 		LIVE_RUNS+=("$group:$rest")
 	done
-	if [ "${#LIVE_RUNS[@]}" -eq 0 ]; then
-		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6 in --legs" >&2
+	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r; then
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-r in --legs" >&2
+		exit 2
+	fi
+	if [ "$RECEIVER" = "native" ] && [ "${#LIVE_RUNS[@]}" -gt 0 ]; then
+		echo "run-gate7: --live --receiver native runs g7-r only (the other live groups are browser halves)" >&2
 		exit 2
 	fi
 	if [ ! -f "$EXTENSION" ]; then
@@ -439,7 +469,7 @@ if [ "$LIVE" = "1" ]; then
 		GSW_BUNDLE="$(realpath "$GSW_BUNDLE")"
 		LIVE_KINDS+=("gsw:$GSW_BUNDLE")
 	fi
-	for run in "${LIVE_RUNS[@]}"; do
+	for run in ${LIVE_RUNS[@]+"${LIVE_RUNS[@]}"}; do
 		group="${run%%:*}"
 		rest="${run#*:}"
 		g="${rest%%:*}"
@@ -459,6 +489,44 @@ if [ "$LIVE" = "1" ]; then
 			echo "run-gate7: run-gate$g.sh @$kind exit=$live_exit (check-gate7.ts --live judges it)" >&2
 		done
 	done
+	# G7r: run-gate6.sh --legs g6c once per receiver kind (header "Group landed (G7r)").
+	if has_group g7-r; then
+		G7R_KINDS=()
+		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "native" ]; then
+			G7R_KINDS+=("native:")
+		fi
+		G7R_KINDS+=(${LIVE_KINDS[@]+"${LIVE_KINDS[@]}"})
+		if [ "$G7R_NATIVE_CORE" = rust ] && [ ! -f "$EXPERIMENT_DIR/receiver/ext/build/librs_core_ext.so" ]; then
+			echo "run-gate7: g7-r: building the native receiver's Rust core adapter (build-rs-core-ext.sh)" >&2
+			bash "$SCRIPT_DIR/build-rs-core-ext.sh" --no-test >"$OUT/build-rs-core-ext.log" 2>&1 || {
+				echo "run-gate7: build-rs-core-ext.sh failed, see $OUT/build-rs-core-ext.log" >&2
+				exit 1
+			}
+		fi
+		mkdir -p "$OUT/gate6"
+		for kb in "${G7R_KINDS[@]}"; do
+			kind="${kb%%:*}"
+			bundle_dir="${kb#*:}"
+			legs_var="G7R_LEGS_$kind"
+			g7r_legs="${G7R_LEGS:-${!legs_var}}"
+			run_dir="$OUT/gate6/rates-$kind"
+			echo "run-gate7: g7-r @$kind: run-gate6.sh --legs g6c (G6C_LEGS=$g7r_legs) into $run_dir" >&2
+			set +e
+			if [ "$kind" = native ]; then
+				RS_RECEIVER_CORE="$G7R_NATIVE_CORE" G6C_LEGS="$g7r_legs" \
+					bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
+			else
+				GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+					GATE7_BROWSER_SPARE=after RS_RECEIVER_CORE="$G7R_NATIVE_CORE" G6C_LEGS="$g7r_legs" \
+					bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
+			fi
+			g7r_exit=$?
+			set -e
+			echo "run-gate7: g7-r run-gate6.sh @$kind exit=$g7r_exit (check-gate7.ts --live judges it)" >&2
+		done
+	fi
 	echo "run-gate7: running check-gate7.ts --live" >&2
 	cd "$REPO_ROOT"
 	set +e

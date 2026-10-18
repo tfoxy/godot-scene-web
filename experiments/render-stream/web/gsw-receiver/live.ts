@@ -615,6 +615,9 @@ class LiveReceiver {
   private readonly onFrame = (ts: number): void => {
     if (this.finished) return;
     this.rafIndex++;
+    // D13/Q9: the timestamp of the first rAF callback after a submitted ack (raf_after_submit,
+    // never `presented`), whether or not the max-fps rule then skips this callback.
+    this.perf.rafAfterSubmit(ts);
     // wm.cpp:83-97: skip a callback before target_ticks; reset after a gap over one second.
     if (this.L.maxFps > 0) {
       const current = Math.floor(performance.now() * 1000);
@@ -628,6 +631,10 @@ class LiveReceiver {
     }
     this.processFrames++;
     this.perf.raf(ts);
+    // G7r: the paced loop's cumulative counters once a second (perf.json `timeline`), the
+    // native receiver's per-second `frames` line, so the g6c checks measure this receiver's
+    // frame rate (paced callbacks; `drawn` counts those that drew) on its own clock.
+    this.perf.sampleTimeline(this.processFrames, this.drawnRafs);
     const g = this.g as GswRs;
     if (this.fenceDrawEnd >= 0 && g.poll_fence() === 1) {
       this.perf.gpuComplete.push(performance.now() - this.fenceDrawEnd);
@@ -1070,6 +1077,7 @@ class LiveReceiver {
       entry.paced.submitted_from = "raf";
       submittedMs = t / 1000;
       this.ack(seq, "submitted", t);
+      this.perf.submitted(t / 1000);
     }
     this.perf.samples.push({
       seq,

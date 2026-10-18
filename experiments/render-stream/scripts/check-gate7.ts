@@ -18,6 +18,8 @@
 // lib/gate7-live.ts checkGateLive), one result per group and receiver kind; `--web-core rust`
 // (G7xwl) judges a web run on the Rust core (receiver-core@web). G7g: the gsw half of g7-6
 // (lib/gate7-gsw-g6.ts), presentation-check on both halves, and g7-6's live g6l.
+// G7r: `--live` with g7-r judges <out>/gate6/rates-<kind>/ for each receiver kind present
+// (`--receiver native|web|gsw` asks for one; lib/gate7r-checks.ts), one result per kind.
 // G7h's harness checks are folded into `report.harness` when present. Requesting a group before
 // its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
@@ -66,6 +68,11 @@ import {
   runGate7BenchChecks,
   runGate7DevChecks,
 } from "./lib/gate7d-checks";
+import {
+  checkG7rKind,
+  G7R_KINDS,
+  type G7rKindResult,
+} from "./lib/gate7r-checks";
 import type { Gate55Expected as Gate55CimExpected } from "./lib/gate55b-expected";
 import { runGate55d } from "./lib/gate55d-checks";
 import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
@@ -108,6 +115,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-5",
   "g7-55",
   "g7-6",
+  "g7-r",
   "g7-dev",
   "g7-bench",
 ];
@@ -159,7 +167,12 @@ export interface Gate7Report {
   /** G7d: the bench's per-receiver, per-input, per-phase table (g7-bench). */
   bench_table: BenchTableRow[];
   /** G7e: one entry per requested group and receiver kind (g7-0 web; G7a: g7-0..g7-3 gsw). */
-  results: (Gate7GroupResult | GswGroupResult | LiveGroupResult)[];
+  results: (
+    | Gate7GroupResult
+    | GswGroupResult
+    | LiveGroupResult
+    | G7rKindResult
+  )[];
 }
 
 interface Args {
@@ -378,7 +391,12 @@ async function main(): Promise<void> {
     groupChecks["g7-bench"] = bench.checks;
     benchTable = bench.table;
   }
-  const results: (Gate7GroupResult | GswGroupResult | LiveGroupResult)[] = [];
+  const results: (
+    | Gate7GroupResult
+    | GswGroupResult
+    | LiveGroupResult
+    | G7rKindResult
+  )[] = [];
   // G7l: `--live` judges only the live runs (lib/gate7-live.ts), never the file legs' sources.
   const wantWeb =
     !live && (receiver === "web" || (!receiver && bundle !== undefined));
@@ -410,6 +428,24 @@ async function main(): Promise<void> {
           }),
         );
       }
+    }
+    // G7r: one result per receiver kind that ran (run-gate7.sh --live --legs g7-r).
+    if (legs.includes("g7-r")) {
+      for (const kind of G7R_KINDS) {
+        if (receiver && receiver !== kind) continue;
+        const runDir = join(out, "gate6", `rates-${kind}`);
+        if (!existsSync(runDir)) {
+          if (receiver === kind)
+            throw new Error(`check-gate7: --live g7-r@${kind}: no ${runDir}`);
+          continue;
+        }
+        console.log(`check-gate7: judging g7-r @${kind} (${runDir})`);
+        results.push(await checkG7rKind(out, kind, webCore));
+      }
+      if (!results.some((r) => r.group === "g7-r"))
+        throw new Error(
+          "check-gate7: --live g7-r: no <out>/gate6/rates-<kind>/",
+        );
     }
   }
   if (legs.includes("g7-0") && wantWeb) {
@@ -561,6 +597,11 @@ async function main(): Promise<void> {
     if ("not_applicable" in r)
       for (const n of r.not_applicable)
         console.log(`N/A   ${r.group}  ${n.id}  ${n.reason}`);
+    if ("phase" in r)
+      for (const p of r.phase)
+        console.log(
+          `phase  g7-r@${r.kind}  ${p.variant} r${p.run}  published ${p.published?.toFixed(2)}/s  credit RTT mean ${p.credit_rtt_mean_frames?.toFixed(2)} frames  hold p50/p95 ${p.hold_p50_us}/${p.hold_p95_us} us  ${p.class}`,
+        );
     if ("cadence" in r)
       for (const c of r.cadence)
         console.log(
