@@ -542,6 +542,40 @@ export interface LiveGroupInput {
   viewsDir: string;
   /** G7xwl: the web export's expected core (run-gate7.sh --web-core; default rust since G7xd). */
   core?: "gdscript" | "rust";
+  /** G7wf: the web export's expected payload GET mechanism (run-gate7.sh --web-fetch; default
+   * fetch). */
+  webFetch?: "fetch" | "httpclient";
+}
+
+/** G7wf: why a live web leg did not fetch its payloads through `want` (empty when it did, or when
+ * the leg wrote no applied.json `live` object: a usage refusal, judged by its own checks). The
+ * receiver records the mechanism it ran as applied.json `live.fetch_impl` (`browser-fetch` or
+ * `httpclient`, web only); `fetches` counts the leg's GETs for the check's detail. */
+export async function fetchImplProblems(
+  dir: string,
+  leg: string,
+  want: "fetch" | "httpclient",
+): Promise<{ problems: string[]; fetches: number; judged: boolean }> {
+  const applied = await readJson<{
+    live?: { fetch_impl?: unknown } | null;
+    fetches?: { source?: string }[] | null;
+  }>(join(dir, "applied.json"));
+  if (!applied?.live) return { problems: [], fetches: 0, judged: false };
+  const expected = want === "fetch" ? "browser-fetch" : "httpclient";
+  const got = applied.live.fetch_impl;
+  const fetches = (applied.fetches ?? []).filter(
+    (f) => f.source === "http",
+  ).length;
+  return {
+    problems:
+      got === expected
+        ? []
+        : [
+            `${leg}: applied.json live.fetch_impl ${JSON.stringify(got ?? null)}, want ${expected}`,
+          ],
+    fetches,
+    judged: true,
+  };
 }
 
 /** The side module a `--core rust` web bundle loads beside the engine (build-rs-core-web.sh). */
@@ -627,6 +661,7 @@ export async function checkGateLive(
 ): Promise<LiveGroupResult> {
   const { def, kind, viewsDir } = input;
   const core = input.core ?? "rust";
+  const webFetch = input.webFetch ?? "fetch";
   // Real path: a native strace leg records the real one (buildMirrorView relocates by it).
   const runDir = realpathSync(input.runDir);
   const checks: Gate7Check[] = [];
@@ -806,6 +841,9 @@ export async function checkGateLive(
   const hello: string[] = [];
   const paced: string[] = [];
   const coreBad: string[] = [];
+  const fetchBad: string[] = [];
+  let fetchLegs = 0;
+  let fetchGets = 0;
   let helloConnections = 0;
   let pacedLegs = 0;
   const expectedKind = kind === "web" ? "web-export" : "gsw-canvas";
@@ -819,6 +857,12 @@ export async function checkGateLive(
     const page = await readJson<PageConfig>(join(dir, "page-config.json"));
     const env = page?.env ?? {};
     if (env.RS_RECEIVER_MODE !== "live") continue;
+    if (kind === "web") {
+      const f = await fetchImplProblems(dir, leg, webFetch);
+      fetchBad.push(...f.problems);
+      if (f.judged) fetchLegs++;
+      fetchGets += f.fetches;
+    }
     // The leg's host: <leg>/host beside <leg>/receiver.
     const legRoot = leg.endsWith("/receiver")
       ? leg.slice(0, -"/receiver".length)
@@ -878,6 +922,19 @@ export async function checkGateLive(
           : "G7xwl: every web leg ran the GDScript core (no `core rust` log line; applied.json `receiver.core` gdscript)",
         coreBad,
         `${browserLegs.length} legs on the ${core} core`,
+      ),
+    );
+  if (kind === "web")
+    checks.push(
+      mk(
+        `fetch-impl@${kind}`,
+        webFetch === "fetch"
+          ? "G7wf: every live web leg fetched its payloads with the browser's fetch() (applied.json live.fetch_impl browser-fetch), not Godot's web HTTPClient"
+          : "G7wf (the A/B's pre-G7wf arm): every live web leg fetched its payloads with Godot's web HTTPClient (live.fetch_impl httpclient)",
+        fetchLegs === 0
+          ? ["no live web leg wrote applied.json live"]
+          : fetchBad,
+        `${fetchLegs} live legs, ${fetchGets} GETs, ${webFetch === "fetch" ? "browser-fetch" : "httpclient"}`,
       ),
     );
   checks.push(

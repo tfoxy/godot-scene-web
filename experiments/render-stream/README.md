@@ -58,6 +58,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7g | gate 6 scene and HD on both browsers, both web cores — landed | [results/gate7/g7g.md](results/gate7/g7g.md) |
 | G7u | suspension and lifecycle | [protocol/gate7/g7u.md](protocol/gate7/g7u.md) |
 | G7r | pacing, rates, phase study, dual on all three receivers (window 1): native 45/45, gsw 59/59, web 76/78 (its fetch tail); no variant holds 60/60 on every phase — landed | [results/gate7/g7r.md](results/gate7/g7r.md) |
+| G7wf | the web export's payload GETs through the browser's `fetch` (`JavaScriptBridge`, both web cores): 66.2→2.8 ms p50; web `g7-r` 79/79, `rate-achieved` at 15/30 now passes, good phase 58.4–59.0/s; `fetch-impl@web` — landed | [results/gate7/g7wf.md](results/gate7/g7wf.md) |
 | G7k | startup, memory, soak | [protocol/gate7/g7k.md](protocol/gate7/g7k.md) |
 | G7q | credit window 2 — fork F1, opt-in | [protocol/gate7/g7q.md](protocol/gate7/g7q.md) |
 | G7v | phone acceptance on both phones, g31 first | [protocol/gate7/g7v.md](protocol/gate7/g7v.md) |

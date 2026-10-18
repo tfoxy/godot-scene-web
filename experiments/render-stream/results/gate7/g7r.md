@@ -175,7 +175,9 @@ Findings:
    The cause is Godot's web `HTTPClient`. Every state change is a JavaScript promise that resolves
    between rAF callbacks, so one GET needs about four iterations however fast the link is. GSW
    proves the browser itself is not slow. The fix is a JavaScript-side fetcher for the web export,
-   which is G7p's (fetch) or G7v's call. G7r only measures it.
+   which is G7p's (fetch) or G7v's call. G7r only measures it. *(G7wf, 2026-10-18, built it:
+   the browser's `fetch` through `JavaScriptBridge`, 2.8 ms per GET; the web's `g7-r` is 79/79,
+   [g7wf.md](g7wf.md).)*
 
 ### Rates per receiver (r3, the merged-tree headline run)
 

@@ -3055,3 +3055,20 @@ GPUCache/ShaderCache/GraphiteDawnCache have no evidence value and ran ~250 MB pe
   skips in `lib/gate7-live.ts` (`grepTree`, `discoverBrowserLegs`, `bandSubstitutions`) are now
   defensive no-ops, since no profile lands under `--out` any more.
 - No check or sabotage changed; see the result doc for what was re-run.
+
+### G7wf: the web export's payload GETs through the browser's `fetch`
+
+G7wf ([../protocol/gate7/g7wf.md](../protocol/gate7/g7wf.md),
+[../results/gate7/g7wf.md](../results/gate7/g7wf.md)) moves the web export's live payload GETs
+from Godot's web `HTTPClient` (four main-loop iterations, about 66 ms, per GET; G7r) to the
+browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetcher.gd`).
+
+- `run-gate7.sh --live --web-fetch fetch|httpclient` (default `fetch`) passes `GATE7_WEB_FETCH` to
+  every gate runner's browser daemon. `httpclient` makes `coreEnv` (`lib/gate7-live-legs.ts`)
+  add `RS_RECEIVER_WEB_FETCH=httpclient` to every web leg: the pre-G7wf path, kept for the A/B.
+- `check-gate7.ts --live --web-fetch <mechanism>` adds `fetch-impl@web` to every live web group
+  and to `g7-r@web`. It fails a live web leg whose applied.json `live.fetch_impl` is not
+  `browser-fetch` (or `httpclient` on the A/B arm). The sabotage is the A/B arm judged as `fetch`.
+- On the browser path each applied.json `fetches[]` entry gains `browser`: `headers_ms`,
+  `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
+  the main-loop iterations completed before the callback.

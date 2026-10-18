@@ -96,7 +96,9 @@ extends Node
 ## written to the cache. Each is verified against its SHA-256 name and decoded first
 ## (resource-hash-mismatch, resource-unavailable, resource-invalid otherwise). In live mode with
 ## `fetch: "http"` (G2c2) a miss is fetched with RsResourceFetcher, `GET <http_path><hash>` on the
-## RS_RECEIVER_URL host and port, one keep-alive HTTPClient, sequentially, polled from _process:
+## RS_RECEIVER_URL host and port, one keep-alive HTTPClient (on the web export the browser's
+## own fetch() through JavaScriptBridge, G7wf: RS_RECEIVER_WEB_FETCH), sequentially, polled
+## from _process:
 ## the transaction waits (unapplied, unacknowledged beyond `received`) until every payload it
 ## needs is in, and the rendered loop keeps presenting the previous state meanwhile. After a
 ## reconnect the payloads held in memory are dropped (RS_RECEIVER_RECONNECT_MEMORY=drop, the
@@ -163,6 +165,11 @@ extends Node
 ##                               frame_post_draw. Unset (default) or 0: _process, exactly as before.
 ##                               Rendered only: under --headless nothing draws, so it is a usage
 ##                               error there. applied.json `live.late_poll` is true only when set.
+##   RS_RECEIVER_WEB_FETCH       G7wf (web only; a usage error natively): `fetch` (default) GETs
+##                               payloads with the browser's fetch() through JavaScriptBridge,
+##                               `httpclient` with Godot's web HTTPClient as before G7wf (four
+##                               main-loop iterations per GET, G7r; kept for the A/B). The web's
+##                               applied.json `live.fetch_impl` is `browser-fetch` or `httpclient`.
 ## The /7 hello's presentation integers are the window's backing size and the display scale
 ## (dpr_milli = round(scale * 1000)); a headless receiver sends the project's viewport size and 1000.
 ## File mode replays a GRS7 recording (a live receiver's received.rs7) with the /7 decoder; every
@@ -343,6 +350,9 @@ var _digest_entries: Array[Array] = []
 var _live: bool = false
 ## G7r: RS_RECEIVER_LATE_POLL=1 (_process_live runs from frame_pre_draw instead of _process).
 var _late_poll: bool = false
+## G7wf: the web export fetches payloads with the browser's fetch() (RS_RECEIVER_WEB_FETCH unset or
+## `fetch`), or with HTTPClient as before (`httpclient`, kept for the A/B). Always false natively.
+var _web_fetch: bool = false
 var _client: RsLiveClient = null
 var _live_report: Dictionary = {}
 var _live_phase: String = ""  # connecting | streaming | draining
@@ -897,7 +907,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 		var fetch_token: String = _token
 		if _sabotage == "wrong-http-token" and fetch_token != "":
 			fetch_token += "-wrong"
-		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms, fetch_token)
+		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms, fetch_token, _web_fetch)
 	var blocks: Array = record["blocks"]
 	_applier.sabotage_reupload = _sabotage == "reupload"
 	_applier.sabotage_ignore_clip = _sabotage == "ignore-clip"
@@ -1629,6 +1639,16 @@ func _ready_live() -> void:
 		_log("error: RS_RECEIVER_LATE_POLL=1 needs a drawing main loop (frame_pre_draw never fires under --headless)")
 		_quit(EXIT_USAGE)
 		return
+	var web_fetch: String = RsConfig.get_env("RS_RECEIVER_WEB_FETCH").strip_edges()
+	if web_fetch != "" and not RsConfig.is_web():
+		_log("error: RS_RECEIVER_WEB_FETCH is web only; a native receiver fetches through HTTPClient")
+		_quit(EXIT_USAGE)
+		return
+	if web_fetch != "" and web_fetch != "fetch" and web_fetch != "httpclient":
+		_log("error: RS_RECEIVER_WEB_FETCH must be fetch, httpclient or unset (got %s)" % JSON.stringify(web_fetch))
+		_quit(EXIT_USAGE)
+		return
+	_web_fetch = RsConfig.is_web() and web_fetch != "httpclient"
 	if not _parse_wire_env():
 		_quit(EXIT_USAGE)
 		return
@@ -1713,6 +1733,9 @@ func _ready_live() -> void:
 	if _late_poll:
 		# Only when set, so every other live leg's applied.json is byte-for-byte what it was.
 		_live_report["late_poll"] = true
+	if RsConfig.is_web():
+		# G7wf: the web export's payload GET mechanism (never on a native receiver's report).
+		_live_report["fetch_impl"] = "browser-fetch" if _web_fetch else "httpclient"
 	_report["live"] = _live_report
 	_stream_report = {
 		"stream_id": null,
@@ -2222,6 +2245,9 @@ func _poll_fetches() -> void:
 			"status": result["status"], "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
 			"verified": false, "delay_us": result["delay_us"], "headers": result["headers"],
 		}
+		if result.has("browser"):
+			# G7wf (web, browser fetch only): the page clock's headers_ms/body_ms/callback_ms.
+			fetch_entry["browser"] = result["browser"]
 		# G6s: dropped under RS_RECEIVER_LOG=summary (fetch_entry is still mutated below, just
 		# never kept).
 		if _log_mode != "summary":

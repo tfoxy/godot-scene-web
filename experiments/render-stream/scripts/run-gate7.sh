@@ -9,6 +9,7 @@
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
 #     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core rust|gdscript]
+#     [--web-fetch fetch|httpclient]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -65,6 +66,13 @@
 # on the chosen core too (GATE7_WEB_CORE to the gate runners' browser daemon; check-gate7.ts
 # --live --web-core <core> adds receiver-core@web, which fails a leg that did not decode and apply
 # through the requested core).
+#
+# --web-fetch fetch|httpclient (G7wf, protocol/gate7/g7wf.md; --live only): how the web export
+# GETs resource payloads. `fetch` (the default) is the browser's fetch() through JavaScriptBridge;
+# `httpclient` (GATE7_WEB_FETCH to the browser daemon, RS_RECEIVER_WEB_FETCH=httpclient on every
+# web leg) is Godot's web HTTPClient, the pre-G7wf path, kept for the A/B. check-gate7.ts
+# --web-fetch adds fetch-impl@web, which fails a live web leg whose applied.json
+# `live.fetch_impl` is not the requested mechanism.
 #
 # Groups landed (G7a, the GSW canvas receiver on the shared Rust core, gate7-design.md "G7a"):
 #   g7-0..g7-3  gates 0 to 3's file-mode receiver legs in the GSW canvas receiver (`gsw`), and
@@ -184,6 +192,7 @@ PLAN_ONLY=0
 SKIP_HARNESS_SELFTEST=0
 BUNDLE=""
 WEB_CORE="rust"
+WEB_FETCH="fetch"
 GSW_BUNDLE=""
 RS_BUILD=""
 LIVE=0
@@ -265,6 +274,10 @@ while [ $# -gt 0 ]; do
 		WEB_CORE="${2:-}"
 		shift 2
 		;;
+	--web-fetch)
+		WEB_FETCH="${2:-}"
+		shift 2
+		;;
 	--rs-build)
 		RS_BUILD="${2:-}"
 		shift 2
@@ -314,6 +327,13 @@ case "$WEB_CORE" in
 gdscript | rust) ;;
 *)
 	echo "run-gate7: --web-core must be gdscript or rust (got $WEB_CORE)" >&2
+	exit 2
+	;;
+esac
+case "$WEB_FETCH" in
+fetch | httpclient) ;;
+*)
+	echo "run-gate7: --web-fetch must be fetch or httpclient (got $WEB_FETCH)" >&2
 	exit 2
 	;;
 esac
@@ -484,7 +504,7 @@ if [ "$LIVE" = "1" ]; then
 			echo "run-gate7: $group live @$kind: run-gate$g.sh --legs $runner_legs into $run_dir" >&2
 			set +e
 			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
-				bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+				GATE7_WEB_FETCH="$WEB_FETCH" bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 				--binary "$BINARY" --out "$run_dir" --legs "$runner_legs" >"$OUT/gate$g/live-$kind.log" 2>&1
 			live_exit=$?
 			set -e
@@ -520,7 +540,7 @@ if [ "$LIVE" = "1" ]; then
 					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
 			else
 				GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
-					GATE7_BROWSER_SPARE=after RS_RECEIVER_CORE="$G7R_NATIVE_CORE" G6C_LEGS="$g7r_legs" \
+					GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after RS_RECEIVER_CORE="$G7R_NATIVE_CORE" G6C_LEGS="$g7r_legs" \
 					bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
 			fi
@@ -534,7 +554,7 @@ if [ "$LIVE" = "1" ]; then
 	set +e
 	gate7_checker mise exec -- pnpm exec tsx --conditions=development \
 		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live --web-core "$WEB_CORE" \
-		${RECEIVER:+--receiver "$RECEIVER"}
+		--web-fetch "$WEB_FETCH" ${RECEIVER:+--receiver "$RECEIVER"}
 	exit $?
 fi
 

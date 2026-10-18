@@ -30,6 +30,8 @@
 //     /run?dir=…&port=…&timeout_s=…) with the next leg's fresh browser already launched and
 //     checked; exits when <pid> is gone. `--core` (default GATE7_WEB_CORE, else rust; G7xwl, G7xd)
 //     is the web export's core, and GATE7_WEB_CORE_SABOTAGE=drop-env is its harness sabotage.
+//     GATE7_WEB_FETCH=httpclient (G7wf; default fetch) runs every web leg's payload GETs on
+//     Godot's web HTTPClient (RS_RECEIVER_WEB_FETCH=httpclient), the pre-G7wf path, for the A/B.
 //     `--spare during|after` (default GATE7_BROWSER_SPARE, else during; G7r): when the next leg's
 //     browser is launched, while this leg runs (G7l) or once it has finished (timing legs)
 
@@ -52,6 +54,7 @@ import {
   runBrowserReceiver,
   serveBrowserDaemon,
   webCoreOf,
+  webFetchOf,
 } from "./lib/gate7-live-legs";
 import { runWebLegs } from "./lib/gate7-web-legs";
 import {
@@ -315,6 +318,10 @@ async function main(): Promise<void> {
         opt("--core", "GATE7_WEB_CORE"),
         process.env.GATE7_WEB_CORE_SABOTAGE,
       ),
+      // G7wf: GATE7_WEB_FETCH (run-gate7.sh --web-fetch), the web export's payload GETs.
+      ...(kind === "web"
+        ? { webFetch: webFetchOf(process.env.GATE7_WEB_FETCH) }
+        : {}),
     } as const;
     if (command === "browser-daemon") {
       const spare = opt("--spare", "GATE7_BROWSER_SPARE") || "during";

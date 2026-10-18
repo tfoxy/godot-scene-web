@@ -188,6 +188,8 @@ interface Args {
   live: boolean;
   /** G7xwl: the web export's expected core on a live run (`--web-core`, default rust since G7xd). */
   webCore: "gdscript" | "rust";
+  /** G7wf: the web export's expected payload GET mechanism on a live run (`--web-fetch`). */
+  webFetch: "fetch" | "httpclient";
 }
 
 function parseArgs(argv: string[]): Args {
@@ -200,6 +202,7 @@ function parseArgs(argv: string[]): Args {
   let receiver: string | undefined;
   let live = false;
   let webCore: "gdscript" | "rust" = "rust";
+  let webFetch: "fetch" | "httpclient" = "fetch";
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") {
       out = argv[++i];
@@ -227,6 +230,13 @@ function parseArgs(argv: string[]): Args {
           `check-gate7: --web-core is gdscript or rust, not ${v}`,
         );
       webCore = v;
+    } else if (argv[i] === "--web-fetch") {
+      const v = argv[++i];
+      if (v !== "fetch" && v !== "httpclient")
+        throw new Error(
+          `check-gate7: --web-fetch is fetch or httpclient, not ${v}`,
+        );
+      webFetch = v;
     }
   }
   if (!out) throw new Error("check-gate7: --out <evidence dir> is required");
@@ -244,6 +254,7 @@ function parseArgs(argv: string[]): Args {
     receiver,
     live,
     webCore,
+    webFetch,
   };
 }
 
@@ -349,6 +360,7 @@ async function main(): Promise<void> {
     receiver,
     live,
     webCore,
+    webFetch,
   } = parseArgs(process.argv.slice(2));
 
   for (const g of legs) {
@@ -425,6 +437,7 @@ async function main(): Promise<void> {
             runDir,
             viewsDir: join(out, def.gate, `live-${kind}-views`),
             core: webCore,
+            webFetch,
           }),
         );
       }
@@ -440,7 +453,7 @@ async function main(): Promise<void> {
           continue;
         }
         console.log(`check-gate7: judging g7-r @${kind} (${runDir})`);
-        results.push(await checkG7rKind(out, kind, webCore));
+        results.push(await checkG7rKind(out, kind, webCore, webFetch));
       }
       if (!results.some((r) => r.group === "g7-r"))
         throw new Error(

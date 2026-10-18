@@ -463,6 +463,18 @@ findings:
 
 `RS_RECEIVER_PROTOCOL` and the /7 hello wait for G7w and G7n (G7l).
 
+**As built (G7wf, 2026-10-18; [results/gate7/g7wf.md](../results/gate7/g7wf.md)).** Live resource
+payload GETs on the web export no longer go through `HTTPClient`. `rs_resource_fetcher.gd` calls
+the browser's own `fetch()` through `JavaScriptBridge` (`RS_RECEIVER_WEB_FETCH`, default `fetch`;
+`httpclient` keeps the old path for the A/B). The request is the same: the same URL, and
+`Authorization: Bearer` only with a token, so a token-less GET is never preflighted (D3). The
+cache rules are the same, and so is verification before use (D31).
+- **Latency.** A GET completes in its promise callback between frames: 2.8/4.5 ms p50/p95,
+  against 66.2/66.7 ms over `HTTPClient`.
+- **Rates.** The web export now meets `rate-achieved` at 15/s and 30/s. Its good-phase runs
+  publish 58.4–59.0/s, as GSW's do.
+- **Unchanged.** File-mode sources (`rs_io.gd`) and native receivers still use `HTTPClient`.
+
 ## Q5. The GSW canvas receiver
 
 `experiments/render-stream/web/gsw-receiver/`, bundled by esbuild with `conditions:["development"]`
@@ -1515,6 +1527,8 @@ flowchart LR
     G7r --> G7p[G7p measurement matrix, report/2]
     G7k --> G7p
     G7q -. if approved .-> G7p
+    G7r --> G7wf[G7wf web export payload GETs through the browser's fetch]
+    G7wf --> G7v
     G7r --> G7v{{G7v phone acceptance - g31 floor, then g86 attended}}
     G7k --> G7v
     G7q --> G7v
@@ -1554,9 +1568,10 @@ Each increment's design detail and "As built" notes live in its own `gate7/<id>.
 | [G7g](gate7/g7g.md) | opus | 5 | no | G7b, G7t, G7tm, G7s, G7l; gate 6 complete through G6s |
 | [G7u](gate7/g7u.md) | sonnet | 5 | no | G7l |
 | [G7r](gate7/g7r.md) | opus | 6 | no | G7g, G6c |
+| [G7wf](gate7/g7wf.md) | opus (rs-increment agent) | 6 | no (G7r's finding) | G7r, G7xd (both landed) |
 | [G7k](gate7/g7k.md) | sonnet | 6 | no | G7g, G7u, G6s |
 | [G7q](gate7/g7q.md) | opus | 7 | no; F1 approved 2026-10-14 (opt-in) | G7r |
-| [G7v](gate7/g7v.md) | opus | 8 | no. g31 device arms unattended while it is attached; **g86 device arms operator-attended**; control arms unattended | G7r, G7k, G7q, G7d, G7x; G7xw if it landed (the web export's arms otherwise run GDScript) |
+| [G7v](gate7/g7v.md) | opus | 8 | no. g31 device arms unattended while it is attached; **g86 device arms operator-attended**; control arms unattended | G7r, G7wf, G7k, G7q, G7d, G7x; G7xw if it landed (the web export's arms otherwise run GDScript) |
 | [G7p](gate7/g7p.md) | sonnet | 9 | no | G7r, G7k, G7v, G6p (G7q if approved) |
 | [G7z](gate7/g7z.md) | sonnet | 10 | no | G7p, G6z (and everything before) |
 

@@ -100,7 +100,22 @@ export interface BrowserRunContext {
    * RS_RECEIVER_CORE out, so the rust-capable bundle silently runs the Rust core instead (G7xd:
    * rust is the bundle's own unset-env default); `receiver-core@web` must fail it. */
   coreSabotage?: "drop-env";
+  /** G7wf (web only): the payload GET mechanism, from GATE7_WEB_FETCH. `fetch` (the default) is
+   * the browser's fetch() and adds nothing to the page; `httpclient` adds
+   * RS_RECEIVER_WEB_FETCH=httpclient (Godot's web HTTPClient, the pre-G7wf path, for the A/B). */
+  webFetch?: WebFetch;
   log?: (line: string) => void;
+}
+
+/** G7wf: the web export's payload GET mechanism (RS_RECEIVER_WEB_FETCH). */
+export type WebFetch = "fetch" | "httpclient";
+
+/** G7wf: GATE7_WEB_FETCH, unset or "" meaning `fetch`. */
+export function webFetchOf(text: string | undefined): WebFetch {
+  const v = text === undefined || text === "" ? "fetch" : text;
+  if (v !== "fetch" && v !== "httpclient")
+    throw new Error(`GATE7_WEB_FETCH must be fetch or httpclient (got ${v})`);
+  return v;
 }
 
 /** G7xwl: the web context's core from GATE7_WEB_CORE / GATE7_WEB_CORE_SABOTAGE, refusing a
@@ -147,13 +162,19 @@ export function webCoreOf(
  * only makes sense on a `gdscript` run now: dropping the word lets the rust-capable bundle fall
  * back to its own default, rust, instead of the requested gdscript). */
 export function coreEnv(
-  ctx: Pick<BrowserRunContext, "kind" | "core" | "coreSabotage">,
+  ctx: Pick<BrowserRunContext, "kind" | "core" | "coreSabotage" | "webFetch">,
 ): Record<string, string> {
-  return ctx.kind === "web" &&
+  return {
+    ...(ctx.kind === "web" &&
     ctx.core === "gdscript" &&
     ctx.coreSabotage !== "drop-env"
-    ? { RS_RECEIVER_CORE: "gdscript" }
-    : {};
+      ? { RS_RECEIVER_CORE: "gdscript" }
+      : {}),
+    // G7wf: only the A/B's pre-G7wf arm names the mechanism; the default page env is unchanged.
+    ...(ctx.kind === "web" && ctx.webFetch === "httpclient"
+      ? { RS_RECEIVER_WEB_FETCH: "httpclient" }
+      : {}),
+  };
 }
 
 export interface BrowserLegRequest {

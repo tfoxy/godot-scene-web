@@ -171,7 +171,8 @@ gate0_tool() {
 # (required: build-web-receiver.sh's bundle/ or the GSW bundle), GATE7_STATIC_ROOT (default $OUT),
 # GATE7_BUILD_SHA256 and GATE7_MANIFEST_SHA256 (optional), GATE7_PAGE_PORT (one leg's page port,
 # e.g. origin-refused's non-allowed one; reset after the call), GATE7_WEB_CORE (G7xwl: gdscript
-# or rust, the web export's core; read by the daemon, as is GATE7_WEB_CORE_SABOTAGE).
+# or rust, the web export's core; read by the daemon, as is GATE7_WEB_CORE_SABOTAGE), GATE7_WEB_FETCH
+# (G7wf: fetch, the default, or httpclient, the web export's payload GETs; read by the daemon).
 # LIVE_RECEIVED_NAME is the live receiver's received tap: received.rs2 (/6, native) or
 # received.rs7 (/7, a browser receiver).
 GATE7_LIVE_KIND="${GATE7_LIVE_KIND:-}"
@@ -199,7 +200,7 @@ if [ -n "$GATE7_LIVE_KIND" ]; then
 		GATE7_HOST_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 	fi
 	LIVE_RECEIVED_NAME="received.rs7"
-	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, web core ${GATE7_WEB_CORE:-rust}, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
+	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, web core ${GATE7_WEB_CORE:-rust}, web fetch ${GATE7_WEB_FETCH:-fetch}, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
 	gate7_daemon_dir="$OUT/gate7-browser"
 	mkdir -p "$gate7_daemon_dir"
 	rm -f "$gate7_daemon_dir/daemon.json"
