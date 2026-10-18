@@ -71,8 +71,10 @@ GDScript) did not arise.
   - refuses a bundle whose copy of the module differs;
   - records `core`, the preset index and `rs_core_web` in `build.json`.
 
-  The default (`gdscript`) build is G7e's. Its `.pck` lists 18 entries, and the rust bundle's
-  lists 20: the same 18 (all identical except `uid_cache.bin`), plus `ext/rs_core.gdextension` and
+  G7e's (`gdscript`, `--core` unset at the time) build was still the default when this landed;
+  G7xd (2026-10-17) flipped `build-web-receiver.sh`'s own default to `rust`, so `gdscript` now
+  needs an explicit `--core gdscript`. Its `.pck` lists 18 entries, and the rust bundle's lists
+  20: the same 18 (all identical except `uid_cache.bin`), plus `ext/rs_core.gdextension` and
   `.godot/extension_list.cfg`.
 - **The index-region guard** (`rs_core_ext.cpp`, `#ifdef __EMSCRIPTEN__`). It applies to the one
   opcode that ends in `mesh_surface_update_index_region`. Two EM_JS functions wrap that
@@ -288,8 +290,10 @@ exit.
 - **The web export on the g31.** The two misses need different fixes. `hd-patch` needs a cut in
   apply, and this bench does not split the adapter's share of apply from the engine's. `scene-full`
   could use D31's deferred digest in the Godot adapters, which would take the digest out of its
-  decode. A web owner (G7v or a G7o follow-up) decides. The native default stays `gdscript` (D34), and the web export's default
-  stays the `Web` preset.
+  decode. A web owner (G7v or a G7o follow-up) decides. *(As written, the native default stayed
+  `gdscript` (D34) and the web export's default stayed the `Web` preset; G7xd, 2026-10-17, flipped
+  both to `rust`/`Web (rust core)` behind a full milestone sweep, with `gdscript` frozen at /7 and
+  kept selectable.)*
 - **Startup and memory** (G7k). See D15 above.
 
 Evidence (ignored, in this worktree's `artifacts/render-stream/g7xw/`):

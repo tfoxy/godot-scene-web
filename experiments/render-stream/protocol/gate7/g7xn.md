@@ -22,6 +22,8 @@ it. Void if F4 is declined, because G7xn has no other consumer in gate 7.
 
 - **As built (G7xn, 2026-10-16; [results/gate7/g7xn.md](../../results/gate7/g7xn.md)).** Every
   native receiver leg of gates 0 to 6 reproduces under `rust`. The default stays `gdscript`.
+  *(G7xd, 2026-10-17, flipped this: `rust` is now the native default, behind a full milestone
+  sweep; `gdscript` is frozen at /7 and stays selectable.)*
   - **Shape.** `rs-core-capi` is a staticlib on stable 1.95.0 with no new crates. `core.rs` wraps
     the `Validator` (render-stream/6, `Inline` digest). `plan.rs` ports `rs_applier.gd` (its rules,
     order, `rs_calls`, stats and 15 sabotages) into a RenderingServer call stream of 65 opcodes. It

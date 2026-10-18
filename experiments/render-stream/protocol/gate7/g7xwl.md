@@ -49,6 +49,10 @@
     leaves `RS_RECEIVER_CORE` out. The bundle still loads the side module, and the receiver
     silently runs GDScript. `receiver-core@web` must fail on every browser leg and nothing else
     may fail. This is the fallback a silent build or flag regression would produce.
+    *(G7xd, 2026-10-17, flipped the native/web default to `rust`: the meaningful drop-env run is
+    now `--web-core gdscript` + drop-env, where the bundle's own unset-env default, rust, is what
+    silently runs instead; `coreEnv`/`webCoreOf` in `lib/gate7-live-legs.ts` carry the updated
+    rule, and `--web-core rust` + drop-env is now a no-op since rust already adds no env word.)*
   - `--web-core rust` with a `gdscript` bundle is refused by `run-gate7.sh` and by the daemon,
     never run.
 - **Re-runs** (gate7-design.md "Re-runs": `receiver/` and the Rust crates):

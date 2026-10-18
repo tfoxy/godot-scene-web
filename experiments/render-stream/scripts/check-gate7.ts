@@ -186,7 +186,7 @@ interface Args {
   receiver: string | undefined;
   /** G7l: judge only the live runs (`<out>/<gate>/live-<kind>/`) of the requested groups. */
   live: boolean;
-  /** G7xwl: the web export's expected core on a live run (`--web-core`, default gdscript). */
+  /** G7xwl: the web export's expected core on a live run (`--web-core`, default rust since G7xd). */
   webCore: "gdscript" | "rust";
 }
 
@@ -199,7 +199,7 @@ function parseArgs(argv: string[]): Args {
   let extension: string | undefined;
   let receiver: string | undefined;
   let live = false;
-  let webCore: "gdscript" | "rust" = "gdscript";
+  let webCore: "gdscript" | "rust" = "rust";
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") {
       out = argv[++i];

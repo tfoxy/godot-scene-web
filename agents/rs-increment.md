@@ -19,10 +19,19 @@ cd .worktrees/<increment-name>
 mise trust mise.toml
 experiments/render-stream/scripts/build-capture.sh
 mise exec -- godot --headless --path experiments/render-stream/receiver --import
+experiments/render-stream/scripts/build-rs-core-ext.sh
 ```
-The last step is required once per fresh worktree — without it every `class_name` reference in
-the receiver degrades to `Variant` and every `--script` run fails with parse errors that look like
-a code bug but are not.
+The `--import` step is required once per fresh worktree — without it every `class_name` reference
+in the receiver degrades to `Variant` and every `--script` run fails with parse errors that look
+like a code bug but are not.
+
+`build-rs-core-ext.sh` is required once per fresh worktree too, since G7xd (2026-10-17): the
+native receiver's `RS_RECEIVER_CORE` now defaults to `rust`, so *every* native receiver launch
+that doesn't explicitly pick `gdscript` tries to load `receiver/ext/rs_core.gdextension` — a
+GDExtension built from `rs-core-capi`, not a checked-in binary. Without this step, even a plain
+`run-gate0.sh` fails every leg with `RS_RECEIVER_CORE=rust, but the adapter is unavailable`
+(`GDExtensionManager.load_extension` returns a nonzero error), which looks like a receiver bug
+but is a missing one-time build.
 
 ## Commit rules
 

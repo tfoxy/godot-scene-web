@@ -8,7 +8,7 @@
 #     [--extension X.gdextension] [--calibration record.json] [--binary template] \
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
-#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core gdscript|rust]
+#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core rust|gdscript]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -56,13 +56,15 @@
 #             <out>/gate0/web/<leg>/; check-gate7.ts judges them with gate 0's own checker
 #             (lib/gate7-adapters.ts). Sources are recorded in <out>/sources.json.
 #
-# --web-core rust (G7xw, gate7-design.md "G7xw", Q14e): every web-export leg and the web bench arm
-# run on the shared Rust core through its dlink side module: build-web-receiver.sh --core rust
-# (or `--bundle`, such a build), gate7-tool.ts web-legs --core rust (RS_RECEIVER_CORE=rust on
-# every leg) and gate7-bench.ts --arm web --core rust. The default (gdscript) is G7e's/G7b's.
-# With --live (G7xwl), the web live legs and their received.rs7 replays run on it too
-# (GATE7_WEB_CORE=rust to the gate runners' browser daemon; check-gate7.ts --live --web-core rust
-# adds receiver-core@web, which fails a leg that did not decode and apply through the core).
+# --web-core rust|gdscript (G7xw, gate7-design.md "G7xw", Q14e; G7xd made rust the default): every
+# web-export leg and the web bench arm run on the shared Rust core through its dlink side module:
+# build-web-receiver.sh --core rust (or `--bundle`, such a build), gate7-tool.ts web-legs --core
+# rust (RS_RECEIVER_CORE=rust on every leg) and gate7-bench.ts --arm web --core rust. That is now
+# the default; --web-core gdscript selects G7e's/G7b's frozen GDScript build (/7, milestone sweeps
+# only, D34 amended). With --live (G7xwl), the web live legs and their received.rs7 replays run
+# on the chosen core too (GATE7_WEB_CORE to the gate runners' browser daemon; check-gate7.ts
+# --live --web-core <core> adds receiver-core@web, which fails a leg that did not decode and apply
+# through the requested core).
 #
 # Groups landed (G7a, the GSW canvas receiver on the shared Rust core, gate7-design.md "G7a"):
 #   g7-0..g7-3  gates 0 to 3's file-mode receiver legs in the GSW canvas receiver (`gsw`), and
@@ -181,7 +183,7 @@ HOLD_SECONDS=30
 PLAN_ONLY=0
 SKIP_HARNESS_SELFTEST=0
 BUNDLE=""
-WEB_CORE="gdscript"
+WEB_CORE="rust"
 GSW_BUNDLE=""
 RS_BUILD=""
 LIVE=0

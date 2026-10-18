@@ -209,14 +209,15 @@ extends Node
 ## browser's HTTP cache stands in for RS_RECEIVER_CACHE_DIR, which is native only (Q4), and a
 ## disk budget there is typed `cache-budget-unsupported` (seq null, item null, name "cache").
 ##
-## Core (G7xn, gate7-design.md D34, Q14e; both modes):
-##   RS_RECEIVER_CORE       gdscript (default: Rs2Decoder decodes, validates and resolves, RsApplier
-##                          applies) or rust (RsRustApplier: the shared Rust core,
+## Core (G7xn, gate7-design.md D34, Q14e; G7xd amended the default; both modes):
+##   RS_RECEIVER_CORE       rust (default since G7xd: RsRustApplier -- the shared Rust core,
 ##                          experiments/render-stream/rs-core, through the GDExtension adapter
 ##                          receiver/ext/ -- decode, validation, resolve and apply in native
 ##                          code, apply as RenderingServer ptrcalls for what changed; this script
-##                          keeps configuration, I/O, evidence and shots). applied.json's
-##                          `receiver` block records it as `core`.
+##                          keeps configuration, I/O, evidence and shots) or gdscript (frozen at
+##                          /7, Rs2Decoder decodes, validates and resolves, RsApplier applies;
+##                          milestone sweeps only, D34). applied.json's `receiver` block records
+##                          the chosen one as `core`.
 ##   RS_RECEIVER_CORE_EXT   rust only: the adapter's .gdextension (default
 ##                          res://ext/rs_core.gdextension, built by
 ##                          scripts/build-rs-core-ext.sh); a missing or unloadable adapter is a
@@ -326,7 +327,8 @@ var _sabotage: String = ""
 ## G7e: the web export's sources and sinks (no-ops natively).
 var _io := RsIo.new()
 ## G7xn: RS_RECEIVER_CORE (gdscript | rust); under rust, _rust is _applier and stands in for _stream.
-var _core_kind: String = "gdscript"
+## G7xd (D34 amended): the default is rust; gdscript stays selectable, frozen, milestone-swept.
+var _core_kind: String = "rust"
 var _rust: RsRustApplier = null
 ## G7o2 (D31): the web export's file mode on the Rust core takes each record's digest after the
 ## frame (RenderingServer.frame_post_draw), not inside decode_us: the offsets of accepted records
@@ -2433,7 +2435,7 @@ func _last_seq() -> int:
 func _parse_core_env() -> bool:
 	var kind: String = RsConfig.get_env("RS_RECEIVER_CORE").strip_edges()
 	if kind == "":
-		kind = "gdscript"
+		kind = "rust"
 	if kind != "gdscript" and kind != "rust":
 		_log("error: RS_RECEIVER_CORE must be gdscript or rust (got %s)" % JSON.stringify(kind))
 		return false

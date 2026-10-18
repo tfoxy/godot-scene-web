@@ -1395,19 +1395,21 @@ export async function checkLiveReplayEqualsLive(
         diffRgba(pa.data, pb.data, pa.width, pa.height).mismatched_pixels > 0
       )
         problems.push(`seq ${at.seq}: shots differ`);
-      const sa = (
-        await readTextOrUndefined(
-          join(live.e.receiverDir, "state", `seq-${at.seq}.json`),
-        )
-      )?.trim();
-      const sb = (
-        await readTextOrUndefined(
-          join(replay.e.receiverDir, "state", `seq-${at.seq}.json`),
-        )
-      )?.trim();
+      // Parsed-and-compared, not raw text (statesEqual, already used above for the recording's
+      // own resolved state): the native rust-core dump (RsRustApplier.state_json(), JS number
+      // spelling) and this replay's dump can legitimately differ in whole-float spelling ("1" vs
+      // "1.0") for the same value without differing in content (G7xd found this once the rust
+      // core's dump became the live ground truth by default).
+      const sa = await readJson<unknown>(
+        join(live.e.receiverDir, "state", `seq-${at.seq}.json`),
+      );
+      const sb = await readJson<unknown>(
+        join(replay.e.receiverDir, "state", `seq-${at.seq}.json`),
+      );
       if (sa === undefined || sb === undefined)
         problems.push(`seq ${at.seq}: a state dump is missing`);
-      else if (sa !== sb) problems.push(`seq ${at.seq}: state dumps differ`);
+      else if (!statesEqual(sa, sb))
+        problems.push(`seq ${at.seq}: state dumps differ`);
     }
     const fetched = replay.e.applied.resources_summary?.distinct_fetched ?? 0;
     const liveFetched =

@@ -3,9 +3,9 @@ extends RsApplier
 ## RS_RECEIVER_CORE=rust (gate7-design.md G7xn, D34, Q14e): the receiver's decode, validation,
 ## resolve and apply run in the shared Rust core (experiments/render-stream/rs-core) through the
 ## native GDExtension adapter `RsCore` (receiver/ext/: rs-core-capi plus a C++ shim over raw
-## gdextension_interface.h). The default stays RS_RECEIVER_CORE=gdscript, Rs2Decoder and
-## RsApplier, which keep the native receiver an independent triangulation for both browser
-## receivers (D8, D34).
+## gdextension_interface.h). This is the default since G7xd (D34 amended); RS_RECEIVER_CORE=
+## gdscript (Rs2Decoder and RsApplier) is frozen at /7 and stays selectable for milestone sweeps,
+## keeping the native receiver an independent triangulation for both browser receivers (D8, D34).
 ##
 ## This class stands in for RsApplier and for Rs2Decoder.Stream at once: receiver.gd keeps its
 ## configuration, I/O, evidence and shots, and calls

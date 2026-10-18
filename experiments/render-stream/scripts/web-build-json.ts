@@ -6,7 +6,8 @@
 //
 // G7xw: `--core rust --preset-index 1` records the `Web (rust core)` preset's options, the core,
 // and the side module's own build record (rs-core-web-build.json in the bundle: the nightly,
-// emcc and every artifact's sha256) as `rs_core_web`. Both default to the G7e preset (gdscript, 0).
+// emcc and every artifact's sha256) as `rs_core_web`. G7xd made rust (preset 1) the default;
+// `--core gdscript --preset-index 0` records the frozen G7e/G7b preset instead.
 
 import { createHash } from "node:crypto";
 import {
@@ -57,7 +58,7 @@ function main(): void {
   const bundle = arg(argv, "--bundle");
   const project = arg(argv, "--project");
   const coreAt = argv.indexOf("--core");
-  const core = coreAt >= 0 ? argv[coreAt + 1] : "gdscript";
+  const core = coreAt >= 0 ? argv[coreAt + 1] : "rust";
   const presetAt = argv.indexOf("--preset-index");
   const presetIndex = presetAt >= 0 ? Number(argv[presetAt + 1]) : 0;
   const sideBuild = join(bundle, "rs-core-web-build.json");

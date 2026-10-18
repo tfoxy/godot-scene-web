@@ -2744,7 +2744,17 @@ The files:
   - applies the `css-opacity` sabotage;
   - records `window.__rsShell` (the exit code and the engine's printed lines with their times).
 - `../receiver/rs_config.gd` and `../receiver/rs_io.gd`, Q4's shims (`../receiver/README.md`).
-- `build-web-receiver.sh [--out DIR] [--force]` builds the bundle in these steps:
+- `build-web-receiver.sh [--out DIR] [--force] [--core rust|gdscript]` builds the bundle. `--core
+  rust` (G7xw; the default since G7xd) exports `Web (rust core)` (`preset.1`), as follows:
+  - it runs `build-rs-core-web.sh`, which builds `rs-core-capi` with the pinned F4 nightly
+    (`-Zbuild-std`, PIC, `panic=abort`, hidden default visibility) and links it with the shim by
+    emcc 4.0.11 into the side module `../receiver/ext/build/web/librs_core_ext.wasm`;
+  - it stages `ext/` without its `.gdignore` and uses the dlink template;
+  - it checks that the export copied the module beside the engine;
+  - it records `core`, the preset index and the module's own `build.json` (`rs_core_web`).
+
+  `--core gdscript` instead builds these steps against the plain `Web` preset (`preset.0`, G7e's/
+  G7b's frozen oracle, no GDExtension support):
   - checks both digests;
   - stages the receiver's git-visible files into
     `artifacts/render-stream/web-receiver/<sha16>/project/`;
@@ -2754,25 +2764,22 @@ The files:
     editor, the template, the preset's sha256 and options, every bundle file's size and sha256,
     and the `.pck`'s file list (`lib/godot-pck.ts`).
 
-  A build of the same source is reused unless `--force`. The last line printed is the bundle
-  directory.
+  A build of the same source and core is reused unless `--force`. The last line printed is the
+  bundle directory.
 
-  `--core rust` (G7xw) exports `Web (rust core)` (`preset.1`) instead, as follows:
-  - it runs `build-rs-core-web.sh`, which builds `rs-core-capi` with the pinned F4 nightly
-    (`-Zbuild-std`, PIC, `panic=abort`, hidden default visibility) and links it with the shim by
-    emcc 4.0.11 into the side module `../receiver/ext/build/web/librs_core_ext.wasm`;
-  - it stages `ext/` without its `.gdignore` and uses the dlink template;
-  - it checks that the export copied the module beside the engine;
-  - it records `core`, the preset index and the module's own `build.json` (`rs_core_web`).
-
-  `run-gate7.sh --web-core rust`, `gate7-tool.ts web-legs --core rust` (RS_RECEIVER_CORE=rust on
-  every leg) and `gate7-bench.ts --arm web --core rust` (legs `*-web-rs*`) run on that bundle.
-  So does `run-gate7.sh --live --web-core rust` (G7xwl, protocol/gate7/g7xwl.md). It passes
-  `GATE7_WEB_CORE=rust` to each gate runner's browser daemon (`gate7-tool.ts browser-daemon
-  --core`), which adds RS_RECEIVER_CORE=rust to every web leg, live and `received.rs7` replay
-  alike. `check-gate7.ts --live --web-core rust` adds `receiver-core@web`: each leg's
-  `core rust` log line, applied.json `receiver.core`, and the side module in its resource timing.
-  `GATE7_WEB_CORE_SABOTAGE=drop-env` leaves the env word out, and that check must fail.
+  `run-gate7.sh --web-core rust` (the default), `gate7-tool.ts web-legs --core rust` and
+  `gate7-bench.ts --arm web --core rust` (legs `*-web-rs*`) run on that bundle; since G7xd, `rust`
+  is also the bundle's own unset-env default, so none of these add an `RS_RECEIVER_CORE` word to
+  the leg's env (env.txt is what it always was for a default run). So does `run-gate7.sh --live --web-core rust` (G7xwl,
+  protocol/gate7/g7xwl.md). It passes `GATE7_WEB_CORE=rust` to each gate runner's browser daemon
+  (`gate7-tool.ts browser-daemon --core`). `check-gate7.ts --live --web-core rust` adds
+  `receiver-core@web`: each leg's `core rust` log line, applied.json `receiver.core`, and the
+  side module in its resource timing. `--web-core gdscript`/`--core gdscript` select the frozen
+  GDScript path instead (/7, milestone sweeps only, D34 amended); on a rust-capable bundle this
+  adds RS_RECEIVER_CORE=gdscript to every leg. `GATE7_WEB_CORE_SABOTAGE=drop-env` on a `gdscript`
+  run leaves that env word out, so the rust-capable bundle silently runs its own default (rust)
+  instead, and `receiver-core@web` must fail; on a `rust` run drop-env is a no-op (rust already
+  adds no word).
   `lib/wasm-side-module-info.mjs` lists a side module's dylink info, exports and imports.
 - `lib/godot-pck.ts` reads the directory of a `.pck` (format 2 or 3, from
   `core/io/file_access_pack.cpp`). `web-build-json.ts` writes `build.json`.

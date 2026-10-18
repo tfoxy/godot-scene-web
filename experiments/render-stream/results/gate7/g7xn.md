@@ -3,11 +3,13 @@
 G7xn ([protocol/gate7/g7xn.md](../../protocol/gate7/g7xn.md);
 [gate7-design.md](../../protocol/gate7-design.md) D34, Q14e) gives the native receiver a second
 core: `RS_RECEIVER_CORE=rust` decodes, validates, resolves and applies through `render-stream-core`,
-via a GDExtension adapter. The default stays `gdscript` (D34). **Every native receiver leg of gates
+via a GDExtension adapter. The default stays `gdscript` (D34). *(G7xd, 2026-10-17, flipped the
+native default to `rust` behind a full milestone sweep; `gdscript` is frozen at /7 and stays
+selectable.)* **Every native receiver leg of gates
 0 to 6 reproduces under `rust`:** same classes and checks on every gate (after one gate 4 harness
 fix and the one allowed gate 6 timing rerun), and on a same-source replay every file leg's shots are
 byte-identical and every `applied.json` and state dump is equal. The one exception is decoder error
-prose on gate 0's `corrupt` leg (same reason code). The default path is unchanged.
+prose on gate 0's `corrupt` leg (same reason code). The default path (as it stood at the time) was unchanged.
 
 **What was built** (no godot-rust, no new crates, no nightly: stable Rust 1.95.0 and g++ 13):
 

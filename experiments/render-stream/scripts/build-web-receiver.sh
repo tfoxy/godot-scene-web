@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the web-export receiver (gate7-design.md D5, Q4 "Bundle provenance", G7e).
 #
-#   bash build-web-receiver.sh [--out DIR] [--force] [--core gdscript|rust]
+#   bash build-web-receiver.sh [--out DIR] [--force] [--core rust|gdscript]
 #
 # Exports experiments/render-stream/receiver/ with the NON-mono Godot 4.5.1 editor (D5: `mise exec
 # -- godot` is the mono build, which has no web templates) and the pinned official
@@ -18,13 +18,14 @@
 # preset and source digests, every bundle file's size and sha256, and the .pck's file list (which
 # no-source-scene checks). The last line printed is the bundle directory.
 #
-# --core rust (G7xw, Q14e) exports the `Web (rust core)` preset instead: the pinned
-# web_dlink_nothreads_release.zip (GDExtension support), with receiver/ext/ staged without its
-# .gdignore and with the side module scripts/build-rs-core-web.sh builds (run first; cargo and
+# --core rust (G7xw, Q14e; the default since G7xd) exports the `Web (rust core)` preset: the
+# pinned web_dlink_nothreads_release.zip (GDExtension support), with receiver/ext/ staged without
+# its .gdignore and with the side module scripts/build-rs-core-web.sh builds (run first; cargo and
 # emcc are incremental) at ext/build/web/librs_core_ext.wasm, which the export copies beside the
 # engine and the engine's loader preloads. The side module's sha256 joins the source digest and its
 # build.json is copied into the bundle as rs-core-web-build.json. RS_RECEIVER_CORE=rust then
-# selects the core at run time; the default (gdscript) path of that bundle is preset.0's.
+# selects the core at run time (also that bundle's own unset-env default). --core gdscript exports
+# the plain `Web` preset.0 instead: G7e's/G7b's frozen oracle build, no GDExtension support.
 
 set -euo pipefail
 
@@ -51,7 +52,7 @@ EXPORT_TIMEOUT_S=300
 
 OUT=""
 FORCE=0
-CORE=gdscript
+CORE=rust
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--out)
