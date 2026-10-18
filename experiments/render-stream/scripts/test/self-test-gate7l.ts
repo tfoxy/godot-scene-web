@@ -27,6 +27,9 @@
 //     default too; drop-env on gdscript omits the word, so the leg silently runs rust instead),
 //     and receiverCoreProblems (lib/gate7-live.ts, receiver-core@web) passes an honest leg, a
 //     killed one, and fails the drop-env sabotage, a missing module fetch and a core mismatch.
+//  9. G7wf: webFetchOf/coreEnv add RS_RECEIVER_WEB_FETCH=httpclient to a web leg only on the A/B's
+//     httpclient run, and fetchImplProblems (fetch-impl@web) passes a leg that ran the requested
+//     mechanism, fails one that ran the other or recorded none, and skips a leg with no `live`.
 
 import {
   mkdirSync,
@@ -48,12 +51,18 @@ import {
   warmCacheProblems,
 } from "../lib/gate2c-checks";
 import {
+  fetchImplProblems,
   knownFailure,
   pacedLoopProblems,
   RS_CORE_SIDE_MODULE,
   receiverCoreProblems,
 } from "../lib/gate7-live";
-import { coreEnv, mapBrowserLeg, webCoreOf } from "../lib/gate7-live-legs";
+import {
+  coreEnv,
+  mapBrowserLeg,
+  webCoreOf,
+  webFetchOf,
+} from "../lib/gate7-live-legs";
 import { wireVersionOf } from "../lib/render-stream-2";
 
 const PROTOCOL = join(
@@ -633,6 +642,95 @@ expect(
     )
   ).length === 2,
 );
+
+// 9. G7wf: webFetchOf/coreEnv and fetchImplProblems (fetch-impl@web).
+expect(
+  "web fetch: unset/empty is fetch, httpclient is accepted, anything else is refused",
+  webFetchOf(undefined) === "fetch" &&
+    webFetchOf("") === "fetch" &&
+    webFetchOf("httpclient") === "httpclient" &&
+    throws(() => webFetchOf("xhr")),
+);
+expect(
+  "web fetch: the default adds no word; httpclient adds RS_RECEIVER_WEB_FETCH=httpclient on web only",
+  JSON.stringify(coreEnv({ kind: "web", core: "rust", webFetch: "fetch" })) ===
+    "{}" &&
+    coreEnv({ kind: "web", core: "rust", webFetch: "httpclient" })
+      .RS_RECEIVER_WEB_FETCH === "httpclient" &&
+    coreEnv({ kind: "web", core: "gdscript", webFetch: "httpclient" })
+      .RS_RECEIVER_CORE === "gdscript" &&
+    JSON.stringify(
+      coreEnv({ kind: "gsw", core: "rust", webFetch: "httpclient" }),
+    ) === "{}",
+);
+const fetchLeg = (name: string, applied: unknown): string => {
+  const dir = join(coreRoot, name);
+  mkdirSync(dir, { recursive: true });
+  if (applied !== null)
+    writeFileSync(join(dir, "applied.json"), JSON.stringify(applied));
+  return dir;
+};
+const webGets = [{ source: "http" }, { source: "http" }, { source: "cache" }];
+{
+  const ok = await fetchImplProblems(
+    fetchLeg("f-ok", {
+      live: { fetch_impl: "browser-fetch" },
+      fetches: webGets,
+    }),
+    "f-ok",
+    "fetch",
+  );
+  expect(
+    "fetch-impl: a browser-fetch leg passes on a fetch run and counts its HTTP GETs",
+    ok.problems.length === 0 && ok.judged && ok.fetches === 2,
+  );
+  const ab = await fetchImplProblems(
+    fetchLeg("f-hc", { live: { fetch_impl: "httpclient" }, fetches: webGets }),
+    "f-hc",
+    "httpclient",
+  );
+  expect(
+    "fetch-impl: an httpclient leg passes on the A/B's httpclient run",
+    ab.problems.length === 0 && ab.judged,
+  );
+  expect(
+    "fetch-impl: an httpclient leg (RS_RECEIVER_WEB_FETCH=httpclient) fails a fetch run",
+    (
+      await fetchImplProblems(
+        fetchLeg("f-hc2", { live: { fetch_impl: "httpclient" } }),
+        "f-hc2",
+        "fetch",
+      )
+    ).problems.length === 1,
+  );
+  expect(
+    "fetch-impl: a pre-G7wf applied.json (no live.fetch_impl) fails a fetch run",
+    (
+      await fetchImplProblems(
+        fetchLeg("f-old", { live: { url: "ws://127.0.0.1:1/x" } }),
+        "f-old",
+        "fetch",
+      )
+    ).problems.length === 1,
+  );
+  const none = await fetchImplProblems(
+    fetchLeg("f-none", { receiver: {} }),
+    "f-none",
+    "fetch",
+  );
+  const gone = await fetchImplProblems(
+    fetchLeg("f-gone", null),
+    "f-gone",
+    "fetch",
+  );
+  expect(
+    "fetch-impl: a leg with no applied.json live object (or none at all) is not judged",
+    none.problems.length === 0 &&
+      !none.judged &&
+      gone.problems.length === 0 &&
+      !gone.judged,
+  );
+}
 rmSync(coreRoot, { recursive: true, force: true });
 
 console.log(

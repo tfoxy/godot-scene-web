@@ -27,6 +27,17 @@ extends RefCounted
 ## "Authorization: Bearer <auth_token>" on every GET. A missing or wrong token gets HTTP 401 from
 ## the host, which falls straight through the existing "non-200 status" rule above into
 ## resource-unavailable -- no separate handling needed.
+##
+## G7wf (protocol/gate7/g7wf.md): with `web_fetch` (the web export's default, RS_RECEIVER_WEB_FETCH
+## unset or `fetch`) each GET is the browser's own fetch() through JavaScriptBridge instead of
+## HTTPClient: Godot's web HTTPClient resolves each of its states on a later main-loop iteration
+## (about 66 ms, four frames, per GET; G7r). The request is the one HTTPClientWeb made (GET, the
+## same URL, `Authorization: Bearer` only with a token, so a token-less GET stays a CORS simple
+## request; default credentials and cache). The page's promise callback records the result between
+## frames (`end_us` is the body's arrival) and issues the next queued GET at once; poll() only
+## enforces the timeout and the injected delay. The body reaches GDScript as one PackedByteArray
+## copied straight from the response's ArrayBuffer (JavaScriptBridge.js_buffer_to_packed_byte_array),
+## with no chunk appends. Results, errors and the queue rules are the HTTPClient path's.
 
 const READ_CHUNK: int = 65536
 ## A bound on the polls one poll() call makes (each one non-blocking).
@@ -44,6 +55,14 @@ var results: Array[Dictionary] = []
 var error: String = ""
 
 var _client: HTTPClient = null
+## G7wf: the browser fetch path (web only) and its JavaScriptBridge objects.
+var web_fetch: bool = false
+var _js: JavaScriptObject = null
+var _js_done: JavaScriptObject = null
+var _js_abort: JavaScriptObject = null
+## Bumped by cancel() and each issue, so a late promise callback of a dropped GET is ignored.
+var _generation: int = 0
+var _issue_frame: int = 0
 var _queue: Array[String] = []
 var _phase: String = "idle"  # idle | delay | connecting | requesting | body
 var _current: Dictionary = {}
@@ -52,13 +71,62 @@ var _deadline_msec: int = 0
 var _connects: int = 0
 
 
-func _init(target_host: String, target_port: int, prefix: String, timeout: int, delay: int, token: String = "") -> void:
+func _init(target_host: String, target_port: int, prefix: String, timeout: int, delay: int, token: String = "", use_web_fetch: bool = false) -> void:
 	host = target_host
 	port = target_port
 	path_prefix = prefix
 	timeout_ms = timeout
 	delay_ms = delay
 	auth_token = token
+	web_fetch = use_web_fetch
+	if web_fetch:
+		_js = _web_helper()
+		_js_done = JavaScriptBridge.create_callback(_on_web_done)
+
+
+## G7wf: the page's fetch helper, defined once per page. `start(url, token, gen, done)` starts one
+## GET and returns its AbortController; `done(gen, status, headers_json, body, error, times_json)`
+## runs in the promise's completion: status 0 and a non-empty error when fetch() rejected
+## (network, CORS, abort), else the HTTP status, the kept headers under their KEPT_HEADERS
+## spelling, and the body as a Uint8Array over the response's ArrayBuffer. `times_json` is the
+## page clock's view of the GET, in ms after the fetch() call: `headers_ms` (the response),
+## `body_ms` (the whole body) and `callback_ms` (this call), which the result keeps as `browser`.
+static func _web_helper() -> JavaScriptObject:
+	JavaScriptBridge.eval("""
+	if (!window.__rsFetch) {
+		window.__rsFetch = {
+			start: function (url, token, gen, done) {
+				const abort = new AbortController();
+				const headers = [];
+				if (token !== '') headers.push(['Authorization', 'Bearer ' + token]);
+				const kept = ['Content-Type', 'Content-Length', 'Cache-Control', 'ETag'];
+				const t0 = performance.now();
+				let tHeaders = -1;
+				let tBody = -1;
+				const times = function () {
+					return JSON.stringify({ headers_ms: tHeaders < 0 ? null : tHeaders - t0, body_ms: tBody < 0 ? null : tBody - t0, callback_ms: performance.now() - t0 });
+				};
+				fetch(url, { method: 'GET', headers: headers, signal: abort.signal })
+					.then(function (res) {
+						tHeaders = performance.now();
+						const got = {};
+						for (const name of kept) {
+							const v = res.headers.get(name);
+							if (v !== null) got[name] = v;
+						}
+						return res.arrayBuffer().then(function (buf) {
+							tBody = performance.now();
+							return [res.status, JSON.stringify(got), new Uint8Array(buf)];
+						});
+					})
+					.then(function (r) { done(gen, r[0], r[1], r[2], '', times()); },
+						function (err) { done(gen, 0, '{}', null, String((err && err.name) || err) + ': ' + String((err && err.message) || ''), times()); });
+				return abort;
+			},
+		};
+	}
+	""", true)
+	return JavaScriptBridge.get_interface("__rsFetch")
 
 
 ## Queues `hashes` (fetched in this order). Clears the previous results.
@@ -84,6 +152,7 @@ func cancel() -> void:
 	_queue.clear()
 	_current = {}
 	_phase = "idle"
+	_web_abort()
 	if _client != null:
 		_client.close()
 		_client = null
@@ -114,6 +183,7 @@ func _fail(detail: String) -> void:
 	_current = {}
 	_queue.clear()
 	_phase = "idle"
+	_web_abort()
 	if _client != null:
 		_client.close()
 		_client = null
@@ -123,6 +193,9 @@ func _fail(detail: String) -> void:
 func _issue() -> void:
 	_current["start_us"] = Time.get_ticks_usec()
 	_deadline_msec = Time.get_ticks_msec() + timeout_ms
+	if web_fetch:
+		_web_issue()
+		return
 	if _client != null:
 		_client.poll()
 		if _client.get_status() == HTTPClient.STATUS_CONNECTED:
@@ -183,6 +256,9 @@ func _poll_once() -> bool:
 	if Time.get_ticks_msec() > _deadline_msec:
 		_fail("GET %s%s: no complete response within %d ms (RS_RECEIVER_FETCH_TIMEOUT_MS)" % [path_prefix, _current["hash"], timeout_ms])
 		return true
+	if web_fetch:
+		# The GET completes in its promise callback (_on_web_done), between frames.
+		return done()
 	_client.poll()
 	var status: HTTPClient.Status = _client.get_status()
 	match _phase:
@@ -239,6 +315,63 @@ func _read_body(status: HTTPClient.Status) -> void:
 	_current["bytes"] = data.size()
 	_current["end_us"] = Time.get_ticks_usec()
 	var code: int = _current["status"]
+	if code != 200:
+		_fail("GET %s%s answered HTTP %d" % [path_prefix, _current["hash"], code])
+		return
+	results.append(_current)
+	_current = {}
+	_next()
+
+
+## G7wf: issues the current GET through the page's fetch(). The URL is the one HTTPClientWeb built
+## (http://<host>:<port><path>, an IPv6 literal bracketed).
+func _web_issue() -> void:
+	_generation += 1
+	_issue_frame = Engine.get_process_frames()
+	var hash: String = _current["hash"]
+	var authority: String = ("[%s]" % host if host.contains(":") else host) + ":%d" % port
+	_js_abort = _js.call("start", "http://" + authority + path_prefix + hash, auth_token, _generation, _js_done)
+	_phase = "requesting"
+
+
+## G7wf: aborts the GET in flight, if any; its callback is then ignored (a stale generation).
+func _web_abort() -> void:
+	if not web_fetch:
+		return
+	_generation += 1
+	if _js_abort != null:
+		_js_abort.call("abort")
+		_js_abort = null
+
+
+## G7wf: the promise callback of one GET: [gen, status, headers_json, body, error, times_json].
+func _on_web_done(args: Array) -> void:
+	if args.size() < 6 or Rs2Decoder.as_int(args[0]) != _generation or _phase != "requesting" or _current.is_empty():
+		return
+	_js_abort = null
+	var end_us: int = Time.get_ticks_usec()
+	var times: Variant = JSON.parse_string(str(args[5]))
+	if times is Dictionary:
+		var browser: Dictionary = times
+		# Main-loop iterations begun between the fetch() call and this callback.
+		browser["process_frames"] = Engine.get_process_frames() - _issue_frame
+		_current["browser"] = browser
+	var failure: String = str(args[4])
+	if failure != "":
+		_fail("GET %s%s: fetch() rejected (%s)" % [path_prefix, _current["hash"], failure])
+		return
+	var code: int = Rs2Decoder.as_int(args[1])
+	_current["status"] = code
+	var parsed: Variant = JSON.parse_string(str(args[2]))
+	_current["headers"] = parsed if parsed is Dictionary else {}
+	var data := PackedByteArray()
+	var body: Variant = args[3]
+	if body is JavaScriptObject:
+		var js_body: JavaScriptObject = body
+		data = JavaScriptBridge.js_buffer_to_packed_byte_array(js_body)
+	_current["data"] = data
+	_current["bytes"] = data.size()
+	_current["end_us"] = end_us
 	if code != 200:
 		_fail("GET %s%s answered HTTP %d" % [path_prefix, _current["hash"], code])
 		return

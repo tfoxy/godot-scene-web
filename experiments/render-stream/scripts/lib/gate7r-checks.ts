@@ -75,6 +75,7 @@ import {
 import { type Gate7Check, mk, readJson } from "./gate7-adapters";
 import {
   browserLegProblems,
+  fetchImplProblems,
   grepTree,
   helloProblems,
   type PageConfig,
@@ -468,6 +469,8 @@ export async function checkG7rKind(
   out: string,
   kind: G7rKind,
   expectedWebCore: "gdscript" | "rust",
+  /** G7wf: the web export's expected payload GET mechanism (run-gate7.sh --web-fetch). */
+  expectedWebFetch: "fetch" | "httpclient" = "fetch",
 ): Promise<G7rKindResult> {
   const runDir = join(out, "gate6", `rates-${kind}`);
   const ratesDir = join(runDir, G6C_DIR);
@@ -521,6 +524,9 @@ export async function checkG7rKind(
   const hello: string[] = [];
   const paced: string[] = [];
   const coreBad: string[] = [];
+  const fetchBad: string[] = [];
+  let fetchLegs = 0;
+  let fetchGets = 0;
   const latePoll: string[] = [];
   let helloConnections = 0;
   let pacedLegs = 0;
@@ -825,10 +831,15 @@ export async function checkG7rKind(
         const basics = await browserLegProblems(r.dir, rel);
         prov.push(...basics.provenance);
         consoleBad.push(...basics.console);
-        if (kind === "web")
+        if (kind === "web") {
           coreBad.push(
             ...(await receiverCoreProblems(r.dir, rel, expectedWebCore)),
           );
+          const f = await fetchImplProblems(r.dir, rel, expectedWebFetch);
+          fetchBad.push(...f.problems);
+          if (f.judged) fetchLegs++;
+          fetchGets += f.fetches;
+        }
         const page = await readJson<PageConfig>(
           join(r.dir, "page-config.json"),
         );
@@ -965,6 +976,17 @@ export async function checkG7rKind(
         : nativeCore,
     ),
   );
+  if (kind === "web")
+    checks.push(
+      mk(
+        at("fetch-impl"),
+        expectedWebFetch === "fetch"
+          ? "G7wf: every web leg fetched its payloads with the browser's fetch() (applied.json live.fetch_impl browser-fetch)"
+          : "G7wf (the A/B's pre-G7wf arm): every web leg fetched its payloads with Godot's web HTTPClient (live.fetch_impl httpclient)",
+        fetchLegs === 0 ? ["no web leg wrote applied.json live"] : fetchBad,
+        `${fetchLegs} web receivers, ${fetchGets} GETs`,
+      ),
+    );
   if (kind !== "gsw")
     checks.push(
       mk(
