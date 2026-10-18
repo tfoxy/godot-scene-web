@@ -737,6 +737,21 @@ impl Applier {
         crate::state::Hash(out)
     }
 
+    /// G7u (D14, D29): the resident textures' payload hashes the store no longer holds, sorted,
+    /// which an in-place context restore must refetch before [`Self::context_restored`] can
+    /// re-upload them (it skips a texture whose pixels are gone).
+    pub fn restore_missing(&self, payloads: &PayloadStore) -> Vec<crate::state::Hash> {
+        let mut out: Vec<crate::state::Hash> = self
+            .resident
+            .values()
+            .filter_map(|r| r.hash)
+            .filter(|h| !payloads.textures.contains_key(h))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     pub fn context_restored(&mut self, payloads: &PayloadStore) {
         self.list.dirty.all = true;
         self.list.dirty.draws = true;

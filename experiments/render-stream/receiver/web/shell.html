@@ -18,8 +18,10 @@
        receiver line, the exit and a context loss (D15);
     4. exposes window.__rsWasmHeap() (the wasm memory's byteLength; emscripten never shrinks it,
        D16), captured from WebAssembly.instantiate(Streaming) before godot.js runs;
-    5. on webglcontextlost marks rs-context-lost, PUTs a context-lost.json stub to
-       RS_RECEIVER_EVIDENCE_URL and reloads (the engine itself only alerts "please reload");
+    5. on webglcontextlost marks rs-context-lost, PUTs a context-lost.json stub (G7u: a
+       `replay-failure` `context-lost` with page time; a later loss after the reload writes
+       context-lost-<n>.json) to RS_RECEIVER_EVIDENCE_URL and reloads once the PUT settles (the
+       engine itself only alerts "please reload"), so the leg continues as a reload;
     6. sets the canvas's width/height attributes and CSS size to the presentation size (DPR 1).
   window.__rsShell carries the parsed config, the exit code ({code, t}) and the engine's printed
   lines with their performance.now() times, for the harness.
@@ -102,14 +104,43 @@ $GODOT_HEAD_INCLUDE
 	if (parsed.sabotage === "css-opacity") {
 		canvas.style.opacity = "0.99";
 	}
-	// 5. Context loss: mark, PUT a stub, reload.
+	// 5. Context loss: mark, PUT the stub (a `replay-failure` `context-lost`, D14), reload once it
+	// settles. The reloaded page is a fresh receiver on a new connection writing the normal
+	// evidence paths; each loss's stub has its own name (`context-lost.json`, then
+	// `context-lost-<n>.json`, counted in sessionStorage), so nothing after it overwrites it.
 	canvas.addEventListener("webglcontextlost", () => {
+		if (shell.contextLost) {
+			return;
+		}
 		performance.mark("rs-context-lost");
 		shell.contextLost = true;
+		const t = performance.now();
+		let n = 1;
+		try {
+			n = Number(sessionStorage.getItem("rs-context-lost-count") || "0") + 1;
+			sessionStorage.setItem("rs-context-lost-count", String(n));
+		} catch (e) {
+			// no sessionStorage: every stub is the first
+		}
 		const evidence = (parsed.env || {}).RS_RECEIVER_EVIDENCE_URL;
-		const body = JSON.stringify({ schema: "render-stream-context-lost/1", t_ms: performance.now() });
+		const nav = performance.getEntriesByType("navigation")[0];
+		const last = shell.lines.length > 0 ? shell.lines[shell.lines.length - 1].line : null;
+		const body = JSON.stringify({
+			schema: "render-stream-context-lost/1",
+			status: "replay-failure",
+			failure: { seq: null, reason: "context-lost", detail: "webglcontextlost: the engine cannot restore its context in place (lgd.js only alerts \"please reload\"); the shell reloads" },
+			recovered: "reload",
+			loss: n,
+			t_ms: t,
+			time_origin: performance.timeOrigin,
+			wall_ms: Date.now(),
+			navigation_type: nav ? nav.type : null,
+			receiver_lines: shell.lines.length,
+			last_receiver_line: last,
+		});
+		const name = n === 1 ? "context-lost.json" : `context-lost-${n}.json`;
 		const put = evidence
-			? fetch(`${evidence.replace(/\/$/, "")}/context-lost.json`, { method: "PUT", body }).catch(() => {})
+			? fetch(`${evidence.replace(/\/$/, "")}/${name}`, { method: "PUT", body }).catch(() => {})
 			: Promise.resolve();
 		put.then(() => location.reload());
 	});

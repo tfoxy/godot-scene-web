@@ -56,7 +56,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7xd | flips the native and web-export default to `RS_RECEIVER_CORE=rust`/`Web (rust core)`; `gdscript` frozen at /7, selectable, milestone-swept (D34 amended); full sweep — landed | [results/gate7/g7xd.md](results/gate7/g7xd.md) |
 | G7o | decode/apply optimization — restructured into G7o1 and tier 2; lands nothing | [protocol/gate7/g7o.md](protocol/gate7/g7o.md) |
 | G7g | gate 6 scene and HD on both browsers, both web cores — landed | [results/gate7/g7g.md](results/gate7/g7g.md) |
-| G7u | suspension and lifecycle | [protocol/gate7/g7u.md](protocol/gate7/g7u.md) |
+| G7u | suspension and lifecycle: real hidden/frozen on the g31, desktop `simulated-suspension` never counted; reload, close, context loss pass on gsw and web; D14 amended: a CDP freeze closes the socket (1006), and both receivers recover by gate 1d's reconnect (newest first, no burst, bounded pending), so frozen-30s passes on both; the web fetch timeout counts only running time — landed | [results/gate7/g7u.md](results/gate7/g7u.md) |
 | G7r | pacing, rates, phase study, dual on all three receivers (window 1): native 45/45, gsw 59/59, web 76/78 (its fetch tail); no variant holds 60/60 on every phase — landed | [results/gate7/g7r.md](results/gate7/g7r.md) |
 | G7wf | the web export's payload GETs through the browser's `fetch` (`JavaScriptBridge`, both web cores): 66.2→2.8 ms p50; web `g7-r` 79/79, `rate-achieved` at 15/30 now passes, good phase 58.4–59.0/s; `fetch-impl@web` — landed | [results/gate7/g7wf.md](results/gate7/g7wf.md) |
 | G7k | startup, memory, soak | [protocol/gate7/g7k.md](protocol/gate7/g7k.md) |

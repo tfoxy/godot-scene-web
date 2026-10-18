@@ -54,6 +54,10 @@ export interface GswRs {
   dispose_json(): string;
   live_reset(keepPayloads: boolean): number;
   memory_hashes(): string;
+  // G7u: the in-place context restore (D14, D29).
+  restore_missing(): string;
+  restore_take(hash: string): number;
+  restore_json(): string;
   free(): void;
 }
 
@@ -181,7 +185,9 @@ export function setUpCanvas(cfg: ReceiverConfig): HTMLCanvasElement {
   const canvas = document.getElementById("frame") as HTMLCanvasElement;
   if (cfg.shellSabotage === "css-opacity") canvas.style.opacity = "0.99";
   canvas.addEventListener("webglcontextlost", (e) => {
-    // Q5 "Context loss": keep the context restorable; draw() re-creates every GL object.
+    // Q5 "Context loss": keep the context restorable. After the restore, draw() re-creates
+    // every GL object and re-uploads every resident texture (the live receiver holds credit
+    // while lost and redraws in place, live.ts `stepContext`).
     e.preventDefault();
     shell.contextLost = true;
     log("webgl context lost");

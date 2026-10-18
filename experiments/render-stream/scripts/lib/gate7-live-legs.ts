@@ -67,7 +67,11 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 
-import { type BrowserContext, chromium } from "@playwright/test";
+import {
+  type BrowserContext,
+  type CDPSession,
+  chromium,
+} from "@playwright/test";
 
 import {
   BACKGROUND_THROTTLING_ARGS,
@@ -78,6 +82,13 @@ import {
   HarnessServer,
   type LaunchedBrowser,
 } from "./browser-harness";
+import {
+  desktopLifecycleActions,
+  LifecycleDriver,
+  type LifecycleSpec,
+  lifecycleEnvOf,
+  parseLifecycleSpec,
+} from "./gate7-lifecycle";
 import { type BackingStore, base64url, parseEnvTxt } from "./gate7-web-legs";
 
 export type BrowserReceiverKind = "web" | "gsw";
@@ -196,6 +207,10 @@ export interface MappedBrowserLeg {
   dropped: string[];
   /** A warm leg: the cold leg's receiver directory (its page-config.json names its profile). */
   warmFrom: string | null;
+  /** G7u: RS_RECEIVER_LIFECYCLE (a harness word, dropped from the page env), parsed. */
+  lifecycle: LifecycleSpec | null;
+  /** G7u: RS_RECEIVER_SHELL_SABOTAGE (a harness word): the page config's `sabotage`. */
+  shellSabotage: "css-opacity" | null;
 }
 
 const DEFAULT_CANVAS: [number, number] = [640, 360];
@@ -227,9 +242,26 @@ export function mapBrowserLeg(
   const dropped: string[] = [];
   let token = "";
   let cacheDir = "";
+  let lifecycle: LifecycleSpec | null = null;
+  let shellSabotage: "css-opacity" | null = null;
   for (const [name, value] of nativeEnv) {
     if (!name.startsWith("RS_RECEIVER_")) {
       dropped.push(name);
+      continue;
+    }
+    // G7u's harness words (lib/gate7-lifecycle.ts): never in the page env.
+    if (name === "RS_RECEIVER_LIFECYCLE") {
+      dropped.push(name);
+      lifecycle = parseLifecycleSpec(value);
+      continue;
+    }
+    if (name === "RS_RECEIVER_SHELL_SABOTAGE") {
+      dropped.push(name);
+      if (value !== "css-opacity")
+        throw new Error(
+          `RS_RECEIVER_SHELL_SABOTAGE must be css-opacity (got ${JSON.stringify(value)})`,
+        );
+      shellSabotage = value;
       continue;
     }
     if (name === "RS_RECEIVER_CACHE_DIR") {
@@ -288,7 +320,18 @@ export function mapBrowserLeg(
     env.RS_RECEIVER_CACHE_MODE === "warm" && cacheDir !== ""
       ? dirname(cacheDir)
       : null;
-  return { env, engineArgs, canvas, token, live, headless, dropped, warmFrom };
+  return {
+    env,
+    engineArgs,
+    canvas,
+    token,
+    live,
+    headless,
+    dropped,
+    warmFrom,
+    lifecycle,
+    shellSabotage,
+  };
 }
 
 function ensureLink(target: string, link: string): void {
@@ -439,18 +482,29 @@ export function runBrowserLeg(
   let finished = false;
   let server: HarnessServer | undefined;
   let token = "";
+  // G7u: a lifecycle leg's driver (lib/gate7-lifecycle.ts); null on every other leg.
+  let lifecycle: LifecycleDriver | null = null;
 
   const writeEvidence = async (): Promise<void> => {
     await writeFile(
       join(dir, "console.jsonl"),
       consoleLines.join("\n") + (consoleLines.length ? "\n" : ""),
     );
+    // A lifecycle leg's stdout.log is every document's lines in order (a reload: the first
+    // document's, stashed by the shim at pagehide, then the last one's).
+    const lines = [
+      ...(lifecycle?.earlierLines ?? []).flatMap((d) =>
+        d.lines.map((l) => ({ ...l, line: scrub(l.line) })),
+      ),
+      ...(state?.lines ?? []),
+    ];
     await writeFile(
       join(dir, "stdout.log"),
-      `${(state?.lines ?? [])
+      `${lines
         .map((l) => (l.stream === "err" ? `[stderr] ${l.line}` : l.line))
         .join("\n")}\n`,
     );
+    if (lifecycle) await lifecycle.write();
     await writeFile(
       join(dir, "timings.json"),
       `${scrub(JSON.stringify({ schema: "render-stream-web-timings/1", wall_ms: Date.now() - started, browser_prepared_ms: prepared.preparedMs, exit: state?.exit ?? null, error: state?.error ?? null, context_lost: state?.contextLost ?? false, wasm_heap_bytes: state?.wasmHeapBytes ?? null, backing_store: state?.backingStore ?? null, marks: state?.marks ?? [], navigation: state?.navigation ?? [], resources: state?.resources ?? [], aborted, lines: (state?.lines ?? []).slice(0, 400).map((l) => ({ t: l.t, line: l.line })) }, null, 2))}\n`,
@@ -497,8 +551,22 @@ export function runBrowserLeg(
       env,
       engine_args: mapped.engineArgs,
       canvas: mapped.canvas,
-      sabotage: null,
+      sabotage: mapped.shellSabotage,
     };
+    if (mapped.lifecycle) {
+      const lcEnv = lifecycleEnvOf();
+      if (lcEnv.env !== "desktop")
+        throw new Error(
+          "lifecycle: GATE7_LIFECYCLE_ENV=device reached the desktop browser harness; the device daemon runs device lifecycle legs",
+        );
+      lifecycle = new LifecycleDriver(
+        mapped.lifecycle,
+        lcEnv.env,
+        ctx.kind,
+        dir,
+        mapped.canvas,
+      );
+    }
     // The URL as written down: never with the fragment.
     const url = `${origin}/${bundleName}/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
     const navigateTo =
@@ -523,6 +591,15 @@ export function runBrowserLeg(
           provenance_checked: provenance ? "before" : "after",
           ...pageConfig,
           dropped: mapped.dropped,
+          ...(mapped.lifecycle
+            ? {
+                lifecycle: {
+                  spec: mapped.lifecycle,
+                  env: lifecycle?.env ?? "desktop",
+                  injected: "page.addInitScript(lifecycle-shim.js)",
+                },
+              }
+            : {}),
         },
         null,
         2,
@@ -584,59 +661,110 @@ export function runBrowserLeg(
       );
       d.dismiss().catch(() => {});
     });
+    const readState = (): Promise<PageState | null> =>
+      page
+        .evaluate(() => ({
+          lines: window.__rsShell?.lines ?? [],
+          error: window.__rsShell?.error ?? null,
+          exit: window.__rsShell?.exit ?? null,
+          contextLost: window.__rsShell?.contextLost ?? false,
+          wasmHeapBytes: window.__rsWasmHeap?.() ?? null,
+          // G7g presentation-check: every canvas's backing store at exit, and the page's DPR.
+          backingStore: {
+            device_pixel_ratio: window.devicePixelRatio,
+            inner: [window.innerWidth, window.innerHeight] as [number, number],
+            canvases: [...document.querySelectorAll("canvas")].map((c) => ({
+              width: c.width,
+              height: c.height,
+              client_width: c.clientWidth,
+              client_height: c.clientHeight,
+            })),
+          },
+          marks: performance
+            .getEntriesByType("mark")
+            .map((m) => ({ name: m.name, t: m.startTime })),
+          navigation: performance
+            .getEntriesByType("navigation")
+            .map((n) => n.toJSON()),
+          resources: performance.getEntriesByType("resource").map((r) => {
+            const e = r as PerformanceResourceTiming;
+            return {
+              name: e.name,
+              start: e.startTime,
+              end: e.responseEnd,
+              transfer: e.transferSize,
+              decoded: e.decodedBodySize,
+            };
+          }),
+        }))
+        .catch(() => null);
+    // G7u: a lifecycle leg gets the shim before any page script (it survives a reload).
+    if (lifecycle)
+      await page.addInitScript({ content: lifecycle.initScript() });
     await page.goto(navigateTo);
     const deadline = Date.now() + req.timeoutMs;
-    while (Date.now() < deadline && !aborted) {
-      const exit = await page
-        .evaluate(() => window.__rsShell?.exit ?? null)
-        .catch(() => null);
-      if (exit) {
-        exitCode = exit.code;
-        break;
+    if (lifecycle) {
+      // One evaluate per poll: exit, error, the shim's pending action and its state. A poll
+      // during a navigation (the reload leg; the web export's context-loss reload) rejects and
+      // reads as null: never an exit.
+      const lc = lifecycle;
+      const actions = desktopLifecycleActions(page);
+      let session: CDPSession | null = null;
+      const shoot = async (): Promise<void> => {
+        session ??= await prepared.context.newCDPSession(page);
+        await lc.screenshot(page, session);
+      };
+      while (Date.now() < deadline && !aborted) {
+        const snap = await LifecycleDriver.poll(page);
+        if (snap?.state) lc.state = snap.state;
+        if (snap?.exit) {
+          exitCode = snap.exit.code;
+          break;
+        }
+        if (snap?.error) break;
+        if (snap?.pending) {
+          const closed = await lc.perform(
+            page,
+            snap.pending,
+            actions,
+            async () => {
+              await shoot();
+              await lc.readFinal(page);
+              state = await readState();
+            },
+          );
+          if (closed) {
+            // The closed tab is the leg's normal end (gate 1d's killed receiver, gracefully).
+            exitCode = 0;
+            break;
+          }
+          continue;
+        }
+        await new Promise((r) => setTimeout(r, 100));
       }
-      const failed = await page
-        .evaluate(() => window.__rsShell?.error ?? null)
-        .catch(() => null);
-      if (failed) break;
-      await new Promise((r) => setTimeout(r, 100));
+      if (aborted) return exitCode;
+      if (!lc.closed) {
+        await shoot();
+        await lc.readFinal(page);
+      }
+    } else {
+      while (Date.now() < deadline && !aborted) {
+        const exit = await page
+          .evaluate(() => window.__rsShell?.exit ?? null)
+          .catch(() => null);
+        if (exit) {
+          exitCode = exit.code;
+          break;
+        }
+        const failed = await page
+          .evaluate(() => window.__rsShell?.error ?? null)
+          .catch(() => null);
+        if (failed) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (aborted) return exitCode;
     }
-    if (aborted) return exitCode;
-    state = await page
-      .evaluate(() => ({
-        lines: window.__rsShell?.lines ?? [],
-        error: window.__rsShell?.error ?? null,
-        exit: window.__rsShell?.exit ?? null,
-        contextLost: window.__rsShell?.contextLost ?? false,
-        wasmHeapBytes: window.__rsWasmHeap?.() ?? null,
-        // G7g presentation-check: every canvas's backing store at exit, and the page's DPR.
-        backingStore: {
-          device_pixel_ratio: window.devicePixelRatio,
-          inner: [window.innerWidth, window.innerHeight] as [number, number],
-          canvases: [...document.querySelectorAll("canvas")].map((c) => ({
-            width: c.width,
-            height: c.height,
-            client_width: c.clientWidth,
-            client_height: c.clientHeight,
-          })),
-        },
-        marks: performance
-          .getEntriesByType("mark")
-          .map((m) => ({ name: m.name, t: m.startTime })),
-        navigation: performance
-          .getEntriesByType("navigation")
-          .map((n) => n.toJSON()),
-        resources: performance.getEntriesByType("resource").map((r) => {
-          const e = r as PerformanceResourceTiming;
-          return {
-            name: e.name,
-            start: e.startTime,
-            end: e.responseEnd,
-            transfer: e.transferSize,
-            decoded: e.decodedBodySize,
-          };
-        }),
-      }))
-      .catch(() => null);
+    if (!lifecycle?.closed) state = await readState();
     if (state && token !== "") {
       // Defence in depth: the receiver never prints the token, but nothing written here may.
       state.lines = state.lines.map((l) => ({ ...l, line: scrub(l.line) }));

@@ -150,6 +150,27 @@
 #             after), so no Chromium start-up lands in a timed window. check-gate7.ts --live judges
 #             them (lib/gate7r-checks.ts). Timing legs: each holds the quiet lock exclusive.
 #
+# Group landed (G7u, protocol/gate7/g7u.md, g7u-as-built.md, D14; `--live` only): suspension
+#   g7-lc     and lifecycle in both browser receivers. G6l's group is reused: run-gate6.sh --legs
+#             g6l runs once per browser kind (`--receiver web|gsw`, else both) with G7U_LEGS naming
+#             the kind's lifecycle legs (run-gate6.sh g6l_lc_words: RS_RECEIVER_LIFECYCLE, a harness
+#             word the page shim lib/browser-probes/lifecycle-shim.js acts on; lib/gate7-lifecycle.ts
+#             writes each receiver's lifecycle.json and compositor/screenshot.png), into
+#             <out>/gate6/lc-<kind>/live/<leg>/, then reference-live-frames:
+#               web     sim-hidden-2s, sim-hidden-30s, sim-frozen-30s, reload, close, context-loss
+#               gsw     web's legs plus sabotage-ack-while-hidden, sabotage-css-opacity
+#             Desktop suspensions are SIMULATED in the page (headless=new has no occlusion or freeze
+#             model, G7h): `simulated-suspension`, never a pass of hidden/frozen. `--env device
+#             --device <id>` with `--legs g7-lc` alone runs the real legs (hidden-2s, hidden-30s,
+#             frozen-30s, reload, close, context-loss; gsw adds sabotage-ack-while-hidden) into
+#             <out>/gate6/lc-<kind>-<id>/ with GATE7_LIFECYCLE_ENV=device and GATE7_DEVICE=<id>
+#             passed to the browser daemon, whose device mode runs them on the phone's real Chrome
+#             (lib/gate7-device-legs.ts; it never falls back to the desktop). A device run raises
+#             S per kind (G7U_START_FRAME, default G7U_DEVICE_START_FRAME_<kind>: web 900, since the
+#             web export needs ~9.5 s on the g31 to connect; gsw 300). G7U_LEGS (a CSV) replaces
+#             every kind's list (development). check-gate7.ts --live judges them
+#             (lib/gate7u-checks.ts). Timing legs.
+#
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
 # and rendered Godot legs share ONE private `gamescope --backend headless` (lib/gamescope.sh).
@@ -167,7 +188,18 @@ RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
 KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
-LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-r g7-dev g7-bench)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-dev g7-bench)
+
+# G7u: each browser kind's lifecycle legs (run-gate6.sh G7U_LEGS), desktop (simulated suspension)
+# and device (real hidden/frozen). G7U_LEGS in the environment replaces every kind's list.
+G7U_LC_COMMON=reload,close,context-loss
+G7U_LEGS_web="sim-hidden-2s,sim-hidden-30s,sim-frozen-30s,$G7U_LC_COMMON"
+G7U_LEGS_gsw="$G7U_LEGS_web,sabotage-ack-while-hidden,sabotage-css-opacity"
+G7U_DEVICE_LEGS_web="hidden-2s,hidden-30s,frozen-30s,$G7U_LC_COMMON"
+G7U_DEVICE_LEGS_gsw="$G7U_DEVICE_LEGS_web,sabotage-ack-while-hidden"
+# G7u part D: a device run's S per kind (run-gate6.sh G7U_START_FRAME; the desktop is always 300).
+G7U_DEVICE_START_FRAME_web=900
+G7U_DEVICE_START_FRAME_gsw=300
 
 # G7r: each receiver kind's g6c legs (lib/gate6c-legs.sh), and the native receivers' core.
 G7R_PHASE=phase-60-r1,phase-60-r2,phase-60-r3,phase-60-r4,phase-60-r5
@@ -436,9 +468,22 @@ g7tool() {
 
 # --- G7l: --live runs only the live halves of g7-1, g7-2, g7-5 and g7-55, then judges them. -----
 if [ "$LIVE" = "1" ]; then
-	if [ "$HARNESS_ENV" != "desktop" ]; then
-		echo "run-gate7: --live runs on the desktop only (drop --env device)" >&2
+	# G7u: `--env device --device <id>` is accepted for exactly `--legs g7-lc` (the real hidden and
+	# frozen legs run on the phone); every other live group is desktop only.
+	if [ "$HARNESS_ENV" != "desktop" ] && [ "${GROUPS_RUN[*]:-}" != "g7-lc" ]; then
+		echo "run-gate7: --live runs on the desktop only (drop --env device), except --legs g7-lc alone" >&2
 		exit 2
+	fi
+	if has_group g7-lc && [ "$RECEIVER" = "native" ]; then
+		echo "run-gate7: g7-lc runs browser receivers only (--receiver web|gsw)" >&2
+		exit 2
+	fi
+	if [ "$HARNESS_ENV" = device ]; then
+		# Before any build: a device lifecycle run the daemon cannot drive fails here, loudly.
+		if ! GATE7_LIFECYCLE_ENV=device GATE7_DEVICE="$DEVICE" g7tool lifecycle-env-check >&2; then
+			echo "run-gate7: g7-lc --env device: refusing (see above); nothing ran on the desktop instead" >&2
+			exit 1
+		fi
 	fi
 	LIVE_RUNS=()
 	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f g7-6:6:g6l; do
@@ -447,8 +492,8 @@ if [ "$LIVE" = "1" ]; then
 		has_group "$group" || continue
 		LIVE_RUNS+=("$group:$rest")
 	done
-	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r; then
-		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-r in --legs" >&2
+	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc; then
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-lc, g7-r in --legs" >&2
 		exit 2
 	fi
 	if [ "$RECEIVER" = "native" ] && [ "${#LIVE_RUNS[@]}" -gt 0 ]; then
@@ -548,6 +593,48 @@ if [ "$LIVE" = "1" ]; then
 			set -e
 			echo "run-gate7: g7-r run-gate6.sh @$kind exit=$g7r_exit (check-gate7.ts --live judges it)" >&2
 		done
+	fi
+	# G7u: run-gate6.sh --legs g6l once per browser kind with G7U_LEGS (header "Group landed (G7u)").
+	if has_group g7-lc; then
+		mkdir -p "$OUT/gate6"
+		for kb in "${LIVE_KINDS[@]}"; do
+			kind="${kb%%:*}"
+			bundle_dir="${kb#*:}"
+			if [ "$HARNESS_ENV" = device ]; then
+				legs_var="G7U_DEVICE_LEGS_$kind"
+				run_name="lc-$kind-$DEVICE"
+				start_var="G7U_DEVICE_START_FRAME_$kind"
+				g7u_start="${G7U_START_FRAME:-${!start_var}}"
+			else
+				legs_var="G7U_LEGS_$kind"
+				run_name="lc-$kind"
+				g7u_start=""
+			fi
+			g7u_legs="${G7U_LEGS:-${!legs_var}}"
+			run_dir="$OUT/gate6/$run_name"
+			echo "run-gate7: g7-lc @$kind ($HARNESS_ENV${DEVICE:+ $DEVICE}): run-gate6.sh --legs g6l (G7U_LEGS=$g7u_legs) into $run_dir" >&2
+			set +e
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+				GATE7_BROWSER_SPARE=after GATE7_LIFECYCLE_ENV="$HARNESS_ENV" GATE7_DEVICE="$DEVICE" \
+				G7U_LEGS="$g7u_legs" G7U_START_FRAME="$g7u_start" \
+				bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+				--binary "$BINARY" --out "$run_dir" --legs g6l >"$OUT/gate6/$run_name.log" 2>&1
+			g7u_exit=$?
+			set -e
+			echo "run-gate7: g7-lc run-gate6.sh @$kind exit=$g7u_exit (check-gate7.ts --live judges it)" >&2
+			# A device run whose browser daemon cannot drive the phone fails here, loudly: it never
+			# falls back to the desktop.
+			if [ "$g7u_exit" != 0 ] && [ -f "$run_dir/gate7-browser/daemon.log" ] &&
+				grep -q 'lifecycle: ' "$run_dir/gate7-browser/daemon.log"; then
+				grep 'lifecycle: ' "$run_dir/gate7-browser/daemon.log" | head -3 | sed 's/^/run-gate7: g7-lc: /' >&2
+				[ "$HARNESS_ENV" = device ] && exit 1
+			fi
+		done
+	fi
+	# G7u: one 30-s lifecycle leg's host evidence (a 3180-frame scene recording, its patch sink, the
+	# tap and the hook log, decoded) alone exceeds node's default 4 GB heap.
+	if has_group g7-lc; then
+		export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=12288"
 	fi
 	echo "run-gate7: running check-gate7.ts --live" >&2
 	cd "$REPO_ROOT"

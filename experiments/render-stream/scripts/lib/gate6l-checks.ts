@@ -96,17 +96,32 @@ import { type ResolvedTransaction, statesEqual } from "./render-stream-2";
 // ---------------------------------------------------------------------------------------------
 
 export const G6L_DIR = "live";
-export const G6L_START_FRAME = 300;
+/** S: 300 for every G6l run. G7u part D's device lifecycle runs may raise it (run-gate6.sh
+ * G7U_START_FRAME); their checker sets it with setG6lStartFrame for that run only and restores
+ * it, so the derived frames below are S's. */
+export let G6L_START_FRAME = 300;
+export const G6L_DEFAULT_START_FRAME = 300;
 export const G6L_STEP_FRAMES = 60;
 export const G6L_LAST_STEP = 11;
-export const G6L_QUIT_FRAME = G6L_START_FRAME + G6L_STEP_FRAMES * 13;
+export let G6L_QUIT_FRAME = G6L_START_FRAME + G6L_STEP_FRAMES * 13;
 export const G6L_SETTLE_OFFSET = 7;
 export const G6L_STALL_SPEC = "2:2000";
 export const G6L_RECONNECT_STEP = 5;
-export const G6L_SABOTAGE_FRAME = G6L_START_FRAME + G6L_STEP_FRAMES * 2;
+export let G6L_SABOTAGE_FRAME = G6L_START_FRAME + G6L_STEP_FRAMES * 2;
 export const G6L_MOTION_WINDOWS = 40;
-export const G6L_MOTION_FIRST = 320;
+export let G6L_MOTION_FIRST = G6L_START_FRAME + 20;
 export const G6L_MOTION_LABEL = 100;
+
+/** Sets S (run-gate6.sh's G6L_START_FRAME override) and every frame derived from it; returns the
+ * previous S. Only G7u's device runs call it (lib/gate7u-checks.ts), restoring 300 after. */
+export function setG6lStartFrame(s: number): number {
+  const previous = G6L_START_FRAME;
+  G6L_START_FRAME = s;
+  G6L_QUIT_FRAME = s + G6L_STEP_FRAMES * 13;
+  G6L_SABOTAGE_FRAME = s + G6L_STEP_FRAMES * 2;
+  G6L_MOTION_FIRST = s + 20;
+  return previous;
+}
 /** Q7c: consecutive applied frames differ by at most this at 60/60 (outside the stall and the
  * reconnect, and, As built (G6l), after a transaction that waited on an HTTP fetch or was shot). */
 export const G6L_MAX_GAP = 2;

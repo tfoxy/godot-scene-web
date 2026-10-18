@@ -94,6 +94,8 @@ struct Opts {
 const SHELL_SABOTAGES: &[&str] = &[
     "css-opacity",
     "ack-on-receipt",
+    // G7u: acks `submitted` from onmessage while the page is suspended (live.ts).
+    "ack-while-hidden",
     "ack-while-hidden",
     "leak-gl-textures",
     "no-evict",
@@ -379,6 +381,8 @@ pub struct GswRs {
     window: Option<[u32; 2]>,
     /// G7g: the adopted presentation (`presentation_json`).
     presentation: Presentation,
+    /// G7u: whether the last `draw` re-sent everything to a restored context.
+    last_restore_draw: bool,
 }
 
 /// G7g: the session's presentation as this receiver adopted it (receiver.gd
@@ -575,6 +579,7 @@ impl GswRs {
             viewport: None,
             window: None,
             presentation: Presentation::default(),
+            last_restore_draw: false,
         })
     }
 
@@ -1416,12 +1421,20 @@ impl GswRs {
         };
         let t = prof::start();
         let mut result = x.execute(&a.list);
+        // A restored context (D14, D29): every GL object is new, so the list goes again with
+        // `dirty.all` and every resident texture re-queued from the payload store. A list that
+        // already carried `dirty.all` executes on the new objects (`restored == 1`) without its
+        // textures, so it is re-sent too.
         if matches!(result, Err(ExecError::NeedsFullUpload))
+            || matches!(&result, Ok(es) if es.restored == 1)
             || x.context_state() == ContextState::Restored
         {
             a.context_restored(&self.payloads);
             self.totals.restores += 1;
+            self.last_restore_draw = true;
             result = x.execute(&a.list);
+        } else {
+            self.last_restore_draw = false;
         }
         match result {
             Ok(es) => {
@@ -1449,6 +1462,64 @@ impl GswRs {
                 -1
             }
         }
+    }
+
+    /// G7u (D14, D29): the resident textures' payload hashes the store no longer holds, sorted
+    /// hex, comma-separated: a context restore refetches each (`stage_payload` as it arrives,
+    /// then `restore_take`) before the restore `draw`, which re-uploads only what the store holds.
+    pub fn restore_missing(&self) -> String {
+        self.applier
+            .as_ref()
+            .map(|a| {
+                a.restore_missing(&self.payloads)
+                    .iter()
+                    .map(|h| h.to_hex())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default()
+    }
+
+    /// G7u: a refetched payload (verified when it arrived, `stage_payload`) into the store, for a
+    /// context restore. 0, or -1 when it was never staged (`error`).
+    pub fn restore_take(&mut self, hash_hex: &str) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        let Some(s) = self.stage.take(&hash) else {
+            self.error =
+                format!("resource-unverified: payload {hash_hex} was not verified before use");
+            return -1;
+        };
+        self.payloads.insert(hash, s.decoded);
+        self.totals.provided += 1;
+        self.totals.provided_bytes += s.bytes as u64;
+        0
+    }
+
+    /// G7u `live.context_loss` facts, one JSON object: what is resident (the applier's textures
+    /// and meshes) and what the last `draw` sent (`restore_draw` true when it re-sent everything
+    /// to a restored context: its texture uploads, and the vertex and index bytes that carry every
+    /// mesh's geometry, since meshes are lowered into the list's shared buffers).
+    pub fn restore_json(&self) -> String {
+        let owned = self
+            .applier
+            .as_ref()
+            .map(|a| a.retained())
+            .unwrap_or_default();
+        let es = &self.last_exec;
+        format!(
+            "{{\"restore_draw\":{},\"restores\":{},\"resident_textures\":{},\"resident_meshes\":{},\"texture_uploads\":{},\"vertex_bytes\":{},\"index_bytes\":{},\"draw_calls\":{}}}",
+            self.last_restore_draw,
+            self.totals.restores,
+            owned[2],
+            owned[3],
+            es.texture_uploads,
+            es.vertex_bytes,
+            es.index_bytes,
+            es.draw_calls
+        )
     }
 
     pub fn stats_ptr(&self) -> *const Stats {

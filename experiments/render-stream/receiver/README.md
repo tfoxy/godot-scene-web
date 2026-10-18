@@ -165,6 +165,7 @@ RS_RECEIVER_OUT=/abs/leg/applied.json RS_RECEIVER_SHOT_WINDOWS=0:307-359,1:367-4
 | `RS_RECEIVER_STALL`           | G1d, `<step>:<ms>`: after the shot for `<step>`, block the main loop `<ms>` (`OS.delay_msec`, an injected delay, not GPU work) before that seq's `submitted` ack               |
 | `RS_RECEIVER_RECONNECT`       | G1d, `<step>`: after the shot for `<step>` and its `submitted` ack, close with 1000, `dispose()` the applier and connect again (connection 2: a fresh session)                 |
 | `RS_RECEIVER_RECONNECT_MEMORY` | G6l, `drop` (default, G2c2's rule: connection 2 takes payloads from its inline records, the cache directory or a fetch) or `keep` (the verified, content-addressed memory map survives the reconnect); `live.reconnect` records the mode and the hashes in memory and in the cache at that moment |
+| `RS_RECEIVER_RECONNECT_ON_LOSS` | G7u, `1`: a connection that closes without an end record (not a host 1002/1008/1009 close) after a session reconnects as `RS_RECEIVER_RECONNECT`'s second half (dispose, a fresh session on the next connection) instead of `live-disconnected`, at most 3 times; `live.loss_reconnects` records each (gate7-design.md D14 as amended: a frozen page may lose its socket) |
 | `RS_RECEIVER_RESYNC`          | G1d, `<step>`: refuse the first transaction in that step's window unapplied, send `resync` for it, and refuse patches until a full transaction arrives                         |
 | `RS_RECEIVER_TOKEN_FILE`      | G2e, gate2-design.md D13: absolute path to a file holding the bearer token, sent as `Authorization: Bearer <token>` on the upgrade and on every resource GET; unset sends none |
 | `RS_RECEIVER_WEB_FETCH`       | G7wf, web only (a usage error natively): `fetch` (default) GETs resource payloads with the browser's `fetch()` through `JavaScriptBridge`; `httpclient` uses Godot's web `HTTPClient` as before G7wf (each GET about four main-loop iterations, G7r), kept for the A/B. The web's `applied.json` `live.fetch_impl` is `browser-fetch` or `httpclient`; a native report has no such key |
@@ -178,7 +179,8 @@ acked `applied`; at the next `frame_post_draw` a due shot is taken and `submitte
 `presented` is reported as `"unavailable"`. After the end record the receiver closes with 1000
 itself (Godot's `WebSocketPeer` would drop an end record that arrived together with the host's
 close frame, so the host waits for this close), then writes `applied.json` and exits 0. A close
-without an end record is replay-failure `live-disconnected`; a close with 1002, 1008 or 1009 is
+without an end record is replay-failure `live-disconnected` (or, under
+`RS_RECEIVER_RECONNECT_ON_LOSS=1`, a reconnect); a close with 1002, 1008 or 1009 is
 `host-error`, with the close reason (the host repeats its error's reason there). Shots and state
 dumps are `shots/seq-<n>.png` and `state/seq-<n>.json`; shot entries carry their `step`;
 `shots_missed` lists the windows without one. Transactions carry `received_us`, `applied_us` and
