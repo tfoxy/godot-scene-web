@@ -68,6 +68,9 @@ export interface LiveConfig {
   stall: { step: number; ms: number } | null;
   reconnect: number | null;
   reconnectMemory: "drop" | "keep";
+  /** RS_RECEIVER_RECONNECT_ON_LOSS=1 (G7u, D14 as amended): a connection lost without an end
+   * record (not a host 1002/1008/1009 close) reconnects with gate 1d's semantics. */
+  reconnectOnLoss: boolean;
   resync: number | null;
   fetchTimeoutMs: number;
   /** `--max-fps N` (engine_args) or RS_RECEIVER_MAX_FPS; 0 is uncapped. */
@@ -221,6 +224,11 @@ function readLive(
     throw new UsageError(
       `RS_RECEIVER_RECONNECT_MEMORY must be drop or keep (got ${JSON.stringify(memory)})`,
     );
+  const onLoss = (env.RS_RECEIVER_RECONNECT_ON_LOSS ?? "").trim();
+  if (onLoss !== "" && onLoss !== "1")
+    throw new UsageError(
+      `RS_RECEIVER_RECONNECT_ON_LOSS must be 1 or unset (got ${JSON.stringify(onLoss)})`,
+    );
   for (const [name, step] of [
     ["RS_RECEIVER_STALL", stall?.step ?? null],
     ["RS_RECEIVER_RECONNECT", reconnect],
@@ -263,6 +271,7 @@ function readLive(
     stall,
     reconnect,
     reconnectMemory: memory,
+    reconnectOnLoss: onLoss === "1",
     resync,
     fetchTimeoutMs:
       nonNegative(

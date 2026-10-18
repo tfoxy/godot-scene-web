@@ -205,7 +205,12 @@ if [ -n "$GATE7_LIVE_KIND" ]; then
 	mkdir -p "$gate7_daemon_dir"
 	rm -f "$gate7_daemon_dir/daemon.json"
 	gs_strip_env_args
-	env -C "$REPO_ROOT" -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" \
+	# G7u part D: the device daemon reverses the page and host ports onto the phone.
+	gate7_daemon_env=()
+	if [ "${GATE7_LIFECYCLE_ENV:-desktop}" = device ]; then
+		gate7_daemon_env=(GATE7_HARNESS_PORT="$GATE7_HARNESS_PORT" GATE7_HOST_PORT="$GATE7_HOST_PORT")
+	fi
+	env -C "$REPO_ROOT" -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" ${gate7_daemon_env[@]+"${gate7_daemon_env[@]}"} \
 		mise exec -- node --conditions=development --import tsx "$SCRIPT_DIR/gate7-tool.ts" browser-daemon \
 		--ready-file "$gate7_daemon_dir/daemon.json" --parent "$$" --kind "$GATE7_LIVE_KIND" \
 		--bundle "$GATE7_BUNDLE_DIR" --static-root "${GATE7_STATIC_ROOT:-$OUT}" \

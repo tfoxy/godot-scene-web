@@ -14,7 +14,10 @@
 // before any session, which is `live-connect-failed` (/7's analogue of /6's 401 upgrade), as is a
 // close 1008 `unauthorized` and a socket that never opens (a 403 origin) or does not open within
 // RS_RECEIVER_CONNECT_TIMEOUT. A close without the end record is `live-disconnected` (`host-error`
-// for 1002/1008/1009). After the end record the receiver closes first (1000), as natively.
+// for 1002/1008/1009), unless RS_RECEIVER_RECONNECT_ON_LOSS=1 (G7u, D14 as amended): then a lost
+// connection reconnects as G1d's RECONNECT does (dispose, a fresh session on the next
+// connection), at most LOSS_RECONNECTS_MAX times, recorded in `live.loss_reconnects`. After the end
+// record the receiver closes first (1000), as natively.
 //
 // Credit and pacing (Q5). `onmessage` decodes and validates, acks `received` and queues. One rAF
 // loop does everything else, in the native `_process_live` order: connection phases, the
@@ -32,7 +35,18 @@
 // full; the full is applied by a fresh applier, because the wasm applier is delta-driven and never
 // saw the refused ones), CREDIT_STAGE, CONNECT_TIMEOUT, INBOUND_BYTES (announced), FETCH_DELAY_MS,
 // FETCH_TIMEOUT_MS, SABOTAGE (`wrong-http-token`; GSW-only `ack-on-receipt`, which acks
-// `submitted` from `onmessage` so `credit-from-paced-loop` can be shown to fail), CACHE_MODE.
+// `submitted` from `onmessage` so `credit-from-paced-loop` can be shown to fail, and G7u's
+// `ack-while-hidden`, which does so only while the page is suspended: hidden, or the lifecycle
+// shim's simulated suspension), CACHE_MODE.
+//
+// WebGL context loss (G7u, gate7-design.md D14 as amended by D29) is recovered in place. From
+// `webglcontextlost` the loop holds: it applies and draws nothing, so no credit returns, and what
+// arrives queues. After `webglcontextrestored` one callback redraws the last applied state with
+// no transaction: the executor recreates its GL objects, and `draw` re-uploads every resident
+// texture from the wasm payload store and the whole vertex and index buffers (every mesh's
+// geometry), after refetching any resident texture's payload the store no longer holds. Credit
+// resumes with the next applied transaction. applied.json `live.context_loss` records it, and the
+// restored target is read back to `context-loss/restored.png`.
 //
 // The cache directory. As for the web export (Q4), the browser's HTTP cache stands in for
 // RS_RECEIVER_CACHE_DIR: every miss is a `fetch` with the default cache mode, which the browser may
@@ -90,6 +104,8 @@ import {
 const SUBPROTOCOL = "render-stream.7";
 const PROTOCOL = "render-stream/7";
 const CLOSE_WAIT_MS = 2000;
+/** RS_RECEIVER_RECONNECT_ON_LOSS: the most lost connections one run reconnects after. */
+const LOSS_RECONNECTS_MAX = 3;
 const KIND_NAME = ["texture", "mesh", "shader"] as const;
 
 /** The page's fragment token (`#token=<hex>`), read once; the fragment is then removed from the
@@ -104,6 +120,45 @@ export function takeToken(): string | null {
 }
 
 const us = (): number => Math.round(performance.now() * 1000);
+
+/** G7u: whether the page is suspended, really (hidden) or as the lifecycle shim simulates it
+ * (`window.__rsLifecycle.suspended()`, scripts/lib/browser-probes/lifecycle-shim.js). */
+function pageSuspended(): boolean {
+  if (document.visibilityState === "hidden") return true;
+  const lc = (
+    window as unknown as { __rsLifecycle?: { suspended?: () => boolean } }
+  ).__rsLifecycle;
+  try {
+    return lc?.suspended?.() === true;
+  } catch {
+    return false;
+  }
+}
+
+/** G7u applied.json `live.context_loss` (receiver clock: `us()`). */
+interface ContextLoss {
+  lost_us: number;
+  restored_us: number | null;
+  resident: { textures: number; meshes: number } | null;
+  uploads_after_restore: { textures: number; meshes: number } | null;
+  refetched: string[];
+  redraw_us: number | null;
+  first_tx_after_restore: number | null;
+  /** Beyond the contract: what the hold and the redraw saw. */
+  losses: number;
+  last_applied_before_loss: {
+    stream: number;
+    seq: number;
+    frame: number;
+  } | null;
+  received_during_loss: number;
+  redraw_duration_us: number | null;
+  redraw: Record<string, unknown> | null;
+  /** Why no redraw ran (nothing applied on the connection yet), or null. */
+  redraw_skipped: string | null;
+  restore_shot: string | null;
+  mechanism: string;
+}
 
 interface Queued {
   entry: LiveEntry;
@@ -180,6 +235,10 @@ class LiveReceiver {
   private finished = false;
   private reconnecting = false;
   private reconnectDue = false;
+  /** The record the next connection's dispose and connect attempts fill: `live.reconnect` (a
+   * scheduled RS_RECEIVER_RECONNECT) or the newest `live.loss_reconnects` entry. */
+  private reconnectRecord: Record<string, unknown> | null = null;
+  private readonly lossReconnects: Record<string, unknown>[] = [];
   private resyncDone = false;
   private awaitingFull = false;
   private rebuildDue = false;
@@ -192,6 +251,18 @@ class LiveReceiver {
   private targetTicks = 0;
   private fenceDrawEnd = -1;
   private resolveDone: () => void = () => {};
+  /** G7u: the context's state as the canvas's events report it, and the loss's evidence. */
+  private ctxState: "ok" | "lost" | "restoring" = "ok";
+  private ctxLoss: ContextLoss | null = null;
+  private restoreFetcher: LiveFetcher | null = null;
+  private restoreWant: string[] | null = null;
+  private readonly restoreBodies = new Map<string, FetchResult>();
+  private makeFetcher:
+    | ((onBody: (r: FetchResult) => void) => LiveFetcher)
+    | null = null;
+  private acksWhileHidden = 0;
+  /** Transactions applied on the current connection (a reconnect's fresh session has none). */
+  private connApplied = 0;
 
   constructor(
     private readonly cfg: ReceiverConfig,
@@ -219,8 +290,18 @@ class LiveReceiver {
         raf_skipped: 0,
         drawn_rafs: 0,
         ack_on_receipt: this.sabotage.has("ack-on-receipt"),
+        // G7u sabotage: submitted acked from onmessage while the page is suspended.
+        ack_while_hidden: this.sabotage.has("ack-while-hidden"),
+        acks_while_hidden: 0,
       },
+      context_loss: null,
     };
+    // Only when asked, so every other live leg's applied.json keeps its keys.
+    if (L.reconnectOnLoss) this.liveBlock.loss_reconnects = this.lossReconnects;
+    canvas.addEventListener("webglcontextlost", () => this.onContextLost());
+    canvas.addEventListener("webglcontextrestored", () =>
+      this.onContextRestored(),
+    );
     this.report = {
       cfg,
       mode: "live",
@@ -360,6 +441,9 @@ class LiveReceiver {
     if (ws !== this.ws || this.finished) return;
     this.opened = true;
     this.phase = "streaming";
+    const lr = this.reconnectRecord;
+    if (lr !== null && "opened_us" in lr && lr.opened_us === null)
+      lr.opened_us = us();
     const rect = this.canvas.getBoundingClientRect();
     // The /7 hello (Q2), key order as there. The token goes only here, never to a log.
     this.send({
@@ -522,8 +606,12 @@ class LiveReceiver {
     if (this.keepLog) this.entries.push(entry);
     this.perfDecode.push(decodeUs);
     this.ack(seq, "received", now);
-    if (this.sabotage.has("ack-on-receipt")) {
-      // GSW-only sabotage: credit returned from onmessage, before any rAF applied or drew it.
+    const whileHidden =
+      this.sabotage.has("ack-while-hidden") && pageSuspended();
+    if (this.sabotage.has("ack-on-receipt") || whileHidden) {
+      // GSW-only sabotages: credit returned from onmessage, before any rAF applied or drew it
+      // (`ack-while-hidden`: only while the page is suspended, so it draws nothing).
+      if (whileHidden) this.acksWhileHidden++;
       const t = us();
       entry.submitted_us = t;
       entry.paced.submitted_ack_ms = t / 1000;
@@ -540,6 +628,22 @@ class LiveReceiver {
           hash: hex(hashes.subarray(32 * k, 32 * k + 32)),
           kind: kinds[k],
         });
+    }
+    if (this.ctxState !== "ok" && this.ctxLoss)
+      this.ctxLoss.received_during_loss++;
+    if (this.pending !== null) {
+      // The wasm core holds ONE accepted state, so a transaction accepted while another waits
+      // for its payloads supersedes it: the newest is applied by a fresh applier (takeQueued's
+      // rebuild). Never under credit window 1 with paced credit; the sabotages that return
+      // credit early (`ack-while-hidden`, `ack-on-receipt`) let it happen.
+      const old = this.pending;
+      this.pending = null;
+      old.item.entry.skipped = "superseded";
+      this.fetcher?.cancel();
+      this.rebuildDue = true;
+      log(
+        `seq ${old.item.entry.seq} superseded by seq ${seq} while its payloads were pending`,
+      );
     }
     this.queue.push({ entry, needed });
   }
@@ -591,15 +695,17 @@ class LiveReceiver {
       let token = this.L.token;
       if (this.sabotage.has("wrong-http-token") && token !== null)
         token = `${token}-wrong`;
-      this.fetcher = new LiveFetcher(
-        this.L.httpOrigin,
-        httpPath,
-        this.L.fetchTimeoutMs,
-        this.cfg.fetchDelayMs,
-        token,
-        this.sabotage.has("ignore-cache"),
-        (r) => this.stageFetched(r),
-      );
+      this.makeFetcher = (onBody) =>
+        new LiveFetcher(
+          this.L.httpOrigin,
+          httpPath,
+          this.L.fetchTimeoutMs,
+          this.cfg.fetchDelayMs,
+          token,
+          this.sabotage.has("ignore-cache"),
+          onBody,
+        );
+      this.fetcher = this.makeFetcher((r) => this.stageFetched(r));
     }
     log(
       `session ${session.session_id} stream ${session.stream?.stream_id} (${session.stream?.transport}, ${session.stream?.encoding}) applied, credit window ${this.report.creditWindow}`,
@@ -683,7 +789,7 @@ class LiveReceiver {
           if (!this.reconnecting) throw this.connectFailure();
           // A reconnect can race the host's teardown of connection 1 (one receiver at a time):
           // retry until the connect timeout.
-          const r = this.liveBlock.reconnect as Record<string, number>;
+          const r = this.reconnectRecord as Record<string, number>;
           r.connect_attempts = (r.connect_attempts ?? 1) + 1;
           this.open();
         }
@@ -705,8 +811,13 @@ class LiveReceiver {
       default:
         break;
     }
-    // The pending transaction's fetches; it is applied in the callback they complete in.
-    if (this.pending !== null) {
+    // G7u: a lost context holds the loop (nothing applied or drawn, so no credit returns); the
+    // callback after the restore redraws with no transaction.
+    if (this.ctxState !== "ok") {
+      this.stepContext();
+      if (this.finished) return;
+    } else if (this.pending !== null) {
+      // The pending transaction's fetches; it is applied in the callback they complete in.
       this.advancePending();
       if (this.finished || this.pending.stage !== "ready") return;
       this.applyReady(ts);
@@ -715,7 +826,12 @@ class LiveReceiver {
       this.takeQueued(ts);
       if (this.finished) return;
     }
-    if (this.endSeen && this.queue.length === 0 && this.pending === null) {
+    if (
+      this.ctxState === "ok" &&
+      this.endSeen &&
+      this.queue.length === 0 &&
+      this.pending === null
+    ) {
       if (this.L.shotFinal && !this.finalDone) {
         this.finalDone = true;
         this.finalShot();
@@ -739,6 +855,14 @@ class LiveReceiver {
           "host-error",
           `${reason}: the host closed with ${code}`,
         );
+      if (
+        this.L.reconnectOnLoss &&
+        this.sessionSeen &&
+        this.lossReconnects.length < LOSS_RECONNECTS_MAX
+      ) {
+        this.beginLossReconnect(code, reason);
+        return;
+      }
       throw new ReplayFailure(
         this.lastSeqOrNull(),
         "live-disconnected",
@@ -975,6 +1099,13 @@ class LiveReceiver {
     entry.paced.applied_ms = appliedUs / 1000;
     this.lastAppliedSeq = seq;
     this.lastAppliedFrame = entry.frame;
+    this.connApplied++;
+    if (
+      this.ctxLoss !== null &&
+      this.ctxLoss.redraw_us !== null &&
+      this.ctxLoss.first_tx_after_restore === null
+    )
+      this.ctxLoss.first_tx_after_restore = seq;
     p.tx.process_frame = this.processFrames;
     p.tx.inline_received = this.inlineSinceApplied;
     this.inlineSinceApplied = 0;
@@ -1124,6 +1255,10 @@ class LiveReceiver {
         leftover_rids: null,
         closed_us: null,
       };
+      this.reconnectRecord = this.liveBlock.reconnect as Record<
+        string,
+        unknown
+      >;
       this.reconnectDue = true;
     }
   }
@@ -1171,6 +1306,196 @@ class LiveReceiver {
     return true;
   }
 
+  // ------------------------------------------------------------------------- context loss
+
+  private onContextLost(): void {
+    if (this.finished) return;
+    const t = us();
+    this.ctxState = "lost";
+    if (this.ctxLoss !== null && this.ctxLoss.redraw_us === null) {
+      // Lost again before the restore redraw: the same loss.
+      this.ctxLoss.losses++;
+      log(`webgl context lost again at ${t} us, before the restore redraw`);
+      return;
+    }
+    const losses = (this.ctxLoss?.losses ?? 0) + 1;
+    this.ctxLoss = {
+      lost_us: t,
+      restored_us: null,
+      resident: null,
+      uploads_after_restore: null,
+      refetched: [],
+      redraw_us: null,
+      first_tx_after_restore: null,
+      losses,
+      last_applied_before_loss:
+        this.lastAppliedSeq > 0
+          ? {
+              stream: this.connIndex,
+              seq: this.lastAppliedSeq,
+              frame: this.lastAppliedFrame,
+            }
+          : null,
+      received_during_loss: 0,
+      redraw_duration_us: null,
+      redraw: null,
+      redraw_skipped: null,
+      restore_shot: null,
+      mechanism:
+        "in place: hold (nothing applied, drawn or credited), then one redraw with no transaction re-uploading every resident texture and the mesh-carrying vertex/index buffers",
+    };
+    this.liveBlock.context_loss = this.ctxLoss;
+    this.restoreFetcher?.cancel();
+    this.restoreFetcher = null;
+    this.restoreWant = null;
+    this.restoreBodies.clear();
+    log(
+      `webgl context lost at ${t} us after seq ${this.lastAppliedSeq}: holding credit, applying nothing`,
+    );
+  }
+
+  private onContextRestored(): void {
+    if (this.finished || this.ctxLoss === null) return;
+    const t = us();
+    this.ctxLoss.restored_us = t;
+    this.ctxState = "restoring";
+    log(`webgl context restored at ${t} us: redrawing in place`);
+  }
+
+  /** One held callback: nothing while lost; once restored, refetch any evicted resident payload
+   * (polled), then the redraw with no transaction, read back once. */
+  private stepContext(): void {
+    if (this.ctxState !== "restoring") return;
+    const loss = this.ctxLoss as ContextLoss;
+    const g = this.g as GswRs;
+    const mem = this.mem as WebAssembly.Memory;
+    if (this.connApplied === 0) {
+      // Nothing applied on this connection (none yet, or a reconnect's fresh session): there is
+      // no state to redraw, and the first transaction draws everything on the new objects.
+      this.ctxState = "ok";
+      loss.redraw_us = us();
+      loss.redraw_skipped = "nothing applied on this connection";
+      log(`context restore: ${loss.redraw_skipped}; no redraw`);
+      return;
+    }
+    if (this.restoreWant === null) {
+      const missing = g.restore_missing();
+      this.restoreWant = missing === "" ? [] : missing.split(",");
+      if (this.restoreWant.length > 0) {
+        if (this.makeFetcher === null)
+          throw new ReplayFailure(
+            this.lastAppliedSeq,
+            "resource-unavailable",
+            `context restore: payload ${this.restoreWant[0]} left the store, and the session has no HTTP fetch`,
+          );
+        log(
+          `context restore: refetching ${this.restoreWant.length} resident payload(s) the store no longer holds`,
+        );
+        this.restoreFetcher = this.makeFetcher((r) => this.stageFetched(r));
+        this.restoreFetcher.start(this.restoreWant);
+      }
+    }
+    if (this.restoreFetcher !== null) {
+      const { results } = this.restoreFetcher.poll();
+      for (const r of results) {
+        const logged: Record<string, unknown> = {
+          stream: this.connIndex,
+          seq: null,
+          hash: r.hash,
+          source: "http",
+          status: r.status,
+          bytes: r.bytes,
+          start_us: r.start_us,
+          end_us: r.end_us,
+          verified: false,
+          delay_us: r.delay_us,
+          headers: r.headers,
+          kind: "texture",
+          context_restore: true,
+        };
+        if (this.keepLog) this.fetchLog.push(logged);
+        if (r.error !== "") throw failWith(this.lastAppliedSeq, r.error);
+        if (r.stage_error)
+          throw new ReplayFailure(
+            this.lastAppliedSeq,
+            r.stage_error.startsWith("resource-hash")
+              ? "resource-hash-mismatch"
+              : "resource-invalid",
+            r.stage_error,
+          );
+        logged.verified = true;
+        this.restoreBodies.set(r.hash, r);
+        this.fetchedHashes.add(r.hash);
+      }
+      if (this.restoreWant.some((h) => !this.restoreBodies.has(h))) return;
+      for (const h of this.restoreWant)
+        if (g.restore_take(h) < 0)
+          throw new ReplayFailure(
+            this.lastAppliedSeq,
+            "resource-invalid",
+            g.error(),
+          );
+      loss.refetched = [...this.restoreWant];
+      this.restoreFetcher = null;
+    }
+    // The redraw: the last applied list, no transaction (lib.rs `draw` sees the restored context).
+    const d0 = performance.now();
+    if (g.draw() < 0) {
+      const err = g.error();
+      if (/lost/i.test(err)) {
+        // Lost again between the restore event and this callback: keep holding.
+        this.ctxState = "lost";
+        loss.losses++;
+        loss.restored_us = null;
+        this.restoreWant = null;
+        log(`context restore: ${err}; holding again`);
+        return;
+      }
+      throw failWith(this.lastAppliedSeq, err);
+    }
+    const d1 = performance.now();
+    const facts = JSON.parse(g.restore_json()) as {
+      restore_draw: boolean;
+      resident_textures: number;
+      resident_meshes: number;
+      texture_uploads: number;
+      vertex_bytes: number;
+      index_bytes: number;
+    };
+    loss.redraw_us = us();
+    loss.redraw_duration_us = Math.round((d1 - d0) * 1000);
+    loss.redraw = facts;
+    loss.resident = {
+      textures: facts.resident_textures,
+      meshes: facts.resident_meshes,
+    };
+    // Meshes are lowered into the list's shared vertex/index buffers: the redraw re-sent every
+    // resident mesh's geometry when it re-sent both buffers whole on the restored context.
+    const buffersResent =
+      facts.restore_draw && facts.vertex_bytes > 0 && facts.index_bytes > 0;
+    loss.uploads_after_restore = {
+      textures: facts.restore_draw ? facts.texture_uploads : 0,
+      meshes: buffersResent ? facts.resident_meshes : 0,
+    };
+    // The restored target, read back once (the checker compares it with the reference at
+    // `last_applied_before_loss.frame`).
+    const sp = g.shot();
+    if (sp !== 0) {
+      const w = g.target_width();
+      const h = g.target_height();
+      const rgba = new Uint8Array(mem.buffer, sp, w * h * 4).slice();
+      const rel = "context-loss/restored.png";
+      this.puts.push(
+        encodePng(rgba, w, h).then((png) => put(this.cfg, rel, png)),
+      );
+      loss.restore_shot = underOut(this.cfg, rel);
+    } else log(`context restore: readback failed: ${g.error()}`);
+    this.ctxState = "ok";
+    log(
+      `context restore: redrew seq ${this.lastAppliedSeq} with no transaction (${loss.uploads_after_restore.textures}/${loss.resident.textures} textures, ${loss.uploads_after_restore.meshes}/${loss.resident.meshes} meshes re-uploaded, ${loss.refetched.length} refetched); credit resumes`,
+    );
+  }
+
   /** RS_RECEIVER_SHOT_FINAL: the last applied state once more, after the end record. */
   private finalShot(): void {
     const g = this.g as GswRs;
@@ -1216,6 +1541,39 @@ class LiveReceiver {
     );
   }
 
+  /**
+   * RS_RECEIVER_RECONNECT_ON_LOSS (G7u, gate7-design.md D14 as amended): the connection closed
+   * without an end record and not by a host error (a frozen page's socket, 1006 on resume). The
+   * recovery is gate 1d's reconnect, unscheduled: the closed connection's state is disposed, and
+   * the next connection starts a fresh session whose first transaction is the host's newest
+   * state. The host treats the lost connection as gate 1d's killed receiver.
+   */
+  private beginLossReconnect(code: number, reason: string): void {
+    const r: Record<string, unknown> = {
+      connection: this.connIndex,
+      code,
+      reason,
+      after_seq: this.lastAppliedSeq,
+      after_frame: this.lastAppliedFrame,
+      lost_us: us(),
+      visibility: document.visibilityState,
+      connect_attempts: 1,
+      created_rids: null,
+      freed_by_apply: null,
+      owned_before_dispose: null,
+      freed_rids: null,
+      leftover_rids: null,
+      closed_us: null,
+      opened_us: null,
+    };
+    this.lossReconnects.push(r);
+    this.reconnectRecord = r;
+    log(
+      `reconnect-on-loss: connection ${this.connIndex} lost (code ${code} ${JSON.stringify(reason)}) after seq ${this.lastAppliedSeq}; reconnecting`,
+    );
+    this.startNextConnection();
+  }
+
   /** Connection 1's tap is finished; the applier is disposed (its retained objects are the
    * RIDs), and connection 2 opens with a fresh session and a new tap. */
   private startNextConnection(): void {
@@ -1225,7 +1583,7 @@ class LiveReceiver {
       freed_by_apply: number;
       owned: number;
     };
-    const r = this.liveBlock.reconnect as Record<string, unknown>;
+    const r = this.reconnectRecord as Record<string, unknown>;
     r.created_rids = d.created;
     r.freed_by_apply = d.freed_by_apply;
     r.owned_before_dispose = d.owned;
@@ -1234,6 +1592,7 @@ class LiveReceiver {
     // No cache directory: the browser's HTTP cache stands in for it (Q4), unseen by the page.
     r.cache_hashes = [];
     g.live_reset(this.L.reconnectMemory === "keep");
+    this.connApplied = 0;
     r.freed_rids = d.owned;
     r.leftover_rids = 0;
     r.closed_us = us();
@@ -1359,6 +1718,7 @@ class LiveReceiver {
       gsw.raf_callbacks = this.rafIndex;
       gsw.raf_skipped = this.rafSkipped;
       gsw.drawn_rafs = this.drawnRafs;
+      gsw.acks_while_hidden = this.acksWhileHidden;
       if (this.cfg.perfOut) {
         const perfRel = relativeToOut(this.cfg, this.cfg.perfOut);
         await put(

@@ -132,6 +132,12 @@ extends Node
 ##                               already verified by hash), so only payloads in neither memory nor
 ##                               the cache directory are fetched. live.reconnect records the mode
 ##                               and the hashes in memory and in the cache at that moment
+##   RS_RECEIVER_RECONNECT_ON_LOSS 1 (G7u, gate7-design.md D14 as amended): a connection that
+##                               closes without an end record, other than a host 1002/1008/1009
+##                               close, after a session (a frozen page's socket: 1006 on resume)
+##                               is recovered as RS_RECEIVER_RECONNECT's part 2 (dispose, a fresh
+##                               session on the next connection) instead of live-disconnected, at
+##                               most LOSS_RECONNECTS_MAX times; live.loss_reconnects records each
 ##   RS_RECEIVER_RESYNC          <step> (G1d): refuse the first transaction in that step's window
 ##                               unapplied, send `resync` for it, and ignore patches until a full
 ##                               transaction arrives
@@ -268,6 +274,8 @@ const DEFAULT_INBOUND_BYTES: int = 16777216
 const DEFAULT_CONNECT_TIMEOUT_MS: int = 10000
 ## How long the receiver waits for the host's close after the end record before closing itself.
 const CLOSE_WAIT_MS: int = 2000
+## RS_RECEIVER_RECONNECT_ON_LOSS: the most lost connections one run reconnects after.
+const LOSS_RECONNECTS_MAX: int = 3
 
 var _data := PackedByteArray()
 var _records: Array[Dictionary] = []
@@ -400,6 +408,12 @@ var _reconnect_due: bool = false
 var _reconnecting: bool = false
 ## RS_RECEIVER_RECONNECT_MEMORY (G6l): "drop" (G2c2's rule) or "keep".
 var _reconnect_memory: String = "drop"
+## RS_RECEIVER_RECONNECT_ON_LOSS (G7u).
+var _reconnect_on_loss: bool = false
+var _loss_reconnects: Array = []
+## The record the next connection's dispose and connect attempts fill: live.reconnect (a scheduled
+## RS_RECEIVER_RECONNECT) or the newest live.loss_reconnects entry.
+var _reconnect_record: Dictionary = {}
 var _resync_step: int = -1
 var _resync_done: bool = false
 var _awaiting_full: bool = false
@@ -1733,6 +1747,9 @@ func _ready_live() -> void:
 	if _late_poll:
 		# Only when set, so every other live leg's applied.json is byte-for-byte what it was.
 		_live_report["late_poll"] = true
+	if _reconnect_on_loss:
+		# Only when set, likewise.
+		_live_report["loss_reconnects"] = _loss_reconnects
 	if RsConfig.is_web():
 		# G7wf: the web export's payload GET mechanism (never on a native receiver's report).
 		_live_report["fetch_impl"] = "browser-fetch" if _web_fetch else "httpclient"
@@ -1895,6 +1912,11 @@ func _parse_g1d_options() -> bool:
 			_log("error: RS_RECEIVER_RECONNECT_MEMORY must be drop or keep (got %s)" % JSON.stringify(memory))
 			return false
 		_reconnect_memory = memory
+	var on_loss: String = RsConfig.get_env("RS_RECEIVER_RECONNECT_ON_LOSS").strip_edges()
+	if on_loss != "" and on_loss != "1":
+		_log("error: RS_RECEIVER_RECONNECT_ON_LOSS must be 1 or unset (got %s)" % JSON.stringify(on_loss))
+		return false
+	_reconnect_on_loss = on_loss == "1"
 	for named: Array in [["RS_RECEIVER_STALL", _stall_step], ["RS_RECEIVER_RECONNECT", _reconnect_step], ["RS_RECEIVER_RESYNC", _resync_step]]:
 		var step: int = named[1]
 		if step >= 0 and _window_of(step).is_empty():
@@ -1923,6 +1945,8 @@ func _process_live() -> void:
 		"connecting":
 			if state == WebSocketPeer.STATE_OPEN:
 				_live_phase = "streaming"
+				if _reconnect_record.has("opened_us") and _reconnect_record["opened_us"] == null:
+					_reconnect_record["opened_us"] = Time.get_ticks_usec()
 				if _wire_version == 7:
 					_send(_hello_v7())
 				else:
@@ -1936,7 +1960,7 @@ func _process_live() -> void:
 					return
 				# A reconnect can race the host's teardown of connection 1 (one receiver at a time: a
 				# second gets 503), so it retries until the connect timeout.
-				var reconnect: Dictionary = _live_report["reconnect"]
+				var reconnect: Dictionary = _reconnect_record
 				reconnect["connect_attempts"] = Rs2Decoder.as_int(reconnect["connect_attempts"]) + 1
 				var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
 				if opened != OK:
@@ -1998,6 +2022,8 @@ func _process_live() -> void:
 			_fail(null, "live-connect-failed", "unauthorized: the host closed with %d before any session" % code)
 		elif code == 1002 or code == 1008 or code == 1009:
 			_fail(_last_seq_or_null(), "host-error", "%s: the host closed with %d" % [reason, code])
+		elif _reconnect_on_loss and _session_seen and _loss_reconnects.size() < LOSS_RECONNECTS_MAX:
+			_begin_loss_reconnect(code, reason)
 		else:
 			_fail(_last_seq_or_null(), "live-disconnected", "the connection closed (code %d %s) without an end record" % [code, JSON.stringify(reason)])
 
@@ -2016,6 +2042,36 @@ func _begin_reconnect() -> void:
 	_log("reconnect: closing connection %d after seq %d" % [_conn_index, _last_applied_seq])
 
 
+## RS_RECEIVER_RECONNECT_ON_LOSS (G7u, gate7-design.md D14 as amended): the connection closed
+## without an end record and not by a host error (a frozen page's socket, 1006 on resume). The
+## recovery is RS_RECEIVER_RECONNECT's part 2, unscheduled: dispose, then a fresh session whose
+## first transaction is the host's newest state. The host treats the lost connection as gate 1d's
+## killed receiver. A submit still pending waits for its frame_post_draw first.
+func _begin_loss_reconnect(code: int, reason: String) -> void:
+	if _submit_pending:
+		return
+	var record: Dictionary = {
+		"connection": _conn_index,
+		"code": code,
+		"reason": reason,
+		"after_seq": _last_applied_seq,
+		"after_frame": _last_applied_frame,
+		"lost_us": Time.get_ticks_usec(),
+		"connect_attempts": 1,
+		"created_rids": null,
+		"freed_by_apply": null,
+		"owned_before_dispose": null,
+		"freed_rids": null,
+		"leftover_rids": null,
+		"closed_us": null,
+		"opened_us": null,
+	}
+	_loss_reconnects.append(record)
+	_reconnect_record = record
+	_log("reconnect-on-loss: connection %d lost (code %d %s) after seq %d; reconnecting" % [_conn_index, code, JSON.stringify(reason), _last_applied_seq])
+	_start_next_connection()
+
+
 ## RS_RECEIVER_RECONNECT, part 2: finish connection 1's received file, free every RID the applier
 ## made (dispose), and open connection 2 with a new received file and a new decoder stream; its
 ## first message is a fresh session.
@@ -2031,7 +2087,7 @@ func _start_next_connection() -> void:
 	var owned_before: int = _applier.owned_rids()
 	var freed: int = _applier.dispose()
 	var leftover: int = _applier.owned_rids()
-	var reconnect: Dictionary = _live_report["reconnect"]
+	var reconnect: Dictionary = _reconnect_record
 	reconnect["created_rids"] = _applier.created_rids
 	reconnect["freed_by_apply"] = _applier.freed_by_apply
 	reconnect["owned_before_dispose"] = owned_before
@@ -2363,6 +2419,7 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 			"leftover_rids": null,
 			"closed_us": null,
 		}
+		_reconnect_record = _live_report["reconnect"]
 		_reconnect_due = true
 
 

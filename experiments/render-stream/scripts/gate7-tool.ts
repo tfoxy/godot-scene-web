@@ -33,7 +33,13 @@
 //     GATE7_WEB_FETCH=httpclient (G7wf; default fetch) runs every web leg's payload GETs on
 //     Godot's web HTTPClient (RS_RECEIVER_WEB_FETCH=httpclient), the pre-G7wf path, for the A/B.
 //     `--spare during|after` (default GATE7_BROWSER_SPARE, else during; G7r): when the next leg's
-//     browser is launched, while this leg runs (G7l) or once it has finished (timing legs)
+//     browser is launched, while this leg runs (G7l) or once it has finished (timing legs).
+//     Under GATE7_LIFECYCLE_ENV=device / GATE7_DEVICE (G7u part D) it runs the lifecycle legs on
+//     the phone's real Chrome instead (lib/gate7-device-legs.ts; needs GATE7_HARNESS_PORT and
+//     GATE7_HOST_PORT, which lib/legs.sh passes); browser-receiver refuses a device env
+//   gate7-tool.ts lifecycle-env-check
+//     (G7u) exits 1 with the reason when GATE7_LIFECYCLE_ENV=device cannot run yet (run-gate7.sh
+//     --env device --legs g7-lc asks this before any build)
 
 import { createHash } from "node:crypto";
 import {
@@ -48,7 +54,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { currentBuildProvenance, gate0WebLegSpecs } from "./lib/gate7-adapters";
+import { serveDeviceBrowserDaemon } from "./lib/gate7-device-legs";
 import { type GswGate, gswLegSpecs } from "./lib/gate7-gsw";
+import {
+  DEVICE_LIFECYCLE_SUPPORT,
+  lifecycleEnvOf,
+} from "./lib/gate7-lifecycle";
 import {
   bundleBuildSha256,
   runBrowserReceiver,
@@ -285,6 +296,19 @@ async function main(): Promise<void> {
       );
     return;
   }
+  if (command === "lifecycle-env-check") {
+    // G7u: run-gate7.sh --env device --legs g7-lc asks before any build (GATE7_LIFECYCLE_ENV,
+    // GATE7_DEVICE); exits 1 with the reason when the daemon cannot drive the device.
+    const lc = lifecycleEnvOf();
+    if (lc.env === "device" && !DEVICE_LIFECYCLE_SUPPORT.ok) {
+      console.error(
+        `lifecycle: GATE7_LIFECYCLE_ENV=device (GATE7_DEVICE=${lc.device}): ${DEVICE_LIFECYCLE_SUPPORT.reason}`,
+      );
+      process.exit(1);
+    }
+    console.log(`lifecycle: env ${lc.env}${lc.device ? ` ${lc.device}` : ""}`);
+    return;
+  }
   if (command === "browser-receiver" || command === "browser-daemon") {
     // G7l: one browser receiver leg inside a gate's own runner (lib/legs.sh, GATE7_LIVE_KIND).
     // Every option defaults to the runner's GATE7_* environment.
@@ -323,6 +347,20 @@ async function main(): Promise<void> {
         ? { webFetch: webFetchOf(process.env.GATE7_WEB_FETCH) }
         : {}),
     } as const;
+    // G7u: a device lifecycle run (run-gate7.sh --env device --legs g7-lc) runs in the daemon's
+    // device mode (lib/gate7-device-legs.ts); it never falls back to the desktop.
+    if (lifecycleEnvOf().env === "device") {
+      if (!DEVICE_LIFECYCLE_SUPPORT.ok || command !== "browser-daemon")
+        throw new Error(
+          `lifecycle: GATE7_LIFECYCLE_ENV=device (GATE7_DEVICE=${process.env.GATE7_DEVICE}): ${DEVICE_LIFECYCLE_SUPPORT.ok ? "only browser-daemon has a device mode" : DEVICE_LIFECYCLE_SUPPORT.reason}; refusing rather than running the legs on the desktop`,
+        );
+      await serveDeviceBrowserDaemon(
+        ctx,
+        resolve(flag(argv, "--ready-file")),
+        Number(flag(argv, "--parent")),
+      );
+      return;
+    }
     if (command === "browser-daemon") {
       const spare = opt("--spare", "GATE7_BROWSER_SPARE") || "during";
       if (spare !== "during" && spare !== "after")

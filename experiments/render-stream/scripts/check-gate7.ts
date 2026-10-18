@@ -20,6 +20,10 @@
 // (lib/gate7-gsw-g6.ts), presentation-check on both halves, and g7-6's live g6l.
 // G7r: `--live` with g7-r judges <out>/gate6/rates-<kind>/ for each receiver kind present
 // (`--receiver native|web|gsw` asks for one; lib/gate7r-checks.ts), one result per kind.
+// G7u: `--live` with g7-lc judges <out>/gate6/lc-<kind>/ (desktop, simulated suspensions) and
+// lc-<kind>-<device>/ (real ones) per receiver kind (lib/gate7u-checks.ts); a kind with no device
+// run gets its real hidden/frozen legs typed `unavailable` (printed UNAV: failing, never a pass),
+// and <out>/g7u-summary.json separates real from simulated evidence.
 // G7h's harness checks are folded into `report.harness` when present. Requesting a group before
 // its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
@@ -73,6 +77,7 @@ import {
   G7R_KINDS,
   type G7rKindResult,
 } from "./lib/gate7r-checks";
+import { checkG7u, type G7uRunResult } from "./lib/gate7u-checks";
 import type { Gate55Expected as Gate55CimExpected } from "./lib/gate55b-expected";
 import { runGate55d } from "./lib/gate55d-checks";
 import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
@@ -115,6 +120,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-5",
   "g7-55",
   "g7-6",
+  "g7-lc",
   "g7-r",
   "g7-dev",
   "g7-bench",
@@ -172,6 +178,7 @@ export interface Gate7Report {
     | GswGroupResult
     | LiveGroupResult
     | G7rKindResult
+    | G7uRunResult
   )[];
 }
 
@@ -408,6 +415,7 @@ async function main(): Promise<void> {
     | GswGroupResult
     | LiveGroupResult
     | G7rKindResult
+    | G7uRunResult
   )[] = [];
   // G7l: `--live` judges only the live runs (lib/gate7-live.ts), never the file legs' sources.
   const wantWeb =
@@ -459,6 +467,20 @@ async function main(): Promise<void> {
         throw new Error(
           "check-gate7: --live g7-r: no <out>/gate6/rates-<kind>/",
         );
+    }
+    // G7u: one result per receiver kind and environment that ran (run-gate7.sh --live --legs
+    // g7-lc), plus each kind's real legs typed `unavailable` when no device run exists.
+    if (legs.includes("g7-lc")) {
+      console.log(
+        "check-gate7: judging g7-lc (<out>/gate6/lc-<kind>[-<device>]/)",
+      );
+      const e = JSON.parse(
+        await readFile(
+          join(EXPERIMENT_DIR, "fixtures", "gate6-scene", "expected.json"),
+          "utf8",
+        ),
+      );
+      results.push(...(await checkG7u(out, e, { receiver, webCore })));
     }
   }
   if (legs.includes("g7-0") && wantWeb) {
@@ -602,9 +624,24 @@ async function main(): Promise<void> {
       console.log(`${c.ok ? "PASS" : "FAIL"}  ${group}  ${c.id}  ${c.detail}`);
   for (const r of results) {
     for (const c of r.checks) {
-      const tag = c.passed ? "PASS" : c.gating ? "FAIL" : "NOTE";
-      console.log(`${tag}  ${r.group}  ${c.id}  ${c.detail}`);
+      const status = (c as { status?: string }).status;
+      const evidence = (c as { evidence?: string }).evidence;
+      const tag = c.passed
+        ? "PASS"
+        : status === "unavailable"
+          ? "UNAV"
+          : c.gating
+            ? "FAIL"
+            : "NOTE";
+      console.log(
+        `${tag}  ${r.group}  ${c.id}${evidence ? `  [${evidence}]` : ""}  ${c.detail}`,
+      );
     }
+    if (r.group === "g7-lc" && "legs" in r && "env" in r)
+      for (const l of r.legs)
+        console.log(
+          `lc  ${r.kind}${r.device ? `-${r.device}` : ""}:${l.leg}  [${l.evidence}]  class ${l.result_class ?? "-"}${l.recovered ? ` (recovered ${l.recovered})` : ""}  ${JSON.stringify(l.measures)}`,
+        );
     if ("startup" in r)
       for (const s of r.startup) console.log(`startup  ${JSON.stringify(s)}`);
     if ("not_applicable" in r)

@@ -38,11 +38,20 @@ extends RefCounted
 ## enforces the timeout and the injected delay. The body reaches GDScript as one PackedByteArray
 ## copied straight from the response's ArrayBuffer (JavaScriptBridge.js_buffer_to_packed_byte_array),
 ## with no chunk appends. Results, errors and the queue rules are the HTTPClient path's.
+##
+## G7u (gate7-design.md D14 as amended): on the web the timeout counts only time while the page
+## runs. The web main loop is rAF-driven, so a hidden or frozen page polls nothing; a gap between
+## two polls of a running GET longer than SUSPEND_GAP_MS is a suspension, and the deadline moves
+## by that gap. Without this a GET in flight across a 30-s freeze timed out on the first poll after
+## `resume`, before its promise callback ran (the g31's frozen-30s leg). Native receivers keep the
+## wall-clock deadline.
 
 const READ_CHUNK: int = 65536
 ## A bound on the polls one poll() call makes (each one non-blocking).
 const MAX_POLLS_PER_CALL: int = 64
 const KEPT_HEADERS: Array[String] = ["Content-Type", "Content-Length", "Cache-Control", "ETag"]
+## A running web page polls every frame; a longer gap is the page hidden or frozen.
+const SUSPEND_GAP_MS: int = 1000
 
 var host: String = ""
 var port: int = 0
@@ -69,6 +78,13 @@ var _current: Dictionary = {}
 var _delay_until_msec: int = 0
 var _deadline_msec: int = 0
 var _connects: int = 0
+## The last poll() of the running GET (web): the suspension rule's clock.
+var _last_poll_msec: int = 0
+## Suspension time not counted toward timeouts (web), in total and as gaps.
+var suspended_ms: int = 0
+var suspended_gaps: int = 0
+## The suspension rule is in force (the web export; tests/fetcher_suspend_selftest.gd sets it).
+var count_running_time_only: bool = false
 
 
 func _init(target_host: String, target_port: int, prefix: String, timeout: int, delay: int, token: String = "", use_web_fetch: bool = false) -> void:
@@ -79,6 +95,7 @@ func _init(target_host: String, target_port: int, prefix: String, timeout: int, 
 	delay_ms = delay
 	auth_token = token
 	web_fetch = use_web_fetch
+	count_running_time_only = RsConfig.is_web()
 	if web_fetch:
 		_js = _web_helper()
 		_js_done = JavaScriptBridge.create_callback(_on_web_done)
@@ -193,6 +210,7 @@ func _fail(detail: String) -> void:
 func _issue() -> void:
 	_current["start_us"] = Time.get_ticks_usec()
 	_deadline_msec = Time.get_ticks_msec() + timeout_ms
+	_last_poll_msec = Time.get_ticks_msec()
 	if web_fetch:
 		_web_issue()
 		return
@@ -230,6 +248,7 @@ func _request() -> void:
 ## the open connection), and stops at the first poll that has to wait for the network or the
 ## delay, so a fetch costs about one frame, not one frame per HTTPClient state. Returns done().
 func poll() -> bool:
+	account_suspension(Time.get_ticks_msec())
 	for _i: int in MAX_POLLS_PER_CALL:
 		var before: String = "%s/%d/%d/%d" % [_phase, results.size(), _current_size(), _queue.size()]
 		_poll_once()
@@ -237,6 +256,22 @@ func poll() -> bool:
 		if done() or before == after:
 			break
 	return done()
+
+
+## The suspension rule, once per poll(): a running GET's poll gap over SUSPEND_GAP_MS moves its
+## deadline by the gap. Returns the gap counted as suspension (0 when none).
+func account_suspension(now_msec: int) -> int:
+	if not count_running_time_only or _phase == "idle" or _phase == "delay":
+		return 0
+	var gap: int = now_msec - _last_poll_msec
+	_last_poll_msec = now_msec
+	if gap <= SUSPEND_GAP_MS:
+		return 0
+	_deadline_msec += gap
+	suspended_ms += gap
+	suspended_gaps += 1
+	print("[receiver] fetch: GET %s%s spanned a %d ms suspension (no poll); its timeout counts only running time" % [path_prefix, _current.get("hash", "?"), gap])
+	return gap
 
 
 func _current_size() -> int:

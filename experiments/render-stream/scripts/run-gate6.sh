@@ -31,6 +31,13 @@
 # kept) and sabotage-live-stale-coalesce (the stall, stale-coalesce @420) -- then
 # reference-live-frames (the reference shooting every host frame a receiver shot, and every
 # stale_from frame) and reference-file (the animate reference on the file timeline).
+# G7u (gate 7's g7-lc, protocol/gate7/g7u-as-built.md): with G7U_LEGS=<csv> (browser
+# receivers only, GATE7_LIVE_KIND) g6l runs ONLY those lifecycle legs under <out>/live/<leg>/,
+# then reference-live-frames with the run's largest quit frame; the g6l legs and reference-file
+# are skipped. Desktop legs (simulated suspension): sim-hidden-2s, sim-hidden-30s,
+# sim-frozen-30s; device legs (GATE7_LIFECYCLE_ENV=device): hidden-2s, hidden-30s, frozen-30s;
+# either: reload, close, context-loss, sabotage-ack-while-hidden; desktop only:
+# sabotage-css-opacity (g6l_lc_words).
 # g6b (G6b, lib/gate6b-legs.sh; needs g6a and g6h in the same run): the
 # HD fixture captured at presentation:960x540 (both sinks, and inline) with 960x540 receivers on
 # each, the presentation hazard (an enforce-min-size capture presented at 960x540), a snap-to-pixel
@@ -493,6 +500,30 @@ source "$SCRIPT_DIR/lib/gate6p-legs.sh"
 # RS_RECEIVER_RECONNECT_MEMORY=keep), sabotage-live-stale-coalesce (the stall, host
 # GRC_SABOTAGE=stale-coalesce from step 2's frame 420).
 G6L_START_FRAME=300
+# G7u part D: a DEVICE lifecycle run may raise S (G7U_START_FRAME, set by run-gate7.sh --env
+# device per receiver kind: the web export's page needs ~9.5 s on the g31 to connect, past S=300's
+# 5 s at 60 fps). Every frame below derives from S, the lc hosts and the reference get
+# RS_FIXTURE_START_FRAME, and the device daemon records it in lifecycle.json; a desktop run, or an
+# unset/300 value, is exactly S=300.
+G6L_START_OVERRIDE=""
+if [ -n "${G7U_START_FRAME:-}" ] && [ "$G7U_START_FRAME" != 300 ]; then
+	if [ "${GATE7_LIFECYCLE_ENV:-desktop}" != device ] || [ -z "${G7U_LEGS:-}" ]; then
+		echo "run-gate6: G7U_START_FRAME=$G7U_START_FRAME is for a device lifecycle run only (GATE7_LIFECYCLE_ENV=device with G7U_LEGS)" >&2
+		exit 2
+	fi
+	case "$G7U_START_FRAME" in
+	*[!0-9]* | "")
+		echo "run-gate6: G7U_START_FRAME must be an integer >= 300 (got $G7U_START_FRAME)" >&2
+		exit 2
+		;;
+	esac
+	if [ "$G7U_START_FRAME" -lt 300 ]; then
+		echo "run-gate6: G7U_START_FRAME must be an integer >= 300 (got $G7U_START_FRAME)" >&2
+		exit 2
+	fi
+	G6L_START_FRAME=$G7U_START_FRAME
+	G6L_START_OVERRIDE=1
+fi
 G6L_STEP_FRAMES=60
 G6L_LAST_STEP=11
 G6L_QUIT_FRAME=$((G6L_START_FRAME + G6L_STEP_FRAMES * 13))
@@ -505,7 +536,7 @@ G6L_SABOTAGE_FRAME=$((G6L_START_FRAME + G6L_STEP_FRAMES * 2))
 # transaction in each window, trying windows in list order, so a motion window never takes a
 # settle shot.
 G6L_MOTION_WINDOWS=40
-G6L_MOTION_FIRST=320
+G6L_MOTION_FIRST=$((G6L_START_FRAME + 20))
 G6L_MOTION_LABEL=100
 
 g6l_windows() {
@@ -634,8 +665,114 @@ print(",".join(str(f) for f in sorted(frames)))
 PY
 }
 
+# G7u lifecycle legs (header; g7u-as-built.md "Legs"): every lc receiver shoots its final
+# state (RS_RECEIVER_SHOT_FINAL=1); RS_RECEIVER_LIFECYCLE and RS_RECEIVER_SHELL_SABOTAGE are
+# harness words (lib/gate7-live-legs.ts mapBrowserLeg drops them from the page env). The 30-s legs
+# run the host to frame 3180 (the suspension at step 2's shot, ~frame 427, ends ~frame 2230).
+G7U_LONG_QUIT_FRAME=$((3180 + G6L_START_FRAME - 300))
+G7U_LEGS="${G7U_LEGS:-}"
+
+# g6l_lc_words <leg>: sets LC_HOST_WORDS and LC_RECEIVER_WORDS for one lc leg; fails (with a
+# message) on an unknown leg, or one not of this environment (sim- legs are desktop only, the real
+# hidden/frozen ones device only).
+g6l_lc_words() {
+	local leg="$1" device=0 lc=""
+	[ "${GATE7_LIFECYCLE_ENV:-desktop}" = "device" ] && device=1
+	LC_HOST_WORDS=()
+	LC_LONG=0
+	LC_RECEIVER_WORDS=(RS_RECEIVER_SHOT_FINAL=1)
+	case "$leg" in
+	sim-hidden-2s | hidden-2s) lc="suspend:hidden:2:2000" ;;
+	sim-hidden-30s | hidden-30s)
+		lc="suspend:hidden:2:30000:home"
+		LC_HOST_WORDS=(RS_FIXTURE_QUIT_FRAME="$G7U_LONG_QUIT_FRAME")
+		LC_LONG=1
+		;;
+	sim-frozen-30s | frozen-30s)
+		lc="suspend:frozen:2:30000"
+		LC_HOST_WORDS=(RS_FIXTURE_QUIT_FRAME="$G7U_LONG_QUIT_FRAME")
+		LC_LONG=1
+		# D14 as amended: a frozen page may lose its socket; the receiver recovers by G1d's
+		# reconnect (a fresh session, the newest state first).
+		LC_RECEIVER_WORDS+=(RS_RECEIVER_RECONNECT_ON_LOSS=1)
+		;;
+	reload) lc="reload:5" ;;
+	close) lc="close:5" ;;
+	context-loss) lc="context-loss:5:500" ;;
+	sabotage-ack-while-hidden)
+		lc="suspend:hidden:2:2000"
+		LC_RECEIVER_WORDS+=(RS_RECEIVER_SABOTAGE=ack-while-hidden)
+		;;
+	sabotage-css-opacity)
+		lc="suspend:hidden:2:2000"
+		LC_RECEIVER_WORDS+=(RS_RECEIVER_SHELL_SABOTAGE=css-opacity)
+		;;
+	*)
+		echo "run-gate6: G7U_LEGS: unknown lifecycle leg $leg" >&2
+		return 1
+		;;
+	esac
+	case "$leg" in
+	sim-*)
+		if [ "$device" = 1 ]; then
+			echo "run-gate6: G7U_LEGS: $leg is a desktop (simulated-suspension) leg; the device runs ${leg#sim-}" >&2
+			return 1
+		fi
+		;;
+	hidden-* | frozen-*)
+		if [ "$device" = 0 ]; then
+			echo "run-gate6: G7U_LEGS: $leg needs a real suspension (GATE7_LIFECYCLE_ENV=device); the desktop runs sim-$leg" >&2
+			return 1
+		fi
+		;;
+	sabotage-css-opacity)
+		if [ "$device" = 1 ]; then
+			echo "run-gate6: G7U_LEGS: sabotage-css-opacity is a desktop leg" >&2
+			return 1
+		fi
+		;;
+	esac
+	LC_RECEIVER_WORDS+=(RS_RECEIVER_LIFECYCLE="$lc")
+	[ -n "$G6L_START_OVERRIDE" ] && LC_HOST_WORDS+=(RS_FIXTURE_START_FRAME="$G6L_START_FRAME")
+	return 0
+}
+
+# run_g7u_lc: the G7U_LEGS legs (run_g6l validated every name before any host ran); sets
+# G7U_MAX_QUIT_FRAME, the largest host quit frame of the run (reference-live-frames runs to it).
+run_g7u_lc() {
+	local leg
+	local -a legs=()
+	IFS=',' read -r -a legs <<<"$G7U_LEGS"
+	G7U_MAX_QUIT_FRAME=$G6L_QUIT_FRAME
+	for leg in "${legs[@]}"; do
+		g6l_lc_words "$leg"
+		if [ "$LC_LONG" = 1 ]; then
+			G7U_MAX_QUIT_FRAME=$G7U_LONG_QUIT_FRAME
+		fi
+		echo "run-gate6: g6l: lc $leg (${LC_HOST_WORDS[*]:-host default} -- ${LC_RECEIVER_WORDS[*]})"
+		g6l_leg "$leg" ${LC_HOST_WORDS[@]+"${LC_HOST_WORDS[@]}"} -- "${LC_RECEIVER_WORDS[@]}"
+	done
+}
+
 run_g6l() {
 	local L="$OUT/live" frames
+	local -a quit_words=()
+	if [ -n "$G7U_LEGS" ]; then
+		if [ -z "$GATE7_LIVE_KIND" ]; then
+			echo "run-gate6: G7U_LEGS needs a browser receiver (GATE7_LIVE_KIND=web|gsw; run-gate7.sh --live --legs g7-lc)" >&2
+			exit 2
+		fi
+		# Validate every leg name before any host runs.
+		local lc_leg
+		local -a lc_legs=()
+		IFS=',' read -r -a lc_legs <<<"$G7U_LEGS"
+		for lc_leg in "${lc_legs[@]}"; do
+			g6l_lc_words "$lc_leg" || exit 2
+		done
+		# A 30-s leg's host runs ~53 s at 60 fps, its receiver as long, the reference to frame 3180.
+		HEADLESS_TIMEOUT_S=300
+		RENDERED_TIMEOUT_S=300
+	fi
 	mkdir -p "$L/import"
 	echo "run-gate6: g6l: import (fixture, receiver)"
 	LEG_ENV=()
@@ -653,6 +790,24 @@ run_g6l() {
 
 	echo "run-gate6: bringing up private gamescope for g6l legs"
 	gs_start 640 360 "$OUT/gamescope-g6l"
+
+	if [ -n "$G7U_LEGS" ]; then
+		run_g7u_lc
+		quit_words=(RS_FIXTURE_QUIT_FRAME="$G7U_MAX_QUIT_FRAME")
+		[ -n "$G6L_START_OVERRIDE" ] && quit_words+=(RS_FIXTURE_START_FRAME="$G6L_START_FRAME")
+		frames="$(g6l_shot_frames "$L")"
+		echo "run-gate6: g6l: reference-live-frames (lc; quit $G7U_MAX_QUIT_FRAME; the frames the receivers shot: $frames)"
+		mkdir -p "$L/reference-live-frames/shots"
+		LEG_ENV=(
+			RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=live RS_FIXTURE_SHOT_FRAMES="$frames"
+			RS_FIXTURE_SHOT_DIR="$L/reference-live-frames/shots"
+			RS_FIXTURE_STEP_LOG="$L/reference-live-frames/steps.jsonl" "${quit_words[@]}"
+		)
+		run_rendered "$L/reference-live-frames" "$SCENE_FIXTURE_DIR"
+		gs_teardown "$OUT/gamescope-g6l"
+		GS_RUN_DIR=""
+		return 0
+	fi
 
 	echo "run-gate6: g6l: live-scene (host + rendered live receiver, fresh cache)"
 	g6l_leg live-scene
@@ -904,6 +1059,14 @@ for group in g6a g6h g6l g6b g6s g6c g6p; do
 	esac
 	LEGS_TIMING_GROUP=""
 done
+
+# G7u: a lifecycle-only run (G7U_LEGS, --legs g6l) has none of g6l's own legs, so check-gate6's
+# g6l verdict would only report them missing; check-gate7.ts --live --legs g7-lc judges it.
+if [ -n "$G7U_LEGS" ] && [ "${GROUPS_RUN[*]}" = "g6l" ]; then
+	echo "run-gate6: G7U_LEGS: check-gate6 skipped (check-gate7.ts --live --legs g7-lc judges the lifecycle legs)"
+	legs_quiet_summary
+	exit 0
+fi
 
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate6: running checker"
