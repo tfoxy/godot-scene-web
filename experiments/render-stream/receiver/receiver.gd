@@ -156,6 +156,13 @@ extends Node
 ##                               receiver.credit_window records the grant from the session)
 ##   RS_RECEIVER_MANIFEST_SHA256 G7e/G7l: 64 lowercase hex, sent as the /7 hello's manifest_sha256
 ##                               (null when unset) and recorded in applied.json `receiver`
+##   RS_RECEIVER_LATE_POLL       G7r (gate7-design.md Q4 "Late poll", D4): 1 moves the socket read,
+##                               the fetch poll and the apply from _process to
+##                               RenderingServer.frame_pre_draw (the same main-loop iteration, just
+##                               before its draw); the `submitted` ack stays at that frame's
+##                               frame_post_draw. Unset (default) or 0: _process, exactly as before.
+##                               Rendered only: under --headless nothing draws, so it is a usage
+##                               error there. applied.json `live.late_poll` is true only when set.
 ## The /7 hello's presentation integers are the window's backing size and the display scale
 ## (dpr_milli = round(scale * 1000)); a headless receiver sends the project's viewport size and 1000.
 ## File mode replays a GRS7 recording (a live receiver's received.rs7) with the /7 decoder; every
@@ -332,6 +339,8 @@ var _digest_entries: Array[Array] = []
 
 # Live mode.
 var _live: bool = false
+## G7r: RS_RECEIVER_LATE_POLL=1 (_process_live runs from frame_pre_draw instead of _process).
+var _late_poll: bool = false
 var _client: RsLiveClient = null
 var _live_report: Dictionary = {}
 var _live_phase: String = ""  # connecting | streaming | draining
@@ -991,7 +1000,8 @@ func _process(_delta: float) -> void:
 			}
 		_perf.sample_timeline(_cache.entries(), _cache.bytes(), _cache.memory_entries(), _cache.memory_bytes(), live_rids)
 	if _live:
-		_process_live()
+		if not _late_poll:
+			_process_live()
 		return
 	if _busy or _finished:
 		return
@@ -1606,6 +1616,17 @@ func _ready_live() -> void:
 		_quit(EXIT_USAGE)
 		return
 	_shot_final = shot_final == "1"
+	var late_poll: String = RsConfig.get_env("RS_RECEIVER_LATE_POLL").strip_edges()
+	if late_poll != "" and late_poll != "0" and late_poll != "1":
+		_log("error: RS_RECEIVER_LATE_POLL must be 0, 1 or unset (got %s)" % JSON.stringify(late_poll))
+		_quit(EXIT_USAGE)
+		return
+	_late_poll = late_poll == "1"
+	if _late_poll and DisplayServer.get_name() == "headless":
+		# frame_pre_draw never fires under --headless (main/main.cpp draws nothing).
+		_log("error: RS_RECEIVER_LATE_POLL=1 needs a drawing main loop (frame_pre_draw never fires under --headless)")
+		_quit(EXIT_USAGE)
+		return
 	if not _parse_wire_env():
 		_quit(EXIT_USAGE)
 		return
@@ -1687,6 +1708,9 @@ func _ready_live() -> void:
 		"reconnect": null,
 		"resync": null,
 	}
+	if _late_poll:
+		# Only when set, so every other live leg's applied.json is byte-for-byte what it was.
+		_live_report["late_poll"] = true
 	_report["live"] = _live_report
 	_stream_report = {
 		"stream_id": null,
@@ -1722,6 +1746,11 @@ func _ready_live() -> void:
 		return
 	_live_phase = "connecting"
 	_deadline_msec = Time.get_ticks_msec() + timeout_ms
+	if _late_poll:
+		# G7r: read, fetch-poll and apply just before this iteration's draw; the submitted ack is
+		# still the same frame's frame_post_draw (_finish_apply connects it).
+		RenderingServer.frame_pre_draw.connect(_process_live)
+		_log("late poll: socket read and apply at frame_pre_draw")
 	set_process(true)
 
 

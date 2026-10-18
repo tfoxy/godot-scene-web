@@ -76,6 +76,13 @@ export class Perf {
   readonly rafIntervals: number[] = [];
   readonly gpuComplete: number[] = [];
   readonly fetchUs: number[] = [];
+  /** D13: the next rAF timestamp after each submitted ack, minus the ack's time (µs). */
+  readonly rafAfterSubmitUs: number[] = [];
+  /** G7r: once a second, the paced loop's cumulative callbacks (`frames`) and drawn frames. */
+  readonly timelineLines: { t_us: number; frames: number; drawn: number }[] =
+    [];
+  private lastSubmitMs = -1;
+  private nextTimelineMs = -1;
   /** G7s: item-space programs defined, shaders refused, library reads. */
   readonly programs = { defined: 0, refused: 0, library_reads: 0 };
   /** G7o2: set before the evidence is written. */
@@ -85,6 +92,26 @@ export class Perf {
   raf(ts: number): void {
     if (this.lastRaf >= 0) this.rafIntervals.push((ts - this.lastRaf) * 1000);
     this.lastRaf = ts;
+  }
+
+  submitted(atMs: number): void {
+    this.lastSubmitMs = atMs;
+  }
+
+  rafAfterSubmit(ts: number): void {
+    if (this.lastSubmitMs < 0) return;
+    this.rafAfterSubmitUs.push(Math.max(0, (ts - this.lastSubmitMs) * 1000));
+    this.lastSubmitMs = -1;
+  }
+
+  sampleTimeline(frames: number, drawn: number): void {
+    const now = performance.now();
+    if (this.nextTimelineMs >= 0 && now < this.nextTimelineMs) return;
+    // Anchored at the old deadline, so the lines stay a second apart however late a callback is.
+    this.nextTimelineMs =
+      this.nextTimelineMs < 0 ? now + 1000 : this.nextTimelineMs + 1000;
+    if (this.nextTimelineMs < now) this.nextTimelineMs = now + 1000;
+    this.timelineLines.push({ t_us: Math.round(now * 1000), frames, drawn });
   }
 
   report(extra: Record<string, unknown>): Record<string, unknown> {
@@ -105,6 +132,7 @@ export class Perf {
         fetch_us: hist(this.fetchUs),
         frame_interval_us: hist(this.rafIntervals),
         gpu_complete_us: hist(this.gpuComplete.map((ms) => ms * 1000)),
+        raf_after_submit_us: hist(this.rafAfterSubmitUs),
       },
       unavailable_stages: [
         {
@@ -124,6 +152,7 @@ export class Perf {
       },
       counts: { drawn_frames: this.samples.length, programs: this.programs },
       payload_verify: this.payloadVerify,
+      timeline: this.timelineLines,
       ...extra,
     };
   }

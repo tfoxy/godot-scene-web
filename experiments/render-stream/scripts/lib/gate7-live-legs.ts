@@ -747,7 +747,12 @@ export async function serveBrowserDaemon(
   ctx: BrowserRunContext,
   readyFile: string,
   parentPid: number,
+  opts: { spare?: "during" | "after" } = {},
 ): Promise<void> {
+  // G7r: `after` launches the next leg's spare browser only once this leg has finished, so no
+  // Chromium start-up (process spawn, GPU process, provenance page) runs inside a timing leg's
+  // measured window; `during` (G7l's default) overlaps it with the leg to save wall time.
+  const spareAfter = opts.spare === "after";
   const log = ctx.log ?? ((line: string) => console.error(line));
   // One profile directory per browser, never reused by a cold leg (D9), kept for warm legs; under
   // the daemon's own directory, outside every leg directory (a profile's history may hold URLs).
@@ -759,7 +764,9 @@ export async function serveBrowserDaemon(
     p.catch((err) => log(`browser-daemon: preparing failed: ${String(err)}`));
     return p;
   };
-  let spare: Promise<PreparedBrowser> | null = prepareSpare();
+  let spare: Promise<PreparedBrowser> | null = spareAfter
+    ? null
+    : prepareSpare();
   let busy = false;
   const takeSpare = async (): Promise<PreparedBrowser> => {
     const p = spare ?? prepareSpare();
@@ -808,8 +815,9 @@ export async function serveBrowserDaemon(
         const prepared = warm
           ? await prepareBrowser(nextProfile(), warm, true)
           : await takeSpare();
-        // The next leg's browser launches and is checked while this one runs.
-        if (!spare) spare = prepareSpare();
+        // The next leg's browser launches and is checked while this one runs (G7l), or after it
+        // (G7r's timing legs, `--spare after`: below).
+        if (!spare && !spareAfter) spare = prepareSpare();
         response.write(
           `started ${dir} (browser prepared in ${prepared.preparedMs} ms)\n`,
         );
@@ -825,6 +833,7 @@ export async function serveBrowserDaemon(
         response.end(`error ${String(err)}\nexit=124\n`);
       } finally {
         busy = false;
+        if (spareAfter && !spare) spare = prepareSpare();
       }
     })();
   });
@@ -832,7 +841,9 @@ export async function serveBrowserDaemon(
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
   await writeFile(readyFile, `${JSON.stringify({ port, pid: process.pid })}\n`);
-  log(`browser-daemon: listening on 127.0.0.1:${port} (kind ${ctx.kind})`);
+  log(
+    `browser-daemon: listening on 127.0.0.1:${port} (kind ${ctx.kind}, spare ${spareAfter ? "after" : "during"} each leg)`,
+  );
   const shutdown = async (): Promise<void> => {
     server.close();
     const s = spare;

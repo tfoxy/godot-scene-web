@@ -22,7 +22,25 @@
 #                                           to the host's own step-11 `freeze` (shots/step-11.png)
 #   gpu-heavy-calibration/round-<n>/{host,receiver}/ and calibration.json (the chosen iterations)
 #   provenance-input.json                   what the shell knows for render-stream-report/1
-# G6C_LEGS (runner environment, optional): a CSV of the legs to run (development); unset: all.
+# G6C_LEGS (runner environment, optional): a CSV of the legs to run (development); unset: all of
+# G6C_ALL_LEGS.
+#
+# G7r (protocol/gate7/g7r.md, gate7-design.md Q9): the same legs with receiver kinds, never forked.
+#   - Under GATE7_LIVE_KIND=web|gsw (lib/legs.sh; run-gate7.sh --live --legs g7-r) every receiver
+#     of a leg is that browser (run_browser_receiver), unless the leg marks it native
+#     (G6C_RECEIVER_NATIVE=1: dual-native's /6 receiver). A browser is rAF-bound (Q9), so where a
+#     native receiver runs at --max-fps 60 a browser gets --max-fps 0 (G6C_RECV60); the browser
+#     legs get no /proc sampler (the curl request is not the receiver; browser memory is G7k's).
+#   - G6C_G7R_LEGS run only when named in G6C_LEGS, so a gate 6 run is what it was:
+#       phase-60-r1..r5            rate-60's configuration, five runs (Q9 `phase-60`)
+#       phase-60-late-poll-r1..r5  the same with RS_RECEIVER_LATE_POLL=1 (native and web)
+#       dual-native                uncapped, 2 connections: receiver-a the run's receiver (a
+#                                  browser on /7 under GATE7_LIVE_KIND), receiver-b native on /6
+#       sabotage-ack-on-receipt    gsw: GRC_PUBLISH_FPS=60, every payload inline, the receiver at
+#                                  30 acking `submitted` from onmessage
+#                                  (RS_RECEIVER_SABOTAGE=ack-on-receipt)
+#   - `constrained` under GATE7_LIVE_KIND has bearer authorization (GRC_LIVE_AUTH=token), so the
+#     browser's payload GETs are preflighted and the proxy can time the preflights.
 
 G6C_DIR_NAME="rates"
 # Q6c's rate timeline runs 30 s of game time; a host gets this long to quit.
@@ -44,9 +62,28 @@ G6C_SABOTAGE_QUIT_S=75
 G6C_INLINE_MAX_BYTES=1048576
 G6C_ALL_LEGS=(rate-baseline rate-15 rate-30 rate-60 rate-uncapped-host60 rate-uncapped mismatch-60-recv30
 	mismatch-15-recv60 dual-60-15 recv-delay constrained sabotage-constrained-ignore-credit gpu-heavy)
+G6C_G7R_PHASE_RUNS=5
+G6C_G7R_LEGS=()
+for g6c_run in $(seq 1 "$G6C_G7R_PHASE_RUNS"); do
+	G6C_G7R_LEGS+=("phase-60-r$g6c_run")
+done
+for g6c_run in $(seq 1 "$G6C_G7R_PHASE_RUNS"); do
+	G6C_G7R_LEGS+=("phase-60-late-poll-r$g6c_run")
+done
+G6C_G7R_LEGS+=(dual-native sabotage-ack-on-receipt)
+# The receiver's --max-fps where G6c's native receiver runs at 60: rAF-bound in a browser (Q9).
+G6C_RECV60=60
+[ -n "${GATE7_LIVE_KIND:-}" ] && G6C_RECV60=0
+# Under GATE7_LIVE_KIND: the next g6c_start_receiver stays native (reset by it).
+G6C_RECEIVER_NATIVE=0
 
 g6c_wanted() {
-	[ -z "${G6C_LEGS:-}" ] && return 0
+	if [ -z "${G6C_LEGS:-}" ]; then
+		case " ${G6C_G7R_LEGS[*]} " in
+		*" $1 "*) return 1 ;;
+		esac
+		return 0
+	fi
 	case ",$G6C_LEGS," in
 	*",$1,"*) return 0 ;;
 	esac
@@ -110,6 +147,8 @@ g6c_start_receiver() {
 		extra_env=("${G6C_RECEIVER_ENV[@]}")
 	fi
 	G6C_RECEIVER_ENV=()
+	local native="$G6C_RECEIVER_NATIVE"
+	G6C_RECEIVER_NATIVE=0
 	G6C_RECEIVER_PID=""
 	mkdir -p "$dir"
 	if [ -z "$port" ]; then
@@ -124,6 +163,15 @@ g6c_start_receiver() {
 	)
 	if [ "${#extra_env[@]}" -gt 0 ]; then
 		LEG_ENV+=("${extra_env[@]}")
+	fi
+	if [ -n "${GATE7_LIVE_KIND:-}" ] && [ "$native" != 1 ]; then
+		# G7r: the browser receiver of this kind, with the native leg's words (lib/legs.sh).
+		run_browser_receiver "$dir" bg -- "$BINARY" --path "$RECEIVER_DIR" --rendering-driver opengl3 \
+			--display-driver x11 --max-fps "$fps" "$@"
+		G6C_RECEIVER_PID="$BG_PID"
+		EXTRA_CHILD_PIDS+=("$BG_PID")
+		echo "run-gate6: ${dir#"$OUT"/} $GATE7_LIVE_KIND browser receiver (--max-fps $fps)"
+		return 0
 	fi
 	g6c_launch_rendered "$dir" "$RECEIVER_DIR" --max-fps "$fps" "$@"
 	G6C_RECEIVER_PID="$G6C_LAUNCHED_PID"
@@ -204,6 +252,11 @@ g6c_wait_receiver() {
 	done
 	wait_owned "$pid" 5
 	[ "$ticks" -ge $((G6C_RECEIVER_TIMEOUT_S * 10)) ] && WAIT_EXIT=124
+	if [ -f "$dir/native-argv.txt" ] && [ -s "$dir/exit-code.txt" ] && [ "$WAIT_EXIT" != 124 ]; then
+		# G7r: a browser receiver; the daemon wrote the receiver's own exit code.
+		echo "run-gate6: ${dir#"$OUT"/} exit=$(cat "$dir/exit-code.txt") ($GATE7_LIVE_KIND browser receiver)"
+		return 0
+	fi
 	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
 	echo "run-gate6: ${dir#"$OUT"/} exit=$WAIT_EXIT"
 }
@@ -426,11 +479,14 @@ run_g6c() {
 	done
 	g6c_provenance_input
 	: >"$G6C/legs-run.txt"
-	for leg in "${G6C_ALL_LEGS[@]}"; do
+	for leg in "${G6C_ALL_LEGS[@]}" "${G6C_G7R_LEGS[@]}"; do
 		if g6c_wanted "$leg"; then
 			echo "$leg" >>"$G6C/legs-run.txt"
 		fi
 	done
+	# G7r: which receiver ran the legs (lib/gate7r-checks.ts reads it).
+	printf '{"kind":"%s","web_core":"%s","native_core":"%s"}\n' "${GATE7_LIVE_KIND:-native}" \
+		"${GATE7_WEB_CORE:-gdscript}" "$RECEIVER_CORE" >"$G6C/receiver-kind.json"
 
 	echo "run-gate6: bringing up private gamescope 640x360 for g6c legs"
 	gs_start 640 360 "$OUT/gamescope-g6c"
@@ -446,12 +502,12 @@ run_g6c() {
 		if g6c_wanted "rate-$leg"; then
 			echo "run-gate6: g6c: rate-$leg (GRC_PUBLISH_FPS=$leg, host and receiver --max-fps 60)"
 			G6C_HOST_ENV=(GRC_PUBLISH_FPS="$leg")
-			g6c_leg "rate-$leg" 60 60
+			g6c_leg "rate-$leg" 60 "$G6C_RECV60"
 		fi
 	done
 	if g6c_wanted rate-uncapped-host60; then
 		echo "run-gate6: g6c: rate-uncapped-host60 (uncapped, host and receiver --max-fps 60)"
-		g6c_leg rate-uncapped-host60 60 60
+		g6c_leg rate-uncapped-host60 60 "$G6C_RECV60"
 	fi
 	if g6c_wanted rate-uncapped; then
 		echo "run-gate6: g6c: rate-uncapped (uncapped, host and receiver --max-fps 0)"
@@ -465,7 +521,7 @@ run_g6c() {
 	if g6c_wanted mismatch-15-recv60; then
 		echo "run-gate6: g6c: mismatch-15-recv60 (GRC_PUBLISH_FPS=15, receiver --max-fps 60)"
 		G6C_HOST_ENV=(GRC_PUBLISH_FPS=15)
-		g6c_leg mismatch-15-recv60 60 60
+		g6c_leg mismatch-15-recv60 60 "$G6C_RECV60"
 	fi
 	if g6c_wanted dual-60-15; then
 		echo "run-gate6: g6c: dual-60-15 (uncapped, GRC_LIVE_MAX_CONNECTIONS=2; receivers --max-fps 60 and 15)"
@@ -481,6 +537,48 @@ run_g6c() {
 		g6c_wait_receiver "$D/receiver-b" "$pid_b"
 		g6c_finish_host "$D/host"
 	fi
+	# G7r's legs (Q9), named in G6C_LEGS only.
+	local run
+	for run in $(seq 1 "$G6C_G7R_PHASE_RUNS"); do
+		if g6c_wanted "phase-60-r$run"; then
+			echo "run-gate6: g6c: phase-60-r$run (GRC_PUBLISH_FPS=60, host --max-fps 60, receiver --max-fps $G6C_RECV60)"
+			G6C_HOST_ENV=(GRC_PUBLISH_FPS=60)
+			g6c_leg "phase-60-r$run" 60 "$G6C_RECV60"
+		fi
+	done
+	for run in $(seq 1 "$G6C_G7R_PHASE_RUNS"); do
+		if g6c_wanted "phase-60-late-poll-r$run"; then
+			echo "run-gate6: g6c: phase-60-late-poll-r$run (as phase-60, RS_RECEIVER_LATE_POLL=1)"
+			G6C_HOST_ENV=(GRC_PUBLISH_FPS=60)
+			G6C_RECEIVER_ENV=(RS_RECEIVER_LATE_POLL=1)
+			g6c_leg "phase-60-late-poll-r$run" 60 "$G6C_RECV60"
+		fi
+	done
+	if g6c_wanted dual-native; then
+		echo "run-gate6: g6c: dual-native (uncapped, GRC_LIVE_MAX_CONNECTIONS=2; receiver-a ${GATE7_LIVE_KIND:-native} --max-fps $G6C_RECV60, receiver-b native --max-fps 60)"
+		D="$G6C/dual-native"
+		local dual_a dual_b
+		g6c_start_host "$D/host" "$SCENE_FIXTURE_DIR" 60 RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=rate \
+			GRC_LIVE_MAX_CONNECTIONS=2
+		G6C_RECEIVER_NATIVE=1
+		g6c_start_receiver "$D/receiver-b" "$G6C_PORT" 60
+		dual_b="$G6C_RECEIVER_PID"
+		g6c_start_receiver "$D/receiver-a" "$G6C_PORT" "$G6C_RECV60"
+		dual_a="$G6C_RECEIVER_PID"
+		g6c_wait_receiver "$D/receiver-a" "$dual_a"
+		g6c_wait_receiver "$D/receiver-b" "$dual_b"
+		g6c_finish_host "$D/host"
+	fi
+	if g6c_wanted sabotage-ack-on-receipt; then
+		echo "run-gate6: g6c: sabotage-ack-on-receipt (GRC_PUBLISH_FPS=60, receiver --max-fps 30, RS_RECEIVER_SABOTAGE=ack-on-receipt)"
+		# Every payload inline, as G6c's ignore-credit sabotage: credit returned on receipt lets the
+		# host publish (and retire D7's pins) before the receiver fetched, so over HTTP the leg
+		# fails resource-unavailable (a 404) first, which is not the pacing this leg is for.
+		G6C_HOST_ENV=(GRC_PUBLISH_FPS=60 GRC_RESOURCE_INLINE_MAX_BYTES="$G6C_INLINE_MAX_BYTES"
+			GRC_RESOURCE_MAX_PAYLOAD_BYTES="$G6C_INLINE_MAX_BYTES")
+		G6C_RECEIVER_ENV=(RS_RECEIVER_SABOTAGE=ack-on-receipt)
+		g6c_leg sabotage-ack-on-receipt 60 30
+	fi
 	if g6c_wanted recv-delay; then
 		echo "run-gate6: g6c: recv-delay (GRC_PUBLISH_FPS=60, receiver --max-fps 60 --frame-delay 40)"
 		G6C_HOST_ENV=(GRC_PUBLISH_FPS=60)
@@ -490,7 +588,15 @@ run_g6c() {
 		echo "run-gate6: g6c: constrained (GRC_PUBLISH_FPS=60, through throttle-proxy constrained)"
 		G6C_HOST_ENV=(GRC_PUBLISH_FPS=60)
 		G6C_PROXY=1
-		g6c_leg constrained 60 60
+		if [ -n "${GATE7_LIVE_KIND:-}" ]; then
+			# G7r (Q9 "plus preflight latency reported"): bearer authorization, as a deployed browser
+			# receiver has it. Only the Authorization header makes a browser's GET non-simple, so
+			# without it there is no CORS preflight to measure (the token travels in the page's
+			# fragment, lib/gate7-live-legs.ts).
+			G6C_HOST_ENV+=(GRC_LIVE_AUTH=token)
+			G6C_RECEIVER_ENV=(RS_RECEIVER_TOKEN_FILE="$G6C/constrained/host/evidence/live-token")
+		fi
+		g6c_leg constrained 60 "$G6C_RECV60"
 	fi
 	if g6c_wanted sabotage-constrained-ignore-credit; then
 		# Q3d: a sabotage never runs with the hook log off.
@@ -503,7 +609,7 @@ run_g6c() {
 		g6c_leg sabotage-constrained-ignore-credit 60 60
 	fi
 
-	for leg in "${G6C_ALL_LEGS[@]}"; do
+	for leg in "${G6C_ALL_LEGS[@]}" "${G6C_G7R_LEGS[@]}"; do
 		case "$leg" in
 		rate-baseline | gpu-heavy) continue ;;
 		esac

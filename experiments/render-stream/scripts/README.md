@@ -2987,3 +2987,41 @@ bash experiments/render-stream/scripts/run-gate7.sh --live --legs g7-6 --receive
 - `web/gsw-rs`'s presentation adoption (`set_window`, `presentation_json`) and `rs-core`'s
   `canvas_attach`/`canvas_stacking_sets` counters are gate 6 specific; see
   [../results/gate7/g7g.md](../results/gate7/g7g.md) "What was built" for both.
+
+### G7r: pacing, rates, the phase study and dual receivers
+
+G7r ([../protocol/gate7/g7r.md](../protocol/gate7/g7r.md), gate7-design.md Q9) runs G6c's g6c
+group again on all three receivers, unforked, and judges it with G6c's own evaluators:
+
+```bash
+bash experiments/render-stream/scripts/run-gate7.sh --live --legs g7-r --web-core rust \
+  [--receiver native|web|gsw] [--bundle <web bundle>] [--gsw-bundle <gsw bundle>] --out <dir>
+```
+
+- `run-gate7.sh` runs `run-gate6.sh --legs g6c` once per receiver kind, with `G6C_LEGS` set to
+  that kind's legs (`G7R_LEGS_<kind>`; `G7R_LEGS` replaces every kind's list), into
+  `<out>/gate6/rates-<kind>/`. Native receivers (and dual-native's /6 one) run on
+  `RS_RECEIVER_CORE` (default `rust` for g7-r).
+- `lib/gate6c-legs.sh` takes receiver kinds: under `GATE7_LIVE_KIND` every g6c receiver is that
+  browser (`run_browser_receiver`), rAF-bound where native runs at 60 (`G6C_RECV60`), unless the
+  leg keeps it native (`G6C_RECEIVER_NATIVE=1`). G7r's own legs (`phase-60-r1..r5`,
+  `phase-60-late-poll-r1..r5`, `dual-native`, `sabotage-ack-on-receipt`) run only when named in
+  `G6C_LEGS`, so a gate 6 run is unchanged. Under `GATE7_LIVE_KIND`, `constrained` has bearer
+  authorization, so its payload GETs are preflighted.
+- The browser daemon's `--spare after` (`GATE7_BROWSER_SPARE=after`, set by g7-r) launches the
+  next leg's browser only after a leg ends, so no Chromium start-up runs in a timed window.
+- `receiver.gd`'s `RS_RECEIVER_LATE_POLL=1` moves the live read, fetch poll and apply to
+  `RenderingServer.frame_pre_draw` (native and web; a usage error under `--headless`). GSW's
+  `perf.json` gains a per-second `timeline` (`frames`, its paced callbacks, and `drawn`) and
+  `raf_after_submit_us`.
+- `throttle-proxy.ts` observes each connection's HTTP/1.1 exchanges without changing them:
+  `stats.json` `http.preflight` (an OPTIONS to its 204 delivered) and `http.get`.
+- `lib/gate7r-checks.ts` (`check-gate7.ts --live --legs g7-r`), per kind: G6c's checks on every
+  leg; `phase-classified` and the phase table (good at a mean credit RTT <= 1.1 host frames, bad
+  at >= 1.9, and the whole-run median's class beside it); `dual-independent` with the connection
+  versions; Q7's band on browser final shots; the browser legs' provenance, console, hello, paced
+  loop, token and core; `late-poll-active`; the preflight report; and the ack-on-receipt sabotage.
+  Each kind's numbers are written to `<out>/gate6/rates-<kind>/g7r-summary.json`.
+- `test/self-test-gate7r.ts` covers the leg lists against the runner, the phase classes, G6c's
+  bound in both phases, the mismatch bounds and the sabotage rule, GSW's phase-free hold, the
+  fetch-tail attribution and the proxy's HTTP observer.

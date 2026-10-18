@@ -175,13 +175,13 @@ export interface LiveCadence {
   submitted_ack_us_p95: number | null;
 }
 
-interface PageConfig {
+export interface PageConfig {
   url?: string;
   env?: Record<string, string>;
   canvas?: [number, number];
 }
 
-interface SummaryConnection {
+export interface SummaryConnection {
   connection: number;
   version?: number;
   receiver_kind?: string | null;
@@ -200,6 +200,65 @@ interface SummaryConnection {
   coalesced?: number;
   credit_rtt_frames?: { median?: number; p95?: number };
   ack_latency_us?: { submitted?: { median?: number; p95?: number } };
+}
+
+/** Q8 hello-recorded for one live connection the host summarised: its /7 hello as the browser leg
+ * at `page` (its page-config.json) must have sent it. Empty when it matches. (G7r shares it.) */
+export function helloProblems(
+  c: SummaryConnection,
+  page: PageConfig | undefined,
+  expectedKind: string,
+): string[] {
+  const env = page?.env ?? {};
+  const origin = page?.url ? new URL(page.url).origin : null;
+  const want: Record<string, unknown> = {
+    version: 7,
+    receiver_kind: expectedKind,
+    credit_window: 1,
+    credit_window_requested: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "1"),
+    manifest_sha256: env.RS_RECEIVER_MANIFEST_SHA256 ?? null,
+    presentation_backing_w: page?.canvas?.[0],
+    presentation_backing_h: page?.canvas?.[1],
+    presentation_css_w: page?.canvas?.[0],
+    presentation_css_h: page?.canvas?.[1],
+    dpr_milli: 1000,
+    origin,
+  };
+  return Object.entries(want)
+    .filter(([k, v]) => (c as unknown as Record<string, unknown>)[k] !== v)
+    .map(
+      ([k, v]) =>
+        `${k}=${JSON.stringify((c as unknown as Record<string, unknown>)[k])} (want ${JSON.stringify(v)})`,
+    );
+}
+
+/** Q6 for one browser leg directory: its provenance.json verdict and its console's errors (a
+ * SHADER ERROR, a `WebGL: ` error or an uncaught page error). (G7r shares it.) */
+export async function browserLegProblems(
+  dir: string,
+  leg: string,
+): Promise<{ provenance: string[]; console: string[] }> {
+  const provenance: string[] = [];
+  const consoleBad: string[] = [];
+  const p = await readJson<{ ok?: boolean; reasons?: string[] }>(
+    join(dir, "provenance.json"),
+  );
+  if (!p?.ok)
+    provenance.push(
+      `${leg}: ${p ? (p.reasons ?? []).join("; ") : "provenance.json missing"}`,
+    );
+  let consoleText = "";
+  try {
+    consoleText = readFileSync(join(dir, "console.jsonl"), "utf8");
+  } catch {
+    consoleBad.push(`${leg}: console.jsonl missing`);
+  }
+  for (const line of consoleText.split("\n").filter(Boolean)) {
+    const m = JSON.parse(line) as { type: string; text: string };
+    if (m.type === "pageerror" || /SHADER ERROR|WebGL: /.test(m.text))
+      consoleBad.push(`${leg}: ${m.type}: ${m.text.slice(0, 160)}`);
+  }
+  return { provenance, console: consoleBad };
 }
 
 /** Every directory under `root` (relative, "/"-separated) holding a page-config.json: a browser
@@ -394,7 +453,7 @@ function verdict(c: CheckerCheck | undefined, view: string): string {
 
 /** Every file under `root` whose bytes contain `token`, except `exclude` and the Chromium
  * profiles (browser-internal storage, not evidence). */
-async function grepTree(
+export async function grepTree(
   root: string,
   token: string,
   exclude: ReadonlySet<string>,
@@ -749,24 +808,9 @@ export async function checkGateLive(
   const expectedKind = kind === "web" ? "web-export" : "gsw-canvas";
   for (const leg of browserLegs) {
     const dir = join(runDir, leg);
-    const p = await readJson<{ ok?: boolean; reasons?: string[] }>(
-      join(dir, "provenance.json"),
-    );
-    if (!p?.ok)
-      prov.push(
-        `${leg}: ${p ? (p.reasons ?? []).join("; ") : "provenance.json missing"}`,
-      );
-    let consoleText = "";
-    try {
-      consoleText = readFileSync(join(dir, "console.jsonl"), "utf8");
-    } catch {
-      consoleBad.push(`${leg}: console.jsonl missing`);
-    }
-    for (const line of consoleText.split("\n").filter(Boolean)) {
-      const m = JSON.parse(line) as { type: string; text: string };
-      if (m.type === "pageerror" || /SHADER ERROR|WebGL: /.test(m.text))
-        consoleBad.push(`${leg}: ${m.type}: ${m.text.slice(0, 160)}`);
-    }
+    const basics = await browserLegProblems(dir, leg);
+    prov.push(...basics.provenance);
+    consoleBad.push(...basics.console);
     if (kind === "web")
       coreBad.push(...(await receiverCoreProblems(dir, leg, core)));
     const page = await readJson<PageConfig>(join(dir, "page-config.json"));
@@ -779,30 +823,12 @@ export async function checkGateLive(
     const summary = await readJson<{ connections?: SummaryConnection[] }>(
       join(runDir, legRoot, "host", "evidence", "live-summary.json"),
     );
-    const origin = page?.url ? new URL(page.url).origin : null;
     for (const c of summary?.connections ?? []) {
       helloConnections++;
-      const want: Record<string, unknown> = {
-        version: 7,
-        receiver_kind: expectedKind,
-        credit_window: 1,
-        credit_window_requested: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "1"),
-        manifest_sha256: env.RS_RECEIVER_MANIFEST_SHA256 ?? null,
-        presentation_backing_w: page?.canvas?.[0],
-        presentation_backing_h: page?.canvas?.[1],
-        presentation_css_w: page?.canvas?.[0],
-        presentation_css_h: page?.canvas?.[1],
-        dpr_milli: 1000,
-        origin,
-      };
-      const bad = Object.entries(want).filter(
-        ([k, v]) => (c as unknown as Record<string, unknown>)[k] !== v,
-      );
+      const bad = helloProblems(c, page, expectedKind);
       // A hello the host refused (no token): only the token verdict differs from an honest one.
       if (bad.length > 0)
-        hello.push(
-          `${legRoot} conn ${c.connection}: ${bad.map(([k, v]) => `${k}=${JSON.stringify((c as unknown as Record<string, unknown>)[k])} (want ${JSON.stringify(v)})`).join(", ")}`,
-        );
+        hello.push(`${legRoot} conn ${c.connection}: ${bad.join(", ")}`);
       cadence.push({
         leg: legRoot,
         connection: c.connection,

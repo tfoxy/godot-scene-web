@@ -21,6 +21,7 @@
 // values. Nothing here launches a process except `git rev-parse` for the report's run block.
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
@@ -866,9 +867,14 @@ export function evaluateLimitedBy(m: G6cMeasure, l: LimitedBy): string[] {
   return p;
 }
 
+/** The upper-bound problem of `evaluateMismatch60Recv30` starts with this (G7r's ack-on-receipt
+ * sabotage must fail exactly that bound, gate7r-checks.ts). */
+export const MISMATCH_UPPER_BOUND = "above the upper bound:";
+export const MISMATCH_LOWER_BOUND = "below the lower bound:";
+
 /** mismatch-60-recv30 (Q7d, as built): the slower receiver sets the pace -- published at least
  * 0.95 x min(60, credit capacity) and at most 1.05 x the receiver frame rate (one per receiver
- * frame) -- and ticks were credit-blocked inside the window. */
+ * frame) -- and ticks were credit-blocked inside the window. Each bound fails on its own line. */
 export function evaluateMismatch60Recv30(m: G6cMeasure): string[] {
   const p = windowProblems(m);
   const c = connRatesOf(m);
@@ -877,9 +883,13 @@ export function evaluateMismatch60Recv30(m: G6cMeasure): string[] {
     return [...p, "no connection or no receiver frame rate"];
   const capacity = creditCapacity(m, c);
   const lo = 0.95 * promptBound(60, capacity);
-  if (!within(c.published, lo, 1.05 * rf))
+  if (c.published < lo)
     p.push(
-      `published ${fmt(c.published)}/s outside [0.95 x min(60, credit capacity ${fmt(capacity)}/s), 1.05 x receiver frame rate ${fmt(rf)}/s]`,
+      `${MISMATCH_LOWER_BOUND} published ${fmt(c.published)}/s < 0.95 x min(60, credit capacity ${fmt(capacity)}/s) = ${fmt(lo)}/s`,
+    );
+  if (c.published > 1.05 * rf)
+    p.push(
+      `${MISMATCH_UPPER_BOUND} published ${fmt(c.published)}/s > 1.05 x receiver frame rate ${fmt(rf)}/s`,
     );
   if (c.ticks_credit_blocked <= 0)
     p.push("no tick was credit-blocked inside the window");
@@ -917,6 +927,10 @@ export function evaluateHostUnperturbed(
 export function evaluateDual(
   m: G6cMeasure,
   referenceHoldP95Us: number | null,
+  /** G7r: A's hold also passes within this many µs of the reference (0: G6c's 10 % only). A
+   * GSW receiver's phase-free hold is about 1 ms, whose 10 % is below the browser clock's
+   * 100 µs quantum. */
+  holdSlackUs = 0,
 ): string[] {
   const p = windowProblems(m);
   const a = connRatesOf(m, 0);
@@ -931,7 +945,10 @@ export function evaluateDual(
   const holdA = m.receivers[0]?.hold_p95_us ?? null;
   if (holdA === null || referenceHoldP95Us === null)
     p.push("A's or rate-uncapped-host60's receiver hold p95 is missing");
-  else if (Math.abs(holdA / referenceHoldP95Us - 1) > 0.1)
+  else if (
+    Math.abs(holdA / referenceHoldP95Us - 1) > 0.1 &&
+    Math.abs(holdA - referenceHoldP95Us) > holdSlackUs
+  )
     p.push(
       `A's receiver hold p95 ${fmt(holdA, 0)} us vs rate-uncapped-host60's ${fmt(referenceHoldP95Us, 0)} us (${fmt(100 * (holdA / referenceHoldP95Us - 1), 1)} %)`,
     );
@@ -1062,6 +1079,13 @@ export function legClass(ev: G6cLegEvidence): {
 // final-latest-state
 // ---------------------------------------------------------------------------------------------
 
+/** The final shot of a receiver at `dir`: its own shots/<name> when that exists (a receiver whose
+ * applied.json names a path elsewhere, a relocated or browser leg), else the recorded path. */
+export function finalShotPath(dir: string, recorded: string): string {
+  const local = join(dir, "shots", basename(recorded));
+  return existsSync(local) ? local : recorded;
+}
+
 export async function finalLatestState(
   ev: G6cLegEvidence,
 ): Promise<{ problems: string[]; detail: string[] }> {
@@ -1078,11 +1102,12 @@ export async function finalLatestState(
       problems.push(`${name}: no final shot`);
       continue;
     }
+    const path = finalShotPath(r.dir, shot.path);
     if (step11 && (shot.frame ?? -1) < step11.applied_frame)
       problems.push(
         `${name}: the final shot is of frame ${shot.frame}, before step 11 at ${step11.applied_frame}`,
       );
-    const got = await decodePngRgba(shot.path);
+    const got = await decodePngRgba(path);
     if (!got || !ref) {
       problems.push(`${name}: the final shot could not be decoded`);
       continue;

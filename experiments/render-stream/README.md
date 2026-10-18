@@ -55,7 +55,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7o | decode/apply optimization — restructured into G7o1 and tier 2; lands nothing | [protocol/gate7/g7o.md](protocol/gate7/g7o.md) |
 | G7g | gate 6 scene and HD on both browsers, both web cores — landed | [results/gate7/g7g.md](results/gate7/g7g.md) |
 | G7u | suspension and lifecycle | [protocol/gate7/g7u.md](protocol/gate7/g7u.md) |
-| G7r | pacing, rates, phase study, dual | [protocol/gate7/g7r.md](protocol/gate7/g7r.md) |
+| G7r | pacing, rates, phase study, dual on all three receivers (window 1): native 45/45, gsw 59/59, web 76/78 (its fetch tail); no variant holds 60/60 on every phase — landed | [results/gate7/g7r.md](results/gate7/g7r.md) |
 | G7k | startup, memory, soak | [protocol/gate7/g7k.md](protocol/gate7/g7k.md) |
 | G7q | credit window 2 — fork F1, opt-in | [protocol/gate7/g7q.md](protocol/gate7/g7q.md) |
 | G7v | phone acceptance on both phones, g31 first | [protocol/gate7/g7v.md](protocol/gate7/g7v.md) |
