@@ -48,3 +48,7 @@ After every public package exists on npm, configure npm Trusted Publishing for e
 - [Parser](docs/parser.md)
 - [Parity validation](docs/parity.md)
 - [Vue usage](docs/vue.md)
+
+## Contributing
+
+Small, focused bug-fix PRs are welcome. Please discuss features and substantial changes in an issue first. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope, licensing, credit, and review expectations.
