@@ -93,6 +93,7 @@ import {
   type ShellTx,
 } from "./evidence";
 import { type FetchResult, LiveFetcher } from "./fetcher";
+import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
 import { type PayloadVerify, Perf } from "./perf";
 import {
   definePrograms,
@@ -220,6 +221,10 @@ class LiveReceiver {
     | "done" = "connecting";
   private deadline = 0;
   private connIndex = 1;
+  // D15 (G7k startup): each fires once, on the first connection only.
+  private firstAppliedMarked = false;
+  private firstSubmittedMarked = false;
+  private firstRafAfterSubmitMarked = false;
   private sessionSeen = false;
   private everSession = false;
   private streamId = "";
@@ -369,6 +374,9 @@ class LiveReceiver {
             digest: "inline",
             sabotage: this.cfg.sabotage,
             format: "rgb10a2",
+            // G7k (Q10 soak): live mode only; `null` (no RS_RECEIVER_MEMORY_BUDGET_BYTES) means
+            // the module never evicts, same as native's unbudgeted default.
+            memory_budget_bytes: this.cfg.memoryBudgetBytes,
           }),
         );
       } catch (e) {
@@ -441,6 +449,8 @@ class LiveReceiver {
     if (ws !== this.ws || this.finished) return;
     this.opened = true;
     this.phase = "streaming";
+    // D15 (G7k startup): once only, not on a G7u reconnect's later connections.
+    if (this.connIndex === 1) performance.mark("rs-socket-open");
     const lr = this.reconnectRecord;
     if (lr !== null && "opened_us" in lr && lr.opened_us === null)
       lr.opened_us = us();
@@ -710,6 +720,9 @@ class LiveReceiver {
     log(
       `session ${session.session_id} stream ${session.stream?.stream_id} (${session.stream?.transport}, ${session.stream?.encoding}) applied, credit window ${this.report.creditWindow}`,
     );
+    // D15 (G7k startup): the session record decoded and its viewport adopted, once (connIndex 1
+    // only: a G7u reconnect starts a fresh session on a later connection too).
+    if (this.connIndex === 1) performance.mark("rs-session-decoded");
   }
 
   private lastSeqOrNull(): number | null {
@@ -724,6 +737,15 @@ class LiveReceiver {
     // D13/Q9: the timestamp of the first rAF callback after a submitted ack (raf_after_submit,
     // never `presented`), whether or not the max-fps rule then skips this callback.
     this.perf.rafAfterSubmit(ts);
+    // D15 (G7k startup): the rAF this receiver's own raf_after_submit series first recorded.
+    if (
+      this.connIndex === 1 &&
+      !this.firstRafAfterSubmitMarked &&
+      this.perf.rafAfterSubmitUs.length > 0
+    ) {
+      this.firstRafAfterSubmitMarked = true;
+      performance.mark("rs-first-raf-after-submit");
+    }
     // wm.cpp:83-97: skip a callback before target_ticks; reset after a gap over one second.
     if (this.L.maxFps > 0) {
       const current = Math.floor(performance.now() * 1000);
@@ -739,8 +761,42 @@ class LiveReceiver {
     this.perf.raf(ts);
     // G7r: the paced loop's cumulative counters once a second (perf.json `timeline`), the
     // native receiver's per-second `frames` line, so the g6c checks measure this receiver's
-    // frame rate (paced callbacks; `drawn` counts those that drew) on its own clock.
-    this.perf.sampleTimeline(this.processFrames, this.drawnRafs);
+    // frame rate (paced callbacks; `drawn` counts those that drew) on its own clock. G7k adds a
+    // residency snapshot on the same once-a-second tick (`sampleTimeline` self-throttles, so
+    // this callback only actually runs the wasm call and the leak sabotage's own pacing once a
+    // second, not every rAF).
+    const leaking = this.sabotage.has("leak-gl-textures");
+    this.perf.sampleTimeline(this.processFrames, this.drawnRafs, () => {
+      if (leaking) leakOneIfDue(ts);
+      const r = JSON.parse((this.g as GswRs).residency_json()) as {
+        entries: number;
+        bytes: number;
+        gl_texture_bytes: number;
+        pinned_bytes: number;
+        evictions: number;
+        budget_bytes: number | null;
+        resident_items: number;
+        resident_textures: number;
+        resident_meshes: number;
+        resident_shaders: number;
+        resident_materials: number;
+      };
+      this.perf.residencyEvictions = r.evictions;
+      this.perf.residencyBudgetBytes = r.budget_bytes;
+      return {
+        cache_entries_memory: r.entries,
+        cache_bytes_memory: r.bytes + r.gl_texture_bytes,
+        gl_texture_bytes: r.gl_texture_bytes,
+        memory_floor_bytes: r.pinned_bytes + r.gl_texture_bytes,
+        wasm_heap_bytes: window.__rsWasmHeap?.() ?? null,
+        resident_items: r.resident_items,
+        resident_textures: r.resident_textures,
+        resident_meshes: r.resident_meshes,
+        resident_shaders: r.resident_shaders,
+        resident_materials: r.resident_materials,
+        leaked_gl_textures: leakedGlTextureCount(),
+      };
+    });
     const g = this.g as GswRs;
     if (this.fenceDrawEnd >= 0 && g.poll_fence() === 1) {
       this.perf.gpuComplete.push(performance.now() - this.fenceDrawEnd);
@@ -1111,6 +1167,11 @@ class LiveReceiver {
     this.inlineSinceApplied = 0;
     this.report.shell.set(`${entry.stream}:${seq}`, p.tx);
     this.ack(seq, "applied", appliedUs);
+    // D15 (G7k startup): the first transaction (never the session record) applied, once.
+    if (this.connIndex === 1 && !this.firstAppliedMarked) {
+      this.firstAppliedMarked = true;
+      performance.mark("rs-first-applied");
+    }
     // The first unshot window holding this frame (receiver.gd `_finish_apply`).
     let step = -1;
     for (const w of this.L.windows)
@@ -1209,6 +1270,11 @@ class LiveReceiver {
       submittedMs = t / 1000;
       this.ack(seq, "submitted", t);
       this.perf.submitted(t / 1000);
+      // D15 (G7k startup): the first submitted ack of the honest credit path, once.
+      if (this.connIndex === 1 && !this.firstSubmittedMarked) {
+        this.firstSubmittedMarked = true;
+        performance.mark("rs-first-submitted");
+      }
     }
     this.perf.samples.push({
       seq,
@@ -1714,6 +1780,10 @@ class LiveReceiver {
         }
       }
       this.report.distinctFetched = this.fetchedHashes.size;
+      // G7k (Q10 soak): the PayloadStore's own cumulative eviction count (0 when a budget was
+      // set and never exceeded; still null when no residency sample was ever taken, e.g. a leg
+      // with no applied transaction).
+      this.report.residencyEvictions = this.perf.residencyEvictions;
       const gsw = this.liveBlock.gsw as Record<string, unknown>;
       gsw.raf_callbacks = this.rafIndex;
       gsw.raf_skipped = this.rafSkipped;

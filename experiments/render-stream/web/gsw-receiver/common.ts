@@ -58,6 +58,8 @@ export interface GswRs {
   restore_missing(): string;
   restore_take(hash: string): number;
   restore_json(): string;
+  // G7k (Q10 soak): live mode's residency and budget (D29 amendment).
+  residency_json(): string;
   free(): void;
 }
 

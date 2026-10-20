@@ -171,6 +171,31 @@
 #             every kind's list (development). check-gate7.ts --live judges them
 #             (lib/gate7u-checks.ts). Timing legs.
 #
+# Group landed (G7k, protocol/gate7/g7k.md, gate7-design.md Q10 "Startup, memory"; `--live`
+#   g7-k      only): startup cost and soak stability, on both browser receivers. Two run-gate6.sh
+#             invocations per kind:
+#               soak     --legs g6s (G6S_LEGS a CSV, run-gate6.sh's own new override; default per
+#                        kind below) into <out>/gate6/g6s-<kind>/, reusing G6s's soak-scene and
+#                        sabotage-soak-no-evict legs unmodified:
+#                          web   soak-scene, sabotage-soak-no-evict
+#                          gsw   web's legs plus sabotage-leak-gl-textures (GSW only: a throwaway
+#                                WebGL context gsw-receiver/gl-leak.ts owns, never the canvas GSW
+#                                draws into)
+#               startup  --legs g6l (G7K_STARTUP_LEGS a CSV, run-gate6.sh's own new mode) into
+#                        <out>/gate6/startup-<kind>/: startup-cold-r0..r5 (a fresh profile each)
+#                        and startup-warm-r0..r5 (r0 a cold load, r1..r5 each a fresh copy of r0's
+#                        profile -- RS_RECEIVER_CACHE_MODE=warm, the same mechanism a live-scene-warm
+#                        leg uses, so each really is "a second load in the same profile"); no g6l
+#                        leg, reference-file or reference-live-frames runs (a startup leg's
+#                        timings.json, D15's navigation-relative marks, is its only evidence).
+#             GATE7_MEM_SAMPLE=1 turns on the harness's 1 Hz memory samplers
+#             (lib/gate7k-samplers.ts: /proc RSS of the browser/renderer/GPU processes, CDP JS
+#             heap, nvidia-smi per-process GPU memory, the page's own wasm heap) for every g7-k
+#             leg, never any other group's. check-gate7.ts --live judges them
+#             (lib/gate7k-checks.ts). Both run-gate6.sh groups (g6s, g6l) are timing groups: each
+#             leg holds the quiet lock exclusive, 300 s for a soak leg and a few seconds for a
+#             startup one.
+#
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
 # and rendered Godot legs share ONE private `gamescope --backend headless` (lib/gamescope.sh).
@@ -188,7 +213,7 @@ RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
 KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
-LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-dev g7-bench)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
 
 # G7u: each browser kind's lifecycle legs (run-gate6.sh G7U_LEGS), desktop (simulated suspension)
 # and device (real hidden/frozen). G7U_LEGS in the environment replaces every kind's list.
@@ -478,6 +503,10 @@ if [ "$LIVE" = "1" ]; then
 		echo "run-gate7: g7-lc runs browser receivers only (--receiver web|gsw)" >&2
 		exit 2
 	fi
+	if has_group g7-k && [ "$RECEIVER" = "native" ]; then
+		echo "run-gate7: g7-k runs browser receivers only (--receiver web|gsw)" >&2
+		exit 2
+	fi
 	if [ "$HARNESS_ENV" = device ]; then
 		# Before any build: a device lifecycle run the daemon cannot drive fails here, loudly.
 		if ! GATE7_LIFECYCLE_ENV=device GATE7_DEVICE="$DEVICE" g7tool lifecycle-env-check >&2; then
@@ -492,8 +521,8 @@ if [ "$LIVE" = "1" ]; then
 		has_group "$group" || continue
 		LIVE_RUNS+=("$group:$rest")
 	done
-	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc; then
-		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-lc, g7-r in --legs" >&2
+	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc && ! has_group g7-k; then
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-lc, g7-r, g7-k in --legs" >&2
 		exit 2
 	fi
 	if [ "$RECEIVER" = "native" ] && [ "${#LIVE_RUNS[@]}" -gt 0 ]; then
@@ -631,9 +660,52 @@ if [ "$LIVE" = "1" ]; then
 			fi
 		done
 	fi
+	# G7k: run-gate6.sh --legs g6s (soak) and --legs g6l (startup, G7K_STARTUP_LEGS) once per
+	# browser kind (header "Group landed (G7k)"). GATE7_MEM_SAMPLE=1 turns on the harness's memory
+	# samplers (gate7k-samplers.ts) for every g7-k leg only, never any other group's.
+	if has_group g7-k; then
+		mkdir -p "$OUT/gate6"
+		G7K_SOAK_LEGS_web="soak-scene,sabotage-soak-no-evict"
+		G7K_SOAK_LEGS_gsw="soak-scene,sabotage-soak-no-evict,sabotage-leak-gl-textures"
+		G7K_STARTUP_DEFAULT="startup-cold-r0,startup-cold-r1,startup-cold-r2,startup-cold-r3,startup-cold-r4,startup-cold-r5,startup-warm-r0,startup-warm-r1,startup-warm-r2,startup-warm-r3,startup-warm-r4,startup-warm-r5"
+		for kb in "${LIVE_KINDS[@]}"; do
+			kind="${kb%%:*}"
+			bundle_dir="${kb#*:}"
+			legs_var="G7K_SOAK_LEGS_$kind"
+			g7k_soak_legs="${G7K_SOAK_LEGS:-${!legs_var}}"
+			g7k_startup_legs="${G7K_STARTUP_LEGS:-$G7K_STARTUP_DEFAULT}"
+			run_dir="$OUT/gate6/g6s-$kind"
+			if [ "${G7K_SKIP_SOAK:-0}" != "1" ]; then
+			echo "run-gate7: g7-k soak @$kind: run-gate6.sh --legs g6s (G6S_LEGS=$g7k_soak_legs) into $run_dir" >&2
+			set +e
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+				GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after GATE7_MEM_SAMPLE=1 \
+				G6S_LEGS="$g7k_soak_legs" \
+				bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+				--binary "$BINARY" --out "$run_dir" --legs g6s >"$OUT/gate6/g6s-$kind.log" 2>&1
+			g7k_exit=$?
+			set -e
+			echo "run-gate7: g7-k soak run-gate6.sh @$kind exit=$g7k_exit (check-gate7.ts --live judges it)" >&2
+			fi
+
+			if [ "${G7K_SKIP_STARTUP:-0}" = "1" ]; then continue; fi
+			run_dir="$OUT/gate6/startup-$kind"
+			echo "run-gate7: g7-k startup @$kind: run-gate6.sh --legs g6l (G7K_STARTUP_LEGS=$g7k_startup_legs) into $run_dir" >&2
+			set +e
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+				GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after GATE7_MEM_SAMPLE=1 \
+				G7K_STARTUP_LEGS="$g7k_startup_legs" GATE7_STATIC_CACHE=1 \
+				bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+				--binary "$BINARY" --out "$run_dir" --legs g6l >"$OUT/gate6/startup-$kind.log" 2>&1
+			g7k_exit=$?
+			set -e
+			echo "run-gate7: g7-k startup run-gate6.sh @$kind exit=$g7k_exit (check-gate7.ts --live judges it)" >&2
+		done
+	fi
 	# G7u: one 30-s lifecycle leg's host evidence (a 3180-frame scene recording, its patch sink, the
-	# tap and the hook log, decoded) alone exceeds node's default 4 GB heap.
-	if has_group g7-lc; then
+	# tap and the hook log, decoded) alone exceeds node's default 4 GB heap. G7k's soak (300 s) is
+	# the same shape of problem.
+	if has_group g7-lc || has_group g7-k; then
 		export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=12288"
 	fi
 	echo "run-gate7: running check-gate7.ts --live" >&2

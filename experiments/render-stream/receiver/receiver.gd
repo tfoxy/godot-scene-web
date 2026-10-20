@@ -114,6 +114,8 @@ extends Node
 ##                               more (shots/final.png, a shot with "final": true and that
 ##                               transaction's seq and frame) before closing
 ##   RS_RECEIVER_RECEIVED_OUT    absolute path of the received bytes (default <dirname>/received.rs2)
+##   RS_RECEIVER_RECEIVED_MAX_BYTES  (G7k) store at most this many received bytes in the received
+##                               file (default: all); the stream report's received_truncated says so
 ##   RS_RECEIVER_INBOUND_BYTES   WebSocketPeer.inbound_buffer_size, set before connecting
 ##                               (default 16777216)
 ##   RS_RECEIVER_CREDIT_STAGE    submitted (default) or applied; forced to applied under --headless,
@@ -376,6 +378,12 @@ var _credit_stage: String = "submitted"
 var _inbound_bytes: int = DEFAULT_INBOUND_BYTES
 var _received_path: String = ""
 var _received_file: FileAccess = null
+## G7k (Q10 soak): RS_RECEIVER_RECEIVED_MAX_BYTES caps what is mirrored into `_received_path`
+## (-1: no cap, the default). A web 300-s soak's received.rs7 is ~420 MB in MEMFS, and the exit PUT
+## of it alone took ~20 minutes; once the cap is reached, later messages are counted (received_bytes)
+## but not stored, and the stream report says so (`received_truncated`).
+var _received_cap: int = -1
+var _received_stored: int = 0
 ## G6s (live-buffer trim): `_data` holds at most the one message currently being decoded
 ## (RsApplier indexes a record by an offset local to `_data`, so nothing more is needed); the
 ## current connection's received byte count, which used to read `_data.size()`, is tracked here
@@ -406,6 +414,10 @@ var _manifest_sha256: String = ""
 ## The live connection being read: 1, then 2 after a reconnect. Transactions, shots and state
 ## dumps name it as their stream.
 var _conn_index: int = 1
+# G7k (D15 startup marks): each fires once, on connection 1 only (a reconnect's later connections
+# are G7u's concern, not a startup leg's).
+var _marked_first_applied: bool = false
+var _marked_first_submitted: bool = false
 # G1d options (-1: off).
 var _stall_step: int = -1
 var _stall_ms: int = 0
@@ -888,6 +900,17 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	return {"ok": true, "stats": stats}
 
 
+## G7k (gate7-design.md Q10 "Startup", D15's navigation-relative marks): a no-op natively (every
+## call site here is also guarded by RsConfig.is_web(), but this helper repeats the guard so a
+## future web-only call site cannot forget it). Fire-and-forget: performance.mark() returns
+## nothing worth reading back, so this needs no JavaScriptBridge.create_callback.
+func _web_mark(name: String) -> void:
+	if not RsConfig.is_web():
+		return
+	JavaScriptBridge.eval("performance.mark('%s')" % name)
+
+
+
 ## The session record (accept_record()'s result): viewport size check, then clear colour, canvas
 ## 1, its transform and cull mask. Returns false (after failing the replay) on any error.
 func _begin_session(accepted: Dictionary) -> bool:
@@ -970,6 +993,8 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_applier.sabotage_ignore_canvas_stacking = _sabotage == "ignore-canvas-stacking"
 	_applier.begin_session(meta, blocks)
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
+	if _live and _conn_index == 1:
+		_web_mark("rs-session-decoded")
 	return true
 
 
@@ -1705,6 +1730,13 @@ func _ready_live() -> void:
 		_quit(EXIT_USAGE)
 		return
 	_received_base = _received_path
+	var received_cap_text: String = RsConfig.get_env("RS_RECEIVER_RECEIVED_MAX_BYTES").strip_edges()
+	if received_cap_text != "":
+		if not received_cap_text.is_valid_int() or received_cap_text.to_int() < 0:
+			_log("error: RS_RECEIVER_RECEIVED_MAX_BYTES must be a non-negative integer (got %s)" % JSON.stringify(received_cap_text))
+			_quit(EXIT_USAGE)
+			return
+		_received_cap = received_cap_text.to_int()
 	var token_file: String = RsConfig.get_env("RS_RECEIVER_TOKEN_FILE").strip_edges()
 	var token_text: String = RsConfig.get_env("RS_RECEIVER_TOKEN").strip_edges()
 	if RsConfig.is_web() and token_file != "":
@@ -1805,6 +1837,7 @@ func _ready_live() -> void:
 		return
 
 	DirAccess.make_dir_recursive_absolute(_received_path.get_base_dir())
+	_received_stored = 0
 	_received_file = FileAccess.open(_received_path, FileAccess.WRITE)
 	if _received_file == null:
 		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
@@ -1978,6 +2011,8 @@ func _process_live() -> void:
 				_live_phase = "streaming"
 				if _reconnect_record.has("opened_us") and _reconnect_record["opened_us"] == null:
 					_reconnect_record["opened_us"] = Time.get_ticks_usec()
+				if _conn_index == 1:
+					_web_mark("rs-socket-open")
 				if _wire_version == 7:
 					_send(_hello_v7())
 				else:
@@ -2129,6 +2164,7 @@ func _start_next_connection() -> void:
 
 	_conn_index += 1
 	_received_path = "%s-%d.%s" % [_received_base.get_basename(), _conn_index, _received_base.get_extension()]
+	_received_stored = 0
 	_received_file = FileAccess.open(_received_path, FileAccess.WRITE)
 	if _received_file == null:
 		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
@@ -2195,8 +2231,12 @@ func _receive_binary(message: PackedByteArray) -> void:
 	var now_us: int = Time.get_ticks_usec()
 	var offset: int = _data.size()
 	_data.append_array(message)
-	_received_file.store_buffer(message)
-	_received_file.flush()
+	if _received_cap < 0 or _received_stored + message.size() <= _received_cap:
+		_received_file.store_buffer(message)
+		_received_file.flush()
+		_received_stored += message.size()
+	elif not _stream_report.get("received_truncated", false):
+		_stream_report["received_truncated"] = true
 	_data_received_bytes += message.size()
 	_stream_report["received_bytes"] = _data_received_bytes
 	if not _session_seen:
@@ -2372,6 +2412,9 @@ func _finish_apply(entry: Dictionary, meta: Dictionary, prefetched: Dictionary) 
 	var seq: int = entry["seq"]
 	_send(RsLiveClient.ack(_stream_id, seq, "applied", now_us))
 	_acks_sent["applied"] = Rs2Decoder.as_int(_acks_sent["applied"]) + 1
+	if _conn_index == 1 and not _marked_first_applied:
+		_marked_first_applied = true
+		_web_mark("rs-first-applied")
 	var step: int = -1
 	var frame: int = entry["frame"]
 	for window: Dictionary in _windows:
@@ -2436,6 +2479,9 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 		entry["submitted_process_frame"] = Engine.get_process_frames()
 	_send(RsLiveClient.ack(_stream_id, seq, "submitted", now_us))
 	_acks_sent["submitted"] = Rs2Decoder.as_int(_acks_sent["submitted"]) + 1
+	if _conn_index == 1 and not _marked_first_submitted:
+		_marked_first_submitted = true
+		_web_mark("rs-first-submitted")
 	_submit_pending = false
 	if step >= 0 and step == _reconnect_step and _live_report["reconnect"] == null:
 		_live_report["reconnect"] = {

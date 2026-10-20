@@ -55,6 +55,11 @@
 # reference-step11 (a rendered `animate` reference on the soak timeline itself: realtime pacing
 # makes the step-11 freeze land at a frame the file timeline cannot reproduce, gate6-design.md
 # "As built (G6s)").
+# G7k (gate7's g7-k, protocol/gate7/g7k.md): with G6S_LEGS=<csv> (a browser receiver only,
+# GATE7_LIVE_KIND) run_g6s runs only the named legs under <out>/g6s/, plus reference-step11
+# always. A fifth, GSW-only leg joins the vocabulary: sabotage-leak-gl-textures
+# (RS_RECEIVER_SABOTAGE=leak-gl-textures). The default (G6S_LEGS unset) is every native leg,
+# unchanged.
 # g6c (G6c, lib/gate6c-legs.sh): under <out>/rates/ the publication-rate legs on the `rate`
 # timeline (realtime, 30 s of game time, GRC_HOOK_LOG=off, no file sink, no tap): rate-baseline
 # (armed, no subscriber), rate-15/-30/-60 (GRC_PUBLISH_FPS), rate-uncapped-host60, rate-uncapped
@@ -672,6 +677,38 @@ PY
 G7U_LONG_QUIT_FRAME=$((3180 + G6L_START_FRAME - 300))
 G7U_LEGS="${G7U_LEGS:-}"
 
+# G7k startup legs (gate7-design.md Q10 "Startup", protocol/gate7/g7k.md): with
+# G7K_STARTUP_LEGS=<csv> (a browser receiver only, GATE7_LIVE_KIND) g6l runs ONLY the named
+# startup-cold-r<N>/startup-warm-r<N> legs (N 0..5, 0 the discarded warmup) against a plain
+# live-scene host; the g6l legs, reference-file and reference-live-frames are skipped (a startup
+# leg's timings.json is its only evidence; it shoots nothing). Mutually exclusive with G7U_LEGS.
+G7K_STARTUP_LEGS="${G7K_STARTUP_LEGS:-}"
+
+# g6l_startup_words <leg>: sets ST_RECEIVER_WORDS for one startup leg; fails (with a message) on
+# an unknown name. A cold leg is a fresh profile (the default `g6l_receiver` RS_RECEIVER_CACHE_DIR,
+# dropped by the browser mapper anyway). A warm leg's browser starts on a copy of
+# startup-warm-r0's own profile (RS_RECEIVER_CACHE_MODE=warm on its RS_RECEIVER_CACHE_DIR,
+# gate7-live-legs.ts mapBrowserLeg's warmFrom) -- repeat 0 is both the discarded warmup D15 names
+# and the one cold load every later warm repeat copies from (so each is independently "a second
+# load in the same profile", never a sixth).
+g6l_startup_words() {
+	local leg="$1"
+	ST_RECEIVER_WORDS=()
+	case "$leg" in
+	startup-cold-r[0-5] | startup-warm-r0) ;;
+	startup-warm-r[1-5])
+		ST_RECEIVER_WORDS=(
+			RS_RECEIVER_CACHE_DIR="$L/startup-warm-r0/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+		)
+		;;
+	*)
+		echo "run-gate6: G7K_STARTUP_LEGS: unknown startup leg $leg" >&2
+		return 1
+		;;
+	esac
+	return 0
+}
+
 # g6l_lc_words <leg>: sets LC_HOST_WORDS and LC_RECEIVER_WORDS for one lc leg; fails (with a
 # message) on an unknown leg, or one not of this environment (sim- legs are desktop only, the real
 # hidden/frozen ones device only).
@@ -757,6 +794,10 @@ run_g7u_lc() {
 run_g6l() {
 	local L="$OUT/live" frames
 	local -a quit_words=()
+	if [ -n "$G7U_LEGS" ] && [ -n "$G7K_STARTUP_LEGS" ]; then
+		echo "run-gate6: G7U_LEGS and G7K_STARTUP_LEGS are mutually exclusive" >&2
+		exit 2
+	fi
 	if [ -n "$G7U_LEGS" ]; then
 		if [ -z "$GATE7_LIVE_KIND" ]; then
 			echo "run-gate6: G7U_LEGS needs a browser receiver (GATE7_LIVE_KIND=web|gsw; run-gate7.sh --live --legs g7-lc)" >&2
@@ -772,6 +813,18 @@ run_g6l() {
 		# A 30-s leg's host runs ~53 s at 60 fps, its receiver as long, the reference to frame 3180.
 		HEADLESS_TIMEOUT_S=300
 		RENDERED_TIMEOUT_S=300
+	fi
+	if [ -n "$G7K_STARTUP_LEGS" ]; then
+		if [ -z "$GATE7_LIVE_KIND" ]; then
+			echo "run-gate6: G7K_STARTUP_LEGS needs a browser receiver (GATE7_LIVE_KIND=web|gsw; run-gate7.sh --legs g7-k)" >&2
+			exit 2
+		fi
+		local st_leg
+		local -a st_legs=()
+		IFS=',' read -r -a st_legs <<<"$G7K_STARTUP_LEGS"
+		for st_leg in "${st_legs[@]}"; do
+			g6l_startup_words "$st_leg" || exit 2
+		done
 	fi
 	mkdir -p "$L/import"
 	echo "run-gate6: g6l: import (fixture, receiver)"
@@ -790,6 +843,20 @@ run_g6l() {
 
 	echo "run-gate6: bringing up private gamescope for g6l legs"
 	gs_start 640 360 "$OUT/gamescope-g6l"
+
+	if [ -n "$G7K_STARTUP_LEGS" ]; then
+		local st_leg
+		local -a st_legs=()
+		IFS=',' read -r -a st_legs <<<"$G7K_STARTUP_LEGS"
+		for st_leg in "${st_legs[@]}"; do
+			g6l_startup_words "$st_leg"
+			echo "run-gate6: g6l: startup $st_leg (${ST_RECEIVER_WORDS[*]:-fresh profile})"
+			g6l_leg "$st_leg" -- "${ST_RECEIVER_WORDS[@]}"
+		done
+		gs_teardown "$OUT/gamescope-g6l"
+		GS_RUN_DIR=""
+		return 0
+	fi
 
 	if [ -n "$G7U_LEGS" ]; then
 		run_g7u_lc
@@ -852,6 +919,20 @@ run_g6l() {
 G6S_MEMORY_BUDGET_BYTES=1048576 # 1 MiB (Q7e: 64 TEXA payloads)
 G6S_CACHE_BUDGET_BYTES=4194304  # 4 MiB
 G6S_INLINE_MAX_BYTES=1048576    # soak-inline: every payload goes inline (live mode's own cap)
+
+# G7k (gate7-design.md Q10 "Soak", protocol/gate7/g7k.md): with G6S_LEGS=<csv> (a browser
+# receiver only, GATE7_LIVE_KIND) run_g6s runs only the named legs under <out>/g6s/, in the order
+# below -- never reorders, never dedupes a caller's duplicate. The default is every native leg,
+# unchanged. `sabotage-leak-gl-textures` is GSW-only (RS_RECEIVER_SABOTAGE has no effect on the
+# native receiver or the web export's engine: the real leak lives in gsw-receiver's own WebGL
+# context wrapper, gate7-design.md Q10, gl-leak.ts) and is never selected by the default.
+G6S_LEGS="${G6S_LEGS:-soak-scene,soak-inline,sabotage-soak-no-evict,sabotage-soak-retain-superseded}"
+g6s_leg_wanted() {
+	case ",$G6S_LEGS," in
+	*",$1,"*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
 
 # g6s_windows: 11 windows spread across frame 1000..20499 for early/mid motion sampling, plus one
 # final window placed AFTER step 11's nominal trigger frame (60 fps * 365 s = 21900). Realtime
@@ -923,6 +1004,12 @@ g6s_receiver() {
 		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_LOG=summary RS_RECEIVER_PERF_OUT="$dir/perf.json"
 		RS_RECEIVER_MEMORY_BUDGET_BYTES="$G6S_MEMORY_BUDGET_BYTES" RS_RECEIVER_SHOT_WINDOWS="$(g6s_windows)" "$@"
 	)
+	# G7k: the web export mirrors the received bytes in MEMFS and PUTs them at exit; for a 300-s
+	# soak that is ~420 MB and ~20 minutes (the process outlived its work and the shots PUT after it
+	# never arrived). A 1 MiB cap keeps the file a stream prefix; the soak judges shots and perf.
+	if [ "$GATE7_LIVE_KIND" = "web" ]; then
+		LEG_ENV+=(RS_RECEIVER_RECEIVED_MAX_BYTES=1048576)
+	fi
 	RENDERED_EXTRA_ARGS=(--max-fps 60)
 	run_rendered "$dir" "$RECEIVER_DIR"
 }
@@ -979,9 +1066,24 @@ run_g6s() {
 	gs_start 640 360 "$OUT/gamescope-g6s"
 
 	# Each leg (including this reference) runs the fixture's soak timeline to its own natural
-	# ~370-s quit.
+	# ~370-s quit. G7k (As built, protocol/gate7/g7k.md): a browser receiver's own launch, any
+	# quiet-lock wait before the leg's own 370 s even starts, AND a pre-existing gap in the web
+	# export's live shutdown after this long a connection all need slack native never needed.
+	# Measured twice, with and without gate7k-samplers.ts's memory sampler attached (ruling the
+	# sampler out as the cause): a web-export soak-scene leg's own applied.json reaches
+	# end_seen/status "ok" with every resources_summary figure complete (the replay itself
+	# finished cleanly, by its own account), but the browser-receiver process does not exit on
+	# its own afterward and needs an external kill at ~1250-1280 s. The evidence written before
+	# the kill is unaffected (checked byte-identical both times), so the budget below just needs
+	# to outlast that gap, not avoid it; closing the gap itself is receiver.gd's live shutdown
+	# path, shared architecture outside this budget-and-samplers-scoped increment (G6s's own RSS
+	# finding is the precedent for reporting rather than fixing a shared-architecture gap here).
 	HEADLESS_TIMEOUT_S=420
 	RENDERED_TIMEOUT_S=420
+	if [ -n "$GATE7_LIVE_KIND" ]; then
+		HEADLESS_TIMEOUT_S=420
+		RENDERED_TIMEOUT_S=1500
+	fi
 
 	# reference-step11 MUST run the soak timeline itself, at the SAME --max-fps 60 as every host
 	# and receiver here, not the file timeline and not uncapped: step 11's freeze (gate6_scene.gd's
@@ -1003,9 +1105,11 @@ run_g6s() {
 	# Realtime-paced (its freeze frame depends on the achieved rate): a timing leg of its own.
 	timing_leg g6s:reference-step11 run_rendered "$G6S/reference-step11" "$SCENE_FIXTURE_DIR"
 
-	echo "run-gate6: g6s: soak-scene (fresh cache, memory 1 MiB / disk 4 MiB)"
-	g6s_leg soak-scene -- RS_RECEIVER_CACHE_DIR="$G6S/soak-scene/receiver/cache" \
-		RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES"
+	if g6s_leg_wanted soak-scene; then
+		echo "run-gate6: g6s: soak-scene (fresh cache, memory 1 MiB / disk 4 MiB)"
+		g6s_leg soak-scene -- RS_RECEIVER_CACHE_DIR="$G6S/soak-scene/receiver/cache" \
+			RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES"
+	fi
 
 	# No cache dir and no store (pure inline, G2c2's HTTP fetcher never starts): a hash evicted
 	# from memory under budget pressure could never be recovered (the host never resends a
@@ -1013,19 +1117,33 @@ run_g6s() {
 	# legitimately recur. So this leg keeps the receiver's own generous default memory budget
 	# (268435456, which this fixture's whole payload footprint never approaches) rather than
 	# Q7e's tight one, and exercises only the carried-set growth check.
-	echo "run-gate6: g6s: soak-inline (every payload inline, no eviction pressure)"
-	g6s_leg soak-inline GRC_RESOURCE_INLINE_MAX_BYTES="$G6S_INLINE_MAX_BYTES" \
-		GRC_RESOURCE_MAX_PAYLOAD_BYTES="$G6S_INLINE_MAX_BYTES" -- \
-		RS_RECEIVER_MEMORY_BUDGET_BYTES=268435456
+	if g6s_leg_wanted soak-inline; then
+		echo "run-gate6: g6s: soak-inline (every payload inline, no eviction pressure)"
+		g6s_leg soak-inline GRC_RESOURCE_INLINE_MAX_BYTES="$G6S_INLINE_MAX_BYTES" \
+			GRC_RESOURCE_MAX_PAYLOAD_BYTES="$G6S_INLINE_MAX_BYTES" -- \
+			RS_RECEIVER_MEMORY_BUDGET_BYTES=268435456
+	fi
 
-	echo "run-gate6: g6s: sabotage-soak-no-evict (RS_RECEIVER_SABOTAGE=no-evict)"
-	g6s_leg sabotage-soak-no-evict -- RS_RECEIVER_CACHE_DIR="$G6S/sabotage-soak-no-evict/receiver/cache" \
-		RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES" RS_RECEIVER_SABOTAGE=no-evict
+	if g6s_leg_wanted sabotage-soak-no-evict; then
+		echo "run-gate6: g6s: sabotage-soak-no-evict (RS_RECEIVER_SABOTAGE=no-evict)"
+		g6s_leg sabotage-soak-no-evict -- RS_RECEIVER_CACHE_DIR="$G6S/sabotage-soak-no-evict/receiver/cache" \
+			RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES" RS_RECEIVER_SABOTAGE=no-evict
+	fi
 
-	echo "run-gate6: g6s: sabotage-soak-retain-superseded (GRC_SABOTAGE=retain-superseded)"
-	g6s_leg sabotage-soak-retain-superseded GRC_SABOTAGE=retain-superseded GRC_SABOTAGE_FRAME=1 -- \
-		RS_RECEIVER_CACHE_DIR="$G6S/sabotage-soak-retain-superseded/receiver/cache" \
-		RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES"
+	if g6s_leg_wanted sabotage-soak-retain-superseded; then
+		echo "run-gate6: g6s: sabotage-soak-retain-superseded (GRC_SABOTAGE=retain-superseded)"
+		g6s_leg sabotage-soak-retain-superseded GRC_SABOTAGE=retain-superseded GRC_SABOTAGE_FRAME=1 -- \
+			RS_RECEIVER_CACHE_DIR="$G6S/sabotage-soak-retain-superseded/receiver/cache" \
+			RS_RECEIVER_CACHE_BUDGET_BYTES="$G6S_CACHE_BUDGET_BYTES"
+	fi
+
+	# G7k (gsw only: RS_RECEIVER_SABOTAGE=leak-gl-textures has no effect on the native receiver,
+	# and run-gate7.sh never selects this leg for a web-core run). The memory budget still
+	# applies, unrelated: the leak is a throwaway WebGL context gsw-receiver's gl-leak.ts owns.
+	if g6s_leg_wanted sabotage-leak-gl-textures; then
+		echo "run-gate6: g6s: sabotage-leak-gl-textures (RS_RECEIVER_SABOTAGE=leak-gl-textures)"
+		g6s_leg sabotage-leak-gl-textures -- RS_RECEIVER_SABOTAGE=leak-gl-textures
+	fi
 
 	HEADLESS_TIMEOUT_S="$old_headless"
 	RENDERED_TIMEOUT_S="$old_rendered"
@@ -1064,6 +1182,13 @@ done
 # g6l verdict would only report them missing; check-gate7.ts --live --legs g7-lc judges it.
 if [ -n "$G7U_LEGS" ] && [ "${GROUPS_RUN[*]}" = "g6l" ]; then
 	echo "run-gate6: G7U_LEGS: check-gate6 skipped (check-gate7.ts --live --legs g7-lc judges the lifecycle legs)"
+	legs_quiet_summary
+	exit 0
+fi
+# G7k: a startup-only run (G7K_STARTUP_LEGS, --legs g6l) shoots nothing and has none of g6l's own
+# legs; check-gate7.ts --live --legs g7-k reads each leg's timings.json instead.
+if [ -n "$G7K_STARTUP_LEGS" ] && [ "${GROUPS_RUN[*]}" = "g6l" ]; then
+	echo "run-gate6: G7K_STARTUP_LEGS: check-gate6 skipped (check-gate7.ts --live --legs g7-k judges the startup legs)"
 	legs_quiet_summary
 	exit 0
 fi

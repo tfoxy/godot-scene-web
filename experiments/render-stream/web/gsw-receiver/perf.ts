@@ -78,15 +78,52 @@ export class Perf {
   readonly fetchUs: number[] = [];
   /** D13: the next rAF timestamp after each submitted ack, minus the ack's time (µs). */
   readonly rafAfterSubmitUs: number[] = [];
-  /** G7r: once a second, the paced loop's cumulative callbacks (`frames`) and drawn frames. */
-  readonly timelineLines: { t_us: number; frames: number; drawn: number }[] =
-    [];
+  /** G7r: once a second, the paced loop's cumulative callbacks (`frames`) and drawn frames.
+   * G7k adds the residency snapshot that second (null fields: not yet started / not sampled),
+   * in the native receiver's own perf.json shape (gate6s-checks.ts `ReceiverTimelineLine`) so
+   * its residencyMetrics/checkResidencyBounded/checkCacheBudgetRespected run on a GSW leg
+   * unchanged: `cache_entries_disk`/`cache_bytes_disk` are always 0 (GSW has no disk tier), and
+   * `live_rids` is `GswRs::residency_json()`'s `resident_*` fields in that shape. */
+  readonly timelineLines: {
+    t_us: number;
+    frames: number;
+    drawn: number;
+    cache_entries_memory: number | null;
+    cache_bytes_memory: number | null;
+    cache_entries_disk: number;
+    cache_bytes_disk: number;
+    /** G7k (D29 amendment): `cache_bytes_memory` is the store's payload bytes in wasm memory plus
+     * the resident textures' GL bytes (`gl_texture_bytes`, also reported alone); the floor is
+     * what a budget can never go below (referenced store bytes plus the GL bytes). */
+    gl_texture_bytes: number | null;
+    memory_floor_bytes: number | null;
+    /** `memory.buffer.byteLength` of the GSW wasm (never shrinks), beside the JS heap the
+     * browser-side sampler reads. */
+    wasm_heap_bytes: number | null;
+    live_rids: {
+      items: number;
+      textures: number;
+      meshes: number;
+      shaders: number;
+      materials: number;
+    } | null;
+    /** Sabotage `leak-gl-textures` only (gate7-design.md Q10, not part of the native shape):
+     * real WebGL textures leaked on a throwaway context, never drawn with (gl-leak.ts). 0
+     * otherwise, never null, so a soak checker can add it to `live_rids.textures` for one "GL
+     * textures" number that is flat honestly and grows under the sabotage. */
+    leaked_gl_textures: number;
+  }[] = [];
   private lastSubmitMs = -1;
   private nextTimelineMs = -1;
   /** G7s: item-space programs defined, shaders refused, library reads. */
   readonly programs = { defined: 0, refused: 0, library_reads: 0 };
   /** G7o2: set before the evidence is written. */
   payloadVerify: PayloadVerify | null = null;
+  /** G7k (Q10 soak): the `PayloadStore`'s cumulative eviction count and configured budget at
+   * the last sample (live mode only; null when no residency sample was ever taken). Set by the
+   * caller from `GswRs::residency_json()` beside each `sampleTimeline` call, not computed here. */
+  residencyEvictions: number | null = null;
+  residencyBudgetBytes: number | null = null;
   private lastRaf = -1;
 
   raf(ts: number): void {
@@ -104,14 +141,54 @@ export class Perf {
     this.lastSubmitMs = -1;
   }
 
-  sampleTimeline(frames: number, drawn: number): void {
+  /** `residency`, when given, is called only on the once-a-second tick (never every rAF), since
+   * it reads across the wasm boundary (`GswRs::residency_json`) and the leaked-texture count. */
+  sampleTimeline(
+    frames: number,
+    drawn: number,
+    residency?: () => {
+      cache_entries_memory: number;
+      cache_bytes_memory: number;
+      gl_texture_bytes: number;
+      memory_floor_bytes: number;
+      wasm_heap_bytes: number | null;
+      resident_items: number;
+      resident_textures: number;
+      resident_meshes: number;
+      resident_shaders: number;
+      resident_materials: number;
+      leaked_gl_textures: number;
+    },
+  ): void {
     const now = performance.now();
     if (this.nextTimelineMs >= 0 && now < this.nextTimelineMs) return;
     // Anchored at the old deadline, so the lines stay a second apart however late a callback is.
     this.nextTimelineMs =
       this.nextTimelineMs < 0 ? now + 1000 : this.nextTimelineMs + 1000;
     if (this.nextTimelineMs < now) this.nextTimelineMs = now + 1000;
-    this.timelineLines.push({ t_us: Math.round(now * 1000), frames, drawn });
+    const r = residency?.() ?? null;
+    this.timelineLines.push({
+      t_us: Math.round(now * 1000),
+      frames,
+      drawn,
+      cache_entries_memory: r?.cache_entries_memory ?? null,
+      cache_bytes_memory: r?.cache_bytes_memory ?? null,
+      cache_entries_disk: 0,
+      cache_bytes_disk: 0,
+      gl_texture_bytes: r?.gl_texture_bytes ?? null,
+      memory_floor_bytes: r?.memory_floor_bytes ?? null,
+      wasm_heap_bytes: r?.wasm_heap_bytes ?? null,
+      live_rids: r
+        ? {
+            items: r.resident_items,
+            textures: r.resident_textures,
+            meshes: r.resident_meshes,
+            shaders: r.resident_shaders,
+            materials: r.resident_materials,
+          }
+        : null,
+      leaked_gl_textures: r?.leaked_gl_textures ?? 0,
+    });
   }
 
   report(extra: Record<string, unknown>): Record<string, unknown> {
@@ -152,6 +229,10 @@ export class Perf {
       },
       counts: { drawn_frames: this.samples.length, programs: this.programs },
       payload_verify: this.payloadVerify,
+      residency: {
+        evictions: this.residencyEvictions,
+        budget_bytes: this.residencyBudgetBytes,
+      },
       timeline: this.timelineLines,
       ...extra,
     };
