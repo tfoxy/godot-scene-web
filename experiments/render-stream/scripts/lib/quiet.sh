@@ -2,7 +2,11 @@
 # quiet.sh -- the machine-wide measurement-isolation lock for render-stream runs
 # (results/measurement-isolation.md). One lock, shared by every worktree and agent on the box:
 #
-#   ${GSW_QUIET_LOCK:-${GSW_QUIET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web}/quiet.lock}
+#   ${GSW_QUIET_LOCK:-${GSW_QUIET_DIR:-${RS_QUIET_LOCK_DIR:-${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web}}/quiet.lock}
+#
+# RS_QUIET_LOCK_DIR (GRT) points a run at a PRIVATE lock directory: correctness-only runs (the lock
+# and pure self-tests, synthetic scheduler tests) then neither wait on nor disturb other agents'
+# timing legs. Never set it for a gate run whose legs share the machine with other agents.
 #
 #   exclusive  one TIMING leg (a rate, cadence or pacing measurement): nothing else heavy runs.
 #   shared     one CORRECTNESS leg, a build step or other heavy work (a cargo build, a pnpm suite,
@@ -12,6 +16,32 @@
 # acquirer waits while a live marker exists, and the current shared holders finish their one leg.
 # A marker is stale (removed by whoever sees it) once its holder process is gone, or after
 # GSW_QUIET_MARKER_MAX_S seconds (default 3600).
+#
+# Scheduling v2 (GRT, results/grt.md) changes only WHEN holders are admitted, never the exclusion.
+#
+# Share window: the marker alone let each concurrent runner run ONE shared leg per exclusive leg --
+# a runner's next leg always found the next timing leg's marker up -- so a series of 6-minute soaks
+# stalled every correctness runner for hours. Now, after an exclusive release, shared work gets a
+# window of GSW_QUIET_SHARE_PCT percent of that hold (default 50, clamped to
+# [GSW_QUIET_SHARE_MIN_S, GSW_QUIET_SHARE_MAX_S], default 0 and 180 s):
+#   - an exclusive acquirer arriving inside the window DEFERS (no marker yet) while shared demand
+#     exists: a live shared holder, or a shared waiter registered in <lock>.swaiters/. It stops
+#     deferring when the window closes or demand has been absent for GSW_QUIET_SHARE_LINGER_S
+#     (default 3 s; 1 s on entry), then posts its marker (`<pid>.v2`) and proceeds as before;
+#   - a shared acquirer inside the window ignores markers written by old (v1) holders, which do
+#     not defer; it honours every `.v2` marker, posted only once its window is over.
+# The window starts at the last exclusive `release` in <lock>.events.log, which v1 and v2 holders
+# both write. The exclusion itself is flock's and unchanged: no shared hold coexists with an
+# exclusive one whichever version took either. GSW_QUIET_SCHED=v1 restores the old scheduling.
+#
+# Backfill: an exclusive acquirer waiting for in-flight shared legs to drain used to block every
+# new shared leg behind the longest of them (10.9 h of 95 h on this box had exactly ONE shared
+# holder running while an exclusive waited: a checker, or a wrapped test suite). A v2 shared holder
+# records its hold length per label (<lock>.stats/, last 5) and, while it holds, its expected end
+# (<lock>.expect/<holder>: start + the label's shortest recent hold). A new shared leg behind a
+# drain is admitted when its label's longest recent hold x 1.25 + 1 s ends before every in-flight
+# shared holder is expected to; any holder without an expectation (v1, or no history) or any
+# exclusive holder means no backfill. A misestimate delays the exclusive by at most the overrun.
 #
 # Every lock is held by a small HOLDER process (`quiet.sh hold`), never by a runner's own file
 # descriptor: Godot hosts, gamescope and browser daemons a runner starts can never inherit (and so
@@ -43,12 +73,21 @@
 # <command...>, quiet_summary <out dir>. Set QUIET_LOG to the run's log first.
 
 QUIET_SH="${QUIET_SH:-$(realpath "${BASH_SOURCE[0]}")}"
-QUIET_DIR="${GSW_QUIET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web}"
+QUIET_DIR="${GSW_QUIET_DIR:-${RS_QUIET_LOCK_DIR:-${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web}}"
 QUIET_LOCK="${GSW_QUIET_LOCK:-$QUIET_DIR/quiet.lock}"
 QUIET_WAITERS="$QUIET_LOCK.waiters"
 QUIET_HOLDERS="$QUIET_LOCK.holders"
 QUIET_EVENTS="$QUIET_LOCK.events.log"
 QUIET_MARKER_MAX_S="${GSW_QUIET_MARKER_MAX_S:-3600}"
+QUIET_SWAITERS="$QUIET_LOCK.swaiters"
+QUIET_DEFERRED="$QUIET_LOCK.deferred"
+QUIET_SCHED="${GSW_QUIET_SCHED:-v2}"
+QUIET_SHARE_PCT="${GSW_QUIET_SHARE_PCT:-50}"
+QUIET_SHARE_MIN_S="${GSW_QUIET_SHARE_MIN_S:-0}"
+QUIET_SHARE_MAX_S="${GSW_QUIET_SHARE_MAX_S:-180}"
+QUIET_SHARE_LINGER_S="${GSW_QUIET_SHARE_LINGER_S:-3}"
+QUIET_STATS="$QUIET_LOCK.stats"
+QUIET_EXPECT="$QUIET_LOCK.expect"
 
 # --- /proc helpers (builtins only: the holder polls them while a timing leg runs) ---------------
 
@@ -129,19 +168,196 @@ quiet__ancestor_hold() {
 	return 1
 }
 
-# quiet__live_waiter: true when a live exclusive waiter's marker exists (removes stale ones).
+# quiet__live_waiter: true when a live exclusive waiter's marker exists (removes stale ones). Sets
+# QUIET__WAITER_V2=1 when one of the live markers is a v2 one (`<pid>.v2`: posted after its share
+# window, so never bypassed), else 0 (only v1 markers, which a share window may bypass).
 quiet__live_waiter() {
-	local f wpid wticks wsince rest
+	local f wpid wticks wsince rest found=1
+	QUIET__WAITER_V2=0
 	for f in "$QUIET_WAITERS"/*; do
 		[ -f "$f" ] || continue
 		{ read -r wpid wticks wsince rest <"$f"; } 2>/dev/null || continue
 		if quiet__alive "$wpid" "$wticks" && [ $((EPOCHSECONDS - wsince)) -le "$QUIET_MARKER_MAX_S" ]; then
 			QUIET__WAITER="$wpid $rest"
-			return 0
+			found=0
+			case "$f" in *.v2) QUIET__WAITER_V2=1 ;; esac
+			continue
 		fi
 		rm -f "$f"
 	done
+	return "$found"
+}
+
+# --- the share window (header: "Share window") ---------------------------------------------
+
+quiet__now_us() {
+	local t="${EPOCHREALTIME/[.,]/}"
+	printf '%s' "$((10#$t))"
+}
+
+# quiet__last_excl_release: sets QUIET__XREL_US (when) and QUIET__XHOLD_US (how long it held) from
+# the last exclusive release in the machine-wide events log (v1 and v2 holders both log it).
+quiet__last_excl_release() {
+	local line="" f
+	for f in "$QUIET_EVENTS" "$QUIET_EVENTS.1"; do
+		[ -f "$f" ] || continue
+		line="$(tail -c 262144 "$f" 2>/dev/null | grep -F '"event":"release","mode":"exclusive"' | tail -n 1)"
+		[ -z "$line" ] || break
+	done
+	[[ $line =~ \"t\":([0-9]+)[.,]([0-9]{6}) ]] || return 1
+	QUIET__XREL_US=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]}))
+	[[ $line =~ \"hold_s\":([0-9]+)\.([0-9]{3}) ]] || return 1
+	QUIET__XHOLD_US=$(((10#${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[2]}) * 1000))
+}
+
+# quiet__secs_us <decimal seconds>: as integer microseconds (up to 6 decimals).
+quiet__secs_us() {
+	local s="$1" i f
+	i="${s%%.*}"
+	f=""
+	[ "$i" = "$s" ] || f="${s#*.}"
+	f="${f}000000"
+	f="${f:0:6}"
+	printf '%s' "$((10#${i:-0} * 1000000 + 10#$f))"
+}
+
+# quiet__share_window_open: true while the share window after the last exclusive release is open;
+# sets QUIET__WINDOW_LEFT_US.
+quiet__share_window_open() {
+	[ "$QUIET_SCHED" != v1 ] || return 1
+	quiet__last_excl_release || return 1
+	local len min max now
+	len=$((QUIET__XHOLD_US * QUIET_SHARE_PCT / 100))
+	min="$(quiet__secs_us "$QUIET_SHARE_MIN_S")"
+	max="$(quiet__secs_us "$QUIET_SHARE_MAX_S")"
+	[ "$len" -ge "$min" ] || len="$min"
+	[ "$len" -le "$max" ] || len="$max"
+	now="$(quiet__now_us)"
+	QUIET__WINDOW_LEFT_US=$((QUIET__XREL_US + len - now))
+	[ "$QUIET__WINDOW_LEFT_US" -gt 0 ]
+}
+
+# quiet__shared_demand: true when a live shared holder or a registered shared waiter exists.
+quiet__shared_demand() {
+	local f a b c d mode rest
+	for f in "$QUIET_HOLDERS"/*; do
+		[ -f "$f" ] || continue
+		{ read -r a b c d mode rest <"$f"; } 2>/dev/null || continue
+		[ "$mode" = shared ] && quiet__alive "$a" "$b" && return 0
+	done
+	for f in "$QUIET_SWAITERS"/*; do
+		[ -f "$f" ] || continue
+		{ read -r a b rest <"$f"; } 2>/dev/null || continue
+		quiet__alive "$a" "$b" && return 0
+		rm -f "$f"
+	done
 	return 1
+}
+
+# --- backfill (header: "Backfill") ----------------------------------------------------------
+
+# quiet__label_key <label>: a file-name-safe key for a label's hold history.
+quiet__label_key() {
+	local k
+	k="$(printf '%s' "$1" | cksum)"
+	printf '%s' "${k%% *}"
+}
+
+# quiet__history <label>: sets QUIET__HMIN_US / QUIET__HMAX_US from the label's last holds (up to
+# 5); fails when it has none.
+quiet__history() {
+	local f v us
+	f="$QUIET_STATS/$(quiet__label_key "$1")"
+	[ -f "$f" ] || return 1
+	QUIET__HMIN_US=""
+	QUIET__HMAX_US=""
+	while read -r v; do
+		[ -n "$v" ] || continue
+		us="$(quiet__secs_us "$v")"
+		[ -n "$QUIET__HMIN_US" ] && [ "$us" -ge "$QUIET__HMIN_US" ] || QUIET__HMIN_US="$us"
+		[ -n "$QUIET__HMAX_US" ] && [ "$us" -le "$QUIET__HMAX_US" ] || QUIET__HMAX_US="$us"
+	done <"$f" 2>/dev/null
+	[ -n "$QUIET__HMAX_US" ]
+}
+
+# quiet__record <label> <hold s>: appends a shared hold's length to its label's history (last 5).
+quiet__record() {
+	local f tmp
+	f="$QUIET_STATS/$(quiet__label_key "$1")"
+	mkdir -p "$QUIET_STATS" 2>/dev/null || return 0
+	tmp="$f.$BASHPID"
+	{
+		tail -n 4 "$f" 2>/dev/null
+		printf '%s\n' "$2"
+	} >"$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null
+	rm -f "$tmp" 2>/dev/null || true
+	# Labels with run-specific words (a wrapped command's paths) would grow the history forever:
+	# about one release in 200 drops histories nobody has updated for 30 days.
+	[ $((RANDOM % 200)) != 0 ] || find "$QUIET_STATS" -type f -mtime +30 -delete 2>/dev/null || true
+}
+
+# quiet__backfill_fits <own label>: while an exclusive acquirer waits for the in-flight shared
+# holds to drain, true when this leg is expected to end before the drain does -- so admitting it
+# costs the exclusive acquirer nothing. Needs an expected end (<lock>.expect/<holder>, from the
+# label's SHORTEST recent hold) for every in-flight shared holder (a v1 holder or a label without
+# history has none: then never), no exclusive holder, and this label's LONGEST recent hold x 1.25
+# + 1 s to fit before the latest of them.
+quiet__backfill_fits() {
+	[ "$QUIET_SCHED" != v1 ] || return 1
+	quiet__history "$1" || return 1
+	local need=$((QUIET__HMAX_US * 5 / 4 + 1000000))
+	local f a b c d mode rest e_pid e_ticks e_end drain=0 any=0
+	for f in "$QUIET_HOLDERS"/*; do
+		[ -f "$f" ] || continue
+		{ read -r a b c d mode rest <"$f"; } 2>/dev/null || continue
+		quiet__alive "$a" "$b" || continue
+		[ "$mode" = shared ] || return 1
+		{ read -r e_pid e_ticks e_end <"$QUIET_EXPECT/$a"; } 2>/dev/null || return 1
+		[ "$e_ticks" = "$b" ] || return 1
+		any=1
+		[ "$e_end" -le "$drain" ] || drain="$e_end"
+	done
+	[ "$any" = 1 ] || return 1
+	[ $(($(quiet__now_us) + need)) -le "$drain" ]
+}
+
+# quiet__defer <owner> <owner ticks> <label> <me> <ticks> <since>: an exclusive acquirer inside a share
+# window waits, without a marker, while shared demand lasts. Sets QUIET__DEFER_US.
+quiet__defer() {
+	local owner="$1" oticks="$2" label="$3" me="$4" ticks="$5"
+	QUIET__DEFER_US=0
+	quiet__share_window_open || return 0
+	local start now last linger noticed=0 f="$QUIET_DEFERRED/$me"
+	start="$(quiet__now_us)"
+	linger="$(quiet__secs_us "$QUIET_SHARE_LINGER_S")"
+	last=$((start - (linger > 1000000 ? linger - 1000000 : 0)))
+	mkdir -p "$QUIET_DEFERRED" 2>/dev/null || true
+	printf '%s %s %s %s %s\n' "$me" "$ticks" "$EPOCHSECONDS" "$owner" "$label" >"$f"
+	QUIET__CLEAN+=("$f")
+	now="$start"
+	while quiet__share_window_open; do
+		quiet__alive "$owner" "$oticks" || {
+			rm -f "$f"
+			exit 0
+		}
+		now="$(quiet__now_us)"
+		# Never longer than one maximal window in all, however often other exclusive holders
+		# (v1 ones, which do not defer) reopen it meanwhile.
+		[ $((now - start)) -lt "$(quiet__secs_us "$QUIET_SHARE_MAX_S")" ] || break
+		if quiet__shared_demand; then
+			last="$now"
+		elif [ $((now - last)) -ge "$linger" ]; then
+			break
+		fi
+		if [ "$noticed" = 0 ] && [ $((now - start)) -ge 1000000 ]; then
+			echo "quiet.sh: $label lets queued shared legs run first (share window, $((QUIET__WINDOW_LEFT_US / 1000000)) s left)" >&2
+			noticed=1
+		fi
+		sleep 0.25
+	done
+	rm -f "$f"
+	now="$(quiet__now_us)"
+	QUIET__DEFER_US=$((now - start))
 }
 
 # quiet__tree <root pid>: prints the root, its descendants, and every process in a session one of
@@ -249,20 +465,47 @@ quiet__hold() {
 		return 0
 	fi
 
-	local fd marker=""
+	local fd marker="" swaiter="" sched="\"sched\":\"$QUIET_SCHED\""
 	exec {fd}>>"$QUIET_LOCK"
-	QUIET__HOLD_MARKER=""
-	trap 'rm -f "$QUIET__HOLD_MARKER"; exit 0' TERM INT HUP
+	QUIET__CLEAN=()
+	trap 'rm -f "${QUIET__CLEAN[@]}"; exit 0' TERM INT HUP
+	if [ "$mode" = "exclusive" ]; then
+		QUIET__DEFER_US=0
+		[ "$QUIET_SCHED" = v1 ] || quiet__defer "$owner" "$owner_ticks" "$label" "$me" "$my_ticks"
+		sched+=",\"deferred_s\":$(quiet__secs 0 "$QUIET__DEFER_US")"
+	fi
 	if [ "$mode" = "exclusive" ] && [ "${GSW_QUIET_SELFTEST_NO_MARKER:-0}" != 1 ]; then
 		# (GSW_QUIET_SELFTEST_NO_MARKER exists only so test/self-test-quiet.sh can show the
-		# starvation the marker prevents.)
+		# starvation the marker prevents.) A v2 marker is never bypassed by a share window: this
+		# acquirer already deferred to it. GSW_QUIET_SCHED=v1 writes the v1 name.
 		marker="$QUIET_WAITERS/$me"
-		QUIET__HOLD_MARKER="$marker"
+		[ "$QUIET_SCHED" = v1 ] || marker+=".v2"
+		QUIET__CLEAN+=("$marker")
 		printf '%s %s %s %s %s\n' "$me" "$my_ticks" "$EPOCHSECONDS" "$owner" "$label" >"$marker"
 	else
+		# Registered while it waits, so a deferring exclusive acquirer sees the demand.
+		if [ "$mode" = "shared" ] && [ "$QUIET_SCHED" != v1 ]; then
+			mkdir -p "$QUIET_SWAITERS" 2>/dev/null || true
+			swaiter="$QUIET_SWAITERS/$me"
+			QUIET__CLEAN+=("$swaiter")
+			printf '%s %s %s %s %s\n' "$me" "$my_ticks" "$EPOCHSECONDS" "$owner" "$label" >"$swaiter"
+		fi
 		local noticed=0 polls=0
 		while quiet__live_waiter; do
-			quiet__alive "$owner" "$owner_ticks" || exit 0
+			quiet__alive "$owner" "$owner_ticks" || {
+				rm -f "$swaiter"
+				exit 0
+			}
+			# Inside a share window, a v1 (non-deferring) waiter's marker does not hold this leg.
+			if [ "$mode" = "shared" ] && [ "$QUIET__WAITER_V2" = 0 ] && quiet__share_window_open; then
+				sched+=",\"bypassed_v1_marker\":true"
+				break
+			fi
+			# Behind a drain, a leg that will be done before the drain is admitted (backfill).
+			if [ "$mode" = "shared" ] && quiet__backfill_fits "$label"; then
+				sched+=",\"backfill\":true"
+				break
+			fi
 			if [ "$noticed" = 0 ] && [ "$polls" -ge 10 ]; then
 				echo "quiet.sh: $label waits for a timing leg's exclusive turn (waiter $QUIET__WAITER)" >&2
 				noticed=1
@@ -278,13 +521,13 @@ quiet__hold() {
 		flock -w 1 -E 75 "$flag" "$fd" || rc=$?
 		[ "$rc" = 0 ] && break
 		if [ "$rc" != 75 ]; then
-			rm -f "$marker"
+			rm -f "$marker" "$swaiter"
 			echo "error flock exited $rc"
 			quiet__log "$log" "\"event\":\"error\",$common,\"detail\":\"flock exited $rc\""
 			return 1
 		fi
 		quiet__alive "$owner" "$owner_ticks" || {
-			rm -f "$marker"
+			rm -f "$marker" "$swaiter"
 			exit 0
 		}
 		if [ "$noticed" = 0 ]; then
@@ -295,10 +538,18 @@ quiet__hold() {
 		[ -z "$marker" ] || printf '%s %s %s %s %s\n' "$me" "$my_ticks" "$EPOCHSECONDS" "$owner" "$label" >"$marker"
 	done
 	rm -f "$marker"
-	QUIET__HOLD_MARKER=""
 	local t1="$EPOCHREALTIME" since="$EPOCHSECONDS"
 	local holder_file="$QUIET_HOLDERS/$me"
 	printf '%s %s %s %s %s %s %s\n' "$me" "$my_ticks" "$owner" "$owner_ticks" "$mode" "$since" "$label" >"$holder_file"
+	# (After the holder file, so a deferring exclusive acquirer never sees a gap in the demand.)
+	[ -z "$swaiter" ] || rm -f "$swaiter"
+	QUIET__CLEAN=()
+	local expect_file=""
+	if [ "$mode" = "shared" ] && [ "$QUIET_SCHED" != v1 ] && quiet__history "$label"; then
+		mkdir -p "$QUIET_EXPECT" 2>/dev/null || true
+		expect_file="$QUIET_EXPECT/$me"
+		printf '%s %s %s\n' "$me" "$my_ticks" "$(($(quiet__now_us) + QUIET__HMIN_US))" >"$expect_file"
+	fi
 
 	local cpuset=""
 	if [ "$mode" = "exclusive" ]; then cpuset="${RS_TIMING_CPUSET:-}"; else cpuset="${RS_BACKGROUND_CPUSET:-}"; fi
@@ -306,7 +557,7 @@ quiet__hold() {
 
 	local wait_s
 	wait_s="$(quiet__secs "$t0" "$t1")"
-	quiet__log "$log" "\"event\":\"acquire\",$common,\"wait_s\":$wait_s,\"cpuset\":$([ -n "$cpuset" ] && quiet__json_str "$cpuset" || echo null),\"pinned\":${#QUIET__PINNED[@]}"
+	quiet__log "$log" "\"event\":\"acquire\",$common,\"wait_s\":$wait_s,$sched,\"cpuset\":$([ -n "$cpuset" ] && quiet__json_str "$cpuset" || echo null),\"pinned\":${#QUIET__PINNED[@]}"
 	echo "acquired $wait_s"
 
 	QUIET__HOLD_DONE=0
@@ -315,8 +566,11 @@ quiet__hold() {
 		QUIET__HOLD_DONE=1
 		[ -z "$cpuset" ] || quiet__unpin "$owner"
 		flock -u "$fd" 2>/dev/null || true
-		rm -f "$holder_file"
-		quiet__log "$log" "\"event\":\"release\",$common,\"hold_s\":$(quiet__secs "$t1" "$EPOCHREALTIME"),\"reason\":\"$1\""
+		rm -f "$holder_file" ${expect_file:+"$expect_file"}
+		local hold_s
+		hold_s="$(quiet__secs "$t1" "$EPOCHREALTIME")"
+		quiet__log "$log" "\"event\":\"release\",$common,\"hold_s\":$hold_s,\"reason\":\"$1\""
+		[ "$mode" != "shared" ] || [ "$QUIET_SCHED" = v1 ] || quiet__record "$label" "$hold_s"
 	}
 	trap 'quiet__hold_release released; exit 0' TERM INT HUP
 	while quiet__alive "$owner" "$owner_ticks"; do
@@ -457,7 +711,9 @@ for e in events:
     elif ev == "release":
         a = acq.pop(e["holder"], None)
         holds.append({"mode": e["mode"], "label": e["label"], "wait_s": a["wait_s"] if a else None,
-                      "hold_s": e["hold_s"], "start_t": a["t"] if a else None, "reason": e.get("reason")})
+                      "hold_s": e["hold_s"], "start_t": a["t"] if a else None, "reason": e.get("reason"),
+                      "deferred_s": a.get("deferred_s") if a else None,
+                      "bypassed_v1_marker": bool(a.get("bypassed_v1_marker")) if a else False})
     elif ev in ("nested", "nested-unisolated"):
         nested.append({"event": ev, "mode": e["mode"], "label": e["label"], "under": e.get("under")})
     elif ev == "error":
@@ -477,6 +733,8 @@ for m in ("exclusive", "shared"):
         "hold_s_max": round(max((h["hold_s"] for h in hs), default=0.0), 3),
         "wait_s_total": round(sum(h["wait_s"] or 0 for h in hs), 3),
         "wait_s_max": round(max((h["wait_s"] or 0 for h in hs), default=0.0), 3),
+        "deferred_s_total": round(sum(h.get("deferred_s") or 0 for h in hs), 3),
+        "bypassed_v1_marker": sum(1 for h in hs if h.get("bypassed_v1_marker")),
     }
 summary = {
     "schema": "render-stream-quiet-lock-summary/1",
@@ -518,6 +776,24 @@ quiet__status_cmd() {
 		fi
 	done
 	[ "$any" = 1 ] || echo "exclusive waiters: none"
+	for f in "$QUIET_DEFERRED"/*; do
+		[ -f "$f" ] || continue
+		{ read -r wpid wticks wsince rest <"$f"; } 2>/dev/null || continue
+		quiet__alive "$wpid" "$wticks" && echo "exclusive deferring to shared demand: pid $wpid, $((EPOCHSECONDS - wsince)) s: $rest"
+	done
+	local n=0
+	for f in "$QUIET_SWAITERS"/*; do
+		[ -f "$f" ] || continue
+		{ read -r wpid wticks rest <"$f"; } 2>/dev/null || continue
+		quiet__alive "$wpid" "$wticks" && n=$((n + 1))
+	done
+	echo "shared waiters (v2): $n"
+	echo "scheduling: $QUIET_SCHED"
+	if quiet__share_window_open; then
+		echo "share window: open, $((QUIET__WINDOW_LEFT_US / 1000000)) s left"
+	else
+		echo "share window: closed"
+	fi
 }
 
 quiet__main() {

@@ -21,6 +21,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
+# GRT: path-independent bytes (debug info, __FILE__), so the same sources build the same library in
+# every worktree and gate 7's input-keyed source cache (scripts/lib/source-key.ts, which keys on
+# this library's sha256) can reuse a source made in another worktree.
+get_filename_component(GRC_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+add_compile_options("-ffile-prefix-map=${GRC_REPO_ROOT}/=")
 
 add_library(grc_warnings INTERFACE)
 target_compile_options(grc_warnings INTERFACE -Wall -Wextra -Werror)

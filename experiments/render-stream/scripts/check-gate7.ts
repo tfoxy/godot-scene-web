@@ -192,6 +192,8 @@ interface Args {
   bundle: string | undefined;
   gswBundle: string | undefined;
   extension: string | undefined;
+  /** GRT: the calibration file the sources were made with (a source key input). */
+  calibration: string | undefined;
   /** web, gsw, or both (unset). */
   receiver: string | undefined;
   /** G7l: judge only the live runs (`<out>/<gate>/live-<kind>/`) of the requested groups. */
@@ -209,6 +211,7 @@ function parseArgs(argv: string[]): Args {
   let bundle: string | undefined;
   let gswBundle: string | undefined;
   let extension: string | undefined;
+  let calibration: string | undefined;
   let receiver: string | undefined;
   let live = false;
   let webCore: "gdscript" | "rust" = "rust";
@@ -227,6 +230,8 @@ function parseArgs(argv: string[]): Args {
       bundle = resolve(argv[++i] ?? "");
     } else if (argv[i] === "--extension") {
       extension = resolve(argv[++i] ?? "");
+    } else if (argv[i] === "--calibration") {
+      calibration = resolve(argv[++i] ?? "");
     } else if (argv[i] === "--gsw-bundle") {
       gswBundle = resolve(argv[++i] ?? "");
     } else if (argv[i] === "--receiver") {
@@ -261,6 +266,7 @@ function parseArgs(argv: string[]): Args {
     bundle,
     gswBundle,
     extension,
+    calibration,
     receiver,
     live,
     webCore,
@@ -367,6 +373,7 @@ async function main(): Promise<void> {
     bundle,
     gswBundle,
     extension,
+    calibration,
     receiver,
     live,
     webCore,
@@ -532,6 +539,7 @@ async function main(): Promise<void> {
           REPO_ROOT,
           extension,
           PINNED_LINUX_TEMPLATE,
+          calibration,
         ),
       }),
     );
@@ -545,6 +553,7 @@ async function main(): Promise<void> {
       REPO_ROOT,
       extension,
       PINNED_LINUX_TEMPLATE,
+      calibration,
     );
     for (const group of legs.filter((g) => g in GSW_GATES)) {
       const gate = GSW_GATES[group];
@@ -585,6 +594,7 @@ async function main(): Promise<void> {
         REPO_ROOT,
         extension,
         PINNED_LINUX_TEMPLATE,
+        calibration,
       ),
     });
     const { classification: _c, ...rest } = r;

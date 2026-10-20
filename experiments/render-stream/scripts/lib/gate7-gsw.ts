@@ -32,7 +32,11 @@ import { fileURLToPath } from "node:url";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { loadRecording, RECORDING_NAME } from "./gate0-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
-import type { Gate7Check, SourceProvenance } from "./gate7-adapters";
+import {
+  type Gate7Check,
+  type SourceProvenance,
+  sourceProvenanceProblems,
+} from "./gate7-adapters";
 import {
   GATE55_LEGS,
   GATE55_NOT_APPLICABLE,
@@ -710,15 +714,7 @@ export async function checkGswGroup(
       join(input.sourceDir, "gate7-source.json"),
     );
     if (!src) problems.push("source gate7-source.json missing");
-    else
-      for (const key of [
-        "git_commit",
-        "git_dirty_digest",
-        "extension_sha256",
-        "template_sha256",
-      ] as const)
-        if (src[key] !== input.current[key])
-          problems.push(`${key} ${src[key]} != current ${input.current[key]}`);
+    else problems.push(...sourceProvenanceProblems(src, input.current));
     checks.push(
       mk(
         "source-run-valid@gsw",

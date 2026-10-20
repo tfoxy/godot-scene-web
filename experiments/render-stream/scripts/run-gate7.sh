@@ -6,7 +6,7 @@
 #     [--env desktop|device] [--device g31|g86] [--receiver native|gsw|web] \
 #     [--bench-inputs <inputs.json>] [--repeats N] [--hold-seconds S] [--plan-only] \
 #     [--extension X.gdextension] [--calibration record.json] [--binary template] \
-#     [--source gate0=/abs/run/dir,...] [--make-sources] [--skip-harness-selftest] \
+#     [--source gate0=/abs/run/dir,...] [--make-sources] [--no-source-cache] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
 #     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core rust|gdscript]
 #     [--web-fetch fetch|httpclient]
@@ -48,10 +48,15 @@
 #   g7-0      gate 0's receiver legs in the web export (the gsw half is G7a's). Sources (D21):
 #             `--source gate0=<dir>` names a native gate 0 run, or `--make-sources` makes one by
 #             running run-gate0.sh (with --extension/--calibration) into <out>/sources-made/gate0/
-#             and records the build's provenance there (gate7-source.json: git commit, the build
-#             paths' dirty digest, capture library and template sha256); check-gate7.ts's
-#             source-run-valid refuses a source from another build or one whose native receiver
-#             legs did not pass. build-web-receiver.sh (or `--bundle`, an existing build) exports
+#             and records the build's provenance there (gate7-source.json: GRT's content key over
+#             the source's inputs, lib/source-key.ts, plus the capture library and template
+#             sha256); check-gate7.ts's source-run-valid refuses a source made from other inputs or
+#             one whose native receiver legs did not pass. GRT: --make-sources first looks the
+#             source up in the input-keyed source cache (source-cache.sh; the main checkout's
+#             artifacts/render-stream/source-cache/<key>/) and publishes every passing source it
+#             makes there, so the native, gsw and web halves of a validation, and later increments
+#             with the same inputs, make each source once. --no-source-cache (or
+#             RS_SOURCE_CACHE=0) makes every source afresh and publishes nothing. build-web-receiver.sh (or `--bundle`, an existing build) exports
 #             the web receiver; gate7-tool.ts web-legs replays every gate 0 receiver leg, the
 #             css-opacity sabotage and the render-time probe through lib/browser-harness.ts into
 #             <out>/gate0/web/<leg>/; check-gate7.ts judges them with gate 0's own checker
@@ -239,6 +244,9 @@ OUT=""
 LEGS_ARG=""
 SOURCE_ARG=""
 MAKE_SOURCES=0
+SOURCE_CACHE="${RS_SOURCE_CACHE:-1}"
+SOURCE_KEY=""
+declare -A SOURCE_CACHE_STATUS=()
 HARNESS_ENV="desktop"
 DEVICE=""
 RECEIVER=""
@@ -281,6 +289,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--make-sources)
 		MAKE_SOURCES=1
+		shift
+		;;
+	--no-source-cache)
+		SOURCE_CACHE=0
 		shift
 		;;
 	--env)
@@ -489,6 +501,42 @@ fi
 
 g7tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-tool.ts" "$@")
+}
+
+# GRT source cache (source-cache.sh): source_cache_lookup <gate> <legs|all> sets SOURCES[<gate>]
+# on a hit; source_cache_publish <gate> <legs|all> copies a passing made source in.
+source_cache_key() {
+	[ -z "$SOURCE_KEY" ] || return 0
+	SOURCE_KEY="$(g7tool source-key --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" | tail -1)" || SOURCE_KEY=""
+	if ! [[ $SOURCE_KEY =~ ^[0-9a-f]{32}$ ]]; then
+		echo "run-gate7: WARNING: no source key ($SOURCE_KEY); the source cache is off for this run" >&2
+		SOURCE_KEY=""
+		SOURCE_CACHE=0
+		return 1
+	fi
+}
+source_cache_lookup() {
+	[ "$SOURCE_CACHE" = 1 ] || return 1
+	source_cache_key || return 1
+	local hit
+	hit="$(bash "$SCRIPT_DIR/source-cache.sh" lookup "$SOURCE_KEY" "$1" "$2")" || {
+		SOURCE_CACHE_STATUS[$1]="miss"
+		return 1
+	}
+	SOURCES[$1]="$hit"
+	SOURCE_CACHE_STATUS[$1]="hit"
+	echo "run-gate7: $1 source: cache hit $hit (key $SOURCE_KEY)" >&2
+}
+source_cache_publish() {
+	[ "$SOURCE_CACHE" = 1 ] || return 0
+	source_cache_key || return 0
+	local at
+	if at="$(bash "$SCRIPT_DIR/source-cache.sh" publish "$SOURCE_KEY" "$1" "$2" "${SOURCES[$1]}")"; then
+		SOURCE_CACHE_STATUS[$1]="published"
+		echo "run-gate7: $1 source published to $at" >&2
+	else
+		SOURCE_CACHE_STATUS[$1]="not-published"
+	fi
 }
 
 # --- G7l: --live runs only the live halves of g7-1, g7-2, g7-5 and g7-55, then judges them. -----
@@ -718,7 +766,7 @@ if [ "$LIVE" = "1" ]; then
 fi
 
 # --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----
-CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG")
+CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG" --calibration "$(realpath -m "$CALIBRATION")")
 [ -n "$RECEIVER" ] && CHECK_ARGS+=(--receiver "$RECEIVER")
 want_gsw() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
 want_web() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; }
@@ -748,20 +796,24 @@ for g in "${SOURCE_GATES[@]}"; do
 			echo "run-gate7: g7-$g needs --source gate$g=<run dir> or --make-sources" >&2
 			exit 2
 		fi
-		echo "run-gate7: making the gate $g source run (run-gate$g.sh)" >&2
 		# Gate 5.5: its file-leg groups only, the same source as G7b's web half (g55f is live, G7l).
 		source_legs=()
 		[ "$g" = 55 ] && source_legs=(--legs g55b,g55c,g55d,g55e)
 		# Gate 6: g6a, g6h and g6b only (g6l is live, G7g's --live; g6s/g6c are timing groups).
 		[ "$g" = 6 ] && source_legs=(--legs g6a,g6h,g6b)
+		cache_legs="${source_legs[1]:-all}"
+		source_cache_lookup "gate$g" "$cache_legs" && continue
+		echo "run-gate7: making the gate $g source run (run-gate$g.sh)" >&2
 		set +e
-		bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
+		bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
 			--out "$OUT/sources-made/gate$g" "${source_legs[@]}"
 		gate_exit=$?
 		set -e
 		echo "run-gate7: run-gate$g.sh exit=$gate_exit (source-run-valid judges it)" >&2
 		SOURCES[gate$g]="$OUT/sources-made/gate$g"
-		g7tool source-provenance --extension "$EXTENSION" --out "${SOURCES[gate$g]}/gate7-source.json"
+		g7tool source-provenance --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
+			--out "${SOURCES[gate$g]}/gate7-source.json"
+		source_cache_publish "gate$g" "$cache_legs"
 	fi
 done
 # G7b: the gates 1 to 6 sources (the same D21 rule as gate 0's).
@@ -790,15 +842,18 @@ for spec in "${G7B_GROUPS[@]}"; do
 		exit 1
 	fi
 	EXTENSION="$(realpath "$EXTENSION")"
+	source_cache_lookup "$gate" "$source_legs" && continue
 	echo "run-gate7: making the $gate source run ($runner --legs $source_legs)" >&2
 	set +e
-	bash "$SCRIPT_DIR/$runner" --extension "$EXTENSION" --calibration "$(realpath "$CALIBRATION")" \
+	bash "$SCRIPT_DIR/$runner" --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
 		--out "$OUT/sources-made/$gate" --legs "$source_legs"
 	source_exit=$?
 	set -e
 	echo "run-gate7: $runner exit=$source_exit (source-run-valid judges it)" >&2
 	SOURCES[$gate]="$OUT/sources-made/$gate"
-	g7tool source-provenance --extension "$EXTENSION" --out "${SOURCES[$gate]}/gate7-source.json"
+	g7tool source-provenance --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
+		--out "${SOURCES[$gate]}/gate7-source.json"
+	source_cache_publish "$gate" "$source_legs"
 done
 {
 	printf '{"sources": {'
@@ -808,7 +863,15 @@ done
 		first=0
 		printf '"%s": "%s"' "$key" "${SOURCES[$key]}"
 	done
-	printf '}, "make_sources": %s, "bundle": "%s"}\n' "$([ "$MAKE_SOURCES" = 1 ] && echo true || echo false)" "$BUNDLE"
+	printf '}, "make_sources": %s, "bundle": "%s", "source_key": "%s", "source_cache": {' \
+		"$([ "$MAKE_SOURCES" = 1 ] && echo true || echo false)" "$BUNDLE" "$SOURCE_KEY"
+	first=1
+	for key in "${!SOURCE_CACHE_STATUS[@]}"; do
+		[ "$first" = 1 ] || printf ', '
+		first=0
+		printf '"%s": "%s"' "$key" "${SOURCE_CACHE_STATUS[$key]}"
+	done
+	printf '}}\n'
 } >"$OUT/sources.json"
 
 # --- G7h's browser-harness self-test (desktop Chromium). ------------------------------------
@@ -839,7 +902,7 @@ if [ "$NEED_GODOT" = "1" ]; then
 		exit 1
 	fi
 	EXTENSION="$(realpath "$EXTENSION")"
-	CALIBRATION="$(realpath "$CALIBRATION")"
+	CALIBRATION="$(realpath -m "$CALIBRATION")"
 	BINARY="$(realpath "$BINARY")"
 	printf '{"path": "%s", "sha256": "%s"}\n' "$BINARY" "$(sha256sum "$BINARY" | awk '{print $1}')" >"$OUT/binary.json"
 	# shellcheck source=lib/gamescope.sh
