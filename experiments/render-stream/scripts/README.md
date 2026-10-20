@@ -5,7 +5,8 @@ other agents' work, without a lock held for a whole multi-gate run (`lib/quiet.s
 `lib/quiet-lock.ts`; result and measurements in `../results/measurement-isolation.md`).
 
 - **Path**: `${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web/quiet.lock`, the same for every worktree
-  (`GSW_QUIET_LOCK` or `GSW_QUIET_DIR` override it). `<lock>.events.log` logs every hold on the
+  (`GSW_QUIET_LOCK` or `GSW_QUIET_DIR` override it; `RS_QUIET_LOCK_DIR=<temp dir>` gives a test or
+  synthetic run a private lock, never a gate run sharing the machine). `<lock>.events.log` logs every hold on the
   machine.
 - **Exclusive, per timing leg**: a leg's host, receiver(s), proxy and samplers hold it from the
   host's start to its `finish_bg`, and nothing else heavy runs meanwhile. Timing legs: g1d, g1c's
@@ -36,8 +37,44 @@ other agents' work, without a lock held for a whole multi-gate run (`lib/quiet.s
 - **Evidence**: each run writes `<out>/quiet-lock.jsonl` (one line per acquire, release and
   nested event, with `wait_s` and `hold_s`) and `<out>/quiet-lock-summary.json`, and the runner
   prints one summary line (holds, exclusive total against wall time).
-- `bash experiments/render-stream/scripts/lib/quiet.sh status` shows the current holders and
-  waiters; `test/self-test-quiet.sh` is the lock's self-test (a private lock, ~40 s).
+- **Scheduling v2** (GRT, `../results/grt.md`; the exclusion above is unchanged, only admission
+  order moved). *Share window*: after an exclusive release, shared work gets 50 % of that hold
+  (`GSW_QUIET_SHARE_PCT`, capped at `GSW_QUIET_SHARE_MAX_S`=180 s): a new exclusive acquirer defers,
+  with no marker yet, while a shared holder or a registered shared waiter (`<lock>.swaiters/`)
+  exists, and stops after 3 s without demand (`GSW_QUIET_SHARE_LINGER_S`); then it posts a `.v2`
+  marker and proceeds as before. *Backfill*: behind a drain (an exclusive acquirer waiting for
+  in-flight shared legs), a new shared leg is admitted when its label's longest recent hold
+  (`<lock>.stats/`) ends before every in-flight shared leg is expected to (`<lock>.expect/`).
+  *Compatibility*: v1 holders (worktrees not yet on this code) and v2 ones share the lock safely:
+  flock does the exclusion for both; a v2 shared leg ignores a v1 marker only inside a share
+  window; a v1 shared leg honours every marker. `GSW_QUIET_SCHED=v1` restores the old scheduling.
+- `bash experiments/render-stream/scripts/lib/quiet.sh status` shows the current holders, waiters,
+  deferring exclusive acquirers and the share window; `test/self-test-quiet.sh` is the lock's
+  self-test (a private lock, ~40 s) and `test/self-test-quiet-sched.sh` the v2 scheduling's (the
+  G7o3 starvation reproduced under v1 and fixed under v2, mixed v1/v2 holders, the deferral bound,
+  backfill; ~5 min); `test/bench-quiet-sched.sh` is the synthetic v1/v2 benchmark (fake runners,
+  private locks, wall and per-leg waits per mix; `../results/grt.md`).
+
+# Source cache (GRT)
+
+**Source cache** (`source-cache.sh`; `lib/source-key.ts`; D21 as amended). A gate 7 source run is
+valid for a build when its content key matches: the template, capture library and calibration
+sha256, the native receiver core, and every git-visible file (committed or not) under `receiver/`,
+`capture/`, `fixtures/`, `rs-core/`, `rs-core-capi/` and `scripts/`, minus gate 7's own runner,
+checker, browser/device/GSW libraries, the lock, tests and `*.md` (`SOURCE_EXCLUDES`). A new file
+under those roots is in the key until excluded. `gate7-tool.ts source-key [--json]` prints it.
+
+- `run-gate7.sh --make-sources` looks each source up first, then publishes each passing source it
+  makes (`--no-source-cache` or `RS_SOURCE_CACHE=0`: neither). `<out>/sources.json` records
+  `source_key` and per gate `hit`, `miss`, `published` or `not-published`.
+- Entries live in the main checkout's `artifacts/render-stream/source-cache/<key>/<gate>--<legs>/`
+  (`GSW_SOURCE_CACHE` overrides): a copy, never the maker's evidence, with the run's own absolute
+  path rewritten to the entry's in every text file (`env.txt` records receiver paths), written to a
+  `.tmp-*` dir and renamed into place, then made read-only. A lookup for a legs list also takes the
+  gate's `all` entry. `source-cache.sh list` / `prune [--keep-days 14]`.
+- The capture library builds path-independently (`-ffile-prefix-map`, `capture/CMakeLists.txt`), so
+  the same capture sources give the same library sha256 in every worktree and a cached source
+  serves later increments.
 
 # Gate −1 runner
 
@@ -2840,10 +2877,13 @@ The files:
   `expected-image-receiver`, `receiver-vs-reference`, `receiver-consumed-stream`,
   `preexisting-skip-receiver`, `preexisting-skip-excluded-region`, and `leg-class-<leg>` for the
   seven receiver legs.
-- **`source-run-valid`** (D21): the source run passed with every native receiver leg in its class,
-  and its `gate7-source.json` matches the current build. That means the same git commit, the same
-  dirty digest of `receiver/`, `capture/` and `fixtures/`, and the same capture library and
-  template sha256.
+- **`source-run-valid`** (D21, amended by GRT): the source run passed with every native receiver
+  leg in its class, and its `gate7-source.json` was made from the same inputs: the same content
+  key (`lib/source-key.ts`: template, capture library and calibration sha256, the native receiver
+  core, and every git-visible file under `receiver/`, `capture/`, `fixtures/`, `rs-core*/` and
+  `scripts/` except gate 7's own and docs), and the same capture library and template sha256. The
+  commit no longer matters; a schema /1 source (no key) still needs the same commit and dirty
+  digest.
 - **`browser-provenance`** passes on every leg.
 - **`console-clean`**: no `SHADER ERROR`, no `WebGL: ` and no page error.
 - **`evidence-complete`**: every file a native leg wrote exists for its web leg. The exceptions are
@@ -2873,8 +2913,10 @@ pnpm render-stream:gate7 -- --legs g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6 \
 # or --make-sources: runs run-gate<N>.sh with only the file-leg groups into <out>/sources-made/
 ```
 
-A source needs `gate7-source.json` (`gate7-tool.ts source-provenance --extension E --out
-<run>/gate7-source.json`, written right after the run). A full native run of a gate serves as its
+A source needs `gate7-source.json` (`gate7-tool.ts source-provenance --extension E [--calibration
+C] --out <run>/gate7-source.json`, written right after the run). `--make-sources` looks each
+source up in the input-keyed source cache first and publishes every passing source it makes
+(`source-cache.sh`, below). A full native run of a gate serves as its
 source. The view keeps only the file-leg groups (g1a,g1b / g2a,g2b,g2d / g3a-g3d / g4a-g4f /
 g5b,g5c,g5d,g5e,g5g / g55b-g55e / g6a,g6h,g6b); the live groups are G7l's and G7g's.
 

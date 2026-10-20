@@ -56,6 +56,7 @@ import {
   readJson,
   type SourceProvenance,
   sha256File,
+  sourceProvenanceProblems,
 } from "./gate7-adapters";
 import type { WebLegSpec } from "./gate7-web-legs";
 import { resolveRecording, statesEqual } from "./render-stream-2";
@@ -895,19 +896,11 @@ export async function checkGateWeb(
       problems.push(
         "source gate7-source.json missing (make it with run-gate7.sh --make-sources or gate7-tool.ts source-provenance)",
       );
-    else
-      for (const key of [
-        "git_commit",
-        "git_dirty_digest",
-        "extension_sha256",
-        "template_sha256",
-      ] as const)
-        if (src[key] !== input.current[key])
-          problems.push(`${key} ${src[key]} != current ${input.current[key]}`);
+    else problems.push(...sourceProvenanceProblems(src, input.current));
     checks.push(
       mk(
         `source-run-valid@web`,
-        "D21: the source run passes every check the web legs answer (natively, on the same view), and was made on this build (git commit, dirty digest, capture library and template sha256)",
+        "D21: the source run passes every check the web legs answer (natively, on the same view), and was made from the same inputs (content key: template, capture library, calibration, receiver core and the source-shaping files; lib/source-key.ts)",
         problems,
         `source valid on ${webIds.length} web checks, same build`,
       ),

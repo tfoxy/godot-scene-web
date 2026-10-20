@@ -1,8 +1,10 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // Gate 7 runner helpers (G7e), called by run-gate7.sh:
 //
-//   gate7-tool.ts source-provenance --extension E --out <source run>/gate7-source.json
-//     writes the current build's D21 provenance next to a source run it just made
+//   gate7-tool.ts source-provenance --extension E [--calibration C] --out <source run>/gate7-source.json
+//     writes the current build's D21 provenance (with GRT's content key) next to a source run
+//   gate7-tool.ts source-key --extension E [--calibration C] [--json]
+//     prints the source content key (lib/source-key.ts; --json: with its inputs)
 //   gate7-tool.ts discover --source <gate N run>
 //     lists the source run's file receiver legs and which are replayed (lib/gate7b-adapters.ts)
 //   gate7-tool.ts web-legs --group g7-<N> --source <gate N run> --bundle <bundle dir> --out <gate 7 run>
@@ -75,6 +77,7 @@ import {
   webLegSpecs,
 } from "./lib/gate7b-adapters";
 import { buildGswBundle, DEFAULT_RS_BUILD } from "./lib/gsw-bundle";
+import { sourceKey } from "./lib/source-key";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..", "..");
@@ -97,15 +100,36 @@ function flag(argv: string[], name: string): string {
 async function main(): Promise<void> {
   const [command, ...argv] = process.argv.slice(2).filter((a) => a !== "--");
   if (command === "source-provenance") {
-    const doc = currentBuildProvenance(
-      REPO_ROOT,
-      resolve(flag(argv, "--extension")),
-      PINNED_LINUX_TEMPLATE,
-    );
-    writeFileSync(
-      resolve(flag(argv, "--out")),
-      `${JSON.stringify(doc, null, 2)}\n`,
-    );
+    const calAt = argv.indexOf("--calibration");
+    const out = resolve(flag(argv, "--out"));
+    const doc = {
+      ...currentBuildProvenance(
+        REPO_ROOT,
+        resolve(flag(argv, "--extension")),
+        PINNED_LINUX_TEMPLATE,
+        calAt >= 0 ? resolve(argv[calAt + 1]) : undefined,
+      ),
+      source_dir: dirname(out),
+    };
+    writeFileSync(out, `${JSON.stringify(doc, null, 2)}\n`);
+    return;
+  }
+  // GRT: the source content key (lib/source-key.ts), for run-gate7.sh's source cache.
+  if (command === "source-key") {
+    const calAt = argv.indexOf("--calibration");
+    const k = sourceKey(REPO_ROOT, {
+      extension: resolve(flag(argv, "--extension")),
+      template: PINNED_LINUX_TEMPLATE,
+      calibration:
+        calAt >= 0
+          ? resolve(argv[calAt + 1])
+          : join(
+              REPO_ROOT,
+              "experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json",
+            ),
+    });
+    if (argv.includes("--json")) console.log(JSON.stringify(k, null, 2));
+    else console.log(k.key);
     return;
   }
   if (command === "discover") {

@@ -34,6 +34,7 @@ import {
   runGate0,
 } from "./gate0-checks";
 import type { WebLegSpec } from "./gate7-web-legs";
+import { type SourceKeyInputs, sourceKey } from "./source-key";
 
 export interface Gate7Check {
   id: string;
@@ -273,10 +274,54 @@ export function nativeOnly(rel: string): boolean {
 
 export interface SourceProvenance {
   schema?: string;
+  /** GRT (schema /2): the content key over the source's inputs (lib/source-key.ts). */
+  source_key?: string;
+  source_inputs?: SourceKeyInputs;
+  /** Where the run was made (or relocated to, by the source cache). */
+  source_dir?: string;
+  /** Informational since GRT: validity is the content key, not the commit. */
   git_commit?: string;
   git_dirty_digest?: string;
   extension_sha256?: string | null;
   template_sha256?: string;
+  calibration_sha256?: string | null;
+}
+
+/** D21 as amended by GRT: why a source run's recorded provenance does not match the current
+ * build. A schema /2 source must carry the same content key (lib/source-key.ts), naming each
+ * input that differs; a schema /1 source (no key) keeps the old rule: same git commit and dirty
+ * digest. Either way the capture library and template sha256 must match. Empty when valid. */
+export function sourceProvenanceProblems(
+  src: SourceProvenance,
+  current: SourceProvenance,
+): string[] {
+  const problems: string[] = [];
+  const keys: (keyof SourceProvenance)[] = [
+    "extension_sha256",
+    "template_sha256",
+  ];
+  if (src.source_key !== undefined) {
+    if (src.source_key !== current.source_key) {
+      const a = src.source_inputs;
+      const b = current.source_inputs;
+      const parts = (
+        [
+          "template_sha256",
+          "extension_sha256",
+          "calibration_sha256",
+          "receiver_core",
+          "files_digest",
+        ] as const
+      ).filter((k) => a?.[k] !== b?.[k]);
+      problems.push(
+        `source_key ${src.source_key} != current ${current.source_key} (differs in ${parts.join(", ") || "schema"})`,
+      );
+    }
+  } else keys.unshift("git_commit", "git_dirty_digest");
+  for (const key of keys)
+    if (src[key] !== current[key])
+      problems.push(`${key} ${src[key]} != current ${current[key]}`);
+  return problems;
 }
 
 export interface Gate0WebInput {
@@ -436,21 +481,11 @@ export async function checkGate0Web(
       problems.push(
         "source gate7-source.json missing (make it with run-gate7.sh --make-sources)",
       );
-    else {
-      for (const key of [
-        "git_commit",
-        "git_dirty_digest",
-        "extension_sha256",
-        "template_sha256",
-      ] as const) {
-        if (src[key] !== input.current[key])
-          problems.push(`${key} ${src[key]} != current ${input.current[key]}`);
-      }
-    }
+    else problems.push(...sourceProvenanceProblems(src, input.current));
     checks.push(
       mk(
         "source-run-valid@web",
-        "D21: the source gate 0 run passed (every native receiver leg in its expected class) and was made on this build (git commit and dirty digest, capture library and template sha256)",
+        "D21: the source gate 0 run passed (every native receiver leg in its expected class) and was made from the same inputs (content key: template, capture library, calibration, receiver core and the source-shaping files; lib/source-key.ts)",
         problems,
         "source run valid, same build",
       ),
@@ -737,13 +772,18 @@ export async function checkGate0Web(
   };
 }
 
-/** The current build's D21 provenance: the git commit, a digest of the uncommitted state of the
- * build's own paths (`git status --porcelain -uall` plus `git diff HEAD`), the capture library's
- * sha256 (the `linux.x86_64` library the .gdextension names) and the pinned template's sha256. */
+/** The current build's D21 provenance: the content key over the source's inputs (GRT,
+ * lib/source-key.ts), the capture library's sha256 (the `linux.x86_64` library the .gdextension
+ * names), the pinned template's and the calibration's sha256 and, informational only since GRT,
+ * the git commit and a digest of the uncommitted state of the build's own paths. */
 export function currentBuildProvenance(
   repoRoot: string,
   extension: string,
   template: string,
+  calibration: string = join(
+    repoRoot,
+    "experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json",
+  ),
 ): SourceProvenance {
   const git = (...args: string[]): string => {
     const r = spawnSync("git", ["-C", repoRoot, ...args], {
@@ -771,11 +811,15 @@ export function currentBuildProvenance(
     );
     extensionSha = m && existsSync(m[1]) ? sha256File(m[1]) : null;
   }
+  const inputs = sourceKey(repoRoot, { extension, template, calibration });
   return {
-    schema: "render-stream-gate7-source/1",
+    schema: "render-stream-gate7-source/2",
+    source_key: inputs.key,
+    source_inputs: inputs,
     git_commit: git("rev-parse", "HEAD").trim(),
     git_dirty_digest: dirty,
     extension_sha256: extensionSha,
     template_sha256: existsSync(template) ? sha256File(template) : undefined,
+    calibration_sha256: inputs.calibration_sha256,
   };
 }

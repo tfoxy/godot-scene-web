@@ -6,7 +6,10 @@
 // an ancestor -- a bash runner calling this TS -- already holding), the optional core pinning
 // (RS_TIMING_CPUSET / RS_BACKGROUND_CPUSET: the holder pins this process's whole tree, all
 // threads) and the JSON-lines logging are one implementation. The holder exits within 0.25 s of
-// this process dying, so a crashed bench never keeps the lock.
+// this process dying, so a crashed bench never keeps the lock. The holder also owns GRT's v2
+// scheduling (the share window after an exclusive release, the exclusive acquirer's deferral and the
+// shared backfill behind a drain; lib/quiet.sh header): a TS hold gets it with no code here, and
+// GSW_QUIET_SCHED=v1 in this process's environment restores the old scheduling for its holds.
 //
 //   const hold = await quietAcquire("exclusive", "g7-bench/gsw-ts-desktop", { log });
 //   try { ...the timed work... } finally { await hold.release(); }
