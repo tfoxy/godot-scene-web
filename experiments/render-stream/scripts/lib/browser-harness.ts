@@ -18,10 +18,12 @@
 // green while describing software, exactly the failure mode `canvasGlyphPixelXvfb.test.ts`'s
 // `assertHardwareRenderer` already guards against for the pixel suites.
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   createReadStream,
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -34,7 +36,15 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { dirname, extname, join, normalize } from "node:path";
+import { homedir } from "node:os";
+import {
+  basename,
+  dirname,
+  extname,
+  join,
+  normalize,
+  relative,
+} from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -98,6 +108,116 @@ export const EXPECTED_CHROMIUM_SHA256 =
   "adc1c21ceed5c2a67184766376fe816ac03e556cc0ca3f782e8212235fe05c6f";
 export const EXPECTED_CHROMIUM_VERSION = "148.0.7778.96";
 
+/**
+ * GRT: where the pinned Chromium is launched from. Playwright's shared cache
+ * (`~/.cache/ms-playwright/`, or PLAYWRIGHT_BROWSERS_PATH) is garbage-collected by ANY repo's
+ * `playwright install` on this box -- at 03:56 on 2026-10-20 another repo's install deleted
+ * `chromium-1223` and every browser leg failed at launch. So the harness launches a repo-private
+ * copy, `<RS_PRIVATE_BROWSERS_DIR or ~/.cache/godot-render-stream/ms-playwright>/chromium-1223/`,
+ * which no other repo's Playwright knows about:
+ *   1. the private copy, when its `chrome` matches EXPECTED_CHROMIUM_SHA256;
+ *   2. else, when the shared cache's binary matches, the private copy is SEEDED from it (`cp -a` of
+ *      the whole revision directory into a temp dir, sha-checked, moved into place under a flock;
+ *      nothing is ever downloaded) and launched; if seeding fails, the verified shared binary is
+ *      launched;
+ *   3. else it throws, naming both paths.
+ * checkBrowserProvenance still hashes whatever was launched against the same pin.
+ */
+export const PRIVATE_BROWSERS_DIR =
+  process.env.RS_PRIVATE_BROWSERS_DIR ??
+  join(homedir(), ".cache", "godot-render-stream", "ms-playwright");
+
+export interface PinnedChromium {
+  executablePath: string;
+  /** private: the repo-private copy; seeded: copied there now; shared: Playwright's cache. */
+  source: "private" | "seeded" | "shared";
+  privatePath: string;
+  sharedPath: string;
+}
+
+let pinnedChromium: PinnedChromium | undefined;
+
+/** The pinned Chromium to launch (header above; memoized per process). */
+export function resolvePinnedChromium(): PinnedChromium {
+  if (pinnedChromium && existsSync(pinnedChromium.executablePath))
+    return pinnedChromium;
+  const sharedPath = chromium.executablePath();
+  // `<browsers root>/chromium-<rev>/<sub path>`: the private copy keeps the same layout.
+  let revDir = dirname(sharedPath);
+  while (
+    !basename(revDir).startsWith("chromium-") &&
+    dirname(revDir) !== revDir
+  )
+    revDir = dirname(revDir);
+  const privateRev = join(PRIVATE_BROWSERS_DIR, basename(revDir));
+  const privatePath = join(privateRev, relative(revDir, sharedPath));
+  const matches = (p: string): boolean =>
+    existsSync(p) && sha256File(p) === EXPECTED_CHROMIUM_SHA256;
+  const done = (
+    executablePath: string,
+    source: PinnedChromium["source"],
+  ): PinnedChromium => {
+    pinnedChromium = { executablePath, source, privatePath, sharedPath };
+    return pinnedChromium;
+  };
+  if (matches(privatePath)) return done(privatePath, "private");
+  if (matches(sharedPath)) {
+    // Under a flock on <private dir>/.seed.lock, so concurrent seeders never replace a copy
+    // another process already verified and launched: the check-and-replace is one critical
+    // section, and only a copy that does NOT match is ever replaced.
+    mkdirSync(PRIVATE_BROWSERS_DIR, { recursive: true });
+    const seed = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+exec 9>"$PRIVATE_DIR/.seed.lock"
+flock 9
+ok() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$SHA" ]; }
+if ok "$PRIVATE_BIN"; then echo present; exit 0; fi
+tmp="$PRIVATE_REV.tmp-$$"
+rm -rf "$tmp"
+cp -a "$SHARED_REV" "$tmp"
+ok "$tmp/$SUB" || { rm -rf "$tmp"; echo "the copy's sha256 is not $SHA" >&2; exit 3; }
+rm -rf "$PRIVATE_REV"
+mv "$tmp" "$PRIVATE_REV"
+echo seeded`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PRIVATE_DIR: PRIVATE_BROWSERS_DIR,
+          PRIVATE_REV: privateRev,
+          PRIVATE_BIN: privatePath,
+          SHARED_REV: revDir,
+          SUB: relative(revDir, sharedPath),
+          SHA: EXPECTED_CHROMIUM_SHA256,
+        },
+      },
+    );
+    if (seed.status === 0 && matches(privatePath)) {
+      const seeded = seed.stdout.trim() === "seeded";
+      if (seeded)
+        console.error(
+          `browser-harness: seeded the private pinned Chromium ${privateRev} from ${revDir}`,
+        );
+      return done(privatePath, seeded ? "seeded" : "private");
+    }
+    console.error(
+      `browser-harness: WARNING: could not seed ${privateRev} (${seed.stderr.trim() || `exit ${seed.status}`}); launching the verified shared copy ${sharedPath}`,
+    );
+    return done(sharedPath, "shared");
+  }
+  throw new Error(
+    `browser-harness: no pinned Chromium ${EXPECTED_CHROMIUM_VERSION} (sha256 ${EXPECTED_CHROMIUM_SHA256}): ` +
+      `the private copy ${privatePath} is ${existsSync(privatePath) ? "a different build" : "missing"} and ` +
+      `the shared Playwright cache's ${sharedPath} is ${existsSync(sharedPath) ? "a different build" : "missing"} ` +
+      `(another repo's \`playwright install\` may have collected it). Restore either one with the pinned build; ` +
+      `this harness never downloads a browser.`,
+  );
+}
+
 export interface LaunchOptions {
   /** D9: on by default (deterministic legs); omit (false) for suspension legs so Chromium's own
    * backgrounding heuristics stay live. */
@@ -135,7 +255,7 @@ export async function launchHarnessBrowser(
           ? []
           : BACKGROUND_THROTTLING_ARGS),
       ];
-  const executablePath = chromium.executablePath();
+  const { executablePath } = resolvePinnedChromium();
   const browser = await chromium.launch({
     headless: false,
     executablePath,

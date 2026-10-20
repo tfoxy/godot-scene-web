@@ -1,0 +1,351 @@
+{
+  "schema": "render-stream-smoke-map/1",
+  "doc": "GRT smoke tier (results/grt.md, scripts/validate-increment.sh): which validation targets a changed path can reach. Every rule whose paths match a changed file adds its reach (an 'exclusive' rule that matches first ends the search: a .md anywhere reaches nothing); a changed file that NO rule matches reaches every target ('*'): conservative by default. Targets: pure (the pure self-tests, always run), lock-tests, capture-build, pnpm-test, cargo:<crate dir>, native:<gate>@<core>, g7:<group>@<receiver>, g7live:<group>@<receiver>, g7x:<group> (desktop g7-dev/g7-bench), none. '*' in a target pattern ranges over the universe below. Sabotage legs (native runs) run only when a changed path matches sabotage_paths or a changed file's content matches sabotage_content; otherwise they are skipped-by-tier (RS_SABOTAGE_TIER=skip). --milestone runs every target with sabotage.",
+  "universe": {
+    "native": [
+      "gate-minus1",
+      "gate0",
+      "gate1",
+      "gate2",
+      "gate3",
+      "gate4",
+      "gate5",
+      "gate55",
+      "gate6"
+    ],
+    "cores": ["rust", "gdscript"],
+    "g7": ["g7-0", "g7-1", "g7-2", "g7-3", "g7-4", "g7-5", "g7-55", "g7-6"],
+    "g7_receivers": ["gsw", "web/rust", "web/gdscript"],
+    "g7live": ["g7-1", "g7-2", "g7-5", "g7-55", "g7-6", "g7-lc", "g7-r"],
+    "g7live_receivers": ["gsw", "web/rust", "native"],
+    "g7x": ["g7-dev", "g7-bench"],
+    "cargo": [
+      "experiments/render-stream/rs-core",
+      "experiments/render-stream/rs-core-capi",
+      "experiments/render-stream/web/gsw-rs",
+      "experiments/render-stream/decode-proto-rs"
+    ],
+    "other": ["pure", "lock-tests", "capture-build", "pnpm-test"]
+  },
+  "sabotage_paths": [
+    "experiments/render-stream/scripts/check-gate*.ts",
+    "experiments/render-stream/scripts/lib/gate*-checks.ts",
+    "experiments/render-stream/scripts/lib/gate*-expected.ts",
+    "experiments/render-stream/scripts/lib/render-stream-*.ts",
+    "experiments/render-stream/scripts/lib/tamper-calibration.mjs",
+    "experiments/render-stream/scripts/gate0-tool.ts",
+    "experiments/render-stream/scripts/lib/legs.sh",
+    "experiments/render-stream/scripts/run-gate*.sh"
+  ],
+  "sabotage_content": "(?i)sabotage|tamper",
+  "smoke": {
+    "doc": "Smoke tier: the legs one representative run keeps, per group. g7live: RS_SMOKE_LEGS entries (leg directories relative to the native runner's --out; an entry also covers the directories under it), with the capture and reference legs the live leg is judged against; full_legs is the group's leg count in a full run (null: not counted). g7 (file mode): GATE7_SMOKE_LEGS, '@first' = the first non-sabotage receiver leg of each gate. A group not listed (g7-lc, g7-r, g7x, the native gates) runs whole in smoke; native gates still skip their sabotage legs unless the diff touches a checker. A change reaching collapse_at or more groups on a receiver is shared code: smoke runs the first reached group there and lists the rest in smoke_deferred (the full tier runs them). The verdict requires every named entry to have run, so a wrong name fails loudly.",
+    "g7live": {
+      "g7-1": { "legs": ["import", "capture", "reference", "live"], "full_legs": 11 },
+      "g7-2": { "legs": ["import", "capture", "reference", "live"], "full_legs": null },
+      "g7-5": { "legs": ["mesh/import", "mesh/reference-live", "mesh/live-mesh"], "full_legs": null },
+      "g7-55": { "legs": ["shader-live/import", "shader-live/reference-live", "shader-live/live-shader"], "full_legs": null },
+      "g7-6": { "legs": ["live/import", "live/reference-live-frames", "live/live-scene"], "full_legs": null }
+    },
+    "collapse_at": 3,
+    "g7": { "legs": ["@first"] }
+  },
+  "rules": [
+    {
+      "why": "docs: no leg reads them",
+      "paths": [
+        "**/*.md",
+        "experiments/render-stream/results/**",
+        "agents/**",
+        "skills/**",
+        "docs/**"
+      ],
+      "reach": ["none"],
+      "exclusive": true
+    },
+    {
+      "why": "the quiet lock: its own self-tests (scheduling only; no leg's output depends on it)",
+      "paths": [
+        "experiments/render-stream/scripts/lib/quiet.sh",
+        "experiments/render-stream/scripts/lib/quiet-lock.ts",
+        "experiments/render-stream/scripts/test/self-test-quiet*.sh",
+        "experiments/render-stream/scripts/test/quiet-fixtures/**"
+      ],
+      "reach": ["lock-tests"]
+    },
+    {
+      "why": "the smoke tier itself and the pure self-tests",
+      "paths": [
+        "experiments/render-stream/scripts/validate-increment.sh",
+        "experiments/render-stream/scripts/smoke-map.json",
+        "experiments/render-stream/scripts/lib/smoke-plan.py",
+        "experiments/render-stream/scripts/test/**"
+      ],
+      "reach": ["pure"]
+    },
+    {
+      "why": "the source cache and content key: a gate 7 run makes and reuses sources through them",
+      "paths": [
+        "experiments/render-stream/scripts/source-cache.sh",
+        "experiments/render-stream/scripts/lib/source-key.ts"
+      ],
+      "reach": ["g7:g7-0@gsw", "g7:g7-0@web/rust"]
+    },
+    {
+      "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
+      "paths": [
+        "experiments/render-stream/capture/**",
+        "experiments/render-stream/calibration/**",
+        "mise.toml",
+        "package.json",
+        "pnpm-lock.yaml",
+        "experiments/render-stream/scripts/build-capture.sh"
+      ],
+      "reach": ["*"]
+    },
+    {
+      "why": "the native receiver: every native gate under both cores, and the web export (built from it)",
+      "paths": ["experiments/render-stream/receiver/**"],
+      "reach": [
+        "native:*@*",
+        "g7:*@web/rust",
+        "g7:*@web/gdscript",
+        "g7live:*@web/rust",
+        "g7live:*@native",
+        "g7x:*"
+      ]
+    },
+    {
+      "why": "the shared Rust core and its C API: every receiver that links it (native rust core, gsw, web rust core)",
+      "paths": [
+        "experiments/render-stream/rs-core/**",
+        "experiments/render-stream/rs-core-capi/**",
+        "experiments/render-stream/scripts/build-rs-core*.sh"
+      ],
+      "reach": [
+        "native:*@rust",
+        "g7:*@gsw",
+        "g7:*@web/rust",
+        "g7live:*@gsw",
+        "g7live:*@web/rust",
+        "g7live:*@native",
+        "cargo:experiments/render-stream/rs-core",
+        "cargo:experiments/render-stream/rs-core-capi",
+        "g7x:*"
+      ]
+    },
+    {
+      "why": "the GSW canvas receiver (page, wasm crate) and the packages it renders with",
+      "paths": ["experiments/render-stream/web/**", "packages/**"],
+      "reach": [
+        "g7:*@gsw",
+        "g7live:*@gsw",
+        "cargo:experiments/render-stream/web/gsw-rs",
+        "g7x:*"
+      ]
+    },
+    {
+      "why": "packages: the toolkit's own suite too",
+      "paths": ["packages/**"],
+      "reach": ["pnpm-test"]
+    },
+    {
+      "why": "the legacy decoder prototype crate",
+      "paths": ["experiments/render-stream/decode-proto-rs/**"],
+      "reach": ["cargo:experiments/render-stream/decode-proto-rs"]
+    },
+    {
+      "why": "wire goldens: the pure self-tests check them, the cores decode them",
+      "paths": ["experiments/render-stream/protocol/golden*/**"],
+      "reach": [
+        "pure",
+        "cargo:experiments/render-stream/rs-core",
+        "cargo:experiments/render-stream/rs-core-capi"
+      ]
+    },
+    {
+      "why": "shared leg machinery and decoders: every native gate and every gate 7 group",
+      "paths": [
+        "experiments/render-stream/scripts/lib/legs.sh",
+        "experiments/render-stream/scripts/lib/gamescope.sh",
+        "experiments/render-stream/scripts/lib/render-stream-*.ts",
+        "experiments/render-stream/scripts/lib/provenance.ts",
+        "experiments/render-stream/scripts/lib/sha256.ts",
+        "experiments/render-stream/scripts/lib/provision-fonts.sh",
+        "experiments/render-stream/scripts/gate0-tool.ts",
+        "experiments/render-stream/scripts/lib/gate-minus1-checks.ts"
+      ],
+      "reach": ["native:*@*", "g7:*@*", "g7live:*@*"]
+    },
+    {
+      "why": "gate -1",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate-minus1.sh",
+        "experiments/render-stream/scripts/check-gate-minus1.ts",
+        "experiments/render-stream/fixtures/spike/**"
+      ],
+      "reach": ["native:gate-minus1@*"]
+    },
+    {
+      "why": "gate 0",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate0.sh",
+        "experiments/render-stream/scripts/check-gate0.ts",
+        "experiments/render-stream/scripts/lib/gate0-*.ts",
+        "experiments/render-stream/fixtures/gate0/**"
+      ],
+      "reach": ["native:gate0@*", "g7:g7-0@*"]
+    },
+    {
+      "why": "gate 1",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate1.sh",
+        "experiments/render-stream/scripts/check-gate1.ts",
+        "experiments/render-stream/scripts/lib/gate1-*.ts",
+        "experiments/render-stream/fixtures/gate1/**"
+      ],
+      "reach": ["native:gate1@*", "g7:g7-1@*", "g7live:g7-1@*"]
+    },
+    {
+      "why": "gate 2",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate2.sh",
+        "experiments/render-stream/scripts/check-gate2.ts",
+        "experiments/render-stream/scripts/lib/gate2*-*.ts",
+        "experiments/render-stream/fixtures/gate2/**"
+      ],
+      "reach": ["native:gate2@*", "g7:g7-2@*", "g7live:g7-2@*"]
+    },
+    {
+      "why": "gate 3",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate3.sh",
+        "experiments/render-stream/scripts/check-gate3.ts",
+        "experiments/render-stream/scripts/lib/gate3*-*.ts",
+        "experiments/render-stream/scripts/lib/clip-derive.ts",
+        "experiments/render-stream/fixtures/gate3/**",
+        "experiments/render-stream/fixtures/gate3-*/**"
+      ],
+      "reach": ["native:gate3@*", "g7:g7-3@*"]
+    },
+    {
+      "why": "gate 4",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate4.sh",
+        "experiments/render-stream/scripts/check-gate4.ts",
+        "experiments/render-stream/scripts/lib/gate4*-*.ts",
+        "experiments/render-stream/fixtures/gate4/**",
+        "experiments/render-stream/fixtures/gate4-*/**"
+      ],
+      "reach": ["native:gate4@*", "g7:g7-4@*"]
+    },
+    {
+      "why": "gate 5",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate5.sh",
+        "experiments/render-stream/scripts/check-gate5.ts",
+        "experiments/render-stream/scripts/lib/gate5-*.ts",
+        "experiments/render-stream/scripts/lib/gate5[a-z]-*.ts",
+        "experiments/render-stream/scripts/lib/geometry-raster.ts",
+        "experiments/render-stream/scripts/lib/render-stream-mesh.ts",
+        "experiments/render-stream/fixtures/gate5/**",
+        "experiments/render-stream/fixtures/gate5-*/**"
+      ],
+      "reach": ["native:gate5@*", "g7:g7-5@*", "g7live:g7-5@*"]
+    },
+    {
+      "why": "gate 5.5",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate55.sh",
+        "experiments/render-stream/scripts/check-gate55.ts",
+        "experiments/render-stream/scripts/lib/gate55*-*.ts",
+        "experiments/render-stream/scripts/lib/render-stream-shader.ts",
+        "experiments/render-stream/fixtures/gate55-*/**"
+      ],
+      "reach": ["native:gate55@*", "g7:g7-55@*", "g7live:g7-55@*"]
+    },
+    {
+      "why": "gate 6",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate6.sh",
+        "experiments/render-stream/scripts/check-gate6.ts",
+        "experiments/render-stream/scripts/lib/gate6*-*.ts",
+        "experiments/render-stream/scripts/lib/gate6*-legs.sh",
+        "experiments/render-stream/scripts/report-gate6.ts",
+        "experiments/render-stream/scripts/lib/render-stream-report.ts",
+        "experiments/render-stream/scripts/throttle-proxy.ts",
+        "experiments/render-stream/scripts/lib/proc-sampler.ts",
+        "experiments/render-stream/fixtures/gate6-*/**"
+      ],
+      "reach": [
+        "native:gate6@*",
+        "g7:g7-6@*",
+        "g7live:g7-6@*",
+        "g7live:g7-r@*",
+        "g7live:g7-lc@*"
+      ]
+    },
+    {
+      "why": "gate 7's runner, tool, checker and shared adapters: every gate 7 group on every receiver",
+      "paths": [
+        "experiments/render-stream/scripts/run-gate7.sh",
+        "experiments/render-stream/scripts/gate7-tool.ts",
+        "experiments/render-stream/scripts/check-gate7.ts",
+        "experiments/render-stream/scripts/lib/gate7-adapters.ts",
+        "experiments/render-stream/scripts/lib/gate7-q7.ts",
+        "experiments/render-stream/scripts/lib/browser-harness.ts",
+        "experiments/render-stream/scripts/lib/browser-probes/**",
+        "experiments/render-stream/scripts/lib/gsw-tolerance.ts",
+        "experiments/render-stream/fixtures/gsw-tolerance.json"
+      ],
+      "reach": ["g7:*@*", "g7live:*@*"]
+    },
+    {
+      "why": "gate 7's web-export half",
+      "paths": [
+        "experiments/render-stream/scripts/lib/gate7b-adapters.ts",
+        "experiments/render-stream/scripts/lib/gate7-web-legs.ts",
+        "experiments/render-stream/scripts/build-web-receiver.sh",
+        "experiments/render-stream/scripts/build-rs-core-web.sh",
+        "experiments/render-stream/scripts/web-build-json.ts",
+        "experiments/render-stream/scripts/lib/godot-pck.ts",
+        "experiments/render-stream/scripts/lib/wasm-side-module-info.mjs"
+      ],
+      "reach": ["g7:*@web/rust", "g7:*@web/gdscript", "g7live:*@web/rust"]
+    },
+    {
+      "why": "gate 7's GSW half",
+      "paths": [
+        "experiments/render-stream/scripts/lib/gate7-gsw*.ts",
+        "experiments/render-stream/scripts/lib/gsw-bundle.ts"
+      ],
+      "reach": ["g7:*@gsw", "g7live:*@gsw"]
+    },
+    {
+      "why": "gate 7's live halves",
+      "paths": [
+        "experiments/render-stream/scripts/lib/gate7-live*.ts",
+        "experiments/render-stream/scripts/lib/gate7-lifecycle.ts",
+        "experiments/render-stream/scripts/lib/gate7r-checks.ts",
+        "experiments/render-stream/scripts/lib/gate7u-checks.ts"
+      ],
+      "reach": ["g7live:*@*"]
+    },
+    {
+      "why": "gate 7's device and bench groups",
+      "paths": [
+        "experiments/render-stream/scripts/gate7-bench.ts",
+        "experiments/render-stream/scripts/gate7-phone-tool.ts",
+        "experiments/render-stream/scripts/lib/gate7-bench-summary.ts",
+        "experiments/render-stream/scripts/lib/gate7x-bench.ts",
+        "experiments/render-stream/scripts/lib/gate7-dev*.ts",
+        "experiments/render-stream/scripts/lib/gate7-device-legs.ts",
+        "experiments/render-stream/scripts/lib/gate7d-checks.ts",
+        "experiments/render-stream/scripts/lib/device-*.ts",
+        "experiments/render-stream/fixtures/gate7-*",
+        "experiments/render-stream/fixtures/gate7-*/**"
+      ],
+      "reach": ["g7x:*"]
+    }
+  ]
+}

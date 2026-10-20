@@ -243,6 +243,9 @@ G7R_NATIVE_CORE="${RS_RECEIVER_CORE:-rust}"
 OUT=""
 LEGS_ARG=""
 SOURCE_ARG=""
+# GRT: the smoke tier's sabotage skip (lib/legs.sh) is for native gate runs only: a gate 7 source
+# needs its sabotage legs (source-run-valid, the web/gsw sabotage replays), and is cached anyway.
+unset RS_SABOTAGE_TIER
 MAKE_SOURCES=0
 SOURCE_CACHE="${RS_SOURCE_CACHE:-1}"
 SOURCE_KEY=""
