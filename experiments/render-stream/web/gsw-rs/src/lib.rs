@@ -87,10 +87,20 @@ struct Opts {
     /// Native `ignore-presentation`: the session's stretch is not adopted (identity transform at
     /// the presentation size).
     ignore_presentation: bool,
+    /// G7k (D29 amendment, Q10 soak), live mode only: `RS_RECEIVER_MEMORY_BUDGET_BYTES`, the
+    /// store's own payload bytes (GL texture bytes are counted separately, by the live client).
+    /// `None` is unlimited, matching the native receiver's unbudgeted default.
+    memory_budget_bytes: Option<u64>,
+    /// Sabotage `no-evict`: the budget above is parsed (so it is still reported) but
+    /// [`PayloadStore::evict_unreferenced`] is simply never called.
+    no_evict: bool,
 }
 
 /// `RS_RECEIVER_SABOTAGE` values the TypeScript shell, not this module, acts on, or that have no
 /// effect on a file-mode GSW receiver (gate7-design.md Q5; each is typed in the leg's evidence).
+/// G7k: `no-evict` moved out of this list (parsed below, into `Opts.no_evict`); `leak-gl-textures`
+/// stays here, since it leaks real GL objects by wrapping the canvas's WebGL2 context in
+/// `live.ts`, not by changing anything this module uploads or deletes.
 const SHELL_SABOTAGES: &[&str] = &[
     "css-opacity",
     "ack-on-receipt",
@@ -98,13 +108,28 @@ const SHELL_SABOTAGES: &[&str] = &[
     "ack-while-hidden",
     "ack-while-hidden",
     "leak-gl-textures",
-    "no-evict",
     "ignore-cache",
     "wrong-http-token",
     // G7o2: the page corrupts a fetched payload byte / provides in the frame (bench-rs.ts).
     "corrupt-payload",
     "verify-in-frame",
 ];
+
+/// A bare `"key":123` (or `"key":123,`/`"key":123}`) numeric field, in the ad hoc scan
+/// `parse_options` already uses for this flat, caller-written JSON object. `None` when the key is
+/// absent or its value is not a non-negative integer.
+fn find_number(json: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{key}\":");
+    let start = json.find(&needle)? + needle.len();
+    let rest = &json[start..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    rest[..end].parse().ok()
+}
 
 fn parse_options(json: &str) -> Result<Opts, String> {
     // A flat, caller-written object: {"digest":"inline"|"deferred","sabotage":[...],"format":...}.
@@ -116,6 +141,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
     // break as the engine's (gate 4's hex box, gate 6's LineEdit).
     o.exec.godot_orientation = true;
     o.format_rgba8 = json.contains("\"format\":\"rgba8\"");
+    // G7k (Q10 soak), live mode only; a file-mode caller never sends this key.
+    o.memory_budget_bytes = find_number(json, "memory_budget_bytes");
     if let Some(start) = json.find("\"sabotage\":[") {
         let rest = &json[start + 12..];
         let end = rest.find(']').unwrap_or(rest.len());
@@ -143,6 +170,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-nine-patch-axis" => o.apply.lower.ignore_nine_patch_axis = true,
                 "polygon-winding" => o.apply.lower.polygon_winding = true,
                 "msdf-px-range" => o.apply.lower.msdf_px_range = true,
+                "no-evict" => o.no_evict = true,
                 "drop-mesh-surface" => o.apply.mesh.drop_surface = true,
                 "stale-mesh" => o.apply.mesh.stale = true,
                 "ignore-presentation" => o.ignore_presentation = true,
@@ -170,6 +198,9 @@ struct Totals {
     provided: u64,
     provided_bytes: u64,
     restores: u64,
+    /// G7k: `PayloadStore` entries [`PayloadStore::evict_unreferenced`] has freed, summed over
+    /// every transaction applied (live mode, a budget set, `no-evict` not sabotaging it).
+    residency_evictions: u64,
 }
 
 /// G7o2 `payload-verified-before-use`: how each payload a transaction used reached the store.
@@ -1291,6 +1322,52 @@ impl GswRs {
         0
     }
 
+    /// G7k (Q10 soak): residency, one JSON object. `entries`/`bytes` are the `PayloadStore`'s own
+    /// cache held now, and `evictions` are what it has freed so far this connection
+    /// (`budget_bytes` is `null` when no `RS_RECEIVER_MEMORY_BUDGET_BYTES` was set, so a caller
+    /// can tell "no budget" from "budget respected with headroom"). `resident_textures`/
+    /// `resident_meshes` are [`Applier::retained`]'s GPU-object counts -- 0 before a session
+    /// starts, so this is safe to call at any time, not only after a context restore.
+    pub fn residency_json(&self) -> String {
+        let owned = self
+            .applier
+            .as_ref()
+            .map(|a| a.retained())
+            .unwrap_or_default();
+        let (gl_bytes, pinned_bytes) = self.pinned_and_gl_bytes();
+        format!(
+            "{{\"entries\":{},\"bytes\":{},\"gl_texture_bytes\":{},\"pinned_bytes\":{},\"evictions\":{},\"budget_bytes\":{},\"resident_items\":{},\"resident_textures\":{},\"resident_meshes\":{},\"resident_shaders\":{},\"resident_materials\":{}}}",
+            self.payloads.len(),
+            self.payloads.total_bytes(),
+            gl_bytes,
+            pinned_bytes,
+            self.totals.residency_evictions,
+            match self.opts.memory_budget_bytes {
+                Some(b) => b.to_string(),
+                None => "null".to_string(),
+            },
+            owned[0],
+            owned[2],
+            owned[3],
+            owned[4],
+            owned[5],
+        )
+    }
+
+    /// G7k: (GL texture bytes, pinned bytes). GL texture bytes are the resident textures' level-0
+    /// RGBA8 (what the page holds as texture objects, each resident texture once). Pinned bytes
+    /// are the store's referenced entries -- the floor [`PayloadStore::evict_unreferenced`]
+    /// cannot go below.
+    fn pinned_and_gl_bytes(&self) -> (u64, u64) {
+        let Some(a) = self.applier.as_ref() else {
+            return (0, 0);
+        };
+        let gl: std::collections::HashSet<_> = a.resident_texture_hashes().collect();
+        let gl_bytes = self.payloads.bytes_of(&gl);
+        let pinned = self.payloads.bytes_of(&a.referenced_payload_hashes());
+        (gl_bytes, pinned)
+    }
+
     /// G7o2 `payload-verified-before-use` counts, one JSON object.
     pub fn payload_verify_json(&self) -> String {
         let v = &self.verify;
@@ -1319,6 +1396,21 @@ impl GswRs {
             return -1;
         };
         let st = a.apply(v.state(), v.delta(), &self.payloads).clone();
+        // G7k (Q10 soak): live mode, a budget set, `no-evict` not sabotaging it. Evicting after
+        // `apply` (not before) means this transaction's own newly-resident hashes are always in
+        // `referenced_payload_hashes` and so can never be the entries evicted to make room for
+        // them (G6s's native rule: never evict the needed set).
+        if self.live && !self.opts.no_evict {
+            if let Some(budget) = self.opts.memory_budget_bytes {
+                // D29 amendment: the budget counts the store's payload bytes plus the GL textures
+                // the resident textures hold; only the store's unreferenced entries can go.
+                let referenced = a.referenced_payload_hashes();
+                let gl: std::collections::HashSet<_> = a.resident_texture_hashes().collect();
+                let store_budget = budget.saturating_sub(self.payloads.bytes_of(&gl));
+                let evicted = self.payloads.evict_unreferenced(&referenced, store_budget);
+                self.totals.residency_evictions += evicted as u64;
+            }
+        }
         let t = prof::start();
         // applied.json evidence (no serialization here: `applied_json_parts` does it later).
         let state = v.state();

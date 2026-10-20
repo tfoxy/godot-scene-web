@@ -72,6 +72,7 @@ import {
   runGate7BenchChecks,
   runGate7DevChecks,
 } from "./lib/gate7d-checks";
+import { checkG7kKind, type G7kKindResult } from "./lib/gate7k-checks";
 import {
   checkG7rKind,
   G7R_KINDS,
@@ -122,6 +123,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-6",
   "g7-lc",
   "g7-r",
+  "g7-k",
   "g7-dev",
   "g7-bench",
 ];
@@ -179,6 +181,7 @@ export interface Gate7Report {
     | LiveGroupResult
     | G7rKindResult
     | G7uRunResult
+    | G7kKindResult
   )[];
 }
 
@@ -416,6 +419,7 @@ async function main(): Promise<void> {
     | LiveGroupResult
     | G7rKindResult
     | G7uRunResult
+    | G7kKindResult
   )[] = [];
   // G7l: `--live` judges only the live runs (lib/gate7-live.ts), never the file legs' sources.
   const wantWeb =
@@ -481,6 +485,28 @@ async function main(): Promise<void> {
         ),
       );
       results.push(...(await checkG7u(out, e, { receiver, webCore })));
+    }
+    // G7k: one result per receiver kind that ran (run-gate7.sh --live --legs g7-k).
+    if (legs.includes("g7-k")) {
+      const e = JSON.parse(
+        await readFile(
+          join(EXPERIMENT_DIR, "fixtures", "gate6-scene", "expected.json"),
+          "utf8",
+        ),
+      );
+      for (const kind of ["web", "gsw"] as const) {
+        if (receiver && receiver !== kind) continue;
+        const soakDir = join(out, "gate6", `g6s-${kind}`);
+        if (!existsSync(soakDir)) {
+          if (receiver === kind)
+            throw new Error(`check-gate7: --live g7-k@${kind}: no ${soakDir}`);
+          continue;
+        }
+        console.log(`check-gate7: judging g7-k @${kind} (${soakDir})`);
+        results.push(await checkG7kKind(out, kind, e));
+      }
+      if (!results.some((r) => r.group === "g7-k"))
+        throw new Error("check-gate7: --live g7-k: no <out>/gate6/g6s-<kind>/");
     }
   }
   if (legs.includes("g7-0") && wantWeb) {

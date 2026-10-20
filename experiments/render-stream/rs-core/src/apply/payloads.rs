@@ -9,7 +9,7 @@
 //! cannot be skipped by drawing from here.
 
 use crate::state::{Hash, Primitive};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A texture's level 0 as straight RGBA8.
 #[derive(Clone, Debug)]
@@ -257,6 +257,12 @@ pub struct PayloadStore {
     /// Shader code (GRP1): a payload's, or a `withheld` shader's from the adapter's library. The
     /// adapter transpiles it once per hash ([`super::Applier::pending_shaders`], G7s).
     pub shaders: HashMap<Hash, String>,
+    /// G7k (D29 amendment, Q10 soak): touch order for budget eviction, oldest-touched at the
+    /// front. `insert` moves a hash to the back; nothing else reorders it (a mere [`Self::has`]
+    /// query is not a touch, matching the native receiver's cache, which only re-orders on a
+    /// re-provide). A browser adapter with no budget never calls [`Self::evict_unreferenced`], so
+    /// this is dead weight (one `VecDeque` push per provide) until it does.
+    order: VecDeque<Hash>,
 }
 
 impl PayloadStore {
@@ -270,6 +276,7 @@ impl PayloadStore {
         self.textures.clear();
         self.meshes.clear();
         self.shaders.clear();
+        self.order.clear();
     }
 
     /// Verify and ingest one payload (Q14c `provide`): its SHA-256 must equal `expected` (the hash
@@ -290,6 +297,10 @@ impl PayloadStore {
     /// A payload [`verify_decode`] already checked against `hash` (G7o2: a staged payload moving
     /// into the store when its transaction is applied).
     pub fn insert(&mut self, hash: Hash, d: Decoded) {
+        if let Some(pos) = self.order.iter().position(|h| *h == hash) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(hash);
         match d {
             Decoded::Texture(px) => {
                 self.textures.insert(hash, px);
@@ -301,6 +312,64 @@ impl PayloadStore {
                 self.shaders.insert(hash, code);
             }
         }
+    }
+
+    /// G7k: decoded bytes held (textures' straight RGBA8 pixels, meshes' four buffers, shaders'
+    /// source) -- what a browser adapter counts toward `RS_RECEIVER_MEMORY_BUDGET_BYTES` (D29
+    /// amendment: "the core's payload cache in wasm memory"; GL texture bytes are counted
+    /// separately, by the adapter, since they are not in this store).
+    pub fn total_bytes(&self) -> u64 {
+        self.textures
+            .values()
+            .map(|t| t.rgba.len() as u64)
+            .sum::<u64>()
+            + self.meshes.values().map(|m| m.data_bytes()).sum::<u64>()
+            + self.shaders.values().map(|s| s.len() as u64).sum::<u64>()
+    }
+
+    /// G7k: decoded bytes of the entries in `hashes` that this store holds (each hash once).
+    pub fn bytes_of(&self, hashes: &HashSet<Hash>) -> u64 {
+        hashes
+            .iter()
+            .map(|h| {
+                self.textures.get(h).map_or(0, |t| t.rgba.len() as u64)
+                    + self.meshes.get(h).map_or(0, |m| m.data_bytes())
+                    + self.shaders.get(h).map_or(0, |s| s.len() as u64)
+            })
+            .sum()
+    }
+
+    /// G7k: entries currently held (the "memory-cache entries" metric G6s checks natively).
+    pub fn len(&self) -> usize {
+        self.textures.len() + self.meshes.len() + self.shaders.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// G7k (Q10 soak, `residency-bounded`/`cache-budget-respected`): evicts the oldest-touched
+    /// entries not in `referenced`, until `total_bytes() <= budget_bytes` or nothing more can be
+    /// evicted (every remaining entry is referenced -- the native rule, G6s: never evict the
+    /// needed set, so one still-needed payload may keep the store over budget). Returns the
+    /// number of entries evicted. The `no-evict` sabotage is simply never calling this.
+    pub fn evict_unreferenced(&mut self, referenced: &HashSet<Hash>, budget_bytes: u64) -> u32 {
+        let mut evicted = 0u32;
+        let mut i = 0;
+        while self.total_bytes() > budget_bytes && i < self.order.len() {
+            let hash = self.order[i];
+            if referenced.contains(&hash) {
+                i += 1;
+                continue;
+            }
+            self.textures.remove(&hash);
+            self.meshes.remove(&hash);
+            self.shaders.remove(&hash);
+            self.order.remove(i);
+            evicted += 1;
+            // The entry after the removed one shifted into index `i`: do not advance.
+        }
+        evicted
     }
 }
 
@@ -572,5 +641,88 @@ mod tests {
         // The skip-payload-hash sabotage stages it, marked unverified.
         stage.stage(&bad, &hash, 2, false).unwrap();
         assert!(!stage.take(&hash).unwrap().verified);
+    }
+
+    fn provide_n(store: &mut PayloadStore, n: u8) -> Hash {
+        let bytes = grt1([n, n, n, n, n, n, n, n]);
+        let hash = crate::wire::sha256(&bytes);
+        store.provide(&bytes, &hash, 2, true).unwrap();
+        hash
+    }
+
+    /// G7k: oldest-touched entries go first, and a referenced hash is never evicted even if the
+    /// store stays over budget because of it (G6s's native rule).
+    #[test]
+    fn eviction_is_lru_and_never_touches_the_referenced_set() {
+        let mut store = PayloadStore::default();
+        let h1 = provide_n(&mut store, 1);
+        let h2 = provide_n(&mut store, 2);
+        let h3 = provide_n(&mut store, 3);
+        assert_eq!(store.len(), 3);
+        let one_entry_bytes = store.total_bytes() / 3;
+
+        // Nothing referenced, budget for one entry: the two oldest (h1, h2) go.
+        let referenced = HashSet::new();
+        let evicted = store.evict_unreferenced(&referenced, one_entry_bytes);
+        assert_eq!(evicted, 2);
+        assert_eq!(store.len(), 1);
+        assert!(!store.has(&h1));
+        assert!(!store.has(&h2));
+        assert!(store.has(&h3));
+
+        // Re-provide h1 and h2; h3 is now the oldest-touched. A budget of one entry that
+        // references h3 must evict h1 and h2 instead, and must not evict h3 even though the
+        // store then stays over budget.
+        let h1 = provide_n(&mut store, 1);
+        let h2 = provide_n(&mut store, 2);
+        assert_eq!(store.len(), 3);
+        let mut referenced = HashSet::new();
+        referenced.insert(h3);
+        let evicted = store.evict_unreferenced(&referenced, one_entry_bytes);
+        assert_eq!(evicted, 2);
+        assert_eq!(store.len(), 1);
+        assert!(store.has(&h3));
+        assert!(!store.has(&h1));
+        assert!(!store.has(&h2));
+        assert!(store.total_bytes() > 0);
+
+        // Re-touching a hash (a re-provide of an already-resident one) moves it to the back.
+        let mut store = PayloadStore::default();
+        let h1 = provide_n(&mut store, 1);
+        let h2 = provide_n(&mut store, 2);
+        provide_n(&mut store, 1); // re-provide: h1 is now the most-recently-touched.
+        let evicted = store.evict_unreferenced(&HashSet::new(), one_entry_bytes);
+        assert_eq!(evicted, 1);
+        assert!(!store.has(&h2)); // h2, not h1, was the oldest-touched.
+        assert!(store.has(&h1));
+    }
+
+    /// G7k: `bytes_of` counts each named hash once, and only what the store holds.
+    #[test]
+    fn bytes_of_counts_held_hashes_once() {
+        let mut store = PayloadStore::default();
+        let h1 = provide_n(&mut store, 1);
+        let h2 = provide_n(&mut store, 2);
+        let one = store.total_bytes() / 2;
+        let mut set = HashSet::new();
+        set.insert(h1);
+        assert_eq!(store.bytes_of(&set), one);
+        set.insert(h2);
+        set.insert(Hash([9u8; 32])); // never provided: contributes nothing
+        assert_eq!(store.bytes_of(&set), 2 * one);
+    }
+
+    /// `no-evict` is simply never calling [`PayloadStore::evict_unreferenced`]: the store keeps
+    /// growing past the budget, by construction (no new behaviour to test beyond "it was never
+    /// called" -- the adapter's own call site is what a sabotage omits).
+    #[test]
+    fn a_budget_respected_by_one_call_is_unbounded_without_it() {
+        let mut store = PayloadStore::default();
+        for n in 0..10u8 {
+            provide_n(&mut store, n);
+        }
+        assert_eq!(store.len(), 10);
+        // "no-evict": the adapter never calls evict_unreferenced, so nothing shrinks.
+        assert_eq!(store.len(), 10);
     }
 }

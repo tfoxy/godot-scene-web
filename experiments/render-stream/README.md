@@ -60,7 +60,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7r | pacing, rates, phase study, dual on all three receivers (window 1): native 45/45, gsw 59/59, web 76/78 (its fetch tail); no variant holds 60/60 on every phase — landed | [results/gate7/g7r.md](results/gate7/g7r.md) |
 | G7wf | the web export's payload GETs through the browser's `fetch` (`JavaScriptBridge`, both web cores): 66.2→2.8 ms p50; web `g7-r` 79/79, `rate-achieved` at 15/30 now passes, good phase 58.4–59.0/s; `fetch-impl@web` — landed | [results/gate7/g7wf.md](results/gate7/g7wf.md) |
 | G7o3 | web export stages payloads on arrival like GSW (G7o2); rs-core step-transaction cuts (−23% native, −22% wasm); GSW hd-patch p95 10.7→9.3 ms (still a stretch-target miss); web-rs hd-patch 11.7→11.8 ms, unchanged (its p95 is `RenderingServer`-call bound, `execute` ≈6.4 of a 9.1 ms apply p95) — landed | [results/gate7/g7o3.md](results/gate7/g7o3.md) |
-| G7k | startup, memory, soak | [protocol/gate7/g7k.md](protocol/gate7/g7k.md) |
+| G7k | startup, memory, soak on both browsers (Rust core): GSW cold 279 / warm 705 ms and web 1815 / 1701 ms to first submit (the HTTP cache removes bytes, not time); 300 s soak holds the 1 MiB budget, flat heaps and GL textures; `no-evict` and `leak-gl-textures` fail exactly their sets (`gpu-mem-bounded` typed `unavailable` for the leak) — landed | [results/gate7/g7k.md](results/gate7/g7k.md) |
 | G7q | credit window 2 — fork F1, opt-in | [protocol/gate7/g7q.md](protocol/gate7/g7q.md) |
 | G7v | phone acceptance on both phones, g31 first | [protocol/gate7/g7v.md](protocol/gate7/g7v.md) |
 | G7p | measurement matrix, report/2 | [protocol/gate7/g7p.md](protocol/gate7/g7p.md) |

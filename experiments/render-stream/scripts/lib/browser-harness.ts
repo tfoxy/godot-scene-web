@@ -347,6 +347,11 @@ export interface HarnessServerOptions {
    * Chrome's 100 µs (the bench times phases of tens of microseconds). `http://127.0.0.1` is a
    * secure context, on the phone too (adb reverse keeps the origin byte-identical). */
   crossOriginIsolated?: boolean;
+  /** G7k (startup-warm): static files carry `Cache-Control: max-age=3600` plus an ETag and
+   * Last-Modified, as a real deployment serves its bundle -- with no validators or freshness
+   * Chromium's HTTP cache cannot reuse a response, so a warm profile would never be warm. Off by
+   * default (every other leg's server is unchanged). */
+  staticCache?: boolean;
   /** G7e: per-nonce evidence directories. A nonce listed here writes into its own directory
    * (a leg's directory, D10) instead of `<evidenceRoot>/<nonce>`; the same `..` guard applies. */
   evidenceDirs?: Readonly<Record<string, string>>;
@@ -715,6 +720,14 @@ export class HarnessServer {
       res.end(body);
       return;
     }
+    const st = statSync(target);
+    const cacheHeaders: Record<string, string> = this.options.staticCache
+      ? {
+          "Cache-Control": "public, max-age=3600",
+          ETag: `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`,
+          "Last-Modified": st.mtime.toUTCString(),
+        }
+      : {};
     const isolation: Record<string, string> = this.options.crossOriginIsolated
       ? {
           "Cross-Origin-Opener-Policy": "same-origin",
@@ -726,6 +739,7 @@ export class HarnessServer {
     res.writeHead(200, {
       "Content-Type": contentTypeFor(target),
       ...isolation,
+      ...cacheHeaders,
     });
     createReadStream(target).pipe(res);
   }

@@ -62,6 +62,15 @@ impl MeshResidency {
         self.resident.len()
     }
 
+    /// G7k: every surface hash the resident meshes currently draw from (a dropped surface, G7t's
+    /// `drop-mesh-surface` sabotage, contributes none). A [`PayloadStore`] budget must never evict
+    /// one of these.
+    pub fn resident_hashes(&self) -> impl Iterator<Item = Hash> + '_ {
+        self.resident
+            .values()
+            .flat_map(|r| r.drawn.iter().flatten().copied())
+    }
+
     fn named(&self) -> BTreeSet<Id> {
         self.named_by.values().flatten().copied().collect()
     }

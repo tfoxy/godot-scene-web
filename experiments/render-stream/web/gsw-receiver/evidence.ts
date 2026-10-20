@@ -244,6 +244,10 @@ export interface Report {
   creditWindow: number | null;
   /** Live: the page payload cache's block (null: file mode's `http-cache`). */
   cache?: Record<string, unknown> | null;
+  /** G7k (Q10 soak), live mode only: the `PayloadStore`'s cumulative eviction count at the last
+   * residency sample (`perf.ts` `Perf.residencyEvictions`). `null`/undefined (file mode, or no
+   * residency sample was ever taken) reports as 0, the native receiver's own default. */
+  residencyEvictions?: number | null;
 }
 
 type RustTx = RustParts["transactions"][number];
@@ -394,7 +398,12 @@ export function appliedJson(r: Report): Record<string, unknown> {
       canvases_created: sum((t) => t.canvases_created),
       canvas_attach: sum((t) => t.canvas_attach),
       canvas_stacking_sets: sum((t) => t.canvas_stacking_sets),
-      evictions_memory: 0,
+      // G7k (Q10 soak): live mode's PayloadStore evictions; file mode never evicts (0, as
+      // natively). There is no disk tier (GSW has no cache directory) and no HTTP re-fetch of a
+      // hash this receiver evicted, by protocol (a carried hash is never resent, memory
+      // g6s-carried-set-resource-duplicate): an evicted hash needed again is GET-fetched, the
+      // same fetch path any other missing payload uses, so it is never a `refetch_after_evict`.
+      evictions_memory: r.residencyEvictions ?? 0,
       evictions_disk: 0,
       refetch_after_evict: 0,
     },

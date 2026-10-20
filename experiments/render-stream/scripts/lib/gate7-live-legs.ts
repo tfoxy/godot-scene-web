@@ -90,6 +90,7 @@ import {
   parseLifecycleSpec,
 } from "./gate7-lifecycle";
 import { type BackingStore, base64url, parseEnvTxt } from "./gate7-web-legs";
+import { type MemSamplerHandle, startMemSampler } from "./gate7k-samplers";
 
 export type BrowserReceiverKind = "web" | "gsw";
 
@@ -484,6 +485,9 @@ export function runBrowserLeg(
   let token = "";
   // G7u: a lifecycle leg's driver (lib/gate7-lifecycle.ts); null on every other leg.
   let lifecycle: LifecycleDriver | null = null;
+  // G7k (Q10 startup/soak): opt-in (GATE7_MEM_SAMPLE=1, set only for g7-k's own legs), so every
+  // other group's evidence and CDP traffic is unchanged. null on every leg that does not ask.
+  let memSampler: MemSamplerHandle | null = null;
 
   const writeEvidence = async (): Promise<void> => {
     await writeFile(
@@ -534,6 +538,8 @@ export function runBrowserLeg(
       staticRoot,
       evidenceRoot: join(staticRoot, ".evidence"),
       allowedLegNonces: [],
+      // G7k: the startup-warm legs need a bundle a warm profile's HTTP cache can reuse.
+      staticCache: process.env.GATE7_STATIC_CACHE === "1",
     });
     const { origin } = await server.start(req.port);
     const nonce = randomBytes(8).toString("hex");
@@ -702,6 +708,15 @@ export function runBrowserLeg(
     if (lifecycle)
       await page.addInitScript({ content: lifecycle.initScript() });
     await page.goto(navigateTo);
+    // G7k: started after the navigation (so provenance's own about:blank page from
+    // `checkProvenanceOf` is never sampled) and before the leg's own work, so a startup leg's
+    // first second is covered too.
+    if (process.env.GATE7_MEM_SAMPLE === "1")
+      memSampler = await startMemSampler(
+        launched.browser,
+        page,
+        join(dir, "mem-timeline.jsonl"),
+      );
     const deadline = Date.now() + req.timeoutMs;
     if (lifecycle) {
       // One evaluate per poll: exit, error, the shim's pending action and its state. A poll
@@ -782,6 +797,9 @@ export function runBrowserLeg(
   const finish = async (): Promise<void> => {
     if (finished) return;
     finished = true;
+    // Awaited, and bounded inside stop() itself: `prepared.context.close()` below must never
+    // race an in-flight CDP session this module still owns.
+    await memSampler?.stop().catch(() => {});
     await writeEvidence().catch((err) =>
       log(`browser-receiver: writing evidence failed: ${String(err)}`),
     );

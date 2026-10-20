@@ -761,6 +761,24 @@ impl Applier {
         ]
     }
 
+    /// G7k: the payload hashes of the resident textures only (what a GL adapter holds as texture
+    /// objects). A texture whose payload was never provided contributes none.
+    pub fn resident_texture_hashes(&self) -> impl Iterator<Item = crate::state::Hash> + '_ {
+        self.resident.values().filter_map(|r| r.hash)
+    }
+
+    /// G7k (Q10 soak): every payload hash the retained state currently draws from -- resident
+    /// textures' and meshes' hashes. A [`PayloadStore`] budget must never evict one of these
+    /// (G6s's native rule). Shaders are not a [`PayloadStore`] eviction concern here: a
+    /// `render-stream-core` adapter transpiles a shader once per hash and keeps the transpiled
+    /// program, not the source, resident ([`Self::pending_shaders`]).
+    pub fn referenced_payload_hashes(&self) -> std::collections::HashSet<crate::state::Hash> {
+        let mut out: std::collections::HashSet<crate::state::Hash> =
+            self.resident.values().filter_map(|r| r.hash).collect();
+        out.extend(self.meshes.resident_hashes());
+        out
+    }
+
     /// G7o2 diagnostics (`rs-core-check walk-diff`): a digest of what the packed list paints, in
     /// paint order and independent of where vertices, rows and indices sit in their buffers: per
     /// draw its state (binding values for an item-space program, the scissor only when it
