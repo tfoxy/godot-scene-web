@@ -19,7 +19,8 @@
 #     shared stream;
 #   - backfill: behind one long shared leg that an exclusive waits on, short shared legs whose
 #     history says they end before it run meanwhile, without delaying the exclusive (and none run
-#     under GSW_QUIET_SCHED=v1).
+#     under GSW_QUIET_SCHED=v1);
+#   - `quiet.sh light` holds nothing: it runs straight through an exclusive hold.
 # Prints one PASS/FAIL line per check and exits non-zero on any FAIL.
 
 set -uo pipefail
@@ -258,6 +259,22 @@ check "backfill: the exclusive is not delayed past the long leg (starts $(field 
 	fle "$(field backfill-v2 x_after_long)" 0.8
 nb="$(grep -c '"backfill":true' "$OUT/backfill-v2/lockdir/quiet.lock.events.log" || true)"
 check "backfill: logged on the acquire ($nb)" [ "$nb" -ge 2 ]
+
+# --- 6. light holds nothing ---------------------------------------------------------------------
+CASE="$OUT/light"
+rm -rf "$CASE"
+mkdir -p "$CASE"
+export GSW_QUIET_DIR="$CASE/lockdir"
+bash "$QV2" exclusive --label hold-x --log "$CASE/lock.jsonl" -- sleep 2 &
+sleep 0.4
+t0="$EPOCHREALTIME"
+bash "$QV2" light --label pure --log "$CASE/lock.jsonl" -- true
+waited="$(python3 -c "import sys; print(round(float(sys.argv[2].replace(',','.')) - float(sys.argv[1].replace(',','.')), 2))" "$t0" "$EPOCHREALTIME")"
+wait
+check "light: runs straight through an exclusive hold (${waited}s < 0.5)" fle "$waited" 0.5
+check "light: logged as a light event" grep -q '"event":"light"' "$CASE/lock.jsonl"
+bash "$QV2" light -- false
+check "light: returns the command's exit status" [ $? = 1 ]
 
 echo "self-test-quiet-sched: $PASSES passed, $FAILS failed (evidence: $OUT)"
 [ "$FAILS" = 0 ]

@@ -48,14 +48,17 @@ other agents' work, without a lock held for a whole multi-gate run (`lib/quiet.s
   *Compatibility*: v1 holders (worktrees not yet on this code) and v2 ones share the lock safely:
   flock does the exclusion for both; a v2 shared leg ignores a v1 marker only inside a share
   window; a v1 shared leg honours every marker. `GSW_QUIET_SCHED=v1` restores the old scheduling.
+- **Light work**: `quiet.sh light -- <command...>` holds nothing and runs the command under
+  `nice -n 10` (logged as a `light` event): for the pure self-tests only
+  (`test/run-pure-self-tests.sh`), never for a build or a leg.
 - `bash experiments/render-stream/scripts/lib/quiet.sh status` shows the current holders, waiters,
   deferring exclusive acquirers and the share window; `test/self-test-quiet.sh` is the lock's
   self-test (a private lock, ~40 s) and `test/self-test-quiet-sched.sh` the v2 scheduling's (the
   G7o3 starvation reproduced under v1 and fixed under v2, mixed v1/v2 holders, the deferral bound,
-  backfill; ~5 min); `test/bench-quiet-sched.sh` is the synthetic v1/v2 benchmark (fake runners,
-  private locks, wall and per-leg waits per mix; `../results/grt.md`).
+  backfill, light; ~5 min); `test/bench-quiet-sched.sh` is the synthetic v1/v2 benchmark (fake
+  runners, private locks, wall and per-leg waits per mix; `../results/grt.md`).
 
-# Source cache (GRT)
+# Source cache and smoke tier (GRT)
 
 **Source cache** (`source-cache.sh`; `lib/source-key.ts`; D21 as amended). A gate 7 source run is
 valid for a build when its content key matches: the template, capture library and calibration
@@ -75,6 +78,44 @@ under those roots is in the key until excluded. `gate7-tool.ts source-key [--jso
 - The capture library builds path-independently (`-ffile-prefix-map`, `capture/CMakeLists.txt`), so
   the same capture sources give the same library sha256 in every worktree and a cached source
   serves later increments.
+
+**Smoke tier** (`validate-increment.sh`, `smoke-map.json`, `lib/smoke-plan.py`). `bash
+validate-increment.sh --plan` maps the diff (`git diff --name-only main...HEAD` plus uncommitted and
+untracked files) through `smoke-map.json` to targets: native gates per core, gate 7 groups per
+receiver and web core, live groups, crates, the lock tests. A path no rule matches reaches every
+target. Without `--plan` it runs them: the pure self-tests (`test/run-pure-self-tests.sh`, light),
+builds and crates, native gates (each passing rust-core full run is published to the source
+cache), then gate 7 with `--make-sources` (which then hits the cache). Native sabotage legs run
+only when a checker, runner, sabotage or mutation file is in the diff; otherwise the runners get
+`RS_SABOTAGE_TIER=skip` (`lib/legs.sh` skips any leg directory naming `sabotage`, leaving
+`skipped-by-tier.txt`) and the run's `tier-verdict.json` lists the sabotage checks as
+skipped-by-tier, failing on any other check. `--milestone` runs every target with sabotage.
+`python3 lib/smoke-plan.py --self-test --map smoke-map.json` tests the map.
+
+`--tier smoke` (default) vs `--tier full`. Smoke runs one representative leg per reached live
+group and browser: `smoke-map.json` "smoke" names each group's leg directories (g7-1: `import`, `capture`,
+`reference`, `live`, 3 of its 11 legs), `validate-increment.sh` passes them as `RS_SMOKE_LEGS` to
+that group's own `run-gate7.sh --live` run (`lib/legs.sh` leaves `skipped-by-tier.txt` in every
+other leg directory), and one receiver leg per file group as `GATE7_SMOKE_LEGS=@first`
+(`smokeSkipsLeg` in `lib/gate7-web-legs.ts`; the `--make-sources` native run is untouched, so the
+source cache stays complete). A diff reaching 3 or more groups on a receiver is shared code: smoke
+runs the first group there and lists the rest, and the groups without a smoke entry, in the plan's
+`smoke_deferred`. The full tier runs every leg of the reached groups; run it once before the commit.
+`lib/tier-verdict.py` judges a filtered run: a failing check is excused only when it names a skipped
+leg (or, for skipped sabotage legs, "sabotage" in its id), every other failure stays real, and each
+smoke entry must have run, so a stale entry fails loudly. Unset, neither variable changes any
+runner. `python3 lib/tier-verdict.py --self-test` tests it.
+
+**Pinned Chromium, repo-private** (`lib/browser-harness.ts` `resolvePinnedChromium`). Every gate 7
+browser launch uses `~/.cache/godot-render-stream/ms-playwright/chromium-1223/`
+(`RS_PRIVATE_BROWSERS_DIR` overrides the root), not Playwright's shared `~/.cache/ms-playwright/`,
+which any repo's `playwright install` garbage-collects (it deleted `chromium-1223` on 2026-10-20 and
+every browser leg failed). When the private copy's `chrome` does not match
+`EXPECTED_CHROMIUM_SHA256` and the shared cache's does, the harness seeds the private copy from it
+(`cp -a` of the revision directory, sha-checked, moved into place under a flock) and launches that;
+if seeding fails it launches the verified shared copy; if neither matches it refuses, naming both
+paths. It never downloads a browser. `checkBrowserProvenance` still hashes whatever was launched
+against the same pin. `test/self-test-pinned-chromium.ts` covers it (no browser launched).
 
 # Gate −1 runner
 

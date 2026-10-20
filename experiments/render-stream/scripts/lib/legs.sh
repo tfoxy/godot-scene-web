@@ -639,8 +639,45 @@ run_rendered_receiver() {
 	run_rendered "$dir" "$RECEIVER_DIR"
 }
 
+# GRT smoke tier (scripts/validate-increment.sh, results/grt.md): two env switches skip a leg
+# without launching it; its directory gets skipped-by-tier.txt instead, and a receiver leg on a
+# skipped capture finds no recording and skips itself (prepare_recording). The checker then fails
+# the checks that needed that evidence; validate-increment.sh's tier verdict excuses exactly the
+# ones whose failure list names only skipped legs.
+#   RS_SABOTAGE_TIER=skip   a SABOTAGE leg (a path component of its directory, relative to $OUT,
+#                           contains "sabotage") is skipped
+#   RS_SMOKE_LEGS=a,b,...   only legs whose directory, relative to $OUT, equals one of the entries
+#                           or lies under one (entry/...) run; every other leg is skipped
+# Milestone sweeps, full-tier runs and plain runner calls set neither and run every leg.
+legs_sabotage_skipped() {
+	local rel why=""
+	rel="$(legs__rel "$1")"
+	if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
+		case "/$rel/" in
+		*/*sabotage*/*) why="RS_SABOTAGE_TIER=skip" ;;
+		esac
+	fi
+	if [ -z "$why" ] && [ -n "${RS_SMOKE_LEGS:-}" ]; then
+		local e keep=0
+		local -a entries
+		IFS=, read -r -a entries <<<"$RS_SMOKE_LEGS"
+		for e in "${entries[@]}"; do
+			case "$rel" in
+			"$e" | "$e"/*) keep=1 ;;
+			esac
+		done
+		[ "$keep" = 1 ] || why="RS_SMOKE_LEGS (the smoke tier runs one representative leg)"
+	fi
+	[ -n "$why" ] || return 1
+	mkdir -p "$1"
+	echo "skipped-by-tier: $why" >"$1/skipped-by-tier.txt"
+	echo "$LEGS_LOG: $rel skipped by tier ($why)" >&2
+	return 0
+}
+
 # The launch functions, each under the quiet lock (header above).
 run_headless() {
+	legs_sabotage_skipped "$1" && return 0
 	legs_lock_enter "$1"
 	LEGS_LOCK_FG=$((LEGS_LOCK_FG + 1))
 	legs__run_headless "$@"
@@ -651,6 +688,7 @@ run_headless() {
 }
 
 run_rendered() {
+	legs_sabotage_skipped "$1" && return 0
 	legs_lock_enter "$1"
 	LEGS_LOCK_FG=$((LEGS_LOCK_FG + 1))
 	legs__run_rendered "$@"
@@ -662,6 +700,10 @@ run_rendered() {
 
 start_headless_bg() {
 	local opens=0
+	if legs_sabotage_skipped "$1"; then
+		BG_PID=""
+		return 0
+	fi
 	if legs__timing_opens; then
 		opens=1
 		timing_leg_begin "${LEGS_TIMING_GROUP:-gate7-live}:$(legs__rel "$1")"
@@ -677,6 +719,9 @@ start_headless_bg() {
 }
 
 finish_bg() {
+	if [ -z "${2:-}" ] && [ -f "$1/skipped-by-tier.txt" ]; then
+		return 0
+	fi
 	legs__finish_bg "$@"
 	local rc=$? pid="$2"
 	if [ -n "$LEGS_TIMING_OPENER" ] && [ "$pid" = "$LEGS_TIMING_OPENER" ]; then

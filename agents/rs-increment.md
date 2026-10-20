@@ -33,6 +33,12 @@ GDExtension built from `rs-core-capi`, not a checked-in binary. Without this ste
 (`GDExtensionManager.load_extension` returns a nonzero error), which looks like a receiver bug
 but is a missing one-time build.
 
+Browser legs launch the pinned Chromium from `~/.cache/godot-render-stream/ms-playwright/`, a
+repo-private copy that other repos' `playwright install` cannot garbage-collect. The first browser
+launch on a machine seeds it by copying Playwright's shared `~/.cache/ms-playwright/chromium-1223/`
+(sha-checked against the pin), so there is nothing to do unless the harness reports that neither
+copy matches; then restore one of them with the pinned build (don't download a different one).
+
 ## Commit rules
 
 One squash commit on current `main` when the increment is finished and verified — don't ask.
@@ -55,11 +61,34 @@ a tag. Don't download anything beyond what the increment's design doc already na
 
 ## Scoped re-runs
 
-Re-run only what your diff can reach (gate7-design.md, "Scoped re-runs and milestone sweeps"): the
-receivers, web-export cores (`gdscript` / `rust`) and `g7-*` groups whose code you changed, plus the
-pure self-tests and the touched crates' tests. Don't sweep every receiver × core × group: the
-orchestrator runs full sweeps at milestones. Your result doc says what you ran and why the rest was
-out of scope.
+Re-run only what your diff can reach (gate7-design.md, "Scoped re-runs and milestone sweeps"), in
+two tiers, through `experiments/render-stream/scripts/validate-increment.sh`. Writing code is
+minutes; validation is most of an increment's time, so plan it before the first run:
+
+1. **Plan.** `validate-increment.sh --plan` maps `git diff --name-only main...HEAD` (plus
+   uncommitted files) through `scripts/smoke-map.json` to the native gates per core, `g7-*` groups
+   per receiver and web-export core, live groups and crates it can reach. A path no rule matches
+   reaches everything; if your change needs a rule, add it to the map (one data file) rather than
+   hand-picking runs. `--plan --tier full` shows the full tier's runs.
+2. **Iterate on smoke** (the default `--tier smoke`). Pure self-tests (they hold no lock, so they
+   never wait on another agent's timing leg), native gates with their sabotage legs skipped, one
+   representative leg per reached live group and browser (g7-1: `capture`, `reference` and `live`,
+   not all 11 legs), one receiver leg per file group; shared code reaching most groups smokes the
+   first group and lists the rest as `smoke_deferred`. Re-run with `--only <run id>` while
+   fixing.
+3. **Full tier once, before the commit** (`--tier full`): every leg of every reached group, with
+   sabotage legs if a checker, runner, sabotage or mutation file is in the diff. Your result doc
+   says what ran (the plan's `runs`) and why the rest was out of scope (its `skipped_targets`).
+4. **`--milestone` is the orchestrator's sweep**, not yours.
+
+Native sabotage legs run only when a checker, runner, sabotage or mutation file is in the diff;
+otherwise they are skipped-by-tier and the summary says so. Never sleep or poll waiting for another
+increment to land: validate on your own base and let the orchestrator order the landings.
+
+The tiers hold no lock for the pure self-tests (`quiet.sh light`) and need a Chromium for gate 7:
+the harness launches a repo-private copy of the pinned build (`~/.cache/godot-render-stream/
+ms-playwright/chromium-1223/`), seeded by `cp -a` from Playwright's shared cache when its sha256
+matches; it never downloads, and fails naming both paths when neither copy matches.
 
 ## Quiet-machine runs
 

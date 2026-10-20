@@ -81,6 +81,7 @@ import {
   collectChromiumProcesses,
   HarnessServer,
   type LaunchedBrowser,
+  resolvePinnedChromium,
 } from "./browser-harness";
 import {
   desktopLifecycleActions,
@@ -383,7 +384,7 @@ async function launchOnProfile(profileDir: string): Promise<{
   launched: LaunchedBrowser;
 }> {
   await mkdir(profileDir, { recursive: true });
-  const executablePath = chromium.executablePath();
+  const { executablePath } = resolvePinnedChromium();
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: false,
     executablePath,

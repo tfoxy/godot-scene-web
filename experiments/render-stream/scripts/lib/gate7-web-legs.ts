@@ -93,6 +93,25 @@ export interface WebLegResult {
   wallMs: number;
 }
 
+/** GRT smoke tier: true when GATE7_SMOKE_LEGS (comma-separated leg ids; an entry also covers the
+ * legs under it, `entry/...`; the entry `@first` names the first leg whose id has no "sabotage" in
+ * it) is set and does not name `leg` among `all`. Unset runs every leg. */
+export function smokeSkipsLeg(
+  leg: string,
+  all: readonly string[],
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.GATE7_SMOKE_LEGS;
+  if (!raw) return false;
+  const entries = raw
+    .split(",")
+    .filter(Boolean)
+    .map((e) =>
+      e === "@first" ? (all.find((l) => !/sabotage/.test(l)) ?? e) : e,
+    );
+  return !entries.some((e) => leg === e || leg.startsWith(`${e}/`));
+}
+
 const DEFAULT_CANVAS: [number, number] = [640, 360];
 const FIXED_ARGS_WITH_VALUE = new Set([
   "--path",
@@ -231,6 +250,21 @@ export async function runWebLegs(
   const results: WebLegResult[] = [];
   try {
     for (const spec of legs) {
+      // GRT smoke tier: GATE7_SMOKE_LEGS names the legs that run; every other leg
+      // is left out and marked, and the checks that needed it are excused by the tier verdict.
+      if (
+        smokeSkipsLeg(
+          spec.leg,
+          legs.map((l) => l.leg),
+        )
+      ) {
+        await mkdir(spec.webDir, { recursive: true });
+        await writeFile(
+          join(spec.webDir, "skipped-by-tier.txt"),
+          "skipped-by-tier: GATE7_SMOKE_LEGS (the smoke tier runs one representative leg)\n",
+        );
+        continue;
+      }
       // Measurement isolation: one file leg, one shared quiet hold (lib/quiet-lock.ts).
       const hold = await quietAcquire(
         "shared",

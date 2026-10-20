@@ -1481,6 +1481,22 @@ both cores) run at milestones only: before G7v, before G7z, and before anything 
 receiver default. The orchestrator runs them, and a regression a sweep finds is assigned to the
 increment that introduced it. At most two increments run validation at once.
 
+**Tiers (GRT, 2026-10-20, user-approved; `results/grt.md`).** `scripts/validate-increment.sh` turns
+the paragraph above into a plan: **pure** (golden checks and every pure `self-test-*.ts`, holding no
+lock, every increment), **scoped** (the targets `scripts/smoke-map.json` maps the diff to; an
+unmatched path reaches every target), **sabotage** (native sabotage legs only when a checker,
+runner, sabotage or mutation file is in the diff, else reported skipped-by-tier) and **milestone**
+(`--milestone`: every target, every sabotage leg; the sweeps above). Sources are reused across
+the native, gsw and web halves and across increments by their input key (D21 as amended).
+Within the scoped tier an increment works in two passes: it iterates on **smoke** (one
+representative leg per reached live group and browser, one receiver leg per file group, native
+gates without their sabotage legs; a diff reaching three or more groups on a receiver smokes only
+the first and lists the rest as deferred) and runs the **full** tier (`--tier full`: every leg of
+every reached group, with sabotage legs when the diff touches a checker, runner, sabotage or mutation
+file) once before the commit. An increment does not sleep or poll waiting for another increment to
+land; the orchestrator orders landings, and a rebase finds any conflict. Measured: G7hp spent 75 of
+98 min in `g7-1` runs it did not need in full (11 legs per receiver, about 2.2 min per live leg),
+and writing its code took 1.7 min.
 
 ### Waves
 

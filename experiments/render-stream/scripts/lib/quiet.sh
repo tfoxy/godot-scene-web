@@ -43,6 +43,9 @@
 # shared holder is expected to; any holder without an expectation (v1, or no history) or any
 # exclusive holder means no backfill. A misestimate delays the exclusive by at most the overrun.
 #
+# Light work (`quiet.sh light -- <command...>`): pure, small CPU work (the pure self-tests) runs
+# under `nice -n 10` holding nothing, so it never queues behind a timing leg; it is logged only.
+#
 # Every lock is held by a small HOLDER process (`quiet.sh hold`), never by a runner's own file
 # descriptor: Godot hosts, gamescope and browser daemons a runner starts can never inherit (and so
 # keep) the lock, and a crash on either side frees it -- the kernel drops the lock when the holder
@@ -66,6 +69,7 @@
 # Command use:
 #   quiet.sh shared    [--label L] [--log F] -- <command...>   the command under a shared hold
 #   quiet.sh exclusive [--label L] [--log F] -- <command...>   the command under an exclusive hold
+#   quiet.sh light     [--label L] [--log F] -- <command...>   the command niced, holding nothing
 #   quiet.sh status                                            live holders and waiters
 #   quiet.sh summary <log.jsonl> [--wall-s S] [--out F.json]   totals per mode, per label
 #   quiet.sh hold <shared|exclusive> --owner PID [--label L] [--log F]   (internal: the holder)
@@ -702,7 +706,7 @@ with open(log) as f:
             events.append(json.loads(line))
         except ValueError:
             pass
-holds, nested, errors = [], [], []
+holds, nested, errors, light = [], [], [], []
 acq = {}
 for e in events:
     ev = e.get("event")
@@ -714,6 +718,8 @@ for e in events:
                       "hold_s": e["hold_s"], "start_t": a["t"] if a else None, "reason": e.get("reason"),
                       "deferred_s": a.get("deferred_s") if a else None,
                       "bypassed_v1_marker": bool(a.get("bypassed_v1_marker")) if a else False})
+    elif ev == "light":
+        light.append({"label": e["label"], "hold_s": e.get("hold_s"), "rc": e.get("rc")})
     elif ev in ("nested", "nested-unisolated"):
         nested.append({"event": ev, "mode": e["mode"], "label": e["label"], "under": e.get("under")})
     elif ev == "error":
@@ -746,6 +752,7 @@ summary = {
     "nested_unisolated": [n for n in nested if n["event"] == "nested-unisolated"],
     "errors": len(errors),
     "open_holds": open_holds,
+    "light": {"runs": len(light), "s_total": round(sum(l["hold_s"] or 0 for l in light), 3)},
     "holds": holds,
 }
 if out:
@@ -838,6 +845,28 @@ quiet__main() {
 		quiet_release
 		return "$rc"
 		;;
+	light)
+		# Pure CPU work: holds nothing (never queues behind a timing leg), runs niced, logged.
+		local label="" rc=0
+		while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+			case "$1" in
+			--label) label="$2" && shift 2 ;;
+			--log) QUIET_LOG="$2" && shift 2 ;;
+			*) echo "quiet.sh: unknown option $1 (usage: quiet.sh light [--label L] [--log F] -- <command...>)" >&2 && return 2 ;;
+			esac
+		done
+		[ "${1:-}" = "--" ] && [ $# -gt 1 ] || {
+			echo "quiet.sh: usage: quiet.sh light [--label L] [--log F] -- <command...>" >&2
+			return 2
+		}
+		shift
+		[ -n "$label" ] || label="light: $*"
+		label="${label:0:160}"
+		local t0="$EPOCHREALTIME"
+		nice -n "${GSW_QUIET_LIGHT_NICE:-10}" "$@" || rc=$?
+		quiet__log "$QUIET_LOG" "\"event\":\"light\",\"mode\":\"light\",\"label\":$(quiet__json_str "$label"),\"owner\":$$,\"hold_s\":$(quiet__secs "$t0" "$EPOCHREALTIME"),\"rc\":$rc"
+		return "$rc"
+		;;
 	status)
 		quiet__status_cmd
 		;;
@@ -845,7 +874,7 @@ quiet__main() {
 		quiet__summary_cmd "$@"
 		;;
 	*)
-		echo "usage: quiet.sh shared|exclusive [--label L] [--log F] -- <command...> | status | summary <log> [--wall-s S] [--out F]" >&2
+		echo "usage: quiet.sh shared|exclusive|light [--label L] [--log F] -- <command...> | status | summary <log> [--wall-s S] [--out F]" >&2
 		return 2
 		;;
 	esac
