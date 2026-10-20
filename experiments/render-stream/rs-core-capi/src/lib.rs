@@ -199,6 +199,40 @@ pub unsafe extern "C" fn rsc_provide(
     })
 }
 
+/// G7o3 (D31): a payload as it arrives, verified and decoded now and held for the apply that first
+/// uses it: 1 when staged, 0 with "<code>: <detail>" in text.
+///
+/// # Safety
+/// `hash` points to `hlen` bytes, `data` to `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_stage(
+    h: *mut RsCore,
+    hash: *const u8,
+    hlen: usize,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    let hash = text(hash, hlen).to_string();
+    let data = bytes(data, len);
+    guard(h, 0, |c| match c.stage(&hash, data) {
+        Ok(()) => 1,
+        Err(e) => {
+            c.text = e.into_bytes();
+            0
+        }
+    })
+}
+
+/// G7o3: drops a staged payload (the receiver's memory cache evicted it).
+///
+/// # Safety
+/// `hash` points to `hlen` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_unstage(h: *mut RsCore, hash: *const u8, hlen: usize) {
+    let hash = text(hash, hlen).to_string();
+    guard(h, (), |c| c.unstage(&hash));
+}
+
 /// A `withheld` shader's library answer: `ok` with its code, or not with the detail.
 ///
 /// # Safety

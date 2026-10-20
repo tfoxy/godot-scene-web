@@ -12,8 +12,19 @@ use std::collections::BTreeMap;
 pub type Id = u32;
 
 /// SHA-256 digest bytes. Hex is lowercase on the wire and in every resolved form.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Hash(pub [u8; 32]);
+
+/// G7o3: a hash table keyed by a SHA-256 digest hashes its first 8 bytes (equal digests hash
+/// equally; the table's own hasher still mixes them), not all 32 plus a length.
+impl std::hash::Hash for Hash {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&self.0[..8]);
+        state.write_u64(u64::from_le_bytes(b));
+    }
+}
 
 impl Hash {
     pub fn to_hex(&self) -> String {

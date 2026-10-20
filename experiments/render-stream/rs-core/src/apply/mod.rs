@@ -43,8 +43,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
 /// G7o2: the applier's id-keyed maps hash with the validator's [`IdHasher`] (SipHash was a few
-/// per cent of a walk); nothing depends on their iteration order.
-type IdMap<V> = HashMap<Id, V, BuildHasherDefault<crate::validate::IdHasher>>;
+/// per cent of a walk); nothing depends on their iteration order. G7o3: the mesh residency and
+/// the texture names too.
+pub(crate) type IdMap<V> = HashMap<Id, V, BuildHasherDefault<crate::validate::IdHasher>>;
 
 /// The root viewport as the applier draws it.
 #[derive(Clone, Copy, Debug)]
@@ -320,7 +321,9 @@ struct ItemRec {
     tex_sizes: TexSizes,
     mesh_versions: Vec<(Id, i64)>,
     // The last walk's results.
-    visited: bool,
+    /// The walk (`Applier::walk_serial`) that last visited the item: it is visited when that is
+    /// the last walk (G7o3: a walk does not reset every record).
+    walked: u64,
     final_xform: Xform,
     /// The modulate handed to children (`modulate * parent's`).
     child_modulate: [f32; 4],
@@ -350,6 +353,12 @@ struct Attach {
     blend: Blend,
     /// `Draw::program`: 0, or a binding slot + 1.
     program: u32,
+    /// G7o3: the item's texture filter and repeat with the state's defaults applied (a change of
+    /// either re-walks: the item's order key, or the transaction's defaults).
+    filter: Filter,
+    repeat: Repeat,
+    /// G7o3: the position in the walk's attach order.
+    order: u32,
 }
 
 /// G7o2: the largest gap (in elements) [`Applier`] merges between two dirty ranges: 16 item rows
@@ -357,6 +366,47 @@ struct Attach {
 const DIRTY_GAP_ROWS: u32 = 16;
 const DIRTY_GAP_VERTICES: u32 = 64;
 const DIRTY_GAP_INDICES: u32 = 256;
+
+/// Whether re-lowering `rec`'s content to `new` without a walk would leave the walk's results
+/// stale. The walk reads an item's content only for whether it draws at all, its clip rect (a
+/// clipping item without a custom rect), and the rect of Godot's attach test: a walked item
+/// without a custom rect whose new rect moves it on or off screen.
+fn content_needs_walk(
+    viewport: &Viewport,
+    walk_serial: u64,
+    it: &Item,
+    rec: &ItemRec,
+    new: &Lowered,
+) -> bool {
+    let old = &rec.lowered;
+    if new.draws.is_empty() != old.draws.is_empty() {
+        return true;
+    }
+    if it.custom_rect || new.rect == old.rect {
+        return false;
+    }
+    if it.clip {
+        return true;
+    }
+    let vp = [0.0, 0.0, viewport.width as f32, viewport.height as f32];
+    rec.walked == walk_serial
+        && geom::intersects_inclusive(&vp, &geom::xform_rect(&rec.final_xform, &new.rect))
+            != rec.on_screen
+}
+
+/// G7o3: the canvas a walk is under, and the modulate its shaded rows multiply in.
+struct WalkCanvas {
+    id: Id,
+    modulate: [f32; 4],
+}
+
+/// G7o3: a replaced lowering's buffers (see [`Applier::lower_item`]).
+#[derive(Default)]
+struct Spare {
+    lowered: Lowered,
+    tex_sizes: TexSizes,
+    mesh_versions: Vec<(Id, i64)>,
+}
 
 /// The applier: owns the packed list it fills.
 pub struct Applier {
@@ -412,6 +462,10 @@ pub struct Applier {
     /// G7o2: the previous assembly's buffers, reused (and compared) by the next.
     spare_indices: Vec<u32>,
     spare_draws: Vec<Draw>,
+    /// G7o3: the buffers of the last lowering an item's re-lowering replaced, reused by the next.
+    spare: Spare,
+    /// G7o3: the walk count, from 1 (a record's `walked` names the walk that last visited it).
+    walk_serial: u64,
     /// G7o2 diagnostics (`rs-core-check walk-diff`): walk and re-assemble at every apply, the
     /// oracle the incremental paths are compared against.
     pub always_walk: bool,
@@ -593,6 +647,8 @@ impl Applier {
             serial: 0,
             spare_indices: Vec::new(),
             spare_draws: Vec::new(),
+            spare: Spare::default(),
+            walk_serial: 1,
             always_walk: false,
         }
     }
@@ -670,7 +726,7 @@ impl Applier {
         let mut out: Vec<(Id, Option<[i32; 4]>)> = self
             .items
             .iter()
-            .filter(|(_, r)| r.visited)
+            .filter(|(_, r)| r.walked == self.walk_serial)
             .map(|(id, r)| {
                 (
                     *id,
@@ -842,59 +898,49 @@ impl Applier {
         self.list.dirty.all = true;
     }
 
-    /// Whether re-lowering `rec`'s content to `new` without a walk would leave the walk's results
-    /// stale. The walk reads an item's content only for whether it draws at all, its clip rect (a
-    /// clipping item without a custom rect), and the rect of Godot's attach test: a walked item
-    /// without a custom rect whose new rect moves it on or off screen.
-    fn content_needs_walk(&self, it: &Item, rec: &ItemRec, new: &Lowered) -> bool {
-        let old = &rec.lowered;
-        if new.draws.is_empty() != old.draws.is_empty() {
-            return true;
-        }
-        if it.custom_rect || new.rect == old.rect {
-            return false;
-        }
-        if it.clip {
-            return true;
-        }
-        let vp = [
-            0.0,
-            0.0,
-            self.viewport.width as f32,
-            self.viewport.height as f32,
-        ];
-        rec.visited
-            && geom::intersects_inclusive(&vp, &geom::xform_rect(&rec.final_xform, &new.rect))
-                != rec.on_screen
-    }
-
     fn lower_item(
         &mut self,
         it: &Item,
         tables: &TableView<'_>,
     ) -> (Lowered, TexSizes, Vec<(Id, i64)>) {
         let t = prof::start();
-        let lowered = lower::lower_with(&it.commands, tables, self.sabotage.lower);
+        let spare = std::mem::take(&mut self.spare);
+        let lowered =
+            lower::lower_reusing(&it.commands, tables, self.sabotage.lower, spare.lowered);
         prof::add(prof::LOWER, t);
         for (s, n) in &lowered.shortcuts {
             *self.shortcut_totals.entry(s.as_str()).or_insert(0) += u64::from(*n);
         }
-        let tex_sizes = lowered
-            .texture_deps
-            .iter()
-            .map(|id| (*id, lower::Tables::texture_size(tables, *id)))
-            .collect();
-        let mesh_versions = lowered
-            .mesh_deps
-            .iter()
-            .map(|id| {
-                (
-                    *id,
-                    tables.state.meshes.get(id).map(|m| m.version).unwrap_or(-1),
-                )
-            })
-            .collect();
+        let mut tex_sizes = spare.tex_sizes;
+        tex_sizes.clear();
+        tex_sizes.extend(
+            lowered
+                .texture_deps
+                .iter()
+                .map(|id| (*id, lower::Tables::texture_size(tables, *id))),
+        );
+        let mut mesh_versions = spare.mesh_versions;
+        mesh_versions.clear();
+        mesh_versions.extend(lowered.mesh_deps.iter().map(|id| {
+            (
+                *id,
+                tables.state.meshes.get(id).map(|m| m.version).unwrap_or(-1),
+            )
+        }));
         (lowered, tex_sizes, mesh_versions)
+    }
+
+    /// G7o3: install a re-lowering in `rec`, keeping the replaced buffers as the next spare.
+    fn install_lowering(
+        spare: &mut Spare,
+        rec: &mut ItemRec,
+        lowered: Lowered,
+        tex_sizes: TexSizes,
+        mesh_versions: Vec<(Id, i64)>,
+    ) {
+        spare.lowered = std::mem::replace(&mut rec.lowered, lowered);
+        spare.tex_sizes = std::mem::replace(&mut rec.tex_sizes, tex_sizes);
+        spare.mesh_versions = std::mem::replace(&mut rec.mesh_versions, mesh_versions);
     }
 
     /// Step 2's half of the applier (Q14c): update the named textures from the accepted
@@ -1161,14 +1207,18 @@ impl Applier {
         let t = prof::start();
         let mut mesh_res = std::mem::take(&mut self.meshes);
         mesh_res.sabotage = self.sabotage.mesh;
-        {
-            let items: Vec<Id> = if self.first {
-                state.items.keys().copied().collect()
-            } else {
-                delta.items_upserted.clone()
-            };
-            mesh_res.sync(state, &items, &delta.items_removed, self.first, payloads);
-        }
+        // G7o3: a fresh applier lists every id once; a patch borrows the delta's lists.
+        let all_items: Vec<Id> = if self.first {
+            state.items.keys().copied().collect()
+        } else {
+            Vec::new()
+        };
+        let upserted: &[Id] = if self.first {
+            &all_items
+        } else {
+            &delta.items_upserted
+        };
+        mesh_res.sync(state, upserted, &delta.items_removed, self.first, payloads);
         prof::add(prof::MESH_SYNC, t);
         let t = prof::start();
         let tables = TableView {
@@ -1196,12 +1246,17 @@ impl Applier {
                 why |= Why::MATERIAL;
             }
         }
-        let mats: Vec<Id> = if self.first {
+        let all_mats: Vec<Id> = if self.first {
             state.materials.keys().copied().collect()
         } else {
-            delta.materials_upserted.clone()
+            Vec::new()
         };
-        for id in mats {
+        let mats: &[Id] = if self.first {
+            &all_mats
+        } else {
+            &delta.materials_upserted
+        };
+        for &id in mats {
             if let Some(m) = state.materials.get(&id) {
                 let key = (m.status, m.shader);
                 if self.materials.get(&id) != Some(&key) {
@@ -1210,12 +1265,17 @@ impl Applier {
                 }
             }
         }
-        let shs: Vec<Id> = if self.first {
+        let all_shs: Vec<Id> = if self.first {
             state.shaders.keys().copied().collect()
         } else {
-            delta.shaders_upserted.clone()
+            Vec::new()
         };
-        for id in shs {
+        let shs: &[Id] = if self.first {
+            &all_shs
+        } else {
+            &delta.shaders_upserted
+        };
+        for &id in shs {
             if let Some(sh) = state.shaders.get(&id) {
                 let key = (sh.status, sh.builtin.clone(), sh.hash);
                 if self.shaders.get(&id) != Some(&key) {
@@ -1224,12 +1284,17 @@ impl Applier {
                 }
             }
         }
-        let texs: Vec<Id> = if self.first {
+        let all_texs: Vec<Id> = if self.first {
             state.textures.keys().copied().collect()
         } else {
-            delta.textures_upserted.clone()
+            Vec::new()
         };
-        for id in texs {
+        let texs: &[Id] = if self.first {
+            &all_texs
+        } else {
+            &delta.textures_upserted
+        };
+        for &id in texs {
             if let Some(t) = state.textures.get(&id) {
                 if t.kind == TextureKind::Canvas && self.canvas_textures.get(&id) != Some(t) {
                     self.canvas_textures.insert(id, t.clone());
@@ -1308,109 +1373,102 @@ impl Applier {
             }
         }
 
-        // Upserted items: classify.
-        let upserted: Vec<Id> = if self.first {
-            state.items.keys().copied().collect()
-        } else {
-            delta.items_upserted.clone()
-        };
+        // Upserted items: classify (the ids listed above, before any removal: a fresh applier's
+        // stale ids are not in the state).
         let mut moved: Vec<Id> = Vec::new();
         let mut content_walk = false;
-        for id in upserted {
+        for &id in upserted {
             let Some(it) = state.items.get(&id) else {
                 continue;
             };
-            match self.items.contains_key(&id) {
-                false => {
-                    let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
-                    self.stats.relowered += 1;
-                    let row = self.alloc_row();
-                    let mut rec = ItemRec {
-                        row,
-                        content_version: it.content_version,
-                        lowered,
-                        vstart: 0,
-                        vcap: 0,
-                        key: StructKey::of(it),
-                        xform: it.xform,
-                        modulate: it.modulate,
-                        self_modulate: it.self_modulate,
-                        tex_sizes,
-                        mesh_versions,
-                        visited: false,
-                        final_xform: geom::IDENTITY,
-                        child_modulate: WHITE,
-                        canvas_modulate: WHITE,
-                        canvas: 0,
-                        unshaded: false,
-                        program_bound: false,
-                        clip_shadow: it.clip,
-                        clip_eff: it.clip,
-                        scissor: None,
-                        on_screen: false,
-                        lowered_at: self.serial,
-                    };
-                    Self::place_vertices(&mut self.list, &mut rec, &mut self.vertex_holes);
-                    self.items.insert(id, rec);
-                    self.stats.created += 1;
-                    self.count_commands(it);
-                    why |= Why::ITEM_ADDED;
-                }
-                true => {
-                    let content_changed = self.items[&id].content_version != it.content_version;
-                    {
-                        // clip-before-clear's model (fixtures/gate3/make_expected.py
-                        // `receiver_clip`): a wire change sets the clip, a content change clears it.
-                        let rec = self.items.get_mut(&id).unwrap();
-                        let before = rec.clip_eff;
-                        if it.clip != rec.clip_shadow {
-                            rec.clip_shadow = it.clip;
-                            rec.clip_eff = it.clip;
-                        }
-                        if content_changed {
-                            rec.clip_eff = false;
-                        }
-                        if self.sabotage.clip_before_clear && rec.clip_eff != before {
-                            why |= Why::ORDER_KEY;
-                        }
+            // G7o3: one record lookup per item (two when its content is re-lowered).
+            let Some(rec) = self.items.get_mut(&id) else {
+                let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
+                self.stats.relowered += 1;
+                let row = self.alloc_row();
+                let mut rec = ItemRec {
+                    row,
+                    content_version: it.content_version,
+                    lowered,
+                    vstart: 0,
+                    vcap: 0,
+                    key: StructKey::of(it),
+                    xform: it.xform,
+                    modulate: it.modulate,
+                    self_modulate: it.self_modulate,
+                    tex_sizes,
+                    mesh_versions,
+                    walked: 0,
+                    final_xform: geom::IDENTITY,
+                    child_modulate: WHITE,
+                    canvas_modulate: WHITE,
+                    canvas: 0,
+                    unshaded: false,
+                    program_bound: false,
+                    clip_shadow: it.clip,
+                    clip_eff: it.clip,
+                    scissor: None,
+                    on_screen: false,
+                    lowered_at: self.serial,
+                };
+                Self::place_vertices(&mut self.list, &mut rec, &mut self.vertex_holes);
+                self.items.insert(id, rec);
+                self.stats.created += 1;
+                self.count_commands(it);
+                why |= Why::ITEM_ADDED;
+                continue;
+            };
+            {
+                let content_changed = rec.content_version != it.content_version;
+                {
+                    // clip-before-clear's model (fixtures/gate3/make_expected.py
+                    // `receiver_clip`): a wire change sets the clip, a content change clears it.
+                    let before = rec.clip_eff;
+                    if it.clip != rec.clip_shadow {
+                        rec.clip_shadow = it.clip;
+                        rec.clip_eff = it.clip;
                     }
                     if content_changed {
-                        self.count_commands(it);
-                        let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
-                        self.stats.relowered += 1;
-                        if self.content_needs_walk(it, &self.items[&id], &lowered) {
-                            content_walk = true;
-                        }
-                        let rec = self.items.get_mut(&id).unwrap();
-                        // Any other change of shape needs only the index buffer and draw table
-                        // re-assembled; the same shape is rewritten in place.
-                        let same = lowered.same_shape(&rec.lowered);
-                        rec.lowered_at = self.serial;
-                        rec.lowered = lowered;
-                        rec.tex_sizes = tex_sizes;
-                        rec.mesh_versions = mesh_versions;
-                        rec.content_version = it.content_version;
-                        let moved_range =
-                            Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
-                        if same && !moved_range {
-                            self.stats.relowered_in_place += 1;
-                        } else {
-                            why |= Why::CONTENT_SHAPE;
-                        }
+                        rec.clip_eff = false;
                     }
-                    let rec = self.items.get_mut(&id).unwrap();
-                    if !rec.key.matches(it) {
-                        rec.key = StructKey::of(it);
+                    if self.sabotage.clip_before_clear && rec.clip_eff != before {
                         why |= Why::ORDER_KEY;
                     }
-                    if rec.xform != it.xform
-                        || rec.modulate != it.modulate
-                        || rec.self_modulate != it.self_modulate
-                    {
-                        rec.xform = it.xform;
-                        rec.modulate = it.modulate;
-                        rec.self_modulate = it.self_modulate;
-                        moved.push(id);
+                }
+                // The order key and the transform (neither depends on the content).
+                if !rec.key.matches(it) {
+                    rec.key = StructKey::of(it);
+                    why |= Why::ORDER_KEY;
+                }
+                if rec.xform != it.xform
+                    || rec.modulate != it.modulate
+                    || rec.self_modulate != it.self_modulate
+                {
+                    rec.xform = it.xform;
+                    rec.modulate = it.modulate;
+                    rec.self_modulate = it.self_modulate;
+                    moved.push(id);
+                }
+                if content_changed {
+                    self.count_commands(it);
+                    let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
+                    self.stats.relowered += 1;
+                    let rec = self.items.get_mut(&id).unwrap();
+                    if content_needs_walk(&self.viewport, self.walk_serial, it, rec, &lowered) {
+                        content_walk = true;
+                    }
+                    // Any other change of shape needs only the index buffer and draw table
+                    // re-assembled; the same shape is rewritten in place.
+                    let same = lowered.same_shape(&rec.lowered);
+                    rec.lowered_at = self.serial;
+                    Self::install_lowering(&mut self.spare, rec, lowered, tex_sizes, mesh_versions);
+                    rec.content_version = it.content_version;
+                    let moved_range =
+                        Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
+                    if same && !moved_range {
+                        self.stats.relowered_in_place += 1;
+                    } else {
+                        why |= Why::CONTENT_SHAPE;
                     }
                 }
             }
@@ -1450,16 +1508,14 @@ impl Applier {
                 // G7o2: a dependency's new geometry or texel size re-lowers like a content change
                 // (in place when the shape holds, else re-assembled); only what the walk reads
                 // of the content re-walks (`content_needs_walk`).
-                if self.content_needs_walk(it, &self.items[&id], &lowered) {
+                let rec = self.items.get_mut(&id).unwrap();
+                if content_needs_walk(&self.viewport, self.walk_serial, it, rec, &lowered) {
                     content_walk = true;
                     why |= Why::DEPENDENCY;
                 }
-                let rec = self.items.get_mut(&id).unwrap();
                 let same = lowered.same_shape(&rec.lowered);
                 rec.lowered_at = self.serial;
-                rec.lowered = lowered;
-                rec.tex_sizes = tex_sizes;
-                rec.mesh_versions = mesh_versions;
+                Self::install_lowering(&mut self.spare, rec, lowered, tex_sizes, mesh_versions);
                 let moved_range = Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
                 if same && !moved_range {
                     self.stats.relowered_in_place += 1;
@@ -1480,12 +1536,17 @@ impl Applier {
                 why |= Why::CANVAS;
             }
         }
-        let cans: Vec<Id> = if self.first {
+        let all_cans: Vec<Id> = if self.first {
             state.canvases.keys().copied().collect()
         } else {
-            delta.canvases_upserted.clone()
+            Vec::new()
         };
-        for id in cans {
+        let cans: &[Id] = if self.first {
+            &all_cans
+        } else {
+            &delta.canvases_upserted
+        };
+        for &id in cans {
             let Some(c) = state.canvases.get(&id) else {
                 continue;
             };
@@ -1599,9 +1660,7 @@ impl Applier {
         self.stats.structural = true;
         self.attach.clear();
         self.walk_keys.clear();
-        for rec in self.items.values_mut() {
-            rec.visited = false;
-        }
+        self.walk_serial += 1;
         let mut canvases: Vec<&Canvas> = state.canvases.values().filter(|c| c.attached).collect();
         if self.sabotage.ignore_canvas_stacking {
             canvases.sort_by_key(|c| c.id);
@@ -1615,20 +1674,33 @@ impl Applier {
             self.note(ApplyShortcut::TieAppendOrder.as_str(), 1);
         }
         let vp = self.viewport;
+        // G7o3: every item's children in draw order, looked up once, on one stack (a call's
+        // children sit above its caller's).
+        let mut stack: Vec<(Id, &Item)> = Vec::new();
         for canvas in canvases {
             let start = self.attach.len();
             let canvas_xf = geom::mul(&vp.global_xform, &canvas.xform);
-            let order = self.sorted_children(state, &canvas.items);
-            for &child in order.iter() {
-                if let Some(it) = state.items.get(&child) {
-                    self.cull(
-                        state, child, it, &canvas_xf, None, WHITE, 0, None, canvas.id,
-                    );
-                }
+            let cv = WalkCanvas {
+                id: canvas.id,
+                modulate: if canvas.root && self.sabotage.ignore_canvas_modulate {
+                    WHITE
+                } else {
+                    canvas.modulate
+                },
+            };
+            let (from, to) = self.children_into(state, &canvas.items, &mut stack);
+            for k in from..to {
+                let (child, it) = stack[k];
+                self.cull(
+                    state, child, it, &canvas_xf, None, WHITE, 0, None, &cv, &mut stack,
+                );
             }
-            // Per-z lists concatenated in z order; within a z, attach order (a stable sort).
-            if !self.sabotage.ignore_z {
-                self.attach[start..].sort_by_key(|a| a.z);
+            stack.truncate(from);
+            // Per-z lists concatenated in z order; within a z, attach order (a stable sort,
+            // skipped when the list is already in z order).
+            if !self.sabotage.ignore_z && self.attach[start..].windows(2).any(|w| w[0].z > w[1].z) {
+                // The stable sort without its scratch allocation: (z, attach order) is unique.
+                self.attach[start..].sort_unstable_by_key(|a| (a.z, a.order));
             }
         }
         // Binding slots no attached item uses any more are released.
@@ -1791,50 +1863,57 @@ impl Applier {
         }
     }
 
-    /// `children` in draw order: as listed when their `draw_index`es already increase strictly (the
-    /// common case: no allocation), else sorted by `draw_index` (ties keep list order, typed).
-    fn sorted_children<'s>(
+    /// Pushes `children` that the state holds, in draw order, onto `stack` with their items and
+    /// returns their range: as listed when their `draw_index`es already increase strictly (the
+    /// common case), else stably sorted by `draw_index` (ties keep list order, typed).
+    fn children_into<'s>(
         &mut self,
         state: &'s ResolvedState,
-        children: &'s [Id],
-    ) -> std::borrow::Cow<'s, [Id]> {
+        children: &[Id],
+        stack: &mut Vec<(Id, &'s Item)>,
+    ) -> (usize, usize) {
+        let from = stack.len();
         let mut last = i64::MIN;
         let mut in_order = true;
         for c in children {
             match state.items.get(c) {
-                Some(it) if it.draw_index > last => last = it.draw_index,
-                _ => {
-                    in_order = false;
-                    break;
+                Some(it) => {
+                    if it.draw_index > last {
+                        last = it.draw_index;
+                    } else {
+                        in_order = false;
+                    }
+                    stack.push((*c, it));
                 }
+                None => in_order = false,
             }
         }
-        if in_order {
-            return std::borrow::Cow::Borrowed(children);
+        if !in_order {
+            let order = &mut stack[from..];
+            order.sort_by_key(|(_, it)| it.draw_index);
+            if order
+                .windows(2)
+                .any(|w| w[0].1.draw_index == w[1].1.draw_index)
+            {
+                self.note(ApplyShortcut::TieAppendOrder.as_str(), 1);
+            }
         }
-        let mut order: Vec<(i64, Id)> = children
-            .iter()
-            .filter_map(|c| state.items.get(c).map(|it| (it.draw_index, *c)))
-            .collect();
-        order.sort_by_key(|(d, _)| *d);
-        if order.windows(2).any(|w| w[0].0 == w[1].0) {
-            self.note(ApplyShortcut::TieAppendOrder.as_str(), 1);
-        }
-        std::borrow::Cow::Owned(order.into_iter().map(|(_, c)| c).collect())
+        (from, stack.len())
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn cull(
+    fn cull<'s>(
         &mut self,
-        state: &ResolvedState,
+        state: &'s ResolvedState,
         id: Id,
         it: &Item,
         parent_xf: &Xform,
         clip: Option<Rect>,
         parent_modulate: [f32; 4],
         z: i64,
-        material_owner: Option<Id>,
-        canvas: Id,
+        material_owner: Option<(Id, Option<Id>)>,
+        cv: &WalkCanvas,
+        stack: &mut Vec<(Id, &'s Item)>,
     ) {
         if !it.visible || it.visibility_layer & self.viewport.cull_mask == 0 {
             return;
@@ -1845,10 +1924,16 @@ impl Applier {
         }
         let final_xf = geom::mul(parent_xf, &it.xform);
         let mut own_clip = clip;
+        // G7o3: what the walk reads of the item's record, in one lookup (the walk changes no
+        // lowering).
+        let (content_rect, draws_something, clip_eff) = match self.items.get(&id) {
+            Some(r) => (r.lowered.rect, !r.lowered.draws.is_empty(), r.clip_eff),
+            None => ([0.0; 4], false, false),
+        };
         let clips = if self.sabotage.ignore_clip {
             false
         } else if self.sabotage.clip_before_clear {
-            self.items.get(&id).is_some_and(|r| r.clip_eff)
+            clip_eff
         } else {
             it.clip
         };
@@ -1856,10 +1941,7 @@ impl Applier {
             let rect = if it.custom_rect {
                 it.custom_rect_rect
             } else {
-                self.items
-                    .get(&id)
-                    .map(|r| r.lowered.rect)
-                    .unwrap_or([0.0; 4])
+                content_rect
             };
             let global = geom::xform_rect(&final_xf, &rect);
             let vp = [
@@ -1884,32 +1966,39 @@ impl Applier {
         } else {
             it.z_index
         };
-        let owner = if it.use_parent_material && material_owner.is_some() {
-            material_owner
-        } else {
-            Some(id)
+        // The material owner and its material (the owner is this item or a walked ancestor).
+        let owner = match material_owner {
+            Some(o) if it.use_parent_material => o,
+            _ => (id, it.material),
         };
-        let eff = self.material_of(state, owner.unwrap_or(id));
+        let eff = self.material_of(state, owner.1);
         let MaterialEff {
             blend,
             unshaded,
             light_only,
             ..
         } = eff;
-        let children = self.sorted_children(state, &it.children);
-        for &c in children.iter() {
-            if let Some(ci) = state.items.get(&c).filter(|ci| ci.behind) {
+        let canvas = cv.id;
+        let (from, to) = self.children_into(state, &it.children, stack);
+        for k in from..to {
+            let (c, ci) = stack[k];
+            if ci.behind {
                 self.cull(
-                    state, c, ci, &final_xf, own_clip, modulate, z, owner, canvas,
+                    state,
+                    c,
+                    ci,
+                    &final_xf,
+                    own_clip,
+                    modulate,
+                    z,
+                    Some(owner),
+                    cv,
+                    stack,
                 );
             }
         }
         // An item-space program takes the canvas modulate after its code (the binding's
         // `post_modulate`), so its row carries none.
-        let draws_something = self
-            .items
-            .get(&id)
-            .is_some_and(|r| !r.lowered.draws.is_empty());
         let program = match eff.program {
             Some((material, hash)) if draws_something && !light_only => {
                 let instanced = matches!(
@@ -1926,7 +2015,7 @@ impl Applier {
             _ => 0,
         };
         if let Some(rec) = self.items.get_mut(&id) {
-            rec.visited = true;
+            rec.walked = self.walk_serial;
             rec.scissor = own_clip;
             rec.final_xform = final_xf;
             rec.child_modulate = modulate;
@@ -1936,7 +2025,7 @@ impl Applier {
             rec.canvas_modulate = if unshaded || rec.program_bound {
                 WHITE
             } else {
-                canvas_modulate(state, canvas, self.sabotage.ignore_canvas_modulate)
+                cv.modulate
             };
             // _attach_canvas_item_for_draw: an item is drawn only when its global rect (the custom
             // rect, else its content's) touches the viewport rect, borders included
@@ -1972,28 +2061,51 @@ impl Applier {
             if !rec.lowered.draws.is_empty() && !light_only && rec.on_screen {
                 let scissor =
                     own_clip.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]);
+                let order = self.attach.len() as u32;
                 self.attach.push(Attach {
+                    order,
                     item: id,
                     z: z as i32,
                     scissor,
                     blend,
                     program,
+                    filter: if it.texture_filter == Filter::Default {
+                        state.default_texture_filter
+                    } else {
+                        it.texture_filter
+                    },
+                    repeat: if it.texture_repeat == Repeat::Default {
+                        state.default_texture_repeat
+                    } else {
+                        it.texture_repeat
+                    },
                 });
             }
         }
-        for &c in children.iter() {
-            if let Some(ci) = state.items.get(&c).filter(|ci| !ci.behind) {
+        for k in from..to {
+            let (c, ci) = stack[k];
+            if !ci.behind {
                 self.cull(
-                    state, c, ci, &final_xf, own_clip, modulate, z, owner, canvas,
+                    state,
+                    c,
+                    ci,
+                    &final_xf,
+                    own_clip,
+                    modulate,
+                    z,
+                    Some(owner),
+                    cv,
+                    stack,
                 );
             }
         }
+        stack.truncate(from);
     }
 
     /// The effective material's blend, and whether it is unshaded or light-only (gate5_5-design.md
     /// D7; no lights reach the wire, so `normal` draws unlit and `light_only` draws nothing).
-    fn material_of(&mut self, state: &ResolvedState, owner: Id) -> MaterialEff {
-        let mut eff = self.material_unswapped(state, owner);
+    fn material_of(&mut self, state: &ResolvedState, material: Option<Id>) -> MaterialEff {
+        let mut eff = self.material_unswapped(state, material);
         if self.sabotage.blend_swap {
             eff.blend = match eff.blend {
                 Blend::Add => Blend::Sub,
@@ -2004,11 +2116,12 @@ impl Applier {
         eff
     }
 
-    fn material_unswapped(&mut self, state: &ResolvedState, owner: Id) -> MaterialEff {
+    /// `material`: the material owner's material.
+    fn material_unswapped(&mut self, state: &ResolvedState, material: Option<Id>) -> MaterialEff {
         if self.sabotage.ignore_material {
             return NO_MATERIAL;
         }
-        let Some(mid) = state.items.get(&owner).and_then(|it| it.material) else {
+        let Some(mid) = material else {
             return NO_MATERIAL;
         };
         let Some(m) = state.materials.get(&mid) else {
@@ -2067,7 +2180,7 @@ impl Applier {
         let Some(rec) = self.items.get(&id) else {
             return;
         };
-        if !rec.visited {
+        if rec.walked != self.walk_serial {
             return;
         }
         let Some(it) = state.items.get(&id) else {
@@ -2101,29 +2214,20 @@ impl Applier {
         self.list.draws = std::mem::take(&mut self.spare_draws);
         self.list.indices.clear();
         self.list.draws.clear();
-        let default_filter = state.default_texture_filter;
-        let default_repeat = state.default_texture_repeat;
         let mut lowered_draws = 0u32;
         let mut skips = 0u32;
         let mut attached = 0u32;
+        // G7o3: the last wire texture's table facts (consecutive draws mostly share one): its
+        // canvas-texture diffuse, filter and repeat, and whether what it draws is resident.
+        type TexFacts = (Option<(Id, Filter, Repeat)>, bool);
+        let mut memo: Option<(Id, TexFacts)> = None;
         for a in &self.attach {
+            // Every attached item has its record (and so its state entry: a removal re-walks).
             let Some(rec) = self.items.get(&a.item) else {
                 continue;
             };
-            let Some(it) = state.items.get(&a.item) else {
-                continue;
-            };
             attached += 1;
-            let item_filter = if it.texture_filter == Filter::Default {
-                default_filter
-            } else {
-                it.texture_filter
-            };
-            let item_repeat = if it.texture_repeat == Repeat::Default {
-                default_repeat
-            } else {
-                it.texture_repeat
-            };
+            let (item_filter, item_repeat) = (a.filter, a.repeat);
             for ld in &rec.lowered.draws {
                 lowered_draws += 1;
                 let LDraw {
@@ -2137,26 +2241,46 @@ impl Applier {
                 let (texture, filter, repeat) = match tex {
                     TexRef::White => (WHITE_TEXTURE, item_filter, item_repeat),
                     TexRef::Wire(tid) => {
-                        // A canvas texture draws its diffuse with its own filter/repeat when set.
-                        let (gpu, f, r) = match state.textures.get(&tid) {
-                            Some(t) if t.kind == TextureKind::Canvas => {
-                                let ct = t.canvas.as_ref();
-                                let diffuse = ct.and_then(|c| c.diffuse).unwrap_or(0);
-                                let f = ct
-                                    .map(|c| c.filter)
-                                    .filter(|f| *f != Filter::Default)
-                                    .unwrap_or(item_filter);
-                                let r = ct
-                                    .map(|c| c.repeat)
-                                    .filter(|r| *r != Repeat::Default)
-                                    .unwrap_or(item_repeat);
-                                (diffuse, f, r)
+                        let (canvas, drawable) = match memo {
+                            Some((t, facts)) if t == tid => facts,
+                            _ => {
+                                let canvas = match state.textures.get(&tid) {
+                                    Some(t) if t.kind == TextureKind::Canvas => {
+                                        let ct = t.canvas.as_ref();
+                                        Some((
+                                            ct.and_then(|c| c.diffuse).unwrap_or(0),
+                                            ct.map_or(Filter::Default, |c| c.filter),
+                                            ct.map_or(Repeat::Default, |c| c.repeat),
+                                        ))
+                                    }
+                                    _ => None,
+                                };
+                                let gpu = canvas.map_or(tid, |c| c.0);
+                                let drawable = self.resident.get(&gpu).is_some_and(|r| {
+                                    matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
+                                });
+                                memo = Some((tid, (canvas, drawable)));
+                                (canvas, drawable)
                             }
-                            _ => (tid, item_filter, item_repeat),
                         };
-                        if !self.resident.get(&gpu).is_some_and(|r| {
-                            matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
-                        }) {
+                        // A canvas texture draws its diffuse with its own filter/repeat when set.
+                        let (gpu, f, r) = match canvas {
+                            Some((diffuse, cf, cr)) => (
+                                diffuse,
+                                if cf != Filter::Default {
+                                    cf
+                                } else {
+                                    item_filter
+                                },
+                                if cr != Repeat::Default {
+                                    cr
+                                } else {
+                                    item_repeat
+                                },
+                            ),
+                            None => (tid, item_filter, item_repeat),
+                        };
+                        if !drawable {
                             skips += 1;
                             continue;
                         }
@@ -2254,13 +2378,13 @@ impl Applier {
         let Some(rec) = self.items.get(&id) else {
             return true;
         };
-        if !rec.visited {
+        if rec.walked != self.walk_serial {
             // Not drawn now; the change matters only once it becomes visible (structural then).
             return true;
         }
         let (parent_xf, parent_mod) = match it.parent {
             Some(p) if p.kind == crate::state::ParentKind::Item => match self.items.get(&p.id) {
-                Some(pr) if pr.visited => (pr.final_xform, pr.child_modulate),
+                Some(pr) if pr.walked == self.walk_serial => (pr.final_xform, pr.child_modulate),
                 _ => return true,
             },
             Some(p) => match state.canvases.get(&p.id) {
@@ -2289,7 +2413,10 @@ impl Applier {
             return false;
         }
         let modulate = mul4(it.modulate, parent_mod);
-        let was_visited = self.items.get(&id).is_some_and(|r| r.visited);
+        let was_visited = self
+            .items
+            .get(&id)
+            .is_some_and(|r| r.walked == self.walk_serial);
         if (modulate[3] < 0.007) == was_visited {
             // Crossing the alpha cut changes what draws.
             return false;
@@ -2327,7 +2454,7 @@ impl Applier {
             };
         }
         self.write_row(state, id);
-        for c in it.children.clone() {
+        for &c in &it.children {
             if !self.move_rec(state, c, &final_xf, modulate) {
                 return false;
             }

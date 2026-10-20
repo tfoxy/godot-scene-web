@@ -284,3 +284,84 @@ fn deferred_record_digest_equals_inline() {
     assert_eq!(checked, spans.len());
     assert!(deferred.record_digest(&data, data.len() + 1).is_err());
 }
+
+/// G7o3 (D31): payloads staged as they arrive issue exactly the RenderingServer calls of payloads
+/// provided (and verified) inside the frame, and once staged, no apply hashes a payload again.
+#[test]
+fn staged_payloads_apply_as_provided_ones() {
+    for name in RECORDINGS {
+        let path = golden().join(name);
+        let data = std::fs::read(&path).unwrap();
+        let store = payloads();
+        let mut core = Core::new();
+        let spans = wire::split_records(&data, 6).unwrap();
+        let mut batches = Vec::new();
+        for (i, s) in spans.iter().enumerate() {
+            if i == 0 {
+                assert_eq!(core.session(&data, s.offset, 6), KIND_SESSION);
+                core.begin_session();
+                batches.push((core.ops.words.clone(), core.ops.arena.clone()));
+                continue;
+            }
+            let kind = core.accept(&data, s.offset);
+            if kind == KIND_RESOURCE {
+                assert!(core.resource_payload());
+                let p = core.text.clone();
+                core.stage(&wire::sha256(&p).to_hex(), &p).unwrap();
+                continue;
+            }
+            if kind != KIND_TRANSACTION {
+                continue;
+            }
+            let (hashes, library) = needed(&mut core);
+            for h in &hashes {
+                // A store payload arrives (is staged) just before its transaction; an inline
+                // one was staged when its record arrived.
+                if let Some(bytes) = store.get(&Hash::from_hex(h).unwrap()) {
+                    core.stage(h, bytes).unwrap();
+                }
+            }
+            for h in &hashes {
+                // The frame's provide reads only the stage: these bytes are never hashed.
+                core.provide(h, b"not the payload").unwrap();
+            }
+            for h in library {
+                core.provide_library(&h, false, "no library in the golden test");
+            }
+            core.apply().unwrap();
+            batches.push((core.ops.words.clone(), core.ops.arena.clone()));
+        }
+        assert_eq!(core.payloads.provided_in_frame, 0, "{name}");
+        assert_eq!(core.payloads.refused, 0, "{name}");
+        core.dispose();
+        batches.push((core.ops.words.clone(), core.ops.arena.clone()));
+        assert_eq!(batches, replay(name, false, ""), "{name}");
+    }
+}
+
+/// G7o3 (D31): a corrupted payload is refused when it arrives and stages nothing, so the frame's
+/// provide verifies whatever it is handed and refuses it again; unstage drops a staged payload.
+#[test]
+fn corrupted_payload_is_refused_on_arrival() {
+    let store = payloads();
+    let (hash, bytes) = store.iter().next().unwrap();
+    let hex = hash.to_hex();
+    let mut bad = bytes.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 1;
+    let mut core = Core::new();
+    let e = core.stage(&hex, &bad).unwrap_err();
+    assert!(e.starts_with("resource-hash-mismatch"), "{e}");
+    assert_eq!(core.staged_len(), 0);
+    let e = core.provide(&hex, &bad).unwrap_err();
+    assert!(e.starts_with("resource-hash-mismatch"), "{e}");
+    // A good copy staged earlier is dropped by a later refused one under the same name.
+    core.stage(&hex, bytes).unwrap();
+    assert!(core.stage(&hex, &bad).is_err());
+    assert_eq!(core.staged_len(), 0);
+    core.stage(&hex, bytes).unwrap();
+    core.unstage(&hex);
+    assert_eq!(core.staged_len(), 0);
+    assert_eq!(core.payloads.unstaged, 1);
+    assert_eq!(core.payloads.refused, 2);
+}

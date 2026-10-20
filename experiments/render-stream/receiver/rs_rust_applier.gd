@@ -20,7 +20,11 @@ extends RsApplier
 ## Payloads: RsResourceCache keeps each payload's raw bytes in rust mode (`keep_raw`), and
 ## apply_state() hands the ones needed() names to the core, which verifies their SHA-256 and
 ## decodes them before use; a `withheld` shader's library code is looked up here
-## (RsResourceCache.library_code()) and handed over the same way.
+## (RsResourceCache.library_code()) and handed over the same way. Since G7o3 (D31) the cache
+## stages each payload in the core as it arrives (stage(): a fetch completion, an inline record, a
+## cache or store read), so the core verifies and decodes it then, ahead of the frame, and the
+## frame's provide() only moves it into the apply. A payload with nothing staged (the core was
+## replaced, or it was used once already) is still verified inside the frame, as before.
 
 ## The adapter's .gdextension (RS_RECEIVER_CORE_EXT overrides it). receiver/ext/ carries a
 ## .gdignore, so the editor never registers the extension for the default path.
@@ -38,6 +42,12 @@ var _core: Object = null
 var _need: Dictionary = {}
 var _counters: Dictionary = {}
 var _counters_frame: int = -1
+## G7o3: the last apply_state()'s split, in microseconds (receiver.gd's perf.json): the provide
+## loop, the core's planner, the op stream's RenderingServer calls, and the stats Variant tree.
+var last_provide_us: int = 0
+var last_plan_us: int = 0
+var last_execute_us: int = 0
+var last_stats_us: int = 0
 
 
 ## Loads the adapter once per process. Returns "" or why it is unavailable.
@@ -156,6 +166,7 @@ func needed(_items: Dictionary, _textures: Dictionary, _meshes: Dictionary = {},
 ## Hands the needed payloads (and library code) to the core, then applies. On a payload the core
 ## refuses, returns {"error": "<code>: <detail>"} (receiver.gd fails the replay with it).
 func apply_state(_stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionary:
+	var provide_t0: int = Time.get_ticks_usec()
 	var need: Dictionary = needed({}, {})
 	_need = {}
 	var hashes: Array = need["hashes"]
@@ -173,7 +184,12 @@ func apply_state(_stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictiona
 		var ok: bool = got["ok"]
 		var body: String = got["code"] if ok else got["detail"]
 		_core.call("provide_library", library_hash, ok, body)
+	last_provide_us = Time.get_ticks_usec() - provide_t0
 	var result: Variant = _core.call("apply")
+	var timing: int = _core.call("apply_timing")
+	last_plan_us = timing & 0x1FFFFF
+	last_execute_us = (timing >> 21) & 0x1FFFFF
+	last_stats_us = (timing >> 42) & 0x1FFFFF
 	if result is String:
 		var error: String = result
 		return {"error": error}
@@ -191,6 +207,29 @@ func apply_state(_stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictiona
 	rs_calls += Rs2Decoder.as_int(stats["rs_calls"])
 	_counters_frame = -1
 	return stats
+
+
+## G7o3 (D31): a payload as it arrives (RsResourceCache's stager): the core verifies its SHA-256
+## against `hash` and decodes it now, and holds it for the apply that first uses it. Returns "" or
+## the refusal, "<code>: <detail>" (resource-hash-mismatch, resource-invalid).
+func stage(hash: String, payload: PackedByteArray) -> String:
+	var staged: String = _core.call("stage", hash, payload)
+	return staged
+
+
+## G7o3: the cache evicted `hash` from memory; the core drops its staged copy, if any.
+func unstage(hash: String) -> void:
+	_core.call("unstage", hash)
+
+
+## G7o3: where the core verified payloads, since it was made: {staged, refused, unstaged,
+## provided_staged, provided_in_frame, provided_in_frame_bytes, staged_now}.
+func payload_counters() -> Dictionary:
+	_refresh_counters()
+	var out: Dictionary = {}
+	for key: String in ["staged", "refused", "unstaged", "provided_staged", "provided_in_frame", "provided_in_frame_bytes", "staged_now"]:
+		out[key] = Rs2Decoder.as_int(_counters["payloads_" + key])
+	return out
 
 
 func dispose() -> int:

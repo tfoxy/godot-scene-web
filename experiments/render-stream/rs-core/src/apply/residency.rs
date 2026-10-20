@@ -15,7 +15,7 @@
 //! costs nothing here.
 
 use crate::state::{EntryStatus, Hash, Id, ResolvedState, ShaderSource, TextureKind, TxDelta};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 /// The engine's placeholder texture (drivers/gles3/storage/texture_storage.cpp
 /// `texture_2d_placeholder`): 4×4 RGBA8, magenta where `(x + y)` is even, else black.
@@ -70,10 +70,10 @@ pub struct TextureAccount {
 /// with a reference count per texture; plus the set the named materials contribute.
 #[derive(Default)]
 pub struct Names {
-    per_item: HashMap<Id, Vec<Id>>,
-    per_item_material: HashMap<Id, Id>,
-    refs: HashMap<Id, u32>,
-    material_refs: HashMap<Id, u32>,
+    per_item: super::IdMap<Vec<Id>>,
+    per_item_material: super::IdMap<Id>,
+    refs: super::IdMap<u32>,
+    material_refs: super::IdMap<u32>,
     /// Textures the named materials' parameters and their shaders' default textures name.
     from_materials: BTreeSet<Id>,
     /// Ids whose named-ness may have changed since the last [`Names::take_changed`].

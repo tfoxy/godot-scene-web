@@ -10,7 +10,7 @@
 
 use super::payloads::{MeshGeometry, PayloadStore};
 use crate::state::{EntryStatus, Hash, Id, ResolvedState};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 /// The native mesh sabotages (`receiver.gd`: `drop-mesh-surface`, `stale-mesh`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,9 +46,9 @@ const BUFFERS: [&str; 4] = ["vertex", "attribute", "skin", "index"];
 /// The resident meshes and the items that name them.
 #[derive(Default)]
 pub struct MeshResidency {
-    resident: HashMap<Id, Resident>,
+    resident: super::IdMap<Resident>,
     /// Mesh ids each item's commands name (`_named_mesh_ids`, kept per item).
-    named_by: HashMap<Id, Vec<Id>>,
+    named_by: super::IdMap<Vec<Id>>,
     pub sabotage: MeshSabotage,
     /// This transaction's rows.
     pub uploads: Vec<MeshUpload>,

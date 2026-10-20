@@ -37,6 +37,13 @@ pub struct Core {
     validator: Option<Validator>,
     pub planner: Planner,
     provided: HashMap<Hash, Vec<u8>>,
+    /// G7o3 (D31): payloads verified and checked when they arrived (`stage`, the receiver's fetch
+    /// completion, inline record or cache read), waiting for the apply that first uses them.
+    /// `provide` moves one into `provided` without hashing it again; `unstage` drops one the
+    /// receiver's memory cache evicted, so this never outgrows the cache.
+    staged: HashMap<Hash, Vec<u8>>,
+    /// G7o3: payload counters since the core was made (`payload_counters`).
+    pub payloads: PayloadCounters,
     library: HashMap<String, Library>,
     /// The planner's RenderingServer calls from the last begin_session / apply / dispose.
     pub ops: OpBuf,
@@ -72,6 +79,18 @@ fn frame_at(data: &[u8], offset: usize) -> Result<&[u8], Error> {
         ));
     }
     Ok(&data[offset..end])
+}
+
+/// G7o3: where each payload's verification happened. `in_frame` counts payloads `provide` had
+/// to hash inside the frame because nothing was staged for them (the pre-G7o3 path).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayloadCounters {
+    pub staged: i64,
+    pub refused: i64,
+    pub unstaged: i64,
+    pub provided_staged: i64,
+    pub provided_in_frame: i64,
+    pub provided_in_frame_bytes: i64,
 }
 
 fn err_text(e: &Error) -> String {
@@ -405,9 +424,10 @@ impl Core {
         }
     }
 
-    /// A payload for the next apply: verified against its name (`resource-hash-mismatch`) and
-    /// decoded by its magic (`resource-invalid`) before it is kept. Err is "<code>: <detail>".
-    pub fn provide(&mut self, hash_hex: &str, bytes: &[u8]) -> Result<(), String> {
+    /// The SHA-256 check against `hash_hex` (`resource-hash-mismatch`) and the decode by magic
+    /// (`resource-invalid`): what `stage` and an unstaged `provide` both run. Err is
+    /// "<code>: <detail>".
+    fn verify(&self, hash_hex: &str, bytes: &[u8]) -> Result<Hash, String> {
         let Some(h) = Hash::from_hex(hash_hex) else {
             return Err(format!(
                 "resource-unavailable: {hash_hex:?} is not a sha256 hex name"
@@ -430,7 +450,58 @@ impl Core {
                 err_text(&e)
             ));
         }
+        Ok(h)
+    }
+
+    /// G7o3 (D31): a payload as it arrives, ahead of the transaction that uses it: verified and
+    /// decoded now (`verify`), then held until `provide` names it. A refused payload stages
+    /// nothing and drops an earlier copy staged under the same name. Err is "<code>: <detail>".
+    pub fn stage(&mut self, hash_hex: &str, bytes: &[u8]) -> Result<(), String> {
+        match self.verify(hash_hex, bytes) {
+            Ok(h) => {
+                self.staged.insert(h, bytes.to_vec());
+                self.payloads.staged += 1;
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(h) = Hash::from_hex(hash_hex) {
+                    self.staged.remove(&h);
+                }
+                self.payloads.refused += 1;
+                Err(e)
+            }
+        }
+    }
+
+    /// G7o3: the receiver's memory cache evicted (or cleared) `hash_hex`; its staged copy goes.
+    pub fn unstage(&mut self, hash_hex: &str) {
+        if let Some(h) = Hash::from_hex(hash_hex) {
+            if self.staged.remove(&h).is_some() {
+                self.payloads.unstaged += 1;
+            }
+        }
+    }
+
+    pub fn staged_len(&self) -> usize {
+        self.staged.len()
+    }
+
+    /// A payload for the next apply. A staged one (verified when it arrived) moves into the
+    /// apply's set without being hashed again, and `bytes` is not read. Anything else is verified
+    /// against its name (`resource-hash-mismatch`) and decoded by its magic (`resource-invalid`)
+    /// here, inside the frame, before it is kept. Err is "<code>: <detail>".
+    pub fn provide(&mut self, hash_hex: &str, bytes: &[u8]) -> Result<(), String> {
+        if let Some(h) = Hash::from_hex(hash_hex) {
+            if let Some(staged) = self.staged.remove(&h) {
+                self.provided.insert(h, staged);
+                self.payloads.provided_staged += 1;
+                return Ok(());
+            }
+        }
+        let h = self.verify(hash_hex, bytes)?;
         self.provided.insert(h, bytes.to_vec());
+        self.payloads.provided_in_frame += 1;
+        self.payloads.provided_in_frame_bytes += bytes.len() as i64;
         Ok(())
     }
 
@@ -500,7 +571,9 @@ impl Core {
         let xf = p.root_canvas_xform();
         let v = &mut self.vt;
         v.clear();
-        v.dict(13);
+        let pc = self.payloads;
+        let staged_now = self.staged.len() as i64;
+        v.dict(20);
         v.key("rs_calls");
         v.int(p.rs_calls);
         v.key("created_rids");
@@ -525,5 +598,18 @@ impl Core {
         v.int(last_seq);
         v.key("transactions");
         v.int(transactions);
+        // G7o3: where payloads were verified (`stage` on arrival, or `provide` in the frame).
+        for (k, n) in [
+            ("payloads_staged", pc.staged),
+            ("payloads_refused", pc.refused),
+            ("payloads_unstaged", pc.unstaged),
+            ("payloads_provided_staged", pc.provided_staged),
+            ("payloads_provided_in_frame", pc.provided_in_frame),
+            ("payloads_provided_in_frame_bytes", pc.provided_in_frame_bytes),
+            ("payloads_staged_now", staged_now),
+        ] {
+            v.key(k);
+            v.int(n);
+        }
     }
 }
