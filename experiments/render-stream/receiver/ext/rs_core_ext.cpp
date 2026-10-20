@@ -15,6 +15,7 @@
 // Nothing here interprets render-stream: the decode, validation, resolve and the applier's
 // reconciliation are all the core's.
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -431,6 +432,11 @@ struct Instance {
   std::vector<uint64_t> rids[6];
   // RIDs created/freed through the shim (diagnostics only).
   int64_t executed = 0;
+  // G7o3: the last apply's split, in microseconds: the core's planner (rsc_apply), the op stream's
+  // RenderingServer calls (execute) and the stats Variant tree (vt_variant).
+  int64_t apply_plan_us = 0;
+  int64_t apply_execute_us = 0;
+  int64_t apply_stats_us = 0;
 
   uint64_t &slot(uint32_t kind, uint32_t handle) {
     std::vector<uint64_t> &t = rids[kind];
@@ -1379,6 +1385,9 @@ enum Method : int {
   M_OP_COUNT,
   M_SET_DIGEST_DEFERRED,
   M_RECORD_DIGEST,
+  M_STAGE,
+  M_UNSTAGE,
+  M_APPLY_TIMING,
   M_COUNT,
 };
 
@@ -1403,6 +1412,9 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"op_count", 0},         // () -> int (the core's opcode count, a constant: G7xw's probe call)
     {"set_digest_deferred", 1}, // (on: bool) -> void (G7o2: the next session defers record digests)
     {"record_digest", 2},    // (data: PackedByteArray, offset: int) -> String (sha256 hex, "" on error)
+    {"stage", 2},            // (hash: String, data: PackedByteArray) -> String ("" ok; G7o3)
+    {"unstage", 1},          // (hash: String) -> void (G7o3)
+    {"apply_timing", 0},     // () -> int: the last apply's plan | execute << 21 | stats << 42, in us (G7o3)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1487,14 +1499,48 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
                           reinterpret_cast<const uint8_t *>(body.data()), body.size());
       return;
     }
-    case M_APPLY:
+    case M_APPLY: {
+      using clock = std::chrono::steady_clock;
+      auto us = [](clock::time_point a, clock::time_point b) {
+        return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
+      };
+      clock::time_point t0 = clock::now();
       if (rsc_apply(inst->core) == 1) {
+        clock::time_point t1 = clock::now();
         execute(inst);
+        clock::time_point t2 = clock::now();
         vt_variant(inst, static_cast<Variant *>(ret));
+        clock::time_point t3 = clock::now();
+        inst->apply_plan_us = us(t0, t1);
+        inst->apply_execute_us = us(t1, t2);
+        inst->apply_stats_us = us(t2, t3);
       } else {
         text_string(inst, static_cast<Variant *>(ret));
       }
       return;
+    }
+    case M_STAGE: {
+      std::string hash = arg_string(args[0]);
+      BytesArg data(args[1]);
+      if (rsc_stage(inst->core, reinterpret_cast<const uint8_t *>(hash.data()), hash.size(), data.data,
+                    data.size) == 1) {
+        ret_string(ret, "");
+      } else {
+        text_string(inst, static_cast<Variant *>(ret));
+      }
+      return;
+    }
+    case M_UNSTAGE: {
+      std::string hash = arg_string(args[0]);
+      rsc_unstage(inst->core, reinterpret_cast<const uint8_t *>(hash.data()), hash.size());
+      return;
+    }
+    case M_APPLY_TIMING: {
+      auto clamp21 = [](int64_t v) { return v < 0 ? 0 : (v > 0x1FFFFF ? 0x1FFFFF : v); };
+      ret_int(ret, clamp21(inst->apply_plan_us) | (clamp21(inst->apply_execute_us) << 21) |
+                       (clamp21(inst->apply_stats_us) << 42));
+      return;
+    }
     case M_DISPOSE: {
       int64_t n = rsc_dispose(inst->core);
       execute(inst);

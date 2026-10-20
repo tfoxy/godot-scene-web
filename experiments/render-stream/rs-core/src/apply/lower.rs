@@ -186,6 +186,9 @@ struct Builder<'a> {
     ignoring: bool,
     rect: Option<Rect>,
     tables: &'a dyn Tables,
+    /// G7o3: the last texture asked of the tables and how it draws (a text item's glyphs share
+    /// one atlas; the tables do not change during a lowering).
+    tex_memo: Option<(Id, TexDraw)>,
 }
 
 impl<'a> Builder<'a> {
@@ -381,25 +384,28 @@ impl<'a> Builder<'a> {
             let uv = if with_uv { uvs[i] } else { [0.0, 0.0] };
             self.vertex(*p, uv, c);
         }
-        let order: Vec<u32> = if indices.is_empty() {
-            (0..n as u32).collect()
-        } else {
-            indices.to_vec()
-        };
+        // The draw order: `indices`, or (none given) every vertex in order (G7o3: not copied).
+        let sequential = indices.is_empty();
+        let len = if sequential { n } else { indices.len() };
+        let order = |k: usize| if sequential { k as u32 } else { indices[k] };
         if strip {
-            for k in 2..order.len() {
+            for k in 2..len {
                 // GL triangle-strip winding does not affect coverage (no culling).
                 self.out.idx.extend_from_slice(&[
-                    first + order[k - 2],
-                    first + order[k - 1],
-                    first + order[k],
+                    first + order(k - 2),
+                    first + order(k - 1),
+                    first + order(k),
                 ]);
             }
         } else {
-            let whole = order.len() / 3 * 3;
-            self.out
-                .idx
-                .extend(order[..whole].iter().map(|i| first + i));
+            let whole = len / 3 * 3;
+            if sequential {
+                self.out.idx.extend((0..whole as u32).map(|i| first + i));
+            } else {
+                self.out
+                    .idx
+                    .extend(indices[..whole].iter().map(|i| first + i));
+            }
         }
     }
 
@@ -445,7 +451,15 @@ impl<'a> Builder<'a> {
                 if !self.out.texture_deps.contains(&id) {
                     self.out.texture_deps.push(id);
                 }
-                let (w, h, mip) = match self.tables.texture_draw(id) {
+                let draw = match self.tex_memo {
+                    Some((t, d)) if t == id => d,
+                    _ => {
+                        let d = self.tables.texture_draw(id);
+                        self.tex_memo = Some((id, d));
+                        d
+                    }
+                };
+                let (w, h, mip) = match draw {
                     TexDraw::Sized(w, h, mip) => (w, h, mip),
                     TexDraw::White => return Some((TexRef::White, [1.0, 1.0])),
                     TexDraw::Skip => return None,
@@ -464,18 +478,14 @@ fn mul4(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]]
 }
 
-fn pairs(c: &Commands, span: crate::state::Span) -> Vec<[f32; 2]> {
-    c.pairs(span)
-        .chunks_exact(2)
-        .map(|p| [p[0], p[1]])
-        .collect()
+/// G7o3: the span's points (or uvs) in place, no copy.
+fn pairs(c: &Commands, span: crate::state::Span) -> &[[f32; 2]] {
+    c.pairs(span).as_chunks::<2>().0
 }
 
-fn quads(c: &Commands, span: crate::state::Span) -> Vec<[f32; 4]> {
-    c.quads(span)
-        .chunks_exact(4)
-        .map(|p| [p[0], p[1], p[2], p[3]])
-        .collect()
+/// G7o3: the span's colours in place, no copy.
+fn quads(c: &Commands, span: crate::state::Span) -> &[[f32; 4]] {
+    c.quads(span).as_chunks::<4>().0
 }
 
 #[derive(Clone, Copy)]
@@ -670,12 +680,31 @@ fn reversed_fan(n: usize) -> Vec<u32> {
 
 /// [`lower`] under the lowering sabotages.
 pub fn lower_with(commands: &Commands, tables: &dyn Tables, sab: LowerSabotage) -> Lowered {
+    lower_reusing(commands, tables, sab, Lowered::default())
+}
+
+/// [`lower_with`] into `spare`'s buffers (G7o3: a re-lowering reuses the lowering it replaces, so
+/// it allocates only when it outgrows it). The result does not depend on `spare`'s contents.
+pub fn lower_reusing(
+    commands: &Commands,
+    tables: &dyn Tables,
+    sab: LowerSabotage,
+    mut spare: Lowered,
+) -> Lowered {
+    spare.verts.clear();
+    spare.idx.clear();
+    spare.draws.clear();
+    spare.rect = [0.0; 4];
+    spare.shortcuts.clear();
+    spare.texture_deps.clear();
+    spare.mesh_deps.clear();
     let mut b = Builder {
-        out: Lowered::default(),
+        out: spare,
         xf: None,
         ignoring: false,
         rect: None,
         tables,
+        tex_memo: None,
     };
     for cmd in &commands.list {
         match cmd {
@@ -1162,20 +1191,25 @@ pub fn lower_with(commands: &Commands, tables: &dyn Tables, sab: LowerSabotage) 
                     None => *transform,
                 });
                 let d = b.begin(texref, false);
+                let mut cols_buf: Vec<[f32; 4]> = Vec::new();
                 for s in surfaces {
                     let n = s.positions.len();
                     // GLES3 TYPE_MESH: modulation = base_color · modulate times the colour attribute.
-                    let cols: Vec<[f32; 4]> = match &s.colors {
-                        Some(c) => c.iter().map(|c| mul4(*c, *modulate)).collect(),
-                        None => vec![*modulate; n],
-                    };
-                    let uvs = s.uvs.clone().unwrap_or_default();
-                    let idx = s.indices.clone().unwrap_or_default();
-                    match s.primitive {
-                        Primitive::Triangles => b.polygon(&s.positions, &cols, &uvs, &idx, false),
-                        Primitive::TriangleStrip => {
-                            b.polygon(&s.positions, &cols, &uvs, &idx, true)
+                    // G7o3: without a colour attribute, one colour (what `polygon` makes of one
+                    // per vertex or of a single one alike), and the arrays borrowed, not copied.
+                    let cols: &[[f32; 4]] = match &s.colors {
+                        Some(c) => {
+                            cols_buf.clear();
+                            cols_buf.extend(c.iter().map(|c| mul4(*c, *modulate)));
+                            &cols_buf
                         }
+                        None => std::slice::from_ref(modulate),
+                    };
+                    let uvs: &[[f32; 2]] = s.uvs.as_deref().unwrap_or(&[]);
+                    let idx: &[u32] = s.indices.as_deref().unwrap_or(&[]);
+                    match s.primitive {
+                        Primitive::Triangles => b.polygon(&s.positions, cols, uvs, idx, false),
+                        Primitive::TriangleStrip => b.polygon(&s.positions, cols, uvs, idx, true),
                         // GL_LINES, GL_LINE_STRIP and GL_POINTS (size 1): the hairline quads.
                         Primitive::Lines | Primitive::LineStrip | Primitive::Points => {
                             b.out.note(Shortcut::HairlineAsQuads);
@@ -1184,7 +1218,14 @@ pub fn lower_with(commands: &Commands, tables: &dyn Tables, sab: LowerSabotage) 
                             } else {
                                 idx.iter().map(|&i| i as usize).filter(|&i| i < n).collect()
                             };
-                            let at = |i: usize| (s.positions[i], cols[i]);
+                            let at = |i: usize| {
+                                let c = if s.colors.is_some() {
+                                    cols[i]
+                                } else {
+                                    *modulate
+                                };
+                                (s.positions[i], c)
+                            };
                             match s.primitive {
                                 Primitive::Points => {
                                     for &i in &order {

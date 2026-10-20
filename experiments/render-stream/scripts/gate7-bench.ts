@@ -461,6 +461,7 @@ async function runNativeArm(
         ...(input.store ? { RS_RECEIVER_STORE_DIR: input.store } : {}),
         // G7xd: the default core (rust) adds nothing, so a rust leg's env is what it always was.
         ...(args.core === "gdscript" ? { RS_RECEIVER_CORE: "gdscript" } : {}),
+        ...(args.profile ? { RS_RECEIVER_PERF_SAMPLES: "1" } : {}),
         ...(args.core === "rust" && args.coreExt
           ? { RS_RECEIVER_CORE_EXT: args.coreExt }
           : {}),
@@ -1382,6 +1383,13 @@ async function runWebArm(
             RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
             RS_RECEIVER_BUILD_SHA256: buildSha256,
             ...(args.core === "gdscript" ? { RS_RECEIVER_CORE: "gdscript" } : {}),
+            // G7o3: --profile lists each transaction's timings in perf.json (diagnostics only).
+            ...(args.profile ? { RS_RECEIVER_PERF_SAMPLES: "1" } : {}),
+            // G7o3: --rs-sabotage reaches the web arm's receiver the same way as native/gsw's
+            // (RS_RECEIVER_SABOTAGE), so `verify-in-frame` can be checked on the web export too.
+            ...(args.rsSabotage.length
+              ? { RS_RECEIVER_SABOTAGE: args.rsSabotage.join(",") }
+              : {}),
             ...(input.store
               ? { RS_RECEIVER_STORE_DIR: `/web-assets/${input.name}/store` }
               : {}),

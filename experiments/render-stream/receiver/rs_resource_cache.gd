@@ -67,6 +67,18 @@ var no_evict: bool = false
 ## itself. Every payload is still verified and decoded here first, so a failure is reported
 ## exactly as before.
 var keep_raw: bool = false
+## G7o3 (D31): under keep_raw, the Rust applier (RsRustApplier) whose core verifies and decodes
+## each payload as it arrives (`stage`), instead of this cache's own SHA-256 and GDScript decode;
+## the frame's provide then moves it into the apply without hashing it again. Every arrival path
+## stages (add_inline, add_fetched, obtain()'s cache and store reads), every refusal is reported
+## with the same code and detail as the GDScript checks give, and every eviction from memory (and
+## clear_memory()) unstages, so the core holds at most what memory holds. Null: the GDScript
+## checks, and the core verifies inside the frame (RS_RECEIVER_SABOTAGE=verify-in-frame, or no
+## applier yet).
+var stager: RsRustApplier = null
+## G7o3: the time spent verifying payloads on arrival (stage, or the GDScript checks), since the
+## last take_verify_us(): receiver.gd's payload_verify_us, outside decode_us and apply_us.
+var _verify_us: int = 0
 var entries_before: int = 0
 ## G6s counters (Q5 "Resource budgets"): how many LRU evictions each layer made, and how many
 ## obtain() calls had to re-fetch from the origin a hash this process had and evicted before.
@@ -224,6 +236,8 @@ func _evict_memory_over_budget() -> void:
 		_memory_order.erase(hash)
 		_ever_evicted[hash] = true
 		evictions_memory += 1
+		if stager != null:
+			stager.unstage(hash)
 
 
 ## G6s: the same, for the cache directory's files, bounded by `cache_budget_bytes` (0: unlimited,
@@ -272,9 +286,9 @@ func has_in_memory(hash: String) -> bool:
 ## An inline record may also carry a render-stream-mesh/1 (GRM1) payload (render-stream-4.md,
 ## since G5d): it is decoded by its magic like any other payload.
 func add_inline(hash: String, payload: PackedByteArray) -> String:
-	var decoded: Dictionary = decode_payload(payload)
+	var decoded: Dictionary = _verified(hash, payload, "inline payload %s" % hash, false)
 	if not decoded["ok"]:
-		return Rs2Decoder.err("resource-invalid", "inline payload %s: %s" % [hash, decoded["detail"]])
+		return decoded["error"]
 	_memory[hash] = _kept(decoded, payload)
 	_lengths[hash] = payload.size()
 	_touch(_memory_order, hash)
@@ -369,6 +383,9 @@ func cache_hashes() -> Array[String]:
 ## Forgets every payload held in memory (a live reconnect: the new session's payloads come from
 ## the stream's inline records, the cache directory or a fetch, never from the old session).
 func clear_memory() -> void:
+	if stager != null:
+		for hash: String in _memory:
+			stager.unstage(hash)
 	_memory.clear()
 	_lengths.clear()
 
@@ -377,11 +394,9 @@ func clear_memory() -> void:
 ## written to the cache, kept in memory -- obtain()'s directory branch, with the bytes already in
 ## hand. Returns "" or the error (resource-hash-mismatch, resource-invalid, resource-unavailable).
 func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> String:
-	if RsTexturePayload.sha256_hex(payload) != hash:
-		return Rs2Decoder.err("resource-hash-mismatch", "%s (%d bytes) does not hash to its name" % [origin, payload.size()])
-	var fetched_decoded: Dictionary = decode_payload(payload)
+	var fetched_decoded: Dictionary = _verified(hash, payload, origin, true)
 	if not fetched_decoded["ok"]:
-		return Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, fetched_decoded["detail"]])
+		return fetched_decoded["error"]
 	if dir != "":
 		var write_error: String = _write_cache(hash, payload)
 		if write_error != "":
@@ -395,6 +410,46 @@ func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> Stri
 	_touch(_memory_order, hash)
 	_evict_memory_over_budget()
 	return ""
+
+
+## A payload as it arrives, checked before anything keeps it: against its name (`check_hash`;
+## an inline record's was checked by the decoder already) and by decoding it. With a stager (G7o3)
+## the Rust core does both and stages it; otherwise the GDScript checks. Returns the decode
+## ({ok: true, ...}; under a stager just {ok: true}), or {ok: false, mismatch: bool, error} with
+## the code and detail the GDScript checks give: resource-hash-mismatch ("<origin> (<n> bytes)
+## does not hash to its name", or `mismatch_detail`), resource-invalid ("<origin>: <detail>").
+func _verified(hash: String, payload: PackedByteArray, origin: String, check_hash: bool, mismatch_detail: String = "") -> Dictionary:
+	var t0: int = Time.get_ticks_usec()
+	var out: Dictionary = _verify(hash, payload, origin, check_hash, mismatch_detail)
+	_verify_us += Time.get_ticks_usec() - t0
+	return out
+
+
+func _verify(hash: String, payload: PackedByteArray, origin: String, check_hash: bool, mismatch_detail: String) -> Dictionary:
+	var mismatch: String = mismatch_detail if mismatch_detail != "" else "%s (%d bytes) does not hash to its name" % [origin, payload.size()]
+	if stager != null:
+		var refused: String = stager.stage(hash, payload)
+		if refused == "":
+			return {"ok": true}
+		if refused.begins_with("resource-hash-mismatch"):
+			return {"ok": false, "mismatch": true, "error": Rs2Decoder.err("resource-hash-mismatch", mismatch)}
+		# The core's "resource-invalid: payload <hash>: <decoder detail>": keep the decoder's part.
+		var prefix: String = "resource-invalid: payload %s: " % hash
+		var detail: String = refused.substr(prefix.length()) if refused.begins_with(prefix) else refused
+		return {"ok": false, "mismatch": false, "error": Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, detail])}
+	if check_hash and RsTexturePayload.sha256_hex(payload) != hash:
+		return {"ok": false, "mismatch": true, "error": Rs2Decoder.err("resource-hash-mismatch", mismatch)}
+	var decoded: Dictionary = decode_payload(payload)
+	if not decoded["ok"]:
+		return {"ok": false, "mismatch": false, "error": Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, decoded["detail"]])}
+	return decoded
+
+
+## G7o3: payload_verify_us since the last call (and zeroes it).
+func take_verify_us() -> int:
+	var us: int = _verify_us
+	_verify_us = 0
+	return us
 
 
 ## The decoded payload for `hash` (in memory: has_in_memory() was true, or obtain() succeeded).
@@ -432,13 +487,10 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 		var cache_bytes: PackedByteArray = FileAccess.get_file_as_bytes(cached)
 		out["source"] = "cache"
 		out["bytes"] = cache_bytes.size()
-		if RsTexturePayload.sha256_hex(cache_bytes) != hash:
-			out["verified"] = false
-			out["error"] = Rs2Decoder.err("resource-hash-mismatch", "cached %s does not hash to its name" % cached)
-			return out
-		var cache_decoded: Dictionary = decode_payload(cache_bytes)
+		var cache_decoded: Dictionary = _verified(hash, cache_bytes, "cached %s" % cached, true, "cached %s does not hash to its name" % cached)
 		if not cache_decoded["ok"]:
-			out["error"] = Rs2Decoder.err("resource-invalid", "cached %s: %s" % [cached, cache_decoded["detail"]])
+			out["verified"] = not cache_decoded["mismatch"]
+			out["error"] = cache_decoded["error"]
 			return out
 		_touch(_disk_order, hash)
 		_memory[hash] = _kept(cache_decoded, cache_bytes)
@@ -463,13 +515,10 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 	var fetched: PackedByteArray = FileAccess.get_file_as_bytes(origin)
 	out["end_us"] = Time.get_ticks_usec()
 	out["bytes"] = fetched.size()
-	if RsTexturePayload.sha256_hex(fetched) != hash:
-		out["verified"] = false
-		out["error"] = Rs2Decoder.err("resource-hash-mismatch", "%s (%d bytes) does not hash to its name" % [origin, fetched.size()])
-		return out
-	var fetched_decoded: Dictionary = decode_payload(fetched)
+	var fetched_decoded: Dictionary = _verified(hash, fetched, origin, true)
 	if not fetched_decoded["ok"]:
-		out["error"] = Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, fetched_decoded["detail"]])
+		out["verified"] = not fetched_decoded["mismatch"]
+		out["error"] = fetched_decoded["error"]
 		return out
 	if dir != "":
 		var write_error: String = _write_cache(hash, fetched)

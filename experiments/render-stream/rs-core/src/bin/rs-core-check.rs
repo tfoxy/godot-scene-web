@@ -7,7 +7,7 @@
 //!   rs-core-check validate <recording>... [--version 2..7] [--recover]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred]
-//!   rs-core-check walk-diff <recording>... [--store <dir>]
+//!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>]
 //!   rs-core-check scissors <recording> [--store <dir>]
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
@@ -32,6 +32,29 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
+
+/// G7o3: the system allocator, counting allocations (`profile` reports them per transaction).
+struct Counting;
+static ALLOCATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+unsafe impl std::alloc::GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::alloc::System.alloc(l)
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        std::alloc::System.dealloc(p, l)
+    }
+    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::alloc::System.alloc_zeroed(l)
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::alloc::System.realloc(p, l, n)
+    }
+}
+#[global_allocator]
+static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -722,6 +745,10 @@ fn cmd_profile(args: &Args) -> ExitCode {
         T0.get_or_init(Instant::now).elapsed().as_secs_f64() * 1e6
     }
     prof::set_clock(Some(clock));
+    fn allocations() -> u64 {
+        ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    prof::set_alloc_counter(Some(allocations));
     let mut files: HashMap<Hash, Option<Vec<u8>>> = HashMap::new();
     let mut read = |h: &Hash| -> Option<Vec<u8>> {
         files
@@ -757,6 +784,10 @@ fn cmd_profile(args: &Args) -> ExitCode {
 /// (`Applier::always_walk`), and compares what their packed lists paint after every transaction
 /// (`Applier::paint_digest`). Prints one line per recording (transactions, how many took the
 /// walk, the rows-only and re-assembly paths, mismatching seqs); exits non-zero on any mismatch.
+/// `--digests <file>` (G7o3) also writes, per transaction of the incremental applier, one line:
+/// the recording, the seq, its paint digest, a digest of its whole packed list as it stands
+/// (buffers, dirty ranges, texture operations) and its stats less the timings: two builds that
+/// write the same file produce the same output.
 fn cmd_walk_diff(args: &Args) -> ExitCode {
     use render_stream_core::apply::geom;
     use render_stream_core::apply::payloads::PayloadStore;
@@ -765,9 +796,19 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
         return usage();
     }
     let store = args.get("store").map(PathBuf::from);
+    let mut digests: Option<std::io::BufWriter<std::fs::File>> = match args.get("digests") {
+        Some(f) => match std::fs::File::create(f) {
+            Ok(file) => Some(std::io::BufWriter::new(file)),
+            Err(e) => {
+                eprintln!("rs-core-check walk-diff: {f}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     let mut failed = false;
     for path in &args.positional {
-        let run = || -> Result<(usize, usize, usize, Vec<i64>), wire::Error> {
+        let mut run = || -> Result<(usize, usize, usize, Vec<i64>), wire::Error> {
             let data =
                 std::fs::read(path).map_err(|e| wire::Error::new("io", format!("{path}: {e}")))?;
             let version = wire::version_of_magic(&data)
@@ -842,8 +883,22 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                         } else if !st.reassembled && st.why == 0 {
                             rows_only += 1;
                         }
-                        if inc.paint_digest() != oracle.paint_digest() {
+                        let paint = inc.paint_digest();
+                        if paint != oracle.paint_digest() {
                             bad.push(v.state().seq);
+                        }
+                        if let Some(w) = digests.as_mut() {
+                            let mut st = st.clone();
+                            st.walk_us = 0.0;
+                            st.assemble_us = 0.0;
+                            let _ = writeln!(
+                                w,
+                                "{path} {} {} {} {}",
+                                v.state().seq,
+                                paint.to_hex(),
+                                list_digest(&inc.list).to_hex(),
+                                sha_hex(format!("{st:?}").as_bytes())
+                            );
                         }
                         inc.list.consumed();
                         oracle.list.consumed();
@@ -877,6 +932,31 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// A digest of a packed list's whole contents as they stand (its `Debug` form, streamed).
+fn list_digest(l: &gsw_canvas_draw_list::DrawList) -> render_stream_core::state::Hash {
+    use sha2::{Digest, Sha256};
+    struct W(Sha256);
+    impl std::fmt::Write for W {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.update(s.as_bytes());
+            Ok(())
+        }
+    }
+    let mut w = W(Sha256::new());
+    let _ = std::fmt::Write::write_fmt(&mut w, format_args!("{l:?}"));
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&w.0.finalize());
+    render_stream_core::state::Hash(out)
+}
+
+fn sha_hex(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b)
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect()
 }
 
 /// `scissors <recording> [--store <dir>]` (gate7-design.md G7a `clip-parity`, Q14d "Lowering"):

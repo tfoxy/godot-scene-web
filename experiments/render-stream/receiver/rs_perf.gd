@@ -121,6 +121,18 @@ var cpu_render_us := Histogram.new()
 ## G7o2 (D31): the web export's deferred record digests, once per frame after its draw; written
 ## only when any were taken (the native receiver digests inline, inside decode_us).
 var evidence_hash_us := Histogram.new()
+## G7o3: payload verification on arrival (outside decode_us and apply_us), and the Rust core's
+## apply_us split: the provide loop, the core's planner, the op stream's RenderingServer calls and
+## the stats Variant tree. Written only when sampled.
+var payload_verify_us := Histogram.new()
+var provide_us := Histogram.new()
+var plan_us := Histogram.new()
+var execute_us := Histogram.new()
+var stats_us := Histogram.new()
+## G7o3: RS_RECEIVER_PERF_SAMPLES=1's per-transaction timings (receiver.gd), and the Rust core's
+## payload counters (receiver.gd _note_payload_counters()).
+var samples: Array[Dictionary] = []
+var payloads: Dictionary = {}
 
 var _last_frame_us: int = -1
 var _start_ms: int = 0
@@ -248,7 +260,15 @@ func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
 	}
 	if evidence_hash_us.count > 0:
 		histograms["evidence_hash_us"] = evidence_hash_us.to_dict()
-	return {
+	var g7o3: Dictionary = {
+		"payload_verify_us": payload_verify_us, "provide_us": provide_us, "plan_us": plan_us,
+		"execute_us": execute_us, "stats_us": stats_us,
+	}
+	for key: String in g7o3:
+		var histogram: Histogram = g7o3[key]
+		if histogram.count > 0:
+			histograms[key] = histogram.to_dict()
+	var doc: Dictionary = {
 		"schema": SCHEMA,
 		"histograms": histograms,
 		"unavailable_stages": [
@@ -269,3 +289,9 @@ func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
 		},
 		"timeline": _timeline,
 	}
+	# G7o3: only when there is something to say (a GDScript-core or unsampled run writes neither).
+	if not payloads.is_empty():
+		doc["payloads"] = payloads
+	if not samples.is_empty():
+		doc["samples"] = samples
+	return doc

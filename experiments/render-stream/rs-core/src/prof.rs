@@ -58,6 +58,18 @@ pub const NAMES: [&str; COUNT] = [
 thread_local! {
     static CLOCK: Cell<Option<fn() -> f64>> = const { Cell::new(None) };
     static ACC: Cell<[f64; COUNT]> = const { Cell::new([0.0; COUNT]) };
+    static ALLOCS: Cell<Option<fn() -> u64>> = const { Cell::new(None) };
+}
+
+/// G7o3: install (or remove) an allocation counter (the number of allocations so far, a native
+/// adapter's counting allocator): [`replay`] then reports each transaction's allocations in
+/// `accept` and in `apply`.
+pub fn set_alloc_counter(counter: Option<fn() -> u64>) {
+    ALLOCS.with(|c| c.set(counter));
+}
+
+fn allocs() -> Option<u64> {
+    ALLOCS.with(|c| c.get().map(|f| f()))
 }
 
 /// Install (or with `None` remove) the clock, in microseconds.
@@ -121,6 +133,9 @@ pub struct TxProfile {
     pub provide_us: f64,
     pub apply_us: f64,
     pub digest_us: f64,
+    /// G7o3: allocations in `accept` and in `apply` ([`set_alloc_counter`]; `None` without one).
+    pub accept_allocs: Option<u64>,
+    pub apply_allocs: Option<u64>,
     pub phases: [f64; COUNT],
     pub needed: usize,
     pub provided_bytes: usize,
@@ -142,7 +157,7 @@ impl TxProfile {
             .zip(self.phases)
             .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
             .collect();
-        serde_json::json!({
+        let mut out = serde_json::json!({
             "seq": self.seq,
             "encoding": if self.full { "full" } else { "patch" },
             "record_bytes": self.record_bytes,
@@ -164,7 +179,12 @@ impl TxProfile {
             "texture_upload_bytes": st.texture_upload_bytes,
             "items": self.items,
             "phases": phases,
-        })
+        });
+        if let (Some(a), Some(b)) = (self.accept_allocs, self.apply_allocs) {
+            out["accept_allocs"] = serde_json::json!(a);
+            out["apply_allocs"] = serde_json::json!(b);
+        }
+        out
     }
 }
 
@@ -214,9 +234,11 @@ pub fn replay(
     take();
     for span in &spans[1..] {
         let rec = span.bytes(data);
+        let a0 = allocs();
         let t0 = now();
         let acc = v.accept(rec, span.offset)?;
         let mut accept_us = now() - t0;
+        let accept_allocs = a0.zip(allocs()).map(|(a, b)| b - a);
         let mut digest_us = 0.0;
         if !inline_digest {
             let t = now();
@@ -252,9 +274,11 @@ pub fn replay(
                     payloads.provide(&b, h, version, true)?;
                     provide_us += now() - t;
                 }
+                let a4 = allocs();
                 let t4 = now();
                 let stats = a.apply(v.state(), v.delta(), &payloads).clone();
                 let apply_us = now() - t4;
+                let apply_allocs = a4.zip(allocs()).map(|(a, b)| b - a);
                 a.list.consumed();
                 let s = v.state();
                 rows.push(TxProfile {
@@ -266,6 +290,8 @@ pub fn replay(
                     provide_us,
                     apply_us,
                     digest_us,
+                    accept_allocs,
+                    apply_allocs,
                     phases: take(),
                     needed: need.len(),
                     provided_bytes,

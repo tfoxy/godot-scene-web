@@ -262,7 +262,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "ignore-presentation", "no-evict"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "ignore-presentation", "no-evict", "verify-in-frame"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -328,6 +328,12 @@ var _perf: RsPerf = null
 var _perf_out_path: String = ""
 var _log_mode: String = "full"
 var _perf_headless: bool = false
+# G7o3: RS_RECEIVER_PERF_SAMPLES=1 (file mode, with RS_RECEIVER_PERF_OUT): perf.json also lists each
+# transaction's timings (`samples`: seq, decode, payload verify, provide, plan, execute, stats and
+# apply, in us), for a per-transaction profile. Off by default: a soak's list would grow unbounded.
+var _perf_samples: bool = false
+var _payload_totals: Dictionary = {}
+var _last_decode_us: int = 0
 # G6c: RS_RECEIVER_SHOT_FINAL=1 (live): after the end record, one more shot of the last applied
 # state (`final.png`) before the receiver closes.
 var _shot_final: bool = false
@@ -668,6 +674,11 @@ func _parse_perf_env() -> bool:
 	if _perf_out_path != "":
 		_perf = RsPerf.new()
 		_perf_headless = DisplayServer.get_name() == "headless"
+	var samples: String = RsConfig.get_env("RS_RECEIVER_PERF_SAMPLES").strip_edges()
+	if samples != "" and samples != "0" and samples != "1":
+		_log("error: RS_RECEIVER_PERF_SAMPLES must be 0 or 1 (got %s)" % JSON.stringify(samples))
+		return false
+	_perf_samples = samples == "1" and _perf != null
 	return true
 
 
@@ -795,10 +806,29 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		# run across several earlier _process calls (resources["fetch_us"] already carries those
 		# through `prefetched`, not re-timed here).
 		_perf.fetch_us.add(Rs2Decoder.as_int(resources["fetch_us"]))
+	# G7o3: payload verification on arrival since the last transaction (the cache's stage or its
+	# GDScript checks), outside decode_us and apply_us like D31's evidence_hash_us.
+	var verify_us: int = _cache.take_verify_us()
 	var apply_t0: int = Time.get_ticks_usec() if _perf != null else 0
 	var stats: Dictionary = _applier.apply_state(_stream, _cache)
 	if _perf != null:
-		_perf.apply_us.add(Time.get_ticks_usec() - apply_t0)
+		var apply_us: int = Time.get_ticks_usec() - apply_t0
+		_perf.apply_us.add(apply_us)
+		if verify_us > 0:
+			_perf.payload_verify_us.add(verify_us)
+		if _rust != null:
+			_perf.provide_us.add(_rust.last_provide_us)
+			_perf.plan_us.add(_rust.last_plan_us)
+			_perf.execute_us.add(_rust.last_execute_us)
+			_perf.stats_us.add(_rust.last_stats_us)
+		if _perf_samples:
+			_perf.samples.append({
+				"seq": seq, "decode_us": _last_decode_us, "payload_verify_us": verify_us, "apply_us": apply_us,
+				"provide_us": _rust.last_provide_us if _rust != null else null,
+				"plan_us": _rust.last_plan_us if _rust != null else null,
+				"execute_us": _rust.last_execute_us if _rust != null else null,
+				"stats_us": _rust.last_stats_us if _rust != null else null,
+			})
 	if stats.has("error"):
 		# G7xn: only RsRustApplier reports one (a payload the core refuses).
 		var apply_error: String = stats["error"]
@@ -1043,7 +1073,8 @@ func _process(_delta: float) -> void:
 	var decode_t0: int = Time.get_ticks_usec() if _perf != null else 0
 	var result: Dictionary = _accept_record(_data, Rs2Decoder.as_int(raw["offset"]))
 	if _perf != null:
-		_perf.decode_us.add(Time.get_ticks_usec() - decode_t0)
+		_last_decode_us = Time.get_ticks_usec() - decode_t0
+		_perf.decode_us.add(_last_decode_us)
 	var errors: PackedStringArray = result["errors"]
 	var record: Dictionary = result["record"]
 	var meta: Dictionary = record["meta"]
@@ -2575,6 +2606,9 @@ func _new_applier() -> void:
 	if _core_kind == "rust":
 		_rust = RsRustApplier.new(viewport, canvas)
 		_applier = _rust
+		# G7o3 (D31): payloads are verified and decoded by this core as they arrive (the cache
+		# stages them), not in the frame; the verify-in-frame sabotage keeps the pre-G7o3 path.
+		_cache.stager = null if _sabotage == "verify-in-frame" else _rust
 	else:
 		_applier = RsApplier.new(viewport, canvas)
 
@@ -2679,6 +2713,8 @@ func _write_perf_report() -> void:
 	var viewport_rid: RID = get_viewport().get_viewport_rid() if is_inside_tree() else RID()
 	# Acks (received/applied/submitted) are a live-transport concept; file mode has none, so
 	# `counts` stays null there rather than a misleading all-zero (D9: declared, not guessed).
+	if _core_kind == "rust":
+		_perf.payloads = _payload_counters(true)
 	var doc: Dictionary = _perf.to_dict(viewport_rid, headless, _acks_sent if _live else null)
 	DirAccess.make_dir_recursive_absolute(_perf_out_path.get_base_dir())
 	var file: FileAccess = FileAccess.open(_perf_out_path, FileAccess.WRITE)
@@ -2705,8 +2741,27 @@ func _quit(code: int) -> void:
 
 func _dispose_applier() -> void:
 	if _applier != null:
+		if _rust != null:
+			_note_payload_counters()
 		var freed: int = _applier.dispose()
 		_log("disposed: %d RIDs freed" % freed)
+	_cache.stager = null
+
+
+## G7o3: the Rust core's payload counters (staged on arrival, refused, unstaged by an eviction,
+## and at apply provided from the stage or verified in the frame) for perf.json's `payloads`:
+## those of the cores this run disposed already, plus the live one's (`include_live`).
+func _payload_counters(include_live: bool) -> Dictionary:
+	var out: Dictionary = _payload_totals.duplicate()
+	if include_live and _rust != null:
+		var counters: Dictionary = _rust.payload_counters()
+		for key: String in counters:
+			out[key] = Rs2Decoder.as_int(out.get(key, 0)) + Rs2Decoder.as_int(counters[key])
+	return out
+
+
+func _note_payload_counters() -> void:
+	_payload_totals = _payload_counters(true)
 
 
 ## G7e: whether payloads have somewhere to come from besides inline records -- a cache directory

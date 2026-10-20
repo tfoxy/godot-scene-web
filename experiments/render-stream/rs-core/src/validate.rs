@@ -2107,15 +2107,22 @@ impl Validator {
             match it.commands {
                 Some(r) => {
                     lift_commands(r.of(&tx.cmds), cmd_f32, cmd_i32, &mut item.commands);
-                    if st.items.get(&it.id).is_some_and(|old| {
-                        item_head_identical(old, &item)
-                            && commands_identical(&old.commands, &item.commands)
-                    }) {
-                        self.item_pool.push(item);
-                        self.was_new[1].push(false);
-                        continue;
-                    }
-                    let prev = st.items.insert(it.id, item);
+                    // G7o3: one B-tree search (compare, then replace in place).
+                    let prev = match st.items.get_mut(&it.id) {
+                        Some(old)
+                            if item_head_identical(old, &item)
+                                && commands_identical(&old.commands, &item.commands) =>
+                        {
+                            self.item_pool.push(item);
+                            self.was_new[1].push(false);
+                            continue;
+                        }
+                        Some(old) => Some(std::mem::replace(old, item)),
+                        None => {
+                            st.items.insert(it.id, item);
+                            None
+                        }
+                    };
                     self.was_new[1].push(prev.is_none());
                     undo.push(Undo::Item(it.id, prev, false));
                     d.items.push((it.id, true));
@@ -2125,23 +2132,24 @@ impl Validator {
                     item.commands.list.clear();
                     item.commands.f32s.clear();
                     item.commands.i32s.clear();
-                    if st
-                        .items
-                        .get(&it.id)
-                        .is_some_and(|old| item_head_identical(old, &item))
-                    {
-                        self.item_pool.push(item);
-                        self.was_new[1].push(false);
-                        continue;
-                    }
-                    let mut prev = st.items.remove(&it.id);
-                    let mut moved = false;
-                    if let Some(p) = prev.as_mut() {
-                        std::mem::swap(&mut item.commands, &mut p.commands);
-                        moved = true;
-                    }
+                    // G7o3: one B-tree search, and replaced in place (a remove and an insert
+                    // shift the node's large values twice).
+                    let (prev, moved) = match st.items.get_mut(&it.id) {
+                        Some(old) if item_head_identical(old, &item) => {
+                            self.item_pool.push(item);
+                            self.was_new[1].push(false);
+                            continue;
+                        }
+                        Some(slot) => {
+                            std::mem::swap(&mut item.commands, &mut slot.commands);
+                            (Some(std::mem::replace(slot, item)), true)
+                        }
+                        None => {
+                            st.items.insert(it.id, item);
+                            (None, false)
+                        }
+                    };
                     self.was_new[1].push(prev.is_none());
-                    st.items.insert(it.id, item);
                     undo.push(Undo::Item(it.id, prev, moved));
                     d.items.push((it.id, false));
                 }
@@ -2447,19 +2455,40 @@ impl Validator {
         let mut eff_work: Vec<Id> = Vec::new();
         let mut matu_check: Vec<Id> = Vec::new();
         for &(id, cmds_changed) in &d.items {
-            let old = ix.item.remove(&id);
+            // G7o3: taken out in place and written back (a remove and an insert leave hash-table
+            // tombstones that force rehashes).
+            let old = ix.item.get_mut(&id).map(std::mem::take);
             let had_old = old.is_some();
             let new_item = st.items.get(&id);
             let mut carried = ItemIdx::default();
+            // G7o3: a claim, draw-index group or material use the item keeps is left in place
+            // (removing and re-inserting the same entry is a no-op on the index).
+            let new_parent = new_item.and_then(|n| n.parent.as_ref().map(pkey));
+            let new_group = new_item.and_then(|n| {
+                let drawing = !n.commands.list.is_empty() || !n.children.is_empty();
+                new_parent.filter(|_| drawing).map(|p| (p, n.draw_index))
+            });
+            let new_material = new_item.and_then(|n| n.material);
+            let (mut keep_claim, mut keep_group, mut keep_material) = (false, false, false);
             if let Some(o) = old {
+                let old_group = o.parent.filter(|_| o.drawing).map(|p| (p, o.draw_index));
                 if let Some(p) = o.parent {
-                    ix.claims.remove(&(p, id));
-                    if o.drawing {
-                        ix.group_remove(p, o.draw_index, id);
+                    keep_claim = new_parent == Some(p);
+                    if !keep_claim {
+                        ix.claims.remove(&(p, id));
+                    }
+                }
+                if let Some((p, di)) = old_group {
+                    keep_group = new_group == old_group;
+                    if !keep_group {
+                        ix.group_remove(p, di, id);
                     }
                 }
                 if let Some(m) = o.material {
-                    ix.mat_users.remove(&(m, id));
+                    keep_material = new_material == Some(m);
+                    if !keep_material {
+                        ix.mat_users.remove(&(m, id));
+                    }
                 }
                 let same_parent = new_item.is_some_and(|n| n.parent.as_ref().map(pkey) == o.parent);
                 if !same_parent {
@@ -2508,7 +2537,12 @@ impl Validator {
                     eff_work.extend(users(&ix.claims, item_key(id)));
                 }
             }
-            let Some(it) = new_item else { continue };
+            let Some(it) = new_item else {
+                if had_old {
+                    ix.item.remove(&id);
+                }
+                continue;
+            };
             let mut e = carried;
             e.parent = it.parent.as_ref().map(pkey);
             e.draw_index = it.draw_index;
@@ -2547,13 +2581,17 @@ impl Validator {
                 ix.n_ops += e.ops.len();
             }
             if let Some(p) = e.parent {
-                ix.claims.insert((p, id));
-                if e.drawing {
+                if !keep_claim {
+                    ix.claims.insert((p, id));
+                }
+                if e.drawing && !keep_group {
                     ix.group_add(p, e.draw_index, id);
                 }
             }
             if let Some(m) = e.material {
-                ix.mat_users.insert((m, id));
+                if !keep_material {
+                    ix.mat_users.insert((m, id));
+                }
             }
             ix.item.insert(id, e);
             texu_check.push(id);
@@ -2803,15 +2841,15 @@ impl Validator {
                     None => continue,
                 }
             };
-            let claimed = ix.claims.range((k, 0)..=(k, Id::MAX)).count();
-            let mut ok =
-                declared.len() == claimed && declared.iter().all(|&c| ix.claims.contains(&(k, c)));
-            if ok && declared.len() > 1 {
-                scratch.clear();
-                scratch.extend_from_slice(declared);
-                scratch.sort_unstable();
-                ok = scratch.windows(2).all(|w| w[0] != w[1]);
-            }
+            // G7o3: the declared list, sorted, must be the claims (ascending, distinct) exactly:
+            // the same count, all claimed, no duplicate; one range walk, no lookup per child.
+            scratch.clear();
+            scratch.extend_from_slice(declared);
+            scratch.sort_unstable();
+            let ok = scratch
+                .iter()
+                .copied()
+                .eq(ix.claims.range((k, 0)..=(k, Id::MAX)).map(|&(_, c)| c));
             if !ok {
                 let what = if k >> 32 == 0 {
                     format!("canvas {id}'s items[]")

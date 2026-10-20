@@ -36,6 +36,10 @@ int32_t rsc_resource_payload(RsCore *h);
 void rsc_needed(RsCore *h);
 // 1 kept, 0 with "<code>: <detail>" in text.
 int32_t rsc_provide(RsCore *h, const uint8_t *hash, size_t hlen, const uint8_t *data, size_t len);
+// G7o3: a payload as it arrives: 1 staged (verified, decoded), 0 with "<code>: <detail>" in text.
+int32_t rsc_stage(RsCore *h, const uint8_t *hash, size_t hlen, const uint8_t *data, size_t len);
+// G7o3: drops a staged payload (evicted by the receiver's memory cache).
+void rsc_unstage(RsCore *h, const uint8_t *hash, size_t hlen);
 void rsc_provide_library(RsCore *h, const uint8_t *hash, size_t hlen, int32_t ok,
                          const uint8_t *body, size_t blen);
 // 1 with ops and the stats vt, 0 with "<code>: <detail>" in text.
