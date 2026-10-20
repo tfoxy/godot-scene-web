@@ -400,3 +400,13 @@ Files: `web/gsw-receiver/{config,live}.ts`, `receiver/receiver.gd`, `receiver/rs
   (it judged `socket-kept-or-reconnected` kept and passed it until the 1001 host close counted as
   a loss). Self-test
   section 8 drives each lost-branch evaluator with an honest case and its failures.
+
+**As built (G7uf, 2026-10-20).** The live `g7-6` `motion-monotonic@web` failures blamed on G7u
+are not G7u's. The pre-G7u G7wf bundle and `main` with G7u's receiver hunks reversed fail the
+same way at matched load. None of this part's receiver, fetcher or shell code runs on the
+per-frame path. The failures come from two sources:
+
+- load from outside the quiet lock;
+- the check's microsecond hold threshold.
+
+See [results/gate7/g7uf.md](../../results/gate7/g7uf.md).
