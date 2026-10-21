@@ -416,6 +416,53 @@ async function compositorProblems(legDir: string): Promise<string[]> {
       ];
 }
 
+/** Q7's css-opacity sabotage check. A leg the smoke tier did not launch (it leaves
+ * `skipped-by-tier.txt`, lib/gate7-web-legs.ts) has no evidence: the check is reported failing with
+ * a `skipped-by-tier` detail naming the leg, which the tier verdict (lib/tier-verdict.py) excuses.
+ * It is never reported as passed. */
+export async function cssOpacitySabotageCheck(
+  honest: WebLegSpec,
+  sab: WebLegSpec,
+): Promise<Gate7Check> {
+  const id = "sabotage-css-opacity@web";
+  if (existsSync(join(sab.webDir, "skipped-by-tier.txt")))
+    return {
+      id,
+      criterion:
+        "Q7: `opacity: 0.99` on the canvas fails exactly compositor-equals-readback (its readback shots still equal the honest leg's and it exits 0)",
+      passed: false,
+      gating: true,
+      detail: `skipped-by-tier: the ${sab.leg} leg was not run by the smoke tier`,
+    };
+  const sabProblems: string[] = [];
+  const comp = await compositorProblems(sab.webDir);
+  if (comp.length === 0)
+    sabProblems.push(
+      "compositor-equals-readback passed on the css-opacity sabotage",
+    );
+  else if (!/px differ/.test(comp[0]))
+    sabProblems.push(`it failed for another reason: ${comp[0]}`);
+  // Everything else must still hold: its readback shots equal the honest web leg's exactly.
+  for (const f of filesUnder(join(honest.webDir, "shots"))) {
+    const a = await decodePngRgba(join(honest.webDir, "shots", f));
+    const b = await decodePngRgba(join(sab.webDir, "shots", f));
+    if (
+      !a ||
+      !b ||
+      diffRgba(a.data, b.data, a.width, a.height).mismatched_pixels > 0
+    )
+      sabProblems.push(`shots/${f} differs from the honest web leg`);
+  }
+  const exit = readFileSync(join(sab.webDir, "exit-code.txt"), "utf8").trim();
+  if (exit !== "0") sabProblems.push(`exit ${exit}`);
+  return mk(
+    "sabotage-css-opacity@web",
+    "Q7: `opacity: 0.99` on the canvas fails exactly compositor-equals-readback (its readback shots still equal the honest leg's and it exits 0)",
+    sabProblems,
+    `fails exactly compositor-equals-readback (${comp[0] ?? ""})`,
+  );
+}
+
 /** Gate 0's `g7-0@web` group. */
 export async function checkGate0Web(
   input: Gate0WebInput,
@@ -688,34 +735,10 @@ export async function checkGate0Web(
         "screenshot equals the last shot exactly",
       ),
     );
-    const sab = specs.find((s) => s.leg === CSS_OPACITY_LEG) as WebLegSpec;
-    const sabProblems: string[] = [];
-    const comp = await compositorProblems(sab.webDir);
-    if (comp.length === 0)
-      sabProblems.push(
-        "compositor-equals-readback passed on the css-opacity sabotage",
-      );
-    else if (!/px differ/.test(comp[0]))
-      sabProblems.push(`it failed for another reason: ${comp[0]}`);
-    // Everything else must still hold: its readback shots equal the honest web leg's exactly.
-    for (const f of filesUnder(join(honest.webDir, "shots"))) {
-      const a = await decodePngRgba(join(honest.webDir, "shots", f));
-      const b = await decodePngRgba(join(sab.webDir, "shots", f));
-      if (
-        !a ||
-        !b ||
-        diffRgba(a.data, b.data, a.width, a.height).mismatched_pixels > 0
-      )
-        sabProblems.push(`shots/${f} differs from the honest web leg`);
-    }
-    const exit = readFileSync(join(sab.webDir, "exit-code.txt"), "utf8").trim();
-    if (exit !== "0") sabProblems.push(`exit ${exit}`);
     checks.push(
-      mk(
-        "sabotage-css-opacity@web",
-        "Q7: `opacity: 0.99` on the canvas fails exactly compositor-equals-readback (its readback shots still equal the honest leg's and it exits 0)",
-        sabProblems,
-        `fails exactly compositor-equals-readback (${comp[0] ?? ""})`,
+      await cssOpacitySabotageCheck(
+        honest,
+        specs.find((s) => s.leg === CSS_OPACITY_LEG) as WebLegSpec,
       ),
     );
   }

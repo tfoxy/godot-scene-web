@@ -206,7 +206,7 @@ pub struct ApplyStats {
     pub freed: u32,
     /// Non-root canvases created (`resources.canvases_created`).
     pub canvases_created: u32,
-    /// G7g: the native receiver's canvas calls (`rs_applier.gd _apply_canvas`): attach and
+    /// G7g: the native receiver's canvas calls (the former GDScript applier's `_apply_canvas`, in `rs_applier.gd`, removed in G7gd): attach and
     /// remove (`resources.canvas_attach`) and stacking sets (`resources.canvas_stacking_sets`,
     /// none under the `ignore-canvas-stacking` sabotage).
     pub canvas_attach: u32,

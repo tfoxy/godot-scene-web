@@ -1,5 +1,5 @@
 //! The adapter over golden-6's valid recordings (protocol/golden-6): every transaction applies
-//! without error, the delta-driven planner's RenderingServer call stream equals rs_applier.gd's
+//! without error, the delta-driven planner's RenderingServer call stream equals the former GDScript applier (`rs_applier.gd`, removed in G7gd)'s
 //! O(state) walk (`full_scan`) call for call, and every sabotage keeps that equality. The
 //! comparison against the GDScript receiver's own evidence is `rs-core-capi-check legs`.
 //!

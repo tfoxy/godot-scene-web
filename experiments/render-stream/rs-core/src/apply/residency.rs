@@ -1,4 +1,4 @@
-//! Texture residency the way the native receiver keeps it (`rs_applier.gd` "Textures", gate2-design.md
+//! Texture residency the way the native receiver keeps it (the former GDScript applier, `rs_applier.gd`, removed in G7gd "Textures", gate2-design.md
 //! Q5 step 3, D5's lazy residency), so GSW's upload accounting and needed set are the native ones:
 //!
 //! - a texture becomes resident only once something *names* it: a command of any item (visible or

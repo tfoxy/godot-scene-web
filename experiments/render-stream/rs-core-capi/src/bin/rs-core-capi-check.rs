@@ -10,7 +10,7 @@
 //! as `_apply_newest` does), and its statistics must equal the leg's: created, freed,
 //! reparented, commands_replayed, msdf_commands, mesh_commands, rs_calls, every apply-side
 //! `resources` counter, and the `uploads`/`mesh_uploads` entries. `record_sha256` is compared
-//! for every transaction entry. The same replay then runs with `full_scan` (rs_applier.gd's
+//! for every transaction entry. The same replay then runs with `full_scan` (the former GDScript applier, `rs_applier.gd`, removed in G7gd; its
 //! O(state) walk) and the two RenderingServer call streams must be identical.
 //!
 //! Payloads come from the inline resource records, the leg's RS_RECEIVER_STORE_DIR and its
