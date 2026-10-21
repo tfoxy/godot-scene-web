@@ -80,7 +80,6 @@ import {
   helloProblems,
   type PageConfig,
   pacedLoopProblems,
-  receiverCoreProblems,
   type SummaryConnection,
 } from "./gate7-live";
 
@@ -217,7 +216,6 @@ export const SUSPENSION_INDEPENDENT: readonly string[] = [
   "browser-provenance",
   "console-clean",
   "hello-recorded",
-  "receiver-core",
 ];
 
 /** A real leg whose suspension did not take effect (`tookEffectProblems` non-empty) answers
@@ -1966,7 +1964,6 @@ interface RunInput {
   device: string | null;
   runDir: string;
   e: Gate6Expected;
-  webCore: "gdscript" | "rust";
 }
 
 /** S as the run's hosts ran it: the first leg's host steps.jsonl (step 0's settle frame less the
@@ -2160,13 +2157,6 @@ async function checkG7uRunAt(
       hello,
       `${host?.connections.length ?? 0} connections`,
     );
-    if (kind === "web")
-      add(
-        "receiver-core",
-        `the web export ran on the ${i.webCore} core`,
-        await receiverCoreProblems(ev.receiverDir, leg, i.webCore),
-        i.webCore,
-      );
 
     if (def.action === "suspend") {
       // Real legs: trusted only when the page shows the suspension took effect.
@@ -3262,7 +3252,7 @@ export function deviceRuns(out: string, kind: G7uKind): string[] {
 export async function checkG7u(
   out: string,
   e: Gate6Expected,
-  opts: { receiver?: string; webCore: "gdscript" | "rust" },
+  opts: { receiver?: string },
 ): Promise<G7uRunResult[]> {
   const results: G7uRunResult[] = [];
   for (const kind of G7U_KINDS) {
@@ -3285,7 +3275,6 @@ export async function checkG7u(
           device: null,
           runDir: desktop,
           e,
-          webCore: opts.webCore,
         }),
       );
     for (const device of devices)
@@ -3297,7 +3286,6 @@ export async function checkG7u(
           device,
           runDir: join(out, "gate6", `lc-${kind}-${device}`),
           e,
-          webCore: opts.webCore,
         }),
       );
     if (devices.length === 0)

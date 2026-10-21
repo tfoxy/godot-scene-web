@@ -299,12 +299,12 @@ run_g1a() {
 	done
 
 	# receiver-typecheck (support, for receiver-typed-clean): the mise editor (debug, so GDScript
-	# warnings are live) runs the render-stream/2 to /6 codec self-test, then one headless
+	# warnings are live) runs the receiver self-test (receiver_selftest.gd, G7gd), then one headless
 	# replay of golden-6/inline.rs6 (inline resource records: no store, a fresh cache).
 	echo "run-gate1: receiver-typecheck"
 	LEG_ENV=(RS_SELFTEST_GOLDEN_DIR="$GOLDEN_DIR")
 	run_headless "$OUT/receiver-typecheck/selftest" none -- \
-		mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/codec2_selftest.gd
+		mise exec -- godot --headless --path "$RECEIVER_DIR" --script res://tests/receiver_selftest.gd
 	local minimal_dir="$OUT/receiver-typecheck/minimal"
 	prepare_recording "$GOLDEN6_DIR/inline.rs6" "$minimal_dir"
 	LEG_ENV=(

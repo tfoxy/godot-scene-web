@@ -15,8 +15,8 @@
 // and g7-55 (G7b: `--source gate<N>=<run>` each, lib/gate7b-adapters.ts checkGateWeb), and the
 // gsw half of g7-0 to g7-3 (G7a) and g7-4 and g7-5 (G7t; lib/gate7-gsw.ts, lib/gate7-gsw-g45.ts).
 // G7l: `--live` judges the live runs of g7-1, g7-2, g7-5 and g7-55 instead (run-gate7.sh --live;
-// lib/gate7-live.ts checkGateLive), one result per group and receiver kind; `--web-core rust`
-// (G7xwl) judges a web run on the Rust core (receiver-core@web). G7g: the gsw half of g7-6
+// lib/gate7-live.ts checkGateLive), one result per group and receiver kind (G7gd: the Rust core
+// is every receiver's only core; `--web-core` accepts only `rust`). G7g: the gsw half of g7-6
 // (lib/gate7-gsw-g6.ts), presentation-check on both halves, and g7-6's live g6l.
 // G7r: `--live` with g7-r judges <out>/gate6/rates-<kind>/ for each receiver kind present
 // (`--receiver native|web|gsw` asks for one; lib/gate7r-checks.ts), one result per kind.
@@ -200,8 +200,6 @@ interface Args {
   receiver: string | undefined;
   /** G7l: judge only the live runs (`<out>/<gate>/live-<kind>/`) of the requested groups. */
   live: boolean;
-  /** G7xwl: the web export's expected core on a live run (`--web-core`, default rust since G7xd). */
-  webCore: "gdscript" | "rust";
   /** G7wf: the web export's expected payload GET mechanism on a live run (`--web-fetch`). */
   webFetch: "fetch" | "httpclient";
 }
@@ -216,7 +214,6 @@ function parseArgs(argv: string[]): Args {
   let calibration: string | undefined;
   let receiver: string | undefined;
   let live = false;
-  let webCore: "gdscript" | "rust" = "rust";
   let webFetch: "fetch" | "httpclient" = "fetch";
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") {
@@ -242,11 +239,10 @@ function parseArgs(argv: string[]): Args {
       live = true;
     } else if (argv[i] === "--web-core") {
       const v = argv[++i];
-      if (v !== "gdscript" && v !== "rust")
+      if (v !== "rust")
         throw new Error(
-          `check-gate7: --web-core is gdscript or rust, not ${v}`,
+          `check-gate7: --web-core is rust, not ${v} (G7gd removed the GDScript core)`,
         );
-      webCore = v;
     } else if (argv[i] === "--web-fetch") {
       const v = argv[++i];
       if (v !== "fetch" && v !== "httpclient")
@@ -271,7 +267,6 @@ function parseArgs(argv: string[]): Args {
     calibration,
     receiver,
     live,
-    webCore,
     webFetch,
   };
 }
@@ -378,7 +373,6 @@ async function main(): Promise<void> {
     calibration,
     receiver,
     live,
-    webCore,
     webFetch,
   } = parseArgs(process.argv.slice(2));
 
@@ -457,7 +451,6 @@ async function main(): Promise<void> {
             kind,
             runDir,
             viewsDir: join(out, def.gate, `live-${kind}-views`),
-            core: webCore,
             webFetch,
           }),
         );
@@ -474,7 +467,7 @@ async function main(): Promise<void> {
           continue;
         }
         console.log(`check-gate7: judging g7-r @${kind} (${runDir})`);
-        results.push(await checkG7rKind(out, kind, webCore, webFetch));
+        results.push(await checkG7rKind(out, kind, webFetch));
       }
       if (!results.some((r) => r.group === "g7-r"))
         throw new Error(
@@ -493,7 +486,7 @@ async function main(): Promise<void> {
           "utf8",
         ),
       );
-      results.push(...(await checkG7u(out, e, { receiver, webCore })));
+      results.push(...(await checkG7u(out, e, { receiver })));
     }
     // G7k: one result per receiver kind that ran (run-gate7.sh --live --legs g7-k).
     if (legs.includes("g7-k")) {

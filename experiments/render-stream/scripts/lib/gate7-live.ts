@@ -121,25 +121,17 @@ export const LIVE_KNOWN_FAILURES: Readonly<
     readonly { ids: RegExp; regions: readonly string[]; reason: string }[]
   >
 > = {
-  // GDScript web core only: the Rust core issues the update through GL_ELEMENT_ARRAY_BUFFER
-  // (G7xw), so on `--web-core rust` (G7xwl) these checks must pass and nothing is excused.
-  "web:gdscript:gate5": [
-    {
-      ids: /^(receiver-vs-reference|warm-host-no-gets|leg-class-live-mesh(-warm|-stall)?)$/,
-      regions: ["RM", "DF"],
-      reason:
-        "G7b's typed web refusal `web-index-region-update`: Godot 4.5.1 binds the wrong target for a mesh index-region update (mesh_storage.cpp:591-593), WebGL 2 rejects it, so RM keeps its old triangles from step 4 (936 px); g5f's per-checkpoint DF tolerance (wire state equals full) cannot excuse DF at step 5 while RM fails in that checkpoint",
-    },
-  ],
+  // G7gd removed the only entry, "web:gdscript:gate5" (G7b's typed `web-index-region-update`
+  // refusal, which only the GDScript web core hit: the Rust core issues the update through
+  // GL_ELEMENT_ARRAY_BUFFER, G7xw). Keys are `<kind>:<gate>`.
 };
 
 export function knownFailure(
   kind: string,
   gate: string,
   c: CheckerCheck,
-  core: "gdscript" | "rust" = "rust",
 ): string | undefined {
-  const key = kind === "web" ? `${kind}:${core}:${gate}` : `${kind}:${gate}`;
+  const key = `${kind}:${gate}`;
   for (const k of LIVE_KNOWN_FAILURES[key] ?? []) {
     if (!k.ids.test(c.id)) continue;
     const named = [...(c.detail ?? "").matchAll(/ in ([A-Z0-9,]+)/g)].flatMap(
@@ -553,8 +545,6 @@ export interface LiveGroupInput {
   runDir: string;
   /** Where the views go (`<out>/<gate>/live-<kind>-views`). */
   viewsDir: string;
-  /** G7xwl: the web export's expected core (run-gate7.sh --web-core; default rust since G7xd). */
-  core?: "gdscript" | "rust";
   /** G7wf: the web export's expected payload GET mechanism (run-gate7.sh --web-fetch; default
    * fetch). */
   webFetch?: "fetch" | "httpclient";
@@ -591,89 +581,10 @@ export async function fetchImplProblems(
   };
 }
 
-/** The side module a `--core rust` web bundle loads beside the engine (build-rs-core-web.sh). */
-export const RS_CORE_SIDE_MODULE = "librs_core_ext.wasm";
-
-/** G7xwl: why a web leg directory is not evidence of running on `core` (empty when it is). Three
- * signals, each the receiver's or the browser's own:
- *   - receiver.gd's `core rust (<path>)` log line, written when RS_RECEIVER_CORE=rust loaded the
- *     adapter and before any record, in stdout.log or in console.jsonl (the browser's console
- *     stream, the only engine output a SIGKILLed leg keeps: its page state is never read back);
- *   - applied.json's `receiver.core`, when the leg wrote one (a SIGKILLed leg does not);
- *   - under rust, the page's resource timing showing the side module fetched, unless the leg
- *     was aborted before its page state was read (timings.json `aborted` with no resources).
- * G7xd made rust the engine's own default (gdscript, frozen at /7, needs the env word to opt
- * in): a gdscript run without RS_RECEIVER_CORE (the drop-env sabotage) still loads the
- * rust-capable module, but logs `core rust` and says rust where gdscript was requested. */
-export async function receiverCoreProblems(
-  dir: string,
-  leg: string,
-  core: "gdscript" | "rust",
-): Promise<string[]> {
-  const out: string[] = [];
-  const read = (name: string): string | null => {
-    try {
-      return readFileSync(join(dir, name), "utf8");
-    } catch {
-      return null;
-    }
-  };
-  const stdout = read("stdout.log");
-  const consoleText = read("console.jsonl");
-  if (stdout === null && consoleText === null)
-    return [`${leg}: neither stdout.log nor console.jsonl`];
-  const rustLine = /core rust \(/;
-  const consoleLogs = (consoleText ?? "")
-    .split("\n")
-    .filter(Boolean)
-    .some((l) => {
-      try {
-        const m = JSON.parse(l) as { type?: string; text?: string };
-        return m.type === "log" && rustLine.test(m.text ?? "");
-      } catch {
-        return false;
-      }
-    });
-  const logsRust =
-    (stdout ?? "").split("\n").some((l) => rustLine.test(l)) || consoleLogs;
-  if (core === "rust" && !logsRust)
-    out.push(`${leg}: no \`core rust\` line in stdout.log or console.jsonl`);
-  if (core === "gdscript" && logsRust)
-    out.push(`${leg}: the engine logged \`core rust\` on a gdscript run`);
-  const applied = await readJson<{ receiver?: { core?: unknown } }>(
-    join(dir, "applied.json"),
-  );
-  if (applied) {
-    const got =
-      typeof applied.receiver?.core === "string"
-        ? applied.receiver.core
-        : "gdscript";
-    if (got !== core)
-      out.push(`${leg}: applied.json receiver.core ${got}, want ${core}`);
-  }
-  if (core === "rust") {
-    const timings = await readJson<{
-      aborted?: boolean;
-      resources?: Array<{ name?: string } | string>;
-    }>(join(dir, "timings.json"));
-    const names = (timings?.resources ?? []).map((r) =>
-      typeof r === "string" ? r : (r.name ?? ""),
-    );
-    const unread = timings?.aborted === true && names.length === 0;
-    if (
-      !unread &&
-      !names.some((n) => n.split("?")[0].endsWith(`/${RS_CORE_SIDE_MODULE}`))
-    )
-      out.push(`${leg}: the page never fetched ${RS_CORE_SIDE_MODULE}`);
-  }
-  return out;
-}
-
 export async function checkGateLive(
   input: LiveGroupInput,
 ): Promise<LiveGroupResult> {
   const { def, kind, viewsDir } = input;
-  const core = input.core ?? "rust";
   const webFetch = input.webFetch ?? "fetch";
   // Real path: a native strace leg records the real one (buildMirrorView relocates by it).
   const runDir = realpathSync(input.runDir);
@@ -809,7 +720,7 @@ export async function checkGateLive(
       });
       continue;
     }
-    const known = c.passed ? undefined : knownFailure(kind, def.gate, c, core);
+    const known = c.passed ? undefined : knownFailure(kind, def.gate, c);
     checks.push({
       id: `${c.id}@${kind}`,
       criterion: c.criterion ?? c.id,
@@ -853,7 +764,6 @@ export async function checkGateLive(
   const consoleBad: string[] = [];
   const hello: string[] = [];
   const paced: string[] = [];
-  const coreBad: string[] = [];
   const fetchBad: string[] = [];
   let fetchLegs = 0;
   let fetchGets = 0;
@@ -865,8 +775,6 @@ export async function checkGateLive(
     const basics = await browserLegProblems(dir, leg);
     prov.push(...basics.provenance);
     consoleBad.push(...basics.console);
-    if (kind === "web")
-      coreBad.push(...(await receiverCoreProblems(dir, leg, core)));
     const page = await readJson<PageConfig>(join(dir, "page-config.json"));
     const env = page?.env ?? {};
     if (env.RS_RECEIVER_MODE !== "live") continue;
@@ -926,17 +834,6 @@ export async function checkGateLive(
       `${browserLegs.length} legs clean`,
     ),
   );
-  if (kind === "web")
-    checks.push(
-      mk(
-        `receiver-core@${kind}`,
-        core === "rust"
-          ? "G7xwl: every web leg (live and its received.rs7 replays) decoded and applied through the shared Rust core: its log names `core rust`, its applied.json says `receiver.core` rust, and its page fetched the bundle's rs-core side module"
-          : "G7xwl: every web leg ran the GDScript core (no `core rust` log line; applied.json `receiver.core` gdscript)",
-        coreBad,
-        `${browserLegs.length} legs on the ${core} core`,
-      ),
-    );
   if (kind === "web")
     checks.push(
       mk(

@@ -965,7 +965,8 @@ export async function checkGateWeb(
         const n = normalizeApplied(doc) as Record<string, unknown>;
         // D11: a --headless native leg has a headless viewport block; a browser always renders.
         if (leg?.headless) delete n.viewport;
-        // G7xw: a rust web leg against its gdscript native leg compares failure seq and reason.
+        // G7xw: a rust web leg against a gdscript native leg (an older source run since G7gd)
+        // compares failure seq and reason.
         if (crossCore) dropCrossCoreDetail(n);
         return n;
       };

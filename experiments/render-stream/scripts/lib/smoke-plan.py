@@ -314,12 +314,13 @@ def self_test(m):
     nat = {t for t in d["targets"] if t.startswith("native:")}
     check("rs-core reaches native gates on the rust core only",
           nat and all(t.endswith("@rust") for t in nat) and "native:gate0@rust" in nat)
-    check("rs-core reaches gsw and the web rust core, not the web gdscript core",
-          "g7:g7-3@gsw" in d["targets"] and "g7:g7-3@web/rust" in d["targets"]
-          and not any(t.endswith("@web/gdscript") for t in d["targets"]))
+    check("rs-core reaches gsw and the web rust core",
+          "g7:g7-3@gsw" in d["targets"] and "g7:g7-3@web/rust" in d["targets"])
+    check("no target names the GDScript core (G7gd removed it)",
+          not any("gdscript" in t for t in uni))
     e = P("experiments/render-stream/scripts/lib/gate3-checks.ts")
-    check("a gate 3 checker reaches gate 3 only (both cores, every g7-3 receiver)",
-          {t for t in e["targets"] if t.startswith("native:")} == {"native:gate3@rust", "native:gate3@gdscript"}
+    check("a gate 3 checker reaches gate 3 only (every g7-3 receiver)",
+          {t for t in e["targets"] if t.startswith("native:")} == {"native:gate3@rust"}
           and "g7:g7-3@gsw" in e["targets"] and "g7:g7-2@gsw" not in e["targets"])
     check("a checker in the diff runs the sabotage legs", e["sabotage"]["run"])
     check("rs-core without sabotage content skips the sabotage legs", not d["sabotage"]["run"])
@@ -370,7 +371,7 @@ def self_test(m):
         seq = [ph[r["phase"]] for r in p_["runs"]]
         return seq == sorted(seq)
     tim = {r["id"] for r in every[0]["runs"] if r["phase"] == "timing"}
-    check("milestone: timing runs are the last phase (native gate 6 both cores, -timing live runs, g7x)",
+    check("milestone: timing runs are the last phase (native gate 6, -timing live runs, g7x)",
           phases_ok(every[0]) and {"native-rust-gate6", "g7live-gsw-timing", "g7live-native-timing", "g7x"} <= tim
           and not any(r["id"] in ("native-rust-gate1", "g7-gsw", "g7live-gsw") for r in every[0]["runs"]
                       if r["phase"] == "timing"))

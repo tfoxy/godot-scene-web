@@ -170,8 +170,7 @@ gate0_tool() {
 # ports picked here, fixed for the run; see gate7_host_env), GATE7_BUNDLE_DIR
 # (required: build-web-receiver.sh's bundle/ or the GSW bundle), GATE7_STATIC_ROOT (default $OUT),
 # GATE7_BUILD_SHA256 and GATE7_MANIFEST_SHA256 (optional), GATE7_PAGE_PORT (one leg's page port,
-# e.g. origin-refused's non-allowed one; reset after the call), GATE7_WEB_CORE (G7xwl: gdscript
-# or rust, the web export's core; read by the daemon, as is GATE7_WEB_CORE_SABOTAGE), GATE7_WEB_FETCH
+# e.g. origin-refused's non-allowed one; reset after the call), GATE7_WEB_FETCH
 # (G7wf: fetch, the default, or httpclient, the web export's payload GETs; read by the daemon).
 # LIVE_RECEIVED_NAME is the live receiver's received tap: received.rs2 (/6, native) or
 # received.rs7 (/7, a browser receiver).
@@ -200,7 +199,7 @@ if [ -n "$GATE7_LIVE_KIND" ]; then
 		GATE7_HOST_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 	fi
 	LIVE_RECEIVED_NAME="received.rs7"
-	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, web core ${GATE7_WEB_CORE:-rust}, web fetch ${GATE7_WEB_FETCH:-fetch}, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
+	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, web fetch ${GATE7_WEB_FETCH:-fetch}, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
 	gate7_daemon_dir="$OUT/gate7-browser"
 	mkdir -p "$gate7_daemon_dir"
 	rm -f "$gate7_daemon_dir/daemon.json"
@@ -312,28 +311,30 @@ run_browser_receiver() {
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$(cat "$dir/exit-code.txt") ($GATE7_LIVE_KIND browser receiver)"
 }
 
-# G7xn (gate7-design.md "G7xn", D34; G7xd flipped the default): the runner's own RS_RECEIVER_CORE
-# (rust, the default since G7xd, or gdscript, frozen at /7 and selectable for milestone sweeps)
-# and RS_RECEIVER_CORE_EXT pick the native receiver's core for every receiver launch of the run.
-# Every launch strips inherited RS_* variables, so receiver_core_env adds them back as NAME=value
-# words, to receiver launches only (`--path "$RECEIVER_DIR"`), and only when something is not the
-# default: a plain default run's env.txt files are what they were, even though RECEIVER_CORE
-# itself already reads "rust" (a non-empty RECEIVER_CORE_EXT still needs forwarding under it).
-RECEIVER_CORE="${RS_RECEIVER_CORE:-rust}"
+# G7xn (gate7-design.md "G7xn", D34): the runner's own RS_RECEIVER_CORE_EXT picks the native
+# receiver's adapter (.gdextension) for every receiver launch of the run. Every launch strips
+# inherited RS_* variables, so receiver_core_env adds it back as a NAME=value word, to receiver
+# launches only (`--path "$RECEIVER_DIR"`), and only when it is set: a plain run's env.txt files
+# carry no core words. G7gd removed the GDScript core, so the Rust core is the only one and a run
+# started with RS_RECEIVER_CORE set to anything but rust refuses to start.
+case "${RS_RECEIVER_CORE:-rust}" in
+rust) ;;
+*)
+	echo "${LEGS_LOG:-legs}: RS_RECEIVER_CORE must be rust or unset (got ${RS_RECEIVER_CORE}); G7gd removed the GDScript core" >&2
+	exit 2
+	;;
+esac
 RECEIVER_CORE_EXT="${RS_RECEIVER_CORE_EXT:-}"
 
 receiver_core_env() {
-	{ [ "$RECEIVER_CORE" != "rust" ] || [ -n "$RECEIVER_CORE_EXT" ]; } || return 0
+	[ -n "$RECEIVER_CORE_EXT" ] || return 0
 	local previous="" arg
 	for arg in "${LEG_ENV[@]}"; do
-		[ "${arg%%=*}" != "RS_RECEIVER_CORE" ] || return 0
+		[ "${arg%%=*}" != "RS_RECEIVER_CORE_EXT" ] || return 0
 	done
 	for arg in "$@"; do
 		if [ "$previous" = "--path" ] && [ "$arg" = "${RECEIVER_DIR:-}" ]; then
-			LEG_ENV+=(RS_RECEIVER_CORE="$RECEIVER_CORE")
-			if [ -n "$RECEIVER_CORE_EXT" ]; then
-				LEG_ENV+=(RS_RECEIVER_CORE_EXT="$RECEIVER_CORE_EXT")
-			fi
+			LEG_ENV+=(RS_RECEIVER_CORE_EXT="$RECEIVER_CORE_EXT")
 			return 0
 		fi
 		previous="$arg"

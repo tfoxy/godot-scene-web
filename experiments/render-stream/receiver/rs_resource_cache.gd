@@ -8,8 +8,10 @@ extends RefCounted
 ## origin is HTTP (G2c2): RsResourceFetcher gets the bytes, add_fetched() verifies, decodes and
 ## caches them exactly as the directory branch of obtain() does.
 ##
-## Every payload is verified against its name (SHA-256) before it is used and before it is
-## written to the cache, and decoded (RsTexturePayload) before it is used. A payload this process
+## Every payload is verified against its name (SHA-256) and decoded before it is used and before
+## it is written to the cache: by the Rust core as it arrives (`stager`, G7o3), else by its hash
+## here and its decode in the core's frame. Memory keeps each payload's raw bytes (raw()); the
+## core decodes them (G7gd removed the GDScript payload decoders). A payload this process
 ## obtained once is never read again from the cache or the origin. Fetched payloads are written to
 ## the cache with a temporary file and a rename; inline ones are not (the cache holds exactly what
 ## was fetched). Nothing here touches the RenderingServer.
@@ -18,13 +20,12 @@ extends RefCounted
 ## resource-unavailable, resource-hash-mismatch, resource-invalid, cache-not-fresh.
 ##
 ## Since G5e (render-stream-4.md "Mesh payload") the same cache holds render-stream-mesh/1 (GRM1)
-## surface payloads: their files are `sha256/<hash>.grm` (here and in the store), the callers say
-## which kind a hash is (`mesh`), and a payload is decoded by its own magic (RsMeshPayload for
-## GRM1, RsTexturePayload otherwise), so decoded() returns the matching shape.
+## surface payloads: their files are `sha256/<hash>.grm` (here and in the store) and the callers
+## say which kind a hash is (`mesh`).
 ##
 ## Since G55d (render-stream-5.md "Shader payload", gate5_5-design.md Q5) it also holds
 ## render-stream-shader/1 (GRP1) code payloads: `sha256/<hash>.grp`, the callers say a hash is a
-## shader (`shader`), and decoded() returns RsShaderPayload.decode()'s {ok, code_bytes, code}.
+## shader (`shader`).
 ## `library_dir` (RS_RECEIVER_SHADER_LIBRARY, D4) is the operator-local library a `withheld`
 ## shader's code comes from: library_code() reads `<library>/sha256/<hash>.grp`, verifies it
 ## against its name and decodes it. A library read is never a fetch and never written to the cache.
@@ -38,7 +39,7 @@ extends RefCounted
 ## warm disk cache's files are seeded from their mtimes (oldest first) before the first touch and
 ## stay ordered consistently with everything touched at runtime after. Eviction never drops a
 ## hash in `set_needed()`'s current set (gate2-design.md Q5: every payload this transaction's
-## resolved state needs, computed by the caller from RsApplier.needed() before it calls
+## resolved state needs, computed by the caller from RsRustApplier.needed() before it calls
 ## obtain() for any of them) -- callers never hold a hash mid-fetch across a call into this class
 ## (obtain() and add_fetched() each complete a fetch in one call), so no separate "pinned by an
 ## in-progress fetch" bookkeeping is needed here. `no_evict` (RS_RECEIVER_SABOTAGE=no-evict)
@@ -46,6 +47,8 @@ extends RefCounted
 ## `evictions_memory`, `evictions_disk` and `refetch_after_evict` count what happened.
 
 const CACHE_SUBDIR: String = "sha256"
+## render-stream-mesh/1's GRM1 magic (render-stream-4.md "Mesh payload").
+const GRM1_MAGIC_HEX: String = "47524d310d0a1a0a"
 
 var dir: String = ""
 var mode: String = "fresh"
@@ -62,21 +65,15 @@ var memory_budget_bytes: int = -1
 var cache_budget_bytes: int = 0
 ## RS_RECEIVER_SABOTAGE=no-evict (G6s): both budgets above are ignored.
 var no_evict: bool = false
-## RS_RECEIVER_CORE=rust (G7xn): memory keeps each payload's raw bytes ({"raw": bytes}, read with
-## raw()) instead of its GDScript decode, because the Rust core verifies and decodes payloads
-## itself. Every payload is still verified and decoded here first, so a failure is reported
-## exactly as before.
-var keep_raw: bool = false
-## G7o3 (D31): under keep_raw, the Rust applier (RsRustApplier) whose core verifies and decodes
-## each payload as it arrives (`stage`), instead of this cache's own SHA-256 and GDScript decode;
-## the frame's provide then moves it into the apply without hashing it again. Every arrival path
-## stages (add_inline, add_fetched, obtain()'s cache and store reads), every refusal is reported
-## with the same code and detail as the GDScript checks give, and every eviction from memory (and
-## clear_memory()) unstages, so the core holds at most what memory holds. Null: the GDScript
-## checks, and the core verifies inside the frame (RS_RECEIVER_SABOTAGE=verify-in-frame, or no
-## applier yet).
+## G7o3 (D31): the Rust applier (RsRustApplier) whose core verifies and decodes each payload as
+## it arrives (`stage`); the frame's provide then moves it into the apply without hashing it
+## again. Every arrival path stages (add_inline, add_fetched, obtain()'s cache and store reads),
+## every refusal is reported as resource-hash-mismatch or resource-invalid with this cache's own
+## origin wording, and every eviction from memory (and clear_memory()) unstages, so the core holds
+## at most what memory holds. Null (RS_RECEIVER_SABOTAGE=verify-in-frame, or no applier yet): only
+## the SHA-256 is checked here, and the core verifies and decodes inside the frame.
 var stager: RsRustApplier = null
-## G7o3: the time spent verifying payloads on arrival (stage, or the GDScript checks), since the
+## G7o3: the time spent verifying payloads on arrival (stage, or the SHA-256 check), since the
 ## last take_verify_us(): receiver.gd's payload_verify_us, outside decode_us and apply_us.
 var _verify_us: int = 0
 var entries_before: int = 0
@@ -85,8 +82,7 @@ var entries_before: int = 0
 var evictions_memory: int = 0
 var evictions_disk: int = 0
 var refetch_after_evict: int = 0
-## hash -> decoded payload ({format, width, height, mipmaps, data} for a texture, RsMeshPayload's
-## decode() for a mesh surface, RsShaderPayload's decode() for shader code), verified.
+## hash -> {ok: true, raw: the verified payload's bytes}.
 var _memory: Dictionary[String, Dictionary] = {}
 ## hash -> the raw payload length, for the same entries.
 var _lengths: Dictionary[String, int] = {}
@@ -116,12 +112,12 @@ func open(cache_dir: String, cache_mode: String, origin_dir: String) -> String:
 		return ""
 	if mode == "fresh":
 		if DirAccess.dir_exists_absolute(dir) and _has_any_entry(dir):
-			return Rs2Decoder.err("cache-not-fresh", "RS_RECEIVER_CACHE_DIR %s is not empty (mode fresh)" % dir)
+			return RsWire.err("cache-not-fresh", "RS_RECEIVER_CACHE_DIR %s is not empty (mode fresh)" % dir)
 	elif not DirAccess.dir_exists_absolute(dir):
-		return Rs2Decoder.err("cache-not-fresh", "RS_RECEIVER_CACHE_DIR %s does not exist (mode warm)" % dir)
+		return RsWire.err("cache-not-fresh", "RS_RECEIVER_CACHE_DIR %s does not exist (mode warm)" % dir)
 	var made: Error = DirAccess.make_dir_recursive_absolute(dir.path_join(CACHE_SUBDIR))
 	if made != OK:
-		return Rs2Decoder.err("resource-unavailable", "cannot create %s: %s" % [dir.path_join(CACHE_SUBDIR), error_string(made)])
+		return RsWire.err("resource-unavailable", "cannot create %s: %s" % [dir.path_join(CACHE_SUBDIR), error_string(made)])
 	entries_before = entries()
 	_seed_disk_order_from_mtime()
 	return ""
@@ -197,7 +193,7 @@ func memory_bytes() -> int:
 
 
 ## G6s (gate2-design.md Q5): the hashes `obtain()` must not evict for the rest of this
-## transaction -- every payload its resolved state needs, exactly RsApplier.needed()'s result.
+## transaction -- every payload its resolved state needs, exactly RsRustApplier.needed()'s hashes.
 ## Callers (receiver.gd's _obtain_needed) set this once per transaction, before making any of
 ## those hashes available, so eviction pressure from adding one never drops another this same
 ## transaction still needs. Replaces the previous set; it is not a lifetime accumulation.
@@ -270,7 +266,7 @@ func _evict_disk_over_budget() -> void:
 		var victim_name: String = entry["name"]
 		if DirAccess.remove_absolute(base.path_join(victim_name)) != OK:
 			continue
-		total -= Rs2Decoder.as_int(entry["bytes"])
+		total -= RsWire.as_int(entry["bytes"])
 		_disk_order.erase(hash)
 		_ever_evicted[hash] = true
 		evictions_disk += 1
@@ -281,15 +277,14 @@ func has_in_memory(hash: String) -> bool:
 	return _memory.has(hash)
 
 
-## Records an inline resource record's payload (already verified by Rs2Decoder.Stream: its
-## SHA-256 is its hash and it decodes). Returns "" or a resource-invalid error.
-## An inline record may also carry a render-stream-mesh/1 (GRM1) payload (render-stream-4.md,
-## since G5d): it is decoded by its magic like any other payload.
+## Records an inline resource record's payload (its SHA-256 already checked by the core's accept).
+## Returns "" or a resource-invalid error. An inline record may also carry a render-stream-mesh/1
+## (GRM1) payload (render-stream-4.md, since G5d) or GRP1 shader code (since G55d).
 func add_inline(hash: String, payload: PackedByteArray) -> String:
 	var decoded: Dictionary = _verified(hash, payload, "inline payload %s" % hash, false)
 	if not decoded["ok"]:
 		return decoded["error"]
-	_memory[hash] = _kept(decoded, payload)
+	_memory[hash] = _kept(payload)
 	_lengths[hash] = payload.size()
 	_touch(_memory_order, hash)
 	_evict_memory_over_budget()
@@ -298,7 +293,7 @@ func add_inline(hash: String, payload: PackedByteArray) -> String:
 
 ## True when `payload` starts with the GRM1 magic (a mesh surface, render-stream-4.md).
 static func is_mesh_payload(payload: PackedByteArray) -> bool:
-	return payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsMeshPayload.GRM1_MAGIC_HEX
+	return payload.size() >= 8 and payload.slice(0, 8).hex_encode() == GRM1_MAGIC_HEX
 
 
 ## True when `payload` starts with the GRP1 magic (shader code, render-stream-5.md, G55d).
@@ -313,16 +308,6 @@ static func payload_kind(payload: PackedByteArray) -> String:
 	if is_shader_payload(payload):
 		return "shader"
 	return "texture"
-
-
-## Decodes a payload by its magic: RsMeshPayload.decode() for GRM1, RsShaderPayload.decode() for
-## GRP1 (G55d), RsTexturePayload.decode() otherwise. All return {ok: bool, ..., detail on failure}.
-static func decode_payload(payload: PackedByteArray) -> Dictionary:
-	if is_mesh_payload(payload):
-		return RsMeshPayload.decode(payload)
-	if is_shader_payload(payload):
-		return RsShaderPayload.decode(payload)
-	return RsTexturePayload.decode(payload)
 
 
 ## The file name a payload has in a cache or store directory: `<hash>.grm` for a mesh surface,
@@ -350,7 +335,7 @@ func library_code(hash: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {"ok": false, "code": "", "detail": "the library has no %s" % path}
 	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
-	if RsShaderPayload.sha256_hex(bytes) != hash:
+	if RsWire.sha256_hex(bytes) != hash:
 		return {"ok": false, "code": "", "detail": "%s does not hash to its name" % path}
 	var decoded_payload: Dictionary = RsShaderPayload.decode(bytes)
 	if not decoded_payload["ok"]:
@@ -405,7 +390,7 @@ func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> Stri
 		_evict_disk_over_budget()
 	if _ever_evicted.has(hash):
 		refetch_after_evict += 1
-	_memory[hash] = _kept(fetched_decoded, payload)
+	_memory[hash] = _kept(payload)
 	_lengths[hash] = payload.size()
 	_touch(_memory_order, hash)
 	_evict_memory_over_budget()
@@ -413,11 +398,11 @@ func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> Stri
 
 
 ## A payload as it arrives, checked before anything keeps it: against its name (`check_hash`;
-## an inline record's was checked by the decoder already) and by decoding it. With a stager (G7o3)
-## the Rust core does both and stages it; otherwise the GDScript checks. Returns the decode
-## ({ok: true, ...}; under a stager just {ok: true}), or {ok: false, mismatch: bool, error} with
-## the code and detail the GDScript checks give: resource-hash-mismatch ("<origin> (<n> bytes)
-## does not hash to its name", or `mismatch_detail`), resource-invalid ("<origin>: <detail>").
+## an inline record's was checked by the core's accept already) and by decoding it. With a stager
+## (G7o3) the Rust core does both and stages it; without one only the name is checked here and the
+## core decodes it in the frame. Returns {ok: true}, or {ok: false, mismatch: bool, error}:
+## resource-hash-mismatch ("<origin> (<n> bytes) does not hash to its name", or
+## `mismatch_detail`), resource-invalid ("<origin>: <decoder detail>").
 func _verified(hash: String, payload: PackedByteArray, origin: String, check_hash: bool, mismatch_detail: String = "") -> Dictionary:
 	var t0: int = Time.get_ticks_usec()
 	var out: Dictionary = _verify(hash, payload, origin, check_hash, mismatch_detail)
@@ -432,17 +417,14 @@ func _verify(hash: String, payload: PackedByteArray, origin: String, check_hash:
 		if refused == "":
 			return {"ok": true}
 		if refused.begins_with("resource-hash-mismatch"):
-			return {"ok": false, "mismatch": true, "error": Rs2Decoder.err("resource-hash-mismatch", mismatch)}
+			return {"ok": false, "mismatch": true, "error": RsWire.err("resource-hash-mismatch", mismatch)}
 		# The core's "resource-invalid: payload <hash>: <decoder detail>": keep the decoder's part.
 		var prefix: String = "resource-invalid: payload %s: " % hash
 		var detail: String = refused.substr(prefix.length()) if refused.begins_with(prefix) else refused
-		return {"ok": false, "mismatch": false, "error": Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, detail])}
-	if check_hash and RsTexturePayload.sha256_hex(payload) != hash:
-		return {"ok": false, "mismatch": true, "error": Rs2Decoder.err("resource-hash-mismatch", mismatch)}
-	var decoded: Dictionary = decode_payload(payload)
-	if not decoded["ok"]:
-		return {"ok": false, "mismatch": false, "error": Rs2Decoder.err("resource-invalid", "%s: %s" % [origin, decoded["detail"]])}
-	return decoded
+		return {"ok": false, "mismatch": false, "error": RsWire.err("resource-invalid", "%s: %s" % [origin, detail])}
+	if check_hash and RsWire.sha256_hex(payload) != hash:
+		return {"ok": false, "mismatch": true, "error": RsWire.err("resource-hash-mismatch", mismatch)}
+	return {"ok": true}
 
 
 ## G7o3: payload_verify_us since the last call (and zeroes it).
@@ -452,23 +434,16 @@ func take_verify_us() -> int:
 	return us
 
 
-## The decoded payload for `hash` (in memory: has_in_memory() was true, or obtain() succeeded).
-func decoded(hash: String) -> Dictionary:
-	return _memory[hash]
-
-
-## The raw payload for `hash` under keep_raw (G7xn), as decoded() otherwise requires.
+## The raw payload for `hash` (in memory: has_in_memory() was true, or obtain() succeeded).
 func raw(hash: String) -> PackedByteArray:
 	var entry: Dictionary = _memory[hash]
 	var bytes: PackedByteArray = entry["raw"]
 	return bytes
 
 
-## What memory keeps for a verified, decoded payload: the decode, or under keep_raw the raw bytes.
-func _kept(decoded_payload: Dictionary, payload: PackedByteArray) -> Dictionary:
-	if keep_raw:
-		return {"ok": true, "raw": payload}
-	return decoded_payload
+## What memory keeps for a verified payload: its raw bytes (the core decodes them).
+static func _kept(payload: PackedByteArray) -> Dictionary:
+	return {"ok": true, "raw": payload}
 
 
 ## Makes `hash` available in memory. Returns {error: "" or "<code>: <detail>", source:
@@ -493,7 +468,7 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 			out["error"] = cache_decoded["error"]
 			return out
 		_touch(_disk_order, hash)
-		_memory[hash] = _kept(cache_decoded, cache_bytes)
+		_memory[hash] = _kept(cache_bytes)
 		_lengths[hash] = cache_bytes.size()
 		_touch(_memory_order, hash)
 		_evict_memory_over_budget()
@@ -504,13 +479,13 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 	if store_dir == "":
 		out["end_us"] = Time.get_ticks_usec()
 		out["verified"] = false
-		out["error"] = Rs2Decoder.err("resource-unavailable", "payload %s is not in memory or the cache, and RS_RECEIVER_STORE_DIR is unset" % hash)
+		out["error"] = RsWire.err("resource-unavailable", "payload %s is not in memory or the cache, and RS_RECEIVER_STORE_DIR is unset" % hash)
 		return out
 	var origin: String = store_dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader))
 	if not FileAccess.file_exists(origin):
 		out["end_us"] = Time.get_ticks_usec()
 		out["verified"] = false
-		out["error"] = Rs2Decoder.err("resource-unavailable", "the store has no %s" % origin)
+		out["error"] = RsWire.err("resource-unavailable", "the store has no %s" % origin)
 		return out
 	var fetched: PackedByteArray = FileAccess.get_file_as_bytes(origin)
 	out["end_us"] = Time.get_ticks_usec()
@@ -529,7 +504,7 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 		_evict_disk_over_budget()
 	if _ever_evicted.has(hash):
 		refetch_after_evict += 1
-	_memory[hash] = _kept(fetched_decoded, fetched)
+	_memory[hash] = _kept(fetched)
 	_lengths[hash] = fetched.size()
 	_touch(_memory_order, hash)
 	_evict_memory_over_budget()
@@ -544,10 +519,10 @@ func _write_cache(hash: String, payload: PackedByteArray) -> String:
 	var temp_path: String = base.path_join(".%s.tmp" % hash)
 	var file: FileAccess = FileAccess.open(temp_path, FileAccess.WRITE)
 	if file == null:
-		return Rs2Decoder.err("resource-unavailable", "cannot write %s: %s" % [temp_path, error_string(FileAccess.get_open_error())])
+		return RsWire.err("resource-unavailable", "cannot write %s: %s" % [temp_path, error_string(FileAccess.get_open_error())])
 	file.store_buffer(payload)
 	file.close()
 	var renamed: Error = DirAccess.rename_absolute(temp_path, final_path)
 	if renamed != OK:
-		return Rs2Decoder.err("resource-unavailable", "cannot rename %s: %s" % [temp_path, error_string(renamed)])
+		return RsWire.err("resource-unavailable", "cannot rename %s: %s" % [temp_path, error_string(renamed)])
 	return ""

@@ -496,8 +496,8 @@ run_g6c() {
 	# G7q: a --credit-window 2 run records its window (absent at 1: the file is what it was).
 	g6c_window_json=""
 	[ "$GATE7_CREDIT_WINDOW" = 2 ] && g6c_window_json=',"credit_window":2'
-	printf '{"kind":"%s","web_core":"%s","native_core":"%s"%s}\n' "${GATE7_LIVE_KIND:-native}" \
-		"${GATE7_WEB_CORE:-gdscript}" "$RECEIVER_CORE" "$g6c_window_json" >"$G6C/receiver-kind.json"
+	# G7gd: no web_core/native_core any more (the Rust core is the only one).
+	printf '{"kind":"%s"%s}\n' "${GATE7_LIVE_KIND:-native}" "$g6c_window_json" >"$G6C/receiver-kind.json"
 
 	echo "run-gate6: bringing up private gamescope 640x360 for g6c legs"
 	gs_start 640 360 "$OUT/gamescope-g6c"

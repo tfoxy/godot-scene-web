@@ -5,9 +5,9 @@
 // blocks, the render-stream-texture/1 payload format) is specified in
 // ../../protocol/render-stream-2.md, which extends render-stream-1.md and, through it,
 // render-stream-0.md. This must agree with it byte for byte, and with the C++ encoder/diff
-// (../../capture/src/rs2_codec.cpp, rs2_diff.cpp) and the GDScript decoder
-// (../../receiver/rs2_decoder.gd, rs_texture_payload.gd). The golden vectors in
-// ../../protocol/golden-2/ are shared by all three.
+// (../../capture/src/rs2_codec.cpp, rs2_diff.cpp) and the shared Rust core (../../rs-core). The
+// golden vectors in ../../protocol/golden-2/ are shared by all three. (Until G7gd a GDScript
+// decoder, receiver/rs2_decoder.gd, was the third reader; this one is the independent oracle.)
 //
 // Structure mirrors render-stream-1.ts: splitRecords()/decodeRecord()/decodeRecording() extended
 // for the new "resource" record type and the u8 block (which decodes to

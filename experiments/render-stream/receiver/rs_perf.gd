@@ -2,9 +2,8 @@ class_name RsPerf
 extends RefCounted
 ## Receiver perf instrumentation (gate6-design.md Q3d, Q5 "Perf (G6r)"), gated by
 ## RS_RECEIVER_PERF_OUT: writes `render-stream-receiver-perf/1` -- histograms for `decode_us`
-## (RsApplier.accept_record: decode and patch resolution, combined; `resolve_us` is not split out
-## separately in this increment, which does not touch rs_applier.gd), `apply_us` (RsApplier.
-## apply_state: apply and upload, combined; `upload_us` is likewise not split, though upload
+## (RsRustApplier.accept: the core's decode and patch resolution, combined; `resolve_us` is not
+## split out), `apply_us` (RsRustApplier.apply_state: apply and upload, combined; `upload_us` is likewise not split, though upload
 ## bytes are already in applied.json's resources_summary and are not duplicated here),
 ## `fetch_us` (reusing the fetch stage's own existing start_us/end_us, never re-timed) and
 ## `frame_interval_us`; counts of received/applied/submitted transactions (from the caller's own
@@ -16,7 +15,7 @@ extends RefCounted
 ## counter), RenderingServer.get_rendering_info's texture/buffer/video memory, the disk cache's
 ## entry count and bytes (RsResourceCache.entries()/bytes()) and, since G6s (gate6-design.md Q7e
 ## "residency-bounded"), the memory cache's entry count and bytes (RsResourceCache.
-## memory_entries()/memory_bytes()) and live RIDs per kind (RsApplier.resident_items()/
+## memory_entries()/memory_bytes()) and live RIDs per kind (RsRustApplier.resident_items()/
 ## resident_textures()/resident_meshes()/resident_shaders()/resident_materials(), all pre-existing
 ## read accessors no increment needed to add).
 ##
@@ -217,7 +216,7 @@ static func read_rss_bytes() -> int:
 ## `cache_entries_memory`/`cache_bytes_memory` (G6s, RsResourceCache.memory_entries()/
 ## memory_bytes()) default to -1 (recorded as null) for a caller that does not pass them, so an
 ## older call site keeps today's "unavailable" shape rather than silently reporting 0.
-## `live_rids` (G6s, RsApplier.resident_items()/resident_textures()/resident_meshes()/
+## `live_rids` (G6s, RsRustApplier.resident_items()/resident_textures()/resident_meshes()/
 ## resident_shaders()/resident_materials(), gate6-design.md Q7e "residency-bounded"): null for a
 ## caller with no applier yet (before the session record).
 func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entries_memory: int = -1, cache_bytes_memory: int = -1, live_rids: Variant = null) -> void:
@@ -241,7 +240,7 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 		"cache_bytes_memory": null if cache_bytes_memory < 0 else cache_bytes_memory,
 		"live_rids": live_rids,
 		# Declared, not guessed (D9): pipeline compilations would need a new RenderingServer/
-		# RsApplier accessor this increment's file list does not add.
+		# RsRustApplier accessor this increment's file list does not add.
 		"pipeline_compilations": null,
 	})
 
@@ -272,8 +271,8 @@ func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
 		"schema": SCHEMA,
 		"histograms": histograms,
 		"unavailable_stages": [
-			{"stage": "resolve_us", "reason": "combined with decode_us inside RsApplier.accept_record, which G6r does not split"},
-			{"stage": "upload_us", "reason": "combined with apply_us inside RsApplier.apply_state, which G6r does not split (upload bytes are in resources_summary)"},
+			{"stage": "resolve_us", "reason": "combined with decode_us inside RsRustApplier.accept, which G6r does not split"},
+			{"stage": "upload_us", "reason": "combined with apply_us inside RsRustApplier.apply_state, which G6r does not split (upload bytes are in resources_summary)"},
 		],
 		"render_time": {
 			"cpu_render_ms": render_time(viewport_rid, headless, false),
@@ -289,7 +288,7 @@ func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
 		},
 		"timeline": _timeline,
 	}
-	# G7o3: only when there is something to say (a GDScript-core or unsampled run writes neither).
+	# G7o3: only when there is something to say (an unsampled run writes no samples).
 	if not payloads.is_empty():
 		doc["payloads"] = payloads
 	if not samples.is_empty():

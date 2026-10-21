@@ -5,10 +5,12 @@ extends RefCounted
 ## no RenderingServer call -- this is the read side only; a payload is built elsewhere (the
 ## capture, G55a; golden-5's vectors build theirs directly in Python).
 ##
-## Parallel to RsMeshPayload's decode() for render-stream-mesh/1 (GRM1): same framing style
-## (magic, u32 meta_len, canonical JSON meta), but GRP1's "data" section is just the shader's
-## code as UTF-8 -- no 40-byte geometry block (GRM1 has one), no separate data_len (GRT1 has
-## one): the payload simply ends where meta.code_bytes says it does.
+## G7gd: the Rust core decodes every payload the stream carries. This one stays because the core
+## never reads an operator-local shader library (gate5_5-design.md D4): RsResourceCache.
+## library_code() reads, verifies and decodes the `.grp` file here and hands the core its code.
+##
+## GRP1 is magic, u32 meta_len, canonical JSON meta, then the shader's code as UTF-8: no
+## geometry block, no separate data_len; the payload ends where meta.code_bytes says it does.
 
 const GRP1_MAGIC_HEX: String = "475250310d0a1a0a"
 const META_KEYS: Array = ["type", "code_bytes"]
@@ -50,9 +52,9 @@ static func decode(bytes: PackedByteArray) -> Dictionary:
 	var code_bytes_value: Variant = meta["code_bytes"]
 	if not (type_value is String and type_value == "shader-code"):
 		return {"ok": false, "code": "payload-meta", "detail": "meta.type is not \"shader-code\""}
-	if not Rs2Decoder.is_int(code_bytes_value):
+	if not RsWire.is_int(code_bytes_value):
 		return {"ok": false, "code": "payload-meta", "detail": "meta.code_bytes is not an integer"}
-	var code_bytes: int = Rs2Decoder.as_int(code_bytes_value)
+	var code_bytes: int = RsWire.as_int(code_bytes_value)
 	if code_bytes < 0:
 		return {"ok": false, "code": "payload-meta", "detail": "meta.code_bytes is negative"}
 

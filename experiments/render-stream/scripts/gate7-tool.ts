@@ -8,10 +8,9 @@
 //   gate7-tool.ts discover --source <gate N run>
 //     lists the source run's file receiver legs and which are replayed (lib/gate7b-adapters.ts)
 //   gate7-tool.ts web-legs --group g7-<N> --source <gate N run> --bundle <bundle dir> --out <gate 7 run>
-//     [--only a,b] [--repeat-differing] [--core gdscript|rust]
-//     replays the group's native receiver legs in the web-export receiver (lib/gate7-web-legs.ts);
-//     --core rust (G7xw) runs them on the shared Rust core (RS_RECEIVER_CORE=rust) and needs a
-//     build-web-receiver.sh --core rust bundle
+//     [--only a,b] [--repeat-differing]
+//     replays the group's native receiver legs in the web-export receiver (lib/gate7-web-legs.ts),
+//     on the shared Rust core: the bundle must be a build-web-receiver.sh (Rust-core) build
 //   gate7-tool.ts source-inputs --source gate0=<run>,gate1=<run>,... --out <inputs.json>
 //     (G7a) every capture recording of the source runs (`*/capture*/recording*.rs2` and the live
 //     receivers' `received.rs2`), each once by sha256, as render-stream-gate7-bench-inputs/1 for
@@ -27,11 +26,10 @@
 //     Options default to the runner's GATE7_* environment; exits with the receiver's exit code
 //     (124 timeout, 143 SIGTERM)
 //   gate7-tool.ts browser-daemon --ready-file <json> --parent <pid> [--kind …] [--bundle …]
-//     [--static-root …] [--core gdscript|rust]
+//     [--static-root …]
 //     (G7l) what lib/legs.sh uses under GATE7_LIVE_KIND: serves browser receiver legs (GET
 //     /run?dir=…&port=…&timeout_s=…) with the next leg's fresh browser already launched and
-//     checked; exits when <pid> is gone. `--core` (default GATE7_WEB_CORE, else rust; G7xwl, G7xd)
-//     is the web export's core, and GATE7_WEB_CORE_SABOTAGE=drop-env is its harness sabotage.
+//     checked; exits when <pid> is gone. A web bundle must be a Rust-core build (G7gd).
 //     GATE7_WEB_FETCH=httpclient (G7wf; default fetch) runs every web leg's payload GETs on
 //     Godot's web HTTPClient (RS_RECEIVER_WEB_FETCH=httpclient), the pre-G7wf path, for the A/B.
 //     `--spare during|after` (default GATE7_BROWSER_SPARE, else during; G7r): when the next leg's
@@ -66,7 +64,7 @@ import {
   bundleBuildSha256,
   runBrowserReceiver,
   serveBrowserDaemon,
-  webCoreOf,
+  requireRustBundle,
   webFetchOf,
 } from "./lib/gate7-live-legs";
 import { runWebLegs } from "./lib/gate7-web-legs";
@@ -152,15 +150,9 @@ async function main(): Promise<void> {
     const only = onlyAt >= 0 ? (argv[onlyAt + 1] ?? "").split(",") : [];
     const build = JSON.parse(
       readFileSync(join(bundle, "build.json"), "utf8"),
-    ) as { pck: { sha256: string }; core?: string };
-    const coreAt = argv.indexOf("--core");
-    const core = coreAt >= 0 ? argv[coreAt + 1] : "rust";
-    if (core !== "gdscript" && core !== "rust")
-      throw new Error(`gate7-tool: --core is gdscript or rust, not ${core}`);
-    if (core === "rust" && build.core !== "rust")
-      throw new Error(
-        `gate7-tool: --core rust needs a build-web-receiver.sh --core rust bundle; ${bundle} is ${build.core ?? "gdscript"}`,
-      );
+    ) as { pck: { sha256: string } };
+    // G7gd: the Rust core is the web export's only core.
+    requireRustBundle("web", bundle);
     const gate = def ? def.gate : "gate0";
     let specs = def
       ? webLegSpecs(source, join(out, gate, "web")).specs
@@ -174,7 +166,6 @@ async function main(): Promise<void> {
         sourceDir: source,
         bundleDir: bundle,
         buildSha256: build.pck.sha256,
-        core,
       },
       specs,
     );
@@ -212,7 +203,6 @@ async function main(): Promise<void> {
             sourceDir: source,
             bundleDir: bundle,
             buildSha256: build.pck.sha256,
-            core,
           },
           again,
         );
@@ -351,6 +341,8 @@ async function main(): Promise<void> {
       throw new Error(
         "gate7-tool: browser-receiver needs --bundle/GATE7_BUNDLE_DIR and --static-root/GATE7_STATIC_ROOT",
       );
+    // G7gd: a web bundle must be a Rust-core build.
+    requireRustBundle(kind, resolve(bundle));
     const ctx = {
       kind,
       bundleDir: resolve(bundle),
@@ -359,13 +351,6 @@ async function main(): Promise<void> {
         process.env.GATE7_BUILD_SHA256 ||
         bundleBuildSha256(resolve(bundle), kind),
       manifestSha256: process.env.GATE7_MANIFEST_SHA256 || undefined,
-      // G7xwl: --core / GATE7_WEB_CORE (run-gate7.sh --live --web-core).
-      ...webCoreOf(
-        kind,
-        resolve(bundle),
-        opt("--core", "GATE7_WEB_CORE"),
-        process.env.GATE7_WEB_CORE_SABOTAGE,
-      ),
       // G7wf: GATE7_WEB_FETCH (run-gate7.sh --web-fetch), the web export's payload GETs.
       ...(kind === "web"
         ? { webFetch: webFetchOf(process.env.GATE7_WEB_FETCH) }

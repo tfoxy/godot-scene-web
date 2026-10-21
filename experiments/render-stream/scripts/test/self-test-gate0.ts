@@ -634,10 +634,10 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
       "--path",
       projects.receiverProjectDir,
       "--script",
-      "res://tests/codec2_selftest.gd",
+      "res://tests/receiver_selftest.gd",
     ],
     [],
-    "[rs2-selftest] ok\n",
+    "[receiver-selftest] ok\n",
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
@@ -1256,7 +1256,7 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeText(
         join(out, "receiver-typecheck", "selftest", "stdout.log"),
-        "SCRIPT WARNING: UNTYPED_DECLARATION\n[rs2-selftest] ok\n",
+        "SCRIPT WARNING: UNTYPED_DECLARATION\n[receiver-selftest] ok\n",
       ),
     checks: { "receiver-typed-clean": false },
   },

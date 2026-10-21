@@ -2249,8 +2249,8 @@ export async function checkReceiverTypedClean(
     if (line) problems.push(`${log}: ${line.trim()}`);
   }
   const selftest = (await readTextOrUndefined(selftestLog)) ?? "";
-  if (!selftest.includes("[rs2-selftest] ok"))
-    problems.push("selftest did not print [rs2-selftest] ok");
+  if (!selftest.includes("[receiver-selftest] ok"))
+    problems.push("selftest did not print [receiver-selftest] ok");
   const selftestExit = await readExitCode(selftestDir);
   if (selftestExit !== 0) problems.push(`selftest exit=${selftestExit}`);
   const applied = await readJson<AppliedJson>(minimalApplied);
@@ -2280,7 +2280,7 @@ export async function checkReceiverTypedClean(
     );
   return check(
     "receiver-typed-clean",
-    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (codec2_selftest.gd) printed [rs2-selftest] ok and exited 0; the replay of golden-6/inline.rs6 (render-stream/6 since G6b; golden-5/inline.rs5 from G55d, golden-4/inline.rs4 from G5d, golden-3/inline.rs3 from G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
+    "receiver-typecheck logs have no SCRIPT ERROR / SCRIPT WARNING / Parse Error / Failed to load script; the selftest (receiver_selftest.gd) printed [receiver-selftest] ok and exited 0; the replay of golden-6/inline.rs6 (render-stream/6 since G6b; golden-5/inline.rs5 from G55d, golden-4/inline.rs4 from G5d, golden-3/inline.rs3 from G4e2) is ok and reports exactly the golden's unsupported entries, each at the seq it first appears",
     problems,
     `selftest ok, golden replay ok with ${want.length} unsupported entries, no script diagnostics`,
     [selftestLog, minimalLog, minimalApplied],

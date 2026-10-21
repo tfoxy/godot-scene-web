@@ -1,6 +1,7 @@
 // Receiver decode profile (2026-10-14), TypeScript side: the same recording through
 // lib/render-stream-2.ts, the decoder the GSW browser receiver loads (G7j). It mirrors
-// receiver/tests/decode_profile.gd's stages so the two can be compared per transaction:
+// the GDScript receiver profile's stages (receiver/tests/decode_profile.gd, removed with the
+// GDScript core in G7gd) so the two could be compared per transaction:
 //
 //   decodeRecord  = record sha256 + meta ASCII + JSON.parse + schema + canonical re-stringify
 //                   + block conversion (schema is the residual: decodeRecord minus the rest)

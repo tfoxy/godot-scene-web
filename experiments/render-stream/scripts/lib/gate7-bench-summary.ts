@@ -244,9 +244,9 @@ function nativeHist(
 }
 
 /**
- * GDScript-receiver repeats (warmup excluded by the caller): decode (= decode + validate +
+ * Godot-receiver repeats (warmup excluded by the caller): decode (= decode + validate +
  * resolve) and apply, from rs_perf.gd's histograms. `receiver` defaults to "native"; the
- * web-export arm (G7m) is the same GDScript and the same perf.json shape (receiver.gd runs
+ * web-export arm (G7m) is the same receiver glue and the same perf.json shape (receiver.gd runs
  * unchanged on the web, gate7-design.md Q4), so it passes "web" here rather than a second copy
  * of this function.
  */
@@ -301,7 +301,7 @@ export function summarizeNativeBench(
       : null,
     tp_ms: null,
     notes: [
-      "native decode_us is RsApplier.accept_record (decode, validation and resolve combined, rs_perf.gd); percentiles from 1/16-octave buckets, means exact",
+      "native decode_us is RsRustApplier.accept (the core's decode, validation and resolve combined, rs_perf.gd); percentiles from 1/16-octave buckets, means exact",
       "total_p95_us = p95(decode) + p95(apply), an upper bound of p95(decode + apply)",
     ],
     record_digest: null,

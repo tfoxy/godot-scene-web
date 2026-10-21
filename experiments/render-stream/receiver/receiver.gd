@@ -7,7 +7,7 @@ extends Node
 ## is made resident from its GRM1 surface payloads and add_mesh replays; since G55d by
 ## gate5_5-design.md "Q5. Receiver": /5's shader and material tables are compiled and created
 ## natively from their GRP1 code, items get their material, use_parent_material and instance
-## parameters, canvas 1 its modulate -- RsApplier's "Shaders and materials"). Its only input is a
+## parameters, canvas 1 its modulate). Its only input is a
 ## render-stream/5 byte stream: a recording file (file mode) or the binary messages of one
 ## WebSocket connection (live mode), plus the texture, mesh and shader payloads that stream names.
 ##
@@ -185,15 +185,15 @@ extends Node
 ## The three G1d options need a shot window for their step.
 ## On open it sends `hello`. Each binary message is appended to the received file, framed (the
 ## first is the magic and the session, every later one exactly one record), decoded and accepted
-## (Rs2Decoder.Stream resolves patches) and acked `received` (a resource record is kept, not acked). The newest accepted transaction is
+## (the core resolves patches) and acked `received` (a resource record is kept, not acked). The newest accepted transaction is
 ## applied at most once per _process and acked `applied`; at the next frame_post_draw a due shot is
 ## taken and the `submitted` ack sent. `presented` is unavailable in Godot and never guessed. The
 ## end record finishes the run; a close without it is replay-failure live-disconnected, a host
 ## `error` message replay-failure host-error.
 ##
-## Every record is decoded and validated completely (Rs2Decoder.decode_record, then
-## Rs2Decoder.Stream.accept, which resolves patches) before RsApplier makes any RenderingServer
-## call for it; the applier then reconciles the RESOLVED state with its own mirror. A failure
+## Every record is decoded and validated completely, and patches resolved, by the shared Rust core
+## (RsRustApplier) before it makes any RenderingServer call for it; the core then reconciles the
+## RESOLVED state with its own mirror. A failure
 ## writes applied.json with status replay-failure and quits with 3. A clean end record writes
 ## status ok and quits with 0. A usage error (missing or malformed environment, or an unsupported
 ## mode) quits with 2 and writes nothing.
@@ -224,21 +224,18 @@ extends Node
 ## browser's HTTP cache stands in for RS_RECEIVER_CACHE_DIR, which is native only (Q4), and a
 ## disk budget there is typed `cache-budget-unsupported` (seq null, item null, name "cache").
 ##
-## Core (G7xn, gate7-design.md D34, Q14e; G7xd amended the default; both modes):
-##   RS_RECEIVER_CORE       rust (default since G7xd: RsRustApplier -- the shared Rust core,
-##                          experiments/render-stream/rs-core, through the GDExtension adapter
-##                          receiver/ext/ -- decode, validation, resolve and apply in native
-##                          code, apply as RenderingServer ptrcalls for what changed; this script
-##                          keeps configuration, I/O, evidence and shots) or gdscript (frozen at
-##                          /7, Rs2Decoder decodes, validates and resolves, RsApplier applies;
-##                          milestone sweeps only, D34). applied.json's `receiver` block records
-##                          the chosen one as `core`.
-##   RS_RECEIVER_CORE_EXT   rust only: the adapter's .gdextension (default
-##                          res://ext/rs_core.gdextension, built by
-##                          scripts/build-rs-core-ext.sh); a missing or unloadable adapter is a
-##                          usage error
-## Under rust, state dumps are the core's resolved `state` in render-stream-2.ts's form (the same
-## keys; numbers as JavaScript prints them), which statesEqual() compares as before.
+## Core (G7xn, gate7-design.md D34, Q14e; both modes): RsRustApplier -- the shared Rust core,
+## experiments/render-stream/rs-core, through the GDExtension adapter receiver/ext/ -- decodes,
+## validates, resolves and applies in native code, apply as RenderingServer ptrcalls for what
+## changed; this script keeps configuration, I/O, evidence and shots. G7gd (2026-10-21) removed
+## the GDScript decoder and applier, so it is the only core; applied.json's `receiver` block still
+## records it as `core` ("rust").
+##   RS_RECEIVER_CORE       unset or rust; any other value is a usage error (G7gd)
+##   RS_RECEIVER_CORE_EXT   the adapter's .gdextension (default res://ext/rs_core.gdextension,
+##                          built by scripts/build-rs-core-ext.sh); a missing or unloadable
+##                          adapter is a usage error
+## State dumps are the core's resolved `state` in render-stream-2.ts's form (the same keys;
+## numbers as JavaScript prints them), which statesEqual() compares.
 ##
 ## Configuration and I/O (G7e, gate7-design.md Q4): every RS_RECEIVER_* value is read through
 ## RsConfig.get_env() (the environment, else `--rs-env=NAME=VALUE` after `--`), and RsIo carries
@@ -282,8 +279,7 @@ const LOSS_RECONNECTS_MAX: int = 3
 var _data := PackedByteArray()
 var _records: Array[Dictionary] = []
 var _next_record: int = 0
-var _stream := Rs2Decoder.Stream.new()
-var _applier: RsApplier
+var _applier: RsRustApplier = null
 var _recording_path: String = ""
 var _out_path: String = ""
 var _shot_dir: String = ""
@@ -349,10 +345,6 @@ var _delivery: String = ""
 var _sabotage: String = ""
 ## G7e: the web export's sources and sinks (no-ops natively).
 var _io := RsIo.new()
-## G7xn: RS_RECEIVER_CORE (gdscript | rust); under rust, _rust is _applier and stands in for _stream.
-## G7xd (D34 amended): the default is rust; gdscript stays selectable, frozen, milestone-swept.
-var _core_kind: String = "rust"
-var _rust: RsRustApplier = null
 ## G7o2 (D31): the web export's file mode on the Rust core takes each record's digest after the
 ## frame (RenderingServer.frame_post_draw), not inside decode_us: the offsets of accepted records
 ## not digested yet, every digest taken (offset -> sha256 hex), and the [entry, record offset]
@@ -385,7 +377,7 @@ var _received_file: FileAccess = null
 var _received_cap: int = -1
 var _received_stored: int = 0
 ## G6s (live-buffer trim): `_data` holds at most the one message currently being decoded
-## (RsApplier indexes a record by an offset local to `_data`, so nothing more is needed); the
+## (the core reads a record at an offset local to `_data`, so nothing more is needed); the
 ## current connection's received byte count, which used to read `_data.size()`, is tracked here
 ## instead (rs-g6s-live-data-unbounded-growth.md). The whole-stream sha256 is read back from
 ## `_received_path` -- an exact mirror of `_data`'s old content, flushed every message -- once
@@ -488,14 +480,13 @@ func _ready() -> void:
 	if _data.is_empty() and FileAccess.get_open_error() != OK:
 		_fail(null, "recording-unreadable", "cannot read %s: %s" % [_recording_path, error_string(FileAccess.get_open_error())])
 		return
-	# G7l: a GRS7 recording (a /7 live receiver's received.rs7) replays with the /7 decoder; any
-	# other magic keeps the /6 decoder, which refuses everything but GRS6 exactly as before.
-	if _data.size() >= 8 and _data.slice(0, 8).hex_encode() == Rs2Decoder.MAGIC_V7_HEX:
+	# G7l: a GRS7 recording (a /7 live receiver's received.rs7) replays at /7; any other magic
+	# stays at /6, which refuses everything but GRS6 exactly as before.
+	if _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V7_HEX:
 		_wire_version = 7
-		_stream = Rs2Decoder.Stream.new(7)
 		var receiver_block: Dictionary = _report["receiver"]
-		receiver_block["protocol"] = Rs2Decoder.PROTOCOL_V7
-	var sha256: String = Rs2Decoder.sha256_hex(_data)
+		receiver_block["protocol"] = RsWire.PROTOCOL_V7
+	var sha256: String = RsWire.sha256_hex(_data)
 	_report["recording"] = {"path": _recording_path, "sha256": sha256, "bytes": _data.size()}
 	_stream_report = {
 		"stream_id": null,
@@ -510,14 +501,14 @@ func _ready() -> void:
 	_streams.append(_stream_report)
 
 	# Framing first, over the whole file: a framing error stops everything before any RS call.
-	var split: Dictionary = Rs2Decoder.split_records(_data, _wire_version)
+	var split: Dictionary = RsWire.split_records(_data, _wire_version)
 	var split_errors: PackedStringArray = split["errors"]
 	if split_errors.size() > 0:
 		_fail_with_error(null, split_errors[0])
 		return
 	_records = split["records"]
 	if _records.is_empty():
-		_fail_with_error(null, Rs2Decoder.err("missing-session", "the recording has no records"))
+		_fail_with_error(null, RsWire.err("missing-session", "the recording has no records"))
 		return
 
 	_new_applier()
@@ -525,16 +516,16 @@ func _ready() -> void:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
 	# G7o2 (D31): a browser receiver computes the record digest after the frame. The native
 	# receiver and live mode keep it inline.
-	if _rust != null and RsConfig.is_web():
+	if RsConfig.is_web():
 		_digest_deferred = true
-		_rust.set_digest_deferred(true)
+		_applier.set_digest_deferred(true)
 		RenderingServer.frame_post_draw.connect(_flush_digests)
 	var raw: Dictionary = _records[_next_record]
 	_next_record += 1
-	if not _begin_session(_accept_session(_data, Rs2Decoder.as_int(raw["offset"]))):
+	if not _begin_session(_accept_session(_data, RsWire.as_int(raw["offset"]))):
 		return
 	if _digest_deferred:
-		_digest_offsets.append(Rs2Decoder.as_int(raw["offset"]))
+		_digest_offsets.append(RsWire.as_int(raw["offset"]))
 	set_process(true)
 
 
@@ -565,8 +556,8 @@ func _init_report(mode: String) -> String:
 			"protocol": "render-stream/%d" % _wire_version,
 			# G7l: at /7 replaced by the session's granted publication.credit_window.
 			"credit_window": 1 if mode == "live" else null,
-			# G7xn: which core decoded and applied (RS_RECEIVER_CORE).
-			"core": _core_kind,
+			# G7xn: which core decoded and applied; the Rust core is the only one since G7gd.
+			"core": "rust",
 		},
 		"mode": mode,
 		"recording": null if mode == "live" else {"path": _recording_path, "sha256": null, "bytes": null},
@@ -727,12 +718,12 @@ func _open_cache() -> bool:
 	return true
 
 
-## A resource record (render-stream-2.md "Resource record"), already verified by Stream.accept:
+## A resource record (render-stream-2.md "Resource record"), already verified by the core:
 ## its payload goes to memory. Returns false after failing the replay.
-func _receive_resource(record: Dictionary, data: PackedByteArray) -> bool:
+func _receive_resource(record: Dictionary) -> bool:
 	var meta: Dictionary = record["meta"]
 	var hash: String = meta["hash"]
-	var payload: PackedByteArray = _rust.resource_payload() if _rust != null else Rs2Decoder.raw_resource_payload(data, record)
+	var payload: PackedByteArray = _applier.resource_payload()
 	var error: String = _cache.add_inline(hash, payload)
 	if error != "":
 		_fail_with_error(_last_seq_or_null(), error)
@@ -746,20 +737,20 @@ func _receive_resource(record: Dictionary, data: PackedByteArray) -> bool:
 ## fetch_us, and since G55d shader_payload_fetches) and the report's fetch list. Returns "" or the
 ## replay-failure error.
 func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> String:
-	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes, _stream.shaders, _stream.materials)
+	var need: Dictionary = _applier.needed()
 	var hashes: Array = need["hashes"]
 	var mesh_hashes: Array = need["mesh_hashes"]
 	var shader_hashes: Array = need["shader_hashes"]
 	# G6s (gate2-design.md Q5, gate6-design.md Q5 "Resource budgets"): eviction must not touch any
 	# of these while this loop is making them available, one call at a time, below.
 	_cache.set_needed(hashes)
-	var fetch_us: int = Rs2Decoder.as_int(resources["fetch_us"])
+	var fetch_us: int = RsWire.as_int(resources["fetch_us"])
 	for value: Variant in hashes:
 		var hash: String = value
 		if _cache.has_in_memory(hash):
 			continue
 		if not _has_cache() and _delivery != "inline":
-			return Rs2Decoder.err("resource-unavailable", "payload %s is needed, and RS_RECEIVER_CACHE_DIR is unset (delivery %s)" % [hash, _delivery])
+			return RsWire.err("resource-unavailable", "payload %s is needed, and RS_RECEIVER_CACHE_DIR is unset (delivery %s)" % [hash, _delivery])
 		var mesh: bool = mesh_hashes.has(hash)
 		var shader: bool = shader_hashes.has(hash)
 		var will_fetch: bool = _cache.ignore_cache or not _cache.cache_has(hash, mesh, shader)
@@ -769,8 +760,8 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 		var source: String = got["source"]
 		var got_bytes: int = got["bytes"]
 		if source == "cache":
-			resources["cache_hits"] = Rs2Decoder.as_int(resources["cache_hits"]) + 1
-			_summary["cache_hits"] = Rs2Decoder.as_int(_summary["cache_hits"]) + 1
+			resources["cache_hits"] = RsWire.as_int(resources["cache_hits"]) + 1
+			_summary["cache_hits"] = RsWire.as_int(_summary["cache_hits"]) + 1
 		elif source == "directory":
 			var start_us: int = got["start_us"]
 			var end_us: int = got["end_us"]
@@ -782,11 +773,11 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 					"status": null, "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
 					"verified": got["verified"], "kind": "mesh" if mesh else ("shader" if shader else "texture"),
 				})
-			resources["fetched"] = Rs2Decoder.as_int(resources["fetched"]) + 1
+			resources["fetched"] = RsWire.as_int(resources["fetched"]) + 1
 			if shader:
-				resources["shader_payload_fetches"] = Rs2Decoder.as_int(resources["shader_payload_fetches"]) + 1
-			resources["fetched_bytes"] = Rs2Decoder.as_int(resources["fetched_bytes"]) + got_bytes
-			_summary["fetched_bytes"] = Rs2Decoder.as_int(_summary["fetched_bytes"]) + got_bytes
+				resources["shader_payload_fetches"] = RsWire.as_int(resources["shader_payload_fetches"]) + 1
+			resources["fetched_bytes"] = RsWire.as_int(resources["fetched_bytes"]) + got_bytes
+			_summary["fetched_bytes"] = RsWire.as_int(_summary["fetched_bytes"]) + got_bytes
 			_fetched_hashes[hash] = true
 			_summary["distinct_fetched"] = _fetched_hashes.size()
 		var error: String = got["error"]
@@ -826,32 +817,31 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		# The whole fetch stage for this transaction, including HTTP fetches live mode may have
 		# run across several earlier _process calls (resources["fetch_us"] already carries those
 		# through `prefetched`, not re-timed here).
-		_perf.fetch_us.add(Rs2Decoder.as_int(resources["fetch_us"]))
-	# G7o3: payload verification on arrival since the last transaction (the cache's stage or its
-	# GDScript checks), outside decode_us and apply_us like D31's evidence_hash_us.
+		_perf.fetch_us.add(RsWire.as_int(resources["fetch_us"]))
+	# G7o3: payload verification on arrival since the last transaction (the cache's stage, or its
+	# SHA-256 check under verify-in-frame), outside decode_us and apply_us like D31's evidence_hash_us.
 	var verify_us: int = _cache.take_verify_us()
 	var apply_t0: int = Time.get_ticks_usec() if _perf != null else 0
-	var stats: Dictionary = _applier.apply_state(_stream, _cache)
+	var stats: Dictionary = _applier.apply_state(_cache)
 	if _perf != null:
 		var apply_us: int = Time.get_ticks_usec() - apply_t0
 		_perf.apply_us.add(apply_us)
 		if verify_us > 0:
 			_perf.payload_verify_us.add(verify_us)
-		if _rust != null:
-			_perf.provide_us.add(_rust.last_provide_us)
-			_perf.plan_us.add(_rust.last_plan_us)
-			_perf.execute_us.add(_rust.last_execute_us)
-			_perf.stats_us.add(_rust.last_stats_us)
+		_perf.provide_us.add(_applier.last_provide_us)
+		_perf.plan_us.add(_applier.last_plan_us)
+		_perf.execute_us.add(_applier.last_execute_us)
+		_perf.stats_us.add(_applier.last_stats_us)
 		if _perf_samples:
 			_perf.samples.append({
 				"seq": seq, "decode_us": _last_decode_us, "payload_verify_us": verify_us, "apply_us": apply_us,
-				"provide_us": _rust.last_provide_us if _rust != null else null,
-				"plan_us": _rust.last_plan_us if _rust != null else null,
-				"execute_us": _rust.last_execute_us if _rust != null else null,
-				"stats_us": _rust.last_stats_us if _rust != null else null,
+				"provide_us": _applier.last_provide_us,
+				"plan_us": _applier.last_plan_us,
+				"execute_us": _applier.last_execute_us,
+				"stats_us": _applier.last_stats_us,
 			})
 	if stats.has("error"):
-		# G7xn: only RsRustApplier reports one (a payload the core refuses).
+		# G7xn: a payload the core refuses.
 		var apply_error: String = stats["error"]
 		_fail_with_error(seq, apply_error)
 		return {"ok": false, "stats": {}}
@@ -862,20 +852,20 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	for key: String in ["meshes_created", "meshes_rebuilt", "surface_updates", "mesh_upload_bytes", "skipped_mesh_commands"]:
 		resources[key] = mesh_resources[key]
 		if _summary.has(key):
-			_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(mesh_resources[key])
+			_summary[key] = RsWire.as_int(_summary[key]) + RsWire.as_int(mesh_resources[key])
 	var material_resources: Dictionary = stats["material_resources"]
 	for key: String in MATERIAL_COUNTERS:
 		if material_resources.has(key):
 			resources[key] = material_resources[key]
-		_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(resources[key])
+		_summary[key] = RsWire.as_int(_summary[key]) + RsWire.as_int(resources[key])
 	var canvas_resources: Dictionary = stats["canvas_resources"]
 	for key: String in CANVAS_COUNTERS:
 		resources[key] = canvas_resources[key]
-		_summary[key] = Rs2Decoder.as_int(_summary[key]) + Rs2Decoder.as_int(resources[key])
+		_summary[key] = RsWire.as_int(_summary[key]) + RsWire.as_int(resources[key])
 	var skipped_shaders: Array = stats["skipped_shaders"]
 	for value: Variant in skipped_shaders:
 		var skip: Dictionary = value
-		var shader_id: int = Rs2Decoder.as_int(skip["id"])
+		var shader_id: int = RsWire.as_int(skip["id"])
 		var skip_hash: String = skip["hash"]
 		var reported_key: String = "%d:%d:%s" % [stream_index, shader_id, skip_hash]
 		if _withheld_reported.has(reported_key):
@@ -904,8 +894,8 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		if _log_mode != "summary":
 			_uploads.append(upload)
 		if upload["op"] != "placeholder":
-			_summary["uploads"] = Rs2Decoder.as_int(_summary["uploads"]) + 1
-			_summary["upload_bytes"] = Rs2Decoder.as_int(_summary["upload_bytes"]) + Rs2Decoder.as_int(upload["data_bytes"])
+			_summary["uploads"] = RsWire.as_int(_summary["uploads"]) + 1
+			_summary["upload_bytes"] = RsWire.as_int(_summary["upload_bytes"]) + RsWire.as_int(upload["data_bytes"])
 	return {"ok": true, "stats": stats}
 
 
@@ -930,7 +920,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	var record: Dictionary = accepted["record"]
 	var meta: Dictionary = record["meta"]
 	if accepted["kind"] != "session":
-		_fail_with_error(null, Rs2Decoder.err("missing-session", "the first record is a %s, not a session" % accepted["kind"]))
+		_fail_with_error(null, RsWire.err("missing-session", "the first record is a %s, not a session" % accepted["kind"]))
 		return false
 	_report["session_id"] = meta["session_id"]
 	var stream_meta: Dictionary = meta["stream"]
@@ -941,11 +931,11 @@ func _begin_session(accepted: Dictionary) -> bool:
 		# G7l: the window the host granted (render-stream-7.md "Session": publication.credit_window).
 		var publication: Dictionary = meta["publication"]
 		var receiver_block: Dictionary = _report["receiver"]
-		receiver_block["credit_window"] = Rs2Decoder.as_int(publication["credit_window"])
-		_granted_window = Rs2Decoder.as_int(publication["credit_window"])
+		receiver_block["credit_window"] = RsWire.as_int(publication["credit_window"])
+		_granted_window = RsWire.as_int(publication["credit_window"])
 	var session_viewport: Dictionary = meta["viewport"]
 	var logical: Array = session_viewport["logical_size"]
-	var logical_size := Vector2(Rs2Decoder.as_int(logical[0]), Rs2Decoder.as_int(logical[1]))
+	var logical_size := Vector2(RsWire.as_int(logical[0]), RsWire.as_int(logical[1]))
 	_viewport_report["logical_size"] = [int(logical_size.x), int(logical_size.y)]
 	var blocks_for_stretch: Array = record["blocks"]
 	_adopt_presentation(session_viewport, blocks_for_stretch)
@@ -986,22 +976,8 @@ func _begin_session(accepted: Dictionary) -> bool:
 			fetch_token += "-wrong"
 		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms, fetch_token, _web_fetch)
 	var blocks: Array = record["blocks"]
-	_applier.sabotage_reupload = _sabotage == "reupload"
-	_applier.sabotage_ignore_clip = _sabotage == "ignore-clip"
-	_applier.sabotage_clip_before_clear = _sabotage == "clip-before-clear"
-	_applier.sabotage_drop_msdf = _sabotage == "drop-msdf"
-	_applier.sabotage_ignore_set_transform = _sabotage == "ignore-set-transform"
-	_applier.sabotage_ignore_clip_ignore = _sabotage == "ignore-clip-ignore"
-	_applier.sabotage_ignore_nine_patch_axis = _sabotage == "ignore-nine-patch-axis"
-	_applier.sabotage_drop_mesh_surface = _sabotage == "drop-mesh-surface"
-	_applier.sabotage_stale_mesh = _sabotage == "stale-mesh"
-	_applier.sabotage_refuse_canvas_texture = _sabotage == "refuse-canvas-texture"
-	_applier.sabotage_ignore_material = _sabotage == "ignore-material"
-	_applier.sabotage_ignore_canvas_modulate = _sabotage == "ignore-canvas-modulate"
-	_applier.sabotage_stale_param = _sabotage == "stale-param"
-	_applier.sabotage_stale_texture = _sabotage == "stale-texture"
-	_applier.sabotage_ignore_canvas_stacking = _sabotage == "ignore-canvas-stacking"
-	_applier.begin_session(meta, blocks)
+	_applier.sabotage = _sabotage
+	_applier.begin_session()
 	_log("session %s stream %s (%s, %s) applied (%d RS calls)" % [meta["session_id"], stream_meta["stream_id"], stream_meta["transport"], stream_meta["encoding"], _applier.rs_calls])
 	if _live and _conn_index == 1:
 		_web_mark("rs-session-decoded")
@@ -1039,7 +1015,7 @@ func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
 			_:
 				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
 		root.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_INTEGER if scale_mode == "integer" else Window.CONTENT_SCALE_STRETCH_FRACTIONAL
-		root.content_scale_size = Vector2i(Rs2Decoder.as_int(logical[0]), Rs2Decoder.as_int(logical[1]))
+		root.content_scale_size = Vector2i(RsWire.as_int(logical[0]), RsWire.as_int(logical[1]))
 		# The session's content_scale_factor block (render-stream-1.md "Session record", blocks[4]).
 		var factor: PackedFloat32Array = blocks[4]
 		root.content_scale_factor = factor[0]
@@ -1056,7 +1032,7 @@ func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
 		_viewport_report["presentation_check"] = "skipped-headless" if headless else null
 		return
 	var presentation: Array = session_viewport["presentation_size"]
-	var presentation_size := Vector2i(Rs2Decoder.as_int(presentation[0]), Rs2Decoder.as_int(presentation[1]))
+	var presentation_size := Vector2i(RsWire.as_int(presentation[0]), RsWire.as_int(presentation[1]))
 	_viewport_report["presentation_size"] = [presentation_size.x, presentation_size.y]
 	if headless:
 		_viewport_report["presentation_check"] = "skipped-headless"
@@ -1106,7 +1082,7 @@ func _process(_delta: float) -> void:
 	# only after the record decoded, the stream accepted (and resolved) it and every payload it
 	# needs is available.
 	var decode_t0: int = Time.get_ticks_usec() if _perf != null else 0
-	var result: Dictionary = _accept_record(_data, Rs2Decoder.as_int(raw["offset"]))
+	var result: Dictionary = _accept_record(_data, RsWire.as_int(raw["offset"]))
 	if _perf != null:
 		_last_decode_us = Time.get_ticks_usec() - decode_t0
 		_perf.decode_us.add(_last_decode_us)
@@ -1116,18 +1092,18 @@ func _process(_delta: float) -> void:
 	var kind: String = result["kind"]
 	if _digest_deferred and errors.size() == 0:
 		# D31: every accepted record gets its digest after the frame (summary log mode included).
-		_digest_offsets.append(Rs2Decoder.as_int(raw["offset"]))
+		_digest_offsets.append(RsWire.as_int(raw["offset"]))
 	if errors.size() > 0:
 		var seq: Variant = null
 		if kind == "transaction" or kind == "":
-			seq = Rs2Decoder.as_int(meta["seq"]) if Rs2Decoder.is_int(meta.get("seq")) else expected_seq
+			seq = RsWire.as_int(meta["seq"]) if RsWire.is_int(meta.get("seq")) else expected_seq
 		_fail_with_error(seq, errors[0])
 		return
 	match kind:
 		"resource":
-			_receive_resource(record, _data)
+			_receive_resource(record)
 		"transaction":
-			var applied: Dictionary = _fetch_and_apply(FILE_STREAM, Rs2Decoder.as_int(meta["seq"]))
+			var applied: Dictionary = _fetch_and_apply(FILE_STREAM, RsWire.as_int(meta["seq"]))
 			if not applied["ok"]:
 				return
 			var stats: Dictionary = applied["stats"]
@@ -1154,8 +1130,8 @@ func _parse_seqs(variable: String, out: Array[int]) -> bool:
 func _transaction_entry(stream: int, meta: Dictionary, record: Dictionary) -> Dictionary:
 	return {
 		"stream": stream,
-		"seq": Rs2Decoder.as_int(meta["seq"]),
-		"frame": Rs2Decoder.as_int(meta["frame"]),
+		"seq": RsWire.as_int(meta["seq"]),
+		"frame": RsWire.as_int(meta["frame"]),
 		"encoding": meta["encoding"],
 		"record_sha256": record["sha256"],
 		"process_frame": null,
@@ -1192,7 +1168,7 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 	var unsupported_commands: Array[Dictionary] = stats["unsupported_commands"]
 	for command: Dictionary in unsupported_commands:
 		_log("seq %d item %d: unsupported command %s (%s) logged, not drawn" % [seq, command["item"], command["name"], command["reason"]])
-	# G7b: web-only typed refusals (rs_applier.gd "Meshes"); always empty natively.
+	# G7b: web-only typed refusals (the removed GDScript applier's); the core never makes one.
 	var web_refused: Array[Dictionary] = stats["mesh_web_refused"]
 	for refused: Dictionary in web_refused:
 		_unsupported.append({"seq": seq, "item": null, "name": "mesh_surface_update_index_region", "reason": refused["reason"], "mesh": refused["mesh"], "surface": refused["surface"]})
@@ -1203,7 +1179,7 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 		var key: String = JSON.stringify([unsupported_entry["op"], unsupported_entry["item"], unsupported_entry["reason"]])
 		current[key] = true
 		if not _previous_unsupported.has(key):
-			var item: Variant = null if unsupported_entry["item"] == null else Rs2Decoder.as_int(unsupported_entry["item"])
+			var item: Variant = null if unsupported_entry["item"] == null else RsWire.as_int(unsupported_entry["item"])
 			_unsupported.append({"seq": seq, "item": item, "name": unsupported_entry["op"], "reason": unsupported_entry["reason"]})
 			_log("seq %d: unsupported %s item %s (%s)" % [seq, unsupported_entry["op"], str(item), unsupported_entry["reason"]])
 	_previous_unsupported = current
@@ -1214,11 +1190,11 @@ func _record_transaction(meta: Dictionary, record: Dictionary, stats: Dictionary
 	if _log_mode != "summary":
 		_transactions.append(entry)
 		if _digest_deferred:
-			_digest_entries.append([entry, Rs2Decoder.as_int(record["offset"])])
+			_digest_entries.append([entry, RsWire.as_int(record["offset"])])
 	_note_applied(entry, meta, stats)
 	var seq: int = entry["seq"]
 
-	if _state_seqs.has(seq) and not _dump_state(seq, meta):
+	if _state_seqs.has(seq) and not _dump_state(seq):
 		return
 
 	if _shot_seqs.has(seq):
@@ -1230,8 +1206,9 @@ func _record_transaction(meta: Dictionary, record: Dictionary, stats: Dictionary
 
 
 ## Writes state/<name>.json: the resolved state just applied, in render-stream-2.md's resolved
-## `state` shape and key order. Returns false (after failing the replay) when it cannot write.
-func _dump_state(seq: int, meta: Dictionary) -> bool:
+## `state` shape and key order (the core's). Returns false (after failing the replay) when it
+## cannot write.
+func _dump_state(seq: int) -> bool:
 	var path: String = _state_dir.path_join("%s.json" % _seq_name(seq))
 	var made: Error = DirAccess.make_dir_recursive_absolute(_state_dir)
 	if made != OK:
@@ -1241,10 +1218,7 @@ func _dump_state(seq: int, meta: Dictionary) -> bool:
 	if file == null:
 		_fail(seq, "state-failed", "cannot write %s: %s" % [path, error_string(FileAccess.get_open_error())])
 		return false
-	if _rust != null:
-		file.store_string(_rust.state_json() + "\n")
-	else:
-		file.store_string(JSON.stringify(_state_json(meta), "", false, true) + "\n")
+	file.store_string(_applier.state_json() + "\n")
 	file.close()
 	_state_paths[_seq_name(seq)] = path
 	_log("state seq %d -> %s" % [seq, path])
@@ -1256,358 +1230,6 @@ func _seq_name(seq: int) -> String:
 	if _conn_index > 1:
 		return "stream-%d-seq-%d" % [_conn_index, seq]
 	return "seq-%d" % seq
-
-
-## The resolved `state` object (render-stream-2.md "Decoded and resolved forms"): integers as
-## ints, floats as float32 values, keys in the spec's order (the order render-stream-2.ts
-## resolveRecording() emits, so a state dump compares with statesEqual()).
-func _state_json(meta: Dictionary) -> Dictionary:
-	var failures: Array = []
-	for value: Variant in meta["failures"]:
-		var failure: Dictionary = value
-		failures.append({"reason": failure["reason"], "detail": failure["detail"]})
-	var unsupported: Array = []
-	for value: Variant in meta["unsupported"]:
-		var entry: Dictionary = value
-		var item: Variant = null if entry["item"] == null else Rs2Decoder.as_int(entry["item"])
-		unsupported.append({"op": entry["op"], "item": item, "reason": entry["reason"]})
-	var canvas_ids: Array[int] = []
-	for id: int in _stream.canvases:
-		canvas_ids.append(id)
-	canvas_ids.sort()
-	var canvases: Array = []
-	for id: int in canvas_ids:
-		var canvas: Dictionary = _stream.canvases[id]
-		var canvas_out: Dictionary = {
-			"id": id,
-			"origin": canvas["origin"],
-			"role": canvas["role"],
-			"attached": canvas["attached"],
-		}
-		# render-stream-6.md "Decoded and resolved forms" (G6b): layer and sublayer, right after
-		# attached and before items.
-		if canvas.has("layer"):
-			canvas_out["layer"] = Rs2Decoder.as_int(canvas["layer"])
-			canvas_out["sublayer"] = Rs2Decoder.as_int(canvas["sublayer"])
-		canvas_out["items"] = Rs2Decoder.int_list(canvas["items"])
-		canvas_out["xform"] = _float_list(canvas["xform"])
-		if canvas.has("modulate"):
-			# render-stream-5.md "Canvas" (G55d).
-			canvas_out["modulate"] = _float_list(canvas["modulate"])
-		canvases.append(canvas_out)
-	var item_ids: Array[int] = []
-	for id: int in _stream.items:
-		item_ids.append(id)
-	item_ids.sort()
-	var items: Array = []
-	for id: int in item_ids:
-		var item: Dictionary = _stream.items[id]
-		var parent: Variant = item["parent"]
-		var parent_out: Variant = null
-		if parent != null:
-			var link: Dictionary = parent
-			parent_out = {"kind": link["kind"], "id": Rs2Decoder.as_int(link["id"])}
-		var commands: Array = []
-		for value: Variant in item["commands"]:
-			var command: Dictionary = value
-			match command["op"]:
-				"add_rect":
-					commands.append({
-						"op": "add_rect",
-						"aa": command["aa"],
-						"rect": _float_list(command["rect"]),
-						"color": _float_list(command["color"]),
-					})
-				"add_texture_rect":
-					commands.append({
-						"op": "add_texture_rect",
-						"tex": _int_or_null(command["tex"]),
-						"tile": command["tile"],
-						"transpose": command["transpose"],
-						"rect": _float_list(command["rect"]),
-						"modulate": _float_list(command["modulate"]),
-					})
-				"add_texture_rect_region":
-					commands.append({
-						"op": "add_texture_rect_region",
-						"tex": _int_or_null(command["tex"]),
-						"transpose": command["transpose"],
-						"clip_uv": command["clip_uv"],
-						"rect": _float_list(command["rect"]),
-						"src": _float_list(command["src"]),
-						"modulate": _float_list(command["modulate"]),
-					})
-				"add_msdf_texture_rect_region":
-					commands.append({
-						"op": "add_msdf_texture_rect_region",
-						"tex": _int_or_null(command["tex"]),
-						"outline": Rs2Decoder.as_int(command["outline"]),
-						"rect": _float_list(command["rect"]),
-						"src": _float_list(command["src"]),
-						"modulate": _float_list(command["modulate"]),
-						"px_range": _float32(command["px_range"]),
-						"scale": _float32(command["scale"]),
-					})
-				"add_line":
-					commands.append({
-						"op": "add_line",
-						"aa": command["aa"],
-						"from": _float_list(command["from"]),
-						"to": _float_list(command["to"]),
-						"colour": _float_list(command["colour"]),
-						"width": _float32(command["width"]),
-					})
-				"add_polyline", "add_multiline":
-					commands.append({
-						"op": command["op"],
-						"aa": command["aa"],
-						"width": _float32(command["width"]),
-						"points": _float_lists(command["points"]),
-						"colors": _float_lists(command["colors"]),
-					})
-				"add_circle":
-					commands.append({
-						"op": "add_circle",
-						"aa": command["aa"],
-						"position": _float_list(command["position"]),
-						"radius": _float32(command["radius"]),
-						"colour": _float_list(command["colour"]),
-					})
-				"add_primitive", "add_polygon":
-					commands.append({
-						"op": command["op"],
-						"tex": _int_or_null(command["tex"]),
-						"points": _float_lists(command["points"]),
-						"colors": _float_lists(command["colors"]),
-						"uvs": _float_lists(command["uvs"]),
-					})
-				"add_triangle_array":
-					commands.append({
-						"op": "add_triangle_array",
-						"tex": _int_or_null(command["tex"]),
-						"count": Rs2Decoder.as_int(command["count"]),
-						"points": _float_lists(command["points"]),
-						"colors": _float_lists(command["colors"]),
-						"uvs": _float_lists(command["uvs"]),
-						"indices": Rs2Decoder.int_list(command["indices"]),
-					})
-				"add_nine_patch":
-					commands.append({
-						"op": "add_nine_patch",
-						"tex": _int_or_null(command["tex"]),
-						"rect": _float_list(command["rect"]),
-						"source": _float_list(command["source"]),
-						"margins": _float_list(command["margins"]),
-						"x_axis": command["x_axis"],
-						"y_axis": command["y_axis"],
-						"draw_center": command["draw_center"],
-						"modulate": _float_list(command["modulate"]),
-					})
-				"add_mesh":
-					commands.append({
-						"op": "add_mesh",
-						"mesh": Rs2Decoder.as_int(command["mesh"]),
-						"tex": _int_or_null(command["tex"]),
-						"transform": _float_list(command["transform"]),
-						"modulate": _float_list(command["modulate"]),
-					})
-				"add_set_transform":
-					commands.append({"op": "add_set_transform", "transform": _float_list(command["transform"])})
-				"add_clip_ignore":
-					commands.append({"op": "add_clip_ignore", "ignore": command["ignore"]})
-				_:
-					commands.append({"op": "unsupported", "name": command["name"], "reason": command["reason"]})
-		var item_out: Dictionary = {
-			"id": id,
-			"origin": item["origin"],
-			"parent": parent_out,
-			"children": Rs2Decoder.int_list(item["children"]),
-			"visible": item["visible"],
-			"draw_index": Rs2Decoder.as_int(item["draw_index"]),
-			"z_index": Rs2Decoder.as_int(item["z_index"]),
-			"z_relative": item["z_relative"],
-			"behind": item["behind"],
-			"clip": item["clip"],
-			"custom_rect": item["custom_rect"],
-			"visibility_layer": Rs2Decoder.as_int(item["visibility_layer"]),
-			"texture_filter": item["texture_filter"],
-			"texture_repeat": item["texture_repeat"],
-		}
-		if item.has("material"):
-			# render-stream-5.md "Item" (G55d): before content_version, in this order.
-			item_out["material"] = _int_or_null(item["material"])
-			item_out["use_parent_material"] = item["use_parent_material"]
-			item_out["instance_params"] = _params_json(item["instance_params"])
-		item_out["content_version"] = Rs2Decoder.as_int(item["content_version"])
-		item_out["xform"] = _float_list(item["xform"])
-		item_out["modulate"] = _float_list(item["modulate"])
-		item_out["self_modulate"] = _float_list(item["self_modulate"])
-		item_out["custom_rect_rect"] = _float_list(item["custom_rect_rect"])
-		item_out["commands"] = commands
-		items.append(item_out)
-	var texture_ids: Array[int] = []
-	for id: int in _stream.textures:
-		texture_ids.append(id)
-	texture_ids.sort()
-	var textures: Array = []
-	for id: int in texture_ids:
-		var t: Dictionary = _stream.textures[id]
-		var canvas_out: Variant = null
-		if t["canvas"] != null:
-			var info: Dictionary = t["canvas"]
-			canvas_out = {"diffuse": _int_or_null(info["diffuse"]), "filter": info["filter"], "repeat": info["repeat"]}
-		textures.append({
-			"id": id,
-			"origin": t["origin"],
-			"kind": t["kind"],
-			"status": t["status"],
-			"reason": t["reason"],
-			"version": Rs2Decoder.as_int(t["version"]),
-			"hash": t["hash"],
-			"format": t["format"],
-			"width": Rs2Decoder.as_int(t["width"]),
-			"height": Rs2Decoder.as_int(t["height"]),
-			"mipmaps": t["mipmaps"],
-			"payload_bytes": Rs2Decoder.as_int(t["payload_bytes"]),
-			"canvas": canvas_out,
-		})
-	var state: Dictionary = {
-		"status": meta["status"],
-		"failures": failures,
-		"unsupported": unsupported,
-		"default_texture_filter": _stream.default_texture_filter,
-		"default_texture_repeat": _stream.default_texture_repeat,
-		"canvases": canvases,
-		"items": items,
-		"textures": textures,
-	}
-	if _stream.version >= 4:
-		# render-stream-4.md "Decoded and resolved forms" (G5e): the mesh table, custom_aabb lifted.
-		var mesh_ids: Array[int] = []
-		for id: int in _stream.meshes:
-			mesh_ids.append(id)
-		mesh_ids.sort()
-		var meshes: Array = []
-		for id: int in mesh_ids:
-			var m: Dictionary = _stream.meshes[id]
-			var surfaces: Array = []
-			for value: Variant in m["surfaces"]:
-				var surface: Dictionary = value
-				surfaces.append({
-					"hash": surface["hash"],
-					"payload_bytes": Rs2Decoder.as_int(surface["payload_bytes"]),
-					"primitive": surface["primitive"],
-					"format": Rs2Decoder.as_int(surface["format"]),
-					"vertex_count": Rs2Decoder.as_int(surface["vertex_count"]),
-					"index_count": Rs2Decoder.as_int(surface["index_count"]),
-				})
-			meshes.append({
-				"id": id,
-				"origin": m["origin"],
-				"status": m["status"],
-				"reason": m["reason"],
-				"version": Rs2Decoder.as_int(m["version"]),
-				"custom_aabb": _float_list(m["custom_aabb"]),
-				"surfaces": surfaces,
-			})
-		state["meshes"] = meshes
-	if _stream.version >= 5:
-		# render-stream-5.md "Decoded and resolved forms" (G55d): the shader and material tables,
-		# parameters as {name, type, value}.
-		var shader_ids: Array[int] = []
-		for id: int in _stream.shaders:
-			shader_ids.append(id)
-		shader_ids.sort()
-		var shaders: Array = []
-		for id: int in shader_ids:
-			var sh: Dictionary = _stream.shaders[id]
-			var default_textures: Array = []
-			for value: Variant in sh["default_textures"]:
-				var default_texture: Dictionary = value
-				default_textures.append({
-					"name": default_texture["name"],
-					"index": Rs2Decoder.as_int(default_texture["index"]),
-					"tex": Rs2Decoder.as_int(default_texture["tex"]),
-				})
-			var uses: Array = []
-			for value: Variant in sh["uses"]:
-				uses.append(value)
-			shaders.append({
-				"id": id,
-				"origin": sh["origin"],
-				"status": sh["status"],
-				"reason": sh["reason"],
-				"version": Rs2Decoder.as_int(sh["version"]),
-				"mode": sh["mode"],
-				"source": sh["source"],
-				"hash": sh["hash"],
-				"payload_bytes": Rs2Decoder.as_int(sh["payload_bytes"]),
-				"builtin": sh["builtin"],
-				"uses": uses,
-				"default_textures": default_textures,
-			})
-		state["shaders"] = shaders
-		var material_ids: Array[int] = []
-		for id: int in _stream.materials:
-			material_ids.append(id)
-		material_ids.sort()
-		var materials: Array = []
-		for id: int in material_ids:
-			var mat: Dictionary = _stream.materials[id]
-			materials.append({
-				"id": id,
-				"origin": mat["origin"],
-				"status": mat["status"],
-				"reason": mat["reason"],
-				"version": Rs2Decoder.as_int(mat["version"]),
-				"shader": _int_or_null(mat["shader"]),
-				"params": _params_json(mat["params"]),
-			})
-		state["materials"] = materials
-	return state
-
-
-## Resolved /5 parameters ({name, type, value}, render-stream-5.md) for a state dump: the float64
-## values unchanged, a `rid` value as {"tex": <int>}.
-static func _params_json(params: Variant) -> Array:
-	var list: Array = params
-	var out: Array = []
-	for value: Variant in list:
-		var param: Dictionary = value
-		var param_value: Variant = param["value"]
-		if param["type"] == "rid" and param_value != null:
-			var link: Dictionary = param_value
-			param_value = {"tex": Rs2Decoder.as_int(link["tex"])}
-		out.append({"name": param["name"], "type": param["type"], "value": param_value})
-	return out
-
-
-static func _int_or_null(value: Variant) -> Variant:
-	return null if value == null else Rs2Decoder.as_int(value)
-
-
-## One float as a float32 value (JSON keeps it as a double holding that value).
-static func _float32(value: Variant) -> float:
-	var one: PackedFloat32Array = PackedFloat32Array([value])
-	return one[0]
-
-
-## A list of float lists (points, colours, UVs), each element a float32 value.
-static func _float_lists(values: Variant) -> Array:
-	var list: Array = values
-	var out: Array = []
-	for value: Variant in list:
-		out.append(_float_list(value))
-	return out
-
-
-## A float list as JSON floats holding float32 values.
-static func _float_list(values: Variant) -> Array[float]:
-	var list: Array = values
-	var out: Array[float] = []
-	for value: float in PackedFloat32Array(list):
-		out.append(value)
-	return out
 
 
 ## Saves the viewport after frame_post_draw as shots/<name>.png. Returns the path, or "" after
@@ -1841,7 +1463,7 @@ func _ready_live() -> void:
 	_log("mode live, url %s, out %s, received %s, credit %s, inbound %d, windows %s, stall %s, reconnect %s, resync %s, display %s" % [_url, _out_path, _received_path, _credit_stage, _inbound_bytes, JSON.stringify(_windows), "%d:%d" % [_stall_step, _stall_ms] if _stall_step >= 0 else "off", str(_reconnect_step) if _reconnect_step >= 0 else "off", str(_resync_step) if _resync_step >= 0 else "off", display_server])
 	if _wire_version == 7:
 		# Never the token itself (token-not-logged): only whether one is held.
-		_log("protocol %s, credit window %d asked, token %s, manifest %s" % [Rs2Decoder.PROTOCOL_V7, _credit_window, "held" if _token != "" else "none", _manifest_sha256 if _manifest_sha256 != "" else "none"])
+		_log("protocol %s, credit window %d asked, token %s, manifest %s" % [RsWire.PROTOCOL_V7, _credit_window, "held" if _token != "" else "none", _manifest_sha256 if _manifest_sha256 != "" else "none"])
 	if display_server == "headless" and (not _windows.is_empty() or _shot_final):
 		_fail(null, "shot-unavailable", "shot windows were requested, but the display server is headless")
 		return
@@ -1884,7 +1506,6 @@ func _parse_wire_env() -> bool:
 		_log("error: a web receiver speaks only render-stream/7 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
-	_stream = Rs2Decoder.Stream.new(_wire_version)
 	var window_text: String = RsConfig.get_env("RS_RECEIVER_CREDIT_WINDOW").strip_edges()
 	if window_text != "":
 		if window_text != "1" and window_text != "2":
@@ -2037,7 +1658,7 @@ func _process_live() -> void:
 				# A reconnect can race the host's teardown of connection 1 (one receiver at a time: a
 				# second gets 503), so it retries until the connect timeout.
 				var reconnect: Dictionary = _reconnect_record
-				reconnect["connect_attempts"] = Rs2Decoder.as_int(reconnect["connect_attempts"]) + 1
+				reconnect["connect_attempts"] = RsWire.as_int(reconnect["connect_attempts"]) + 1
 				var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
 				if opened != OK:
 					_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
@@ -2158,7 +1779,7 @@ func _start_next_connection() -> void:
 	# G6s (live-buffer trim): `_data` no longer holds the whole connection; `_received_path` is
 	# its exact byte-for-byte mirror (every message was store_buffer()+flush()ed as it arrived),
 	# so the final sha256 is read back from disk once here rather than carried in memory.
-	_stream_report["received_sha256"] = Rs2Decoder.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
+	_stream_report["received_sha256"] = RsWire.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
 	_stream_report["received_bytes"] = _data_received_bytes
 	var owned_before: int = _applier.owned_rids()
 	var freed: int = _applier.dispose()
@@ -2181,7 +1802,6 @@ func _start_next_connection() -> void:
 		return
 	_data = PackedByteArray()
 	_data_received_bytes = 0
-	_stream = Rs2Decoder.Stream.new(_wire_version)
 	_inline_since_applied = 0
 	# G2c2: connection 2 owes nothing to connection 1: payloads come from its own inline records,
 	# the cache directory or a fetch, never from this process's memory. G6l (keep): the memory
@@ -2253,7 +1873,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 	_stream_report["received_bytes"] = _data_received_bytes
 	if not _session_seen:
 		# The first message is the magic followed by exactly the session record.
-		var split: Dictionary = Rs2Decoder.split_records(message, _wire_version)
+		var split: Dictionary = RsWire.split_records(message, _wire_version)
 		var split_errors: PackedStringArray = split["errors"]
 		if split_errors.size() > 0:
 			_fail_with_error(null, split_errors[0])
@@ -2281,17 +1901,17 @@ func _receive_binary(message: PackedByteArray) -> void:
 	if errors.size() > 0:
 		var seq: Variant = null
 		if kind == "transaction" or kind == "":
-			seq = Rs2Decoder.as_int(meta["seq"]) if Rs2Decoder.is_int(meta.get("seq")) else expected_seq
+			seq = RsWire.as_int(meta["seq"]) if RsWire.is_int(meta.get("seq")) else expected_seq
 		_fail_with_error(seq, errors[0])
 		return
-	if Rs2Decoder.as_int(record["byte_length"]) != message.size():
-		_fail(null, "live-framing", "a message of %d bytes holds a %d-byte record; every message after the first is exactly one record" % [message.size(), Rs2Decoder.as_int(record["byte_length"])])
+	if RsWire.as_int(record["byte_length"]) != message.size():
+		_fail(null, "live-framing", "a message of %d bytes holds a %d-byte record; every message after the first is exactly one record" % [message.size(), RsWire.as_int(record["byte_length"])])
 		return
 	match kind:
 		"resource":
 			# Inline payloads (render-stream-2.md "Live transport"): kept for the transactions that
 			# follow; no ack.
-			_receive_resource(record, _data)
+			_receive_resource(record)
 		"transaction":
 			var entry: Dictionary = _transaction_entry(_conn_index, meta, record)
 			entry["received_us"] = now_us
@@ -2302,7 +1922,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 				_transactions.append(entry)
 			var received_seq: int = entry["seq"]
 			_send(RsLiveClient.ack(_stream_id, received_seq, "received", now_us))
-			_acks_sent["received"] = Rs2Decoder.as_int(_acks_sent["received"]) + 1
+			_acks_sent["received"] = RsWire.as_int(_acks_sent["received"]) + 1
 			# Only the resolved state after the newest accepted transaction can be applied; an older
 			# waiting one is superseded (never happens under credit: one in flight).
 			_waiting.append({"entry": entry, "meta": meta})
@@ -2310,7 +1930,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 			_end_seen = true
 			_stream_report["end_seen"] = true
 			_report["end_seen"] = true
-			_log("end record after %d transactions" % (_rust.transactions if _rust != null else _stream.transactions))
+			_log("end record after %d transactions" % _applier.transactions)
 		_:
 			_fail(null, "live-framing", "unexpected %s record" % kind)
 	# G6s (live-buffer trim): every message after the first is exactly one record (enforced
@@ -2351,7 +1971,7 @@ func _refuse_coalesced() -> void:
 	for folded: Dictionary in _coalesced:
 		folded.erase("coalesced_into")
 		folded["skipped"] = "resync"
-		_send(RsLiveClient.resync(_stream_id, Rs2Decoder.as_int(folded["seq"]), "injected"))
+		_send(RsLiveClient.resync(_stream_id, RsWire.as_int(folded["seq"]), "injected"))
 	_coalesced.clear()
 
 
@@ -2361,7 +1981,7 @@ func _http_misses() -> Array[String]:
 	var out: Array[String] = []
 	if _fetcher == null:
 		return out
-	var need: Dictionary = _applier.needed(_stream.items, _stream.textures, _stream.meshes, _stream.shaders, _stream.materials)
+	var need: Dictionary = _applier.needed()
 	var mesh_hashes: Array = need["mesh_hashes"]
 	var shader_hashes: Array = need["shader_hashes"]
 	for value: Variant in need["hashes"]:
@@ -2418,21 +2038,21 @@ func _poll_fetches() -> void:
 		# never kept).
 		if _log_mode != "summary":
 			_fetches.append(fetch_entry)
-		resources["fetch_us"] = Rs2Decoder.as_int(resources["fetch_us"]) + (end_us - start_us)
+		resources["fetch_us"] = RsWire.as_int(resources["fetch_us"]) + (end_us - start_us)
 		if error == "":
 			# A 200 body: verified against its name first (a mismatch leaves verified false).
 			var body: PackedByteArray = result["data"]
 			fetch_entry["kind"] = RsResourceCache.payload_kind(body)
 			if fetch_entry["kind"] == "shader":
-				resources["shader_payload_fetches"] = Rs2Decoder.as_int(resources.get("shader_payload_fetches", 0)) + 1
+				resources["shader_payload_fetches"] = RsWire.as_int(resources.get("shader_payload_fetches", 0)) + 1
 			error = _cache.add_fetched(hash, body, "GET %s" % hash)
 			fetch_entry["verified"] = not error.begins_with("resource-hash-mismatch")
 		if error != "":
 			_fail_with_error(seq, error)
 			return
-		resources["fetched"] = Rs2Decoder.as_int(resources["fetched"]) + 1
-		resources["fetched_bytes"] = Rs2Decoder.as_int(resources["fetched_bytes"]) + got_bytes
-		_summary["fetched_bytes"] = Rs2Decoder.as_int(_summary["fetched_bytes"]) + got_bytes
+		resources["fetched"] = RsWire.as_int(resources["fetched"]) + 1
+		resources["fetched_bytes"] = RsWire.as_int(resources["fetched_bytes"]) + got_bytes
+		_summary["fetched_bytes"] = RsWire.as_int(_summary["fetched_bytes"]) + got_bytes
 		_fetched_hashes[hash] = true
 		_summary["distinct_fetched"] = _fetched_hashes.size()
 	var meta: Dictionary = pending["meta"]
@@ -2470,25 +2090,25 @@ func _finish_apply(entry: Dictionary, meta: Dictionary, prefetched: Dictionary) 
 		folded["process_frame"] = entry["process_frame"]
 		folded["applied_us"] = now_us
 		folded["coalesced_into"] = seq
-		_send(RsLiveClient.ack(_stream_id, Rs2Decoder.as_int(folded["seq"]), "applied", now_us))
-		_acks_sent["applied"] = Rs2Decoder.as_int(_acks_sent["applied"]) + 1
+		_send(RsLiveClient.ack(_stream_id, RsWire.as_int(folded["seq"]), "applied", now_us))
+		_acks_sent["applied"] = RsWire.as_int(_acks_sent["applied"]) + 1
 	if not _coalesced.is_empty():
-		_log("seq %d applied with %s (credit window %d)" % [seq, str(_coalesced.map(func(f: Dictionary) -> int: return Rs2Decoder.as_int(f["seq"]))), _granted_window])
+		_log("seq %d applied with %s (credit window %d)" % [seq, str(_coalesced.map(func(f: Dictionary) -> int: return RsWire.as_int(f["seq"]))), _granted_window])
 	var folded_now: Array[Dictionary] = _coalesced
 	_coalesced = []
 	_send(RsLiveClient.ack(_stream_id, seq, "applied", now_us))
-	_acks_sent["applied"] = Rs2Decoder.as_int(_acks_sent["applied"]) + 1
+	_acks_sent["applied"] = RsWire.as_int(_acks_sent["applied"]) + 1
 	if _conn_index == 1 and not _marked_first_applied:
 		_marked_first_applied = true
 		_web_mark("rs-first-applied")
 	var step: int = -1
 	var frame: int = entry["frame"]
 	for window: Dictionary in _windows:
-		if not window["shot"] and frame >= Rs2Decoder.as_int(window["from"]) and frame <= Rs2Decoder.as_int(window["to"]):
+		if not window["shot"] and frame >= RsWire.as_int(window["from"]) and frame <= RsWire.as_int(window["to"]):
 			step = window["step"]
 			window["shot"] = true
 			break
-	if step >= 0 and not _dump_state(seq, meta):
+	if step >= 0 and not _dump_state(seq):
 		return
 	if _credit_stage == "submitted" or step >= 0:
 		_coalesced_drawn = folded_now
@@ -2516,9 +2136,9 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 			# G6s (gate6-design.md Q7e): the wire frame this shot's transaction was published at,
 			# so a realtime-timeline checker can find the right shot without the per-transaction
 			# array RS_RECEIVER_LOG=summary drops.
-			"frame": Rs2Decoder.as_int(entry["frame"]),
+			"frame": RsWire.as_int(entry["frame"]),
 		})
-		_log("shot step %d seq %d frame %d -> %s" % [step, seq, Rs2Decoder.as_int(entry["frame"]), path])
+		_log("shot step %d seq %d frame %d -> %s" % [step, seq, RsWire.as_int(entry["frame"]), path])
 	if step >= 0 and step == _stall_step and _live_report["stall"] == null:
 		# RS_RECEIVER_STALL: an injected receiver delay (a blocked main loop), not GPU-limited work;
 		# the host sees it only as a credit that does not come back.
@@ -2529,7 +2149,7 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 			"step": step,
 			"ms": _stall_ms,
 			"after_seq": seq,
-			"after_frame": Rs2Decoder.as_int(entry["frame"]),
+			"after_frame": RsWire.as_int(entry["frame"]),
 			"start_us": start_us,
 			"end_us": end_us,
 			"injected": true,
@@ -2547,11 +2167,11 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 	for folded: Dictionary in _coalesced_drawn:
 		folded["submitted_us"] = now_us
 		folded["submitted_process_frame"] = Engine.get_process_frames()
-		_send(RsLiveClient.ack(_stream_id, Rs2Decoder.as_int(folded["seq"]), "submitted", now_us))
-		_acks_sent["submitted"] = Rs2Decoder.as_int(_acks_sent["submitted"]) + 1
+		_send(RsLiveClient.ack(_stream_id, RsWire.as_int(folded["seq"]), "submitted", now_us))
+		_acks_sent["submitted"] = RsWire.as_int(_acks_sent["submitted"]) + 1
 	_coalesced_drawn = []
 	_send(RsLiveClient.ack(_stream_id, seq, "submitted", now_us))
-	_acks_sent["submitted"] = Rs2Decoder.as_int(_acks_sent["submitted"]) + 1
+	_acks_sent["submitted"] = RsWire.as_int(_acks_sent["submitted"]) + 1
 	if _conn_index == 1 and not _marked_first_submitted:
 		_marked_first_submitted = true
 		_web_mark("rs-first-submitted")
@@ -2560,7 +2180,7 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 		_live_report["reconnect"] = {
 			"step": step,
 			"after_seq": seq,
-			"after_frame": Rs2Decoder.as_int(entry["frame"]),
+			"after_frame": RsWire.as_int(entry["frame"]),
 			"connect_attempts": 1,
 			"created_rids": null,
 			"freed_by_apply": null,
@@ -2614,7 +2234,7 @@ func _refuse_for_resync(entry: Dictionary) -> bool:
 			return false
 	elif not _resync_done:
 		var window: Dictionary = _window_of(_resync_step)
-		if window["shot"] or frame < Rs2Decoder.as_int(window["from"]) or frame > Rs2Decoder.as_int(window["to"]):
+		if window["shot"] or frame < RsWire.as_int(window["from"]) or frame > RsWire.as_int(window["to"]):
 			return false
 		_resync_done = true
 		_awaiting_full = true
@@ -2656,25 +2276,19 @@ func _last_seq_or_null() -> Variant:
 	return null
 
 
-## The seq of the last accepted transaction (Rs2Decoder.Stream.last_seq, or the Rust core's).
+## The seq of the last accepted transaction (0 before the first).
 func _last_seq() -> int:
-	if _rust != null:
-		return _rust.last_seq
-	return _stream.last_seq
+	return _applier.last_seq if _applier != null else 0
 
 
-## G7xn: RS_RECEIVER_CORE and RS_RECEIVER_CORE_EXT. Loads the adapter under rust. Logs and returns
-## false (a usage error) when the value is unknown or the adapter does not load.
+## G7xn: RS_RECEIVER_CORE and RS_RECEIVER_CORE_EXT. Loads the adapter. Logs and returns false (a
+## usage error) when RS_RECEIVER_CORE names anything but rust (G7gd removed the GDScript core) or
+## the adapter does not load.
 func _parse_core_env() -> bool:
 	var kind: String = RsConfig.get_env("RS_RECEIVER_CORE").strip_edges()
-	if kind == "":
-		kind = "rust"
-	if kind != "gdscript" and kind != "rust":
-		_log("error: RS_RECEIVER_CORE must be gdscript or rust (got %s)" % JSON.stringify(kind))
+	if kind != "" and kind != "rust":
+		_log("error: RS_RECEIVER_CORE must be rust or unset (got %s); G7gd removed the GDScript core" % JSON.stringify(kind))
 		return false
-	_core_kind = kind
-	if kind == "gdscript":
-		return true
 	var path: String = RsConfig.get_env("RS_RECEIVER_CORE_EXT").strip_edges()
 	if path == "":
 		path = RsRustApplier.DEFAULT_EXTENSION
@@ -2682,8 +2296,6 @@ func _parse_core_env() -> bool:
 	if problem != "":
 		_log("error: RS_RECEIVER_CORE=rust, but the adapter is unavailable: %s" % problem)
 		return false
-	# The core verifies and decodes each payload itself, from its raw bytes.
-	_cache.keep_raw = true
 	_log("core rust (%s)" % path)
 	return true
 
@@ -2695,7 +2307,7 @@ func _flush_digests() -> void:
 		return
 	var t0: int = Time.get_ticks_usec()
 	for offset: int in _digest_offsets:
-		var hex: String = _rust.record_digest(_data, offset)
+		var hex: String = _applier.record_digest(_data, offset)
 		if hex != "":
 			_digest_hex[offset] = hex
 	_digest_offsets.clear()
@@ -2718,33 +2330,24 @@ func _accepted_records() -> int:
 	return _next_record
 
 
-## The applier for RS_RECEIVER_CORE.
+## A fresh core (RsRustApplier).
 func _new_applier() -> void:
 	var viewport: RID = get_viewport().get_viewport_rid()
 	var canvas: RID = get_viewport().find_world_2d().canvas
-	if _core_kind == "rust":
-		_rust = RsRustApplier.new(viewport, canvas)
-		_applier = _rust
-		# G7o3 (D31): payloads are verified and decoded by this core as they arrive (the cache
-		# stages them), not in the frame; the verify-in-frame sabotage keeps the pre-G7o3 path.
-		_cache.stager = null if _sabotage == "verify-in-frame" else _rust
-	else:
-		_applier = RsApplier.new(viewport, canvas)
+	_applier = RsRustApplier.new(viewport, canvas)
+	# G7o3 (D31): payloads are verified and decoded by the core as they arrive (the cache stages
+	# them), not in the frame; the verify-in-frame sabotage keeps the pre-G7o3 path.
+	_cache.stager = null if _sabotage == "verify-in-frame" else _applier
 
 
-## A stream's first record (a session), through the configured core, at the stream's wire
-## version (G7xwl: the Rust core speaks /7 as _stream does).
+## A stream's first record (a session), at the stream's wire version (G7xwl: /6, or /7).
 func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
-	if _rust != null:
-		return _rust.accept_session(data, offset, _wire_version)
-	return RsApplier.accept_record(data, offset, _stream)
+	return _applier.accept_session(data, offset, _wire_version)
 
 
-## Any later record, through the configured core.
+## Any later record.
 func _accept_record(data: PackedByteArray, offset: int) -> Dictionary:
-	if _rust != null:
-		return _rust.accept(data, offset)
-	return RsApplier.accept_record(data, offset, _stream)
+	return _applier.accept(data, offset)
 
 
 func _send(message: Dictionary) -> void:
@@ -2809,7 +2412,7 @@ func _write_report() -> void:
 		# G6s (live-buffer trim): `_data` only ever holds the message in flight; `_received_path`
 		# is its exact byte-for-byte mirror, so the whole connection's sha256 is read back from
 		# disk once here instead of carried in memory (rs-g6s-live-data-unbounded-growth.md).
-		var sha256: String = Rs2Decoder.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
+		var sha256: String = RsWire.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
 		_stream_report["received_sha256"] = sha256
 		_stream_report["received_bytes"] = _data_received_bytes
 		_report["recording"] = {"path": _received_path, "sha256": sha256, "bytes": _data_received_bytes}
@@ -2832,8 +2435,7 @@ func _write_perf_report() -> void:
 	var viewport_rid: RID = get_viewport().get_viewport_rid() if is_inside_tree() else RID()
 	# Acks (received/applied/submitted) are a live-transport concept; file mode has none, so
 	# `counts` stays null there rather than a misleading all-zero (D9: declared, not guessed).
-	if _core_kind == "rust":
-		_perf.payloads = _payload_counters(true)
+	_perf.payloads = _payload_counters(true)
 	var doc: Dictionary = _perf.to_dict(viewport_rid, headless, _acks_sent if _live else null)
 	DirAccess.make_dir_recursive_absolute(_perf_out_path.get_base_dir())
 	var file: FileAccess = FileAccess.open(_perf_out_path, FileAccess.WRITE)
@@ -2860,8 +2462,7 @@ func _quit(code: int) -> void:
 
 func _dispose_applier() -> void:
 	if _applier != null:
-		if _rust != null:
-			_note_payload_counters()
+		_note_payload_counters()
 		var freed: int = _applier.dispose()
 		_log("disposed: %d RIDs freed" % freed)
 	_cache.stager = null
@@ -2872,10 +2473,10 @@ func _dispose_applier() -> void:
 ## those of the cores this run disposed already, plus the live one's (`include_live`).
 func _payload_counters(include_live: bool) -> Dictionary:
 	var out: Dictionary = _payload_totals.duplicate()
-	if include_live and _rust != null:
-		var counters: Dictionary = _rust.payload_counters()
+	if include_live and _applier != null:
+		var counters: Dictionary = _applier.payload_counters()
 		for key: String in counters:
-			out[key] = Rs2Decoder.as_int(out.get(key, 0)) + Rs2Decoder.as_int(counters[key])
+			out[key] = RsWire.as_int(out.get(key, 0)) + RsWire.as_int(counters[key])
 	return out
 
 

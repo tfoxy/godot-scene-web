@@ -194,7 +194,7 @@ func _next() -> void:
 
 func _fail(detail: String) -> void:
 	_current["end_us"] = Time.get_ticks_usec()
-	_current["error"] = Rs2Decoder.err("resource-unavailable", detail)
+	_current["error"] = RsWire.err("resource-unavailable", detail)
 	error = _current["error"]
 	results.append(_current)
 	_current = {}
@@ -381,7 +381,7 @@ func _web_abort() -> void:
 
 ## G7wf: the promise callback of one GET: [gen, status, headers_json, body, error, times_json].
 func _on_web_done(args: Array) -> void:
-	if args.size() < 6 or Rs2Decoder.as_int(args[0]) != _generation or _phase != "requesting" or _current.is_empty():
+	if args.size() < 6 or RsWire.as_int(args[0]) != _generation or _phase != "requesting" or _current.is_empty():
 		return
 	_js_abort = null
 	var end_us: int = Time.get_ticks_usec()
@@ -395,7 +395,7 @@ func _on_web_done(args: Array) -> void:
 	if failure != "":
 		_fail("GET %s%s: fetch() rejected (%s)" % [path_prefix, _current["hash"], failure])
 		return
-	var code: int = Rs2Decoder.as_int(args[1])
+	var code: int = RsWire.as_int(args[1])
 	_current["status"] = code
 	var parsed: Variant = JSON.parse_string(str(args[2]))
 	_current["headers"] = parsed if parsed is Dictionary else {}

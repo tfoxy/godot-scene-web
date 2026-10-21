@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // Self-test for the render-stream/2, /3, /4, /5 AND /6 TypeScript decoder/validator/resolver
 // (lib/render-stream-2.ts) against the golden vectors they share with the C++ codec/diff and the
-// GDScript decoder (protocol/golden-2/, render-stream-2.md; protocol/golden-3/,
+// Rust core (until G7gd also a GDScript decoder) (protocol/golden-2/, render-stream-2.md; protocol/golden-3/,
 // render-stream-3.md; protocol/golden-4/, render-stream-4.md; protocol/golden-5/,
 // render-stream-5.md; protocol/golden-6/, render-stream-6.md).
 //
