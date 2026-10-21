@@ -187,6 +187,9 @@ command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 # Whatever ends this script stops the Godot process it owns and tears its own compositor down.
 # Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
 cleanup() {
+	if declare -F legs_par_cleanup >/dev/null; then
+		legs_par_cleanup
+	fi
 	if [ -n "${CURRENT_CHILD_PID:-}" ] && kill -0 "$CURRENT_CHILD_PID" 2>/dev/null; then
 		echo "run-gate3: stopping owned process $CURRENT_CHILD_PID" >&2
 		kill "$CURRENT_CHILD_PID" 2>/dev/null || true
@@ -258,6 +261,7 @@ run_g3a() {
 	# Rendered legs: one private gamescope for all of them.
 	echo "run-gate3: bringing up private gamescope for rendered legs"
 	gs_start 640 360 "$OUT/gamescope"
+	legs_par_begin
 
 	echo "run-gate3: reference"
 	run_reference "$OUT/reference"
@@ -267,6 +271,7 @@ run_g3a() {
 	REFERENCE_ARMED=1
 	run_reference "$OUT/reference-armed"
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope"
 	GS_RUN_DIR=""
 }
@@ -320,6 +325,7 @@ run_g3b() {
 	# Rendered legs: one private gamescope for all of them.
 	echo "run-gate3: bringing up private gamescope for g3b rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g3b"
+	legs_par_begin
 
 	echo "run-gate3: receiver"
 	run_rendered_receiver "$OUT/capture" "$OUT/receiver"
@@ -352,6 +358,7 @@ run_g3b() {
 	echo "run-gate3: root-size-observe (receiver)"
 	run_rendered_receiver "$OUT/root-size-observe/capture" "$OUT/root-size-observe/receiver"
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope-g3b"
 	GS_RUN_DIR=""
 }
@@ -390,6 +397,7 @@ run_g3c() {
 
 	echo "run-gate3: bringing up private gamescope for g3c's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-xform"
+	legs_par_begin
 
 	echo "run-gate3: reference-xform"
 	REFERENCE_FIXTURE="$XFORM_DIR"
@@ -413,6 +421,7 @@ run_g3c() {
 	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=ignore-clip)
 	run_rendered_receiver "$OUT/capture-xform" "$OUT/sabotage-xform-receiver-ignore-clip"
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope-xform"
 	GS_RUN_DIR=""
 }
@@ -433,6 +442,7 @@ run_g3d() {
 
 	echo "run-gate3: bringing up private gamescope for rendered legs (g3d)"
 	gs_start 640 360 "$OUT/gamescope-g3d"
+	legs_par_begin
 
 	echo "run-gate3: reference-clip-ignore"
 	REFERENCE_EXTRA_ENV=(RS_FIXTURE_VARIANT=clip-ignore)
@@ -441,6 +451,7 @@ run_g3d() {
 	echo "run-gate3: receiver-clip-ignore"
 	run_rendered_receiver "$OUT/capture-clip-ignore" "$OUT/receiver-clip-ignore"
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope-g3d"
 	GS_RUN_DIR=""
 }

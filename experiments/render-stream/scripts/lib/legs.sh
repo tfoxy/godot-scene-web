@@ -351,6 +351,64 @@ write_invocation() {
 	} >"$dir/env.txt"
 }
 
+# --------------------------------------------------------------------------------------------
+# Faster-than-real-time live legs (GRT2b part B, results/grt.md "Part 2b"; a measured PROTOTYPE,
+# not a tier). RS_FAST_FRAMES=all|host|receiver (default off) rewrites a correctness launch's
+# `--max-fps 60` into `--fixed-fps 60 --max-fps 0 --disable-vsync` (Godot 4.5: simulated time
+# advances 1/60 s per frame, no real-time sync), on every side, only hosts, or only receivers
+# (`--path $RECEIVER_DIR`).
+#
+# RS_FAST_FRAMES_MAX_FPS=N (default 0) scales real time instead: the launch gets `--max-fps N`
+# alone, e.g. 240 for 4x. Godot 4.5.1 cannot cap a fixed-fps run: Main::iteration returns before
+# OS::add_frame_delay whenever --fixed-fps is set, so --max-fps beside it is ignored
+# (main/main.cpp). The gate fixtures count frames, not delta, so a plain --max-fps N gives them the
+# same frames N/60 times faster.
+#
+# Never inside a timing group or a timing leg: those stay real time. The one exception is
+# GATE7_FAST_FRAMES=1, the gate 7 browser half of the same experiment, which also unthrottles
+# Chromium (lib/gate7-live-legs.ts) and lets the rewrite into a GATE7_LIVE_KIND live leg.
+RS_FAST_FRAMES_MODE="${RS_FAST_FRAMES:-off}"
+RS_FAST_FRAMES_MAX_FPS="${RS_FAST_FRAMES_MAX_FPS:-0}"
+case "$RS_FAST_FRAMES_MODE" in
+off | all | host | receiver) ;;
+*)
+	echo "$LEGS_LOG: RS_FAST_FRAMES must be off, all, host or receiver (got $RS_FAST_FRAMES_MODE)" >&2
+	exit 2
+	;;
+esac
+LEGS_ARGV=()
+legs__fast_argv() {
+	LEGS_ARGV=("$@")
+	[ "$RS_FAST_FRAMES_MODE" != off ] || return 0
+	if [ -n "$LEGS_TIMING_GROUP" ] || [ -n "$LEGS_TIMING_LABEL" ]; then
+		[ "${GATE7_FAST_FRAMES:-0}" = 1 ] && [ -n "$GATE7_LIVE_KIND" ] && [ -z "$LEGS_TIMING_GROUP" ] ||
+			return 0
+	fi
+	local -a args=("$@") out=()
+	local i recv=0 prev=""
+	for i in "${args[@]}"; do
+		[ "$prev" = "--path" ] && [ "$i" = "${RECEIVER_DIR:-}" ] && recv=1
+		prev="$i"
+	done
+	case "$RS_FAST_FRAMES_MODE" in
+	host) [ "$recv" = 0 ] || return 0 ;;
+	receiver) [ "$recv" = 1 ] || return 0 ;;
+	esac
+	for ((i = 0; i < ${#args[@]}; i++)); do
+		if [ "${args[$i]}" = "--max-fps" ] && [ "${args[$((i + 1))]:-}" = 60 ]; then
+			if [ "$RS_FAST_FRAMES_MAX_FPS" -gt 0 ]; then
+				out+=(--max-fps "$RS_FAST_FRAMES_MAX_FPS" --disable-vsync)
+			else
+				out+=(--fixed-fps 60 --max-fps 0 --disable-vsync)
+			fi
+			i=$((i + 1))
+		else
+			out+=("${args[$i]}")
+		fi
+	done
+	LEGS_ARGV=("${out[@]}")
+}
+
 # Waits for an owned child, killing it after $2 seconds. Sets WAIT_EXIT (124 on timeout).
 WAIT_EXIT=0
 wait_owned() {
@@ -385,6 +443,8 @@ legs__run_headless() {
 		run_browser_receiver "$dir" fg -- "$@"
 		return 0
 	fi
+	legs__fast_argv "$@"
+	set -- "${LEGS_ARGV[@]}"
 	mkdir -p "$dir"
 	gs_strip_env_args
 	receiver_core_env "$@"
@@ -442,6 +502,8 @@ legs__start_headless_bg() {
 		return 0
 	fi
 	gate7_host_env
+	legs__fast_argv "$@"
+	set -- "${LEGS_ARGV[@]}"
 	mkdir -p "$dir"
 	gs_strip_env_args
 	receiver_core_env "$@"
@@ -560,6 +622,8 @@ legs__run_rendered() {
 		run_browser_receiver "$dir" fg -- "$BINARY" --path "$project" "${extra[@]}"
 		return 0
 	fi
+	legs__fast_argv --path "$project" ${extra[@]+"${extra[@]}"}
+	extra=(${LEGS_ARGV[@]+"${LEGS_ARGV[@]:2}"})
 	mkdir -p "$dir"
 	gs_require_live
 	write_invocation "$dir" "$BINARY" --path "$project" --rendering-driver opengl3 --display-driver x11 "${extra[@]}"
@@ -608,6 +672,14 @@ RECEIVER_EXTRA_SHOTS=""
 RECEIVER_STATE=0
 RECEIVER_EXTRA_ENV=()
 run_rendered_receiver() {
+	# a parallel region (RS_LEG_SHARDS, below) runs the whole leg -- its tsx settle-seqs step too
+	if legs__par_dispatch run_rendered_receiver "$@"; then
+		RECEIVER_SOURCE=""
+		RECEIVER_EXTRA_SHOTS=""
+		RECEIVER_STATE=0
+		RECEIVER_EXTRA_ENV=()
+		return 0
+	fi
 	local capture_dir="$1" dir="$2" seqs shots source="${RECEIVER_SOURCE:-$RECORDING_NAME}"
 	local extra="$RECEIVER_EXTRA_SHOTS" state="$RECEIVER_STATE"
 	local -a extra_env=()
@@ -678,6 +750,7 @@ legs_sabotage_skipped() {
 # The launch functions, each under the quiet lock (header above).
 run_headless() {
 	legs_sabotage_skipped "$1" && return 0
+	legs__par_dispatch run_headless "$@" && return 0
 	legs_lock_enter "$1"
 	LEGS_LOCK_FG=$((LEGS_LOCK_FG + 1))
 	legs__run_headless "$@"
@@ -689,6 +762,7 @@ run_headless() {
 
 run_rendered() {
 	legs_sabotage_skipped "$1" && return 0
+	legs__par_dispatch run_rendered "$@" && return 0
 	legs_lock_enter "$1"
 	LEGS_LOCK_FG=$((LEGS_LOCK_FG + 1))
 	legs__run_rendered "$@"
@@ -704,6 +778,8 @@ start_headless_bg() {
 		BG_PID=""
 		return 0
 	fi
+	# a background (live) host never runs beside parallel workers (legs_par_begin below)
+	legs_par_wait
 	if legs__timing_opens; then
 		opens=1
 		timing_leg_begin "${LEGS_TIMING_GROUP:-gate7-live}:$(legs__rel "$1")"
@@ -729,4 +805,231 @@ finish_bg() {
 	fi
 	legs_lock_leave
 	return "$rc"
+}
+
+# --------------------------------------------------------------------------------------------
+# Parallel file-mode legs (GRT2b, results/grt.md "Part 2b", scripts/README.md "Sharded legs").
+# Opt-in: RS_LEG_SHARDS=N (`on` = 2; unset, 0, 1 or `off` = serial, the default) runs the launches
+# inside a runner's PARALLEL REGIONS on up to N workers at once, each a subshell with its own
+# private gamescope (slot 0 reuses the runner's; slots 1..N-1 start beside it, same size) and its
+# own per-leg shared quiet-lock hold, exactly as a serial leg holds it.
+#   legs_par_begin          opens a region (a no-op when serial, inside a timing group, in a
+#                           browser-receiver run, or inside a worker). Call it after gs_start.
+#   legs_par_end            waits for every worker, tears the extra gamescopes down, closes the
+#                           region; fails when a worker failed (as the serial leg would have).
+#   legs_par_unit <fn> ...  runs `fn ...` as ONE unit on one worker: legs that must run in order
+#                           (gate 2's cold -> warm cache pairs) go in one unit. Outside a region,
+#                           or serial, it just calls the function.
+# Inside an open region every run_rendered_receiver (its recording copy and tsx settle-seqs step
+# included), run_headless and run_rendered becomes a unit by itself; a gate's own helpers' setup
+# before such a launch stays in the runner, in order. A live receiver (RS_RECEIVER_MODE=live) is
+# never a unit, and a background host (start_headless_bg) first waits for every worker. So a
+# region may hold only legs that read nothing another leg of the region writes,
+# and the runner must not read a leg's outputs before legs_par_end. One-shot globals the launch
+# functions reset after a call are reset in the runner at dispatch time too. Timing legs never run
+# in a region (legs_par_begin refuses inside LEGS_TIMING_GROUP or a timing leg). A runner's cleanup
+# calls legs_par_cleanup (stops workers and their Godot children, tears the extra gamescopes down).
+LEGS_PAR_N=1
+case "${RS_LEG_SHARDS:-}" in
+"" | 0 | 1 | off) LEGS_PAR_N=1 ;;
+on) LEGS_PAR_N=2 ;;
+*[!0-9]*)
+	echo "$LEGS_LOG: RS_LEG_SHARDS must be a worker count, on (2) or off (got $RS_LEG_SHARDS)" >&2
+	exit 2
+	;;
+*) LEGS_PAR_N="$RS_LEG_SHARDS" ;;
+esac
+LEGS_PAR_OPEN=0
+LEGS_PAR_CHILD=""
+LEGS_PAR_PIDS=()
+LEGS_PAR_LABELS=()
+LEGS_PAR_GS=()
+LEGS_PAR_RC=0
+LEGS_PAR_SLOT=""
+
+# legs__par_gs_save / legs__par_gs_load <saved>: one gamescope session's GS_* globals.
+legs__par_gs_save() {
+	printf '%s\t%s\t%s\t%s\t%s\t%s' "${GS_PID:-}" "${GS_START_TICKS:-}" "${GS_SID:-}" \
+		"${GS_DISPLAY:-}" "${GS_RUN_DIR:-}" "${GS_LOG:-}"
+}
+legs__par_gs_load() {
+	IFS=$'\t' read -r GS_PID GS_START_TICKS GS_SID GS_DISPLAY GS_RUN_DIR GS_LOG <<<"$1" || true
+}
+
+legs_par_begin() {
+	[ "$LEGS_PAR_N" -gt 1 ] || return 0
+	[ -z "$LEGS_PAR_CHILD" ] || return 0
+	[ "$LEGS_PAR_OPEN" = 0 ] || return 0
+	if [ -n "$LEGS_TIMING_GROUP" ] || [ -n "$LEGS_TIMING_LABEL" ]; then
+		echo "$LEGS_LOG: parallel region refused inside a timing group: serial" >&2
+		return 0
+	fi
+	if [ -n "$GATE7_LIVE_KIND" ]; then
+		# browser receivers share one daemon, one page port and one host port per run: serial
+		return 0
+	fi
+	LEGS_PAR_OPEN=1
+	LEGS_PAR_RC=0
+	LEGS_PAR_PIDS=()
+	LEGS_PAR_LABELS=()
+	LEGS_PAR_GS=()
+	local k main base
+	main="$(legs__par_gs_save)"
+	if [ -n "${GS_PID:-}" ] && gs_is_ours "$GS_PID" "$GS_START_TICKS"; then
+		LEGS_PAR_GS[0]="$main"
+		base="$GS_RUN_DIR"
+		for ((k = 1; k < LEGS_PAR_N; k++)); do
+			gs_start "$GS_WIDTH" "$GS_HEIGHT" "$base-shard$k"
+			LEGS_PAR_GS[k]="$(legs__par_gs_save)"
+			legs__par_gs_load "$main"
+		done
+	fi
+	echo "$LEGS_LOG: parallel region open: $LEGS_PAR_N workers"
+}
+
+# legs__par_reap <slot>: fails while the slot's worker runs; else records its status, frees it.
+legs__par_reap() {
+	local k="$1" pid="${LEGS_PAR_PIDS[$1]:-}" rc=0
+	[ -n "$pid" ] || return 0
+	kill -0 "$pid" 2>/dev/null && return 1
+	wait "$pid" || rc=$?
+	if [ "$rc" != 0 ]; then
+		echo "$LEGS_LOG: parallel unit ${LEGS_PAR_LABELS[$k]} failed (exit $rc)" >&2
+		[ "$LEGS_PAR_RC" != 0 ] || LEGS_PAR_RC="$rc"
+	fi
+	LEGS_PAR_PIDS[k]=""
+	return 0
+}
+
+# legs__par_free_slot: waits for a free worker slot; sets LEGS_PAR_SLOT.
+legs__par_free_slot() {
+	local k
+	while :; do
+		for ((k = 0; k < LEGS_PAR_N; k++)); do
+			if legs__par_reap "$k"; then
+				LEGS_PAR_SLOT="$k"
+				return 0
+			fi
+		done
+		sleep 0.1
+	done
+}
+
+# legs__par_child_term: a worker told to stop stops the Godot process it owns first.
+legs__par_child_term() {
+	if [ -n "$CURRENT_CHILD_PID" ] && kill -0 "$CURRENT_CHILD_PID" 2>/dev/null; then
+		kill "$CURRENT_CHILD_PID" 2>/dev/null || true
+	fi
+	exit 143
+}
+
+# legs__par_child <slot> <command...>: a worker's body (in its own subshell).
+legs__par_child() {
+	LEGS_PAR_CHILD="$1"
+	shift
+	trap - EXIT
+	trap legs__par_child_term TERM INT
+	# the runner's holds are the runner's: this worker takes its own, per leg
+	LEGS_LOCK_MODE=""
+	LEGS_LOCK_FG=0
+	LEGS_LOCK_BG=()
+	QUIET__DEPTH=0
+	QUIET__HOLDER=""
+	QUIET__MODE=""
+	CURRENT_CHILD_PID=""
+	if [ -n "${LEGS_PAR_GS[$LEGS_PAR_CHILD]:-}" ]; then
+		legs__par_gs_load "${LEGS_PAR_GS[$LEGS_PAR_CHILD]}"
+	fi
+	"$@"
+}
+
+# legs__par_dispatch <command...>: inside an open region (in the runner, outside any timing leg),
+# starts the command on a free worker and succeeds; otherwise fails, and the caller runs it inline.
+legs__par_dispatch() {
+	[ "$LEGS_PAR_OPEN" = 1 ] || return 1
+	[ -z "$LEGS_PAR_CHILD" ] || return 1
+	[ -z "$LEGS_TIMING_LABEL" ] || return 1
+	if [ "$(leg_env_value RS_RECEIVER_MODE || true)" = live ]; then
+		# a live receiver is never a parallel unit: it runs inline, alone
+		legs_par_wait
+		return 1
+	fi
+	legs__par_free_slot
+	local k="$LEGS_PAR_SLOT" label="$1"
+	case "$1" in
+	run_headless | run_rendered) label="$(legs__rel "$2")" ;;
+	run_rendered_receiver) label="$(legs__rel "$3")" ;;
+	legs_par_unit) label="$2 $(legs__rel "${3:-}")" ;;
+	esac
+	(legs__par_child "$k" "$@") &
+	LEGS_PAR_PIDS[k]=$!
+	LEGS_PAR_LABELS[k]="$label"
+	echo "$LEGS_LOG: worker $k: $label"
+	# the one-shot globals a launch resets after its call (the worker has its own copies)
+	RENDERED_EXTRA_ARGS=()
+	RECEIVER_STORE_DIR=""
+	GATE7_PAGE_PORT=""
+	return 0
+}
+
+legs_par_unit() {
+	legs__par_dispatch legs_par_unit "$@" && return 0
+	"$@"
+}
+
+# legs_par_wait: a barrier inside a region -- waits for every running worker (the region stays
+# open, its compositors up). For legs that replay what earlier legs of the region wrote.
+legs_par_wait() {
+	[ "$LEGS_PAR_OPEN" = 1 ] || return 0
+	[ -z "$LEGS_PAR_CHILD" ] || return 0
+	local k
+	for ((k = 0; k < LEGS_PAR_N; k++)); do
+		while ! legs__par_reap "$k"; do
+			sleep 0.1
+		done
+	done
+}
+
+legs_par_end() {
+	[ "$LEGS_PAR_OPEN" = 1 ] || return 0
+	legs_par_wait
+	legs__par_teardown
+	LEGS_PAR_OPEN=0
+	echo "$LEGS_LOG: parallel region closed"
+	local rc="$LEGS_PAR_RC"
+	LEGS_PAR_RC=0
+	return "$rc"
+}
+
+# legs__par_teardown: the extra gamescope sessions (slot 0 is the runner's own).
+legs__par_teardown() {
+	local k main
+	main="$(legs__par_gs_save)"
+	for ((k = 1; k < ${#LEGS_PAR_GS[@]}; k++)); do
+		[ -n "${LEGS_PAR_GS[$k]:-}" ] || continue
+		legs__par_gs_load "${LEGS_PAR_GS[$k]}"
+		gs_teardown "$GS_RUN_DIR" || true
+		LEGS_PAR_GS[k]=""
+	done
+	legs__par_gs_load "$main"
+}
+
+# legs_par_cleanup: for a runner's EXIT trap -- stops running workers (each stops its Godot child)
+# and tears the extra gamescopes down. Safe to call when no region is open.
+legs_par_cleanup() {
+	[ -z "$LEGS_PAR_CHILD" ] || return 0
+	local k pid n
+	for ((k = 0; k < ${#LEGS_PAR_PIDS[@]}; k++)); do
+		pid="${LEGS_PAR_PIDS[$k]:-}"
+		[ -n "$pid" ] || continue
+		kill -TERM "$pid" 2>/dev/null || true
+		n=0
+		while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 50 ]; do
+			sleep 0.1
+			n=$((n + 1))
+		done
+	done
+	LEGS_PAR_PIDS=()
+	[ "${#LEGS_PAR_GS[@]}" = 0 ] || legs__par_teardown
+	LEGS_PAR_OPEN=0
 }

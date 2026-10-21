@@ -251,6 +251,9 @@ command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 # Whatever ends this script stops the Godot process it owns and tears its own compositor down.
 # Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
 cleanup() {
+	if declare -F legs_par_cleanup >/dev/null; then
+		legs_par_cleanup
+	fi
 	if [ -n "${KILL_RECEIVER_PID:-}" ] && kill -0 "$KILL_RECEIVER_PID" 2>/dev/null; then
 		echo "run-gate1: stopping owned live receiver $KILL_RECEIVER_PID" >&2
 		kill "$KILL_RECEIVER_PID" 2>/dev/null || true
@@ -331,6 +334,7 @@ run_g1a() {
 	# Rendered legs: one private gamescope for all of them.
 	echo "run-gate1: bringing up private gamescope for rendered legs"
 	gs_start 640 360 "$OUT/gamescope"
+	legs_par_begin
 
 	echo "run-gate1: reference"
 	mkdir -p "$OUT/reference/shots"
@@ -355,6 +359,7 @@ run_g1a() {
 	echo "run-gate1: root-size-observe (receiver)"
 	run_rendered_receiver "$OUT/root-size-observe/capture" "$OUT/root-size-observe/receiver"
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope"
 	GS_RUN_DIR=""
 }
@@ -387,6 +392,7 @@ run_g1b() {
 
 	echo "run-gate1: bringing up private gamescope for g1b rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g1b"
+	legs_par_begin
 
 	echo "run-gate1: receiver-patch"
 	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
@@ -418,6 +424,7 @@ run_g1b() {
 	RECEIVER_EXTRA_SHOTS="$tie_seq,$next_seq"
 	run_rendered_receiver "$OUT/tie-overlap/capture" "$OUT/tie-overlap/receiver"
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope-g1b"
 	GS_RUN_DIR=""
 }

@@ -221,7 +221,18 @@ const FIXED_ARGS_WITH_VALUE = new Set([
   "--rendering-driver",
   "--display-driver",
 ]);
-const LAUNCH_ARGS = [...BROWSER_LAUNCH_ARGS, ...BACKGROUND_THROTTLING_ARGS];
+/** GRT2b part B (results/grt.md "Part 2b"; a measured prototype, never a default): with
+ * GATE7_FAST_FRAMES=1 in the daemon's environment, Chromium's frame pacing is unthrottled so a
+ * rAF-driven receiver can keep up with an RS_FAST_FRAMES host (lib/legs.sh). */
+export const FAST_FRAME_ARGS = [
+  "--disable-gpu-vsync",
+  "--disable-frame-rate-limit",
+] as const;
+const LAUNCH_ARGS = [
+  ...BROWSER_LAUNCH_ARGS,
+  ...BACKGROUND_THROTTLING_ARGS,
+  ...(process.env.GATE7_FAST_FRAMES === "1" ? FAST_FRAME_ARGS : []),
+];
 
 /** A host path as a URL path under the static root (refuses one outside it). */
 export function urlPathUnder(staticRoot: string, hostPath: string): string {

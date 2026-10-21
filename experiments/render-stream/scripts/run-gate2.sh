@@ -235,6 +235,9 @@ command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 # Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
 LIVE_HOST_PID=""
 cleanup() {
+	if declare -F legs_par_cleanup >/dev/null; then
+		legs_par_cleanup
+	fi
 	if [ -n "${CURRENT_CHILD_PID:-}" ] && kill -0 "$CURRENT_CHILD_PID" 2>/dev/null; then
 		echo "run-gate2: stopping owned process $CURRENT_CHILD_PID" >&2
 		kill "$CURRENT_CHILD_PID" 2>/dev/null || true
@@ -332,6 +335,16 @@ g2_receiver() {
 	fi
 }
 
+# g2b_cache_pair: receiver-cold, then receiver-warm on its cache. Under RS_LEG_SHARDS this is ONE
+# parallel unit (lib/legs.sh legs_par_unit), so the pair stays in order on one worker.
+g2b_cache_pair() {
+	echo "run-gate2: receiver-cold (fresh cache, store = capture/store)"
+	g2_receiver "$OUT/capture" "$OUT/receiver-cold" rendered
+	echo "run-gate2: receiver-warm (a new process on receiver-cold's cache, mode warm)"
+	g2_receiver "$OUT/capture" "$OUT/receiver-warm" rendered \
+		RS_RECEIVER_CACHE_DIR="$OUT/receiver-cold/cache" RS_RECEIVER_CACHE_MODE=warm
+}
+
 run_g2a() {
 	# import: the release template cannot load a loose project until the editor generated .godot/.
 	echo "run-gate2: import"
@@ -357,6 +370,7 @@ run_g2a() {
 	# Rendered legs: one private gamescope for all of them.
 	echo "run-gate2: bringing up private gamescope for rendered legs"
 	gs_start 640 360 "$OUT/gamescope"
+	legs_par_begin
 
 	echo "run-gate2: reference"
 	run_reference "$OUT/reference"
@@ -366,6 +380,7 @@ run_g2a() {
 	REFERENCE_ARMED=1
 	run_reference "$OUT/reference-armed"
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope"
 	GS_RUN_DIR=""
 }
@@ -467,15 +482,13 @@ run_g2b() {
 	# Rendered legs: one private gamescope.
 	echo "run-gate2: bringing up private gamescope for g2b rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g2b"
+	legs_par_begin
 
 	echo "run-gate2: reference-unsupported (rendered fixture, RS_FIXTURE_VARIANT=unsupported)"
 	REFERENCE_VARIANT=unsupported
 	run_reference "$OUT/reference-unsupported"
-	echo "run-gate2: receiver-cold (fresh cache, store = capture/store)"
-	g2_receiver "$OUT/capture" "$OUT/receiver-cold" rendered
-	echo "run-gate2: receiver-warm (a new process on receiver-cold's cache, mode warm)"
-	g2_receiver "$OUT/capture" "$OUT/receiver-warm" rendered \
-		RS_RECEIVER_CACHE_DIR="$OUT/receiver-cold/cache" RS_RECEIVER_CACHE_MODE=warm
+	# receiver-warm reuses receiver-cold's cache: one parallel unit, in order (lib/legs.sh)
+	legs_par_unit g2b_cache_pair
 	echo "run-gate2: receiver-patch (the patch recording, its own fresh cache)"
 	G2_SOURCE="$PATCH_RECORDING_NAME"
 	g2_receiver "$OUT/capture" "$OUT/receiver-patch" rendered
@@ -488,6 +501,7 @@ run_g2b() {
 	echo "run-gate2: sabotage-omit-replace receiver"
 	g2_receiver "$OUT/sabotage-omit-replace/capture" "$OUT/sabotage-omit-replace/receiver" rendered
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope-g2b"
 	GS_RUN_DIR=""
 
@@ -729,6 +743,7 @@ run_g2d() {
 
 	echo "run-gate2: bringing up private gamescope for g2d rendered legs (host-renderer evidence)"
 	gs_start 640 360 "$OUT/gamescope-g2d"
+	legs_par_begin
 
 	echo "run-gate2: canvas-host (RS_FIXTURE_VARIANT=canvas, rendered capture host)"
 	g2_capture_rendered "$OUT/canvas-host/capture" RS_FIXTURE_VARIANT=canvas
@@ -738,6 +753,8 @@ run_g2d() {
 	g2_capture_rendered "$OUT/sabotage-omit-canvas-filter/capture" RS_FIXTURE_VARIANT=canvas \
 		GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=canvas_texture_set_texture_filter GRC_SABOTAGE_FRAME="$f11"
 
+	# the receivers below replay the rendered captures above
+	legs_par_wait
 	echo "run-gate2: canvas-host receiver"
 	g2_receiver "$OUT/canvas-host/capture" "$OUT/canvas-host/receiver" rendered
 	echo "run-gate2: canvas-normal receiver (compared against the plain reference)"
@@ -745,6 +762,7 @@ run_g2d() {
 	echo "run-gate2: sabotage-omit-canvas-filter receiver"
 	g2_receiver "$OUT/sabotage-omit-canvas-filter/capture" "$OUT/sabotage-omit-canvas-filter/receiver" rendered
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope-g2d"
 	GS_RUN_DIR=""
 }
@@ -816,6 +834,7 @@ run_g2f() {
 
 	echo "run-gate2: bringing up private gamescope for g2f rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g2f"
+	legs_par_begin
 
 	echo "run-gate2: reference-canvas (rendered fixture, RS_FIXTURE_VARIANT=canvas, extension absent)"
 	REFERENCE_VARIANT=canvas
@@ -827,6 +846,7 @@ run_g2f() {
 	echo "run-gate2: shim-sabotage-omit-canvas-filter receiver (rendered)"
 	g2_receiver "$OUT/shim-sabotage-omit-canvas-filter/capture" "$OUT/shim-sabotage-omit-canvas-filter/receiver" rendered
 
+	legs_par_end
 	gs_teardown "$OUT/gamescope-g2f"
 	GS_RUN_DIR=""
 }

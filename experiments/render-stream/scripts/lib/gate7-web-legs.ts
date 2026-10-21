@@ -28,6 +28,7 @@
 // receiver's PUT of applied.json is held open (the page cannot quit before it is answered), for
 // `compositor-equals-readback` (Q7).
 
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -237,57 +238,121 @@ export async function runWebLegs(
     resolve(ctx.bundleDir),
     join(ctx.out, ctx.kind === "gsw" ? "gsw-bundle" : "web-bundle"),
   );
-  let onApplied: (() => Promise<void>) | undefined;
+  // The applied.json PUT hook (the compositor screenshot), per leg nonce: legs may run at once.
+  const onApplied = new Map<string, () => Promise<void>>();
   const server = new HarnessServer({
     staticRoot: ctx.out,
     evidenceRoot: join(ctx.out, ".evidence"),
     allowedLegNonces: [],
-    onPut: async (_nonce, path) => {
-      if (path === "applied.json" && onApplied) await onApplied();
+    onPut: async (nonce, path) => {
+      const hook = onApplied.get(nonce);
+      if (path === "applied.json" && hook) await hook();
     },
   });
   const { origin } = await server.start();
-  const results: WebLegResult[] = [];
-  try {
-    for (const spec of legs) {
-      // GRT smoke tier: GATE7_SMOKE_LEGS names the legs that run; every other leg
-      // is left out and marked, and the checks that needed it are excused by the tier verdict.
-      if (
-        smokeSkipsLeg(
-          spec.leg,
-          legs.map((l) => l.leg),
-        )
-      ) {
-        await mkdir(spec.webDir, { recursive: true });
-        await writeFile(
-          join(spec.webDir, "skipped-by-tier.txt"),
-          "skipped-by-tier: GATE7_SMOKE_LEGS (the smoke tier runs one representative leg)\n",
-        );
-        continue;
-      }
-      // Measurement isolation: one file leg, one shared quiet hold (lib/quiet-lock.ts).
-      const hold = await quietAcquire(
-        "shared",
-        `gate7-${ctx.kind ?? "web"}:${ctx.gate}/${spec.leg}`,
-        { log: join(ctx.out, "quiet-lock.jsonl") },
+  const results: (WebLegResult | undefined)[] = new Array(legs.length);
+  const done: boolean[] = legs.map(() => false);
+  const shards = legShards();
+  const runAt = async (i: number) => {
+    const spec = legs[i];
+    // GRT smoke tier: GATE7_SMOKE_LEGS names the legs that run; every other leg
+    // is left out and marked, and the checks that needed it are excused by the tier verdict.
+    if (
+      smokeSkipsLeg(
+        spec.leg,
+        legs.map((l) => l.leg),
+      )
+    ) {
+      await mkdir(spec.webDir, { recursive: true });
+      await writeFile(
+        join(spec.webDir, "skipped-by-tier.txt"),
+        "skipped-by-tier: GATE7_SMOKE_LEGS (the smoke tier runs one representative leg)\n",
       );
-      try {
-        results.push(
-          await runOne(ctx, spec, server, origin, (hook) => {
-            onApplied = hook;
-          }),
-        );
-      } finally {
-        await hold.release();
-      }
-      log(
-        `gate7-${ctx.kind ?? "web"}: ${spec.leg} exit=${results[results.length - 1].exitCode}`,
-      );
+      done[i] = true;
+      return;
     }
+    // GRT2b: a leg that reads an earlier leg's cache (gate 2's warm legs) waits for all of them.
+    while (dependsOnEarlier(spec) && done.slice(0, i).some((d) => !d))
+      await new Promise((r) => setTimeout(r, 100));
+    // Measurement isolation: one file leg, one shared quiet hold (lib/quiet-lock.ts) -- owned,
+    // when legs run at once, by the leg's own owner process.
+    const owner = shards > 1 ? legOwner() : undefined;
+    const hold = await quietAcquire(
+      "shared",
+      `gate7-${ctx.kind ?? "web"}:${ctx.gate}/${spec.leg}`,
+      { log: join(ctx.out, "quiet-lock.jsonl"), owner: owner?.pid },
+    );
+    let result: WebLegResult;
+    try {
+      result = await runOne(ctx, spec, server, origin, (nonce, hook) => {
+        if (hook) onApplied.set(nonce, hook);
+        else onApplied.delete(nonce);
+      });
+      results[i] = result;
+    } finally {
+      await hold.release();
+      owner?.kill("SIGTERM");
+      done[i] = true;
+    }
+    log(`gate7-${ctx.kind ?? "web"}: ${spec.leg} exit=${result.exitCode}`);
+  };
+  try {
+    if (shards > 1)
+      log(
+        `gate7-${ctx.kind ?? "web"}: ${legs.length} legs on ${shards} workers (RS_LEG_SHARDS)`,
+      );
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(shards, legs.length) }, async () => {
+        while (next < legs.length) await runAt(next++);
+      }),
+    );
   } finally {
     await server.stop();
   }
-  return results;
+  // the legs that ran, in order (a smoke-skipped leg has no result)
+  return results.filter((r): r is WebLegResult => r !== undefined);
+}
+
+/** GRT2b (results/grt.md "Part 2b"): RS_LEG_SHARDS=N (`on` = 2) runs N file legs at once, each in
+ * its own browser, as lib/legs.sh's parallel regions do natively; unset, 0, 1 or `off` = serial. */
+export function legShards(env: NodeJS.ProcessEnv = process.env): number {
+  const v = env.RS_LEG_SHARDS ?? "";
+  if (v === "" || v === "off") return 1;
+  if (v === "on") return 2;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0)
+    throw new Error(
+      `RS_LEG_SHARDS must be a worker count, on (2) or off (got ${v})`,
+    );
+  return Math.max(1, n);
+}
+
+/** A leg whose native env warms from another leg's cache (RS_RECEIVER_CACHE_MODE=warm, or an
+ * RS_RECEIVER_CACHE_DIR outside its own leg) must run after every earlier leg. */
+export function dependsOnEarlier(spec: Pick<WebLegSpec, "nativeDir">): boolean {
+  const envPath = join(spec.nativeDir, "env.txt");
+  if (!existsSync(envPath)) return false;
+  for (const line of readFileSync(envPath, "utf8").split("\n")) {
+    if (line === "RS_RECEIVER_CACHE_MODE=warm") return true;
+    if (line.startsWith("RS_RECEIVER_CACHE_DIR=")) {
+      const rel = relative(resolve(spec.nativeDir), resolve(line.slice(22)));
+      if (rel.startsWith("..") || rel.startsWith("/")) return true;
+    }
+  }
+  return false;
+}
+
+/** A leg's quiet-lock owner: a child that lives until killed or until this process dies (it
+ * polls its parent), so the leg's hold never outlives this run. */
+function legOwner(): ChildProcess {
+  return spawn(
+    "bash",
+    ["-c", 'while kill -0 "$PPID" 2>/dev/null; do sleep 0.25; done'],
+    {
+      stdio: "ignore",
+    },
+  );
 }
 
 async function runOne(
@@ -295,7 +360,7 @@ async function runOne(
   spec: WebLegSpec,
   server: HarnessServer,
   origin: string,
-  setHook: (hook: (() => Promise<void>) | undefined) => void,
+  setHook: (nonce: string, hook: (() => Promise<void>) | undefined) => void,
 ): Promise<WebLegResult> {
   const started = Date.now();
   await mkdir(spec.webDir, { recursive: true });
@@ -411,6 +476,7 @@ async function runOne(
     }
     const session: CDPSession = await context.newCDPSession(page);
     setHook(
+      nonce,
       spec.compositor
         ? async () => {
             const shot = (await session.send("Page.captureScreenshot", {
@@ -494,11 +560,11 @@ async function runOne(
       join(spec.webDir, "timings.json"),
       `${JSON.stringify({ schema: "render-stream-web-timings/1", wall_ms: Date.now() - started, exit: state?.exit ?? null, error: state?.error ?? null, context_lost: state?.contextLost ?? false, wasm_heap_bytes: state?.wasmHeapBytes ?? null, backing_store: state?.backingStore ?? null, marks: state?.marks ?? [], navigation: state?.navigation ?? [], resources: state?.resources ?? [], lines: (state?.lines ?? []).slice(0, 400).map((l) => ({ t: l.t, line: l.line })) }, null, 2)}\n`,
     );
-    setHook(undefined);
+    setHook(nonce, undefined);
     await session.detach().catch(() => {});
     await context.close().catch(() => {});
   } finally {
-    setHook(undefined);
+    setHook(nonce, undefined);
     server.removeLeg(nonce);
     await writeFile(
       join(spec.webDir, "console.jsonl"),

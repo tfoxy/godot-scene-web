@@ -32,6 +32,8 @@ GS_VULKAN_DEVICE=""
 GS_LOG=""
 GS_RUN_DIR=""
 GS_LAST_GODOT_PID=""
+GS_WIDTH=""
+GS_HEIGHT=""
 
 gs_die() {
 	echo "gamescope.sh: $*" >&2
@@ -90,6 +92,8 @@ gs_start() {
 	mkdir -p "$run_dir"
 	GS_RUN_DIR="$run_dir"
 	GS_LOG="$run_dir/gamescope.log"
+	GS_WIDTH="$width"
+	GS_HEIGHT="$height"
 
 	command -v gamescope >/dev/null 2>&1 || gs_die "gamescope is not installed"
 
@@ -226,6 +230,22 @@ gs_launch_godot() {
 # process that exits mid-scan, or one this user can't read, is silently skipped (never fatal --
 # the caller decides whether an empty result is a problem).
 gs_socket_owners() {
+	local inode="$1" path pid owners=() seen=" "
+	# One `find` over every /proc/<pid>/fd (GRT2b): the old per-fd `readlink` fork cost one process
+	# per open fd on the box (~11k), 15-20 s of every rendered leg. Same set, same pid order.
+	while IFS= read -r path; do
+		pid="${path#/proc/}"
+		pid="${pid%%/*}"
+		case "$seen" in *" $pid "*) continue ;; esac
+		seen+="$pid "
+		owners+=("$pid")
+	done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -lname "socket:\\[$inode\\]" 2>/dev/null || true)
+	printf '%s\n' "${owners[@]:-}"
+}
+
+# gs_socket_owners_slow <inode>: the pre-GRT2b readlink walk, kept for the equality self-test
+# (test/self-test-socket-owners.sh).
+gs_socket_owners_slow() {
 	local inode="$1" pid link owners=()
 	for pid_dir in /proc/[0-9]*; do
 		pid="${pid_dir#/proc/}"
