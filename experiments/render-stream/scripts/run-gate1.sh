@@ -107,13 +107,19 @@ LIVE_PORT=""
 # the first transaction of step 6's window and asks for a resync. The killed receiver is SIGKILLed
 # once the host's live log reaches frame S + 5 N. ignore-credit starts at S + 3 N; stale-coalesce
 # at S + N, with the same stall as live-stall.
-STALL_SPEC="1:2000"
+# GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
+# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+STALL_STEP=1
+STALL_FRAMES=120 # 2000 ms
+STALL_SPEC=""
 # ignore-credit needs a receiver that holds its credit at some point after the sabotage frame:
 # measured (2026-10-09), a receiver that returns credit within one frame (p50 8.5 ms) makes a host
 # that ignores credit send exactly what a correct host sends, and the sabotage is unobservable. A
 # 500 ms stall after the step 3 shot (S+3N+7 = 487 on) ends before step 4's window (547), so no
 # shot is missed.
-IGNORE_CREDIT_STALL_SPEC="3:500"
+IGNORE_CREDIT_STALL_STEP=3
+IGNORE_CREDIT_STALL_FRAMES=30 # 500 ms
+IGNORE_CREDIT_STALL_SPEC=""
 RECONNECT_STEP=4
 RESYNC_STEP=6
 KILL_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 5))
@@ -634,6 +640,7 @@ run_g1d() {
 	echo "run-gate1: bringing up private gamescope for g1d rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g1d"
 
+	STALL_SPEC="$(legs_stall_spec "$OUT/live-stall/host" "$STALL_STEP" "$STALL_FRAMES")"
 	echo "run-gate1: live-stall (RS_RECEIVER_STALL=$STALL_SPEC)"
 	start_live_host "$OUT/live-stall/host"
 	LIVE_RECEIVER_ENV=(RS_RECEIVER_STALL="$STALL_SPEC")
@@ -652,12 +659,14 @@ run_g1d() {
 	live_receiver "$OUT/live-resync" rendered
 	finish_live_host "$OUT/live-resync/host"
 
+	IGNORE_CREDIT_STALL_SPEC="$(legs_stall_spec "$OUT/sabotage-ignore-credit/host" "$IGNORE_CREDIT_STALL_STEP" "$IGNORE_CREDIT_STALL_FRAMES")"
 	echo "run-gate1: sabotage-ignore-credit (host sends regardless of credit from frame $IGNORE_CREDIT_FRAME; RS_RECEIVER_STALL=$IGNORE_CREDIT_STALL_SPEC)"
 	start_live_host "$OUT/sabotage-ignore-credit/host" GRC_SABOTAGE=ignore-credit GRC_SABOTAGE_FRAME="$IGNORE_CREDIT_FRAME"
 	LIVE_RECEIVER_ENV=(RS_RECEIVER_STALL="$IGNORE_CREDIT_STALL_SPEC")
 	live_receiver "$OUT/sabotage-ignore-credit" rendered
 	finish_live_host "$OUT/sabotage-ignore-credit/host"
 
+	STALL_SPEC="$(legs_stall_spec "$OUT/sabotage-stale-coalesce/host" "$STALL_STEP" "$STALL_FRAMES")"
 	echo "run-gate1: sabotage-stale-coalesce (host sends the first missed target from frame $STALE_COALESCE_FRAME; RS_RECEIVER_STALL=$STALL_SPEC)"
 	start_live_host "$OUT/sabotage-stale-coalesce/host" GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$STALE_COALESCE_FRAME"
 	LIVE_RECEIVER_ENV=(RS_RECEIVER_STALL="$STALL_SPEC")

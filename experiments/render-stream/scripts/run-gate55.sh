@@ -96,7 +96,11 @@ G55F_QUIT_FRAME=$((G55F_START_FRAME + G55F_STEP_FRAMES * G55F_LAST_STEP + 11))
 # <step>:<ms> (gate1-design.md G1d): after step 1's shot, block the receiver long enough that PH
 # (every-frame shader parameter) changes for well over 60 frames and step 3's code change (tint
 # -> tint_b, applied frame S+3N=480) lands inside the stall.
-G55F_STALL_SPEC="1:2000"
+# GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
+# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+G55F_STALL_STEP=1
+G55F_STALL_FRAMES=120 # 2000 ms
+G55F_STALL_SPEC=""
 
 usage() {
 	sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -737,8 +741,10 @@ run_g55f() {
 	echo "run-gate55: g55f: live-shader-warm (a new host + a new rendered receiver on live-shader's cache)"
 	g55f_leg live-shader-warm rendered -- \
 		RS_RECEIVER_CACHE_DIR="$S/live-shader/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	G55F_STALL_SPEC="$(legs_stall_spec "$S/live-shader-stall/host" "$G55F_STALL_STEP" "$G55F_STALL_FRAMES")"
 	echo "run-gate55: g55f: live-shader-stall (RS_RECEIVER_STALL=$G55F_STALL_SPEC)"
 	g55f_leg live-shader-stall rendered -- RS_RECEIVER_STALL="$G55F_STALL_SPEC"
+	G55F_STALL_SPEC="$(legs_stall_spec "$S/sabotage-shader-stale-coalesce/host" "$G55F_STALL_STEP" "$G55F_STALL_FRAMES")"
 	echo "run-gate55: g55f: sabotage-shader-stale-coalesce (stale-coalesce @$f1, RS_RECEIVER_STALL=$G55F_STALL_SPEC)"
 	g55f_leg sabotage-shader-stale-coalesce rendered GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$f1" -- \
 		RS_RECEIVER_STALL="$G55F_STALL_SPEC"

@@ -352,23 +352,39 @@ write_invocation() {
 }
 
 # --------------------------------------------------------------------------------------------
-# Faster-than-real-time live legs (GRT2b part B, results/grt.md "Part 2b"; a measured PROTOTYPE,
-# not a tier). RS_FAST_FRAMES=all|host|receiver (default off) rewrites a correctness launch's
-# `--max-fps 60` into `--fixed-fps 60 --max-fps 0 --disable-vsync` (Godot 4.5: simulated time
-# advances 1/60 s per frame, no real-time sync), on every side, only hosts, or only receivers
-# (`--path $RECEIVER_DIR`).
+# Fast frames (GRT3, results/grt.md "Part 3"; scripts/README.md "Fast frames (GRT3)"). Opt-in:
+# RS_FAST_FRAMES=all|host|receiver (default off) runs the ALLOWLISTED live correctness legs below
+# faster than real time; validate-increment.sh's smoke and full tiers set it, milestone sweeps and
+# a plain runner do not. On every side, hosts only, or receivers only (`--path $RECEIVER_DIR`), an
+# allowlisted launch's `--max-fps 60` becomes `--max-fps $RS_FAST_FRAMES_MAX_FPS --disable-vsync`
+# (default 240; a browser receiver gets the `--max-fps` alone, its Chromium is unthrottled by
+# GATE7_FAST_FRAMES=1, lib/gate7-live-legs.ts). A fast host also gets
+#   GRC_LOW_PROCESSOR_SLEEP_USEC=0  without it a headless host sleeps 6900 us per frame whatever
+#                                   --max-fps says (~145 fps at most; capture/src/entry.cpp);
+#   GRC_LIVE_AWAIT_HELLO_MS=<ms>    a live host holds its timeline at the first armed frame until
+#                                   the first receiver's hello (RS_FAST_AWAIT_HELLO_MS, default
+#                                   60000), so the 300-frame join window costs no real time.
+# The gate fixtures count frames, never delta, and every check of an allowlisted leg counts host
+# frames: stalls and the fetch delay are specified in frames at 60 fps and converted with
+# legs_frames_ms against the host's own rate (exactly the old milliseconds at 60 fps, so a
+# real-time leg's env and evidence are unchanged), and check-gate1.ts's sim-kept-running reads
+# the host's --max-fps from its argv.txt.
 #
-# RS_FAST_FRAMES_MAX_FPS=N (default 0) scales real time instead: the launch gets `--max-fps N`
-# alone, e.g. 240 for 4x. Godot 4.5.1 cannot cap a fixed-fps run: Main::iteration returns before
-# OS::add_frame_delay whenever --fixed-fps is set, so --max-fps beside it is ignored
-# (main/main.cpp). The gate fixtures count frames, not delta, so a plain --max-fps N gives them the
-# same frames N/60 times faster.
+# Never unbounded --fixed-fps: Godot 4.5.1 ignores --max-fps beside it (Main::iteration returns
+# before OS::add_frame_delay), and a host that finishes its timeline before a receiver joins
+# breaks every live leg (GRT2b), so RS_FAST_FRAMES_MAX_FPS must be 61..1000.
 #
-# Never inside a timing group or a timing leg: those stay real time. The one exception is
-# GATE7_FAST_FRAMES=1, the gate 7 browser half of the same experiment, which also unthrottles
-# Chromium (lib/gate7-live-legs.ts) and lets the rewrite into a GATE7_LIVE_KIND live leg.
+# The DENYLIST stays real time whatever is set: every timing group but RS_FAST_ALLOW_GROUPS
+# (g1c-rate's live-rate-30, g6l, g6s, g6c, g6p: rate, cadence, phase, soak), every timing_leg
+# label (g6s reference-step11), every leg RS_FAST_DENY_LEGS names (g2e's refusal legs, whose host
+# may never see a hello), every leg not in RS_FAST_ALLOW_LEGS, and everything outside these
+# runners: run-gate7.sh's g7-r pacing, g7-lc lifecycle, g7-k startup and soak groups, every
+# gate7-bench.ts arm and every device leg. A timing leg keeps the exclusive quiet lock either way:
+# the allowlisted timing groups (g1d, g2c-pins, g5f, g55f) and gate 7's live legs run fast UNDER
+# their exclusive hold, never outside it.
 RS_FAST_FRAMES_MODE="${RS_FAST_FRAMES:-off}"
-RS_FAST_FRAMES_MAX_FPS="${RS_FAST_FRAMES_MAX_FPS:-0}"
+RS_FAST_FRAMES_MAX_FPS="${RS_FAST_FRAMES_MAX_FPS:-240}"
+RS_FAST_AWAIT_HELLO_MS="${RS_FAST_AWAIT_HELLO_MS:-60000}"
 case "$RS_FAST_FRAMES_MODE" in
 off | all | host | receiver) ;;
 *)
@@ -376,16 +392,113 @@ off | all | host | receiver) ;;
 	exit 2
 	;;
 esac
-LEGS_ARGV=()
-legs__fast_argv() {
-	LEGS_ARGV=("$@")
-	[ "$RS_FAST_FRAMES_MODE" != off ] || return 0
-	if [ -n "$LEGS_TIMING_GROUP" ] || [ -n "$LEGS_TIMING_LABEL" ]; then
-		[ "${GATE7_FAST_FRAMES:-0}" = 1 ] && [ -n "$GATE7_LIVE_KIND" ] && [ -z "$LEGS_TIMING_GROUP" ] ||
-			return 0
+case "$RS_FAST_FRAMES_MAX_FPS" in
+'' | *[!0-9]*) RS_FAST_FRAMES_MAX_FPS=bad ;;
+esac
+if [ "$RS_FAST_FRAMES_MODE" != off ] && { [ "$RS_FAST_FRAMES_MAX_FPS" = bad ] ||
+	[ "$RS_FAST_FRAMES_MAX_FPS" -le 60 ] || [ "$RS_FAST_FRAMES_MAX_FPS" -gt 1000 ]; }; then
+	echo "$LEGS_LOG: RS_FAST_FRAMES_MAX_FPS must be 61..1000 (never unbounded --fixed-fps; got ${RS_FAST_FRAMES_MAX_FPS:-})" >&2
+	exit 2
+fi
+# "<runner>:<leg>" globs; <leg> is the leg directory under --out, a trailing host/ or receiver/
+# dropped (legs__fast_leg). Gate 7's live groups run these same runners (GATE7_LIVE_KIND), so
+# g7-1, g7-2, g7-5 and g7-55 follow this list leg by leg.
+RS_FAST_ALLOW_LEGS=(
+	# gate 1 g1c (live delivery) and g1d (stall, coalescing, reconnect, resync, kill, sabotages)
+	run-gate1:live-headless run-gate1:live run-gate1:sabotage-drop-message
+	run-gate1:live-receiver-killed run-gate1:live-stall run-gate1:live-reconnect
+	run-gate1:live-resync run-gate1:sabotage-ignore-credit run-gate1:sabotage-stale-coalesce
+	# gate 2 g2b live-inline and g2c (live resources, stall, reconnect, pins)
+	run-gate2:live-inline run-gate2:live-headless run-gate2:sabotage-drop-resource
+	run-gate2:sabotage-wrong-hash-live run-gate2:live run-gate2:live-warm run-gate2:live-stall
+	run-gate2:live-reconnect run-gate2:live-animate run-gate2:sabotage-unpin
+	# gate 5 g5f and gate 5.5 g55f (live mesh / shader through a stall)
+	'run-gate5:mesh/live-mesh*' run-gate5:mesh/sabotage-mesh-stale-coalesce
+	'run-gate55:shader-live/live-shader*' run-gate55:shader-live/sabotage-shader-stale-coalesce
+)
+# Named real-time legs (documentation as much as policy: they are outside the allowlist anyway).
+RS_FAST_DENY_LEGS=(
+	run-gate1:live-rate-30 run-gate2:sabotage-no-token run-gate2:sabotage-bad-http-token
+	run-gate2:origin-refused run-gate2:sabotage-no-cors run-gate2:live-auth 'run-gate6:*'
+)
+# Timing groups whose legs may run fast (still under their exclusive hold): their checks count
+# frames once the stalls do.
+RS_FAST_ALLOW_GROUPS=(g1d g2c-pins g5f g55f)
+
+legs__fast_leg() {
+	local rel="${1#"$OUT"/}"
+	case "${rel##*/}" in
+	host | receiver | receiver-*) rel="${rel%/*}" ;;
+	esac
+	printf '%s' "$rel"
+}
+
+# legs_fast_applies <leg dir>: true when RS_FAST_FRAMES is on and the leg is allowlisted here.
+legs_fast_applies() {
+	[ "$RS_FAST_FRAMES_MODE" != off ] || return 1
+	local key pat g ok=0
+	if [ -n "$LEGS_TIMING_GROUP" ]; then
+		for g in "${RS_FAST_ALLOW_GROUPS[@]}"; do
+			[ "$g" = "$LEGS_TIMING_GROUP" ] && ok=1
+		done
+		[ "$ok" = 1 ] || return 1
+	elif [ -n "$LEGS_TIMING_LABEL" ]; then
+		case "$LEGS_TIMING_LABEL" in
+		gate7-live:*) ;;
+		*) return 1 ;;
+		esac
 	fi
+	key="$LEGS_LOG:$(legs__fast_leg "$1")"
+	for pat in "${RS_FAST_DENY_LEGS[@]}"; do
+		# shellcheck disable=SC2053 # a glob on purpose
+		[[ $key == $pat ]] && return 1
+	done
+	for pat in "${RS_FAST_ALLOW_LEGS[@]}"; do
+		# shellcheck disable=SC2053
+		[[ $key == $pat ]] && return 0
+	done
+	return 1
+}
+
+# legs_fast_host_fps <host dir>: the frame rate the host launched at <host dir> runs at (60, or
+# RS_FAST_FRAMES_MAX_FPS when it runs fast).
+legs_fast_host_fps() {
+	case "$RS_FAST_FRAMES_MODE" in
+	all | host)
+		if legs_fast_applies "$1"; then
+			echo "$RS_FAST_FRAMES_MAX_FPS"
+			return 0
+		fi
+		;;
+	esac
+	echo 60
+}
+
+# legs_frames_ms <host dir> <frames>: <frames> host frames in milliseconds at that host's rate,
+# rounded (a stall or fetch delay given in frames at 60 fps: 78 -> 1300 ms at 60, 325 at 240).
+legs_frames_ms() {
+	local fps
+	fps="$(legs_fast_host_fps "$1")"
+	echo $((($2 * 1000 + fps / 2) / fps))
+}
+
+# legs_stall_spec <host dir> <step> <frames>: the receiver's RS_RECEIVER_STALL (<step>:<ms>) for a
+# stall of <frames> host frames after <step>'s shot.
+legs_stall_spec() {
+	echo "$2:$(legs_frames_ms "$1" "$3")"
+}
+
+# legs__fast_argv <argv...>: sets LEGS_ARGV (the rewrite above, or argv unchanged) for the launch
+# in LEGS_FAST_DIR (its leg directory, set by the caller) and, for a rewritten host, adds the fast
+# host words to LEG_ENV.
+LEGS_ARGV=()
+LEGS_FAST_DIR=""
+legs__fast_argv() {
+	local dir="$LEGS_FAST_DIR"
+	LEGS_ARGV=("$@")
+	legs_fast_applies "$dir" || return 0
 	local -a args=("$@") out=()
-	local i recv=0 prev=""
+	local i recv=0 prev="" browser=0 rewrote=0
 	for i in "${args[@]}"; do
 		[ "$prev" = "--path" ] && [ "$i" = "${RECEIVER_DIR:-}" ] && recv=1
 		prev="$i"
@@ -394,19 +507,23 @@ legs__fast_argv() {
 	host) [ "$recv" = 0 ] || return 0 ;;
 	receiver) [ "$recv" = 1 ] || return 0 ;;
 	esac
+	[ "$recv" = 1 ] && [ -n "${GATE7_LIVE_KIND:-}" ] && browser=1
 	for ((i = 0; i < ${#args[@]}; i++)); do
 		if [ "${args[$i]}" = "--max-fps" ] && [ "${args[$((i + 1))]:-}" = 60 ]; then
-			if [ "$RS_FAST_FRAMES_MAX_FPS" -gt 0 ]; then
-				out+=(--max-fps "$RS_FAST_FRAMES_MAX_FPS" --disable-vsync)
-			else
-				out+=(--fixed-fps 60 --max-fps 0 --disable-vsync)
-			fi
+			out+=(--max-fps "$RS_FAST_FRAMES_MAX_FPS")
+			[ "$browser" = 1 ] || out+=(--disable-vsync)
 			i=$((i + 1))
+			rewrote=1
 		else
 			out+=("${args[$i]}")
 		fi
 	done
 	LEGS_ARGV=("${out[@]}")
+	[ "$rewrote" = 1 ] && [ "$recv" = 0 ] || return 0
+	LEG_ENV+=(GRC_LOW_PROCESSOR_SLEEP_USEC=0)
+	if leg_env_value GRC_LIVE_LISTEN >/dev/null; then
+		LEG_ENV+=(GRC_LIVE_AWAIT_HELLO_MS="$RS_FAST_AWAIT_HELLO_MS")
+	fi
 }
 
 # Waits for an owned child, killing it after $2 seconds. Sets WAIT_EXIT (124 on timeout).
@@ -439,12 +556,13 @@ wait_owned() {
 legs__run_headless() {
 	local dir="$1" mode="$2"
 	shift 3
+	LEGS_FAST_DIR="$dir"
+	legs__fast_argv "$@"
+	set -- "${LEGS_ARGV[@]}"
 	if gate7_browser_leg "$@"; then
 		run_browser_receiver "$dir" fg -- "$@"
 		return 0
 	fi
-	legs__fast_argv "$@"
-	set -- "${LEGS_ARGV[@]}"
 	mkdir -p "$dir"
 	gs_strip_env_args
 	receiver_core_env "$@"
@@ -497,8 +615,10 @@ BG_PID=""
 legs__start_headless_bg() {
 	local dir="$1"
 	shift 2
+	LEGS_FAST_DIR="$dir"
 	if gate7_browser_leg "$@"; then
-		run_browser_receiver "$dir" bg -- "$@"
+		legs__fast_argv "$@"
+		run_browser_receiver "$dir" bg -- "${LEGS_ARGV[@]}"
 		return 0
 	fi
 	gate7_host_env
@@ -618,12 +738,13 @@ legs__run_rendered() {
 		extra=("${RENDERED_EXTRA_ARGS[@]}")
 	fi
 	RENDERED_EXTRA_ARGS=()
-	if gate7_browser_leg "$BINARY" --path "$project" "${extra[@]}"; then
-		run_browser_receiver "$dir" fg -- "$BINARY" --path "$project" "${extra[@]}"
-		return 0
-	fi
+	LEGS_FAST_DIR="$dir"
 	legs__fast_argv --path "$project" ${extra[@]+"${extra[@]}"}
 	extra=(${LEGS_ARGV[@]+"${LEGS_ARGV[@]:2}"})
+	if gate7_browser_leg "$BINARY" --path "$project" ${extra[@]+"${extra[@]}"}; then
+		run_browser_receiver "$dir" fg -- "$BINARY" --path "$project" ${extra[@]+"${extra[@]}"}
+		return 0
+	fi
 	mkdir -p "$dir"
 	gs_require_live
 	write_invocation "$dir" "$BINARY" --path "$project" --rendering-driver opengl3 --display-driver x11 "${extra[@]}"

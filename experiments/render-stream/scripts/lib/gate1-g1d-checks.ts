@@ -113,6 +113,22 @@ export const STALL_LEGS: readonly G1dLeg[] = [
 /** sim-kept-running: frames advanced >= this share of the nominal 60 fps over the stall, at an
  * average frame interval <= 1.25 x 1/60 s (gate1-design.md G1d). */
 export const NOMINAL_FPS = 60;
+
+/** GRT3 (scripts/README.md "Fast frames (GRT3)"): the host's nominal frame rate, its argv.txt's
+ * `--max-fps` (one word per line; 60 when absent). A fast-frame leg's host runs at
+ * RS_FAST_FRAMES_MAX_FPS, and the runner's stall milliseconds are the stall's frames at that rate,
+ * so every frame count below is the same at any rate. */
+export function hostFpsOfArgv(text: string | undefined): number {
+  const words = (text ?? "").split("\n");
+  const i = words.indexOf("--max-fps");
+  const fps = i >= 0 ? Number(words[i + 1]) : Number.NaN;
+  return Number.isInteger(fps) && fps > 0 ? fps : NOMINAL_FPS;
+}
+
+/** A stall's length in host frames at `fps`: ms x fps / 1000 (120 for 2000 ms at 60 fps). */
+export function stallFrames(ms: number, fps: number): number {
+  return (ms * fps) / 1000;
+}
 export const MIN_FRAME_SHARE = 0.8;
 export const MAX_INTERVAL_FACTOR = 1.25;
 
@@ -240,6 +256,8 @@ export interface G1dLegEvaluation {
   shots: G1dShot[];
   windows: ShotWindow[];
   env: Map<string, string>;
+  /** the host's nominal frame rate (hostFpsOfArgv; 60 at real time) */
+  host_fps?: number;
   steps: StepLine[] | undefined;
   checkpoints: Gate1Checkpoint[];
   delivery: DeliveryReport[];
@@ -629,6 +647,9 @@ export async function evaluateG1dLeg(
     shots,
     windows,
     env,
+    host_fps: hostFpsOfArgv(
+      await readTextOrUndefined(join(hostDir, "argv.txt")),
+    ),
     steps,
     checkpoints,
     delivery,
@@ -706,10 +727,12 @@ export function checkSimKeptRunning(evals: Evals): Gate1Check {
   const e = evals.get("live-stall");
   const s = e?.stall;
   const requested = parseStall(e?.env.get("RS_RECEIVER_STALL"));
+  // GRT3: in host frames at the host's own rate (60 at real time, where this is unchanged).
+  const fps = e?.host_fps ?? NOMINAL_FPS;
   const minFrames = requested
-    ? Math.floor((MIN_FRAME_SHARE * NOMINAL_FPS * requested.ms) / 1000)
+    ? Math.floor(MIN_FRAME_SHARE * stallFrames(requested.ms, fps))
     : null;
-  const maxInterval = (MAX_INTERVAL_FACTOR * 1000) / NOMINAL_FPS;
+  const maxInterval = (MAX_INTERVAL_FACTOR * 1000) / fps;
   if (!e || !s || minFrames === null) problems.push("live-stall not evaluated");
   else if (s.send_frame === null || s.credit_frame === null)
     problems.push(
@@ -736,7 +759,7 @@ export function checkSimKeptRunning(evals: Evals): Gate1Check {
   }
   return check(
     "sim-kept-running",
-    `live-stall: between the send of the stalled seq and the arrival of its credit the host ran at least 0.8 x 60 x the stall's seconds frame callbacks, every one logged, at an average interval <= 1.25 x 1/60 s, and the fixture applied at least one step in between`,
+    `live-stall: between the send of the stalled seq and the arrival of its credit the host ran at least 0.8 x the stall's frames at the host's --max-fps (0.8 x 60 x its seconds at real time) frame callbacks, every one logged, at an average interval <= 1.25 / that rate, and the fixture applied at least one step in between`,
     problems,
     s
       ? `${s.frames_during_stall} host frames (${s.send_frame} -> ${s.credit_frame}) at ${s.avg_frame_interval_ms?.toFixed(2)} ms; steps applied inside: ${s.steps_applied_during.join(",")}`
