@@ -379,6 +379,8 @@ impl<'a> Builder<'a> {
             [1.0; 4]
         };
         let with_uv = uvs.len() == n;
+        // G7o4: one reservation per polygon (a mesh surface is thousands of vertices).
+        self.out.verts.reserve(n);
         for (i, p) in points.iter().enumerate() {
             let c = if per_vertex { colors[i] } else { uniform };
             let uv = if with_uv { uvs[i] } else { [0.0, 0.0] };
@@ -388,6 +390,9 @@ impl<'a> Builder<'a> {
         let sequential = indices.is_empty();
         let len = if sequential { n } else { indices.len() };
         let order = |k: usize| if sequential { k as u32 } else { indices[k] };
+        self.out
+            .idx
+            .reserve(if strip { 3 * len.saturating_sub(2) } else { len });
         if strip {
             for k in 2..len {
                 // GL triangle-strip winding does not affect coverage (no culling).

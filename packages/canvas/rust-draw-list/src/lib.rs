@@ -12,8 +12,10 @@
 //! - [`Vertex`]: an item-local position, a normalized uv, a STRAIGHT colour and the item index.
 //! - indices: `u32`, in final paint order.
 //! - [`Draw`]: an index range plus the state it needs (texture, sampler, blend, program, scissor,
-//!   and a multi-channel signed distance field's parameters). Draws are in final paint order. An executor may merge ADJACENT draws whose state is equal and
-//!   whose index ranges touch, never reorder them.
+//!   and a multi-channel signed distance field's parameters). Draws are in final paint order. An
+//!   executor may merge ADJACENT draws whose state is equal and whose index ranges touch, never
+//!   reorder them; an untextured draw's texture and sampler count as equal to anything
+//!   ([`DRAW_UNTEXTURED`], G7o4).
 //! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels and frees.
 //! - [`Binding`]s: item-space programs (Godot's custom `canvas_item` shaders, registered with the
 //!   executor beside the list) with their uniform values, named by a draw's `program`.
@@ -39,7 +41,8 @@ pub struct Item {
     /// Straight RGBA: the modulate composed down the tree, `self_modulate` last, times the canvas
     /// modulate.
     pub modulate: [f32; 4],
-    /// Reserved for executor-visible item flags; 0 today.
+    /// Executor-visible item flags ([`ITEM_UNTEXTURED`]); an executor reads the word through its
+    /// float texel's bits, so every defined flag keeps the word a normal (never denormal) float.
     pub flags: u32,
     pub reserved: u32,
 }
@@ -96,6 +99,18 @@ pub const DRAW_SCISSOR: u32 = 1;
 /// colour and the modulate, with the coverage multiplied into alpha. [`Draw::msdf`] holds the
 /// parameters.
 pub const DRAW_MSDF: u32 = 2;
+/// [`Draw::flags`] (G7o4): an untextured draw. Its `texture` is [`WHITE_TEXTURE`], its `program`
+/// [`BUILTIN_PROGRAM`], it is not [`DRAW_MSDF`], and its item's row carries [`ITEM_UNTEXTURED`],
+/// so the builtin program colours its fragments as the white texel would (`texel = 1`) whatever
+/// texture is bound. Its texture and sampler therefore never end a run: it merges with a textured
+/// neighbour of otherwise equal state ([`mergeable`], [`merged`]).
+pub const DRAW_UNTEXTURED: u32 = 4;
+
+/// [`Item::flags`] (G7o4): every fragment the builtin program draws for this item takes the white
+/// texel's value (`texel = 1`) instead of sampling the bound texture. Bit 30: the flags word reads
+/// as the normal float 2.0 through a float texel. A producer sets it only on items whose every draw
+/// is white, and marks those draws [`DRAW_UNTEXTURED`].
+pub const ITEM_UNTEXTURED: u32 = 1 << 30;
 
 /// Sampler bits.
 pub struct Sampler;
@@ -401,34 +416,53 @@ impl DrawList {
         self.texture_bytes.clear();
     }
 
-    /// Draw calls an executor issues for this list once it merges adjacent equal-state draws.
+    /// Draw calls an executor issues for this list once it merges runs of adjacent draws
+    /// ([`mergeable`] against the run's state, [`merged`]).
     pub fn merged_draw_count(&self) -> usize {
         let mut count = 0;
-        let mut prev: Option<&Draw> = None;
+        let mut run: Option<Draw> = None;
         for d in &self.draws {
             if d.index_count == 0 {
                 continue;
             }
-            match prev {
-                Some(p) if mergeable(p, d) => {}
-                _ => count += 1,
-            }
-            prev = Some(d);
+            run = Some(match run {
+                Some(r) if mergeable(&r, d) => merged(&r, d),
+                _ => {
+                    count += 1;
+                    *d
+                }
+            });
         }
         count
     }
 }
 
-/// Whether `next` can extend `prev` into one draw call: equal state and touching index ranges.
+/// Whether `next` can extend the run `prev` (one draw, or a run's state from [`merged`]) into one
+/// draw call: touching index ranges and equal state, where a [`DRAW_UNTEXTURED`] side's texture and
+/// sampler match anything. Without untextured draws this is plain equality of adjacent draws.
 pub fn mergeable(prev: &Draw, next: &Draw) -> bool {
+    let untextured = (prev.flags | next.flags) & DRAW_UNTEXTURED != 0;
     prev.first_index + prev.index_count == next.first_index
-        && prev.texture == next.texture
-        && prev.sampler == next.sampler
+        && (untextured || (prev.texture == next.texture && prev.sampler == next.sampler))
         && prev.blend == next.blend
         && prev.program == next.program
-        && prev.flags == next.flags
+        && (prev.flags & !DRAW_UNTEXTURED) == (next.flags & !DRAW_UNTEXTURED)
         && (prev.flags & DRAW_SCISSOR == 0 || prev.scissor == next.scissor)
         && (prev.flags & DRAW_MSDF == 0 || prev.msdf == next.msdf)
+}
+
+/// The state of run `run` extended by `next` (which [`mergeable`] admitted): the index range
+/// grows, and a run that was untextured so far takes a textured `next`'s texture and sampler (and
+/// stops being untextured), which is what the merged call binds.
+pub fn merged(run: &Draw, next: &Draw) -> Draw {
+    let mut out = *run;
+    out.index_count += next.index_count;
+    if run.flags & DRAW_UNTEXTURED != 0 && next.flags & DRAW_UNTEXTURED == 0 {
+        out.texture = next.texture;
+        out.sampler = next.sampler;
+        out.flags &= !DRAW_UNTEXTURED;
+    }
+    out
 }
 
 /// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path. It
@@ -728,5 +762,58 @@ mod tests {
             ..plain
         };
         assert!(mergeable(&plain, &plain2));
+    }
+
+    #[test]
+    fn untextured_draws_join_a_textured_run_without_bridging_two_textures() {
+        let at = |first: u32, texture: u32, sampler: u32, flags: u32| Draw {
+            first_index: first,
+            index_count: 6,
+            texture,
+            sampler,
+            flags,
+            ..Draw::default()
+        };
+        let w = |first| at(first, WHITE_TEXTURE, 0, DRAW_UNTEXTURED);
+        // W A W A W: one call bound to texture 3 (sampler 1).
+        let list = DrawList {
+            draws: vec![w(0), at(6, 3, 1, 0), w(12), at(18, 3, 1, 0), w(24)],
+            ..DrawList::default()
+        };
+        assert_eq!(list.merged_draw_count(), 1);
+        let run = merged(&merged(&w(0), &at(6, 3, 1, 0)), &w(12));
+        assert_eq!((run.texture, run.sampler, run.flags), (3, 1, 0));
+        assert_eq!(run.index_count, 18);
+        // W A W B: the untextured draw between two textures does not bridge them.
+        let list = DrawList {
+            draws: vec![w(0), at(6, 3, 1, 0), w(12), at(18, 4, 1, 0)],
+            ..DrawList::default()
+        };
+        assert_eq!(list.merged_draw_count(), 2);
+        // A sampler change of the same texture ends the run too.
+        let list = DrawList {
+            draws: vec![at(0, 3, 1, 0), w(6), at(12, 3, 0, 0)],
+            ..DrawList::default()
+        };
+        assert_eq!(list.merged_draw_count(), 2);
+        // A white draw WITHOUT the flag still ends a textured run (the pre-G7o4 rule).
+        let list = DrawList {
+            draws: vec![at(0, 3, 1, 0), at(6, WHITE_TEXTURE, 0, 0), at(12, 3, 1, 0)],
+            ..DrawList::default()
+        };
+        assert_eq!(list.merged_draw_count(), 3);
+        // Other state still decides: a scissored untextured draw does not join an unscissored run.
+        let scissored = Draw {
+            flags: DRAW_UNTEXTURED | DRAW_SCISSOR,
+            scissor: [0, 0, 4, 4],
+            ..w(6)
+        };
+        let list = DrawList {
+            draws: vec![at(0, 3, 1, 0), scissored],
+            ..DrawList::default()
+        };
+        assert_eq!(list.merged_draw_count(), 2);
+        // ITEM_UNTEXTURED reads as a normal float through a float texel.
+        assert!(f32::from_bits(ITEM_UNTEXTURED).is_normal());
     }
 }

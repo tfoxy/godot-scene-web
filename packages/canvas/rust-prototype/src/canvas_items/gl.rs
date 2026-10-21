@@ -26,8 +26,8 @@ use crate::present::{
 };
 use glow::HasContext;
 use gsw_canvas_draw_list::{
-    BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, Draw, DrawList, Format, Sampler,
-    Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
+    BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, DRAW_UNTEXTURED, Draw, DrawList,
+    Format, Sampler, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -59,6 +59,8 @@ uniform bool u_premultiply;
 out vec2 v_uv;
 out vec4 v_color;
 flat out vec4 v_tint;
+// G7o4: the row's ITEM_UNTEXTURED flag (bit 30 of the flags word, read through its float bits).
+flat out uint v_untextured;
 void main() {
   int item = int(a_item);
   ivec2 at = ivec2((item % 512) * 3, item / 512);
@@ -74,6 +76,7 @@ void main() {
   v_color = a_color;
   vec4 modulate = vec4(t1.zw, t2.xy);
   v_tint = u_premultiply ? vec4(modulate.rgb * modulate.a, modulate.a) : modulate;
+  v_untextured = (floatBitsToUint(t2.z) >> 30) & 1u;
 }"#;
 
 /// The draw program's fragment stage: `TEXTURED_MESH_FRAGMENT_SRC` of `executor-webgl.ts`, with
@@ -87,9 +90,13 @@ uniform bool u_texel_premultiply;
 in vec2 v_uv;
 in vec4 v_color;
 flat in vec4 v_tint;
+flat in uint v_untextured;
 out vec4 fragColor;
 void main() {
-  vec4 texel = texture(u_texture, v_uv);
+  // G7o4: an untextured item's fragment takes the white texel's exact value (1.0), whatever
+  // texture its merged call binds (sampled first, outside any branch).
+  vec4 sampled = texture(u_texture, v_uv);
+  vec4 texel = v_untextured != 0u ? vec4(1.0) : sampled;
   // A straight texel becomes premultiplied only AFTER filtering: Godot's order.
   if (u_texel_premultiply) texel.rgb *= texel.a;
   vec4 color = v_color;
@@ -1588,12 +1595,17 @@ impl CanvasItemsExecutor {
                 };
                 cache.premultiply = Some(premultiply);
             }
-            if draw.texture == WHITE_TEXTURE {
+            // G7o4: the texture and sampler are the run's first textured draw's.
+            let tex_draw = &list.draws[call.texture_draw as usize];
+            // An all-untextured call binds the white texel too: its fragments ignore the texture,
+            // but leaving a stale binding in place (the cache is not the whole GL state) dropped
+            // a gate 4e MSDF frame's draws after an atlas re-upload (G7o4's g7-4 run).
+            if tex_draw.flags & DRAW_UNTEXTURED != 0 || tex_draw.texture == WHITE_TEXTURE {
                 // A 1×1 white texel samples white under every filter and wrap: keep the sampler.
                 bind_draw_texture_with(gl, cache, objects.white, stats);
-            } else if let Some(texture) = self.textures.get(&draw.texture) {
+            } else if let Some(texture) = self.textures.get(&tex_draw.texture) {
                 bind_draw_texture_with(gl, cache, *texture, stats);
-                let sampler = objects.samplers[sampler_index(draw.sampler)];
+                let sampler = objects.samplers[sampler_index(tex_draw.sampler)];
                 if cache.draw_sampler != Some(sampler) {
                     unsafe { gl.c().bind_sampler(UNIT_DRAW, Some(sampler)) };
                     cache.draw_sampler = Some(sampler);

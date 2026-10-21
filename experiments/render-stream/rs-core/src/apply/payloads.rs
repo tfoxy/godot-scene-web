@@ -249,14 +249,19 @@ pub fn mesh_geometry(
     })
 }
 
+/// G7o4: payload tables hash a digest's first 8 bytes ([`Hash`]'s `Hash` impl) with the id
+/// hasher, not SipHash: a lookup per texture draw and per dependency check stays a few
+/// instructions. No caller depends on a table's iteration order (each sorts or keeps its own).
+pub type HashBuild = std::hash::BuildHasherDefault<crate::validate::IdHasher>;
+
 /// Verified, decoded payloads by content hash.
 #[derive(Default)]
 pub struct PayloadStore {
-    pub textures: HashMap<Hash, TexturePixels>,
-    pub meshes: HashMap<Hash, MeshGeometry>,
+    pub textures: HashMap<Hash, TexturePixels, HashBuild>,
+    pub meshes: HashMap<Hash, MeshGeometry, HashBuild>,
     /// Shader code (GRP1): a payload's, or a `withheld` shader's from the adapter's library. The
     /// adapter transpiles it once per hash ([`super::Applier::pending_shaders`], G7s).
-    pub shaders: HashMap<Hash, String>,
+    pub shaders: HashMap<Hash, String, HashBuild>,
     /// G7k (D29 amendment, Q10 soak): touch order for budget eviction, oldest-touched at the
     /// front. `insert` moves a hash to the back; nothing else reorders it (a mere [`Self::has`]
     /// query is not a touch, matching the native receiver's cache, which only re-orders on a
@@ -451,7 +456,7 @@ pub fn verify_decode(
 /// `skip-payload-hash` sabotage, which the `payload-verified-before-use` check counts.
 #[derive(Default)]
 pub struct PayloadStage {
-    staged: HashMap<Hash, Staged>,
+    staged: HashMap<Hash, Staged, HashBuild>,
     /// Payloads staged (verified) / refused, since the last `clear`.
     pub staged_count: u64,
     pub refused_count: u64,

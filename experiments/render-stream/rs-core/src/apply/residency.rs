@@ -79,7 +79,17 @@ pub struct Names {
     /// Ids whose named-ness may have changed since the last [`Names::take_changed`].
     changed: BTreeSet<Id>,
     materials_dirty: bool,
+    /// G7o4: bumped by every [`Names::update`]; with the state's identity it keys `named`.
+    generation: u64,
+    /// G7o4: the last [`Names::named_materials`] and [`Names::named_shaders`] (one transaction
+    /// asks for them several times: the adapter's pending shaders, `needed`, the refusals and the
+    /// material residency), with the key they were computed for.
+    named: std::cell::RefCell<Option<(NamedKey, BTreeSet<Id>, BTreeSet<Id>)>>,
 }
+
+/// What the named materials and shaders depend on: the names' generation and the state (its
+/// address, sequence number and frame: a new transaction, or another state, misses).
+type NamedKey = (u64, usize, i64, i64);
 
 fn item_names(it: &crate::state::Item) -> Vec<Id> {
     let mut out: Vec<Id> = it.commands.list.iter().filter_map(|c| c.tex()).collect();
@@ -95,7 +105,9 @@ fn item_names(it: &crate::state::Item) -> Vec<Id> {
 
 impl Names {
     pub fn clear(&mut self) {
+        let generation = self.generation + 1;
         *self = Names::default();
+        self.generation = generation;
     }
 
     pub fn is_named(&self, id: Id) -> bool {
@@ -107,6 +119,7 @@ impl Names {
         if all {
             self.clear();
         }
+        self.generation += 1;
         let touch = |names: &mut Names, id: Id, it: Option<&crate::state::Item>| {
             let new = it.map(item_names).unwrap_or_default();
             let new_mat = it.and_then(|i| i.material);
@@ -223,6 +236,33 @@ impl Names {
 
     /// The `ok` materials some item names (`_named_material_ids`), ascending.
     pub fn named_materials(&self, state: &ResolvedState) -> BTreeSet<Id> {
+        self.named_cached(state).0
+    }
+
+    /// The `ok` shaders of the named materials, whatever their code's source (`_named_shader_ids`).
+    pub fn named_shaders(&self, state: &ResolvedState) -> BTreeSet<Id> {
+        self.named_cached(state).1
+    }
+
+    fn named_cached(&self, state: &ResolvedState) -> (BTreeSet<Id>, BTreeSet<Id>) {
+        let key = (
+            self.generation,
+            state as *const ResolvedState as usize,
+            state.seq,
+            state.frame,
+        );
+        if let Some((k, m, s)) = self.named.borrow().as_ref() {
+            if *k == key {
+                return (m.clone(), s.clone());
+            }
+        }
+        let m = self.compute_named_materials(state);
+        let s = self.compute_named_shaders(state, &m);
+        *self.named.borrow_mut() = Some((key, m.clone(), s.clone()));
+        (m, s)
+    }
+
+    fn compute_named_materials(&self, state: &ResolvedState) -> BTreeSet<Id> {
         self.material_refs
             .iter()
             .filter(|(mid, n)| {
@@ -236,10 +276,9 @@ impl Names {
             .collect()
     }
 
-    /// The `ok` shaders of the named materials, whatever their code's source (`_named_shader_ids`).
-    pub fn named_shaders(&self, state: &ResolvedState) -> BTreeSet<Id> {
+    fn compute_named_shaders(&self, state: &ResolvedState, named: &BTreeSet<Id>) -> BTreeSet<Id> {
         let mut out = BTreeSet::new();
-        for mid in self.named_materials(state) {
+        for &mid in named {
             if let Some(sid) = state.materials.get(&mid).and_then(|m| m.shader) {
                 if state
                     .shaders

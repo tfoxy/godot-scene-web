@@ -1801,7 +1801,7 @@ impl Validator {
         fn absent<T>(
             label: &str,
             ids: &[i64],
-            map: &std::collections::BTreeMap<Id, T>,
+            map: &crate::state::IdTable<T>,
         ) -> Option<String> {
             ids.iter()
                 .find(|&&id| u32::try_from(id).map_or(true, |i| !map.contains_key(&i)))
@@ -3560,8 +3560,8 @@ mod tests {
     fn check_delta(prev: &ResolvedState, next: &ResolvedState, d: &TxDelta) {
         fn side<T: PartialEq + std::fmt::Debug>(
             what: &str,
-            prev: &std::collections::BTreeMap<Id, T>,
-            next: &std::collections::BTreeMap<Id, T>,
+            prev: &crate::state::IdTable<T>,
+            next: &crate::state::IdTable<T>,
             up: &[Id],
             rm: &[Id],
         ) {
