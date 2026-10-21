@@ -214,11 +214,42 @@ gs_strip_env_args() {
 	done < <(compgen -e | grep -E '^(RS|GRC)_' || true)
 }
 
+# G7q (gate7-design.md D4, fork F1, opt-in): GATE7_CREDIT_WINDOW=2 in a runner's environment (never
+# an RS_/GRC_ name: those are stripped) runs its live legs at credit window 2. A live host (an env
+# word GRC_LIVE_LISTEN=) gets GRC_LIVE_CREDIT_WINDOW_MAX=2 unless the leg sets it; browser
+# receivers ask for 2 (lib/legs.sh run_browser_receiver), and g6c's native receivers speak /7 at 2
+# (lib/gate6c-legs.sh). Default 1: every launch is exactly what it was.
+GATE7_CREDIT_WINDOW="${GATE7_CREDIT_WINDOW:-1}"
+case "$GATE7_CREDIT_WINDOW" in
+1 | 2) ;;
+*)
+	echo "GATE7_CREDIT_WINDOW must be 1 or 2 (got $GATE7_CREDIT_WINDOW)" >&2
+	exit 2
+	;;
+esac
+# gs_credit_window_words <env words...>: prints the words a window-2 run adds (none at window 1).
+gs_credit_window_words() {
+	[ "$GATE7_CREDIT_WINDOW" = 2 ] || return 0
+	local word listen=0
+	for word in "$@"; do
+		case "$word" in
+		GRC_LIVE_LISTEN=*) listen=1 ;;
+		GRC_LIVE_CREDIT_WINDOW_MAX=*) return 0 ;;
+		esac
+	done
+	[ "$listen" = 1 ] && echo "GRC_LIVE_CREDIT_WINDOW_MAX=2"
+	return 0
+}
+
 gs_launch_godot() {
 	local display="$1" binary="$2" project_dir="$3" log_file="$4"
 	shift 4
 	gs_require_live
 	gs_strip_env_args
+	local word
+	for word in $(gs_credit_window_words ${GS_GODOT_ENV[@]+"${GS_GODOT_ENV[@]}"}); do
+		GS_GODOT_ENV+=("$word")
+	done
 	env -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" \
 		XDG_SESSION_TYPE=x11 DISPLAY="$display" "${GS_GODOT_ENV[@]}" \
 		"$binary" --path "$project_dir" --rendering-driver opengl3 --display-driver x11 "$@" \

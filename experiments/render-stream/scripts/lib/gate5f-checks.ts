@@ -72,6 +72,7 @@ import {
   loadResolved,
 } from "./gate2b-checks";
 import {
+  appliedAs,
   coldFetchedHashes,
   connTimelines,
   connTimelinesAtCallback,
@@ -378,7 +379,10 @@ export function staleFromOfSeq(
 /** Every settle step's checkpoint against reference-live's step shot, per region, with
  * `benign` and `stale_exact` judged from the host's own wire (see G5fCheckpoint's doc). */
 export async function g5fCheckpoints(
-  expected: { regions: Record<string, readonly number[]> },
+  expected: {
+    regions: Record<string, readonly number[]>;
+    steps?: readonly Pick<Gate5MeshStep, "step" | "fresh">[];
+  },
   e: G5fLegEvidence,
   referenceDir: string,
 ): Promise<G5fCheckpoint[]> {
@@ -430,10 +434,45 @@ export async function g5fCheckpoints(
         onlyDf && wireStateEqualsFullAtFrame(e.host, cp.frame) === true;
     if (e.host) {
       cp.stale_from = staleFromOfSeq(e.host, cp.seq);
-      if (cp.stale_from !== null)
+      if (cp.stale_from !== null) {
+        // G7q: a stale send can carry a snapshot from before a step the shot's frame is past (at
+        // credit window 2 the host repeats the stale target while it is in flight, so it can
+        // reach back past a step boundary). Its pixels then differ from the step shot in DF and
+        // in every region the fresh table says those steps touch, and only there. With no step
+        // between, that is DF alone, the window-1 rule.
+        const allowed = new Set([G5F_CONTINUOUS_REGION]);
+        const sf = cp.stale_from;
+        for (const st of expected.steps ?? [])
+          if (
+            st.step >= 1 &&
+            G5F_START_FRAME + G5F_STEP_FRAMES * st.step > sf &&
+            G5F_START_FRAME + G5F_STEP_FRAMES * st.step <= (cp.frame ?? 0)
+          )
+            for (const [name, fresh] of Object.entries(st.fresh))
+              if (fresh) allowed.add(name);
+        const boxes = [...allowed]
+          .map((n) => expected.regions[n])
+          .filter((b): b is readonly number[] => b !== undefined);
+        let outside = 0;
+        for (let y = 0; y < ref.height; y++)
+          for (let x = 0; x < ref.width; x++) {
+            const i = (y * ref.width + x) * 4;
+            if (
+              ref.data[i] === got.data[i] &&
+              ref.data[i + 1] === got.data[i + 1] &&
+              ref.data[i + 2] === got.data[i + 2] &&
+              ref.data[i + 3] === got.data[i + 3]
+            )
+              continue;
+            if (
+              !boxes.some((b) => x >= b[0] && x < b[2] && y >= b[1] && y < b[3])
+            )
+              outside++;
+          }
         cp.stale_exact =
-          (cp.mismatched_pixels === 0 || onlyDf) &&
+          (cp.mismatched_pixels === 0 || outside === 0) &&
           wireStateEqualsFullAtFrame(e.host, cp.frame, cp.stale_from) === true;
+      }
     }
   }
   return out;
@@ -892,8 +931,16 @@ export function checkMeshFetchesLatestOnly(evals: Evals): G2bCheck {
         typeof f.start_us === "number" &&
         typeof stall.send_frame === "number",
     );
+    // G7q: at credit window 2 the recovery may be folded into the next send (one apply): a fetch
+    // made for either is the apply's (`appliedAs`); at window 1 that is the recovery itself.
+    const txs = ev.e.applied?.transactions ?? [];
+    const applyOf = (seq: number | undefined) =>
+      appliedAs(
+        txs,
+        txs.find((t) => (t.stream ?? 1) === 1 && t.seq === seq),
+      )?.seq ?? seq;
     const fetchesForRecovery = (ev.e.applied?.fetches ?? []).filter(
-      (f) => f.seq === r.seq,
+      (f) => applyOf(f.seq) === applyOf(r.seq),
     );
     if (fetchesForRecovery.length === 0)
       problems.push(`no fetch recorded for the recovery seq ${r.seq}`);

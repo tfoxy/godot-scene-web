@@ -155,6 +155,14 @@
 #             after), so no Chromium start-up lands in a timed window. check-gate7.ts --live judges
 #             them (lib/gate7r-checks.ts). Timing legs: each holds the quiet lock exclusive.
 #
+# --credit-window 1|2 (G7q, protocol/gate7/g7q.md; fork F1, opt-in; `--live` only): exports
+# GATE7_CREDIT_WINDOW to the gate runners, so every live host's GRC_LIVE_CREDIT_WINDOW_MAX and
+# every live browser receiver's hello ask for that window (lib/gamescope.sh, lib/legs.sh), and
+# g6c's native receivers speak /7 at it (lib/gate6c-legs.sh). With g7-r, each kind runs the
+# window-2 list instead (G7R_W2_LEGS_<kind>: rate-baseline, phase-60 x5, then constrained for a
+# browser or the window-overrun sabotage natively), judged by g7rLegs(kind, 2) and its
+# phase-window2-rate check. Default 1: every run is what it was.
+#
 # Group landed (G7u, protocol/gate7/g7u.md, g7u-as-built.md, D14; `--live` only): suspension
 #   g7-lc     and lifecycle in both browser receivers. G6l's group is reused: run-gate6.sh --legs
 #             g6l runs once per browser kind (`--receiver web|gsw`, else both) with G7U_LEGS naming
@@ -238,6 +246,10 @@ G7R_BROWSER_RATES=rate-baseline,rate-15,rate-30,rate-60,rate-uncapped-host60,rat
 G7R_LEGS_native="rate-baseline,$G7R_PHASE,$G7R_LATE"
 G7R_LEGS_web="$G7R_BROWSER_RATES,$G7R_PHASE,$G7R_LATE,dual-native,constrained"
 G7R_LEGS_gsw="$G7R_BROWSER_RATES,$G7R_PHASE,dual-native,constrained,sabotage-ack-on-receipt"
+# G7q (--credit-window 2): the window-2 lists (lib/gate7r-checks.ts g7rLegs(kind, 2)).
+G7R_W2_LEGS_native="rate-baseline,$G7R_PHASE,sabotage-constrained-window-overrun"
+G7R_W2_LEGS_web="rate-baseline,$G7R_PHASE,constrained"
+G7R_W2_LEGS_gsw="rate-baseline,$G7R_PHASE,constrained"
 G7R_NATIVE_CORE="${RS_RECEIVER_CORE:-rust}"
 
 OUT=""
@@ -344,6 +356,11 @@ while [ $# -gt 0 ]; do
 		;;
 	--web-core)
 		WEB_CORE="${2:-}"
+		shift 2
+		;;
+	--credit-window)
+		# G7q (fork F1, opt-in): every live leg at credit window 2 (lib/gamescope.sh).
+		export GATE7_CREDIT_WINDOW="$2"
 		shift 2
 		;;
 	--web-fetch)
@@ -655,6 +672,7 @@ if [ "$LIVE" = "1" ]; then
 			kind="${kb%%:*}"
 			bundle_dir="${kb#*:}"
 			legs_var="G7R_LEGS_$kind"
+			[ "$GATE7_CREDIT_WINDOW" = 2 ] && legs_var="G7R_W2_LEGS_$kind"
 			g7r_legs="${G7R_LEGS:-${!legs_var}}"
 			run_dir="$OUT/gate6/rates-$kind"
 			echo "run-gate7: g7-r @$kind: run-gate6.sh --legs g6c (G6C_LEGS=$g7r_legs) into $run_dir" >&2

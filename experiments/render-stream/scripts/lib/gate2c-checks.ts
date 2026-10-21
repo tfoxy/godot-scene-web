@@ -205,6 +205,22 @@ export interface G2cTransaction {
   submitted_us?: number | null;
   skipped?: string | null;
   resources?: Record<string, number> | null;
+  /** G7q (credit window 2): applied and drawn with this later seq (receiver.gd's fold). */
+  coalesced_into?: number;
+}
+
+/** G7q: the transaction a receiver actually applied for `t`: `t` itself, or at credit window 2
+ * the later one it was folded into (its applied facts, resources and uploads are that one's). */
+export function appliedAs(
+  txs: readonly G2cTransaction[],
+  t: G2cTransaction | undefined,
+): G2cTransaction | undefined {
+  if (t?.coalesced_into === undefined) return t;
+  return (
+    txs.find(
+      (x) => (x.stream ?? 1) === (t.stream ?? 1) && x.seq === t.coalesced_into,
+    ) ?? t
+  );
 }
 
 export interface G2cApplied {
@@ -475,14 +491,37 @@ export interface ConnTimeline {
   n: number;
   sends: ResolvedTransaction[];
   closed: number | null;
+  /** G7q (credit window 2): each frame line's `in_flight_seqs`, by frame (absent at window 1,
+   * where the base is the only in-flight transaction). */
+  inFlight?: Map<number, number[]>;
 }
 
 export function connTimelines(host: G2cHost): ConnTimeline[] {
-  return host.connections.map((c) => ({
-    n: c.n,
-    sends: c.tap.recording?.transactions ?? [],
-    closed: closeFrame(c.host.log),
-  }));
+  return host.connections.map((c) => {
+    const inFlight = new Map<number, number[]>();
+    for (const l of c.host.log ?? []) {
+      const seqs = (l as { in_flight_seqs?: number[] }).in_flight_seqs;
+      if (Array.isArray(seqs) && typeof l.state === "string")
+        inFlight.set(l.frame, seqs);
+    }
+    return {
+      n: c.n,
+      sends: c.tap.recording?.transactions ?? [],
+      closed: closeFrame(c.host.log),
+      ...(inFlight.size > 0 ? { inFlight } : {}),
+    };
+  });
+}
+
+/** G7q: every in-flight transaction of a window-2 connection after the callback at `frame`
+ * (the host pins each one's payloads, not only the base's). Empty at window 1. */
+export function inFlightAt(
+  c: ConnTimeline,
+  frame: number,
+): ResolvedTransaction[] {
+  if (!c.inFlight || (c.closed !== null && frame >= c.closed)) return [];
+  const seqs = c.inFlight.get(frame) ?? [];
+  return c.sends.filter((t) => seqs.includes(t.seq));
 }
 
 /** The base (last transaction sent) of a connection after the callback at `frame`, or null when
@@ -562,6 +601,8 @@ export function pinsReport(
     for (const c of conns) {
       const base = baseAt(c, f);
       if (base) for (const h of hashesOf(base)) expected.add(h);
+      for (const t of inFlightAt(c, f))
+        for (const h of hashesOf(t)) expected.add(h);
     }
     while (k < serving.length && serving[k].frame === f) {
       const l = serving[k++];
@@ -714,10 +755,14 @@ export function fetchesAfterApplied(a: G2cApplied | undefined): string[] {
   );
   for (const f of a?.fetches ?? []) {
     if (f.source !== "http") continue;
-    const t = tx.get(`${f.stream ?? 1}:${f.seq}`);
+    // G7q: a fetch for a transaction folded into a later one belongs to that one.
+    const t = appliedAs(
+      a?.transactions ?? [],
+      tx.get(`${f.stream ?? 1}:${f.seq}`),
+    );
     const applied = t?.applied_us;
     if (typeof applied !== "number") {
-      if (a?.failure?.seq !== f.seq)
+      if (a?.failure?.seq !== f.seq && a?.failure?.seq !== t?.seq)
         out.push(
           `fetch ${f.hash?.slice(0, 12)} for seq ${f.seq}: that seq was never applied`,
         );
@@ -1720,7 +1765,29 @@ export function checkStallNewestTexture(evals: Evals): G2bCheck {
     const aId = ids.get("A");
     const a1 = fixtureHash(host, "A", "texture_2d_update");
     const tx = (a.transactions ?? []).filter((t) => (t.stream ?? 1) === 1);
-    const after = tx.find((t) => (t.seq ?? 0) > (stall.after_seq ?? 0));
+    // G7q: at credit window w the stalled seq's w - 1 free slots let that many sends out during
+    // the stall (seqs after it, sent before its credit, from the host log); the recovery is the
+    // first send after them, applied alone or folded with the next (its picture is that apply's).
+    const log = host.connections[0]?.host.log ?? [];
+    const creditAt = log.findIndex(
+      (l) =>
+        (l.event === "ack" || l.event === "resync") &&
+        l.credited === true &&
+        l.seq === stall.after_seq,
+    );
+    const inStall = log
+      .slice(0, creditAt < 0 ? 0 : creditAt)
+      .filter(
+        (l) =>
+          l.event === undefined &&
+          l.sent &&
+          !l.sent.dropped &&
+          l.sent.seq > (stall.after_seq ?? 0),
+      ).length;
+    const recovery = tx.find(
+      (t) => (t.seq ?? 0) > (stall.after_seq ?? 0) + inStall,
+    );
+    const after = appliedAs(tx, recovery);
     const f6 = liveStepFrame(host.timeline, 6);
     const f7 = liveStepFrame(host.timeline, 7);
     if (!after) problems.push("no transaction after the stall");
@@ -1742,7 +1809,13 @@ export function checkStallNewestTexture(evals: Evals): G2bCheck {
           `seq ${after.seq} names A (id ${aId}) with hash ${entry?.hash?.slice(0, 12)}, A1 is ${a1?.slice(0, 12)}`,
         );
       const fetches = (a.fetches ?? []).filter((f) => f.hash === a1);
-      if (fetches.length !== 1 || fetches[0].seq !== after.seq)
+      // G7q: a fetch made for a seq folded into `after` counts as `after`'s.
+      const fetchSeq = (f: (typeof fetches)[number]) =>
+        appliedAs(
+          tx,
+          tx.find((t) => t.seq === f.seq),
+        )?.seq ?? f.seq;
+      if (fetches.length !== 1 || fetchSeq(fetches[0]) !== after.seq)
         problems.push(
           `A1 fetched ${fetches.length} time(s) (seqs ${fetches.map((f) => f.seq).join(",")}), expected once for seq ${after.seq}`,
         );
@@ -1775,11 +1848,14 @@ export function checkReconnectNoRefetch(evals: Evals): G2bCheck {
     problems.push(`${host.connections.length} connections, expected 2`);
   else {
     const tx2 = (a.transactions ?? []).filter((t) => t.stream === 2);
-    const first = tx2[0];
+    // G7q: at credit window 2 connection 2's seq 1 may be folded into seq 2; its resources and
+    // uploads are then seq 2's (the full transaction's encoding is still checked on seq 1).
+    const opening = tx2[0];
+    const first = appliedAs(tx2, opening);
     const tap2 = host.connections[1].tap.recording?.transactions ?? [];
-    if (first?.encoding !== "full")
+    if (opening?.encoding !== "full")
       problems.push(
-        `connection 2 starts with ${first?.encoding ?? "nothing"}, not full`,
+        `connection 2 starts with ${opening?.encoding ?? "nothing"}, not full`,
       );
     const res = first?.resources ?? {};
     // G7l: a browser receiver's disk cache is its browser's HTTP cache (`http-cache`, Q4), which

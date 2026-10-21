@@ -205,6 +205,9 @@ export interface LiveEntry {
   /** G7mm: processFrames of the callback that sent the `submitted` ack */
   submitted_process_frame: number | null;
   skipped: string | null;
+  /** G7q (credit window 2 only): the seq this transaction was applied and drawn with, when the
+   * receiver applied several queued transactions in one callback (only the last is drawn). */
+  coalesced_into?: number;
   /** Q9 `credit-from-paced-loop` evidence (GSW only): the rAF callback that applied and drew
    * this transaction (its index and timestamp), and when its `submitted` ack was sent and from
    * where (`raf`, or `onmessage` under the `ack-on-receipt` sabotage). */
@@ -340,6 +343,10 @@ export function appliedJson(r: Report): Record<string, unknown> {
             submitted_us: e.submitted_us,
             submitted_process_frame: e.submitted_process_frame,
             skipped: e.skipped,
+            // G7q (credit window 2 only): applied and drawn with this later seq.
+            ...(e.coalesced_into !== undefined
+              ? { coalesced_into: e.coalesced_into }
+              : {}),
             resources: applied ? resourcesOf(t, s) : null,
             paced: e.paced,
           };

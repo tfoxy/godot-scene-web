@@ -121,13 +121,15 @@
 // request carrying any other Origin gets 403 on every route, logged to stdout.log as
 // `live: 403 origin <origin> ...` (an OriginRejected event), and an allowed origin's resource
 // GETs and preflights speak CORS. A preflight is an http-get hook-log line with
-// "method":"OPTIONS". GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 1) caps the hello's window; the
-// host itself grants at most 1 until G7q. Listener sabotages (GRC_SABOTAGE, all need
+// "method":"OPTIONS". GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 1) caps the hello's window
+// (G7q implements window 2, fork F1, opt-in). Listener sabotages (GRC_SABOTAGE, all need
 // GRC_LIVE_LISTEN): no-cors (no Access-Control-* header at all), accept-any-origin (the
-// allowlist is ignored) and token-ignored (a wrong /7 hello token is not refused; needs
-// GRC_LIVE_AUTH=token). They act on the listener only, never on a record, so the wire declares
-// no sabotage for them (the session's `sabotage` stays null): evidence/live.json carries
-// `listener_sabotage` instead.
+// allowlist is ignored), token-ignored (a wrong /7 hello token is not refused; needs
+// GRC_LIVE_AUTH=token) and window-overrun (G7q: from GRC_SABOTAGE_FRAME on, default 1, every
+// connection keeps publishing at each due tick past a full credit window, the third in flight
+// at window 2 and every one after). They act on the listener only, never on a record, so the
+// wire declares no sabotage for them (the session's `sabotage` stays null): evidence/live.json
+// carries `listener_sabotage` instead.
 
 #include <sys/random.h>
 #include <sys/stat.h>
@@ -266,7 +268,8 @@ struct Live {
   bool stopped = false;
   uint64_t linger_deadline_ns = 0;
   // G7n (live.json): GRC_LIVE_ALLOWED_ORIGINS as parsed, GRC_LIVE_CREDIT_WINDOW_MAX, and the
-  // listener sabotage (no-cors | accept-any-origin | token-ignored; empty when none).
+  // listener sabotage (no-cors | accept-any-origin | token-ignored | window-overrun; empty when
+  // none).
   std::vector<std::string> allowed_origins;
   uint64_t credit_window_max = 1;
   std::string listener_sabotage;
@@ -278,7 +281,8 @@ bool is_listener_sabotage(const char *kind) {
     return false;
   }
   const std::string text(kind);
-  return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored";
+  return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored" ||
+         text == "window-overrun";
 }
 
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
@@ -723,7 +727,11 @@ void perf_timeline_tick(uint64_t now_ns) {
               // each tick (Hub::summaries()). It only ever grows (render-stream-2.md's
               // resource-duplicate rule means a carried hash is never forgotten), so the check
               // here is on its growth rate, not on it staying flat.
-              ",\"carried_size\":" + std::to_string(s.carried_size) + "}";
+              ",\"carried_size\":" + std::to_string(s.carried_size) +
+              // G7q: a window-2 connection's grant (credit capacity is w / RTT); absent at 1.
+              (s.credit_window > 1 ? ",\"credit_window\":" + std::to_string(s.credit_window)
+                                   : std::string()) +
+              "}";
     }
   }
   line += "]}";
@@ -1313,6 +1321,11 @@ void stream_start() {
     } else if (g_live.listener_sabotage == "token-ignored" && auth_mode != "token") {
       live_ok = false;
       why = "sabotage token-ignored needs GRC_LIVE_AUTH=token";
+    } else if (g_live.listener_sabotage == "window-overrun" &&
+               !env_positive("GRC_SABOTAGE_FRAME", 1, &live_config.window_overrun_frame)) {
+      // G7q: the frame the overrun starts at (default 1, from the first send).
+      live_ok = false;
+      why = "sabotage window-overrun: invalid GRC_SABOTAGE_FRAME (a positive frame)";
     }
     g_live.credit_window_max = live_config.credit_window_max;
     // G2e: generated only once every other live setting is known good, so a usage error never

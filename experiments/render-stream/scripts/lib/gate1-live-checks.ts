@@ -259,6 +259,12 @@ export interface LiveLogLine {
   /** G2b2 `resource` event lines: the payload sent inline */
   hash?: string;
   bytes?: number;
+  /** G7q (credit window 2): a /7 hello line's grant */
+  credit_window_granted?: number;
+  /** G7q: a window-2 frame line's every in-flight seq, oldest first */
+  in_flight_seqs?: number[];
+  /** G7q: a resync line's later in-flight seqs whose slots it returned */
+  discarded?: number[];
 }
 
 export function parseLiveLog(
@@ -430,6 +436,8 @@ export function stateKey(t: RecordingSummary["transactions"][number]): string {
 
 export interface DeliveryReport {
   credit_stage: string | null;
+  /** G7q: the connection's granted credit window (the /7 hello line's grant; 1 below /7) */
+  window: number;
   frame_lines: number;
   sends: number;
   dropped: number;
@@ -440,7 +448,7 @@ export interface DeliveryReport {
   /** sends logged with `credit: false` */
   sent_without_credit: string[];
   max_queued_bytes: number;
-  /** the largest credit window + QUEUED_SLACK_BYTES */
+  /** the `window` largest credit windows + QUEUED_SLACK_BYTES */
   queued_limit: number | null;
   queued_violations: string[];
   /** tapped transactions whose resolved state differs from the full recording at their frame */
@@ -473,30 +481,39 @@ export function largestMessage(
  * resource records, up to the session joining seq 1's window. */
 export function largestCreditWindow(
   tapBytes: Uint8Array | undefined,
+  creditWindow = 1,
 ): number | null {
   if (!tapBytes) return null;
   const { records } = splitRecords(tapBytes, wireVersionOf(tapBytes));
   if (records.length === 0) return null;
-  let largest = 0;
+  const windows: number[] = [];
   let window = 8;
   for (const raw of records) {
     window += raw.byte_length;
     const type = decodeRecord(raw, wireVersionOf(tapBytes)).record?.meta.type;
     if (type === "transaction" || type === "end") {
-      largest = Math.max(largest, window);
+      windows.push(window);
       window = 0;
     }
   }
-  return Math.max(largest, window);
+  windows.push(window);
+  // G7q: at credit window w, up to w sends may be queued at once: the w largest windows.
+  windows.sort((a, b) => b - a);
+  return windows
+    .slice(0, Math.max(1, creditWindow))
+    .reduce((sum, w) => sum + w, 0);
 }
 
 export function deliveryReport(host: LiveHostEvidence): DeliveryReport {
   const log = host.log ?? [];
   const hello = log.find((l) => l.event === "hello");
   const creditStage = hello?.credit_stage ?? null;
+  // G7q: the granted window (pending-bounded generalized: max_in_flight <= w).
+  const creditWindow = hello?.credit_window_granted ?? 1;
   const outstanding = new Set<number>();
   const out: DeliveryReport = {
     credit_stage: creditStage,
+    window: creditWindow,
     frame_lines: 0,
     sends: 0,
     dropped: 0,
@@ -510,13 +527,16 @@ export function deliveryReport(host: LiveHostEvidence): DeliveryReport {
     compared_states: 0,
     send_gaps: [],
   };
-  const largest = largestCreditWindow(host.tapBytes);
+  const largest = largestCreditWindow(host.tapBytes, creditWindow);
   out.queued_limit = largest === null ? null : largest + QUEUED_SLACK_BYTES;
   let lastSendFrame: number | null = null;
   for (const line of log) {
     if (line.event === "ack" || line.event === "resync") {
       const credits = line.event === "resync" || line.stage === creditStage;
       if (credits && line.seq !== undefined) outstanding.delete(line.seq);
+      // G7q: a resync returns every later in-flight slot too (the host lists them).
+      if (line.event === "resync" && line.credited === true)
+        for (const seq of line.discarded ?? []) outstanding.delete(seq);
       continue;
     }
     if (line.event !== undefined || line.state === undefined) continue;
@@ -538,9 +558,9 @@ export function deliveryReport(host: LiveHostEvidence): DeliveryReport {
     out.sends++;
     if (lastSendFrame !== null) out.send_gaps.push(line.frame - lastSendFrame);
     lastSendFrame = line.frame;
-    if (outstanding.size > 0)
+    if (outstanding.size >= creditWindow)
       out.in_flight_violations.push(
-        `frame ${line.frame}: seq ${sent.seq} sent while seq ${[...outstanding].join(",")} had no credit`,
+        `frame ${line.frame}: seq ${sent.seq} sent while seq ${[...outstanding].join(",")} had no credit${creditWindow > 1 ? ` (window ${creditWindow})` : ""}`,
       );
     outstanding.add(sent.seq);
     out.max_in_flight = Math.max(out.max_in_flight, outstanding.size);
@@ -1370,10 +1390,11 @@ export function checkLiveCreditBounded(evals: Evals): Gate1Check {
       ...d.queued_violations,
     ].slice(0, 3))
       problems.push(`${e.leg}: ${v}`);
-    if (d.max_in_flight > 1)
+    // G7q: bounded by the granted credit window (1 below /7).
+    if (d.max_in_flight > d.window)
       problems.push(`${e.leg}: max in flight ${d.max_in_flight}`);
     const summary = e.host.summary?.connections?.[0];
-    if (summary && (summary.max_in_flight ?? 0) > 1)
+    if (summary && (summary.max_in_flight ?? 0) > d.window)
       problems.push(
         `${e.leg}: the host reports max_in_flight ${summary.max_in_flight}`,
       );

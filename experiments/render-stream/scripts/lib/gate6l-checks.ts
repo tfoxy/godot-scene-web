@@ -61,6 +61,7 @@ import {
   loadResolved,
 } from "./gate2b-checks";
 import {
+  appliedAs,
   coldFetchedHashes,
   fetchesAfterApplied,
   type G2cApplied,
@@ -554,6 +555,8 @@ export interface AppliedTx {
   fetched: number;
   /** receiver clock: from reading the transaction to its submitted ack (null when unknown) */
   receive_to_submit_us: number | null;
+  /** G7q (credit window >= 2): the later seq this one was applied and drawn with */
+  coalesced_into?: number | null;
   /** G7mm: the receiver frame that read the transaction, and the frame of its `submitted` ack;
    * absent (older evidence) or null when unknown. A hold counts in frames when both are numbers. */
   received_process_frame?: number | null;
@@ -593,6 +596,7 @@ export function appliedTransactions(a: G6lApplied | undefined): AppliedTx[] {
         typeof t.received_us === "number" && typeof t.submitted_us === "number"
           ? t.submitted_us - t.received_us
           : null,
+      coalesced_into: t.coalesced_into ?? null,
       received_process_frame:
         typeof t.received_process_frame === "number"
           ? t.received_process_frame
@@ -641,6 +645,10 @@ export function evaluateMotionMonotonic(
   stallSeq: number | null,
   from: number,
   to: number,
+  /** G7q: the granted credit window w. The host is blocked after sending p only while all w
+   * slots are held, so the slot that lets the next send out is seq p - w + 1's (p itself at
+   * window 1): the gap after p is that transaction's hold, not p's. */
+  window = 1,
 ): MotionReport {
   const out: MotionReport = {
     problems: [],
@@ -675,17 +683,22 @@ export function evaluateMotionMonotonic(
     out.gaps[String(gap)] = (out.gaps[String(gap)] ?? 0) + 1;
     out.max_gap = Math.max(out.max_gap, gap);
     if (gap <= G6L_MAX_GAP) continue;
-    if (stallSeq !== null && p.seq === stallSeq && p.stream === 1) {
+    const slotSeq = p.seq - (window - 1);
+    const b =
+      window > 1
+        ? (tx.find((t) => t.stream === p.stream && t.seq === slotSeq) ?? p)
+        : p;
+    if (stallSeq !== null && b.seq === stallSeq && b.stream === 1) {
       add("stall");
       continue;
     }
-    const hold = heldOverFrame(p);
+    const hold = heldOverFrame(b);
     if (hold.held) {
       out.hold_basis[hold.basis] = (out.hold_basis[hold.basis] ?? 0) + 1;
       add(
-        p.fetched > 0
+        b.fetched > 0
           ? "receiver-fetch"
-          : shots.has(`${p.stream}:${p.seq}`)
+          : shots.has(`${b.stream}:${b.seq}`)
             ? "receiver-shot"
             : "receiver-frame",
       );
@@ -693,11 +706,11 @@ export function evaluateMotionMonotonic(
     }
     if (out.problems.length < 8)
       out.problems.push(
-        `stream ${n.stream}: frames ${p.frame} -> ${n.frame} (gap ${gap}) although the receiver held seq ${p.seq} only ${
-          p.received_process_frame != null && p.submitted_process_frame != null
-            ? `${p.submitted_process_frame - p.received_process_frame} frames, ${p.receive_to_submit_us ?? "?"} us`
-            : `${p.receive_to_submit_us ?? "?"} us`
-        }`,
+        `stream ${n.stream}: frames ${p.frame} -> ${n.frame} (gap ${gap}) although the receiver held seq ${b.seq} only ${
+          b.received_process_frame != null && b.submitted_process_frame != null
+            ? `${b.submitted_process_frame - b.received_process_frame} frames, ${b.receive_to_submit_us ?? "?"} us`
+            : `${b.receive_to_submit_us ?? "?"} us`
+        }${window > 1 ? ` (window ${window})` : ""}`,
       );
   }
   return out;
@@ -707,6 +720,12 @@ export function evaluateMotionMonotonic(
  * The host's side of the cadence (pure): for every send after the first, the number of frame
  * callbacks between the credit for the previous seq (its crediting ack or resync line) and the
  * send; 0 means the first callback after the credit sent.
+ *
+ * G7q (credit window w, the log's hello grant; 1 below /7): a send needs a free slot, the one
+ * seq N - w held (the w-th send back; at window 1 the previous one). The host sends at the first
+ * callback with a free slot, one send per callback, so the delay counts the callbacks after the
+ * later of that slot's credit and the previous send. A resync line's `discarded` seqs are
+ * credited with it.
  */
 export function creditToSend(log: readonly LiveLogLine[] | undefined): {
   delays: Record<string, number>;
@@ -715,36 +734,54 @@ export function creditToSend(log: readonly LiveLogLine[] | undefined): {
   const delays: Record<string, number> = {};
   const problems: string[] = [];
   const lines = log ?? [];
+  const window =
+    lines.find((l) => l.event === "hello")?.credit_window_granted ?? 1;
   const creditIndex = new Map<number, number>();
-  let last: number | null = null;
+  const sent: { seq: number; index: number }[] = [];
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     if (
       (l.event === "ack" || l.event === "resync") &&
       l.credited === true &&
       l.seq !== undefined
-    )
+    ) {
       creditIndex.set(l.seq, i);
+      if (l.event === "resync")
+        for (const d of l.discarded ?? []) creditIndex.set(d, i);
+    }
     if (l.event !== undefined || !l.sent || l.sent.dropped) continue;
-    if (last !== null) {
-      const ci = creditIndex.get(last);
-      if (ci === undefined)
+    if (sent.length >= window) {
+      const slot = sent[sent.length - window];
+      const ci = creditIndex.get(slot.seq);
+      if (ci === undefined || ci > i)
         problems.push(
-          `frame ${l.frame}: seq ${l.sent.seq} sent before seq ${last} was credited`,
+          `frame ${l.frame}: seq ${l.sent.seq} sent before seq ${slot.seq} was credited${window > 1 ? ` (window ${window})` : ""}`,
         );
       else {
+        const since = Math.max(ci, sent[sent.length - 1].index);
         let callbacks = 0;
-        for (let j = ci + 1; j < i; j++)
+        for (let j = since + 1; j < i; j++)
           if (lines[j].event === undefined && lines[j].state !== undefined)
             callbacks++;
         delays[String(callbacks)] = (delays[String(callbacks)] ?? 0) + 1;
         if (callbacks > 0 && problems.length < 4)
           problems.push(
-            `frame ${l.frame}: seq ${l.sent.seq} sent ${callbacks} callbacks after seq ${last}'s credit`,
+            `frame ${l.frame}: seq ${l.sent.seq} sent ${callbacks} callbacks after seq ${slot.seq}'s credit${window > 1 ? ` freed a slot (window ${window})` : ""}`,
           );
       }
+    } else if (sent.length > 0) {
+      // G7q: a free slot from the start (window >= 2): the next callback after the last send.
+      let callbacks = 0;
+      for (let j = sent[sent.length - 1].index + 1; j < i; j++)
+        if (lines[j].event === undefined && lines[j].state !== undefined)
+          callbacks++;
+      delays[String(callbacks)] = (delays[String(callbacks)] ?? 0) + 1;
+      if (callbacks > 0 && problems.length < 4)
+        problems.push(
+          `frame ${l.frame}: seq ${l.sent.seq} sent ${callbacks} callbacks after the previous send with a slot free (window ${window})`,
+        );
     }
-    last = l.sent.seq;
+    sent.push({ seq: l.sent.seq, index: i });
   }
   return { delays, problems };
 }
@@ -990,9 +1027,15 @@ function stallOf(ev: G6lLegEvidence): StallReport | null {
  * window, trying windows in list order, so these and only these may be missed: windows wholly
  * inside the stall or the reconnect, and a window whose only candidate (the stall's recovery, for
  * one) was taken by a settle window listed before it.
+ *
+ * G7q (credit window w >= 2): a receiver applies several queued transactions in one frame and
+ * draws only the newest, so the candidates are the applies, each at its newest transaction's
+ * frame: a transaction folded into a later one (`coalesced_into`) was never drawn on its own and
+ * is no candidate (none is folded at window 1). The stall's recovery folded with the next send,
+ * for one, leaves one apply in both a settle window and a motion window.
  */
 export function windowsWithoutCandidate(
-  tx: readonly Pick<AppliedTx, "stream" | "seq" | "frame">[],
+  tx: readonly Pick<AppliedTx, "stream" | "seq" | "frame" | "coalesced_into">[],
   shots: ReadonlyMap<string, number>,
   windows: readonly ShotWindow[] = g6lWindows(),
 ): number[] {
@@ -1000,6 +1043,8 @@ export function windowsWithoutCandidate(
     .filter(
       (w) =>
         !tx.some((t) => {
+          if (t.coalesced_into !== undefined && t.coalesced_into !== null)
+            return false;
           const shotFor = shots.get(`${t.stream}:${t.seq}`);
           return (
             t.frame >= w.from &&
@@ -1363,17 +1408,23 @@ export function judgeMotionLeg(
     delays: Record<string, number>;
     problems: string[];
   }> | null,
+  /** G7q: the granted credit window (the host's hello line); else the receiver's own record of
+   * the session's publication.credit_window, else 1 */
+  window?: number,
 ): { report: MotionReport; problems: string[]; note: string } {
   const problems: string[] = [];
   const shots = new Set(
     (applied.shots ?? []).map((s) => `${s.stream ?? 1}:${s.seq}`),
   );
+  const recorded = (applied as { receiver?: { credit_window?: unknown } })
+    .receiver?.credit_window;
   const r = evaluateMotionMonotonic(
     appliedTransactions(applied),
     shots,
     applied.live?.stall?.after_seq ?? null,
     G6L_MOTION_FIRST,
     G6L_QUIT_FRAME,
+    window ?? (typeof recorded === "number" ? recorded : 1),
   );
   for (const c of credit ?? []) {
     for (const [k, v] of Object.entries(c.delays))
@@ -1447,6 +1498,7 @@ export function checkMotionMonotonic(evals: Evals): {
       l.leg,
       ev.ev.applied,
       ev.digest?.credit_to_send ?? null,
+      ev.delivery[0]?.window,
     );
     reports[l.leg] = j.report;
     problems.push(...j.problems);
@@ -1455,7 +1507,7 @@ export function checkMotionMonotonic(evals: Evals): {
   return {
     check: check(
       "motion-monotonic",
-      "on every g6l receiver the applied host frames strictly increase per connection; every host sends each transaction at the first frame callback after its predecessor's credit; from frame 320 to the quit, consecutive applied frames differ by at most 2 at 60/60, except after the stalled seq, across the reconnect, or where the receiver itself held the earlier transaction from receipt to its submitted ack, either over a frame boundary (submitted in a later receiver frame than it was read in) or for more than 16.667 ms (an HTTP fetch, a shot and its state dump, or a slow frame; As built G6l)",
+      "on every g6l receiver the applied host frames strictly increase per connection; every host sends each transaction at the first frame callback after its predecessor's credit (at credit window w: after the credit of the seq w sends back freed its slot, G7q); from frame 320 to the quit, consecutive applied frames differ by at most 2 at 60/60, except after the stalled seq, across the reconnect, or where the receiver itself held the earlier transaction (at window w: the one whose slot the next send took, w - 1 seqs before it) from receipt to its submitted ack, either over a frame boundary (submitted in a later receiver frame than it was read in) or for more than 16.667 ms (an HTTP fetch, a shot and its state dump, or a slow frame; As built G6l)",
       problems,
       notes.join("; "),
       evidenceOf(
@@ -1546,7 +1598,8 @@ export function checkPendingBounded(evals: Evals): Gate6Check {
         ...d.queued_violations,
       ].slice(0, 2))
         problems.push(`${l.leg} connection ${c.n}: ${v}`);
-      if (d.max_in_flight > 1 || (s?.max_in_flight ?? 0) > 1)
+      // G7q: bounded by the granted credit window w (1 below /7).
+      if (d.max_in_flight > d.window || (s?.max_in_flight ?? 0) > d.window)
         problems.push(
           `${l.leg} connection ${c.n}: max in flight ${d.max_in_flight} (host ${s?.max_in_flight})`,
         );
@@ -1557,23 +1610,26 @@ export function checkPendingBounded(evals: Evals): Gate6Check {
     });
     if (l.stall) {
       const st = ev.stall;
+      // G7q: at window w the stalled seq's w - 1 free slots let that many sends out before the
+      // window is full (none at window 1).
+      const w = ev.delivery[0]?.window ?? 1;
       if (!st || st.send_frame === null || st.credit_frame === null)
         problems.push(`${l.leg}: the stall is not visible in the host log`);
-      else if (st.sends_during > 0)
+      else if (st.sends_during > w - 1)
         problems.push(
-          `${l.leg}: ${st.sends_during} transactions sent during the stall`,
+          `${l.leg}: ${st.sends_during} transactions sent during the stall${w > 1 ? ` (window ${w})` : ""}`,
         );
       if (st && st.max_pending > 1)
         problems.push(`${l.leg}: max pending ${st.max_pending}`);
     }
     const d0 = ev.delivery[0];
     notes.push(
-      `${l.leg} in flight ${d0?.max_in_flight}, queued max ${d0?.max_queued_bytes} B <= ${d0?.queued_limit}${l.stall ? `, during the stall ${ev.stall?.max_queued_bytes_during} B and ${ev.stall?.sends_during} sends` : ""}`,
+      `${l.leg} in flight ${d0?.max_in_flight} (window ${d0?.window ?? 1}), queued max ${d0?.max_queued_bytes} B <= ${d0?.queued_limit}${l.stall ? `, during the stall ${ev.stall?.max_queued_bytes_during} B and ${ev.stall?.sends_during} sends` : ""}`,
     );
   }
   return check(
     "pending-bounded",
-    "on every g6l host connection at most one transaction in flight (recomputed from the log's own acks and as the host reports it), at most one pending target, queued bytes never above the largest credit window (one transaction and the resources it needs) + 4096 B of control frames; on the stall legs nothing is sent between the stalled seq and its credit",
+    "on every g6l host connection at most w transactions in flight at the granted credit window w (1 below /7; recomputed from the log's own acks and as the host reports it), at most one pending target, queued bytes never above the w largest credit windows (a transaction and the resources it needs) + 4096 B of control frames; on the stall legs at most w - 1 sends between the stalled seq and its credit (none at window 1)",
     problems.slice(0, 10),
     notes.join("; "),
     G6L_LEGS.map((l) => join(hostDirOf(evals, l.leg), "tap", "live-1.jsonl")),
@@ -1596,24 +1652,38 @@ export function checkStallLatest(evals: Evals): Gate6Check {
       problems.push(
         `the recovery seq ${r.seq} (frame ${r.frame}) is not the host's state at its frame`,
       );
+    // G7q: at credit window w the stalled seq's w - 1 free slots sent `sends_during` more before
+    // the stall (none at window 1); the recovery is the first send after them. A receiver may
+    // fold it into the next send (one apply, the newer drawn): its picture is then that apply's.
+    const w = ev.delivery[0]?.window ?? 1;
+    const inStall = w > 1 ? st.sends_during : 0;
     const after = appliedTransactions(ev.ev.applied).find(
-      (t) => t.stream === 1 && t.seq > (st.stalled_seq ?? 0),
+      (t) => t.stream === 1 && t.seq > (st.stalled_seq ?? 0) + inStall,
     );
     if (after?.seq !== r.seq)
       problems.push(
-        `the first transaction applied after the stall is seq ${after?.seq}, not the recovery seq ${r.seq}`,
+        `the first transaction applied after the stall${inStall > 0 ? ` and its ${inStall} in-window sends` : ""} is seq ${after?.seq}, not the recovery seq ${r.seq}`,
       );
-    const cp = ev.checkpoints.find((c) => c.stream === 1 && c.seq === r.seq);
-    if (!cp) problems.push(`the recovery seq ${r.seq} was not shot`);
+    const txs = ev.ev.applied?.transactions ?? [];
+    const drawn =
+      appliedAs(
+        txs,
+        txs.find((t) => (t.stream ?? 1) === 1 && t.seq === r.seq),
+      )?.seq ?? r.seq;
+    const cp = ev.checkpoints.find((c) => c.stream === 1 && c.seq === drawn);
+    if (!cp)
+      problems.push(
+        `the recovery seq ${r.seq}${drawn !== r.seq ? ` (folded into seq ${drawn})` : ""} was not shot`,
+      );
     else if (cp.vs_frame !== 0)
       problems.push(
         `the recovery shot differs from the reference at frame ${cp.frame} in ${cp.vs_frame_regions.join(",")}`,
       );
-    detail = `stall after seq ${st.stalled_seq} (frame ${st.send_frame}, measured ${st.measured_ms?.toFixed(1)} ms), credit at frame ${st.credit_frame} (${st.frames_during_stall} frames), recovery seq ${r.seq} at frame ${r.frame} (${r.frames_after_credit} after the credit, ${r.encoding}), steps applied during ${st.steps_applied_during.join(",")}; equals the host's full recording there and its shot equals the reference`;
+    detail = `stall after seq ${st.stalled_seq} (frame ${st.send_frame}, measured ${st.measured_ms?.toFixed(1)} ms), credit at frame ${st.credit_frame} (${st.frames_during_stall} frames), ${inStall} in-window sends during it (window ${w}), recovery seq ${r.seq} at frame ${r.frame} (${r.frames_after_credit} after the credit, ${r.encoding}${drawn !== r.seq ? `, folded into seq ${drawn}` : ""}), steps applied during ${st.steps_applied_during.join(",")}; equals the host's full recording there and its shot equals the reference`;
   }
   return check(
     "stall-latest",
-    "live-stall: the first transaction applied after the 2-s stall is the host's recovery send, its resolved state equals the host's full recording (the mirror) at its own frame, from the tap (no stale target), and its shot equals the reference at that frame",
+    "live-stall: the first transaction applied after the 2-s stall (at credit window w, after the w - 1 sends its free slots let out) is the host's recovery send, its resolved state equals the host's full recording (the mirror) at its own frame, from the tap (no stale target), and its shot (that of the apply it was folded into, at window w) equals the reference at that frame",
     problems,
     detail,
     [join(ev?.ev.receiverDir ?? "live-stall", "applied.json")],
@@ -1635,18 +1705,34 @@ export function checkFetchLatestOnly(evals: Evals): Gate6Check {
     problems.push("live-stall: no stall recovery evidence");
   else if (!versions) problems.push("no TEXA create in the hook log");
   else {
+    // G7q: at credit window w a fetch is attributed to the apply it served: a transaction folded
+    // into a later one (`coalesced_into`) is applied, and its payloads fetched, with that one.
+    const txs = ev.ev.applied?.transactions ?? [];
+    const asApplied = (stream: number, seq: number | undefined) =>
+      seq === undefined
+        ? undefined
+        : (appliedAs(
+            txs,
+            txs.find((t) => (t.stream ?? 1) === stream && t.seq === seq),
+          ) ?? { seq, frame: undefined });
+    const target = asApplied(1, st.recovery.seq);
+    const drawnSeq = target?.seq ?? st.recovery.seq;
+    const drawnFrame = target?.frame ?? st.recovery.frame;
     const r = evaluateFetchLatestOnly(
       versions,
-      ev.ev.applied?.fetches ?? [],
+      (ev.ev.applied?.fetches ?? []).map((f) => ({
+        ...f,
+        seq: asApplied(f.stream ?? 1, f.seq)?.seq ?? f.seq,
+      })),
       st.send_frame,
       st.credit_frame,
       {
-        seq: st.recovery.seq,
-        frame: st.recovery.frame,
+        seq: drawnSeq,
+        frame: drawnFrame,
       },
     );
     problems.push(...r.problems);
-    detail = `${r.in_stall.length} TEXA versions landed in frames ${st.send_frame + 1}..${st.credit_frame}; only ${r.current?.slice(0, 12)} (current at the recovery frame ${st.recovery.frame}) was fetched, for seq ${st.recovery.seq}`;
+    detail = `${r.in_stall.length} TEXA versions landed in frames ${st.send_frame + 1}..${st.credit_frame}; only ${r.current?.slice(0, 12)} (current at the recovery frame ${drawnFrame}) was fetched, for seq ${st.recovery.seq}${drawnSeq !== st.recovery.seq ? ` folded into seq ${drawnSeq} (credit window 2)` : ""}`;
   }
   return check(
     "fetch-latest-only",
@@ -1976,6 +2062,23 @@ export function checkLegClass(
   ev: G6lEvaluation,
 ): Gate6Check {
   const problems: string[] = [];
+  // G7q (credit window w >= 2): a receiver may fold the sabotage's stale recovery into the next
+  // send (one apply, the newer drawn). The host repeats the stale target on every send made while
+  // the stale one holds its slot (rs_live.h, stale-coalesce), so the apply it was folded into
+  // draws the same stale state: the recovery's picture is that apply's, judged by the same rule.
+  // At window 1 nothing is folded.
+  const recoverySeq = ev.stall?.recovery?.seq;
+  const txs = ev.ev.applied?.transactions ?? [];
+  const recoveryTx = txs.find(
+    (t) => (t.stream ?? 1) === 1 && t.seq === recoverySeq,
+  );
+  const foldedInto =
+    ev.leg.expected_pixel === "pixel-mismatch" &&
+    recoveryTx?.coalesced_into !== undefined &&
+    recoveryTx?.coalesced_into !== null
+      ? (appliedAs(txs, recoveryTx)?.seq ?? null)
+      : null;
+  const expectedPixel = ev.leg.expected_pixel;
   const wanted = g6lExpectedClass(ev.leg);
   if (ev.result_class !== wanted)
     problems.push(
@@ -1991,9 +2094,9 @@ export function checkLegClass(
     problems.push(
       `unsupported ${JSON.stringify(ev.unsupported_pairs)} != ${JSON.stringify(G6L_WIRE_UNSUPPORTED)}`,
     );
-  if (ev.pixel_verdict !== ev.leg.expected_pixel)
+  if (ev.pixel_verdict !== expectedPixel)
     problems.push(
-      `pixels ${ev.pixel_verdict}, expected ${ev.leg.expected_pixel}${
+      `pixels ${ev.pixel_verdict}, expected ${expectedPixel}${
         ev.pixel_verdict === "pixel-mismatch"
           ? `: ${ev.reasons
               .filter((r) => r.startsWith("pixel-mismatch"))
@@ -2015,9 +2118,18 @@ export function checkLegClass(
         problems.push(
           `the recovery seq ${r.seq} equals the host's state at its frame: the stale target had no effect`,
         );
-      const cp = ev.checkpoints.find((c) => c.stream === 1 && c.seq === r.seq);
-      if (!cp) problems.push(`no shot of the recovery seq ${r.seq}`);
+      const cp = ev.checkpoints.find(
+        (c) => c.stream === 1 && c.seq === (foldedInto ?? r.seq),
+      );
+      if (!cp)
+        problems.push(
+          `no shot of the recovery seq ${r.seq}${foldedInto !== null ? ` (folded into seq ${foldedInto})` : ""}`,
+        );
       else {
+        if (foldedInto !== null && cp.wire !== r.stale_from)
+          problems.push(
+            `the recovery seq ${r.seq} was folded into seq ${foldedInto}, which carries frame ${cp.wire}'s snapshot, not the held stale target ${r.stale_from}`,
+          );
         const want = staleFreshRegions(
           e.steps,
           ev.stall?.steps_applied_during ?? [],
@@ -2032,7 +2144,7 @@ export function checkLegClass(
           problems.push(
             `the recovery shot (frame ${cp.frame}) differs in ${got.join(",") || "nothing"}, not in ${missing.join(",")} (Q7c's MS, SM, AN and the regions the fresh table says the swallowed steps ${ev.stall?.steps_applied_during.join(",")} touch)`,
           );
-        detail += `; recovery seq ${r.seq} at frame ${r.frame} carries frame ${r.stale_from}'s snapshot: its shot equals the reference at ${cp.wire} and differs from frame ${cp.frame} in ${got.join(",")} (fresh-table set ${want.join(",")} included)`;
+        detail += `; recovery seq ${r.seq} at frame ${r.frame} carries frame ${r.stale_from}'s snapshot${foldedInto !== null ? ` (folded into seq ${foldedInto}, which repeats it: credit window 2)` : ""}: its shot equals the reference at ${cp.wire} and differs from frame ${cp.frame} in ${got.join(",")} (fresh-table set ${want.join(",")} included)`;
       }
       // Every pixel mismatch of the leg must be a stale copy the wire itself names.
       for (const c of ev.checkpoints)

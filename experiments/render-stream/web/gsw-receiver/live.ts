@@ -179,6 +179,12 @@ interface Pending {
   logged: Map<string, Record<string, unknown>>;
   /** Operator-library shader code (async reads, before the applying callback). */
   library: "none" | "reading" | "done";
+  /** G7q (credit window 2): the seq each payload was requested for. A fold keeps this pending
+   * transaction's fetches, so a payload fetched (or refused) for a transaction folded into a
+   * later one is logged and failed at its own seq, as receiver.gd does. */
+  requester: Map<string, number>;
+  /** G7q: each requested payload's kind (a folded transaction's may no longer be needed). */
+  kinds: Map<string, number>;
 }
 
 export async function runLive(
@@ -234,6 +240,9 @@ class LiveReceiver {
   private lastAppliedFrame = -1;
   private inlineSinceApplied = 0;
   private queue: Queued[] = [];
+  /** G7q (credit window 2): the transactions folded into the next apply (in seq order), each
+   * acked `applied` and `submitted` with it (gate7-design.md Q2 "Credit with window w"). */
+  private coalesced: Queued["entry"][] = [];
   private pending: Pending | null = null;
   private fetcher: LiveFetcher | null = null;
   private endSeen = false;
@@ -645,7 +654,17 @@ class LiveReceiver {
     }
     if (this.ctxState !== "ok" && this.ctxLoss)
       this.ctxLoss.received_during_loss++;
-    if (this.pending !== null) {
+    if (this.pending !== null && this.windowTwo()) {
+      // G7q (credit window 2): the next transaction arrived while this one waits for its
+      // payloads. The wasm applier has prepared both (rs-core merges their deltas), so the
+      // newest is applied for both, with no rebuild; its needed set (computed at its accept,
+      // over the merged delta) covers the older one's payloads too. The fold happens in place:
+      // the pending transaction becomes the newest and keeps every body fetched and every GET
+      // in flight (wasm's stage is keyed by hash, so a staged body serves the newest's needed
+      // set as well); only the payloads neither fetched nor requested yet are queued.
+      this.foldIntoPending(this.pending, { entry, needed });
+      return;
+    } else if (this.pending !== null) {
       // The wasm core holds ONE accepted state, so a transaction accepted while another waits
       // for its payloads supersedes it: the newest is applied by a fresh applier (takeQueued's
       // rebuild). Never under credit window 1 with paced credit; the sabotages that return
@@ -946,6 +965,46 @@ class LiveReceiver {
     );
   }
 
+  /** G7q: the session granted credit window 2 (publication.credit_window). Window 1 keeps its
+   * superseded-and-rebuild path exactly as it was. */
+  private windowTwo(): boolean {
+    return (this.report.creditWindow ?? 1) >= 2;
+  }
+
+  /** G7q: `next` (just accepted) folds into the pending transaction `p` in place: `p` becomes
+   * `next`, the older entry is applied and acked with it, and the fetches `p` made are kept. */
+  private foldIntoPending(p: Pending, next: Queued): void {
+    const old = p.item.entry;
+    this.coalesced.push(old);
+    old.coalesced_into = next.entry.seq;
+    p.item = next;
+    // The newest's needed set is fetched and provided from the start (accept reset wasm's provide
+    // cursor; payloads the older one already provided are in the store, so not needed again).
+    p.stage = "fetch";
+    if (p.library === "done") p.library = "none";
+    const asked = this.fetcher?.requested() ?? new Set<string>();
+    const misses = next.needed
+      .map((n) => n.hash)
+      .filter((h) => !p.bodies.has(h) && !asked.has(h));
+    for (const h of misses) p.requester.set(h, next.entry.seq);
+    for (const n of next.needed) p.kinds.set(n.hash, n.kind);
+    // Queued (never issued) requests the newest no longer needs are dropped; one in flight
+    // completes (advancePending waits for it).
+    this.fetcher?.retain(new Set(next.needed.map((n) => n.hash)));
+    if (misses.length > 0) {
+      if (this.fetcher === null)
+        throw new ReplayFailure(
+          next.entry.seq,
+          "resource-unavailable",
+          `payload ${misses[0]} is needed, and the session has no HTTP fetch`,
+        );
+      this.fetcher.extend(misses);
+    }
+    log(
+      `seq ${old.seq} folds into seq ${next.entry.seq} while its payloads were pending (${misses.length} more to fetch)`,
+    );
+  }
+
   /** The newest queued transaction becomes the one to apply (receiver.gd `_apply_newest`). */
   private takeQueued(ts: number): void {
     const g = this.g as GswRs;
@@ -953,6 +1012,23 @@ class LiveReceiver {
     const queued = this.queue;
     this.queue = [];
     const item = queued[queued.length - 1];
+    // G7q (credit window 2): a payload is requested for the oldest queued transaction that needed
+    // it (its own accept's needed set), so a fetch, or its failure, is logged at the seq that first
+    // named it even when that seq is folded into the newest here.
+    const firstNeeder = new Map<string, number>();
+    if (this.windowTwo())
+      for (const q of queued)
+        for (const n of q.needed)
+          if (!firstNeeder.has(n.hash)) firstNeeder.set(n.hash, q.entry.seq);
+    if (this.windowTwo()) {
+      // G7q (credit window 2): several queued transactions apply in this one callback (the
+      // applier merged their deltas as each was accepted), drawing only the newest.
+      for (const older of queued.slice(0, -1)) {
+        this.coalesced.push(older.entry);
+        older.entry.coalesced_into = item.entry.seq;
+      }
+      queued.length = 1;
+    }
     for (const older of queued.slice(0, -1)) {
       // Never under credit window 1: the wasm state is the newest, so older ones are superseded
       // and the newest is applied by a fresh applier walking the whole resolved state.
@@ -984,6 +1060,13 @@ class LiveReceiver {
       bodies: new Map(),
       logged: new Map(),
       library: "none",
+      requester: new Map(
+        item.needed.map((n) => [
+          n.hash,
+          firstNeeder.get(n.hash) ?? item.entry.seq,
+        ]),
+      ),
+      kinds: new Map(item.needed.map((n) => [n.hash, n.kind])),
     };
     const misses = item.needed.map((n) => n.hash);
     if (misses.length > 0) {
@@ -1024,12 +1107,21 @@ class LiveReceiver {
     const mem = this.mem as WebAssembly.Memory;
     const seq = p.item.entry.seq;
     if (p.stage === "fetch") {
-      const fetchOutstanding = p.item.needed.some((n) => !p.bodies.has(n.hash));
+      // G7q (credit window 2): after a fold in place, a GET made for the older transaction may
+      // still be in flight (or done and not yet polled) although the newest no longer needs its
+      // payload; it completes into this transaction first, so every GET is logged and held in
+      // memory like any other fetch (receiver.gd likewise finishes a transaction's fetches before
+      // it folds). Never at window 1, where every request is for a needed payload.
+      const fetcherBusy = (): boolean =>
+        this.windowTwo() && (this.fetcher?.busy() ?? false);
+      const fetchOutstanding =
+        p.item.needed.some((n) => !p.bodies.has(n.hash)) || fetcherBusy();
       if (fetchOutstanding && this.fetcher !== null) {
         const { results } = this.fetcher.poll();
         for (const r of results) this.noteFetch(p, r);
         if (this.finished) return;
-        const stillOut = p.item.needed.some((n) => !p.bodies.has(n.hash));
+        const stillOut =
+          p.item.needed.some((n) => !p.bodies.has(n.hash)) || fetcherBusy();
         if (stillOut) return;
       }
       // Every payload is in, each verified and decoded in its fetch completion (G7o2,
@@ -1041,7 +1133,7 @@ class LiveReceiver {
         if (body.stageError !== null || g.provide_staged() < 0) {
           const err = body.stageError ?? g.error();
           throw new ReplayFailure(
-            seq,
+            p.requester.get(n.hash) ?? seq,
             err.startsWith("resource-hash")
               ? "resource-hash-mismatch"
               : "resource-invalid",
@@ -1051,6 +1143,26 @@ class LiveReceiver {
         const logged = p.logged.get(n.hash);
         if (logged) logged.verified = true;
         if (n.kind === 2) p.tx.shader_payload_fetches++;
+      }
+      // G7q: a body fetched for a transaction folded into this one that this one no longer needs
+      // (its payload was replaced in between) goes to the store too, verified on arrival like any
+      // other: it is in memory, as receiver.gd's fetched payloads are, so it is never refetched.
+      // Empty at window 1.
+      for (const [hash, body] of p.bodies) {
+        if (p.item.needed.some((n) => n.hash === hash)) continue;
+        if (body.stageError === null && !g.is_staged(hash)) continue; // provided earlier
+        if (body.stageError !== null || g.restore_take(hash) < 0) {
+          const err = body.stageError ?? g.error();
+          throw new ReplayFailure(
+            p.requester.get(hash) ?? seq,
+            err.startsWith("resource-hash")
+              ? "resource-hash-mismatch"
+              : "resource-invalid",
+            err,
+          );
+        }
+        const logged = p.logged.get(hash);
+        if (logged) logged.verified = true;
       }
       this.provideUs = (performance.now() - t0) * 1000;
       p.stage = "library";
@@ -1095,9 +1207,11 @@ class LiveReceiver {
   /** One completed GET, logged as receiver.gd `_poll_fetches` logs it. */
   private noteFetch(p: Pending, r: FetchResult): void {
     const entry = p.item.entry;
+    // G7q: the seq the GET was made for (an older one folded into `entry` at window 2).
+    const forSeq = p.requester.get(r.hash) ?? entry.seq;
     const logged: Record<string, unknown> = {
       stream: this.connIndex,
-      seq: entry.seq,
+      seq: forSeq,
       hash: r.hash,
       source: "http",
       status: r.status,
@@ -1112,11 +1226,14 @@ class LiveReceiver {
     p.tx.fetch_us += r.end_us - r.start_us;
     this.perf.fetchUs.push(r.end_us - r.start_us);
     if (r.error !== "") {
-      void this.fail(failWith(entry.seq, r.error));
+      void this.fail(failWith(forSeq, r.error));
       return;
     }
     // receiver.gd `_poll_fetches`: a 200 body's kind is recorded before it is verified.
-    const kind = p.item.needed.find((n) => n.hash === r.hash)?.kind ?? 0;
+    const kind =
+      p.item.needed.find((n) => n.hash === r.hash)?.kind ??
+      p.kinds.get(r.hash) ??
+      0;
     logged.kind = KIND_NAME[kind] ?? "texture";
     p.logged.set(r.hash, logged);
     p.bodies.set(r.hash, {
@@ -1170,6 +1287,22 @@ class LiveReceiver {
     p.tx.inline_received = this.inlineSinceApplied;
     this.inlineSinceApplied = 0;
     this.report.shell.set(`${entry.stream}:${seq}`, p.tx);
+    // G7q: the transactions folded into this apply are applied with it, acked first, in order.
+    const folded = this.coalesced;
+    this.coalesced = [];
+    for (const f of folded) {
+      f.applied_us = appliedUs;
+      f.paced.applied_raf = this.rafIndex;
+      f.paced.applied_raf_ts_ms = ts;
+      f.paced.applied_ms = appliedUs / 1000;
+      f.coalesced_into = seq;
+      this.connApplied++;
+      this.ack(f.seq, "applied", appliedUs);
+    }
+    if (folded.length > 0)
+      log(
+        `seq ${seq} applied with ${folded.map((f) => f.seq).join(",")} (credit window 2)`,
+      );
     this.ack(seq, "applied", appliedUs);
     // D15 (G7k startup): the first transaction (never the session record) applied, once.
     if (this.connIndex === 1 && !this.firstAppliedMarked) {
@@ -1199,6 +1332,10 @@ class LiveReceiver {
     this.drawnRafs++;
     entry.paced.drawn_raf = this.rafIndex;
     entry.paced.drawn_ms = d1;
+    for (const f of folded) {
+      f.paced.drawn_raf = this.rafIndex;
+      f.paced.drawn_ms = d1;
+    }
     const st = (this.stats as () => Record<string, number>)();
     const decodeUs = this.perfDecode.length
       ? (this.perfDecode.pop() as number)
@@ -1273,6 +1410,17 @@ class LiveReceiver {
       entry.paced.submitted_ack_ms = t / 1000;
       entry.paced.submitted_from = "raf";
       submittedMs = t / 1000;
+      for (const f of folded) {
+        // G7q: each folded transaction was drawn in this frame; its own submitted ack first,
+        // unless it already sent one (the GSW-only sabotages ack in onmessage, ack-on-receipt
+        // and ack-while-hidden: never twice, and its evidence keeps `onmessage`).
+        if (f.paced.submitted_from !== null) continue;
+        f.submitted_us = t;
+        f.submitted_process_frame = this.processFrames;
+        f.paced.submitted_ack_ms = t / 1000;
+        f.paced.submitted_from = "raf";
+        this.ack(f.seq, "submitted", t);
+      }
       this.ack(seq, "submitted", t);
       this.perf.submitted(t / 1000);
       // D15 (G7k startup): the first submitted ack of the honest credit path, once.
@@ -1681,6 +1829,7 @@ class LiveReceiver {
     this.fetcher?.cancel();
     this.pending = null;
     this.queue = [];
+    this.coalesced = [];
     this.sessionSeen = false;
     this.streamId = "";
     this.lastAcceptedSeq = 0;

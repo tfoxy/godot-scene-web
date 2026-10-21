@@ -398,6 +398,15 @@ var _stream_id: String = ""
 var _windows: Array[Dictionary] = []  # {step, from, to, shot: bool}
 var _waiting: Array[Dictionary] = []  # accepted, not yet applied: {entry, meta}
 var _submit_pending: bool = false
+## G7q (credit window 2, gate7-design.md Q2 "Credit with window w"): the window the session granted
+## (publication.credit_window; 1 below /7). At 2 the host may have a second transaction in flight,
+## so several accepted transactions can wait for one apply: the resolved state is the newest's, so
+## the newest is applied and drawn and the older ones are folded into it (`_coalesced`), each acked
+## `applied` with it and `submitted` at its draw (`_coalesced_drawn`), in seq order. At window 1
+## nothing is ever folded: the older-waiting path stays exactly what it was.
+var _granted_window: int = 1
+var _coalesced: Array[Dictionary] = []
+var _coalesced_drawn: Array[Dictionary] = []
 var _end_seen: bool = false
 var _acks_sent: Dictionary = {"received": 0, "applied": 0, "submitted": 0}
 var _closing_by_receiver: bool = false
@@ -933,6 +942,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 		var publication: Dictionary = meta["publication"]
 		var receiver_block: Dictionary = _report["receiver"]
 		receiver_block["credit_window"] = Rs2Decoder.as_int(publication["credit_window"])
+		_granted_window = Rs2Decoder.as_int(publication["credit_window"])
 	var session_viewport: Dictionary = meta["viewport"]
 	var logical: Array = session_viewport["logical_size"]
 	var logical_size := Vector2(Rs2Decoder.as_int(logical[0]), Rs2Decoder.as_int(logical[1]))
@@ -2187,6 +2197,8 @@ func _start_next_connection() -> void:
 	_session_seen = false
 	_stream_id = ""
 	_waiting.clear()
+	_coalesced.clear()
+	_coalesced_drawn = []
 	_previous_unsupported = {}
 	_stream_report = {
 		"stream_id": null,
@@ -2311,12 +2323,36 @@ func _receive_binary(message: PackedByteArray) -> void:
 
 func _apply_newest() -> void:
 	var newest: Dictionary = _waiting[_waiting.size() - 1]
+	if _granted_window > 1:
+		# G7q: every older waiting transaction is applied with the newest (the resolved state).
+		for index: int in range(_waiting.size() - 1):
+			_coalesced.append(_waiting[index]["entry"])
 	_waiting.clear()
 	var entry: Dictionary = newest["entry"]
 	var meta: Dictionary = newest["meta"]
+	_mark_coalesced(entry)
 	if _refuse_for_resync(entry):
+		_refuse_coalesced()
 		return
 	_begin_apply(entry, meta, _empty_resources())
+
+
+## G7q: marks every folded transaction with the seq it is applied with, as soon as it is folded
+## (so a fetch made for it, or a failure while applying, is attributed to that seq).
+func _mark_coalesced(newest_entry: Dictionary) -> void:
+	for folded: Dictionary in _coalesced:
+		folded["coalesced_into"] = newest_entry["seq"]
+
+
+## G7q: the newest was refused for a resync, so the transactions folded into it are refused with
+## it, each with its own resync (the host frees every later window slot on the first, and the rest
+## arrive stale).
+func _refuse_coalesced() -> void:
+	for folded: Dictionary in _coalesced:
+		folded.erase("coalesced_into")
+		folded["skipped"] = "resync"
+		_send(RsLiveClient.resync(_stream_id, Rs2Decoder.as_int(folded["seq"]), "injected"))
+	_coalesced.clear()
 
 
 ## The payloads the current resolved state needs that are neither in memory nor in the cache
@@ -2400,6 +2436,22 @@ func _poll_fetches() -> void:
 		_fetched_hashes[hash] = true
 		_summary["distinct_fetched"] = _fetched_hashes.size()
 	var meta: Dictionary = pending["meta"]
+	if _granted_window > 1 and not _waiting.is_empty():
+		# G7q: newer transactions arrived while this one fetched, and the resolved state is the
+		# newest's: this one folds into it (after one more miss check, as below).
+		_coalesced.append(entry)
+		var newest: Dictionary = _waiting[_waiting.size() - 1]
+		for index: int in range(_waiting.size() - 1):
+			_coalesced.append(_waiting[index]["entry"])
+		_waiting.clear()
+		var newest_entry: Dictionary = newest["entry"]
+		var newest_meta: Dictionary = newest["meta"]
+		_mark_coalesced(newest_entry)
+		if _refuse_for_resync(newest_entry):
+			_refuse_coalesced()
+			return
+		_begin_apply(newest_entry, newest_meta, resources)
+		return
 	_begin_apply(entry, meta, resources)
 
 
@@ -2413,6 +2465,17 @@ func _finish_apply(entry: Dictionary, meta: Dictionary, prefetched: Dictionary) 
 	entry["applied_us"] = now_us
 	_note_applied(entry, meta, stats)
 	var seq: int = entry["seq"]
+	# G7q: the transactions folded into this apply first, in seq order.
+	for folded: Dictionary in _coalesced:
+		folded["process_frame"] = entry["process_frame"]
+		folded["applied_us"] = now_us
+		folded["coalesced_into"] = seq
+		_send(RsLiveClient.ack(_stream_id, Rs2Decoder.as_int(folded["seq"]), "applied", now_us))
+		_acks_sent["applied"] = Rs2Decoder.as_int(_acks_sent["applied"]) + 1
+	if not _coalesced.is_empty():
+		_log("seq %d applied with %s (credit window %d)" % [seq, str(_coalesced.map(func(f: Dictionary) -> int: return Rs2Decoder.as_int(f["seq"]))), _granted_window])
+	var folded_now: Array[Dictionary] = _coalesced
+	_coalesced = []
 	_send(RsLiveClient.ack(_stream_id, seq, "applied", now_us))
 	_acks_sent["applied"] = Rs2Decoder.as_int(_acks_sent["applied"]) + 1
 	if _conn_index == 1 and not _marked_first_applied:
@@ -2428,6 +2491,7 @@ func _finish_apply(entry: Dictionary, meta: Dictionary, prefetched: Dictionary) 
 	if step >= 0 and not _dump_state(seq, meta):
 		return
 	if _credit_stage == "submitted" or step >= 0:
+		_coalesced_drawn = folded_now
 		_submit_pending = true
 		RenderingServer.frame_post_draw.connect(_after_post_draw.bind(entry, step), CONNECT_ONE_SHOT)
 
@@ -2479,6 +2543,13 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 	# iteration (the web runs one per rAF callback). G7mm records it on native too, next to
 	# received_process_frame, for motion-monotonic's hold-in-frames rule.
 	entry["submitted_process_frame"] = Engine.get_process_frames()
+	# G7q: each transaction folded into this draw gets its own submitted ack first.
+	for folded: Dictionary in _coalesced_drawn:
+		folded["submitted_us"] = now_us
+		folded["submitted_process_frame"] = Engine.get_process_frames()
+		_send(RsLiveClient.ack(_stream_id, Rs2Decoder.as_int(folded["seq"]), "submitted", now_us))
+		_acks_sent["submitted"] = Rs2Decoder.as_int(_acks_sent["submitted"]) + 1
+	_coalesced_drawn = []
 	_send(RsLiveClient.ack(_stream_id, seq, "submitted", now_us))
 	_acks_sent["submitted"] = Rs2Decoder.as_int(_acks_sent["submitted"]) + 1
 	if _conn_index == 1 and not _marked_first_submitted:

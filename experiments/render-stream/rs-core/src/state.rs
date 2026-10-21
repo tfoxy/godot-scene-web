@@ -623,4 +623,51 @@ impl TxDelta {
     pub fn clear(&mut self) {
         *self = TxDelta::default();
     }
+
+    /// G7q (credit window 2): folds a later transaction's delta into this one, so one apply of
+    /// the later resolved state does what applying both in sequence would. Every list becomes
+    /// the ascending union. An id both removed and upserted (removed by one transaction and
+    /// re-created by a later one, or the reverse) stays in both: the applier removes first and
+    /// then upserts only what the resolved state still holds, which is the sequential result.
+    pub fn merge(&mut self, later: &TxDelta) {
+        fn union(a: &mut Vec<Id>, b: &[Id]) {
+            if b.is_empty() {
+                return;
+            }
+            let mut out: Vec<Id> = Vec::with_capacity(a.len() + b.len());
+            let (mut i, mut j) = (0, 0);
+            while i < a.len() || j < b.len() {
+                let next = if j >= b.len() || (i < a.len() && a[i] <= b[j]) {
+                    let v = a[i];
+                    i += 1;
+                    if j < b.len() && b[j] == v {
+                        j += 1;
+                    }
+                    v
+                } else {
+                    let v = b[j];
+                    j += 1;
+                    v
+                };
+                out.push(next);
+            }
+            *a = out;
+        }
+        self.seq = later.seq;
+        self.full |= later.full;
+        union(&mut self.canvases_upserted, &later.canvases_upserted);
+        union(&mut self.canvases_removed, &later.canvases_removed);
+        union(&mut self.items_upserted, &later.items_upserted);
+        union(&mut self.items_removed, &later.items_removed);
+        union(&mut self.items_commands, &later.items_commands);
+        union(&mut self.textures_upserted, &later.textures_upserted);
+        union(&mut self.textures_removed, &later.textures_removed);
+        union(&mut self.meshes_upserted, &later.meshes_upserted);
+        union(&mut self.meshes_removed, &later.meshes_removed);
+        union(&mut self.shaders_upserted, &later.shaders_upserted);
+        union(&mut self.shaders_removed, &later.shaders_removed);
+        union(&mut self.materials_upserted, &later.materials_upserted);
+        union(&mut self.materials_removed, &later.materials_removed);
+        self.defaults_changed |= later.defaults_changed;
+    }
 }

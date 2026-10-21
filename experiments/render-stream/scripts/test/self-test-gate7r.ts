@@ -31,6 +31,7 @@ import {
 import {
   fetchTail,
   fetchTailCause,
+  G7Q_OVERRUN_LEG,
   G7R_KINDS,
   g7rLegs,
   gswPhaseFreeHolds,
@@ -76,7 +77,36 @@ for (const kind of G7R_KINDS) {
     unknown.length === 0,
     unknown.join(","),
   );
+  // G7q: the --credit-window 2 lists.
+  const want2 = shellVar(`G7R_W2_LEGS_${kind}`).split(",");
+  const got2 = g7rLegs(kind, 2).map((d) => d.leg);
+  expect(
+    `g7rLegs(${kind}, 2) equals run-gate7.sh G7R_W2_LEGS_${kind}`,
+    JSON.stringify(got2) === JSON.stringify(want2),
+    `${got2.join(",")} vs ${want2.join(",")}`,
+  );
+  const unknown2 = got2.filter(
+    (l) =>
+      !legsSh.includes(`g6c_wanted ${l};`) &&
+      !legsSh.includes(`g6c_wanted "${l.replace(/\d+$/, "")}$run"`),
+  );
+  expect(
+    `gate6c-legs.sh runs every ${kind} window-2 leg`,
+    unknown2.length === 0,
+    unknown2.join(","),
+  );
 }
+expect(
+  "g7rLegs(native, 2): the window-overrun sabotage is G6c's constrained sabotage leg, renamed",
+  (() => {
+    const d = g7rLegs("native", 2).find((l) => l.leg === G7Q_OVERRUN_LEG);
+    return (
+      d?.kind === "sabotage" &&
+      d.expected_class === "delivery-violation" &&
+      d.transport === "constrained"
+    );
+  })(),
+);
 expect(
   "native runs no browser receiver; dual-native's receiver-b stays native",
   g7rLegs("native").every((d) => d.browser_receivers.length === 0) &&

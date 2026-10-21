@@ -49,6 +49,8 @@ const us = (): number => Math.round(performance.now() * 1000);
 export class LiveFetcher {
   private queue: string[] = [];
   private inFlight = false;
+  /** G7q: the hash of the GET in flight (null when none). */
+  private inFlightHash: string | null = null;
   private delayUntil = -1;
   private done: FetchResult[] = [];
   private failed = false;
@@ -75,11 +77,41 @@ export class LiveFetcher {
     this.delayUntil = -1;
   }
 
+  /** G7q (credit window 2, a fold in place): queues more misses after those already queued,
+   * keeping the GET in flight and every completed result not yet polled. */
+  extend(hashes: string[]): void {
+    this.queue.push(...hashes);
+  }
+
+  /** G7q: every hash queued, in flight, or completed and not yet polled (a fold queues only the
+   * others). */
+  requested(): Set<string> {
+    const out = new Set(this.queue);
+    if (this.inFlight && this.inFlightHash !== null) out.add(this.inFlightHash);
+    for (const r of this.done) out.add(r.hash);
+    return out;
+  }
+
+  /** G7q: drops the queued (not yet issued) hashes not in `keep`; one in flight is kept. */
+  retain(keep: ReadonlySet<string>): void {
+    this.queue = this.queue.filter((h) => keep.has(h));
+  }
+
+  /** G7q: a request queued, in flight, or completed and not yet polled. */
+  busy(): boolean {
+    return (
+      this.inFlight ||
+      this.done.length > 0 ||
+      (!this.failed && this.queue.length > 0)
+    );
+  }
+
   /** Drops everything queued or in flight (a reconnect). */
   cancel(): void {
     this.generation++;
     this.queue = [];
     this.inFlight = false;
+    this.inFlightHash = null;
     this.done = [];
     this.delayUntil = -1;
   }
@@ -104,6 +136,7 @@ export class LiveFetcher {
     const gen = this.generation;
     this.delayUntil = -1;
     this.inFlight = true;
+    this.inFlightHash = hash;
     const r: FetchResult = {
       hash,
       status: null,
@@ -126,6 +159,7 @@ export class LiveFetcher {
       r.end_us = us();
       r.error = error;
       this.inFlight = false;
+      this.inFlightHash = null;
       if (error !== "") {
         this.failed = true;
         this.queue = [];

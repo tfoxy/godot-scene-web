@@ -91,6 +91,9 @@ export const G7R_PHASE_RUNS = 5;
 /** Q9 `phase-classified`: mean credit RTT in host frames. */
 export const G7R_GOOD_MAX_FRAMES = 1.1;
 export const G7R_BAD_MIN_FRAMES = 1.9;
+/** G7q (Q9's window-2 prediction): at credit window 2 every phase run publishes at least
+ * 0.95 x 60 per second, whatever the clock phase. */
+export const G7Q_WINDOW2_MIN_PUBLISHED = 0.95 * 60;
 export const G7R_SABOTAGE_LEG = "sabotage-ack-on-receipt";
 /** dual-independent: A's hold p95 also passes within 1 ms of the reference (evaluateDual): GSW's
  * phase-free hold is about 1 ms, ten browser clock quanta (performance.now() is clamped to
@@ -100,6 +103,14 @@ export const DUAL_HOLD_SLACK_US = 1000;
 export const G7R_SABOTAGE_FAILS: readonly string[] = [
   "credit-from-paced-loop",
   "rate-mismatch",
+];
+/** G7q (gate7/g7q.md "Sabotage"): at credit window 2 the host keeps sending past a full window
+ * (GRC_SABOTAGE=window-overrun, a listener sabotage) through G6c's constrained link; it must fail
+ * exactly these, as G6c's ignore-credit sabotage does at window 1. */
+export const G7Q_OVERRUN_LEG = "sabotage-constrained-window-overrun";
+export const G7Q_OVERRUN_FAILS: readonly string[] = [
+  "pending-bounded",
+  "queue-bounded",
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -146,8 +157,22 @@ function phaseLeg(kind: G7rKind, variant: G7rVariant, run: number): G7rLeg {
   };
 }
 
-/** Each kind's legs, in run order (run-gate7.sh G7R_LEGS_<kind>). */
-export function g7rLegs(kind: G7rKind): G7rLeg[] {
+/** Each kind's legs, in run order (run-gate7.sh G7R_LEGS_<kind>). At credit window 2 (G7q,
+ * `--credit-window 2`): the baseline, the phase-60 study, the constrained leg for a browser, and
+ * the window-overrun sabotage (native: G6c's constrained sabotage leg at window 2). */
+export function g7rLegs(kind: G7rKind, creditWindow = 1): G7rLeg[] {
+  if (creditWindow >= 2) {
+    const w2: G7rLeg[] = [withKind(g6c("rate-baseline"), kind)];
+    for (let r = 1; r <= G7R_PHASE_RUNS; r++)
+      w2.push(phaseLeg(kind, "phase", r));
+    if (kind !== "native") w2.push(withKind(g6c("constrained"), kind));
+    else
+      w2.push({
+        ...withKind(g6c("sabotage-constrained-ignore-credit"), kind),
+        leg: G7Q_OVERRUN_LEG,
+      });
+    return w2;
+  }
   const out: G7rLeg[] = [withKind(g6c("rate-baseline"), kind)];
   if (kind !== "native")
     for (const leg of [
@@ -233,6 +258,8 @@ export function gswPhaseFreeHolds(transactions: readonly PacedTx[]): number[] {
 
 export interface PhaseRow {
   kind: G7rKind;
+  /** G7q: the connection's granted credit window (1, or 2 under --credit-window 2) */
+  credit_window?: number;
   /** native, native-late-poll, web, web-late-poll, gsw */
   variant: string;
   leg: string;
@@ -430,6 +457,8 @@ interface ReceiverKindJson {
   kind?: string;
   web_core?: string;
   native_core?: string;
+  /** G7q: present (2) only on a --credit-window 2 run */
+  credit_window?: number;
 }
 
 const fmt = (v: number | null | undefined, d = 2): string =>
@@ -478,7 +507,6 @@ export async function checkG7rKind(
   const phase: PhaseRow[] = [];
   const rates: Record<string, Record<string, unknown>> = {};
   const at = (id: string) => `${id}@${kind}`;
-  const defs = g7rLegs(kind);
   const legsRun = readText(join(ratesDir, "legs-run.txt"))
     .split("\n")
     .map((s) => s.trim())
@@ -486,6 +514,8 @@ export async function checkG7rKind(
   const rk = await readJson<ReceiverKindJson>(
     join(ratesDir, "receiver-kind.json"),
   );
+  // G7q: a --credit-window 2 run judges the window-2 leg list.
+  const defs = g7rLegs(kind, rk?.credit_window ?? 1);
   const runProblems: string[] = [];
   if (!existsSync(ratesDir)) runProblems.push(`no ${ratesDir}`);
   if (rk?.kind !== kind)
@@ -674,7 +704,20 @@ export async function checkG7rKind(
             class_median: median === null ? null : phaseClass(median),
             rate_achieved: problems.length === 0,
           };
+          row.credit_window = c0?.credit_window ?? 1;
           phase.push(row);
+          if ((c0?.credit_window ?? 1) >= 2)
+            own.push([
+              "phase-window2-rate",
+              `Q9's window-2 prediction (G7q): at credit window 2 the run publishes >= ${G7Q_WINDOW2_MIN_PUBLISHED}/s whatever the clock phase`,
+              row.published === null
+                ? ["no published rate inside the window"]
+                : row.published >= G7Q_WINDOW2_MIN_PUBLISHED
+                  ? []
+                  : [
+                      `published ${fmt(row.published)}/s < ${G7Q_WINDOW2_MIN_PUBLISHED} (mean credit RTT ${fmt(frames)} host frames)`,
+                    ],
+            ]);
           own.push([
             "phase-classified",
             `Q9: published/s, the window's mean credit RTT in host frames and the receiver hold p50/p95 reported; good at <= ${G7R_GOOD_MAX_FRAMES} frames, bad at >= ${G7R_BAD_MIN_FRAMES}, between named`,
@@ -740,6 +783,25 @@ export async function checkG7rKind(
         ]);
         break;
       }
+      case "sabotage":
+        // G7q's window-overrun (the only sabotage-kind leg here): G6c's constrained checks.
+        rates[L].proxy = ev.proxy;
+        own.push([
+          "pending-bounded",
+          "max_pending <= 1, max_in_flight <= w (the granted credit window, 1 below /7), queued bytes <= w transactions + control frames",
+          evaluatePendingBounded(summary0),
+        ]);
+        own.push([
+          "queue-bounded",
+          "host max_queued_bytes <= w x largest message + 64 KiB (w the granted credit window)",
+          evaluateQueueBounded(summary0),
+        ]);
+        own.push([
+          "host-unperturbed",
+          "host frame-interval p95 within 5 % and frame rate within 2 % of rate-baseline",
+          evaluateHostUnperturbed(m, base),
+        ]);
+        break;
       case "constrained": {
         rates[L].proxy = ev.proxy;
         own.push([
@@ -749,12 +811,12 @@ export async function checkG7rKind(
         ]);
         own.push([
           "pending-bounded",
-          "max_pending <= 1, max_in_flight <= 1, queued bytes <= one transaction + control frames",
+          "max_pending <= 1, max_in_flight <= w (the granted credit window, 1 below /7), queued bytes <= w transactions + control frames",
           evaluatePendingBounded(summary0),
         ]);
         own.push([
           "queue-bounded",
-          "host max_queued_bytes <= largest message + 64 KiB",
+          "host max_queued_bytes <= w x largest message + 64 KiB (w the granted credit window)",
           evaluateQueueBounded(summary0),
         ]);
         own.push([
@@ -869,6 +931,38 @@ export async function checkG7rKind(
       }
     }
 
+    if (L === G7Q_OVERRUN_LEG) {
+      const failing = own
+        .filter(([, , p]) => p.length > 0)
+        .map(([id]) => id)
+        .sort();
+      const problems: string[] = [];
+      if (cls.cls !== def.expected_class)
+        problems.push(`class ${cls.cls}, expected ${def.expected_class}`);
+      if (
+        JSON.stringify(failing) !==
+        JSON.stringify([...G7Q_OVERRUN_FAILS].sort())
+      )
+        problems.push(
+          `failing ${failing.join(", ") || "nothing"}, expected exactly ${G7Q_OVERRUN_FAILS.join(", ")}`,
+        );
+      if (
+        (summary0 as { credit_window?: number } | undefined)?.credit_window !==
+        2
+      )
+        problems.push(
+          "the sabotage connection was not granted credit window 2",
+        );
+      checks.push(
+        mk(
+          at(`sabotage-${L}`),
+          `${L}: at credit window 2 the host keeps publishing past a full window (window-overrun) through the constrained link; must fail exactly ${G7Q_OVERRUN_FAILS.join(" and ")} (class ${def.expected_class})`,
+          problems,
+          `${cls.cls}; ${own.map(([id, , p]) => `${id} ${p.length > 0 ? `FAIL (${p.slice(0, 2).join("; ").slice(0, 300)})` : "pass"}`).join("; ")}`,
+        ),
+      );
+      continue;
+    }
     if (L === G7R_SABOTAGE_LEG) {
       const all: [string, string[]][] = [
         ["leg-class", cls.cls === def.expected_class ? [] : [cls.cls]],
@@ -922,7 +1016,7 @@ export async function checkG7rKind(
     checks.push(
       mk(
         at("hello-recorded"),
-        "Q8: each browser connection's host summary shows the /7 hello (version 7, the receiver kind, window 1 granted, the presentation integers at DPR 1, the harness origin)",
+        "Q8: each browser connection's host summary shows the /7 hello (version 7, the receiver kind, the window it asked for granted (1, or 2 under --credit-window 2), the presentation integers at DPR 1, the harness origin)",
         helloConnections === 0 ? ["no browser connection recorded"] : hello,
         `${helloConnections} browser connections`,
       ),

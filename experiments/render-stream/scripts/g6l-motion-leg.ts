@@ -32,7 +32,11 @@ async function main(): Promise<number> {
         ...creditToSend(c.host.log),
       }))
     : null;
-  const j = judgeMotionLeg(leg, ev.applied, credit);
+  // G7q: the granted credit window, from connection 1's hello line (1 below /7).
+  const window =
+    ev.host?.connections[0]?.host.log?.find((l) => l.event === "hello")
+      ?.credit_window_granted ?? 1;
+  const j = judgeMotionLeg(leg, ev.applied, credit, window);
   console.log(
     JSON.stringify({
       leg,
