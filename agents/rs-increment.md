@@ -85,6 +85,14 @@ Native sabotage legs run only when a checker, runner, sabotage or mutation file 
 otherwise they are skipped-by-tier and the summary says so. Never sleep or poll waiting for another
 increment to land: validate on your own base and let the orchestrator order the landings.
 
+**Fast frames** (GRT3, `scripts/README.md` "Fast frames (GRT3)"): the smoke and full tiers run the
+allowlisted live correctness legs faster than real time (g1c, g1d, g2c, g5f, g55f, and the
+g7-1/g7-2/g7-5/g7-55 live groups). That is for correctness verdicts only. Any number you report
+about rate, pacing, phase, cadence, startup, lifecycle, soak, a bench or a device comes from a
+real-time run (`--fast-frames off`, a plain runner, or a denylisted leg, which is real time
+anyway); `--milestone` is always real time. A new live leg stays real time until its checks count
+frames and it is added to `RS_FAST_ALLOW_LEGS` in `lib/legs.sh`.
+
 The tiers hold no lock for the pure self-tests (`quiet.sh light`) and need a Chromium for gate 7:
 the harness launches a repo-private copy of the pinned build (`~/.cache/godot-render-stream/
 ms-playwright/chromium-1223/`), seeded by `cp -a` from Playwright's shared cache when its sha256

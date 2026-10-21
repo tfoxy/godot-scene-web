@@ -467,3 +467,161 @@ validation and measurement, overlapping, since code and docs were written while 
 - Checker cost: `run-gate7:checker` blocked drains for 2.4 h. Backfill helps only once its label
   has history.
 - **Pinning off.** `RS_TIMING_CPUSET` is unchanged (`measurement-isolation.md`).
+
+## Part 3 (GRT3): live correctness legs faster than real time (2026-10-20)
+
+Part 2b's prototype broke every millisecond-defined stall and left the 300-frame join window as a
+real-time budget. Part 3 removes both causes and turns fast frames into a tier mode with an
+explicit allowlist. Evidence is in the worktree's `artifacts/render-stream/grt3/`: one directory per
+arm (`<gate>-rt-a`, `<gate>-fast240-a`, `g7-<n>-<receiver>-{rt,fast}`, `g1c-fast{120,145,240}`),
+with `compare3.py` (verdicts, shots, lifetimes) and `verdicts.py`.
+
+### What was built
+
+- **Stalls and the fetch delay are in frames** at 60 fps: 120 (g1d, g5f, g55f: 2000 ms), 78 (g2c:
+  1300 ms), 30 (ignore-credit: 500 ms), 6 (g2c pins' fetch delay: 100 ms). `lib/legs.sh`
+  `legs_frames_ms`/`legs_stall_spec` turn them into the receiver's milliseconds at the leg's own
+  host rate, so a real-time leg passes exactly the old `1:2000`, `5:1300`, `3:500` and `100`. No
+  receiver changed: GDScript, GSW and the web export all still take `<step>:<ms>`.
+  `check-gate1.ts`'s `sim-kept-running` reads the host's `--max-fps` from its `argv.txt` and asks
+  for 0.8 x the stall's frames at an average interval <= 1.25 / that rate. Every other stall
+  check (missed windows, the post-stall step, `stall-newest-texture`, coalescing) was already
+  frame-based.
+- **The host holds its timeline for its first receiver.** `GRC_LIVE_AWAIT_HELLO_MS=<ms>` makes
+  `capture/src/entry.cpp` block its frame callback at the first armed publish, draining the
+  listener every millisecond, until a connection's hello has arrived (a non-empty `stream_id` in
+  `Hub::summaries()`) or the timeout passes. The main loop, the fixture's frame counter and the
+  capture's frame stamps all wait together. It is one function and one call in `stream_publish`;
+  `rs_live.{h,cpp}` are untouched. Unset (every real-time leg), it does nothing.
+- **A headless host reaches its cap.** `GRC_LOW_PROCESSOR_SLEEP_USEC=0` calls
+  `OS.set_low_processor_usage_mode_sleep_usec(0)` at extension init. Part 2b's ~145 fps ceiling was
+  that 6900 µs sleep (`OS::add_frame_delay`, `!p_can_draw`); with it off, 1080 frames at
+  `--max-fps 240` took 4.49 s, exactly 240 fps.
+- **The allowlist and denylist** live in `lib/legs.sh` (`RS_FAST_ALLOW_LEGS`,
+  `RS_FAST_ALLOW_GROUPS`, `RS_FAST_DENY_LEGS`) and `scripts/README.md` "Fast frames (GRT3)". The
+  rewrite now reaches browser receivers too (`--max-fps N` alone), and `RS_FAST_FRAMES_MAX_FPS`
+  defaults to 240 and refuses anything outside 61..1000 (no unbounded `--fixed-fps` path is left).
+- **`validate-increment.sh --fast-frames on|off`** (default on for smoke and full, off under
+  `--milestone`) passes `RS_FAST_FRAMES=all RS_FAST_FRAMES_MAX_FPS=240` to every native run and adds
+  `GATE7_FAST_FRAMES=1` to the g7-1/g7-2/g7-5/g7-55 live runs only.
+- Tests: `test/self-test-fast-frames.sh` (rewrite, host words, both lists, conversion: 34 cases) and
+  `test/self-test-fast-frames-checks.ts` (`hostFpsOfArgv`, `stallFrames`, `sim-kept-running` on
+  synthetic evidence, including a host that missed its rate).
+
+### Identity: fast vs real time on the same code
+
+Every arm ran the full legs of its groups, sabotage legs included. "Checks" compares every check
+id's status; "shots" compares the shot PNGs by sha256, per leg and step and per host frame.
+
+| Arms (groups) | checks, real time = fast | shots at a common host frame | shot sets per step |
+|---|---|---|---|
+| gate 1 (g1a, g1c, g1d) | 54 = 54 (53 pass, g1b not run) | 78/78 identical | 94/94 identical |
+| gate 2 (g2a, g2c) | 43 = 43 (40 pass, 3 groups not run) | 40/40 | 56/60 (4: `live-animate`) |
+| gate 5 (g5c, g5f) | 38 = 38 (34 pass, 4 not run) | 31/32 (1: the stale-coalesce sabotage) | 32/38 |
+| gate 5.5 (g55f) | 19 = 19 (15 pass, 4 not run) | 27/27 | 31/38 |
+| g7-1 live, gsw | 38 = 38, all pass | 16/16 | 94/94 |
+| g7-1 live, web-rust | 40 = 40, all pass | 75/75 | 94/94 |
+| g7-2 live, gsw | 35 = 35, all pass | 21/21 | 60/72 (12: `live-animate`) |
+| g7-2 live, web-rust | 37 = 37, all pass | 33/33 | 63/72 (9: `live-animate`) |
+
+- **Shots.** Every shot taken at the same host frame in both arms is byte-identical. Per step,
+  shots differ only where the receiver shot a different frame of an *animated* fixture (g2c's
+  `live-animate`, g55f's per-frame shader phase, g5f's every-frame geometry), which two real-time
+  runs do as well: the checkers' own `live-vs-reference` (every shot equals the reference at its
+  frame) passed in every arm.
+- **Stalls in frames.** The stall legs behave the same in frames. g1d `live-stall`: the receiver
+  blocked 2000.1 ms vs 500.1 ms, the host ran 122 vs 123 frames between the stalled send and its
+  credit (16.67 vs 4.17 ms each), coalesced +69 vs +70, and the same windows were missed (`{2}`).
+  g2c `live-stall`: the stall after seq 492 at frame 607 ended at frame 687 vs 688, and step 6's
+  texture arrived in the first post-stall transaction in both. g5f and g55f stale-coalesce: the
+  recovery at frame 488 vs 490 (g5f) and 489 vs 489 (g55f), stale from 368 in all four, failing on
+  exactly the same regions. Part 2b's `--max-fps 240` broke g2c `live-stall` (steps 6 and 7 got no
+  shot); in frames it passes.
+- **The one frame-level difference** is g5f `sabotage-mesh-stale-coalesce`'s step-1 shot at frame
+  367. Under that sabotage a send is labelled with the current frame but carries the first missed
+  target, so its content depends on when credit returned, not on the frame. Both arms classify it
+  `pixel-mismatch`, as expected.
+
+### Speed-ups
+
+Per live leg, process lifetimes (argv.txt write to the last stdout.log write) from the same pairs.
+Real time is ~18.4 s per gate 1 live leg (1080 frames at 60 fps; Part 2b measured the same) and
+~16.9 s per gate 2 one.
+
+| Leg kind (example) | real time | fast (240) | ratio |
+|---|---|---|---|
+| native live, rendered receiver (gate 1 `live`, host) | 18.40 s | 5.78 s | 3.2x |
+| native live, headless receiver (gate 1 `live-headless`) | 18.53 s | 7.02 s | 2.6x |
+| native g1d stall leg (`live-stall`) | 18.37 s | 5.62 s | 3.3x |
+| native g2c live (`live`) / pins (`live-animate`) | 16.95 / 16.66 s | 5.92 / 5.32 s | 2.9x / 3.1x |
+| native g5f `live-mesh` / g55f `live-shader` | 14.73 / 14.61 s | 4.68 / 4.68 s | 3.1x / 3.1x |
+| gsw live (g7-1 `live`, host / receiver) | 18.36 / 18.07 s | 5.01 / 4.65 s | 3.7x / 3.9x |
+| gsw `live-replay` (file mode, unthrottled Chromium) | 18.14 s | 1.28 s | 14x |
+| web-rust live (g7-1 `live`, host) | 18.39 s | 6.78 s | 2.7x |
+| web-rust `live-replay` | 20.35 s | 5.40 s | 3.8x |
+| gsw g7-2 `live` (host) | 16.77 s | 4.78 s | 3.5x |
+| web-rust g7-2 `live` (host) | 17.24 s | 7.03 s | 2.5x |
+| denylisted g2e `live-auth` (stays real time) | 16.87 s | 16.97 s | 1.0x |
+
+A fast host's lifetime is start-up (0.4 s), the hold for its first hello and 1080 frames / 240
+(4.5 s). The hold was 0.10-0.18 s for a gsw receiver, 0.7-2.1 s for a native rendered one and
+1.6-1.9 s for the web export, which now costs no frames. Per run, lock-held time (exclusive plus
+shared) fell 1.65-2.1x: gate 1 264 -> 142 s, gate 2 211 -> 110 s, gate 5 135 -> 63 s, gate 5.5
+90 -> 48 s, g7-1 gsw 277 -> 134 s, g7-1 web 300 -> 154 s, g7-2 gsw 329 -> 200 s (its g2e legs
+stay real time). Run wall times are not comparable: every arm ran beside the others and beside
+other agents' g6c timing legs (lock waits of minutes).
+
+**240 vs 145 vs 120** (gate 1 g1c, rendered `live` host lifetime; all three identical in verdicts):
+120 fps 11.6 s (1.6x), 145 fps 9.45 s (1.95x), 240 fps 5.78 s (3.2x). With the sleep override
+the host held exactly 240 fps (1080 frames in 4.49 s), so 240 is the default. A higher cap was not
+tried: the shot windows are 53 frames (220 ms at 240), and the rendered receivers' own frame rate
+then starts to matter.
+
+### Traps
+
+- **A plain `--max-fps` above ~145 is not honoured on a headless host** without the sleep override:
+  Part 2b's "x4" was 2.35x for that reason, and a stall converted at the cap but run at 145 fails
+  `sim-kept-running` (the synthetic case in `self-test-fast-frames-checks.ts`).
+- **Same frame, not same step.** Animated fixtures' shots are a function of the host frame; compare
+  them by frame.
+- **The await must not block refusal legs.** g2e's auth/origin legs may never see a hello, so they
+  are denylisted rather than waiting out the timeout.
+- **Chromium unthrottling is run-wide.** The daemon prepares the next leg's browser ahead, so
+  `GATE7_FAST_FRAMES=1` covers a run's denylisted legs too (g7-1's `live-rate-30`): those keep
+  `--max-fps 60` on host and receiver, and the receiver paces itself (GSW's tick rule, the export's
+  `web_main.cpp`). `validate-increment.sh` never sets it for g7-6, g7-r, g7-lc or g7-k.
+
+### Validation and scope
+
+Ran: the arms above (each runner's full legs, sabotage included, both modes); the pure self-tests
+(`run-pure-self-tests.sh`, 53/53, both new tests in it); `self-test-fast-frames.sh` 34/34;
+`tsc --noEmit` over the experiment (0 errors); biome on the touched TS; `validate-increment.sh
+--tier smoke --only native-rust-gate0,native-rust-gate1,g7live-gsw-g7-1` (fast frames on through
+the tier). 3/3 runs pass: native-rust-gate0, native-rust-gate1 (all 66 gate 1
+checks, hosts at 240 with `1:500`, `live-rate-30` left at 60) and the g7-1 gsw smoke (4 legs in
+117 s, on the restructured `lib/legs.sh`). Gate 0 and 1's 1171 s and 2322 s walls were 1088 s
+and 2108 s of lock waits behind other agents' timing legs.
+
+Not run, with the reason: the plan reaches all 65 targets, because `lib/legs.sh` and
+`capture/src/entry.cpp` match every rule, and a full tier of that size is a milestone sweep, not
+an increment's run (hours). The capture change is inert unless one of its two new variables is set
+(no runner sets them outside fast frames); the `lib/legs.sh` change is inert while
+`RS_FAST_FRAMES` is off (`self-test-fast-frames.sh`'s "off" cases, and every real-time arm above
+passing with the old specs). The gdscript core, gates -1/3/4/6, the file groups and g7-5/g7-55/g7-6
+live were therefore left to the next milestone sweep, which runs real time.
+
+**G7q.** `git merge-tree` of this branch with `rs/g7q` is clean. G7q edits `rs_live.{h,cpp}`
+(window-w credit), `entry.cpp`'s header, `Live` struct, `is_listener_sabotage` and `stream_start`,
+and `lib/legs.sh`'s `run_browser_receiver` and `legs__start_headless_bg` (between `gate7_host_env`
+and `legs__fast_argv "$@"`). This change leaves `rs_live.{h,cpp}` untouched, adds its two functions
+next to `stream_publish` and `initialize`, and keeps `legs__fast_argv "$@"`'s call line as it was
+(the leg directory comes in `LEGS_FAST_DIR`), so neither side's hunks touch.
+
+The arms ran on the first cut of `lib/legs.sh`; the G7q restructure after them only moved where the
+leg directory comes from (`LEGS_FAST_DIR`) and is covered by `self-test-fast-frames.sh` and the
+tier run.
+
+Time: about 2.5 h wall. About 1.0 h went to implementation and docs (the code in the first 25 min,
+then restructuring `lib/legs.sh` for a clean G7q merge, and the docs), and about 2.1 h to
+validation, overlapping: 19 arms plus the tier run, most of it queued on the exclusive lock behind
+each other and behind another agent's g6c run.

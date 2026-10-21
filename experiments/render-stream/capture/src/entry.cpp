@@ -1895,6 +1895,56 @@ void stream_finish(rs2::EndReason reason) {
   }
 }
 
+// GRT3 (results/grt.md "Part 3"; scripts/README.md "Fast frames"): GRC_LIVE_AWAIT_HELLO_MS=<ms>
+// holds the host's whole timeline -- this frame callback, so the main loop, the fixture's frame
+// counter and every capture frame stamp -- at the first armed publish until a receiver's hello has
+// arrived, or for at most <ms>. Off (unset) by default, so a real-time host is byte for byte what
+// it was; the fast-frame correctness legs set it so a receiver's start-up costs no host frames and
+// a faster-than-real-time host cannot run its join window out before the receiver connects. Only
+// the first hold of a run waits: a reconnect or a second receiver joins a running timeline.
+struct LiveAwaitHello {
+  bool checked = false;
+  uint64_t timeout_ms = 0;
+};
+LiveAwaitHello g_live_await;
+
+bool live_any_hello() {
+  for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
+    if (!s.stream_id.empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void live_await_first_hello(uint64_t frame) {
+  if (g_live_await.checked) {
+    return;
+  }
+  g_live_await.checked = true;
+  if (g_live.hub == nullptr || g_live.server == nullptr || g_live.stopped) {
+    return;
+  }
+  if (!env_positive("GRC_LIVE_AWAIT_HELLO_MS", 0, &g_live_await.timeout_ms)) {
+    log_line("live: await-hello: ignoring an invalid GRC_LIVE_AWAIT_HELLO_MS (a positive ms)");
+    return;
+  }
+  if (g_live_await.timeout_ms == 0 || live_any_hello()) {
+    return;
+  }
+  const uint64_t start_ns = monotonic_ns();
+  const uint64_t deadline_ns = start_ns + g_live_await.timeout_ms * 1000000ull;
+  bool hello = false;
+  while (!hello && monotonic_ns() < deadline_ns) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    live_drain(frame);
+    hello = live_any_hello();
+  }
+  log_line("live: await-hello: held frame " + std::to_string(frame) + " for " +
+           std::to_string((monotonic_ns() - start_ns) / 1000000ull) + " ms, " +
+           (hello ? std::string("a hello arrived") : std::string("timed out")));
+}
+
 // One snapshot for the frame callback at the end of iteration `frame`, shared
 // by both sinks. It is copied under the mirror lock (timed) and diffed and
 // encoded outside it.
@@ -1924,6 +1974,7 @@ void stream_publish(uint64_t frame) {
   }
   resources_drain();
   live_drain(frame);
+  live_await_first_hello(frame);  // GRT3: off unless GRC_LIVE_AWAIT_HELLO_MS
   // G6r: one steady-clock read shared by the due-tick check below and, when a snapshot is taken,
   // by the hub's own on_frame() timing -- the quarter-period slack in tick_due() absorbs the few
   // nanoseconds this function otherwise takes before the snapshot would have been copied.
@@ -2219,10 +2270,41 @@ void on_shutdown() {
            std::to_string(hooks_total_calls()));
 }
 
+// GRT3 (results/grt.md "Part 3"): GRC_LOW_PROCESSOR_SLEEP_USEC=<usec> sets
+// OS.low_processor_usage_mode_sleep_usec (the project default is 6900). A headless host cannot
+// draw, so OS::add_frame_delay sleeps at least that long per frame whatever --max-fps says, which
+// caps it near 145 fps; the fast-frame legs set 0 so `--max-fps N` alone paces the host. Unset,
+// nothing is called.
+void apply_low_processor_sleep() {
+  const char *value = std::getenv("GRC_LOW_PROCESSOR_SLEEP_USEC");
+  if (value == nullptr || *value == '\0') {
+    return;
+  }
+  uint64_t usec = 0;
+  if (!env_non_negative("GRC_LOW_PROCESSOR_SLEEP_USEC", 0, &usec) || usec > 1000000) {
+    log_line("init: ignoring an invalid GRC_LOW_PROCESSOR_SLEEP_USEC (0..1000000)");
+    return;
+  }
+  void *os = singleton_object("OS");
+  // OS.set_low_processor_usage_mode_sleep_usec(int usec): void (extension_api.json hash).
+  GDExtensionMethodBindPtr bind =
+      method_bind("OS", "set_low_processor_usage_mode_sleep_usec", 1286410249);
+  if (os == nullptr || bind == nullptr || g_iface.object_method_bind_ptrcall == nullptr) {
+    log_line("init: GRC_LOW_PROCESSOR_SLEEP_USEC: OS.set_low_processor_usage_mode_sleep_usec "
+             "unavailable");
+    return;
+  }
+  const int64_t arg = static_cast<int64_t>(usec);  // ptrcall passes every int as int64
+  const GDExtensionConstTypePtr args[1] = {&arg};
+  g_iface.object_method_bind_ptrcall(bind, os, args, nullptr);
+  log_line("init: low_processor_usage_mode_sleep_usec=" + std::to_string(usec));
+}
+
 void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (level != GDEXTENSION_INITIALIZATION_SCENE) {
     return;
   }
+  apply_low_processor_sleep();
   g_state.calibration_path = env_string("GRC_CALIBRATION");
   g_state.evidence_dir = env_string("GRC_EVIDENCE_DIR");
   const std::string mode = env_string("GRC_MODE");

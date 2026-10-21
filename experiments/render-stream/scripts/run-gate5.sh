@@ -86,7 +86,11 @@ G5F_QUIT_FRAME=$((G5F_START_FRAME + G5F_STEP_FRAMES * G5F_LAST_STEP + 11))
 # <step>:<ms> (gate1-design.md G1d, memory rs-g1d-stall-facts): after step 1's shot, block the
 # receiver long enough that DF (every-frame geometry) changes for well over 60 frames and step 2's
 # applied change (frame S+2N) lands inside the stall.
-G5F_STALL_SPEC="1:2000"
+# GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
+# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+G5F_STALL_STEP=1
+G5F_STALL_FRAMES=120 # 2000 ms
+G5F_STALL_SPEC=""
 
 usage() {
 	sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -621,8 +625,10 @@ run_g5f() {
 	echo "run-gate5: g5f: live-mesh-warm (a new host + a new rendered receiver on live-mesh's cache, mode warm)"
 	g5f_leg live-mesh-warm rendered -- \
 		RS_RECEIVER_CACHE_DIR="$M/live-mesh/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	G5F_STALL_SPEC="$(legs_stall_spec "$M/live-mesh-stall/host" "$G5F_STALL_STEP" "$G5F_STALL_FRAMES")"
 	echo "run-gate5: g5f: live-mesh-stall (RS_RECEIVER_STALL=$G5F_STALL_SPEC)"
 	g5f_leg live-mesh-stall rendered -- RS_RECEIVER_STALL="$G5F_STALL_SPEC"
+	G5F_STALL_SPEC="$(legs_stall_spec "$M/sabotage-mesh-stale-coalesce/host" "$G5F_STALL_STEP" "$G5F_STALL_FRAMES")"
 	echo "run-gate5: g5f: sabotage-mesh-stale-coalesce (stale-coalesce @$f1, RS_RECEIVER_STALL=$G5F_STALL_SPEC)"
 	g5f_leg sabotage-mesh-stale-coalesce rendered GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$f1" -- \
 		RS_RECEIVER_STALL="$G5F_STALL_SPEC"

@@ -11,6 +11,13 @@
 #                receiver leg per file group (smoke-map.json "smoke"); full: every leg of the
 #                reached groups, run once at the end of the increment
 #   --milestone  the full sweep: every target, every sabotage leg
+#   --fast-frames on|off
+#                GRT3 (scripts/README.md "Fast frames (GRT3)"): run the allowlisted live correctness
+#                legs faster than real time (RS_FAST_FRAMES=all, RS_FAST_FRAMES_MAX_FPS=--fast-fps,
+#                and GATE7_FAST_FRAMES=1 on the g7-1/g7-2/g7-5/g7-55 live runs). Default on for
+#                --tier smoke and full, off under --milestone (sweeps keep real time). Timing legs and
+#                every denylisted leg stay real time either way (lib/legs.sh).
+#   --fast-fps N the fast-frame rate (default 240)
 #   --base REF   the diff is `git diff --name-only REF...HEAD` plus uncommitted and untracked
 #                files (default main); --paths replaces it with an explicit list
 #   --only       run only these run ids (from --plan)
@@ -42,6 +49,8 @@ TIER=smoke
 ONLY=""
 JOBS=1
 PATHS=""
+FAST_FRAMES=""
+FAST_FPS=240
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--base) BASE="$2" && shift 2 ;;
@@ -52,9 +61,20 @@ while [ $# -gt 0 ]; do
 	--only) ONLY="$2" && shift 2 ;;
 	-j) JOBS="$2" && shift 2 ;;
 	--paths) PATHS="$2" && shift 2 ;;
+	--fast-frames) FAST_FRAMES="$2" && shift 2 ;;
+	--fast-fps) FAST_FPS="$2" && shift 2 ;;
 	*) echo "validate-increment: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
+# GRT3: fast frames on for the smoke and full tiers, off for milestone sweeps (real time).
+if [ -z "$FAST_FRAMES" ]; then
+	FAST_FRAMES=on
+	[ "$MILESTONE" = 1 ] && FAST_FRAMES=off
+fi
+case "$FAST_FRAMES" in
+on | off) ;;
+*) echo "validate-increment: --fast-frames must be on or off" >&2 && exit 2 ;;
+esac
 [ -n "$OUT" ] || OUT="$REPO_ROOT/artifacts/render-stream/validate/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 OUT="$(realpath "$OUT")"
@@ -93,7 +113,11 @@ print(f"validate-increment: tier {p['tier']}; {smoke} representative legs in fil
       f"({sum(1 for r in p['runs'] if r.get('smoke_legs'))} runs); every other run is whole; "
       f"{len(p['smoke_deferred'])} group targets deferred to the full tier")
 PY
+echo "validate-increment: fast frames $FAST_FRAMES$([ "$FAST_FRAMES" = on ] && echo " (--max-fps $FAST_FPS on allowlisted live legs; lib/legs.sh)")"
 [ "$PLAN_ONLY" = 1 ] && exit 0
+printf 'fast_frames=%s\nfast_fps=%s\n' "$FAST_FRAMES" "$FAST_FPS" >"$OUT/fast-frames.txt"
+FAST_ENV=()
+[ "$FAST_FRAMES" = on ] && FAST_ENV=(RS_FAST_FRAMES=all RS_FAST_FRAMES_MAX_FPS="$FAST_FPS")
 
 EXT="$EXPERIMENT_DIR/capture/build/render_stream_capture.gdextension"
 CAL="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
@@ -132,7 +156,7 @@ run_one() {
 		core="$(field core)"
 		sab="$(field sabotage)"
 		runner="$SCRIPT_DIR/run-${gate}.sh"
-		local -a env=(RS_RECEIVER_CORE="$core")
+		local -a env=(RS_RECEIVER_CORE="$core" ${FAST_ENV[@]+"${FAST_ENV[@]}"})
 		[ "$sab" = true ] || env+=(RS_SABOTAGE_TIER=skip)
 		env "${env[@]}" bash "$runner" --extension "$EXT" --calibration "$CAL" --out "$dir/run" \
 			>"$dir/run.log" 2>&1 || rc=$?
@@ -163,12 +187,18 @@ run_one() {
 		sl_file="$(field gate7_smoke_legs)"
 		[ -z "$sl_live" ] || genv+=(RS_SMOKE_LEGS="$sl_live")
 		[ -z "$sl_file" ] || genv+=(GATE7_SMOKE_LEGS="$sl_file")
+		# GRT3: only the live groups whose legs are allowlisted get fast frames (and an unthrottled
+		# Chromium); g7-6, g7-lc, g7-r and g7-k are timing groups and keep real time.
+		if [ "$kind" = g7live ] && [ "${#FAST_ENV[@]}" -gt 0 ] &&
+			python3 -c 'import sys; sys.exit(0 if set(sys.argv[1].split(",")) <= {"g7-1", "g7-2", "g7-5", "g7-55"} else 1)' "$groups"; then
+			genv+=("${FAST_ENV[@]}" GATE7_FAST_FRAMES=1)
+		fi
 		case "$recv" in
 		gsw) args+=(--receiver gsw) ;;
 		native) args+=(--receiver native) ;;
 		web/*) args+=(--receiver web --web-core "${recv#web/}") ;;
 		esac
-		env "${genv[@]}" bash "$SCRIPT_DIR/run-gate7.sh" "${args[@]}" >"$dir/run.log" 2>&1 || rc=$?
+		env ${genv[@]+"${genv[@]}"} bash "$SCRIPT_DIR/run-gate7.sh" "${args[@]}" >"$dir/run.log" 2>&1 || rc=$?
 		if [ -n "$sl_live$sl_file" ]; then
 			python3 "$SCRIPT_DIR/lib/tier-verdict.py" --run "$dir/run" --smoke-legs "$sl_live" \
 				>"$dir/tier-verdict.json" 2>&1 && rc=0 || rc=1

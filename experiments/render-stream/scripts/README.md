@@ -155,20 +155,90 @@ Measured in `../results/grt.md` "Part 2b".
   ```bash
   RS_LEG_SHARDS=2 bash experiments/render-stream/scripts/run-gate3.sh --extension … --calibration …
   ```
-- **Fast frames: `RS_FAST_FRAMES=all|host|receiver`.** This is a measured prototype, not a tier
-  (`../results/grt.md` "Part 2b" has what it breaks).
-  - It rewrites a correctness launch's `--max-fps 60`, on every side, on hosts only, or on
-    receivers only. Timing groups and timing legs keep real time.
-  - With `RS_FAST_FRAMES_MAX_FPS=N`, the rewrite is `--max-fps N --disable-vsync`, which scales
-    real time.
-  - Without it, the rewrite is `--fixed-fps 60 --max-fps 0 --disable-vsync`, which is unlimited.
-    Godot 4.5.1 ignores `--max-fps` beside `--fixed-fps`.
-  - A headless host tops out near 145 fps, whatever N is: the headless display cannot draw, so
-    Godot sleeps `low_processor_mode_sleep_usec` (6900 µs) per frame.
-  - `GATE7_FAST_FRAMES=1` adds Chromium's `--disable-gpu-vsync --disable-frame-rate-limit` to the
-    gate 7 live browser (`lib/gate7-live-legs.ts`), and lets the rewrite into a `GATE7_LIVE_KIND`
-    live leg.
-  - `test/self-test-fast-frames.sh` covers the rewrite.
+- **Fast frames** (`RS_FAST_FRAMES`) were a GRT2b prototype; GRT3 made them a tier mode, below.
+
+# Fast frames (GRT3)
+
+Measured in `../results/grt.md` "Part 3". `RS_FAST_FRAMES=all|host|receiver` (default off) runs the
+**allowlisted** live correctness legs faster than real time, and `validate-increment.sh` turns it on
+for its smoke and full tiers (`--fast-frames on|off`, `--fast-fps N`, default 240). A plain runner
+and `--milestone` keep real time. `lib/legs.sh` "Fast frames" holds the lists and the rewrite.
+
+- **What changes in a fast leg.**
+  - The `--max-fps 60` of an allowlisted launch becomes `--max-fps $RS_FAST_FRAMES_MAX_FPS
+    --disable-vsync` (61..1000, default 240). A browser receiver gets the `--max-fps` alone, and
+    `GATE7_FAST_FRAMES=1` unthrottles its Chromium (`--disable-gpu-vsync
+    --disable-frame-rate-limit`, run-wide: the daemon prepares browsers ahead). The web export
+    honours `--max-fps` itself (`platform/web/web_main.cpp` skips rAF callbacks), so no export
+    change is needed.
+  - A fast host gets `GRC_LOW_PROCESSOR_SLEEP_USEC=0`: a headless host cannot draw, so Godot sleeps
+    `low_processor_mode_sleep_usec` (6900 µs) per frame whatever `--max-fps` says, and topped out
+    near 145 fps (GRT2b). With 0, `--max-fps` alone paces it.
+  - A fast live host gets `GRC_LIVE_AWAIT_HELLO_MS=60000`: it holds its whole timeline (the frame
+    callback, so the main loop, the fixture's frame counter and every capture frame stamp) at the
+    first armed frame until the first receiver's hello, so the 300-frame join window costs no real
+    time and a receiver that starts slowly (the web export: 2.7 s) cannot miss step 0. Only the
+    first hello is awaited; a reconnect joins a running timeline. Unset, nothing waits.
+  - Never unbounded `--fixed-fps`: Godot 4.5.1 ignores `--max-fps` beside it, and a host that ends
+    its timeline before a receiver joins breaks every live leg. `RS_FAST_FRAMES_MAX_FPS=0` is
+    refused.
+- **Stalls and delays are in frames.** Every receiver stall and fetch delay a correctness leg uses
+  is a frame count at 60 fps, converted to the receiver's milliseconds at the leg's own host rate
+  (`legs_frames_ms`, `legs_stall_spec`). At real time the milliseconds are exactly the old ones,
+  so a real-time leg's env.txt and evidence are unchanged:
+
+  | Leg | frames | real time | at 240 fps |
+  |---|---|---|---|
+  | g1d `live-stall`, `sabotage-stale-coalesce` (step 1) | 120 | `1:2000` | `1:500` |
+  | g1d `sabotage-ignore-credit` (step 3) | 30 | `3:500` | `3:125` |
+  | g2c `live-stall` (step 5) | 78 | `5:1300` | `5:325` |
+  | g2c `live-animate`, `sabotage-unpin` fetch delay | 6 | 100 ms | 25 ms |
+  | g5f `live-mesh-stall`, g55f `live-shader-stall` and their stale-coalesce sabotages | 120 | `1:2000` | `1:500` |
+
+  The checks count host frames: check-gate1.ts's `sim-kept-running` reads the host's `--max-fps`
+  from its `argv.txt` (`hostFpsOfArgv`) and asks for 0.8 x the stall's frames at an average
+  interval <= 1.25 / that rate; the missed-step and post-stall windows were already frame-based.
+  Wall-clock guards (`RS_RECEIVER_FETCH_TIMEOUT_MS`, `RS_RECEIVER_CONNECT_TIMEOUT`,
+  `GRC_LIVE_HELLO_TIMEOUT_MS`, the runners' kill and wait budgets) stay wall clock: a fast leg only
+  ever finishes sooner, so none fires spuriously.
+- **The allowlist** (`RS_FAST_ALLOW_LEGS`, `<runner>:<leg dir>` globs; gate 7's live groups run the
+  same runners, so g7-1, g7-2, g7-5 and g7-55 follow it leg by leg):
+  - gate 1 g1c: `live-headless`, `live`, `sabotage-drop-message`;
+  - gate 1 g1d (timing group, allowlisted): `live-receiver-killed`, `live-stall`, `live-reconnect`,
+    `live-resync`, `sabotage-ignore-credit`, `sabotage-stale-coalesce`;
+  - gate 2: g2b's `live-inline`; g2c's `live-headless`, `sabotage-drop-resource`,
+    `sabotage-wrong-hash-live`, `live`, `live-warm`, `live-stall`, `live-reconnect`, and the
+    g2c-pins timing group's `live-animate` and `sabotage-unpin`;
+  - gate 5 g5f: `mesh/live-mesh*`, `mesh/sabotage-mesh-stale-coalesce`;
+  - gate 5.5 g55f: `shader-live/live-shader*`, `shader-live/sabotage-shader-stale-coalesce`.
+
+  The allowlisted timing groups (`RS_FAST_ALLOW_GROUPS`: g1d, g2c-pins, g5f, g55f) and gate 7's live
+  legs keep their **exclusive** quiet-lock hold: they run fast under it, never outside it.
+- **The denylist** (real time whatever is set):
+  - every other timing group: g1c-rate (`live-rate-30`, G6r publish rate), g6l (cadence), g6s
+    (soak), g6c (rates, phase lock, credit window), g6p (overhead);
+  - every `timing_leg` label (g6s `reference-step11`);
+  - `RS_FAST_DENY_LEGS`: g2e's `sabotage-no-token`, `sabotage-bad-http-token`, `origin-refused`,
+    `sabotage-no-cors` and `live-auth` (refusal legs: a host may never see a hello), every gate 6
+    leg;
+  - every leg not in the allowlist, file-mode legs (no `--max-fps 60` to rewrite) included;
+  - everything outside these runners: run-gate7.sh's g7-r (G7r pacing), g7-lc (G7u lifecycle),
+    g7-k (G7k startup and soak) and g7-6 (gate 6) groups, which `validate-increment.sh` never gives
+    the fast env; every `gate7-bench.ts` arm; every device leg.
+- **When to use it.** For validating correctness: the smoke and full tiers, or a runner by hand.
+  Never for a rate, pacing, phase, cadence, startup, lifecycle or soak number, a bench or a device
+  leg, and never in a milestone sweep. The lists are policy: a new live leg is real time until it
+  is added to `RS_FAST_ALLOW_LEGS`, which needs its checks to count frames (a stall or delay given
+  in frames, no wall-clock rate or interval judged).
+- `test/self-test-fast-frames.sh` covers the rewrite, the host words, both lists and the frame
+  conversion; `test/self-test-fast-frames-checks.ts` covers `hostFpsOfArgv`, `stallFrames` and
+  `sim-kept-running` on synthetic evidence.
+
+  ```bash
+  RS_FAST_FRAMES=all bash experiments/render-stream/scripts/run-gate1.sh --legs g1a,g1c,g1d …
+  bash experiments/render-stream/scripts/validate-increment.sh --tier full   # fast frames on
+  bash experiments/render-stream/scripts/validate-increment.sh --fast-frames off   # real time
+  ```
 
 # Gate −1 runner
 

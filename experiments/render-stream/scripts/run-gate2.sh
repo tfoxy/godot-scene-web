@@ -582,9 +582,14 @@ g2c_leg() {
 # update lands inside it and the first post-stall transaction carries A1 (gate2-design.md G2c2
 # "As built"); unpin is armed from frame 1, before the receiver's first fetch, because ANIM has
 # only six contents and a fresh cache holds all of them long before S + N.
-G2C_STALL_SPEC="5:1300"
+# GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
+# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+G2C_STALL_STEP=5
+G2C_STALL_FRAMES=78 # 1300 ms
+G2C_STALL_SPEC=""
 G2C_RECONNECT_STEP=7
-G2C_FETCH_DELAY_MS=100
+G2C_FETCH_DELAY_FRAMES=6 # 100 ms
+G2C_FETCH_DELAY_MS=""
 G2C_UNPIN_FRAME=1
 run_g2c() {
 	local f6 seqs live_store
@@ -622,6 +627,7 @@ run_g2c() {
 	echo "run-gate2: live-warm (a new host + a new rendered receiver on live's cache, mode warm)"
 	g2c_leg live-warm rendered -- \
 		RS_RECEIVER_CACHE_DIR="$OUT/live/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	G2C_STALL_SPEC="$(legs_stall_spec "$OUT/live-stall/host" "$G2C_STALL_STEP" "$G2C_STALL_FRAMES")"
 	echo "run-gate2: live-stall (RS_RECEIVER_STALL=$G2C_STALL_SPEC)"
 	g2c_leg live-stall rendered -- RS_RECEIVER_STALL="$G2C_STALL_SPEC"
 	echo "run-gate2: live-reconnect (RS_RECEIVER_RECONNECT=$G2C_RECONNECT_STEP)"
@@ -629,9 +635,11 @@ run_g2c() {
 	# The live-animate pins (live-animate, sabotage-unpin) are timing legs: each holds the
 	# exclusive quiet lock from its host's start to its finish (lib/legs.sh).
 	LEGS_TIMING_GROUP=g2c-pins
+	G2C_FETCH_DELAY_MS="$(legs_frames_ms "$OUT/live-animate/host" "$G2C_FETCH_DELAY_FRAMES")"
 	echo "run-gate2: live-animate (RS_FIXTURE_VARIANT=animate, RS_RECEIVER_FETCH_DELAY_MS=$G2C_FETCH_DELAY_MS)"
 	g2c_leg live-animate rendered RS_FIXTURE_VARIANT=animate -- \
 		RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
+	G2C_FETCH_DELAY_MS="$(legs_frames_ms "$OUT/sabotage-unpin/host" "$G2C_FETCH_DELAY_FRAMES")"
 	echo "run-gate2: sabotage-unpin (as live-animate, unpin @$G2C_UNPIN_FRAME)"
 	g2c_leg sabotage-unpin rendered RS_FIXTURE_VARIANT=animate GRC_SABOTAGE=unpin \
 		GRC_SABOTAGE_FRAME="$G2C_UNPIN_FRAME" -- RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
