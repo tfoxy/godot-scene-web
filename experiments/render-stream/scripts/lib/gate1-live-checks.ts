@@ -75,6 +75,7 @@ import {
   type Gate1Classification,
   patchDivergence,
   resolvedStateOf,
+  sameState,
 } from "./gate1-checks";
 import type { Gate1Expected } from "./gate1-expected";
 import { decodeRecord, splitRecords, wireVersionOf } from "./render-stream-2";
@@ -375,7 +376,19 @@ export interface LiveHostEvidence {
 export async function loadLiveHost(
   dir: string,
   connection = 1,
+  /** GRT4b: the host's own full and patch recordings, shared by its connections' evidence
+   * (every connection of a host reads the same two files); keyed by path. */
+  sinks?: Map<string, Promise<RecordingSummary>>,
 ): Promise<LiveHostEvidence> {
+  const sink = (path: string): Promise<RecordingSummary> => {
+    if (!sinks) return loadRecording(path);
+    let hit = sinks.get(path);
+    if (!hit) {
+      hit = loadRecording(path);
+      sinks.set(path, hit);
+    }
+    return hit;
+  };
   return {
     dir,
     connection,
@@ -389,8 +402,8 @@ export async function loadLiveHost(
     ),
     tap: await loadRecording(join(dir, "tap", tapName(connection))),
     tapBytes: await readBytes(join(dir, "tap", tapName(connection))),
-    full: await loadRecording(join(dir, RECORDING_NAME)),
-    patch: await loadRecording(join(dir, PATCH_RECORDING_NAME)),
+    full: await sink(join(dir, RECORDING_NAME)),
+    patch: await sink(join(dir, PATCH_RECORDING_NAME)),
     steps: parseStepLog(await readTextOrUndefined(join(dir, "steps.jsonl"))),
     exit_code: await readExitCode(dir),
   };
@@ -578,7 +591,7 @@ export function deliveryReport(host: LiveHostEvidence): DeliveryReport {
       out.stale_states.push(
         `seq ${t.meta.seq} frame ${t.meta.frame}: no full-recording transaction`,
       );
-    else if (stateKey(f) !== stateKey(t))
+    else if (!sameState(f, t))
       out.stale_states.push(
         `seq ${t.meta.seq} frame ${t.meta.frame}: resolves to a state other than the full recording's`,
       );

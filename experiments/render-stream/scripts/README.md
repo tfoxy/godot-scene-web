@@ -281,6 +281,29 @@ for every tier, `--milestone` included since GRT4a (`--fast-frames on|off`, `--f
   bash experiments/render-stream/scripts/validate-increment.sh --fast-frames off   # real time
   ```
 
+# Checker cost and byte identity (GRT4b)
+
+The checkers share one decoder and a few hot helpers (`results/grt.md` "Part 4b"): `node:crypto`
+behind the decoders' hash seam (`lib/node-hash.ts`, imported first by every `check-gate*.ts`), one
+decode per record per reader (`withRecordMemo`), item interning across a recording's transactions
+(`internItems`), state comparison without building strings (`lib/json-key-equal.ts`,
+`statesEqual`), and a cell grid in `meshActions`. `test/self-test-grt4b.ts` proves each against
+the code it replaced. A checker change that should not move a verdict is checked on real evidence
+with `test/checker-identity.py`: `run` copies an evidence dir to a fixed work path, runs the
+checker (shared quiet lock, `/usr/bin/time -v`, optionally `--cpu-prof`) and keeps every file it
+wrote, canonicalised; `compare` diffs two runs (before from a detached `main` checkout, after from
+the worktree). Use unpruned evidence (a source-cache entry, a fresh run): pruned recordings send a
+checker down its "no host evidence" paths.
+
+  ```bash
+  T=experiments/render-stream/scripts/test/checker-identity.py
+  python3 -I $T run --work W --save S --label before --name g6 --pristine <evidence dir> \
+    --map <old abs prefix>=@OUT@ -- mise exec -- pnpm exec tsx --conditions=development \
+    <before checkout>/experiments/render-stream/scripts/check-gate6.ts --out @OUT@
+  python3 -I $T run … --label after …   # the same, from this checkout
+  python3 -I $T compare --save S --name g6 before after
+  ```
+
 # Gate −1 runner
 
 Drives `../fixtures/spike/` through every leg of the capture library's runtime contract

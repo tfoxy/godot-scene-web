@@ -28,6 +28,8 @@
 // its increment lands is refused,
 // exactly as `run-gate6.sh` refuses an unlanded group.
 
+// GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
+import "./lib/node-hash";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";

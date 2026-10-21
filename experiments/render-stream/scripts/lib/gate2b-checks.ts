@@ -65,6 +65,7 @@ import {
   type TransactionTexture,
   validateRecording,
   wireVersionOf,
+  withRecordMemo,
 } from "./render-stream-2";
 
 // ---------------------------------------------------------------------------------------------
@@ -238,29 +239,38 @@ export async function loadResolved(path: string): Promise<Resolved> {
   const { createHash } = await import("node:crypto");
   const sha256 = createHash("sha256").update(data).digest("hex");
   // G7l: a /7 live stream reads as /7 (wireVersionOf), every other magic as /6, as before.
-  const version = wireVersionOf(data);
-  const errors = validateRecording(data, version);
-  let recording: ResolvedRecording | null = null;
-  try {
-    recording = resolveRecording(data, version);
-  } catch (e) {
-    errors.push(`resolveRecording: ${(e as Error).message}`);
-  }
-  const metas: Array<Record<string, unknown>> = [];
-  const resources = new Map<string, Uint8Array>();
-  for (const raw of splitRecords(data, version).records) {
-    const { record } = decodeRecord(raw, version);
-    if (!record) break;
-    const meta = record.meta as unknown as Record<string, unknown>;
-    metas.push(meta);
-    if (meta.type === "resource") {
-      const start = raw.offset + raw.byte_length - Number(meta.bytes);
-      resources.set(
-        String(meta.hash),
-        data.subarray(start, start + Number(meta.bytes)),
-      );
-    }
-  }
+  // GRT4b: validate, resolve and the metas loop share one decode of each record (3 reads).
+  const bytes = data;
+  const { errors, recording, metas, resources } = withRecordMemo(
+    bytes,
+    () => {
+      const version = wireVersionOf(bytes);
+      const errors = validateRecording(bytes, version);
+      let recording: ResolvedRecording | null = null;
+      try {
+        recording = resolveRecording(bytes, version);
+      } catch (e) {
+        errors.push(`resolveRecording: ${(e as Error).message}`);
+      }
+      const metas: Array<Record<string, unknown>> = [];
+      const resources = new Map<string, Uint8Array>();
+      for (const raw of splitRecords(bytes, version).records) {
+        const { record } = decodeRecord(raw, version);
+        if (!record) break;
+        const meta = record.meta as unknown as Record<string, unknown>;
+        metas.push(meta);
+        if (meta.type === "resource") {
+          const start = raw.offset + raw.byte_length - Number(meta.bytes);
+          resources.set(
+            String(meta.hash),
+            bytes.subarray(start, start + Number(meta.bytes)),
+          );
+        }
+      }
+      return { errors, recording, metas, resources };
+    },
+    3,
+  );
   return {
     path,
     present: true,

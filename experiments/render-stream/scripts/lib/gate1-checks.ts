@@ -129,6 +129,7 @@ import {
   type LiveLegReport,
   liveLegReport,
 } from "./gate1-live-checks";
+import { jsonKeyEqual } from "./json-key-equal";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract
@@ -706,11 +707,13 @@ export function evaluateInvariants(
 // Patch sink against full sink
 // ---------------------------------------------------------------------------------------------
 
-/** A resolved state as one comparable string: numbers bit-exact (-0 kept apart from 0). */
-function stateKey(t: RecordingSummary["transactions"][number]): string {
-  return JSON.stringify(resolvedStateOf(t.meta), (_key, value) =>
-    Object.is(value, -0) ? "-0" : value,
-  );
+/** Two resolved states compared as one comparable string each (numbers bit-exact, -0 kept apart
+ * from 0), without building either string (GRT4b, lib/json-key-equal.ts). */
+export function sameState(
+  a: RecordingSummary["transactions"][number],
+  b: RecordingSummary["transactions"][number],
+): boolean {
+  return jsonKeyEqual(resolvedStateOf(a.meta), resolvedStateOf(b.meta));
 }
 
 /** The resolved `state` of a transaction, in render-stream-2.md's key order: exactly what a
@@ -766,7 +769,7 @@ export function patchDivergence(
   for (const t of patch.transactions) {
     const f = byFrame.get(t.meta.frame);
     if (!f) out.push(`frame ${t.meta.frame}: no full-sink transaction`);
-    else if (stateKey(f) !== stateKey(t))
+    else if (!sameState(f, t))
       out.push(
         `frame ${t.meta.frame} (seq ${t.meta.seq}): the patch sink resolves to a different state`,
       );

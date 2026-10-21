@@ -47,8 +47,10 @@ import {
 } from "./gate0-expected";
 import {
   applyTransaction,
+  createRecordingValidator,
   decodeRecord,
   emptyResolvedState,
+  internItems,
   isPartialUnknownItems,
   type ResolvedCanvas,
   type ResolvedCommand,
@@ -69,8 +71,8 @@ import {
   sortedResolvedTextures,
   splitRecords,
   type UnknownItemsMeta,
-  validateRecording,
   wireVersionOf,
+  withRecordMemo,
 } from "./render-stream-2";
 
 /** WP3's `render-stream-gate0-expected/1` type, whatever it is named there. */
@@ -733,6 +735,16 @@ export function summarizeRecording(
   path: string,
   data: Uint8Array | undefined,
 ): RecordingSummary {
+  // GRT4b: the validator and the loop below share one decode of each record, record by record.
+  return data
+    ? withRecordMemo(data, () => summarizeRecordingOnce(path, data), 2)
+    : summarizeRecordingOnce(path, data);
+}
+
+function summarizeRecordingOnce(
+  path: string,
+  data: Uint8Array | undefined,
+): RecordingSummary {
   if (!data) {
     return {
       path,
@@ -751,12 +763,29 @@ export function summarizeRecording(
     present: true,
     sha256: sha256Hex(data),
     bytes: data.length,
-    errors: validateRecording(data, version),
+    errors: [],
     transactions: [],
   };
   const split = splitRecords(data, version);
+  // validateRecording(data, version), driven record by record ahead of this loop (GRT4b): the
+  // same validator, the same records, the same first error.
+  let errors: string[] | null =
+    split.errors.length > 0 ? [split.errors[0]] : null;
+  const validator = errors
+    ? null
+    : createRecordingValidator(split.records, version);
+  if (validator?.errors) errors = validator.errors;
+  let validated = 1;
+  const validateBefore = (end: number): void => {
+    while (errors === null && validator && validated < end) {
+      const e = validator.accept(validated++);
+      if (e) errors = e;
+    }
+  };
   let state: ResolvedState = emptyResolvedState();
-  for (const raw of split.records) {
+  const lastItems = new Map<number, ResolvedItem>();
+  for (const [k, raw] of split.records.entries()) {
+    validateBefore(k + 1);
     const { record } = decodeRecord(raw, version);
     if (!record) break;
     const meta = record.meta;
@@ -778,7 +807,7 @@ export function summarizeRecording(
           ...(meta.unknown_items !== undefined
             ? { unknown_items: meta.unknown_items }
             : {}),
-          items: sortedResolvedItems(state),
+          items: internItems(sortedResolvedItems(state), lastItems),
           canvases: sortedResolvedCanvases(state),
           default_texture_filter: meta.default_texture_filter,
           default_texture_repeat: meta.default_texture_repeat,
@@ -801,6 +830,8 @@ export function summarizeRecording(
       summary.end = meta as EndMeta;
     }
   }
+  validateBefore(split.records.length);
+  summary.errors = errors ?? validator?.finish() ?? [];
   return summary;
 }
 

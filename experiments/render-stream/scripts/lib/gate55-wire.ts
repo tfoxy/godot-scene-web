@@ -17,6 +17,7 @@ import {
   type SessionMeta,
   type TransactionMeta,
   wireVersionOf,
+  withRecordMemo,
 } from "./render-stream-2";
 
 /** One transaction: its wire meta and its resolved state (resolveRecording's `state`). */
@@ -54,6 +55,13 @@ export function wire5FromBytes(
   path: string,
   data: Uint8Array | undefined,
 ): Wire5 {
+  // GRT4b: decodeRecording and resolveRecording share one decode of each record.
+  return data
+    ? withRecordMemo(data, () => wire5FromBytesOnce(path, data), 2)
+    : wire5FromBytesOnce(path, data);
+}
+
+function wire5FromBytesOnce(path: string, data: Uint8Array | undefined): Wire5 {
   const out: Wire5 = {
     path,
     present: data !== undefined,

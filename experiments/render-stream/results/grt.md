@@ -734,3 +734,189 @@ Traps: the old summary's recursive glob followed view symlinks into source runs 
 tested on a base without a repo (now `changed_paths` in Python, tested on a throwaway repo);
 `create-worktree.sh` fails on `mise exec` before `mise trust` in a fresh worktree (worked around by
 hand: `git worktree add`, `mise trust`, `install-agent-config.sh`, `pnpm install`).
+
+## Part 4b (GRT4b): profile and speed up the checkers (2026-10-21)
+
+The checkers held the quiet lock 1.4–1.7 h per milestone sweep, and a lifecycle run's evidence
+needed a 12 GB Node heap. This part measures where their time and memory go on preserved evidence,
+fixes the top items, and proves every verdict unchanged byte for byte.
+
+### Evidence and method
+
+Preserved evidence under `artifacts/render-stream/` has had its recordings pruned (the retention
+policy deletes `.rs2`/`.rs7`, which every checker reads first), so a checker run over it takes the
+"no host evidence" shortcuts and its profile means nothing. The inputs were the unpruned ones,
+copied read-only into the worktree (`artifacts/render-stream/grt4b/pristine/`):
+
+| name | evidence | checker |
+| --- | --- | --- |
+| `g2c` | source-cache `3cc7cc8f…/gate2--all` (G7q's native gate 2 source run) | `check-gate2.ts` |
+| `g6c` | source-cache `3cc7cc8f…/gate6--g6a+g6h+g6b` (1.7 GB, native gate 6) | `check-gate6.ts` |
+| `g7gsw` | G7q's `g7q-full3-w1/g7-gsw/run` (g7-0..g7-6 GSW file legs), sources from `3cc7cc8f…`; its own GSW shots were pruned, so those pixel checks see missing shots | `check-gate7.ts` |
+| `g7lclive` | a fresh `run-gate7.sh --live --legs g7-lc --receiver gsw` (8 legs, 1.6 GB) | `check-gate7.ts --live` |
+
+`test/checker-identity.py run` copies one input to the same work path for every run, points its
+symlinks at the copy (and a source-cache entry's at a private read-only copy), runs the checker
+under `/usr/bin/time -v` and `quiet.sh shared`, and keeps every file the checker created or changed,
+canonicalised (sorted keys, timing keys dropped). `compare` diffs two runs; the before run comes
+from a detached `main` checkout, so each checkout's own path compares as `@CODE@`, and
+`source-key.ts`'s `current <key>` as `@SOURCE_KEY@` (it hashes the checkout's scripts, so an edit
+moves it by design). Profiles are `--cpu-prof` at 5 ms, summed by self time.
+
+A g7-k soak was not profiled: its checker took 6 s on G7k's preserved run, and the 12 GB heap
+(`run-gate7.sh`, set for g7-lc and g7-k) is the lifecycle run's.
+
+### Where the time went (before)
+
+CPU seconds by self time, `main` at `0917af47` (one profile each; "decode + validate" is the record
+decoder and validator less hashing, "per-seq states" applyTransaction and the sorted per-transaction
+tables):
+
+| category | g2c | g6c | g7gsw | g7lclive |
+| --- | ---: | ---: | ---: | ---: |
+| SHA-256, pure JS (`sha256.ts`) | 11.2 | 48.6 | 74.9 | 105.2 |
+| record decode + validate | 14.1 | 49.3 | 88.7 | 71.2 |
+| state compare (`stateKey`, `statesEqual`) | 3.7 | 65.1 | 66.2 | 46.7 |
+| per-seq states (lift, sort) | 1.0 | 6.5 | 13.0 | 10.5 |
+| model raster (`geometry-raster.ts`) | 0 | 66.0 | 47.7 | 0 |
+| region maps, budgets | 0 | 26.7 | 11.7 | 2.6 |
+| pixel diffs | 0.8 | 3.4 | 9.0 | 0 |
+| GC | 1.6 | 65.5 | 50.8 | 46.7 |
+| idle (awaits: file reads, PNG decode in libvips) | 0.8 | 6.0 | 14.4 | 2.9 |
+| other | 1.4 | 16.9 | 25.4 | 12.8 |
+| **total** | 34.6 | 353.9 | 401.9 | 298.6 |
+| peak RSS | 1.0 GB | 4.2 GB | 4.4 GB | 7.5 GB |
+
+What each line was:
+
+- **SHA-256 in pure JS.** G7j made the decoders browser-loadable with a pure SHA-256 and a per-file
+  `setHashImpl` seam, but no checker ever injected `node:crypto`. Every record and every u8 payload
+  was hashed in JS, twice over (validate, then the reader's own decode).
+- **Repeated decodes.** `summarizeRecording` validated a recording (decoding and hashing every
+  record) and then decoded every record again; `loadResolved` decoded three times (validate,
+  resolve, its metas loop); `wire5FromBytes` twice. Inside one decode, the meta's ASCII was built a
+  character at a time and float blocks grown by `push` (on G6's 99 MB HD recording: floats 221 ms,
+  `JSON.parse` 134 ms, the canonical-JSON re-stringify 125 ms, per 1.2 s decode).
+- **State comparison by string.** `patchDivergence` and `deliveryReport` compared every full-sink
+  frame with its patch-sink or tap frame as `JSON.stringify(state, negZeroReplacer)`, two whole
+  strings per frame through a replacer callback; `statesEqual` did the same through `froundDeep`
+  copies. They were also most of the garbage.
+- **Per-seq states.** A full-encoding recording lifts every item again at every transaction:
+  one lifecycle leg's host held its 104 MB recording as 445 MiB of summary (397 MiB of it the
+  per-transaction items) plus 450 MiB more as `loadResolved`'s copy, and each extra connection
+  loaded the host's full and patch summaries again (1.2 GB retained per host). 88% of those items
+  equal the previous transaction's.
+- **Mesh raster.** `meshActions` measured every pixel of a mesh's window against every boundary edge
+  and triangle (gate 6's HD scene, gsw's g7-6).
+- **Region maps and budgets.** `regionMap` called `Object.entries` per pixel; `accumulateBudgetHd`
+  ran a regex per pixel.
+- **Repeated reads.** In `g7gsw`, 276 recording loads for 230 files (19% of the decoded bytes) and
+  6,033 PNG decodes for 4,406 files. Both left alone: the recording repeats are separate checks'
+  loads, and PNG decode runs on libvips' threads (the whole idle line is at most 14 s).
+- Per-seq receiver state dumps (`state/seq-<n>.json`) and whole-JSONL loads (live logs) are under 1%
+  each.
+
+### Fixes
+
+All in `experiments/render-stream/scripts/`, each exact by construction and covered by
+`test/self-test-grt4b.ts` (pure, ~3 s, in `run-pure-self-tests.sh`):
+
+1. **`lib/node-hash.ts`**: every `check-gate*.ts` imports it first; it sets `node:crypto` behind
+   the three decoders' hash seams. (Self-test: equal digests at every block boundary.)
+2. **`withRecordMemo(data, fn, uses)`** (`render-stream-2.ts`): inside the scope, `decodeRecord`
+   decodes each record of `data` once and hands later readers the same result, dropping it after
+   `uses` reads. `summarizeRecording` now drives `createRecordingValidator` record by record ahead
+   of its own loop (the same validator, records and first error as `validateRecording`), so it
+   holds one record at a time; `loadResolved` (3 reads) and `wire5FromBytes` (2) use it too.
+   (Self-test: every golden recording reads the same inside and outside the memo, with both hashes;
+   `summarizeRecording`'s errors equal `validateRecording`'s on 84 recordings, 58 of them invalid.)
+3. **Faster decode**: printable ASCII is checked, then decoded at once (`TextDecoder("latin1")`
+   maps 0x20–0x7e to themselves); f32/i32/f64 blocks are sized once and filled. 1.2 s → 0.56 s on
+   the 99 MB recording.
+4. **`lib/json-key-equal.ts` `jsonKeyEqual`** replaces the two per-frame `stateKey` string
+   comparisons (`sameState`); **`statesEqual`** becomes one walk with the same answer
+   (`froundJsonEqual`). Both walk the two values in `JSON.stringify`'s own order and stop at the
+   first different token; a value they do not model (`toJSON`, a bigint) falls back to the strings.
+   (Self-test: 20,000 fuzzed pairs each against the string comparison, with -0 and `"-0"`, NaN and
+   the infinities, holes, omitted members, key order, Dates, values that round to the same float32.)
+5. **`internItems`** (`render-stream-2.ts`): `summarizeRecording` and `resolveRecording` reuse the
+   previous transaction's item object when the new one is the same value (`sameValueDeep`: same
+   prototypes, own keys in the same order, leaves equal under `Object.is`), as a patch recording
+   already does. **`loadHost`** shares the host's full and patch summaries between its connections.
+6. **`meshActions`' cell grid** (`geometry-raster.ts`): per 8 px cell, the boundary edges within
+   `max(band_px, edge) + 1` px and the triangles whose box plus 1 px reaches it, in their original
+   order, so the first hit and every distance comparison are unchanged (a triangle with |det| <
+   1e-3 px² goes in every cell). `setMeshGrid(false)` is the old full scan, for the self-test: 300
+   fuzzed scenes (slivers, welded vertices, bands, scissors, textures, rotations) rasterize
+   bit-identically; two deliberately wrong margins fail it.
+7. `regionMap` takes `Object.entries` once per map, `accumulateBudgetHd` each region's family name
+   once, `rasterizeItems` copies underlay bytes without a `subarray` per pixel.
+
+Not changed: the checks themselves, their order, and every checker's output. Nothing here touches
+the GDScript-core-only checks G7gd is deleting.
+
+### After
+
+Before and after back to back on the same input, unprofiled (`checker-identity.py`, labels `tbase`
+and `tfinal`), at load 5–6 from other work on the machine:
+
+| checker (input) | wall s | user CPU s | peak RSS |
+| --- | ---: | ---: | ---: |
+| `check-gate2.ts` (`g2c`) | 32.9 → 11.7 (2.8x) | 37.6 → 14.6 | 1.05 → 0.74 GB |
+| `check-gate6.ts` (`g6c`) | 218.9 → 88.5 (2.5x) | 305.2 → 125.6 | 4.25 → 1.97 GB |
+| `check-gate7.ts`, g7-0..g7-6 GSW (`g7gsw`) | 324.9 → 140.0 (2.3x) | 412.2 → 180.5 | 4.37 → 2.04 GB |
+| `check-gate7.ts --live`, g7-lc GSW (`g7lclive`) | 270.0 → 86.3 (3.1x) | 397.0 → 137.0 | **7.77 → 3.62 GB** |
+
+The profiled runs (load 4–13, so walls vary more) agree: `g6c` 354 → 77 s of CPU samples,
+`g7gsw` 402 → 122, `g7lclive` 299 → 78. What is left, after (CPU s): `g7gsw` decode + validate 24.6,
+model raster 17.6, state compare 17.5, per-seq states 16.2 (interning included), GC 13.2;
+`g7lclive` decode + validate 23.7, per-seq states 19.0, state compare 18.2, GC 10.2.
+
+The lifecycle checker's heap: one leg's host retained 2.26 GB under the old code (measured with
+`--expose-gc` piece by piece on `sim-hidden-2s`: full summary 445 MiB, patch 98, tap 54, the
+resolved full 450, and `loadHost` 1.2 GB on top for its own copies). The whole run now peaks at
+3.6 GB RSS for one receiver kind. `run-gate7.sh` still raises g7-lc and g7-k to 12 GB (both kinds
+in one checker, and a device run's longer legs); that can come down once a full two-kind run is
+measured.
+
+**Byte identity.** Every file each checker wrote is the same before and after, canonically (JSON
+with sorted keys, timing keys dropped, the checkout's own path and current source key masked as
+above): `g2c` 1 file (`result.json`), `g6c` 1, `g7gsw` 183 (`result.json` and every
+`gate*/gsw-view/` report and diff), `g7lclive` 2 (`result.json`, `g7u-summary.json`), and at
+every intermediate step that ran them (labels `a1`–`a6`, `tfinal`). Exit codes match: the inputs
+fail some checks under today's checker (`g6c`'s groups absent from its source run are not-run,
+`g7gsw`'s pruned GSW shots and its source checks against a tree that has moved on, g7-lc's device
+rows typed unavailable), identically before and after. Saved runs:
+`artifacts/render-stream/grt4b/save/<label>/<name>/` in the worktree (`cost.json`, `files/`,
+`cpu-prof/`).
+
+### Validation and scope
+
+- `test/self-test-grt4b.ts` (above), and the pure tier: `run-pure-self-tests.sh` 57/57 pass in
+  673 s at load 6–9 (no lock held).
+- One real smoke at load ~5 (the machine was in use):
+  `validate-increment.sh --tier smoke --only native-rust-gate0,g7-gsw`, 2/2 pass in 82 s (gate 0
+  with its sabotage legs, a checker being in the diff; `artifacts/render-stream/validate/
+  grt4b-smoke/` in the worktree).
+- The identity runs above on four real evidence sets, one of them a fresh g7-lc run.
+- `smoke-map.json`: `lib/node-hash.ts` and `lib/json-key-equal.ts` join the shared-decoder rule
+  (every gate); `scripts/create-worktree.sh` reaches nothing.
+- No full tier (as asked). `render-stream-2.ts` is the shared decoder, so the next milestone sweep
+  is this change's full run: every checker on fresh evidence.
+
+Also here: `scripts/create-worktree.sh` now runs `mise trust` before its first `mise exec` (GRT4a's
+trap).
+
+Traps:
+
+- Preserved evidence is pruned of recordings: a checker over it runs in seconds down its "no host
+  evidence" paths, and its profile is worthless. Unpruned inputs: the source-cache entries, a
+  fresh run, or `.worktrees/*/artifacts/render-stream/validate/*`.
+- A before/after pair needs the before code in its own checkout (`git worktree add --detach`): a
+  `tsx` checker loads its modules at start, but `lib/gate4-checks.ts` and `lib/gate5-checks.ts`
+  import some checks lazily, so editing a checkout under a running checker mixes two versions.
+- `rs-core-check` must exist in the checking checkout (`experiments/render-stream/rs-core/target/
+  release/`) for g7-5's lowering parity; a symlinked `target/` is untracked, so `source-key.ts`
+  reads it as a file and dies with EISDIR. Copy the binary into a real `target/release/`.
+- `--trace-gc` and `--max-inlined-bytecode-size` are refused in `NODE_OPTIONS`; `--cpu-prof` and
+  `--max-old-space-size` are not. `tsx` loses line numbers in profiles: attribute by function name.

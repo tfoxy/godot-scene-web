@@ -13,6 +13,8 @@
 // with synthetic values. Every group speaks render-stream/6 since G6b. A landed group that was not
 // run is reported `not-run` and fails the gate.
 
+// GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
+import "./lib/node-hash";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

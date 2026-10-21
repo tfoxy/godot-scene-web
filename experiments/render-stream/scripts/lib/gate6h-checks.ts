@@ -755,6 +755,8 @@ export function accumulateBudgetHd(
   ri: RegionIndex,
 ): number {
   let n = 0;
+  // GRT4b: each region's family name once, not a regex per pixel.
+  const family = ri.names.map((name) => name.replace(/^c\d+\./, ""));
   for (let i = 0; i < a.width * a.height; i++) {
     const cls = r.exact[i]
       ? r.delta[i] > 0
@@ -764,7 +766,7 @@ export function accumulateBudgetHd(
         ? "band"
         : "undecided";
     // Per region family (`SC`, not `c3.SC`): nine cells x 17 regions would bury the table.
-    const name = regionName(ri, i).replace(/^c\d+\./, "");
+    const name = ri.index[i] < 0 ? "BG" : family[ri.index[i]];
     const key = `${name}/${cls}`;
     let cell = cells.get(key);
     if (!cell) {
