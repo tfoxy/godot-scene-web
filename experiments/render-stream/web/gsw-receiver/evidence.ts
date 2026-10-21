@@ -198,8 +198,12 @@ export interface LiveEntry {
   encoding: string;
   record_sha256: string;
   received_us: number;
+  /** G7mm: the rAF callback that would first handle the record (processFrames + 1 at receipt) */
+  received_process_frame: number;
   applied_us: number | null;
   submitted_us: number | null;
+  /** G7mm: processFrames of the callback that sent the `submitted` ack */
+  submitted_process_frame: number | null;
   skipped: string | null;
   /** Q9 `credit-from-paced-loop` evidence (GSW only): the rAF callback that applied and drew
    * this transaction (its index and timestamp), and when its `submitted` ack was sent and from
@@ -331,8 +335,10 @@ export function appliedJson(r: Report): Record<string, unknown> {
             record_sha256: e.record_sha256,
             ...appliedEntry(t, s),
             received_us: e.received_us,
+            received_process_frame: e.received_process_frame,
             applied_us: e.applied_us,
             submitted_us: e.submitted_us,
+            submitted_process_frame: e.submitted_process_frame,
             skipped: e.skipped,
             resources: applied ? resourcesOf(t, s) : null,
             paced: e.paced,

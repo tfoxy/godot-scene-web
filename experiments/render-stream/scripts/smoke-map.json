@@ -52,6 +52,11 @@
   },
   "rules": [
     {
+      "why": "offline comparison of replayed native receiver legs (G7xn); no gate runs it",
+      "paths": ["experiments/render-stream/scripts/compare-receiver-cores.ts"],
+      "reach": ["none"]
+    },
+    {
       "why": "docs: no leg reads them",
       "paths": [
         "**/*.md",
@@ -272,6 +277,7 @@
         "experiments/render-stream/scripts/lib/gate6*-*.ts",
         "experiments/render-stream/scripts/lib/gate6*-legs.sh",
         "experiments/render-stream/scripts/report-gate6.ts",
+        "experiments/render-stream/scripts/g6l-motion-leg.ts",
         "experiments/render-stream/scripts/lib/render-stream-report.ts",
         "experiments/render-stream/scripts/throttle-proxy.ts",
         "experiments/render-stream/scripts/lib/proc-sampler.ts",

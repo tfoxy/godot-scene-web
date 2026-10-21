@@ -28,7 +28,8 @@
 //   reference-live-frames/   shots/frame-<f>.png (and step-<k>.png), steps.jsonl
 //   reference-file/          shots/step-<k>.png (the animate variant on the file timeline)
 
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import {
   decodePngRgba,
@@ -257,6 +258,9 @@ export interface G6lApplied extends G2cApplied {
   transactions?: Array<
     NonNullable<G2cApplied["transactions"]>[number] & {
       stream?: number;
+      /** G7mm: the receiver frames of the transaction's receipt and `submitted` ack */
+      received_process_frame?: number | null;
+      submitted_process_frame?: number | null;
     }
   >;
   live?:
@@ -550,9 +554,33 @@ export interface AppliedTx {
   fetched: number;
   /** receiver clock: from reading the transaction to its submitted ack (null when unknown) */
   receive_to_submit_us: number | null;
+  /** G7mm: the receiver frame that read the transaction, and the frame of its `submitted` ack;
+   * absent (older evidence) or null when unknown. A hold counts in frames when both are numbers. */
+  received_process_frame?: number | null;
+  submitted_process_frame?: number | null;
 }
 
-/** The applied (not skipped) transactions of a receiver, in apply order. */
+/** Whether the receiver held the transaction before crediting it: over a frame boundary (the
+ * transaction was submitted in a later receiver frame than it was read in; needs the G7mm frame
+ * fields), or for longer than one frame of time between receipt and the submitted ack (a slow
+ * frame or a state dump inside one receiver frame, which no frame count sees). Evidence without
+ * the frame fields has the microsecond rule alone. `basis` says which rule excused it: `frames`
+ * wins when both hold. */
+export function heldOverFrame(t: AppliedTx): {
+  held: boolean;
+  basis: "frames" | "us";
+} {
+  const byFrames =
+    typeof t.received_process_frame === "number" &&
+    typeof t.submitted_process_frame === "number" &&
+    t.submitted_process_frame > t.received_process_frame;
+  if (byFrames) return { held: true, basis: "frames" };
+  return {
+    held:
+      t.receive_to_submit_us !== null && t.receive_to_submit_us > G6L_FRAME_US,
+    basis: "us",
+  };
+} /** The applied (not skipped) transactions of a receiver, in apply order. */
 export function appliedTransactions(a: G6lApplied | undefined): AppliedTx[] {
   return (a?.transactions ?? [])
     .filter((t) => typeof t.applied_us === "number" && !t.skipped)
@@ -564,6 +592,14 @@ export function appliedTransactions(a: G6lApplied | undefined): AppliedTx[] {
       receive_to_submit_us:
         typeof t.received_us === "number" && typeof t.submitted_us === "number"
           ? t.submitted_us - t.received_us
+          : null,
+      received_process_frame:
+        typeof t.received_process_frame === "number"
+          ? t.received_process_frame
+          : null,
+      submitted_process_frame:
+        typeof t.submitted_process_frame === "number"
+          ? t.submitted_process_frame
           : null,
     }));
 }
@@ -579,6 +615,9 @@ export interface MotionReport {
    * transaction's receipt-to-submitted time exceeded a frame: fetch, shot or frame) */
   attributed: Record<string, number>;
   max_gap: number;
+  /** the excused gaps > G6L_MAX_GAP by how the receiver's hold was judged: `frames` (G7mm
+   * received/submitted process frames) or `us` (older evidence without them) */
+  hold_basis: Record<string, number>;
   /** the host sent each transaction this many callbacks after its predecessor's credit */
   credit_to_send: Record<string, number>;
 }
@@ -587,8 +626,10 @@ export interface MotionReport {
  * motion-monotonic (pure). Per stream, applied host frames strictly increase. From frame `from`
  * to `to`, a gap > G6L_MAX_GAP between consecutive applied frames must be attributed: to the stall
  * (the stalled seq to the next), the reconnect (connection 1's last to connection 2's first), or
- * the receiver itself, when its receipt-to-submitted time for the earlier transaction exceeded one
- * frame (G6L_FRAME_US). Both ends run at 60 fps and the host sends at the first callback after a
+ * the receiver itself, when it held the earlier transaction (heldOverFrame: G7mm counts a hold in
+ * receiver frames, submitted in a later frame than it was read in; a receipt-to-submitted time over
+ * one frame, G6L_FRAME_US, still counts, and is the only rule for evidence without the frame
+ * fields). Both ends run at 60 fps and the host sends at the first callback after a
  * credit (checked from its log by `creditToSend`), so a gap of 3 or more needs the receiver to hold
  * the credit longer than a frame; what held it is reported (an HTTP fetch, which is frame-quantized
  * (memory rs-g2c2-live-resource-facts); a shot and its state dump; or the frame alone). A gap > 2
@@ -605,6 +646,7 @@ export function evaluateMotionMonotonic(
     problems: [],
     gaps: {},
     attributed: {},
+    hold_basis: {},
     max_gap: 0,
     credit_to_send: {},
   };
@@ -637,10 +679,9 @@ export function evaluateMotionMonotonic(
       add("stall");
       continue;
     }
-    if (
-      p.receive_to_submit_us !== null &&
-      p.receive_to_submit_us > G6L_FRAME_US
-    ) {
+    const hold = heldOverFrame(p);
+    if (hold.held) {
+      out.hold_basis[hold.basis] = (out.hold_basis[hold.basis] ?? 0) + 1;
       add(
         p.fetched > 0
           ? "receiver-fetch"
@@ -652,7 +693,11 @@ export function evaluateMotionMonotonic(
     }
     if (out.problems.length < 8)
       out.problems.push(
-        `stream ${n.stream}: frames ${p.frame} -> ${n.frame} (gap ${gap}) although the receiver held seq ${p.seq} only ${p.receive_to_submit_us ?? "?"} us`,
+        `stream ${n.stream}: frames ${p.frame} -> ${n.frame} (gap ${gap}) although the receiver held seq ${p.seq} only ${
+          p.received_process_frame != null && p.submitted_process_frame != null
+            ? `${p.submitted_process_frame - p.received_process_frame} frames, ${p.receive_to_submit_us ?? "?"} us`
+            : `${p.receive_to_submit_us ?? "?"} us`
+        }`,
       );
   }
   return out;
@@ -1307,6 +1352,84 @@ export function checkLiveMotion(evals: Evals): Gate6Check {
   );
 }
 
+/** One g6l leg's motion verdict (pure): evaluateMotionMonotonic over its applied.json plus the
+ * host's credit-to-send delays per connection. Shared by checkMotionMonotonic and the runner's
+ * per-leg rerun gate (g6l-motion-leg.ts). */
+export function judgeMotionLeg(
+  leg: string,
+  applied: G6lApplied,
+  credit: ReadonlyArray<{
+    n: number;
+    delays: Record<string, number>;
+    problems: string[];
+  }> | null,
+): { report: MotionReport; problems: string[]; note: string } {
+  const problems: string[] = [];
+  const shots = new Set(
+    (applied.shots ?? []).map((s) => `${s.stream ?? 1}:${s.seq}`),
+  );
+  const r = evaluateMotionMonotonic(
+    appliedTransactions(applied),
+    shots,
+    applied.live?.stall?.after_seq ?? null,
+    G6L_MOTION_FIRST,
+    G6L_QUIT_FRAME,
+  );
+  for (const c of credit ?? []) {
+    for (const [k, v] of Object.entries(c.delays))
+      r.credit_to_send[k] = (r.credit_to_send[k] ?? 0) + v;
+    for (const p of c.problems.slice(0, 2))
+      problems.push(`${leg} connection ${c.n}: ${p}`);
+  }
+  if (credit === null) problems.push(`${leg}: no host evidence`);
+  for (const p of r.problems.slice(0, 3)) problems.push(`${leg}: ${p}`);
+  const note = `${leg} gaps ${Object.entries(r.gaps)
+    .map(([g, n]) => `${g}x${n}`)
+    .join(" ")}, >2 after ${
+    Object.entries(r.attributed)
+      .map(([c, n]) => `${c} ${n}`)
+      .join(", ") || "none"
+  } (hold judged by ${
+    Object.entries(r.hold_basis)
+      .map(([k, n]) => `${k} ${n}`)
+      .join(", ") || "n/a"
+  }), max ${r.max_gap}, sends ${Object.entries(r.credit_to_send)
+    .map(([k, n]) => `${n} at +${k}`)
+    .join(" ")} callbacks after the credit`;
+  return { report: r, problems, note };
+}
+
+/** G7mm: <leg dir>/attempts.json, written by run-gate6.sh's per-leg rerun gate: every attempt of
+ * the leg with its /proc/loadavg at start and end and its motion verdict. */
+export interface G6lLegAttempt {
+  attempt: number;
+  load_start: number | null;
+  load_end: number | null;
+  motion_pass: boolean | null;
+  problems?: string[];
+  evidence?: string;
+}
+
+function attemptsNote(leg: string, receiverDir: string): string {
+  try {
+    const f = join(dirname(receiverDir), "attempts.json");
+    if (!existsSync(f)) return "";
+    const doc = JSON.parse(readFileSync(f, "utf8")) as {
+      attempts?: G6lLegAttempt[];
+    };
+    const at = doc.attempts ?? [];
+    if (at.length === 0) return "";
+    return ` [${leg} attempts: ${at
+      .map(
+        (a) =>
+          `#${a.attempt} load ${a.load_start ?? "?"}->${a.load_end ?? "?"} motion ${a.motion_pass === null ? "?" : a.motion_pass ? "pass" : "FAIL"}`,
+      )
+      .join("; ")}]`;
+  } catch {
+    return "";
+  }
+}
+
 export function checkMotionMonotonic(evals: Evals): {
   check: Gate6Check;
   reports: Record<string, MotionReport>;
@@ -1320,41 +1443,19 @@ export function checkMotionMonotonic(evals: Evals): {
       problems.push(`${l.leg}: not evaluated`);
       continue;
     }
-    const shots = new Set(
-      (ev.ev.applied.shots ?? []).map((s) => `${s.stream ?? 1}:${s.seq}`),
+    const j = judgeMotionLeg(
+      l.leg,
+      ev.ev.applied,
+      ev.digest?.credit_to_send ?? null,
     );
-    const r = evaluateMotionMonotonic(
-      appliedTransactions(ev.ev.applied),
-      shots,
-      ev.ev.applied.live?.stall?.after_seq ?? null,
-      G6L_MOTION_FIRST,
-      G6L_QUIT_FRAME,
-    );
-    for (const c of ev.digest?.credit_to_send ?? []) {
-      for (const [k, v] of Object.entries(c.delays))
-        r.credit_to_send[k] = (r.credit_to_send[k] ?? 0) + v;
-      for (const p of c.problems.slice(0, 2))
-        problems.push(`${l.leg} connection ${c.n}: ${p}`);
-    }
-    if (!ev.digest) problems.push(`${l.leg}: no host evidence`);
-    reports[l.leg] = r;
-    for (const p of r.problems.slice(0, 3)) problems.push(`${l.leg}: ${p}`);
-    notes.push(
-      `${l.leg} gaps ${Object.entries(r.gaps)
-        .map(([g, n]) => `${g}x${n}`)
-        .join(" ")}, >2 after ${
-        Object.entries(r.attributed)
-          .map(([c, n]) => `${c} ${n}`)
-          .join(", ") || "none"
-      }, max ${r.max_gap}, sends ${Object.entries(r.credit_to_send)
-        .map(([k, n]) => `${n} at +${k}`)
-        .join(" ")} callbacks after the credit`,
-    );
+    reports[l.leg] = j.report;
+    problems.push(...j.problems);
+    notes.push(j.note + attemptsNote(l.leg, ev.ev.receiverDir));
   }
   return {
     check: check(
       "motion-monotonic",
-      "on every g6l receiver the applied host frames strictly increase per connection; every host sends each transaction at the first frame callback after its predecessor's credit; from frame 320 to the quit, consecutive applied frames differ by at most 2 at 60/60, except after the stalled seq, across the reconnect, or where the receiver itself held the earlier transaction longer than a frame from receipt to its submitted ack (an HTTP fetch, a shot and its state dump, or a slow frame; As built G6l)",
+      "on every g6l receiver the applied host frames strictly increase per connection; every host sends each transaction at the first frame callback after its predecessor's credit; from frame 320 to the quit, consecutive applied frames differ by at most 2 at 60/60, except after the stalled seq, across the reconnect, or where the receiver itself held the earlier transaction from receipt to its submitted ack, either over a frame boundary (submitted in a later receiver frame than it was read in) or for more than 16.667 ms (an HTTP fetch, a shot and its state dump, or a slow frame; As built G6l)",
       problems,
       notes.join("; "),
       evidenceOf(

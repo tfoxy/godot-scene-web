@@ -410,3 +410,23 @@ per-frame path. The failures come from two sources:
 - the check's microsecond hold threshold.
 
 See [results/gate7/g7uf.md](../../results/gate7/g7uf.md).
+
+**As built (G7mm, 2026-10-20).** The G7uf recommendation, with one change after the first live run.
+
+- **Hold in frames.** Each receiver records `received_process_frame` (the receiver frame whose poll
+  read the transaction) and `submitted_process_frame`: `receiver.gd` (native and the web export),
+  and the GSW receiver (`live.ts`; the rAF callback that would first handle the record, so
+  `processFrames + 1` at receipt). A fetch always defers its apply one frame, so the check now
+  sees it as a hold whatever the frame jitter. The frozen core's decode and apply are untouched.
+- **A frame count alone is too strict.** The first live web run failed 12 gaps of 3 that the
+  microsecond rule excused: a frame iteration that took 20 ms for one process frame (receipt and
+  `submitted` in the same frame). The check counts a hold if either rule holds, so no verdict that
+  passed before fails now. Evidence without the frame fields has the microsecond rule only.
+- **Timing check.** The g6l legs already ran in the `g6l` timing group. `run-gate6.sh`
+  (`g6l_motion_leg`) now records the 1-min `/proc/loadavg` at each motion leg's start and end,
+  judges the leg through `g6l-motion-leg.ts`, and reruns a failed leg once when either figure is
+  above `G6L_RERUN_LOAD` (4). The first attempt's evidence moves to `<out>/g6l-attempts/`
+  (gate 7's leg discovery skips it); `<leg>/attempts.json` lists both attempts and the check's
+  note prints them.
+
+See [results/gate7/g7mm.md](../../results/gate7/g7mm.md).

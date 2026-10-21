@@ -8,7 +8,7 @@
 //   - applied.json equal except timings and `receiver`: the receiver block is dropped, the run
 //     roots in every path are replaced by "<run>", and these keys are dropped wherever they occur:
 //     received_us, applied_us, submitted_us, start_us, end_us, fetch_us, delay_us, closed_us,
-//     process_frame (frame-clock timing) and headers (an HTTP response's Date). A failure's
+//     process_frame, received_process_frame, submitted_process_frame (frame-clock timing) and headers (an HTTP response's Date). A failure's
 //     `detail` is the two decoders' own prose: it is compared, and a difference is reported apart
 //     (`detail_only`) when the reasons and every other field agree.
 //   - every shot byte-identical (same file names, same sha256);
@@ -46,6 +46,8 @@ const TIMING_KEYS = new Set([
   "delay_us",
   "closed_us",
   "process_frame",
+  "received_process_frame",
+  "submitted_process_frame",
   "headers",
 ]);
 

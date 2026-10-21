@@ -623,8 +623,57 @@ g6l_leg() {
 	receiver_words=("$@")
 	start_live_scene_host "$L/$leg/host" ${host_words[@]+"${host_words[@]}"}
 	g6l_receiver "$L/$leg" ${receiver_words[@]+"${receiver_words[@]}"}
+	G6L_LOAD_END="$(g6l_load1)" # the host still holds the exclusive quiet lock here
 	finish_bg "$L/$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
 	LIVE_HOST_PID=""
+}
+
+# G7mm: motion-monotonic is a timing check. g6l_motion_leg <leg> <g6l_leg words...> runs one of
+# the five motion legs (a timing leg: g6l_leg's host holds the exclusive quiet lock), records the
+# 1-min /proc/loadavg figure at the leg's start (before its host launches) and end (receiver done,
+# host still running), and judges the leg's motion-monotonic through g6l-motion-leg.ts. A failed
+# leg whose load exceeded G6L_RERUN_LOAD (the quiet lock cannot see other repos' load) runs exactly
+# once more; its first attempt moves to <out>/g6l-attempts/<leg>-attempt1. The bound is never
+# widened. <leg dir>/attempts.json lists every attempt; the checker reports it.
+G6L_RERUN_LOAD="${G6L_RERUN_LOAD:-4}"
+G6L_LOAD_END=""
+g6l_tsx() {
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$@")
+}
+g6l_load1() {
+	local l1=""
+	read -r l1 _ </proc/loadavg
+	printf '%s' "${l1:-0}"
+}
+
+g6l_motion_leg() {
+	local leg="$1" attempt=1 load_start verdict pass rerun attempts_json=""
+	while :; do
+		load_start="$(g6l_load1)"
+		G6L_LOAD_END=""
+		g6l_leg "$@"
+		[ -f "$L/$leg/host/skipped-by-tier.txt" ] && return 0
+		verdict="$(quiet_run shared "$LEGS_LOG:g6l-motion-leg:$leg" -- \
+			g6l_tsx "$SCRIPT_DIR/g6l-motion-leg.ts" "$L" "$leg" 2>/dev/null | tail -n 1)" || true
+		pass=false
+		case "$verdict" in *'"pass":true'*) pass=true ;; esac
+		attempts_json+="${attempts_json:+,}{\"attempt\":$attempt,\"load_start\":$load_start,\"load_end\":${G6L_LOAD_END:-null},\"motion_pass\":$pass}"
+		rerun=no
+		if [ "$pass" = false ] && [ "$attempt" = 1 ] && [ -z "$G6L_START_OVERRIDE" ] &&
+			awk -v a="$load_start" -v b="${G6L_LOAD_END:-0}" -v t="$G6L_RERUN_LOAD" 'BEGIN{exit !((a>t)||(b>t))}'; then
+			rerun=yes
+		fi
+		echo "run-gate6: g6l: $leg attempt $attempt load $load_start -> ${G6L_LOAD_END:-?}, motion pass=$pass, rerun=$rerun"
+		if [ "$rerun" = yes ]; then
+			mkdir -p "$OUT/g6l-attempts"
+			rm -rf "$OUT/g6l-attempts/$leg-attempt1"
+			mv "$L/$leg" "$OUT/g6l-attempts/$leg-attempt1"
+			attempt=2
+			continue
+		fi
+		break
+	done
+	printf '{"attempts":[%s]}\n' "$attempts_json" >"$L/$leg/attempts.json"
 }
 
 # The host frames reference-live-frames must shoot (a CSV): for every shot of every g6l receiver,
@@ -877,15 +926,15 @@ run_g6l() {
 	fi
 
 	echo "run-gate6: g6l: live-scene (host + rendered live receiver, fresh cache)"
-	g6l_leg live-scene
+	g6l_motion_leg live-scene
 	echo "run-gate6: g6l: live-scene-warm (a new host + a new rendered receiver on live-scene's cache)"
-	g6l_leg live-scene-warm -- RS_RECEIVER_CACHE_DIR="$L/live-scene/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
+	g6l_motion_leg live-scene-warm -- RS_RECEIVER_CACHE_DIR="$L/live-scene/receiver/cache" RS_RECEIVER_CACHE_MODE=warm
 	echo "run-gate6: g6l: live-stall (RS_RECEIVER_STALL=$G6L_STALL_SPEC)"
-	g6l_leg live-stall -- RS_RECEIVER_STALL="$G6L_STALL_SPEC"
+	g6l_motion_leg live-stall -- RS_RECEIVER_STALL="$G6L_STALL_SPEC"
 	echo "run-gate6: g6l: live-reconnect (RS_RECEIVER_RECONNECT=$G6L_RECONNECT_STEP, memory kept)"
-	g6l_leg live-reconnect -- RS_RECEIVER_RECONNECT="$G6L_RECONNECT_STEP" RS_RECEIVER_RECONNECT_MEMORY=keep
+	g6l_motion_leg live-reconnect -- RS_RECEIVER_RECONNECT="$G6L_RECONNECT_STEP" RS_RECEIVER_RECONNECT_MEMORY=keep
 	echo "run-gate6: g6l: sabotage-live-stale-coalesce (stale-coalesce @$G6L_SABOTAGE_FRAME, RS_RECEIVER_STALL=$G6L_STALL_SPEC)"
-	g6l_leg sabotage-live-stale-coalesce GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$G6L_SABOTAGE_FRAME" -- \
+	g6l_motion_leg sabotage-live-stale-coalesce GRC_SABOTAGE=stale-coalesce GRC_SABOTAGE_FRAME="$G6L_SABOTAGE_FRAME" -- \
 		RS_RECEIVER_STALL="$G6L_STALL_SPEC"
 
 	frames="$(g6l_shot_frames "$L")"

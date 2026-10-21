@@ -198,6 +198,106 @@ export function selfTestG6l(e: Gate6Expected, h: SelfTestHooks): void {
       "motion: connection 1 -> 2 is attributed reconnect",
       reconnect.problems.length === 0 && reconnect.attributed.reconnect === 1,
     );
+    // G7mm: holds count in frames where the receiver recorded them.
+    const framed = (
+      frames: number[],
+      pf: Array<[number, number] | null>,
+      us: number,
+      stream = 1,
+    ): AppliedTx[] =>
+      frames.map((f, i) => ({
+        stream,
+        seq: i + 1,
+        frame: f,
+        fetched: pf[i] ? 1 : 0,
+        receive_to_submit_us: us,
+        received_process_frame: pf[i]?.[0] ?? 500 + i,
+        submitted_process_frame: pf[i]?.[1] ?? 500 + i,
+      }));
+    const deferred = evaluateMotionMonotonic(
+      framed([320, 321, 324], [null, [501, 502], null], 15000),
+      noShots,
+      null,
+      320,
+      1080,
+    );
+    assert(
+      "motion: a fetch deferred one frame (15 ms hold, under 16.667) passes by frames",
+      deferred.problems.length === 0 &&
+        deferred.attributed["receiver-fetch"] === 1 &&
+        deferred.hold_basis.frames === 1,
+      JSON.stringify(deferred),
+    );
+    fails(
+      "motion: the same 15 ms hold without frame fields still fails (microsecond fallback)",
+      evaluateMotionMonotonic(
+        tx([320, 321, 324]).map((t, i) => ({
+          ...t,
+          receive_to_submit_us: i === 1 ? 15000 : 6000,
+        })),
+        noShots,
+        null,
+        320,
+        1080,
+      ).problems,
+      "gap 3",
+    );
+    fails(
+      "motion: a gap of 3 behind a transaction received and submitted in one frame, fast in us, fails",
+      evaluateMotionMonotonic(
+        framed([320, 321, 324], [null, [501, 501], null], 6000),
+        noShots,
+        null,
+        320,
+        1080,
+      ).problems,
+      "0 frames",
+    );
+    const slowFrame = evaluateMotionMonotonic(
+      framed([320, 321, 324], [null, [501, 501], null], 20800),
+      noShots,
+      null,
+      320,
+      1080,
+    );
+    assert(
+      "motion: one frame iteration longer than a frame in us (same process frame) is still excused",
+      slowFrame.problems.length === 0 &&
+        slowFrame.attributed["receiver-fetch"] === 1 &&
+        slowFrame.hold_basis.us === 1,
+    );
+    const twoFrame = evaluateMotionMonotonic(
+      framed([320, 321, 325], [null, [501, 503], null], 40000),
+      noShots,
+      null,
+      320,
+      1080,
+    );
+    assert(
+      "motion: a real 2-frame fetch hold is excused (receiver-fetch) by frames",
+      twoFrame.problems.length === 0 &&
+        twoFrame.attributed["receiver-fetch"] === 1 &&
+        twoFrame.hold_basis.frames === 1,
+    );
+    const reconnectFramed = evaluateMotionMonotonic(
+      [
+        ...framed([606, 607], [null, null], 2000),
+        ...framed([612, 613, 616], [null, null, null], 2000, 2),
+      ],
+      noShots,
+      null,
+      320,
+      1080,
+    );
+    fails(
+      "motion: a reconnect's second stream is judged by frames too (fast 3-gap fails)",
+      reconnectFramed.problems,
+      "stream 2",
+    );
+    assert(
+      "motion: the reconnect itself is still attributed",
+      reconnectFramed.attributed.reconnect === 1,
+    );
     fails(
       "motion: a frame going backwards",
       evaluateMotionMonotonic(tx([320, 322, 321]), noShots, null, 320, 1080)

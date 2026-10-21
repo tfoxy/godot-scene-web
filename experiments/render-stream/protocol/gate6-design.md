@@ -1323,7 +1323,15 @@ each from a run:
    that never sits on a credit. A gap above 2 must follow the stalled seq, the reconnect, or a
    receiver hold longer than one frame (`G6L_FRAME_US`). A gap above 2 behind a receiver faster
    than a frame fails. The ≤ 2 bound still holds for every gap the receiver did not cause, and
-   the causes are reported per leg.
+   the causes are reported per leg. **Amended by G7mm (2026-10-20):** "held longer than one
+   frame" is counted in receiver frames, not microseconds. Each receiver records
+   `received_process_frame` (the frame whose poll read the transaction) and
+   `submitted_process_frame`; a transaction held over a frame when the second is greater. A fetch
+   always defers its apply to the next frame, but frame jitter could put the measured hold under
+   16.667 ms and fail the check (G7uf, G7k). Older evidence without the fields keeps the
+   microsecond rule. The bound of 2 is unchanged. `motion-monotonic` is also a timing verdict:
+   `run-gate6.sh` records `/proc/loadavg` at each motion leg's start and end and reruns a failed
+   leg once when its 1-min load exceeded 4 (results/gate7/g7mm.md).
 3. **The stall.** `RS_RECEIVER_STALL=2:2000` held 2000.1 ms after the step-2 shot. The host sent
    frame 427 or 428 and the credit arrived at 550 or 551 (123 frames). The recovery went out at
    the credit's own callback. Steps 3 and 4 were swallowed. Five TEXA versions landed in the
