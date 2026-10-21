@@ -113,10 +113,11 @@ reaches everything). `python3 lib/smoke-plan.py --self-test --map smoke-map.json
 
 **Phases** (GRT4a). Each planned run has a `phase`, run in order: `setup` (pure, lock tests, builds,
 crates), `native` (native correctness gates), `g7` (file groups and correctness live groups), then
-`timing`: the map's `"timing"` targets (native gate 6, the g7-6/g7-lc/g7-r live groups, `g7x`),
+`timing`: the map's `"timing"` targets (native gate 6, the g7-6/g7-lc/g7-r/g7-k live groups, `g7x`),
 at `--timing-jobs` (default 1). A receiver's live groups split into `g7live-<r>` and
-`g7live-<r>-timing`; the native receiver only ever plans `g7-r` (run-gate7.sh refuses any other
-live group there). G7q's full tier ran gate 6's and the timing live groups' exclusive legs beside
+`g7live-<r>-timing`; the complete sweep plans g7-r on gsw, web/rust and native and g7-k on both
+browsers, and the native receiver only ever plans `g7-r` (run-gate7.sh refuses any other
+live group there). Smoke defers g7-k (the map's `smoke.defer`: its 300 s soak legs) to the full tier. G7q's full tier ran gate 6's and the timing live groups' exclusive legs beside
 the browser groups, whose own lock wait reached 3.8–4.9 ks of a 6–7 ks run.
 
 **Typed unavailable rows and the summary** (GRT4a). A native or gate 7 run whose runner exits 1 is

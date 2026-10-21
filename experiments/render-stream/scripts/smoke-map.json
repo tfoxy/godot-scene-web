@@ -16,7 +16,7 @@
     "cores": ["rust"],
     "g7": ["g7-0", "g7-1", "g7-2", "g7-3", "g7-4", "g7-5", "g7-55", "g7-6"],
     "g7_receivers": ["gsw", "web/rust"],
-    "g7live": ["g7-1", "g7-2", "g7-5", "g7-55", "g7-6", "g7-lc", "g7-r"],
+    "g7live": ["g7-1", "g7-2", "g7-5", "g7-55", "g7-6", "g7-lc", "g7-r", "g7-k"],
     "g7live_receivers": ["gsw", "web/rust", "native"],
     "g7x": ["g7-dev", "g7-bench"],
     "cargo": [
@@ -47,11 +47,13 @@
       "g7-55": { "legs": ["shader-live/import", "shader-live/reference-live", "shader-live/live-shader"], "full_legs": null },
       "g7-6": { "legs": ["live/import", "live/reference-live-frames", "live/live-scene"], "full_legs": null }
     },
+    "defer": ["g7-k"],
+    "defer_doc": "Groups smoke never runs (the full tier and --milestone run them whole, listed in smoke_deferred): g7-k's soak legs hold the exclusive quiet lock for 300 s each (about 11 min per browser with startup), and run-gate7.sh has no leg filter for them that tier-verdict.py would accept. Run a g7-k change with --tier full --only g7live-<r>-timing.",
     "collapse_at": 3,
     "g7": { "legs": ["@first"] }
   },
   "timing_doc": "GRT4a: targets whose runs go in validate-increment.sh's last phase, after every correctness run: their exclusive quiet-lock legs (gate 6's g6l/g6s/g6c/g6p, the timing live groups, the bench and device-control arms) starved the browser groups sharing a tier with them (G7q: 11.9-13.8 ks of summed lock wait). A receiver's live groups split into a correctness run and a -timing run.",
-  "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7x:*"],
+  "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7live:g7-k@*", "g7x:*"],
   "rules": [
     {
       "why": "docs: no leg reads them",
@@ -293,6 +295,7 @@
         "g7:g7-6@*",
         "g7live:g7-6@*",
         "g7live:g7-r@*",
+        "g7live:g7-k@*",
         "g7live:g7-lc@*"
       ]
     },
@@ -338,6 +341,7 @@
         "experiments/render-stream/scripts/lib/gate7-live*.ts",
         "experiments/render-stream/scripts/lib/gate7-lifecycle.ts",
         "experiments/render-stream/scripts/lib/gate7r-checks.ts",
+        "experiments/render-stream/scripts/lib/gate7k-*.ts",
         "experiments/render-stream/scripts/lib/gate7u-checks.ts"
       ],
       "reach": ["g7live:*@*"]

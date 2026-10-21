@@ -70,9 +70,9 @@ def universe(m):
             t.add(f"g7:{g}@{r}")
     for g in u["g7live"]:
         for r in u["g7live_receivers"]:
-            # run-gate7.sh --live: the native receiver runs g7-r only (its three kinds), and g7-r runs
-            # only there; g7-lc, like every other live group, is a browser half (exit 2 on native).
-            if (g == "g7-r") != (r == "native"):
+            # run-gate7.sh --live: the native receiver runs g7-r only (exit 2 on any other live group);
+            # g7-r also runs per browser kind (run-gate6.sh --legs g6c), and g7-k is browser-only.
+            if r == "native" and g != "g7-r":
                 continue
             t.add(f"g7live:{g}@{r}")
     for g in u["g7x"]:
@@ -220,6 +220,10 @@ def runs(targets, m, sabotage, tier="smoke"):
         out.append(run)
     for r in u["g7live_receivers"]:
         groups = [g for g in u["g7live"] if f"g7live:{g}@{r}" in targets]
+        if tier == "smoke":  # smoke.defer: groups too expensive for smoke (g7-k's 300 s soak legs)
+            dg = [g for g in groups if g in sm.get("defer", [])]
+            deferred += [f"g7live:{g}@{r}" for g in dg]
+            groups = [g for g in groups if g not in dg]
         if not groups:
             continue
         rid = f"g7live-{r.replace('/', '-')}"
@@ -237,7 +241,7 @@ def runs(targets, m, sabotage, tier="smoke"):
         is_timing = lambda g: f"g7live:{g}@{r}" in timing
         # GRT4a: correctness groups and timing groups never share a run (so the correctness run gets
         # fast frames and the timing run waits for the timing phase).
-        rest_c = [g for g in rest if not is_timing(g)]
+        rest_c = [g for g in rest if not is_timing(g)]  # (g7-r and g7-k are timing groups)
         rest_t = [g for g in rest if is_timing(g)]
         if rest_c:
             out.append({"id": rid, "kind": "g7live", "receiver": r, "groups": rest_c, "phase": "g7"})
@@ -365,6 +369,25 @@ def self_test(m):
           and all(set(r["groups"]) <= {"g7-r"} for p_ in every for r in p_["runs"]
                   if r["kind"] == "g7live" and r.get("receiver") == "native")
           and any(r.get("receiver") == "native" and r["groups"] == ["g7-r"] for r in every[0]["runs"]))
+    # Browser g7-r and g7-k: the complete sweep plans them, in the timing live runs; native stays g7-r.
+    want = {"g7live:g7-r@native", "g7live:g7-r@gsw", "g7live:g7-r@web/rust", "g7live:g7-k@gsw", "g7live:g7-k@web/rust"}
+    got = {t for t in uni if t.startswith("g7live:") and (t.endswith("@native") or t.split(":")[1].split("@")[0] in ("g7-r", "g7-k"))}
+    check("the universe has g7-r on native, gsw and web/rust and g7-k on both browsers, nothing else on native",
+          got == want)
+    mr = {r["id"]: r for r in every[0]["runs"]}
+    check("milestone: g7-r and g7-k ride the browsers' -timing live runs, g7-r alone the native one",
+          all({"g7-r", "g7-k"} <= set(mr[f"g7live-{k}-timing"]["groups"]) and mr[f"g7live-{k}-timing"]["phase"] == "timing"
+              for k in ("gsw", "web-rust"))
+          and mr["g7live-native-timing"]["groups"] == ["g7-r"] and want <= set(every[0]["targets"]))
+    wr = P("experiments/render-stream/scripts/lib/gate7-web-legs.ts")
+    check("a web-export file reaches g7-r and g7-k on web/rust only",
+          {"g7live:g7-r@web/rust", "g7live:g7-k@web/rust"} <= set(wr["targets"])
+          and not any(t in wr["targets"] for t in ("g7live:g7-r@gsw", "g7live:g7-k@gsw", "g7live:g7-r@native")))
+    kk = P("experiments/render-stream/scripts/lib/gate7k-checks.ts")
+    kf = plan(m, ["experiments/render-stream/scripts/lib/gate7k-checks.ts"], repo, False, "full")
+    check("smoke defers g7-k (listed in smoke_deferred), the full tier plans it whole",
+          "g7live:g7-k@gsw" in kk["smoke_deferred"] and not any("g7-k" in r.get("groups", []) for r in kk["runs"])
+          and any("g7-k" in r.get("groups", []) for r in kf["runs"]))
     # GRT4a item 4: timing runs (native gate 6, the timing live groups, g7x) go last, in their own phase.
     ph = {"setup": 0, "native": 1, "g7": 2, "timing": 3}
     def phases_ok(p_):
@@ -376,7 +399,7 @@ def self_test(m):
           and not any(r["id"] in ("native-rust-gate1", "g7-gsw", "g7live-gsw") for r in every[0]["runs"]
                       if r["phase"] == "timing"))
     check("no run mixes correctness and timing live groups",
-          all(not (set(r["groups"]) & {"g7-1", "g7-2", "g7-5", "g7-55"} and set(r["groups"]) & {"g7-6", "g7-lc", "g7-r"})
+          all(not (set(r["groups"]) & {"g7-1", "g7-2", "g7-5", "g7-55"} and set(r["groups"]) & {"g7-6", "g7-lc", "g7-r", "g7-k"})
               for p_ in every for r in p_["runs"] if r["kind"] == "g7live"))
     sm6 = every[2]
     check("smoke: a gate 6 checker's g7-6 smoke run is a timing-phase run, after the file groups",
