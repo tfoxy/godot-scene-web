@@ -202,9 +202,18 @@ export function regionMap(
   height: number,
 ): string[] {
   const out = new Array<string>(width * height);
+  // GRT4b: regionOf6's loop with its Object.entries() taken once per map, not once per pixel.
+  const entries = Object.entries(regions);
   for (let y = 0; y < height; y++)
-    for (let x = 0; x < width; x++)
-      out[y * width + x] = regionOf6(regions, x, y);
+    for (let x = 0; x < width; x++) {
+      let name = "BG";
+      for (const [n, r] of entries)
+        if (x >= r[0] && x < r[2] && y >= r[1] && y < r[3]) {
+          name = n;
+          break;
+        }
+      out[y * width + x] = name;
+    }
   return out;
 }
 

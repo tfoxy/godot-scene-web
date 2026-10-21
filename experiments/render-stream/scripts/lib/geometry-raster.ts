@@ -439,6 +439,86 @@ function windowOf(
   return [x0, y0, x1, y1];
 }
 
+/** GRT4b: per 8 px cell of a mesh's window, the boundary edges and triangles that can matter to
+ * a pixel in it, in their original order. A pixel's edge distance only feeds `d < band_px` and
+ * `d < edge`, so an edge farther than both (plus 1 px of rounding slack) never changes either
+ * comparison; a triangle cannot accept a pixel outside its box plus 1 px (barycentric's 1e-9
+ * slack is far below that for any |det| >= 1e-3 px^2; flatter triangles go in every cell). The
+ * first hit in the original order is kept, so the raster is bit-identical to a full scan. */
+let meshGridOn = true;
+
+/** Test hook (test/self-test-grt4b.ts): off, every cell lists every edge and triangle, which is
+ * the full per-pixel scan meshActions made before GRT4b. */
+export function setMeshGrid(on: boolean): void {
+  meshGridOn = on;
+}
+
+function meshGrid(
+  verts: readonly Point[],
+  topo: { triangles: [number, number, number][] },
+  edges: readonly (readonly [Point, Point])[],
+  win: Box,
+  bandPx: number | undefined,
+  edge: number,
+): {
+  cell: (x: number, y: number) => number;
+  edges: number[][];
+  triangles: number[][];
+} {
+  const CELL = 8;
+  const [x0, y0, x1, y1] = win;
+  const gw = Math.max(1, Math.ceil((x1 - x0) / CELL));
+  const gh = Math.max(1, Math.ceil((y1 - y0) / CELL));
+  const edgeLists: number[][] = Array.from({ length: gw * gh }, () => []);
+  const triLists: number[][] = Array.from({ length: gw * gh }, () => []);
+  const put = (lists: number[][], k: number, at: Box | null): void => {
+    const box = meshGridOn ? at : null;
+    // Cells whose pixel centres can fall in `box` (null: every cell): x + 0.5 >= box[0] puts x
+    // at or above box[0] - 0.5.
+    const cx0 = box ? Math.max(0, Math.floor((box[0] - 1 - x0) / CELL)) : 0;
+    const cy0 = box ? Math.max(0, Math.floor((box[1] - 1 - y0) / CELL)) : 0;
+    const cx1 = box
+      ? Math.min(gw - 1, Math.floor((box[2] - x0) / CELL))
+      : gw - 1;
+    const cy1 = box
+      ? Math.min(gh - 1, Math.floor((box[3] - y0) / CELL))
+      : gh - 1;
+    for (let cy = cy0; cy <= cy1; cy++)
+      for (let cx = cx0; cx <= cx1; cx++) lists[cy * gw + cx].push(k);
+  };
+  const reach = Math.max(bandPx ?? 0, edge) + 1;
+  edges.forEach(([a, b], k) => {
+    put(edgeLists, k, [
+      Math.min(a[0], b[0]) - reach,
+      Math.min(a[1], b[1]) - reach,
+      Math.max(a[0], b[0]) + reach,
+      Math.max(a[1], b[1]) + reach,
+    ]);
+  });
+  topo.triangles.forEach((t, k) => {
+    const [a, b, c] = [verts[t[0]], verts[t[1]], verts[t[2]]];
+    const det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    put(
+      triLists,
+      k,
+      Math.abs(det) < 1e-3
+        ? null
+        : [
+            Math.min(a[0], b[0], c[0]) - 1,
+            Math.min(a[1], b[1], c[1]) - 1,
+            Math.max(a[0], b[0], c[0]) + 1,
+            Math.max(a[1], b[1], c[1]) + 1,
+          ],
+    );
+  });
+  return {
+    cell: (x, y) =>
+      Math.floor((y - y0) / CELL) * gw + Math.floor((x - x0) / CELL),
+    edges: edgeLists,
+    triangles: triLists,
+  };
+}
+
 function meshActions(
   shape: MeshShape,
   m: Affine,
@@ -466,18 +546,22 @@ function meshActions(
   const actions: Action[] = [];
   const area: number[] = [];
   let covered = 0;
+  const grid = meshGrid(verts, topo, edges, [x0, y0, x1, y1], bandPx, edge);
   for (let y = y0; y < y1; y++)
     for (let x = x0; x < x1; x++) {
       const i = y * canvas.width + x;
       const p: Point = [x + 0.5, y + 0.5];
+      const cell = grid.cell(x, y);
       let d2 = Number.POSITIVE_INFINITY;
-      for (const [a, b] of edges) d2 = Math.min(d2, segDist2(p[0], p[1], a, b));
+      for (const k of grid.edges[cell])
+        d2 = Math.min(d2, segDist2(p[0], p[1], edges[k][0], edges[k][1]));
       const d = Math.sqrt(d2);
       let hit: {
         t: [number, number, number];
         w: [number, number, number];
       } | null = null;
-      for (const t of topo.triangles) {
+      for (const k of grid.triangles[cell]) {
+        const t = topo.triangles[k];
         const w = barycentric(p, verts[t[0]], verts[t[1]], verts[t[2]]);
         if (w) {
           hit = { t, w };
@@ -761,11 +845,10 @@ export function rasterizeItems(scene: RasterScene): Gate5Raster {
             ? thinLineActions(op, m, scissor, canvas)
             : ninePatchActions(op, m, scissor, canvas, textures, edge);
       const underlay = new Uint8Array(r.area.length * 4);
+      // GRT4b: four bytes copied per pixel, not a subarray view allocated per pixel.
       for (let k = 0; k < r.area.length; k++)
-        underlay.set(
-          canvas.rgba.subarray(r.area[k] * 4, r.area[k] * 4 + 4),
-          k * 4,
-        );
+        for (let c = 0; c < 4; c++)
+          underlay[k * 4 + c] = canvas.rgba[r.area[k] * 4 + c];
       for (const a of r.actions) {
         if (a.kind === "paint") canvas.paint(a.i, a.c, a.tol, a.blend);
         else if (a.kind === "band")

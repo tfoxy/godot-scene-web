@@ -71,6 +71,12 @@
       "exclusive": true
     },
     {
+      "why": "repo worktree tooling: no leg runs it",
+      "paths": ["scripts/create-worktree.sh"],
+      "reach": ["none"],
+      "exclusive": true
+    },
+    {
       "why": "the quiet lock: its own self-tests (scheduling only; no leg's output depends on it)",
       "paths": [
         "experiments/render-stream/scripts/lib/quiet.sh",
@@ -179,6 +185,8 @@
         "experiments/render-stream/scripts/lib/render-stream-*.ts",
         "experiments/render-stream/scripts/lib/provenance.ts",
         "experiments/render-stream/scripts/lib/sha256.ts",
+        "experiments/render-stream/scripts/lib/node-hash.ts",
+        "experiments/render-stream/scripts/lib/json-key-equal.ts",
         "experiments/render-stream/scripts/lib/provision-fonts.sh",
         "experiments/render-stream/scripts/gate0-tool.ts",
         "experiments/render-stream/scripts/lib/gate-minus1-checks.ts"

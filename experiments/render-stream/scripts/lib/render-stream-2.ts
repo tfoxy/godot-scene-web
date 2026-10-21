@@ -1441,14 +1441,16 @@ function hashBytes(bytes: Uint8Array): string {
   return hashImpl(bytes);
 }
 
+// GRT4b: printable ASCII decodes to the same code points under every single-byte decoder, so the
+// bytes are checked first and then decoded at once (the string was built a byte at a time).
+const latin1 = new TextDecoder("latin1");
+
 function bytesToAscii(bytes: Uint8Array): string | null {
-  let out = "";
   for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i];
     if (b < 0x20 || b > 0x7e) return null;
-    out += String.fromCharCode(b);
   }
-  return out;
+  return latin1.decode(bytes);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -2821,14 +2823,59 @@ export interface DecodeRecordOptions {
   recordDigest?: "inline" | "deferred";
 }
 
+type DecodeRecordResult = { record?: DecodedRecord; errors: string[] };
+
+/** GRT4b: inside `withRecordMemo(data, fn)`, decodeRecord() decodes each record of `data` once
+ * and hands every later caller the same result. A checker reads one recording through
+ * validateRecording, resolveRecording and its own decode loop, each of which decoded (and
+ * hashed) every record again; nothing mutates a decoded record. Off by default (the browser
+ * decoder never enables it); dropped when `fn` returns, so it holds nothing past the scope. */
+let recordMemo: {
+  buffer: ArrayBufferLike;
+  uses: number;
+  decoded: Map<string, { result: DecodeRecordResult; left: number }>;
+} | null = null;
+
+/** `uses`: how many times the scope reads each record (the first decode included); a record read
+ * that often is dropped from the memo, so a caller that reads record by record holds one. */
+export function withRecordMemo<T>(
+  data: Uint8Array,
+  fn: () => T,
+  uses = Number.POSITIVE_INFINITY,
+): T {
+  if (recordMemo) return fn();
+  recordMemo = { buffer: data.buffer, uses, decoded: new Map() };
+  try {
+    return fn();
+  } finally {
+    recordMemo = null;
+  }
+}
+
 export function decodeRecord(
   raw: RawRecord,
   version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
   opts?: DecodeRecordOptions,
-): {
-  record?: DecodedRecord;
-  errors: string[];
-} {
+): DecodeRecordResult {
+  const memo = recordMemo;
+  if (!memo || raw.bytes.buffer !== memo.buffer)
+    return decodeRecordOnce(raw, version, opts);
+  const key = `${raw.offset}:${raw.byte_length}:${raw.bytes.byteOffset}:${raw.bytes.byteLength}:${version}:${opts?.recordDigest ?? "inline"}`;
+  const hit = memo.decoded.get(key);
+  if (!hit) {
+    const result = decodeRecordOnce(raw, version, opts);
+    if (memo.uses > 1) memo.decoded.set(key, { result, left: memo.uses - 1 });
+    return result;
+  }
+  if (--hit.left <= 0) memo.decoded.delete(key);
+  return hit.result;
+}
+
+function decodeRecordOnce(
+  raw: RawRecord,
+  version: 2 | 3 | 4 | 5 | 6 | 7,
+  opts?: DecodeRecordOptions,
+): DecodeRecordResult {
   const view = new DataView(
     raw.bytes.buffer,
     raw.bytes.byteOffset,
@@ -2934,21 +2981,22 @@ export function decodeRecord(
       };
     }
     if (descriptor.type === "f32") {
-      const floats: number[] = [];
+      // GRT4b: sized once and filled, not grown by push (a third of the time).
+      const floats = new Array<number>(descriptor.count);
       for (let f = 0; f < descriptor.count; f++)
-        floats.push(view.getFloat32(pos + f * 4, true));
+        floats[f] = view.getFloat32(pos + f * 4, true);
       blocks.push(floats);
     } else if (descriptor.type === "i32") {
       // render-stream-4.md "Block type i32": little-endian two's-complement 32-bit integers.
-      const ints: number[] = [];
+      const ints = new Array<number>(descriptor.count);
       for (let f = 0; f < descriptor.count; f++)
-        ints.push(view.getInt32(pos + f * 4, true));
+        ints[f] = view.getInt32(pos + f * 4, true);
       blocks.push(ints);
     } else if (descriptor.type === "f64") {
       // render-stream-5.md "Block type f64": little-endian IEEE 754 binary64.
-      const doubles: number[] = [];
+      const doubles = new Array<number>(descriptor.count);
       for (let f = 0; f < descriptor.count; f++)
-        doubles.push(view.getFloat64(pos + f * 8, true));
+        doubles[f] = view.getFloat64(pos + f * 8, true);
       blocks.push(doubles);
     } else {
       const payload = raw.bytes.subarray(pos, pos + blockLen);
@@ -5785,6 +5833,7 @@ export function resolveRecording(
   let state = emptyResolvedState();
   const transactions: ResolvedTransaction[] = [];
   const resources: ResolvedResource[] = [];
+  const lastItems = new Map<number, ResolvedItem>();
   for (let i = 1; i < decoded.records.length; i++) {
     const record = decoded.records[i];
     const meta = record.meta;
@@ -5808,7 +5857,7 @@ export function resolveRecording(
         default_texture_filter: meta.default_texture_filter,
         default_texture_repeat: meta.default_texture_repeat,
         canvases: sortedResolvedCanvases(state),
-        items: sortedResolvedItems(state),
+        items: internItems(sortedResolvedItems(state), lastItems),
         textures: sortedResolvedTextures(state),
         ...(version === 4 || version === 5 || version === 6 || version === 7
           ? { meshes: sortedResolvedMeshes(state) }
@@ -5857,7 +5906,149 @@ function froundDeep(value: unknown): unknown {
 }
 
 export function statesEqual(a: unknown, b: unknown): boolean {
-  return JSON.stringify(froundDeep(a)) === JSON.stringify(froundDeep(b));
+  // GRT4b: the same answer as the string comparison below, from one walk over both values that
+  // stops at the first difference; anything the walk does not model (a bigint) falls back to it.
+  try {
+    return froundJsonEqual(a, b);
+  } catch (e) {
+    if (e !== FROUND_FALLBACK) throw e;
+    return JSON.stringify(froundDeep(a)) === JSON.stringify(froundDeep(b));
+  }
+}
+
+const FROUND_FALLBACK = new Error(
+  "froundJsonEqual: fall back to JSON.stringify",
+);
+
+/** The JSON text of froundDeep(v) when v is a leaf, null when v is an object or array (walked),
+ * undefined when JSON.stringify leaves it out (undefined, a function, a symbol). */
+function froundLeaf(v: unknown): string | null | undefined {
+  switch (typeof v) {
+    case "number": {
+      const f = Math.fround(v);
+      return Number.isFinite(f) ? String(f) : "null";
+    }
+    case "string":
+      return JSON.stringify(v);
+    case "boolean":
+      return v ? "true" : "false";
+    case "undefined":
+    case "function":
+    case "symbol":
+      return undefined;
+    case "bigint":
+      throw FROUND_FALLBACK;
+    default:
+      return v === null ? "null" : null;
+  }
+}
+
+/** JSON.stringify(froundDeep(a)) === JSON.stringify(froundDeep(b)). froundDeep rebuilds every
+ * non-array object as a plain one from Object.entries (so no toJSON survives), keeps an array's
+ * holes (written null), and rounds every number to float32 (-0 is written 0). */
+function froundJsonEqual(a: unknown, b: unknown): boolean {
+  if (typeof a === "number" && typeof b === "number") {
+    const fa = Math.fround(a);
+    const fb = Math.fround(b);
+    if (!Number.isFinite(fa) || !Number.isFinite(fb))
+      return !Number.isFinite(fa) && !Number.isFinite(fb);
+    return fa === fb;
+  }
+  if (typeof a === "string" && typeof b === "string") return a === b;
+  const ta = froundLeaf(a);
+  const tb = froundLeaf(b);
+  if (ta !== null || tb !== null) return ta === tb;
+  const aa = Array.isArray(a);
+  if (aa !== Array.isArray(b)) return false;
+  if (aa) {
+    const x = a as unknown[];
+    const y = b as unknown[];
+    if (x.length !== y.length) return false;
+    for (let i = 0; i < x.length; i++) {
+      // A hole and an omitted value are both written null inside an array.
+      const ea = froundLeaf(x[i]) === undefined ? null : x[i];
+      const eb = froundLeaf(y[i]) === undefined ? null : y[i];
+      if (!froundJsonEqual(ea, eb)) return false;
+    }
+    return true;
+  }
+  const ra = a as Record<string, unknown>;
+  const rb = b as Record<string, unknown>;
+  const ka = Object.keys(ra);
+  const kb = Object.keys(rb);
+  let i = 0;
+  let j = 0;
+  for (;;) {
+    while (i < ka.length && froundLeaf(ra[ka[i]]) === undefined) i++;
+    while (j < kb.length && froundLeaf(rb[kb[j]]) === undefined) j++;
+    if (i === ka.length || j === kb.length)
+      return i === ka.length && j === kb.length;
+    if (ka[i] !== kb[j] || !froundJsonEqual(ra[ka[i]], rb[kb[j]])) return false;
+    i++;
+    j++;
+  }
+}
+
+/** GRT4b: `a` and `b` are the same value all the way down: the same prototypes, own keys in the
+ * same order, and leaves equal under Object.is. One can stand in for the other wherever nothing
+ * mutates or compares identities. */
+export function sameValueDeep(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (
+    typeof a !== "object" ||
+    typeof b !== "object" ||
+    a === null ||
+    b === null ||
+    Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)
+  )
+    return false;
+  if (Array.isArray(a)) {
+    const y = b as unknown[];
+    if (a.length !== y.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const p = a[i];
+      const q = y[i];
+      if (typeof p === "number" && typeof q === "number") {
+        if (!Object.is(p, q)) return false;
+        continue;
+      }
+      // A hole reads undefined; only then can the two differ by `in`.
+      if ((p === undefined || q === undefined) && i in a !== i in y)
+        return false;
+      if (!sameValueDeep(p, q)) return false;
+    }
+    return true;
+  }
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (let i = 0; i < ka.length; i++)
+    if (
+      ka[i] !== kb[i] ||
+      !sameValueDeep(
+        (a as Record<string, unknown>)[ka[i]],
+        (b as Record<string, unknown>)[kb[i]],
+      )
+    )
+      return false;
+  return true;
+}
+
+/** GRT4b: a transaction's sorted items, each replaced by the previous transaction's item of the
+ * same id when that one is the same value (sameValueDeep). A full-encoding recording lifts every
+ * item again at every transaction; ~90% of them are unchanged (a live gate 6 host's 104 MB
+ * recording held 397 MiB of per-transaction items), and a patch recording already shares them. */
+export function internItems(
+  items: ResolvedItem[],
+  prev: Map<number, ResolvedItem>,
+): ResolvedItem[] {
+  for (let i = 0; i < items.length; i++) {
+    const p = prev.get(items[i].id);
+    if (p && p !== items[i] && sameValueDeep(p, items[i])) items[i] = p;
+  }
+  prev.clear();
+  for (const item of items) prev.set(item.id, item);
+  return items;
 }
 
 // --------------------------------------------------------------------------------------- recordSha256

@@ -10,6 +10,8 @@
 // The checks live in lib/gate5-checks.ts, which scripts/test/self-test-gate5.ts drives with
 // synthetic values.
 
+// GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
+import "./lib/node-hash";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

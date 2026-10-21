@@ -31,7 +31,7 @@ import {
   readJson,
   readTextOrUndefined,
 } from "./gate-minus1-checks";
-import { diffRgba, readExitCode } from "./gate0-checks";
+import { diffRgba, type RecordingSummary, readExitCode } from "./gate0-checks";
 import { parseEnvTxt } from "./gate1-g1d-checks";
 import {
   deliveryReasons,
@@ -324,8 +324,9 @@ export async function loadHost(dir: string): Promise<G2cHost> {
     .filter((n): n is number => Number.isInteger(n));
   if (numbers.length === 0) numbers.push(1);
   const connections: G2cConnection[] = [];
+  const sinks = new Map<string, Promise<RecordingSummary>>();
   for (const n of numbers) {
-    const host = await loadLiveHost(dir, n);
+    const host = await loadLiveHost(dir, n, sinks);
     connections.push({
       n,
       host,

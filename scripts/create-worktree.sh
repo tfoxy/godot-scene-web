@@ -57,6 +57,8 @@ done
 
 git -C "$root" worktree add -b "$branch" "$destination" main
 created_checkout=1
-(cd "$destination" && bash scripts/install-agent-config.sh && mise exec -- pnpm install --frozen-lockfile)
+# Trust the new checkout's mise.toml first: every `mise exec` in it fails until it is trusted.
+(cd "$destination" && mise trust mise.toml && bash scripts/install-agent-config.sh \
+  && mise exec -- pnpm install --frozen-lockfile)
 trap - EXIT
 printf 'created %s on %s\n' "$destination" "$branch"

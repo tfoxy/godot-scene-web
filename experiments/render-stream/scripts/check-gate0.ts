@@ -9,6 +9,8 @@
 // The checks and classifyLeg live in lib/gate0-checks.ts, which scripts/test/self-test-gate0.ts
 // drives against fabricated evidence trees.
 
+// GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
+import "./lib/node-hash";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

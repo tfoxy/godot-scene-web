@@ -9,6 +9,8 @@
 // The criteria themselves live in lib/gate-minus1-checks.ts, which scripts/test/self-test-checker.ts
 // also imports directly, against fabricated evidence, to prove each one can actually fail.
 
+// GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
+import "./lib/node-hash";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
