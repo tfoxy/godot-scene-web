@@ -214,7 +214,8 @@ export function helloProblems(
   const want: Record<string, unknown> = {
     version: 7,
     receiver_kind: expectedKind,
-    credit_window: 1,
+    // G7q: the grant equals the request (a window-2 run raises the host maximum to 2 too).
+    credit_window: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "1"),
     credit_window_requested: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "1"),
     manifest_sha256: env.RS_RECEIVER_MANIFEST_SHA256 ?? null,
     presentation_backing_w: page?.canvas?.[0],
@@ -952,7 +953,7 @@ export async function checkGateLive(
   checks.push(
     mk(
       `hello-recorded@${kind}`,
-      "Q8: each live connection's host summary shows the /7 hello: version 7, the receiver kind, window 1 granted for the window asked, the manifest sha, the presentation integers of the canvas at DPR 1, and the harness origin",
+      "Q8: each live connection's host summary shows the /7 hello: version 7, the receiver kind, the window asked granted (1, or 2 under --credit-window 2), the manifest sha, the presentation integers of the canvas at DPR 1, and the harness origin",
       helloConnections === 0
         ? ["no live connection recorded by any host"]
         : hello,

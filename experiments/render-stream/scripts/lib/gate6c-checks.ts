@@ -190,6 +190,8 @@ export interface TimelineConn {
   credit_rtt_count?: number;
   credit_rtt_sum_us?: number;
   credit_rtt_frames_sum?: number;
+  /** G7q: the connection's granted credit window, present only at 2 */
+  credit_window?: number;
 }
 
 export interface TimelineLine {
@@ -211,6 +213,8 @@ export interface SummaryConn {
   connection?: number;
   stream_id?: string | null;
   sent?: number;
+  /** G7q: the granted credit window (live-summary.json; 1 below /7) */
+  credit_window?: number;
   coalesced?: number;
   max_pending?: number;
   pending_episodes?: number;
@@ -522,6 +526,8 @@ export interface ConnRates {
   /** the window's mean credit round trip, in microseconds and in host frame callbacks */
   credit_rtt_mean_us: number | null;
   credit_rtt_mean_frames: number | null;
+  /** G7q: the granted credit window (1 unless the host timeline says 2) */
+  credit_window?: number;
 }
 
 /** Per connection: counts and rates between the window's first and last timeline lines. A
@@ -549,6 +555,7 @@ export function connectionRates(w: HostWindow): ConnRates[] {
       rttCount > 0;
     out.push({
       connection: end.connection,
+      credit_window: end.credit_window ?? 1,
       credit_rtt_mean_us: hasRtt
         ? ((end.credit_rtt_sum_us ?? 0) - (start.credit_rtt_sum_us ?? 0)) /
           rttCount
@@ -733,7 +740,8 @@ export function creditCapacity(
   c: ConnRates | undefined,
 ): number | null {
   if (!c || m.host_frame === null || !c.credit_rtt_mean_frames) return null;
-  return m.host_frame / c.credit_rtt_mean_frames;
+  // G7q: w transactions per round trip at credit window w.
+  return (m.host_frame * (c.credit_window ?? 1)) / c.credit_rtt_mean_frames;
 }
 
 /** min(nominal, credit capacity): what a prompt host can publish (null capacity: nominal). */
@@ -1007,36 +1015,42 @@ export function evaluateCreditRtt(conn: SummaryConn | undefined): string[] {
   return median >= 60_000 ? [] : [`credit RTT p50 ${median} us < 60000 us`];
 }
 
-/** Q7c `pending-bounded`: one pending target, one in flight, one transaction queued (+ control). */
+/** Q7c `pending-bounded`: one pending target, at most w in flight (the connection's granted
+ * credit window, G7q; 1 below /7), at most w transactions queued (+ control). */
 export function evaluatePendingBounded(
   conn: SummaryConn | undefined,
 ): string[] {
   if (!conn) return ["no connection summary"];
+  const w = conn.credit_window ?? 1;
   const p: string[] = [];
   if ((conn.max_pending ?? 0) > 1) p.push(`max_pending ${conn.max_pending}`);
-  if ((conn.max_in_flight ?? 0) > 1)
-    p.push(`max_in_flight ${conn.max_in_flight}`);
-  const limit = (conn.max_message_sent ?? 0) + QUEUED_SLACK_BYTES;
+  if ((conn.max_in_flight ?? 0) > w)
+    p.push(
+      `max_in_flight ${conn.max_in_flight}${w > 1 ? ` > window ${w}` : ""}`,
+    );
+  const limit = w * (conn.max_message_sent ?? 0) + QUEUED_SLACK_BYTES;
   if ((conn.max_queued_bytes ?? 0) > limit)
     p.push(
-      `max_queued_bytes ${conn.max_queued_bytes} > one transaction (${conn.max_message_sent}) + ${QUEUED_SLACK_BYTES}`,
+      `max_queued_bytes ${conn.max_queued_bytes} > ${w > 1 ? `${w} x ` : ""}one transaction (${conn.max_message_sent}) + ${QUEUED_SLACK_BYTES}`,
     );
   return p;
 }
 
-/** Q7d `queue-bounded`: the host's queue never holds more than its largest message + 64 KiB. */
+/** Q7d `queue-bounded`: the host's queue never holds more than w of its largest message + 64 KiB
+ * (w the connection's granted credit window, G7q; 1 below /7). */
 export function evaluateQueueBounded(conn: SummaryConn | undefined): string[] {
   if (!conn) return ["no connection summary"];
-  const limit = (conn.max_message_sent ?? 0) + 65_536;
+  const w = conn.credit_window ?? 1;
+  const limit = w * (conn.max_message_sent ?? 0) + 65_536;
   return (conn.max_queued_bytes ?? 0) <= limit
     ? []
     : [
-        `max_queued_bytes ${conn.max_queued_bytes} > largest message ${conn.max_message_sent} + 65536`,
+        `max_queued_bytes ${conn.max_queued_bytes} > ${w > 1 ? `${w} x ` : ""}largest message ${conn.max_message_sent} + 65536`,
       ];
 }
 
-/** The class of a g6c leg: success, delivery-violation (sends without credit or several in
- * flight), replay-failure or unsupported (any receiver), host-failure. */
+/** The class of a g6c leg: success, delivery-violation (sends without credit, or more in flight than
+ * the granted credit window), replay-failure or unsupported (any receiver), host-failure. */
 export function legClass(ev: G6cLegEvidence): {
   cls: string;
   reasons: string[];
@@ -1062,7 +1076,10 @@ export function legClass(ev: G6cLegEvidence): {
     if (r.exit !== 0) reasons.push(`${basename(r.dir)} exit ${r.exit}`);
   }
   for (const c of ev.summary?.connections ?? []) {
-    if ((c.sent_without_credit ?? 0) > 0 || (c.max_in_flight ?? 0) > 1)
+    if (
+      (c.sent_without_credit ?? 0) > 0 ||
+      (c.max_in_flight ?? 0) > (c.credit_window ?? 1)
+    )
       return {
         cls: "delivery-violation",
         reasons: [
@@ -1900,12 +1917,12 @@ export async function runGate6c(out: string): Promise<G6cResult> {
         ]);
         own.push([
           "pending-bounded",
-          "max_pending <= 1, max_in_flight <= 1, queued bytes <= one transaction + control frames",
+          "max_pending <= 1, max_in_flight <= w (the granted credit window, 1 below /7), queued bytes <= w transactions + control frames",
           evaluatePendingBounded(summary0),
         ]);
         own.push([
           "queue-bounded",
-          "host max_queued_bytes <= largest message + 64 KiB",
+          "host max_queued_bytes <= w x largest message + 64 KiB (w the granted credit window)",
           evaluateQueueBounded(summary0),
         ]);
         own.push([

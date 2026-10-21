@@ -692,6 +692,19 @@ applied that seq and drew, by the receiver's own timeline. Rates are reported as
 plus `raf_after_submit` and `gpu_complete` (GSW). `presented` is `unavailable` with the reason
 "headless Chromium: no display and no canvas presentation feedback".
 
+*As built (G7q, window 2, opt-in; [results/gate7/g7q.md](../results/gate7/g7q.md)).* The
+window-2 prediction held on every receiver. Running `--credit-window 2` five times per receiver,
+every run published at least 0.95 × 60: native 59.77–59.85/s, web 59.05–60.00/s, GSW
+58.95–59.06/s. All five GSW runs sat at a mean credit RTT of 1.38–1.40 frames, which is
+`between` by window 1's classes. That phase cost a GSW window-1 control run 49.6/s. At window 2
+the class no longer predicts the rate, so `phase-window2-rate` (≥ 57/s) is the gating window-2
+check, and `phase-classified` is reported. The window-overrun sabotage fails exactly
+`pending-bounded` and `queue-bounded`. The first build's GSW credit-RTT p95 at window 2,
+38.9–47.1 ms against 22.5–31.7 ms at window 1, came from cancelling and refetching on a fold.
+With GSW's fold in place it is 19.5–28.7 ms, at 59.84/s on five of five runs. The native receiver
+and the web export keep their window-1 tails. G7q recommends making window 2 the default (`GRC_LIVE_CREDIT_WINDOW_MAX=2`) once G7v measures it
+on the g31, with window 1 kept as the correctness baseline.
+
 ## Q10. Suspension, lifecycle, startup and memory
 
 Lifecycle legs run on `gate6-scene`'s `live` timeline (S = 300, N = 60). The suspension starts

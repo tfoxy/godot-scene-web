@@ -19,8 +19,8 @@
 //   both-versions        a /6 and a /7 WebSocket open on one listener at once; offering both
 //                        subprotocols chooses /7; each stream validates as its own version (GRS6 /
 //                        GRS7, ending with its end record); the /7 session declares
-//                        publication.credit_window 1 for a hello asking 2 under
-//                        GRC_LIVE_CREDIT_WINDOW_MAX=2; live-summary.json records both versions.
+//                        publication.credit_window 2 for a hello asking 2 under
+//                        GRC_LIVE_CREDIT_WINDOW_MAX=2 (G7q); live-summary.json records both versions.
 // and, on a bearer host (GRC_LIVE_AUTH=token / --token) with an Origin allowlist:
 //   v7-upgrade-without-bearer, v6-upgrade-keeps-bearer, token-right, token-wrong, token-null,
 //   origin-403-upgrade, origin-403-get, origin-403-options, origin-allowed-upgrade, cors-get,
@@ -485,8 +485,8 @@ async function testBothVersions(
         (d.records[d.records.length - 1].meta as unknown as { type: string })
           .type;
       ok(
-        s7.protocol === "render-stream/7" && s7.publication.credit_window === 1,
-        `${tag} both-versions: the /7 session declares credit_window ${s7.publication.credit_window} for a hello asking 2 (GRC_LIVE_CREDIT_WINDOW_MAX=2; host window 1 before G7q)`,
+        s7.protocol === "render-stream/7" && s7.publication.credit_window === 2,
+        `${tag} both-versions: the /7 session declares credit_window ${s7.publication.credit_window} for a hello asking 2 (GRC_LIVE_CREDIT_WINDOW_MAX=2; granted 2 since G7q)`,
       );
       ok(
         last(d6) === "end" && last(d7) === "end",
@@ -499,7 +499,7 @@ async function testBothVersions(
     ok(
       versions.join(",") === "6,7" &&
         v7?.receiver_kind === "gsw-canvas" &&
-        v7?.credit_window === 1 &&
+        v7?.credit_window === 2 &&
         v7?.credit_window_requested === 2 &&
         v7?.presentation_backing_w === 640 &&
         v7?.token_ok === null,

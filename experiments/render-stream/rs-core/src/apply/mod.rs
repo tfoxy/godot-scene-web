@@ -417,9 +417,16 @@ pub struct Applier {
     /// Resident textures, native semantics (`residency`); the GPU holds the `ok` images.
     resident: IdMap<residency::Resident>,
     names: residency::Names,
-    /// The texture ids `prepare` chose for this transaction.
+    /// The texture ids `prepare` chose for this transaction (G7q: for every transaction prepared
+    /// since the last apply).
     pending: std::collections::BTreeSet<Id>,
     prepared: bool,
+    /// G7q (credit window 2): a receiver may accept several transactions before one apply. The
+    /// one prepared transaction's delta (`last_delta`), and from the second on their merge
+    /// (`merged`, TxDelta::merge), which `apply` and `needed` use instead of the caller's delta
+    /// (the newest transaction's alone). Both are None after an apply.
+    last_delta: Option<TxDelta>,
+    merged: Option<TxDelta>,
     /// This transaction's texture accounting.
     pub account: residency::TextureAccount,
     pub sabotage: ApplySabotage,
@@ -620,6 +627,8 @@ impl Applier {
             names: residency::Names::default(),
             pending: Default::default(),
             prepared: false,
+            last_delta: None,
+            merged: None,
             account: Default::default(),
             sabotage: ApplySabotage::default(),
             attach: Vec::new(),
@@ -967,13 +976,27 @@ impl Applier {
     pub fn prepare(&mut self, state: &ResolvedState, delta: &TxDelta) {
         let t = prof::start();
         self.names.update(state, delta, self.first);
-        self.pending = residency::candidates(
+        let candidates = residency::candidates(
             &mut self.names,
             state,
             delta,
             self.first,
             self.sabotage.reupload,
         );
+        if self.prepared {
+            // G7q: a second transaction before the apply: fold it in.
+            let mut merged = self
+                .merged
+                .take()
+                .or_else(|| self.last_delta.take())
+                .unwrap_or_default();
+            merged.merge(delta);
+            self.merged = Some(merged);
+            self.pending.extend(candidates);
+        } else {
+            self.pending = candidates;
+            self.last_delta = Some(delta.clone());
+        }
         self.prepared = true;
         prof::add(prof::PREPARE, t);
     }
@@ -988,6 +1011,8 @@ impl Applier {
         store: &PayloadStore,
         out: &mut Vec<crate::state::Hash>,
     ) {
+        // G7q: every transaction prepared since the last apply (one: the caller's delta).
+        let delta = self.merged.as_ref().unwrap_or(delta);
         out.clear();
         let push = |h: crate::state::Hash, out: &mut Vec<crate::state::Hash>| {
             if !store.has(&h) && !out.contains(&h) {
@@ -1220,6 +1245,10 @@ impl Applier {
             self.prepare(state, delta);
         }
         self.prepared = false;
+        self.last_delta = None;
+        // G7q: every transaction prepared since the last apply, merged (one: the caller's).
+        let merged = self.merged.take();
+        let delta = merged.as_ref().unwrap_or(delta);
         // Mesh residency first (the lowering draws the resident surfaces): the native receiver
         // applies meshes before it replays commands (`rs_applier.gd` step 3b).
         let t = prof::start();
@@ -2487,3 +2516,5 @@ mod g7t_tests;
 mod ordering_model;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod window_tests;

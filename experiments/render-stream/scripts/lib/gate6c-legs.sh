@@ -71,6 +71,9 @@ for g6c_run in $(seq 1 "$G6C_G7R_PHASE_RUNS"); do
 	G6C_G7R_LEGS+=("phase-60-late-poll-r$g6c_run")
 done
 G6C_G7R_LEGS+=(dual-native sabotage-ack-on-receipt)
+# G7q (gate7/g7q.md "Sabotage"): G6c's constrained sabotage with GRC_SABOTAGE=window-overrun at
+# credit window 2 (GATE7_CREDIT_WINDOW=2; run-gate7.sh --credit-window 2 --receiver native).
+G6C_G7R_LEGS+=(sabotage-constrained-window-overrun)
 # The receiver's --max-fps where G6c's native receiver runs at 60: rAF-bound in a browser (Q9).
 G6C_RECV60=60
 [ -n "${GATE7_LIVE_KIND:-}" ] && G6C_RECV60=0
@@ -172,6 +175,11 @@ g6c_start_receiver() {
 		EXTRA_CHILD_PIDS+=("$BG_PID")
 		echo "run-gate6: ${dir#"$OUT"/} $GATE7_LIVE_KIND browser receiver (--max-fps $fps)"
 		return 0
+	fi
+	if [ "$GATE7_CREDIT_WINDOW" = 2 ] && [ "$native" != 1 ]; then
+		# G7q: a native receiver at credit window 2 speaks /7 (render-stream/6 has no window);
+		# dual-native's receiver-b (G6C_RECEIVER_NATIVE=1) stays /6 at window 1.
+		LEG_ENV+=(RS_RECEIVER_PROTOCOL=7 RS_RECEIVER_CREDIT_WINDOW=2)
 	fi
 	g6c_launch_rendered "$dir" "$RECEIVER_DIR" --max-fps "$fps" "$@"
 	G6C_RECEIVER_PID="$G6C_LAUNCHED_PID"
@@ -485,8 +493,11 @@ run_g6c() {
 		fi
 	done
 	# G7r: which receiver ran the legs (lib/gate7r-checks.ts reads it).
-	printf '{"kind":"%s","web_core":"%s","native_core":"%s"}\n' "${GATE7_LIVE_KIND:-native}" \
-		"${GATE7_WEB_CORE:-gdscript}" "$RECEIVER_CORE" >"$G6C/receiver-kind.json"
+	# G7q: a --credit-window 2 run records its window (absent at 1: the file is what it was).
+	g6c_window_json=""
+	[ "$GATE7_CREDIT_WINDOW" = 2 ] && g6c_window_json=',"credit_window":2'
+	printf '{"kind":"%s","web_core":"%s","native_core":"%s"%s}\n' "${GATE7_LIVE_KIND:-native}" \
+		"${GATE7_WEB_CORE:-gdscript}" "$RECEIVER_CORE" "$g6c_window_json" >"$G6C/receiver-kind.json"
 
 	echo "run-gate6: bringing up private gamescope 640x360 for g6c legs"
 	gs_start 640 360 "$OUT/gamescope-g6c"
@@ -607,6 +618,21 @@ run_g6c() {
 		G6C_PROXY=1
 		G6C_HOST_TIMEOUT_OVERRIDE=$((G6C_SABOTAGE_QUIT_S + 60))
 		g6c_leg sabotage-constrained-ignore-credit 60 60
+	fi
+	if g6c_wanted sabotage-constrained-window-overrun; then
+		if [ "$GATE7_CREDIT_WINDOW" != 2 ]; then
+			echo "run-gate6: sabotage-constrained-window-overrun needs GATE7_CREDIT_WINDOW=2 (run-gate7.sh --credit-window 2)" >&2
+			exit 2
+		fi
+		# G7q: as the ignore-credit sabotage above (same frame, quit time, inline payloads and link),
+		# but the host overruns its credit window 2 (a listener sabotage: the wire declares none).
+		echo "run-gate6: g6c: sabotage-constrained-window-overrun (window-overrun @$G6C_SABOTAGE_FRAME, window 2, quit at ${G6C_SABOTAGE_QUIT_S} s, inline payloads, through the proxy)"
+		G6C_HOST_ENV=(GRC_PUBLISH_FPS=60 GRC_SABOTAGE=window-overrun GRC_SABOTAGE_FRAME="$G6C_SABOTAGE_FRAME"
+			GRC_HOOK_LOG=on RS_FIXTURE_QUIT_TIME="$G6C_SABOTAGE_QUIT_S"
+			GRC_RESOURCE_INLINE_MAX_BYTES="$G6C_INLINE_MAX_BYTES" GRC_RESOURCE_MAX_PAYLOAD_BYTES="$G6C_INLINE_MAX_BYTES")
+		G6C_PROXY=1
+		G6C_HOST_TIMEOUT_OVERRIDE=$((G6C_SABOTAGE_QUIT_S + 60))
+		g6c_leg sabotage-constrained-window-overrun 60 60
 	fi
 
 	for leg in "${G6C_ALL_LEGS[@]}" "${G6C_G7R_LEGS[@]}"; do

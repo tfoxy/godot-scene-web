@@ -1585,11 +1585,11 @@ std::vector<Sent> of_conn(const FakeTransport &t, Sent::Kind kind, std::uint32_t
 
 // gate7-design.md Q3 "Two subprotocols on one listener": a /6 and a /7 connection on one hub,
 // served from one snapshot; each gets its own magic, protocol string and hello shape; a /7
-// connection's publication declares the grant, capped at 1 before G7q.
+// connection's publication declares the grant (asked 2 under a maximum of 2: 2, since G7q).
 void test_v6_and_v7_on_one_hub() {
   FakeTransport transport;
   LiveConfig config;
-  config.credit_window_max = 2;  // the env allows 2; the host still grants 1 (kHostCreditWindow)
+  config.credit_window_max = 2;  // the env allows 2, so a hello asking 2 is granted 2 (G7q)
   Hub hub(&transport, config, template_v6());
   hub.on_event(opened_with(1, "render-stream.6"), 0);
   hub.on_event(opened_with(2, "render-stream.7", "http://127.0.0.1:5173"), 0);
@@ -1609,8 +1609,8 @@ void test_v6_and_v7_on_one_hub() {
     check(has(s6, "\"protocol\":\"render-stream/6\"") && !has(s6, "credit_window"),
           "the /6 session is /6's, with no credit_window: " + s6.substr(0, 60));
     check(has(s7, "\"protocol\":\"render-stream/7\"") &&
-              has(s7, "\"publication\":{\"mode\":\"every-frame\",\"target_fps\":null,\"credit_window\":1}"),
-          "the /7 session declares publication.credit_window 1 (asked 2, max 2, host 1)");
+              has(s7, "\"publication\":{\"mode\":\"every-frame\",\"target_fps\":null,\"credit_window\":2}"),
+          "the /7 session declares publication.credit_window 2 (asked 2, max 2, G7q)");
     check(b6[1].bytes == b7[1].bytes,
           "seq 1 is byte-identical on /6 and /7 (render-stream-7.md: records are /6's)");
   }
@@ -1621,7 +1621,7 @@ void test_v6_and_v7_on_one_hub() {
               sums[0].origin.empty() && !sums[0].token_checked,
           "the /6 summary has no /7 hello, window 1, no origin, token not checked");
     check(sums[1].has_hello7 && sums[1].receiver_kind == "gsw-canvas" &&
-              sums[1].credit_window_requested == 2 && sums[1].credit_window == 1 &&
+              sums[1].credit_window_requested == 2 && sums[1].credit_window == 2 &&
               sums[1].manifest_sha256 == std::string(64, 'e') &&
               sums[1].presentation_backing_w == 640 && sums[1].dpr_milli == 1000 &&
               sums[1].origin == "http://127.0.0.1:5173" && !sums[1].token_checked,

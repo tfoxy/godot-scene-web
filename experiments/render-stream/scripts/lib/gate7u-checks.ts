@@ -38,8 +38,10 @@ import { type StallReport, shotName } from "./gate1-g1d-checks";
 import {
   type DeliveryReport,
   type LiveConnectionSummary,
+  type LiveHostEvidence,
   type LiveLogLine,
   receivedFileName,
+  stateKey,
 } from "./gate1-live-checks";
 import { type HookLine, loadResolved } from "./gate2b-checks";
 import type { G2cHost } from "./gate2c-checks";
@@ -745,7 +747,11 @@ export function synthesiseStall(
   return out;
 }
 
-/** pending-bounded (pure): Q10's bound at credit window 1, over the suspension. */
+/** pending-bounded (pure): Q10's bound at the granted credit window w, over the suspension. G7q:
+ * at window w the stalled seq's w - 1 free slots let that many sends out without any credit
+ * (seqs stalled + 1 .. stalled + w - 1): those are neither sends "during the stall" beyond the
+ * window nor credit that flowed to a suspended page. Any other send inside the suspension needed a
+ * credit the suspended page returned. At window 1 the rule is the one it was. */
 export function evaluatePendingBounded(
   d: DeliveryReport | undefined,
   s: LiveConnectionSummary | undefined,
@@ -760,23 +766,28 @@ export function evaluatePendingBounded(
     ...d.queued_violations,
   ].slice(0, 3))
     problems.push(v);
-  if (d.max_in_flight > 1 || (s?.max_in_flight ?? 0) > 1)
+  if (d.max_in_flight > d.window || (s?.max_in_flight ?? 0) > d.window)
     problems.push(
-      `max in flight ${d.max_in_flight} (host ${s?.max_in_flight}) above the window (1)`,
+      `max in flight ${d.max_in_flight} (host ${s?.max_in_flight}) above the window (${d.window})`,
     );
   if ((s?.max_pending ?? 0) > 1 || (st?.max_pending ?? 0) > 1)
     problems.push(
       `max pending ${Math.max(s?.max_pending ?? 0, st?.max_pending ?? 0)}`,
     );
+  const w = d.window;
   if (!st || st.send_frame === null || st.credit_frame === null)
     problems.push("the suspension is not visible in the host log");
-  else if (st.sends_during > 0)
+  else if (st.sends_during > w - 1)
     problems.push(
-      `${st.sends_during} transactions sent between the stalled seq and its credit`,
+      `${st.sends_during} transactions sent between the stalled seq and its credit${w > 1 ? ` (window ${w})` : ""}`,
     );
-  if (synth.sends_in_window.length > 0)
+  const stalled = st?.stalled_seq ?? null;
+  const credited = synth.sends_in_window.filter(
+    (q) => stalled === null || q <= stalled || q > stalled + (w - 1),
+  );
+  if (credited.length > 0)
     problems.push(
-      `${synth.sends_in_window.length} transactions sent inside the suspension (credit kept flowing to a suspended page: seqs ${synth.sends_in_window.slice(0, 6).join(",")})`,
+      `${credited.length} transactions sent inside the suspension (credit kept flowing to a suspended page: seqs ${credited.slice(0, 6).join(",")})`,
     );
   if (
     st &&
@@ -1159,9 +1170,9 @@ export function evaluateLossPendingBounded(
     ].slice(0, 3))
       problems.push(`connection ${i + 1}: ${v}`);
     const s = summaries[i];
-    if (d.max_in_flight > 1 || (s?.max_in_flight ?? 0) > 1)
+    if (d.max_in_flight > d.window || (s?.max_in_flight ?? 0) > d.window)
       problems.push(
-        `connection ${i + 1}: max in flight ${d.max_in_flight} (host ${s?.max_in_flight}) above the window (1)`,
+        `connection ${i + 1}: max in flight ${d.max_in_flight} (host ${s?.max_in_flight}) above the window (${d.window})`,
       );
     if ((s?.max_pending ?? 0) > 1)
       problems.push(`connection ${i + 1}: max pending ${s?.max_pending}`);
@@ -1253,6 +1264,8 @@ export function evaluateNewestFirst(
 export interface ResumeTx {
   stream: number;
   seq: number;
+  /** G7q (credit window >= 2): applied and drawn with this later seq (one apply) */
+  coalesced_into?: number | null;
   applied: boolean;
   skipped: string | null;
   /** the receiver frame of the apply: GSW's rAF index, the web export's process frame */
@@ -1261,7 +1274,8 @@ export interface ResumeTx {
 
 /** resume-no-burst (pure): at most two applies in the first resumed receiver frame, and none
  * skipped silently (every seq the host sent from the stalled one on is recorded, and each
- * recorded but unapplied transaction names why). */
+ * recorded but unapplied transaction names why). G7q: an apply is counted once, however many
+ * queued transactions it folded (`coalesced_into`; none at window 1). */
 export function evaluateResumeNoBurst(
   tx: readonly ResumeTx[],
   stalledSeq: number | null,
@@ -1284,7 +1298,10 @@ export function evaluateResumeNoBurst(
     problems.push(`seq ${first.seq} has no receiver frame of its apply`);
   else {
     n = after.filter(
-      (t) => t.applied && t.frame_key === first.frame_key,
+      (t) =>
+        t.applied &&
+        t.frame_key === first.frame_key &&
+        (t.coalesced_into === undefined || t.coalesced_into === null),
     ).length;
     if (n > 2)
       problems.push(
@@ -1309,20 +1326,120 @@ export function evaluateResumeNoBurst(
   };
 }
 
+/** The resume apply that came ahead of the recovery (G7q, credit window w >= 2). */
+export interface ResumeFold {
+  /** the fold target: the newest transaction the page held at resume */
+  seq: number;
+  /** its host frame */
+  frame: number;
+  /** held transactions it folded past the stalled seq's w - 1 in-window sends */
+  past_window: number;
+  stale_from: number | null;
+  /** its resolved state equals the host's full recording at its frame */
+  state_equals_full: boolean | null;
+}
+
+/**
+ * The resume fold ahead of the recovery (pure; G7q). At credit window w the page holds, at
+ * resume, the stalled seq and at most its w - 1 in-window sends, folds them into the newest
+ * (`coalesced_into`), and the recovery (the first send after the stalled credit) is the first
+ * post-resume picture. When credit kept flowing to the suspended page (the ack-while-hidden
+ * sabotage, which pending-bounded fails), the page holds sends past those w - 1 and GSW folds the
+ * whole held queue into its newest, which is applied, and shot, before the recovery arrives. That
+ * apply is then the first post-resume picture, so stall-latest and fetch-latest-only judge it as
+ * well. Null otherwise: at window 1 (nothing folds), when the stalled seq applies alone, or when
+ * its fold target is within its w - 1 in-window sends (the honest window-w resume).
+ */
+export function resumeFoldAhead(
+  stalledSeq: number | null,
+  window: number,
+  txs: readonly {
+    stream?: number;
+    seq?: number;
+    frame?: number | null;
+    coalesced_into?: number | null;
+  }[],
+  recoverySeq: number | null,
+  facts: (seq: number) => {
+    frame: number | null;
+    stale_from: number | null;
+    state_equals_full: boolean | null;
+  },
+): ResumeFold | null {
+  if (window < 2 || stalledSeq === null || recoverySeq === null) return null;
+  const into = txs.find(
+    (t) => (t.stream ?? 1) === 1 && t.seq === stalledSeq,
+  )?.coalesced_into;
+  if (typeof into !== "number") return null;
+  if (into <= stalledSeq + (window - 1) || into >= recoverySeq) return null;
+  const f = facts(into);
+  const frame =
+    f.frame ??
+    txs.find((t) => (t.stream ?? 1) === 1 && t.seq === into)?.frame ??
+    null;
+  if (frame === null) return null;
+  return {
+    seq: into,
+    frame,
+    past_window: into - stalledSeq - (window - 1),
+    stale_from: f.stale_from,
+    state_equals_full: f.state_equals_full,
+  };
+}
+
+/** A send's host facts, as stallReport reads the recovery's: its frame, stale_from, and whether
+ * its tap state equals the full recording's at its frame. */
+export function sendFacts(
+  host: Pick<LiveHostEvidence, "log" | "tap" | "full"> | undefined,
+  seq: number,
+): {
+  frame: number | null;
+  stale_from: number | null;
+  state_equals_full: boolean | null;
+} {
+  const line = host?.log?.find(
+    (l) => l.event === undefined && l.sent?.seq === seq && !l.sent?.dropped,
+  );
+  const tx = host?.tap.transactions.find((t) => t.meta.seq === seq);
+  const full = host?.full.transactions.find(
+    (t) => t.meta.frame === tx?.meta.frame,
+  );
+  return {
+    frame: line?.frame ?? tx?.meta.frame ?? null,
+    stale_from: line?.sent?.stale_from ?? null,
+    state_equals_full: tx && full ? stateKey(tx) === stateKey(full) : null,
+  };
+}
+
 /**
  * stall-latest (pure; G6l's rule): the first transaction applied after the stalled seq is the
  * host's recovery send, carries no stale_from, equals the host's mirror at its frame, and its shot
  * equals the reference. A recovery beyond the last shot window (a 30-s suspension, frame > `lastWindowTo`)
- * is not shot; then its state equality stands alone and the detail says so.
+ * is not shot; then its state equality stands alone and the detail says so. G7q: given a resume
+ * fold ahead of the recovery (`resumeFoldAhead`), that apply is the first post-resume picture: it
+ * carries no stale_from, equals the host's mirror at its frame, and its shot (in the recovery's
+ * place) equals the reference; the recovery's own checks stand unchanged.
  */
 export function evaluateStallLatest(
-  st: Pick<StallReport, "stalled_seq" | "recovery"> | null,
-  applied: readonly { stream: number; seq: number }[],
+  st:
+    | (Pick<StallReport, "stalled_seq" | "recovery"> &
+        Partial<Pick<StallReport, "sends_during">>)
+    | null,
+  applied: readonly {
+    stream: number;
+    seq: number;
+    coalesced_into?: number | null;
+  }[],
   checkpoints: readonly Pick<
     G6lCheckpoint,
     "stream" | "seq" | "frame" | "vs_frame" | "vs_frame_regions"
   >[],
   lastWindowTo: number = G6L_QUIT_FRAME,
+  /** G7q: the granted credit window. The recovery follows the stalled seq's w - 1 in-window sends,
+   * and its picture is the apply it was folded into (G6l's stall-latest at window w). */
+  window = 1,
+  /** G7q: the resume apply ahead of the recovery (null at window 1 and on an honest resume) */
+  fold: ResumeFold | null = null,
 ): { problems: string[]; detail: string } {
   const r = st?.recovery;
   if (!st || !r)
@@ -1336,26 +1453,52 @@ export function evaluateStallLatest(
     problems.push(
       `the recovery seq ${r.seq} (frame ${r.frame}) is not the host's state at its frame`,
     );
+  const inStall = window > 1 ? (st.sends_during ?? 0) : 0;
   const after = applied.find(
-    (t) => t.stream === 1 && t.seq > (st.stalled_seq ?? 0),
+    (t) => t.stream === 1 && t.seq > (st.stalled_seq ?? 0) + inStall,
   );
   if (after?.seq !== r.seq)
     problems.push(
-      `the first transaction applied after the stall is seq ${after?.seq}, not the recovery seq ${r.seq}`,
+      `the first transaction applied after the stall${inStall > 0 ? ` and its ${inStall} in-window sends` : ""} is seq ${after?.seq}, not the recovery seq ${r.seq}`,
     );
-  const cp = checkpoints.find((c) => c.stream === 1 && c.seq === r.seq);
-  let shot = "its shot equals the reference";
+  if (fold) {
+    if (fold.stale_from !== null)
+      problems.push(
+        `the resume apply's seq ${fold.seq} carries stale_from ${fold.stale_from}`,
+      );
+    if (fold.state_equals_full !== true)
+      problems.push(
+        `the resume apply's seq ${fold.seq} (frame ${fold.frame}) is not the host's state at its frame`,
+      );
+  }
+  const drawn = fold
+    ? fold.seq
+    : (applied.find((t) => t.stream === 1 && t.seq === r.seq)?.coalesced_into ??
+      r.seq);
+  const shotFrame = fold ? fold.frame : r.frame;
+  const cp = checkpoints.find((c) => c.stream === 1 && c.seq === drawn);
+  let shot = fold
+    ? `the resume apply's shot (of seq ${drawn}) equals the reference`
+    : `its shot${drawn !== r.seq ? ` (of seq ${drawn}, which it was folded into)` : ""} equals the reference`;
   if (!cp) {
-    if (r.frame > lastWindowTo)
-      shot = `not shot (frame ${r.frame} lies after the last shot window, ${lastWindowTo}): judged by its state alone`;
-    else problems.push(`the recovery seq ${r.seq} was not shot`);
+    if (shotFrame > lastWindowTo)
+      shot = `not shot (frame ${shotFrame} lies after the last shot window, ${lastWindowTo}): judged by its state alone`;
+    else
+      problems.push(
+        fold
+          ? `the resume apply's seq ${drawn} was not shot`
+          : `the recovery seq ${r.seq}${drawn !== r.seq ? ` (folded into seq ${drawn})` : ""} was not shot`,
+      );
   } else if (cp.vs_frame !== 0)
     problems.push(
-      `the recovery shot differs from the reference at frame ${cp.frame} in ${cp.vs_frame_regions.join(",")}`,
+      `the ${fold ? "resume apply's" : "recovery"} shot differs from the reference at frame ${cp.frame} in ${cp.vs_frame_regions.join(",")}`,
     );
+  const foldText = fold
+    ? `; first the resume apply: the stalled seq and the queue it held folded into seq ${fold.seq} at frame ${fold.frame} (${fold.past_window} past its ${window - 1} in-window send${window - 1 === 1 ? "" : "s"}: credit kept flowing), equal to the host's full recording there`
+    : "";
   return {
     problems,
-    detail: `stalled seq ${st.stalled_seq}, recovery seq ${r.seq} at frame ${r.frame} (${r.frames_after_credit} after the credit, ${r.encoding}), equals the host's full recording there; ${shot}`,
+    detail: `stalled seq ${st.stalled_seq}, recovery seq ${r.seq} at frame ${r.frame} (${r.frames_after_credit} after the credit, ${r.encoding}), equals the host's full recording there${foldText}; ${shot}`,
   };
 }
 
@@ -2271,6 +2414,8 @@ async function checkG7uRunAt(
             return {
               stream: (x.stream as number | undefined) ?? 1,
               seq: (x.seq as number | undefined) ?? 0,
+              coalesced_into:
+                (x.coalesced_into as number | null | undefined) ?? null,
               applied: typeof x.applied_us === "number" && !x.skipped,
               skipped: (x.skipped as string | null | undefined) ?? null,
               frame_key:
@@ -2428,7 +2573,7 @@ async function checkG7uRunAt(
         );
         add(
           "pending-bounded",
-          "max_in_flight <= window (1), max_pending <= 1, nothing sent inside the suspension, queued bytes during it at most one credit window + control",
+          "max_in_flight <= the granted window w (1 by default), max_pending <= 1, nothing sent inside the suspension but the stalled seq's w - 1 in-window sends, queued bytes during it at most w credit windows + control",
           pb.problems,
           pb.detail,
         );
@@ -2490,10 +2635,28 @@ async function checkG7uRunAt(
           sk.detail,
         );
         const evals = new Map<string, G6lEvaluation>([["live-stall", g]]);
+        // G7q: a resume fold ahead of the recovery (credit flowed to the suspended page past the
+        // stalled seq's w - 1 in-window sends) is the first post-resume picture; stall-latest and
+        // fetch-latest-only judge it as well (null at window 1 and on an honest resume).
+        const fold = resumeFoldAhead(
+          st?.stalled_seq ?? null,
+          g.delivery[0]?.window ?? 1,
+          (ev.applied?.transactions ?? []) as {
+            stream?: number;
+            seq?: number;
+            frame?: number | null;
+            coalesced_into?: number | null;
+          }[],
+          st?.recovery?.seq ?? null,
+          (seq) => sendFacts(c1?.host, seq),
+        );
         const sl = evaluateStallLatest(
           st,
           appliedTransactions(ev.applied),
           g.checkpoints,
+          G6L_QUIT_FRAME,
+          g.delivery[0]?.window ?? 1,
+          fold,
         );
         add(
           "stall-latest",
@@ -2513,7 +2676,7 @@ async function checkG7uRunAt(
                 host.hook.lines,
                 e.texture_hashes.TEXA0,
                 fetchFrom,
-                st.recovery.frame,
+                fold?.frame ?? st.recovery.frame,
               )
             : null;
         if (texaGone)
@@ -2531,7 +2694,21 @@ async function checkG7uRunAt(
                   [
                     "live-stall",
                     st && fetchFrom !== null
-                      ? { ...g, stall: { ...st, send_frame: fetchFrom } }
+                      ? {
+                          ...g,
+                          stall: {
+                            ...st,
+                            send_frame: fetchFrom,
+                            recovery:
+                              fold && st.recovery
+                                ? {
+                                    ...st.recovery,
+                                    seq: fold.seq,
+                                    frame: fold.frame,
+                                  }
+                                : st.recovery,
+                          },
+                        }
                       : g,
                   ],
                 ]),
@@ -2549,6 +2726,8 @@ async function checkG7uRunAt(
             return {
               stream: (x.stream as number | undefined) ?? 1,
               seq: (x.seq as number | undefined) ?? 0,
+              coalesced_into:
+                (x.coalesced_into as number | null | undefined) ?? null,
               applied: typeof x.applied_us === "number" && !x.skipped,
               skipped: (x.skipped as string | null | undefined) ?? null,
               frame_key:

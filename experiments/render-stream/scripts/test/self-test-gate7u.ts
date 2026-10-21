@@ -62,8 +62,10 @@ import {
   lcSabotageProblems,
   legDef,
   legsFor,
+  type ResumeFold,
   rafInside,
   realLegs,
+  resumeFoldAhead,
   snapInBand,
   synthesiseStall,
   texaFetchedIn,
@@ -629,6 +631,7 @@ expect(
 // 4. pending-bounded and friends.
 const dHonest: DeliveryReport = {
   credit_stage: "submitted",
+  window: 1,
   frame_lines: 590,
   sends: 100,
   dropped: 0,
@@ -693,6 +696,45 @@ pb = evaluatePendingBounded(dHonest, undefined, null, sg);
 expect(
   "pending-bounded: an invisible stall fails",
   some(pb.problems, /not visible/),
+);
+// G7q, credit window 2: the stalled seq (40)'s free slot lets seq 41 out inside the suspension;
+// seq 42 would have needed a credit from the suspended page.
+const dW2 = { ...dHonest, window: 2, max_in_flight: 2 };
+const stW2 = {
+  ...stHonest,
+  stalled_seq: 40,
+  sends_during: 1,
+} as typeof stHonest;
+pb = evaluatePendingBounded(dW2, { max_in_flight: 2, max_pending: 1 }, stW2, {
+  sends_in_window: [41],
+  problems: [],
+});
+expect(
+  "pending-bounded (window 2): the stalled seq's one in-window send passes",
+  pb.problems.length === 0,
+  pb.problems.join("; "),
+);
+pb = evaluatePendingBounded(
+  dW2,
+  { max_in_flight: 2, max_pending: 1 },
+  { ...stW2, sends_during: 2 } as typeof stHonest,
+  { sends_in_window: [41, 42], problems: [] },
+);
+expect(
+  "pending-bounded (window 2): a send before the stalled seq inside the suspension still fails",
+  some(
+    evaluatePendingBounded(dW2, { max_in_flight: 2, max_pending: 1 }, stW2, {
+      sends_in_window: [39, 41],
+      problems: [],
+    }).problems,
+    /seqs 39\)/,
+  ),
+);
+expect(
+  "pending-bounded (window 2): a second send inside the suspension fails",
+  some(pb.problems, /2 transactions sent between/) &&
+    some(pb.problems, /seqs 42/),
+  pb.problems.join("; "),
 );
 
 const steady = hostLog({ frames: 600 });
@@ -862,6 +904,129 @@ expect(
   sl.problems.length === 0,
   sl.problems.join("; "),
 );
+// G7q, credit window 2: seq 12 went out in the stalled seq 11's free slot, the recovery is 13,
+// folded into 14 (one apply, 14 shot).
+{
+  const st2 = {
+    stalled_seq: 11,
+    sends_during: 1,
+    recovery: { ...rec, seq: 13, base_seq: 12 },
+  };
+  const tx2 = [
+    { stream: 1, seq: 11 },
+    { stream: 1, seq: 12 },
+    { stream: 1, seq: 13, coalesced_into: 14 },
+    { stream: 1, seq: 14 },
+  ];
+  const cp14 = [{ ...cps[0], seq: 14, frame: 441 }];
+  const w2 = evaluateStallLatest(st2, tx2, cp14, 1080, 2);
+  expect(
+    "stall-latest (window 2): the recovery after the in-window send, folded and shot as 14",
+    w2.problems.length === 0,
+    w2.problems.join("; "),
+  );
+  expect(
+    "stall-latest (window 1 rule on window-2 evidence): seq 12 is not the recovery",
+    some(evaluateStallLatest(st2, tx2, cp14, 1080, 1).problems, /is seq 12/),
+  );
+  // An honest window-2 resume folds the stalled seq into its one in-window send: no fold ahead.
+  const facts = (seq: number) => ({
+    frame: 430 + seq,
+    stale_from: null,
+    state_equals_full: true,
+  });
+  const honest = [
+    { stream: 1, seq: 11, coalesced_into: 12 },
+    { stream: 1, seq: 12 },
+    ...tx2.slice(2),
+  ];
+  expect(
+    "resumeFoldAhead: honest window-2 resume (11 into 12) is no fold ahead",
+    resumeFoldAhead(11, 2, honest, 13, facts) === null,
+  );
+  expect(
+    "resumeFoldAhead: window 1 never folds ahead",
+    resumeFoldAhead(11, 1, honest, 13, facts) === null,
+  );
+}
+// G7q, credit window 2, ack-while-hidden: credit kept flowing, so the page held 11..20 at resume
+// and folded them into 20 (shot), before the recovery 21 (applied alone, unshot).
+{
+  const facts = (seq: number) => ({
+    frame: 430 + seq,
+    stale_from: null,
+    state_equals_full: true,
+  });
+  const txs = [
+    ...Array.from({ length: 9 }, (_, i) => ({
+      stream: 1,
+      seq: 11 + i,
+      coalesced_into: 20,
+    })),
+    { stream: 1, seq: 20 },
+    { stream: 1, seq: 21 },
+  ];
+  const st = {
+    stalled_seq: 11,
+    sends_during: 9,
+    recovery: { ...rec, seq: 21, frame: 455, base_seq: 20 },
+  };
+  const cp20 = [{ ...cps[0], seq: 20, frame: 450 }];
+  const fold = resumeFoldAhead(11, 2, txs, 21, facts);
+  expect(
+    "resumeFoldAhead: a held queue folded past the in-window send is the resume apply",
+    fold?.seq === 20 && fold.frame === 450 && fold.past_window === 8,
+    JSON.stringify(fold),
+  );
+  expect(
+    "resumeFoldAhead: a fold target at or past the recovery is none",
+    resumeFoldAhead(11, 2, txs, 20, facts) === null,
+  );
+  const w = evaluateStallLatest(st, txs, cp20, 1080, 2, fold);
+  expect(
+    "stall-latest (window 2, fold ahead): judged by the resume apply's shot",
+    w.problems.length === 0 && /resume apply/.test(w.detail),
+    w.problems.join("; "),
+  );
+  expect(
+    "stall-latest (window 2, no fold given): the unshot recovery fails as before",
+    some(evaluateStallLatest(st, txs, cp20, 1080, 2).problems, /was not shot/),
+  );
+  expect(
+    "stall-latest (window 2, fold ahead): the resume apply unshot fails",
+    some(
+      evaluateStallLatest(st, txs, [], 1080, 2, fold).problems,
+      /resume apply's seq 20 was not shot/,
+    ),
+  );
+  const bad = evaluateStallLatest(
+    st,
+    txs,
+    [{ ...cp20[0], vs_frame: 7, vs_frame_regions: ["MS"] }],
+    1080,
+    2,
+    { ...(fold as ResumeFold), stale_from: 3, state_equals_full: false },
+  );
+  expect(
+    "stall-latest (window 2, fold ahead): a stale, unequal, mismatching resume apply fails thrice",
+    bad.problems.length === 3,
+    bad.problems.join("; "),
+  );
+  expect(
+    "stall-latest (window 2, fold ahead): the recovery's own state checks stand",
+    some(
+      evaluateStallLatest(
+        { ...st, recovery: { ...st.recovery, state_equals_full: false } },
+        txs,
+        cp20,
+        1080,
+        2,
+        fold,
+      ).problems,
+      /recovery seq 21 .* is not the host's state/,
+    ),
+  );
+}
 sl = evaluateStallLatest(
   stl,
   [

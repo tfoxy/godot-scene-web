@@ -7,10 +7,14 @@
 //  2. evaluateMotionMonotonic: gaps of 1 and 2 pass; a gap of 3 passes only after the stalled
 //     seq, across the reconnect, or when the receiver held the earlier transaction longer than a
 //     frame (fetch, shot, frame); a gap of 3 behind a fast receiver and a frame going backwards fail.
+//     G7q, credit window 2: the gap is the hold of the transaction whose slot the next send took
+//     (w - 1 seqs back), and the stall's gap follows the in-window send after the stalled seq.
 //  3. creditToSend: sends at the first callback after the credit pass; a late send and a send
-//     before the credit fail.
+//     before the credit fail. G7q, window 2 (the hello's grant): a send needs the credit of the
+//     seq two back, one send per callback; a third in flight and a late send fail.
 //  4. windowsWithoutCandidate: a window whose only transaction was shot for an earlier-listed
-//     window is legitimately missed; a window with an unshot transaction is not.
+//     window is legitimately missed; a window with an unshot transaction is not, unless (G7q) that
+//     transaction was folded into a later one (`coalesced_into`) and so never drawn alone.
 //  5. evaluateFetchLatestOnly, evaluateReconnectFetches, evaluateWarmFetches and staleFreshRegions.
 //  6. wireSends, compareAt (HU compared since G6b) and gate 5f's connTimelinesAtCallback as g6l uses it.
 
@@ -304,6 +308,45 @@ export function selfTestG6l(e: Gate6Expected, h: SelfTestHooks): void {
         .problems,
       "after frame",
     );
+    // G7q, window 2: seq 3 -> 4 has a gap of 3; seq 2 (the slot seq 4 took) was the slow one.
+    const w2 = evaluateMotionMonotonic(
+      tx([320, 321, 322, 325], { slow: [2] }),
+      new Set(["1:2"]),
+      null,
+      320,
+      1080,
+      2,
+    );
+    assert(
+      "motion (window 2): a gap after seq 3 is attributed to seq 2's shot",
+      w2.problems.length === 0 && w2.attributed["receiver-shot"] === 1,
+      JSON.stringify(w2),
+    );
+    fails(
+      "motion (window 2): the same gap with seq 3 slow and seq 2 fast",
+      evaluateMotionMonotonic(
+        tx([320, 321, 322, 325], { slow: [3] }),
+        noShots,
+        null,
+        320,
+        1080,
+        2,
+      ).problems,
+      "held seq 2",
+    );
+    const w2stall = evaluateMotionMonotonic(
+      tx([426, 427, 428, 549]),
+      noShots,
+      2,
+      320,
+      1080,
+      2,
+    );
+    assert(
+      "motion (window 2): the gap after the stalled seq's in-window send is attributed stall",
+      w2stall.problems.length === 0 && w2stall.attributed.stall === 1,
+      JSON.stringify(w2stall),
+    );
   }
 
   // 3. creditToSend.
@@ -340,6 +383,53 @@ export function selfTestG6l(e: Gate6Expected, h: SelfTestHooks): void {
       creditToSend([frameLine(41, 1), frameLine(42, 2)]).problems,
       "before seq 1 was credited",
     );
+    // G7q, window 2.
+    const hello2: LiveLogLine = {
+      frame: 40,
+      t_us: 40 * 16667,
+      event: "hello",
+      credit_window_granted: 2,
+    };
+    const w2 = creditToSend([
+      hello2,
+      frameLine(41, 1),
+      frameLine(42, 2),
+      ack(43, 1),
+      frameLine(43, 3),
+      ack(44, 2),
+      frameLine(44, 4),
+    ]);
+    passes(
+      "credit-to-send (window 2): seq 2 at the next callback, then each at its slot's credit",
+      w2.problems,
+    );
+    assert(
+      "credit-to-send (window 2): three sends at +0",
+      w2.delays["0"] === 3,
+      JSON.stringify(w2.delays),
+    );
+    fails(
+      "credit-to-send (window 2): a third in flight",
+      creditToSend([
+        hello2,
+        frameLine(41, 1),
+        frameLine(42, 2),
+        frameLine(43, 3),
+      ]).problems,
+      "before seq 1 was credited",
+    );
+    fails(
+      "credit-to-send (window 2): a slot free a callback before the send",
+      creditToSend([
+        hello2,
+        frameLine(41, 1),
+        frameLine(42, 2),
+        ack(43, 1),
+        frameLine(43),
+        frameLine(44, 3),
+      ]).problems,
+      "callbacks after",
+    );
   }
 
   // 4. windowsWithoutCandidate.
@@ -375,6 +465,37 @@ export function selfTestG6l(e: Gate6Expected, h: SelfTestHooks): void {
       "missed windows: an unshot transaction in 112 makes it shootable",
       JSON.stringify(notMissed) === "[]",
       JSON.stringify(notMissed),
+    );
+    // G7q: the recovery (frame 549) folded into the next send (550), shot for window 4: one
+    // apply, so window 112 has no candidate left.
+    const folded = tx([427, 549, 550, 562]).map((t) =>
+      t.seq === 2 ? { ...t, coalesced_into: 3 } : t,
+    );
+    const foldMissed = windowsWithoutCandidate(
+      folded,
+      new Map([
+        ["1:3", 4],
+        ["1:4", 113],
+      ]),
+      windows,
+    );
+    assert(
+      "missed windows (window 2): a transaction folded into the window-4 shot is no candidate",
+      JSON.stringify(foldMissed) === "[112]",
+      JSON.stringify(foldMissed),
+    );
+    const unfolded = windowsWithoutCandidate(
+      tx([427, 549, 550, 562]),
+      new Map([
+        ["1:2", 4],
+        ["1:4", 113],
+      ]),
+      windows,
+    );
+    assert(
+      "missed windows: unfolded, the recovery's successor is window 112's candidate",
+      JSON.stringify(unfolded) === "[]",
+      JSON.stringify(unfolded),
     );
   }
 

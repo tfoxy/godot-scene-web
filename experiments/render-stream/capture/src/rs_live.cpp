@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <set>
 #include <utility>
 
@@ -646,9 +647,19 @@ struct Hub::Conn {
   AckStage credit_stage = AckStage::Submitted;
   Session session;
   std::uint64_t next_seq = 1;
-  std::optional<std::uint64_t> in_flight;
+  // The credit window (G7q, gate7-design.md D4, Q2 "Credit with window w"): the sent seqs that
+  // hold one of the connection's `window_slots` (its granted credit_window), oldest first. A send
+  // takes a slot; its credit-stage ack, or a resync (which also frees every later slot), returns
+  // it. `credit` is "a slot is free" (or the hello's credit for the session and seq 1). At window
+  // 1 this is exactly the single in-flight seq it replaced: the window-1 transcripts pin it
+  // (test/rs_live_window_test.cpp).
+  std::deque<std::uint64_t> window;
+  std::uint64_t window_slots = 1;
   std::set<std::uint64_t> uncredited;  // sent seqs whose credit has not returned
   bool credit = false;
+  // Window >= 2 only: the payloads of every in-window seq other than the last one sent (that one
+  // is `base_payloads`), so every in-flight transaction's payloads stay pinned (D7, Q2).
+  std::map<std::uint64_t, rs::PayloadMap> window_payloads;
   Snapshot base;
   bool has_base = false;
   rs::PayloadMap base_payloads;  // G2c2: the payloads `base` names (the pin, D7)
@@ -661,6 +672,14 @@ struct Hub::Conn {
   std::set<std::string> carried;  // G2b2: payload hashes this connection already carried inline
   std::uint64_t stale_frame = 0;
   std::uint64_t stale_ns = 0;  // the frame callback's time when `stale` was captured (G6r Q3c)
+  // G7q, stale-coalesce at window >= 2: the stale target just sent stays the target of every
+  // send made while its seq still holds a window slot, so a receiver folding those sends into one
+  // apply still draws it (the sabotage's sets stay window 1's). Never set at window 1, where
+  // nothing is sent while a seq is in flight.
+  std::optional<rs::Captured> stale_held;
+  std::uint64_t stale_held_seq = 0;
+  std::uint64_t stale_held_frame = 0;
+  std::uint64_t stale_held_ns = 0;
   // Rate control (G6r): the schedule starts at this connection's first send; `started` is false
   // until then, so that very first send (right after the hello) is never rate-gated.
   bool schedule_started = false;
@@ -879,6 +898,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         c.s.credit_window_requested = message.credit_window;
         c.s.credit_window =
             std::min({message.credit_window, config_.credit_window_max, kHostCreditWindow});
+        c.window_slots = c.s.credit_window;
         c.s.manifest_sha256 = message.has_manifest_sha256 ? message.manifest_sha256 : "";
         c.s.presentation_backing_w = message.presentation_backing_w;
         c.s.presentation_backing_h = message.presentation_backing_h;
@@ -942,6 +962,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
       }
       std::string ignored;
       bool credited = false;
+      std::vector<std::uint64_t> discarded;  // G7q: the later slots a resync freed
       const auto sent = c.sent_at.find(message.seq);
       if (message.stream_id != c.s.stream_id) {
         ignored = "stream-id";
@@ -968,13 +989,27 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         }
         if (credit_message) {
           // Any credit-stage answer settles its own seq, so `uncredited` (max_in_flight) counts
-          // the seqs still outstanding even when ignore-credit put several in flight; only the
-          // in-flight seq returns the credit.
+          // the seqs still outstanding even when ignore-credit put several in flight; only a seq
+          // holding a window slot returns credit (G7q: one slot per seq, window w).
           c.uncredited.erase(message.seq);
-          if (c.in_flight.has_value() && *c.in_flight == message.seq) {
+          const auto slot = std::find(c.window.begin(), c.window.end(), message.seq);
+          if (slot != c.window.end()) {
             credited = true;
-            c.credit = true;
-            c.in_flight.reset();
+            if (is_ack) {
+              c.window.erase(slot);
+            } else {
+              // G7q (render-stream-7.md "Credit with window w"): a resync for any in-flight seq
+              // makes the next send full, and the receiver ignores every later in-flight patch
+              // until then, so their slots return with it (never at window 1: nothing is later).
+              for (auto later = slot + 1; later != c.window.end(); ++later) {
+                c.uncredited.erase(*later);
+                c.window_payloads.erase(*later);
+                discarded.push_back(*later);
+              }
+              c.window.erase(slot, c.window.end());
+            }
+            c.window_payloads.erase(message.seq);
+            c.credit = c.window.size() < c.window_slots;
             ++c.s.credits;
             if (!is_ack) {
               c.resync = true;
@@ -1009,6 +1044,13 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         line.str("reason", message.reason);
       }
       line.boolean("credited", credited);
+      if (!discarded.empty()) {
+        std::string list;
+        for (const std::uint64_t seq : discarded) {
+          list += (list.empty() ? "" : ",") + std::to_string(seq);
+        }
+        line.raw("discarded", "[" + list + "]");
+      }
       if (ignored.empty()) {
         line.null("ignored");
       } else {
@@ -1025,6 +1067,8 @@ bool Hub::wants_snapshot(std::uint64_t frame, std::uint64_t now_ns) const {
       config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
   const bool stale_coalesce =
       config_.stale_coalesce_frame != 0 && frame >= config_.stale_coalesce_frame;
+  const bool overrun =
+      config_.window_overrun_frame != 0 && frame >= config_.window_overrun_frame;
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
     if (c.state == State::AwaitHello && c.hello_received) {
@@ -1036,7 +1080,7 @@ bool Hub::wants_snapshot(std::uint64_t frame, std::uint64_t now_ns) const {
     // G6r: under rate control, credit alone is not enough -- a tick must also be due. The
     // stale-coalesce clause is unaffected by pacing: it needs a snapshot to keep as the pending
     // target the moment one is missing, independent of whether a send would currently be due.
-    if ((c.credit || ignore_credit) && (ignore_credit || tick_due(c, now_ns))) {
+    if ((c.credit || ignore_credit || overrun) && (ignore_credit || tick_due(c, now_ns))) {
       return true;
     }
     if (stale_coalesce && !c.stale.has_value()) {
@@ -1217,6 +1261,11 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
 
   const std::uint64_t seq = cur.seq;
   const bool had_credit = c.credit;
+  if (c.window_slots > 1 && c.has_base &&
+      std::find(c.window.begin(), c.window.end(), c.base.seq) != c.window.end()) {
+    // G7q: the last sent is still in flight, so its payloads stay pinned past this send.
+    c.window_payloads[c.base.seq] = std::move(c.base_payloads);
+  }
   c.base = std::move(cur);
   c.has_base = true;
   c.base_payloads = snapshot.payloads;
@@ -1240,8 +1289,14 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
     if (!had_credit) {
       ++c.s.sent_without_credit;  // ignore-credit
     }
-    c.credit = false;
-    c.in_flight = seq;
+    // One window slot per send. A send without a free slot (the ignore-credit and window-overrun
+    // sabotages) takes the newest slot from the oldest seq, whose late ack is then stale.
+    c.window.push_back(seq);
+    while (c.window.size() > c.window_slots) {
+      c.window_payloads.erase(c.window.front());
+      c.window.pop_front();
+    }
+    c.credit = c.window.size() < c.window_slots;
     c.uncredited.insert(seq);
     c.sent_at[seq] = Conn::Sent{now_ns, frame, 0, capture_ns};
     c.s.max_in_flight = std::max<std::uint64_t>(c.s.max_in_flight, c.uncredited.size());
@@ -1269,10 +1324,18 @@ void Hub::log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool cre
                     : c.state == State::Streaming ? "streaming"
                                                   : "closed")
       .boolean("credit", credit_before);
-  if (c.in_flight.has_value()) {
-    line.num("in_flight", *c.in_flight);
+  if (!c.window.empty()) {
+    line.num("in_flight", c.window.back());
   } else {
     line.null("in_flight");
+  }
+  if (c.window_slots > 1) {
+    // G7q: every seq holding a slot, oldest first (window >= 2 connections only).
+    std::string list;
+    for (const std::uint64_t seq : c.window) {
+      list += (list.empty() ? "" : ",") + std::to_string(seq);
+    }
+    line.raw("in_flight_seqs", "[" + list + "]");
   }
   line.boolean("pending", c.pending);
   if (c.pending) {
@@ -1371,6 +1434,9 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
       const bool ignore_credit =
           config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
       const bool rate_limited = config_.publish_period_ns != 0;
+      // G7q window-overrun: past a full window, still paced (unlike ignore-credit).
+      const bool overrun =
+          config_.window_overrun_frame != 0 && frame >= config_.window_overrun_frame;
       // G6r Q3c: ignore-credit's whole point is a send at every callback, credit or not, so it
       // bypasses pacing too, not only credit. Under the default GRC_PUBLISH_FPS=uncapped,
       // tick_due() is always true, so `due` adds nothing and every ticks_*/frames_rate_idle
@@ -1392,10 +1458,16 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
           if (rate_limited && c.s.sent > sent_before) {
             ++c.s.ticks_sent;
           }
+          if (c.window_slots > 1 && c.s.sent > sent_before && !c.window.empty()) {
+            c.stale_held = stale;
+            c.stale_held_seq = c.window.back();
+            c.stale_held_frame = c.stale_frame;
+            c.stale_held_ns = stale_capture_ns;
+          }
         } else {
           ++c.s.frames_rate_idle;
         }
-      } else if (c.credit || ignore_credit) {
+      } else if (c.credit || ignore_credit || overrun) {
         if (due) {
           if (rate_limited) {
             ++c.s.ticks_due;
@@ -1403,9 +1475,20 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
           if (snapshot == nullptr) {
             continue;
           }
+          if (c.stale_held.has_value() &&
+              std::find(c.window.begin(), c.window.end(), c.stale_held_seq) == c.window.end()) {
+            c.stale_held.reset();  // its seq was credited (or resynced): drawn on its own
+          }
           const std::uint64_t sent_before = c.s.sent;
-          sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, false,
-                                       now_ns);
+          if (c.stale_held.has_value()) {
+            // G7q stale-coalesce at window >= 2: repeat the stale target while it is in flight.
+            const rs::Captured held = *c.stale_held;
+            sent_json = send_transaction(c, held, frame, now_ns, epoch, snapshot_ns, false,
+                                         c.stale_held_ns, c.stale_held_frame);
+          } else {
+            sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, false,
+                                         now_ns);
+          }
           advance_schedule(c, now_ns);
           if (rate_limited && c.s.sent > sent_before) {
             ++c.s.ticks_sent;
@@ -1553,6 +1636,10 @@ std::vector<const rs::PayloadMap *> Hub::base_payloads() const {
     const Conn &c = *entry.second;
     if (c.state != State::Closed && c.has_base) {
       out.push_back(&c.base_payloads);
+      // G7q: every other in-flight transaction's payloads (window >= 2; none at window 1).
+      for (const auto &held : c.window_payloads) {
+        out.push_back(&held.second);
+      }
     }
   }
   return out;

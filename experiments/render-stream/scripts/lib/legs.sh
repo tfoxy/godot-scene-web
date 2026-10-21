@@ -288,6 +288,11 @@ run_browser_receiver() {
 	local dir="$1" how="$2"
 	shift 3
 	mkdir -p "$dir"
+	# G7q: GATE7_CREDIT_WINDOW=2 (lib/gamescope.sh): a live browser receiver asks for window 2.
+	if [ "$GATE7_CREDIT_WINDOW" = 2 ] && [ "$(leg_env_value RS_RECEIVER_MODE || true)" = "live" ] &&
+		! leg_env_value RS_RECEIVER_CREDIT_WINDOW >/dev/null; then
+		LEG_ENV+=(RS_RECEIVER_CREDIT_WINDOW=2)
+	fi
 	printf '%s\n' ${LEG_ENV[@]+"${LEG_ENV[@]}"} >"$dir/native-env.txt"
 	printf '%s\n' "$@" >"$dir/native-argv.txt"
 	local -a cmd=(curl -sS -N --get --max-time $((RENDERED_TIMEOUT_S + 120))
@@ -622,6 +627,11 @@ legs__start_headless_bg() {
 		return 0
 	fi
 	gate7_host_env
+	# G7q: GATE7_CREDIT_WINDOW=2 (lib/gamescope.sh): a live host's window maximum.
+	local credit_word
+	for credit_word in $(gs_credit_window_words ${LEG_ENV[@]+"${LEG_ENV[@]}"}); do
+		LEG_ENV+=("$credit_word")
+	done
 	legs__fast_argv "$@"
 	set -- "${LEGS_ARGV[@]}"
 	mkdir -p "$dir"

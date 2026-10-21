@@ -57,6 +57,8 @@ export interface GswRs {
   // G7u: the in-place context restore (D14, D29).
   restore_missing(): string;
   restore_take(hash: string): number;
+  /** Whether a payload is staged (verified on arrival, not yet in the store). */
+  is_staged(hash: string): boolean;
   restore_json(): string;
   // G7k (Q10 soak): live mode's residency and budget (D29 amendment).
   residency_json(): string;

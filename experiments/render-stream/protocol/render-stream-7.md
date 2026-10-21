@@ -89,6 +89,17 @@ F1 (gate7-design.md D4; G7q implements the host side only once approved). Before
 host accepts a hello asking for `credit_window: 2` and grants `1`; this codec never enables
 window-2 behaviour itself.
 
+*As built (G7q, F1 approved opt-in).* The host grants `min(credit_window,
+GRC_LIVE_CREDIT_WINDOW_MAX)`, the maximum defaulting to 1, so window 2 needs both the hello and
+the host to ask for it. At window w each sent transaction holds one of w slots. A slot returns on
+that seq's own credit-stage `ack` (acks stay per seq, as at window 1), or on a `resync` for it,
+which also returns every later in-flight slot: the receiver ignores patches until the full
+transaction the resync forces. The host pins the payloads of every in-flight transaction. A
+receiver that accepts several transactions before one frame applies the newest resolved state
+once, draws it, and acks each folded seq `applied` and `submitted` with it, in seq order. The
+wire is unchanged. Window 1 stays byte for byte: `capture/test/rs_live_window_test.cpp` pins the
+hub's window-1 transcripts as recorded before G7q.
+
 ## Live transport
 
 ### Hello

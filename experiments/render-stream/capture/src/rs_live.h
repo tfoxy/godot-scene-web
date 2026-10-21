@@ -82,6 +82,15 @@
 //                   the first callback that coalesced since the last send) is kept, and when
 //                   credit returns that copy is sent instead of the newest state, labelled with
 //                   the current frame. The next transaction patches from it to the newest state.
+//                   At window w >= 2 (G7q) a send made while that stale send still holds its slot
+//                   repeats the stale copy (labelled stale_from too), so a receiver that folds
+//                   them into one apply still draws the stale state, as at window 1; the next
+//                   send after its credit patches to the newest state.
+//   window-overrun  (G7q, a listener sabotage: entry.cpp, LiveConfig::window_overrun_frame) from
+//                   the sabotage frame on, a connection whose window is full still sends at every
+//                   due tick (rate control still applies, unlike ignore-credit): the third in
+//                   flight at window 2, and every one after. Each such send counts in
+//                   sent_without_credit and takes the newest window slot from the oldest seq.
 //
 // Files, when a tap directory is configured (GRC_LIVE_TAP_DIR):
 //   stream-<connection>.rs2   the exact bytes of every binary message formed for that connection
@@ -102,10 +111,19 @@
 //     `unauthorized`; nothing was sent before it and nothing is after. The hello line of the live
 //     log carries every hello key except `token`, plus `token_ok`. The token-ignored sabotage
 //     (LiveConfig::token_ignored) skips the refusal; `token_ok` still records the comparison.
-//   - window: the host grants min(credit_window, LiveConfig::credit_window_max,
+//   - window: the host grants w = min(credit_window, LiveConfig::credit_window_max,
 //     kHostCreditWindow) and declares it as the session's `publication.credit_window`.
-//     kHostCreditWindow is 1 until G7q implements window 2 (fork F1), so a hello asking for 2 is
-//     accepted and granted 1, whatever GRC_LIVE_CREDIT_WINDOW_MAX says.
+//     GRC_LIVE_CREDIT_WINDOW_MAX defaults to 1, so window 2 is opt-in (fork F1, G7q).
+//   - window w (G7q; render-stream-7.md "Credit with window w"): up to w sent transactions hold a
+//     window slot each; a callback with a free slot (and, under rate control, a due tick) sends.
+//     Each transaction is still a patch against the last one sent, so a receiver applies them in
+//     order, possibly several in one frame. Each slot returns on its own seq's credit-stage ack
+//     (acks are per seq, as at window 1), or on a resync for it, which also frees every later
+//     slot (the receiver ignores patches until the full transaction the resync forces; the live
+//     log's resync line lists them as `discarded`). Pins cover every in-flight transaction's
+//     payloads (base_payloads), not only the last sent's. A window-2 connection's frame lines
+//     add `in_flight_seqs` (every slot, oldest first; `in_flight` stays the newest). Window 1 is
+//     byte for byte the delivery above (test/rs_live_window_test.cpp's pinned transcripts).
 // A /6 connection is byte for byte what it was before G7n.
 #ifndef GRC_RS_LIVE_H
 #define GRC_RS_LIVE_H
@@ -222,9 +240,9 @@ class ServerTransport : public LiveTransport {
 
 // ----------------------------------------------------------------------------- hub
 
-// The largest credit window the host implements (render-stream-7.md "Publication"): window 2 is
-// G7q's work (fork F1), so every grant is capped at 1 until then.
-inline constexpr std::uint64_t kHostCreditWindow = 1;
+// The largest credit window the host implements (render-stream-7.md "Publication"; G7q, fork F1).
+// The grant is also capped by GRC_LIVE_CREDIT_WINDOW_MAX, default 1, so window 2 is opt-in.
+inline constexpr std::uint64_t kHostCreditWindow = 2;
 
 // The subprotocol that makes a connection /7 (render-stream-7.md "Live transport").
 inline constexpr const char *kSubprotocolV7 = "render-stream.7";
@@ -242,6 +260,7 @@ struct LiveConfig {
   std::uint64_t drop_message_frame = 0;
   std::uint64_t ignore_credit_frame = 0;   // G1d
   std::uint64_t stale_coalesce_frame = 0;  // G1d
+  std::uint64_t window_overrun_frame = 0;  // G7q (a listener sabotage, rs_live.h header)
   // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 1); every grant is also capped at
   // kHostCreditWindow.
   std::uint64_t credit_window_max = 1;

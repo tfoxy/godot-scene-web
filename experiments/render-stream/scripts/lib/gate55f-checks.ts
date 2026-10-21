@@ -75,6 +75,7 @@ import {
   loadResolved,
 } from "./gate2b-checks";
 import {
+  appliedAs,
   coldFetchedHashes,
   connTimelines,
   fetchesAfterApplied,
@@ -384,7 +385,10 @@ export function staleFromOfSeq(
 /** Every settle step's checkpoint against reference-live's step shot, per region, with
  * `benign` and `stale_exact` judged from the host's own wire (see G55fCheckpoint's doc). */
 export async function g55fCheckpoints(
-  expected: { regions: Record<string, readonly number[]> },
+  expected: {
+    regions: Record<string, readonly number[]>;
+    steps?: readonly Pick<Gate55ShaderStep, "step" | "fresh">[];
+  },
   e: G55fLegEvidence,
   referenceDir: string,
 ): Promise<G55fCheckpoint[]> {
@@ -436,10 +440,43 @@ export async function g55fCheckpoints(
         onlyPh && wireStateEqualsFullAtFrame(e.host, cp.frame) === true;
     if (e.host) {
       cp.stale_from = staleFromOfSeq(e.host, cp.seq);
-      if (cp.stale_from !== null)
+      if (cp.stale_from !== null) {
+        // G7q: as gate5f-checks.ts: a stale snapshot from before a step the shot's frame is past
+        // differs in PH and in every region the fresh table says those steps touch, and only
+        // there (PH alone, the window-1 rule, with no step between).
+        const allowed = new Set([G55F_CONTINUOUS_REGION]);
+        const sf = cp.stale_from;
+        for (const st of expected.steps ?? [])
+          if (
+            st.step >= 1 &&
+            G55F_START_FRAME + G55F_STEP_FRAMES * st.step > sf &&
+            G55F_START_FRAME + G55F_STEP_FRAMES * st.step <= (cp.frame ?? 0)
+          )
+            for (const [name, fresh] of Object.entries(st.fresh))
+              if (fresh) allowed.add(name);
+        const boxes = [...allowed]
+          .map((n) => expected.regions[n])
+          .filter((b): b is readonly number[] => b !== undefined);
+        let outside = 0;
+        for (let y = 0; y < ref.height; y++)
+          for (let x = 0; x < ref.width; x++) {
+            const i = (y * ref.width + x) * 4;
+            if (
+              ref.data[i] === got.data[i] &&
+              ref.data[i + 1] === got.data[i + 1] &&
+              ref.data[i + 2] === got.data[i + 2] &&
+              ref.data[i + 3] === got.data[i + 3]
+            )
+              continue;
+            if (
+              !boxes.some((b) => x >= b[0] && x < b[2] && y >= b[1] && y < b[3])
+            )
+              outside++;
+          }
         cp.stale_exact =
-          (cp.mismatched_pixels === 0 || onlyPh) &&
+          (cp.mismatched_pixels === 0 || outside === 0) &&
           wireStateEqualsFullAtFrame(e.host, cp.frame, cp.stale_from) === true;
+      }
     }
   }
   return out;
@@ -904,7 +941,17 @@ export function checkShaderFetchesLatestOnly(evals: Evals): G2bCheck {
     // Only the fetch(es) tied to the recovery seq itself are judged against "the newest" -- a
     // receiver with a fresh cache legitimately fetches every OTHER shader hash it ever needs
     // (the initial six, at earlier seqs), which has nothing to do with the stall's coalescing.
-    const fetchesForRecovery = shFetches.filter((f) => f.seq === r.seq);
+    // G7q: a fetch made for the recovery or for the send it was folded with (one apply) is the
+    // apply's (`appliedAs`); at window 1 that is the recovery seq itself.
+    const txs = ev.e.applied?.transactions ?? [];
+    const applyOf = (seq: number | undefined) =>
+      appliedAs(
+        txs,
+        txs.find((t) => (t.stream ?? 1) === 1 && t.seq === seq),
+      )?.seq ?? seq;
+    const fetchesForRecovery = shFetches.filter(
+      (f) => applyOf(f.seq) === applyOf(r.seq),
+    );
     const distinctAtRecovery = new Set(fetchesForRecovery.map((f) => f.hash));
     const unexpected = [...distinctAtRecovery].filter(
       (h) => h !== undefined && !newestTintHash.includes(h as string),

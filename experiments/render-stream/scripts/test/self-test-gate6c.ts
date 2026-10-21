@@ -512,6 +512,36 @@ export function selfTestGate6c(h: SelfTestHooks): void {
       evaluatePendingBounded({ ...honest, max_queued_bytes: 94_792 + 40_960 }),
       "max_queued_bytes",
     );
+    // G7q: generalized to the connection's granted credit window w.
+    const window2 = {
+      ...honest,
+      credit_window: 2,
+      max_in_flight: 2,
+      max_queued_bytes: 2 * 94_792,
+    };
+    passes(
+      "g7q evaluatePendingBounded: window 2, two in flight, two queued",
+      evaluatePendingBounded(window2),
+    );
+    passes(
+      "g7q evaluateQueueBounded: window 2, two largest messages queued",
+      evaluateQueueBounded(window2),
+    );
+    fails(
+      "g7q evaluatePendingBounded: window 2, a third in flight",
+      evaluatePendingBounded({ ...window2, max_in_flight: 3 }),
+      "window 2",
+    );
+    fails(
+      "g7q evaluatePendingBounded: window 1, two in flight",
+      evaluatePendingBounded({ ...window2, credit_window: 1 }),
+      "max_in_flight 2",
+    );
+    fails(
+      "g7q evaluateQueueBounded: window 2, the overrun's queue",
+      evaluateQueueBounded({ ...window2, max_queued_bytes: 594_924 }),
+      "2 x largest",
+    );
 
     const def = G6C_LEGS.find((l) => l.kind === "sabotage");
     const ev = (over: Partial<G6cLegEvidence>): G6cLegEvidence => ({

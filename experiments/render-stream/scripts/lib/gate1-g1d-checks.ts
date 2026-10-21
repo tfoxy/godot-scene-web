@@ -782,14 +782,17 @@ export function checkPendingBounded(evals: Evals): Gate1Check {
       ...d.queued_violations,
     ].slice(0, 3))
       problems.push(v);
-    if (d.max_in_flight > 1) problems.push(`max in flight ${d.max_in_flight}`);
-    if ((summary?.max_in_flight ?? 0) > 1)
+    // G7q: at credit window w, w - 1 more sends may follow the stalled seq before the window
+    // is full (none at window 1).
+    if (d.max_in_flight > d.window)
+      problems.push(`max in flight ${d.max_in_flight}`);
+    if ((summary?.max_in_flight ?? 0) > d.window)
       problems.push(`the host reports max_in_flight ${summary?.max_in_flight}`);
     if (s.max_pending > 1 || (summary?.max_pending ?? 0) > 1)
       problems.push(`more than one pending target (${summary?.max_pending})`);
-    if (s.sends_during > 0)
+    if (s.sends_during > d.window - 1)
       problems.push(
-        `${s.sends_during} transactions sent between the stalled seq and its credit`,
+        `${s.sends_during} transactions sent between the stalled seq and its credit${d.window > 1 ? ` (window ${d.window})` : ""}`,
       );
     if (s.send_frame === null || s.credit_frame === null)
       problems.push("the stall is not visible in the host log");
@@ -799,7 +802,7 @@ export function checkPendingBounded(evals: Evals): Gate1Check {
     "live-stall: through the whole leg at most one transaction in flight (recomputed from the log's own acks) and at most one pending target, queued bytes never above the largest credit window + 4096, and nothing sent between the stalled seq and its credit",
     problems,
     s && d
-      ? `max in flight ${d.max_in_flight}, max pending ${s.max_pending}, max queued ${d.max_queued_bytes} B <= ${d.queued_limit} (during the stall ${s.max_queued_bytes_during} B), 0 sends during the stall`
+      ? `max in flight ${d.max_in_flight}, max pending ${s.max_pending}, max queued ${d.max_queued_bytes} B <= ${d.queued_limit} (during the stall ${s.max_queued_bytes_during} B), ${s.sends_during} sends during the stall`
       : "",
     e
       ? [logPath(e), join(e.legDir, "host", "evidence", "live-summary.json")]
@@ -860,13 +863,18 @@ export function checkNewestAfterStall(evals: Evals): Gate1Check {
   const e = evals.get("live-stall");
   const s = e?.stall;
   const r = s?.recovery;
+  // G7q: at credit window w the recovery patches on the last seq sent, the stalled seq plus the
+  // sends its free slots let out during the stall (at window 1, the stalled seq itself).
+  const window = e?.delivery[0]?.window ?? 1;
   if (!e || !s) problems.push("live-stall not evaluated");
   else if (!r || s.credit_frame === null)
     problems.push("no transaction after the credit");
   else {
-    if (r.encoding !== "patch" || r.base_seq !== s.stalled_seq)
+    const expectedBase =
+      window > 1 ? (s.stalled_seq ?? 0) + s.sends_during : s.stalled_seq;
+    if (r.encoding !== "patch" || r.base_seq !== expectedBase)
       problems.push(
-        `seq ${r.seq} is ${r.encoding} with base_seq ${r.base_seq}, expected a patch on the stalled seq ${s.stalled_seq}`,
+        `seq ${r.seq} is ${r.encoding} with base_seq ${r.base_seq}, expected a patch on ${window > 1 ? `the last seq sent, ${expectedBase} (window ${window})` : `the stalled seq ${s.stalled_seq}`}`,
       );
     if (r.frames_after_credit > 2)
       problems.push(

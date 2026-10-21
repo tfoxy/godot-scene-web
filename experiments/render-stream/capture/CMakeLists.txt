@@ -159,6 +159,29 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 
+# G7q: credit window tests (gate7-design.md D4, Q2 "Credit with window w"): window 1 pinned by
+# transcript digests recorded before G7q (test/golden/live-window1-transcripts.txt), and window 2.
+add_executable(rs_live_window_test
+  test/rs_live_window_test.cpp
+  src/rs2_codec.cpp
+  src/rs2_diff.cpp
+  src/rs_canvas_texture_shim.cpp
+  src/rs_histogram.cpp
+  src/rs_live.cpp
+  src/rs_publish.cpp
+  src/rs_resource_store.cpp
+  src/report.cpp
+  src/rs_sha1.cpp
+  src/rs_sha256.cpp
+  src/rs_ws.cpp
+)
+target_include_directories(rs_live_window_test PRIVATE src test)
+target_link_libraries(rs_live_window_test PRIVATE grc_warnings Threads::Threads)
+target_compile_definitions(rs_live_window_test PRIVATE
+  GRC_WINDOW1_TRANSCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/test/golden/live-window1-transcripts.txt"
+  GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_window_test_tmp")
+add_test(NAME rs_live_window COMMAND rs_live_window_test)
+
 # G7n: test-only live host (rs_ws + the hub around a fixed scene) for the Node interop
 # self-test's /6 + /7, hello token, Origin and CORS checks (scripts/test/self-test-rs-ws.ts).
 # Not linked into render_stream_capture.
