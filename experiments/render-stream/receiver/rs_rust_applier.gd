@@ -1,40 +1,59 @@
 class_name RsRustApplier
-extends RsApplier
-## RS_RECEIVER_CORE=rust (gate7-design.md G7xn, D34, Q14e): the receiver's decode, validation,
-## resolve and apply run in the shared Rust core (experiments/render-stream/rs-core) through the
-## native GDExtension adapter `RsCore` (receiver/ext/: rs-core-capi plus a C++ shim over raw
-## gdextension_interface.h). This is the default since G7xd (D34 amended); RS_RECEIVER_CORE=
-## gdscript (Rs2Decoder and RsApplier) is frozen at /7 and stays selectable for milestone sweeps,
-## keeping the native receiver an independent triangulation for both browser receivers (D8, D34).
+extends RefCounted
+## The receiver's only core (gate7-design.md G7xn, D34, Q14e; G7gd): decode, validation, resolve
+## and apply run in the shared Rust core (experiments/render-stream/rs-core) through the native
+## GDExtension adapter `RsCore` (receiver/ext/: rs-core-capi plus a C++ shim over raw
+## gdextension_interface.h; the web export loads the same adapter as a dlink side module). It was
+## the default from G7xd; G7gd (2026-10-21, user decision, D34 amended) removed the GDScript
+## decoder and applier it once stood in for.
 ##
-## This class stands in for RsApplier and for Rs2Decoder.Stream at once: receiver.gd keeps its
-## configuration, I/O, evidence and shots, and calls
-##   accept_session() / accept() instead of RsApplier.accept_record() (the same {record, errors,
-##     kind} Dictionary, with record.meta carrying what receiver.gd reads),
-##   needed(), apply_state(), begin_session(), dispose() and the counters as on RsApplier.
-## The core resolves every transaction and keeps the stream; this object only marshals. Apply for
-## changed items runs in native code as RenderingServer ptrcalls: the core reconciles the resolved
-## state with its own mirror of what it sent (rs-core-capi/src/plan.rs, rs_applier.gd's rules
-## and order), visiting only what the accepted transactions touched.
+## receiver.gd keeps configuration, I/O, evidence and shots, and calls accept_session() / accept()
+## per record (a {record, errors, kind} Dictionary, with record.meta carrying what receiver.gd
+## reads), needed(), apply_state(), begin_session(), dispose() and the counters below. The core
+## resolves every transaction and keeps the stream; this object only marshals. Apply for changed
+## items runs in native code as RenderingServer ptrcalls: the core reconciles the resolved state
+## with its own mirror of what it sent (rs-core-capi/src/plan.rs), visiting only what the accepted
+## transactions touched.
 ##
-## Payloads: RsResourceCache keeps each payload's raw bytes in rust mode (`keep_raw`), and
-## apply_state() hands the ones needed() names to the core, which verifies their SHA-256 and
-## decodes them before use; a `withheld` shader's library code is looked up here
-## (RsResourceCache.library_code()) and handed over the same way. Since G7o3 (D31) the cache
-## stages each payload in the core as it arrives (stage(): a fetch completion, an inline record, a
-## cache or store read), so the core verifies and decodes it then, ahead of the frame, and the
-## frame's provide() only moves it into the apply. A payload with nothing staged (the core was
-## replaced, or it was used once already) is still verified inside the frame, as before.
+## Payloads: RsResourceCache keeps each payload's raw bytes, and apply_state() hands the ones
+## needed() names to the core, which verifies their SHA-256 and decodes them before use; a
+## `withheld` shader's library code is looked up here (RsResourceCache.library_code()) and handed
+## over the same way. Since G7o3 (D31) the cache stages each payload in the core as it arrives
+## (stage(): a fetch completion, an inline record, a cache or store read), so the core verifies
+## and decodes it then, ahead of the frame, and the frame's provide() only moves it into the
+## apply. A payload with nothing staged (the core was replaced, or it was used once already, or
+## the verify-in-frame sabotage) is still verified inside the frame.
 
 ## The adapter's .gdextension (RS_RECEIVER_CORE_EXT overrides it). receiver/ext/ carries a
 ## .gdignore, so the editor never registers the extension for the default path.
 const DEFAULT_EXTENSION: String = "res://ext/rs_core.gdextension"
 const CLASS_NAME: String = "RsCore"
 
-## The seq of the last accepted transaction (Rs2Decoder.Stream.last_seq).
+## The apply sabotages the core implements (RS_RECEIVER_SABOTAGE; rs-core-capi's plan.rs).
+const CORE_SABOTAGES: Array[String] = [
+	"reupload", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform",
+	"ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh",
+	"refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param",
+	"stale-texture", "ignore-canvas-stacking",
+]
+
+## The seq of the last accepted transaction.
 var last_seq: int = 0
-## Transactions accepted on the current stream (Rs2Decoder.Stream.transactions).
+## Transactions accepted on the current stream.
 var transactions: int = 0
+## RenderingServer calls made by the core since this applier was made.
+var rs_calls: int = 0
+## RIDs the last dispose() freed.
+var disposed_frees: int = 0
+## RIDs the core created, and freed while applying, since this applier was made. Before a
+## dispose(), created_rids - freed_by_apply is what the core owns.
+var created_rids: int = 0
+var freed_by_apply: int = 0
+## One of CORE_SABOTAGES, or "" (set before begin_session()).
+var sabotage: String = ""
+
+var _viewport: RID
+var _root_canvas: RID
 
 var _core: Object = null
 ## needed()'s answer for the stream as it stands (receiver.gd asks before fetching and again at
@@ -65,15 +84,15 @@ static func load_core(path: String) -> String:
 
 
 func _init(viewport: RID, root_canvas: RID) -> void:
-	super(viewport, root_canvas)
+	_viewport = viewport
+	_root_canvas = root_canvas
 	var made: Variant = ClassDB.instantiate(CLASS_NAME)
 	_core = made
 
 
 ## The first record of a stream (file mode: the recording's first record; live: the first
-## message): a fresh core stream. RsApplier.accept_record()'s shape, record.meta parsed from the
-## session's own meta JSON (as Rs2Decoder.decode_record() parses it) and record.blocks the
-## session's float blocks. `version` is the stream's wire version (receiver.gd's _wire_version:
+## message): a fresh core stream. A {record, errors, kind} Dictionary, record.meta parsed from
+## the session's own meta JSON and record.blocks the session's float blocks. `version` is the stream's wire version (receiver.gd's _wire_version:
 ## 6, or 7 on a /7 live connection and its received.rs7 replay, G7xwl); the core validates the
 ## session, and every record after it, at that version.
 func accept_session(data: PackedByteArray, offset: int, version: int) -> Dictionary:
@@ -102,7 +121,7 @@ func record_digest(data: PackedByteArray, offset: int) -> String:
 	return hex
 
 
-## One record after the session (RsApplier.accept_record()'s shape).
+## One record after the session (accept_session()'s shape).
 func accept(data: PackedByteArray, offset: int) -> Dictionary:
 	var out: Dictionary = _core.call("accept", data, offset)
 	if out["kind"] == "transaction":
@@ -127,28 +146,8 @@ func state_json() -> String:
 	return text
 
 
-func _sabotage_name() -> String:
-	var flags: Dictionary[String, bool] = {
-		"reupload": sabotage_reupload, "ignore-clip": sabotage_ignore_clip,
-		"clip-before-clear": sabotage_clip_before_clear, "drop-msdf": sabotage_drop_msdf,
-		"ignore-set-transform": sabotage_ignore_set_transform,
-		"ignore-clip-ignore": sabotage_ignore_clip_ignore,
-		"ignore-nine-patch-axis": sabotage_ignore_nine_patch_axis,
-		"drop-mesh-surface": sabotage_drop_mesh_surface, "stale-mesh": sabotage_stale_mesh,
-		"refuse-canvas-texture": sabotage_refuse_canvas_texture,
-		"ignore-material": sabotage_ignore_material,
-		"ignore-canvas-modulate": sabotage_ignore_canvas_modulate,
-		"stale-param": sabotage_stale_param, "stale-texture": sabotage_stale_texture,
-		"ignore-canvas-stacking": sabotage_ignore_canvas_stacking,
-	}
-	for name: String in flags:
-		if flags[name]:
-			return name
-	return ""
-
-
-func begin_session(_meta: Dictionary, _blocks: Array) -> void:
-	var opened: String = _core.call("open", _viewport, _root_canvas, _sabotage_name())
+func begin_session() -> void:
+	var opened: String = _core.call("open", _viewport, _root_canvas, sabotage if CORE_SABOTAGES.has(sabotage) else "")
 	if opened != "":
 		push_error(opened)
 		return
@@ -156,7 +155,9 @@ func begin_session(_meta: Dictionary, _blocks: Array) -> void:
 	_refresh_counters()
 
 
-func needed(_items: Dictionary, _textures: Dictionary, _meshes: Dictionary = {}, _shaders: Dictionary = {}, _materials: Dictionary = {}) -> Dictionary:
+## What the stream as it stands needs: {hashes: Array (payload hashes), library: Array (withheld
+## shaders' library hashes), ...} as rs-core-capi answers it.
+func needed() -> Dictionary:
 	if _need.is_empty():
 		var need: Dictionary = _core.call("needed")
 		_need = need
@@ -165,15 +166,15 @@ func needed(_items: Dictionary, _textures: Dictionary, _meshes: Dictionary = {},
 
 ## Hands the needed payloads (and library code) to the core, then applies. On a payload the core
 ## refuses, returns {"error": "<code>: <detail>"} (receiver.gd fails the replay with it).
-func apply_state(_stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictionary:
+func apply_state(cache: RsResourceCache) -> Dictionary:
 	var provide_t0: int = Time.get_ticks_usec()
-	var need: Dictionary = needed({}, {})
+	var need: Dictionary = needed()
 	_need = {}
 	var hashes: Array = need["hashes"]
 	for value: Variant in hashes:
 		var hash: String = value
 		if not cache.has_in_memory(hash):
-			return {"error": Rs2Decoder.err("resource-unavailable", "payload %s is needed and not in memory" % hash)}
+			return {"error": RsWire.err("resource-unavailable", "payload %s is needed and not in memory" % hash)}
 		var provided: String = _core.call("provide", hash, cache.raw(hash))
 		if provided != "":
 			return {"error": provided}
@@ -194,17 +195,17 @@ func apply_state(_stream: Rs2Decoder.Stream, cache: RsResourceCache) -> Dictiona
 		var error: String = result
 		return {"error": error}
 	var stats: Dictionary = result
-	# RsApplier's stats carry a typed Array[Dictionary] here (receiver.gd's _note_applied() reads
-	# it as one); the adapter's Arrays are untyped.
+	# receiver.gd's _note_applied() reads a typed Array[Dictionary] here; the adapter's Arrays are
+	# untyped.
 	var listed: Array = stats["unsupported_commands"]
 	var unsupported_commands: Array[Dictionary] = []
 	unsupported_commands.assign(listed)
 	stats["unsupported_commands"] = unsupported_commands
-	# G7b's web-only index-region refusals (rs_applier.gd "Meshes"): always empty natively, and the
-	# core runs only natively until G7xw ports the refusal into plan.rs.
+	# G7b's web-only index-region refusals: the GDScript applier's (G7gd removed it); the core's
+	# executor never refuses one, so always empty.
 	var mesh_web_refused: Array[Dictionary] = []
 	stats["mesh_web_refused"] = mesh_web_refused
-	rs_calls += Rs2Decoder.as_int(stats["rs_calls"])
+	rs_calls += RsWire.as_int(stats["rs_calls"])
 	_counters_frame = -1
 	return stats
 
@@ -228,7 +229,7 @@ func payload_counters() -> Dictionary:
 	_refresh_counters()
 	var out: Dictionary = {}
 	for key: String in ["staged", "refused", "unstaged", "provided_staged", "provided_in_frame", "provided_in_frame_bytes", "staged_now"]:
-		out[key] = Rs2Decoder.as_int(_counters["payloads_" + key])
+		out[key] = RsWire.as_int(_counters["payloads_" + key])
 	return out
 
 
@@ -244,15 +245,15 @@ func _refresh_counters() -> void:
 	var counters: Dictionary = _core.call("counters")
 	_counters = counters
 	_counters_frame = Engine.get_process_frames()
-	rs_calls = Rs2Decoder.as_int(_counters["rs_calls"])
-	created_rids = Rs2Decoder.as_int(_counters["created_rids"])
-	freed_by_apply = Rs2Decoder.as_int(_counters["freed_by_apply"])
+	rs_calls = RsWire.as_int(_counters["rs_calls"])
+	created_rids = RsWire.as_int(_counters["created_rids"])
+	freed_by_apply = RsWire.as_int(_counters["freed_by_apply"])
 
 
 func _counter(key: String) -> int:
 	if _counters_frame != Engine.get_process_frames():
 		_refresh_counters()
-	return Rs2Decoder.as_int(_counters[key])
+	return RsWire.as_int(_counters[key])
 
 
 func owned_rids() -> int:

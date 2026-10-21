@@ -556,7 +556,7 @@ export function checkCacheBudgetRespected(
     `evictions_memory ${evictionsMemory}, evictions_disk ${evictionsDisk}, ` +
     `refetch_after_evict ${summary?.refetch_after_evict ?? 0} ` +
     "(whether an evicted hash was ever in the needed set at eviction time is proven by " +
-    "receiver/tests/applier2_selftest.gd's _test_cache_budgets(), not re-derived from this " +
+    "the cache's set_needed() guard (rs_resource_cache.gd; until G7gd also applier2_selftest.gd), not re-derived from this " +
     "run's evidence: RS_RECEIVER_LOG=summary and GRC_HOOK_LOG=off leave no per-event trail for a " +
     "300-s soak to reconstruct it from externally)";
   return check(

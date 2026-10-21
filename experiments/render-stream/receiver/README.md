@@ -13,10 +13,9 @@ superseded at G2b2). G1d added the live options for a stall, a reconnect and a r
 (`RS_RECEIVER_STALL`, `_RECONNECT`, `_RESYNC`).
 
 **Since G6b the receiver speaks `render-stream/6`** ([`../protocol/render-stream-6.md`](../protocol/render-stream-6.md),
-contract [`../protocol/gate6-design.md`](../protocol/gate6-design.md) "Q5. Receiver"): `rs2_decoder.gd`'s
-module-wide default version is 6 (5 from G55d, 4 from G5d, 3 from G4e2), the live client's subprotocol is
-`render-stream.6` and its `hello` says `render-stream/6`. A `GRS5` recording is refused with `bad-magic`; the
-self-tests decode golden-2 to golden-5 at their own versions explicitly. See "Presentation and canvas layers
+contract [`../protocol/gate6-design.md`](../protocol/gate6-design.md) "Q5. Receiver"): file mode frames
+and decodes at /6 (a GRS7 recording, a live receiver's `received.rs7`, at /7), the live client's subprotocol
+is `render-stream.6` and its `hello` says `render-stream/6`. A `GRS5` recording is refused with `bad-magic`. See "Presentation and canvas layers
 (G6b)" and "Shaders and materials (G55d)" below.
 
 ### Presentation and canvas layers (G6b)
@@ -47,19 +46,17 @@ self-tests decode golden-2 to golden-5 at their own versions explicitly. See "Pr
 | `main.tscn`                  | A root `Node` with `receiver.gd`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `receiver.gd`                | Orchestration: environment, framing pass, session and viewport check, one record per `_process`, state dumps, shots, `applied.json`, exit code; in live mode the connection, the acks, the step-window shots and the close after the end record.                                                                                                                                                                                                                                                                        |
 | `rs_live_client.gd`          | `RsLiveClient` (G1c2, G2e): the `WebSocketPeer` client (`inbound_buffer_size` and, when a token is given, the `Authorization: Bearer` handshake header, both set before `connect_to_url`; `get_packet()` before `was_string_packet()`), the `hello`/`ack`/`resync` encoders and the host `error` parser.                                                                                                                                                                                                                |
-| `rs2_decoder.gd`             | `Rs2Decoder` (G2b1): pure `PackedByteArray` → records, with the wire spec's error codes (`split_records`, `decode_record`, `validate_recording`, `raw_resource_payload`). `Rs2Decoder.Stream.accept` checks the cross-record rules (resource records included) and resolves patches into the full state (`canvases`/`items`/`textures`, the default filter/repeat). Since G4e1, `split_records`/`validate_recording` take an optional `version` (2, the default, or 3) and also decode `render-stream/3`'s one new command, `add_msdf_texture_rect_region` -- implemented in this same file behind that parameter rather than a forked `Rs3Decoder` (`../protocol/render-stream-3.md`; nothing in the receiver speaks /3 yet, that is G4e2).                                                                                                                                                     |
-| `rs_texture_payload.gd`      | `RsTexturePayload` (G2b1): `render-stream-texture/1` decode (`payload-magic`/`-meta`/`-length`/`-size`), SHA-256, and the `Image` rebuilt from it.                                                                                                                                                                                                                                                                                                                                                                      |
+| `rs_wire.gd`                | `RsWire` (G7gd): record framing (`split_records`, the GRS2–GRS7 magics) and the small helpers every script shares (`err`, `as_int`, `is_int`, `int_list`, `sha256_hex`). Decoding, validation and resolution are the Rust core's; G7gd removed the GDScript decoder (`rs2_decoder.gd`, `Rs2Decoder`) and payload decoders (`rs_texture_payload.gd`, `rs_mesh_payload.gd`) this was cut from. |
 | `rs_resource_cache.gd`       | `RsResourceCache` (G2b2): the in-memory map of verified payloads (inline records and everything obtained this process), the content-addressed cache directory (`fresh`/`warm`, temp file + rename, verified on read and before write) and the store directory as the file-mode origin; `resource-unavailable`, `resource-hash-mismatch`, `resource-invalid`, `cache-not-fresh`. Since G6s: `RS_RECEIVER_MEMORY_BUDGET_BYTES`/`_CACHE_BUDGET_BYTES` LRU-evict each layer past its byte budget, never a hash `set_needed()` names; `evictions_memory`/`_disk`/`refetch_after_evict` count it; `no-evict` (sabotage) disables both.                                                                                                                                        |
 | `rs_resource_fetcher.gd`     | `RsResourceFetcher` (G2c2, G2e): live mode's `GET <http_path><hash>` on the WebSocket's host and port, one keep-alive `HTTPClient`, sequential, polled from `_process` (several non-blocking polls per call while they progress), a per-GET timeout and the injected delay as a timed wait, and (when a token is given) an `Authorization: Bearer` header on every request; non-200 (401 included), connection loss and timeout are `resource-unavailable`. The fetched bytes go through `RsResourceCache.add_fetched`. On the web export (G7wf) each GET is the browser's own `fetch()` through `JavaScriptBridge` instead (`RS_RECEIVER_WEB_FETCH`, default `fetch`): the same URL and headers, completed in the page's promise callback between frames, the body copied once from the response's `ArrayBuffer` into one `PackedByteArray`, and each result gains `browser` (`headers_ms`, `body_ms`, `callback_ms` on the page clock, `process_frames`). |
-| `rs_applier.gd`              | `RsApplier`: wire id → RID maps and every RenderingServer call, counted in `rs_calls`. It applies the **resolved** state, never a patch, reconciling it with its own mirror so only changed state costs calls; since G2b2 also texture residency (D5), the root's default filter/repeat, the items' filter/repeat and the texture draws, skipping (and recording) commands that name an unsupported texture.                                                                                                            |
-| `rs_rust_applier.gd`         | `RsRustApplier` (G7xn, gate7-design.md D34, Q14e): `RS_RECEIVER_CORE=rust`. It stands in for `RsApplier` and `Rs2Decoder.Stream` at once, over the `RsCore` class of the GDExtension adapter in `ext/`: the shared Rust core (`../rs-core`, through `../rs-core-capi`) decodes, validates and resolves every record and applies the resolved state from native code as RenderingServer ptrcalls, by `rs_applier.gd`'s rules and order, visiting only what the accepted transactions touched. This class only marshals (records in, `accept_record()`-shaped Dictionaries, `needed()`, the payloads and `apply_state()`'s stats out). |
-| `ext/`                       | The adapter (G7xn): `rs_core_ext.cpp` (C++ over the raw `gdextension_interface.h`, the capture's vendored copy, no godot-cpp), `rs_core_capi.h` (the Rust staticlib's C ABI), `rs_core.gdextension` (loaded at run time by `RsRustApplier.load_core()` only), and a `.gdignore`, so the editor never registers the extension and only the explicit `gdscript` path (frozen, D34) skips loading it. Build: `../scripts/build-rs-core-ext.sh` (into the ignored `ext/build/`). The web export (G7xw): the same shim and staticlib as an emscripten side module (`../scripts/build-rs-core-web.sh`, `ext/build/web/`, `web.wasm32` in the `.gdextension`), exported by `export_presets.cfg`'s `Web (rust core)` preset, which stages `ext/` without the `.gdignore`; on the web the shim also routes `mesh_surface_update_index_region`'s upload to `GL_ELEMENT_ARRAY_BUFFER` (G7b's `web-index-region-update`). |
+| `rs_rust_applier.gd`         | `RsRustApplier` (G7xn, gate7-design.md D34, Q14e; the only core since G7gd): over the `RsCore` class of the GDExtension adapter in `ext/`, the shared Rust core (`../rs-core`, through `../rs-core-capi`) decodes, validates and resolves every record and applies the resolved state from native code as RenderingServer ptrcalls, visiting only what the accepted transactions touched (the rules and order of the GDScript applier it replaced). This class only marshals (records in, `{record, errors, kind}` Dictionaries, `needed()`, the payloads and `apply_state()`'s stats out). |
+| `rs_shader_payload.gd`       | `RsShaderPayload` (G55d): GRP1 decode, kept for `RsResourceCache.library_code()` only: the core never reads the operator-local shader library, it is handed the code. |
+| `ext/`                       | The adapter (G7xn): `rs_core_ext.cpp` (C++ over the raw `gdextension_interface.h`, the capture's vendored copy, no godot-cpp), `rs_core_capi.h` (the Rust staticlib's C ABI), `rs_core.gdextension` (loaded at run time by `RsRustApplier.load_core()` only), and a `.gdignore`, so the editor never registers the extension. Build: `../scripts/build-rs-core-ext.sh` (into the ignored `ext/build/`). The web export (G7xw): the same shim and staticlib as an emscripten side module (`../scripts/build-rs-core-web.sh`, `ext/build/web/`, `web.wasm32` in the `.gdextension`), exported by `export_presets.cfg`'s `Web (rust core)` preset, which stages `ext/` without the `.gdignore`; on the web the shim also routes `mesh_surface_update_index_region`'s upload to `GL_ELEMENT_ARRAY_BUFFER` (G7b's `web-index-region-update`). |
 | `rs_config.gd`               | `RsConfig` (G7e, gate7-design.md Q4): every `RS_RECEIVER_*` read goes through `get_env()`: the environment first, then `--rs-env=NAME=VALUE` after `--` (a web export's only source; the shell builds them). `is_web()`. |
 | `rs_io.gd`                   | `RsIo` (G7e, Q4): natively nothing. On the web, `prepare_sources()` fetches the recording, the store and the shader library (same-origin URL paths; a directory's list from the harness's `GET <dir>/?list`) through `HTTPClient` into the in-memory filesystem at the same paths before the session, and `finish()` PUTs every file under `RS_RECEIVER_OUT`'s directory to `RS_RECEIVER_EVIDENCE_URL` before disposing and quitting. On the web `RS_RECEIVER_CACHE_DIR` is refused and the cache is `http-cache`. |
-| `export_presets.cfg`         | The web export's preset (G7e, D5); export only through `../scripts/build-web-receiver.sh`, which pins the editor and template sha256 and fills in `@RS_WEB_TEMPLATE@`. |
+| `export_presets.cfg`         | The web export's preset, `Web (rust core)` (G7e, D5, G7xw; G7gd removed the GDScript-core `Web` preset); export only through `../scripts/build-web-receiver.sh`, which pins the editor and the dlink template sha256 and fills in `@RS_WEB_DLINK_TEMPLATE@`. |
 | `web/shell.html`             | The web export's HTML shell (G7e, Q4 "Shell"): fragment token, `?env=` to `--rs-env`, performance marks, wasm heap, context loss, canvas size, `window.__rsShell`. |
-| `tests/codec2_selftest.gd`   | Golden-vector self-test against `../protocol/golden-2/` (G2b1) AND `../protocol/golden-3/` (G4e1): decoded form, resolved state per seq for `full`/`patch`/`inline.rs2`/`.rs3`, every invalid vector, `corrupt-meta.rs2`/`.rs3`, every payload vector. One file, not a separate `codec3_selftest.gd` (render-stream-3.md is implemented in `rs2_decoder.gd` itself).                                                                                                                                                                                                                                                                                                                          |
-| `tests/applier2_selftest.gd` | G2b2: the applier on the goldens (identical per-seq stats for full, patch and inline delivery, 0 calls for an unchanged seq, the texture residency rules, the reupload sabotage, a reconnect), the cache's fresh/warm/ignore-cache and origin failures, and the live control messages against `control/valid/`. Since G6s, `_test_cache_budgets()`: memory and disk LRU eviction under a tight budget, `set_needed()` protection, `no-evict`, `refetch_after_evict` and a warm cache's mtime seeding.                                                                                                                                       |
+| `tests/receiver_selftest.gd` | G7gd: every glue script at `res://` loads and compiles under the debug editor, `RsWire.split_records` frames every golden-2 to golden-7 recording as its `*.decoded.json` lists the records, and every framing-code invalid vector fails with its code. Run by gate 0's and gate 1's `receiver-typecheck`. |
 | `tests/ws_selftest.gd`       | `WebSocketPeer` interop self-test against the capture library's `rs_ws` echo server (G1c1), plus a bearer-token phase against a second, auth-enabled echo instance (G2e).                                                                                                                                                                                                                                                                                                                                               |
 | `tests/http_selftest.gd`     | `HTTPClient` interop self-test against `rs_ws`'s resource GET serving (G2c1), plus a bearer-token phase against the same auth-enabled echo instance (G2e).                                                                                                                                                                                                                                                                                                                                                              |
 
@@ -69,25 +66,16 @@ Import once with the editor (it writes the ignored `.godot/` cache the release t
 
 ```bash
 mise exec -- godot --headless --path experiments/render-stream/receiver --import
-mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/codec2_selftest.gd
-mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/applier2_selftest.gd
+experiments/render-stream/scripts/build-rs-core-ext.sh
+mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/receiver_selftest.gd
 ```
 
-The self-tests print `[rs2-selftest] ok` / `[applier2-selftest] ok` and exit 0, or print each
-failure and exit 1. Since G55d `applier2_selftest.gd` runs golden-4 (decoded as version 4) and
-golden-5 (`full`/`patch`/`inline.rs5`: identical per-seq stats, `[74, 1, 1, 2, 2, 0, 16, 24, 18, 0, 27, 104, 1, 1, 44]`
--- golden-4's eleven seqs cost exactly what they cost on /4, since a white canvas modulate is the
-engine's default and makes no call --
-RenderingServer calls; seq 12's shaders, materials and every parameter's exact Variant type; the
-`ignore-material`, `ignore-canvas-modulate` and `stale-param` sabotages; `params.rs5` with no, a
-tampered and a real shader library), and checks the live control messages against golden-5's
-`control/valid/`. golden-4 state 8's `add_triangle_array` prints `Condition "count > p_indices.size()"`
-(engine-rejected on purpose); that line is expected. `RS_SELFTEST_GOLDEN_DIR` overrides the golden-2 directory (default
-`<receiver>/../protocol/golden-2`); `RS_SELFTEST_TMP_DIR` the applier test's scratch directory.
-`codec2_selftest.gd` always also runs against its sibling `<receiver>/../protocol/golden-3`
-(version 3), which is not independently overridable.
-On the goldens the applier makes `[74, 1, 1, 2, 2, 0]` RenderingServer calls for seqs 1–6 of
-`full.rs2`, `patch.rs2` and `inline.rs2` alike (plus 3 for the session).
+The self-test prints `[receiver-selftest] ok (<n> checks)` and exits 0, or prints each failure
+and exits 1. `RS_SELFTEST_GOLDEN_DIR` overrides the golden-2 directory (default
+`<receiver>/../protocol/golden-2`); golden-3 to golden-7 are its siblings. Until G7gd the GDScript
+codec (`codec2_selftest.gd`) and applier (`applier2_selftest.gd`) self-tests ran here; the golden
+vectors' decode and resolution are now checked by the Rust core's cargo tests and the TypeScript
+checker decoder's self-tests (`../scripts/test/self-test-rs*.ts`).
 
 A replay:
 
@@ -117,23 +105,20 @@ Resources (G2b2, gate2-design.md Q5 "Environment"; both modes unless noted):
 | `RS_RECEIVER_FETCH_DELAY_MS`   | an injected delay before each fetch, default 0                                                                                                                                                                                                         |
 | `RS_RECEIVER_SABOTAGE`         | `reupload` (upload every resident texture at every applied transaction), `ignore-cache` (fetch even on a cache hit), `wrong-http-token` (live only, G2e: correct token on the upgrade, wrong one on every GET), `ignore-clip` (gate3-design.md Q5, G3b: every `canvas_item_set_clip` call passes `false`), `clip-before-clear` (G3b: the pre-gate-3 apply order -- the clip setter before content, with no shadow reset on clear), `drop-msdf` (G4e2), `ignore-set-transform` and `ignore-clip-ignore` (G5d), `drop-mesh-surface` (G5e: a mesh build never adds its surface 1) `stale-mesh` (G5e: in-place payload changes of a resident surface are ignored) or `refuse-canvas-texture` (every draw naming a canvas-texture entry is skipped, logged with reason `canvas-texture-headless` and counted in `skipped_commands`: a recording made with the headless CanvasTexture shim replayed as the default capture would have refused it, [canvas-texture-headless.md](../protocol/canvas-texture-headless.md) "Simulated refusal"), `ignore-material` (G55d: `canvas_item_set_material` is never called), `ignore-canvas-modulate` (G55d: `canvas_set_modulate` is never called) `stale-param` (G55e: a material's parameters are set only when the material is created), `stale-texture` (G6a: a resident RGBA8 image keeps its first payload, LA8 atlas pages still update), `ignore-canvas-stacking` (G6b: extra canvases are attached but never stacked, so they draw at (0,0) in canvas RID order) or `ignore-presentation` (G6b: stretch stays disabled whatever the session says and the visible-rect check is skipped, so a half presentation shows the top-left of the logical frame at scale 1); all exist only to fail checks or to compare pictures |
 
-Core (G7xn, gate7-design.md D34; G7xd flipped the default; both modes). **Run
-`../scripts/build-rs-core-ext.sh` once per fresh worktree first**: since `rust` is the default,
-*any* native receiver launch that does not explicitly pick `gdscript` now loads
-`ext/rs_core.gdextension`, and that adapter is a build output, not a checked-in binary. Skipping
-this step fails every default-core leg with "`RS_RECEIVER_CORE=rust, but the adapter is
+Core (G7xn, gate7-design.md D34; the only core since G7gd; both modes). **Run
+`../scripts/build-rs-core-ext.sh` once per fresh worktree first**: every native receiver launch
+loads `ext/rs_core.gdextension`, and that adapter is a build output, not a checked-in binary.
+Skipping this step fails every leg with "`RS_RECEIVER_CORE=rust, but the adapter is
 unavailable`", which reads like a receiver bug.
 
 | Variable               | Meaning |
 | ---------------------- | ------- |
-| `RS_RECEIVER_CORE`     | `rust` (default since G7xd: `RsRustApplier` over the GDExtension adapter: the shared Rust core decodes, validates, resolves and applies; this project keeps configuration, I/O, evidence and shots) or `gdscript` (`Rs2Decoder` and `RsApplier`; frozen at /7, milestone sweeps only). `applied.json`'s `receiver` block records the chosen one as `core`. Under `rust`, state dumps are the core's resolved `state` in render-stream-2.ts's form (same keys, JavaScript's number printing), compared with `statesEqual()` as before, and the cache keeps each payload's raw bytes for the core to verify and decode. |
-| `RS_RECEIVER_CORE_EXT` | `rust` only: the adapter's `.gdextension` (default `res://ext/rs_core.gdextension`). A missing or unloadable adapter, or any other `RS_RECEIVER_CORE`, is a usage error. |
+| `RS_RECEIVER_CORE`     | unset or `rust`; anything else is a usage error (G7gd removed the GDScript core). `RsRustApplier` over the GDExtension adapter: the shared Rust core decodes, validates, resolves and applies; this project keeps configuration, I/O, evidence and shots. `applied.json`'s `receiver` block records `core: "rust"`. State dumps are the core's resolved `state` in render-stream-2.ts's form (same keys, JavaScript's number printing), compared with `statesEqual()`, and the cache keeps each payload's raw bytes for the core to verify and decode. |
+| `RS_RECEIVER_CORE_EXT` | the adapter's `.gdextension` (default `res://ext/rs_core.gdextension`). A missing or unloadable adapter is a usage error. |
 
-The gate runners pass their own `RS_RECEIVER_CORE`/`RS_RECEIVER_CORE_EXT` to every receiver launch
-(`../scripts/lib/legs.sh` `receiver_core_env`), so `RS_RECEIVER_CORE=gdscript bash run-gateN.sh ...`
-runs a whole gate on the frozen GDScript core; `../scripts/replay-receiver-legs.sh` re-runs a
-finished run's file-mode receiver legs on another core against the same source, and
-`../scripts/compare-receiver-cores.ts` compares the two.
+The gate runners forward their own `RS_RECEIVER_CORE_EXT` to every receiver launch
+(`../scripts/lib/legs.sh` `receiver_core_env`) and refuse to start with any `RS_RECEIVER_CORE` but
+`rust`.
 
 Exit codes: `0` status `ok`; `3` replay-failure (`applied.json` written); `2` usage error
 (`RS_RECEIVER_OUT` missing or not absolute, a malformed `RS_RECEIVER_SHOT_SEQS` or
@@ -191,7 +176,7 @@ G1d options. The stall runs in the `frame_post_draw` callback that takes the ste
 host sees only a credit that does not return; `live.stall` records `step`, `ms`, `after_seq`,
 `after_frame`, `start_us`, `end_us`, `injected: true` and the mechanism. A reconnect waits for the
 close handshake of connection 1 (2 s at most), writes its received file, calls
-`RsApplier.dispose()` (which frees every RID the applier still owns), and opens connection 2,
+`RsRustApplier.dispose()` (which frees every RID the core still owns), and opens connection 2,
 retrying while the host still refuses a second receiver (503) until the connect timeout;
 `live.reconnect` records the step, the seq, `created_rids`, `freed_by_apply`,
 `owned_before_dispose`, `freed_rids`, `leftover_rids` and the connect attempts. Connection 2 writes
@@ -302,8 +287,8 @@ also requested, else `null`); `shots_missed` is `[]`; `live` is `null`. `viewpor
   `material_get_param` cannot witness any of this (dummy storage drops parameters), so the
   self-test asserts on the applier's recorded calls.
 - **Resolved state, identity reconciliation.** Each transaction is decoded and accepted by
-  `Rs2Decoder.Stream`, which resolves a patch against the previous state. `RsApplier.apply_state`
-  then follows gate 0's Q5 steps 2–8 against the resolved state: free vanished, create new, parent
+  the Rust core, which resolves a patch against the previous state. Its apply (rs-core-capi's
+  `plan.rs`, a port of the GDScript applier G7gd removed) then follows gate 0's Q5 steps 2–8 against the resolved state: free vanished, create new, parent
   pass, order pass (re-`set_parent` from the first divergence), setters only for new items or
   changed values (floats compared as float32; `z_relative` and `behind` included), content rebuild
   only on a `content_version` change, canvas 1 transform. A full and a patch encoding of the same

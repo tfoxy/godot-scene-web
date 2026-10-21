@@ -465,7 +465,7 @@ sha256, and `gamescope/` holds the compositor's log and identity.
 | Leg                       | Directory                                | Runs                                                                                                                                                                                           | Expected class                           |
 | ------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `import`                  | `import/{fixture,receiver}/`             | `mise exec -- godot --headless --path <project> --import`. The runner stops if either fails                                                                                                    | — (exit 0)                               |
-| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/codec2_selftest.gd` with `RS_SELFTEST_GOLDEN_DIR=protocol/golden-2`, then a headless replay of `golden-4/inline.rs4` (inline, no store; a fresh cache; `golden-3/inline.rs3` from G4e2 to G5d, `golden-2/inline.rs2` before)      | —                                        |
+| `receiver-typecheck`      | `receiver-typecheck/{selftest,minimal}/` | mise editor: `--script res://tests/receiver_selftest.gd` (G7gd; `codec2_selftest.gd` before) with `RS_SELFTEST_GOLDEN_DIR=protocol/golden-2`, then a headless replay of `golden-4/inline.rs4` (inline, no store; a fresh cache; `golden-3/inline.rs3` from G4e2 to G5d, `golden-2/inline.rs2` before)      | —                                        |
 | `capture`                 | `capture/`                               | template `--headless`, `GRC_MODE=arm`, `GRC_STREAM_OUT`, `GRC_ROOT_SIZE=enforce-min-size`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_QUIT_FRAME=400`, under strace; maps/fd sampled at `armed.marker` | `success`                                |
 | `preexisting`             | `preexisting/`                           | the capture host on `res://preexisting.tscn`, quit 52                                                                                                                                          | `capture-failure`                        |
 | `preexisting-skip`        | `preexisting-skip/{capture,receiver}/`   | the same capture with `GRC_UNKNOWN_ITEM=skip` (../protocol/unknown-item-skip.md), then a gamescope receiver with the settle shots                                                              | `partial-unknown-items`                  |
@@ -525,7 +525,7 @@ Legs without a receiver (`capture`, `preexisting`) stop after rule 2.
 | `receiver-vs-reference`         | receiver vs reference at every step, full frame and both regions: 0 mismatched pixels and max channel delta 0 (`compareRgbaBuffers` with exact budgets)                                                                                                                                                                                                                                              |
 | `receiver-consumed-stream`      | `receiver` `applied.json` is `render-stream-receiver-applied/4` (/3 before G5e), seqs 1..N, each `record_sha256` equal to the host's, every shot `applied_through == seq`, `recording.sha256` equal to the capture file's, and `resources_summary` shows nothing fetched and nothing uploaded                                                                                                                        |
 | `receiver-never-loaded-fixture` | the traced receiver opens its recording and nothing under `fixtures/`; no file in `receiver/` (outside `.godot/`) is byte-identical to one in `fixtures/gate0/`; no receiver log has a `[fixture]` line; argv has `--path <abs receiver>`                                                                                                                                                            |
-| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[rs2-selftest] ok` and exited 0; the `golden-4/inline.rs4` replay (since G5d) is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
+| `receiver-typed-clean`          | no `SCRIPT ERROR`, `SCRIPT WARNING`, `Parse Error` or `Failed to load script` in the typecheck logs; the selftest printed `[receiver-selftest] ok` (`[rs2-selftest] ok` before G7gd) and exited 0; the `golden-4/inline.rs4` replay (since G5d) is ok and reports exactly the golden's unsupported entries, each at its first seq                                                                                                                       |
 | `preexisting-skip-account`      | the skip capture's session and `result.json` declare `unknown_item_policy` `skip` (one unknown RID named); every transaction is `ok` with `unknown_items` `{unknown_rids 1, withheld_items 1, withheld_commands 1}`, `unknown_calls` non-decreasing and growing across step 2, exactly 2 published items and no published `add_rect` in a pre-existing colour                                     |
 | `preexisting-skip-reference`    | every `preexisting-reference/shots/step-<k>.png` equals `synthesizePreexistingReference(k)` exactly, and its `steps.jsonl` is the gate 0 timeline                                                                                                                                                                                                                                                  |
 | `preexisting-skip-receiver`     | every skip receiver settle shot equals `synthesizeExpected(k)` exactly (nothing of `Preexisting` or `PreChild` drawn)                                                                                                                                                                                                                                                                                |
@@ -2784,7 +2784,7 @@ variant, the `soak` timeline, `realtime` time and `GRC_HOOK_LOG=off`, on render-
   `resident_textures()`/`_meshes()`/`_shaders()`/`_materials()`.
 - `receiver/tests/applier2_selftest.gd`: `_test_cache_budgets()` (LRU eviction at both layers,
   `set_needed()` protection, `no-evict`, `refetch_after_evict`, a warm cache's mtime seeding), run
-  from `_initialize()`.
+  from `_initialize()`. (G7gd removed this self-test with the GDScript applier.)
 - `capture/src/rs2_snapshot.h`, `rs_publish.cpp`: a new `SabotageKind::RetainSuperseded`
   (`retain-superseded`), the usual mechanical plumbing (parse table, `to_wire`).
 - `capture/src/rs_resource_store.{h,cpp}`: `ServedResources::set_retain_superseded_frame()`; from
@@ -2839,7 +2839,7 @@ variant, the `soak` timeline, `realtime` time and `GRC_HOOK_LOG=off`, on render-
   honest leg. An honest leg's check fails on any growth or over-bound metric; a sabotage's fails
   only when exactly its named metric does), `checkCacheBudgetRespected` (bytes within budget plus
   payload, eviction actually exercised; the needed-set clause is proven by
-  `applier2_selftest.gd`'s `_test_cache_budgets()`, not re-derived here: a 300-s soak's
+  `applier2_selftest.gd`'s `_test_cache_budgets()` (until G7gd removed it), not re-derived here: a 300-s soak's
   `GRC_HOOK_LOG=off`/`RS_RECEIVER_LOG=summary` evidence has no per-event trail for it),
   `checkRssBounded` (the `/proc` sampler, or the engines' own `rss_bytes` with no sampler file),
   `checkSoakPixels` (the final shot -- by its own recorded `frame`, the highest one reached --
@@ -3009,42 +3009,32 @@ The files:
   - applies the `css-opacity` sabotage;
   - records `window.__rsShell` (the exit code and the engine's printed lines with their times).
 - `../receiver/rs_config.gd` and `../receiver/rs_io.gd`, Q4's shims (`../receiver/README.md`).
-- `build-web-receiver.sh [--out DIR] [--force] [--core rust|gdscript]` builds the bundle. `--core
-  rust` (G7xw; the default since G7xd) exports `Web (rust core)` (`preset.1`), as follows:
-  - it runs `build-rs-core-web.sh`, which builds `rs-core-capi` with the pinned F4 nightly
+- `build-web-receiver.sh [--out DIR] [--force] [--core rust]` builds the bundle: `Web (rust
+  core)`, `preset.0` and the only preset since G7gd (G7xw; `--core` accepts only `rust`). It:
+  - runs `build-rs-core-web.sh`, which builds `rs-core-capi` with the pinned F4 nightly
     (`-Zbuild-std`, PIC, `panic=abort`, hidden default visibility) and links it with the shim by
     emcc 4.0.11 into the side module `../receiver/ext/build/web/librs_core_ext.wasm`;
-  - it stages `ext/` without its `.gdignore` and uses the dlink template;
-  - it checks that the export copied the module beside the engine;
-  - it records `core`, the preset index and the module's own `build.json` (`rs_core_web`).
-
-  `--core gdscript` instead builds these steps against the plain `Web` preset (`preset.0`, G7e's/
-  G7b's frozen oracle, no GDExtension support):
-  - checks both digests;
+  - checks the editor's and the dlink template's digests;
   - stages the receiver's git-visible files into
-    `artifacts/render-stream/web-receiver/<sha16>/project/`;
-  - fills in the placeholder;
-  - runs `--import` and `--export-release Web`;
+    `artifacts/render-stream/web-receiver/<sha16>/project/`, `ext/` without its `.gdignore`;
+  - fills in the template placeholder;
+  - runs `--import` and `--export-release "Web (rust core)"`, and checks that the export copied
+    the module beside the engine;
   - writes `bundle/build.json` (`render-stream-web-build/1`). It records the git commit, the
-    editor, the template, the preset's sha256 and options, every bundle file's size and sha256,
-    and the `.pck`'s file list (`lib/godot-pck.ts`).
+    editor, the template, the preset's sha256 and options, `core` (`rust`), every bundle file's
+    size and sha256, the `.pck`'s file list (`lib/godot-pck.ts`) and the module's own
+    `build.json` (`rs_core_web`).
 
-  A build of the same source and core is reused unless `--force`. The last line printed is the
-  bundle directory.
+  A build of the same source is reused unless `--force`. The last line printed is the bundle
+  directory. G7gd removed the GDScript-core `Web` preset (G7e's and G7b's build); G7b's preserved
+  shots (`artifacts/render-stream/gate7/g7b-r1/`) stay the web export's byte oracle.
 
-  `run-gate7.sh --web-core rust` (the default), `gate7-tool.ts web-legs --core rust` and
-  `gate7-bench.ts --arm web --core rust` (legs `*-web-rs*`) run on that bundle; since G7xd, `rust`
-  is also the bundle's own unset-env default, so none of these add an `RS_RECEIVER_CORE` word to
-  the leg's env (env.txt is what it always was for a default run). So does `run-gate7.sh --live --web-core rust` (G7xwl,
-  protocol/gate7/g7xwl.md). It passes `GATE7_WEB_CORE=rust` to each gate runner's browser daemon
-  (`gate7-tool.ts browser-daemon --core`). `check-gate7.ts --live --web-core rust` adds
-  `receiver-core@web`: each leg's `core rust` log line, applied.json `receiver.core`, and the
-  side module in its resource timing. `--web-core gdscript`/`--core gdscript` select the frozen
-  GDScript path instead (/7, milestone sweeps only, D34 amended); on a rust-capable bundle this
-  adds RS_RECEIVER_CORE=gdscript to every leg. `GATE7_WEB_CORE_SABOTAGE=drop-env` on a `gdscript`
-  run leaves that env word out, so the rust-capable bundle silently runs its own default (rust)
-  instead, and `receiver-core@web` must fail; on a `rust` run drop-env is a no-op (rust already
-  adds no word).
+  `run-gate7.sh` (its `--web-core` accepts only `rust`), `gate7-tool.ts web-legs` and
+  `gate7-bench.ts --arm web` (legs `*-web-rs*`) run on that bundle, and add no core word to a
+  leg's env. `run-gate7.sh` and `gate7-tool.ts` (`requireRustBundle`) refuse a bundle whose
+  `build.json` does not say `core: "rust"` (an old GDScript build). G7gd retired
+  `receiver-core@web` and its `GATE7_WEB_CORE_SABOTAGE=drop-env` sabotage: with one core there is
+  nothing to fall back to, and a receiver whose adapter does not load refuses to start.
   `lib/wasm-side-module-info.mjs` lists a side module's dylink info, exports and imports.
 - `lib/godot-pck.ts` reads the directory of a `.pck` (format 2 or 3, from
   `core/io/file_access_pack.cpp`). `web-build-json.ts` writes `build.json`.
@@ -3132,8 +3122,8 @@ The files:
 ## Gate 7 files, legs and criteria (g7-1 to g7-6 web export, G7b)
 
 G7b ([../protocol/gate7-design.md](../protocol/gate7-design.md) "G7b", Q4, Q7, Q8, D11, D21, D34)
-replays every **file** receiver leg of gates 1 to 6 in the G7e web export, on the GDScript decoder,
-and judges each gate with that gate's own checker:
+replays every **file** receiver leg of gates 1 to 6 in the G7e web export (on the GDScript decoder
+until G7xd, the Rust core since; G7gd removed the GDScript one), and judges each gate with that gate's own checker:
 
 ```bash
 pnpm render-stream:gate7 -- --legs g7-1,g7-2,g7-3,g7-4,g7-5,g7-55,g7-6 \
@@ -3280,8 +3270,7 @@ bash experiments/render-stream/scripts/run-gate7.sh --live --legs g7-r --web-cor
 
 - `run-gate7.sh` runs `run-gate6.sh --legs g6c` once per receiver kind, with `G6C_LEGS` set to
   that kind's legs (`G7R_LEGS_<kind>`; `G7R_LEGS` replaces every kind's list), into
-  `<out>/gate6/rates-<kind>/`. Native receivers (and dual-native's /6 one) run on
-  `RS_RECEIVER_CORE` (default `rust` for g7-r).
+  `<out>/gate6/rates-<kind>/`. Every receiver runs on the Rust core (the only one since G7gd).
 - `lib/gate6c-legs.sh` takes receiver kinds: under `GATE7_LIVE_KIND` every g6c receiver is that
   browser (`run_browser_receiver`), rAF-bound where native runs at 60 (`G6C_RECV60`), unless the
   leg keeps it native (`G6C_RECEIVER_NATIVE=1`). G7r's own legs (`phase-60-r1..r5`,

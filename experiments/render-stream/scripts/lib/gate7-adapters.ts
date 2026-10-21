@@ -202,7 +202,8 @@ export function appliedCore(doc: unknown): string {
   return typeof receiver?.core === "string" ? receiver.core : "gdscript";
 }
 
-/** G7xw: across cores (a `rust` web leg against its `gdscript` native leg), a failure's prose
+/** G7xw: across cores (a `rust` web leg against a `gdscript` native leg: since G7gd only an
+ * older source run's evidence, such as G7b's preserved g7b-r1, can be one), a failure's prose
  * `detail` is each decoder's own wording (results/gate7/g7xn.md "Same-source replay": gate 0's
  * `corrupt`), so only its `seq` and `reason` are compared. Mutates the normalized document. */
 export function dropCrossCoreDetail(normalized: Record<string, unknown>): void {

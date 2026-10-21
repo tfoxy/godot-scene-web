@@ -12,9 +12,7 @@
 //     its URL under /sources/<gate>/ (a symlink in the gate 7 run directory); anything else is a
 //     refusal, never silently passed through;
 //   - every other value verbatim (shot seqs, sabotages, budgets);
-//   - G7xw: `rust` is the default core since G7xd; with `core: "gdscript"` on the run,
-//     RS_RECEIVER_CORE=gdscript is added to every leg, as lib/legs.sh's receiver_core_env adds
-//     the runner's own natively (a `rust` run, default or explicit, adds nothing).
+//   - no core words: the shared Rust core is the web export's only core since G7gd.
 // Engine arguments after argv.txt's fixed `--path/--rendering-driver/--display-driver/--headless`
 // pass through, except `--resolution WxH`, which becomes the canvas size (the presentation size,
 // DPR 1; the shell sets the canvas attributes and CSS size, Q4 item 6). The default is the
@@ -78,10 +76,6 @@ export interface WebRunContext {
    * (web/gsw-receiver/). Both read the same `?env=` page configuration and report through the
    * same `window.__rsShell` contract. */
   kind?: "web" | "gsw";
-  /** G7xw: the web export's core; default rust since G7xd. `gdscript` adds
-   * RS_RECEIVER_CORE=gdscript to every leg's env; absent or `rust` adds nothing (the bundle must
-   * be build-web-receiver.sh --core rust's for a `rust` run). */
-  core?: "gdscript" | "rust";
   timeoutMs?: number;
   log?: (line: string) => void;
 }
@@ -392,7 +386,6 @@ async function runOne(
   const env = {
     ...mapped.env,
     ...extra,
-    ...(ctx.core === "gdscript" ? { RS_RECEIVER_CORE: "gdscript" } : {}),
     RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
     RS_RECEIVER_BUILD_SHA256: ctx.buildSha256,
   };

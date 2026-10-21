@@ -4,10 +4,10 @@
 // options the export used, the source digest, every bundle file's size and sha256, and the .pck's
 // file list (lib/godot-pck.ts), which no-source-scene checks.
 //
-// G7xw: `--core rust --preset-index 1` records the `Web (rust core)` preset's options, the core,
-// and the side module's own build record (rs-core-web-build.json in the bundle: the nightly,
-// emcc and every artifact's sha256) as `rs_core_web`. G7xd made rust (preset 1) the default;
-// `--core gdscript --preset-index 0` records the frozen G7e/G7b preset instead.
+// G7xw: records the `Web (rust core)` preset's options, the core (`rust`, the only one since
+// G7gd, which also made that preset index 0) and the side module's own build record
+// (rs-core-web-build.json in the bundle: the nightly, emcc and every artifact's sha256) as
+// `rs_core_web`.
 
 import { createHash } from "node:crypto";
 import {
@@ -59,6 +59,8 @@ function main(): void {
   const project = arg(argv, "--project");
   const coreAt = argv.indexOf("--core");
   const core = coreAt >= 0 ? argv[coreAt + 1] : "rust";
+  if (core !== "rust")
+    throw new Error(`web-build-json: --core is rust, not ${core} (G7gd)`);
   const presetAt = argv.indexOf("--preset-index");
   const presetIndex = presetAt >= 0 ? Number(argv[presetAt + 1]) : 0;
   const sideBuild = join(bundle, "rs-core-web-build.json");

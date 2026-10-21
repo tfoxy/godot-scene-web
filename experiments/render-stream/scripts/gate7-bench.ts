@@ -5,14 +5,14 @@
 //
 //   gate7-bench.ts --arm native --inputs <inputs.json> --out <dir> --binary <template> \
 //       --receiver-dir <receiver/>                                   # desktop native, headless
-//       [--core gdscript|rust] [--core-ext <rs_core.gdextension>] [--taskset <cpus>]
-//                                            # G7xn: the native receiver's core (RS_RECEIVER_CORE)
+//       [--core rust] [--core-ext <rs_core.gdextension>] [--taskset <cpus>]
+//                                            # G7xn: RS_RECEIVER_CORE_EXT; G7gd: rust only
 //   gate7-bench.ts --arm gsw-ts --inputs <inputs.json> --out <dir>      # desktop Chromium (D9)
 //   gate7-bench.ts --arm gsw-ts --env device --device g31 --inputs <inputs.json> --out <dir> [--probes]
 //   gate7-bench.ts --arm web --inputs <inputs.json> --out <dir>        # desktop Chromium, web export
 //   gate7-bench.ts --arm web --env device --device g31 --inputs <inputs.json> --out <dir>
-//       [--core gdscript|rust]   # G7xw: the web export's core; `rust` builds and loads the
-//                                # `Web (rust core)` bundle and names its legs `-web-rs`
+//       [--core rust]            # G7xw: the `Web (rust core)` bundle, legs named `-web-rs`
+//                                # (G7gd removed the GDScript core: `rust` is the only value)
 //   gate7-bench.ts --arm gsw-rs|gsw-rs-inline [--rs-build <dir>] ...  # G7x: rs-gsw-wasm (Q14c)
 //   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
 //   gate7-bench.ts --interleave gsw-rs-base,gsw-rs --rs-build-base <dir> ...  # G7o2: before/after
@@ -142,11 +142,13 @@ interface Args {
   holdSeconds: number;
   adbBin: string | undefined;
   only: string[];
-  /** gate7-design.md D31/G7o1; `gsw` only, ignored by `native` and `web` (GDScript stays inline). */
+  /** gate7-design.md D31/G7o1; `gsw` only, ignored by `native` and `web` (the Godot receiver
+   * decides: inline natively, deferred on the web export). */
   recordDigest: "inline" | "deferred";
-  /** G7xn: the native arm's receiver core (RS_RECEIVER_CORE); `rust` legs are `native-rs-bench-*`.
-   * G7xw: also the web arm's (build-web-receiver.sh --core rust); its legs are `*-web-rs[-<id>]`. */
-  core: "gdscript" | "rust";
+  /** G7xn: the native arm's receiver core; its legs are `native-rs-bench-*`. G7xw: also the web
+   * arm's (build-web-receiver.sh); its legs are `*-web-rs[-<id>]`. G7gd: always `rust`, the only
+   * core (kept as a field so the arm and leg reports keep their `core`). */
+  core: "rust";
   /** G7xn: RS_RECEIVER_CORE_EXT for `--core rust` (default: the receiver's own). */
   coreExt: string | undefined;
   /** G7xn: run each native receiver under `taskset -c <cpus>` (a quieter, comparable core). */
@@ -316,9 +318,9 @@ function parseArgs(argv: string[]): Args {
       }
       case "--core": {
         const core = v();
-        if (core !== "gdscript" && core !== "rust")
+        if (core !== "rust")
           throw new HarnessUsageError(
-            `--core must be gdscript or rust (got ${core})`,
+            `--core must be rust (got ${core}); G7gd removed the GDScript core`,
           );
         a.core = core;
         break;
@@ -341,8 +343,6 @@ function parseArgs(argv: string[]): Args {
     );
   if (a.arm !== "native" && a.taskset)
     throw new HarnessUsageError("--taskset is a native-arm option");
-  if (a.arm !== "native" && a.arm !== "web" && a.core !== "rust")
-    throw new HarnessUsageError("--core is a native- and web-arm option");
   return a;
 }
 
@@ -459,8 +459,6 @@ async function runNativeArm(
         RS_RECEIVER_PERF_OUT: join(dir, "perf.json"),
         RS_RECEIVER_LOG: "summary",
         ...(input.store ? { RS_RECEIVER_STORE_DIR: input.store } : {}),
-        // G7xd: the default core (rust) adds nothing, so a rust leg's env is what it always was.
-        ...(args.core === "gdscript" ? { RS_RECEIVER_CORE: "gdscript" } : {}),
         ...(args.profile ? { RS_RECEIVER_PERF_SAMPLES: "1" } : {}),
         ...(args.core === "rust" && args.coreExt
           ? { RS_RECEIVER_CORE_EXT: args.coreExt }
@@ -1068,7 +1066,7 @@ const WEB_REPLAY_TIMEOUT_MS = 180_000;
 
 /** build-web-receiver.sh (G7e, D5): reuses a cached bundle by the receiver/ source sha256, or
  * builds one (8 to 10 s). Called once per gate7-bench.ts invocation, not per repeat. G7xw:
- * `rust` builds the `Web (rust core)` bundle (--core rust). */
+ * the `Web (rust core)` bundle, the only one since G7gd. */
 function buildWebBundle(core: Args["core"]): {
   bundleDir: string;
   buildSha256: string;
@@ -1382,7 +1380,6 @@ async function runWebArm(
             RS_RECEIVER_LOG: "summary",
             RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
             RS_RECEIVER_BUILD_SHA256: buildSha256,
-            ...(args.core === "gdscript" ? { RS_RECEIVER_CORE: "gdscript" } : {}),
             // G7o3: --profile lists each transaction's timings in perf.json (diagnostics only).
             ...(args.profile ? { RS_RECEIVER_PERF_SAMPLES: "1" } : {}),
             // G7o3: --rs-sabotage reaches the web arm's receiver the same way as native/gsw's

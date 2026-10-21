@@ -18,16 +18,12 @@
 //  6. pacedLoopProblems (lib/gate7-live.ts, Q9 credit-from-paced-loop): web passes only when the
 //     submitted ack's process frame is the apply's; gsw only when applied and drawn in one rAF and
 //     acked from that rAF after the draw (an ack from onmessage, the ack-on-receipt sabotage, fails).
-//  7. knownFailure (lib/gate7-live.ts): web g5f's mesh pixel checks name the known
-//     web-index-region-update cause only when every region they name is RM or DF, and never on
-//     the rust web core (knownFailure's own default since G7xd).
-//  8. G7xwl/G7xd: webCoreOf/coreEnv (lib/gate7-live-legs.ts) add RS_RECEIVER_CORE=gdscript to a
-//     web leg only on an explicit gdscript run (a `rust` run, default or explicit, needs a
-//     `--core rust` bundle but adds no word, since rust is now the bundle's own unset-env
-//     default too; drop-env on gdscript omits the word, so the leg silently runs rust instead),
-//     and receiverCoreProblems (lib/gate7-live.ts, receiver-core@web) passes an honest leg, a
-//     killed one, and fails the drop-env sabotage, a missing module fetch and a core mismatch.
-//  9. G7wf: webFetchOf/coreEnv add RS_RECEIVER_WEB_FETCH=httpclient to a web leg only on the A/B's
+//  7. knownFailure (lib/gate7-live.ts): nothing is excused any more (G7gd removed the only entry,
+//     the GDScript web core's web-index-region-update), for web or gsw.
+//  8. G7gd: requireRustBundle (lib/gate7-live-legs.ts) accepts a build.json saying core rust and
+//     refuses an older GDScript-core bundle (core gdscript, or no core); gsw never needs one.
+//     (G7gd retired receiver-core@web and its drop-env sabotage, which this section covered.)
+//  9. G7wf: webFetchOf/webPageEnv add RS_RECEIVER_WEB_FETCH=httpclient to a web leg only on the A/B's
 //     httpclient run, and fetchImplProblems (fetch-impl@web) passes a leg that ran the requested
 //     mechanism, fails one that ran the other or recorded none, and skips a leg with no `live`.
 
@@ -54,14 +50,12 @@ import {
   fetchImplProblems,
   knownFailure,
   pacedLoopProblems,
-  RS_CORE_SIDE_MODULE,
-  receiverCoreProblems,
 } from "../lib/gate7-live";
 import {
-  coreEnv,
   mapBrowserLeg,
-  webCoreOf,
+  requireRustBundle,
   webFetchOf,
+  webPageEnv,
 } from "../lib/gate7-live-legs";
 import { wireVersionOf } from "../lib/render-stream-2";
 
@@ -430,38 +424,18 @@ const mesh = (detail: string) => ({
   detail,
 });
 expect(
-  "known: web g5f RM/DF only is named (gdscript core, explicit since G7xd flipped the default)",
-  knownFailure(
-    "web",
-    "gate5",
-    mesh(
-      "live-mesh step 4 (seq 340): 936 px differ in RM; step 5: 2216 px differ in DF,RM",
-    ),
-    "gdscript",
-  ) !== undefined,
-);
-expect(
-  "known: another region is not",
-  knownFailure(
-    "web",
-    "gate5",
-    mesh("step 4: 936 px differ in RM; step 6: 12 px differ in TX"),
-    "gdscript",
-  ) === undefined,
+  "known: web g5f RM/DF is no longer excused (G7gd removed the GDScript web core's entry)",
+  knownFailure("web", "gate5", mesh("step 4: 936 px differ in RM")) ===
+    undefined,
 );
 expect(
   "known: gsw never",
   knownFailure("gsw", "gate5", mesh("step 4: 936 px differ in RM")) ===
     undefined,
 );
-expect(
-  "known: never on the rust web core (G7xwl: it issues the update; also knownFailure's own default since G7xd)",
-  knownFailure("web", "gate5", mesh("step 4: 936 px differ in RM")) ===
-    undefined,
-);
 
-// 8. G7xwl: the web core on a live run.
-const coreRoot = mkdtempSync(join(tmpdir(), "self-test-gate7xwl-"));
+// 8. G7gd: the web export's bundle must be a Rust-core build.
+const coreRoot = mkdtempSync(join(tmpdir(), "self-test-gate7gd-"));
 const bundleOf = (core: string | undefined): string => {
   const dir = join(coreRoot, `bundle-${core ?? "none"}`);
   mkdirSync(dir, { recursive: true });
@@ -475,175 +449,20 @@ const bundleOf = (core: string | undefined): string => {
   return dir;
 };
 expect(
-  "core: default rust (G7xd), no env word, on a rust-capable bundle",
-  JSON.stringify(
-    coreEnv({
-      kind: "web",
-      ...webCoreOf("web", bundleOf("rust"), undefined, undefined),
-    }),
-  ) === "{}",
+  "bundle: a rust-core bundle is accepted",
+  !throws(() => requireRustBundle("web", bundleOf("rust"))),
 );
 expect(
-  "core: default rust on a gdscript-only bundle is refused",
-  throws(() => webCoreOf("web", bundleOf(undefined), undefined, undefined)),
+  "bundle: a GDScript-core bundle (core gdscript, or pre-G7xw with no core) is refused",
+  throws(() => requireRustBundle("web", bundleOf("gdscript"))) &&
+    throws(() => requireRustBundle("web", bundleOf(undefined))),
 );
 expect(
-  "core: gdscript on a rust-capable bundle adds RS_RECEIVER_CORE=gdscript",
-  coreEnv({
-    kind: "web",
-    ...webCoreOf("web", bundleOf("rust"), "gdscript", undefined),
-  }).RS_RECEIVER_CORE === "gdscript",
-);
-expect(
-  "core: gdscript on a gdscript-only bundle needs no validation (always available)",
-  coreEnv({
-    kind: "web",
-    ...webCoreOf("web", bundleOf(undefined), "gdscript", undefined),
-  }).RS_RECEIVER_CORE === "gdscript",
-);
-expect(
-  "core: rust (explicit or default) on a gdscript-only bundle is refused",
-  throws(() => webCoreOf("web", bundleOf("gdscript"), "rust", undefined)) &&
-    throws(() => webCoreOf("web", bundleOf(undefined), "rust", undefined)),
-);
-expect(
-  "core: an unknown core or sabotage is refused",
-  throws(() => webCoreOf("web", bundleOf("rust"), "wasm", undefined)) &&
-    throws(() => webCoreOf("web", bundleOf("rust"), "rust", "skip")),
-);
-expect(
-  "core: drop-env on an explicit rust selection is a no-op (rust already adds no word)",
-  (() => {
-    const c = webCoreOf("web", bundleOf("rust"), "rust", "drop-env");
-    return (
-      c.core === "rust" &&
-      c.coreSabotage === "drop-env" &&
-      coreEnv({ kind: "web", ...c }).RS_RECEIVER_CORE === undefined
-    );
-  })(),
-);
-expect(
-  "core: drop-env on gdscript omits RS_RECEIVER_CORE, so the rust-capable bundle silently runs its own default (rust) instead",
-  (() => {
-    const c = webCoreOf("web", bundleOf("rust"), "gdscript", "drop-env");
-    return (
-      c.core === "gdscript" &&
-      c.coreSabotage === "drop-env" &&
-      coreEnv({ kind: "web", ...c }).RS_RECEIVER_CORE === undefined
-    );
-  })(),
-);
-expect(
-  "core: gsw never gets the word",
-  JSON.stringify(coreEnv({ kind: "gsw", core: "rust" })) === "{}",
-);
-const legOf = (
-  name: string,
-  stdout: string | null,
-  appliedCore: string | null | undefined,
-  resources: string[],
-  /** A SIGKILLed leg (gate 1's `killed`): its engine lines only in console.jsonl, its page state
-   * never read (timings.json `aborted`, no resources). */
-  killedConsole?: string,
-): string => {
-  const dir = join(coreRoot, name);
-  mkdirSync(dir, { recursive: true });
-  if (stdout !== null) writeFileSync(join(dir, "stdout.log"), stdout);
-  if (appliedCore !== null)
-    writeFileSync(
-      join(dir, "applied.json"),
-      JSON.stringify({
-        receiver: appliedCore === undefined ? {} : { core: appliedCore },
-      }),
-    );
-  if (killedConsole !== undefined)
-    writeFileSync(
-      join(dir, "console.jsonl"),
-      `${JSON.stringify({ t: 1, type: "log", text: "Godot Engine v4.5.1" })}\n${JSON.stringify({ t: 2, type: "log", text: killedConsole })}\n`,
-    );
-  writeFileSync(
-    join(dir, "timings.json"),
-    JSON.stringify({
-      ...(killedConsole !== undefined ? { aborted: true } : {}),
-      resources: resources.map((n) => ({ name: n })),
-    }),
-  );
-  return dir;
-};
-const MODULE = `http://127.0.0.1:1/web-bundle/${RS_CORE_SIDE_MODULE}`;
-const rustLine = "[rs] core rust (res://ext/rs_core.gdextension)\n";
-expect(
-  "receiver-core: an honest rust leg passes",
-  (
-    await receiverCoreProblems(
-      legOf("r-ok", `x\n${rustLine}`, "rust", [MODULE]),
-      "r-ok",
-      "rust",
-    )
-  ).length === 0,
-);
-expect(
-  "receiver-core: a killed rust leg (empty stdout, no applied.json, page unread) passes on console.jsonl",
-  (
-    await receiverCoreProblems(
-      legOf("r-killed", "\n", null, [], rustLine.trim()),
-      "r-killed",
-      "rust",
-    )
-  ).length === 0,
-);
-expect(
-  "receiver-core: a killed drop-env leg fails on console.jsonl",
-  (
-    await receiverCoreProblems(
-      legOf("r-killed-drop", "\n", null, [], "[receiver] mode live"),
-      "r-killed-drop",
-      "rust",
-    )
-  ).length === 1,
-);
-expect(
-  "receiver-core: drop-env (rust bundle, GDScript ran) fails twice",
-  (
-    await receiverCoreProblems(
-      legOf("r-drop", "x\n", "gdscript", [MODULE]),
-      "r-drop",
-      "rust",
-    )
-  ).length === 2,
-);
-expect(
-  "receiver-core: a rust leg whose page never fetched the module fails",
-  (
-    await receiverCoreProblems(
-      legOf("r-nomod", rustLine, "rust", []),
-      "r-nomod",
-      "rust",
-    )
-  ).length === 1,
-);
-expect(
-  "receiver-core: a gdscript leg passes (pre-G7xn applied.json: no core key)",
-  (
-    await receiverCoreProblems(
-      legOf("g-ok", "x\n", undefined, []),
-      "g-ok",
-      "gdscript",
-    )
-  ).length === 0,
-);
-expect(
-  "receiver-core: a rust leg on a gdscript run fails",
-  (
-    await receiverCoreProblems(
-      legOf("g-rust", rustLine, "rust", [MODULE]),
-      "g-rust",
-      "gdscript",
-    )
-  ).length === 2,
+  "bundle: gsw is never checked",
+  !throws(() => requireRustBundle("gsw", join(coreRoot, "no-such-bundle"))),
 );
 
-// 9. G7wf: webFetchOf/coreEnv and fetchImplProblems (fetch-impl@web).
+// 9. G7wf: webFetchOf/webPageEnv and fetchImplProblems (fetch-impl@web).
 expect(
   "web fetch: unset/empty is fetch, httpclient is accepted, anything else is refused",
   webFetchOf(undefined) === "fetch" &&
@@ -653,15 +472,13 @@ expect(
 );
 expect(
   "web fetch: the default adds no word; httpclient adds RS_RECEIVER_WEB_FETCH=httpclient on web only",
-  JSON.stringify(coreEnv({ kind: "web", core: "rust", webFetch: "fetch" })) ===
-    "{}" &&
-    coreEnv({ kind: "web", core: "rust", webFetch: "httpclient" })
+  JSON.stringify(webPageEnv({ kind: "web", webFetch: "fetch" })) === "{}" &&
+    webPageEnv({ kind: "web", webFetch: "httpclient" })
       .RS_RECEIVER_WEB_FETCH === "httpclient" &&
-    coreEnv({ kind: "web", core: "gdscript", webFetch: "httpclient" })
-      .RS_RECEIVER_CORE === "gdscript" &&
-    JSON.stringify(
-      coreEnv({ kind: "gsw", core: "rust", webFetch: "httpclient" }),
-    ) === "{}",
+    webPageEnv({ kind: "web", webFetch: "httpclient" }).RS_RECEIVER_CORE ===
+      undefined &&
+    JSON.stringify(webPageEnv({ kind: "gsw", webFetch: "httpclient" })) ===
+      "{}",
 );
 const fetchLeg = (name: string, applied: unknown): string => {
   const dir = join(coreRoot, name);

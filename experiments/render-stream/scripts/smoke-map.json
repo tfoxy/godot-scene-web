@@ -13,9 +13,9 @@
       "gate55",
       "gate6"
     ],
-    "cores": ["rust", "gdscript"],
+    "cores": ["rust"],
     "g7": ["g7-0", "g7-1", "g7-2", "g7-3", "g7-4", "g7-5", "g7-55", "g7-6"],
-    "g7_receivers": ["gsw", "web/rust", "web/gdscript"],
+    "g7_receivers": ["gsw", "web/rust"],
     "g7live": ["g7-1", "g7-2", "g7-5", "g7-55", "g7-6", "g7-lc", "g7-r"],
     "g7live_receivers": ["gsw", "web/rust", "native"],
     "g7x": ["g7-dev", "g7-bench"],
@@ -53,11 +53,6 @@
   "timing_doc": "GRT4a: targets whose runs go in validate-increment.sh's last phase, after every correctness run: their exclusive quiet-lock legs (gate 6's g6l/g6s/g6c/g6p, the timing live groups, the bench and device-control arms) starved the browser groups sharing a tier with them (G7q: 11.9-13.8 ks of summed lock wait). A receiver's live groups split into a correctness run and a -timing run.",
   "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7x:*"],
   "rules": [
-    {
-      "why": "offline comparison of replayed native receiver legs (G7xn); no gate runs it",
-      "paths": ["experiments/render-stream/scripts/compare-receiver-cores.ts"],
-      "reach": ["none"]
-    },
     {
       "why": "docs: no leg reads them",
       "paths": [
@@ -118,12 +113,11 @@
       "reach": ["*"]
     },
     {
-      "why": "the native receiver: every native gate under both cores, and the web export (built from it)",
+      "why": "the native receiver: every native gate, and the web export (built from it)",
       "paths": ["experiments/render-stream/receiver/**"],
       "reach": [
         "native:*@*",
         "g7:*@web/rust",
-        "g7:*@web/gdscript",
         "g7live:*@web/rust",
         "g7live:*@native",
         "g7x:*"
@@ -328,7 +322,7 @@
         "experiments/render-stream/scripts/lib/godot-pck.ts",
         "experiments/render-stream/scripts/lib/wasm-side-module-info.mjs"
       ],
-      "reach": ["g7:*@web/rust", "g7:*@web/gdscript", "g7live:*@web/rust"]
+      "reach": ["g7:*@web/rust", "g7live:*@web/rust"]
     },
     {
       "why": "gate 7's GSW half",

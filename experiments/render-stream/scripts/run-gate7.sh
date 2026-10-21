@@ -8,7 +8,7 @@
 #     [--extension X.gdextension] [--calibration record.json] [--binary template] \
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--no-source-cache] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
-#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core rust|gdscript]
+#     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core rust]
 #     [--web-fetch fetch|httpclient]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
@@ -62,15 +62,11 @@
 #             <out>/gate0/web/<leg>/; check-gate7.ts judges them with gate 0's own checker
 #             (lib/gate7-adapters.ts). Sources are recorded in <out>/sources.json.
 #
-# --web-core rust|gdscript (G7xw, gate7-design.md "G7xw", Q14e; G7xd made rust the default): every
-# web-export leg and the web bench arm run on the shared Rust core through its dlink side module:
-# build-web-receiver.sh --core rust (or `--bundle`, such a build), gate7-tool.ts web-legs --core
-# rust (RS_RECEIVER_CORE=rust on every leg) and gate7-bench.ts --arm web --core rust. That is now
-# the default; --web-core gdscript selects G7e's/G7b's frozen GDScript build (/7, milestone sweeps
-# only, D34 amended). With --live (G7xwl), the web live legs and their received.rs7 replays run
-# on the chosen core too (GATE7_WEB_CORE to the gate runners' browser daemon; check-gate7.ts
-# --live --web-core <core> adds receiver-core@web, which fails a leg that did not decode and apply
-# through the requested core).
+# --web-core rust (G7xw, gate7-design.md "G7xw", Q14e): every web-export leg and the web bench
+# arm run on the shared Rust core through its dlink side module (build-web-receiver.sh, or
+# `--bundle`, such a build). G7gd removed the GDScript core, so `rust` is the only value accepted
+# (the flag stays for callers that pass it); a bundle whose build.json does not say core rust (an
+# old GDScript build) is refused before anything runs.
 #
 # --web-fetch fetch|httpclient (G7wf, protocol/gate7/g7wf.md; --live only): how the web export
 # GETs resource payloads. `fetch` (the default) is the browser's fetch() through JavaScriptBridge;
@@ -148,9 +144,7 @@
 #                       mismatch-60-recv30, phase-60-r1..r5, phase-60-late-poll-r1..r5,
 #                       dual-native, constrained
 #               gsw     web's legs without the late-poll runs, plus sabotage-ack-on-receipt
-#             The native receivers (and dual-native's /6 one) run on RS_RECEIVER_CORE (default rust
-#             here: D34 as amended demotes the GDScript decode/apply path); the web export on
-#             --web-core. G7R_LEGS (a CSV) replaces every kind's list (development). Each browser
+#             Every receiver runs on the Rust core (the only one since G7gd). G7R_LEGS (a CSV) replaces every kind's list (development). Each browser
 #             run's daemon launches its next spare browser only after a leg (GATE7_BROWSER_SPARE=
 #             after), so no Chromium start-up lands in a timed window. check-gate7.ts --live judges
 #             them (lib/gate7r-checks.ts). Timing legs: each holds the quiet lock exclusive.
@@ -250,7 +244,6 @@ G7R_LEGS_gsw="$G7R_BROWSER_RATES,$G7R_PHASE,dual-native,constrained,sabotage-ack
 G7R_W2_LEGS_native="rate-baseline,$G7R_PHASE,sabotage-constrained-window-overrun"
 G7R_W2_LEGS_web="rate-baseline,$G7R_PHASE,constrained"
 G7R_W2_LEGS_gsw="rate-baseline,$G7R_PHASE,constrained"
-G7R_NATIVE_CORE="${RS_RECEIVER_CORE:-rust}"
 
 OUT=""
 LEGS_ARG=""
@@ -412,13 +405,20 @@ if [ "$selection_exit" != "0" ]; then
 	echo "run-gate7: refusing (see above)" >&2
 	exit 2
 fi
-case "$WEB_CORE" in
-gdscript | rust) ;;
-*)
-	echo "run-gate7: --web-core must be gdscript or rust (got $WEB_CORE)" >&2
+if [ "$WEB_CORE" != rust ]; then
+	echo "run-gate7: --web-core must be rust (got $WEB_CORE); G7gd removed the GDScript core" >&2
 	exit 2
-	;;
-esac
+fi
+# G7gd: a web bundle must be a Rust-core build (build.json core rust); an old GDScript bundle
+# passed with --bundle is refused before any host runs (gate7-tool.ts refuses it too).
+require_rust_bundle() {
+	local bundle_core
+	bundle_core="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("core") or "gdscript")' "$1/build.json")"
+	if [ "$bundle_core" != rust ]; then
+		echo "run-gate7: $1 is a $bundle_core-core web bundle; G7gd removed that core (rebuild with build-web-receiver.sh)" >&2
+		exit 2
+	fi
+}
 case "$WEB_FETCH" in
 fetch | httpclient) ;;
 *)
@@ -619,16 +619,11 @@ if [ "$LIVE" = "1" ]; then
 	want_gsw_live() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
 	if want_web_live; then
 		if [ -z "$BUNDLE" ]; then
-			echo "run-gate7: building the web receiver (build-web-receiver.sh --core $WEB_CORE)" >&2
-			BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" --core "$WEB_CORE" | tail -1)"
+			echo "run-gate7: building the web receiver (build-web-receiver.sh)" >&2
+			BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
 		fi
 		BUNDLE="$(realpath "$BUNDLE")"
-		# G7xwl: the browser daemon refuses it too (webCoreOf); refused here before any host runs.
-		bundle_core="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("core") or "gdscript")' "$BUNDLE/build.json")"
-		if [ "$WEB_CORE" = rust ] && [ "$bundle_core" != rust ]; then
-			echo "run-gate7: --live --web-core rust needs a build-web-receiver.sh --core rust bundle; $BUNDLE is $bundle_core" >&2
-			exit 2
-		fi
+		require_rust_bundle "$BUNDLE"
 		LIVE_KINDS+=("web:$BUNDLE")
 	fi
 	if want_gsw_live; then
@@ -657,7 +652,7 @@ if [ "$LIVE" = "1" ]; then
 			mkdir -p "$OUT/gate$g"
 			echo "run-gate7: $group live @$kind: run-gate$g.sh --legs $runner_legs into $run_dir" >&2
 			set +e
-			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
 				GATE7_WEB_FETCH="$WEB_FETCH" bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 				--binary "$BINARY" --out "$run_dir" --legs "$runner_legs" >"$OUT/gate$g/live-$kind.log" 2>&1
 			live_exit=$?
@@ -672,7 +667,7 @@ if [ "$LIVE" = "1" ]; then
 			G7R_KINDS+=("native:")
 		fi
 		G7R_KINDS+=(${LIVE_KINDS[@]+"${LIVE_KINDS[@]}"})
-		if [ "$G7R_NATIVE_CORE" = rust ] && [ ! -f "$EXPERIMENT_DIR/receiver/ext/build/librs_core_ext.so" ]; then
+		if [ ! -f "$EXPERIMENT_DIR/receiver/ext/build/librs_core_ext.so" ]; then
 			echo "run-gate7: g7-r: building the native receiver's Rust core adapter (build-rs-core-ext.sh)" >&2
 			bash "$SCRIPT_DIR/build-rs-core-ext.sh" --no-test >"$OUT/build-rs-core-ext.log" 2>&1 || {
 				echo "run-gate7: build-rs-core-ext.sh failed, see $OUT/build-rs-core-ext.log" >&2
@@ -690,12 +685,12 @@ if [ "$LIVE" = "1" ]; then
 			echo "run-gate7: g7-r @$kind: run-gate6.sh --legs g6c (G6C_LEGS=$g7r_legs) into $run_dir" >&2
 			set +e
 			if [ "$kind" = native ]; then
-				RS_RECEIVER_CORE="$G7R_NATIVE_CORE" G6C_LEGS="$g7r_legs" \
+				G6C_LEGS="$g7r_legs" \
 					bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
 			else
-				GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
-					GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after RS_RECEIVER_CORE="$G7R_NATIVE_CORE" G6C_LEGS="$g7r_legs" \
+				GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
+					GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after G6C_LEGS="$g7r_legs" \
 					bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
 			fi
@@ -724,7 +719,7 @@ if [ "$LIVE" = "1" ]; then
 			run_dir="$OUT/gate6/$run_name"
 			echo "run-gate7: g7-lc @$kind ($HARNESS_ENV${DEVICE:+ $DEVICE}): run-gate6.sh --legs g6l (G7U_LEGS=$g7u_legs) into $run_dir" >&2
 			set +e
-			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
 				GATE7_BROWSER_SPARE=after GATE7_LIFECYCLE_ENV="$HARNESS_ENV" GATE7_DEVICE="$DEVICE" \
 				G7U_LEGS="$g7u_legs" G7U_START_FRAME="$g7u_start" \
 				bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
@@ -759,7 +754,7 @@ if [ "$LIVE" = "1" ]; then
 			if [ "${G7K_SKIP_SOAK:-0}" != "1" ]; then
 			echo "run-gate7: g7-k soak @$kind: run-gate6.sh --legs g6s (G6S_LEGS=$g7k_soak_legs) into $run_dir" >&2
 			set +e
-			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
 				GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after GATE7_MEM_SAMPLE=1 \
 				G6S_LEGS="$g7k_soak_legs" \
 				bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
@@ -773,7 +768,7 @@ if [ "$LIVE" = "1" ]; then
 			run_dir="$OUT/gate6/startup-$kind"
 			echo "run-gate7: g7-k startup @$kind: run-gate6.sh --legs g6l (G7K_STARTUP_LEGS=$g7k_startup_legs) into $run_dir" >&2
 			set +e
-			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_WEB_CORE="$WEB_CORE" \
+			GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
 				GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after GATE7_MEM_SAMPLE=1 \
 				G7K_STARTUP_LEGS="$g7k_startup_legs" GATE7_STATIC_CACHE=1 \
 				bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
@@ -793,7 +788,7 @@ if [ "$LIVE" = "1" ]; then
 	cd "$REPO_ROOT"
 	set +e
 	gate7_checker mise exec -- pnpm exec tsx --conditions=development \
-		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live --web-core "$WEB_CORE" \
+		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live \
 		--web-fetch "$WEB_FETCH" ${RECEIVER:+--receiver "$RECEIVER"}
 	exit $?
 fi
@@ -1064,7 +1059,7 @@ run_g7_bench() {
 			bench --arm gsw-ts "${common[@]}" --out "$B"
 		fi
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; then
-			bench --arm web --core "$WEB_CORE" "${common[@]}" --out "$B"
+			bench --arm web "${common[@]}" --out "$B"
 		fi
 	else
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; then
@@ -1072,18 +1067,19 @@ run_g7_bench() {
 			bench --arm gsw-ts --env device --device "$DEVICE" "${common[@]}" --out "$B" --probes --hold-seconds "$HOLD_SECONDS"
 		fi
 		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; then
-			bench --arm web --core "$WEB_CORE" --env device --device "$DEVICE" "${common[@]}" --out "$B"
+			bench --arm web --env device --device "$DEVICE" "${common[@]}" --out "$B"
 		fi
 	fi
 }
 
 if has_group g7-0 && want_web; then
 	if [ -z "$BUNDLE" ]; then
-		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" --core "$WEB_CORE" | tail -1)"
+		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
 	fi
 	BUNDLE="$(realpath "$BUNDLE")"
+	require_rust_bundle "$BUNDLE"
 	echo "run-gate7: g7-0 web legs (bundle $BUNDLE)" >&2
-	g7tool web-legs --group g7-0 --source "${SOURCES[gate0]}" --bundle "$BUNDLE" --out "$OUT" --core "$WEB_CORE"
+	g7tool web-legs --group g7-0 --source "${SOURCES[gate0]}" --bundle "$BUNDLE" --out "$OUT"
 	CHECK_ARGS+=(--bundle "$BUNDLE")
 fi
 if [ "${#SOURCE_GATES[@]}" -gt 0 ]; then
@@ -1135,16 +1131,17 @@ if [ "${#SOURCE_GATES[@]}" -gt 0 ] && want_gsw; then
 fi
 if [ "${#G7B_RUN[@]}" -gt 0 ]; then
 	if [ -z "$BUNDLE" ]; then
-		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" --core "$WEB_CORE" | tail -1)"
+		BUNDLE="$(bash "$SCRIPT_DIR/build-web-receiver.sh" | tail -1)"
 	fi
 	BUNDLE="$(realpath "$BUNDLE")"
+	require_rust_bundle "$BUNDLE"
 	EXTENSION="$(realpath "$EXTENSION")"
 	for pair in "${G7B_RUN[@]}"; do
 		group="${pair%%:*}"
 		gate="${pair#*:}"
 		echo "run-gate7: $group web legs ($gate, bundle $BUNDLE)" >&2
 		g7tool web-legs --group "$group" --source "${SOURCES[$gate]}" --bundle "$BUNDLE" --out "$OUT" \
-			--repeat-differing --core "$WEB_CORE"
+			--repeat-differing
 		CHECK_ARGS+=(--source "$gate=${SOURCES[$gate]}")
 	done
 	case " ${CHECK_ARGS[*]} " in

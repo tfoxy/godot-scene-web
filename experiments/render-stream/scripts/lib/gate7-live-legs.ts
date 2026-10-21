@@ -21,8 +21,8 @@
 //     (`token-not-logged`);
 //   - added: RS_RECEIVER_EVIDENCE_URL (/evidence/<nonce>; PUTs land in RS_RECEIVER_OUT's
 //     directory), RS_RECEIVER_BUILD_SHA256, RS_RECEIVER_PROTOCOL=7 on a live leg, and
-//     RS_RECEIVER_MANIFEST_SHA256 (GATE7_MANIFEST_SHA256) on a live leg when set, and (G7xwl)
-//     RS_RECEIVER_CORE=rust on every web leg under GATE7_WEB_CORE=rust (webCoreOf);
+//     RS_RECEIVER_MANIFEST_SHA256 (GATE7_MANIFEST_SHA256) on a live leg when set (the web
+//     export's bundle must be a Rust-core build: requireRustBundle, G7gd);
 //   - a native `--headless` leg: a browser always renders, so the leg runs rendered, with the
 //     credit stage its native receiver used (`applied`, forced under --headless) unless the leg
 //     names one.
@@ -95,24 +95,12 @@ import { type MemSamplerHandle, startMemSampler } from "./gate7k-samplers";
 
 export type BrowserReceiverKind = "web" | "gsw";
 
-/** G7xwl: the web export's core on a live run (GATE7_WEB_CORE; run-gate7.sh --live --web-core).
- * `rust` adds RS_RECEIVER_CORE=rust to every web leg (live and its received.rs7 replays) and needs
- * a build-web-receiver.sh --core rust bundle. The GSW receiver always runs the Rust core. G7xd
- * made `rust` the default (gdscript is frozen at /7 and stays selectable, milestone-swept). */
-export type WebCore = "gdscript" | "rust";
-
 export interface BrowserRunContext {
   kind: BrowserReceiverKind;
   bundleDir: string;
   staticRoot: string;
   buildSha256: string;
   manifestSha256?: string;
-  /** G7xwl (web only; default rust since G7xd). */
-  core?: WebCore;
-  /** G7xwl's harness sabotage (GATE7_WEB_CORE_SABOTAGE=drop-env): a `gdscript` run that leaves
-   * RS_RECEIVER_CORE out, so the rust-capable bundle silently runs the Rust core instead (G7xd:
-   * rust is the bundle's own unset-env default); `receiver-core@web` must fail it. */
-  coreSabotage?: "drop-env";
   /** G7wf (web only): the payload GET mechanism, from GATE7_WEB_FETCH. `fetch` (the default) is
    * the browser's fetch() and adds nothing to the page; `httpclient` adds
    * RS_RECEIVER_WEB_FETCH=httpclient (Godot's web HTTPClient, the pre-G7wf path, for the A/B). */
@@ -131,58 +119,29 @@ export function webFetchOf(text: string | undefined): WebFetch {
   return v;
 }
 
-/** G7xwl: the web context's core from GATE7_WEB_CORE / GATE7_WEB_CORE_SABOTAGE, refusing a
- * `rust` run on a bundle that is not `build-web-receiver.sh --core rust` (as gate7-tool.ts
- * web-legs --core rust does). G7xd: an unset GATE7_WEB_CORE resolves to `rust`. */
-export function webCoreOf(
+/** G7gd: the web export runs only the shared Rust core, so its bundle must be a
+ * build-web-receiver.sh build whose build.json says `core: "rust"`; an older GDScript-core bundle
+ * (no `core`, or `gdscript`) is refused. The GSW receiver always runs the Rust core. */
+export function requireRustBundle(
   kind: BrowserReceiverKind,
   bundleDir: string,
-  coreText: string | undefined,
-  sabotageText: string | undefined,
-): Pick<BrowserRunContext, "core" | "coreSabotage"> {
-  const core = coreText === undefined || coreText === "" ? "rust" : coreText;
-  if (core !== "gdscript" && core !== "rust")
-    throw new Error(`GATE7_WEB_CORE must be gdscript or rust (got ${core})`);
-  if (
-    sabotageText !== undefined &&
-    sabotageText !== "" &&
-    sabotageText !== "drop-env"
-  )
+): void {
+  if (kind !== "web") return;
+  const build = JSON.parse(
+    readFileSync(join(bundleDir, "build.json"), "utf8"),
+  ) as { core?: string };
+  if (build.core !== "rust")
     throw new Error(
-      `GATE7_WEB_CORE_SABOTAGE must be drop-env (got ${sabotageText})`,
+      `the web export runs only the Rust core since G7gd; ${bundleDir} is a ${build.core ?? "gdscript"}-core bundle (rebuild with build-web-receiver.sh)`,
     );
-  if (kind !== "web") return {};
-  if (core === "rust") {
-    const build = JSON.parse(
-      readFileSync(join(bundleDir, "build.json"), "utf8"),
-    ) as { core?: string };
-    if (build.core !== "rust")
-      throw new Error(
-        `GATE7_WEB_CORE=rust needs a build-web-receiver.sh --core rust bundle; ${bundleDir} is ${build.core ?? "gdscript"}`,
-      );
-  }
-  return {
-    core,
-    ...(sabotageText === "drop-env"
-      ? { coreSabotage: "drop-env" as const }
-      : {}),
-  };
 }
 
-/** G7xwl: the env words the run's web core adds to every web leg (live and file replays alike).
- * G7xd: rust is the default (the bundle's own unset-env behavior), so a `rust` run adds nothing;
- * a `gdscript` run adds RS_RECEIVER_CORE=gdscript, or nothing under the drop-env sabotage (which
- * only makes sense on a `gdscript` run now: dropping the word lets the rust-capable bundle fall
- * back to its own default, rust, instead of the requested gdscript). */
-export function coreEnv(
-  ctx: Pick<BrowserRunContext, "kind" | "core" | "coreSabotage" | "webFetch">,
+/** The env words the run adds to every web leg (live and file replays alike): only G7wf's fetch
+ * mechanism (G7gd removed the core words; the Rust core is the bundle's only core). */
+export function webPageEnv(
+  ctx: Pick<BrowserRunContext, "kind" | "webFetch">,
 ): Record<string, string> {
   return {
-    ...(ctx.kind === "web" &&
-    ctx.core === "gdscript" &&
-    ctx.coreSabotage !== "drop-env"
-      ? { RS_RECEIVER_CORE: "gdscript" }
-      : {}),
     // G7wf: only the A/B's pre-G7wf arm names the mechanism; the default page env is unchanged.
     ...(ctx.kind === "web" && ctx.webFetch === "httpclient"
       ? { RS_RECEIVER_WEB_FETCH: "httpclient" }
@@ -563,7 +522,7 @@ export function runBrowserLeg(
       ...(ctx.manifestSha256 && mapped.live
         ? { RS_RECEIVER_MANIFEST_SHA256: ctx.manifestSha256 }
         : {}),
-      ...coreEnv(ctx),
+      ...webPageEnv(ctx),
     };
     const pageConfig = {
       env,
@@ -595,12 +554,7 @@ export function runBrowserLeg(
         {
           url,
           kind: ctx.kind,
-          ...(ctx.kind === "web"
-            ? {
-                core: ctx.core ?? "rust",
-                core_sabotage: ctx.coreSabotage ?? null,
-              }
-            : {}),
+          ...(ctx.kind === "web" ? { core: "rust" } : {}),
           origin,
           token: mapped.token !== "" ? "fragment" : null,
           headless_native: mapped.headless,

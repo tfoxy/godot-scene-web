@@ -1139,9 +1139,9 @@ async function buildGoodTree(out: string, projects: Projects): Promise<void> {
   }
   await writeProcess(
     join(out, "receiver-typecheck", "selftest"),
-    ["godot", "--script", "res://tests/codec2_selftest.gd"],
+    ["godot", "--script", "res://tests/receiver_selftest.gd"],
     [],
-    "[rs2-selftest] ok\n",
+    "[receiver-selftest] ok\n",
     0,
   );
   const minimalDir = join(out, "receiver-typecheck", "minimal");
@@ -3617,7 +3617,7 @@ const scenarios: Scenario[] = [
     mutate: (out) =>
       writeText(
         join(out, "receiver-typecheck", "selftest", "stdout.log"),
-        "[rs2-selftest] ok\nSCRIPT WARNING: unsafe\n",
+        "[receiver-selftest] ok\nSCRIPT WARNING: unsafe\n",
       ),
     checks: { "receiver-typed-clean": false },
   },

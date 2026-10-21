@@ -27,7 +27,7 @@
 //     reference under Q7's band (every differing pixel `readback` or `delta1`, G7b's classes);
 //     the native receiver's stays exact (budget 0).
 //   - Browser legs: Q6's provenance and console, Q8's hello, Q9's `credit-from-paced-loop` (every
-//     leg but the sabotage), and the web export's `receiver-core`; the native receivers' core.
+//     leg but the sabotage). (G7gd retired `receiver-core`: the Rust core is the only one.)
 //   - `late-poll-active`: each late-poll leg's receiver ran with RS_RECEIVER_LATE_POLL (its
 //     applied.json `live.late_poll`), and no other leg did.
 //   - `constrained`: G6c's criteria, plus the proxy's observed CORS preflight latency (reported).
@@ -80,7 +80,6 @@ import {
   helloProblems,
   type PageConfig,
   pacedLoopProblems,
-  receiverCoreProblems,
   type SummaryConnection,
 } from "./gate7-live";
 import { classifyShot } from "./gate7b-adapters";
@@ -455,8 +454,6 @@ export interface G7rKindResult {
 
 interface ReceiverKindJson {
   kind?: string;
-  web_core?: string;
-  native_core?: string;
   /** G7q: present (2) only on a --credit-window 2 run */
   credit_window?: number;
 }
@@ -497,7 +494,6 @@ function phaseFreeMeasure(
 export async function checkG7rKind(
   out: string,
   kind: G7rKind,
-  expectedWebCore: "gdscript" | "rust",
   /** G7wf: the web export's expected payload GET mechanism (run-gate7.sh --web-fetch). */
   expectedWebFetch: "fetch" | "httpclient" = "fetch",
 ): Promise<G7rKindResult> {
@@ -553,7 +549,6 @@ export async function checkG7rKind(
   const consoleBad: string[] = [];
   const hello: string[] = [];
   const paced: string[] = [];
-  const coreBad: string[] = [];
   const fetchBad: string[] = [];
   let fetchLegs = 0;
   let fetchGets = 0;
@@ -562,7 +557,6 @@ export async function checkG7rKind(
   let pacedLegs = 0;
   let sabotagePaced: string[] = [];
   const expectedKind = kind === "web" ? "web-export" : "gsw-canvas";
-  const nativeCore = rk?.native_core ?? "gdscript";
 
   for (const def of defs) {
     const ev = evs.get(def.leg);
@@ -894,9 +888,6 @@ export async function checkG7rKind(
         prov.push(...basics.provenance);
         consoleBad.push(...basics.console);
         if (kind === "web") {
-          coreBad.push(
-            ...(await receiverCoreProblems(r.dir, rel, expectedWebCore)),
-          );
           const f = await fetchImplProblems(r.dir, rel, expectedWebFetch);
           fetchBad.push(...f.problems);
           if (f.judged) fetchLegs++;
@@ -917,10 +908,6 @@ export async function checkG7rKind(
         }
         if (applied)
           legPaced = [...legPaced, ...pacedLoopProblems(rel, applied)];
-      } else if (applied && applied.receiver?.core !== nativeCore) {
-        coreBad.push(
-          `${rel}: native applied.json receiver.core ${applied.receiver?.core}, want ${nativeCore}`,
-        );
       }
     }
     if (def.browser_receivers.length > 0) {
@@ -1058,18 +1045,6 @@ export async function checkG7rKind(
       ),
     );
   }
-  checks.push(
-    mk(
-      at("receiver-core"),
-      kind === "web"
-        ? `G7xwl/D34: every web leg decoded and applied through the ${expectedWebCore} core, and every native receiver (dual-native's /6 one) through ${nativeCore}`
-        : `D34 (amended): every native receiver decoded and applied through ${nativeCore} (applied.json receiver.core)`,
-      coreBad,
-      kind === "web"
-        ? `web ${expectedWebCore}, native ${nativeCore}`
-        : nativeCore,
-    ),
-  );
   if (kind === "web")
     checks.push(
       mk(

@@ -50,7 +50,7 @@ import {
 import {
   type BrowserLegRequest,
   type BrowserRunContext,
-  coreEnv,
+  webPageEnv,
   type LegHandle,
   mapBrowserLeg,
 } from "./gate7-live-legs";
@@ -396,7 +396,7 @@ export function runDeviceBrowserLeg(
       ...(ctx.manifestSha256 && mapped.live
         ? { RS_RECEIVER_MANIFEST_SHA256: ctx.manifestSha256 }
         : {}),
-      ...coreEnv(ctx),
+      ...webPageEnv(ctx),
     };
     const pageConfig = {
       env,
@@ -434,12 +434,7 @@ export function runDeviceBrowserLeg(
         {
           url,
           kind: ctx.kind,
-          ...(ctx.kind === "web"
-            ? {
-                core: ctx.core ?? "rust",
-                core_sabotage: ctx.coreSabotage ?? null,
-              }
-            : {}),
+          ...(ctx.kind === "web" ? { core: "rust" } : {}),
           origin,
           token: mapped.token !== "" ? "fragment" : null,
           headless_native: mapped.headless,
