@@ -39,7 +39,7 @@ export const QUIET_SH = join(
 export function quietAcquire(
   mode: QuietMode,
   label: string,
-  opts: { log?: string } = {},
+  opts: { log?: string; owner?: number } = {},
 ): Promise<QuietHold> {
   const started = Date.now();
   const child = spawn(
@@ -49,7 +49,10 @@ export function quietAcquire(
       "hold",
       mode,
       "--owner",
-      String(process.pid),
+      // GRT2b: `owner` (default this process) is whose death frees the hold. Concurrent legs of
+      // one process each pass their own owner process (lib/gate7-web-legs.ts legOwner), since a
+      // second hold owned by this process would only nest in the first.
+      String(opts.owner ?? process.pid),
       "--label",
       label,
       "--log",

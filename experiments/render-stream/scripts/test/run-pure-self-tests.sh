@@ -53,6 +53,12 @@ for f in "$SCRIPT_DIR"/test/self-test-*.ts; do
 	NAMES+=("${b%.ts}")
 	CMDS+=("cd '$REPO_ROOT' && mise exec -- pnpm exec tsx --conditions=development '$f'")
 done
+# GRT2b's pure bash self-tests: stub launches and a private lock dir. self-test-socket-owners.sh is
+# not here, because its old-scan half walks every /proc fd (~1 min).
+for b in self-test-par-legs.sh self-test-fast-frames.sh; do
+	NAMES+=("${b%.sh}")
+	CMDS+=("bash '$SCRIPT_DIR/test/$b'")
+done
 if [ -n "$ONLY" ]; then
 	keepn=()
 	keepc=()

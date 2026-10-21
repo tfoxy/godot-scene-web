@@ -117,6 +117,59 @@ if seeding fails it launches the verified shared copy; if neither matches it ref
 paths. It never downloads a browser. `checkBrowserProvenance` still hashes whatever was launched
 against the same pin. `test/self-test-pinned-chromium.ts` covers it (no browser launched).
 
+# Sharded legs and fast frames (GRT2b)
+
+Measured in `../results/grt.md` "Part 2b".
+
+- **The display-ownership check is fast now.** `lib/gamescope.sh` `gs_socket_owners` finds the
+  holders of a gamescope X socket with one `find /proc/*/fd -lname`. It used to fork one `readlink`
+  per open fd on the box: ~15 s per socket, two sockets per rendered leg. That was ~90 % of every
+  native rendered leg (27 s → 2.1 s median). The evidence (`display-ownership.json`) is unchanged.
+  `test/self-test-socket-owners.sh` checks the new scan against the old one
+  (`gs_socket_owners_slow`) on live sockets.
+- **Sharded file-mode legs: `RS_LEG_SHARDS=N`** (`on` = 2; unset, `0`, `1` or `off` = serial, the
+  default). It is opt-in. Natively it is wired into gates 0–3; for browsers, into every gate 7
+  file group.
+  - Natively, each rendered block of a runner whose legs are all file-mode is a parallel region:
+    `legs_par_begin` after its `gs_start`, `legs_par_end` before its `gs_teardown` (`lib/legs.sh`
+    "Parallel file-mode legs").
+  - Inside a region, each `run_rendered_receiver`, `run_rendered` and `run_headless` runs on one of
+    N workers. Each worker has its own private gamescope and its own per-leg shared quiet-lock hold.
+  - Legs that must stay in order form one unit through `legs_par_unit <fn>`: gate 2's
+    `receiver-cold` → `receiver-warm` cache pair is `g2b_cache_pair`. `legs_par_wait` is a barrier:
+    in g2d, the receivers wait for the rendered captures they replay.
+  - Live receivers, background hosts, timing groups and timing legs never shard. Neither do the
+    native runners' gate 7 browser receivers (`GATE7_LIVE_KIND`), whose daemon, page port and host
+    port are per run.
+  - Gate 7's file legs (`gate7-tool.ts gsw-legs` / `web-legs`, `lib/gate7-web-legs.ts`) run N
+    legs at once, each in its own browser on the run's one harness server. Each leg's applied.json
+    hook is keyed by its nonce. Each leg's quiet hold is owned by its own owner process
+    (`quietAcquire`'s `owner`): a second hold owned by the same process would only nest. A leg
+    whose native env warms from another leg's cache (`dependsOnEarlier`) waits for every earlier
+    leg.
+  - `test/self-test-par-legs.sh` covers the bash library with stub launches.
+    `test/self-test-web-legs-shards.ts` covers the TS helpers.
+  - Verdicts and shots are byte-identical to serial on gates 0–3, at both 2 and 3 workers, and on
+    g7-0 gsw.
+
+  ```bash
+  RS_LEG_SHARDS=2 bash experiments/render-stream/scripts/run-gate3.sh --extension … --calibration …
+  ```
+- **Fast frames: `RS_FAST_FRAMES=all|host|receiver`.** This is a measured prototype, not a tier
+  (`../results/grt.md` "Part 2b" has what it breaks).
+  - It rewrites a correctness launch's `--max-fps 60`, on every side, on hosts only, or on
+    receivers only. Timing groups and timing legs keep real time.
+  - With `RS_FAST_FRAMES_MAX_FPS=N`, the rewrite is `--max-fps N --disable-vsync`, which scales
+    real time.
+  - Without it, the rewrite is `--fixed-fps 60 --max-fps 0 --disable-vsync`, which is unlimited.
+    Godot 4.5.1 ignores `--max-fps` beside `--fixed-fps`.
+  - A headless host tops out near 145 fps, whatever N is: the headless display cannot draw, so
+    Godot sleeps `low_processor_mode_sleep_usec` (6900 µs) per frame.
+  - `GATE7_FAST_FRAMES=1` adds Chromium's `--disable-gpu-vsync --disable-frame-rate-limit` to the
+    gate 7 live browser (`lib/gate7-live-legs.ts`), and lets the rewrite into a `GATE7_LIVE_KIND`
+    live leg.
+  - `test/self-test-fast-frames.sh` covers the rewrite.
+
 # Gate −1 runner
 
 Drives `../fixtures/spike/` through every leg of the capture library's runtime contract

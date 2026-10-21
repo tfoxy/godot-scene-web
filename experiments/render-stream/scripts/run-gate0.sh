@@ -143,6 +143,9 @@ command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 # Only recorded pids are touched (gs_teardown re-verifies pid + start ticks).
 CURRENT_CHILD_PID=""
 cleanup() {
+	if declare -F legs_par_cleanup >/dev/null; then
+		legs_par_cleanup
+	fi
 	if [ -n "$CURRENT_CHILD_PID" ] && kill -0 "$CURRENT_CHILD_PID" 2>/dev/null; then
 		echo "run-gate0: stopping owned process $CURRENT_CHILD_PID" >&2
 		kill "$CURRENT_CHILD_PID" 2>/dev/null || true
@@ -251,6 +254,7 @@ fi
 # ---------------------------------------------------------------------------------------------
 echo "run-gate0: bringing up private gamescope for rendered legs"
 gs_start 640 360 "$OUT/gamescope"
+legs_par_begin
 
 echo "run-gate0: reference"
 mkdir -p "$OUT/reference/shots"
@@ -277,6 +281,7 @@ for kind in freeze omit perturb; do
 	run_rendered_receiver "$OUT/sabotage-$kind/capture" "$OUT/sabotage-$kind/receiver"
 done
 
+legs_par_end
 gs_teardown "$OUT/gamescope"
 GS_RUN_DIR=""
 
