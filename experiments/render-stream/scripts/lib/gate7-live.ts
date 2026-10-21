@@ -275,7 +275,13 @@ export function discoverBrowserLegs(root: string): string[] {
     }
     if (rel !== "" && entries.includes("page-config.json")) out.push(rel);
     for (const e of entries) {
-      if (e === "gate7-browser" || e === "store" || e === "cache") continue;
+      if (
+        e === "gate7-browser" ||
+        e === "store" ||
+        e === "cache" ||
+        e === "g6l-attempts"
+      )
+        continue;
       const r = rel === "" ? e : `${rel}/${e}`;
       let isDir = false;
       try {
@@ -427,7 +433,13 @@ function discoverTracedLegs(root: string): string[] {
     if (rel !== "" && entries.includes("strace.txt")) out.push(rel);
     if (depth >= 3) return;
     for (const e of entries) {
-      if (e === "gate7-browser" || e === "store" || e === "cache") continue;
+      if (
+        e === "gate7-browser" ||
+        e === "store" ||
+        e === "cache" ||
+        e === "g6l-attempts"
+      )
+        continue;
       const r = rel === "" ? e : `${rel}/${e}`;
       try {
         if (statSync(join(root, r)).isDirectory()) walk(r, depth + 1);

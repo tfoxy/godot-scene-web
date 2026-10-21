@@ -599,8 +599,11 @@ class LiveReceiver {
       encoding: st.encoding === 0 ? "full" : "patch",
       record_sha256: digest,
       received_us: now,
+      // G7mm: the rAF callback that would first handle it (the Godot receivers' poll frame)
+      received_process_frame: this.processFrames + 1,
       applied_us: null,
       submitted_us: null,
+      submitted_process_frame: null,
       skipped: null,
       paced: {
         received_ms: now / 1000,
@@ -624,6 +627,7 @@ class LiveReceiver {
       if (whileHidden) this.acksWhileHidden++;
       const t = us();
       entry.submitted_us = t;
+      entry.submitted_process_frame = this.processFrames + 1;
       entry.paced.submitted_ack_ms = t / 1000;
       entry.paced.submitted_from = "onmessage";
       this.ack(seq, "submitted", t);
@@ -1265,6 +1269,7 @@ class LiveReceiver {
     ) {
       const t = us();
       entry.submitted_us = t;
+      entry.submitted_process_frame = this.processFrames;
       entry.paced.submitted_ack_ms = t / 1000;
       entry.paced.submitted_from = "raf";
       submittedMs = t / 1000;

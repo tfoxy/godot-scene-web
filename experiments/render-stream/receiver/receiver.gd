@@ -2283,6 +2283,9 @@ func _receive_binary(message: PackedByteArray) -> void:
 		"transaction":
 			var entry: Dictionary = _transaction_entry(_conn_index, meta, record)
 			entry["received_us"] = now_us
+			# G7mm: the main-loop iteration whose poll read the transaction; motion-monotonic counts
+			# a hold in frames (submitted_process_frame - received_process_frame).
+			entry["received_process_frame"] = Engine.get_process_frames()
 			if _log_mode != "summary":
 				_transactions.append(entry)
 			var received_seq: int = entry["seq"]
@@ -2471,12 +2474,11 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 		_log("stall: blocked %d us after the step %d shot (seq %d), injected" % [end_us - start_us, step, seq])
 	var now_us: int = Time.get_ticks_usec()
 	entry["submitted_us"] = now_us
-	if RsConfig.is_web():
-		# G7l (gate7-design.md Q9 `credit-from-paced-loop`): the main-loop iteration of this
-		# submitted ack. Equal to the entry's process_frame when the transaction was applied and
-		# drawn in one iteration (the web runs one per rAF callback). Web only, so native
-		# applied.json stays byte-for-byte what it was.
-		entry["submitted_process_frame"] = Engine.get_process_frames()
+	# G7l (gate7-design.md Q9 `credit-from-paced-loop`): the main-loop iteration of this submitted
+	# ack. Equal to the entry's process_frame when the transaction was applied and drawn in one
+	# iteration (the web runs one per rAF callback). G7mm records it on native too, next to
+	# received_process_frame, for motion-monotonic's hold-in-frames rule.
+	entry["submitted_process_frame"] = Engine.get_process_frames()
 	_send(RsLiveClient.ack(_stream_id, seq, "submitted", now_us))
 	_acks_sent["submitted"] = Rs2Decoder.as_int(_acks_sent["submitted"]) + 1
 	if _conn_index == 1 and not _marked_first_submitted:
