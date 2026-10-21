@@ -108,6 +108,11 @@ import json, sys
 p = json.load(open(sys.argv[1]))
 sys.exit(0 if all(set(r['groups']) <= {'g7-r'} for r in p['runs'] if r.get('receiver') == 'native') else 1)
 PY"
+check "the milestone plans g7-r and g7-k in each browser's -timing run" "python3 - '$OUT/plan.json' <<'PY'
+import json, sys
+r = {x['id']: x for x in json.load(open(sys.argv[1]))['runs']}
+sys.exit(0 if all({'g7-r', 'g7-k'} <= set(r['g7live-' + k + '-timing']['groups']) for k in ('gsw', 'web-rust')) else 1)
+PY"
 S="$OUT/validate-summary.json"
 check "typed unavailable rows: the run passes and the summary lists them" "python3 - '$S' <<'PY'
 import json, sys

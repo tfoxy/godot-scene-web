@@ -20,7 +20,7 @@
 #                and GATE7_FAST_FRAMES=1 on the g7-1/g7-2/g7-5/g7-55 live runs). Default on for every
 #                tier, --milestone included (GRT4a). Every timing leg and every denylisted leg stays
 #                real time either way (lib/legs.sh RS_FAST_ALLOW_LEGS / RS_FAST_DENY_LEGS; the
-#                g7-6/g7-lc/g7-r live runs and g7x never get the fast env).
+#                g7-6/g7-lc/g7-r/g7-k live runs and g7x never get the fast env).
 #   --fast-fps N the fast-frame rate (default 240)
 #   --base REF   the diff is `git diff --name-only REF...HEAD` plus uncommitted and untracked
 #                files (default main; lib/smoke-plan.py --print-paths); --paths replaces it with an
@@ -30,7 +30,7 @@
 #                plan `phase`, GRT4a): setup (pure self-tests, lock tests, builds, crates); native
 #                (native correctness gates; rust-core full runs are published to the source cache,
 #                so gate 7 reuses them); g7 (gate 7 file groups and correctness live groups); then
-#                timing (native gate 6, the g7-6/g7-lc/g7-r live runs, g7x), after everything else
+#                timing (native gate 6, the g7-6/g7-lc/g7-r/g7-k live runs, g7x), after everything else
 #                so their exclusive legs never stall a correctness run of the same tier
 #   --timing-jobs N
 #                runs at once in the timing phase (default 1)
