@@ -3,7 +3,7 @@
 //! check CLI drive it directly.
 //!
 //! Every answer the receiver reads is written as a Variant tree (`vt.rs`) in the exact shape
-//! `receiver/rs_applier.gd` and `Rs2Decoder` give receiver.gd, so receiver.gd's own logic (failure
+//! the former GDScript applier (`rs_applier.gd`, removed in G7gd) and `Rs2Decoder` give receiver.gd, so receiver.gd's own logic (failure
 //! seqs, evidence, acks) runs unchanged on top of either core.
 
 use crate::ops::OpBuf;

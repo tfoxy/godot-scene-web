@@ -1,4 +1,4 @@
-//! The Godot applier, in Rust: `receiver/rs_applier.gd`'s reconciliation of a RESOLVED state with
+//! The Godot applier, in Rust: the former GDScript applier (`rs_applier.gd`, removed in G7gd)'s reconciliation of a RESOLVED state with
 //! the receiver's own mirror of what it last sent to the RenderingServer, emitting the same
 //! RenderingServer calls in the same order (`ops.rs`) and the same statistics Dictionary
 //! (`apply_state()`'s return value, `vt.rs`). The C++ shim executes the calls as ptrcalls.

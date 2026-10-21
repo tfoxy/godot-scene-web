@@ -1,6 +1,6 @@
 //! Shader and material residency the native receiver's way (G7s), for `applied.json`'s /5
 //! counters (`shaders_created`, `shader_code_sets`, `materials_created`, `param_sets`,
-//! `instance_param_sets`; gate5_5-design.md Q5): what `rs_applier.gd` creates, sets and frees in
+//! `instance_param_sets`; gate5_5-design.md Q5): what the former GDScript applier (`rs_applier.gd`, removed in G7gd) creates, sets and frees in
 //! `_apply_shaders`, `_apply_materials` and `_apply_item_material`. The GSW applier draws from the
 //! resolved state directly, so this is accounting only: it decides no pixel.
 //!

@@ -97,7 +97,7 @@ impl Shortcut {
 pub const MAX_NINE_PATCH_CELLS: usize = 16384;
 
 /// Receiver sabotages that act on the lowering (gate7-design.md Q5 "Sabotages"): the native
-/// receiver's, defined as `rs_applier.gd` defines them, plus G7t's GSW-only `polygon-winding`.
+/// receiver's, defined as the former GDScript applier (`rs_applier.gd`, removed in G7gd) defines them, plus G7t's GSW-only `polygon-winding`.
 /// Each exists only to fail a check.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LowerSabotage {

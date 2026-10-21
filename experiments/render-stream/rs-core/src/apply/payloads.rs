@@ -18,7 +18,7 @@ pub struct TexturePixels {
     pub height: u32,
     pub rgba: Vec<u8>,
     /// The payload's own `Image.Format` name, mipmaps flag and `data` length (every level): what
-    /// the native receiver's upload accounting reads (`rs_applier.gd`, `uploads[].data_bytes`).
+    /// the native receiver's upload accounting reads (the former GDScript applier, `rs_applier.gd`, removed in G7gd; `uploads[].data_bytes`).
     pub format: String,
     pub mipmaps: bool,
     pub data_len: usize,
