@@ -50,6 +50,7 @@ import {
 import {
   type AppliedJson,
   type CaptureResultJson,
+  checkerDiffDir,
   classifyLeg,
   diffRgba,
   loadRecording,
@@ -680,7 +681,7 @@ export async function liveCheckpoints(
     join_,
     join(outDir, "reference", "shots"),
     join(receiverDir, "shots"),
-    join(receiverDir, "diff"),
+    checkerDiffDir(outDir, receiverDir),
     expected,
   );
 }

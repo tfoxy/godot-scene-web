@@ -51,6 +51,7 @@ import {
   type Checkpoint,
   type Classification,
   checkCaptureArmed,
+  checkerDiffDir,
   checkHeadlessNoGpuGate0,
   checkManifestPresent,
   checkReceiverConsumedStream,
@@ -1043,7 +1044,7 @@ export async function evaluateGate1Leg(
         stepJoin,
         join(outDir, "reference", "shots"),
         join(layout.receiverDir, "shots"),
-        join(layout.receiverDir, "diff"),
+        checkerDiffDir(outDir, layout.receiverDir),
         expected,
       ));
     }

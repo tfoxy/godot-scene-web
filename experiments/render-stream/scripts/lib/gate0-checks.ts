@@ -27,8 +27,9 @@
 // stderr) and exit-code.txt.
 
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 
 import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-diff";
 import {
@@ -1360,6 +1361,32 @@ async function shotSeqsPresent(receiverDir: string): Promise<number[]> {
   }
 }
 
+/** GRT4a: where a checker judging `outDir` writes the diff images of the receiver leg at
+ * `receiverDir`. A native run's own leg: `<receiverDir>/diff`, as always. A leg that resolves
+ * outside `outDir` (a gate 7 view links its legs to the source run, often a READ-ONLY source-cache
+ * entry, or to the web legs): `<outDir>/view-diff/<receiverDir relative to outDir>/diff`, so a
+ * checker never writes into a source it only reads (G7q: EACCES on a cache hit's diff/step-0.png). */
+export function checkerDiffDir(outDir: string, receiverDir: string): string {
+  const own = join(receiverDir, "diff");
+  const real = (p: string): string => {
+    // the deepest existing ancestor, resolved (a diff dir may not exist yet)
+    let q = p;
+    for (;;) {
+      try {
+        return join(realpathSync(q), relative(q, p));
+      } catch {
+        const up = dirname(q);
+        if (up === q) return p;
+        q = up;
+      }
+    }
+  };
+  const root = real(outDir);
+  const at = real(own);
+  if (at === root || at.startsWith(root + sep)) return own;
+  return join(outDir, "view-diff", relative(outDir, receiverDir), "diff");
+}
+
 /** Receiver shot vs the reference shot of the same step: full frame and the two rect regions.
  * The full-frame diff image goes to diffDir/step-<k>.png (compareRgbaBuffers, exact budgets). */
 export async function computeCheckpoints(
@@ -1527,7 +1554,7 @@ export async function evaluateLeg(
         stepJoin,
         join(layout.referenceDir ?? join(outDir, "reference"), "shots"),
         join(layout.receiverDir, "shots"),
-        join(layout.receiverDir, "diff"),
+        checkerDiffDir(outDir, layout.receiverDir),
         expected,
         leg === "preexisting-skip" ? preexistingRects(expected) : [],
       ));
