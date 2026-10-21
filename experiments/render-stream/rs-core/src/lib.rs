@@ -13,6 +13,7 @@ pub mod state;
 
 pub mod canon;
 pub mod goldens;
+pub mod idtable;
 pub mod json;
 pub mod meta;
 pub mod payload;

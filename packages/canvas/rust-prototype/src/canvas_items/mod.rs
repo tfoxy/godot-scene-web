@@ -13,7 +13,11 @@
 //! 3. a clear of the offscreen target (`list.target`: RGB10_A2 or RGBA8) to the PREMULTIPLIED
 //!    `target.clear` (the list's clear colour is straight, the target holds premultiplied colour);
 //! 4. every [`Draw`] in order, merging only ADJACENT draws that
-//!    [`mergeable`](gsw_canvas_draw_list::mergeable) allows ([`plan_calls`]);
+//!    [`mergeable`](gsw_canvas_draw_list::mergeable) allows ([`plan_calls`]); a run that takes in
+//!    [`DRAW_UNTEXTURED`](gsw_canvas_draw_list::DRAW_UNTEXTURED) draws binds its textured draws'
+//!    texture, and the builtin program draws an
+//!    [`ITEM_UNTEXTURED`](gsw_canvas_draw_list::ITEM_UNTEXTURED) item's fragments as the white
+//!    texel (G7o4);
 //! 5. the blit to the canvas with G7c's `StageTarget` semantics (`packages/canvas/src/present.ts`):
 //!    RGB10_A2 is a `texelFetch` draw writing `floor(c·255 + 0.5)/255`, never `blitFramebuffer`
 //!    (memory g7c-gpu-blend-conversion-facts); RGBA8 is a `blitFramebuffer`;
@@ -28,7 +32,9 @@
 //!
 //! This module also holds the target-independent planning ([`plan_calls`], [`item_upload_rects`])
 //! so it is unit-tested natively.
-use gsw_canvas_draw_list::{BUILTIN_PROGRAM, Blend, Draw, DrawList, WHITE_TEXTURE, mergeable};
+use gsw_canvas_draw_list::{
+    BUILTIN_PROGRAM, Blend, DRAW_UNTEXTURED, Draw, DrawList, WHITE_TEXTURE, mergeable, merged,
+};
 
 #[cfg(target_arch = "wasm32")]
 mod gl;
@@ -293,10 +299,14 @@ pub const MAX_PROGRAM_SAMPLERS: usize = 13;
 /// One `drawElements` call: the state of draw `draw` over a merged index range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Call {
-    /// Index of the run's first draw in `list.draws` (its state is the call's).
+    /// Index of the run's first draw in `list.draws` (its state is the call's, but for the
+    /// texture and sampler: `texture_draw`'s).
     pub draw: u32,
     pub first_index: u32,
     pub index_count: u32,
+    /// G7o4: the draw whose texture and sampler the call binds: the run's first draw that is not
+    /// [`DRAW_UNTEXTURED`], else `draw` (an all-untextured run, which needs no texture of its own).
+    pub texture_draw: u32,
 }
 
 /// What [`plan_calls`] counted besides the calls.
@@ -332,28 +342,36 @@ pub fn plan_calls(
 ) -> PlanCounts {
     out.clear();
     let mut counts = PlanCounts::default();
-    let mut prev: Option<&Draw> = None;
+    // The current run's state (`merged`): its texture and sampler are its first textured draw's.
+    let mut run: Option<Draw> = None;
     for (i, draw) in list.draws.iter().enumerate() {
         if draw.index_count == 0 {
             continue;
         }
         if !drawable(draw, list.indices.len(), &known_texture, &known_binding) {
             counts.skipped += 1;
-            prev = None;
+            run = None;
             continue;
         }
-        match (prev, out.last_mut()) {
-            (Some(p), Some(call)) if mergeable(p, draw) => {
+        run = Some(match (run, out.last_mut()) {
+            (Some(r), Some(call)) if mergeable(&r, draw) => {
                 call.index_count += draw.index_count;
+                if r.flags & DRAW_UNTEXTURED != 0 && draw.flags & DRAW_UNTEXTURED == 0 {
+                    call.texture_draw = i as u32;
+                }
                 counts.merged += 1;
+                merged(&r, draw)
             }
-            _ => out.push(Call {
-                draw: i as u32,
-                first_index: draw.first_index,
-                index_count: draw.index_count,
-            }),
-        }
-        prev = Some(draw);
+            _ => {
+                out.push(Call {
+                    draw: i as u32,
+                    first_index: draw.first_index,
+                    index_count: draw.index_count,
+                    texture_draw: i as u32,
+                });
+                *draw
+            }
+        });
     }
     counts
 }
@@ -549,17 +567,20 @@ mod tests {
                 Call {
                     draw: 0,
                     first_index: 0,
-                    index_count: 12
+                    index_count: 12,
+                    texture_draw: 0
                 },
                 Call {
                     draw: 2,
                     first_index: 12,
-                    index_count: 6
+                    index_count: 6,
+                    texture_draw: 2
                 },
                 Call {
                     draw: 4,
                     first_index: 18,
-                    index_count: 6
+                    index_count: 6,
+                    texture_draw: 4
                 },
             ]
         );
@@ -611,7 +632,8 @@ mod tests {
             Call {
                 draw: 5,
                 first_index: 18,
-                index_count: 6
+                index_count: 6,
+                texture_draw: 5
             }
         );
     }
@@ -661,15 +683,61 @@ mod tests {
                 Call {
                     draw: 0,
                     first_index: 0,
-                    index_count: 3
+                    index_count: 3,
+                    texture_draw: 0
                 },
                 Call {
                     draw: 2,
                     first_index: 6,
-                    index_count: 3
+                    index_count: 3,
+                    texture_draw: 2
                 }
             ]
         );
+    }
+
+    #[test]
+    fn untextured_draws_join_a_textured_run_and_the_call_binds_its_texture() {
+        let w = |first| Draw {
+            flags: DRAW_UNTEXTURED,
+            ..draw(first, 3)
+        };
+        let t = |first, texture| Draw {
+            texture,
+            sampler: Sampler::LINEAR,
+            ..draw(first, 3)
+        };
+        // W W A W A | B W: the first run binds A (draw 2), the second B (draw 5).
+        let l = list(
+            vec![w(0), w(3), t(6, 2), w(9), t(12, 2), t(15, 3), w(18)],
+            21,
+        );
+        let mut out = Vec::new();
+        let counts = plan_calls(&l, |_| true, |_| false, &mut out);
+        assert_eq!(out.len(), l.merged_draw_count());
+        assert_eq!(
+            out,
+            vec![
+                Call {
+                    draw: 0,
+                    first_index: 0,
+                    index_count: 15,
+                    texture_draw: 2,
+                },
+                Call {
+                    draw: 5,
+                    first_index: 15,
+                    index_count: 6,
+                    texture_draw: 5,
+                },
+            ]
+        );
+        assert_eq!(counts.merged, 5);
+        // An all-untextured run names its own first draw.
+        let l = list(vec![w(0), w(3)], 6);
+        plan_calls(&l, |_| true, |_| false, &mut out);
+        assert_eq!(out[0].texture_draw, 0);
+        assert_eq!(out[0].index_count, 6);
     }
 
     #[test]
@@ -682,7 +750,8 @@ mod tests {
             vec![Call {
                 draw: 0,
                 first_index: 0,
-                index_count: 6
+                index_count: 6,
+                texture_draw: 0
             }]
         );
         assert_eq!(l.merged_draw_count(), 1);

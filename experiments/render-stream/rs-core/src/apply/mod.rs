@@ -34,7 +34,7 @@ use crate::state::{
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
     Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, Target, Uniform,
-    BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, WHITE_TEXTURE,
+    BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, DRAW_UNTEXTURED, ITEM_UNTEXTURED, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
 use payloads::{MeshGeometry, PayloadStore};
@@ -411,6 +411,8 @@ struct Spare {
 /// The applier: owns the packed list it fills.
 pub struct Applier {
     pub list: DrawList,
+    /// G7o4: `list.merged_draw_count()` as of the last `assemble`.
+    expected_calls: Option<u32>,
     viewport: Viewport,
     items: IdMap<ItemRec>,
     free_rows: Vec<u32>,
@@ -444,7 +446,7 @@ pub struct Applier {
     pub stats: ApplyStats,
     first: bool,
     /// G7s: the adapter's program (or refusal) per custom shader code hash.
-    programs: HashMap<Hash, ProgramEntry>,
+    programs: HashMap<Hash, ProgramEntry, payloads::HashBuild>,
     programs_dirty: bool,
     /// Live binding slots by key, each slot's key, and the free slots.
     binding_slots: HashMap<BindingKey, u32>,
@@ -582,6 +584,21 @@ fn canvas_modulate(state: &ResolvedState, canvas: Id, ignore_root: bool) -> [f32
     }
 }
 
+/// G7o4: an item's row flags: [`ITEM_UNTEXTURED`] when every draw of its lowering is white and
+/// not MSDF (so the builtin program draws it as the white texel whatever texture is bound).
+fn row_flags(lowered: &Lowered) -> u32 {
+    if !lowered.draws.is_empty()
+        && lowered
+            .draws
+            .iter()
+            .all(|d| d.tex == TexRef::White && d.msdf.is_none())
+    {
+        ITEM_UNTEXTURED
+    } else {
+        0
+    }
+}
+
 fn mul4(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]]
 }
@@ -620,6 +637,7 @@ impl Applier {
         };
         Applier {
             list: DrawList::new(target),
+            expected_calls: None,
             viewport,
             items: IdMap::default(),
             free_rows: Vec::new(),
@@ -640,7 +658,7 @@ impl Applier {
             shortcut_totals: BTreeMap::new(),
             stats: ApplyStats::default(),
             first: true,
-            programs: HashMap::new(),
+            programs: HashMap::default(),
             programs_dirty: false,
             binding_slots: HashMap::new(),
             binding_keys: Vec::new(),
@@ -904,6 +922,22 @@ impl Applier {
             list.dirty.vertices.add(rec.vstart, rec.vstart + n);
         }
         moved
+    }
+
+    /// G7o4: a re-lowering that changes whether the item is untextured ([`row_flags`]) rewrites
+    /// the flags of its row when the last walk wrote that row (a walk later in this apply writes
+    /// the whole row again; an unwalked row is written by the walk that first visits it).
+    fn sync_row_flags(list: &mut DrawList, rec: &ItemRec, walk_serial: u64, stats: &mut ApplyStats) {
+        if rec.walked != walk_serial {
+            return;
+        }
+        let flags = row_flags(&rec.lowered);
+        let r = rec.row as usize;
+        if list.items[r].flags != flags {
+            list.items[r].flags = flags;
+            list.dirty.items.add(rec.row, rec.row + 1);
+            stats.rows_written += 1;
+        }
     }
 
     /// Re-pack every item's vertices contiguously (when the slab's holes outgrow its use).
@@ -1512,6 +1546,7 @@ impl Applier {
                     rec.content_version = it.content_version;
                     let moved_range =
                         Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
+                    Self::sync_row_flags(&mut self.list, rec, self.walk_serial, &mut self.stats);
                     if same && !moved_range {
                         self.stats.relowered_in_place += 1;
                     } else {
@@ -1564,6 +1599,7 @@ impl Applier {
                 rec.lowered_at = self.serial;
                 Self::install_lowering(&mut self.spare, rec, lowered, tex_sizes, mesh_versions);
                 let moved_range = Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
+                Self::sync_row_flags(&mut self.list, rec, self.walk_serial, &mut self.stats);
                 if same && !moved_range {
                     self.stats.relowered_in_place += 1;
                 } else {
@@ -1667,7 +1703,8 @@ impl Applier {
         }
         prof::add(prof::CLASSIFY, t);
         self.stats.why = why;
-        if walk || why != 0 {
+        let assembled = walk || why != 0;
+        if assembled {
             #[cfg(not(target_arch = "wasm32"))]
             let t0 = std::time::Instant::now();
             let t = prof::start();
@@ -1697,7 +1734,11 @@ impl Applier {
         self.stats.vertex_count = self.list.vertices.len() as u32;
         self.stats.index_count = self.list.indices.len() as u32;
         self.stats.emitted_draws = self.list.draws.len() as u32;
-        self.stats.expected_calls = self.list.merged_draw_count() as u32;
+        // G7o4: only `assemble` writes the draws, so the merged count is kept until it runs again.
+        if assembled || self.expected_calls.is_none() {
+            self.expected_calls = Some(self.list.merged_draw_count() as u32);
+        }
+        self.stats.expected_calls = self.expected_calls.unwrap_or(0);
         &self.stats
     }
 
@@ -2096,7 +2137,7 @@ impl Applier {
                     mul4(rec.child_modulate, it.self_modulate),
                     rec.canvas_modulate,
                 ),
-                flags: 0,
+                flags: row_flags(&rec.lowered),
                 reserved: 0,
             };
             let r = rec.row;
@@ -2240,7 +2281,7 @@ impl Applier {
         let row = Row {
             xform: rec.final_xform,
             modulate,
-            flags: 0,
+            flags: row_flags(&rec.lowered),
             reserved: 0,
         };
         let r = rec.row;
@@ -2275,6 +2316,12 @@ impl Applier {
             };
             attached += 1;
             let (item_filter, item_repeat) = (a.filter, a.repeat);
+            // G7o4: an untextured item's draws through the builtin program ignore the texture.
+            let untextured = if a.program == BUILTIN_PROGRAM && row_flags(&rec.lowered) != 0 {
+                DRAW_UNTEXTURED
+            } else {
+                0
+            };
             for ld in &rec.lowered.draws {
                 lowered_draws += 1;
                 let LDraw {
@@ -2351,7 +2398,8 @@ impl Applier {
                     program: a.program,
                     scissor: scissor.unwrap_or([0; 4]),
                     flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 }
-                        | if msdf.is_some() { DRAW_MSDF } else { 0 },
+                        | if msdf.is_some() { DRAW_MSDF } else { 0 }
+                        | untextured,
                     msdf: msdf.unwrap_or([0.0; 2]),
                 });
             }

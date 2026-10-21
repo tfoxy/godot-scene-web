@@ -54,6 +54,10 @@ export interface MeshSpec {
   program?: number;
   /** G7tm: `DRAW_MSDF` with `Draw::msdf` `[px_range, outline]`; absent for a plain draw. */
   msdf?: readonly [number, number];
+  /** G7o4: `DRAW_UNTEXTURED` (texture 0, the builtin program, no MSDF); its item's row carries
+   *  `ITEM_UNTEXTURED` when every mesh of the item is untextured. The TypeScript spec draws it as
+   *  any white mesh. */
+  untextured?: boolean;
   vertices: readonly VertexSpec[];
   /** Triangle list into `vertices`. */
   indices: readonly number[];
@@ -113,11 +117,9 @@ export function samplerBits(mesh: MeshSpec): number {
   return (mesh.filter === "linear" ? 1 : 0) | (WRAP_CODES[mesh.wrap] << 1);
 }
 
-/** The state `gsw_canvas_draw_list::mergeable` compares, as a key. */
+/** The state `gsw_canvas_draw_list::mergeable` compares, as a key (texture and sampler apart). */
 function stateKey(mesh: MeshSpec): string {
   return [
-    mesh.texture,
-    samplerBits(mesh),
     BLEND_CODES[mesh.blend],
     mesh.program ?? 0,
     mesh.scissor ? mesh.scissor.join(",") : "-",
@@ -126,17 +128,36 @@ function stateKey(mesh: MeshSpec): string {
 }
 
 /** Draw calls the Rust executor must issue: runs of adjacent meshes with equal state (their index
- *  ranges always touch, since meshes are packed in order). */
+ *  ranges always touch, since meshes are packed in order). G7o4 (`gsw_canvas_draw_list::merged`):
+ *  an untextured mesh matches any texture and sampler, and a run that was untextured so far takes
+ *  the first textured mesh's. */
 export function expectedDrawCalls(spec: ItemsCase): number {
   let calls = 0;
-  let previous: string | null = null;
+  let run: { key: string; tex: string | null } | null = null;
   for (const mesh of spec.meshes) {
     if (mesh.indices.length === 0) continue;
     const key = stateKey(mesh);
-    if (key !== previous) calls += 1;
-    previous = key;
+    const tex = mesh.untextured
+      ? null
+      : `${mesh.texture}|${samplerBits(mesh)}`;
+    if (
+      run !== null &&
+      run.key === key &&
+      (run.tex === null || tex === null || run.tex === tex)
+    ) {
+      run.tex = run.tex ?? tex;
+      continue;
+    }
+    calls += 1;
+    run = { key, tex };
   }
   return calls;
+}
+
+/** G7o4: `ITEM_UNTEXTURED` (bit 30) for an item whose every mesh is untextured. */
+function itemFlags(spec: ItemsCase, item: number): number {
+  const own = spec.meshes.filter((m) => m.item === item);
+  return own.length > 0 && own.every((m) => m.untextured) ? 0x40000000 : 0;
 }
 
 /** `PDL1` (see `gsw_canvas_draw_list::pdl1`) of `spec` with frame `frame`'s items: version 1
@@ -181,12 +202,12 @@ export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
   u32(vertexCount);
   u32(indexCount);
   u32(spec.meshes.length);
-  for (const item of items) {
+  items.forEach((item, i) => {
     for (const v of item.xform) fl(v);
     for (const v of item.modulate) fl(v);
+    u32(itemFlags(spec, i));
     u32(0);
-    u32(0);
-  }
+  });
   for (const mesh of spec.meshes) {
     for (const vertex of mesh.vertices) {
       fl(vertex.pos[0]);
@@ -212,8 +233,10 @@ export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
     u32(mesh.program ?? 0);
     const scissor = mesh.scissor ?? [0, 0, 0, 0];
     for (const v of scissor) i32(v);
-    // Draw::flags: DRAW_SCISSOR 1, DRAW_MSDF 2.
-    u32((mesh.scissor ? 1 : 0) | (mesh.msdf ? 2 : 0));
+    // Draw::flags: DRAW_SCISSOR 1, DRAW_MSDF 2, DRAW_UNTEXTURED 4.
+    u32(
+      (mesh.scissor ? 1 : 0) | (mesh.msdf ? 2 : 0) | (mesh.untextured ? 4 : 0),
+    );
     if (version === 2) {
       fl(mesh.msdf?.[0] ?? 0);
       fl(mesh.msdf?.[1] ?? 0);
@@ -240,6 +263,8 @@ export interface QuadOptions {
   program?: number;
   /** G7tm: an MSDF draw's `[px_range, outline]`. */
   msdf?: readonly [number, number];
+  /** G7o4: `DRAW_UNTEXTURED` (white texel, builtin program). */
+  untextured?: boolean;
 }
 
 /** An axis-aligned quad in item-local space, two triangles. */
@@ -261,6 +286,7 @@ export function quad(
     scissor: options.scissor,
     ...(options.program ? { program: options.program } : {}),
     ...(options.msdf ? { msdf: options.msdf } : {}),
+    ...(options.untextured ? { untextured: true } : {}),
     vertices: [
       { pos: [x, y], uv: [u0, v0], color: c[0] },
       { pos: [x + w, y], uv: [u1, v0], color: c[1] },
@@ -695,6 +721,17 @@ function itemsOnlyUpdate(): ItemsCase {
   return { ...base, frames: [first, frame2, frame3] };
 }
 
+/** G7o4: `manyItems` with every white quad untextured, so the white runs join the textured runs
+ *  around them (fewer calls, the textured draw's texture bound); frame 2 moves a few items. The
+ *  shots must equal the TypeScript spec's, which draws the white quads with the white texel. */
+function untexturedRuns(): ItemsCase {
+  const base = itemsOnlyUpdate();
+  const meshes = base.meshes.map((m) =>
+    m.texture === 0 ? { ...m, untextured: true } : m,
+  );
+  return { ...base, name: "untexturedRuns", meshes, frames: base.frames.slice(0, 2) };
+}
+
 /** G7c's rgb10a2Stack: an opaque base under five MIX layers of alpha 0.2 (left), one
  *  translucent quad over the transparent clear (right). */
 function stack(format: TargetFormat): ItemsCase {
@@ -739,6 +776,7 @@ export function buildCases(): ItemsCase[] {
     stack("rgb10a2"),
     stack("rgba8"),
     itemsOnlyUpdate(),
+    untexturedRuns(),
   ];
 }
 

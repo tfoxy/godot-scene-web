@@ -7,7 +7,7 @@
 //! the wire's order; maps are keyed by wire id, so iteration is ascending id order, which is the
 //! order the resolved form lists entries in.
 
-use std::collections::BTreeMap;
+pub use crate::idtable::IdTable;
 
 pub type Id = u32;
 
@@ -560,12 +560,12 @@ pub struct ResolvedState {
     pub unknown_items: Option<UnknownItems>,
     pub default_texture_filter: Filter,
     pub default_texture_repeat: Repeat,
-    pub canvases: BTreeMap<Id, Canvas>,
-    pub items: BTreeMap<Id, Item>,
-    pub textures: BTreeMap<Id, Texture>,
-    pub meshes: BTreeMap<Id, Mesh>,
-    pub shaders: BTreeMap<Id, Shader>,
-    pub materials: BTreeMap<Id, Material>,
+    pub canvases: IdTable<Canvas>,
+    pub items: IdTable<Item>,
+    pub textures: IdTable<Texture>,
+    pub meshes: IdTable<Mesh>,
+    pub shaders: IdTable<Shader>,
+    pub materials: IdTable<Material>,
 }
 
 impl ResolvedState {
@@ -581,12 +581,12 @@ impl ResolvedState {
             unknown_items: None,
             default_texture_filter: Filter::Nearest,
             default_texture_repeat: Repeat::Disabled,
-            canvases: BTreeMap::new(),
-            items: BTreeMap::new(),
-            textures: BTreeMap::new(),
-            meshes: BTreeMap::new(),
-            shaders: BTreeMap::new(),
-            materials: BTreeMap::new(),
+            canvases: IdTable::new(),
+            items: IdTable::new(),
+            textures: IdTable::new(),
+            meshes: IdTable::new(),
+            shaders: IdTable::new(),
+            materials: IdTable::new(),
         }
     }
 }
