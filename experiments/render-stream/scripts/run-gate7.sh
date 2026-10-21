@@ -539,13 +539,25 @@ source_cache_lookup() {
 	[ "$SOURCE_CACHE" = 1 ] || return 1
 	source_cache_key || return 1
 	local hit
-	hit="$(bash "$SCRIPT_DIR/source-cache.sh" lookup "$SOURCE_KEY" "$1" "$2")" || {
+	hit="$(bash "$SCRIPT_DIR/source-cache.sh" lookup "$SOURCE_KEY" "$1" "$2" --lease $$)" || {
 		SOURCE_CACHE_STATUS[$1]="miss"
 		return 1
 	}
 	SOURCES[$1]="$hit"
 	SOURCE_CACHE_STATUS[$1]="hit"
 	echo "run-gate7: $1 source: cache hit $hit (key $SOURCE_KEY)" >&2
+}
+# GRT4a single flight: source_cache_flight <gate> before a lookup that may lead to making the
+# source, source_cache_land <gate> after its publish (or a hit). A second run missing the same key
+# and gate waits for the first maker, then hits (source-cache.sh "Single flight").
+source_cache_flight() {
+	[ "$SOURCE_CACHE" = 1 ] || return 0
+	source_cache_key || return 0
+	bash "$SCRIPT_DIR/source-cache.sh" flight "$SOURCE_KEY" "$1" $$ || true
+}
+source_cache_land() {
+	[ "$SOURCE_CACHE" = 1 ] && [ -n "$SOURCE_KEY" ] || return 0
+	bash "$SCRIPT_DIR/source-cache.sh" land "$SOURCE_KEY" "$1" $$ || true
 }
 source_cache_publish() {
 	[ "$SOURCE_CACHE" = 1 ] || return 0
@@ -823,7 +835,8 @@ for g in "${SOURCE_GATES[@]}"; do
 		# Gate 6: g6a, g6h and g6b only (g6l is live, G7g's --live; g6s/g6c are timing groups).
 		[ "$g" = 6 ] && source_legs=(--legs g6a,g6h,g6b)
 		cache_legs="${source_legs[1]:-all}"
-		source_cache_lookup "gate$g" "$cache_legs" && continue
+		source_cache_flight "gate$g"
+		source_cache_lookup "gate$g" "$cache_legs" && source_cache_land "gate$g" && continue
 		echo "run-gate7: making the gate $g source run (run-gate$g.sh)" >&2
 		set +e
 		bash "$SCRIPT_DIR/run-gate$g.sh" --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
@@ -835,6 +848,7 @@ for g in "${SOURCE_GATES[@]}"; do
 		g7tool source-provenance --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
 			--out "${SOURCES[gate$g]}/gate7-source.json"
 		source_cache_publish "gate$g" "$cache_legs"
+		source_cache_land "gate$g"
 	fi
 done
 # G7b: the gates 1 to 6 sources (the same D21 rule as gate 0's).
@@ -863,7 +877,8 @@ for spec in "${G7B_GROUPS[@]}"; do
 		exit 1
 	fi
 	EXTENSION="$(realpath "$EXTENSION")"
-	source_cache_lookup "$gate" "$source_legs" && continue
+	source_cache_flight "$gate"
+	source_cache_lookup "$gate" "$source_legs" && source_cache_land "$gate" && continue
 	echo "run-gate7: making the $gate source run ($runner --legs $source_legs)" >&2
 	set +e
 	bash "$SCRIPT_DIR/$runner" --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
@@ -875,6 +890,7 @@ for spec in "${G7B_GROUPS[@]}"; do
 	g7tool source-provenance --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
 		--out "${SOURCES[$gate]}/gate7-source.json"
 	source_cache_publish "$gate" "$source_legs"
+	source_cache_land "$gate"
 done
 {
 	printf '{"sources": {'

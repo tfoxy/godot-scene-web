@@ -50,6 +50,8 @@
     "collapse_at": 3,
     "g7": { "legs": ["@first"] }
   },
+  "timing_doc": "GRT4a: targets whose runs go in validate-increment.sh's last phase, after every correctness run: their exclusive quiet-lock legs (gate 6's g6l/g6s/g6c/g6p, the timing live groups, the bench and device-control arms) starved the browser groups sharing a tier with them (G7q: 11.9-13.8 ks of summed lock wait). A receiver's live groups split into a correctness run and a -timing run.",
+  "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7x:*"],
   "rules": [
     {
       "why": "offline comparison of replayed native receiver legs (G7xn); no gate runs it",
@@ -84,6 +86,7 @@
         "experiments/render-stream/scripts/validate-increment.sh",
         "experiments/render-stream/scripts/smoke-map.json",
         "experiments/render-stream/scripts/lib/smoke-plan.py",
+        "experiments/render-stream/scripts/lib/tier-verdict.py",
         "experiments/render-stream/scripts/test/**"
       ],
       "reach": ["pure"]

@@ -31,6 +31,7 @@ import {
   readTextOrUndefined,
 } from "./gate-minus1-checks";
 import {
+  checkerDiffDir,
   classifyLeg,
   loadRecording,
   type RecordingSummary,
@@ -503,7 +504,7 @@ export async function evaluateG1dLeg(
     join_,
     join(outDir, "reference", "shots"),
     join(receiverDir, "shots"),
-    join(receiverDir, "diff"),
+    checkerDiffDir(outDir, receiverDir),
     expected,
     (step, seq) =>
       shotName(shots.find((x) => x.step === step)?.stream ?? 1, seq),

@@ -74,14 +74,31 @@ under those roots is in the key until excluded. `gate7-tool.ts source-key [--jso
   (`GSW_SOURCE_CACHE` overrides): a copy, never the maker's evidence, with the run's own absolute
   path rewritten to the entry's in every text file (`env.txt` records receiver paths), written to a
   `.tmp-*` dir and renamed into place, then made read-only. A lookup for a legs list also takes the
-  gate's `all` entry. `source-cache.sh list` / `prune [--keep-days 14]`.
+  gate's `all` entry. `source-cache.sh list` / `prune [--keep N | --keep-days 14]`.
+- **Single flight** (GRT4a). `run-gate7.sh` takes `source-cache.sh flight <key> <gate> <pid>` before
+  its lookup and `land`s after its publish, so two runs missing the same key and gate at once
+  (validate-increment.sh's `g7-gsw` and `g7-web-rust`, or two worktrees) make that source once: the
+  second waits on `<root>/.flight/<key>--<gate>/`, then hits. A flight whose owner process is gone
+  is taken over; a wait past `GSW_SOURCE_FLIGHT_MAX_S` (7200) makes the source unshared.
+- **Keep-N / LRU pruning** (GRT4a). Every publish prunes the cache to the `GSW_SOURCE_CACHE_KEEP`
+  (default 3; `0` = never) most recently used keys (`<key>/.last-used`, touched by each publish and
+  lookup hit). A key with a live lease (`lookup --lease <pid>`; run-gate7.sh passes its own pid, so
+  a run replaying an old entry keeps it), a live flight, or a key used within
+  `GSW_SOURCE_CACHE_MIN_AGE_S` (default 6 h; runners from before GRT4a take no lease) is never
+  pruned, so the cache can sit above N while keys are in use. Entries are read-only: pruning does
+  `chmod -R u+w`, then `rm -rf`.
+- **Checkers never write into a source** (GRT4a). A gate 7 view links its legs to the source run,
+  often a read-only cache entry, and the gate 0/1 checkers used to write `diff/step-<k>.png` through
+  that link (G7q: EACCES, worked around with `RS_SOURCE_CACHE=0`). `checkerDiffDir`
+  (`lib/gate0-checks.ts`) keeps a run's own legs' diffs at `<receiver>/diff/` and puts a linked
+  leg's under `<view>/view-diff/<leg>/receiver/diff/`.
 - The capture library builds path-independently (`-ffile-prefix-map`, `capture/CMakeLists.txt`), so
   the same capture sources give the same library sha256 in every worktree and a cached source
   serves later increments.
 
 **Smoke tier** (`validate-increment.sh`, `smoke-map.json`, `lib/smoke-plan.py`). `bash
-validate-increment.sh --plan` maps the diff (`git diff --name-only main...HEAD` plus uncommitted and
-untracked files) through `smoke-map.json` to targets: native gates per core, gate 7 groups per
+validate-increment.sh --plan` maps the diff (`git diff --name-only main...HEAD`, or `<ref>...HEAD`
+with `--base <ref>`, plus uncommitted and untracked files) through `smoke-map.json` to targets: native gates per core, gate 7 groups per
 receiver and web core, live groups, crates, the lock tests. A path no rule matches reaches every
 target. Without `--plan` it runs them: the pure self-tests (`test/run-pure-self-tests.sh`, light),
 builds and crates, native gates (each passing rust-core full run is published to the source
@@ -89,8 +106,31 @@ cache), then gate 7 with `--make-sources` (which then hits the cache). Native sa
 only when a checker, runner, sabotage or mutation file is in the diff; otherwise the runners get
 `RS_SABOTAGE_TIER=skip` (`lib/legs.sh` skips any leg directory naming `sabotage`, leaving
 `skipped-by-tier.txt`) and the run's `tier-verdict.json` lists the sabotage checks as
-skipped-by-tier, failing on any other check. `--milestone` runs every target with sabotage.
-`python3 lib/smoke-plan.py --self-test --map smoke-map.json` tests the map.
+skipped-by-tier, failing on any other check. `--milestone` runs every target with sabotage;
+`--milestone --base <commit>` is the delta sweep (GRT4a): the full tier over the targets the diff
+since `<commit>` reaches, with every sabotage leg of those (a capture, wire or unmatched path still
+reaches everything). `python3 lib/smoke-plan.py --self-test --map smoke-map.json` tests the map.
+
+**Phases** (GRT4a). Each planned run has a `phase`, run in order: `setup` (pure, lock tests, builds,
+crates), `native` (native correctness gates), `g7` (file groups and correctness live groups), then
+`timing`: the map's `"timing"` targets (native gate 6, the g7-6/g7-lc/g7-r live groups, `g7x`),
+at `--timing-jobs` (default 1). A receiver's live groups split into `g7live-<r>` and
+`g7live-<r>-timing`; the native receiver only ever plans `g7-r` (run-gate7.sh refuses any other
+live group there). G7q's full tier ran gate 6's and the timing live groups' exclusive legs beside
+the browser groups, whose own lock wait reached 3.8–4.9 ks of a 6–7 ks run.
+
+**Typed unavailable rows and the summary** (GRT4a). A native or gate 7 run whose runner exits 1 is
+re-judged by `lib/tier-verdict.py --runner-rc 1`: failing rows typed `unavailable` or
+`device-unavailable` (desktop g7-lc's real-suspension rows) do not fail it but are listed; any
+other failing row, a runner exit with every check passing, or an exit >= 2 still fails.
+`validate-summary.json` (`render-stream-validate-summary/2`) gives each run its phase, wall time,
+quiet-lock wait and hold per mode summed over the run's own `quiet-lock-summary.json` files
+(symlinked directories are not followed: a view links its source, often another run's cache
+entry, and following it counted G7q's g7-gsw wait as 18.6 ks instead of its own 6.2 ks), its
+unavailable rows, and per-phase totals. Each run dir has `command.txt` (the env and argv it got).
+`test/self-test-validate-tier.sh` (a stubbed sweep on a private lock) and
+`test/self-test-source-cache.sh` (a private cache) cover the phases, verdicts, summary, fast-frame
+env, `--base`, single flight and pruning; both are pure.
 
 `--tier smoke` (default) vs `--tier full`. Smoke runs one representative leg per reached live
 group and browser: `smoke-map.json` "smoke" names each group's leg directories (g7-1: `import`, `capture`,
@@ -161,8 +201,8 @@ Measured in `../results/grt.md` "Part 2b".
 
 Measured in `../results/grt.md` "Part 3". `RS_FAST_FRAMES=all|host|receiver` (default off) runs the
 **allowlisted** live correctness legs faster than real time, and `validate-increment.sh` turns it on
-for its smoke and full tiers (`--fast-frames on|off`, `--fast-fps N`, default 240). A plain runner
-and `--milestone` keep real time. `lib/legs.sh` "Fast frames" holds the lists and the rewrite.
+for every tier, `--milestone` included since GRT4a (`--fast-frames on|off`, `--fast-fps N`, default
+240). A plain runner keeps real time. `lib/legs.sh` "Fast frames" holds the lists and the rewrite.
 
 - **What changes in a fast leg.**
   - The `--max-fps 60` of an allowlisted launch becomes `--max-fps $RS_FAST_FRAMES_MAX_FPS
@@ -225,11 +265,12 @@ and `--milestone` keep real time. `lib/legs.sh` "Fast frames" holds the lists an
   - everything outside these runners: run-gate7.sh's g7-r (G7r pacing), g7-lc (G7u lifecycle),
     g7-k (G7k startup and soak) and g7-6 (gate 6) groups, which `validate-increment.sh` never gives
     the fast env; every `gate7-bench.ts` arm; every device leg.
-- **When to use it.** For validating correctness: the smoke and full tiers, or a runner by hand.
-  Never for a rate, pacing, phase, cadence, startup, lifecycle or soak number, a bench or a device
-  leg, and never in a milestone sweep. The lists are policy: a new live leg is real time until it
-  is added to `RS_FAST_ALLOW_LEGS`, which needs its checks to count frames (a stall or delay given
-  in frames, no wall-clock rate or interval judged).
+- **When to use it.** For validating correctness: every tier, milestone sweeps included (GRT4a),
+  or a runner by hand. Never for a rate, pacing, phase, cadence, startup, lifecycle or soak number,
+  a bench or a device leg: those legs are denylisted, so they stay real time in a sweep too. The
+  lists are policy: a new live leg is real time until it is added to `RS_FAST_ALLOW_LEGS`, which
+  needs its checks to count frames (a stall or delay given in frames, no wall-clock rate or
+  interval judged).
 - `test/self-test-fast-frames.sh` covers the rewrite, the host words, both lists and the frame
   conversion; `test/self-test-fast-frames-checks.ts` covers `hostFpsOfArgv`, `stallFrames` and
   `sim-kept-running` on synthetic evidence.

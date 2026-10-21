@@ -79,19 +79,27 @@ minutes; validation is most of an increment's time, so plan it before the first 
 3. **Full tier once, before the commit** (`--tier full`): every leg of every reached group, with
    sabotage legs if a checker, runner, sabotage or mutation file is in the diff. Your result doc
    says what ran (the plan's `runs`) and why the rest was out of scope (its `skipped_targets`).
-4. **`--milestone` is the orchestrator's sweep**, not yours.
+   Runs go in phases (GRT4a): setup, native, gate 7 correctness, then the timing runs (native
+   gate 6, the `g7live-<r>-timing` runs, `g7x`) last, so their exclusive legs never stall your
+   correctness runs. A run whose only non-pass rows are typed `unavailable` (desktop g7-lc's
+   phone rows) passes, and `validate-summary.json` lists those rows beside each run's wall time,
+   lock wait and lock hold.
+4. **`--milestone` is the orchestrator's sweep**, not yours (`--milestone --base <commit>` is the
+   delta sweep: the full tier over the diff since that commit, every sabotage leg).
 
 Native sabotage legs run only when a checker, runner, sabotage or mutation file is in the diff;
 otherwise they are skipped-by-tier and the summary says so. Never sleep or poll waiting for another
 increment to land: validate on your own base and let the orchestrator order the landings.
 
-**Fast frames** (GRT3, `scripts/README.md` "Fast frames (GRT3)"): the smoke and full tiers run the
-allowlisted live correctness legs faster than real time (g1c, g1d, g2c, g5f, g55f, and the
-g7-1/g7-2/g7-5/g7-55 live groups). That is for correctness verdicts only. Any number you report
+**Fast frames** (GRT3, `scripts/README.md` "Fast frames (GRT3)"): every tier, `--milestone`
+included since GRT4a, runs the allowlisted live correctness legs faster than real time (g1c, g1d,
+g2c, g5f, g55f, and the g7-1/g7-2/g7-5/g7-55 live groups). That is for correctness verdicts only;
+every denylisted timing leg stays real time in every tier (rate, pacing, phase, startup, lifecycle,
+soak, gate 6's timing groups, g7-r/g7-lc/g7-k/g7-6, benches, device legs). Any number you report
 about rate, pacing, phase, cadence, startup, lifecycle, soak, a bench or a device comes from a
 real-time run (`--fast-frames off`, a plain runner, or a denylisted leg, which is real time
-anyway); `--milestone` is always real time. A new live leg stays real time until its checks count
-frames and it is added to `RS_FAST_ALLOW_LEGS` in `lib/legs.sh`.
+anyway). A new live leg stays real time until its checks count frames and it is added to
+`RS_FAST_ALLOW_LEGS` in `lib/legs.sh`.
 
 The tiers hold no lock for the pure self-tests (`quiet.sh light`) and need a Chromium for gate 7:
 the harness launches a repo-private copy of the pinned build (`~/.cache/godot-render-stream/

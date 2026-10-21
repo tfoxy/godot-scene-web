@@ -1492,15 +1492,28 @@ reproduced G7b byte for byte, and its legs waited about 2.2 h on the quiet lock 
 agents. **Full sweeps** (every landed group on every receiver and core, plus native gates 0–6 under
 both cores) run at milestones only: before G7v, before G7z, and before anything adopts a new
 receiver default. The orchestrator runs them, and a regression a sweep finds is assigned to the
-increment that introduced it. At most two increments run validation at once.
+increment that introduced it. At most two increments run validation at once. *Amended
+2026-10-21 (user-approved):* the sweep before G7v stays complete; the sweep before G7z is a delta
+sweep, `validate-increment.sh --milestone --base <the pre-G7v sweep's commit>`: the full tier over
+the targets the diff since that commit reaches, with every sabotage leg of those targets. It
+escalates to a complete sweep by itself when capture, the wire, `rs-core` or a receiver's apply
+path changed, because those paths reach every target in `smoke-map.json`. G7z's manifests cite both.
 
 **Tiers (GRT, 2026-10-20, user-approved; `results/grt.md`).** `scripts/validate-increment.sh` turns
 the paragraph above into a plan: **pure** (golden checks and every pure `self-test-*.ts`, holding no
 lock, every increment), **scoped** (the targets `scripts/smoke-map.json` maps the diff to; an
 unmatched path reaches every target), **sabotage** (native sabotage legs only when a checker,
 runner, sabotage or mutation file is in the diff, else reported skipped-by-tier) and **milestone**
-(`--milestone`: every target, every sabotage leg; the sweeps above). Sources are reused across
-the native, gsw and web halves and across increments by their input key (D21 as amended).
+(`--milestone`: every target, every sabotage leg; the sweeps above; with `--base <commit>`, the
+delta sweep). Sources are reused across the native, gsw and web halves and across increments by
+their input key (D21 as amended); two runs missing the same key make it once (a single flight on
+the key), and the cache keeps the most recently used keys (GRT4a). Every tier runs its correctness
+runs first and its timing runs (native gate 6, the timing live groups, `g7x`) last, in their own
+phase, so exclusive timing legs never stall a correctness run of the same tier (G7q's full tier:
+3.8–4.9 ks of a browser live run's own lock wait). Fast frames (GRT3) apply in every tier,
+milestones included since GRT4a, to the allowlisted correctness legs only; every timing leg (rate,
+pacing, phase, startup, lifecycle, soak, gate 6's timing groups, g7-r/lc/k/6, benches, devices)
+stays real time.
 Within the scoped tier an increment works in two passes: it iterates on **smoke** (one
 representative leg per reached live group and browser, one receiver leg per file group, native
 gates without their sabotage legs; a diff reaching three or more groups on a receiver smokes only

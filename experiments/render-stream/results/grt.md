@@ -625,3 +625,112 @@ Time: about 2.5 h wall. About 1.0 h went to implementation and docs (the code in
 then restructuring `lib/legs.sh` for a clean G7q merge, and the docs), and about 2.1 h to
 validation, overlapping: 19 arms plus the tier run, most of it queued on the exclusive lock behind
 each other and behind another agent's g6c run.
+
+## Part 4a (GRT4a): gate-runtime follow-ups (2026-10-21)
+
+Eight follow-ups from G7q's full tier, all user-approved, landed before the milestone sweep they
+shape. Proved synthetically (stub runners, a private lock, a private cache), then by one real
+smoke run.
+
+### What was built
+
+1. **No `g7live-native` + `g7-lc` pair.** `smoke-plan.py`'s universe let `g7-lc` onto the native
+   receiver, so every full or milestone plan's `g7live-native` run exited 2 in a second
+   (`run-gate7.sh`: "g7-lc runs browser receivers only"). The native receiver now plans `g7-r` only,
+   and `runs()` asserts it.
+2. **Typed `unavailable` rows.** `tier-verdict.py --runner-rc N` re-judges a native or gate 7 run
+   whose runner exited 1: failing rows with status `unavailable`/`device-unavailable` are listed,
+   not failed. A runner exit with every check passing, or an exit >= 2, still fails. Gate 7's
+   harness checks (`{id, ok}`) now count as checks too (a failing one used to be invisible to the
+   verdict). On G7q's evidence: `g7live-gsw` (4 UNAV rows) and `g7live-web-rust` (3) at both
+   windows now pass; `g7-web-gdscript`'s checker crash (no checks written) still fails.
+3. **Single flight on the source key.** `source-cache.sh flight`/`land` around run-gate7.sh's
+   lookup, make and publish: a second run missing the same key and gate waits for the first maker,
+   then hits. Chosen over a validate-increment.sh source phase because it also covers two
+   worktrees (or a hand run beside a tier) with the same inputs.
+4. **Timing phase.** Each planned run has a `phase` (`setup`, `native`, `g7`, `timing`) and the
+   map's `"timing"` targets (native gate 6, `g7-6`/`g7-lc`/`g7-r` live, `g7x`) run last, at
+   `--timing-jobs` (default 1). A receiver's live groups split into `g7live-<r>` (correctness, which
+   now gets fast frames in the full tier too: the mixed run used to get none) and
+   `g7live-<r>-timing`.
+5. **Cache pruning and read-only entries.** Every publish prunes to `GSW_SOURCE_CACHE_KEEP` (3)
+   most recently used keys; lookup hits refresh a key, a live lease (`lookup --lease <run-gate7
+   pid>`), a live flight or use within `GSW_SOURCE_CACHE_MIN_AGE_S` (6 h) protects it, and entries
+   are `chmod -R u+w`'d before `rm -rf`. The recency guard exists because runners from before
+   GRT4a (other worktrees until they rebase) take no lease and refresh nothing. `prune` with no
+   argument now keeps N (`--keep-days` still works). The gate 0/1 checkers write a linked leg's
+   diffs under `<view>/view-diff/` (`checkerDiffDir`), never through a view's symlink into the
+   source: G7q's `g7-web-gdscript` failed with EACCES on a cache hit's `diff/step-0.png`.
+6. **Summary.** `validate-summary.json` is `render-stream-validate-summary/2`: per run its phase,
+   wall, lock wait and hold per mode, unavailable rows; per-phase totals; every run dir has
+   `command.txt`.
+7. **Fast frames in milestones.** `--fast-frames` defaults on for every tier. Native runs and the
+   correctness live runs get the fast env; `lib/legs.sh`'s allow/deny lists keep every timing leg
+   real time, and the timing live runs, file groups and `g7x` never get it.
+8. **`--base`.** `smoke-plan.py --base REF` (and `--print-paths`) computes `REF...HEAD` plus
+   uncommitted and untracked files; validate-increment.sh uses it. `--milestone --base <commit>` is
+   the delta sweep: the full tier over that diff's targets with every sabotage leg; capture, the
+   wire, `rs-core` and unmatched paths still reach everything (the escalation).
+
+### Before (cited, not re-run)
+
+G7q's full tier (`artifacts/render-stream/gate7/g7q/.claude/worktrees/agent-a21460591887c87cb/
+artifacts/render-stream/validate/g7q-full3-w{1,2}/`): `g7live-native` rc 2 in 1 s at both windows;
+`g7live-gsw` and `g7live-web-rust` rc 1 with only UNAV rows; `g7-web-gdscript` rc 1 on EACCES.
+
+The lock-wait numbers it reported were inflated. The old summary summed every
+`quiet-lock-summary.json` under a run, following symlinks, so a gate 7 view's link to its source run
+(often a cache entry made by another run) counted that run's holds again:
+
+| run (G7q) | wall s | reported wait s | own wait s (shared + exclusive) | own hold s |
+| --- | ---: | ---: | ---: | ---: |
+| w1 `g7-gsw` | 8674 | 18608 | 4838 + 1371 | 2939 |
+| w1 `g7-web-rust` | 9751 | 34397 | 5815 + 686 | 5297 |
+| w2 `g7live-gsw` | 7328 | 13802 | 916 + 3987 | 2145 |
+| w2 `g7live-web-rust` | 6138 | 11919 | 1410 + 2394 | 2042 |
+| full2 `native-rust-gate6` | 7179 | 3801 | 690 + 3110 | 3043 |
+
+So the browser live runs' real wait was 3.8–4.9 ks, not 11.9–13.8 ks, most of it exclusive: their
+own exclusive live legs queued behind each other and behind gate 6's timing legs. The timing phase
+removes the second cause; the first is inherent (every gate 7 live leg holds the lock exclusively).
+
+### Validation and scope
+
+Synthetic first (no Godot, no browser; private lock, private cache), all in the pure tier:
+
+- `test/self-test-validate-tier.sh` (20 checks, ~9 s): `smoke-plan.py --self-test` (now 28 cases:
+  the native/g7-lc pairing over complete, full and smoke plans, phases, no mixed live runs, the
+  delta sweep and its escalation, `--base` in a throwaway git repo) and `tier-verdict.py
+  --self-test` (13 cases); then a stubbed `--milestone -j 4` sweep (`RS_VALIDATE_STUB`): every
+  timing run starts after the last correctness run ends, no shared hold overlaps an exclusive one,
+  the stubbed UNAV-only run passes with its rows listed, per-run lock numbers exclude a symlinked
+  foreign summary, the fast env reaches native and correctness live runs only, and `lib/legs.sh`
+  under the captured env runs g1d `live-stall` fast and keeps g6l, g6c and `live-rate-30` real time.
+- `test/self-test-source-cache.sh` (17 checks, ~2 s): three concurrent makers build once, a dead
+  owner's flight is taken over, a live one's wait is bounded, LRU (a hit refreshes), a read-only
+  entry pruned and a kept one byte-identical, leases, the recency guard, `KEEP=0`, `--keep N`.
+- `test/self-test-checker-diff-dir.ts` (7 checks): a view linked into a read-only entry writes its
+  diff under `view-diff/` and the entry is unchanged; the old path is refused; a native run's own
+  legs (also through a symlinked `--out`, or not yet created) keep `<receiver>/diff`.
+
+The pure tier: 56/56 (`run-pure-self-tests.sh`, 1280 s at load 5–9 while the machine was in use,
+no lock held). `tsc --noEmit` over the experiment: 0 errors; biome clean on the touched TS.
+
+One real smoke, at load < 4 (an earlier start was stopped when the user's load passed 8):
+`validate-increment.sh --tier smoke --only native-rust-gate0,g7-gsw`
+(`artifacts/render-stream/validate/grt4a-smoke/`), 2/2 pass in 149 s: gate 0 with its sabotage
+legs (a checker is in the diff) in 53 s, published as key `e6ea8ff6…`, which pruned the least
+recently used key `f2b5051f…` (no process had it open); `g7-gsw`'s g7-0 smoke then took the flight,
+hit that entry and judged its `gsw-view` with the diffs in `gsw-view/view-diff/`, 96 s. The summary
+carries the new per-run phase, wall, wait and hold. The recency guard was added after this run;
+`self-test-source-cache.sh` covers it.
+
+Not run: the full tier and any sweep (the plan reaches 42 targets through `run-gate7.sh` and the
+gate 0/1 checkers; that size is the milestone sweep this increment shapes), the lock tests (the
+lock is unchanged) and the GDScript targets (G7gd deletes them; milestone-only under D34).
+
+Traps: the old summary's recursive glob followed view symlinks into source runs and cache entries
+(3–6x inflated waits); `git diff main...HEAD` was computed in bash, so the planner could not be
+tested on a base without a repo (now `changed_paths` in Python, tested on a throwaway repo);
+`create-worktree.sh` fails on `mise exec` before `mise trust` in a fresh worktree (worked around by
+hand: `git worktree add`, `mise trust`, `install-agent-config.sh`, `pnpm install`).
