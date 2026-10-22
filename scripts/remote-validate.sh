@@ -16,6 +16,9 @@
 #   --collect KEY    wait for / download the run a previous --no-wait printed
 #   --toolchain-smoke  instead of a plan, build the four toolchain outputs on a runner and fetch their sha256s
 #   --and-local      run the refused runs through local validate-increment.sh while the remote run flies
+#   --determinism R,R  repeat every run R times in each of len(R,R) jobs (e.g. 3,1: 3x on one runner,
+#                    1x on another); lib/remote-determinism.ts compares all repeats' shots and dumps,
+#                    and a disagreement fails the wrapper like a failed run
 #   --dry-run        plan and print what would be pushed and dispatched; touch nothing
 #
 # Cleanup: a failed push or dispatch, SIGINT/SIGTERM and a normal finish (unless --no-wait) cancel the
@@ -33,7 +36,7 @@ POLL_S="${RV_POLL_S:-4}"
 FIND_TRIES="${RV_FIND_TRIES:-30}"
 WORKFLOW=remote-validate.yml
 
-BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 TSMOKE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0
+BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 TSMOKE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0 DETERMINISM=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--base) BASE="$2" && BASE_SET=1 && shift 2 ;;
@@ -46,9 +49,15 @@ while [ $# -gt 0 ]; do
 	--and-local) AND_LOCAL=1 && shift ;;
 	--dry-run) DRY=1 && shift ;;
 	--toolchain-smoke) TSMOKE=1 && shift ;;
+	--determinism) DETERMINISM="$2" && shift 2 ;;
 	*) echo "remote-validate: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
+
+if [ -n "$DETERMINISM" ] && ! [[ "$DETERMINISM" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]; then
+	echo "remote-validate: --determinism wants comma-separated repeat counts (e.g. 3,1), got $DETERMINISM" >&2
+	exit 2
+fi
 
 TMP="$(mktemp -d)"
 BRANCH="" PUSHED=0 DISPATCHED=0 KEEP_BRANCH=0 RUN_ID="" RUN_KEY="" INTERRUPTED=0 CLEANED=0
@@ -104,6 +113,7 @@ wait_and_download() {
 	wait "$WATCH_PID"
 	WATCH_PID=""
 	mkdir -p "$dir"
+	rm -f "$dir/validate-summary.json" "$dir/determinism.json" # a same-second earlier run's
 	gh run download "$id" -n summary -D "$dir" >/dev/null 2>&1
 	gh run download "$id" -n failing-evidence -D "$dir/failing-evidence" >/dev/null 2>&1
 	if [ ! -f "$dir/validate-summary.json" ]; then
@@ -120,7 +130,20 @@ for x in r.get("refused", []):
     print(f"  refused {x['id']:<24} {x['reason']}")
 n = len(s["runs"])
 print(f"remote-validate: {n - s['failed']}/{n} runs pass; setup_s {r.get('setup_s')}; {r.get('run_url')}")
-sys.exit(1 if s["failed"] else 0)
+bad = 1 if s["failed"] else 0
+try:
+    d = json.load(open(sys.argv[1].replace("validate-summary.json", "determinism.json")))
+except (OSError, ValueError):
+    d = None
+if d is not None:
+    print(f"remote-validate: determinism {'AGREES' if d.get('ok') else 'DISAGREES'} over {d.get('runs')} runs: "
+          f"{d.get('shots', {}).get('agree')}/{d.get('shots', {}).get('total')} shots, "
+          f"{d.get('dumps', {}).get('agree')}/{d.get('dumps', {}).get('total')} dumps")
+    bad = bad or (0 if d.get("ok") else 1)
+elif r.get("determinism"):
+    print("remote-validate: determinism was requested but no determinism.json came back")
+    bad = 1
+sys.exit(bad)
 PY
 }
 
@@ -218,7 +241,7 @@ snapshot() {
 
 if [ "$DRY" = 1 ]; then
 	echo "remote-validate: dry run: would snapshot $WT at ${HEAD_SHA:0:12}, push refs/heads/remote-run/$WT-<shortsha>, dispatch $WORKFLOW"
-	echo "remote-validate: dry run: inputs worktree=$WT base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON"
+	echo "remote-validate: dry run: inputs worktree=$WT base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON${DETERMINISM:+ determinism=$DETERMINISM}"
 	exit 0
 fi
 
@@ -238,7 +261,7 @@ if [ "$MILESTONE" = 1 ]; then milestone_in=complete && [ "$BASE_SET" = 1 ] && mi
 if ! gh workflow run "$WORKFLOW" --ref "$BRANCH" \
 	-f "run_key=$RUN_KEY" -f "worktree=$WT" -f "sha=$SHA" -f "base=$BASE_SHA" -f "tier=$TIER" \
 	-f "runs=$RUNS_JSON" -f "milestone=$milestone_in" -f "paths=$PATHS" -f "refused=$REFUSED_JSON" \
-	>"$TMP/dispatch.log" 2>&1; then
+	${DETERMINISM:+-f "determinism=$DETERMINISM"} >"$TMP/dispatch.log" 2>&1; then
 	echo "remote-validate: dispatch failed:" >&2
 	cat "$TMP/dispatch.log" >&2
 	exit 1

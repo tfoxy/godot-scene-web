@@ -1,6 +1,7 @@
 # Remote compute for long validation runs
 
-Status: recommendation, not implemented. Assessed 2026-10-22 at `24ec89be`.
+Status: assessed 2026-10-22 at `24ec89be`. R0 (GPU-free runs) and R1 (gate 0 on a software
+rasterizer) are implemented.
 
 ## Goal
 
@@ -56,8 +57,11 @@ It would not have applied to public repos either way, and self-hosting needs har
 - **Native rendered legs need a Vulkan device.**
   - They run `--rendering-driver opengl3 --display-driver x11` (`lib/legs.sh:761`) inside
     `gamescope --backend headless`, which picks a Vulkan device.
-  - `lib/gamescope.sh` deliberately never falls back to Xvfb.
-  - Whether gamescope runs on lavapipe is untested.
+  - `lib/gamescope.sh` never falls back to Xvfb locally.
+  - gamescope cannot run on lavapipe: 3.16.19 stops at "physical device doesn't support
+    VK_EXT_physical_device_drm", because its headless backend needs a DRM-backed device (R1, run
+    39764689493). Hosted runners therefore use a CI-only `RS_DISPLAY_MODE=xvfb-llvmpipe` display
+    instead (see "Software-raster gate 0" below).
 - **Pinned inputs live outside the repo.** All are sha-pinned and must be provisioned and cached per
   runner:
   - The 4.5.1 `linux_release.x86_64` template.
@@ -91,6 +95,27 @@ It would not have applied to public repos either way, and self-hosting needs har
 A software rasterizer proves the pipeline and wire format, not NVIDIA pixel parity. The local NVIDIA
 run stays the authority for pixels. A remote green means "safe to spend a local GPU run on", not
 "landed".
+
+## Software-raster gate 0 (R1, 2026-10-22)
+
+- **Display:** `RS_DISPLAY_MODE=xvfb-llvmpipe` in `lib/gamescope.sh` `gs_start`.
+  - Xvfb runs under `setsid`, with the display number from `-displayfd` and the same globals, pid +
+    start-ticks identity and socket-ownership proof. `gamescope.json` records `"backend":"xvfb"`.
+  - It refuses to start unless `GITHUB_ACTIONS=true` and `RUNNER_ENVIRONMENT=github-hosted`.
+  - Godot's `opengl3` renders on Mesa llvmpipe ("OpenGL API 4.5 (Core Profile) Mesa 25.2.8 ... llvmpipe
+    (LLVM 20.1.2, 256 bits)"). The rs-setup `swrast` input installs it and writes
+    `swrast-provenance.json` (CPU model, Mesa and LLVM versions); the run adds Godot's GL string.
+- **Determinism:** `scripts/remote-validate.sh --only native-rust-gate0 --tier full --paths
+  experiments/render-stream/scripts/run-gate0.sh --determinism 3,1` runs gate 0 three times on one
+  runner and once on another. `lib/remote-determinism.ts` then compares every shot by sha256, and
+  every dump under `canonicalEqual` with the run-volatile fields masked.
+  - Result: every run passed gate 0, every one of the 60 shots was byte-identical across all four runs
+    and every dump agreed. This held in two acceptance runs (39765496604, 39766507305) on three host
+    CPUs: an Intel Xeon Platinum 8573C, an AMD EPYC 9V45 and an AMD EPYC 7763. llvmpipe ran at its
+    default thread count; no Mesa knob was needed.
+  - The 30 shots that local runs also take (sabotage legs skipped) are byte-identical to the local
+    RTX 2060's as well. Gate 0 needs no separate swrast baseline.
+- **Cost:** a gate 0 run takes ~40–60 s on a runner. Locally it takes ~2 min, plus the quiet-lock wait.
 
 ## Consistent benchmarks
 

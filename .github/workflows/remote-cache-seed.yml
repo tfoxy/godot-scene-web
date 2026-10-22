@@ -41,8 +41,10 @@ jobs:
           fonts: "true"
           apt: "true"
           capture-build: "true"
+          rs-core-ext: "true"
 
       - name: Report
         run: |
           echo "seed setup: $(( $(date +%s) - SETUP_T0 )) s"
-          du -sh ~/.cache/godot-render-stream/* "$HOME"/.cargo/registry experiments/render-stream/capture/build 2>/dev/null
+          du -sh ~/.cache/godot-render-stream/* "$HOME"/.cargo/registry experiments/render-stream/capture/build \
+            experiments/render-stream/receiver/ext/build 2>/dev/null
