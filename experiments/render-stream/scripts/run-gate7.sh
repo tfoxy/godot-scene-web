@@ -679,7 +679,7 @@ if [ "$LIVE" = "1" ]; then
 			kind="${kb%%:*}"
 			bundle_dir="${kb#*:}"
 			legs_var="G7R_LEGS_$kind"
-			[ "$GATE7_CREDIT_WINDOW" = 2 ] && legs_var="G7R_W2_LEGS_$kind"
+			[ "${GATE7_CREDIT_WINDOW:-1}" = 2 ] && legs_var="G7R_W2_LEGS_$kind"
 			g7r_legs="${G7R_LEGS:-${!legs_var}}"
 			run_dir="$OUT/gate6/rates-$kind"
 			echo "run-gate7: g7-r @$kind: run-gate6.sh --legs g6c (G6C_LEGS=$g7r_legs) into $run_dir" >&2
