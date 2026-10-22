@@ -34,6 +34,9 @@
 // ------------------------------------------------------------------------------------------- types
 
 export const RENDER_STREAM_REPORT_SCHEMA = "render-stream-report/1";
+/** G7p (gate7-design.md Q12): /1 plus the browser and device fields below. `validate()` accepts
+ * both; a /2 report is judged by the extra rules in `validateV2`. */
+export const RENDER_STREAM_REPORT_2_SCHEMA = "render-stream-report/2";
 
 export type Arm = "unarmed" | "armed-idle" | "streaming";
 export type MeasuredStatus = "measured" | "unavailable" | "not-applicable";
@@ -60,7 +63,22 @@ export interface ReportProvenance {
     project_sha256: string;
     rendering_method: string;
     adapter: { vendor: string; name: string; api_version: string };
+    /** report/2 (Q12): which receiver this report measures; `browser` and `bundle` are null for
+     * the native receiver. */
+    kind?: ReceiverKind;
+    browser?: {
+      product: string;
+      version: string;
+      revision: string;
+      sha256: string;
+      args: string[];
+      renderer: string;
+      extensions_hash: string;
+    } | null;
+    bundle?: { sha256: string; bytes: number } | null;
   };
+  /** report/2: desktop or device (Q12). */
+  env?: ReportEnv;
   protocol: string;
   host: {
     cpu_model: string;
@@ -76,7 +94,7 @@ export interface ReportProvenance {
   };
   timing: {
     host_clock: "steady_clock";
-    receiver_clock: "Time.get_ticks_usec";
+    receiver_clock: "Time.get_ticks_usec" | "performance.now";
     rates_clock: "host";
     screenshots: "outside-measured-window";
     hook_log: "off" | "on";
@@ -153,7 +171,15 @@ export interface ReportRepeat {
     recv_fetch_us: ReportDist;
     recv_frame_interval_us: ReportDist;
     recv_gpu_render_ms: ReportDist;
+    /** report/2 (Q12) */
+    recv_raf_interval_us?: ReportDist;
+    recv_raf_after_submit_us?: ReportDist;
+    recv_gpu_complete_us?: ReportDist;
+    recv_hold_us?: ReportDist;
+    recv_preflight_us?: ReportDist;
   };
+  /** report/2: one <dist> per D15 mark, or null where no startup leg ran for the repeat. */
+  startup?: Record<string, unknown> | null;
   cpu: {
     host_main_thread_s: number;
     host_io_thread_s: number;
@@ -228,10 +254,15 @@ export interface ReportScenario {
     receiver_max_fps: number;
     credit_stage: string;
     transport: TransportKind;
-    cache: CacheState;
+    cache: CacheState | "warm-http";
     delivery: string;
     connections: number;
     time: TimeMode;
+    /** report/2 (Q12) */
+    receiver_kind?: ReceiverKind;
+    credit_window?: 1 | 2;
+    late_poll?: boolean;
+    fetch_concurrency?: number;
   };
   /** null only in a single-repeat functional report (`validate(…, {repeats: 1})`, G6c) */
   warmup: { run_dir: string; discarded: true } | null;
@@ -277,11 +308,91 @@ export interface ReportOptimizations {
 }
 
 export interface RenderStreamReport {
-  schema: "render-stream-report/1";
+  schema: "render-stream-report/1" | "render-stream-report/2";
+  /** report/2: the phone's rows (Q12 device rows), each with its desktop control row. */
+  device_rows?: DeviceRow[];
+  /** report/2: rows left out because their build is not the report's (D28), and why. */
+  omitted_device_rows?: OmittedDeviceRow[];
   run: ReportRun;
   provenance: ReportProvenance;
   scenarios: ReportScenario[];
   optimizations: ReportOptimizations | null;
+}
+
+
+// ------------------------------------------------------------------------------- report/2 types
+
+export type ReceiverKind = "native" | "web-export" | "gsw-canvas";
+export const BROWSER_KINDS: readonly ReceiverKind[] = [
+  "web-export",
+  "gsw-canvas",
+];
+
+/** Q12 `provenance.env`. `device` is perf-report/1's `env.device` block as device.ts produces it
+ * (docs/perf-report-contract.md), copied and not generalized (D17). */
+export interface ReportEnv {
+  kind: "desktop" | "device";
+  device_id: "g31" | "g86" | null;
+  device: Record<string, unknown> | null;
+  panel: {
+    raf_interval_p50_us: number;
+    mode_hz: number;
+    mode_source: string;
+  } | null;
+}
+
+/** One device repeat (Q12 `repeats[].stages` and `repeats[].device` for a phone; the stage names
+ * are Q12's). A repeat that fails Q13b's watchdog carries `invalid` and is never averaged in. */
+export interface DeviceRowRepeat {
+  run: number;
+  stages: Record<string, unknown>;
+  phase_class: string | null;
+  device: Record<string, unknown>;
+  startup: Record<string, unknown> | null;
+  invalid?: { reason: string };
+}
+
+/** One device row: a phone's repeats of one workload at one window on one receiver, with its
+ * desktop control row beside it. `build.bundle_sha256` is `RS_RECEIVER_BUILD_SHA256`, the bundle
+ * the legs ran; it must equal the report's `provenance.receiver.bundle.sha256` (D28). */
+export interface DeviceRow {
+  device_id: "g31" | "g86";
+  receiver_kind: "web-export" | "gsw-canvas";
+  credit_window: 1 | 2;
+  workload: string;
+  env: ReportEnv;
+  build: { bundle_sha256: string; source: string };
+  repeats: DeviceRowRepeat[];
+  summary: { valid_repeats: number; invalid_repeats: number; drawn_hz_mean: number | null };
+  control: {
+    env: ReportEnv;
+    repeats: DeviceRowRepeat[];
+  } | null;
+}
+
+/** A device row left out of the report, and why (D28: never shown as current). */
+export interface OmittedDeviceRow {
+  device_id: "g31" | "g86";
+  receiver_kind: string;
+  credit_window: number;
+  workload: string;
+  build_sha256: string | null;
+  reason: string;
+}
+
+export function deviceRowSummary(
+  repeats: readonly DeviceRowRepeat[],
+): DeviceRow["summary"] {
+  const valid = repeats.filter((r) => !r.invalid);
+  const drawn = valid
+    .map((r) => r.stages.drawn_hz)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  return {
+    valid_repeats: valid.length,
+    invalid_repeats: repeats.length - valid.length,
+    drawn_hz_mean:
+      drawn.length === 0 ? null : drawn.reduce((a, b) => a + b, 0) / drawn.length,
+  };
 }
 
 // ---------------------------------------------------------------------------------------- helpers
@@ -451,9 +562,10 @@ export function validate(input: unknown, opts: ValidateOptions = {}): string[] {
   if (!isPlainObject(input)) {
     return ["report-entry: top level is not an object"];
   }
-  if (input.schema !== RENDER_STREAM_REPORT_SCHEMA) {
+  const v2 = input.schema === RENDER_STREAM_REPORT_2_SCHEMA;
+  if (input.schema !== RENDER_STREAM_REPORT_SCHEMA && !v2) {
     errors.push(
-      `bad-schema: schema is ${JSON.stringify(input.schema)}, expected ${JSON.stringify(RENDER_STREAM_REPORT_SCHEMA)}`,
+      `bad-schema: schema is ${JSON.stringify(input.schema)}, expected ${JSON.stringify(RENDER_STREAM_REPORT_SCHEMA)} or ${JSON.stringify(RENDER_STREAM_REPORT_2_SCHEMA)}`,
     );
   }
   if (!isPlainObject(input.run)) {
@@ -568,6 +680,7 @@ export function validate(input: unknown, opts: ValidateOptions = {}): string[] {
       );
       continue;
     }
+    if (v2) validateScenarioV2(raw, where, errors);
     const repeats: ReportRepeat[] = [];
     let repeatOk = true;
     for (let i = 0; i < raw.repeats.length; i++) {
@@ -605,7 +718,8 @@ export function validate(input: unknown, opts: ValidateOptions = {}): string[] {
           const mustNotMeasure =
             path === "recv_gpu_render_ms" &&
             provenance &&
-            !isRenderedDesktopGlReceiver(provenance)
+            (!isRenderedDesktopGlReceiver(provenance) ||
+              (v2 && provenance.receiver.kind !== "native"))
               ? "the receiver is not a rendered desktop-GL receiver (D9)"
               : undefined;
           validateDist(
@@ -714,6 +828,7 @@ export function validate(input: unknown, opts: ValidateOptions = {}): string[] {
         }
       }
 
+      if (v2 && repeatOk) validateRepeatV2(r, rWhere, provenance, errors);
       if (repeatOk) repeats.push(r as unknown as ReportRepeat);
     }
 
@@ -733,6 +848,8 @@ export function validate(input: unknown, opts: ValidateOptions = {}): string[] {
     }
   }
 
+  if (v2) validateTopV2(input, provenance, errors);
+
   if (input.optimizations !== null && !isPlainObject(input.optimizations)) {
     errors.push("optimizations-entry: optimizations must be an object or null");
   } else if (
@@ -745,6 +862,232 @@ export function validate(input: unknown, opts: ValidateOptions = {}): string[] {
   }
 
   return errors;
+}
+
+// ------------------------------------------------------------------------------------- validate /2
+
+const STAGE_V2_DISTS: readonly string[] = [
+  "recv_raf_interval_us",
+  "recv_raf_after_submit_us",
+  "recv_gpu_complete_us",
+  "recv_hold_us",
+  "recv_preflight_us",
+];
+
+function validateEnv(env: unknown, where: string, errors: string[]): void {
+  if (!isPlainObject(env)) {
+    errors.push(`env-entry: ${where} is not an object`);
+    return;
+  }
+  if (env.kind !== "desktop" && env.kind !== "device")
+    errors.push(`env-entry: ${where}.kind is ${JSON.stringify(env.kind)}`);
+  if (env.kind === "desktop") {
+    if (env.device_id !== null)
+      errors.push(`env-entry: ${where} is desktop but has a device_id`);
+    if (env.device !== null)
+      errors.push(`env-entry: ${where} is desktop but has a device block`);
+  }
+  if (env.kind === "device") {
+    if (env.device_id !== "g31" && env.device_id !== "g86")
+      errors.push(
+        `env-entry: ${where}.device_id is ${JSON.stringify(env.device_id)}, expected g31 or g86`,
+      );
+    const d = env.device;
+    if (!isPlainObject(d)) {
+      errors.push(`env-entry: ${where} is a device but env.device is missing`);
+    } else {
+      for (const key of ["model", "androidRelease", "chrome"])
+        if (!isNonEmptyString(d[key]))
+          errors.push(`env-entry: ${where}.device.${key} is missing`);
+    }
+  }
+  if (env.panel !== null) {
+    const p = env.panel;
+    if (
+      !isPlainObject(p) ||
+      !isFiniteNumber(p.raf_interval_p50_us) ||
+      !isFiniteNumber(p.mode_hz) ||
+      !isNonEmptyString(p.mode_source)
+    )
+      errors.push(`env-entry: ${where}.panel is not {raf_interval_p50_us, mode_hz, mode_source} or null`);
+  }
+}
+
+function validateScenarioV2(
+  raw: Record<string, unknown>,
+  where: string,
+  errors: string[],
+): void {
+  const c = raw.config;
+  if (!isPlainObject(c)) return; // /1 rules report a missing config themselves
+  if (
+    c.receiver_kind !== "native" &&
+    c.receiver_kind !== "web-export" &&
+    c.receiver_kind !== "gsw-canvas"
+  )
+    errors.push(
+      `scenario-entry: ${where}: config.receiver_kind is ${JSON.stringify(c.receiver_kind)}`,
+    );
+  if (c.credit_window !== 1 && c.credit_window !== 2)
+    errors.push(`scenario-entry: ${where}: config.credit_window is ${JSON.stringify(c.credit_window)}`);
+  if (typeof c.late_poll !== "boolean")
+    errors.push(`scenario-entry: ${where}: config.late_poll is not a boolean`);
+  if (!isFiniteNumber(c.fetch_concurrency) || c.fetch_concurrency < 1)
+    errors.push(`scenario-entry: ${where}: config.fetch_concurrency is not a positive number`);
+  if (c.cache !== "cold" && c.cache !== "warm" && c.cache !== "warm-http")
+    errors.push(`scenario-entry: ${where}: config.cache is ${JSON.stringify(c.cache)}`);
+  if (c.cache === "warm-http" && c.receiver_kind === "native")
+    errors.push(`scenario-entry: ${where}: warm-http is a browser cache state`);
+}
+
+function validateRepeatV2(
+  r: Record<string, unknown>,
+  where: string,
+  provenance: ReportProvenance | undefined,
+  errors: string[],
+): void {
+  const stages = r.stages as Record<string, unknown>;
+  const kind = provenance?.receiver?.kind;
+  for (const key of STAGE_V2_DISTS) {
+    if (stages[key] === undefined) {
+      errors.push(`repeat-entry: ${where}.stages.${key} is missing (report/2)`);
+      continue;
+    }
+    // recv_gpu_complete_us is measured only for gsw-canvas (Q12 rules).
+    const mustNot =
+      key === "recv_gpu_complete_us" && kind !== undefined && kind !== "gsw-canvas"
+        ? `the receiver is ${kind}, and a gpu_complete fence exists only for gsw-canvas`
+        : undefined;
+    validateDist(stages[key], `${where}.stages.${key}`, errors, mustNot);
+  }
+  if (r.startup !== null && r.startup !== undefined && !isPlainObject(r.startup))
+    errors.push(`repeat-entry: ${where}.startup is not an object or null`);
+}
+
+function validateTopV2(
+  input: Record<string, unknown>,
+  provenance: ReportProvenance | undefined,
+  errors: string[],
+): void {
+  const p = isPlainObject(input.provenance) ? input.provenance : undefined;
+  if (!p) return;
+  validateEnv(p.env, "provenance.env", errors);
+  const r = isPlainObject(p.receiver) ? p.receiver : undefined;
+  const kind = r?.kind;
+  if (kind !== "native" && kind !== "web-export" && kind !== "gsw-canvas")
+    errors.push(
+      `provenance-entry: provenance.receiver.kind is ${JSON.stringify(kind)}`,
+    );
+  if (r && kind === "native") {
+    if (r.browser !== null || r.bundle !== null)
+      errors.push("provenance-entry: a native receiver has browser: null and bundle: null");
+  } else if (r && (kind === "web-export" || kind === "gsw-canvas")) {
+    const b = r.browser;
+    if (
+      !isPlainObject(b) ||
+      !isNonEmptyString(b.product) ||
+      !isNonEmptyString(b.version) ||
+      !isNonEmptyString(b.revision) ||
+      !isNonEmptyString(b.sha256) ||
+      !Array.isArray(b.args) ||
+      !isNonEmptyString(b.renderer) ||
+      !isNonEmptyString(b.extensions_hash)
+    )
+      errors.push("provenance-entry: provenance.receiver.browser is not {product, version, revision, sha256, args, renderer, extensions_hash}");
+    const bu = r.bundle;
+    if (!isPlainObject(bu) || !isNonEmptyString(bu.sha256) || !isFiniteNumber(bu.bytes))
+      errors.push("provenance-entry: provenance.receiver.bundle is not {sha256, bytes}");
+  }
+  const t = isPlainObject(p.timing) ? p.timing : undefined;
+  if (t) {
+    const want =
+      kind === "web-export" || kind === "gsw-canvas"
+        ? "performance.now"
+        : "Time.get_ticks_usec";
+    if (t.receiver_clock !== want)
+      errors.push(
+        `provenance-entry: provenance.timing.receiver_clock is ${JSON.stringify(t.receiver_clock)}, expected ${JSON.stringify(want)} for ${String(kind)}`,
+      );
+  }
+  const rows = input.device_rows;
+  if (!Array.isArray(rows)) {
+    errors.push("device-rows-entry: device_rows is not an array (report/2)");
+  } else {
+    rows.forEach((row, i) => {
+      validateDeviceRow(row, `device_rows[${i}]`, provenance, errors);
+    });
+  }
+  if (!Array.isArray(input.omitted_device_rows)) {
+    errors.push("device-rows-entry: omitted_device_rows is not an array (report/2)");
+  } else {
+    input.omitted_device_rows.forEach((o, i) => {
+      if (
+        !isPlainObject(o) ||
+        !isNonEmptyString(o.device_id) ||
+        !isNonEmptyString(o.reason)
+      )
+        errors.push(`device-rows-entry: omitted_device_rows[${i}] has no device_id and reason`);
+    });
+  }
+}
+
+function validateDeviceRow(
+  row: unknown,
+  where: string,
+  provenance: ReportProvenance | undefined,
+  errors: string[],
+): void {
+  if (!isPlainObject(row)) {
+    errors.push(`device-rows-entry: ${where} is not an object`);
+    return;
+  }
+  if (row.device_id !== "g31" && row.device_id !== "g86")
+    errors.push(`device-rows-entry: ${where}.device_id is ${JSON.stringify(row.device_id)}`);
+  validateEnv(row.env, `${where}.env`, errors);
+  if (isPlainObject(row.env)) {
+    if (row.env.kind !== "device")
+      errors.push(`device-rows-entry: ${where}.env.kind is not "device"`);
+    if (row.env.device_id !== row.device_id)
+      errors.push(`device-rows-entry: ${where}.env.device_id differs from device_id`);
+  }
+  if (!isPlainObject(row.build) || !isNonEmptyString(row.build.bundle_sha256))
+    errors.push(`device-rows-entry: ${where}.build.bundle_sha256 is missing`);
+  else {
+    const want = (provenance?.receiver as { bundle?: { sha256?: string } } | undefined)?.bundle?.sha256;
+    if (want !== undefined && row.build.bundle_sha256 !== want)
+      errors.push(
+        `stale-build: ${where} ran bundle ${row.build.bundle_sha256.slice(0, 12)}, the report's is ${want.slice(0, 12)} (D28: an older build's row is omitted and named, not shown as current)`,
+      );
+  }
+  const repeats = row.repeats;
+  if (!Array.isArray(repeats) || repeats.length === 0) {
+    errors.push(`device-rows-entry: ${where}.repeats is empty`);
+    return;
+  }
+  for (const [i, rep] of repeats.entries()) {
+    if (!isPlainObject(rep) || !isPlainObject(rep.stages) || !isPlainObject(rep.device)) {
+      errors.push(`device-rows-entry: ${where}.repeats[${i}] has no stages and device`);
+      continue;
+    }
+    if (rep.invalid !== undefined && !(isPlainObject(rep.invalid) && isNonEmptyString(rep.invalid.reason)))
+      errors.push(`device-rows-entry: ${where}.repeats[${i}].invalid has no reason`);
+    if (rep.stages.presented !== undefined && rep.stages.presented !== "unavailable")
+      errors.push(`device-rows-entry: ${where}.repeats[${i}] reports presented (it is unavailable for every receiver, Q12)`);
+  }
+  const want = deviceRowSummary(repeats as DeviceRowRepeat[]);
+  if (JSON.stringify(row.summary) !== JSON.stringify(want))
+    errors.push(
+      `invalid-averaged: ${where}.summary is ${JSON.stringify(row.summary)}, a recomputation over its valid repeats gives ${JSON.stringify(want)} (an invalid repeat is never averaged in)`,
+    );
+  if (row.control !== null) {
+    if (!isPlainObject(row.control) || !Array.isArray(row.control.repeats) || row.control.repeats.length === 0)
+      errors.push(`device-rows-entry: ${where}.control has no repeats`);
+    else {
+      validateEnv(row.control.env, `${where}.control.env`, errors);
+      if (isPlainObject(row.control.env) && row.control.env.kind !== "desktop")
+        errors.push(`device-rows-entry: ${where}.control.env.kind is not "desktop"`);
+    }
+  }
 }
 
 function sortedAggregate(
@@ -798,6 +1141,7 @@ function scalarExtractor(
 const AGGREGATE_METRICS: readonly MetricExtractor[] = [
   ...RATE_NAMES.map(rateExtractor),
   ...DIST_PATHS.map(distExtractor),
+  ...STAGE_V2_DISTS.map(distExtractor),
   {
     path: "bytes.transaction.p50",
     extract: (r) =>

@@ -1222,7 +1222,9 @@ for group in g6a g6h g6l g6b g6s g6c g6p; do
 	g6b) run_g6b ;;
 	g6s) run_g6s ;;
 	g6c) run_g6c ;;
-	g6p) run_g6p ;;
+	g6p)
+		if [ -n "${G7P_MATRIX:-}" ]; then run_g7p; else run_g6p; fi
+		;;
 	esac
 	LEGS_TIMING_GROUP=""
 done
@@ -1249,6 +1251,15 @@ if [ -n "${G6C_LEGS:-}" ] && [ "${GROUPS_RUN[*]}" = "g6c" ] && ! printf '%s\n' $
 	legs_quiet_summary
 	exit 0
 fi
+
+# G7p: a browser (or native /7) matrix run; check-gate7.ts --live --legs g7-p builds and judges its
+# render-stream-report/2 (check-gate6's g6p verdict is gate 6's native /6 matrix).
+if [ -n "${G7P_MATRIX:-}" ] && [ "${GROUPS_RUN[*]}" = "g6p" ]; then
+	echo "run-gate6: G7P_MATRIX: check-gate6 skipped (check-gate7.ts --live --legs g7-p judges the matrix)"
+	legs_quiet_summary
+	exit 0
+fi
+
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate6: running checker"
 cd "$REPO_ROOT"
