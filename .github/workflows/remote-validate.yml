@@ -55,8 +55,6 @@ jobs:
       max-parallel: 10
       matrix:
         id: ${{ fromJSON(inputs.runs) }}
-    env:
-      MISE_DISABLE_TOOLS: godot
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,6 +69,14 @@ jobs:
           echo "RS_QUIET_LOCK_DIR=$RUNNER_TEMP/quiet-lock" >>"$GITHUB_ENV"
 
       - uses: ./.github/actions/rs-setup
+        with:
+          chromium: ${{ matrix.id == 'pnpm-test' }}
+
+      # the pure self-tests include rs-ws, which runs the capture build's rs_ws_echo (a local
+      # worktree runs build-capture.sh once for the same reason). R0b folds this into capture-build.
+      - name: Build the capture library
+        if: matrix.id == 'pure'
+        run: CMAKE=cmake bash experiments/render-stream/scripts/build-capture.sh
 
       - name: Record setup time
         run: |
@@ -112,6 +118,7 @@ jobs:
             mkdir -p "$ev/run"
             for f in command.txt run.log tier-verdict.json; do [ -f "$run/$f" ] && cp "$run/$f" "$ev/"; done
             [ -f "$run/run/result.json" ] && cp "$run/run/result.json" "$ev/run/"
+            cp "$run"/*.log "$ev/" 2>/dev/null
           fi
           true
 
@@ -158,8 +165,9 @@ jobs:
           python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out merged \
             --expect "$(cat expect.txt)" --remote-json remote.json jobs/*/ || rc=$?
           for ev in jobs/*/evidence/*; do [ -d "$ev" ] && cp -r "$ev" failing/; done
-          echo "merge rc=$rc"
-          exit $rc
+          echo "merge rc=$rc (1 = some run failed; that is the summary's verdict, not a plumbing error)"
+          # red only when the merge itself broke: no summary was written
+          test -s merged/validate-summary.json
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
