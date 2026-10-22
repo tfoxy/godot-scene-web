@@ -1,7 +1,7 @@
 # Remote compute for long validation runs
 
-Status: assessed 2026-10-22 at `24ec89be`. R0 (GPU-free runs) and R1 (gate 0 on a software
-rasterizer) are implemented.
+Status: assessed 2026-10-22 at `24ec89be`. R0 (GPU-free runs), R1 (gate 0 on a software
+rasterizer) and R2 (native gates −1, 1, 2, 3, 4, 5 and 5.5 on it) are implemented.
 
 ## Goal
 
@@ -116,6 +116,35 @@ run stays the authority for pixels. A remote green means "safe to spend a local 
   - The 30 shots that local runs also take (sabotage legs skipped) are byte-identical to the local
     RTX 2060's as well. Gate 0 needs no separate swrast baseline.
 - **Cost:** a gate 0 run takes ~40–60 s on a runner. Locally it takes ~2 min, plus the quiet-lock wait.
+
+## Software-raster native gates (R2, 2026-10-22)
+
+Gates −1, 1, 2, 3, 4, 5 and 5.5 run on the same Xvfb + llvmpipe route, one matrix job per gate
+(`native-rust-<gate>`, `RS_LEG_SHARDS=2` on 4 vCPU, gate 4 with the font checkout, every native job
+with the receiver project's `--import`).
+
+- **Result:** `scripts/remote-validate.sh --milestone --only <the seven> --determinism 2,1` passed 7/7
+  (every sabotage leg included) and every gate's three runs agreed (run 39776739430, four host CPU
+  models: EPYC 7763, EPYC 9V74, Xeon 8573C, Xeon 8370C). Dispatch to summary: 676 s. Job wall per gate for
+  one run: −1 52 s, 1 89 s, 2 188 s, 3 83 s, 4 224 s, 5 135 s, 5.5 170 s; setup 44–272 s (a cold cache
+  restore is the long end).
+- **No `swrast` pixel baselines or checker-model tables were needed.** The within-run exact-pixel
+  checks (receiver against reference, oracle against shots) are the authority, and they hold on
+  llvmpipe: the G55b RGB10_A2 alpha, the G5b hand-lowered raster and every readback model pass
+  unchanged. Should one ever differ, add a table keyed by `swrast-provenance.json`, beside the NVIDIA
+  one.
+- **Timing groups stay local.** `RS_SKIP_TIMING_GROUPS=1` (set only by the workflow) skips
+  `g1c-rate`, `g1d`, `g2c-pins`, `g5f` and `g55f`: each leg directory gets `skipped-remote.txt`,
+  `lib/tier-verdict.py` excuses the checks about those legs (named in id, detail or criterion), and
+  `validate-summary.json` lists them as `skipped_remote[]`. The wrapper prints each skipped group with its
+  local command (`run-gate1.sh --legs g1a,g1d`, ...).
+- **Live legs and determinism.** A live leg names its shots by the wire seq they landed at, which follows
+  the credit loop's timing (and differs run to run on NVIDIA too). `lib/remote-determinism.ts`
+  therefore compares such a directory as a content set (distinct images and masked states must be
+  equal across runs) and lists its `applied.json` as live-timed instead of comparing transaction
+  boundaries; file-mode legs stay compared file by file. All 12 gate 2 and 6 gate 1 live sets matched.
+- **`--only X` when the plan does not reach X:** `validate-increment.sh` warns, `remote-validate.sh`
+  fails (rc 2) naming `--paths` and `--milestone`; a job whose run never executed merges as `missing`.
 
 ## Consistent benchmarks
 

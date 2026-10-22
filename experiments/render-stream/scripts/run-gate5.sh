@@ -704,9 +704,12 @@ for group in "${GROUPS_RUN[@]}"; do
 	g5f)
 		# A timing group (lib/legs.sh): each of its legs holds the exclusive quiet lock from its host's
 		# start to its finish_bg; its references and imports stay shared.
-		LEGS_TIMING_GROUP=g5f
-		run_g5f
-		LEGS_TIMING_GROUP=""
+		if ! legs_skip_group g5f "$OUT/mesh/reference-live" "$OUT/mesh/live-mesh" "$OUT/mesh/live-mesh-warm" "$OUT/mesh/live-mesh-stall" \
+			"$OUT/mesh/sabotage-mesh-stale-coalesce"; then
+			LEGS_TIMING_GROUP=g5f
+			run_g5f
+			LEGS_TIMING_GROUP=""
+		fi
 		;;
 	g5g) run_g5g ;;
 	esac

@@ -128,6 +128,16 @@ for x in s["runs"]:
 r = s.get("remote", {})
 for x in r.get("refused", []):
     print(f"  refused {x['id']:<24} {x['reason']}")
+# Timing groups inside a correctness gate are never run on a hosted runner (RS_SKIP_TIMING_GROUPS=1):
+# say which, and how to run each locally (quiet machine, `uptime` first).
+LOCAL = {"g1c-rate": ("gate1", "g1a,g1c"), "g1d": ("gate1", "g1a,g1d"), "g2c-pins": ("gate2", "g2a,g2c"),
+         "g5f": ("gate5", "g5f"), "g55f": ("gate55", "g55f")}
+for x in s["runs"]:
+    for g in x.get("skipped_remote_groups", []):
+        gate, legs = LOCAL.get(g, (None, None))
+        how = (f"bash experiments/render-stream/scripts/run-{gate}.sh --legs {legs} --extension ... --calibration ... "
+               f"(or validate-increment.sh --only {x['id']} --tier full)") if gate else f"validate-increment.sh --only {x['id']} --tier full"
+        print(f"  skipped timing group {g} ({x['id']}), run it locally: {how}")
 n = len(s["runs"])
 print(f"remote-validate: {n - s['failed']}/{n} runs pass; setup_s {r.get('setup_s')}; {r.get('run_url')}")
 bad = 1 if s["failed"] else 0
@@ -139,6 +149,10 @@ if d is not None:
     print(f"remote-validate: determinism {'AGREES' if d.get('ok') else 'DISAGREES'} over {d.get('runs')} runs: "
           f"{d.get('shots', {}).get('agree')}/{d.get('shots', {}).get('total')} shots, "
           f"{d.get('dumps', {}).get('agree')}/{d.get('dumps', {}).get('total')} dumps")
+    for k, g in sorted((d.get("gates") or {}).items()):
+        print(f"  determinism {k:<26} {'agrees' if g.get('ok') else 'DISAGREES'} over {g.get('runs')} runs: "
+              f"{g.get('shots')}/{g.get('shots_total')} shots, {g.get('dumps')}/{g.get('dumps_total')} dumps"
+              + (f", {g.get('live_sets')} live content sets" if g.get("live_sets") else ""))
     bad = bad or (0 if d.get("ok") else 1)
 elif r.get("determinism"):
     print("remote-validate: determinism was requested but no determinism.json came back")
@@ -181,6 +195,13 @@ import fnmatch, json, re, sys
 plan, smap, only = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), set(filter(None, sys.argv[3].split(",")))
 rem = smap.get("remote", {})
 cap, ref = rem.get("capable", []), rem.get("refuse", {})
+planned = {r["id"] for r in plan["runs"]}
+bad = sorted(only - planned)
+if bad:
+    # validate-increment --only silently drops an id the plan does not reach ("0/0 pass"); never here
+    print(f"remote-validate: --only {','.join(bad)}: not in this plan (it reaches: {', '.join(sorted(planned)) or 'nothing'}). "
+          "Force a run into the plan with --paths <a file it covers>, or use --milestone.", file=sys.stderr)
+    sys.exit(2)
 remote, refused = [], []
 for r in plan["runs"]:
     if only and r["id"] not in only:

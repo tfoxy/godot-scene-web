@@ -160,5 +160,69 @@ check "--plan --milestone --base REF records a delta sweep over that diff" \
 check "--milestone without --base stays complete" \
 	"python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p[\"milestone\"] == \"complete\" and p[\"base\"] is None else 1)' '$OUT/plan.json'"
 
+# R2: RS_SKIP_TIMING_GROUPS (remote workflow only). legs_skip_group is inert unless the env is 1; set,
+# it marks each leg dir skipped-remote.txt and tier-verdict excuses exactly the checks naming them.
+skip_group() { # <env value or ""> <dir>
+	env OUT="$TMP/skip" RS_SKIP_TIMING_GROUPS="$1" bash -c "
+		LEGS_LOG=run-gate1; source '$SCRIPT_DIR/lib/gamescope.sh'; source '$SCRIPT_DIR/lib/legs.sh'
+		legs_skip_group g1d \"\$OUT/live-stall\" \"\$OUT/live-reconnect\" && echo skipped || echo ran" 2>/dev/null
+}
+mkdir -p "$TMP/skip"
+check "RS_SKIP_TIMING_GROUPS unset: legs_skip_group runs the group and writes nothing" \
+	"[ \"\$(skip_group '')\" = ran ] && [ -z \"\$(ls -A '$TMP/skip')\" ]"
+check "RS_SKIP_TIMING_GROUPS=0: still runs the group" "[ \"\$(skip_group 0)\" = ran ] && [ -z \"\$(ls -A '$TMP/skip')\" ]"
+check "RS_SKIP_TIMING_GROUPS=1: skips the group, a marker in every leg dir" \
+	"[ \"\$(skip_group 1)\" = skipped ] && grep -q 'timing group g1d' '$TMP/skip/live-stall/skipped-remote.txt' && [ -f '$TMP/skip/live-reconnect/skipped-remote.txt' ]"
+cat >"$TMP/stub-remote.sh" <<'STUB'
+d="$RS_VALIDATE_DIR"
+mkdir -p "$d/run/live-stall/host" "$d/run/live-ok"
+echo '{}' >"$d/run/live-ok/applied.json"
+cat >"$d/run/result.json" <<'JSON'
+{"gate_passed": false, "checks": [
+ {"id": "a", "passed": true},
+ {"id": "g1d-stall-recovery", "passed": false, "detail": "live-stall: no receiver evidence"}]}
+JSON
+if [ "${RS_SKIP_TIMING_GROUPS:-}" = 1 ]; then
+	echo "skipped-remote: RS_SKIP_TIMING_GROUPS=1 (timing group g1d: wall-clock legs stay local)" >"$d/run/live-stall/host/skipped-remote.txt"
+else
+	echo '{}' >"$d/run/live-stall/host/applied.json"
+fi
+exit 1
+STUB
+for mode in unset 1; do
+	envs=(); [ "$mode" = 1 ] && envs=(RS_SKIP_TIMING_GROUPS=1)
+	env ${envs[@]+"${envs[@]}"} RS_VALIDATE_STUB="$TMP/stub-remote.sh" \
+		bash "$SCRIPT_DIR/validate-increment.sh" --milestone --only native-rust-gate1 --out "$TMP/remote-$mode" \
+		--paths experiments/render-stream/scripts/lib/gate3-checks.ts >"$TMP/remote-$mode.log" 2>&1
+	echo $? >"$TMP/remote-$mode.rc"
+done
+check "without the env a failing check naming a leg is a failed run (local behaviour unchanged)" \
+	"[ \"\$(cat '$TMP/remote-unset.rc')\" = 1 ] && [ \"\$(cat '$TMP/remote-unset/native-rust-gate1/rc')\" = 1 ]"
+check "with the env that check is excused: the full run passes, rc 0" \
+	"[ \"\$(cat '$TMP/remote-1.rc')\" = 0 ] && [ \"\$(cat '$TMP/remote-1/native-rust-gate1/rc')\" = 0 ]"
+check "the summary lists the skipped timing group and leg per run (skipped_remote[])" "python3 - '$TMP/remote-1/validate-summary.json' <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))['runs'][0]
+sys.exit(0 if r['skipped_remote'] == ['live-stall/host'] and r['skipped_remote_groups'] == ['g1d'] else 1)
+PY"
+check "a different failing check stays real beside a skipped-remote leg" "python3 - '$SCRIPT_DIR' <<'PY'
+import importlib.util, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location('tv', sys.argv[1] + '/lib/tier-verdict.py')
+tv = importlib.util.module_from_spec(spec); spec.loader.exec_module(tv)
+with tempfile.TemporaryDirectory() as d:
+    os.makedirs(d + '/live-stall'); os.makedirs(d + '/other')
+    open(d + '/live-stall/skipped-remote.txt', 'w').write('skipped-remote: timing group g1d')
+    open(d + '/other/a.json', 'w').write('{}')
+    json.dump({'checks': [{'id': 'pixels', 'passed': False, 'detail': 'differs'}]}, open(d + '/result.json', 'w'))
+    sys.exit(0 if tv.verdict(d, False, '', 1)['verdict'] == 'fail' else 1)
+PY"
+# R2: an --only id the plan does not contain warns (it is not an error) instead of a silent 0/0.
+RS_VALIDATE_STUB="$TMP/stub.sh" STUB_Q="$Q" STUB_TIMES="$TMP/times2.txt" STUB_FOREIGN="$TMP/foreign" \
+	bash "$SCRIPT_DIR/validate-increment.sh" --only native-rust-gate99,pure --out "$TMP/unplanned" \
+	--paths experiments/render-stream/scripts/lib/gate3-checks.ts >"$TMP/unplanned.log" 2>&1
+check "an unplanned --only id prints a warning naming it and the way to force it" \
+	"grep -q 'WARNING --only native-rust-gate99: not in this plan' '$TMP/unplanned.log' && grep -q -- '--paths' '$TMP/unplanned.log'"
+check "the warning is not an error: the planned ids still run" "grep -q 'pure rc=0' '$TMP/unplanned.log'"
+
 echo "self-test-validate-tier: $([ "$fails" = 0 ] && echo "all pass" || echo "$fails FAIL")"
 [ "$fails" = 0 ]

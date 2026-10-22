@@ -265,6 +265,18 @@ run_one() {
 	echo "validate-increment: $id rc=$rc ($(cat "$dir/wall_s") s)"
 }
 
+# An --only id the plan does not contain would silently validate nothing ("0/0 runs pass"): say so.
+if [ -n "$ONLY" ]; then
+	python3 - "$OUT/plan.json" "$ONLY" <<'PY' >&2
+import json, sys
+planned = {r["id"] for r in json.load(open(sys.argv[1]))["runs"]}
+bad = [i for i in sys.argv[2].split(",") if i and i not in planned]
+if bad:
+    print(f"validate-increment: WARNING --only {','.join(bad)}: not in this plan (it reaches: {', '.join(sorted(planned)) or 'nothing'}), so "
+          "nothing runs for it. Force it in with --paths <a file it covers> or --milestone.")
+PY
+fi
+
 mapfile -t RUNS < <(python3 -c "
 import json, sys
 p = json.load(open(sys.argv[1]))

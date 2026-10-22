@@ -559,12 +559,14 @@ run_g1c() {
 	# own pacing. check-gate1.ts's checkLiveRate30 verifies the published rate lands near 30 fps
 	# and that the file sink is untouched.
 	# A rate check: a timing leg (exclusive quiet lock, lib/legs.sh).
-	echo "run-gate1: live-rate-30 (GRC_PUBLISH_FPS=30; G6r self-test)"
-	LEGS_TIMING_GROUP=g1c-rate
-	start_live_host "$OUT/live-rate-30/host" GRC_PUBLISH_FPS=30
-	live_receiver "$OUT/live-rate-30" rendered
-	finish_live_host "$OUT/live-rate-30/host"
-	LEGS_TIMING_GROUP=""
+	if ! legs_skip_group g1c-rate "$OUT/live-rate-30"; then
+		echo "run-gate1: live-rate-30 (GRC_PUBLISH_FPS=30; G6r self-test)"
+		LEGS_TIMING_GROUP=g1c-rate
+		start_live_host "$OUT/live-rate-30/host" GRC_PUBLISH_FPS=30
+		live_receiver "$OUT/live-rate-30" rendered
+		finish_live_host "$OUT/live-rate-30/host"
+		LEGS_TIMING_GROUP=""
+	fi
 
 	gs_teardown "$OUT/gamescope-g1c"
 	GS_RUN_DIR=""
@@ -683,9 +685,12 @@ for group in "${GROUPS_RUN[@]}"; do
 	g1b) run_g1b ;;
 	g1c) run_g1c ;;
 	g1d)
-		LEGS_TIMING_GROUP=g1d
-		run_g1d
-		LEGS_TIMING_GROUP=""
+		if ! legs_skip_group g1d "$OUT/live-receiver-killed" "$OUT/live-stall" "$OUT/live-reconnect" \
+			"$OUT/live-resync" "$OUT/sabotage-ignore-credit" "$OUT/sabotage-stale-coalesce"; then
+			LEGS_TIMING_GROUP=g1d
+			run_g1d
+			LEGS_TIMING_GROUP=""
+		fi
 		;;
 	esac
 done

@@ -634,16 +634,18 @@ run_g2c() {
 	g2c_leg live-reconnect rendered -- RS_RECEIVER_RECONNECT="$G2C_RECONNECT_STEP"
 	# The live-animate pins (live-animate, sabotage-unpin) are timing legs: each holds the
 	# exclusive quiet lock from its host's start to its finish (lib/legs.sh).
-	LEGS_TIMING_GROUP=g2c-pins
-	G2C_FETCH_DELAY_MS="$(legs_frames_ms "$OUT/live-animate/host" "$G2C_FETCH_DELAY_FRAMES")"
-	echo "run-gate2: live-animate (RS_FIXTURE_VARIANT=animate, RS_RECEIVER_FETCH_DELAY_MS=$G2C_FETCH_DELAY_MS)"
-	g2c_leg live-animate rendered RS_FIXTURE_VARIANT=animate -- \
-		RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
-	G2C_FETCH_DELAY_MS="$(legs_frames_ms "$OUT/sabotage-unpin/host" "$G2C_FETCH_DELAY_FRAMES")"
-	echo "run-gate2: sabotage-unpin (as live-animate, unpin @$G2C_UNPIN_FRAME)"
-	g2c_leg sabotage-unpin rendered RS_FIXTURE_VARIANT=animate GRC_SABOTAGE=unpin \
-		GRC_SABOTAGE_FRAME="$G2C_UNPIN_FRAME" -- RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
-	LEGS_TIMING_GROUP=""
+	if ! legs_skip_group g2c-pins "$OUT/live-animate" "$OUT/sabotage-unpin"; then
+		LEGS_TIMING_GROUP=g2c-pins
+		G2C_FETCH_DELAY_MS="$(legs_frames_ms "$OUT/live-animate/host" "$G2C_FETCH_DELAY_FRAMES")"
+		echo "run-gate2: live-animate (RS_FIXTURE_VARIANT=animate, RS_RECEIVER_FETCH_DELAY_MS=$G2C_FETCH_DELAY_MS)"
+		g2c_leg live-animate rendered RS_FIXTURE_VARIANT=animate -- \
+			RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
+		G2C_FETCH_DELAY_MS="$(legs_frames_ms "$OUT/sabotage-unpin/host" "$G2C_FETCH_DELAY_FRAMES")"
+		echo "run-gate2: sabotage-unpin (as live-animate, unpin @$G2C_UNPIN_FRAME)"
+		g2c_leg sabotage-unpin rendered RS_FIXTURE_VARIANT=animate GRC_SABOTAGE=unpin \
+			GRC_SABOTAGE_FRAME="$G2C_UNPIN_FRAME" -- RS_RECEIVER_FETCH_DELAY_MS="$G2C_FETCH_DELAY_MS"
+		LEGS_TIMING_GROUP=""
+	fi
 
 	gs_teardown "$OUT/gamescope-g2c"
 	GS_RUN_DIR=""

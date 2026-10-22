@@ -760,9 +760,12 @@ for group in "${GROUPS_RUN[@]}"; do
 	g55d) run_g55d ;;
 	g55e) run_g55e ;;
 	g55f)
-		LEGS_TIMING_GROUP=g55f
-		run_g55f
-		LEGS_TIMING_GROUP=""
+		if ! legs_skip_group g55f "$OUT/shader-live/reference-live" "$OUT/shader-live/live-shader" "$OUT/shader-live/live-shader-warm" "$OUT/shader-live/live-shader-stall" \
+			"$OUT/shader-live/sabotage-shader-stale-coalesce"; then
+			LEGS_TIMING_GROUP=g55f
+			run_g55f
+			LEGS_TIMING_GROUP=""
+		fi
 		;;
 	esac
 done

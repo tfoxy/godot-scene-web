@@ -879,6 +879,26 @@ legs_sabotage_skipped() {
 	return 0
 }
 
+# legs_skip_group <timing group> <leg dir>...: RS_SKIP_TIMING_GROUPS=1 (remote runs only, set by
+# .github/workflows/remote-validate.yml, never a default) skips a whole timing group inside a
+# correctness gate (g1c-rate, g1d, g2c-pins, g5f, g55f: wall-clock legs a shared hosted VM would
+# only make noisy). Each leg dir gets skipped-remote.txt instead of evidence; lib/tier-verdict.py
+# excuses the checks that name those legs like skipped-by-tier, and lists them (and the group) as
+# skipped_remote[] in the run's verdict and validate-summary.json. Returns 0 when the group is
+# skipped (the caller does not run it), 1 otherwise: unset, it changes nothing.
+legs_skip_group() {
+	[ "${RS_SKIP_TIMING_GROUPS:-}" = 1 ] || return 1
+	local group="$1" d
+	shift
+	for d in "$@"; do
+		mkdir -p "$d"
+		echo "skipped-remote: RS_SKIP_TIMING_GROUPS=1 (timing group $group: wall-clock legs stay local)" \
+			>"$d/skipped-remote.txt"
+	done
+	echo "$LEGS_LOG: timing group $group skipped on this runner (RS_SKIP_TIMING_GROUPS=1): ${*#"$OUT"/}" >&2
+	return 0
+}
+
 # The launch functions, each under the quiet lock (header above).
 run_headless() {
 	legs_sabotage_skipped "$1" && return 0

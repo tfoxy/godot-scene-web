@@ -4,7 +4,10 @@
   tier-verdict.py --run DIR [--sabotage-skipped] [--smoke-legs a,b,...] [--runner-rc N] [--self-test]
 
 A run under RS_SABOTAGE_TIER=skip / RS_SMOKE_LEGS / GATE7_SMOKE_LEGS (lib/legs.sh,
-lib/gate7-web-legs.ts) leaves `skipped-by-tier.txt` in every leg directory it did not launch, so
+lib/gate7-web-legs.ts) leaves `skipped-by-tier.txt` in every leg directory it did not launch, and a
+remote run under RS_SKIP_TIMING_GROUPS=1 (lib/legs.sh) leaves `skipped-remote.txt` in every leg of a
+timing group; both mark a skipped leg the same way, the second is also listed as `skipped_remote`
+(legs) and `skipped_remote_groups` in the verdict. So
 the checker fails the checks that needed that evidence. The verdict reads every gating check in the
 run's own result.json (any `{id, passed, detail}` object in it) and excuses a failing
 check only when
@@ -51,11 +54,17 @@ def walk_checks(node, out):
 
 def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
     marked, launched = [], set()
+    remote_marked, remote_groups = [], set()
     for root, dirs, files in os.walk(run):
         rel = os.path.relpath(root, run)
-        if "skipped-by-tier.txt" in files:
+        if "skipped-by-tier.txt" in files or "skipped-remote.txt" in files:
             marked.append(rel)
             dirs[:] = []
+            if "skipped-remote.txt" in files:
+                remote_marked.append(rel)
+                m = re.search(r"timing group ([A-Za-z0-9_-]+)", open(os.path.join(root, "skipped-remote.txt")).read())
+                if m:
+                    remote_groups.add(m.group(1))
     # a launched leg: any directory holding evidence that is not under a marked one
     for root, dirs, files in os.walk(run):
         rel = os.path.relpath(root, run)
@@ -64,7 +73,7 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
             continue
         if files:
             launched.add(rel)
-    tokens = set()
+    tokens = set(remote_groups)
     for m in marked:
         comps = [c for c in m.split(os.sep) if c != "."]
         while len(comps) > 1 and comps[-1] in GENERIC:
@@ -83,6 +92,10 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
     excused, real, unavailable = [], [], []
     for c in failing:
         text = f"{c['id']} {c.get('detail', '')} {json.dumps(c.get('failures', ''))}"
+        if remote_groups:
+            # a check that is ABOUT a group skipped by RS_SKIP_TIMING_GROUPS names that group (or
+            # a skipped leg) in its criterion: "on every g55f leg, ..."
+            text += f" {c.get('criterion', '')}"
         if str(c.get("status", "")) in UNAVAILABLE:
             unavailable.append(c["id"])
         elif sabotage_skipped and "sabotage" in c["id"]:
@@ -105,7 +118,8 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
             ok, runner = False, "the runner exited 1 but no check explains it"
     out = {"verdict": "pass" if ok else "fail", "checks": len(checks), "skipped_dirs": len(marked),
            "skipped_by_tier": sorted(set(excused)), "unavailable": sorted(set(unavailable)),
-           "failing": sorted(set(real)), "smoke_legs_not_run": missing}
+           "failing": sorted(set(real)), "smoke_legs_not_run": missing,
+           "skipped_remote": sorted(remote_marked), "skipped_remote_groups": sorted(remote_groups)}
     if runner_rc is not None:
         out["runner_rc"] = runner_rc
     if runner:
@@ -140,6 +154,29 @@ def self_test():
     case("a check naming a skipped leg is excused",
          {"result.json": res(("a", True, ""), ("live-handshake", False, "live-stall: no connection")),
           "live/applied.json": "{}", "live-stall/skipped-by-tier.txt": "x"}, "pass")
+    mark = "skipped-remote: RS_SKIP_TIMING_GROUPS=1 (timing group g1d: wall-clock legs stay local)"
+    case("a check naming a leg skipped by RS_SKIP_TIMING_GROUPS is excused",
+         {"result.json": res(("a", True, ""), ("live-handshake", False, "live-stall: no connection")),
+          "live/applied.json": "{}", "live-stall/host/skipped-remote.txt": mark}, "pass")
+    with tempfile.TemporaryDirectory() as d:
+        mk(d, {"result.json": json.dumps({"checks": [
+                   {"id": "warm-host-no-gets", "passed": False, "criterion": "on every g1d leg, the warm host is quiet", "detail": "0 GETs"},
+                   {"id": "pixels", "passed": False, "criterion": "every shot equals the reference", "detail": "differs"}]}),
+               "ok/a.json": "{}", "live-stall/skipped-remote.txt": mark})
+        v = verdict(d, False, "", 1)
+    okc = v["failing"] == ["pixels"] and v["skipped_by_tier"] == ["warm-host-no-gets"]
+    print(("PASS " if okc else "FAIL ") + "a check whose criterion names the skipped timing group is excused, a bare one is not")
+    fails += not okc
+    case("an unexplained failure stays real beside a skipped-remote leg",
+         {"result.json": res(("a", False, "pixels differ")), "live/applied.json": "{}",
+          "live-stall/host/skipped-remote.txt": mark}, "fail")
+    with tempfile.TemporaryDirectory() as d:
+        mk(d, {"result.json": res(("a", True, ""), ("x", False, "live-stall missing")), "live/applied.json": "{}",
+               "live-stall/host/skipped-remote.txt": mark, "live-reconnect/skipped-by-tier.txt": "x"})
+        v = verdict(d, False, "")
+    okr = v["skipped_remote"] == ["live-stall/host"] and v["skipped_remote_groups"] == ["g1d"] and v["skipped_dirs"] == 2
+    print(("PASS " if okr else "FAIL ") + "skipped_remote lists only the remote-skipped legs and their groups")
+    fails += not okr
     case("an unexplained failure stays real",
          {"result.json": res(("a", False, "pixels differ")), "live/applied.json": "{}",
           "live-stall/skipped-by-tier.txt": "x"}, "fail")

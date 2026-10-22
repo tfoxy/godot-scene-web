@@ -110,6 +110,17 @@ skipped-by-tier, failing on any other check. `--milestone` runs every target wit
 `--milestone --base <commit>` is the delta sweep (GRT4a): the full tier over the targets the diff
 since `<commit>` reaches, with every sabotage leg of those (a capture, wire or unmatched path still
 reaches everything). `python3 lib/smoke-plan.py --self-test --map smoke-map.json` tests the map.
+`--only <id>` for an id the plan does not reach prints a WARNING (nothing runs for it; force it in
+with `--paths <a file it covers>` or `--milestone`); `scripts/remote-validate.sh` fails (rc 2) instead.
+
+**Timing groups on hosted runners (R2).** `RS_SKIP_TIMING_GROUPS=1` is set only by
+`.github/workflows/remote-validate.yml` (never a default, never by the planner). The timing groups
+inside the correctness gates (`g1c-rate`, `g1d`, `g2c-pins`, `g5f`, `g55f`: exclusive-lock wall-clock
+legs) then skip every leg (`lib/legs.sh` `legs_skip_group`, one `skipped-remote.txt` per leg dir),
+`lib/tier-verdict.py` excuses the checks about those legs (named in the check's id, detail or
+criterion) like skipped-by-tier, and `validate-summary.json` lists them per run as
+`skipped_remote[]` / `skipped_remote_groups[]`. `remote-validate.sh` prints each skipped group and the
+local command to run it (`run-gate1.sh --legs g1a,g1d` ...). Unset, nothing changes.
 
 **Phases** (GRT4a). Each planned run has a `phase`, run in order: `setup` (pure, lock tests, builds,
 crates), `native` (native correctness gates), `g7` (file groups and correctness live groups), then
