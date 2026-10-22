@@ -131,7 +131,7 @@ def fold_shards(rows, expected):
 def emit(out, summary, rows, failed, t0, t1, n_skipped):
     json.dump(summary, open(os.path.join(out, "validate-summary.json"), "w"), indent=2)
     for x in rows:
-        print(f"  {x['id']:<28} [{x['phase']:<6}] rc={x['rc']:<3} {x['wall_s'] or 0:>8.1f} s  lock wait {x['lock_wait_s']:>7.1f} s"
+        print(f"  {x['id']:<28} [{str(x['phase']):<6}] rc={x['rc']:<3} {x['wall_s'] or 0:>8.1f} s  lock wait {x['lock_wait_s']:>7.1f} s"
               f"  hold {x['lock_hold_s']:>7.1f} s"
               + (f"  skipped-by-tier {x['skipped_by_tier']}" if x["skipped_by_tier"] else "")
               + (f"  unavailable {len(x['unavailable'])}" if x["unavailable"] else ""))
