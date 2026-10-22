@@ -81,6 +81,53 @@ def phase_totals(rows):
     return phases
 
 
+def rc_rank(rc):
+    """Worse is larger: 0 passes, a number is the exit status, anything else (missing) is worst."""
+    try:
+        return int(rc)
+    except (TypeError, ValueError):
+        return 1 << 30
+
+
+def fold_shards(rows, expected):
+    """Sharded runs (the workflow splits `pure` into RS_PURE_SHARD jobs) arrive as several rows with
+    one id. Fold each id into ONE row so readers and run ids are unchanged: rc = the worst, wall_s =
+    the max (shards run in parallel), lock times and skipped_by_tier summed, failing/unavailable
+    unioned. `expected` maps id -> shard count: fewer rows than that (a shard job died before writing
+    its summary) makes the folded rc "missing". The row gains `shards`: [{rc, wall_s}] for audit."""
+    by_id, order = {}, []
+    for r in rows:
+        if r["id"] not in by_id:
+            order.append(r["id"])
+        by_id.setdefault(r["id"], []).append(r)
+    out = []
+    for i in order:
+        g = by_id[i]
+        want = expected.get(i, 1)
+        if len(g) == 1 and want <= 1:
+            out.append(g[0])
+            continue
+        f = dict(g[0])
+        worst = max(g, key=lambda r: rc_rank(r["rc"]))
+        f["rc"] = "missing" if len(g) < want else worst["rc"]
+        walls = [r["wall_s"] for r in g if r["wall_s"] is not None]
+        f["wall_s"] = max(walls) if walls else None
+        f["lock_wait_s"] = round(sum(r["lock_wait_s"] for r in g), 1)
+        f["lock_hold_s"] = round(sum(r["lock_hold_s"] for r in g), 1)
+        f["lock_summaries"] = sum(r["lock_summaries"] for r in g)
+        f["lock"] = {m: {k: round(sum(r["lock"].get(m, {}).get(k, 0) for r in g), 1) for k in ("holds", "wait_s", "hold_s")}
+                     for m in ("shared", "exclusive")} if any(r["lock"] for r in g) else {}
+        f["skipped_by_tier"] = sum(r["skipped_by_tier"] for r in g)
+        for k in ("unavailable", "failing"):
+            seen = []
+            for r in g:
+                seen += [x for x in r[k] if x not in seen]
+            f[k] = seen
+        f["shards"] = [{"rc": r["rc"], "wall_s": r["wall_s"]} for r in g]
+        out.append(f)
+    return out
+
+
 def emit(out, summary, rows, failed, t0, t1, n_skipped):
     json.dump(summary, open(os.path.join(out, "validate-summary.json"), "w"), indent=2)
     for x in rows:
@@ -132,6 +179,13 @@ def merge_mode(argv):
             setup_s.append(float(open(os.path.join(j, "setup_s")).read().strip()))
         except (OSError, ValueError):
             pass
+    expected_shards = {}
+    if remote_json:
+        try:
+            expected_shards = json.load(open(remote_json)).get("shards") or {}
+        except (OSError, ValueError):
+            pass
+    rows = fold_shards(rows, expected_shards)
     have = {r["id"] for r in rows}
     for i in expect:
         if i not in have:

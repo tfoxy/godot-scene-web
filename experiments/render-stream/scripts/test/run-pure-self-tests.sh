@@ -14,6 +14,14 @@
 # run-gate7.sh runs them). --lock-tests adds the two lock self-tests (self-test-quiet.sh,
 # self-test-quiet-sched.sh: private locks, ~5 min, timing-sensitive, so they run after the others,
 # one at a time). Prints one PASS/FAIL line per test and a summary; exits non-zero on any FAIL.
+#
+# RS_PURE_SHARD=i/n (1 <= i <= n) runs only shard i of n: the remote workflow splits `pure` across n
+# jobs (docs/remote-compute.md). The split is deterministic -- longest-processing-time-first over the
+# per-test seconds in pure-shard-weights.json (a test missing there weighs 20 s), ties broken by
+# name -- and the n shards cover every test exactly once. Unset or empty means the whole suite,
+# exactly as before. --list prints the selected units and exits. A heavy test listed under "parts" in
+# the weights file (gate 1, gate 2: ~10 minutes each on a runner) is itself split into parts "name@KofP",
+# run with RS_SELF_TEST_SHARD=K/P, which test/shard.ts reads to run every P-th scenario.
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,12 +32,15 @@ OUT=""
 JOBS=4
 LOCK_TESTS=0
 ONLY=""
+LIST=0
+SHARD="${RS_PURE_SHARD:-}"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--out) OUT="$2" && shift 2 ;;
 	-j) JOBS="$2" && shift 2 ;;
 	--lock-tests) LOCK_TESTS=1 && shift ;;
 	--only) ONLY="$2" && shift 2 ;;
+	--list) LIST=1 && shift ;;
 	*) echo "run-pure-self-tests: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
@@ -67,6 +78,37 @@ if [ -n "$ONLY" ]; then
 	done
 	NAMES=(${keepn[@]+"${keepn[@]}"})
 	CMDS=(${keepc[@]+"${keepc[@]}"})
+fi
+
+if [ -n "$SHARD" ]; then
+	keep_out="$(python3 -I "$SCRIPT_DIR/test/pure-shard.py" "$SHARD" "$SCRIPT_DIR/test/pure-shard-weights.json" "${NAMES[@]}")" ||
+		{ echo "run-pure-self-tests: bad RS_PURE_SHARD=$SHARD" >&2 && exit 2; }
+	mapfile -t keep <<<"$keep_out"
+	# a unit is a test, or "test@KofP": part K of P of a heavy test's own scenario shard
+	keepn=()
+	keepc=()
+	for k in "${keep[@]}"; do
+		[ -n "$k" ] || continue
+		base="${k%@*}"
+		for i in "${!NAMES[@]}"; do
+			[ "${NAMES[$i]}" = "$base" ] || continue
+			keepn+=("$k")
+			if [ "$k" = "$base" ]; then
+				keepc+=("${CMDS[$i]}")
+			else
+				part="${k#*@}"
+				keepc+=("export RS_SELF_TEST_SHARD='${part%of*}/${part#*of}'; ${CMDS[$i]}")
+			fi
+			break
+		done
+	done
+	NAMES=(${keepn[@]+"${keepn[@]}"})
+	CMDS=(${keepc[@]+"${keepc[@]}"})
+	case "$SHARD" in 1/*) ;; *) LOCK_TESTS=0 ;; esac
+fi
+if [ "$LIST" = 1 ]; then
+	printf '%s\n' ${NAMES[@]+"${NAMES[@]}"}
+	exit 0
 fi
 
 # exclusive_active: a timing leg holds the machine-wide lock right now.

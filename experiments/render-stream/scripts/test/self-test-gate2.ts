@@ -79,6 +79,8 @@ import {
   HTTP_RESOURCES,
 } from "./gate2c-fixture";
 import { texturePayload } from "./rs2-test-encoder";
+import "./node-hash";
+import { inShard, isFirstShard } from "./shard";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -503,6 +505,7 @@ function verdicts(report: Gate2Report): Map<string, string> {
 
 /** Check ids some scenario proved can fail. */
 const targeted = new Set<string>();
+let scenarioPosition = 0;
 
 async function scenario(
   root: string,
@@ -511,6 +514,11 @@ async function scenario(
   perturb: (out: string) => Promise<void>,
   failing: string[],
 ): Promise<void> {
+  if (!inShard(scenarioPosition++)) {
+    // another shard (RS_SELF_TEST_SHARD) runs this scenario and asserts that it fails these ids
+    for (const id of failing) targeted.add(id);
+    return;
+  }
   const out = join(root, name);
   await cp(good, out, { recursive: true });
   await perturb(out);
@@ -2134,80 +2142,82 @@ async function main(): Promise<void> {
     );
 
     // Groups not run: their checks are not-run and the gate fails.
-    const g2aOnly = join(root, "g2a-only");
-    await cp(good, g2aOnly, { recursive: true });
-    const LATER = ["group-g2b", "group-g2c", "group-g2d", "group-g2e"];
-    await writeJson(join(g2aOnly, "legs.json"), {
-      groups_run: ["g2a"],
-      groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
-    });
-    const onlyA = await run(g2aOnly);
-    assert(
-      "g2b-g2e not run: group-g2b..group-g2e are not-run, the g2a checks pass and the gate fails",
-      !onlyA.gate_passed &&
-        LATER.every((id) =>
-          onlyA.checks.some((c) => c.id === id && c.status === "not-run"),
-        ) &&
-        onlyA.checks
-          .filter((c) => !LATER.includes(c.id))
-          .map((c) => `${c.id}:${c.status}`)
-          .join(",") === G2A_CHECKS.map((id) => `${id}:pass`).join(","),
-      onlyA.checks.map((c) => `${c.id}:${c.status}`).join(","),
-    );
-    // g2b without g2d: G2d's legs and canvas-normal-region are not judged at all, every g2b
-    // check passes, and group-g2d is not-run.
-    const noG2d = join(root, "no-g2d");
-    await cp(good, noG2d, { recursive: true });
-    for (const leg of [
-      "canvas-headless",
-      "canvas-host",
-      "canvas-normal",
-      "sabotage-omit-canvas-filter",
-    ])
-      await rm(join(noG2d, leg), { recursive: true, force: true });
-    await writeJson(join(noG2d, "legs.json"), {
-      groups_run: ["g2a", "g2b", "g2c", "g2e"],
-      groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
-    });
-    const withoutD = await run(noG2d);
-    const g2dIds = [
-      "canvas-texture-headless-refused",
-      "canvas-texture-override",
-      "canvas-texture-wire",
-      "canvas-normal-region",
-      "leg-class-canvas-headless",
-      "leg-class-canvas-host",
-      "leg-class-canvas-normal",
-      "leg-class-sabotage-omit-canvas-filter",
-    ];
-    assert(
-      "g2d not run: only group-g2d is not-run, G2d's checks are absent, every other check passes",
-      !withoutD.gate_passed &&
+    if (isFirstShard) {
+      const g2aOnly = join(root, "g2a-only");
+      await cp(good, g2aOnly, { recursive: true });
+      const LATER = ["group-g2b", "group-g2c", "group-g2d", "group-g2e"];
+      await writeJson(join(g2aOnly, "legs.json"), {
+        groups_run: ["g2a"],
+        groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
+      });
+      const onlyA = await run(g2aOnly);
+      assert(
+        "g2b-g2e not run: group-g2b..group-g2e are not-run, the g2a checks pass and the gate fails",
+        !onlyA.gate_passed &&
+          LATER.every((id) =>
+            onlyA.checks.some((c) => c.id === id && c.status === "not-run"),
+          ) &&
+          onlyA.checks
+            .filter((c) => !LATER.includes(c.id))
+            .map((c) => `${c.id}:${c.status}`)
+            .join(",") === G2A_CHECKS.map((id) => `${id}:pass`).join(","),
+        onlyA.checks.map((c) => `${c.id}:${c.status}`).join(","),
+      );
+      // g2b without g2d: G2d's legs and canvas-normal-region are not judged at all, every g2b
+      // check passes, and group-g2d is not-run.
+      const noG2d = join(root, "no-g2d");
+      await cp(good, noG2d, { recursive: true });
+      for (const leg of [
+        "canvas-headless",
+        "canvas-host",
+        "canvas-normal",
+        "sabotage-omit-canvas-filter",
+      ])
+        await rm(join(noG2d, leg), { recursive: true, force: true });
+      await writeJson(join(noG2d, "legs.json"), {
+        groups_run: ["g2a", "g2b", "g2c", "g2e"],
+        groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
+      });
+      const withoutD = await run(noG2d);
+      const g2dIds = [
+        "canvas-texture-headless-refused",
+        "canvas-texture-override",
+        "canvas-texture-wire",
+        "canvas-normal-region",
+        "leg-class-canvas-headless",
+        "leg-class-canvas-host",
+        "leg-class-canvas-normal",
+        "leg-class-sabotage-omit-canvas-filter",
+      ];
+      assert(
+        "g2d not run: only group-g2d is not-run, G2d's checks are absent, every other check passes",
+        !withoutD.gate_passed &&
+          withoutD.checks
+            .filter((c) => c.status !== "pass")
+            .map((c) => `${c.id}:${c.status}`)
+            .join(",") === "group-g2d:not-run" &&
+          !withoutD.checks.some((c) => g2dIds.includes(c.id)) &&
+          withoutD.legs["canvas-normal"] === undefined,
         withoutD.checks
           .filter((c) => c.status !== "pass")
-          .map((c) => `${c.id}:${c.status}`)
-          .join(",") === "group-g2d:not-run" &&
-        !withoutD.checks.some((c) => g2dIds.includes(c.id)) &&
-        withoutD.legs["canvas-normal"] === undefined,
-      withoutD.checks
-        .filter((c) => c.status !== "pass")
-        .map((c) => `${c.id}:${c.status}: ${c.detail.slice(0, 200)}`)
-        .join(" | "),
-    );
-    await rm(noG2d, { recursive: true, force: true });
-    await writeJson(join(g2aOnly, "legs.json"), {
-      groups_run: [],
-      groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
-    });
-    const notRun = await run(g2aOnly);
-    assert(
-      "nothing run: group-g2a..group-g2e are not-run and the gate fails",
-      !notRun.gate_passed &&
-        ["group-g2a", ...LATER].every((id) =>
-          notRun.checks.some((c) => c.id === id && c.status === "not-run"),
-        ),
-      notRun.checks.map((c) => `${c.id}:${c.status}`).join(","),
-    );
+          .map((c) => `${c.id}:${c.status}: ${c.detail.slice(0, 200)}`)
+          .join(" | "),
+      );
+      await rm(noG2d, { recursive: true, force: true });
+      await writeJson(join(g2aOnly, "legs.json"), {
+        groups_run: [],
+        groups_landed: ["g2a", "g2b", "g2c", "g2d", "g2e"],
+      });
+      const notRun = await run(g2aOnly);
+      assert(
+        "nothing run: group-g2a..group-g2e are not-run and the gate fails",
+        !notRun.gate_passed &&
+          ["group-g2a", ...LATER].every((id) =>
+            notRun.checks.some((c) => c.id === id && c.status === "not-run"),
+          ),
+        notRun.checks.map((c) => `${c.id}:${c.status}`).join(","),
+      );
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

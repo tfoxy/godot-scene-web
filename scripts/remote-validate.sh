@@ -14,6 +14,7 @@
 #
 #   --no-wait        print the run_key after dispatching and exit; the workflow deletes the branch itself
 #   --collect KEY    wait for / download the run a previous --no-wait printed
+#   --toolchain-smoke  instead of a plan, build the four toolchain outputs on a runner and fetch their sha256s
 #   --and-local      run the refused runs through local validate-increment.sh while the remote run flies
 #   --dry-run        plan and print what would be pushed and dispatched; touch nothing
 #
@@ -32,7 +33,7 @@ POLL_S="${RV_POLL_S:-4}"
 FIND_TRIES="${RV_FIND_TRIES:-30}"
 WORKFLOW=remote-validate.yml
 
-BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0
+BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 TSMOKE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--base) BASE="$2" && BASE_SET=1 && shift 2 ;;
@@ -44,6 +45,7 @@ while [ $# -gt 0 ]; do
 	--collect) COLLECT="$2" && shift 2 ;;
 	--and-local) AND_LOCAL=1 && shift ;;
 	--dry-run) DRY=1 && shift ;;
+	--toolchain-smoke) TSMOKE=1 && shift ;;
 	*) echo "remote-validate: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
@@ -170,6 +172,10 @@ for r in plan["runs"]:
     (refused.append({"id": r["id"], "reason": why}) if why else remote.append(r["id"]))
 json.dump({"remote": remote, "refused": refused}, sys.stdout)
 PY
+if [ "$TSMOKE" = 1 ]; then
+	# R0b: not a planned run. Builds the four toolchain outputs on a runner (scripts/remote-toolchain-smoke.sh)
+	echo '{"remote":["toolchain-smoke"],"refused":[]}' >"$TMP/split.json"
+fi
 REMOTE_IDS="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["remote"]))' "$TMP/split.json")"
 REFUSED_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json.load(open(sys.argv[1]))["refused"]))' "$TMP/split.json")"
 RUNS_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["remote"]))' "$TMP/split.json")"

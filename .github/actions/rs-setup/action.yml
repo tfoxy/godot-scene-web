@@ -1,31 +1,44 @@
 name: rs-setup
 description: >-
-  Toolchain for remote render-stream validation runs (docs/remote-compute.md). R0a provides only
-  what the `pure`, `pnpm-test` and `cargo-*` runs need: node and pnpm (versions from mise.toml),
-  `pnpm install --frozen-lockfile` with a store cache, Rust 1.95.0 and `cargo fetch` for the
-  render-stream crates (their `cargo test` runs --offline) with a registry cache. The later-rung
-  inputs below exist so workflows can already name them; enabling one fails loudly until its rung
-  implements it.
+  Toolchain for remote render-stream validation runs (docs/remote-compute.md). The base is node and
+  pnpm (versions from mise.toml), `pnpm install --frozen-lockfile`, Rust 1.95.0 and `cargo fetch` for
+  the render-stream crates. Feature inputs (all off by default) add the pinned Godot editor, export
+  templates, emsdk, the nightly toolchain, wasm-bindgen, the gate 4 fonts, apt tools and the capture
+  build. Every cache is restore-only (a cache saved on a run branch is invisible to other branches);
+  only remote-cache-seed.yml, on main, passes `save: true`. The repo allows only GitHub-owned,
+  tfoxy-owned and pnpm/action-setup actions, so every pinned input is installed with plain shell and
+  a sha check.
 
 inputs:
   rust-version:
     description: Rust toolchain for the cargo-* runs (matches the local stable)
     default: 1.95.0
-  # ---- later rungs: disabled by default, not implemented at R0a ---------------------------------
+  save:
+    description: Save caches on a miss (only remote-cache-seed.yml on main sets this)
+    default: "false"
   godot:
-    description: "R0b: mise Godot editor (asdf-godot plugin), sha-verified"
+    description: Godot 4.5.1-stable Linux editor at the mise install path, sha from build-web-receiver.sh
     default: "false"
   templates:
-    description: "R0b: 4.5.1 linux_release.x86_64 + web_dlink_nothreads_release.zip from the .tpz, sha-verified"
+    description: linux_release.x86_64 + web_dlink_nothreads_release.zip cut from the 4.5.1 .tpz (never cached whole)
     default: "false"
   emsdk:
-    description: "R0b: emsdk 4.0.11"
+    description: emsdk 4.0.11 at ~/.cache/godot-render-stream/emsdk
     default: "false"
-  nightly:
-    description: "R0b: Rust nightly-2025-10-15 with rust-src (-Zbuild-std)"
+  rust-nightly:
+    description: Rust nightly-2025-10-15 with rust-src (-Zbuild-std)
     default: "false"
   wasm-bindgen:
-    description: "R0b: wasm-bindgen-cli 0.2.129"
+    description: wasm-bindgen-cli 0.2.129 (release tarball, pinned sha) and the wasm32-unknown-unknown target
+    default: "false"
+  fonts:
+    description: gate 4 fonts, sparse checkout of godotengine/godot 4.5.1-stable thirdparty/fonts next to the repo
+    default: "false"
+  apt:
+    description: strace (cmake ships on the runner image)
+    default: "false"
+  capture-build:
+    description: Restore (or build) the capture library build tree that the pure self-tests need (rs_ws_echo)
     default: "false"
   chromium:
     description: >-
@@ -33,7 +46,7 @@ inputs:
       for pnpm-test's browser tests. R3 adds the sha check against the pinned build.
     default: "false"
   gamescope:
-    description: "R1: apt gamescope/xvfb/mesa-vulkan-drivers/strace for rendered legs"
+    description: "R1: apt gamescope/xvfb/mesa-vulkan-drivers for rendered legs"
     default: "false"
 
 runs:
@@ -42,23 +55,29 @@ runs:
     - name: Refuse rungs that are not implemented yet
       shell: bash
       env:
-        GODOT: ${{ inputs.godot }}
-        TEMPLATES: ${{ inputs.templates }}
-        EMSDK: ${{ inputs.emsdk }}
-        NIGHTLY: ${{ inputs.nightly }}
-        WASM_BINDGEN: ${{ inputs.wasm-bindgen }}
         GAMESCOPE: ${{ inputs.gamescope }}
       run: |
-        for pair in godot:"$GODOT" templates:"$TEMPLATES" emsdk:"$EMSDK" nightly:"$NIGHTLY" \
-          wasm-bindgen:"$WASM_BINDGEN" gamescope:"$GAMESCOPE"; do
-          if [ "${pair#*:}" = "true" ]; then
-            echo "::error::rs-setup input '${pair%%:*}' is not implemented at R0a"
-            exit 1
-          fi
-        done
+        if [ "$GAMESCOPE" = "true" ]; then
+          echo "::error::rs-setup input 'gamescope' is not implemented yet (R1)"
+          exit 1
+        fi
+
+    - name: Pins
+      id: pins
+      shell: bash
+      run: |
+        rs=experiments/render-stream/scripts
+        pin() { sed -n "s/^$1=\"\([0-9a-f]\{64\}\)\".*/\1/p" "$2" | head -1; }
+        {
+          echo "editor=$(pin EXPECTED_EDITOR_SHA256 $rs/build-web-receiver.sh)"
+          echo "web=$(pin EXPECTED_TEMPLATE_SHA256 $rs/build-web-receiver.sh)"
+          echo "linux=$(pin EXPECTED_BINARY_SHA256 $rs/run-gate0.sh)"
+        } | tee -a "$GITHUB_OUTPUT"
+        if grep -qE '=$' "$GITHUB_OUTPUT"; then echo "::error::a sha pin was not found"; exit 1; fi
 
     # The repo only allows actions owned by GitHub, the owner, or pnpm/action-setup, so node and pnpm
     # come the way publish.yml gets them (versions equal mise.toml's), not through jdx/mise-action.
+    # No `cache: pnpm` here: setup-node saves in its post step, and a branch-saved cache is useless.
     - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       with:
         version: 10.26.0
@@ -66,7 +85,6 @@ runs:
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: 24.12.0
-        cache: pnpm
 
     # validate-increment's pnpm-test run calls `mise exec -- pnpm test`. A mise stand-in that just
     # execs the command keeps the runner scripts identical to local (no mise download here).
@@ -78,9 +96,27 @@ runs:
         chmod +x "$RUNNER_TEMP/shim/mise"
         echo "$RUNNER_TEMP/shim" >>"$GITHUB_PATH"
 
+    - name: pnpm store path
+      id: pnpm-store
+      shell: bash
+      run: echo "path=$(pnpm store path --silent)" >>"$GITHUB_OUTPUT"
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: pnpm-cache
+      with:
+        path: ${{ steps.pnpm-store.outputs.path }}
+        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-${{ runner.os }}-
+
     - name: pnpm install
       shell: bash
       run: pnpm install --frozen-lockfile
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.save == 'true' && steps.pnpm-cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ steps.pnpm-store.outputs.path }}
+        key: ${{ steps.pnpm-cache.outputs.cache-primary-key }}
 
     - name: Playwright Chromium
       if: inputs.chromium == 'true'
@@ -96,7 +132,8 @@ runs:
         rustup default "$RUST_VERSION"
         rustc --version
 
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: cargo-cache
       with:
         path: |
           ~/.cargo/registry
@@ -111,3 +148,190 @@ runs:
           [ -f "$lock" ] || continue
           (cd "$(dirname "$lock")" && cargo fetch --locked)
         done
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.save == 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+    # ---- features ----------------------------------------------------------------------------------
+
+    - name: apt tools
+      if: inputs.apt == 'true'
+      shell: bash
+      run: |
+        sudo apt-get install -y --no-install-recommends strace || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace; }
+        cmake --version | head -1 # build-capture.sh defaults to /snap/bin/cmake; the workflows pass CMAKE=cmake
+
+    # Editor: the sha pin is build-web-receiver.sh's (of the extracted binary); the release API's zip
+    # digest is pinned here as well.
+    - name: Godot editor
+      if: inputs.godot == 'true'
+      shell: bash
+      env:
+        EDITOR_SHA: ${{ steps.pins.outputs.editor }}
+      run: |
+        dest="$HOME/.local/share/mise/installs/godot/4.5.1-stable"
+        bin="$dest/Godot_v4.5.1-stable_linux.x86_64"
+        if ! { [ -x "$bin" ] && echo "$EDITOR_SHA  $bin" | sha256sum -c --quiet -; }; then
+          d="$(mktemp -d)"
+          curl -fsSL --retry 3 -o "$d/editor.zip" \
+            https://github.com/godotengine/godot/releases/download/4.5.1-stable/Godot_v4.5.1-stable_linux.x86_64.zip
+          echo "02ec53d1cc7dbb9cc6355393c61b9ab43d1244751a124f10248a4802830788cd  $d/editor.zip" | sha256sum -c --quiet -
+          mkdir -p "$dest"
+          unzip -q -o "$d/editor.zip" Godot_v4.5.1-stable_linux.x86_64 -d "$dest"
+          rm -rf "$d"
+          chmod +x "$bin"
+          echo "$EDITOR_SHA  $bin" | sha256sum -c --quiet -
+        fi
+        ln -sf "$bin" "$RUNNER_TEMP/shim/godot" # `mise exec -- godot` -> the stand-in -> this
+        "$bin" --version
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: templates-cache
+      if: inputs.templates == 'true'
+      with:
+        path: ~/.cache/godot-render-stream/templates/4.5.1-stable
+        key: godot-templates-4.5.1-${{ steps.pins.outputs.linux }}-${{ steps.pins.outputs.web }}
+
+    # The 1.36 GB .tpz is downloaded only on a miss, mined for the two files and deleted at once;
+    # the cache holds just those files.
+    - name: Export templates
+      if: inputs.templates == 'true'
+      shell: bash
+      env:
+        LINUX_SHA: ${{ steps.pins.outputs.linux }}
+        WEB_SHA: ${{ steps.pins.outputs.web }}
+      run: |
+        t="$HOME/.cache/godot-render-stream/templates/4.5.1-stable"
+        mkdir -p "$t"
+        verify() { (cd "$t" && printf '%s  linux_release.x86_64\n%s  web_dlink_nothreads_release.zip\n' "$LINUX_SHA" "$WEB_SHA" | sha256sum -c --quiet -); }
+        if ! verify 2>/dev/null; then
+          d="$(mktemp -d)"
+          curl -fsSL --retry 3 -o "$d/t.tpz" \
+            https://github.com/godotengine/godot/releases/download/4.5.1-stable/Godot_v4.5.1-stable_export_templates.tpz
+          echo "1998af37f1387684e2c211cdb483daf492fc64dc6b12096bddcdca25b6910c86  $d/t.tpz" | sha256sum -c --quiet -
+          unzip -q -j -o "$d/t.tpz" '*/linux_release.x86_64' '*/web_dlink_nothreads_release.zip' -d "$t"
+          rm -rf "$d"
+          verify
+        fi
+        ls -l "$t"
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.templates == 'true' && inputs.save == 'true' && steps.templates-cache.outputs.cache-hit != 'true'
+      with:
+        path: ~/.cache/godot-render-stream/templates/4.5.1-stable
+        key: ${{ steps.templates-cache.outputs.cache-primary-key }}
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: emsdk-cache
+      if: inputs.emsdk == 'true'
+      with:
+        path: ~/.cache/godot-render-stream/emsdk
+        key: emsdk-4.0.11-${{ runner.os }}
+
+    - name: emsdk 4.0.11
+      if: inputs.emsdk == 'true' && steps.emsdk-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        e="$HOME/.cache/godot-render-stream/emsdk"
+        rm -rf "$e"
+        git clone --depth 1 --branch 4.0.11 https://github.com/emscripten-core/emsdk "$e"
+        (cd "$e" && ./emsdk install 4.0.11 && ./emsdk activate 4.0.11)
+        rm -rf "$e/.git"
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.emsdk == 'true' && inputs.save == 'true' && steps.emsdk-cache.outputs.cache-hit != 'true'
+      with:
+        path: ~/.cache/godot-render-stream/emsdk
+        key: ${{ steps.emsdk-cache.outputs.cache-primary-key }}
+
+    - name: Rust nightly-2025-10-15 + rust-src
+      if: inputs.rust-nightly == 'true'
+      shell: bash
+      run: |
+        rustup toolchain install nightly-2025-10-15 --profile minimal --component rust-src
+        rustc +nightly-2025-10-15 --version
+
+    # wasm-bindgen publishes a .sha256sum beside every tarball; the digest below is that tarball's.
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: wb-cache
+      if: inputs.wasm-bindgen == 'true'
+      with:
+        path: ~/.cache/godot-render-stream/bin
+        key: wasm-bindgen-0.2.129-${{ runner.os }}
+
+    - name: wasm-bindgen 0.2.129
+      if: inputs.wasm-bindgen == 'true'
+      shell: bash
+      run: |
+        rustup target add wasm32-unknown-unknown
+        b="$HOME/.cache/godot-render-stream/bin"
+        if [ ! -x "$b/wasm-bindgen" ]; then
+          d="$(mktemp -d)"
+          n=wasm-bindgen-0.2.129-x86_64-unknown-linux-musl
+          curl -fsSL --retry 3 -o "$d/wb.tar.gz" "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$n.tar.gz"
+          echo "82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  $d/wb.tar.gz" | sha256sum -c --quiet -
+          mkdir -p "$b"
+          tar -xzf "$d/wb.tar.gz" -C "$b" --strip-components=1 "$n/wasm-bindgen"
+          rm -rf "$d"
+        fi
+        echo "$b" >>"$GITHUB_PATH"
+        "$b/wasm-bindgen" --version
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.wasm-bindgen == 'true' && inputs.save == 'true' && steps.wb-cache.outputs.cache-hit != 'true'
+      with:
+        path: ~/.cache/godot-render-stream/bin
+        key: ${{ steps.wb-cache.outputs.cache-primary-key }}
+
+    - name: Gate 4 fonts
+      if: inputs.fonts == 'true'
+      shell: bash
+      run: |
+        g="$GITHUB_WORKSPACE/../godot-4.5.1-stable"
+        if [ ! -d "$g/thirdparty/fonts" ]; then
+          rm -rf "$g"
+          git clone -q --depth 1 --filter=blob:none --sparse --branch 4.5.1-stable https://github.com/godotengine/godot "$g"
+          git -C "$g" sparse-checkout set thirdparty/fonts
+        fi
+        python3 -I - <<'PY'
+        import hashlib, json, os, sys
+        root = os.environ["GITHUB_WORKSPACE"]
+        bad = 0
+        for e in json.load(open(os.path.join(root, "experiments/render-stream/fixtures/gate4-i18n/fonts.lock.json"))):
+            p = os.path.normpath(os.path.join(root, e["source"]))
+            ok = os.path.isfile(p) and hashlib.sha256(open(p, "rb").read()).hexdigest() == e["sha256"]
+            print(("ok  " if ok else "BAD ") + e["file"])
+            bad += not ok
+        sys.exit(1 if bad else 0)
+        PY
+
+    # The pure self-tests include rs-ws, which runs the capture build's rs_ws_echo. The build tree is
+    # cached by a hash of the capture sources. Its objects must look newer than the freshly checked-out
+    # sources, so the sources are dated 2000-01-01 before the restore.
+    - name: Date the capture sources
+      if: inputs.capture-build == 'true'
+      shell: bash
+      run: find experiments/render-stream/capture -path '*/build' -prune -o -type f -exec touch -d 2000-01-01 {} +
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: capture-cache
+      if: inputs.capture-build == 'true'
+      with:
+        path: experiments/render-stream/capture/build
+        key: capture-build-${{ runner.os }}-${{ hashFiles('experiments/render-stream/capture/**', 'experiments/render-stream/scripts/build-capture.sh') }}
+
+    - name: Capture build
+      if: inputs.capture-build == 'true' && steps.capture-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: CMAKE=cmake bash experiments/render-stream/scripts/build-capture.sh
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.capture-build == 'true' && inputs.save == 'true' && steps.capture-cache.outputs.cache-hit != 'true'
+      with:
+        path: experiments/render-stream/capture/build
+        key: ${{ steps.capture-cache.outputs.cache-primary-key }}
