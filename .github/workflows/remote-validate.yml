@@ -209,10 +209,15 @@ jobs:
                      "shards": json.loads(os.environ["SHARDS"] or "{}")}, open("remote.json", "w"))
           open("expect.txt", "w").write(",".join(json.loads(os.environ["RUNS"])))
           PY
+          # download-artifact puts a lone artifact straight into jobs/ instead of jobs/<name>/
+          if [ -f jobs/validate-summary.json ]; then
+            mkdir -p jobs/job-single
+            for f in jobs/*; do [ "$f" = jobs/job-single ] || mv "$f" jobs/job-single/; done
+          fi
           rc=0
           python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out merged \
             --expect "$(cat expect.txt)" --remote-json remote.json jobs/*/ || rc=$?
-          cp jobs/*/toolchain-hashes.json merged/ 2>/dev/null
+          cp jobs/*/toolchain-hashes.json merged/ 2>/dev/null || true
           for ev in jobs/*/evidence/*; do [ -d "$ev" ] && cp -r "$ev" failing/; done
           echo "merge rc=$rc (1 = some run failed; that is the summary's verdict, not a plumbing error)"
           # red only when the merge itself broke: no summary was written
