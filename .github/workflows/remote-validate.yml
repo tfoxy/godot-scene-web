@@ -45,16 +45,49 @@ concurrency:
   group: remote-validate-${{ inputs.worktree }}
   cancel-in-progress: true
 
+env:
+  # `pure` is the long pole, so it runs as this many parallel jobs (RS_PURE_SHARD=i/n); the merge job
+  # folds them back into one `pure` run entry
+  PURE_SHARDS: "6"
+  # build-capture.sh defaults to /snap/bin/cmake
+  CMAKE: cmake
+
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.expand.outputs.matrix }}
+      shards: ${{ steps.expand.outputs.shards }}
+    steps:
+      - id: expand
+        env:
+          RUNS: ${{ inputs.runs }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          n = int(os.environ["PURE_SHARDS"])
+          include, shards = [], {}
+          for i in json.loads(os.environ["RUNS"]):
+              if i == "pure" and n > 1:
+                  shards[i] = n
+                  include += [{"id": i, "shard": f"{k}/{n}", "label": f"{i}-{k}of{n}"} for k in range(1, n + 1)]
+              else:
+                  include.append({"id": i, "shard": "", "label": i})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("matrix=" + json.dumps(include) + "\n")
+              f.write("shards=" + json.dumps(shards) + "\n")
+          PY
+
   validate:
-    name: ${{ matrix.id }}
+    name: ${{ matrix.label }}
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: 10
       matrix:
-        id: ${{ fromJSON(inputs.runs) }}
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,21 +104,30 @@ jobs:
       - uses: ./.github/actions/rs-setup
         with:
           chromium: ${{ matrix.id == 'pnpm-test' }}
-
-      # the pure self-tests include rs-ws, which runs the capture build's rs_ws_echo (a local
-      # worktree runs build-capture.sh once for the same reason). R0b folds this into capture-build.
-      - name: Build the capture library
-        if: matrix.id == 'pure'
-        run: CMAKE=cmake bash experiments/render-stream/scripts/build-capture.sh
+          # the pure self-tests include rs-ws, which runs the capture build's rs_ws_echo (a local
+          # worktree runs build-capture.sh once for the same reason): restored from the seeded cache
+          capture-build: ${{ matrix.id == 'pure' }}
+          # toolchain-smoke (remote-validate.sh --toolchain-smoke) builds with every pinned input
+          godot: ${{ matrix.id == 'toolchain-smoke' }}
+          templates: ${{ matrix.id == 'toolchain-smoke' }}
+          emsdk: ${{ matrix.id == 'toolchain-smoke' }}
+          rust-nightly: ${{ matrix.id == 'toolchain-smoke' }}
+          wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' }}
 
       - name: Record setup time
         run: |
           mkdir -p "$RUNNER_TEMP/art"
           echo $(( $(date +%s) - SETUP_T0 )) >"$RUNNER_TEMP/art/setup_s"
 
+      - name: toolchain smoke
+        if: matrix.id == 'toolchain-smoke'
+        run: bash scripts/remote-toolchain-smoke.sh --out "$RUNNER_TEMP/v"
+
       - name: validate-increment
+        if: matrix.id != 'toolchain-smoke'
         env:
           ID: ${{ matrix.id }}
+          RS_PURE_SHARD: ${{ matrix.shard }}
           BASE: ${{ inputs.base }}
           TIER: ${{ inputs.tier }}
           MILESTONE: ${{ inputs.milestone }}
@@ -107,14 +149,18 @@ jobs:
         if: always()
         env:
           ID: ${{ matrix.id }}
+          LABEL: ${{ matrix.label }}
         run: |
           art="$RUNNER_TEMP/art"
           mkdir -p "$art"
           [ -f "$RUNNER_TEMP/v/validate-summary.json" ] && cp "$RUNNER_TEMP/v/validate-summary.json" "$art/"
+          # per-test seconds of a pure shard (a few KB): the input to pure-shard-weights.json
+          [ -f "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" ] && cp "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" "$art/"
+          [ -f "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" "$art/timings-$LABEL.jsonl"
           run="$RUNNER_TEMP/v/$ID"
           rc="$(cat "$run/rc" 2>/dev/null || echo missing)"
           if [ "$rc" != 0 ]; then
-            ev="$art/evidence/$ID"
+            ev="$art/evidence/$LABEL"
             mkdir -p "$ev/run"
             for f in command.txt run.log tier-verdict.json; do [ -f "$run/$f" ] && cp "$run/$f" "$ev/"; done
             [ -f "$run/run/result.json" ] && cp "$run/run/result.json" "$ev/run/"
@@ -125,14 +171,14 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: job-${{ matrix.id }}
+          name: job-${{ matrix.label }}
           path: ${{ runner.temp }}/art
           retention-days: 3
           if-no-files-found: ignore
 
   merge:
     if: always()
-    needs: validate
+    needs: [plan, validate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -150,6 +196,7 @@ jobs:
         env:
           RUNS: ${{ inputs.runs }}
           REFUSED: ${{ inputs.refused }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
           RUN_KEY: ${{ inputs.run_key }}
           SHA: ${{ inputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -158,12 +205,14 @@ jobs:
           python3 - <<'PY'
           import json, os
           json.dump({"run_url": os.environ["RUN_URL"], "sha": os.environ["SHA"], "run_key": os.environ["RUN_KEY"],
-                     "refused": json.loads(os.environ["REFUSED"] or "[]")}, open("remote.json", "w"))
+                     "refused": json.loads(os.environ["REFUSED"] or "[]"),
+                     "shards": json.loads(os.environ["SHARDS"] or "{}")}, open("remote.json", "w"))
           open("expect.txt", "w").write(",".join(json.loads(os.environ["RUNS"])))
           PY
           rc=0
           python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out merged \
             --expect "$(cat expect.txt)" --remote-json remote.json jobs/*/ || rc=$?
+          cp jobs/*/toolchain-hashes.json merged/ 2>/dev/null
           for ev in jobs/*/evidence/*; do [ -d "$ev" ] && cp -r "$ev" failing/; done
           echo "merge rc=$rc (1 = some run failed; that is the summary's verdict, not a plumbing error)"
           # red only when the merge itself broke: no summary was written
@@ -173,7 +222,7 @@ jobs:
         if: always()
         with:
           name: summary
-          path: merged/validate-summary.json
+          path: merged
           retention-days: 3
           if-no-files-found: ignore
 

@@ -115,6 +115,7 @@ check "g7x refused" grep -q 'refused g7x:' "$TMP/dry.out"
 check "device run refused" grep -q 'refused g7live-gsw-device: device-related' "$TMP/dry.out"
 check "not-yet-capable run refused with its reason" grep -q 'refused native-rust-gate0: not yet remote-capable' "$TMP/dry.out"
 check "--only narrows the plan" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only pure 2>&1 | grep -q 'remote runs: pure\$'"
+check "--toolchain-smoke plans exactly the toolchain-smoke run" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --toolchain-smoke 2>&1 | grep -q 'remote runs: toolchain-smoke\$'"
 check "dry run pushed nothing" test -z "$(remote_branches)"
 
 # ---- snapshot -------------------------------------------------------------------------------------------
@@ -256,6 +257,78 @@ PY
 python3 "$VS" --merge --out "$TMP/merged2" --expect pure "$TMP/jobs/job-pure" >/dev/null 2>&1
 check "an all-green merge exits 0 with failed 0" bash -c "[ \$? = 0 ] && python3 -c 'import json,sys; sys.exit(json.load(open(\"$TMP/merged2/validate-summary.json\"))[\"failed\"])'"
 
+# ---- pure shards: the fold in --merge ------------------------------------------------------------------------------------------------
+mkdir -p "$TMP/sh"
+mks() { # mks <dir> <rc> <wall> <failing-json> <lock-hold>
+	mkdir -p "$1"
+	printf '{"schema":"render-stream-validate-summary/2","wall_s":%s,"runs":[{"id":"pure","phase":"setup","rc":"%s","wall_s":%s,"lock_wait_s":0.0,"lock_hold_s":%s,"lock":{},"lock_summaries":0,"skipped_by_tier":0,"unavailable":[],"failing":%s}],"phases":{},"milestone":null,"base":"abc","sabotage":{"run":false,"why":[]},"skipped_targets":3,"failed":0}\n' "$3" "$2" "$3" "$5" "$4" >"$1/validate-summary.json"
+}
+mks "$TMP/sh/1" 0 100.5 '[]' 1; mks "$TMP/sh/2" 1 250.0 '["a"]' 2; mks "$TMP/sh/3" 0 180.0 '[]' 3; mks "$TMP/sh/4" 2 90.0 '["a","b"]' 4
+echo '{"run_url":"u","sha":"s","run_key":"k","refused":[],"shards":{"pure":4}}' >"$TMP/sh/remote.json"
+python3 "$VS" --merge --out "$TMP/shm" --expect pure --remote-json "$TMP/sh/remote.json" "$TMP/sh"/[1-4]/ >/dev/null 2>&1; rc=$?
+check "four pure shards fold into ONE pure run: rc worst, wall max, failing union" python3 - "$TMP/shm/validate-summary.json" "$rc" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert sys.argv[2] == "1"
+assert [r["id"] for r in s["runs"]] == ["pure"], s["runs"]
+r = s["runs"][0]
+assert r["rc"] == "2" and r["wall_s"] == 250.0 and r["failing"] == ["a", "b"], r
+assert r["lock_hold_s"] == 10.0 and len(r["shards"]) == 4 and s["failed"] == 1
+PY
+mks "$TMP/sh/5" 0 10 '[]' 0
+echo '{"shards":{"pure":4}}' >"$TMP/sh/remote2.json"
+python3 "$VS" --merge --out "$TMP/shm2" --expect pure --remote-json "$TMP/sh/remote2.json" "$TMP/sh"/[1,3,5]/ >/dev/null 2>&1
+check "a pure shard that never wrote a summary makes the folded rc missing" python3 - "$TMP/shm2/validate-summary.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert [r["rc"] for r in s["runs"]] == ["missing"] and s["failed"] == 1, s["runs"]
+PY
+python3 "$VS" --merge --out "$TMP/shm3" --expect pure "$TMP/sh/1" "$TMP/sh/3" >/dev/null 2>&1
+check "without a shard count the fold still leaves one pure row" python3 - "$TMP/shm3/validate-summary.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert [r["id"] for r in s["runs"]] == ["pure"] and s["runs"][0]["rc"] == "0" and s["runs"][0]["wall_s"] == 180.0
+PY
+
+# ---- pure shards: the split ---------------------------------------------------------------------------------------------------------
+PURE="$ROOT/experiments/render-stream/scripts/test/run-pure-self-tests.sh"
+bash "$PURE" --list >"$TMP/all.txt"
+check "--list names the whole suite when RS_PURE_SHARD is unset" test "$(wc -l <"$TMP/all.txt")" -gt 20
+RS_PURE_SHARD= bash "$PURE" --list >"$TMP/empty.txt"
+check "an empty RS_PURE_SHARD is the whole suite, byte for byte" cmp -s "$TMP/all.txt" "$TMP/empty.txt"
+PARTS="$ROOT/experiments/render-stream/scripts/test/pure-shard-weights.json"
+for n in 2 3 4 5 6 7; do
+	: >"$TMP/cat$n.txt"
+	for i in $(seq 1 "$n"); do RS_PURE_SHARD="$i/$n" bash "$PURE" --list >>"$TMP/cat$n.txt"; done
+	check "shards 1..$n cover every test exactly once (a split test: each of its parts exactly once)" python3 -I - "$TMP/all.txt" "$TMP/cat$n.txt" "$PARTS" <<'PY'
+import json, sys
+whole = open(sys.argv[1]).read().split()
+got = open(sys.argv[2]).read().split()
+parts = json.load(open(sys.argv[3])).get("parts", {})
+want = []
+for t in whole:
+    p = int(parts.get(t, 1))
+    want += [t] if p <= 1 else [f"{t}@{k}of{p}" for k in range(1, p + 1)]
+assert sorted(got) == sorted(want), sorted(set(got) ^ set(want))
+assert len(got) == len(set(got))
+PY
+done
+RS_PURE_SHARD=2/4 bash "$PURE" --list >"$TMP/s24a.txt"; RS_PURE_SHARD=2/4 bash "$PURE" --list >"$TMP/s24b.txt"
+check "the split is deterministic" cmp -s "$TMP/s24a.txt" "$TMP/s24b.txt"
+check "a bad shard spec is refused" bash -c "! RS_PURE_SHARD=5/4 bash '$PURE' --list >/dev/null 2>&1"
+check "6 shards balance: the heaviest is within one unit of the mean" python3 -I - "$ROOT" <<'PY'
+import importlib.util, json, subprocess, sys
+d = sys.argv[1] + "/experiments/render-stream/scripts/test/"
+spec = importlib.util.spec_from_file_location("ps", d + "pure-shard.py")
+ps = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ps)
+cfg = json.load(open(d + "pure-shard-weights.json"))
+names = subprocess.run(["bash", d + "run-pure-self-tests.sh", "--list"], capture_output=True, text=True).stdout.split()
+_, load = ps.shards(names, cfg["weights"], cfg["parts"], 6)
+heaviest_unit = max(u[1] for u in ps.units(names, cfg["weights"], cfg["parts"]))
+assert max(load) <= sum(load) / 6 + heaviest_unit, load
+PY
+
 # ---- workflows -----------------------------------------------------------------------------------------------------------------------
 check "workflow YAML parses" python3 - "$ROOT" <<'PY'
 import glob, sys
@@ -267,11 +340,17 @@ for f in glob.glob(sys.argv[1] + "/.github/workflows/remote-*.yml") + [sys.argv[
     yaml.safe_load(open(f))
 PY
 check "every action is pinned to a full commit sha" bash -c "! grep -hE '^\s*-?\s*uses: ' '$ROOT'/.github/workflows/remote-*.yml '$ROOT'/.github/actions/rs-setup/action.yml | grep -v '\./' | grep -vE 'uses: [^@]+@[0-9a-f]{40} # v'"
+check "run branches only restore caches: the setup action saves behind inputs.save and nothing else saves" bash -c \
+	"! grep -qE 'uses: actions/cache@' '$ROOT'/.github/actions/rs-setup/action.yml '$ROOT'/.github/workflows/remote-*.yml \
+	&& [ \"\$(grep -c 'actions/cache/save@' '$ROOT/.github/actions/rs-setup/action.yml')\" = \"\$(grep -c \"inputs.save == 'true'\" '$ROOT/.github/actions/rs-setup/action.yml')\" ] \
+	&& ! grep -q 'save:' '$ROOT/.github/workflows/remote-validate.yml'"
+check "the seed workflow runs on main only, saves, and is cron plus dispatch" bash -c \
+	"grep -q \"github.ref == 'refs/heads/main'\" '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'save: \"true\"' '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'cron:' '$ROOT/.github/workflows/remote-cache-seed.yml' && ! grep -q pull_request '$ROOT/.github/workflows/remote-cache-seed.yml'"
 check "only the cleanup job and the janitor may write contents" bash -c \
 	"[ \"\$(grep -c 'contents: write' '$ROOT/.github/workflows/remote-validate.yml')\" = 1 ]"
 if command -v actionlint >/dev/null 2>&1; then AL=actionlint; elif mise exec actionlint@latest -- actionlint -version >/dev/null 2>&1; then AL="mise exec actionlint@latest -- actionlint"; else AL=""; fi
 if [ -n "$AL" ]; then
-	check "actionlint is clean" bash -c "cd '$ROOT' && $AL .github/workflows/remote-validate.yml .github/workflows/remote-run-janitor.yml"
+	check "actionlint is clean" bash -c "cd '$ROOT' && $AL .github/workflows/remote-validate.yml .github/workflows/remote-run-janitor.yml .github/workflows/remote-cache-seed.yml"
 else
 	echo "note: actionlint unavailable, skipped"
 fi

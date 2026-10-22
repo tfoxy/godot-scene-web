@@ -1,0 +1,48 @@
+# Seeds the Actions caches that remote-validate.yml's run branches restore (docs/remote-compute.md).
+# A cache saved on a run branch is readable only by that branch, while main's caches are readable
+# by every branch, so every cache is saved here, on main, and the run branches only restore.
+# Weekly, and on demand: gh workflow run remote-cache-seed.yml --ref main
+name: remote-cache-seed
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remote-cache-seed
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    # a run branch dispatching this would save its caches where only that branch can read them
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup clock start
+        run: echo "SETUP_T0=$(date +%s)" >>"$GITHUB_ENV"
+
+      - uses: ./.github/actions/rs-setup
+        with:
+          save: "true"
+          godot: "true"
+          templates: "true"
+          emsdk: "true"
+          rust-nightly: "true"
+          wasm-bindgen: "true"
+          fonts: "true"
+          apt: "true"
+          capture-build: "true"
+
+      - name: Report
+        run: |
+          echo "seed setup: $(( $(date +%s) - SETUP_T0 )) s"
+          du -sh ~/.cache/godot-render-stream/* "$HOME"/.cargo/registry experiments/render-stream/capture/build 2>/dev/null

@@ -78,6 +78,8 @@ import {
   type TState,
   transactionRecords,
 } from "./rs2-test-encoder";
+import "./node-hash";
+import { inShard, isFirstShard } from "./shard";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -4137,6 +4139,7 @@ async function runScenarios(): Promise<void> {
       );
     }
     for (const [index, scenario] of scenarios.entries()) {
+      if (!inShard(index)) continue; // RS_SELF_TEST_SHARD: another shard runs this scenario
       const caseRoot = join(root, `case-${index}`);
       await cp(join(root, "template"), caseRoot, { recursive: true });
       const projects = projectsUnder(caseRoot);
@@ -4400,8 +4403,10 @@ async function main(): Promise<void> {
       "utf8",
     ),
   ) as Gate1Expected;
-  classifyUnitCases();
-  helperCases();
+  if (isFirstShard) {
+    classifyUnitCases();
+    helperCases();
+  }
   await runScenarios();
   console.log(
     `\nself-test-gate1: ${assertions - failures}/${assertions} assertions correct (${scenarios.length} evidence scenarios)`,
