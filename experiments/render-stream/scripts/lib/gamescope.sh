@@ -18,6 +18,14 @@
 #   gs_verify_display_ownership "$GS_DISPLAY" "$GS_PID" "$GS_SID" "$GODOT_PID" "$RUN_DIR/display-ownership.json"
 #   gs_teardown "$RUN_DIR"
 #
+# RS_DISPLAY_MODE (docs/remote-compute.md, Decision 10): unset or `gamescope` is the only local
+# display. `xvfb-llvmpipe` is a CI-only display for GitHub-hosted runners, which have no GPU:
+# gamescope needs a DRM-backed Vulkan device (on lavapipe it stops at "physical device doesn't
+# support VK_EXT_physical_device_drm"), so there gs_start runs Xvfb, under the same setsid session
+# rules and process-identity checks, and Godot's opengl3 renders on Mesa llvmpipe. That mode refuses
+# to start unless GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted: on this desktop Xvfb
+# does not isolate a headed process (see WHY GAMESCOPE above).
+#
 # Every function that can fail calls `gs_die`, which prints to stderr and `exit 1`s the CALLING
 # script (this file is sourced, not subshelled, so `exit` here ends run-gate-minus1.sh itself --
 # that is intentional: a dead or fake compositor must fail the leg, not be silently skipped).
@@ -34,6 +42,10 @@ GS_RUN_DIR=""
 GS_LAST_GODOT_PID=""
 GS_WIDTH=""
 GS_HEIGHT=""
+GS_DISPLAY_MODE="${RS_DISPLAY_MODE:-gamescope}"
+# what gs_is_ours requires in the compositor's cmdline: the display server this mode starts
+GS_PROC_PATTERN=gamescope
+[ "$GS_DISPLAY_MODE" = xvfb-llvmpipe ] && GS_PROC_PATTERN=Xvfb
 
 gs_die() {
 	echo "gamescope.sh: $*" >&2
@@ -62,12 +74,12 @@ gs_proc_cmdline() {
 	tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null
 }
 
-# True iff $1 is still a gamescope process AND (no $2 given, or its start ticks still match $2).
+# True iff $1 is still a gamescope process (an Xvfb one in xvfb-llvmpipe mode) AND (no $2 given, or its start ticks still match $2).
 # Never trusts a bare PID: PIDs recycle, so identity is always PID + start-ticks together.
 gs_is_ours() {
 	local pid="$1" expected_ticks="${2:-}"
 	[ -d "/proc/$pid" ] || return 1
-	gs_proc_cmdline "$pid" | grep -q gamescope || return 1
+	gs_proc_cmdline "$pid" | grep -q "$GS_PROC_PATTERN" || return 1
 	if [ -n "$expected_ticks" ]; then
 		[ "$(gs_proc_start_ticks "$pid")" = "$expected_ticks" ] || return 1
 	fi
@@ -94,6 +106,15 @@ gs_start() {
 	GS_LOG="$run_dir/gamescope.log"
 	GS_WIDTH="$width"
 	GS_HEIGHT="$height"
+
+	case "$GS_DISPLAY_MODE" in
+	gamescope) ;;
+	xvfb-llvmpipe)
+		gs_start_xvfb "$width" "$height" "$run_dir"
+		return
+		;;
+	*) gs_die "RS_DISPLAY_MODE must be gamescope (the default) or xvfb-llvmpipe (CI only), got '$GS_DISPLAY_MODE'" ;;
+	esac
 
 	command -v gamescope >/dev/null 2>&1 || gs_die "gamescope is not installed"
 
@@ -151,6 +172,64 @@ gs_start() {
 }
 JSON
 	echo "gamescope.sh: compositor pid $GS_PID ready on DISPLAY=$GS_DISPLAY (GPU: ${GS_VULKAN_DEVICE:-UNKNOWN})" >&2
+}
+
+# gs_start's CI-only branch (RS_DISPLAY_MODE=xvfb-llvmpipe): Xvfb in its own setsid session, its
+# display number chosen by Xvfb itself (-displayfd), never a desktop display. Sets the same globals
+# and writes the same gamescope.json (backend "xvfb", no Vulkan device), so the ownership proof and
+# the teardown work unchanged on it.
+gs_start_xvfb() {
+	local width="$1" height="$2" run_dir="$3"
+	if [ "${GITHUB_ACTIONS:-}" != true ] || [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+		gs_die "RS_DISPLAY_MODE=xvfb-llvmpipe is the CI-only software-rasterizer display (docs/remote-compute.md, Decision 10) and runs only on a GitHub-hosted runner (GITHUB_ACTIONS=true, RUNNER_ENVIRONMENT=github-hosted); here it would put a headed Godot on Xvfb, which does not isolate on a Wayland desktop. Unset RS_DISPLAY_MODE to use gamescope."
+	fi
+	command -v Xvfb >/dev/null 2>&1 || gs_die "Xvfb is not installed"
+	local fdfile="$run_dir/xvfb.displayfd"
+	: >"$fdfile"
+	(
+		ulimit -c 0
+		exec env -u DISPLAY -u WAYLAND_DISPLAY setsid Xvfb -displayfd 3 -screen 0 "${width}x${height}x24" \
+			-nolisten tcp -noreset 3>"$fdfile"
+	) >"$GS_LOG" 2>&1 &
+	GS_PID=$!
+	echo "$GS_PID" >"$run_dir/gamescope.pid"
+
+	local waited=0 number=""
+	while [ "$waited" -lt 200 ]; do
+		number="$(tr -dc '0-9' <"$fdfile" 2>/dev/null || true)"
+		[ -n "$number" ] && [ -S "/tmp/.X11-unix/X$number" ] && break
+		if [ ! -d "/proc/$GS_PID" ]; then
+			cat "$GS_LOG" >&2 2>/dev/null || true
+			gs_die "Xvfb exited before it produced a display"
+		fi
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	[ -n "$number" ] || { cat "$GS_LOG" >&2 2>/dev/null || true; gs_die "Xvfb produced no display within 20s"; }
+	GS_DISPLAY=":$number"
+
+	GS_START_TICKS="$(gs_proc_start_ticks "$GS_PID")"
+	[ -n "$GS_START_TICKS" ] || gs_die "Xvfb exited before its process identity could be recorded"
+	GS_SID="$(gs_proc_sid "$GS_PID")"
+	echo "$GS_START_TICKS" >"$run_dir/gamescope.start-ticks"
+	GS_VULKAN_DEVICE=""
+
+	cat >"$run_dir/gamescope.json" <<JSON
+{
+  "schema": "render-stream-gamescope-bringup/1",
+  "pid": $GS_PID,
+  "startTicks": "$GS_START_TICKS",
+  "sid": "$GS_SID",
+  "display": "$GS_DISPLAY",
+  "vulkanDevice": null,
+  "width": $width,
+  "height": $height,
+  "backend": "xvfb",
+  "displayMode": "xvfb-llvmpipe",
+  "log": "$GS_LOG"
+}
+JSON
+	echo "gamescope.sh: Xvfb pid $GS_PID ready on DISPLAY=$GS_DISPLAY (CI-only xvfb-llvmpipe display)" >&2
 }
 
 # Launches godot against the private display: strips WAYLAND_DISPLAY (the same trap as gs_start),

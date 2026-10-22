@@ -59,7 +59,8 @@ case "$1 $2" in
 	mkdir -p "$dir"
 	if [ "$name" = summary ]; then
 		f="${FAKE_GH_FAILED:-0}"
-		printf '{"schema":"render-stream-validate-summary/2","wall_s":1.0,"failed":%s,"runs":[{"id":"pure","phase":"setup","rc":"0","wall_s":1.0}],"remote":{"run_url":"u","setup_s":[3.0],"refused":[]}}\n' "$f" >"$dir/validate-summary.json"
+		printf '{"schema":"render-stream-validate-summary/2","wall_s":1.0,"failed":%s,"runs":[{"id":"pure","phase":"setup","rc":"0","wall_s":1.0}],"remote":{"run_url":"u","setup_s":[3.0],"refused":[],"determinism":"%s"}}\n' "$f" "${FAKE_GH_DET_REQ:-}" >"$dir/validate-summary.json"
+		[ -n "${FAKE_GH_DET:-}" ] && printf '{"ok":%s,"runs":4,"shots":{"agree":3,"total":3},"dumps":{"agree":2,"total":2}}\n' "$FAKE_GH_DET" >"$dir/determinism.json"
 	else
 		[ "${FAKE_GH_FAILED:-0}" = 1 ] && echo x >"$dir/pure-evidence.txt"
 	fi
@@ -94,6 +95,7 @@ cat >"$out/plan.json" <<'JSON'
  {"id":"pnpm-test","kind":"pnpm-test","phase":"setup"},
  {"id":"lock-tests","kind":"lock-tests"},
  {"id":"native-rust-gate0","kind":"native","phase":"native","gate":"gate0"},
+ {"id":"native-rust-gate1","kind":"native","phase":"native","gate":"gate1"},
  {"id":"native-rust-gate6","kind":"native","phase":"timing","gate":"gate6"},
  {"id":"g7live-gsw-device","kind":"g7live","phase":"g7","groups":["g7-lc-device"]},
  {"id":"g7x","kind":"g7x","phase":"g7","groups":["g7-bench"]}]}
@@ -108,12 +110,15 @@ remote_branches() { git --git-dir="$BARE" for-each-ref --format='%(refname)' ref
 # ---- refusals (dry run) -------------------------------------------------------------------------------
 ( cd "$CLONE" && bash "$WRAP" --dry-run ) >"$TMP/dry.out" 2>&1
 check "dry run exits 0" grep -q 'dry run: would snapshot' "$TMP/dry.out"
-check "remote-capable runs are pure, cargo-*, pnpm-test only" grep -q 'remote runs: pure,cargo-rs-core,pnpm-test$' "$TMP/dry.out"
+check "remote-capable runs are pure, cargo-*, pnpm-test, native-rust-gate0 only" grep -q 'remote runs: pure,cargo-rs-core,pnpm-test,native-rust-gate0$' "$TMP/dry.out"
 check "timing run refused" grep -q 'refused native-rust-gate6: timing run' "$TMP/dry.out"
 check "lock-tests refused" grep -q 'refused lock-tests: lock self-tests' "$TMP/dry.out"
 check "g7x refused" grep -q 'refused g7x:' "$TMP/dry.out"
 check "device run refused" grep -q 'refused g7live-gsw-device: device-related' "$TMP/dry.out"
-check "not-yet-capable run refused with its reason" grep -q 'refused native-rust-gate0: not yet remote-capable' "$TMP/dry.out"
+check "not-yet-capable run refused with its reason" grep -q 'refused native-rust-gate1: not yet remote-capable' "$TMP/dry.out"
+check "--determinism rejects a non-count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 3,x >/dev/null 2>&1; test \$? = 2"
+check "--determinism rejects a zero count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 0 >/dev/null 2>&1; test \$? = 2"
+check "--determinism is shown in the dry run's inputs" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only native-rust-gate0 --determinism 3,1 2>&1 | grep -q 'runs=\[\"native-rust-gate0\"\] determinism=3,1\$'"
 check "--only narrows the plan" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only pure 2>&1 | grep -q 'remote runs: pure\$'"
 check "--toolchain-smoke plans exactly the toolchain-smoke run" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --toolchain-smoke 2>&1 | grep -q 'remote runs: toolchain-smoke\$'"
 check "dry run pushed nothing" test -z "$(remote_branches)"
@@ -138,13 +143,22 @@ check "snapshot omits the ignored file" bash -c "! grep -q '^ign/' '$TMP/snapsho
 check "only main and the run branch exist on origin at dispatch" bash -c \
 	"[ \"\$(grep -vc '^refs/heads/remote-run/${CLONE##*/}-' '$TMP/refs-at-dispatch.txt')\" = 1 ] && grep -qx refs/heads/main '$TMP/refs-at-dispatch.txt'"
 check "dispatch carried run_key, sha, base, tier and the run list" bash -c \
-	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
+	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
+check "a plain dispatch carries no determinism input" bash -c "! grep -q 'determinism=' '$FAKE_GH_LOG'"
 check "the summary landed under artifacts/render-stream/remote/" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/validate-summary.json"
 check "the branch is deleted after a normal finish" test -z "$(remote_branches)"
 check "the output names the results directory" grep -q 'results in .*artifacts/render-stream/remote/' "$TMP/ok.out"
 FAKE_GH_FAILED=1 FAKE_GH_MODE=ok bash "$WRAP" >"$TMP/red.out" 2>&1; rc=$?
 check "a summary with failed > 0 exits non-zero" test "$rc" != 0
 check "failing evidence is downloaded" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/failing-evidence/pure-evidence.txt"
+
+FAKE_GH_MODE=ok FAKE_GH_DET_REQ=3,1 FAKE_GH_DET=true bash "$WRAP" --only native-rust-gate0 --determinism 3,1 >"$TMP/det.out" 2>&1; rc=$?
+check "an agreeing determinism run exits 0 and says so" bash -c "test $rc = 0 && grep -q 'determinism AGREES over 4 runs: 3/3 shots, 2/2 dumps' '$TMP/det.out'"
+check "the determinism dispatch carries its repeat counts" grep -q 'determinism=3,1' "$FAKE_GH_LOG"
+FAKE_GH_MODE=ok FAKE_GH_DET_REQ=3,1 FAKE_GH_DET=false bash "$WRAP" --only native-rust-gate0 --determinism 3,1 >"$TMP/det.out" 2>&1; rc=$?
+check "a disagreeing determinism run exits non-zero" bash -c "test $rc != 0 && grep -q 'determinism DISAGREES' '$TMP/det.out'"
+FAKE_GH_MODE=ok FAKE_GH_DET_REQ=3,1 bash "$WRAP" --only native-rust-gate0 --determinism 3,1 >"$TMP/det.out" 2>&1; rc=$?
+check "a requested determinism report that never came back exits non-zero" bash -c "test $rc != 0 && grep -q 'no determinism.json came back' '$TMP/det.out'"
 
 # ---- failed dispatch, SIGINT, SIGTERM ---------------------------------------------------------------------
 FAKE_GH_MODE=dispatch-fail bash "$WRAP" >"$TMP/df.out" 2>&1; rc=$?

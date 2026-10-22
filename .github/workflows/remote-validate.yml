@@ -37,6 +37,12 @@ on:
         description: JSON list of {id, reason} the wrapper kept local
         required: false
         default: "[]"
+      determinism:
+        description: >-
+          '' (off), or comma-separated repeat counts, one job each (e.g. 3,1): every run is repeated
+          that many times per job and lib/remote-determinism.ts compares all repeats' shots and dumps
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -62,13 +68,19 @@ jobs:
       - id: expand
         env:
           RUNS: ${{ inputs.runs }}
+          DETERMINISM: ${{ inputs.determinism }}
         run: |
           python3 - <<'PY'
           import json, os
           n = int(os.environ["PURE_SHARDS"])
+          det = [int(x) for x in os.environ["DETERMINISM"].split(",") if x.strip()]
           include, shards = [], {}
           for i in json.loads(os.environ["RUNS"]):
-              if i == "pure" and n > 1:
+              if det:
+                  # one job per repeat count, each on its own runner; the merge folds them into one row
+                  shards[i] = len(det)
+                  include += [{"id": i, "shard": "", "repeat": r, "label": f"{i}-det{k}x{r}"} for k, r in enumerate(det, 1)]
+              elif i == "pure" and n > 1:
                   shards[i] = n
                   include += [{"id": i, "shard": f"{k}/{n}", "label": f"{i}-{k}of{n}"} for k in range(1, n + 1)]
               else:
@@ -105,11 +117,17 @@ jobs:
         with:
           chromium: ${{ matrix.id == 'pnpm-test' }}
           # the pure self-tests include rs-ws, which runs the capture build's rs_ws_echo (a local
-          # worktree runs build-capture.sh once for the same reason): restored from the seeded cache
-          capture-build: ${{ matrix.id == 'pure' }}
+          # worktree runs build-capture.sh once for the same reason): restored from the seeded cache.
+          # A native gate needs the capture extension too.
+          capture-build: ${{ matrix.id == 'pure' || startsWith(matrix.id, 'native-') }}
+          # native-* runs (R1): rendered legs on Xvfb + llvmpipe, the rs-core GDExtension, the
+          # release template, the editor (imports, receiver self-test) and strace
+          swrast: ${{ startsWith(matrix.id, 'native-') }}
+          rs-core-ext: ${{ startsWith(matrix.id, 'native-') }}
+          apt: ${{ startsWith(matrix.id, 'native-') }}
           # toolchain-smoke (remote-validate.sh --toolchain-smoke) builds with every pinned input
-          godot: ${{ matrix.id == 'toolchain-smoke' }}
-          templates: ${{ matrix.id == 'toolchain-smoke' }}
+          godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') }}
+          templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') }}
           emsdk: ${{ matrix.id == 'toolchain-smoke' }}
           rust-nightly: ${{ matrix.id == 'toolchain-smoke' }}
           wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' }}
@@ -132,6 +150,8 @@ jobs:
           TIER: ${{ inputs.tier }}
           MILESTONE: ${{ inputs.milestone }}
           CHANGED_PATHS: ${{ inputs.paths }}
+          REPEAT: ${{ matrix.repeat }}
+          LABEL: ${{ matrix.label }}
         run: |
           # the planner's default base is `main`; point it at the merge-base the wrapper computed
           git update-ref refs/heads/main "$BASE"
@@ -143,7 +163,26 @@ jobs:
           esac
           [ -n "$CHANGED_PATHS" ] && args+=(--paths "$CHANGED_PATHS")
           mkdir -p "$RS_QUIET_LOCK_DIR"
-          bash experiments/render-stream/scripts/validate-increment.sh "${args[@]}"
+          if [ -z "$REPEAT" ]; then
+            bash experiments/render-stream/scripts/validate-increment.sh "${args[@]}"
+            exit $?
+          fi
+          # determinism mode: REPEAT runs on this runner, $RUNNER_TEMP/v (the first) then v2..vN; the
+          # job's summary folds them into one row, and every repeat's run dir becomes det-<label>
+          rc=0 outs=()
+          for k in $(seq 1 "$REPEAT"); do
+            o="$RUNNER_TEMP/v"; [ "$k" = 1 ] || o="$RUNNER_TEMP/v$k"
+            args[5]="$o" # --out's value
+            bash experiments/render-stream/scripts/validate-increment.sh "${args[@]}" || rc=1
+            outs+=("$o/")
+            d="$RUNNER_TEMP/det/$LABEL/r$k"
+            mkdir -p "$d" && cp -a "$o/$ID/run/." "$d/" 2>/dev/null
+          done
+          cp "$RUNNER_TEMP/swrast-provenance.json" "$RUNNER_TEMP/det/$LABEL/" 2>/dev/null
+          python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out "$RUNNER_TEMP/vmerged" \
+            --expect "$ID" "${outs[@]}" || true
+          cp "$RUNNER_TEMP/vmerged/validate-summary.json" "$RUNNER_TEMP/v/validate-summary.json"
+          exit $rc
 
       - name: Trim artifact
         if: always()
@@ -151,12 +190,24 @@ jobs:
           ID: ${{ matrix.id }}
           LABEL: ${{ matrix.label }}
         run: |
+          set +e # best effort: a job that died in setup has no run dir, and that must not fail here
           art="$RUNNER_TEMP/art"
           mkdir -p "$art"
           [ -f "$RUNNER_TEMP/v/validate-summary.json" ] && cp "$RUNNER_TEMP/v/validate-summary.json" "$art/"
           # per-test seconds of a pure shard (a few KB): the input to pure-shard-weights.json
           [ -f "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" ] && cp "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" "$art/timings-$LABEL.jsonl"
+          # swrast provenance plus the GL renderer string the run's Godot printed (OpenGL API ... llvmpipe)
+          [ -f "$RUNNER_TEMP/swrast-provenance.json" ] && python3 -I - "$RUNNER_TEMP/swrast-provenance.json" "$RUNNER_TEMP/v/$ID/run" "$art/swrast-provenance.json" <<'PY'
+          import glob, json, re, sys
+          p = json.load(open(sys.argv[1]))
+          for f in sorted(glob.glob(sys.argv[2] + "/**/stdout.log", recursive=True)):
+              m = re.search(r"^OpenGL API .*$", open(f, errors="replace").read(), re.M)
+              if m:
+                  p["godot_gl"] = m.group(0)
+                  break
+          json.dump(p, open(sys.argv[3], "w"), indent=2)
+          PY
           run="$RUNNER_TEMP/v/$ID"
           rc="$(cat "$run/rc" 2>/dev/null || echo missing)"
           if [ "$rc" != 0 ]; then
@@ -176,9 +227,63 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      # determinism mode: every repeat's run dir (gate 0 is ~5 MB), for the determinism job
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && matrix.repeat
+        with:
+          name: det-${{ matrix.label }}
+          path: ${{ runner.temp }}/det
+          retention-days: 3
+          if-no-files-found: ignore
+
+  determinism:
+    if: always() && inputs.determinism != ''
+    needs: [plan, validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.26.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: det-*
+          path: det
+          merge-multiple: true
+
+      - name: Compare repeats
+        run: |
+          pnpm install --frozen-lockfile >/dev/null
+          mkdir -p out
+          dirs=(det/*/r*/)
+          rc=0
+          pnpm exec tsx --conditions=development experiments/render-stream/scripts/lib/remote-determinism.ts \
+            --out out/determinism.json "${dirs[@]}" || rc=$?
+          cp det/*/swrast-provenance.json out/ 2>/dev/null || true
+          for f in det/*/swrast-provenance.json; do [ -f "$f" ] && cp "$f" "out/provenance-$(basename "$(dirname "$f")").json"; done
+          echo "determinism rc=$rc"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: determinism
+          path: out
+          retention-days: 3
+          if-no-files-found: ignore
+
   merge:
     if: always()
-    needs: [plan, validate]
+    needs: [plan, validate, determinism]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -192,12 +297,20 @@ jobs:
           pattern: job-*
           path: jobs
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: inputs.determinism != ''
+        continue-on-error: true
+        with:
+          name: determinism
+          path: determinism
+
       - name: Merge summaries
         env:
           RUNS: ${{ inputs.runs }}
           REFUSED: ${{ inputs.refused }}
           SHARDS: ${{ needs.plan.outputs.shards }}
           RUN_KEY: ${{ inputs.run_key }}
+          DETERMINISM: ${{ inputs.determinism }}
           SHA: ${{ inputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -206,7 +319,8 @@ jobs:
           import json, os
           json.dump({"run_url": os.environ["RUN_URL"], "sha": os.environ["SHA"], "run_key": os.environ["RUN_KEY"],
                      "refused": json.loads(os.environ["REFUSED"] or "[]"),
-                     "shards": json.loads(os.environ["SHARDS"] or "{}")}, open("remote.json", "w"))
+                     "shards": json.loads(os.environ["SHARDS"] or "{}"),
+                     "determinism": os.environ["DETERMINISM"]}, open("remote.json", "w"))
           open("expect.txt", "w").write(",".join(json.loads(os.environ["RUNS"])))
           PY
           # download-artifact puts a lone artifact straight into jobs/ instead of jobs/<name>/
@@ -218,6 +332,7 @@ jobs:
           python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out merged \
             --expect "$(cat expect.txt)" --remote-json remote.json jobs/*/ || rc=$?
           cp jobs/*/toolchain-hashes.json merged/ 2>/dev/null || true
+          cp determinism/*.json merged/ 2>/dev/null || true
           for ev in jobs/*/evidence/*; do [ -d "$ev" ] && cp -r "$ev" failing/; done
           echo "merge rc=$rc (1 = some run failed; that is the summary's verdict, not a plumbing error)"
           # red only when the merge itself broke: no summary was written
@@ -241,7 +356,7 @@ jobs:
 
   cleanup:
     if: always()
-    needs: [validate, merge]
+    needs: [validate, determinism, merge]
     runs-on: ubuntu-latest
     permissions:
       contents: write

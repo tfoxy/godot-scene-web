@@ -56,7 +56,7 @@
   "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7live:g7-k@*", "g7x:*"],
   "remote": {
     "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
-    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*"],
+    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "native-rust-gate0"],
     "refuse": {
       "phases": { "timing": "timing run: wall-clock numbers from a shared VM would be noise" },
       "ids": {
@@ -85,6 +85,16 @@
       "paths": ["scripts/create-worktree.sh"],
       "reach": ["none"],
       "exclusive": true
+    },
+    {
+      "why": "remote-run plumbing (docs/remote-compute.md): no local leg runs it; remote-determinism.ts has a pure self-test, the wrapper scripts/test-remote-validate.sh",
+      "paths": [
+        ".github/**",
+        "scripts/remote-*.sh",
+        "scripts/test-remote-validate.sh",
+        "experiments/render-stream/scripts/lib/remote-determinism.ts"
+      ],
+      "reach": ["pure"]
     },
     {
       "why": "the quiet lock: its own self-tests (scheduling only; no leg's output depends on it)",

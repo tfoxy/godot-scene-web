@@ -45,23 +45,21 @@ inputs:
       Playwright's Chromium (the repo's pinned @playwright/test version) installed on the runner,
       for pnpm-test's browser tests. R3 adds the sha check against the pinned build.
     default: "false"
-  gamescope:
-    description: "R1: apt gamescope/xvfb/mesa-vulkan-drivers for rendered legs"
+  swrast:
+    description: >-
+      Rendered legs on a software rasterizer (R1): Xvfb and Mesa llvmpipe, selected by
+      RS_DISPLAY_MODE=xvfb-llvmpipe (lib/gamescope.sh, CI only). Writes
+      $RUNNER_TEMP/swrast-provenance.json (CPU model, Mesa and LLVM package versions).
+    default: "false"
+  rs-core-ext:
+    description: >-
+      receiver/ext/build/librs_core_ext.so (build-rs-core-ext.sh --no-test), the native receiver's
+      only core; cached by a hash of its sources
     default: "false"
 
 runs:
   using: composite
   steps:
-    - name: Refuse rungs that are not implemented yet
-      shell: bash
-      env:
-        GAMESCOPE: ${{ inputs.gamescope }}
-      run: |
-        if [ "$GAMESCOPE" = "true" ]; then
-          echo "::error::rs-setup input 'gamescope' is not implemented yet (R1)"
-          exit 1
-        fi
-
     - name: Pins
       id: pins
       shell: bash
@@ -335,3 +333,70 @@ runs:
       with:
         path: experiments/render-stream/capture/build
         key: ${{ steps.capture-cache.outputs.cache-primary-key }}
+
+    # rs-core-capi (Rust staticlib) + the C++ shim. Only the built library is cached; a hit skips the
+    # build entirely (the cargo-rs-core-capi run owns the crate's tests, hence --no-test).
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: rs-core-ext-cache
+      if: inputs.rs-core-ext == 'true'
+      with:
+        path: experiments/render-stream/receiver/ext/build
+        key: rs-core-ext-${{ runner.os }}-${{ inputs.rust-version }}-${{ hashFiles('experiments/render-stream/rs-core/**', 'experiments/render-stream/rs-core-capi/**', 'packages/canvas/rust-draw-list/**', 'experiments/render-stream/receiver/ext/*.cpp', 'experiments/render-stream/receiver/ext/*.h', 'experiments/render-stream/capture/vendor/**', 'experiments/render-stream/scripts/build-rs-core-ext.sh') }}
+
+    - name: rs-core GDExtension
+      if: inputs.rs-core-ext == 'true' && steps.rs-core-ext-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p "${RS_QUIET_LOCK_DIR:-$RUNNER_TEMP/quiet-lock}"
+        bash experiments/render-stream/scripts/build-rs-core-ext.sh --no-test
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.rs-core-ext == 'true' && inputs.save == 'true' && steps.rs-core-ext-cache.outputs.cache-hit != 'true'
+      with:
+        path: experiments/render-stream/receiver/ext/build
+        key: ${{ steps.rs-core-ext-cache.outputs.cache-primary-key }}
+
+    # Software rasterizer (R1, docs/remote-compute.md). The runner has no GPU and no /dev/dri, so the
+    # rendered legs use lib/gamescope.sh's CI-only RS_DISPLAY_MODE=xvfb-llvmpipe: Xvfb, with Godot's
+    # opengl3 on Mesa llvmpipe. gamescope itself cannot run here: on lavapipe (the only Vulkan device)
+    # gamescope 3.16.19 stops at "physical device doesn't support VK_EXT_physical_device_drm" (its
+    # headless backend needs a DRM-backed device; R1 run 39764689493).
+    - name: Software-rasterizer display (Xvfb + llvmpipe)
+      if: inputs.swrast == 'true'
+      shell: bash
+      run: |
+        pk=(xvfb libgl1-mesa-dri libglx-mesa0 libegl-mesa0 x11-utils)
+        sudo apt-get install -y --no-install-recommends "${pk[@]}" >/dev/null 2>&1 ||
+          { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends "${pk[@]}"; }
+        command -v Xvfb
+        { echo "RS_DISPLAY_MODE=xvfb-llvmpipe"; echo "GALLIUM_DRIVER=llvmpipe"; } >>"$GITHUB_ENV"
+        python3 -I - "$RUNNER_TEMP" <<'PY'
+        import json, os, re, subprocess, sys
+        tmp = sys.argv[1]
+        def sh(*a):
+            try:
+                return subprocess.run(a, capture_output=True, text=True, timeout=30).stdout.strip()
+            except Exception as e:
+                return f"error: {e}"
+        cpu = open("/proc/cpuinfo").read()
+        model = re.search(r"^model name\s*:\s*(.*)$", cpu, re.M)
+        flags = re.search(r"^flags\s*:\s*(.*)$", cpu, re.M)
+        pk = {}
+        for line in sh("dpkg-query", "-W", "-f", "${Package}\t${Version}\n", "xvfb", "libgl1-mesa-dri", "libglx-mesa0",
+                       "libegl-mesa0", "libllvm*").splitlines():
+            n, _, v = line.partition("\t")
+            if v:
+                pk[n] = v
+        json.dump({
+            "schema": "render-stream-swrast-provenance/1",
+            "display_mode": "xvfb-llvmpipe",
+            "runner": {"os": os.environ.get("ImageOS"), "image_version": os.environ.get("ImageVersion"),
+                       "name": os.environ.get("RUNNER_NAME"), "environment": os.environ.get("RUNNER_ENVIRONMENT")},
+            "cpu": {"model": model.group(1) if model else None, "nproc": os.cpu_count(),
+                    "simd": sorted(f for f in (flags.group(1).split() if flags else []) if re.match(r"(avx|sse|fma|f16c)", f))},
+            "kernel": sh("uname", "-r"),
+            "packages": pk,
+            "lp_num_threads": os.environ.get("LP_NUM_THREADS"),
+        }, open(os.path.join(tmp, "swrast-provenance.json"), "w"), indent=2)
+        PY
+        cat "$RUNNER_TEMP/swrast-provenance.json"
