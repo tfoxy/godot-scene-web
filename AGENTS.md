@@ -56,14 +56,17 @@ mise exec -- godot --version
 
 Do not run package managers outside the repo root unless a package-specific command requires it.
 
-**TypeScript 7.** `tsc` (and therefore `pnpm typecheck`) is TypeScript 7.1 beta, the Go compiler. It has no JS
-compiler API, so `import ts from "typescript"` does not work: code that needs the API imports
-`@typescript/typescript6` (bin `tsc6`), as `packages/core/test/package-boundaries.test.ts` does. tsdown's `.d.ts`
-emit stays on TS 6 because `.pnpmfile.cjs` gives rolldown-plugin-dts `@typescript/typescript6` as its `typescript`
-(pnpm does not apply `overrides` or `packageExtensions` to a peer). Downstream consumers typecheck our source with
-TS 6, so fixes must pass both: run `pnpm typecheck:ts6` before landing a type-level change (the publish workflow
-runs it; `pnpm check` does not). Editors need the TypeScript Native Preview / TS 7 extension; the built-in tsserver
-cannot load 7.x.
+**TypeScript 7.** `tsc` (and therefore `pnpm typecheck`) is TypeScript 7.1 beta, the Go compiler. It has no
+in-process compiler API, so `import ts from "typescript"` does not work: code that needs to parse TypeScript uses
+`typescript/sync` (a tsgo child process) and `typescript/ast` (node guards, `SyntaxKind`), as
+`packages/core/test/package-boundaries.test.ts` does. tsdown's `.d.ts` emit runs on TS 7.1 too: rolldown-plugin-dts
+0.29 picks its `tsgo` generator by itself when `typescript` is 7.1, and reads compiler options from each package's
+`tsconfig.json` only (not from `tsdown.config.ts`). tsdown 0.23 still asks for ^0.28, so a `pnpm-workspace.yaml`
+`overrides` entry pins the beta; drop it once tsdown depends on a stable 0.29. TS 6 remains only as
+`@typescript/typescript6` (bin `tsc6`) for `pnpm typecheck:ts6`: downstream consumers typecheck our source with TS 6,
+so fixes must pass both. Run `pnpm typecheck:ts6` before landing a type-level change (the publish workflow runs it;
+`pnpm check` does not). Editors need the TypeScript Native Preview / TS 7 extension; the built-in tsserver cannot
+load 7.x.
 
 Use [gsw-wgpu-renderer](skills/gsw-wgpu-renderer/SKILL.md) for implementation and review of the Rust/wgpu
 canvas renderer; use [gsw-perf](skills/gsw-perf/SKILL.md) for performance-harness work and measurements.
