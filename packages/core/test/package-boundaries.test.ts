@@ -1,11 +1,24 @@
 // @vitest-environment node
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import ts from "@typescript/typescript6";
 import * as esbuild from "esbuild";
-import { describe, expect, it } from "vitest";
+import {
+  isCallExpression,
+  isExportDeclaration,
+  isImportDeclaration,
+  isImportTypeNode,
+  isLiteralTypeNode,
+  isStringLiteral,
+  type Node,
+  SyntaxKind,
+} from "typescript/ast";
+import { API } from "typescript/sync";
+import { afterAll, describe, expect, it } from "vitest";
 
 const root = process.cwd();
+// TS 7 has no in-process compiler API: `typescript/sync` parses in a tsgo child process.
+const api = new API({ cwd: root });
+afterAll(() => api.close());
 const packagesDir = join(root, "packages");
 const names = readdirSync(packagesDir).filter((name) => {
   try {
@@ -39,36 +52,35 @@ function files(dir: string): string[] {
   });
 }
 function imports(file: string): string[] {
-  const source = ts.createSourceFile(
-    file,
-    readFileSync(file, "utf8"),
-    ts.ScriptTarget.Latest,
-    true,
-  );
+  const source = api.createSourceFile(file, readFileSync(file, "utf8"));
   const result: string[] = [];
-  const visit = (node: ts.Node) => {
+  const visit = (node: Node): undefined => {
     if (
-      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      (isImportDeclaration(node) || isExportDeclaration(node)) &&
       node.moduleSpecifier &&
-      ts.isStringLiteral(node.moduleSpecifier)
+      isStringLiteral(node.moduleSpecifier)
     )
       result.push(node.moduleSpecifier.text);
     if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      isCallExpression(node) &&
+      node.expression.kind === SyntaxKind.ImportKeyword &&
       node.arguments[0] &&
-      ts.isStringLiteral(node.arguments[0])
+      isStringLiteral(node.arguments[0])
     )
       result.push(node.arguments[0].text);
     if (
-      ts.isImportTypeNode(node) &&
-      ts.isLiteralTypeNode(node.argument) &&
-      ts.isStringLiteral(node.argument.literal)
+      isImportTypeNode(node) &&
+      isLiteralTypeNode(node.argument) &&
+      isStringLiteral(node.argument.literal)
     )
       result.push(node.argument.literal.text);
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   };
-  visit(source);
+  try {
+    visit(source.sourceFile);
+  } finally {
+    source.dispose();
+  }
   return result;
 }
 

@@ -6,8 +6,13 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
 
+overrides:
+  # tsdown 0.23.1 still asks for rolldown-plugin-dts ^0.28.7. 0.29 is the first release whose `tsgo`
+  # generator emits `.d.ts` with TypeScript 7.1 (`typescript/sync`), so the build needs no TS 6.
+  # Pinned exactly while it is a beta; drop this once tsdown depends on a stable 0.29.
+  rolldown-plugin-dts: 0.29.0-beta.2
+
 peerDependencyRules:
   allowedVersions:
-    # tsdown only lists `typescript` as a peer; its `.d.ts` work goes through rolldown-plugin-dts,
-    # which .pnpmfile.cjs pins to TypeScript 6.
+    # tsdown peers `typescript` ^7.0.0, which a prerelease does not satisfy.
     tsdown>typescript: 7.1.0-beta
