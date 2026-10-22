@@ -278,17 +278,21 @@ export function runUploadBench(
       // `respec` is measuring a re-spec rather than a first allocation.
       const texture = gl.createTexture();
       respec(gl, texture, canvas);
-      const raw: ExecutorTexture = { texture, width, height };
+      // Raw arms re-upload in place, so advance `revision` with each upload as
+      // the texture cache does; a revision-keyed consumer then sees new pixels.
+      const raw = { texture, width, height, revision: 0 };
       const key = `bench://${placement}/${width}x${height}`;
       const cached = textures.update(key, canvas);
 
       const upload = (method: UploadMethod): ExecutorTexture => {
         if (method === "respec") {
           respec(gl, texture, canvas);
+          raw.revision += 1;
           return raw;
         }
         if (method === "sub") {
           sub(gl, texture, canvas);
+          raw.revision += 1;
           return raw;
         }
         return textures.update(key, canvas);
