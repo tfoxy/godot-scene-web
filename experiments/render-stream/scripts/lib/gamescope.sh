@@ -293,12 +293,16 @@ gs_strip_env_args() {
 	done < <(compgen -e | grep -E '^(RS|GRC)_' || true)
 }
 
-# G7q (gate7-design.md D4, fork F1, opt-in): GATE7_CREDIT_WINDOW=2 in a runner's environment (never
-# an RS_/GRC_ name: those are stripped) runs its live legs at credit window 2. A live host (an env
-# word GRC_LIVE_LISTEN=) gets GRC_LIVE_CREDIT_WINDOW_MAX=2 unless the leg sets it; browser
-# receivers ask for 2 (lib/legs.sh run_browser_receiver), and g6c's native receivers speak /7 at 2
-# (lib/gate6c-legs.sh). Default 1: every launch is exactly what it was.
-GATE7_CREDIT_WINDOW="${GATE7_CREDIT_WINDOW:-1}"
+# G7q/G7wd (gate7-design.md D4, fork F1 resolved 2026-10-22): GATE7_CREDIT_WINDOW=1|2 in a runner's
+# environment (never an RS_/GRC_ name: those are stripped) runs its live legs at that credit
+# window. A live host (an env word GRC_LIVE_LISTEN=) gets GRC_LIVE_CREDIT_WINDOW_MAX=<window>
+# unless the leg sets it; browser receivers ask for it (lib/legs.sh run_browser_receiver), and
+# g6c's native receivers speak /7 at 2 (lib/gate6c-legs.sh). The default is 2 for gate 7's live
+# runs (run-gate7.sh --live exports it; a browser GATE7_LIVE_KIND implies it) and 1 for the native
+# gates run directly (1, 2, 6 stay on /6, which has no window). Window 1 is always explicit.
+if [ -z "${GATE7_CREDIT_WINDOW:-}" ]; then
+	if [ -n "${GATE7_LIVE_KIND:-}" ]; then GATE7_CREDIT_WINDOW=2; else GATE7_CREDIT_WINDOW=1; fi
+fi
 case "$GATE7_CREDIT_WINDOW" in
 1 | 2) ;;
 *)
@@ -306,9 +310,8 @@ case "$GATE7_CREDIT_WINDOW" in
 	exit 2
 	;;
 esac
-# gs_credit_window_words <env words...>: prints the words a window-2 run adds (none at window 1).
+# gs_credit_window_words <env words...>: prints the host-maximum word a live host launch adds.
 gs_credit_window_words() {
-	[ "$GATE7_CREDIT_WINDOW" = 2 ] || return 0
 	local word listen=0
 	for word in "$@"; do
 		case "$word" in
@@ -316,7 +319,7 @@ gs_credit_window_words() {
 		GRC_LIVE_CREDIT_WINDOW_MAX=*) return 0 ;;
 		esac
 	done
-	[ "$listen" = 1 ] && echo "GRC_LIVE_CREDIT_WINDOW_MAX=2"
+	[ "$listen" = 1 ] && echo "GRC_LIVE_CREDIT_WINDOW_MAX=$GATE7_CREDIT_WINDOW"
 	return 0
 }
 

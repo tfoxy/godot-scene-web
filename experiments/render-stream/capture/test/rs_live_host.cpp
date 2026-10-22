@@ -9,7 +9,7 @@
 // Configuration is read from the same environment variables entry.cpp reads, with the same
 // rules, so the sabotage cases exercise the same switches:
 //   GRC_LIVE_ALLOWED_ORIGINS    comma list (rs_ws.h parse_allowed_origins); invalid -> exit 2
-//   GRC_LIVE_CREDIT_WINDOW_MAX  1 or 2 (default 1); invalid -> exit 2
+//   GRC_LIVE_CREDIT_WINDOW_MAX  1 or 2 (default 2); invalid -> exit 2
 //   GRC_SABOTAGE                no-cors | accept-any-origin | token-ignored (anything else -> 2)
 // and from flags:
 //   --port=N          0 (default) binds an ephemeral port

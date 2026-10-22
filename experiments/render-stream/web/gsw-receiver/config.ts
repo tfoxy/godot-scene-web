@@ -8,7 +8,7 @@
 // Live mode (G7l) reads the native receiver's live variables (receiver.gd `_ready_live`) with the
 // same rules and the same usage errors, plus the browser's: the page's `engine_args` (`--max-fps
 // N`, wm.cpp's rule) or RS_RECEIVER_MAX_FPS, RS_RECEIVER_CREDIT_WINDOW (the /7 hello's request,
-// default 1), and the bearer token, which comes from the page's fragment (never from `?env=`).
+// default 2 since G7wd; 1 is explicit), and the bearer token, which comes from the page's fragment (never from `?env=`).
 
 export type ReceiverMode = "file" | "live";
 
@@ -204,7 +204,7 @@ function readLive(
   const creditWindow = positive(
     "RS_RECEIVER_CREDIT_WINDOW",
     env.RS_RECEIVER_CREDIT_WINDOW,
-    1,
+    2,
   );
   let stall: LiveConfig["stall"] = null;
   const stallText = (env.RS_RECEIVER_STALL ?? "").trim();

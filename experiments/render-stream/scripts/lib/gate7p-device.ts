@@ -152,7 +152,7 @@ export async function legFacts(legDir: string): Promise<LegFacts> {
       build = env.RS_RECEIVER_BUILD_SHA256 ?? null;
       window = env.RS_RECEIVER_CREDIT_WINDOW
         ? Number(env.RS_RECEIVER_CREDIT_WINDOW)
-        : 1;
+        : 2; // G7wd: a receiver that sets no RS_RECEIVER_CREDIT_WINDOW asks for 2
     } catch {
       /* unreadable page config: the facts stay null */
     }

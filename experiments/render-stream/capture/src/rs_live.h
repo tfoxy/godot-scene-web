@@ -113,7 +113,7 @@
 //     (LiveConfig::token_ignored) skips the refusal; `token_ok` still records the comparison.
 //   - window: the host grants w = min(credit_window, LiveConfig::credit_window_max,
 //     kHostCreditWindow) and declares it as the session's `publication.credit_window`.
-//     GRC_LIVE_CREDIT_WINDOW_MAX defaults to 1, so window 2 is opt-in (fork F1, G7q).
+//     GRC_LIVE_CREDIT_WINDOW_MAX defaults to 2 (fork F1 resolved, G7wd); window 1 is explicit.
 //   - window w (G7q; render-stream-7.md "Credit with window w"): up to w sent transactions hold a
 //     window slot each; a callback with a free slot (and, under rate control, a due tick) sends.
 //     Each transaction is still a patch against the last one sent, so a receiver applies them in
@@ -241,7 +241,7 @@ class ServerTransport : public LiveTransport {
 // ----------------------------------------------------------------------------- hub
 
 // The largest credit window the host implements (render-stream-7.md "Publication"; G7q, fork F1).
-// The grant is also capped by GRC_LIVE_CREDIT_WINDOW_MAX, default 1, so window 2 is opt-in.
+// The grant is also capped by GRC_LIVE_CREDIT_WINDOW_MAX, default 2 (G7wd); a hello asking 1 is still granted 1.
 inline constexpr std::uint64_t kHostCreditWindow = 2;
 
 // The subprotocol that makes a connection /7 (render-stream-7.md "Live transport").
@@ -261,9 +261,9 @@ struct LiveConfig {
   std::uint64_t ignore_credit_frame = 0;   // G1d
   std::uint64_t stale_coalesce_frame = 0;  // G1d
   std::uint64_t window_overrun_frame = 0;  // G7q (a listener sabotage, rs_live.h header)
-  // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 1); every grant is also capped at
+  // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2); every grant is also capped at
   // kHostCreditWindow.
-  std::uint64_t credit_window_max = 1;
+  std::uint64_t credit_window_max = 2;
   // G7n: the session's bearer token (GRC_LIVE_AUTH=token), checked against a /7 hello's `token`;
   // empty: no session auth, a /7 hello's token is not checked (`token_ok` null).
   std::string auth_token;

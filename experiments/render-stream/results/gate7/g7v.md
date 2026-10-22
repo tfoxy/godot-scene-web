@@ -29,7 +29,7 @@ window 2): gsw pace 47.0 → 58.1, scene 35.9 → 54.4, hd 4.4 → 8.5; web pace
 58.8 Hz (T_p 17.00 ms on every repeat), so the 60 Hz host's arrivals drift across every rAF phase
 within each 20-s window, and every gsw repeat is a `between` run (credit RTT 1.28–1.67 host
 frames), as Q13c predicted. G7q measured window 2 at ≥ 0.95 × 60 on 15 of 15 desktop phase runs.
-G7v does not flip the default (fork F1 stays the user's call).
+G7v does not flip the default (fork F1 stays the user's call); the user flipped it on 2026-10-22 ([g7wd.md](g7wd.md)).
 
 **`phase-alias` occurred** (Q13c's named risk) on every gsw window-2 repeat: 31–42 drawing
 callbacks per 20-s window applied two seqs on pace, 71–85 on scene, which is what keeps drawn below

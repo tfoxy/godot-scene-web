@@ -161,7 +161,7 @@ extends Node
 ##                               upgrade (gate7-design.md Q8).
 ##   RS_RECEIVER_TOKEN           G7l, web only: the bearer token itself (the shell takes it from
 ##                               the page's fragment; a browser has no token file). /7 only.
-##   RS_RECEIVER_CREDIT_WINDOW   G7l: 1 (default) or 2, the hello's credit_window (/7 only; the
+##   RS_RECEIVER_CREDIT_WINDOW   G7l: 2 (default since G7wd) or 1, the hello's credit_window (/7 only; the
 ##                               host grants min(window, its max); applied.json
 ##                               receiver.credit_window records the grant from the session)
 ##   RS_RECEIVER_MANIFEST_SHA256 G7e/G7l: 64 lowercase hex, sent as the /7 hello's manifest_sha256
@@ -1506,6 +1506,8 @@ func _parse_wire_env() -> bool:
 		_log("error: a web receiver speaks only render-stream/7 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
+	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
+	_credit_window = 2 if _wire_version == 7 else 1
 	var window_text: String = RsConfig.get_env("RS_RECEIVER_CREDIT_WINDOW").strip_edges()
 	if window_text != "":
 		if window_text != "1" and window_text != "2":

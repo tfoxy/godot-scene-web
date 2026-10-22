@@ -179,6 +179,12 @@ Measured in `../results/grt.md` "Part 2b".
   native rendered leg (27 s → 2.1 s median). The evidence (`display-ownership.json`) is unchanged.
   `test/self-test-socket-owners.sh` checks the new scan against the old one
   (`gs_socket_owners_slow`) on live sockets.
+- **Credit window default (G7wd, fork F1).** `GATE7_CREDIT_WINDOW` is 2 for gate 7's live runs
+  (`run-gate7.sh --live` exports it; a browser `GATE7_LIVE_KIND` implies it) and 1 for the native
+  gates run directly, which stay on /6. `--credit-window 1` (or `GATE7_CREDIT_WINDOW=1`) is the
+  explicit window-1 run: every live host gets `GRC_LIVE_CREDIT_WINDOW_MAX=1` and every browser
+  receiver `RS_RECEIVER_CREDIT_WINDOW=1`. g7-r's default list follows the window (the window-2
+  list at 2, `G7R_LEGS_<kind>` at 1).
 - **Sharded file-mode legs: `RS_LEG_SHARDS=N`** (`on` = 2; unset, `0`, `1` or `off` = serial, the
   default). It is opt-in. Natively it is wired into gates 0–3; for browsers, into every gate 7
   file group.

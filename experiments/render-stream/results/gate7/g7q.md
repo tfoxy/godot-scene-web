@@ -1,7 +1,12 @@
 ## Gate 7q result (2026-10-21)
 
+> **Amendment, 2026-10-22 (G7wd, [g7wd.md](g7wd.md)).** Every "window 1 is the default" and
+> "`GRC_LIVE_CREDIT_WINDOW_MAX` defaults to 1" statement below was true when G7q landed. Fork F1
+> is now resolved the other way round: window 2 is the default and window 1 is explicit. The
+> measurements are unchanged.
+
 G7q ([protocol/gate7/g7q.md](../../protocol/gate7/g7q.md); gate7-design.md D4, Q2, Q9, fork F1)
-implements credit window 2, opt-in: the host keeps up to two transactions in flight per
+implements credit window 2, opt-in (amended below): the host keeps up to two transactions in flight per
 receiver, and each receiver applies several queued transactions per frame. Window 1 stays the
 default and the correctness baseline.
 

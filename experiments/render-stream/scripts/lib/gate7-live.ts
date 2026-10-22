@@ -206,9 +206,9 @@ export function helloProblems(
   const want: Record<string, unknown> = {
     version: 7,
     receiver_kind: expectedKind,
-    // G7q: the grant equals the request (a window-2 run raises the host maximum to 2 too).
-    credit_window: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "1"),
-    credit_window_requested: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "1"),
+    // G7q/G7wd: the grant equals the request; the default request is 2 (the host maximum defaults to 2).
+    credit_window: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "2"),
+    credit_window_requested: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "2"),
     manifest_sha256: env.RS_RECEIVER_MANIFEST_SHA256 ?? null,
     presentation_backing_w: page?.canvas?.[0],
     presentation_backing_h: page?.canvas?.[1],
